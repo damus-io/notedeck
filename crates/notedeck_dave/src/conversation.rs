@@ -6,7 +6,8 @@
 use crate::backend::BackendType;
 use crate::publish::{ingest_live_event, pns_ingest};
 use crate::{
-    messages, session, session_events, session_loader, Dave, Message, PermissionResponse, SessionId,
+    messages, reconcile, session, session_events, session_loader, Dave, Message,
+    PermissionResponse, SessionId,
 };
 use nostrdb::{NoteKey, Transaction};
 use std::collections::HashMap;
@@ -210,6 +211,9 @@ impl Dave {
         // within each session so `process_conversation_notes` sees a coherent
         // batch.
         let mut by_session: HashMap<SessionId, Vec<nostrdb::NoteKey>> = HashMap::new();
+        // Local sessions that got notes this poll: each may now be at rest
+        // with all of its own notes indexed.
+        let mut reconcile_ids: Vec<SessionId> = Vec::new();
         for key in note_keys {
             let Ok(note) = ndb.get_note_by_key(&txn, key) else {
                 continue;
@@ -252,6 +256,9 @@ impl Dave {
                 continue;
             };
             let is_remote = session.is_remote();
+            if !is_remote {
+                reconcile_ids.push(session_id);
+            }
             let notes: Vec<_> = keys
                 .iter()
                 .filter_map(|key| ndb.get_note_by_key(&txn, *key).ok())
@@ -281,12 +288,18 @@ impl Dave {
             let Some(session) = self.session_manager.get_mut(session_id) else {
                 continue;
             };
-            rebuild_remote_chat(session, ndb, &txn, &account);
+            rebuild_chat_from_fold(session, ndb, &txn, &account);
             tracing::debug!(
                 "rebuilt remote session {} chat from ndb ({} messages)",
                 session_id,
                 session.chat.len(),
             );
+        }
+
+        for session_id in reconcile_ids {
+            if let Some(session) = self.session_manager.get_mut(session_id) {
+                reconcile::maybe_reconcile_at_rest(session, ndb, &account);
+            }
         }
 
         remote_user_messages
@@ -322,7 +335,7 @@ pub(crate) struct ProcessedNotes {
     /// User messages received from remote clients (for local sessions).
     pub remote_user_messages: Vec<(SessionId, String)>,
     /// True if this batch needs the caller to rebuild the remote session's chat
-    /// from ndb (see [`rebuild_remote_chat`]) — set only on the slow path, when
+    /// from ndb (see [`rebuild_chat_from_fold`]) — set only on the slow path, when
     /// a new displayable note sorts at or before what's already shown. In-order
     /// notes are appended directly here and do NOT set this.
     pub rebuild_chat: bool,
@@ -382,12 +395,17 @@ pub(crate) fn process_conversation_notes<'a>(
     notes.sort_by_key(|n| session_loader::EventOrder::from_note(n));
 
     for (idx, note) in notes.iter().enumerate() {
-        // Skip events we've already processed (dedup)
+        // Skip events we've already processed (dedup). A note this host
+        // published is one of those, but its arrival means nostrdb has indexed
+        // it, which the reconcile at rest waits for.
         let note_id = *note.id();
         let dominated = session
             .agentic
             .as_mut()
-            .map(|a| !a.seen_note_ids.insert(note_id))
+            .map(|a| {
+                a.unindexed_self_notes.remove(&note_id);
+                !a.seen_note_ids.insert(note_id)
+            })
             .unwrap_or(true);
         if dominated {
             continue;
@@ -410,6 +428,11 @@ pub(crate) fn process_conversation_notes<'a>(
                     queued,
                     ..messages::UserMessage::from(content)
                 }));
+                // Appended where it arrived; the reconcile at rest moves it to
+                // where the fold sorts it.
+                if let Some(agentic) = &mut session.agentic {
+                    agentic.fold_dirty = true;
+                }
                 session.update_title_from_last_message();
                 remote_user_messages.push((session_id, content.to_string()));
             }
@@ -576,17 +599,16 @@ pub(crate) fn process_conversation_notes<'a>(
     }
 }
 
-/// Rebuild a remote session's chat from ndb — the single source of truth for
-/// remote conversation display order.
+/// Rebuild a session's chat from ndb: the fold over its kind-1988 notes.
 ///
-/// Loads every kind-1988 event for the session sorted by
-/// [`EventOrder`](session_loader::EventOrder) and replaces `session.chat`, so
-/// the displayed order is a pure, total function of the persisted event set,
-/// independent of the order events arrived or were ingested (the fresh-machine
-/// backfill case). Re-seeds the dedup set and permission state, then overlays
-/// any in-memory permission decisions the loader couldn't know from ndb — an
-/// auto-accept published this poll but not yet ingested back through the relay.
-pub(crate) fn rebuild_remote_chat(
+/// This is the single source of truth for a remote session's display order,
+/// and what a local session's chat becomes at rest (see
+/// [`reconcile::maybe_reconcile_at_rest`]). Loads every note for the session
+/// sorted by [`EventOrder`](session_loader::EventOrder), so the result is a
+/// pure, total function of the persisted event set, independent of the order
+/// events arrived or were ingested (the fresh-machine backfill case), then
+/// installs it with [`apply_loaded_chat`].
+pub(crate) fn rebuild_chat_from_fold(
     session: &mut session::ChatSession,
     ndb: &nostrdb::Ndb,
     txn: &Transaction,
@@ -600,21 +622,37 @@ pub(crate) fn rebuild_remote_chat(
         return;
     };
     let loaded = session_loader::load_session_messages_for_author(ndb, txn, author, &claude_sid);
+    apply_loaded_chat(session, loaded);
+}
+
+/// Replace a session's chat with a loaded fold, and bring the state that
+/// points into the chat along with it.
+///
+/// Shared by the rebuild ([`rebuild_chat_from_fold`]) and restore, so a
+/// restored session starts with the same bookkeeping as a rebuilt one:
+/// - the dedup set and permission state gain what the fold loaded;
+/// - the fast-path tail is seeded from the fold's highest order, so notes
+///   that sort after it append instead of forcing another rebuild (a real
+///   order, never the display order of a waiting message);
+/// - subagent rows are re-indexed, since a background subagent outlives its
+///   turn and finds its row through that index;
+/// - in-memory permission decisions the fold can't know yet are laid over
+///   it: an auto-accept recorded this poll, its response not yet ingested,
+///   would otherwise render as pending (and collapsed).
+pub(crate) fn apply_loaded_chat(
+    session: &mut session::ChatSession,
+    loaded: session_loader::LoadedSession,
+) {
     session.chat = loaded.messages;
 
     let Some(agentic) = &mut session.agentic else {
         return;
     };
     agentic.seen_note_ids.extend(loaded.note_ids);
-    // Seed the fast-path tail from the freshly loaded set: subsequent in-order
-    // notes can then append instead of forcing another rebuild.
     agentic.tail_order = loaded.max_order;
     agentic.permissions.merge_loaded(loaded.permissions);
+    agentic.reindex_rows(&session.chat);
 
-    // Overlay in-memory permission decisions onto the freshly loaded chat. The
-    // loader only knows responses persisted in ndb, so an auto-accept recorded
-    // this poll (its response event published but not yet ingested) would render
-    // as pending — and collapsed — without this.
     for msg in session.chat.iter_mut() {
         let Message::PermissionRequest(req) = msg else {
             continue;
@@ -929,7 +967,7 @@ mod tests {
 
     /// Integration test for the remote conversation display path: events
     /// ingested out of order into ndb produce a correctly ordered chat after
-    /// the loader-driven rebuild (`rebuild_remote_chat`), the single ordering
+    /// the loader-driven rebuild (`rebuild_chat_from_fold`), the single ordering
     /// source `poll_remote_conversation_events` uses.
     #[tokio::test]
     async fn test_process_conversation_notes_ordering() {
@@ -1045,7 +1083,7 @@ mod tests {
                 "last_activity should track the newest ingested note's created_at"
             );
 
-            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+            rebuild_chat_from_fold(&mut session, &ndb, &txn, &author);
         }
 
         // Assert correct ordering in the rebuilt chat. The tool_result arrived
@@ -1104,7 +1142,7 @@ mod tests {
     /// detector was never seeded from the initial load, so on a fresh machine
     /// the first backfilled event that belonged mid-list was appended at the end
     /// and never noticed, leaving the chat permanently misordered. The single
-    /// loader-driven rebuild path (`rebuild_remote_chat`) is order-independent by
+    /// loader-driven rebuild path (`rebuild_chat_from_fold`) is order-independent by
     /// construction: `process_conversation_notes` never appends display for
     /// remote sessions, it only flags that a rebuild is needed.
     #[tokio::test]
@@ -1165,7 +1203,7 @@ mod tests {
         // Initial load populates the chat with what's present so far: [B, C].
         {
             let txn = Transaction::new(&ndb).unwrap();
-            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+            rebuild_chat_from_fold(&mut session, &ndb, &txn, &author);
         }
         assert_eq!(
             assistant_texts(&session.chat),
@@ -1203,7 +1241,7 @@ mod tests {
                 vec!["B", "C"],
                 "an out-of-order note must not be appended"
             );
-            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+            rebuild_chat_from_fold(&mut session, &ndb, &txn, &author);
         }
 
         // A lands in its correct position despite arriving last.
@@ -1268,7 +1306,7 @@ mod tests {
             let sub = ingest(&ndb, &a);
             let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
             let txn = Transaction::new(&ndb).unwrap();
-            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+            rebuild_chat_from_fold(&mut session, &ndb, &txn, &author);
         }
         assert_eq!(assistant_texts(&session.chat), vec!["A"]);
 
@@ -1362,7 +1400,7 @@ mod tests {
             let batch = vec![ndb.get_note_by_id(&txn, &evt.note_id).unwrap()];
             let result = process_conversation_notes(batch, session, 1, true, Some(&sk), &ndb);
             if result.rebuild_chat {
-                rebuild_remote_chat(session, &ndb, &txn, &author);
+                rebuild_chat_from_fold(session, &ndb, &txn, &author);
             }
             result.rebuild_chat
         };
@@ -1379,7 +1417,7 @@ mod tests {
                 .expect("ingest failed");
             let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
             let txn = Transaction::new(&ndb).unwrap();
-            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+            rebuild_chat_from_fold(&mut session, &ndb, &txn, &author);
         }
 
         assert!(
@@ -1561,7 +1599,7 @@ mod tests {
             let sub = ingest(&ndb, &first);
             let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
             let txn = Transaction::new(&ndb).unwrap();
-            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+            rebuild_chat_from_fold(&mut session, &ndb, &txn, &author);
         }
 
         {
@@ -1661,7 +1699,7 @@ mod tests {
             let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
             let txn = Transaction::new(&ndb).unwrap();
             if i == 0 {
-                rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+                rebuild_chat_from_fold(&mut session, &ndb, &txn, &author);
                 continue;
             }
             let note = ndb.get_note_by_id(&txn, &evt.note_id).unwrap();
@@ -1784,7 +1822,7 @@ mod tests {
                 result.rebuild_chat,
                 "a permission_request must request a rebuild"
             );
-            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+            rebuild_chat_from_fold(&mut session, &ndb, &txn, &author);
         }
 
         // Verify the request is pending (response=None)
@@ -1918,7 +1956,7 @@ mod tests {
             assert_eq!(notes.len(), 2);
 
             let _result = process_conversation_notes(notes, &mut session, 1, true, Some(&sk), &ndb);
-            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+            rebuild_chat_from_fold(&mut session, &ndb, &txn, &author);
         }
 
         // Find the PermissionRequest — regardless of processing order,
@@ -1948,7 +1986,7 @@ mod tests {
 
     /// Regression: an auto-accepted remote permission must reconstruct as
     /// `auto_accepted` from ndb alone. The remote chat is rebuilt purely from the
-    /// persisted event set (`rebuild_remote_chat`), so if the `"auto"` provenance
+    /// persisted event set (`rebuild_chat_from_fold`), so if the `"auto"` provenance
     /// isn't carried on the response event and reconstructed by the loader, the
     /// responded row starts collapsed on a fresh machine — the regression this
     /// test guards. No in-memory decision is seeded here; the flag must come
@@ -2015,7 +2053,7 @@ mod tests {
 
         {
             let txn = Transaction::new(&ndb).unwrap();
-            rebuild_remote_chat(&mut session, &ndb, &txn, &author);
+            rebuild_chat_from_fold(&mut session, &ndb, &txn, &author);
         }
 
         let perm_msg = session

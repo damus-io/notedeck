@@ -258,6 +258,17 @@ impl ToolResponse {
         &self.typ
     }
 
+    /// Mutable access to the response, for filling in detail a reloaded row
+    /// lost on the wire (see dave's reconcile at rest).
+    pub fn responses_mut(&mut self) -> &mut ToolResponses {
+        &mut self.typ
+    }
+
+    /// Take the response out of the row.
+    pub fn into_responses(self) -> ToolResponses {
+        self.typ
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }

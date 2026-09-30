@@ -236,9 +236,19 @@ pub struct AgenticSessionData {
     /// When a poll batch's new notes all sort after this, they are appended in
     /// order (O(batch)) instead of triggering a full rebuild (O(n)); a note at
     /// or before it forces a rebuild. Seeded from the loader on every rebuild
-    /// (see `rebuild_remote_chat`); `None` conservatively forces a rebuild, so a
+    /// (see `rebuild_chat_from_fold`); `None` conservatively forces a rebuild, so a
     /// missed seeding can never misorder — it only costs one extra rebuild.
     pub tail_order: Option<agentium_core::session_loader::EventOrder>,
+    /// Kind-1988 notes this host published for the session that nostrdb has
+    /// not handed back through the conversation subscription yet. Filled by
+    /// [`record_self_note`](Self::record_self_note) on every publish and
+    /// drained as each note arrives (`process_conversation_notes`). The chat
+    /// is only rebuilt from the fold while this is empty: a fold taken earlier
+    /// would be missing rows the host is showing.
+    pub unindexed_self_notes: HashSet<[u8; 32]>,
+    /// The host published something since its chat last matched the fold, so
+    /// the next reconcile at rest has work to do (see `reconcile.rs`).
+    pub fold_dirty: bool,
     /// Accumulated usage metrics across queries in this session.
     pub usage: crate::messages::UsageInfo,
     /// Runtime allowlist for auto-accepting permissions this session.
@@ -281,6 +291,8 @@ impl AgenticSessionData {
             remote_status_ts: 0,
             seen_note_ids: HashSet::new(),
             tail_order: None,
+            unindexed_self_notes: HashSet::new(),
+            fold_dirty: false,
             usage: Default::default(),
             runtime_allows: HashSet::new(),
             event_id: uuid::Uuid::new_v4().to_string(),
@@ -332,6 +344,34 @@ impl AgenticSessionData {
         let key = Self::runtime_allow_key(tool_name, tool_input)?;
         self.runtime_allows.insert(key.clone());
         Some(key)
+    }
+
+    /// Record a kind-1988 note this host just published for the session.
+    ///
+    /// Marks it seen, so its echo through the conversation subscription is not
+    /// processed again, and holds it as unindexed until that echo arrives. The
+    /// session's chat no longer matches the fold until it does.
+    pub fn record_self_note(&mut self, note_id: [u8; 32]) {
+        self.seen_note_ids.insert(note_id);
+        self.unindexed_self_notes.insert(note_id);
+        self.fold_dirty = true;
+    }
+
+    /// Point `subagent_indices` at the subagent rows of a chat that was just
+    /// replaced, and forget every running tool.
+    ///
+    /// A rebuilt chat has new row positions. A background subagent keeps
+    /// running after its turn ends, and its completion finds its row through
+    /// this map. A running tool never outlives its turn, and a chat is only
+    /// rebuilt at rest, so no running row is left to track.
+    pub fn reindex_rows(&mut self, chat: &[Message]) {
+        self.subagent_indices.clear();
+        self.running_tool_indices.clear();
+        for (idx, message) in chat.iter().enumerate() {
+            if let Message::Subagent(info) = message {
+                self.subagent_indices.insert(info.task_id.clone(), idx);
+            }
+        }
     }
 
     /// Stable Nostr event identity (d-tag for kind-1988 / kind-31988).
@@ -1680,6 +1720,28 @@ impl ChatSession {
     /// because it covers the window between dispatch and first token arrival.
     pub fn is_dispatched(&self) -> bool {
         !matches!(self.dispatch_state, DispatchState::Idle)
+    }
+
+    /// Whether this is a local agentic session with nothing in flight, so its
+    /// chat can be swapped for the fold over its notes (see `reconcile.rs`).
+    ///
+    /// Nothing is in flight when no turn is dispatched or running, no
+    /// assistant segment is open, no tool is running (a spontaneous wake-up
+    /// turn streams without a dispatch), no permission awaits an answer and no
+    /// compaction is under way. Remote sessions already show the fold, and
+    /// chat-mode sessions publish nothing to fold.
+    pub fn at_rest(&self) -> bool {
+        let Some(agentic) = &self.agentic else {
+            return false;
+        };
+        !self.is_remote()
+            && self.backend_type.is_agentic()
+            && self.task_handle.is_none()
+            && !self.is_dispatched()
+            && self.open_assistant_idx.is_none()
+            && agentic.running_tool_indices.is_empty()
+            && agentic.permissions.pending.is_empty()
+            && agentic.compact_intent.is_none()
     }
 
     /// Append a streaming token to the current assistant message.

@@ -10,9 +10,9 @@ use crate::publish::{
 };
 use crate::session_events::LiveEventTags;
 use crate::{
-    backend, get_backend, messages, secret_key_bytes, session, session_events, session_loader,
-    Dave, DaveApiResponse, ExecutedTool, Message, PermissionResponse, SessionId, SessionInfo,
-    SubagentInfo, ToolCall, ToolCalls, ToolResponse, ToolResponses,
+    backend, get_backend, messages, reconcile, secret_key_bytes, session, session_events,
+    session_loader, Dave, DaveApiResponse, ExecutedTool, Message, PermissionResponse, SessionId,
+    SessionInfo, SubagentInfo, ToolCall, ToolCalls, ToolResponse, ToolResponses,
 };
 use nostrdb::Transaction;
 use notedeck::{AppContext, Waker};
@@ -31,6 +31,8 @@ impl Dave {
     pub(crate) fn process_events(&mut self, app_ctx: &AppContext) -> ProcessEventsResult {
         let mut needs_send: HashSet<SessionId> = HashSet::new();
         let mut needs_compact: HashSet<SessionId> = HashSet::new();
+        // Sessions whose turn ended this drain, to reconcile once it's over.
+        let mut ended: Vec<SessionId> = Vec::new();
         let active_id = self.session_manager.active_id();
 
         // Extract secret key once for live event generation
@@ -93,6 +95,7 @@ impl Dave {
             // persistent channel that stays open for the next turn / wake-up.
             match recvr.try_recv() {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    ended.push(session_id);
                     if let Some(session) = self.session_manager.get_mut(session_id) {
                         handle_stream_end(
                             session,
@@ -110,6 +113,7 @@ impl Dave {
                     // that just completed, but keep the receiver installed so the
                     // next turn (including a spontaneous wake-up) still flows.
                     if turn_ended {
+                        ended.push(session_id);
                         if let Some(session) = self.session_manager.get_mut(session_id) {
                             handle_stream_end(
                                 session,
@@ -132,6 +136,19 @@ impl Dave {
                         session.incoming_tokens = Some(recvr);
                     }
                 }
+            }
+        }
+
+        // A turn that published nothing at its end has every note indexed
+        // already, so no conversation poll will come along to reconcile it.
+        // One about to dispatch again or compact is not at rest.
+        let author = *app_ctx.accounts.selected_account_pubkey();
+        for session_id in ended {
+            if needs_send.contains(&session_id) || needs_compact.contains(&session_id) {
+                continue;
+            }
+            if let Some(session) = self.session_manager.get_mut(session_id) {
+                reconcile::maybe_reconcile_at_rest(session, app_ctx.ndb, &author);
             }
         }
 
@@ -621,9 +638,9 @@ fn publish_subagent(
     let session_id = agentic.event_session_id().to_string();
     match session_events::build_subagent_event(info, &session_id, &mut agentic.live_threading, sk) {
         Ok(event) => {
-            // Mark as seen so the relay echo isn't reprocessed.
-            agentic.seen_note_ids.insert(event.note_id);
-            pns_ingest(ndb, &event.note_json, sk);
+            if pns_ingest(ndb, &event.note_json, sk) {
+                agentic.record_self_note(event.note_id);
+            }
             Some(event)
         }
         Err(e) => {

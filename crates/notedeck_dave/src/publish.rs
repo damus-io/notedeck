@@ -20,9 +20,18 @@ use notedeck::AppContext;
 /// (nostrdb unwraps the inner event so dave can query it at once), and fans the
 /// envelope out to the account's private relays. dave authors the inner event and
 /// no longer wraps 1080 envelopes or runs a publish queue itself.
-pub(crate) fn pns_ingest(ndb: &nostrdb::Ndb, event_json: &str, secret_key: &[u8; 32]) {
-    if let Err(e) = notedeck::write_private_note(ndb, secret_key, event_json) {
-        tracing::warn!("failed to write private note: {e}");
+///
+/// Returns whether the note was handed to nostrdb. One that wasn't never
+/// comes back through the conversation subscription, so it must not be
+/// recorded as waiting for that (see
+/// [`AgenticSessionData::record_self_note`](session::AgenticSessionData::record_self_note)).
+pub(crate) fn pns_ingest(ndb: &nostrdb::Ndb, event_json: &str, secret_key: &[u8; 32]) -> bool {
+    match notedeck::write_private_note(ndb, secret_key, event_json) {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!("failed to write private note: {e}");
+            false
+        }
     }
 }
 
@@ -214,9 +223,9 @@ pub(crate) fn ingest_live_event(
         secret_key,
     ) {
         Ok(event) => {
-            // Mark as seen so we don't double-process when it echoes back from the relay
-            agentic.seen_note_ids.insert(event.note_id);
-            pns_ingest(ndb, &event.note_json, secret_key);
+            if pns_ingest(ndb, &event.note_json, secret_key) {
+                agentic.record_self_note(event.note_id);
+            }
             Some(event)
         }
         Err(e) => {
@@ -248,7 +257,8 @@ fn ingest_remote_user_message(
     let engine = embedded_engine(ndb, secret_key)?;
     match engine.prepare_message(&session_id, text) {
         Ok(event) => {
-            agentic.seen_note_ids.insert(event.note_id);
+            // The engine ingested it already.
+            agentic.record_self_note(event.note_id);
             Some(event)
         }
         Err(e) => {
@@ -362,6 +372,31 @@ pub(crate) fn record_dispatch(
     }
 }
 
+/// Publish a permission response the user gave (see
+/// [`publish_permission_response`]) and, when it answers a session this host
+/// runs, record the note on that session.
+///
+/// Only a local session records it: a remote issuer renders the response's
+/// reply row from the note's echo, which a recorded note would skip.
+pub(crate) fn publish_user_permission_response(
+    sessions: &mut session::SessionManager,
+    engine: &agentium_core::Engine,
+    resp: &PermissionPublish,
+) {
+    let Some(event) = publish_permission_response(engine, resp) else {
+        return;
+    };
+    let local = sessions.iter_mut().find(|s| {
+        !s.is_remote()
+            && s.agentic
+                .as_ref()
+                .is_some_and(|a| a.event_session_id() == resp.event_session_id)
+    });
+    if let Some(agentic) = local.and_then(|s| s.agentic.as_mut()) {
+        agentic.record_self_note(event.note_id);
+    }
+}
+
 /// Build and locally ingest one permission response through the engine (which
 /// resolves the request's note id from ndb); the host's private-sync Session
 /// fans it out. Returns the built event, or `None` after logging a failure.
@@ -395,10 +430,12 @@ pub(crate) fn publish_permission_response(
     }
 }
 
-/// Ingest an event this host built for one of its own sessions, marking it seen
-/// so its echo back from the relay isn't processed again. Returns the note id,
-/// or `None` after logging a build failure.
-fn ingest_session_event(
+/// Ingest an event this host built for one of its own sessions and record it
+/// (see [`AgenticSessionData::record_self_note`]). Returns the note id, or
+/// `None` after logging a build or ingest failure.
+///
+/// [`AgenticSessionData::record_self_note`]: session::AgenticSessionData::record_self_note
+pub(crate) fn ingest_session_event(
     agentic: &mut session::AgenticSessionData,
     result: Result<session_events::BuiltEvent, session_events::EventBuildError>,
     event_desc: &str,
@@ -407,8 +444,10 @@ fn ingest_session_event(
 ) -> Option<[u8; 32]> {
     match result {
         Ok(evt) => {
-            agentic.seen_note_ids.insert(evt.note_id);
-            pns_ingest(ndb, &evt.note_json, sk);
+            if !pns_ingest(ndb, &evt.note_json, sk) {
+                return None;
+            }
+            agentic.record_self_note(evt.note_id);
             Some(evt.note_id)
         }
         Err(e) => {
@@ -619,7 +658,7 @@ impl Dave {
         };
 
         for resp in std::mem::take(&mut self.pending_perm_responses) {
-            publish_permission_response(&engine, &resp);
+            publish_user_permission_response(&mut self.session_manager, &engine, &resp);
         }
     }
 

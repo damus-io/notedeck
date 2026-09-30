@@ -17,6 +17,7 @@ pub(crate) mod path_utils;
 mod pns_runtime;
 mod publish;
 mod quaternion;
+mod reconcile;
 pub mod reference;
 pub mod render;
 mod restore;

@@ -11,22 +11,31 @@
 //! have the same [`view_signature`] — and that the fold is the same again when
 //! those notes are backfilled into a fresh ndb in reverse order.
 //!
+//! Then the host's notes come back through the conversation poll, and the host
+//! reconciles its chat to the fold at rest ([`maybe_reconcile_at_rest`]). Every
+//! scenario must converge there without a drift, and leave the host's chat
+//! equal to the fold.
+//!
 //! A scenario that fails today is `#[ignore]`d with the converge card that
 //! fixes it; that card un-ignores it.
 
 use crate::backend::BackendType;
 use crate::config::AiMode;
+use crate::conversation::process_conversation_notes;
 use crate::messages::{
     CompactionInfo, PendingPermission, PermissionRequest, QuestionAnswer, RunningTool,
     SubagentInfo, SubagentStatus,
 };
 use crate::publish::{
-    publish_auto_accept_response, publish_permission_response, record_dispatch, record_user_message,
+    publish_auto_accept_response, publish_user_permission_response, record_dispatch,
+    record_user_message, MAX_TOOL_OUTPUT_WIRE_BYTES,
 };
+use crate::reconcile::{maybe_reconcile_at_rest, Drift, ReconcileOutcome};
 use crate::session::{ChatSession, CompactIntent, SessionId, SessionManager};
 use crate::stream_events::{apply_response, handle_stream_end, ApplyCtx};
 use crate::tests::{test_config, test_secret_key};
-use crate::{embedded_engine, DaveApiResponse, ExecutedTool, PermissionResponse};
+use crate::tools::ToolResponses;
+use crate::{embedded_engine, DaveApiResponse, ExecutedTool, Message, PermissionResponse};
 use agentium_core::session_events::AI_CONVERSATION_KIND;
 use agentium_core::session_loader::{
     load_session_messages_for_author, view_signature, EventOrder, RowSig,
@@ -72,9 +81,6 @@ struct Host {
     sid: SessionId,
     ndb: Ndb,
     secret_key: Option<[u8; 32]>,
-    /// Notes the host published that the session does not record in
-    /// `seen_note_ids` (engine-built permission responses).
-    extra_note_ids: HashSet<[u8; 32]>,
     /// Response channels of the permission requests the backend sent, kept
     /// open so resolving a request does not log a closed-channel error.
     permission_rxs: Vec<oneshot::Receiver<PermissionResponse>>,
@@ -105,7 +111,6 @@ impl Host {
             sid,
             ndb,
             secret_key: Some(sk),
-            extra_note_ids: HashSet::new(),
             permission_rxs: Vec::new(),
             indexed,
             _dir: dir,
@@ -185,17 +190,53 @@ impl Host {
         self.indexed.wait_for(&self.ndb, &ids).await;
     }
 
-    /// Every note id the host published for this session.
+    /// Every note id the host published for this session. Each publish
+    /// records its note as seen.
     fn published_note_ids(&mut self) -> HashSet<[u8; 32]> {
-        let extra = self.extra_note_ids.clone();
-        let agentic = self.session().agentic.as_ref().unwrap();
-        agentic
+        self.session()
+            .agentic
+            .as_ref()
+            .unwrap()
             .seen_note_ids
+            .clone()
+    }
+
+    fn author(&self) -> nostrdb_net::Pubkey {
+        nostrdb_net::FullKeypair::from_secret_bytes(&self.secret_key.unwrap())
+            .unwrap()
+            .pubkey
+    }
+
+    /// Reconcile at rest without handing the host its notes back: what the
+    /// host does at the end of a turn.
+    fn reconcile_now(&mut self) -> ReconcileOutcome {
+        let author = self.author();
+        let session = self.sessions.get_mut(self.sid).unwrap();
+        maybe_reconcile_at_rest(session, &self.ndb, &author)
+    }
+
+    /// Hand the host its published notes back the way the conversation poll
+    /// does once they are indexed, then reconcile at rest, as the poll does.
+    fn poll_and_reconcile(&mut self) -> ReconcileOutcome {
+        let ids = self.published_note_ids();
+        let author = self.author();
+        let sid = self.sid;
+        let txn = Transaction::new(&self.ndb).unwrap();
+        let notes = ids
             .iter()
-            .chain(agentic.permissions.request_note_ids.values())
-            .chain(extra.iter())
-            .copied()
-            .collect()
+            .map(|id| self.ndb.get_note_by_id(&txn, id).unwrap())
+            .collect();
+        let session = self.sessions.get_mut(sid).unwrap();
+        process_conversation_notes(
+            notes,
+            session,
+            sid,
+            false,
+            self.secret_key.as_ref(),
+            &self.ndb,
+        );
+        drop(txn);
+        maybe_reconcile_at_rest(session, &self.ndb, &author)
     }
 }
 
@@ -315,6 +356,22 @@ async fn assert_host_matches_fold(script: Vec<Step>) {
     assert_eq!(
         fold, backfilled,
         "the fold depends on the order the notes were ingested"
+    );
+
+    assert_eq!(
+        host.reconcile_now(),
+        ReconcileOutcome::NotReady,
+        "a host whose own notes haven't come back through the poll must wait"
+    );
+    assert_eq!(
+        host.poll_and_reconcile(),
+        ReconcileOutcome::Converged,
+        "the host's chat drifted from the fold at rest"
+    );
+    assert_eq!(
+        view_signature(&host.session().chat),
+        fold,
+        "after the reconcile the host's chat is the fold"
     );
 }
 
@@ -571,8 +628,7 @@ fn answer_question(id: uuid::Uuid) -> Step {
             .expect("a local question with a published request publishes a response");
         let sk = host.secret_key.unwrap();
         let engine = embedded_engine(&host.ndb, &sk).unwrap();
-        let event = publish_permission_response(&engine, &publish).unwrap();
-        host.extra_note_ids.insert(event.note_id);
+        publish_user_permission_response(&mut host.sessions, &engine, &publish);
     }))
 }
 
@@ -689,4 +745,140 @@ async fn queued_send_behind_question_reply_waiting() {
 #[tokio::test]
 async fn queued_send_behind_question_reply_dispatched() {
     assert_host_matches_fold(queued_behind_question_reply(true)).await;
+}
+
+/// Drive `script` through a fresh host and wait for its notes to be indexed.
+async fn driven(script: Vec<Step>) -> Host {
+    let mut host = Host::new();
+    host.drive(script).await;
+    host.settle().await;
+    host
+}
+
+/// An edit's diff past the wire budget is dropped from its `tool_result`
+/// note, so the fold shows the tool without it. The host keeps its diff
+/// through the reconcile.
+///
+/// Capped *output* can't be tested the same way yet: a capped 40KB copy makes
+/// an inner event over 32KB, which nostrdb's NIP-44 unpad rejects (its
+/// `calc_padded_len` overflows a `uint16_t` past 32768), so that note never
+/// indexes and the session never reconciles.
+#[tokio::test]
+async fn reconcile_keeps_dropped_diff() {
+    let edit = crate::file_update::FileUpdate::new(
+        "big.rs".to_string(),
+        crate::file_update::FileUpdateType::Write {
+            content: "x".repeat(MAX_TOOL_OUTPUT_WIRE_BYTES + 1),
+        },
+    );
+    let mut script = Vec::from(user_turn("write the file"));
+    script.extend([
+        running("t1", "Write", "big.rs"),
+        Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
+            tool_name: "Write".to_string(),
+            summary: "big.rs".to_string(),
+            output: None,
+            parent_task_id: None,
+            file_update: Some(edit),
+            tool_use_id: Some("t1".to_string()),
+        })),
+        Step::StreamEnd,
+    ]);
+    let mut host = driven(script).await;
+
+    let has_diff = |chat: &[Message]| {
+        chat.iter()
+            .find_map(|message| match message {
+                Message::ToolResponse(resp) => match resp.responses() {
+                    ToolResponses::ExecutedTool(tool) => Some(tool.file_update.is_some()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("the turn has a tool row")
+    };
+    let author = host.author();
+    let fold_has_diff = {
+        let txn = Transaction::new(&host.ndb).unwrap();
+        has_diff(&load_session_messages_for_author(&host.ndb, &txn, &author, SESSION).messages)
+    };
+    assert!(!fold_has_diff, "the wire dropped the diff");
+
+    assert_eq!(host.poll_and_reconcile(), ReconcileOutcome::Converged);
+    assert!(has_diff(&host.session().chat), "the host kept its diff");
+}
+
+/// A row the host shows but never published is drift: the reconcile reports
+/// the row, and the host's chat becomes the fold without it.
+#[tokio::test]
+async fn reconcile_reports_unpublished_row() {
+    let mut script = Vec::from(user_turn("hello"));
+    script.extend([
+        token("hi"),
+        Step::StreamEnd,
+        Step::Act(Box::new(|host: &mut Host| {
+            host.session()
+                .chat
+                .push(Message::System("only on the host".to_string()));
+        })),
+    ]);
+    let mut host = driven(script).await;
+
+    assert_eq!(
+        host.poll_and_reconcile(),
+        ReconcileOutcome::Drifted(Drift {
+            index: 2,
+            host: Some(RowSig::System("only on the host".to_string())),
+            fold: None,
+        })
+    );
+    let sk = host.secret_key.unwrap();
+    assert_eq!(
+        view_signature(&host.session().chat),
+        fold_signature(&host.ndb, &sk)
+    );
+    assert_eq!(
+        host.reconcile_now(),
+        ReconcileOutcome::NotReady,
+        "nothing was published since, so there is nothing to do"
+    );
+}
+
+/// A background subagent outlives its turn. The reconcile at rest rebuilds
+/// the chat under it, and its completion on a later wake-up still finds its
+/// row, then reconciles again without drift.
+#[tokio::test]
+async fn reconcile_keeps_background_subagent_live() {
+    let mut script = Vec::from(user_turn("explore in the background"));
+    script.extend([
+        Step::Backend(DaveApiResponse::SubagentSpawned(SubagentInfo {
+            task_id: "s1".to_string(),
+            description: "Map the loader".to_string(),
+            subagent_type: "Explore".to_string(),
+            status: SubagentStatus::Running,
+            output: String::new(),
+            max_output_size: 4000,
+            tool_results: Vec::new(),
+            background: true,
+        })),
+        token("it runs in the background"),
+        Step::StreamEnd,
+    ]);
+    let mut host = driven(script).await;
+    assert_eq!(host.poll_and_reconcile(), ReconcileOutcome::Converged);
+
+    host.drive(vec![
+        Step::Backend(DaveApiResponse::SubagentCompleted {
+            task_id: "s1".to_string(),
+            result: "mapped it".to_string(),
+        }),
+        Step::Settle,
+    ])
+    .await;
+    let completed = host.session().chat.iter().any(|message| {
+        matches!(message, Message::Subagent(info)
+            if info.task_id == "s1" && info.status == SubagentStatus::Completed)
+    });
+    assert!(completed, "the completion found the rebuilt row");
+    assert_eq!(host.poll_and_reconcile(), ReconcileOutcome::Converged);
 }

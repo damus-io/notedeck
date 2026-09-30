@@ -867,15 +867,13 @@ impl Dave {
         let Some(session) = self.session_manager.get_mut(dave_sid) else {
             return;
         };
-        session.chat = loaded.messages;
         if let Some(agentic) = &mut session.agentic {
             agentic.event_id = claude_sid.to_string();
             if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
                 agentic.live_threading.seed(root, last);
             }
-            agentic.permissions.merge_loaded(loaded.permissions);
-            agentic.seen_note_ids = loaded.note_ids;
         }
+        crate::conversation::apply_loaded_chat(session, loaded);
     }
 
     pub(crate) fn process_archive_conversion(&mut self, ctx: &mut AppContext<'_>) {
@@ -1002,8 +1000,6 @@ fn hydrate_session_from_state(
     loaded: session_loader::LoadedSession,
     local_hostname: &str,
 ) {
-    session.chat = loaded.messages;
-
     if is_session_remote(&state.hostname, &state.cwd, local_hostname) {
         session.source = session::SessionSource::Remote;
     }
@@ -1068,9 +1064,6 @@ fn hydrate_session_from_state(
         if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
             agentic.live_threading.seed(root, last);
         }
-        // Load permission state and dedup set from events.
-        agentic.permissions.merge_loaded(loaded.permissions);
-        agentic.seen_note_ids = loaded.note_ids;
         // Set remote status and permission mode from the state event.
         agentic.remote_status = AgentStatus::from_status_str(&state.status);
         agentic.remote_status_ts = state.created_at;
@@ -1080,6 +1073,10 @@ fn hydrate_session_from_state(
         // Live conversation events flow through the shared per-account
         // subscription; no per-session subscription needed here.
     }
+
+    // The history, and the state that points into it (dedup set, permission
+    // state, fast-path tail, subagent rows) — the same install a rebuild does.
+    crate::conversation::apply_loaded_chat(session, loaded);
 }
 
 #[cfg(test)]
@@ -1195,6 +1192,91 @@ mod tests {
         let agentic = manager.get_mut(sid).unwrap().agentic.as_ref().unwrap();
         assert_eq!(agentic.event_id, "dead-dtag");
         assert_eq!(agentic.resume_session_id, None);
+    }
+
+    /// A restored session gets the bookkeeping a live one has: the fast-path
+    /// tail is seeded from the fold, and a background subagent still running
+    /// when the host went down is indexed, so its completion (which arrives on
+    /// a later wake-up turn) finds its row.
+    #[tokio::test]
+    async fn hydrator_seeds_tail_and_background_subagent() {
+        use crate::messages::{SubagentInfo, SubagentStatus};
+        use crate::Message;
+
+        let sk = test_secret_key();
+        let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let sid = "restored-subagent";
+        let tmp = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+
+        let mut threading = ThreadingState::new();
+        let live = |content: &str, role: &str, threading: &mut ThreadingState| {
+            build_live_event(
+                content,
+                role,
+                sid,
+                None,
+                LiveEventTags::default(),
+                threading,
+                &sk,
+            )
+            .unwrap()
+        };
+        let user = live("explore the loader", "user", &mut threading);
+        let subagent = session_events::build_subagent_event(
+            &SubagentInfo {
+                task_id: "s1".to_string(),
+                description: "Map the loader".to_string(),
+                subagent_type: "Explore".to_string(),
+                status: SubagentStatus::Running,
+                output: String::new(),
+                max_output_size: 4000,
+                tool_results: Vec::new(),
+                background: true,
+            },
+            sid,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        let reply = live("it runs in the background", "assistant", &mut threading);
+
+        let filter = nostrdb::Filter::new().build();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        for ev in [&user, &subagent, &reply] {
+            ndb.process_event_with(&ev.to_event_json(), IngestMetadata::new().client(true))
+                .unwrap();
+        }
+        ndb.wait_for_all_notes(sub, 3).await.unwrap();
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let loaded = session_loader::load_session_messages_for_author(&ndb, &txn, &account, sid);
+        let max_order = loaded.max_order;
+        assert!(max_order.is_some());
+
+        let mut manager = SessionManager::new();
+        let id = manager.new_resumed_session(
+            PathBuf::from("/tmp/proj"),
+            String::new(),
+            "placeholder".to_string(),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        let session = manager.get_mut(id).unwrap();
+        hydrate_session_from_state(session, &hydrate_test_state(sid, None), loaded, "my-host");
+
+        let agentic = session.agentic.as_ref().unwrap();
+        assert_eq!(agentic.tail_order, max_order, "the tail is seeded");
+        assert_eq!(agentic.subagent_indices.get("s1"), Some(&1));
+        assert!(matches!(&session.chat[1], Message::Subagent(info) if info.background));
+
+        session.complete_subagent("s1", "mapped it");
+        let Message::Subagent(info) = &session.chat[1] else {
+            panic!("the subagent row moved");
+        };
+        assert_eq!(info.status, SubagentStatus::Completed);
     }
 
     /// Reopening a soft-deleted session materializes it from ndb with its
