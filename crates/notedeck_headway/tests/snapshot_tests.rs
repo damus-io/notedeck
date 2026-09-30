@@ -2874,7 +2874,7 @@ const DETAIL_RECORDS: [(&str, &str, Option<&str>, Option<&str>); 4] = [
         "2c3d4e5f60718293a4b5c6d7e8f9012345678ab9",
         "headway: animate a column sliding into its new slot",
         None,
-        Some(QUEUE_EXPLAINER),
+        Some(DETAIL_OLDER_EXPLAINER),
     ),
     (
         "3d4e5f60718293a4b5c6d7e8f9012345678ab9c0",
@@ -2883,6 +2883,10 @@ const DETAIL_RECORDS: [(&str, &str, Option<&str>, Option<&str>); 4] = [
         Some(QUEUE_EXPLAINER),
     ),
 ];
+
+/// The explainer of [`DETAIL_RECORDS`]' second-newest record: not the
+/// newest's, so a click on it can be told from `e`, which opens the newest's.
+const DETAIL_OLDER_EXPLAINER: &str = "https://claude.ai/artifact/column-slide-explainer";
 
 /// Record [`DETAIL_RECORDS`] on [`DETAIL_REVIEW_CARD`], oldest first, each
 /// from [`REVIEW_HOST`] with a deep checkout path. Waits for each to fold before
@@ -2953,6 +2957,98 @@ fn detail_review_section_shows_the_newest_three_until_show_all() {
     wait_for_label(&mut harness, short(0));
     harness.get_by_label("Show fewer").click();
     wait_for_absent(&mut harness, short(0));
+}
+
+/// Behavioural (no lavapipe): a row in the detail's Review section acts on its
+/// own record, not the newest `r` and `e` act on. Clicking the second row's
+/// sha pushes a `Review` entry naming that record, and clicking its explainer
+/// opens that record's explainer — both through the card-action path the keys
+/// and the sidebar take.
+#[test]
+fn a_detail_review_row_click_acts_on_its_own_record() {
+    use notedeck::NavRequest;
+    use notedeck_headway::HeadwayRoute;
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 900.0));
+    seed_detail_reviews(&mut harness);
+    let card = harness_card_id(&mut harness, DETAIL_REVIEW_CARD);
+    // The second row's record, newest first.
+    let second = {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let app_ctx = state.notedeck.app_context();
+        let txn = Transaction::new(app_ctx.ndb).expect("txn");
+        let boards = headway::event::fold_board(app_ctx.ndb, &txn, &author)
+            .expect("folded")
+            .finalize();
+        let view =
+            headway::event::find_board(&boards, &author, store::BOARD_ID).expect("demo board");
+        let record = &view.card(card).expect("card").reviews[1];
+        assert_eq!(record.fields.commit.as_deref(), Some(DETAIL_RECORDS[2].0));
+        record.id
+    };
+    harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
+    let second_sha = &DETAIL_RECORDS[2].0[..12];
+    wait_for_label(&mut harness, second_sha);
+    wait_for_label(&mut harness, "Review in session");
+
+    // Its explainer: the body's link on the line under its sha (the sidebar's
+    // is right of the body, under "Review in session").
+    let sha_top = label_top(&harness, second_sha).expect("second row's sha");
+    let sidebar_left = harness
+        .get_by_label("Review in session")
+        .bounding_box()
+        .expect("sidebar link")
+        .x0;
+    harness
+        .get_all_by_label("Explainer ↗")
+        .filter(|node| {
+            node.bounding_box()
+                .is_some_and(|bb| bb.x1 < sidebar_left && bb.y0 > sha_top)
+        })
+        .min_by(|a, b| {
+            let top = |n: &Node<'_>| n.bounding_box().map_or(f64::MAX, |bb| bb.y0);
+            top(a).total_cmp(&top(b))
+        })
+        .expect("the second row's explainer")
+        .click();
+    let mut opened = None;
+    for _ in 0..4 {
+        harness.step();
+        opened = harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
+                _ => None,
+            });
+        if opened.is_some() {
+            break;
+        }
+    }
+    assert_eq!(opened.as_deref(), Some(DETAIL_OLDER_EXPLAINER));
+
+    harness.state_mut().notedeck.app_context().navigator.take();
+    harness.get_by_label(second_sha).click();
+    wait_for_absent(&mut harness, "± Review diff");
+    let requests = harness.state_mut().notedeck.app_context().navigator.take();
+    let reviews: Vec<&HeadwayRoute> = requests
+        .iter()
+        .filter_map(|req| match req {
+            NavRequest::PushToActive(entry) => entry.token.downcast_ref::<HeadwayRoute>(),
+            _ => None,
+        })
+        .filter(|route| route.review_card().is_some())
+        .collect();
+    assert_eq!(reviews.len(), 1, "the click pushes one review entry");
+    assert_eq!(reviews[0].review_card(), Some(card));
+    assert_eq!(
+        reviews[0].review_target().map(|t| t.record),
+        Some(Some(second)),
+        "the pane opens on the clicked record, not the newest"
+    );
 }
 
 /// Snapshot: a card detail's Review section with four records — the newest

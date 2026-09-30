@@ -67,14 +67,16 @@ pub(crate) enum CardAction {
     /// `Enter`/`o`: open the card's detail. The detail itself has nothing to
     /// open; a plain review pane backs out to it.
     Open,
-    /// `e`: open the explainer of the card's record (the one a review pane
-    /// shows, else the newest).
-    Explainer,
+    /// `e`: open the explainer of the card's record. `None` (the key) is the
+    /// record a review pane shows, else the newest; a click on one record's
+    /// link in the detail's Review section names it.
+    Explainer(Option<NoteId>),
     /// `s`/`S`: open the record's agentium session, `S` asking it for a
     /// `/code-review` of its work.
     Session(SessionOpen),
-    /// `r`: open the review pane on the card's newest record.
-    Review,
+    /// `r`: open the review pane on the card's newest record (`None`, the
+    /// key), or on the record a click in the detail's Review section names.
+    Review(Option<NoteId>),
     /// `a`: archive the card.
     Archive,
     /// `D`: move the card to the end of Done.
@@ -95,10 +97,10 @@ pub(crate) fn card_action(press: KeyPress) -> Option<CardAction> {
     }
     Some(match (press.key, press.modifiers.shift) {
         (Key::Enter, _) | (Key::O, false) => CardAction::Open,
-        (Key::E, false) => CardAction::Explainer,
+        (Key::E, false) => CardAction::Explainer(None),
         (Key::S, false) => CardAction::Session(SessionOpen::Plain),
         (Key::S, true) => CardAction::Session(SessionOpen::CodeReview),
-        (Key::R, false) => CardAction::Review,
+        (Key::R, false) => CardAction::Review(None),
         (Key::A, false) => CardAction::Archive,
         (Key::D, true) => CardAction::Done,
         (Key::X, true) => CardAction::SendBack,
@@ -153,11 +155,13 @@ pub(crate) fn apply_card_action(
             ActionView::Pane => state.back_to_detail(card),
             ActionView::Detail => {}
         },
-        CardAction::Explainer => state.open_explainer(ctx, view, card),
+        CardAction::Explainer(record) => state.open_explainer(ctx, view, card, record),
         CardAction::Session(how) => state.open_card_session(view, card, how, now),
-        CardAction::Review => match at {
+        CardAction::Review(record) => match at {
             ActionView::Queue => state.newest_record(card),
-            ActionView::Grid(_) | ActionView::Pane | ActionView::Detail => state.open_review(card),
+            ActionView::Grid(_) | ActionView::Pane | ActionView::Detail => {
+                state.open_review(card, record)
+            }
         },
         CardAction::Archive => return archive_card(view, state, card, at, now),
         CardAction::Done => return state.accept_card(view, card, now),

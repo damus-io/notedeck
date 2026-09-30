@@ -83,13 +83,23 @@ impl BoardUiState {
         }
     }
 
-    /// `e`: open the explainer of `card`'s record ([`acted_record`]) in a
-    /// browser tab, or say there's none.
+    /// `e`: open the explainer of `card`'s `record` in a browser tab, or say
+    /// there's none. `None` (the key) is the [`acted_record`]; a click on a
+    /// record's own link in the detail's Review section names that record.
     ///
     /// [`acted_record`]: Self::acted_record
-    pub(crate) fn open_explainer(&mut self, ctx: &egui::Context, view: &BoardView, card: NoteId) {
+    pub(crate) fn open_explainer(
+        &mut self,
+        ctx: &egui::Context,
+        view: &BoardView,
+        card: NoteId,
+        record: Option<NoteId>,
+    ) {
         let url = find_card(view, card)
-            .and_then(|(_, card)| self.acted_record(card))
+            .and_then(|(_, card)| match record {
+                Some(record) => card.reviews.iter().find(|r| r.id == record),
+                None => self.acted_record(card),
+            })
             .and_then(|r| r.fields.explainer.as_deref());
         match url {
             Some(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
@@ -122,12 +132,12 @@ impl BoardUiState {
         }
     }
 
-    /// `r`: open `card`'s review pane on its newest record, over its detail.
-    /// The app's nav diff puts the detail's entry under the pane's when the
-    /// pane wasn't opened from it (the grid, a pane's `n`/`p`), so the pane's
-    /// `q` always backs out to the card.
-    pub(crate) fn open_review(&mut self, card: NoteId) {
-        self.review.open(card, None);
+    /// `r`: open `card`'s review pane over its detail, on `record` or, for
+    /// `None` (the key), its newest. The app's nav diff puts the detail's
+    /// entry under the pane's when the pane wasn't opened from it (the grid, a
+    /// pane's `n`/`p`), so the pane's `q` always backs out to the card.
+    pub(crate) fn open_review(&mut self, card: NoteId, record: Option<NoteId>) {
+        self.review.open(card, record);
         self.selected = Some(card);
     }
 
@@ -185,7 +195,7 @@ impl BoardUiState {
         let Some(next) = column_neighbour(view, card, step) else {
             return;
         };
-        self.open_review(next);
+        self.open_review(next, None);
         self.set_cursor(next);
     }
 

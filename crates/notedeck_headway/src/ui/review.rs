@@ -1133,16 +1133,10 @@ fn load_ui(ui: &mut egui::Ui, theme: &ColorTheme, loader: &mut ReviewLoader, sou
     }
 }
 
-/// A frameless "Explainer ↗" link that opens `url` in a new browser tab.
+/// The review pane's frameless "Explainer ↗" link that opens `url` in a new
+/// browser tab.
 fn explainer_link_ui(ui: &mut egui::Ui, theme: &ColorTheme, url: &str) {
-    explainer_link(ui, url, egui::RichText::new(EXPLAINER).color(theme.accent));
-}
-
-/// The explainer link's text.
-const EXPLAINER: &str = "Explainer ↗";
-
-/// A frameless link drawn as `text` that opens `url` in a new browser tab.
-fn explainer_link(ui: &mut egui::Ui, url: &str, text: egui::RichText) {
+    let text = egui::RichText::new(EXPLAINER).color(theme.accent);
     if ui
         .add(egui::Button::new(text).frame(false))
         .on_hover_text(url)
@@ -1151,6 +1145,9 @@ fn explainer_link(ui: &mut egui::Ui, url: &str, text: egui::RichText) {
         ui.ctx().open_url(egui::OpenUrl::new_tab(url));
     }
 }
+
+/// The explainer link's text.
+const EXPLAINER: &str = "Explainer ↗";
 
 /// [`agentium_chip_ui`] no wider than `max_width`: a longer session title
 /// ellipsizes, and its full text shows on hover.
@@ -1273,15 +1270,20 @@ impl ReviewSection {
 /// looks the commit up by the card's `Headway:` trailer — how cards finished
 /// before review records existed stay reviewable. The caller draws it only for
 /// a card with records or in a terminal column.
+///
+/// A click comes back as a [`CardAction`] naming the record it was on, for
+/// the detail to apply through [`crate::keys::apply_card_action`] as the
+/// sidebar's clicks and the keys are: a row's sha or subject is
+/// `Review(Some(record))`, its explainer `Explainer(Some(record))`, and the
+/// button `r`'s own `Review(None)`.
 pub(super) fn review_section_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     card_id: NoteId,
     reviews: &[ReviewView],
-    state: &mut BoardUiState,
-) {
-    let section = &mut state.review_section;
+    section: &mut ReviewSection,
+) -> Option<CardAction> {
     section.sync(card_id, reviews);
 
     ui.horizontal(|ui| {
@@ -1292,9 +1294,7 @@ pub(super) fn review_section_ui(
     });
     ui.add_space(SPACING_SM);
 
-    // `Some(record)` once a row or the button was clicked; the inner `None`
-    // (the button) opens on the newest record.
-    let mut open: Option<Option<NoteId>> = None;
+    let mut picked = None;
     let shown = if section.show_all {
         reviews.len()
     } else {
@@ -1305,8 +1305,11 @@ pub(super) fn review_section_ui(
         if i > 0 {
             ui.add_space(SPACING_SM);
         }
-        if record_row_ui(ui, theme, app_ctx, &r.fields, &mut location.text) {
-            open = Some(Some(r.id));
+        // Only the newest row's parts are what `r` and `e` act on here, so
+        // only its hovers name them.
+        let keyed = i == 0;
+        if let Some(action) = record_row_ui(ui, theme, app_ctx, r, &mut location.text, keyed) {
+            picked = Some(action);
         }
     }
     if reviews.len() > RECORDS_SHOWN {
@@ -1334,33 +1337,38 @@ pub(super) fn review_section_ui(
     }
 
     ui.add_space(SPACING_MD);
-    if secondary_action_button(ui, theme, "± Review diff").clicked() {
-        open = Some(None);
+    if secondary_action_button(ui, theme, "± Review diff")
+        .on_hover_text("Review the newest commit's diff (r)")
+        .clicked()
+    {
+        picked = Some(CardAction::Review(None));
     }
-    if let Some(record) = open {
-        state.review.open(card_id, record);
-    }
+    picked
 }
 
 /// One record in the detail's Review section, on two lines. First the sha pill
 /// and the commit subject, elided to the row (in full on hover); then, indented
 /// under the subject in small muted text, where it was made — `location`
 /// (`host:path`, elided in its middle), `⎇ branch` — its agentium session chip
-/// and its explainer link, `·` between those it has. Returns whether the sha or
-/// the subject was clicked, which opens the pane on this record.
+/// and its explainer link, `·` between those it has. A click on the sha or the
+/// subject is [`CardAction::Review`] of this record, on the explainer
+/// [`CardAction::Explainer`] of it. `keyed` (the newest row) has the sha and
+/// explainer hovers name their keys.
 fn record_row_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
-    fields: &ReviewFields,
+    record: &ReviewView,
     location: &mut MiddleElided,
-) -> bool {
+    keyed: bool,
+) -> Option<CardAction> {
+    let fields = &record.fields;
     let mut clicked = false;
+    let mut picked = None;
     let mut indent = 0.0;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = SPACING_SM;
-        let sha = fields.commit.as_deref().unwrap_or("(no commit)");
-        let pill = sha_pill(ui, theme, sha).on_hover_text("Review this commit's diff");
+        let pill = record_sha_ui(ui, theme, fields, keyed);
         clicked |= pill.clicked();
         indent = pill.rect.width() + ui.spacing().item_spacing.x;
         if let Some(subject) = fields.title.as_deref() {
@@ -1413,12 +1421,54 @@ fn record_row_ui(
             }
             if let Some(url) = fields.explainer.as_deref() {
                 dot(ui);
-                let text = egui::RichText::new(EXPLAINER).small().color(theme.accent);
-                explainer_link(ui, url, text);
+                if record_explainer_ui(ui, theme, url, keyed).clicked() {
+                    picked = Some(CardAction::Explainer(Some(record.id)));
+                }
             }
         });
     });
-    clicked
+    if clicked {
+        picked = Some(CardAction::Review(Some(record.id)));
+    }
+    picked
+}
+
+/// A record's sha pill, the mouse twin of `r` on it, shared by the detail's
+/// Review section rows and its sidebar block. `keyed` has its hover name the
+/// key, for the record `r` acts on.
+fn record_sha_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    fields: &ReviewFields,
+    keyed: bool,
+) -> egui::Response {
+    let sha = fields.commit.as_deref().unwrap_or("(no commit)");
+    let hover = if keyed {
+        "Review this commit's diff (r)"
+    } else {
+        "Review this commit's diff"
+    };
+    sha_pill(ui, theme, sha).on_hover_text(hover)
+}
+
+/// A record's small accent "Explainer ↗" link, the mouse twin of `e` on it,
+/// shared by the detail's Review section rows and its sidebar block. Its hover
+/// names `e` when `keyed` (the record `e` acts on), then the url.
+fn record_explainer_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    url: &str,
+    keyed: bool,
+) -> egui::Response {
+    let hover = if keyed {
+        "Open the explainer (e)"
+    } else {
+        "Open the explainer"
+    };
+    sidebar_link(ui, theme, EXPLAINER).on_hover_ui(|ui| {
+        ui.label(hover);
+        ui.label(egui::RichText::new(url).small().color(theme.text_muted));
+    })
 }
 
 /// The card detail sidebar's Review block: the newest record's sha pill and
@@ -1456,12 +1506,8 @@ pub(super) fn review_sidebar_ui(
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = SPACING_SM;
-        let sha = fields.commit.as_deref().unwrap_or("(no commit)");
-        if sha_pill(ui, theme, sha)
-            .on_hover_text("Review this commit's diff (r)")
-            .clicked()
-        {
-            picked = Some(CardAction::Review);
+        if record_sha_ui(ui, theme, fields, true).clicked() {
+            picked = Some(CardAction::Review(None));
         }
         // A truncated label shows its full text on hover by itself.
         if let Some(subject) = fields.title.as_deref() {
@@ -1499,12 +1545,8 @@ pub(super) fn review_sidebar_ui(
             if session.is_some() {
                 ui.label(egui::RichText::new("·").small().color(theme.text_muted));
             }
-            let link = sidebar_link(ui, theme, EXPLAINER).on_hover_ui(|ui| {
-                ui.label("Open the explainer (e)");
-                ui.label(egui::RichText::new(url).small().color(theme.text_muted));
-            });
-            if link.clicked() {
-                picked = Some(CardAction::Explainer);
+            if record_explainer_ui(ui, theme, url, true).clicked() {
+                picked = Some(CardAction::Explainer(None));
             }
         });
     }
@@ -1519,7 +1561,7 @@ pub(super) fn review_sidebar_ui(
             .on_hover_text("Open the review pane (r)")
             .clicked()
         {
-            picked = Some(CardAction::Review);
+            picked = Some(CardAction::Review(None));
         }
     }
     picked

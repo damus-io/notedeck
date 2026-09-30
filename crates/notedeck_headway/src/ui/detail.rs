@@ -452,8 +452,8 @@ enum DetailOutcome {
     DetachParent,
     /// Lift a blocker: remove the `card`-blocked-by-`on` dependency edge.
     Unblock(NoteId),
-    /// A card action clicked in the sidebar's Review block, applied as its
-    /// key would be.
+    /// A card action clicked in the body's Review section or the sidebar's
+    /// Review block, applied as its key would be.
     CardAction(CardAction),
 }
 
@@ -560,7 +560,12 @@ fn detail_body_ui(
     // `HeadwayRoute::Review` entry.
     if !ctx.reviews.is_empty() || ctx.terminal {
         ui.add_space(SPACING_LG);
-        review_section_ui(ui, theme, app_ctx, ctx.card_id, ctx.reviews, state);
+        let section = &mut state.review_section;
+        if let Some(card_action) =
+            review_section_ui(ui, theme, app_ctx, ctx.card_id, ctx.reviews, section)
+        {
+            *outcome = DetailOutcome::CardAction(card_action);
+        }
     }
 }
 
