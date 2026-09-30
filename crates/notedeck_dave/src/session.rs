@@ -545,6 +545,12 @@ pub struct ChatSession {
     /// content exists, content must skip past the dispatched user(s); afterwards
     /// it appends after the prior content but still before queued user messages.
     turn_has_content: bool,
+    /// Chat index of the assistant segment still receiving tokens, if any. Set
+    /// when [`append_token`](Self::append_token) starts a new assistant row and
+    /// taken by [`close_open_assistant`](Self::close_open_assistant) when the
+    /// segment ends — at the next row the turn inserts, or at stream end — so
+    /// each segment is published once, in its place in the turn.
+    open_assistant_idx: Option<usize>,
     /// Cached status for the agent (derived from session state)
     cached_status: AgentStatus,
     /// Set when cached_status changes, cleared after publishing state event
@@ -622,6 +628,7 @@ impl ChatSession {
             task_handle: None,
             dispatch_state: DispatchState::Idle,
             turn_has_content: false,
+            open_assistant_idx: None,
             cached_status: AgentStatus::Idle,
             state_dirty: true,
             focus_requested: false,
@@ -693,6 +700,7 @@ impl ChatSession {
             task_handle: None,
             dispatch_state: DispatchState::Idle,
             turn_has_content: false,
+            open_assistant_idx: None,
             cached_status: AgentStatus::Pending,
             state_dirty: false, // placeholder should not publish state events
             focus_requested: false,
@@ -1693,8 +1701,53 @@ impl ChatSession {
             // user messages (which must stay trailing to trigger redispatch).
             let mut msg = crate::messages::AssistantMessage::new();
             msg.push_token(token);
-            self.insert_turn_content(Message::Assistant(msg));
+            self.open_assistant_idx = Some(self.insert_turn_content(Message::Assistant(msg)));
         }
+    }
+
+    /// End the open assistant segment: finalize its row so no later token can
+    /// extend it, and return its text for publishing.
+    ///
+    /// Returns `None` when no segment is open, or when the tracked row is no
+    /// longer a streaming assistant (the chat was replaced under it) or is
+    /// empty. Each segment is returned at most once.
+    pub fn close_open_assistant(&mut self) -> Option<String> {
+        let idx = self.open_assistant_idx.take()?;
+        let Some(Message::Assistant(msg)) = self.chat.get_mut(idx) else {
+            return None;
+        };
+        if !msg.is_streaming() {
+            return None;
+        }
+        msg.finalize();
+        if msg.text().is_empty() {
+            return None;
+        }
+        Some(msg.text().to_string())
+    }
+
+    /// Whether placing this tool result inserts a new chat row, which ends the
+    /// open assistant segment.
+    ///
+    /// It does not when the result folds into its parent subagent's row
+    /// ([`fold_tool_result`](Self::fold_tool_result)) or upgrades its running
+    /// row in place ([`place_tool_result`](Self::place_tool_result)); this
+    /// mirrors the conditions those two apply.
+    pub fn tool_result_inserts_row(&self, result: &ExecutedTool) -> bool {
+        let Some(agentic) = &self.agentic else {
+            return true;
+        };
+        let folds = result
+            .parent_task_id
+            .as_ref()
+            .and_then(|id| agentic.subagent_indices.get(id))
+            .is_some_and(|&idx| matches!(self.chat.get(idx), Some(Message::Subagent(_))));
+        let upgrades = result
+            .tool_use_id
+            .as_ref()
+            .and_then(|id| agentic.running_tool_indices.get(id))
+            .is_some_and(|&idx| matches!(self.chat.get(idx), Some(Message::ToolRunning(_))));
+        !folds && !upgrades
     }
 
     /// Finalize the last assistant message (cache parsed markdown, etc).

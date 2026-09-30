@@ -358,16 +358,25 @@ async fn plain_turn() {
     assert_host_matches_fold(script).await;
 }
 
-/// G1: text, a tool, then more text is two assistant segments on the host, but
-/// only the last segment is published, at stream end.
+/// G1: text, a tool, then more text is two assistant segments, each published
+/// when it closes so the first sorts ahead of the tool.
+///
+/// The tool carries no id and no running row: pairing those is G2, covered by
+/// `tool_pairing`. Converge 2 (headway:dave/hundred-wave-idea) can restore the
+/// realistic running-row form here.
 #[tokio::test]
-#[ignore = "converge 1 (headway:dave/fat-reform-disagree)"]
 async fn multi_segment_turn() {
     let mut script = Vec::from(user_turn("look at the file"));
     script.extend([
         token("let me read it"),
-        running("t1", "Read", "src/lib.rs"),
-        executed("t1", "Read", "src/lib.rs", None),
+        Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
+            tool_name: "Read".to_string(),
+            summary: "src/lib.rs".to_string(),
+            output: Some("ok".to_string()),
+            parent_task_id: None,
+            file_update: None,
+            tool_use_id: None,
+        })),
         token("it is short"),
         Step::StreamEnd,
     ]);

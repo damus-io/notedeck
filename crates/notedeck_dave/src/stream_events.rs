@@ -180,6 +180,13 @@ pub(crate) fn apply_response(
 ) -> ApplyOutcome {
     let mut outcome = ApplyOutcome::default();
 
+    // A response that adds a row ends the assistant segment before it. Publish
+    // that segment first, so it is stamped ahead of this response's own note
+    // and sorts in its place in the turn.
+    if closes_assistant_segment(session, &res) {
+        flush_open_assistant(session, ctx.ndb, ctx.secret_key);
+    }
+
     // Determine the live event to publish for this response.
     // Centralised here so every response type that needs relay
     // propagation is handled in one place.
@@ -310,6 +317,52 @@ pub(crate) fn apply_response(
     }
 
     outcome
+}
+
+/// Whether applying `res` inserts a chat row, ending the open assistant
+/// segment: tokens after it start a new segment below that row.
+///
+/// Responses that only update state, or update a row in place, leave the
+/// segment open — flushing there would split one text block into two rows.
+fn closes_assistant_segment(session: &session::ChatSession, res: &DaveApiResponse) -> bool {
+    match res {
+        DaveApiResponse::ToolCalls(_)
+        | DaveApiResponse::ToolRunning(_)
+        | DaveApiResponse::PermissionRequest(_)
+        | DaveApiResponse::SubagentSpawned(_)
+        | DaveApiResponse::TodoUpdate(_)
+        | DaveApiResponse::Failed(_)
+        | DaveApiResponse::CompactionComplete(_) => true,
+        DaveApiResponse::ToolResult(result) => session.tool_result_inserts_row(result),
+        DaveApiResponse::Token(_)
+        | DaveApiResponse::SessionInfo(_)
+        | DaveApiResponse::UsageUpdate(_)
+        | DaveApiResponse::SubagentOutput { .. }
+        | DaveApiResponse::SubagentCompleted { .. }
+        | DaveApiResponse::SubagentFailed { .. }
+        | DaveApiResponse::CompactionStarted
+        | DaveApiResponse::QueryComplete(_) => false,
+    }
+}
+
+/// Close the session's open assistant segment and publish it as a
+/// `role=assistant` live event (locally ingested; the host fans it out).
+///
+/// Every segment is published once, when it ends, so text written before a
+/// tool call reaches observers and survives a restart, in its place in the
+/// turn. Publishes nothing without a signing key or an open, non-empty segment.
+fn flush_open_assistant(
+    session: &mut session::ChatSession,
+    ndb: &nostrdb::Ndb,
+    secret_key: &Option<[u8; 32]>,
+) {
+    let Some(text) = session.close_open_assistant() else {
+        return;
+    };
+    let Some(sk) = secret_key else {
+        return;
+    };
+    ingest_live_event(session, ndb, sk, &text, "assistant", None, None);
 }
 
 /// Handle tool calls from the AI backend.
@@ -578,8 +631,9 @@ fn handle_session_info(session: &mut session::ChatSession, info: SessionInfo) {
 
 /// Handle stream-end for a session after the AI backend disconnects.
 ///
-/// Finalizes the assistant message, ingests the live event locally (the host
-/// fans it out), and checks whether queued messages need redispatch.
+/// Publishes the turn's last open assistant segment (the host fans it out),
+/// finalizes the turn's rows, and checks whether queued messages need
+/// redispatch.
 pub(crate) fn handle_stream_end(
     session: &mut session::ChatSession,
     session_id: SessionId,
@@ -588,28 +642,24 @@ pub(crate) fn handle_stream_end(
     needs_send: &mut HashSet<SessionId>,
     needs_compact: &mut HashSet<SessionId>,
 ) {
+    // Publish the segment the turn ended on. A turn that wrote no text since
+    // its last row publishes nothing here — never an earlier turn's text.
+    flush_open_assistant(session, ndb, secret_key);
     session.finalize_last_assistant();
 
     // Stop any tool row still spinning: an interrupted turn can end without a
     // result for a tool that had already started.
     session.finalize_running_tools();
 
-    // Generate live event for the finalized assistant message
-    if let Some(sk) = secret_key {
-        if let Some(text) = session.last_assistant_text() {
-            ingest_live_event(session, ndb, sk, &text, "assistant", None, None);
-        }
-    }
-
     session.task_handle = None;
 
-    // If the backend returned nothing (dispatch_state never left
-    // AwaitingResponse), show an error so the user isn't left staring
-    // at silence.
+    // If the backend returned nothing this turn (dispatch_state never left
+    // AwaitingResponse and no row was added — a compaction adds one without
+    // leaving it), show an error so the user isn't left staring at silence.
     if matches!(
         session.dispatch_state,
         session::DispatchState::AwaitingResponse { .. }
-    ) && session.last_assistant_text().is_none()
+    ) && !session.turn_has_content()
     {
         tracing::warn!("Session {}: backend returned empty response", session_id);
         session
@@ -727,6 +777,150 @@ mod tests {
             .iter()
             .find(|t| t[0] == name)
             .and_then(|t| t[1].as_str())
+    }
+
+    /// An agentic session, its ndb and a signing key, for driving responses
+    /// through [`apply_response`].
+    struct Fixture {
+        session: session::ChatSession,
+        ndb: Ndb,
+        secret_key: Option<[u8; 32]>,
+        _dir: TempDir,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let dir = TempDir::new().unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
+            let session = session::ChatSession::new(
+                1,
+                PathBuf::from("/tmp"),
+                AiMode::Agentic,
+                BackendType::Claude,
+            );
+            Fixture {
+                session,
+                ndb,
+                secret_key: Some(test_secret_key()),
+                _dir: dir,
+            }
+        }
+
+        fn apply(&mut self, res: DaveApiResponse) {
+            let ctx = ApplyCtx {
+                ndb: &self.ndb,
+                secret_key: &self.secret_key,
+                persistent_stream: true,
+            };
+            apply_response(&mut self.session, 1, res, &ctx);
+        }
+
+        fn stream_end(&mut self) {
+            handle_stream_end(
+                &mut self.session,
+                1,
+                &self.secret_key,
+                &self.ndb,
+                &mut HashSet::new(),
+                &mut HashSet::new(),
+            );
+        }
+
+        /// How many notes the session has published so far.
+        fn published(&self) -> usize {
+            self.session.agentic.as_ref().unwrap().seen_note_ids.len()
+        }
+
+        /// The session's assistant rows, in chat order.
+        fn assistant_texts(&self) -> Vec<&str> {
+            self.session
+                .chat
+                .iter()
+                .filter_map(|m| match m {
+                    Message::Assistant(msg) => Some(msg.text()),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    fn executed(tool_use_id: Option<&str>, parent_task_id: Option<&str>) -> ExecutedTool {
+        ExecutedTool {
+            tool_name: "Grep".to_string(),
+            summary: "3 matches".to_string(),
+            output: None,
+            parent_task_id: parent_task_id.map(str::to_string),
+            file_update: None,
+            tool_use_id: tool_use_id.map(str::to_string),
+        }
+    }
+
+    /// A turn that writes no text publishes no assistant note — before the
+    /// segment flush, stream end re-published the previous turn's text.
+    #[test]
+    fn textless_turn_publishes_no_assistant_note() {
+        let mut f = Fixture::new();
+        f.session.mark_dispatched();
+        f.apply(DaveApiResponse::Token("first answer".to_string()));
+        f.stream_end();
+        assert_eq!(f.published(), 1, "the text turn publishes its segment");
+
+        f.session.mark_dispatched();
+        f.apply(DaveApiResponse::ToolResult(executed(None, None)));
+        f.stream_end();
+        assert_eq!(
+            f.published(),
+            2,
+            "the tool-only turn publishes its tool result and nothing else"
+        );
+    }
+
+    /// A subagent-internal result, or a result upgrading its running row in
+    /// place, adds no row, so it must not split the text streaming around it.
+    #[test]
+    fn in_place_results_keep_the_segment_open() {
+        let mut f = Fixture::new();
+        f.session.mark_dispatched();
+        f.apply(DaveApiResponse::SubagentSpawned(SubagentInfo {
+            task_id: "s1".to_string(),
+            description: "Map the loader".to_string(),
+            subagent_type: "Explore".to_string(),
+            status: SubagentStatus::Running,
+            output: String::new(),
+            max_output_size: 4000,
+            tool_results: Vec::new(),
+            background: true,
+        }));
+        f.apply(DaveApiResponse::ToolRunning(crate::messages::RunningTool {
+            tool_use_id: "t1".to_string(),
+            tool_name: "Grep".to_string(),
+            summary: "loader".to_string(),
+        }));
+        f.apply(DaveApiResponse::Token("while ".to_string()));
+        f.apply(DaveApiResponse::ToolResult(executed(None, Some("s1"))));
+        f.apply(DaveApiResponse::Token("that runs, ".to_string()));
+        f.apply(DaveApiResponse::ToolResult(executed(Some("t1"), None)));
+        f.apply(DaveApiResponse::Token("one block".to_string()));
+        f.stream_end();
+
+        assert_eq!(f.assistant_texts(), ["while that runs, one block"]);
+    }
+
+    /// An empty response shows the error on any turn, not only before the
+    /// session's first assistant text.
+    #[test]
+    fn empty_response_after_a_text_turn_shows_error() {
+        let mut f = Fixture::new();
+        f.session.mark_dispatched();
+        f.apply(DaveApiResponse::Token("first answer".to_string()));
+        f.stream_end();
+
+        f.session.mark_dispatched();
+        f.stream_end();
+        assert!(matches!(
+            f.session.chat.last(),
+            Some(Message::Error(e)) if e == "No response from backend"
+        ));
     }
 
     /// The host publishes each subagent lifecycle transition as a
