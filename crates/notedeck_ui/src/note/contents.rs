@@ -193,6 +193,15 @@ fn render_undecorated_note_contents<'a>(
             ui.weak(note.content());
             return;
         };
+        // nostrdb writes blocks at ingest only for kinds 1 and 30023, and makes
+        // them lazily for the rest, where it sizes its parse buffer by the
+        // content's length (`ndb_note_to_blocks`, nostrdb.c:11462). A short
+        // note of any other kind — a one-line kind-1111 comment — comes back
+        // with no blocks at all. Show its text rather than an empty body.
+        if blocks.iter(note).next().is_none() && !note.content().is_empty() {
+            ui.label(RichText::new(note.content()).text_style(note_body));
+            return;
+        }
 
         // Reference mode is decided on the note's whole content, not per block.
         // The reference schemes (`nostr:`, `headway:<board>/…`) use `:` and `/`,
