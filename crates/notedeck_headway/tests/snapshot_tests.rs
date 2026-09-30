@@ -3250,6 +3250,81 @@ fn chrome_nav_loop_review_queue_is_one_entry() {
     assert_eq!(stack.len(), 2, "reopening the queue pushes nothing");
 }
 
+/// `A` in the review queue leaves for the record's agentium session: the app
+/// raises exactly one `AppAction::Open` naming the session, with a
+/// `/code-review` message that names the commit and the card, and Headway
+/// itself pushes no history entry, so the chrome's switch to Dave is the only
+/// one and back returns to the queue. (The Dave leg lives in the chrome behind
+/// its `dave` feature; see `open_note_in_owning_app`.) The header's "Review in
+/// session" button, beside the session chip, raises the same open.
+#[test]
+fn shift_a_in_the_queue_opens_the_session_asking_for_a_review() {
+    use notedeck::{AppAction, AppId, ChromeNavEntry, NavStack};
+    use std::rc::Rc;
+
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+
+    let mut stack: NavStack<ChromeNavEntry> =
+        NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))]);
+    chrome_frame(&mut harness, &mut stack);
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    chrome_frame(&mut harness, &mut stack);
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "1 / 2");
+    wait_for_label(&mut harness, QUEUE_SESSION);
+    wait_for_label(&mut harness, "Review in session");
+    assert_eq!(stack.len(), 2, "the queue is one entry");
+
+    let opens = |harness: &mut Harness<'static, HeadwayTestState>| -> Vec<notedeck::OpenUri> {
+        let app_ctx = harness.state_mut().notedeck.app_context();
+        app_ctx
+            .app_actions
+            .take()
+            .into_iter()
+            .filter_map(|action| match action {
+                AppAction::Open(open) => Some(open),
+                _ => None,
+            })
+            .collect()
+    };
+    // Nothing the harness drains yet (a chip click, say) may count below.
+    opens(&mut harness);
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::A);
+    chrome_frame(&mut harness, &mut stack);
+    let raised = opens(&mut harness);
+    assert_eq!(raised.len(), 1, "one open: {raised:?}");
+    let open = &raised[0];
+    assert_eq!(open.reference, QUEUE_SESSION);
+    let msg = open.msg.as_deref().expect("A sends a message");
+    assert!(msg.starts_with("launch a /code-review"), "{msg}");
+    assert!(
+        msg.contains(&format!("commit {}", &fixture.queue[..12])),
+        "{msg}"
+    );
+    assert!(msg.contains("card headway:"), "{msg}");
+
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(stack.len(), 2, "Headway pushes nothing for the open");
+    wait_for_label(&mut harness, "1 / 2");
+
+    // The header button does the same.
+    harness.get_by_label("Review in session").click();
+    chrome_frame(&mut harness, &mut stack);
+    let clicked = opens(&mut harness);
+    assert_eq!(clicked, raised, "the button is A");
+
+    // `a` opens the session with no message.
+    harness.press_key(egui::Key::A);
+    chrome_frame(&mut harness, &mut stack);
+    assert_eq!(
+        opens(&mut harness),
+        vec![notedeck::OpenUri::new(QUEUE_SESSION)]
+    );
+}
+
 /// Title of the one card [`seed_roadmap_board`] puts on its board. It exists on no
 /// other board, so seeing it rendered proves the `roadmap` board is the active one.
 const ROADMAP_CARD: &str = "roadmap-only card";

@@ -52,7 +52,7 @@ use review::{
     review_queue_ui,
 };
 
-pub(crate) use review::{QueueNotice, QueuePending, QueueStep, reason_field_id};
+pub(crate) use review::{QueueNotice, QueuePending, QueueStep, SessionOpen, reason_field_id};
 
 /// Transient, per-board UI state that must persist across frames but isn't part
 /// of the data model (e.g. which column has an open "add card" composer).
@@ -207,6 +207,11 @@ pub struct BoardUiState {
     /// A board edit left for the next frame, because a frame applies one: the
     /// move behind an `X` verdict's comment.
     follow_up: Option<BoardAction>,
+    /// An agentium session a review key (`a`/`A`) asked to open this frame.
+    /// The keys run without an [`AppContext`](notedeck::AppContext), so
+    /// [`board_ui`] takes it ([`take_open`](Self::take_open)) and raises it as
+    /// an [`AppAction::Open`](notedeck::AppAction::Open).
+    open: Option<notedeck::OpenUri>,
 }
 
 impl BoardUiState {
@@ -533,6 +538,10 @@ pub fn board_ui(
         ui.ctx().request_repaint();
     }
     let action = board_pane_ui(ui, theme, app_ctx, view, boards, sync, state);
+    // `a`/`A` in the queue or a review pane leave for the record's session.
+    if let Some(open) = state.take_open() {
+        app_ctx.app_actions.push(notedeck::AppAction::Open(open));
+    }
     // A verdict swallowed the frame's keys, so the pane's edit could only be a
     // drop landing in the same frame; the verdict wins, as a key does over a
     // drop in the grid.
@@ -577,6 +586,8 @@ fn board_pane_ui(
     // to its detail branch below, which drops it in turn.
     if let Some(card) = state.review.card() {
         if let Some((_, card)) = find_card(view, card) {
+            // The queue's session keys (`a`/`A`) work in a plain pane too.
+            keys::review_keys(ui.ctx(), view, state);
             review_pane_ui(ui, theme, app_ctx, view, card, state);
             return None;
         }

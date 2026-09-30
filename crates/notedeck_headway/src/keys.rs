@@ -9,7 +9,9 @@
 //! The review queue has its own keymap, [`queue_keys`]: `n`/`]` and `p`/`[`
 //! step cards; `j`/`k`, `Ctrl-d`/`Ctrl-u`, `gg`/`G` and `J`/`K` scroll the
 //! diff by a line, half a page, to its ends and by file; `o` opens the
-//! explainer and `Enter` the card; `D` moves the card to Done and `X` asks for
+//! explainer and `Enter` the card; `a` opens the record's agentium session and
+//! `A` opens it asking for a `/code-review` of its work (both also in a plain
+//! review pane, [`review_keys`]); `D` moves the card to Done and `X` asks for
 //! a reason and sends it back to In Progress; `?` toggles its which-key strip
 //! ([`QUEUE_HINTS`]) and `q`/`Esc` leave it for the grid.
 //!
@@ -31,7 +33,8 @@ use crate::cursor::{self, CursorMove, Side, Vertical};
 use crate::event::BoardView;
 use crate::store::BoardAction;
 use crate::ui::{
-    BoardUiState, QueuePending, QueueStep, ViewFilter, filter_field_id, reason_field_id,
+    BoardUiState, QueuePending, QueueStep, SessionOpen, ViewFilter, filter_field_id,
+    reason_field_id,
 };
 
 /// Chord steps the board grid can be waiting on.
@@ -146,6 +149,10 @@ pub(crate) const QUEUE_HINTS: &[KeyHint] = &[
     KeyHint {
         keys: &["X"],
         label: "send back",
+    },
+    KeyHint {
+        keys: &["a", "A"],
+        label: "session/review",
     },
     KeyHint {
         keys: &["q", "esc"],
@@ -353,6 +360,7 @@ pub(crate) fn queue_keys(
         (Key::K, true) => state.scroll_review(PatchScroll::PrevFile),
         (Key::O, false) => state.open_explainer(ctx, view),
         (Key::Enter, _) => state.open_queue_card(),
+        (Key::A, shift) => state.open_record_session(view, session_open_kind(shift), now),
         (Key::D, true) => action = state.accept_queue_card(view, now),
         (Key::X, true) => state.start_reject(view, now),
         (Key::Questionmark, _) | (Key::Slash, true) => state.toggle_key_hints(),
@@ -363,6 +371,33 @@ pub(crate) fn queue_keys(
     // frame and would otherwise type the X.
     chord::swallow_key_events(ctx);
     action
+}
+
+/// A plain review pane's keys (one opened from a card's detail, not the
+/// queue): `a` and `A`, as in [`queue_keys`]. Runs before the pane lays out,
+/// under the same focus rules; the pane's Esc is its own.
+pub(crate) fn review_keys(ctx: &egui::Context, view: &BoardView, state: &mut BoardUiState) {
+    if focus_taken(ctx) {
+        return;
+    }
+    let Some(press) = ctx.input(chord::first_key_press) else {
+        return;
+    };
+    if press.key != Key::A || !press.is_bare() {
+        return;
+    }
+    let now = ctx.input(|i| i.time);
+    state.open_record_session(view, session_open_kind(press.modifiers.shift), now);
+    chord::swallow_key_events(ctx);
+}
+
+/// What an `a` asks of the record's session: `A` (Shift) a code review.
+fn session_open_kind(shift: bool) -> SessionOpen {
+    if shift {
+        SessionOpen::CodeReview
+    } else {
+        SessionOpen::Plain
+    }
 }
 
 /// The `X` composer's keys: Enter posts the reason (an empty one does
@@ -561,6 +596,9 @@ mod tests {
         commented: Option<(NoteId, String)>,
         /// The last URL a key asked the platform to open.
         opened: Option<String>,
+        /// The last agentium session open a key raised, as `board_ui` takes
+        /// it ([`BoardUiState::take_open`]).
+        session: Option<notedeck::OpenUri>,
     }
 
     /// A harness that runs [`board_keys`] over [`grid`] each frame, unfiltered.
@@ -572,8 +610,9 @@ mod tests {
                     filter: &parsed,
                     hide_subissues: false,
                 };
-                // As `board_ui` does: the queue's keys while it's open, the
-                // grid's otherwise, then any follow-up an earlier frame left.
+                // As `board_ui` does: the queue's keys while it's open, a
+                // plain review pane's while one is, the grid's otherwise, then
+                // any follow-up an earlier frame left.
                 let verdict = if h.state.queue_open() {
                     queue_keys(ui.ctx(), &h.view, &mut h.state)
                 } else {
@@ -581,9 +620,15 @@ mod tests {
                 };
                 let action = if h.state.queue_open() || verdict.is_some() {
                     verdict
+                } else if h.state.review_card().is_some() {
+                    review_keys(ui.ctx(), &h.view, &mut h.state);
+                    None
                 } else {
                     board_keys(ui.ctx(), &h.view, &filter, &mut h.state)
                 };
+                if let Some(open) = h.state.take_open() {
+                    h.session = Some(open);
+                }
                 match action.or_else(|| h.state.take_follow_up()) {
                     Some(BoardAction::MoveCard {
                         card,
@@ -628,6 +673,7 @@ mod tests {
                 archived: None,
                 commented: None,
                 opened: None,
+                session: None,
             },
         );
         harness.run();
@@ -995,7 +1041,7 @@ mod tests {
 
     /// A 3×3 board shaped for the review queue: `In Progress` holds 1–3,
     /// `In Review` 4–6 and `Done` 7–9. Card 5 carries a review record with an
-    /// explainer.
+    /// explainer, a commit and the agentium session [`SESSION`] that made it.
     fn review_board() -> BoardView {
         let mut view = square_grid();
         for (col, id) in view
@@ -1011,11 +1057,19 @@ mod tests {
             created_at: 0,
             fields: ReviewFields {
                 explainer: Some("https://example.com/explainer".to_string()),
+                commit: Some(COMMIT.to_string()),
+                agentium: Some(SESSION.to_string()),
                 ..Default::default()
             },
         }];
         view
     }
+
+    /// The agentium session behind [`review_board`]'s record.
+    const SESSION: &str = "agentium:power-baby-metal";
+
+    /// The commit [`review_board`]'s record names.
+    const COMMIT: &str = "136ceb9d3bfa0123456789abcdef0123456789ab";
 
     /// A harness on [`review_board`] with the queue open on its second card.
     fn queue_harness() -> Harness<'static, KeysHarness> {
@@ -1040,6 +1094,7 @@ mod tests {
         rejecting: bool,
         notice: Option<QueueNotice>,
         opened: Option<String>,
+        session: Option<notedeck::OpenUri>,
         hints: bool,
     }
 
@@ -1055,6 +1110,7 @@ mod tests {
             rejecting: h.state.rejecting(),
             notice: h.state.notice(),
             opened: h.opened.clone(),
+            session: h.session.clone(),
             hints: h.state.key_hints_shown(),
         }
     }
@@ -1241,6 +1297,69 @@ mod tests {
             harness.state().state.queue_review().map(|t| t.card),
             Some(id(5))
         );
+    }
+
+    /// `a` opens the shown record's session; `A` opens it with a
+    /// `/code-review` message naming the commit and the card. Neither leaves
+    /// the queue, since the open is a cross-app one.
+    #[test]
+    fn a_opens_the_record_session_and_shift_a_asks_for_a_review() {
+        let mut harness = queue_harness();
+        press(&mut harness, Key::A);
+        assert_eq!(
+            harness.state().session,
+            Some(notedeck::OpenUri::new(SESSION))
+        );
+
+        harness.state_mut().session = None;
+        press_with(&mut harness, Modifiers::SHIFT, Key::A);
+        let card_ref = headway::wordid::card_ref(&harness.state().view.id, id(5).bytes());
+        let msg = format!(
+            "launch a /code-review for the work done in this session \
+             (commit 136ceb9d3bfa, card {card_ref})"
+        );
+        assert_eq!(
+            harness.state().session,
+            Some(notedeck::OpenUri {
+                reference: SESSION.to_string(),
+                msg: Some(msg),
+            })
+        );
+        assert!(harness.state().state.queue_open());
+        assert_eq!(harness.state().state.review_card(), Some(id(5)));
+        assert_eq!(harness.state().state.notice(), None);
+    }
+
+    /// On a record with no session, `a` and `A` open nothing and say so.
+    #[test]
+    fn a_without_a_session_only_says_so() {
+        let mut harness = queue_harness();
+        press(&mut harness, Key::N);
+        press(&mut harness, Key::A);
+        press_with(&mut harness, Modifiers::SHIFT, Key::A);
+        assert_eq!(harness.state().session, None);
+        assert_eq!(harness.state().state.notice(), Some(QueueNotice::NoSession));
+    }
+
+    /// A plain review pane (opened from a card's detail, not the queue) takes
+    /// `a` and `A` too.
+    #[test]
+    fn a_works_in_a_plain_review_pane() {
+        let mut harness = keys_harness(None);
+        harness.state_mut().view = review_board();
+        harness
+            .state_mut()
+            .state
+            .set_review(Some(crate::nav::ReviewTarget {
+                card: id(5),
+                record: None,
+            }));
+        press_with(&mut harness, Modifiers::SHIFT, Key::A);
+        let open = harness.state().session.clone().expect("an open");
+        assert_eq!(open.reference, SESSION);
+        assert!(open.msg.is_some_and(|m| m.contains("commit 136ceb9d3bfa")));
+        assert!(!harness.state().state.queue_open());
+        assert_eq!(harness.state().archived, None, "not the grid's archive");
     }
 
     /// A verdict key on a board without its column does nothing but say so.

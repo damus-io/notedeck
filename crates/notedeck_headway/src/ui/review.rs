@@ -53,6 +53,9 @@ pub(crate) struct ReviewUi {
     /// The pane was opened (or moved to another card) since it last drew, so
     /// its trailer search is re-run (see [`ReviewLoader::expire`]).
     reopened: bool,
+    /// How wide the header's "Review in session" button drew last frame,
+    /// reserved beside the session chip so the title elides short of it.
+    session_button_width: f32,
     /// A scroll the queue's keys asked of the open diff, handed to its
     /// [`GitPatchState`](notedeck_ui::diff::GitPatchState) on the pane's next
     /// pass (and dropped there if the diff hasn't loaded).
@@ -213,6 +216,8 @@ pub(crate) enum QueueNotice {
     NoDoneColumn,
     /// `X` on a board with no In Progress column.
     NoInProgressColumn,
+    /// `a`/`A` on a record that names no agentium session.
+    NoSession,
 }
 
 impl QueueNotice {
@@ -224,8 +229,51 @@ impl QueueNotice {
             QueueNotice::NoExplainer => "No explainer on this record",
             QueueNotice::NoDoneColumn => "No Done column on this board",
             QueueNotice::NoInProgressColumn => "No In Progress column on this board",
+            QueueNotice::NoSession => "No agentium session on this record",
         }
     }
+}
+
+/// What `a`/`A` (or the header's "Review in session" button) ask of the shown
+/// record's agentium session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionOpen {
+    /// `a`: just open the session in Dave.
+    Plain,
+    /// `A`: open it and ask it to review its own work ([`CODE_REVIEW_PROMPT`]).
+    CodeReview,
+}
+
+/// The message `A` sends into a record's session. [`session_open`] appends the
+/// record's commit and card as ` (commit <short sha>, card <card ref>)`, so
+/// the session knows which of its commits is meant.
+pub(crate) const CODE_REVIEW_PROMPT: &str =
+    "launch a /code-review for the work done in this session";
+
+/// The [`AppAction::Open`](notedeck::AppAction::Open) request that opens
+/// `fields`' agentium session `how` asks, or `None` when the record names no
+/// session. `card_ref` is the record's card, as `headway:<board>/<word-id>`.
+/// Allocates, so it's built on the key press or click, never per frame.
+pub(crate) fn session_open(
+    fields: &ReviewFields,
+    card_ref: &str,
+    how: SessionOpen,
+) -> Option<notedeck::OpenUri> {
+    let session = fields.agentium.as_deref()?;
+    let msg = match how {
+        SessionOpen::Plain => None,
+        SessionOpen::CodeReview => Some(match fields.commit.as_deref() {
+            Some(sha) => format!(
+                "{CODE_REVIEW_PROMPT} (commit {}, card {card_ref})",
+                short_sha(sha)
+            ),
+            None => format!("{CODE_REVIEW_PROMPT} (card {card_ref})"),
+        }),
+    };
+    Some(notedeck::OpenUri {
+        reference: session.to_owned(),
+        msg,
+    })
 }
 
 /// The `X` composer's one-line reason, posted as a `review:` comment.
@@ -472,6 +520,38 @@ impl BoardUiState {
         }
     }
 
+    /// `a`/`A`: ask the app to open the agentium session of the record the
+    /// review pane shows (the queue's, or a plain pane's), `how` says; the
+    /// request waits in [`take_open`](Self::take_open) for [`super::board_ui`]
+    /// to raise. A record with no session only says so.
+    pub(crate) fn open_record_session(&mut self, view: &BoardView, how: SessionOpen, now: f64) {
+        let Some(card) = self
+            .queue
+            .current()
+            .or(self.review.card())
+            .and_then(|c| find_card(view, c))
+            .map(|(_, card)| card)
+        else {
+            return;
+        };
+        let card_ref = headway::wordid::card_ref(&view.id, card.id.bytes());
+        let open = self
+            .review
+            .shown_record(card)
+            .and_then(|r| session_open(&r.fields, &card_ref, how));
+        match open {
+            Some(open) => self.open = Some(open),
+            None => self.set_notice(QueueNotice::NoSession, now),
+        }
+    }
+
+    /// Take the session open a review key asked for this frame, if any, for
+    /// the app to raise as an [`AppAction::Open`](notedeck::AppAction::Open).
+    /// Clears it so it fires once.
+    pub(crate) fn take_open(&mut self) -> Option<notedeck::OpenUri> {
+        self.open.take()
+    }
+
     /// Leave the queue for the current card's detail. The queue keeps its
     /// place, so backing out of the detail lands on its entry where it was.
     pub(crate) fn open_queue_card(&mut self) {
@@ -641,8 +721,8 @@ pub(super) fn review_pane_ui(
             .next_card()
             .and_then(|c| find_card(view, c))
             .map(|(_, c)| c.title.as_str()),
-        notice: &mut state.notice,
     });
+    let notice = &mut state.notice;
     let review = &mut state.review;
     if review.ref_for != Some(card.id) {
         review.ref_for = Some(card.id);
@@ -693,7 +773,7 @@ pub(super) fn review_pane_ui(
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
-            review_topbar_ui(ui, theme, app_ctx, card, record, review, queue);
+            review_topbar_ui(ui, theme, app_ctx, card, record, review, queue, notice);
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_SM);
@@ -753,19 +833,20 @@ struct QueueHeader<'a> {
     position: &'a str,
     /// The next card's title, if the queue has one.
     next: Option<&'a str>,
-    /// The queue keys' short-lived message, shown beside the position.
-    notice: &'a mut Option<(QueueNotice, f64)>,
 }
 
 /// The pane's header, one row. Left: ← Back, the card ref (click copies), the
-/// title elided to one line, and the record's agentium session chip capped at
-/// [`SESSION_CHIP_MAX_WIDTH`]. Right: in the queue, its position as a pill and
-/// the next card's title as a muted peek (at most [`PEEK_SHARE`] of the row);
-/// the record's explainer link at the far end. On a narrow screen the peek
-/// goes, the card ref with it, and the chip shrinks to its status dot.
+/// title elided to one line, the record's agentium session chip capped at
+/// [`SESSION_CHIP_MAX_WIDTH`], and a "Review in session" button that does
+/// `A`. Right: in the queue, its position as a pill and the next card's title
+/// as a muted peek (at most [`PEEK_SHARE`] of the row); a key's short-lived
+/// notice; the record's explainer link at the far end. On a narrow screen the
+/// peek goes, the card ref and the button with it, and the chip shrinks to its
+/// status dot.
 ///
 /// The right side lays out first, right to left, so the title knows how much
 /// room is left to elide into.
+#[allow(clippy::too_many_arguments)]
 fn review_topbar_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -774,6 +855,7 @@ fn review_topbar_ui(
     record: Option<&ReviewView>,
     review: &mut ReviewUi,
     queue: Option<QueueHeader<'_>>,
+    notice: &mut Option<(QueueNotice, f64)>,
 ) {
     let fields = record.map(|r| &r.fields);
     let narrow = notedeck::ui::is_narrow(ui.ctx());
@@ -786,6 +868,7 @@ fn review_topbar_ui(
             if let Some(queue) = queue {
                 queue_header_ui(ui, theme, queue, (!narrow).then_some(peek_width));
             }
+            super::notice_ui(ui, theme, notice);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 let back =
                     egui::Button::new(egui::RichText::new("← Back").color(theme.text_secondary))
@@ -805,13 +888,29 @@ fn review_topbar_ui(
                 } else {
                     SESSION_CHIP_MAX_WIDTH
                 };
-                let reserve = session.map_or(0.0, |_| chip_width + ui.spacing().item_spacing.x);
+                let gap = ui.spacing().item_spacing.x;
+                let button = if narrow {
+                    0.0
+                } else {
+                    review.session_button_width + gap
+                };
+                let reserve = session.map_or(0.0, |_| chip_width + gap + button);
                 ui.scope(|ui| {
                     ui.set_max_width((ui.available_width() - reserve).max(0.0));
                     ui.add(egui::Label::new(egui::RichText::new(&card.title).strong()).truncate());
                 });
-                if let Some(session) = session {
-                    session_chip_ui(ui, theme, app_ctx, session, chip_width);
+                let Some(session) = session else {
+                    return;
+                };
+                session_chip_ui(ui, theme, app_ctx, session, chip_width);
+                if narrow {
+                    return;
+                }
+                if review_in_session_button(ui, theme, &mut review.session_button_width)
+                    && let Some(open) = fields
+                        .and_then(|f| session_open(f, &review.card_ref, SessionOpen::CodeReview))
+                {
+                    app_ctx.app_actions.push(notedeck::AppAction::Open(open));
                 }
             });
         });
@@ -851,7 +950,19 @@ fn queue_header_ui(
         ui.label(muted("Next:"));
     }
     text_pill(ui, theme, queue.position);
-    super::notice_ui(ui, theme, queue.notice);
+}
+
+/// The header's "Review in session" button (the `A` key): opens the record's
+/// agentium session asking it for a `/code-review` of its work. Records its
+/// drawn width in `width`, which the header reserves next frame so the title
+/// elides short of it. Returns whether it was clicked.
+fn review_in_session_button(ui: &mut egui::Ui, theme: &ColorTheme, width: &mut f32) -> bool {
+    let text = egui::RichText::new("Review in session").color(theme.accent);
+    let response = ui
+        .add(egui::Button::new(text).frame(false))
+        .on_hover_text("Open the session and ask it to /code-review this commit (A)");
+    *width = response.rect.width();
+    response.clicked()
 }
 
 /// One selectable chip per record, newest first, labelled by short sha, with
