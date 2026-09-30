@@ -1648,6 +1648,17 @@ fn comment_note_ui(
         );
     }
 
+    comment_view_ui(ui, app_ctx, &note);
+}
+
+/// Render a kind-1111 comment with the shared notedeck_ui note renderer — its
+/// author's picture and name, when, and its body — as the card's comment
+/// thread and a record's review comments both show theirs.
+pub(super) fn comment_view_ui(
+    ui: &mut egui::Ui,
+    app_ctx: &mut notedeck::AppContext,
+    note: &nostrdb::Note,
+) {
     // No actionbar/options menu: there's no relay publishing or note-nav wired up
     // here, so the reply/zap/repost affordances would be dead. A small framed pfp
     // keeps each comment compact in the thread.
@@ -1656,7 +1667,7 @@ fn comment_note_ui(
         | notedeck_ui::NoteOptions::InlineReferences
         | notedeck_ui::NoteOptions::Framed;
     let mut note_context = app_ctx.note_context();
-    notedeck_ui::NoteView::new(&mut note_context, &note, flags).show(ui);
+    notedeck_ui::NoteView::new(&mut note_context, note, flags).show(ui);
 }
 
 /// A single comment: an attribution line (short author, relative time, word-id,

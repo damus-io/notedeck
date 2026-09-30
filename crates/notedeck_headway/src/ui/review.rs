@@ -18,7 +18,9 @@ use notedeck_ui::diff::PatchScroll;
 use std::time::Instant;
 
 use super::card_actions::CardStep;
-use super::review_comments::{DraftComment, ReviewDrafts, comments_ui, location_place};
+use super::review_comments::{
+    DraftComment, ReviewDrafts, comments_ui, location_place, posted_comment_ui,
+};
 use super::widgets::{
     ChevronDir, ControlSize, ICON_BUTTON, ICON_BUTTON_SM, IconFace, MiddleElided, StatusIcon,
     count_badge, detail_heading, pill_height, round_icon_button, secondary_action_button,
@@ -27,7 +29,9 @@ use super::widgets::{
 use super::{BoardUiState, find_card, pane_hints_ui};
 use crate::keys::{ActionView, CardAction, apply_card_action};
 use crate::nav::{NavPos, ReviewTarget};
-use crate::review::{RecordSet, ReviewJob, ReviewLoad, ReviewLoader, ReviewSource, short_sha};
+use crate::review::{
+    LoadedReview, RecordSet, ReviewJob, ReviewLoad, ReviewLoader, ReviewSource, short_sha,
+};
 use crate::store::BoardAction;
 
 /// The review pane's slice of [`BoardUiState`]: which card is open, which of
@@ -1463,12 +1467,40 @@ fn load_ui(
             });
             ui.add_space(SPACING_MD);
             comments_ui(ui, theme, loaded, comments.record, comments.drafts);
-            notedeck_ui::diff::git_patch_ui(&loaded.patch, &mut loaded.patch_state, ui);
+            patch_ui(ui, theme, app_ctx, loaded, comments.record);
         }
     }
     if retry {
         loader.retry(source);
     }
+}
+
+/// The loaded diff, with `record`'s posted comments drawn whole under their
+/// lines — author and all, from their events in the db
+/// ([`posted_comment_ui`]). A pane with no record has none to draw.
+fn patch_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    loaded: &mut LoadedReview,
+    record: Option<&ReviewView>,
+) {
+    let Some(record) = record else {
+        notedeck_ui::diff::git_patch_ui(&loaded.patch, &mut loaded.patch_state, ui);
+        return;
+    };
+    let txn = (!record.comments.is_empty())
+        .then(|| nostrdb::Transaction::new(app_ctx.ndb).ok())
+        .flatten();
+    let mut draw = |ui: &mut egui::Ui, note: &notedeck_ui::diff::PatchNote| {
+        posted_comment_ui(ui, theme, app_ctx, txn.as_ref(), record, note.key);
+    };
+    notedeck_ui::diff::git_patch_ui_with(
+        &loaded.patch,
+        &mut loaded.patch_state,
+        ui,
+        Some(&mut draw),
+    );
 }
 
 /// The detail's explainer links' text.
@@ -1562,19 +1594,10 @@ struct RecordLocation {
     comment_count: usize,
     /// "N review comments", or empty with none.
     comments_label: String,
-    /// One line per review comment, oldest first: where it points, then
-    /// what it says (its first line).
-    comments: Vec<RecordComment>,
-}
-
-/// One review comment as the detail's Review section lists it, formatted when
-/// the record's comments change.
-struct RecordComment {
-    /// `path:42-48` (`path:old 3-6` for deleted lines), or empty for a
-    /// comment on the commit as a whole.
-    place: String,
-    /// The comment's first line.
-    body: String,
+    /// Where each review comment points, oldest first: `path:42-48`
+    /// (`path:old 3-6` for deleted lines), or empty for a comment on the
+    /// commit as a whole. The comments themselves draw from their events.
+    comments: Vec<String>,
 }
 
 impl RecordLocation {
@@ -1588,10 +1611,7 @@ impl RecordLocation {
         let comments = record
             .comments
             .iter()
-            .map(|c| RecordComment {
-                place: c.location.as_ref().map_or_else(String::new, location_place),
-                body: c.body.lines().next().unwrap_or_default().to_owned(),
-            })
+            .map(|c| c.location.as_ref().map_or_else(String::new, location_place))
             .collect();
         Self {
             record: record.id,
@@ -1669,6 +1689,12 @@ pub(super) fn review_section_ui(
     section: &mut ReviewSection,
 ) -> Option<CardAction> {
     section.sync(card_id, reviews);
+    // The records' review comments draw from their events in the db.
+    let txn = reviews
+        .iter()
+        .any(|r| !r.comments.is_empty())
+        .then(|| nostrdb::Transaction::new(app_ctx.ndb).ok())
+        .flatten();
 
     ui.horizontal(|ui| {
         detail_heading(ui, theme, "Review");
@@ -1692,7 +1718,7 @@ pub(super) fn review_section_ui(
         // Only the newest row's parts are what `r` and `e` act on here, so
         // only its hovers name them.
         let keyed = i == 0;
-        if let Some(action) = record_row_ui(ui, theme, app_ctx, r, location, keyed) {
+        if let Some(action) = record_row_ui(ui, theme, app_ctx, txn.as_ref(), r, location, keyed) {
             picked = Some(action);
         }
     }
@@ -1740,13 +1766,15 @@ pub(super) fn review_section_ui(
 /// explainer hovers name their keys.
 ///
 /// A record with inline review comments gets a third line, "N review
-/// comments", and one line under it per comment: where it points, then what
-/// it says. They're the record's, so they stay out of the card's own
-/// comment thread.
+/// comments", and under it each comment: where it points, then the comment
+/// drawn by the note renderer, author and all ([`posted_comment_ui`], under
+/// `txn`). They're the record's, so they stay out of the card's own comment
+/// thread.
 fn record_row_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
+    txn: Option<&nostrdb::Transaction>,
     record: &ReviewView,
     row: &mut RecordLocation,
     keyed: bool,
@@ -1807,7 +1835,7 @@ fn record_row_ui(
         });
     });
     if !row.comments.is_empty() {
-        record_comments_ui(ui, theme, indent, row);
+        record_comments_ui(ui, theme, app_ctx, txn, indent, record, row);
     }
     if clicked {
         picked = Some(CardAction::Review(Some(record.id)));
@@ -1816,9 +1844,18 @@ fn record_row_ui(
 }
 
 /// A record's inline review comments under its row in the detail's Review
-/// section, indented under the subject: the count, then one small line per
-/// comment, its place in monospace and its first line elided to the row.
-fn record_comments_ui(ui: &mut egui::Ui, theme: &ColorTheme, indent: f32, row: &RecordLocation) {
+/// section, indented under the subject: the count, then each comment's place
+/// in small monospace over the comment itself, drawn by the note renderer so
+/// it shows who wrote it ([`posted_comment_ui`]).
+fn record_comments_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    txn: Option<&nostrdb::Transaction>,
+    indent: f32,
+    record: &ReviewView,
+    row: &RecordLocation,
+) {
     ui.horizontal(|ui| {
         ui.add_space(indent);
         ui.label(
@@ -1827,26 +1864,20 @@ fn record_comments_ui(ui: &mut egui::Ui, theme: &ColorTheme, indent: f32, row: &
                 .color(theme.text_secondary),
         );
     });
-    for comment in &row.comments {
+    for (key, place) in row.comments.iter().enumerate() {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = SPACING_SM;
             ui.add_space(indent);
-            if !comment.place.is_empty() {
-                ui.label(
-                    egui::RichText::new(comment.place.as_str())
-                        .small()
-                        .monospace()
-                        .color(theme.text_muted),
-                );
-            }
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(comment.body.as_str())
-                        .small()
-                        .color(theme.text_secondary),
-                )
-                .truncate(),
-            );
+            ui.vertical(|ui| {
+                if !place.is_empty() {
+                    ui.label(
+                        egui::RichText::new(place.as_str())
+                            .small()
+                            .monospace()
+                            .color(theme.text_muted),
+                    );
+                }
+                posted_comment_ui(ui, theme, app_ctx, txn, record, key);
+            });
         });
     }
 }

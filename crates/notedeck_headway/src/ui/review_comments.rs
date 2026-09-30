@@ -22,6 +22,7 @@ use notedeck_ui::diff::{
     DiffSide, GitPatch, LineKind, LineSpan, PatchNote, PatchNoteKind, PatchSelection,
 };
 
+use super::detail::comment_view_ui;
 use super::review::{QueueNotice, review_comments_open};
 use super::widgets::secondary_action_button;
 use super::{BoardEffect, BoardUiState, find_card};
@@ -221,7 +222,7 @@ fn sync_notes(loaded: &mut LoadedReview, record: &ReviewView, drafts: &ReviewDra
         return;
     }
     let patch = &loaded.patch;
-    let posted = record.comments.iter().filter_map(|c| {
+    let posted = record.comments.iter().enumerate().filter_map(|(key, c)| {
         let loc = c.location.as_ref()?;
         if loc.commit != loaded.commit.sha {
             return None;
@@ -237,16 +238,58 @@ fn sync_notes(loaded: &mut LoadedReview, record: &ReviewView, drafts: &ReviewDra
             lines: patch.files()[file].lines_in(span)?,
             text: c.body.clone(),
             kind: PatchNoteKind::Posted,
+            // Drawn whole, author and all, by `posted_comment_ui`.
+            caller_draws: true,
+            key,
         })
     });
-    let unsent = drafts.of(record.id).iter().map(|d| PatchNote {
-        file: d.file,
-        lines: d.lines.clone(),
-        text: format!("Draft: {}", d.body),
-        kind: PatchNoteKind::Draft,
-    });
+    let unsent = drafts
+        .of(record.id)
+        .iter()
+        .enumerate()
+        .map(|(key, d)| PatchNote {
+            file: d.file,
+            lines: d.lines.clone(),
+            text: format!("Draft: {}", d.body),
+            kind: PatchNoteKind::Draft,
+            caller_draws: false,
+            key,
+        });
     let notes = posted.chain(unsent).collect();
     loaded.patch_state.set_notes(patch, notes, stamp);
+}
+
+/// Posted review comment `key` of `record`, where the diff hands it its rows:
+/// drawn by the note renderer the card's own comments use, so it shows who
+/// wrote it ([`comment_view_ui`]). The comment's event comes from the db under
+/// `txn`; when it isn't there, a plain line with the author's short handle
+/// stands in.
+pub(super) fn posted_comment_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    txn: Option<&nostrdb::Transaction>,
+    record: &ReviewView,
+    key: usize,
+) {
+    let Some(comment) = record.comments.get(key) else {
+        return;
+    };
+    let note = txn.and_then(|txn| app_ctx.ndb.get_note_by_id(txn, comment.id.bytes()).ok());
+    if let Some(note) = note {
+        comment_view_ui(ui, app_ctx, &note);
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = SPACING_SM;
+        ui.label(
+            egui::RichText::new(headway::fmt::short_author(&comment.author))
+                .small()
+                .strong()
+                .color(theme.text_secondary),
+        );
+        ui.label(comment.body.as_str());
+    });
 }
 
 /// Above the diff: the composer for the picked lines, while there are any,

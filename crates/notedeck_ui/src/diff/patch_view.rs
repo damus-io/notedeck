@@ -87,21 +87,37 @@ pub struct PatchSelection {
 /// reviewer can tell what is still theirs to send.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatchNoteKind {
+    /// Written but not sent: marked in the warning colour.
     Draft,
+    /// Sent: marked in the selection's colour.
     Posted,
 }
 
-/// A row the caller asks for under a file's lines — a review comment, say —
-/// set with [`GitPatchState::set_notes`]. It takes one row of the diff under
-/// the last of its `lines`, which get a bar in their gutter.
+/// A note the caller asks for under a file's lines — a review comment, say —
+/// set with [`GitPatchState::set_notes`]. It sits under the last of its
+/// `lines`, which get a bar in their gutter.
+///
+/// By default it takes one row and shows the first line of `text`. With
+/// `caller_draws`, [`git_patch_ui_with`] hands its space to the caller's
+/// drawer instead — a whole note with its author, say — and gives it as many
+/// rows as the drawer turns out to need.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchNote {
+    /// The file (index into the patch's files) it's on.
     pub file: usize,
     /// Indices into the file's [`lines`](FilePatch::lines) the note is about.
     pub lines: Range<usize>,
-    /// What the row says. One line of it shows; hovering shows it all.
+    /// What the note says: the one line a plain note shows (hovering shows it
+    /// all), and its accessible label.
     pub text: String,
+    /// How its bar is coloured.
     pub kind: PatchNoteKind,
+    /// The caller draws it (see [`git_patch_ui_with`]); `false` for the
+    /// built-in one-line row.
+    pub caller_draws: bool,
+    /// The caller's own handle for it — an index into its comments, say —
+    /// so its drawer knows what to draw. The widget never reads it.
+    pub key: usize,
 }
 
 /// The pick being made: where it started and where it stretches to, both
@@ -169,6 +185,12 @@ pub struct GitPatchState {
     line_notes: Vec<PatchNote>,
     /// Per file, its run of `line_notes`.
     note_spans: Vec<Range<usize>>,
+    /// How many rows each of `line_notes` takes: one for a plain note, what
+    /// its drawer last needed for one the caller draws.
+    note_rows: Vec<usize>,
+    /// Running totals of `note_rows`, one longer than it: the rows every note
+    /// before index `n` takes is `note_prefix[n]`.
+    note_prefix: Vec<usize>,
     /// What the caller said `line_notes` were built from (see
     /// [`GitPatchState::set_notes`]); `None` until it sets any.
     notes_stamp: Option<u64>,
@@ -514,7 +536,9 @@ impl GitPatchState {
             let end = notes.partition_point(|n| n.file <= f);
             self.note_spans.push(start..end);
         }
+        self.note_rows = vec![1; notes.len()];
         self.line_notes = notes;
+        self.sum_note_rows();
         self.notes_stamp = Some(stamp);
         // Laid out per index, and the indices just changed.
         self.galleys.notes.clear();
@@ -533,10 +557,39 @@ impl GitPatchState {
             .map_or(&[], |span| &self.line_notes[span.clone()])
     }
 
+    /// Recount [`note_prefix`](Self::note_prefix) from `note_rows`.
+    fn sum_note_rows(&mut self) {
+        self.note_prefix.clear();
+        self.note_prefix.push(0);
+        let mut total = 0;
+        for rows in &self.note_rows {
+            total += rows;
+            self.note_prefix.push(total);
+        }
+    }
+
+    /// Give note `n` `rows` rows, as its drawer turned out to need.
+    fn set_note_rows(&mut self, n: usize, rows: usize) {
+        if let Some(slot) = self.note_rows.get_mut(n) {
+            *slot = rows.max(1);
+            self.sum_note_rows();
+        }
+    }
+
     /// How many of file `f`'s notes sit above line `i`: those under a line
     /// before it.
     fn notes_before(&self, f: usize, i: usize) -> usize {
         self.file_notes(f).partition_point(|n| n.lines.end <= i)
+    }
+
+    /// Rows the notes of file `f` above line `i` take (`i` past the end for
+    /// all of them).
+    fn note_rows_before(&self, f: usize, i: usize) -> usize {
+        let Some(span) = self.note_spans.get(f) else {
+            return 0;
+        };
+        let upto = span.start + self.notes_before(f, i);
+        self.note_prefix[upto] - self.note_prefix[span.start]
     }
 
     /// Rows file `f`'s body takes when expanded: its hunk headers, lines and
@@ -545,7 +598,7 @@ impl GitPatchState {
         if file.hunks.is_empty() {
             1
         } else {
-            file.hunks.len() + file.lines.len() + self.file_notes(f).len()
+            file.hunks.len() + file.lines.len() + self.note_rows_before(f, usize::MAX)
         }
     }
 
@@ -553,12 +606,12 @@ impl GitPatchState {
     /// hunk before it took one header row plus its lines and their notes.
     fn hunk_row(&self, f: usize, file: &FilePatch, h: usize) -> usize {
         let start = file.hunks[h].lines.start;
-        h + start + self.notes_before(f, start)
+        h + start + self.note_rows_before(f, start)
     }
 
     /// Body row of line `i`, which is in hunk `h`.
     fn line_row(&self, f: usize, h: usize, i: usize) -> usize {
-        h + 1 + i + self.notes_before(f, i)
+        h + 1 + i + self.note_rows_before(f, i)
     }
 
     /// The hunk whose rows contain body row `b` (binary search on
@@ -596,8 +649,13 @@ impl GitPatchState {
         if b == at {
             return Row::Line(f, i);
         }
-        let note = self.note_spans[f].start + self.notes_before(f, i) + (b - at - 1);
-        Row::Comment(note)
+        // Row `k` of the notes under line `i`: find the note it falls in.
+        let k = b - at - 1;
+        let first = self.note_spans[f].start + self.notes_before(f, i);
+        let base = self.note_prefix[first];
+        let past = self.note_prefix[first..].partition_point(|&p| p - base <= k);
+        let note = first + past - 1;
+        Row::Comment(note, k - (self.note_prefix[note] - base))
     }
 
     /// A click on line `i` of file `f`, in hunk `hunk`: pick it, or with
@@ -796,8 +854,9 @@ enum Row {
     HunkHeader(usize, usize),
     /// File, index into its `lines`.
     Line(usize, usize),
-    /// A caller's note, by index into `GitPatchState::line_notes`.
-    Comment(usize),
+    /// Row `.1` of a caller's note, by index into
+    /// `GitPatchState::line_notes`.
+    Comment(usize, usize),
 }
 
 /// The row at scroll offset `offset`. The half-pixel slack keeps an offset
@@ -818,9 +877,26 @@ struct RowMetrics {
     step: f32,
 }
 
-/// Draw `patch` with `state`, filling the available space.
-#[profiling::function]
+/// Draw `patch` with `state`, filling the available space. Every note gets
+/// the built-in one-line row; see [`git_patch_ui_with`] to draw them.
 pub fn git_patch_ui(patch: &GitPatch, state: &mut GitPatchState, ui: &mut Ui) {
+    git_patch_ui_with(patch, state, ui, None);
+}
+
+/// Draws a [`PatchNote`] with `caller_draws` set, in a `Ui` as wide as the
+/// diff past its gutter; the note takes as many rows as the drawer used.
+pub type NoteDrawer<'a> = &'a mut dyn FnMut(&mut Ui, &PatchNote);
+
+/// [`git_patch_ui`], with `draw_note` drawing the notes marked
+/// `caller_draws` (the rest keep the one-line row). A drawn note starts one
+/// row tall and grows to what its drawer used, a pass later.
+#[profiling::function]
+pub fn git_patch_ui_with(
+    patch: &GitPatch,
+    state: &mut GitPatchState,
+    ui: &mut Ui,
+    mut draw_note: Option<NoteDrawer<'_>>,
+) {
     if state.collapsed.len() != patch.files().len() {
         // The caller swapped the patch without new state. Recover rather than
         // index out of bounds; the labels fall back to the source strings.
@@ -876,8 +952,20 @@ pub fn git_patch_ui(patch: &GitPatch, state: &mut GitPatchState, ui: &mut Ui) {
                 ui.scope_builder(UiBuilder::new().max_rect(rows_rect), |ui| {
                     ui.skip_ahead_auto_ids(first); // Stable ids as rows scroll.
                     for row in first..end {
-                        let row = state.locate(patch, row);
-                        row_ui(patch, state, row, ui);
+                        match state.locate(patch, row) {
+                            // A drawn note is drawn whole from its first row,
+                            // or from the top of the view when that's above it.
+                            Row::Comment(n, part) if state.line_notes[n].caller_draws => {
+                                match draw_note.as_deref_mut() {
+                                    Some(draw) if part == 0 || row == first => {
+                                        drawn_note_ui(state, n, part, draw, ui)
+                                    }
+                                    Some(_) => skip_row(ui),
+                                    None => row_ui(patch, state, Row::Comment(n, part), ui),
+                                }
+                            }
+                            located => row_ui(patch, state, located, ui),
+                        }
                     }
                 });
 
@@ -972,7 +1060,7 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
                 state.click_hunk(patch, f, h);
             }
         }
-        Row::Comment(n) => {
+        Row::Comment(n, _) => {
             let galley = state.galleys.note(n, &state.line_notes[n], ui);
             note_row_ui(&state.line_notes[n], galley, ui);
         }
@@ -1166,6 +1254,61 @@ fn note_row_ui(note: &PatchNote, galley: Arc<Galley>, ui: &mut Ui) {
     response.on_hover_ui(|ui| {
         ui.label(&note.text);
     });
+}
+
+/// Note `n`, drawn by the caller's `draw` from row `part` of it (the row this
+/// pass is at). Its band and bar are painted across every row it takes, the
+/// drawer gets the width past the gutter, and when the drawer used more or
+/// fewer rows than the note has, the note is resized for the next pass.
+/// Advances one row, as every row does; the note's later rows skip.
+fn drawn_note_ui(
+    state: &mut GitPatchState,
+    n: usize,
+    part: usize,
+    draw: &mut dyn FnMut(&mut Ui, &PatchNote),
+    ui: &mut Ui,
+) {
+    let height = ui.spacing().interact_size.y;
+    let spacing = ui.spacing().item_spacing.y;
+    let step = height + spacing;
+    let min = ui.cursor().min;
+    let rows = state.note_rows[n];
+    let top = min.y - part as f32 * step;
+    let right = ui.clip_rect().right().max(min.x);
+    let note_rect = Rect::from_min_max(
+        egui::pos2(min.x, top),
+        egui::pos2(right, top + rows as f32 * step - spacing),
+    );
+    let visuals = ui.visuals();
+    let accent = note_color(state.line_notes[n].kind, visuals);
+    let painter = ui.painter();
+    painter.rect_filled(note_rect, 0.0, visuals.faint_bg_color);
+    painter.rect_filled(note_rect.with_max_x(min.x + NOTE_BAR), 0.0, accent);
+
+    let inner = note_rect.with_min_x(min.x + ui.spacing().icon_width + STATUS_WIDTH);
+    let mut child = ui.new_child(
+        UiBuilder::new()
+            .id_salt(("patch_note", n))
+            .max_rect(inner)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    child.set_clip_rect(note_rect.intersect(ui.clip_rect()));
+    draw(&mut child, &state.line_notes[n]);
+
+    let used = child.min_rect().height();
+    let needed = (((used + spacing) / step).ceil() as usize).max(1);
+    if needed != rows {
+        state.set_note_rows(n, needed);
+        ui.ctx().request_repaint();
+    }
+    skip_row(ui);
+}
+
+/// Take one row's space, drawing nothing: a drawn note's later rows.
+fn skip_row(ui: &mut Ui) {
+    let height = ui.spacing().interact_size.y;
+    let row = Rect::from_min_size(ui.cursor().min, egui::vec2(0.0, height));
+    ui.advance_cursor_after_rect(row);
 }
 
 /// The hunk of `file` that line `i` is in.
@@ -1524,6 +1667,8 @@ mod tests {
             lines,
             text: text.to_string(),
             kind: PatchNoteKind::Posted,
+            caller_draws: false,
+            key: 0,
         };
         // long.txt: hunk 0 is lines 0..7, hunk 1 lines 7..15. Given out of
         // order; one on a file that doesn't exist is dropped.
@@ -1544,7 +1689,7 @@ mod tests {
         let rows: Vec<_> = (0..total).map(|r| state.locate(&patch, r)).collect();
         let long = state.file_rows[4];
         let texts = |r: Row| match r {
-            Row::Comment(n) => state.line_notes[n].text.as_str(),
+            Row::Comment(n, _) => state.line_notes[n].text.as_str(),
             _ => "",
         };
         assert_eq!(rows[long + 8], Row::Line(4, 6));
@@ -1559,6 +1704,51 @@ mod tests {
         state.set_collapsed(4, true);
         assert_eq!(state.layout(&patch), plain - 17);
         assert_eq!(state.locate(&patch, long + 1), Row::FileHeader(5));
+
+        // A note grown to three rows (as a drawn one does) takes all three,
+        // each naming its row of the note, and pushes the rest down.
+        state.set_collapsed(4, false);
+        state.set_note_rows(0, 3);
+        assert_eq!(state.layout(&patch), plain + 5);
+        for part in 0..3 {
+            assert_eq!(state.locate(&patch, long + 9 + part), Row::Comment(0, part));
+        }
+        assert_eq!(state.locate(&patch, long + 12), Row::HunkHeader(4, 1));
+        assert_eq!(state.locate(&patch, long + 14), Row::Comment(1, 0));
+    }
+
+    /// A note the caller draws is handed to its drawer, and grows to the rows
+    /// the drawer used: the line after it moves down by as many.
+    #[test]
+    fn a_drawn_note_grows_to_what_its_drawer_used() {
+        let patch = GitPatch::parse(MULTI);
+        let mut state = GitPatchState::new(&patch, &mut Localization::default());
+        let note = PatchNote {
+            file: 4,
+            lines: 0..1,
+            text: "drawn".to_string(),
+            kind: PatchNoteKind::Posted,
+            caller_draws: true,
+            key: 0,
+        };
+        state.set_notes(&patch, vec![note], 1);
+        let size = egui::vec2(800.0, 1600.0);
+        let mut harness = Harness::builder().with_size(size).build_ui_state(
+            |ui, (patch, state): &mut (GitPatch, GitPatchState)| {
+                let mut draw = |ui: &mut Ui, note: &PatchNote| {
+                    ui.label(format!("{} by someone", note.text));
+                    ui.label("second line");
+                    ui.label("third line");
+                };
+                git_patch_ui_with(patch, state, ui, Some(&mut draw));
+            },
+            (patch, state),
+        );
+        harness.run();
+        assert!(harness.query_by_label("drawn by someone").is_some());
+        assert!(harness.query_by_label("third line").is_some());
+        let (_, state) = harness.state();
+        assert!(state.note_rows[0] >= 3, "grew to {}", state.note_rows[0]);
     }
 
     /// A click picks one line, a shift-click stretches the pick within its

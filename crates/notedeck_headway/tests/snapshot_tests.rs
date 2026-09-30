@@ -3043,9 +3043,16 @@ fn review_comments_draft_then_send_to_the_session() {
     assert!(msg.contains("src/keys.rs:1-16\n```diff\n+/// What a key does in the review queue."));
     assert!(msg.ends_with("```\nkeys want a test"), "{msg}");
 
-    // Posted: it folds back onto the record and draws as a posted comment.
+    // Posted: it folds back onto the record and draws as a posted comment,
+    // by the note renderer, so it says who wrote it (this account has no
+    // profile, so the renderer's placeholder name).
     wait_for_label(&mut harness, "keys want a test");
     assert!(harness.query_by_label("Draft: keys want a test").is_none());
+    assert_eq!(
+        harness.query_all_by_label("nostrich").count(),
+        2,
+        "both posted comments carry their author"
+    );
 }
 
 /// Snapshot: the review queue's diff with a comment posted on `src/queue.rs`
