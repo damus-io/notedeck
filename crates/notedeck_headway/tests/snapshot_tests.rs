@@ -3138,6 +3138,92 @@ fn a_detail_review_row_click_acts_on_its_own_record() {
     );
 }
 
+/// Behavioural (no lavapipe): a description edit survives a sidebar Review
+/// click in the frame that commits it. egui drops the editor's focus on the
+/// press and fires the click on the release, so a quick click (here, press and
+/// release in one frame) makes one detail pass carry both the edit and the
+/// sidebar's `CardAction::Session`, which returns no board edit and used to
+/// overwrite the edit with nothing.
+///
+/// The sidebar, not a body Review row: the body's rows sit under the editor,
+/// whose collapse renumbers their widget ids in that frame, so egui drops a
+/// row's click before the detail ever sees it.
+#[test]
+fn a_detail_review_click_keeps_a_same_frame_description_edit() {
+    const EDITED: &str = "Drag a column header to reorder.";
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 900.0));
+    seed_detail_reviews(&mut harness);
+    let card = harness_card_id(&mut harness, DETAIL_REVIEW_CARD);
+    harness.get_by_label(DETAIL_REVIEW_CARD).simulate_click();
+    wait_for_label(&mut harness, "Review in session");
+
+    harness.get_by_label("Add description…").click();
+    harness.run_ok();
+    harness
+        .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+        .find(|n| n.is_focused())
+        .expect("the focused description editor")
+        .type_text(EDITED);
+    harness.run_ok();
+    raised_opens(&mut harness);
+
+    // One frame takes the press and the release: the editor commits on the
+    // press and the sidebar's click fires on the release. Raw input, since
+    // kittest's own click runs a frame per event.
+    let link = harness
+        .get_by_label("Review in session")
+        .bounding_box()
+        .expect("the sidebar link");
+    let pos = egui::pos2(
+        ((link.x0 + link.x1) / 2.0) as f32,
+        ((link.y0 + link.y1) / 2.0) as f32,
+    );
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::PointerMoved(pos));
+    harness.step();
+    for pressed in [true, false] {
+        harness.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    harness.run_ok();
+
+    // The click still took: it raised the session open.
+    let raised = raised_opens(&mut harness);
+    assert_eq!(raised.len(), 1, "one open: {raised:?}");
+    assert_eq!(raised[0].reference, QUEUE_SESSION);
+
+    // And the edit was published: the folded card carries it.
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        let description = {
+            let state = harness.state_mut();
+            let author = state.account.pubkey;
+            let app_ctx = state.notedeck.app_context();
+            let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            let boards = headway::event::fold_board(app_ctx.ndb, &txn, &author)
+                .expect("folded")
+                .finalize();
+            headway::event::find_board(&boards, &author, store::BOARD_ID)
+                .and_then(|view| view.card(card))
+                .map(|c| c.description.clone())
+        };
+        if description.as_deref() == Some(EDITED) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the description edit was dropped: {description:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 /// Snapshot: a card detail's Review section with four records — the newest
 /// three as two-line rows (sha pill and subject; then where it was made, the
 /// session and the explainer) and the "Show all 4" toggle — above the

@@ -1773,6 +1773,13 @@ fn detail_comment_composer_ui(
 }
 
 /// Resolve the collected [`DetailOutcome`] into a single [`BoardAction`].
+///
+/// `action` may already hold a title or description edit the body committed
+/// earlier in this pass. An outcome that has no board edit of its own
+/// (`Close`, `OpenCard`, `ReviewQueue`, a view-only [`CardAction`]) leaves it
+/// be. One that does (`MoveTo`, `Delete`, a label or comment, …) replaces it:
+/// the slot holds one edit a frame, and that click's edit and side effects (a
+/// closed sheet, a cleared draft) belong together.
 fn resolve_detail_outcome(
     egui_ctx: &egui::Context,
     state: &mut BoardUiState,
@@ -1860,14 +1867,20 @@ fn resolve_detail_outcome(
             state.open_review_queue(view, QueueScope::Epic(ctx.card_id), now)
         }
         DetailOutcome::CardAction(card_action) => {
-            *action = apply_card_action(
+            // Most card actions only move the view and return `None`. Don't let
+            // that wipe a title or description edit the body committed earlier
+            // in this pass: egui drops the editor's focus on the press, so a
+            // quick click lands its release in the frame that commits the edit.
+            if let Some(edit) = apply_card_action(
                 egui_ctx,
                 view,
                 state,
                 ctx.card_id,
                 card_action,
                 ActionView::Detail,
-            );
+            ) {
+                *action = Some(edit);
+            }
         }
         DetailOutcome::AddSubissue => {
             let title = state.new_subissue.trim().to_string();
