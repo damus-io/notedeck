@@ -2446,8 +2446,44 @@ struct ReviewFixture {
     queue: String,
     /// Touches `src/keys.rs` again, for the queue's second card.
     verdicts: String,
+    /// Changes the PNG `assets/shot.png` (added by the commit before it) and
+    /// adds `assets/new.png`: the image diff. The fixture's head.
+    images: String,
     /// The root commit: the repo identity the records carry.
     root: String,
+}
+
+/// A `w`×`h` PNG of flat blocks: a dark ground, a card in `card` colour and,
+/// when `bar` is set, a green bar across it — the "after" of an image diff.
+/// Flat so it encodes small (and the same on every machine).
+fn fixture_png(w: u32, h: u32, card: [u8; 3], bar: bool) -> Vec<u8> {
+    let image = image::RgbaImage::from_fn(w, h, |x, y| {
+        let in_card = (w / 8..w - w / 8).contains(&x) && (h / 5..h - h / 5).contains(&y);
+        let in_bar = bar && in_card && (h / 2..h / 2 + h / 8).contains(&y);
+        let [r, g, b] = if in_bar {
+            [60, 200, 90]
+        } else if in_card {
+            card
+        } else {
+            [30, 32, 40]
+        };
+        image::Rgba([r, g, b, 255])
+    });
+    let mut out = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut out, image::ImageFormat::Png)
+        .expect("encode fixture png");
+    out.into_inner()
+}
+
+/// The image diff's three sides: `assets/shot.png` before and after, and the
+/// added `assets/new.png`.
+fn fixture_pngs() -> [Vec<u8>; 3] {
+    [
+        fixture_png(160, 100, [90, 110, 200], false),
+        fixture_png(200, 100, [90, 110, 200], true),
+        fixture_png(64, 64, [200, 120, 60], false),
+    ]
 }
 
 /// Commit everything in `dir` as `subject`, dated `at` (unix seconds) for
@@ -2568,10 +2604,27 @@ fn build_review_fixture(dir: &std::path::Path) -> ReviewFixture {
         SEED_AT,
     );
 
+    let [before, after, added] = fixture_pngs();
+    let write_bytes = |file: &str, body: &[u8]| {
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().expect("file has a parent")).unwrap();
+        std::fs::write(path, body).unwrap();
+    };
+    write_bytes("assets/shot.png", &before);
+    dated_commit(dir, "headway: queue screenshot", SEED_AT - 1800);
+    write_bytes("assets/shot.png", &after);
+    write_bytes("assets/new.png", &added);
+    let images = dated_commit(
+        dir,
+        "headway: refresh the queue screenshots",
+        SEED_AT - 1200,
+    );
+
     ReviewFixture {
         dir: dir.to_string_lossy().into_owned(),
         queue,
         verdicts,
+        images,
         root,
     }
 }
@@ -2607,7 +2660,7 @@ fn review_fixture() -> ReviewFixture {
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
-    if head(fixed).as_deref() == Some(fixture.verdicts.as_str()) {
+    if head(fixed).as_deref() == Some(fixture.images.as_str()) {
         return fixture;
     }
     if fixed.exists() {
@@ -2617,7 +2670,7 @@ fn review_fixture() -> ReviewFixture {
         // Another run renamed its copy in first; it's the same repo.
         assert_eq!(
             head(fixed).as_deref(),
-            Some(fixture.verdicts.as_str()),
+            Some(fixture.images.as_str()),
             "a concurrent run left a different review fixture at {dir}"
         );
     }
@@ -2640,23 +2693,7 @@ const QUEUE_SESSION: &str = "agentium:power-baby-metal";
 /// checkout of the repo at [`review_fixture_dir`] — which is how the pane finds
 /// the other host's commits here without a fetch.
 fn seed_review_queue(harness: &mut Harness<'static, HeadwayTestState>, fixture: &ReviewFixture) {
-    let local = headway::git::host_name().expect("this host has a name");
-    let done = harness_card_id(harness, "Scaffold the Headway app crate");
-    apply_demo_action(
-        harness,
-        store::BoardAction::AddReview {
-            card: done,
-            review: event::ReviewFields {
-                commit: Some(fixture.root.clone()),
-                title: Some("headway: review queue skeleton".to_string()),
-                branch: Some("headway".to_string()),
-                host: Some(local),
-                path: Some(fixture.dir.clone()),
-                repo: Some(fixture.root.clone()),
-                ..Default::default()
-            },
-        },
-    );
+    record_local_checkout(harness, fixture);
 
     let records = [
         (
@@ -2675,24 +2712,63 @@ fn seed_review_queue(harness: &mut Harness<'static, HeadwayTestState>, fixture: 
     for (title, (sha, subject, session, explainer)) in QUEUE_CARDS.iter().zip(records) {
         let card = harness_card_id(harness, title);
         move_to_in_review(harness, card);
-        apply_demo_action(
-            harness,
-            store::BoardAction::AddReview {
-                card,
-                review: event::ReviewFields {
-                    commit: Some(sha.clone()),
-                    title: Some(subject.to_string()),
-                    branch: Some("headway".to_string()),
-                    host: Some(REVIEW_HOST.to_string()),
-                    path: Some("/home/jb55/dev/notedeck".to_string()),
-                    repo: Some(fixture.root.clone()),
-                    agentium: session.map(str::to_string),
-                    explainer: explainer.map(str::to_string),
-                    ..Default::default()
-                },
-            },
-        );
+        add_fixture_record(harness, card, sha, subject, session, explainer, fixture);
     }
+}
+
+/// A record on `card` from [`REVIEW_HOST`] naming fixture commit `sha`.
+fn add_fixture_record(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    card: NoteId,
+    sha: &str,
+    subject: &str,
+    session: Option<&str>,
+    explainer: Option<&str>,
+    fixture: &ReviewFixture,
+) {
+    apply_demo_action(
+        harness,
+        store::BoardAction::AddReview {
+            card,
+            review: event::ReviewFields {
+                commit: Some(sha.to_string()),
+                title: Some(subject.to_string()),
+                branch: Some("headway".to_string()),
+                host: Some(REVIEW_HOST.to_string()),
+                path: Some("/home/jb55/dev/notedeck".to_string()),
+                repo: Some(fixture.root.clone()),
+                agentium: session.map(str::to_string),
+                explainer: explainer.map(str::to_string),
+                ..Default::default()
+            },
+        },
+    );
+}
+
+/// A record on the Done card saying this host has a checkout of the fixture
+/// repo at [`review_fixture_dir`], which is how the pane finds
+/// [`REVIEW_HOST`]'s commits here without a fetch.
+fn record_local_checkout(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    fixture: &ReviewFixture,
+) {
+    let local = headway::git::host_name().expect("this host has a name");
+    let done = harness_card_id(harness, "Scaffold the Headway app crate");
+    apply_demo_action(
+        harness,
+        store::BoardAction::AddReview {
+            card: done,
+            review: event::ReviewFields {
+                commit: Some(fixture.root.clone()),
+                title: Some("headway: review queue skeleton".to_string()),
+                branch: Some("headway".to_string()),
+                host: Some(local),
+                path: Some(fixture.dir.clone()),
+                repo: Some(fixture.root.clone()),
+                ..Default::default()
+            },
+        },
+    );
 }
 
 /// Open the review queue on the seeded board and wait for its first card's
@@ -2704,6 +2780,84 @@ fn open_review_queue(harness: &mut Harness<'static, HeadwayTestState>) {
     wait_for_any_label(harness, "src/queue.rs");
     wait_for_any_label(harness, "src/keys.rs");
     wait_for_label(harness, "local checkout");
+}
+
+/// Seed one In Review card whose record names [`ReviewFixture::images`], and
+/// open the review queue on it, waiting for both image files and their first
+/// caption.
+fn open_image_review(harness: &mut Harness<'static, HeadwayTestState>, fixture: &ReviewFixture) {
+    record_local_checkout(harness, fixture);
+    let card = harness_card_id(harness, QUEUE_CARDS[0]);
+    move_to_in_review(harness, card);
+    let subject = "headway: refresh the queue screenshots";
+    add_fixture_record(harness, card, &fixture.images, subject, None, None, fixture);
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    wait_for_label(harness, "1 / 1");
+    wait_for_any_label(harness, "assets/shot.png");
+    wait_for_any_label(harness, "assets/new.png");
+}
+
+/// The captions the image diff shows, in order: the added `new.png`'s after
+/// (git lists it first), then `shot.png` before and after. Built from the fixture's own PNG bytes,
+/// all under 1 KB, so their size reads in bytes.
+fn image_captions() -> [String; 3] {
+    let [before, after, added] = fixture_pngs();
+    for png in [&before, &after, &added] {
+        assert!(png.len() < 1024, "fixture png is {} bytes", png.len());
+    }
+    [
+        format!("after 64×64 · {} B", added.len()),
+        format!("before 160×100 · {} B", before.len()),
+        format!("after 200×100 · {} B", after.len()),
+    ]
+}
+
+/// The labels of the images on screen, top to bottom then left to right,
+/// without the bidi isolation marks Fluent wraps a caption's placeables in.
+fn image_labels(harness: &Harness<'static, HeadwayTestState>) -> Vec<String> {
+    let mut images: Vec<_> = harness
+        .query_all(egui_kittest::kittest::By::new().role(egui::accesskit::Role::Image))
+        .map(|node| {
+            let at = node.accesskit_node().bounding_box().expect("laid out");
+            let label = node.accesskit_node().label().unwrap_or_default();
+            let label: String = label
+                .chars()
+                .filter(|c| !matches!(c, '\u{2068}' | '\u{2069}'))
+                .collect();
+            ((at.y0 as i64, at.x0 as i64), label)
+        })
+        .collect();
+    images.sort();
+    images.into_iter().map(|(_, label)| label).collect()
+}
+
+/// Pump frames until the image diff's three images are on screen.
+fn wait_for_image_captions(harness: &mut Harness<'static, HeadwayTestState>) {
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    while image_labels(harness).len() < 3 {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the image diff: {:?}",
+            image_labels(harness)
+        );
+        harness.run_ok();
+    }
+}
+
+/// A commit that changes a PNG shows it before and after in the review
+/// pane's diff, each captioned with its pixel and file size, in place of
+/// "Binary file not shown"; an added PNG shows only its after.
+#[test]
+fn review_diff_shows_changed_images_before_and_after() {
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1100.0));
+    open_image_review(&mut harness, &fixture);
+    wait_for_image_captions(&mut harness);
+
+    // new.png's after alone (an added file has no before), then shot.png's
+    // two sides.
+    assert_eq!(image_labels(&harness), image_captions());
+    assert!(harness.query_by_label("Binary file not shown").is_none());
 }
 
 /// Behavioural twin of [`snapshot_headway_review_queue`] (no lavapipe): the
@@ -3415,6 +3569,20 @@ fn snapshot_headway_review_queue() {
     wait_for_label(&mut harness, "send back");
     harness.run_steps(3);
     harness.snapshot("headway_review_queue_key_hints");
+}
+
+/// Snapshot: the review pane's image diff (see
+/// [`review_diff_shows_changed_images_before_and_after`]): `shot.png` before
+/// and after side by side, the added `new.png` with only its after.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_image_diff() {
+    let fixture = review_fixture();
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 1000.0));
+    open_image_review(&mut harness, &fixture);
+    wait_for_image_captions(&mut harness);
+    harness.run_steps(3);
+    harness.snapshot("headway_review_image_diff");
 }
 
 /// Snapshot: the review queue with a real-length current title (see

@@ -14,8 +14,8 @@
 mod resolve;
 
 pub use resolve::{
-    CommitPatch, Found, ResolveCtx, Resolved, Target, commit_patch, remote_host, resolve,
-    resolve_by_trailer,
+    Blob, CommitPatch, Found, ResolveCtx, Resolved, Target, blob_bytes, commit_patch, remote_host,
+    resolve, resolve_by_trailer,
 };
 
 use std::fmt;

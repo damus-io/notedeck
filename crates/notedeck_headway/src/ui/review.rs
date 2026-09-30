@@ -821,7 +821,7 @@ pub(super) fn review_pane_ui(
         source,
         &mut review.loader,
     );
-    review.loader.poll(app_ctx.i18n);
+    review.loader.poll(ui.ctx(), app_ctx.i18n);
     // A queue key's scroll goes to the diff if it's in; one asked of a diff
     // still loading is dropped rather than jumping it once it lands.
     if let Some(request) = review.scroll.take()

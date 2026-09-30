@@ -10,6 +10,7 @@
 //! repaints the same view lays none of them out again.
 
 use super::patch::{FilePatch, FileStatus, GitPatch, LineKind};
+use super::patch_images::{images_ui, FileImages, ImageGeometry, ShownImages};
 use super::{
     file_extension, DiffTag, RowGalleys, DELETE_COLOR, DIFF_FONT_SIZE, INSERT_COLOR,
     LINE_NUMBER_COLOR,
@@ -198,6 +199,12 @@ pub struct GitPatchState {
     /// What the caller said `line_notes` were built from (see
     /// [`GitPatchState::set_notes`]); `None` until it sets any.
     notes_stamp: Option<u64>,
+    /// Per file, its changed images, when the caller set any (see
+    /// [`GitPatchState::set_file_images`]). Empty until it does.
+    images: Vec<Option<ShownImages>>,
+    /// How big image rows are this pass; measured before the rows are laid
+    /// out, so a file's row count and its drawing agree.
+    image_geometry: ImageGeometry,
 }
 
 /// Laid-out diff lines, kept across passes so a line is laid out once, when
@@ -216,6 +223,8 @@ struct LineGalleys {
     /// The caller's note rows, one line each, per index into
     /// `GitPatchState::line_notes`.
     notes: HashMap<usize, CachedNote>,
+    /// Image captions, per `(file, column)`.
+    captions: HashMap<(usize, usize), CachedNote>,
     /// Counts passes, to tell the lines drawn in this one from the rest.
     pass: u64,
 }
@@ -280,6 +289,7 @@ impl LineGalleys {
         if !self.key.as_ref().is_some_and(|k| k.still_valid(&key)) {
             self.lines.clear();
             self.notes.clear();
+            self.captions.clear();
         }
         self.key = Some(key);
         self.pass += 1;
@@ -326,11 +336,33 @@ impl LineGalleys {
         galley
     }
 
-    /// End a pass: forget the lines and notes it didn't draw.
+    /// Column `side` of file `f`'s image captions, `text`, laid out now if
+    /// it wasn't in view last pass.
+    fn caption(&mut self, f: usize, side: usize, text: &str, ui: &Ui) -> Arc<Galley> {
+        let pass = self.pass;
+        if let Some(cached) = self.captions.get_mut(&(f, side)) {
+            cached.pass = pass;
+            return cached.galley.clone();
+        }
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let galley =
+            ui.fonts_mut(|fonts| fonts.layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER));
+        self.captions.insert(
+            (f, side),
+            CachedNote {
+                galley: galley.clone(),
+                pass,
+            },
+        );
+        galley
+    }
+
+    /// End a pass: forget the lines, notes and captions it didn't draw.
     fn end_pass(&mut self) {
         let pass = self.pass;
         self.lines.retain(|_, line| line.pass == pass);
         self.notes.retain(|_, note| note.pass == pass);
+        self.captions.retain(|_, caption| caption.pass == pass);
     }
 }
 
@@ -562,6 +594,34 @@ impl GitPatchState {
         self.galleys.notes.clear();
     }
 
+    /// Show file `file`'s changed images in place of its "Binary file not
+    /// shown", replacing any set before: its before and after side by side,
+    /// each captioned with its size. A side that couldn't be shown is
+    /// captioned with why; when neither can, the file keeps its one note row
+    /// and it says why instead. Captions are formatted here, once.
+    ///
+    /// The textures are the caller's to upload, once, when its load lands
+    /// (see [`FileImages`]). A file index past the patch's files is ignored.
+    pub fn set_file_images(&mut self, file: usize, images: FileImages, i18n: &mut Localization) {
+        let files = self.collapsed.len();
+        if file >= files {
+            return;
+        }
+        if self.images.len() < files {
+            self.images.resize(files, None);
+        }
+        self.images[file] = ShownImages::new(images, i18n);
+        self.galleys.captions.retain(|&(f, _), _| f != file);
+    }
+
+    /// File `f`'s images, if it has any side to draw.
+    fn shown_images(&self, f: usize) -> Option<&ShownImages> {
+        self.images
+            .get(f)
+            .and_then(Option::as_ref)
+            .filter(|i| i.any_shown())
+    }
+
     /// The `stamp` the notes were last [set](Self::set_notes) with; `None`
     /// on a fresh state, so a reloaded patch asks for its notes again.
     pub fn notes_stamp(&self) -> Option<u64> {
@@ -611,10 +671,11 @@ impl GitPatchState {
     }
 
     /// Rows file `f`'s body takes when expanded: its hunk headers, lines and
-    /// notes.
+    /// notes, or for a file without hunks its note or its images.
     fn body_rows(&self, f: usize, file: &FilePatch) -> usize {
         if file.hunks.is_empty() {
-            1
+            self.shown_images(f)
+                .map_or(1, |images| images.rows(self.image_geometry))
         } else {
             file.hunks.len() + file.lines.len() + self.note_rows_before(f, usize::MAX)
         }
@@ -739,6 +800,9 @@ impl GitPatchState {
         }
         let file = &patch.files()[f];
         if file.hunks.is_empty() {
+            if self.shown_images(f).is_some() {
+                return Row::Image(f, body - 1);
+            }
             return Row::Note(f);
         }
         let b = body - 1;
@@ -868,6 +932,9 @@ enum Row {
     FileHeader(usize),
     /// A file with no hunks: binary, a pure rename, or a mode change.
     Note(usize),
+    /// Row `.1` of a binary file's before and after images (see
+    /// [`GitPatchState::set_file_images`]).
+    Image(usize, usize),
     /// File, hunk index.
     HunkHeader(usize, usize),
     /// File, index into its `lines`.
@@ -932,6 +999,13 @@ pub fn git_patch_ui_with(
     state.columns.update(&state.rows, &state.totals, ui);
     let row_height = row_height(ui);
     let row_step = row_height + ui.spacing().item_spacing.y;
+    state.image_geometry = ImageGeometry::new(
+        ui,
+        ui.cursor().left(),
+        ui.max_rect().right(),
+        image_indent(ui),
+        row_step,
+    );
     let content_rows = state.layout(patch);
     let rows = RowMetrics {
         height: row_height,
@@ -984,6 +1058,8 @@ pub fn git_patch_ui_with(
                                     None => row_ui(patch, state, Row::Comment(n, part), ui),
                                 }
                             }
+                            // Images are drawn whole the same way.
+                            Row::Image(_, part) if part > 0 && row != first => skip_row(ui),
                             located => row_ui(patch, state, located, ui),
                         }
                     }
@@ -1050,7 +1126,10 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
         }
         Row::Note(f) => {
             let file = &patch.files()[f];
-            let note = if file.binary {
+            let images_note = state.images.get(f).and_then(Option::as_ref);
+            let note: &str = if let Some(note) = images_note.and_then(ShownImages::note) {
+                note
+            } else if file.binary {
                 &state.notes.binary
             } else if matches!(file.status, FileStatus::Renamed { .. }) {
                 &state.notes.renamed
@@ -1062,6 +1141,25 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
                 ui.add_space(ui.spacing().icon_width + STATUS_WIDTH);
                 ui.weak(note);
             });
+        }
+        Row::Image(f, part) => {
+            let Some(images) = state.images.get(f).and_then(Option::as_ref) else {
+                return skip_row(ui);
+            };
+            let galleys = &mut state.galleys;
+            let mut caption = |side: usize| {
+                let text = &images.sides[side].as_ref()?.caption;
+                Some(galleys.caption(f, side, text, ui))
+            };
+            let captions = [caption(0), caption(1)];
+            images_ui(
+                images,
+                captions,
+                part,
+                state.image_geometry,
+                image_indent(ui),
+                ui,
+            );
         }
         Row::HunkHeader(f, h) => {
             let header = patch.text(patch.files()[f].hunks[h].header);
@@ -1331,6 +1429,12 @@ fn drawn_note_ui(
         state.resized.push((n, needed));
     }
     skip_row(ui);
+}
+
+/// How far right of a row's start an image column begins: under the path,
+/// as a file's note is.
+fn image_indent(ui: &Ui) -> f32 {
+    ui.spacing().icon_width + STATUS_WIDTH
 }
 
 /// Take one row's space, drawing nothing: a drawn note's later rows.
@@ -1609,7 +1713,7 @@ fn split_path(path: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diff::{DiffSide, LineSpan};
+    use crate::diff::{DiffSide, FileImages, ImageSide, LineSpan, PatchImage};
     use egui::accesskit::Role;
     use egui_kittest::{
         kittest::{NodeT, Queryable},
@@ -2346,5 +2450,116 @@ mod tests {
         assert!(r > g + 8, "deleted row not red at the far edge: {r},{g}");
         let [r, g, _, _] = at(new.2);
         assert!(g > r + 8, "inserted row not green at the far edge: {r},{g}");
+    }
+
+    /// A commit changing one image in place, adding another, and changing a
+    /// binary file that isn't one.
+    const IMAGES: &str = "\
+diff --git a/shot.png b/shot.png
+index 1111111..2222222 100644
+Binary files a/shot.png and b/shot.png differ
+diff --git a/new.png b/new.png
+new file mode 100644
+index 0000000..3333333
+Binary files /dev/null and b/new.png differ
+diff --git a/data.bin b/data.bin
+index 4444444..5555555 100644
+Binary files a/data.bin and b/data.bin differ
+";
+
+    /// A flat `w`×`h` side, uploaded to `ctx`.
+    fn image_side(ctx: &egui::Context, w: usize, h: usize, bytes: u64) -> ImageSide {
+        let pixels = egui::ColorImage::filled([w, h], Color32::from_rgb(200, 80, 40));
+        ImageSide::Shown(PatchImage {
+            texture: notedeck::media::load_texture_checked(ctx, "side", pixels, Default::default()),
+            width: w as u32,
+            height: h as u32,
+            bytes,
+        })
+    }
+
+    /// The images patch in a harness, with `shot.png` given both sides and
+    /// `new.png` its after.
+    fn image_harness() -> Harness<'static, (GitPatch, GitPatchState)> {
+        let mut harness = harness(GitPatch::parse(IMAGES), 900.0);
+        let ctx = harness.ctx.clone();
+        let mut i18n = Localization::no_bidi();
+        let (_, state) = harness.state_mut();
+        let shot = FileImages {
+            old: Some(image_side(&ctx, 120, 80, 142 * 1024)),
+            new: Some(image_side(&ctx, 160, 90, 9_542_000)),
+        };
+        state.set_file_images(0, shot, &mut i18n);
+        let added = FileImages {
+            old: None,
+            new: Some(image_side(&ctx, 64, 64, 812)),
+        };
+        state.set_file_images(1, added, &mut i18n);
+        harness.run();
+        harness
+    }
+
+    /// A changed image shows its before and after, captioned with their
+    /// sizes; an added one only its after; a binary file with no images
+    /// keeps its note.
+    #[test]
+    fn binary_images_show_before_and_after() {
+        let harness = image_harness();
+        for caption in [
+            "before 120×80 · 142 KB",
+            "after 160×90 · 9.1 MB",
+            "after 64×64 · 812 B",
+        ] {
+            assert_eq!(shown(&harness, caption), 2, "{caption}: image + caption");
+        }
+        assert_eq!(
+            harness.query_all_by_role(Role::Image).count(),
+            3,
+            "one image per side shown"
+        );
+        assert_eq!(shown(&harness, "Binary file not shown"), 1, "data.bin");
+    }
+
+    /// An image file's rows follow its header, as many as its tallest side
+    /// and caption need, and the next file's header comes after them.
+    /// Collapsing the file hides them.
+    #[test]
+    fn image_rows_span_the_tallest_side() {
+        let mut harness = image_harness();
+        let (patch, state) = harness.state_mut();
+        let total = state.layout(patch);
+        let rows: Vec<_> = (0..total).map(|r| state.locate(patch, r)).collect();
+        let shot = state.file_rows[0];
+        let added = state.file_rows[1];
+        assert_eq!(rows[shot], Row::FileHeader(0));
+        let image_rows = added - shot - 1;
+        assert!(
+            image_rows > 3,
+            "90pt image + caption span rows: {image_rows}"
+        );
+        for (part, row) in rows[shot + 1..added].iter().enumerate() {
+            assert_eq!(*row, Row::Image(0, part));
+        }
+        assert_eq!(rows[added], Row::FileHeader(1));
+        assert_eq!(rows[state.file_rows[2] + 1], Row::Note(2));
+
+        state.set_collapsed(0, true);
+        assert_eq!(state.layout(patch), total - image_rows);
+    }
+
+    /// With no side it can draw, the file keeps one note row, saying why.
+    #[test]
+    fn unshown_images_say_why_in_the_note() {
+        let mut harness = harness(GitPatch::parse(IMAGES), 900.0);
+        let mut i18n = Localization::no_bidi();
+        let big = FileImages {
+            old: Some(ImageSide::TooLarge { bytes: 9_542_000 }),
+            new: Some(ImageSide::Omitted),
+        };
+        harness.state_mut().1.set_file_images(0, big, &mut i18n);
+        harness.run();
+        assert_eq!(shown(&harness, "before: too large to show (9.1 MB)"), 1);
+        assert_eq!(shown(&harness, "Binary file not shown"), 2);
+        assert_eq!(harness.query_all_by_role(Role::Image).count(), 0);
     }
 }

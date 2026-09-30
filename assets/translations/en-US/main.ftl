@@ -79,6 +79,9 @@ Add_your_private_key_a52e = Add your private key
 # Section header for advertised relays
 Advertised_8b3b = Advertised
 
+# Label for the new version of a changed image in a diff
+after_3c87 = after
+
 # Title for algorithmic feeds column
 Algo_2452 = Algo
 
@@ -111,6 +114,9 @@ Back_to_the_chat_ea20 = Back to the chat
 
 # Profile banner URL field label
 Banner_52ef = Banner
+
+# Label for the old version of a changed image in a diff
+before_ebeb = before
 
 # Diff placeholder for a changed binary file
 Binary_file_not_shown_aa41 = Binary file not shown
@@ -849,6 +855,18 @@ Settings_7a4f = Settings
 
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = Show the last note for each user from a list
+
+# Caption for a version of a changed image that failed to decode in a diff
+side___not_an_image_that_could_be_read_e19e = {$side}: not an image that could be read
+
+# Caption for a version of a changed image skipped because the commit has too many images
+side___not_shown__the_commit_changes_too_many_images_6798 = {$side}: not shown, the commit changes too many images
+
+# Caption for a version of a changed image too big to load in a diff
+side___too_large_to_show___size_7a45 = {$side}: too large to show ({$size})
+
+# Caption under one version of a changed image in a diff: which version, its pixel size and its file size
+side___width___height_____size_78ff = {$side} {$width}×{$height} · {$size}
 
 # Button label to sign out of account
 Sign_out_337b = Sign out

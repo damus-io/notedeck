@@ -267,6 +267,45 @@ pub fn commit_patch(repo_dir: &Path, sha: &str, max_bytes: usize) -> Result<Comm
     })
 }
 
+/// A file's content at one commit, as [`blob_bytes`] found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Blob {
+    /// The rev has no such path: the parent side of an added file, the
+    /// commit side of a deleted one, or any path at a root commit's parent.
+    Missing,
+    /// Bigger than the cap, so not read: its size in bytes.
+    TooLarge(u64),
+    /// Its content.
+    Bytes(Vec<u8>),
+}
+
+/// File `path` as of `rev` in `repo_dir` (`git cat-file blob <rev>:<path>`),
+/// unless it's over `max_bytes`: its size is checked first, so a huge file is
+/// never read. A `rev` or `path` that doesn't name a blob is
+/// [`Blob::Missing`], not an error; git failing to run is one.
+pub fn blob_bytes(
+    repo_dir: &Path,
+    rev: &str,
+    path: &str,
+    max_bytes: u64,
+) -> Result<Blob, GitError> {
+    let spec = format!("{rev}:{path}");
+    // Non-zero and silent when `spec` names nothing: a missing path, or a
+    // root commit's `^`.
+    let Ok(oid) = git(repo_dir, &["rev-parse", "--verify", "--quiet", &spec]) else {
+        return Ok(Blob::Missing);
+    };
+    let size = git(repo_dir, &["cat-file", "-s", &oid])?;
+    let size: u64 = size.parse().map_err(|_| GitError {
+        command: format!("cat-file -s {oid}"),
+        stderr: format!("not a size: {size:?}"),
+    })?;
+    if size > max_bytes {
+        return Ok(Blob::TooLarge(size));
+    }
+    git_bytes(repo_dir, &["cat-file", "blob", &oid]).map(Blob::Bytes)
+}
+
 /// `bytes` cut to at most `max` bytes, backed up to just after the last newline
 /// so the patch never ends mid-line. Returns whether anything was cut.
 fn cap_at_line(bytes: &[u8], max: usize) -> (&[u8], bool) {
@@ -974,6 +1013,33 @@ mod tests {
         assert!(cut.patch.len() <= 300);
         assert!(cut.patch.ends_with('\n'));
         assert!(full.patch.starts_with(&cut.patch));
+    }
+
+    /// A committed file reads back at its commit and, changed, at the one
+    /// before; a path the rev lacks is missing (so is anything at a root
+    /// commit's parent), and a blob over the cap is reported by size unread.
+    #[test]
+    fn blob_bytes_reads_each_side_and_respects_the_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let root = init_repo(&repo);
+        let old: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0, 1, 2, 3];
+        let new: Vec<u8> = (0..=255).collect();
+        std::fs::write(repo.join("shot.png"), &old).unwrap();
+        run(&repo, &["add", "shot.png"]);
+        run(&repo, &["commit", "-q", "-m", "add shot"]);
+        std::fs::write(repo.join("shot.png"), &new).unwrap();
+        run(&repo, &["commit", "-q", "-am", "change shot"]);
+        let sha = run(&repo, &["rev-parse", "HEAD"]);
+
+        let read = |rev: &str, path: &str, max: u64| blob_bytes(&repo, rev, path, max).unwrap();
+        assert_eq!(read(&sha, "shot.png", 1024), Blob::Bytes(new.clone()));
+        assert_eq!(read(&format!("{sha}^"), "shot.png", 1024), Blob::Bytes(old));
+        assert_eq!(read(&format!("{sha}^^"), "shot.png", 1024), Blob::Missing);
+        assert_eq!(read(&sha, "nope.png", 1024), Blob::Missing);
+        assert_eq!(read(&format!("{root}^"), "shot.png", 1024), Blob::Missing);
+        assert_eq!(read(&sha, "shot.png", 255), Blob::TooLarge(256));
+        assert_eq!(read(&sha, "shot.png", 256), Blob::Bytes(new));
     }
 
     /// Every [`Found`] × [`Target`] pair gets its short label: a local find

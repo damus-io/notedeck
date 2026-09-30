@@ -30,6 +30,8 @@ use nostrdb_net::NoteId;
 use notedeck::{Localization, Waker};
 use notedeck_ui::diff::{GitPatch, GitPatchState};
 
+use crate::review_images::{self, FetchedImages};
+
 /// The patch size the pane loads before cutting it off (as `headway diff`).
 const MAX_PATCH_BYTES: usize = 4 << 20;
 
@@ -200,12 +202,14 @@ impl Byline {
     }
 }
 
-/// What the worker sends back: the resolution and the parsed patch, before the
-/// UI thread attaches the localized [`GitPatchState`].
+/// What the worker sends back: the resolution, the parsed patch and its
+/// changed images decoded, before the UI thread attaches the localized
+/// [`GitPatchState`] and uploads the images.
 struct Fetched {
     resolved: Resolved,
     commit: CommitPatch,
     patch: GitPatch,
+    images: Vec<FetchedImages>,
 }
 
 /// The review pane's loads: started on demand, cached per [`ReviewSource`], and
@@ -318,11 +322,12 @@ impl ReviewLoader {
 
     /// Take every result the workers have sent since the last frame. Each
     /// patch's view state is built here, on the UI thread, where the
-    /// localization it formats its labels with lives.
-    pub(crate) fn poll(&mut self, i18n: &mut Localization) {
+    /// localization it formats its labels with lives, and its images are
+    /// uploaded to `ctx`, once.
+    pub(crate) fn poll(&mut self, ctx: &egui::Context, i18n: &mut Localization) {
         while let Ok((source, result)) = self.rx.try_recv() {
             let load = match result {
-                Ok(fetched) => ReviewLoad::Ready(Box::new(loaded(fetched, source, i18n))),
+                Ok(fetched) => ReviewLoad::Ready(Box::new(loaded(fetched, source, ctx, i18n))),
                 Err(e) => ReviewLoad::Failed(e),
             };
             self.loads.insert(
@@ -370,10 +375,12 @@ fn load(job: &ReviewJob, local_host: &str) -> Result<Fetched, GitError> {
     };
     let commit = git::commit_patch(&resolved.repo_dir, &resolved.sha, MAX_PATCH_BYTES)?;
     let patch = GitPatch::parse(commit.patch.clone());
+    let images = review_images::fetch(&resolved.repo_dir, &resolved.sha, &patch);
     Ok(Fetched {
         resolved,
         commit,
         patch,
+        images,
     })
 }
 
@@ -387,18 +394,26 @@ fn load(job: &ReviewJob, local_host: &str) -> Result<Fetched, GitError> {
 /// opens at the top and stepping back to one returns to where it was left. The
 /// sha is in the salt because a trailer search can land on a different commit
 /// under the same source (a rebase, then a re-open), and that is a new diff.
-fn loaded(fetched: Fetched, source: ReviewSource, i18n: &mut Localization) -> LoadedReview {
+fn loaded(
+    fetched: Fetched,
+    source: ReviewSource,
+    ctx: &egui::Context,
+    i18n: &mut Localization,
+) -> LoadedReview {
     let Fetched {
         resolved,
         commit,
         patch,
+        images,
     } = fetched;
+    let mut patch_state = GitPatchState::new(&patch, i18n).with_id_salt((source, &commit.sha));
+    review_images::upload(images, &commit.sha, &mut patch_state, ctx, i18n);
     LoadedReview {
         source: resolved.source_label().into_owned(),
         source_hover: resolved.to_string(),
         by_trailer: resolved.how == Found::ByTrailer,
         byline: Byline::of(&commit),
-        patch_state: GitPatchState::new(&patch, i18n).with_id_salt((source, &commit.sha)),
+        patch_state,
         commit,
         patch,
     }
