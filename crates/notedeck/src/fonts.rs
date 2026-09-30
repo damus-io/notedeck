@@ -130,8 +130,12 @@ pub fn setup_fonts(ctx: &egui::Context) {
                 "../../../assets/fonts/Inconsolata-Regular.ttf"
             ))
             .tweak(FontTweak {
-                scale: 1.22,            // This font is smaller than DejaVuSans
-                y_offset_factor: -0.18, // and too low
+                scale: 1.22, // This font is smaller than DejaVuSans
+                // No lift: the family's row metrics come from this face itself,
+                // so its glyphs already sit on the row's baseline. The -0.18
+                // that was here drew every monospace glyph ~2px above it, so
+                // inline code rode high in prose and mono text in buttons.
+                y_offset_factor: 0.0,
                 y_offset: 0.0,
                 baseline_offset_factor: 0.0,
             }),
