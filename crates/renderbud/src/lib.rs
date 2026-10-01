@@ -14,11 +14,47 @@ mod world;
 #[cfg(feature = "egui")]
 pub mod egui;
 
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util;
+
 pub use camera::{ArcballController, Camera, FlyController, ThirdPersonController};
 pub use material::{MaterialGpu, MaterialUniform};
-pub use model::{Aabb, Mesh, Model, ModelData, ModelDraw, Vertex};
+pub use model::{Aabb, LoadError, Mesh, Model, ModelData, ModelDraw, Vertex};
 pub use texture::upload_rgba8_texture_2d;
 pub use world::{Node, NodeId, ObjectId, Transform, World};
+
+/// Loads glTF models for a [`Renderer`] off its thread: everything a model
+/// upload needs (the device, queue and material layout), cloned out of the
+/// renderer by [`Renderer::model_uploader`] so a worker can parse and upload
+/// without locking it. The [`ModelData`] it returns joins the renderer
+/// through [`Renderer::insert_model`].
+#[derive(Clone)]
+pub struct ModelUploader {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    material_bgl: wgpu::BindGroupLayout,
+}
+
+impl ModelUploader {
+    /// Parse and upload a self-contained glTF model (a `.glb`, or a `.gltf`
+    /// with embedded data). CPU-heavy: call it off the UI thread.
+    ///
+    /// Safe on untrusted bytes: a GPU validation or out-of-memory error is
+    /// caught in an error scope (scopes are per thread, so this captures only
+    /// this upload's) and returned as [`LoadError::Gpu`] rather than reaching
+    /// the device's uncaptured-error handler.
+    pub fn upload_gltf_slice(&self, bytes: &[u8]) -> Result<ModelData, LoadError> {
+        let oom = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let model = model::load_gltf_slice(&self.device, &self.queue, &self.material_bgl, bytes);
+        let validation = pollster::block_on(validation.pop());
+        let oom = pollster::block_on(oom.pop());
+        match validation.or(oom) {
+            Some(e) => Err(LoadError::Gpu(e)),
+            None => model,
+        }
+    }
+}
 
 /// Active camera controller mode.
 pub enum CameraMode {
@@ -707,15 +743,25 @@ impl Renderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         path: impl AsRef<std::path::Path>,
-    ) -> Result<Model, gltf::Error> {
+    ) -> Result<Model, LoadError> {
         let model_data = crate::model::load_gltf_model(device, queue, &self.material_bgl, path)?;
+        Ok(self.insert_model(model_data))
+    }
 
-        self.model_ids += 1;
-        let id = Model { id: self.model_ids };
+    /// A handle that loads models for this renderer on any thread, without
+    /// borrowing it: hand the result back with [`insert_model`].
+    pub fn model_uploader(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> ModelUploader {
+        ModelUploader {
+            device: device.clone(),
+            queue: queue.clone(),
+            material_bgl: self.material_bgl.clone(),
+        }
+    }
 
-        self.models.insert(id, model_data);
-
-        Ok(id)
+    /// Forget a model, returning its GPU data (dropping it frees the
+    /// buffers and textures). Any object still placed with it stops drawing.
+    pub fn remove_model(&mut self, model: Model) -> Option<ModelData> {
+        self.models.remove(&model)
     }
 
     /// Register a procedurally-generated model. Returns a handle that can

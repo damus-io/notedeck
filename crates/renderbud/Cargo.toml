@@ -14,9 +14,12 @@ gltf = "1.4"
 wgpu = { workspace = true }
 half = "2.7.1"
 rayon = "1.10"
+pollster = { workspace = true }
 
 [features]
 egui = ["egui-wgpu", "dep:egui"]
+# Fixtures for other crates' tests (a generated cube .glb).
+test-util = []
 
 [dev-dependencies]
 winit = "0.30"

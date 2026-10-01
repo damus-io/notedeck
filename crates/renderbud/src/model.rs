@@ -31,6 +31,42 @@ pub struct ModelData {
     pub bounds: Aabb,
 }
 
+impl ModelData {
+    /// How many triangles the model draws, over all its meshes.
+    pub fn triangles(&self) -> u32 {
+        self.draws.iter().map(|d| d.mesh.num_indices / 3).sum()
+    }
+}
+
+/// Why a glTF model couldn't be loaded.
+#[derive(Debug)]
+pub enum LoadError {
+    /// The file isn't glTF, or its buffers or images don't decode.
+    Gltf(gltf::Error),
+    /// It parsed, but has no triangle geometry to draw.
+    Empty,
+    /// The GPU rejected one of its resources.
+    Gpu(wgpu::Error),
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadError::Gltf(e) => write!(f, "glTF: {e}"),
+            LoadError::Empty => f.write_str("no triangle geometry"),
+            LoadError::Gpu(e) => write!(f, "GPU: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for LoadError {}
+
+impl From<gltf::Error> for LoadError {
+    fn from(e: gltf::Error) -> Self {
+        LoadError::Gltf(e)
+    }
+}
+
 /// A model handle
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Copy, Clone)]
 pub struct Model {
@@ -77,6 +113,9 @@ impl GltfWgpuCache {
         self.samplers[idx].as_ref().unwrap()
     }
 
+    /// The view for `tex`, uploaded on first use. `None` when its image can't
+    /// be used (a pixel format we don't convert, or bigger than the device
+    /// allows); the material then falls back to its default texture.
     fn ensure_texture_view(
         &mut self,
         images: &[gltf::image::Data],
@@ -84,23 +123,29 @@ impl GltfWgpuCache {
         queue: &wgpu::Queue,
         tex: gltf::Texture<'_>,
         srgb: bool,
-    ) -> (usize, bool) {
+    ) -> Option<(usize, bool)> {
         let key = (tex.index(), srgb);
-        self.tex_views.entry(key).or_insert_with(|| {
-            let img = &images[tex.source().index()];
-            let rgba8 = build_rgba(img);
+        if self.tex_views.contains_key(&key) {
+            return Some(key);
+        }
+        let img = images.get(tex.source().index())?;
+        let max = device.limits().max_texture_dimension_2d;
+        if img.width == 0 || img.height == 0 || img.width > max || img.height > max {
+            return None;
+        }
+        let rgba8 = build_rgba(img)?;
 
-            let format = if srgb {
-                wgpu::TextureFormat::Rgba8UnormSrgb
-            } else {
-                wgpu::TextureFormat::Rgba8Unorm
-            };
+        let format = if srgb {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        } else {
+            wgpu::TextureFormat::Rgba8Unorm
+        };
 
-            upload_rgba8_texture_2d(
-                device, queue, img.width, img.height, &rgba8, format, "gltf_tex",
-            )
-        });
-        key
+        let view = upload_rgba8_texture_2d(
+            device, queue, img.width, img.height, &rgba8, format, "gltf_tex",
+        );
+        self.tex_views.insert(key, view);
+        Some(key)
     }
 
     fn view_ref(&self, key: (usize, bool)) -> &wgpu::TextureView {
@@ -146,8 +191,10 @@ impl Vertex {
     }
 }
 
-fn build_rgba(img: &gltf::image::Data) -> Vec<u8> {
-    match img.format {
+/// `img` as RGBA8, or `None` for a pixel format this doesn't convert (the
+/// float ones).
+fn build_rgba(img: &gltf::image::Data) -> Option<Vec<u8>> {
+    let rgba: Vec<u8> = match img.format {
         gltf::image::Format::R8 => img.pixels.iter().flat_map(|&r| [r, r, r, 255]).collect(),
         gltf::image::Format::R8G8B8 => img
             .pixels
@@ -186,20 +233,50 @@ fn build_rgba(img: &gltf::image::Data) -> Vec<u8> {
                 [r, g, b, a]
             })
             .collect(),
-        _ => panic!("Unhandled image format {:?}", img.format),
-    }
+        _ => return None,
+    };
+    let expected = img.width as usize * img.height as usize * 4;
+    (rgba.len() == expected).then_some(rgba)
 }
 
+/// Load the glTF file at `path` (and the buffers and images it refers to).
 pub fn load_gltf_model(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     material_bgl: &wgpu::BindGroupLayout,
     path: impl AsRef<std::path::Path>,
-) -> Result<ModelData, gltf::Error> {
-    let path = path.as_ref();
+) -> Result<ModelData, LoadError> {
+    let (doc, buffers, images) = gltf::import(path.as_ref())?;
+    upload_gltf(device, queue, material_bgl, &doc, &buffers, &images)
+}
 
-    let (doc, buffers, images) = gltf::import(path)?;
+/// Load a self-contained glTF model from memory: a `.glb`, or a `.gltf` whose
+/// buffers and images are embedded as data URIs. A file that refers to
+/// others beside it fails, since there's nothing to resolve them against.
+pub fn load_gltf_slice(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    material_bgl: &wgpu::BindGroupLayout,
+    bytes: &[u8],
+) -> Result<ModelData, LoadError> {
+    let (doc, buffers, images) = gltf::import_slice(bytes)?;
+    upload_gltf(device, queue, material_bgl, &doc, &buffers, &images)
+}
 
+/// Upload a parsed glTF document's materials and triangle meshes.
+///
+/// The input may be anything someone committed, so nothing in it can panic
+/// this: an unusable texture falls back to the default one, attributes of
+/// the wrong length to defaults, and a primitive with an out-of-range index
+/// is skipped. A document with no triangles left is [`LoadError::Empty`].
+fn upload_gltf(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    material_bgl: &wgpu::BindGroupLayout,
+    doc: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+    images: &[gltf::image::Data],
+) -> Result<ModelData, LoadError> {
     // --- default textures
     let default_sampler = make_default_sampler(device);
     let default_basecolor = upload_rgba8_texture_2d(
@@ -230,7 +307,7 @@ pub fn load_gltf_model(
         "normal_1x1",
     );
 
-    let mut cache = GltfWgpuCache::new(&doc);
+    let mut cache = GltfWgpuCache::new(doc);
 
     let mut materials: Vec<MaterialGpu> = Vec::new();
 
@@ -243,28 +320,28 @@ pub fn load_gltf_model(
 
         let mut chosen_sampler_idx: Option<usize> = None;
 
-        let basecolor_key = pbr.base_color_texture().map(|info| {
+        let basecolor_key = pbr.base_color_texture().and_then(|info| {
             let s_idx = cache.ensure_sampler(device, info.texture().sampler());
             if chosen_sampler_idx.is_none() {
                 chosen_sampler_idx = s_idx;
             }
-            cache.ensure_texture_view(&images, device, queue, info.texture(), true)
+            cache.ensure_texture_view(images, device, queue, info.texture(), true)
         });
 
-        let mr_key = pbr.metallic_roughness_texture().map(|info| {
+        let mr_key = pbr.metallic_roughness_texture().and_then(|info| {
             let s_idx = cache.ensure_sampler(device, info.texture().sampler());
             if chosen_sampler_idx.is_none() {
                 chosen_sampler_idx = s_idx;
             }
-            cache.ensure_texture_view(&images, device, queue, info.texture(), false)
+            cache.ensure_texture_view(images, device, queue, info.texture(), false)
         });
 
-        let normal_key = mat.normal_texture().map(|norm_tex| {
+        let normal_key = mat.normal_texture().and_then(|norm_tex| {
             let s_idx = cache.ensure_sampler(device, norm_tex.texture().sampler());
             if chosen_sampler_idx.is_none() {
                 chosen_sampler_idx = s_idx;
             }
-            cache.ensure_texture_view(&images, device, queue, norm_tex.texture(), false)
+            cache.ensure_texture_view(images, device, queue, norm_tex.texture(), false)
         });
 
         let uniform = MaterialUniform {
@@ -328,7 +405,7 @@ pub fn load_gltf_model(
                 continue;
             }
 
-            let reader = prim.reader(|b| Some(&buffers[b.index()]));
+            let reader = prim.reader(|b| buffers.get(b.index()).map(|d| &d.0[..]));
 
             let positions: Vec<[f32; 3]> = match reader.read_positions() {
                 Some(it) => it.collect(),
@@ -337,12 +414,14 @@ pub fn load_gltf_model(
 
             let normals: Vec<[f32; 3]> = reader
                 .read_normals()
-                .map(|it| it.collect())
+                .map(|it| it.collect::<Vec<_>>())
+                .filter(|n| n.len() == positions.len())
                 .unwrap_or_else(|| vec![[0.0, 0.0, 1.0]; positions.len()]);
 
             let uvs: Vec<[f32; 2]> = reader
                 .read_tex_coords(0)
-                .map(|tc| tc.into_f32().collect())
+                .map(|tc| tc.into_f32().collect::<Vec<_>>())
+                .filter(|uv| uv.len() == positions.len())
                 .unwrap_or_else(|| vec![[0.0, 0.0]; positions.len()]);
 
             let indices: Vec<u32> = if let Some(read) = reader.read_indices() {
@@ -350,6 +429,16 @@ pub fn load_gltf_model(
             } else {
                 (0..positions.len() as u32).collect()
             };
+            if indices.len() < 3 || indices.iter().any(|&i| i as usize >= positions.len()) {
+                continue;
+            }
+            let mut indices = indices;
+            indices.truncate(indices.len() - indices.len() % 3);
+            let material_index = prim
+                .material()
+                .index()
+                .filter(|&i| i < default_material_index)
+                .unwrap_or(default_material_index);
 
             /*
             let tangents: Vec<[f32; 4]> = reader
@@ -385,8 +474,6 @@ pub fn load_gltf_model(
                 usage: wgpu::BufferUsages::INDEX,
             });
 
-            let material_index = prim.material().index().unwrap_or(default_material_index);
-
             draws.push(ModelDraw {
                 mesh: Mesh {
                     num_indices: indices.len() as u32,
@@ -396,6 +483,10 @@ pub fn load_gltf_model(
                 material_index,
             });
         }
+    }
+
+    if draws.is_empty() {
+        return Err(LoadError::Empty);
     }
 
     Ok(ModelData {

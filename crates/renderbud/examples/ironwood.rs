@@ -110,7 +110,7 @@ impl Renderbud {
     fn load_gltf_model(
         &mut self,
         path: impl AsRef<std::path::Path>,
-    ) -> Result<renderbud::Model, gltf::Error> {
+    ) -> Result<renderbud::Model, renderbud::LoadError> {
         self.renderer
             .load_gltf_model(&self.device, &self.queue, path)
     }
