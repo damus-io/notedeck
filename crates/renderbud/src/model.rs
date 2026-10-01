@@ -316,7 +316,11 @@ fn upload_gltf(
         let bc_factor = pbr.base_color_factor();
         let metallic_factor = pbr.metallic_factor();
         let roughness_factor = pbr.roughness_factor();
-        let ao_strength = mat.occlusion_texture().map(|o| o.strength()).unwrap_or(1.0);
+        // The shader reads occlusion from the metallic-roughness texture's
+        // red channel (packed ORM). Without an occlusion texture there's no
+        // occlusion to apply, and that channel is 0 in the default texture,
+        // which at full strength would zero all ambient light.
+        let ao_strength = mat.occlusion_texture().map(|o| o.strength()).unwrap_or(0.0);
 
         let mut chosen_sampler_idx: Option<usize> = None;
 
@@ -391,7 +395,7 @@ fn upload_gltf(
             base_color_factor: Vec4::ONE,
             metallic_factor: 0.0,
             roughness_factor: 1.0,
-            ao_strength: 1.0,
+            ao_strength: 0.0,
             _pad0: 0.0,
         },
     ));
