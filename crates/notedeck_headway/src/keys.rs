@@ -333,12 +333,13 @@ pub(crate) const REVIEW_NAV_HINTS: &[KeyHint] = &[
     },
 ];
 
-/// Commenting on the lines picked in a review pane's diff (a click on a
-/// line's numbers, shift-click for a run, a hunk's header for all of it).
+/// Commenting in a review pane: on the lines picked in its diff (a click on
+/// a line's numbers, shift-click for a run, a hunk's header for all of it),
+/// or, with none picked, on the commit as a whole.
 pub(crate) const REVIEW_COMMENT_HINTS: &[KeyHint] = &[
     KeyHint {
         keys: &["c"],
-        label: "comment on picked lines",
+        label: "comment (picked lines or commit)",
     },
     KeyHint {
         keys: &["C"],
@@ -1891,6 +1892,8 @@ mod tests {
         opened: Option<String>,
         session: Option<notedeck::OpenUri>,
         hints: bool,
+        /// The record whose commit as a whole the review composer is open on.
+        commenting: Option<NoteId>,
     }
 
     fn pane_effects(harness: &Harness<'static, KeysHarness>) -> PaneEffects {
@@ -1910,6 +1913,7 @@ mod tests {
             opened: h.opened.clone(),
             session: h.session.clone(),
             hints: h.state.key_hints_shown(),
+            commenting: h.state.commenting_on_commit(),
         }
     }
 
@@ -2147,6 +2151,58 @@ diff --git a/b.txt b/b.txt
                 Some(QueueNotice::NoComments)
             );
         }
+    }
+
+    /// `c` with no lines picked opens the composer on the shown record's
+    /// commit as a whole, rather than asking for a pick.
+    #[test]
+    fn c_with_nothing_picked_comments_on_the_commit() {
+        let mut harness = pane_harness();
+        press(&mut harness, Key::C);
+        assert_eq!(harness.state().state.commenting_on_commit(), Some(id(50)));
+        assert_eq!(harness.state().state.notice(), None);
+    }
+
+    /// A comment on the commit as a whole posts with no location, and leads
+    /// the session message — just what it says, no place or quote — ahead of
+    /// the comments on lines, whatever order they were added in. The card
+    /// stays where it is.
+    #[test]
+    fn send_comments_leads_with_the_whole_commit_comments() {
+        let mut harness = pane_harness();
+        let [lines, _] = two_drafts();
+        let state = &mut harness.state_mut().state;
+        state.add_review_draft(id(50), lines);
+        state.add_review_draft(
+            id(50),
+            crate::ui::DraftComment::on_commit("split this commit".to_string()),
+        );
+        press_with(&mut harness, Modifiers::SHIFT, Key::C);
+
+        let h = harness.state();
+        let (_, _, comments) = h.review_comments.clone().expect("comments posted");
+        let posted: Vec<_> = comments
+            .iter()
+            .map(|c| (c.location.is_some(), c.body.as_str()))
+            .collect();
+        assert_eq!(
+            posted,
+            vec![(true, "rename it"), (false, "split this commit")],
+            "published as added"
+        );
+        let card_ref = headway::wordid::card_ref(&h.view.id, id(5).bytes());
+        assert_eq!(
+            h.session.as_ref().and_then(|o| o.msg.as_deref()),
+            Some(
+                format!(
+                    "Review comments on commit 136ceb9d3bfa (card {card_ref}):\n\n\
+                     split this commit\n\n\
+                     src/a.rs:1-2\n```diff\n fn a() {{\n-    old();\n+    new();\n```\nrename it"
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(h.moved, None, "no verdict");
     }
 
     /// The scroll keys each ask the diff for their scroll; `]` the next file.

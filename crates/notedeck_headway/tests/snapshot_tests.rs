@@ -3185,7 +3185,7 @@ const QUEUE_HINT_LABELS: [&str; 15] = [
     "half page",
     "top/bottom",
     "next/prev file",
-    "comment on picked lines",
+    "comment (picked lines or commit)",
     "send comments",
     "leave",
 ];
@@ -3321,8 +3321,8 @@ fn draft_on_keys_hunk(harness: &mut Harness<'static, HeadwayTestState>, body: &s
 }
 
 /// Inline review comments, as a reviewer writes them in the queue: a comment
-/// already posted on the record shows under its lines; `c` with nothing picked
-/// says how to pick; a click on a hunk's header picks it and opens the
+/// already posted on the record shows under its lines; a click on a hunk's
+/// header picks it and opens the
 /// composer, where `c` puts the keyboard; Ctrl+Enter files a draft, drawn under
 /// its lines and counted on the header's "Send 1 comment"; a click on a line's
 /// numbers then a shift-click picks a run; and `C` posts the draft on the
@@ -3338,12 +3338,6 @@ fn review_comments_draft_then_send_to_the_session() {
     open_review_queue(&mut harness);
     wait_for_label(&mut harness, POSTED_COMMENT);
     raised_opens(&mut harness);
-
-    harness.press_key(egui::Key::C);
-    wait_for_label(
-        &mut harness,
-        "Click a line number to pick lines to comment on",
-    );
 
     draft_on_keys_hunk(&mut harness, "keys want a test");
     wait_for_label(&mut harness, "Draft: keys want a test");
@@ -3389,6 +3383,78 @@ fn review_comments_draft_then_send_to_the_session() {
         2,
         "both posted comments carry their author"
     );
+}
+
+/// A comment on the commit as a whole, as a reviewer writes it in the queue
+/// with no lines picked: `c` opens the composer on "this commit", Ctrl+Enter
+/// files it as a draft listed over the diff, and `C` posts it on the record
+/// with no location and sends it to the record's session as just what it
+/// says, after which it folds back and draws over the diff, author and all.
+#[test]
+fn review_comment_on_the_whole_commit() {
+    const BODY: &str = "split this commit in two";
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1400.0));
+    seed_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness);
+    raised_opens(&mut harness);
+
+    harness.press_key(egui::Key::C);
+    wait_for_label(&mut harness, "this commit");
+    harness.run_ok();
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text(BODY.to_string()));
+    harness.run_ok();
+    harness.press_key_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    wait_for_label(&mut harness, "Send 1 comment");
+    assert!(harness.query_by_label(BODY).is_some(), "draft row");
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::C);
+    wait_for_absent(&mut harness, "Send 1 comment");
+    let opens = raised_opens(&mut harness);
+    assert_eq!(opens.len(), 1, "one open: {opens:?}");
+    assert_eq!(opens[0].reference, QUEUE_SESSION);
+    let msg = opens[0].msg.as_deref().expect("a message");
+    assert!(msg.starts_with("Review comments on commit "), "{msg}");
+    assert!(msg.ends_with(&format!("):\n\n{BODY}")), "{msg}");
+
+    // Posted: it folds back onto the record and draws over the diff by the
+    // note renderer, which carries its author and puts the text in a label's
+    // value rather than its name.
+    wait_for_label(&mut harness, "nostrich");
+    let posted = harness
+        .query_all(egui_kittest::kittest::By::new())
+        .any(|n| n.accesskit_node().value().as_deref() == Some(BODY));
+    assert!(posted, "the posted comment draws over the diff");
+}
+
+/// Snapshot: the review queue with nothing picked, a draft on the commit as
+/// a whole listed over the diff as "this commit" (counted on the header's
+/// "Send 1 comment"), and `c` pressed again so the composer is open on the
+/// commit.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_comment_on_commit() {
+    let fixture = review_fixture();
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness);
+    harness.press_key(egui::Key::C);
+    wait_for_label(&mut harness, "this commit");
+    harness.run_ok();
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text("split this commit in two".to_string()));
+    harness.run_ok();
+    harness.press_key_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    wait_for_label(&mut harness, "Send 1 comment");
+    harness.press_key(egui::Key::C);
+    wait_for_label(&mut harness, "Comment on");
+    harness.run_steps(3);
+    harness.snapshot("headway_review_comment_on_commit");
 }
 
 /// Snapshot: the review queue's diff with a comment posted on `src/queue.rs`

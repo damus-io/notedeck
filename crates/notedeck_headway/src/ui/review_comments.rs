@@ -1,5 +1,6 @@
-//! Inline review comments in the review pane: pick lines of the diff, write a
-//! comment on them, and send the lot at once — each published as a review
+//! Inline review comments in the review pane: pick lines of the diff and
+//! write a comment on them, or write one on the commit as a whole with
+//! nothing picked, and send the lot at once — each published as a review
 //! comment on the record (see [`headway::event::build_review_comment`]) and all
 //! of them, in one message, to the record's agentium session.
 //!
@@ -29,11 +30,20 @@ use super::{BoardEffect, BoardUiState, find_card};
 use crate::review::LoadedReview;
 use crate::store::{BoardAction, NewReviewComment};
 
-/// A comment written on picked lines of a record's diff and not sent yet.
-/// Everything the send needs is built when it's added, so sending formats
-/// nothing per comment but the message.
+/// A comment written on a record's commit and not sent yet: on picked lines
+/// of its diff, or on the commit as a whole. Everything the send needs is
+/// built when it's added, so sending formats nothing per comment but the
+/// message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DraftComment {
+    /// The lines it's on, or `None` for a comment on the commit as a whole.
+    pub(crate) at: Option<DraftLines>,
+    pub(crate) body: String,
+}
+
+/// Where on the diff a [`DraftComment`] on picked lines sits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DraftLines {
     /// The file (index into the loaded patch's files) and its lines it's on.
     pub(crate) file: usize,
     pub(crate) lines: Range<usize>,
@@ -44,10 +54,26 @@ pub(crate) struct DraftComment {
     pub(crate) place: String,
     /// The picked lines, each with its `+`/`-`/` ` prefix.
     pub(crate) quote: String,
-    pub(crate) body: String,
 }
 
+/// How the pane's draft list names a comment on the commit as a whole, where
+/// a comment on lines shows its place.
+const WHOLE_COMMIT: &str = "this commit";
+
 impl DraftComment {
+    /// A draft of `body` on the commit as a whole (`c` with nothing picked).
+    pub(crate) fn on_commit(body: String) -> Self {
+        Self { at: None, body }
+    }
+
+    /// How the pane names where the draft is: its place, or
+    /// [`WHOLE_COMMIT`].
+    fn place(&self) -> &str {
+        self.at
+            .as_ref()
+            .map_or(WHOLE_COMMIT, |at| at.place.as_str())
+    }
+
     /// A draft of `body` on `picked` lines of `patch`, which was loaded from
     /// `commit`. `None` when the pick covers no numbered line.
     pub(crate) fn new(
@@ -84,11 +110,13 @@ impl DraftComment {
             quote.push_str(patch.text(line.text));
         }
         Some(Self {
-            file: picked.file,
-            lines: picked.lines.clone(),
-            place: place(file.path(), span),
-            location,
-            quote,
+            at: Some(DraftLines {
+                file: picked.file,
+                lines: picked.lines.clone(),
+                place: place(file.path(), span),
+                location,
+                quote,
+            }),
             body,
         })
     }
@@ -135,8 +163,11 @@ pub(crate) struct ReviewDrafts {
     /// Bumped on every change to a draft, so the diff's rows for them are
     /// rebuilt only then (see [`sync_notes`]).
     rev: u64,
-    /// The comment being written on the picked lines.
+    /// The comment being written on the picked lines, or on the commit.
     composer: String,
+    /// The record whose commit as a whole the composer is open on, since
+    /// `c` with nothing picked. Picking lines takes the composer over.
+    whole: Option<NoteId>,
     /// `c` asked for the composer's field to take the keyboard.
     focus: bool,
     /// The pick [`pick_label`](Self::pick_label) was formatted for.
@@ -183,6 +214,13 @@ impl ReviewDrafts {
 
     /// `c`: have the composer's field take the keyboard on its next pass.
     pub(crate) fn focus_composer(&mut self) {
+        self.focus = true;
+    }
+
+    /// `c` with nothing picked: open the composer on `record`'s commit as a
+    /// whole, with the keyboard.
+    fn open_on_commit(&mut self, record: NoteId) {
+        self.whole = Some(record);
         self.focus = true;
     }
 
@@ -243,17 +281,21 @@ fn sync_notes(loaded: &mut LoadedReview, record: &ReviewView, drafts: &ReviewDra
             key,
         })
     });
+    // A comment on the commit as a whole has no rows; `comments_ui` lists it.
     let unsent = drafts
         .of(record.id)
         .iter()
         .enumerate()
-        .map(|(key, d)| PatchNote {
-            file: d.file,
-            lines: d.lines.clone(),
-            text: format!("Draft: {}", d.body),
-            kind: PatchNoteKind::Draft,
-            caller_draws: false,
-            key,
+        .filter_map(|(key, d)| {
+            let at = d.at.as_ref()?;
+            Some(PatchNote {
+                file: at.file,
+                lines: at.lines.clone(),
+                text: format!("Draft: {}", d.body),
+                kind: PatchNoteKind::Draft,
+                caller_draws: false,
+                key,
+            })
         });
     let notes = posted.chain(unsent).collect();
     loaded.patch_state.set_notes(patch, notes, stamp);
@@ -292,13 +334,16 @@ pub(super) fn posted_comment_ui(
     });
 }
 
-/// Above the diff: the composer for the picked lines, while there are any,
-/// and the record's drafts, each with a ✕ to drop it. Also keeps the diff's
-/// comment rows current ([`sync_notes`]). A pane with no record (a card found
-/// by its trailer) has nothing to root a comment on, so it gets neither.
+/// Above the diff: the record's posted comments on the commit as a whole
+/// (they have no lines to sit under), the composer for the picked lines or,
+/// after a `c` with nothing picked, for the commit, and the record's drafts,
+/// each with a ✕ to drop it. Also keeps the diff's comment rows current
+/// ([`sync_notes`]). A pane with no record (a card found by its trailer) has
+/// nothing to root a comment on, so it gets none of it.
 pub(super) fn comments_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
     loaded: &mut LoadedReview,
     record: Option<&ReviewView>,
     drafts: &mut ReviewDrafts,
@@ -308,29 +353,64 @@ pub(super) fn comments_ui(
         return;
     };
     sync_notes(loaded, record, drafts);
+    commit_comments_ui(ui, theme, app_ctx, record);
 
     if let Some(picked) = loaded.patch_state.selection() {
-        composer_ui(ui, theme, loaded, record.id, picked, drafts);
+        // Picking lines takes over a composer opened on the commit.
+        drafts.whole = None;
+        composer_ui(ui, theme, loaded, record.id, Some(picked), drafts);
+        ui.add_space(SPACING_SM);
+    } else if drafts.whole == Some(record.id) {
+        composer_ui(ui, theme, loaded, record.id, None, drafts);
         ui.add_space(SPACING_SM);
     } else {
-        // Nothing picked, so `c` has nothing to focus.
+        // No composer, so `c` has nothing to focus.
         drafts.focus = false;
     }
     drafts_ui(ui, theme, record.id, drafts);
 }
 
-/// The composer: where the picked lines are, a field for the comment, and
-/// "Add comment" (or Ctrl+Enter in the field), which files it as a draft and
-/// drops the pick, or "Cancel", which drops the pick.
+/// `record`'s posted comments on the commit as a whole, oldest first, each
+/// drawn by the note renderer ([`posted_comment_ui`]). Replies to a comment
+/// on lines carry its lines, so they draw in the diff instead.
+fn commit_comments_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    record: &ReviewView,
+) {
+    let mut whole = record
+        .comments
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.location.is_none())
+        .map(|(key, _)| key)
+        .peekable();
+    if whole.peek().is_none() {
+        return;
+    }
+    let txn = nostrdb::Transaction::new(app_ctx.ndb).ok();
+    for key in whole {
+        posted_comment_ui(ui, theme, app_ctx, txn.as_ref(), record, key);
+    }
+    ui.add_space(SPACING_SM);
+}
+
+/// The composer: what it's on (the picked lines' place, or the commit), a
+/// field for the comment, and "Add comment" (or Ctrl+Enter in the field),
+/// which files it as a draft and closes the composer, or "Cancel", which
+/// closes it. `picked` is `None` for a comment on the commit as a whole.
 fn composer_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     loaded: &mut LoadedReview,
     record: NoteId,
-    picked: PatchSelection,
+    picked: Option<PatchSelection>,
     drafts: &mut ReviewDrafts,
 ) {
-    if drafts.pick_for.as_ref() != Some(&picked) {
+    if let Some(picked) = &picked
+        && drafts.pick_for.as_ref() != Some(picked)
+    {
         drafts.pick_label = loaded
             .patch
             .files()
@@ -339,6 +419,13 @@ fn composer_ui(
             .unwrap_or_default();
         drafts.pick_for = Some(picked.clone());
     }
+    let (place_label, hint) = match picked {
+        Some(_) => (
+            drafts.pick_label.as_str(),
+            "Comment on these lines (Ctrl+Enter adds it)",
+        ),
+        None => (WHOLE_COMMIT, "Comment on this commit (Ctrl+Enter adds it)"),
+    };
 
     let id = composer_field_id();
     let focused = ui.memory(|m| m.has_focus(id));
@@ -356,7 +443,7 @@ fn composer_ui(
                 .color(theme.text_muted),
         );
         ui.label(
-            egui::RichText::new(drafts.pick_label.as_str())
+            egui::RichText::new(place_label)
                 .small()
                 .monospace()
                 .color(theme.text_secondary),
@@ -368,7 +455,7 @@ fn composer_ui(
             .id(id)
             .desired_rows(2)
             .desired_width(f32::INFINITY)
-            .hint_text("Comment on these lines (Ctrl+Enter adds it)"),
+            .hint_text(hint),
     );
     if std::mem::take(&mut drafts.focus) {
         field.request_focus();
@@ -384,6 +471,7 @@ fn composer_ui(
 
     if cancel {
         loaded.patch_state.clear_selection();
+        drafts.whole = None;
         drafts.composer.clear();
         ui.memory_mut(|m| m.surrender_focus(id));
         return;
@@ -392,26 +480,31 @@ fn composer_ui(
     if !add || body.is_empty() {
         return;
     }
-    let Some(draft) =
-        DraftComment::new(&loaded.patch, &picked, &loaded.commit.sha, body.to_owned())
-    else {
+    let draft = match &picked {
+        Some(picked) => {
+            DraftComment::new(&loaded.patch, picked, &loaded.commit.sha, body.to_owned())
+        }
+        None => Some(DraftComment::on_commit(body.to_owned())),
+    };
+    let Some(draft) = draft else {
         return;
     };
     drafts.add(record, draft);
     drafts.composer.clear();
+    drafts.whole = None;
     loaded.patch_state.clear_selection();
     ui.memory_mut(|m| m.surrender_focus(id));
 }
 
-/// The record's drafts, one small row each: its place, then its first line,
-/// then a ✕ that drops it.
+/// The record's drafts, one small row each: its place (or
+/// [`WHOLE_COMMIT`]), then its first line, then a ✕ that drops it.
 fn drafts_ui(ui: &mut egui::Ui, theme: &ColorTheme, record: NoteId, drafts: &mut ReviewDrafts) {
     let mut dropped = None;
     for (i, draft) in drafts.of(record).iter().enumerate() {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = SPACING_SM;
             ui.label(
-                egui::RichText::new(draft.place.as_str())
+                egui::RichText::new(draft.place())
                     .small()
                     .monospace()
                     .color(theme.warning),
@@ -440,15 +533,28 @@ fn drafts_ui(ui: &mut egui::Ui, theme: &ColorTheme, record: NoteId, drafts: &mut
 }
 
 impl BoardUiState {
-    /// `c`: put the keyboard in the comment composer on `card`'s diff, or,
-    /// with no lines picked there, say how to pick some.
+    /// `c`: put the keyboard in the comment composer on `card`'s diff — on
+    /// the picked lines, or, with none picked, on the shown record's commit
+    /// as a whole. A pane with no record has nothing to root a comment on,
+    /// and says so.
     pub(crate) fn focus_review_composer(&mut self, view: &BoardView, card: NoteId, now: f64) {
-        let picked = find_card(view, card).is_some_and(|(_, c)| self.review.has_picked_lines(c));
-        if picked {
+        let Some((_, found)) = find_card(view, card) else {
+            return;
+        };
+        if self.review.has_picked_lines(found) {
             self.review.drafts.focus_composer();
-        } else {
-            self.set_notice(QueueNotice::NoLinesPicked, now);
+            return;
         }
+        match self.review.shown_record(found) {
+            Some(record) => self.review.drafts.open_on_commit(record.id),
+            None => self.set_notice(QueueNotice::NoRecordToComment, now),
+        }
+    }
+
+    /// The record whose commit as a whole the composer is open on, if any.
+    #[cfg(test)]
+    pub(crate) fn commenting_on_commit(&self) -> Option<NoteId> {
+        self.review.drafts.whole
     }
 
     /// File `draft` on `record`, as the composer's "Add comment" does.
@@ -482,7 +588,7 @@ impl BoardUiState {
         let comments = drafts
             .into_iter()
             .map(|d| NewReviewComment {
-                location: Some(d.location),
+                location: d.at.map(|at| at.location),
                 body: d.body,
                 reply_to: None,
             })

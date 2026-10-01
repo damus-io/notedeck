@@ -330,7 +330,7 @@ pub(crate) enum QueueNotice {
     /// `C` with no comments written on the diff.
     NoComments,
     /// `c` with no lines of the diff picked.
-    NoLinesPicked,
+    NoRecordToComment,
 }
 
 /// A [`QueueNotice`] that's up: when it went up (egui time) and in which view.
@@ -366,7 +366,7 @@ impl QueueNotice {
             QueueNotice::NoSession => "No agentium session on this record",
             QueueNotice::CardGone => "This card has left the board",
             QueueNotice::NoComments => "No comments to send",
-            QueueNotice::NoLinesPicked => "Click a line number to pick lines to comment on",
+            QueueNotice::NoRecordToComment => "No review record to comment on",
         }
     }
 }
@@ -429,11 +429,15 @@ pub(crate) fn send_back_open(
 
 /// The [`AppAction::Open`](notedeck::AppAction::Open) request "Send N
 /// comments" raises beside publishing them: one message into `fields`'
-/// agentium session carrying every comment in `drafts`, in order, each as its
-/// place, the lines it's on quoted as a diff, then what it says:
+/// agentium session carrying every comment in `drafts`. Comments on the
+/// commit as a whole come first, as they were added, each just what it says;
+/// then the comments on lines, in order, each as its place, the lines it's
+/// on quoted as a diff, then what it says:
 ///
 /// ```text
 /// Review comments on commit <short sha> (card headway:<board>/<word-id>):
+///
+/// a comment on the whole commit
 ///
 /// src/lib.rs:42-48
 /// ```diff
@@ -454,8 +458,9 @@ pub(crate) fn review_comments_open(
 
     fields.agentium.as_ref()?;
     let commit = drafts
-        .first()
-        .map(|d| d.location.commit.as_str())
+        .iter()
+        .find_map(|d| d.at.as_ref())
+        .map(|at| at.location.commit.as_str())
         .or(fields.commit.as_deref());
     let mut msg = match commit {
         Some(sha) => format!(
@@ -464,11 +469,17 @@ pub(crate) fn review_comments_open(
         ),
         None => format!("Review comments (card {card_ref}):"),
     };
-    for draft in drafts {
+    for draft in drafts.iter().filter(|d| d.at.is_none()) {
+        let _ = write!(msg, "\n\n{}", draft.body);
+    }
+    for (at, draft) in drafts
+        .iter()
+        .filter_map(|d| d.at.as_ref().map(|at| (at, d)))
+    {
         let _ = write!(
             msg,
             "\n\n{}\n```diff\n{}\n```\n{}",
-            draft.place, draft.quote, draft.body
+            at.place, at.quote, draft.body
         );
     }
     open_record_session(fields, Some(msg))
@@ -1467,7 +1478,7 @@ fn load_ui(
                 }
             });
             ui.add_space(SPACING_MD);
-            comments_ui(ui, theme, loaded, comments.record, comments.drafts);
+            comments_ui(ui, theme, app_ctx, loaded, comments.record, comments.drafts);
             patch_ui(ui, theme, app_ctx, loaded, comments.record);
         }
     }

@@ -354,7 +354,8 @@ opened (the grid's `r`, a pane's `n`/`p`), so its `q` lands on that detail.
 | `]` / `[`               |                             | next / previous file        |                 |
 | `h` / `l`               | column left / right         |                             |                 |
 | `H` / `L`, `J` / `K`    | move the card across / reorder it |                       |                 |
-| `c`                     | new card                    |                             |                 |
+| `c`                     | new card                    | comment on the picked lines, or on the commit with none picked |  |
+| `C`                     |                             | send the drafts: post them on the record, one message to its session |  |
 | `/`                     | filter                      |                             |                 |
 | `R`                     | review queue over In Review |                             | review queue over the card's In Review sub-issues, at any depth |
 | `q` / `Esc`             | (`Esc` clears the cursor)   | queue: leave for the grid (an epic's queue: for the epic's detail); plain: back to the card | back (to the grid, or the card `n`/`p` left) |
