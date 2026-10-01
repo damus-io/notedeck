@@ -255,8 +255,8 @@ const CHAT_ROOT_HINTS: &[&[ChordHint]] = &[
         hint("zc", KeyAction::BlockClose),
     ],
     &[
-        hint("zR", KeyAction::BlockExpandAll),
-        hint("zM", KeyAction::BlockCollapseAll),
+        hint("zr", KeyAction::BlockExpandAll),
+        hint("zm", KeyAction::BlockCollapseAll),
     ],
     &[hint("h", KeyAction::FocusSessionsPane)],
     // Both leave normal mode, so they share a group.

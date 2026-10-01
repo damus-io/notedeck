@@ -66,7 +66,7 @@ will accept next.
 | `gg` / `G` | First / last block (or session) |
 | `za` / `o` | Toggle the focused block |
 | `zo` / `zc` | Expand / collapse the focused block |
-| `zR` / `zM` | Expand / collapse every block |
+| `zr` / `zm` | Expand / collapse every block |
 | `h` / `l` | Point the motions at the session list / the chat |
 | `Enter` | In the session list: open that session and go back to typing |
 | `n` | New agent (leaves normal mode for the picker) |
