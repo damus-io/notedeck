@@ -33,12 +33,6 @@ struct HeadwayTestState {
     /// a test can exercise the board↔card port's seeding both ways (a `Card` token
     /// shows the detail, a `Board`/`()` token returns to the grid).
     nav_token: Option<std::rc::Rc<dyn std::any::Any>>,
-    /// When set, the harness plays the chrome's whole global-nav loop on this
-    /// stack instead, slides included (the entry beneath the top draws in the
-    /// same pass as the top while one runs), and Headway's nav requests land
-    /// on it as the chrome's `apply_nav_requests` lands them. See
-    /// [`chrome_nav_pass`] and [`slide_harness`].
-    chrome_nav: Option<ChromeNav>,
 }
 
 fn render_headway(ui: &mut egui::Ui, state: &mut HeadwayTestState) {
@@ -89,10 +83,6 @@ fn render_headway(ui: &mut egui::Ui, state: &mut HeadwayTestState) {
             // (`notedeck_chrome/src/chrome/frame.rs`, `Chrome::show`): a Headway that
             // stops owning its spacing then shows up glued here, as it would live.
             ui.spacing_mut().item_spacing.x = 0.0;
-            if let Some(nav) = &mut state.chrome_nav {
-                chrome_nav_pass(ui, &mut app_ctx, &mut state.headway, nav);
-                return;
-            }
             // Mirror the chrome: when a global-history entry is set, draw it through
             // `render_nav` with its route token (the chrome always reaches an app this
             // way); otherwise the plain `render` root.
@@ -106,82 +96,6 @@ fn render_headway(ui: &mut egui::Ui, state: &mut HeadwayTestState) {
             }
         });
     });
-}
-
-/// How many passes a [`ChromeNav`] slide draws two entries for before it
-/// lands. egui_nav's spring takes a few dozen; the bug a slide can hide shows
-/// on its first.
-const SLIDE_PASSES: u8 = 3;
-
-/// The chrome's global stack and the slide running on it, for a harness that
-/// plays the chrome's whole nav loop (see [`chrome_nav_pass`]).
-struct ChromeNav {
-    stack: notedeck::NavStack<notedeck::ChromeNavEntry>,
-    /// Passes the running slide has drawn.
-    slid: u8,
-}
-
-/// One pass of the chrome's global nav, as `Chrome::show` runs it for an app
-/// (`notedeck_chrome/src/chrome/frame.rs`): every entry draws through
-/// [`App::render_nav`] with its own token, and the nav requests the pass
-/// raised land on the stack as `Chrome::apply_nav_requests` lands them — a
-/// push or a back starts a slide, and a back's slide pops when it ends,
-/// handing the popped entry to [`App::cleanup_nav`].
-///
-/// While a slide runs, the entry beneath the top draws first and the top
-/// after it, in one pass, as egui_nav's `show_internal` draws them. This
-/// doesn't call egui_nav itself: its `render_bg` and `render_fg` both build a
-/// `Ui` with the nav's own id, on different layers, which egui
-/// debug-asserts against, so a debug test can't run a real slide.
-fn chrome_nav_pass(
-    ui: &mut egui::Ui,
-    app_ctx: &mut AppContext,
-    headway: &mut Headway,
-    nav: &mut ChromeNav,
-) {
-    use notedeck::NavRequest;
-
-    let stack = &mut nav.stack;
-    let area = ui.available_rect_before_wrap();
-    let sliding = stack.navigating() || stack.returning();
-    if sliding && let Some(under) = stack.prev() {
-        let token = under.token.clone();
-        ui.scope_builder(
-            egui::UiBuilder::new().max_rect(area).id_salt("slide-under"),
-            |ui| headway.render_nav(app_ctx, ui, &token),
-        );
-    }
-    let token = stack.top().token.clone();
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(area).id_salt("slide-top"),
-        |ui| headway.render_nav(app_ctx, ui, &token),
-    );
-
-    if sliding {
-        nav.slid += 1;
-        ui.ctx().request_repaint();
-        if nav.slid >= SLIDE_PASSES {
-            nav.slid = 0;
-            if stack.returning() {
-                if let Some(popped) = stack.pop() {
-                    headway.cleanup_nav(app_ctx, &popped.token);
-                }
-            } else {
-                stack.navigating_mut(false);
-            }
-        }
-    }
-
-    let active = stack.top().app;
-    for request in app_ctx.navigator.take() {
-        match request {
-            NavRequest::PushToActive(entry) => stack.route_to(entry.tag(active)),
-            NavRequest::Back => {
-                stack.go_back();
-            }
-            _ => panic!("unexpected nav request kind from Headway"),
-        }
-    }
 }
 
 /// Render `note_id` (a kind-1 note) through `NoteView`, the surface the
@@ -289,7 +203,6 @@ fn headway_state() -> HeadwayTestState {
         fonts_installed: false,
         ref_note: None,
         nav_token: None,
-        chrome_nav: None,
     }
 }
 
@@ -2446,8 +2359,44 @@ struct ReviewFixture {
     queue: String,
     /// Touches `src/keys.rs` again, for the queue's second card.
     verdicts: String,
+    /// Changes the PNG `assets/shot.png` (added by the commit before it) and
+    /// adds `assets/new.png`: the image diff. The fixture's head.
+    images: String,
     /// The root commit: the repo identity the records carry.
     root: String,
+}
+
+/// A `w`×`h` PNG of flat blocks: a dark ground, a card in `card` colour and,
+/// when `bar` is set, a green bar across it — the "after" of an image diff.
+/// Flat so it encodes small (and the same on every machine).
+fn fixture_png(w: u32, h: u32, card: [u8; 3], bar: bool) -> Vec<u8> {
+    let image = image::RgbaImage::from_fn(w, h, |x, y| {
+        let in_card = (w / 8..w - w / 8).contains(&x) && (h / 5..h - h / 5).contains(&y);
+        let in_bar = bar && in_card && (h / 2..h / 2 + h / 8).contains(&y);
+        let [r, g, b] = if in_bar {
+            [60, 200, 90]
+        } else if in_card {
+            card
+        } else {
+            [30, 32, 40]
+        };
+        image::Rgba([r, g, b, 255])
+    });
+    let mut out = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut out, image::ImageFormat::Png)
+        .expect("encode fixture png");
+    out.into_inner()
+}
+
+/// The image diff's three sides: `assets/shot.png` before and after, and the
+/// added `assets/new.png`.
+fn fixture_pngs() -> [Vec<u8>; 3] {
+    [
+        fixture_png(160, 100, [90, 110, 200], false),
+        fixture_png(200, 100, [90, 110, 200], true),
+        fixture_png(64, 64, [200, 120, 60], false),
+    ]
 }
 
 /// Commit everything in `dir` as `subject`, dated `at` (unix seconds) for
@@ -2568,10 +2517,27 @@ fn build_review_fixture(dir: &std::path::Path) -> ReviewFixture {
         SEED_AT,
     );
 
+    let [before, after, added] = fixture_pngs();
+    let write_bytes = |file: &str, body: &[u8]| {
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().expect("file has a parent")).unwrap();
+        std::fs::write(path, body).unwrap();
+    };
+    write_bytes("assets/shot.png", &before);
+    dated_commit(dir, "headway: queue screenshot", SEED_AT - 1800);
+    write_bytes("assets/shot.png", &after);
+    write_bytes("assets/new.png", &added);
+    let images = dated_commit(
+        dir,
+        "headway: refresh the queue screenshots",
+        SEED_AT - 1200,
+    );
+
     ReviewFixture {
         dir: dir.to_string_lossy().into_owned(),
         queue,
         verdicts,
+        images,
         root,
     }
 }
@@ -2607,7 +2573,7 @@ fn review_fixture() -> ReviewFixture {
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
-    if head(fixed).as_deref() == Some(fixture.verdicts.as_str()) {
+    if head(fixed).as_deref() == Some(fixture.images.as_str()) {
         return fixture;
     }
     if fixed.exists() {
@@ -2617,7 +2583,7 @@ fn review_fixture() -> ReviewFixture {
         // Another run renamed its copy in first; it's the same repo.
         assert_eq!(
             head(fixed).as_deref(),
-            Some(fixture.verdicts.as_str()),
+            Some(fixture.images.as_str()),
             "a concurrent run left a different review fixture at {dir}"
         );
     }
@@ -2640,23 +2606,7 @@ const QUEUE_SESSION: &str = "agentium:power-baby-metal";
 /// checkout of the repo at [`review_fixture_dir`] — which is how the pane finds
 /// the other host's commits here without a fetch.
 fn seed_review_queue(harness: &mut Harness<'static, HeadwayTestState>, fixture: &ReviewFixture) {
-    let local = headway::git::host_name().expect("this host has a name");
-    let done = harness_card_id(harness, "Scaffold the Headway app crate");
-    apply_demo_action(
-        harness,
-        store::BoardAction::AddReview {
-            card: done,
-            review: event::ReviewFields {
-                commit: Some(fixture.root.clone()),
-                title: Some("headway: review queue skeleton".to_string()),
-                branch: Some("headway".to_string()),
-                host: Some(local),
-                path: Some(fixture.dir.clone()),
-                repo: Some(fixture.root.clone()),
-                ..Default::default()
-            },
-        },
-    );
+    record_local_checkout(harness, fixture);
 
     let records = [
         (
@@ -2675,24 +2625,63 @@ fn seed_review_queue(harness: &mut Harness<'static, HeadwayTestState>, fixture: 
     for (title, (sha, subject, session, explainer)) in QUEUE_CARDS.iter().zip(records) {
         let card = harness_card_id(harness, title);
         move_to_in_review(harness, card);
-        apply_demo_action(
-            harness,
-            store::BoardAction::AddReview {
-                card,
-                review: event::ReviewFields {
-                    commit: Some(sha.clone()),
-                    title: Some(subject.to_string()),
-                    branch: Some("headway".to_string()),
-                    host: Some(REVIEW_HOST.to_string()),
-                    path: Some("/home/jb55/dev/notedeck".to_string()),
-                    repo: Some(fixture.root.clone()),
-                    agentium: session.map(str::to_string),
-                    explainer: explainer.map(str::to_string),
-                    ..Default::default()
-                },
-            },
-        );
+        add_fixture_record(harness, card, sha, subject, session, explainer, fixture);
     }
+}
+
+/// A record on `card` from [`REVIEW_HOST`] naming fixture commit `sha`.
+fn add_fixture_record(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    card: NoteId,
+    sha: &str,
+    subject: &str,
+    session: Option<&str>,
+    explainer: Option<&str>,
+    fixture: &ReviewFixture,
+) {
+    apply_demo_action(
+        harness,
+        store::BoardAction::AddReview {
+            card,
+            review: event::ReviewFields {
+                commit: Some(sha.to_string()),
+                title: Some(subject.to_string()),
+                branch: Some("headway".to_string()),
+                host: Some(REVIEW_HOST.to_string()),
+                path: Some("/home/jb55/dev/notedeck".to_string()),
+                repo: Some(fixture.root.clone()),
+                agentium: session.map(str::to_string),
+                explainer: explainer.map(str::to_string),
+                ..Default::default()
+            },
+        },
+    );
+}
+
+/// A record on the Done card saying this host has a checkout of the fixture
+/// repo at [`review_fixture_dir`], which is how the pane finds
+/// [`REVIEW_HOST`]'s commits here without a fetch.
+fn record_local_checkout(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    fixture: &ReviewFixture,
+) {
+    let local = headway::git::host_name().expect("this host has a name");
+    let done = harness_card_id(harness, "Scaffold the Headway app crate");
+    apply_demo_action(
+        harness,
+        store::BoardAction::AddReview {
+            card: done,
+            review: event::ReviewFields {
+                commit: Some(fixture.root.clone()),
+                title: Some("headway: review queue skeleton".to_string()),
+                branch: Some("headway".to_string()),
+                host: Some(local),
+                path: Some(fixture.dir.clone()),
+                repo: Some(fixture.root.clone()),
+                ..Default::default()
+            },
+        },
+    );
 }
 
 /// Open the review queue on the seeded board and wait for its first card's
@@ -2704,6 +2693,84 @@ fn open_review_queue(harness: &mut Harness<'static, HeadwayTestState>) {
     wait_for_any_label(harness, "src/queue.rs");
     wait_for_any_label(harness, "src/keys.rs");
     wait_for_label(harness, "local checkout");
+}
+
+/// Seed one In Review card whose record names [`ReviewFixture::images`], and
+/// open the review queue on it, waiting for both image files and their first
+/// caption.
+fn open_image_review(harness: &mut Harness<'static, HeadwayTestState>, fixture: &ReviewFixture) {
+    record_local_checkout(harness, fixture);
+    let card = harness_card_id(harness, QUEUE_CARDS[0]);
+    move_to_in_review(harness, card);
+    let subject = "headway: refresh the queue screenshots";
+    add_fixture_record(harness, card, &fixture.images, subject, None, None, fixture);
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    wait_for_label(harness, "1 / 1");
+    wait_for_any_label(harness, "assets/shot.png");
+    wait_for_any_label(harness, "assets/new.png");
+}
+
+/// The captions the image diff shows, in order: the added `new.png`'s after
+/// (git lists it first), then `shot.png` before and after. Built from the fixture's own PNG bytes,
+/// all under 1 KB, so their size reads in bytes.
+fn image_captions() -> [String; 3] {
+    let [before, after, added] = fixture_pngs();
+    for png in [&before, &after, &added] {
+        assert!(png.len() < 1024, "fixture png is {} bytes", png.len());
+    }
+    [
+        format!("after 64×64 · {} B", added.len()),
+        format!("before 160×100 · {} B", before.len()),
+        format!("after 200×100 · {} B", after.len()),
+    ]
+}
+
+/// The labels of the images on screen, top to bottom then left to right,
+/// without the bidi isolation marks Fluent wraps a caption's placeables in.
+fn image_labels(harness: &Harness<'static, HeadwayTestState>) -> Vec<String> {
+    let mut images: Vec<_> = harness
+        .query_all(egui_kittest::kittest::By::new().role(egui::accesskit::Role::Image))
+        .map(|node| {
+            let at = node.accesskit_node().bounding_box().expect("laid out");
+            let label = node.accesskit_node().label().unwrap_or_default();
+            let label: String = label
+                .chars()
+                .filter(|c| !matches!(c, '\u{2068}' | '\u{2069}'))
+                .collect();
+            ((at.y0 as i64, at.x0 as i64), label)
+        })
+        .collect();
+    images.sort();
+    images.into_iter().map(|(_, label)| label).collect()
+}
+
+/// Pump frames until the image diff's three images are on screen.
+fn wait_for_image_captions(harness: &mut Harness<'static, HeadwayTestState>) {
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    while image_labels(harness).len() < 3 {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the image diff: {:?}",
+            image_labels(harness)
+        );
+        harness.run_ok();
+    }
+}
+
+/// A commit that changes a PNG shows it before and after in the review
+/// pane's diff, each captioned with its pixel and file size, in place of
+/// "Binary file not shown"; an added PNG shows only its after.
+#[test]
+fn review_diff_shows_changed_images_before_and_after() {
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1100.0));
+    open_image_review(&mut harness, &fixture);
+    wait_for_image_captions(&mut harness);
+
+    // new.png's after alone (an added file has no before), then shot.png's
+    // two sides.
+    assert_eq!(image_labels(&harness), image_captions());
+    assert!(harness.query_by_label("Binary file not shown").is_none());
 }
 
 /// Behavioural twin of [`snapshot_headway_review_queue`] (no lavapipe): the
@@ -3031,14 +3098,15 @@ fn post_queue_comment(harness: &mut Harness<'static, HeadwayTestState>, fixture:
             card,
             record,
             comments: vec![store::NewReviewComment {
-                location: event::ReviewLocation {
+                location: Some(event::ReviewLocation {
                     path: "src/queue.rs".to_string(),
                     commit: fixture.queue.clone(),
                     start: 8,
                     end: 10,
                     side: event::LineSide::New,
-                },
+                }),
                 body: POSTED_COMMENT.to_string(),
+                reply_to: None,
             }],
         },
     );
@@ -3415,6 +3483,20 @@ fn snapshot_headway_review_queue() {
     wait_for_label(&mut harness, "send back");
     harness.run_steps(3);
     harness.snapshot("headway_review_queue_key_hints");
+}
+
+/// Snapshot: the review pane's image diff (see
+/// [`review_diff_shows_changed_images_before_and_after`]): `shot.png` before
+/// and after side by side, the added `new.png` with only its after.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_image_diff() {
+    let fixture = review_fixture();
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 1000.0));
+    open_image_review(&mut harness, &fixture);
+    wait_for_image_captions(&mut harness);
+    harness.run_steps(3);
+    harness.snapshot("headway_review_image_diff");
 }
 
 /// Snapshot: the review queue with a real-length current title (see
@@ -4486,18 +4568,21 @@ fn a_card_that_has_not_folded_in_keeps_its_route_entry() {
         harness.run_ok();
     }
 
-    let backs = harness
-        .state_mut()
-        .notedeck
-        .app_context()
-        .navigator
-        .take()
+    let requests = harness.state_mut().notedeck.app_context().navigator.take();
+    let backs = requests
         .iter()
         .filter(|req| matches!(req, NavRequest::Back))
         .count();
     assert_eq!(
         backs, 0,
         "a route whose card hasn't folded in must keep its own history entry"
+    );
+    // Nor is it pruned: a card never on the board hasn't left it.
+    assert!(
+        !requests
+            .iter()
+            .any(|req| matches!(req, NavRequest::RemoveActive(_))),
+        "a card that hasn't folded in yet isn't pruned from the history"
     );
 }
 
@@ -4553,8 +4638,9 @@ fn deleting_the_open_card_still_backs_out_to_the_board() {
 /// One chrome frame of the global nav loop: draw the stack top through
 /// `render_nav` (its token), pump the harness, then drain the app's queued nav
 /// requests into the stack the way `Chrome::apply_nav_requests` does —
-/// `PushToActive`/`Back` are the only kinds Headway raises. A self-push inherits
-/// the active (top) app's slot. A back lands at once, as the chrome's does
+/// `PushToActive`, `RemoveActive` (a card that left the board) and `Back` are
+/// the only kinds Headway raises. A self-push and a prune inherit the active
+/// (top) app's slot. A back lands at once, as the chrome's does
 /// when its slide ends (the frames in between redraw the outgoing entry).
 /// Shared by the `chrome_nav_loop_*` tests.
 fn chrome_frame(
@@ -4572,6 +4658,9 @@ fn chrome_frame(
     for request in app_ctx.navigator.take() {
         match request {
             NavRequest::PushToActive(entry) => stack.route_to(entry.tag(active)),
+            NavRequest::RemoveActive(is_dead) => {
+                stack.retain_routes(|e| e.app != active || !is_dead(e.token.as_ref()));
+            }
             // `go_back` only flags the slide; `pop` is what its end does.
             NavRequest::Back => {
                 stack.go_back();
@@ -4582,143 +4671,6 @@ fn chrome_frame(
             _ => panic!("unexpected nav request kind from Headway"),
         }
     }
-}
-
-/// A [`behavioral_harness`] that plays the chrome's global nav with its
-/// slides (see [`HeadwayTestState::chrome_nav`]), rooted on the app-switch
-/// entry the chrome seeds.
-fn slide_harness() -> Harness<'static, HeadwayTestState> {
-    use notedeck::{AppId, ChromeNavEntry, NavStack};
-
-    let mut state = headway_state();
-    state.chrome_nav = Some(ChromeNav {
-        stack: NavStack::new(vec![ChromeNavEntry::new(AppId(0), std::rc::Rc::new(()))]),
-        slid: 0,
-    });
-    let mut harness =
-        harness_builder(egui::Vec2::new(1200.0, 800.0)).build_ui_state(render_headway, state);
-    wait_for_board(&mut harness);
-    harness
-}
-
-/// The [`slide_harness`]'s global stack.
-fn chrome_stack<'h>(
-    harness: &'h Harness<'static, HeadwayTestState>,
-) -> &'h notedeck::NavStack<notedeck::ChromeNavEntry> {
-    &harness
-        .state()
-        .chrome_nav
-        .as_ref()
-        .expect("a slide harness")
-        .stack
-}
-
-/// Pump frames until the [`slide_harness`]'s stack has no slide running and
-/// has `len` entries, or panic after a deadline.
-fn settle_slides(harness: &mut Harness<'static, HeadwayTestState>, len: usize) {
-    let deadline = Instant::now() + SETTLE_TIMEOUT;
-    loop {
-        harness.run_ok();
-        let stack = chrome_stack(harness);
-        if !stack.navigating() && !stack.returning() && stack.len() == len {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for a still stack of {len}; it has {}",
-            stack.len()
-        );
-    }
-}
-
-/// Behavioural (no lavapipe), under the chrome's slides: `D` on the board
-/// queue's last card says "Review queue done" on the grid the back lands on.
-/// Before, the back's slide drew the outgoing queue entry in the same pass,
-/// which reseeded the queue open, and the notice was taken down as left
-/// before it ever showed.
-#[test]
-fn a_finished_queue_says_so_after_the_back_slide() {
-    const CARD: &str = "Inline card creation";
-    let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = slide_harness();
-    seed_in_review(&mut harness, repo.path(), &[CARD], &["src/done.rs"]);
-
-    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
-    settle_slides(&mut harness, 2);
-    wait_for_label(&mut harness, "1 / 1");
-
-    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
-    settle_slides(&mut harness, 1);
-    wait_for_label(&mut harness, "7 cards · 5 columns");
-    assert!(
-        harness.query_by_label("Review queue done").is_some(),
-        "the grid says the queue is done"
-    );
-}
-
-/// As [`a_finished_queue_says_so_after_the_back_slide`], for an epic's queue
-/// (`R` from the epic's detail): the notice shows on the epic's detail the
-/// back lands on.
-#[test]
-fn a_finished_epic_queue_says_so_after_the_back_slide() {
-    const EPIC: &str = "Define nostr event model for boards";
-    const SUBISSUE: &str = "Sync cards across relays";
-    let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = slide_harness();
-    seed_in_review(&mut harness, repo.path(), &[SUBISSUE], &["src/sync.rs"]);
-
-    harness.get_by_label(EPIC).click();
-    settle_slides(&mut harness, 2);
-    wait_for_label(&mut harness, "← Back");
-
-    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
-    settle_slides(&mut harness, 3);
-    wait_for_label(&mut harness, "1 / 1");
-
-    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
-    settle_slides(&mut harness, 2);
-    wait_for_label(&mut harness, "← Back");
-    assert!(
-        harness.query_by_label("1 / 1").is_none(),
-        "the queue has gone"
-    );
-    assert!(
-        harness.query_by_label("Review queue done").is_some(),
-        "the epic's detail says its queue is done"
-    );
-}
-
-/// As [`a_finished_epic_queue_says_so_after_the_back_slide`], with the epic
-/// archived while its queue is open: `D` on the last card closes the queue
-/// onto the grid, by way of the epic's detail entry the back lands on first,
-/// and the grid still says the queue is done once it settles. Before, that
-/// entry's pass drew the grid only after the pass had been checked for the
-/// notice's view (the gone epic's selection drops as the pane draws), so the
-/// next pass took the notice down.
-#[test]
-fn a_gone_epics_finished_queue_says_so_on_the_grid() {
-    const SUBISSUE: &str = "Sync cards across relays";
-    let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = slide_harness();
-    seed_in_review(&mut harness, repo.path(), &[SUBISSUE], &["src/sync.rs"]);
-    let epic = harness_card_id(&mut harness, DEMO_EPIC);
-
-    harness.get_by_label(DEMO_EPIC).click();
-    settle_slides(&mut harness, 2);
-    wait_for_label(&mut harness, "← Back");
-    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
-    settle_slides(&mut harness, 3);
-    wait_for_label(&mut harness, "1 / 1");
-
-    archive_demo_cards(&mut harness, &[epic]);
-
-    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
-    settle_slides(&mut harness, 1);
-    wait_for_label(&mut harness, "6 cards · 5 columns");
-    assert!(
-        harness.query_by_label("Review queue done").is_some(),
-        "the grid says the queue is done"
-    );
 }
 
 /// Pump frames until the demo board, folded fresh off the db, passes `done`,
@@ -4748,45 +4700,6 @@ fn wait_for_demo(
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(25));
     }
-}
-
-/// Behavioural (no lavapipe), under the chrome's slides: a notice is about
-/// the view it went up in. `s` on a sessionless record in a plain review pane
-/// says so there, and it's gone from the detail Esc backs out to, and from the
-/// grid the next Esc reaches.
-#[test]
-fn a_pane_notice_stays_with_its_pane_through_the_slides() {
-    const CARD: &str = "Inline card creation";
-    const NO_SESSION: &str = "No agentium session on this record";
-    let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = slide_harness();
-    seed_in_review(&mut harness, repo.path(), &[CARD], &["src/pane.rs"]);
-
-    harness.get_by_label(CARD).click();
-    settle_slides(&mut harness, 2);
-    wait_for_label(&mut harness, "± Review diff");
-    press_board_keys(&mut harness, &[egui::Key::R]);
-    settle_slides(&mut harness, 3);
-    wait_for_any_label(&mut harness, "src/pane.rs");
-
-    press_board_keys(&mut harness, &[egui::Key::S]);
-    wait_for_label(&mut harness, NO_SESSION);
-
-    press_board_keys(&mut harness, &[egui::Key::Escape]);
-    settle_slides(&mut harness, 2);
-    wait_for_label(&mut harness, "± Review diff");
-    assert!(
-        harness.query_by_label(NO_SESSION).is_none(),
-        "the pane's notice didn't follow it to the detail"
-    );
-
-    press_board_keys(&mut harness, &[egui::Key::Escape]);
-    settle_slides(&mut harness, 1);
-    wait_for_label(&mut harness, "7 cards · 5 columns");
-    assert!(
-        harness.query_by_label(NO_SESSION).is_none(),
-        "nor on to the grid"
-    );
 }
 
 /// Full chrome round-trip (behavioural, no lavapipe): replicate the chrome's global
@@ -5079,16 +4992,6 @@ fn top_route(
         .downcast_ref::<notedeck_headway::HeadwayRoute>()
 }
 
-/// Whether the stack's top is `card`'s detail (not a pane over it).
-fn top_is_detail(stack: &notedeck::NavStack<notedeck::ChromeNavEntry>, card: NoteId) -> bool {
-    top_route(stack).is_some_and(|r| {
-        r.selected_card() == Some(card)
-            && r.review_card().is_none()
-            && r.graph_epic().is_none()
-            && !r.is_review_queue()
-    })
-}
-
 /// A chrome global-nav stack at the board root, with the harness drawn
 /// through it once.
 fn chrome_stack_at_board(
@@ -5100,63 +5003,6 @@ fn chrome_stack_at_board(
     stack
 }
 
-/// Put the grid's cursor on the first In Review card by walking the review
-/// queue there and leaving it, which leaves the cursor on the card last shown.
-fn cursor_on_first_in_review(
-    harness: &mut Harness<'static, HeadwayTestState>,
-    stack: &mut notedeck::NavStack<notedeck::ChromeNavEntry>,
-) {
-    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
-    chrome_frame(harness, stack);
-    chrome_frame(harness, stack);
-    wait_for_label(harness, "1 / 2");
-    harness.press_key(egui::Key::Q);
-    chrome_frame(harness, stack);
-    assert_eq!(stack.len(), 1, "leaving the queue backs out to the board");
-}
-
-/// Grid `r` opens the cursor card's review over its detail, which the pane
-/// never came from: under the chrome's stack the detail goes in underneath,
-/// so the pane's `q` lands on the card's detail, as its strip says, and one
-/// more back lands on the board. Before, the pane sat straight on the board
-/// and `q` skipped the detail.
-#[test]
-fn chrome_nav_loop_grid_review_backs_out_to_the_detail() {
-    const CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
-    let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
-    let ids = seed_in_review(&mut harness, repo.path(), &CARDS, &["src/a.rs", "src/b.rs"]);
-    let mut stack = chrome_stack_at_board(&mut harness);
-    cursor_on_first_in_review(&mut harness, &mut stack);
-
-    harness.press_key(egui::Key::R);
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(stack.len(), 3, "the detail, then the review over it");
-    assert_eq!(
-        top_route(&stack).and_then(|r| r.review_card()),
-        Some(ids[0])
-    );
-    assert!(top_is_detail_below(&stack, ids[0]));
-    chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, "local checkout");
-
-    harness.press_key(egui::Key::Q);
-    chrome_frame(&mut harness, &mut stack);
-    assert!(
-        top_is_detail(&stack, ids[0]),
-        "q lands on the card's detail"
-    );
-    chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, "± Review diff");
-    assert!(harness.query_by_label("7 cards · 5 columns").is_none());
-
-    harness.press_key(egui::Key::Q);
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(stack.len(), 1, "one more back lands on the board");
-    chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, "7 cards · 5 columns");
-}
-
 /// Whether the entry under the stack's top is `card`'s detail.
 fn top_is_detail_below(stack: &notedeck::NavStack<notedeck::ChromeNavEntry>, card: NoteId) -> bool {
     let routes = stack.routes();
@@ -5165,127 +5011,6 @@ fn top_is_detail_below(stack: &notedeck::NavStack<notedeck::ChromeNavEntry>, car
             .token
             .downcast_ref::<notedeck_headway::HeadwayRoute>()
             .is_some_and(|r| r.selected_card() == Some(card) && r.review_card().is_none())
-}
-
-/// A pane's `n` opens the next card's review over that card's detail, so the
-/// pane's `q` lands on the next card's detail. Before, `n` pushed the review
-/// straight onto the first card's review, and `q` went back to it after a
-/// frame of the second card's detail.
-#[test]
-fn chrome_nav_loop_pane_step_backs_out_to_the_new_cards_detail() {
-    const CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
-    let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
-    let ids = seed_in_review(&mut harness, repo.path(), &CARDS, &["src/a.rs", "src/b.rs"]);
-    let mut stack = chrome_stack_at_board(&mut harness);
-
-    harness.get_by_label(CARDS[0]).click();
-    chrome_frame(&mut harness, &mut stack);
-    chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, "± Review diff");
-    harness.get_by_label("± Review diff").click_accesskit();
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(stack.len(), 3, "the review over the detail it came from");
-    chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, "local checkout");
-
-    harness.press_key(egui::Key::N);
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(stack.len(), 5, "the next card's detail, then its review");
-    assert_eq!(
-        top_route(&stack).and_then(|r| r.review_card()),
-        Some(ids[1])
-    );
-    assert!(top_is_detail_below(&stack, ids[1]));
-    chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, CARDS[1]);
-
-    harness.press_key(egui::Key::Q);
-    chrome_frame(&mut harness, &mut stack);
-    assert!(
-        top_is_detail(&stack, ids[1]),
-        "q lands on the next card's detail"
-    );
-    chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, "± Review diff");
-    wait_for_label(&mut harness, CARDS[1]);
-}
-
-/// A pane's `a` archives its card and backs out to its detail; the detail
-/// then leaves for the board once the archive folds in. Opened from the grid
-/// with `r`, the detail under the pane never drew the card, and if the
-/// archive folds in during the back's slide it never will: that is the case
-/// that used to strand the grid under a stale detail entry for good. The
-/// test holds the slide open (the chrome keeps drawing the outgoing pane's
-/// entry, and ignores backs, until it ends) until the archive has folded.
-#[test]
-fn chrome_nav_loop_pane_archive_ends_on_the_board() {
-    use notedeck::NavRequest;
-
-    const CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
-    let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
-    seed_in_review(&mut harness, repo.path(), &CARDS, &["src/a.rs", "src/b.rs"]);
-    let mut stack = chrome_stack_at_board(&mut harness);
-    cursor_on_first_in_review(&mut harness, &mut stack);
-
-    harness.press_key(egui::Key::R);
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(stack.len(), 3);
-    chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, "local checkout");
-
-    harness.press_key(egui::Key::A);
-    // The frame that reads the key. Not `run_ok`: once the archive folds in
-    // the pane's card has left the board, and it asks for Back again every
-    // frame until the chrome lands the first one, which this harness only
-    // does in `chrome_frame`.
-    harness.step();
-    let requests = harness.state_mut().notedeck.app_context().navigator.take();
-    assert!(
-        matches!(requests[..], [NavRequest::Back]),
-        "a is one back, to the detail"
-    );
-    // The slide: the pane's entry is still the top, drawn until it ends.
-    wait_for_label(&mut harness, "6 cards · 5 columns");
-    harness.state_mut().notedeck.app_context().navigator.take();
-    stack.go_back();
-    stack.pop();
-    assert_eq!(stack.len(), 2, "the slide lands on the card's detail");
-
-    chrome_frames_until(&mut harness, &mut stack, "the board root", |s| s.len() == 1);
-    chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, "6 cards · 5 columns");
-    assert!(harness.query_by_label("← Back").is_none());
-}
-
-/// The detail's `n` opens the next card as a drill, so its `q` (one back)
-/// returns to the card `n` left, as the strip's "back" says, not the grid.
-#[test]
-fn chrome_nav_loop_detail_step_backs_to_the_previous_card() {
-    const CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
-    let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
-    let ids = seed_in_review(&mut harness, repo.path(), &CARDS, &["src/a.rs", "src/b.rs"]);
-    let mut stack = chrome_stack_at_board(&mut harness);
-
-    harness.get_by_label(CARDS[0]).click();
-    chrome_frame(&mut harness, &mut stack);
-    chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, "± Review diff");
-
-    harness.press_key(egui::Key::N);
-    chrome_frame(&mut harness, &mut stack);
-    assert!(top_is_detail(&stack, ids[1]));
-    chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, CARDS[1]);
-
-    harness.press_key(egui::Key::Q);
-    chrome_frame(&mut harness, &mut stack);
-    assert!(top_is_detail(&stack, ids[0]), "back to the card n left");
-    chrome_frame(&mut harness, &mut stack);
-    wait_for_label(&mut harness, "← Back");
-    wait_for_label(&mut harness, CARDS[0]);
 }
 
 /// The demo board's epic: "Sync cards across relays" and "Scaffold the
@@ -5542,10 +5267,10 @@ fn chrome_nav_loop_epic_queue_whose_epic_left_ends_on_the_board() {
 
 /// As [`chrome_nav_loop_epic_queue_whose_epic_left_ends_on_the_board`], with
 /// the epic's queue reached by a history walk, so the epic's detail never
-/// drew and nothing but `close_queue`'s archived marker says the epic has
-/// left. The queue's card stays, so `q` is what closes it. Without the
-/// marker, the epic's detail entry the back lands on holds the selection as
-/// a card not folded in yet, and never backs on to the board.
+/// drew. The queue's card stays, so `q` is what closes it. The epic's detail
+/// entry under the queue went with the epic, pruned when it left; were it
+/// still there, the back would land on it, and it would hold the selection
+/// as a card not folded in yet and never back on to the board.
 #[test]
 fn chrome_nav_loop_gone_epics_queue_backs_off_its_undrawn_detail() {
     use notedeck::{AppId, ChromeNavEntry};

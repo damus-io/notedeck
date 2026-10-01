@@ -16,7 +16,9 @@
 use egui::{CentralPanel, Context, Pos2, RawInput, Rect};
 use notedeck::Localization;
 use notedeck_testing::alloc::{measure, CountingAllocator};
-use notedeck_ui::diff::{git_patch_ui, GitPatch, GitPatchState, PatchScroll};
+use notedeck_ui::diff::{
+    git_patch_ui, FileImages, GitPatch, GitPatchState, ImageSide, PatchImage, PatchScroll,
+};
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -102,6 +104,64 @@ fn diff_rows_do_not_allocate_per_frame() {
 #[test]
 fn selectable_rows_do_not_allocate_per_frame() {
     assert_eq!(marginal_allocs(true), 0);
+}
+
+/// A commit changing one PNG.
+const IMAGE_PATCH: &str = "\
+diff --git a/shot.png b/shot.png
+index 1111111..2222222 100644
+Binary files a/shot.png and b/shot.png differ
+";
+
+/// One steady-state frame of [`IMAGE_PATCH`] with its before and after
+/// uploaded once, as a caller does when its load lands, and the file
+/// `collapsed` or not.
+fn image_frame_allocs(collapsed: bool) -> u64 {
+    let patch = GitPatch::parse(IMAGE_PATCH);
+    let ctx = Context::default();
+    let mut state = GitPatchState::new(&patch, &mut Localization::default());
+    let side = |w, h| {
+        Some(ImageSide::Shown(PatchImage {
+            texture: ctx.load_texture(
+                "side",
+                egui::ColorImage::filled([w, h], egui::Color32::GRAY),
+                Default::default(),
+            ),
+            width: w as u32,
+            height: h as u32,
+            bytes: 4096,
+        }))
+    };
+    let images = FileImages {
+        old: side(300, 200),
+        new: side(320, 240),
+    };
+    state.set_file_images(0, images, &mut Localization::default());
+    state.set_collapsed(0, collapsed);
+    let input = RawInput {
+        screen_rect: Some(Rect::from_min_size(
+            Pos2::ZERO,
+            egui::vec2(900.0, TALL_HEIGHT),
+        )),
+        ..Default::default()
+    };
+    for _ in 0..8 {
+        frame(&ctx, &patch, &mut state, input.clone());
+    }
+    let ((), counts) = measure(|| frame(&ctx, &patch, &mut state, input));
+    eprintln!("image file collapsed {collapsed}: {counts}");
+    counts.thread.allocs + counts.thread.reallocs
+}
+
+/// A visible image costs nothing per frame: the textures were uploaded when
+/// the load landed, the captions are laid out once as they scroll in, and the
+/// rows only paint. Measured as the file expanded (its images in view) over
+/// the same file collapsed (only its header).
+#[test]
+fn image_rows_do_not_allocate_per_frame() {
+    let shown = image_frame_allocs(false);
+    let hidden = image_frame_allocs(true);
+    assert_eq!(shown.saturating_sub(hidden), 0);
 }
 
 /// Where a tall selectable frame's allocations go, heaviest first:

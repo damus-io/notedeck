@@ -28,8 +28,11 @@
 //! a single back leaves the queue — for the board, or, for an epic's queue
 //! (opened from that epic's detail), for the epic's detail.
 
+use std::collections::HashSet;
+
 use nostrdb_net::NoteId;
 
+use crate::event::BoardView;
 use crate::ui::QueueScope;
 
 /// A Headway entry in the chrome-owned global navigation history.
@@ -219,6 +222,26 @@ impl HeadwayRoute {
         }
     }
 
+    /// The card this entry is *of*: a [`Card`](Self::Card)'s id, a
+    /// [`Graph`](Self::Graph)'s epic, a [`Review`](Self::Review)'s card. When
+    /// that card leaves the board the entry has nothing left to draw, so
+    /// [`Headway`](crate::Headway) prunes it from the history (see
+    /// [`SeenCards`]).
+    ///
+    /// `None` for the board, and for the [`ReviewQueue`](Self::ReviewQueue)
+    /// even when it is an epic's: the queue walks a snapshot of the epic's
+    /// In Review subissues, which are still on the board without it, so it
+    /// stays open and finishes as the board's queue does (see
+    /// `BoardUiState::close_queue`).
+    pub fn entry_card(&self) -> Option<NoteId> {
+        match self {
+            HeadwayRoute::Card { id, .. } => Some(*id),
+            HeadwayRoute::Graph { epic, .. } => Some(*epic),
+            HeadwayRoute::Review { card, .. } => Some(*card),
+            HeadwayRoute::Board | HeadwayRoute::ReviewQueue { .. } => None,
+        }
+    }
+
     /// The history-dropdown title for this entry: a card's or graph's snapshotted
     /// title, "Review queue" for the queue ("Review queue: <epic title>" for an
     /// epic's), or `None` for the board (so the chrome falls back to the
@@ -315,6 +338,67 @@ impl NavPos {
             NavPos::Queue(scope) => scope.epic(),
             NavPos::Board | NavPos::Card(_) => None,
         }
+    }
+
+    /// The card whose history entry this position draws: what
+    /// [`HeadwayRoute::entry_card`] names for the route that seeds it. A back
+    /// from such a position while its card is off the board is left to the
+    /// prune (see [`Headway::render_board`](crate::Headway)).
+    pub(crate) fn entry_card(&self) -> Option<NoteId> {
+        match self {
+            NavPos::Card(card) | NavPos::Graph(card) | NavPos::Review(card) => Some(*card),
+            NavPos::Board | NavPos::Queue(_) => None,
+        }
+    }
+}
+
+/// The cards on the board Headway drew last, so it can tell which have left
+/// since: archived, deleted or moved to another board, from this device or
+/// another. Each one that left takes its history entries with it, in one
+/// [`Navigator::remove_active_routes`](notedeck::Navigator::remove_active_routes)
+/// prune, rather than leaving entries that would draw a card that isn't
+/// there.
+///
+/// Diffed against the fold rather than raised by the actions that remove a
+/// card, so a remote archive and a local one take the same path.
+#[derive(Default)]
+pub(crate) struct SeenCards {
+    /// The board the ids are from, by owner and slug. Switching boards
+    /// replaces every card at once, and none of them has left its board.
+    board: Option<([u8; 32], String)>,
+    /// The cards in `board`'s columns when it was last drawn.
+    ids: HashSet<NoteId>,
+}
+
+impl SeenCards {
+    /// Note the cards `view` holds, and return the ones the last frame's view
+    /// of the same board held and this one doesn't.
+    ///
+    /// Called once a frame. A frame whose cards didn't change (nearly all of
+    /// them) only probes the set and allocates nothing; the set is rebuilt
+    /// only when a card came or went.
+    pub(crate) fn departed(&mut self, view: &BoardView) -> Vec<NoteId> {
+        let cards = || view.columns.iter().flat_map(|c| &c.cards).map(|c| c.id);
+        let same_board = self
+            .board
+            .as_ref()
+            .is_some_and(|(author, id)| *author == view.author && *id == view.id);
+        if same_board
+            && cards().count() == self.ids.len()
+            && cards().all(|id| self.ids.contains(&id))
+        {
+            return Vec::new();
+        }
+
+        let now: HashSet<NoteId> = cards().collect();
+        let gone = if same_board {
+            self.ids.difference(&now).copied().collect()
+        } else {
+            self.board = Some((view.author, view.id.clone()));
+            Vec::new()
+        };
+        self.ids = now;
+        gone
     }
 }
 
@@ -416,6 +500,43 @@ pub(crate) fn reconcile_nav(before: NavPos, after: NavPos) -> Option<NavReconcil
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`SeenCards::departed`] names the cards that left the board since the
+    /// last frame, and only those: nothing on the first frame, nothing for a
+    /// card that arrives, nothing when the whole board is swapped for
+    /// another, and each departure once.
+    #[test]
+    fn seen_cards_names_each_card_that_left_once() {
+        use crate::cursor::tests::{id, square_grid};
+        use crate::event::CardView;
+
+        let mut seen = SeenCards::default();
+        let mut view = square_grid();
+        assert!(seen.departed(&view).is_empty(), "first frame: none left");
+        assert!(seen.departed(&view).is_empty(), "a steady frame");
+
+        let gone = view.columns[1].cards.remove(1).id;
+        assert_eq!(seen.departed(&view), vec![gone]);
+        assert!(seen.departed(&view).is_empty(), "named once");
+
+        let arrived = view.columns[0].cards[0].clone();
+        view.columns[2].cards.push(CardView {
+            id: id(42),
+            ..arrived
+        });
+        assert!(
+            seen.departed(&view).is_empty(),
+            "an arrival isn't a departure"
+        );
+
+        let mut other = square_grid();
+        other.id = "other".to_string();
+        other.columns[0].cards.clear();
+        assert!(
+            seen.departed(&other).is_empty(),
+            "a board switch isn't a departure"
+        );
+    }
 
     /// The board↔card↔graph transition → global-history request mapping (see
     /// [`reconcile_nav`]): opening a card from the board pushes, drilling from one

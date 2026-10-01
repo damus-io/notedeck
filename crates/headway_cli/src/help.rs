@@ -260,9 +260,21 @@ three spellings are equivalent.",
         name: "comment",
         group: Group::Cards,
         summary: "Comment on a card",
-        usage: &["comment <card> <text...>"],
+        usage: &[
+            "comment <card> <text...>",
+            "comment <card> --reply-to <comment> <text...>",
+            "comment <card> --path <file> --line <a[-b]> [--old] [--record <sha>] <text...>",
+            "comment <card> --record <sha> <text...>",
+        ],
         details: "\
 The comment body is every remaining positional joined with spaces.
+
+Review comments: `show <card>` lists each review record's inline comments
+under it, each with its word-id. --reply-to takes a card comment or a
+review comment; a reply to a review comment goes on that comment's record,
+under the same lines, not into the card's thread. --path and --line leave a
+new inline comment on a review record's commit (the newest record, or the
+one --record picks); --record alone comments on the whole commit.
 
 With --comment-nsec <key> (or $HEADWAY_COMMENT_NSEC, or a key file named
 by $HEADWAY_COMMENT_NSEC_FILE, in that order) the comment is signed by that
@@ -270,12 +282,29 @@ key instead of yours, so it shows as that key's comment. It is still sealed
 into the board's channel with your access, so the key needs no membership.
 Sealed boards only: a plaintext board shows just its owner's events, so
 this is refused there.",
-        options: &[(
-            "--reply-to <c>",
-            "Thread this reply under another comment on the same card (its id, a prefix, or its word-id)",
-        )],
+        options: &[
+            (
+                "--reply-to <c>",
+                "Thread this reply under a comment or review comment on the same card (its id, a prefix, or its word-id)",
+            ),
+            (
+                "--path <file>",
+                "Comment on this file in a review record's commit, as the diff names it (needs --line)",
+            ),
+            (
+                "--line <a[-b]>",
+                "The line, or inclusive range, the comment points at (needs --path)",
+            ),
+            ("--old", "The lines are on the old (deleted) side"),
+            (
+                "--record <sha>",
+                "The review record whose commit starts with this [default: the newest]",
+            ),
+        ],
         examples: &[
             "headway comment headway:headway/report-raven-expand committed abc123 (\"...\")",
+            "headway comment headway:headway/report-raven-expand --path src/lib.rs --line 40-44 why a clone here?",
+            "headway comment headway:headway/report-raven-expand --reply-to <word-id> fixed in def456",
         ],
     },
     Command {

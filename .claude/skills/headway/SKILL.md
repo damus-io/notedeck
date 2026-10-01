@@ -187,7 +187,8 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `estimate <card> <n>` | Set an estimate — a number (or `none` to clear) |
 | `seq <card> <pos> [--in <c>]` | Position a card in a container's work-order (see Work order) |
 | `next [--in <c>] [--ready] [-n <k>]` | Print the ready frontier — what to work on next (see Work order) |
-| `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment |
+| `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment or a review comment |
+| `comment <card> --path <f> --line <a[-b]> [--old] [--record <sha>] <text...>` | Inline review comment on a review record's commit (newest record by default); `--record` alone comments on the whole commit |
 | `review <card> [--explainer <url>] [--commit <rev>]` | Record a commit for review on the card: sha, title, branch, host, repo path and `agentium:` ref, read from git in `--repo-dir` (default cwd) and `$AGENTIUM_SESSION` |
 | `diff <card> [--record <sha>]` | Print the commit the card's newest review record names (`git show`-style), fetching it from the recording host if this one lacks it; falls back to the card's `Headway:` trailer |
 | `delete <card>` | Remove a card (reversible tombstone) |
@@ -277,6 +278,13 @@ checkout, then any checkout of the same repo (matched by root commit), then a
 bare cache under the headway-cli data dir, and fetches over ssh from the
 recording host when none has it — never prompting, never creating refs in your
 checkout.
+
+Inline review comments left on a commit (in the app's review pane, or by
+`comment --path`) print under their record in `show <card>`, threaded, each with
+its word-id and `path:line` (`path:old a-b` for deleted lines). Answer one with
+`headway comment <card> --reply-to <word-id> <text>`: the reply goes on the same
+record under the same lines, not into the card's comment thread. It is signed
+by the comment key like any comment (see below).
 
 When commenting a finished card's commit hash, a Dave agentic session should also
 quote its own `agentium:` session ref (from `$AGENTIUM_SESSION`) beside the hash —

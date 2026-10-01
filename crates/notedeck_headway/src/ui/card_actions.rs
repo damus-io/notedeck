@@ -214,15 +214,6 @@ impl BoardUiState {
         self.selected = Some(card);
     }
 
-    /// `a` in a plain review pane: back out to `card`'s detail, which leaves
-    /// in turn once the archive folds in, as the detail does for any card
-    /// that left the board. That takes two frames, one back each: the chrome
-    /// runs one back at a time.
-    pub(crate) fn archive_from_pane(&mut self, card: NoteId) {
-        self.back_to_detail(card);
-        self.archived = Some(card);
-    }
-
     /// Leave the detail (and any review pane over it) for the grid: the
     /// detail's `q`, or what archiving its card does.
     pub(crate) fn leave_card(&mut self) {

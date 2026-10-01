@@ -32,6 +32,8 @@ mod actions;
 mod debug;
 mod frame;
 mod header;
+#[cfg(all(test, feature = "headway", not(debug_assertions)))]
+mod headway_nav_tests;
 mod keyboard;
 mod nav;
 mod roster;
@@ -104,6 +106,14 @@ pub struct Chrome {
     /// while a `global_nav` slide was in flight, applied in order once it
     /// lands (see [`Chrome::apply_nav_requests`]).
     pending_prunes: Vec<PendingPrune>,
+
+    /// True when `global_nav`'s egui-nav transition was still moving at the
+    /// end of this frame's [`nav_frame`](notedeck::nav_frame): a slide, a
+    /// drag, or a released drag springing back (see
+    /// [`NavFrameResponse::in_flight`](notedeck::NavFrameResponse)). A
+    /// drag-back sets neither of the stack's own transition flags, so this is
+    /// what holds a prune over one.
+    global_nav_in_flight: bool,
 
     #[cfg(feature = "auto-update")]
     updater: notedeck::updater::Updater,
@@ -223,6 +233,7 @@ impl Chrome {
             global_nav: Some(seed_global_nav()),
             pending_open: None,
             pending_prunes: Vec::new(),
+            global_nav_in_flight: false,
             #[cfg(feature = "auto-update")]
             updater: notedeck::updater::Updater::new(
                 app_ref.app_ctx.path,
@@ -334,6 +345,7 @@ impl Chrome {
             global_nav: Some(seed_global_nav()),
             pending_open: None,
             pending_prunes: Vec::new(),
+            global_nav_in_flight: false,
             updater: notedeck::updater::Updater::new(
                 ctx.path,
                 &ctx.ndb,
@@ -454,14 +466,8 @@ impl notedeck::App for Chrome {
         }
 
         // Apply any navigation requests apps enqueued while rendering to the
-        // global history, then re-derive the active app. Entries a prune took
-        // out go to their app's cleanup, as a popped entry does.
-        let nav_requests = ctx.navigator.take();
-        for entry in self.apply_nav_requests(nav_requests) {
-            if let Some(app) = self.apps.get_mut(entry.app.slot()) {
-                app.cleanup_nav(ctx, &entry.token);
-            }
-        }
+        // global history, then re-derive the active app.
+        self.drain_nav_requests(ctx);
 
         // Fallback keybindings — only fire if no app consumed the key.
         self.handle_fallback_keybindings(ui.ctx());

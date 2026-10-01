@@ -34,6 +34,17 @@ jobs:
         env:
           CI: true
 
+      # Headway through the real chrome with nav slides on, as the app ships,
+      # and the chrome's global history under a real egui_nav drag.
+      # Release only: during a slide egui_nav draws two routes of one app on
+      # two layers with the same widget ids, which egui debug-asserts against
+      # (compiled out in release). See
+      # crates/notedeck_chrome/src/chrome/headway_nav_tests.rs.
+      - name: Run Nav Slide Tests (Release, Real Chrome)
+        run: cargo test --release -p notedeck_chrome --features headway --lib -- headway_nav_tests global_nav_tests::slide_tests
+        env:
+          CI: true
+
       - name: Run notedeck_notebook Tests
         run: cargo test -p notedeck_notebook -- --test-threads=1
         env:

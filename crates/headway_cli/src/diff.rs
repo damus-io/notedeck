@@ -74,10 +74,11 @@ pub(crate) fn print_diff(
     Ok(())
 }
 
-/// The review record `diff` shows: the one whose commit starts with `prefix`
-/// when given (newest first, as [`event::CardView::reviews`] is ordered), else
-/// the newest. `None` when the card has no records and no prefix was asked for.
-fn pick_record<'a>(
+/// The review record `diff` shows, and a new `comment --path` lands on: the
+/// one whose commit starts with `prefix` when given (newest first, as
+/// [`event::CardView::reviews`] is ordered), else the newest. `None` when the
+/// card has no records and no prefix was asked for.
+pub(crate) fn pick_record<'a>(
     reviews: &'a [ReviewView],
     prefix: Option<&str>,
 ) -> Result<Option<&'a ReviewView>> {

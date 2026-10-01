@@ -79,7 +79,10 @@ impl Chrome {
                 // `chrome_handle_app_action` wants.
                 let (app_action, can_take_drag_from, popped) = {
                     let Chrome {
-                        global_nav, apps, ..
+                        global_nav,
+                        apps,
+                        global_nav_in_flight,
+                        ..
                     } = &mut *self;
                     let nav = global_nav
                         .as_mut()
@@ -129,16 +132,19 @@ impl Chrome {
                         },
                     );
 
+                    // Whether egui-nav is still moving the routes (a drag
+                    // included), which holds prunes over until it lands.
+                    *global_nav_in_flight = frame.in_flight;
+
                     // A completed global-back popped the top entry inside
-                    // `nav_frame`. Surface the popped entry (its owning app + the
-                    // opaque route token) so we can hand it to that app's
-                    // `cleanup_nav` once the split borrows above are released —
-                    // the chrome itself never inspects the token. The token is an
-                    // `Rc`, so cloning it out is a refcount bump.
+                    // `nav_frame`. Surface the popped entry so we can hand it
+                    // to its app's `cleanup_nav` once the split borrows above
+                    // are released — the chrome itself never inspects the
+                    // token.
                     let popped = match frame.event {
                         Some(NavStackEvent::Popped {
                             route: Some(entry), ..
-                        }) => Some((entry.app, entry.token)),
+                        }) => Some(entry),
                         _ => None,
                     };
 
@@ -146,11 +152,8 @@ impl Chrome {
                 };
 
                 // Split borrows released — free the popped entry's resources by
-                // routing the pop back to the app that owned it (e.g. columns
-                // closes a deep-linked thread's subscription).
-                if let Some((app, token)) = popped {
-                    self.apps[app.slot()].cleanup_nav(app_ctx, &token);
-                }
+                // routing the pop back to the app that owned it.
+                self.cleanup_entries(app_ctx, popped);
 
                 // Retry an open raised on an earlier frame whose reference
                 // hadn't resolved yet, before this frame's actions so a newer

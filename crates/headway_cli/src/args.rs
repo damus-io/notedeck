@@ -128,11 +128,17 @@ pub(crate) enum Command {
         /// `-n <k>`: cap the number of cards printed.
         limit: Option<usize>,
     },
+    /// Comment on a card, or — with `--path`/`--line`/`--record`, or a
+    /// `--reply-to` naming a review comment — on one of its review records'
+    /// commits (see [`build_action`](crate::edit::build_action)).
     Comment {
         card: String,
         body: String,
-        /// A comment on the same card to thread this reply under.
+        /// A comment on the same card, or a review comment on one of its
+        /// records, to thread this reply under.
         reply_to: Option<String>,
+        /// Where on a review record's commit a new inline comment points.
+        review: ReviewCommentFlags,
     },
     /// Record a review record on a card: a commit plus where it lives (host,
     /// path, repo) and the session and explainer behind it. The fields are
@@ -191,6 +197,46 @@ pub(crate) enum Command {
         nsec: String,
     },
     Logout,
+}
+
+/// `comment`'s review flags as typed: where on which review record a new
+/// inline comment goes. All unset means an ordinary card comment.
+#[derive(Default)]
+pub(crate) struct ReviewCommentFlags {
+    /// `--path`: the file, as the diff names it.
+    pub(crate) path: Option<String>,
+    /// `--line`: `a` or `a-b`, parsed from the flag.
+    pub(crate) lines: Option<(u32, u32)>,
+    /// `--old`: the lines are on the old (deleted) side.
+    pub(crate) old: bool,
+    /// `--record`: the record whose commit starts with this prefix, rather
+    /// than the newest.
+    pub(crate) record: Option<String>,
+}
+
+impl ReviewCommentFlags {
+    /// Any review flag was given, so the comment goes on a record.
+    pub(crate) fn any(&self) -> bool {
+        self.path.is_some() || self.lines.is_some() || self.old || self.record.is_some()
+    }
+}
+
+/// Parse a `--line` value: `42` for one line or `42-48` for a range, 1-based
+/// and inclusive, so `0` and a backwards range are refused.
+fn parse_lines(value: &str) -> Result<(u32, u32)> {
+    let bad = || format!("--line wants <a> or <a-b> (1-based), got '{value}'");
+    let num = |s: &str| s.trim().parse::<u32>().ok().filter(|&n| n > 0);
+    let (start, end) = match value.split_once('-') {
+        Some((a, b)) => (num(a).ok_or_else(bad)?, num(b).ok_or_else(bad)?),
+        None => {
+            let a = num(value).ok_or_else(bad)?;
+            (a, a)
+        }
+    };
+    if end < start {
+        return Err(bad().into());
+    }
+    Ok((start, end))
 }
 
 /// Where `seq` should place the card, parsed from `--after/--before/--first/--last`
@@ -410,8 +456,10 @@ impl Cli {
         let mut ready = false;
         let mut count: Option<usize> = None;
         let mut review = ReviewFlags::default();
-        // `diff --record`: which review record to show.
+        // `diff --record`: which review record to show. `comment` shares it,
+        // with its other review flags.
         let mut record = None;
+        let mut review_comment = ReviewCommentFlags::default();
         let mut positionals: Vec<String> = Vec::new();
         // `-h`/`--help` is answered after the loop, once the positionals say
         // *which* help — the overview, or one command's page.
@@ -452,6 +500,9 @@ impl Cli {
                 "--remote" => review.remote = Some(value("--remote")?),
                 "--repo-dir" => review.repo_dir = Some(value("--repo-dir")?),
                 "--record" => record = Some(value("--record")?),
+                "--path" => review_comment.path = Some(value("--path")?),
+                "--line" => review_comment.lines = Some(parse_lines(&value("--line")?)?),
+                "--old" => review_comment.old = true,
                 "-n" | "--count" => {
                     count = Some(value("-n")?.parse().map_err(|_| "-n must be a number")?)
                 }
@@ -529,6 +580,7 @@ impl Cli {
             count,
             review,
             record,
+            review_comment,
         )?;
 
         // A card selector like `headway:commerce/purse-metal-toilet` already names
@@ -636,6 +688,7 @@ fn parse_command(
     count: Option<usize>,
     review: ReviewFlags,
     record: Option<String>,
+    mut review_comment: ReviewCommentFlags,
 ) -> Result<Command> {
     let card = || -> Result<String> { arg(rest, 0, name) };
     Ok(match name {
@@ -739,11 +792,15 @@ fn parse_command(
                 .or_else(|| rest.get(1).cloned())
                 .ok_or("unrelate needs --to <card>")?,
         },
-        "comment" => Command::Comment {
-            card: card()?,
-            body: joined(rest, 1, name)?,
-            reply_to,
-        },
+        "comment" => {
+            review_comment.record = record;
+            Command::Comment {
+                card: card()?,
+                body: joined(rest, 1, name)?,
+                reply_to,
+                review: review_comment,
+            }
+        }
         // Gathered here, before any relay work, so a bad rev or a directory
         // outside a repo fails fast (see `review::gather`).
         "review" => Command::Review {
@@ -912,6 +969,35 @@ mod tests {
         assert!(help_of(&["show"]).is_none());
     }
 
+    /// `comment`'s review flags parse into where the comment goes: `--line`
+    /// takes one line or an inclusive range, `--record` is shared with `diff`,
+    /// and a malformed range is refused before any relay work.
+    #[test]
+    fn comment_review_flags_parse() {
+        let cli = parse(&[
+            "comment", "card", "--path", "src/a.rs", "--line", "3-5", "--old", "--record", "abc",
+            "rename", "it",
+        ]);
+        let Command::Comment { body, review, .. } = cli.command else {
+            panic!("expected a comment");
+        };
+        assert_eq!(body, "rename it");
+        assert_eq!(review.path.as_deref(), Some("src/a.rs"));
+        assert_eq!(review.lines, Some((3, 5)));
+        assert!(review.old && review.any());
+        assert_eq!(review.record.as_deref(), Some("abc"));
+
+        let Command::Comment { review, .. } = parse(&["comment", "card", "hi"]).command else {
+            panic!("expected a comment");
+        };
+        assert!(!review.any(), "no flags is a card comment");
+
+        assert_eq!(parse_lines("42").unwrap(), (42, 42));
+        for bad in ["0", "5-3", "a", "3-", "-3", ""] {
+            assert!(parse_lines(bad).is_err(), "{bad:?}");
+        }
+    }
+
     /// An unrecognised command is rejected by name, whether or not help was
     /// asked for — `headway frobnicate --help` has no page to print.
     #[test]
@@ -947,6 +1033,7 @@ mod tests {
                 None,
                 ReviewFlags::default(),
                 None,
+                ReviewCommentFlags::default(),
             );
             // A command that wants a flag we didn't pass errors about *that*;
             // only the fallback arm means the name has no parser at all.

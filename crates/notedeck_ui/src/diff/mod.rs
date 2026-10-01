@@ -11,11 +11,13 @@
 //! [`git_patch_ui`] draws one, virtualized, with collapsible files.
 
 mod patch;
+mod patch_images;
 mod patch_view;
 
 pub use patch::{
     DiffSide, FilePatch, FileStatus, GitPatch, Hunk, LineKind, LineSpan, PatchLine, Span,
 };
+pub use patch_images::{FileImages, ImageSide, PatchImage};
 pub use patch_view::{
     git_patch_ui, git_patch_ui_with, GitPatchState, NoteDrawer, PatchNote, PatchNoteKind,
     PatchScroll, PatchSelection,
