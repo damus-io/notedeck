@@ -4,6 +4,29 @@
 /// A unit cube (corners at ±0.5) as a `.glb`: 24 vertices with flat normals,
 /// 12 triangles and one material of `base_color` (linear RGBA).
 pub fn cube_glb(base_color: [f32; 4]) -> Vec<u8> {
+    cube(base_color, None)
+}
+
+/// [`cube_glb`] with UVs and its base colour texture in a file beside it,
+/// at `texture_uri` (relative, as written into the model): the layout of
+/// model kits that share one texture atlas across many `.glb`s.
+pub fn textured_cube_glb(base_color: [f32; 4], texture_uri: &str) -> Vec<u8> {
+    cube(base_color, Some(texture_uri))
+}
+
+/// A `size`×`size` checkerboard PNG of `a` and `b` squares, 2 pixels each:
+/// a texture for [`textured_cube_glb`].
+pub fn checker_png(size: u32, a: [u8; 3], b: [u8; 3]) -> Vec<u8> {
+    let img = image::RgbImage::from_fn(size, size, |x, y| {
+        image::Rgb(if (x / 2 + y / 2) % 2 == 0 { a } else { b })
+    });
+    let mut png = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("encode png");
+    png
+}
+
+fn cube(base_color: [f32; 4], texture_uri: Option<&str>) -> Vec<u8> {
     // Each face: its normal and the two in-plane axes, wound so the
     // triangles face outward.
     let faces: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
@@ -17,6 +40,7 @@ pub fn cube_glb(base_color: [f32; 4]) -> Vec<u8> {
 
     let mut positions: Vec<f32> = Vec::with_capacity(24 * 3);
     let mut normals: Vec<f32> = Vec::with_capacity(24 * 3);
+    let mut uvs: Vec<f32> = Vec::with_capacity(24 * 2);
     let mut indices: Vec<u16> = Vec::with_capacity(36);
     for (n, u, v) in faces {
         let base = (positions.len() / 3) as u16;
@@ -25,6 +49,7 @@ pub fn cube_glb(base_color: [f32; 4]) -> Vec<u8> {
                 positions.push(n[k] * 0.5 + u[k] * su + v[k] * sv);
             }
             normals.extend_from_slice(&n);
+            uvs.extend_from_slice(&[su + 0.5, 0.5 - sv]);
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
@@ -39,10 +64,25 @@ pub fn cube_glb(base_color: [f32; 4]) -> Vec<u8> {
     while !bin.len().is_multiple_of(4) {
         bin.push(0);
     }
+    let uvs_offset = bin.len();
+    bin.extend(uvs.iter().flat_map(|f| f.to_le_bytes()));
+    let uvs_len = bin.len() - uvs_offset;
+
+    // The texture's pieces, spliced into the JSON below when there is one.
+    let (uv_attribute, base_color_texture, texture_parts) = match texture_uri {
+        Some(uri) => (
+            r#","TEXCOORD_0":3"#.to_string(),
+            r#","baseColorTexture":{"index":0}"#.to_string(),
+            format!(
+                r#","images":[{{"uri":"{uri}"}}],"textures":[{{"source":0,"sampler":0}}],"samplers":[{{"magFilter":9728,"minFilter":9728}}]"#
+            ),
+        ),
+        None => Default::default(),
+    };
 
     let [r, g, b, a] = base_color;
     let json = format!(
-        r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1}},"indices":2,"material":0}}]}}],"materials":[{{"pbrMetallicRoughness":{{"baseColorFactor":[{r},{g},{b},{a}],"metallicFactor":0.0,"roughnessFactor":0.6}}}}],"buffers":[{{"byteLength":{bin_len}}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{normals_offset},"target":34962}},{{"buffer":0,"byteOffset":{normals_offset},"byteLength":{normals_len},"target":34962}},{{"buffer":0,"byteOffset":{indices_offset},"byteLength":{indices_len},"target":34963}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":24,"type":"VEC3","min":[-0.5,-0.5,-0.5],"max":[0.5,0.5,0.5]}},{{"bufferView":1,"componentType":5126,"count":24,"type":"VEC3"}},{{"bufferView":2,"componentType":5123,"count":36,"type":"SCALAR"}}]}}"#,
+        r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1{uv_attribute}}},"indices":2,"material":0}}]}}],"materials":[{{"pbrMetallicRoughness":{{"baseColorFactor":[{r},{g},{b},{a}]{base_color_texture},"metallicFactor":0.0,"roughnessFactor":0.6}}}}],"buffers":[{{"byteLength":{bin_len}}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{normals_offset},"target":34962}},{{"buffer":0,"byteOffset":{normals_offset},"byteLength":{normals_len},"target":34962}},{{"buffer":0,"byteOffset":{indices_offset},"byteLength":{indices_len},"target":34963}},{{"buffer":0,"byteOffset":{uvs_offset},"byteLength":{uvs_len},"target":34962}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":24,"type":"VEC3","min":[-0.5,-0.5,-0.5],"max":[0.5,0.5,0.5]}},{{"bufferView":1,"componentType":5126,"count":24,"type":"VEC3"}},{{"bufferView":2,"componentType":5123,"count":36,"type":"SCALAR"}},{{"bufferView":3,"componentType":5126,"count":24,"type":"VEC2"}}]{texture_parts}}}"#,
         bin_len = bin.len(),
         normals_len = indices_offset - normals_offset,
     );

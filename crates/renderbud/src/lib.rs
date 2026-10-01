@@ -39,16 +39,37 @@ pub struct ModelUploader {
 
 impl ModelUploader {
     /// Parse and upload a self-contained glTF model (a `.glb`, or a `.gltf`
-    /// with embedded data). CPU-heavy: call it off the UI thread.
+    /// with embedded data). CPU-heavy: call it off the UI thread. A model
+    /// that refers to files beside it needs
+    /// [`upload_gltf_slice_with`](Self::upload_gltf_slice_with).
+    pub fn upload_gltf_slice(&self, bytes: &[u8]) -> Result<ModelData, LoadError> {
+        self.upload_gltf_slice_with(bytes, &mut |_| None)
+    }
+
+    /// [`upload_gltf_slice`](Self::upload_gltf_slice), asking `resolve` for
+    /// each file the model refers to, by its URI relative to the model (a
+    /// `.glb` whose textures sit in a folder beside it, say). A missing
+    /// buffer fails the load with [`LoadError::Missing`]; a missing or
+    /// undecodable image only loses its texture.
     ///
     /// Safe on untrusted bytes: a GPU validation or out-of-memory error is
     /// caught in an error scope (scopes are per thread, so this captures only
     /// this upload's) and returned as [`LoadError::Gpu`] rather than reaching
     /// the device's uncaptured-error handler.
-    pub fn upload_gltf_slice(&self, bytes: &[u8]) -> Result<ModelData, LoadError> {
+    pub fn upload_gltf_slice_with(
+        &self,
+        bytes: &[u8],
+        resolve: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
+    ) -> Result<ModelData, LoadError> {
         let oom = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let model = model::load_gltf_slice(&self.device, &self.queue, &self.material_bgl, bytes);
+        let model = model::load_gltf_slice(
+            &self.device,
+            &self.queue,
+            &self.material_bgl,
+            bytes,
+            resolve,
+        );
         let validation = pollster::block_on(validation.pop());
         let oom = pollster::block_on(oom.pop());
         match validation.or(oom) {

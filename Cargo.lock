@@ -8077,6 +8077,7 @@ dependencies = [
 name = "renderbud"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bytemuck",
  "egui",
  "egui-wgpu",

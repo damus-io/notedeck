@@ -45,6 +45,8 @@ pub enum LoadError {
     Gltf(gltf::Error),
     /// It parsed, but has no triangle geometry to draw.
     Empty,
+    /// A buffer it needs is missing or short: the URI (or `BIN chunk`).
+    Missing(String),
     /// The GPU rejected one of its resources.
     Gpu(wgpu::Error),
 }
@@ -54,6 +56,7 @@ impl std::fmt::Display for LoadError {
         match self {
             LoadError::Gltf(e) => write!(f, "glTF: {e}"),
             LoadError::Empty => f.write_str("no triangle geometry"),
+            LoadError::Missing(what) => write!(f, "missing buffer {what}"),
             LoadError::Gpu(e) => write!(f, "GPU: {e}"),
         }
     }
@@ -250,17 +253,118 @@ pub fn load_gltf_model(
     upload_gltf(device, queue, material_bgl, &doc, &buffers, &images)
 }
 
-/// Load a self-contained glTF model from memory: a `.glb`, or a `.gltf` whose
-/// buffers and images are embedded as data URIs. A file that refers to
-/// others beside it fails, since there's nothing to resolve them against.
+/// Load a glTF model from memory: a `.glb`, or a `.gltf`. Data embedded in
+/// it (the `BIN` chunk, `data:` URIs) is read directly; any other file it
+/// refers to is asked of `resolve`, by its URI as written (relative to the
+/// model, percent-decoded), which returns the bytes or `None`.
+///
+/// A missing or short buffer fails the load ([`LoadError::Missing`]); a
+/// missing or undecodable image only loses its texture, as an untextured
+/// model still shows its shape.
 pub fn load_gltf_slice(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     material_bgl: &wgpu::BindGroupLayout,
     bytes: &[u8],
+    resolve: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
 ) -> Result<ModelData, LoadError> {
-    let (doc, buffers, images) = gltf::import_slice(bytes)?;
+    let (doc, buffers, images) = import_slice(bytes, resolve)?;
     upload_gltf(device, queue, material_bgl, &doc, &buffers, &images)
+}
+
+/// [`gltf::import_slice`], with files outside the model read through
+/// `resolve` instead of failing (it has no directory to read them from).
+/// Images are decoded here to RGBA8.
+fn import_slice(
+    bytes: &[u8],
+    resolve: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
+) -> Result<
+    (
+        gltf::Document,
+        Vec<gltf::buffer::Data>,
+        Vec<gltf::image::Data>,
+    ),
+    LoadError,
+> {
+    let gltf::Gltf { document, mut blob } = gltf::Gltf::from_slice(bytes)?;
+
+    let mut buffers = Vec::new();
+    for buffer in document.buffers() {
+        let (mut data, what) = match buffer.source() {
+            gltf::buffer::Source::Bin => (blob.take(), "BIN chunk".to_string()),
+            gltf::buffer::Source::Uri(uri) => (read_uri(uri, resolve), uri.to_string()),
+        };
+        let data = match &mut data {
+            Some(data) if data.len() >= buffer.length() => std::mem::take(data),
+            _ => return Err(LoadError::Missing(what)),
+        };
+        buffers.push(gltf::buffer::Data(data));
+    }
+
+    let images = document
+        .images()
+        .map(|image| {
+            let encoded = match image.source() {
+                gltf::image::Source::View { view, .. } => buffers
+                    .get(view.buffer().index())
+                    .and_then(|b| b.0.get(view.offset()..view.offset() + view.length()))
+                    .map(<[u8]>::to_vec),
+                gltf::image::Source::Uri { uri, .. } => read_uri(uri, resolve),
+            };
+            encoded
+                .and_then(|bytes| ::image::load_from_memory(&bytes).ok())
+                .map(|img| {
+                    let rgba = img.into_rgba8();
+                    gltf::image::Data {
+                        width: rgba.width(),
+                        height: rgba.height(),
+                        format: gltf::image::Format::R8G8B8A8,
+                        pixels: rgba.into_raw(),
+                    }
+                })
+                // Zero-sized: the material falls back to its default texture.
+                .unwrap_or(gltf::image::Data {
+                    pixels: Vec::new(),
+                    format: gltf::image::Format::R8G8B8A8,
+                    width: 0,
+                    height: 0,
+                })
+        })
+        .collect();
+
+    Ok((document, buffers, images))
+}
+
+/// The bytes a glTF URI names: decoded from a base64 `data:` URI, or asked
+/// of `resolve` by its percent-decoded relative path.
+fn read_uri(uri: &str, resolve: &mut dyn FnMut(&str) -> Option<Vec<u8>>) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    if let Some(data) = uri.strip_prefix("data:") {
+        let (_, encoded) = data.split_once(";base64,")?;
+        return base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .ok();
+    }
+    resolve(&percent_decode(uri)?)
+}
+
+/// `uri` with its `%XX` escapes decoded; `None` when they aren't valid
+/// UTF-8 or hex.
+fn percent_decode(uri: &str) -> Option<String> {
+    let bytes = uri.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// Upload a parsed glTF document's materials and triangle meshes.
@@ -746,6 +850,39 @@ impl Aabb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A model whose texture sits beside it asks the resolver for it by
+    /// its relative URI and decodes what comes back; with nothing to
+    /// resolve it still loads, its image left empty (so untextured).
+    #[test]
+    fn import_resolves_files_beside_the_model() {
+        let glb = crate::test_util::textured_cube_glb([1.0; 4], "Textures/color%20map.png");
+        let png = crate::test_util::checker_png(4, [255, 0, 0], [0, 0, 255]);
+        let mut asked = Vec::new();
+        let (_, buffers, images) = import_slice(&glb, &mut |uri| {
+            asked.push(uri.to_string());
+            Some(png.clone())
+        })
+        .unwrap();
+        assert_eq!(asked, ["Textures/color map.png"]);
+        assert_eq!(buffers.len(), 1);
+        assert_eq!((images[0].width, images[0].height), (4, 4));
+        assert_eq!(&images[0].pixels[..4], &[255, 0, 0, 255]);
+
+        let (_, _, images) = import_slice(&glb, &mut |_| None).unwrap();
+        assert_eq!(images[0].width, 0);
+    }
+
+    /// A buffer the model can't find fails the load, naming it.
+    #[test]
+    fn import_fails_on_a_missing_buffer() {
+        let gltf = br#"{"asset":{"version":"2.0"},"buffers":[{"uri":"mesh.bin","byteLength":4}]}"#;
+        match import_slice(gltf, &mut |_| None) {
+            Err(LoadError::Missing(what)) => assert_eq!(what, "mesh.bin"),
+            other => panic!("expected a missing buffer, got {:?}", other.map(|_| ())),
+        }
+        assert!(import_slice(gltf, &mut |_| Some(vec![0; 4])).is_ok());
+    }
 
     /// A mesh with no UVs still gets unit tangents perpendicular to its
     /// normals, never zero (which the shader would turn into NaN).
