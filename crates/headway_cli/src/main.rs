@@ -14,6 +14,7 @@ mod args;
 mod boards;
 mod diff;
 mod edit;
+mod grep;
 mod help;
 mod output;
 mod review;
@@ -99,16 +100,16 @@ fn require_owner(me: &Pubkey, owner: &Pubkey, cmd: &str) -> Result<()> {
 /// shared with us by its slug alone when there's no `--author` (see
 /// [`shared_owner`]).
 ///
-/// Not the listings — `headway board` and `show --all` cover every board, so no
-/// one slug is theirs to resolve (and an ambiguous current board mustn't break
-/// them). Not `seed`/`migrate` either: they only ever act on a board *we* own,
+/// Not the listings — `headway board`, `show --all` and `grep --all` cover
+/// every board, so no one slug is theirs to resolve (and an ambiguous current
+/// board mustn't break them). Not `seed`/`migrate` either: they only ever act on a board *we* own,
 /// and `headway --board shared seed` must create our own `shared` even when
 /// someone else's is in the roster.
 fn resolves_owner_by_slug(cmd: &Command, show_all: bool) -> bool {
     !matches!(
         cmd,
         Command::Board { id: None } | Command::Seed { .. } | Command::Migrate
-    ) && !(show_all && matches!(cmd, Command::Show { .. }))
+    ) && !(show_all && matches!(cmd, Command::Show { .. } | Command::Grep { .. }))
 }
 
 /// The owner of the board `board_id` names when it isn't one of ours: the one
@@ -614,6 +615,39 @@ async fn run() -> Result<()> {
                 None => Container::BoardRoot(view.id.clone()),
             };
             print_next(&view, &container, ready, limit, as_json);
+        }
+
+        // Read command: search card text. One fold per board searched (just
+        // this one, or every readable board under `--all`) and one pass over
+        // its cards. Never signs.
+        Command::Grep { pattern, container } => {
+            let boards = if show_all {
+                if container.is_some() {
+                    return Err(
+                        "--in searches one card's subtree on its own board — drop --all".into(),
+                    );
+                }
+                let mut boards = list_boards(&ndb, &roster, &author);
+                // Only when searching our own: `--author <someone>` asks for theirs.
+                if author == me {
+                    boards.extend(list_shared_with_me(&ndb, &roster, &me));
+                }
+                boards
+            } else {
+                vec![
+                    load_board(&ndb, &roster, &author, &board)
+                        .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?,
+                ]
+            };
+            // `--in <board-slug>` is the whole board, the same as no `--in`.
+            let subtree = match (container.as_deref(), boards.first()) {
+                (Some(sel), Some(view)) => match resolve_container(view, sel)? {
+                    Container::Card(id) => Some(id),
+                    Container::BoardRoot(_) => None,
+                },
+                _ => None,
+            };
+            grep::cmd_grep(&boards, subtree, &pattern, show_archived, as_json)?;
         }
 
         // Read command: resolve the card's review record to a commit (fetching

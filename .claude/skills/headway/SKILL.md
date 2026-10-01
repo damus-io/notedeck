@@ -187,6 +187,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `estimate <card> <n>` | Set an estimate — a number (or `none` to clear) |
 | `seq <card> <pos> [--in <c>]` | Position a card in a container's work-order (see Work order) |
 | `next [--in <c>] [--ready] [-n <k>]` | Print the ready frontier — what to work on next (see Work order) |
+| `grep <pattern> [--in <c>] [-i\|-s] [--archived] [--all] [--json]` | Search card text (title, description, comments, review comments) and print each matching line under its card's ref (see Searching cards) |
 | `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment or a review comment |
 | `comment <card> --path <f> --line <a[-b]> [--old] [--record <sha>] <text...>` | Inline review comment on a review record's commit (newest record by default); `--record` alone comments on the whole commit |
 | `review <card> [--explainer <url>] [--commit <rev>]` | Record a commit for review on the card: sha, title, branch, host, repo path and `agentium:` ref, read from git in `--repo-dir` (default cwd) and `$AGENTIUM_SESSION` |
@@ -373,6 +374,36 @@ priority is a human-facing label, not an input to the frontier. So a board where
 nobody has run `seq` has no real work-order: `next --ready` is just the board in
 default order, and you should judge the biggest win yourself rather than trust the
 first line. Curate with `seq` to make `next` meaningful.
+
+## Searching cards (`grep`)
+
+`headway grep <pattern>` finds the cards that *say* something, without a
+`show --json` + `show <card>` loop: it searches every card's **title,
+description, comment thread and inline review comments** in one run and prints
+each matching line under the card's full `headway:<board>/<word-id>` ref, with
+the field it came from. Labels and review records' commit subjects are not
+searched. It's a read command — it never signs.
+
+- `<pattern>` is a **regex**, **smart-case** by default: an all-lowercase
+  pattern matches any case, one with an uppercase letter matches exactly. `-i`
+  forces case-insensitive, `-s` case-sensitive. Quote a pattern with spaces —
+  `grep` takes exactly one.
+- Scope: the current board (or the board a ref names); `--all` searches every
+  board you can read, your own and the ones shared with you. `--in <card>`
+  searches only that card **and everything under it** (the card itself is
+  included, unlike `next --in`); `--in <board-slug>` is the whole board.
+- Archived cards are skipped unless `--archived`.
+- `--json` is an array with one object per matching card — `ref`, `id`,
+  `board`, `title`, `column` (`archived` for an archived card) and `matches`
+  (`[{field, text}]`, `field` one of `title`/`desc`/`comment`/`review`).
+  "No matches" is `[]` (plain output says `no matches`); either way it exits 0.
+
+```bash
+headway grep 'relay reconnect' --board notedeck
+headway grep -i nostrdb --all                     # every board you can read
+headway grep sealed --in headway:notedeck/saddle-because-liquid   # one epic
+headway --json grep 'Changelog' --archived | jq -r '.[].ref'
+```
 
 ## Terminal columns: what counts as "done"
 

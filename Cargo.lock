@@ -3976,6 +3976,7 @@ dependencies = [
  "hex",
  "nostrdb",
  "nostrdb_net",
+ "regex",
  "serde_json",
  "tempfile",
  "tokio",

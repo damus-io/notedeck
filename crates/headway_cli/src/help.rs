@@ -127,6 +127,55 @@ persisted current board between commands.",
         ],
     },
     Command {
+        name: "grep",
+        group: Group::Reading,
+        summary: "Search card text (titles, descriptions, comments) across a board",
+        usage: &["grep <pattern> [--in <container>] [-i | -s] [--archived] [--all]"],
+        details: "\
+Print every line of card text that matches <pattern>, grouped under the
+card's headway:<board>/<word-id> ref, with the field it came from: the
+title, the description, a comment, or a review comment on one of the
+card's commits. Labels and review records' commit subjects are not
+searched.
+
+<pattern> is a regex. Case is smart by default: an all-lowercase pattern
+matches any case, and a pattern with an uppercase letter matches exactly.
+-i and -s force one or the other.
+
+Searches the current board (or the one --in names); --all searches every
+board you can read. Archived cards are skipped unless --archived. One
+fold of each board covers every card, so it stays one relay sync however
+many cards match. A read-only command: it never signs or publishes.",
+        options: &[
+            (
+                "--in <c>",
+                "Search only this card and everything under it (a card ref), or the board slug for the whole board",
+            ),
+            (
+                "-i, --ignore-case",
+                "Match any case, even with uppercase in the pattern",
+            ),
+            (
+                "-s, --case-sensitive",
+                "Match case exactly, even for a lowercase pattern",
+            ),
+            ("--archived", "Search archived cards too"),
+            (
+                "--all",
+                "Search every board you can read, not just this one",
+            ),
+            (
+                "--json",
+                "Machine-readable output: one object per card, its matches grouped under it",
+            ),
+        ],
+        examples: &[
+            "headway grep 'relay reconnect' --board notedeck",
+            "headway grep -i nostrdb --all",
+            "headway grep sealed --in headway:notedeck/saddle-because-liquid",
+        ],
+    },
+    Command {
         name: "diff",
         group: Group::Reading,
         summary: "Print the commit a card's review record names, fetching it if needed",

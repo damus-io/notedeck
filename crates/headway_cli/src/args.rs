@@ -6,12 +6,14 @@ use std::env;
 use std::ffi::OsString;
 
 use nostrdb_net::Pubkey;
+use regex::Regex;
 
 use headway::event::ReviewFields;
 use headway::store;
 
 use nostrdb_net::relay::sync::Result;
 
+use crate::grep::{CaseMode, compile_pattern};
 use crate::review::{self, ReviewFlags};
 use crate::{APP, help};
 
@@ -130,6 +132,17 @@ pub(crate) enum Command {
         ready: bool,
         /// `-n <k>`: cap the number of cards printed.
         limit: Option<usize>,
+    },
+    /// Search card text — title, description, comments and review comments —
+    /// for `pattern`, printing each matching line under its card's ref (see
+    /// [`cmd_grep`](crate::grep::cmd_grep)). A read command — it never signs.
+    Grep {
+        /// The compiled regex, its case mode already folded in, so a bad
+        /// pattern fails before any relay work.
+        pattern: Regex,
+        /// `--in`: search only this card and its subtree. A card ref, or the
+        /// board slug (the whole board). Shares `next --in`'s grammar.
+        container: Option<String>,
     },
     /// Comment on a card, or — with `--path`/`--line`/`--record`, or a
     /// `--reply-to` naming a review comment — on one of its review records'
@@ -319,7 +332,9 @@ impl Command {
                 }
                 selectors.extend(container.as_deref());
             }
-            Command::Next { container, .. } => selectors.extend(container.as_deref()),
+            Command::Next { container, .. } | Command::Grep { container, .. } => {
+                selectors.extend(container.as_deref())
+            }
             Command::Move { card, .. }
             | Command::Title { card, .. }
             | Command::Desc { card, .. }
@@ -392,7 +407,8 @@ pub(crate) struct Cli {
     pub(crate) board_explicit: bool,
     pub(crate) json: bool,
     pub(crate) archived: bool,
-    /// `show` renders every board in the cache instead of just the current one.
+    /// `show` renders, and `grep` searches, every board in the cache instead of
+    /// just the current one.
     pub(crate) all: bool,
     /// `migrate` reports what it would re-seal and publishes nothing. The seal is
     /// irreversible once it reaches a relay, so the dry run is how you look first.
@@ -458,6 +474,8 @@ impl Cli {
         // `next` flags.
         let mut ready = false;
         let mut count: Option<usize> = None;
+        // `grep`'s case mode, folded into the compiled pattern.
+        let mut case = CaseMode::Smart;
         let mut review = ReviewFlags::default();
         // `diff --record`: which review record to show. `comment` shares it,
         // with its other review flags.
@@ -497,6 +515,8 @@ impl Cli {
                 "--last" => seq.last = true,
                 "--in" => seq.container = Some(value("--in")?),
                 "--ready" => ready = true,
+                "-i" | "--ignore-case" => case = CaseMode::Insensitive,
+                "-s" | "--case-sensitive" => case = CaseMode::Sensitive,
                 "--commit" => review.commit = Some(value("--commit")?),
                 "--explainer" => review.explainer = Some(value("--explainer")?),
                 "--agentium" => review.agentium = Some(value("--agentium")?),
@@ -581,6 +601,7 @@ impl Cli {
             seq,
             ready,
             count,
+            case,
             review,
             record,
             review_comment,
@@ -689,6 +710,7 @@ fn parse_command(
     seq: SeqFlags,
     ready: bool,
     count: Option<usize>,
+    case: CaseMode,
     review: ReviewFlags,
     record: Option<String>,
     mut review_comment: ReviewCommentFlags,
@@ -761,6 +783,19 @@ fn parse_command(
             ready,
             limit: count,
         },
+        // One pattern: a second positional is refused rather than silently
+        // dropped, since `grep sealed board` most likely meant the phrase.
+        "grep" => {
+            if rest.len() > 1 {
+                return Err("grep takes one pattern — quote it if it has spaces: \
+                     `headway grep 'sealed board'`"
+                    .into());
+            }
+            Command::Grep {
+                pattern: compile_pattern(&arg(rest, 0, name)?, case)?,
+                container: seq.container,
+            }
+        }
         // `parent <card> <parent>` sets, `parent <card>` detaches — mirrors how
         // `label` with no labels clears.
         "parent" => Command::Parent {
@@ -1034,6 +1069,7 @@ mod tests {
                 SeqFlags::default(),
                 false,
                 None,
+                CaseMode::Smart,
                 ReviewFlags::default(),
                 None,
                 ReviewCommentFlags::default(),
@@ -1385,6 +1421,54 @@ mod tests {
             }
             _ => panic!("expected a Next command"),
         }
+    }
+
+    /// The compiled pattern and `--in` container behind a `grep` argv.
+    fn grep_of(args: &[&str]) -> (Regex, Option<String>) {
+        match parse(args).command {
+            Command::Grep { pattern, container } => (pattern, container),
+            _ => panic!("expected a Grep command"),
+        }
+    }
+
+    /// `grep` is smart-case by default, `-i`/`-s` override it in either
+    /// spelling, and `--in <ref>` self-routes like `next --in`.
+    #[test]
+    fn grep_parses_case_flags_and_routes() {
+        let (re, container) = grep_of(&["grep", "relay"]);
+        assert!(re.is_match("Relay pool") && container.is_none());
+        assert!(!grep_of(&["grep", "Relay"]).0.is_match("relay pool"));
+        assert!(grep_of(&["grep", "-i", "Relay"]).0.is_match("relay pool"));
+        assert!(
+            grep_of(&["grep", "Relay", "--ignore-case"])
+                .0
+                .is_match("relay")
+        );
+        assert!(!grep_of(&["grep", "-s", "relay"]).0.is_match("Relay"));
+        assert!(
+            !grep_of(&["--case-sensitive", "grep", "relay"])
+                .0
+                .is_match("Relay")
+        );
+
+        let cli = parse(&[
+            "grep",
+            "x",
+            "--in",
+            "headway:notedeck/saddle-because-liquid",
+        ]);
+        assert_eq!(cli.board, "notedeck");
+        assert!(cli.board_explicit);
+        assert!(parse(&["grep", "x", "--all"]).all);
+    }
+
+    /// A missing, unparseable or split pattern fails at parse time, before any
+    /// relay work.
+    #[test]
+    fn grep_rejects_bad_patterns() {
+        assert!(parse_err(&["grep"]).contains("missing an argument"));
+        assert!(parse_err(&["grep", "("]).contains("invalid search pattern"));
+        assert!(parse_err(&["grep", "sealed", "board"]).contains("one pattern"));
     }
 
     /// `--board` marks the board explicit for the statelessness guard; a bare
