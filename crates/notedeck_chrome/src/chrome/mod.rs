@@ -192,14 +192,14 @@ impl Chrome {
         app_args: &[String],
         notedeck: &mut Notedeck,
     ) -> Result<Self, Error> {
-        // `render_state` is only consumed by the GPU-backed apps (Dave,
-        // Nostrverse); silence the unused warning when neither is compiled in.
-        #[cfg(not(any(feature = "dave", feature = "nostrverse")))]
-        {
-            let _ = render_state;
-        }
         let notedeck_options = notedeck.options();
         stop_debug_mode(notedeck_options);
+
+        // A wgpu window gets the shared 3D renderer; it builds its GPU state
+        // only when an app first draws a model.
+        if let Some(rs) = render_state {
+            notedeck.set_renderer3d(notedeck::Renderer3d::new(rs.clone()));
+        }
 
         // Named (not a borrowed temporary) so we can drop it below to release
         // the `&mut notedeck` borrow and register kind-renderers afterwards.

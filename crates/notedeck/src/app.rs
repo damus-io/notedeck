@@ -377,6 +377,11 @@ pub struct Notedeck {
     /// input and screen rect as the one eframe passes to `update`.
     egui: Option<egui::Context>,
 
+    /// The shared renderbud 3D renderer, set by the shell once it knows the
+    /// window has a wgpu device (see [`set_renderer3d`](Self::set_renderer3d)).
+    /// Handed to each frame's [`AppContext::renderer3d`](crate::AppContext::renderer3d).
+    renderer3d: Option<crate::Renderer3d>,
+
     /// How anything off the render thread asks this host for another pass:
     /// `request_repaint` in the GUI, a `Notify` signal headless.
     ///
@@ -687,6 +692,12 @@ impl Notedeck {
         self.android_app = Some(context);
     }
 
+    /// Give apps a shared 3D renderer: the shell calls this at startup when
+    /// the window has a wgpu device.
+    pub fn set_renderer3d(&mut self, renderer: crate::Renderer3d) {
+        self.renderer3d = Some(renderer);
+    }
+
     /// Boot with a window: `ctx` is the host's egui context, which becomes both
     /// the wake seam and what apps read the display through.
     pub fn init<P: AsRef<Path>>(ctx: &egui::Context, data_path: P, args: &[String]) -> Self {
@@ -988,6 +999,7 @@ impl Notedeck {
             navigator: crate::Navigator::default(),
             local_relay,
             egui,
+            renderer3d: None,
             waker,
             pass_nr: 0,
             headless_wake,
@@ -1059,6 +1071,7 @@ impl Notedeck {
                 private_channels: &mut self.private_channels,
                 waker: &self.waker,
                 egui: self.egui.as_ref(),
+                renderer3d: self.renderer3d.as_ref(),
                 #[cfg(target_os = "android")]
                 android: self.android_app.as_ref().unwrap().clone(),
             },

@@ -45,6 +45,7 @@ mod relay_resolver;
 pub mod relayspec;
 mod remote_api;
 mod remote_data;
+mod render3d;
 mod result;
 mod route;
 mod runtime;
@@ -143,6 +144,7 @@ pub use registries::AppRegistries;
 pub use relay_resolver::RelaySetResolver;
 pub use relayspec::RelaySpec;
 pub use remote_api::{RelayInspectApi, RelayInspectEntry, RemoteApi};
+pub use render3d::Renderer3d;
 pub use result::Result;
 pub use route::{DrawerRouter, ReplacementType, Router};
 pub use runtime::RuntimeThreadBudget;
@@ -195,6 +197,18 @@ pub use zaps::{
 /// Panics at adapter selection time if no CPU adapter is available.
 #[cfg(feature = "snapshot-testing")]
 pub fn software_renderer() -> egui_kittest::wgpu::WgpuTestRenderer {
+    egui_kittest::wgpu::WgpuTestRenderer::from_render_state(software_render_state())
+}
+
+/// The software-rasterized [`egui_wgpu::RenderState`] behind
+/// [`software_renderer`], for a test that also needs the device itself: build
+/// a [`Renderer3d`] on it and hand the same state to
+/// [`WgpuTestRenderer::from_render_state`](egui_kittest::wgpu::WgpuTestRenderer::from_render_state),
+/// so textures the app registers are the ones the snapshot samples.
+///
+/// Same requirements and panics as [`software_renderer`].
+#[cfg(feature = "snapshot-testing")]
+pub fn software_render_state() -> egui_wgpu::RenderState {
     use egui_wgpu::wgpu;
     use std::sync::Arc;
 
@@ -218,7 +232,10 @@ pub fn software_renderer() -> egui_kittest::wgpu::WgpuTestRenderer {
             })
     }));
 
-    egui_kittest::wgpu::WgpuTestRenderer::from_setup(egui_wgpu::WgpuSetup::CreateNew(setup))
+    egui_kittest::wgpu::create_render_state(
+        egui_wgpu::WgpuSetup::CreateNew(setup),
+        egui_wgpu::RendererOptions::PREDICTABLE,
+    )
 }
 
 // export libs

@@ -5795,6 +5795,7 @@ dependencies = [
  "puffin_egui",
  "rand 0.9.2",
  "regex",
+ "renderbud",
  "ring",
  "rodio",
  "rustls",

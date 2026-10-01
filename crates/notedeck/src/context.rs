@@ -90,6 +90,9 @@ pub struct AppContext<'a> {
     /// no window to read, command or animate, so the right response is to skip
     /// the work rather than to fabricate a default.
     pub egui: Option<&'a egui::Context>,
+    /// The host's shared 3D renderer, or `None` when the window has no wgpu
+    /// backend (headless, glow, most tests). See [`Renderer3d`](crate::Renderer3d).
+    pub renderer3d: Option<&'a crate::Renderer3d>,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,
