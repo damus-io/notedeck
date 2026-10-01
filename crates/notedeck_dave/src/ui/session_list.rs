@@ -78,7 +78,7 @@ pub struct SessionListUi<'a> {
     focus_queue: &'a FocusQueue,
     collapse_state: &'a CollapseState,
     ctrl_held: bool,
-    /// A leader chord is walking the list: wash the active row like the
+    /// Normal mode is walking the list: wash the active row like the
     /// chat's block cursor, so it's clear where `j` / `k` are.
     chord_cursor: bool,
 }
@@ -99,8 +99,7 @@ impl<'a> SessionListUi<'a> {
         }
     }
 
-    /// Mark the active row as the cursor of a leader chord in the sessions
-    /// pane.
+    /// Mark the active row as normal mode's cursor in the sessions pane.
     pub fn chord_cursor(mut self, chord_cursor: bool) -> Self {
         self.chord_cursor = chord_cursor;
         self

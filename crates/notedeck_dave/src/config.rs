@@ -125,10 +125,6 @@ pub struct DaveSettings {
     pub model: String,
     pub endpoint: Option<String>,
     pub api_key: Option<String>,
-    /// The key that opens a keyboard chord over the chat's collapsible blocks.
-    /// Defaulted so settings files written before it existed still load.
-    #[serde(default)]
-    pub leader_key: LeaderKey,
     /// Environment variables exported into every agent session this host
     /// spawns, on every backend (e.g. `HEADWAY_COMMENT_NSEC_FILE`, so agent
     /// comments sign with the agent's own key in any worktree without touching
@@ -147,90 +143,7 @@ impl Default for DaveSettings {
             model: AiProvider::default().default_model().to_string(),
             endpoint: None,
             api_key: None,
-            leader_key: LeaderKey::default(),
             session_env: BTreeMap::new(),
-        }
-    }
-}
-
-/// A user-configurable leader key: modifiers plus one key, as persisted in
-/// `dave_settings.json`.
-///
-/// The key is stored as its [`egui::Key::name`] rather than as the enum:
-/// egui's `Key` serde is feature-gated, and the name is stable across egui
-/// bumps. Resolve it with [`LeaderKey::resolve`] once, not per frame.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LeaderKey {
-    pub ctrl: bool,
-    pub shift: bool,
-    pub alt: bool,
-    /// [`egui::Key::name`] of the key, e.g. `"Semicolon"`.
-    pub key: String,
-}
-
-impl Default for LeaderKey {
-    /// Ctrl+;: free in both Dave's keybindings and the chrome's, and
-    /// vim-adjacent. Ctrl+Space is avoided for macOS input-source switching.
-    fn default() -> Self {
-        Self::from_press(egui::Modifiers::CTRL, egui::Key::Semicolon)
-    }
-}
-
-impl LeaderKey {
-    /// Record a key press as a leader key.
-    pub fn from_press(modifiers: egui::Modifiers, key: egui::Key) -> Self {
-        LeaderKey {
-            ctrl: modifiers.ctrl,
-            shift: modifiers.shift,
-            alt: modifiers.alt,
-            key: key.name().to_owned(),
-        }
-    }
-
-    /// Whether a press would make a usable leader. It needs Ctrl or Alt: a
-    /// bare or Shift-only key is something you type.
-    pub fn is_valid_press(modifiers: egui::Modifiers) -> bool {
-        modifiers.ctrl || modifiers.alt
-    }
-
-    /// The modifiers to match exactly.
-    pub fn modifiers(&self) -> egui::Modifiers {
-        let mut modifiers = egui::Modifiers::NONE;
-        if self.ctrl {
-            modifiers = modifiers.plus(egui::Modifiers::CTRL);
-        }
-        if self.shift {
-            modifiers = modifiers.plus(egui::Modifiers::SHIFT);
-        }
-        if self.alt {
-            modifiers = modifiers.plus(egui::Modifiers::ALT);
-        }
-        modifiers
-    }
-
-    /// The stored key name as an [`egui::Key`], or `None` if it names no key
-    /// (a hand-edited or future settings file).
-    pub fn resolve(&self) -> Option<egui::Key> {
-        egui::Key::from_name(&self.key)
-    }
-}
-
-impl std::fmt::Display for LeaderKey {
-    /// Human-readable form, e.g. `Ctrl+Shift+;`.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.ctrl {
-            f.write_str("Ctrl+")?;
-        }
-        if self.alt {
-            f.write_str("Alt+")?;
-        }
-        if self.shift {
-            f.write_str("Shift+")?;
-        }
-        match self.resolve() {
-            Some(key) => f.write_str(key.symbol_or_name()),
-            None => f.write_str(&self.key),
         }
     }
 }
@@ -243,7 +156,6 @@ impl DaveSettings {
             model: provider.default_model().to_string(),
             endpoint: provider.default_endpoint().map(|s| s.to_string()),
             api_key: None,
-            leader_key: LeaderKey::default(),
             session_env: BTreeMap::new(),
         }
     }
@@ -269,7 +181,6 @@ impl DaveSettings {
                 .map(|s| s.to_string())
                 .or_else(|| provider.default_endpoint().map(|s| s.to_string())),
             api_key,
-            leader_key: LeaderKey::default(),
             session_env: BTreeMap::new(),
         }
     }
@@ -726,14 +637,15 @@ mod tests {
         assert_eq!(config.endpoint(), Some("http://localhost:1234/v1"));
     }
 
-    /// A `dave_settings.json` written before the leader key existed still
-    /// loads, with the default leader.
+    /// A `dave_settings.json` written while the leader key was configurable
+    /// still loads: serde ignores the retired `leader_key` field.
     #[test]
-    fn settings_without_a_leader_key_still_load() {
-        let json = r#"{"provider":"OpenAI","model":"gpt-4o","endpoint":null,"api_key":null}"#;
+    fn settings_with_a_stale_leader_key_still_load() {
+        let json = r#"{"provider":"OpenAI","model":"gpt-4o","endpoint":null,"api_key":null,
+            "leader_key":{"ctrl":true,"shift":false,"alt":false,"key":"Semicolon"}}"#;
         let settings: DaveSettings = serde_json::from_str(json).unwrap();
-        assert_eq!(settings.leader_key, LeaderKey::default());
-        assert_eq!(settings.leader_key.to_string(), "Ctrl+;");
+        assert_eq!(settings.provider, AiProvider::OpenAI);
+        assert_eq!(settings.model, "gpt-4o");
     }
 
     /// A `dave_settings.json` written before `session_env` existed still loads,

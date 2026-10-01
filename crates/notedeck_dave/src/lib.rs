@@ -233,9 +233,6 @@ pub struct Dave {
     /// Vim-style normal mode (Esc enters it) and any chord pending in it,
     /// carried across frames.
     normal_mode: ui::keybindings::NormalMode,
-    /// `settings.leader_key` resolved to an egui key, refreshed whenever the
-    /// settings change so the per-frame keybinding pass never parses it.
-    leader: ui::keybindings::Leader,
     /// A kind-31988 session-state note to focus, raised when its inline
     /// `agentium:` chip is clicked in another app (a note, a Dave chat) or it is
     /// opened by URI, with any message to send into it. Resolved to a session and
@@ -437,7 +434,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let settings = DaveSettings::from_model_config(&config);
             (config, settings)
         };
-        let leader = ui::keybindings::Leader::resolve(&settings.leader_key);
 
         // Determine AI mode from backend type
         let ai_mode = model_config.ai_mode();
@@ -538,7 +534,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             auto_steal: focus_queue::AutoStealState::Disabled,
             home_session: None,
             normal_mode: ui::keybindings::NormalMode::default(),
-            leader,
             pending_open: None,
             directory_picker,
             session_picker: SessionPicker::new(),
@@ -584,7 +579,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Note: Provider changes require app restart to take effect.
     pub fn apply_settings(&mut self, settings: DaveSettings) {
         self.model_config = ModelConfig::from_settings(&settings);
-        self.leader = ui::keybindings::Leader::resolve(&settings.leader_key);
         self.settings_serializer.try_save(settings.clone());
         self.settings = settings;
     }

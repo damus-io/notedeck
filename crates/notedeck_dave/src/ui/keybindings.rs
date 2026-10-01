@@ -1,5 +1,5 @@
-use crate::config::{AiMode, LeaderKey};
-use egui::{Key, Modifiers};
+use crate::config::AiMode;
+use egui::Key;
 
 /// Keybinding actions that can be triggered globally
 #[derive(Debug, Clone, PartialEq)]
@@ -53,37 +53,37 @@ pub enum KeyAction {
     ClearAgent,
     /// Rename the active agent (Ctrl+Shift+R)
     RenameAgent,
-    /// Move the block cursor to the next collapsible block (<leader> j, Ctrl+Shift+N)
+    /// Move the block cursor to the next collapsible block (normal j, Ctrl+Shift+N)
     BlockCursorDown,
-    /// Move the block cursor to the previous collapsible block (<leader> k, Ctrl+Shift+P)
+    /// Move the block cursor to the previous collapsible block (normal k, Ctrl+Shift+P)
     BlockCursorUp,
-    /// Move the block cursor to the first collapsible block (<leader> gg)
+    /// Move the block cursor to the first collapsible block (normal gg)
     BlockCursorFirst,
-    /// Move the block cursor to the last collapsible block (<leader> G)
+    /// Move the block cursor to the last collapsible block (normal G)
     BlockCursorLast,
-    /// Flip the block under the cursor (<leader> za / o, Ctrl+Shift+O)
+    /// Flip the block under the cursor (normal za / o, Ctrl+Shift+O)
     BlockToggle,
-    /// Expand the block under the cursor (<leader> zo)
+    /// Expand the block under the cursor (normal zo)
     BlockOpen,
-    /// Collapse the block under the cursor (<leader> zc)
+    /// Collapse the block under the cursor (normal zc)
     BlockClose,
-    /// Expand every collapsible block (<leader> zR, Ctrl+Shift+E)
+    /// Expand every collapsible block (normal zR, Ctrl+Shift+E)
     BlockExpandAll,
-    /// Collapse every collapsible block (<leader> zM, Ctrl+Shift+M)
+    /// Collapse every collapsible block (normal zM, Ctrl+Shift+M)
     BlockCollapseAll,
-    /// Drop the block cursor, so the transcript follows new output again (<leader> q)
+    /// Drop the block cursor, so the transcript follows new output again (normal q)
     BlockCursorClear,
-    /// Point the chord at the session list (<leader> h)
+    /// Point the chord at the session list (normal h)
     FocusSessionsPane,
-    /// Point the chord back at the chat (<leader> l, or Enter from the session list)
+    /// Point the chord back at the chat (normal l, or Enter from the session list)
     FocusChatPane,
-    /// Switch to the next session without focusing its input (<leader> h j)
+    /// Switch to the next session without focusing its input (normal h j)
     SessionPaneNext,
-    /// Switch to the previous session without focusing its input (<leader> h k)
+    /// Switch to the previous session without focusing its input (normal h k)
     SessionPanePrev,
-    /// Switch to the first session in the list (<leader> h gg)
+    /// Switch to the first session in the list (normal h gg)
     SessionPaneFirst,
-    /// Switch to the last session in the list (<leader> h G)
+    /// Switch to the last session in the list (normal h G)
     SessionPaneLast,
     /// Leave normal mode for the chat input (`i` / `a`)
     InsertMode,
@@ -102,68 +102,14 @@ impl KeyAction {
                 | KeyAction::FocusQueuePrev
         )
     }
-
-    /// Actions that can leave a different session active. A chord that ran one
-    /// can't hand focus back to the id it saved: that was the old session's
-    /// input, which no longer renders.
-    fn changes_session(&self) -> bool {
-        matches!(
-            self,
-            KeyAction::SessionPaneNext
-                | KeyAction::SessionPanePrev
-                | KeyAction::SessionPaneFirst
-                | KeyAction::SessionPaneLast
-                | KeyAction::CloneAgent
-                | KeyAction::DeleteActiveSession
-                | KeyAction::FocusQueueNext
-                | KeyAction::FocusQueuePrev
-        )
-    }
-}
-
-/// The key that opens a chord, resolved from the persisted [`LeaderKey`].
-///
-/// Built once when settings load or change, so the per-frame match never
-/// parses a key name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Leader {
-    modifiers: Modifiers,
-    key: Key,
-}
-
-impl Leader {
-    /// Ctrl+;, the same binding as [`LeaderKey::default`].
-    pub const DEFAULT: Leader = Leader {
-        modifiers: Modifiers::CTRL,
-        key: Key::Semicolon,
-    };
-
-    /// Resolve a persisted leader. A key name egui does not know (a
-    /// hand-edited or newer settings file) falls back to [`Self::DEFAULT`].
-    pub fn resolve(leader: &LeaderKey) -> Self {
-        let Some(key) = leader.resolve() else {
-            tracing::warn!("unknown leader key {:?}, using Ctrl+;", leader.key);
-            return Self::DEFAULT;
-        };
-        Leader {
-            modifiers: leader.modifiers(),
-            key,
-        }
-    }
-
-    /// Whether this frame pressed the leader.
-    fn pressed(self, input: &egui::InputState) -> bool {
-        input.modifiers.matches_exact(self.modifiers) && input.key_pressed(self.key)
-    }
 }
 
 /// Dave's vim-style normal mode, and how far into a chord it is.
 ///
 /// Owned by [`Dave`](crate::Dave) and passed `&mut` into [`check_keybindings`]
 /// each frame. Insert mode is the default: the chat input has focus and you
-/// type. Esc (or the leader, until it retires) enters normal mode, which sets
-/// the input's focus aside so bare keys (`j`, `z`, `g`, …) are read as
-/// commands rather than typed.
+/// type. Esc enters normal mode, which sets the input's focus aside so bare
+/// keys (`j`, `z`, `g`, …) are read as commands rather than typed.
 ///
 /// Normal mode stays on after a command so motions repeat — `j j j za` — and
 /// never times out; the which-key strip shows it is on. A key it doesn't know
@@ -182,10 +128,6 @@ pub struct NormalMode {
     /// Which pane the motions move through. Back to [`Pane::Chat`] each time
     /// normal mode is entered.
     pane: Pane,
-    /// Whatever held keyboard focus when normal mode was entered, handed back
-    /// when it ends. Usually `None` after Esc: egui drops a text field's focus
-    /// on Esc before Dave sees the key, so the active input is focused instead.
-    restore_focus: Option<egui::Id>,
     /// Whether the session list is on screen, as of the last frame. `h` is a
     /// no-op without it.
     sessions_shown: bool,
@@ -194,10 +136,6 @@ pub struct NormalMode {
     /// Whether the active session has a running turn to stop, as of the last
     /// frame.
     interruptible: bool,
-    /// When normal mode ends, focus the active session's input instead of
-    /// `restore_focus`: it switched sessions, or an action asked for the input
-    /// while normal mode held the keyboard.
-    focus_input_on_end: bool,
     /// Normal mode ended wanting the active input focused; taken by
     /// [`Self::take_input_focus`].
     input_focus_due: bool,
@@ -208,17 +146,17 @@ pub struct NormalMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pending {
     /// Normal mode's root: waiting for a command or a prefix.
-    Leader,
-    /// `<leader> z`: waiting for `a` / `o` / `c` / `R` / `M`.
-    LeaderZ,
-    /// `<leader> g`: waiting for the second `g`.
-    LeaderG,
-    /// `<leader> d`: waiting for the second `d`.
-    LeaderD,
-    /// `<leader> ]`: waiting for `q`.
-    LeaderCloseBracket,
-    /// `<leader> [`: waiting for `q`.
-    LeaderOpenBracket,
+    Root,
+    /// `z`: waiting for `a` / `o` / `c` / `R` / `M`.
+    Z,
+    /// `g`: waiting for the second `g`.
+    G,
+    /// `d`: waiting for the second `d`.
+    D,
+    /// `]`: waiting for `q`.
+    CloseBracket,
+    /// `[`: waiting for `q`.
+    OpenBracket,
 }
 
 /// Which part of Dave a chord's motions move through.
@@ -304,8 +242,8 @@ const FOCUS_QUEUE: &[ChordHint] = &[
     hint("[q", KeyAction::FocusQueuePrev),
 ];
 
-/// What `<leader>` accepts in the chat pane.
-const CHAT_LEADER_HINTS: &[&[ChordHint]] = &[
+/// What normal mode's root accepts in the chat pane.
+const CHAT_ROOT_HINTS: &[&[ChordHint]] = &[
     BLOCK_MOTIONS,
     &[
         hint("za", KeyAction::BlockToggle),
@@ -329,8 +267,8 @@ const CHAT_LEADER_HINTS: &[&[ChordHint]] = &[
 /// The keycap for Enter.
 const ENTER: &str = "\u{21b5}";
 
-/// What `<leader>` accepts in the sessions pane.
-const SESSIONS_LEADER_HINTS: &[&[ChordHint]] = &[
+/// What normal mode's root accepts in the sessions pane.
+const SESSIONS_ROOT_HINTS: &[&[ChordHint]] = &[
     SESSION_MOTIONS,
     &[
         hint("l", KeyAction::FocusChatPane),
@@ -339,12 +277,12 @@ const SESSIONS_LEADER_HINTS: &[&[ChordHint]] = &[
     INSERT,
 ];
 
-/// What `<leader>` accepts in either pane besides the pane's own keys: the
+/// What normal mode's root accepts in either pane besides the pane's own keys: the
 /// strip gives them a row of their own.
 const SESSION_KEYS: &[&[ChordHint]] = &[SESSION_LIFECYCLE, SESSION_VIEW, SESSION_TURN, FOCUS_QUEUE];
 
-/// What `<leader> z` accepts.
-const LEADER_Z_HINTS: &[&[ChordHint]] = &[
+/// What `z` accepts.
+const Z_HINTS: &[&[ChordHint]] = &[
     &[
         hint("a", KeyAction::BlockToggle),
         hint("o", KeyAction::BlockOpen),
@@ -356,20 +294,20 @@ const LEADER_Z_HINTS: &[&[ChordHint]] = &[
     ],
 ];
 
-/// What `<leader> g` accepts in the chat pane.
-const CHAT_LEADER_G_HINTS: &[&[ChordHint]] = &[&[hint("g", KeyAction::BlockCursorFirst)]];
+/// What `g` accepts in the chat pane.
+const CHAT_G_HINTS: &[&[ChordHint]] = &[&[hint("g", KeyAction::BlockCursorFirst)]];
 
-/// What `<leader> g` accepts in the sessions pane.
-const SESSIONS_LEADER_G_HINTS: &[&[ChordHint]] = &[&[hint("g", KeyAction::SessionPaneFirst)]];
+/// What `g` accepts in the sessions pane.
+const SESSIONS_G_HINTS: &[&[ChordHint]] = &[&[hint("g", KeyAction::SessionPaneFirst)]];
 
-/// What `<leader> d` accepts.
-const LEADER_D_HINTS: &[&[ChordHint]] = &[&[hint("d", KeyAction::DeleteActiveSession)]];
+/// What `d` accepts.
+const D_HINTS: &[&[ChordHint]] = &[&[hint("d", KeyAction::DeleteActiveSession)]];
 
-/// What `<leader> ]` accepts.
-const LEADER_CLOSE_BRACKET_HINTS: &[&[ChordHint]] = &[&[hint("q", KeyAction::FocusQueueNext)]];
+/// What `]` accepts.
+const CLOSE_BRACKET_HINTS: &[&[ChordHint]] = &[&[hint("q", KeyAction::FocusQueueNext)]];
 
-/// What `<leader> [` accepts.
-const LEADER_OPEN_BRACKET_HINTS: &[&[ChordHint]] = &[&[hint("q", KeyAction::FocusQueuePrev)]];
+/// What `[` accepts.
+const OPEN_BRACKET_HINTS: &[&[ChordHint]] = &[&[hint("q", KeyAction::FocusQueuePrev)]];
 
 impl ChordView {
     /// The pane's keys this state could accept, in groups the strip spaces
@@ -380,22 +318,22 @@ impl ChordView {
     /// keeps the two from drifting.
     pub fn hints(self) -> &'static [&'static [ChordHint]] {
         match (self.pane, self.pending) {
-            (Pane::Chat, Pending::Leader) => CHAT_LEADER_HINTS,
-            (Pane::Sessions, Pending::Leader) => SESSIONS_LEADER_HINTS,
-            (_, Pending::LeaderZ) => LEADER_Z_HINTS,
-            (Pane::Chat, Pending::LeaderG) => CHAT_LEADER_G_HINTS,
-            (Pane::Sessions, Pending::LeaderG) => SESSIONS_LEADER_G_HINTS,
-            (_, Pending::LeaderD) => LEADER_D_HINTS,
-            (_, Pending::LeaderCloseBracket) => LEADER_CLOSE_BRACKET_HINTS,
-            (_, Pending::LeaderOpenBracket) => LEADER_OPEN_BRACKET_HINTS,
+            (Pane::Chat, Pending::Root) => CHAT_ROOT_HINTS,
+            (Pane::Sessions, Pending::Root) => SESSIONS_ROOT_HINTS,
+            (_, Pending::Z) => Z_HINTS,
+            (Pane::Chat, Pending::G) => CHAT_G_HINTS,
+            (Pane::Sessions, Pending::G) => SESSIONS_G_HINTS,
+            (_, Pending::D) => D_HINTS,
+            (_, Pending::CloseBracket) => CLOSE_BRACKET_HINTS,
+            (_, Pending::OpenBracket) => OPEN_BRACKET_HINTS,
         }
     }
 
     /// The session keys this state accepts, from either pane: empty past the
-    /// leader.
+    /// root.
     pub fn session_keys(self) -> &'static [&'static [ChordHint]] {
         match self.pending {
-            Pending::Leader => SESSION_KEYS,
+            Pending::Root => SESSION_KEYS,
             _ => &[],
         }
     }
@@ -449,20 +387,13 @@ impl NormalMode {
         std::mem::take(&mut self.input_focus_due)
     }
 
-    /// Hold an action's request to focus the input until the chord ends.
-    /// Taking focus mid-chord would put the input back under the bare keys.
-    pub fn defer_input_focus(&mut self) {
-        self.focus_input_on_end = true;
-    }
-
     /// A Ctrl binding ran while normal mode was on. It stays on, like vim,
     /// unless the binding opened something you type into: those leave it the
     /// way their chord keys do.
-    fn after_modified(&mut self, action: &KeyAction, ctx: &egui::Context) {
+    fn after_modified(&mut self, action: &KeyAction) {
         match action {
             KeyAction::NewAgent | KeyAction::RenameAgent => self.release(),
-            KeyAction::OpenExternalEditor => self.end(ctx),
-            action if action.changes_session() => self.focus_input_on_end = true,
+            KeyAction::OpenExternalEditor => self.end(),
             _ => {}
         }
     }
@@ -483,31 +414,24 @@ impl NormalMode {
         self.pending.is_some()
     }
 
-    /// Enter normal mode: set the focused widget aside so bare keys reach us.
+    /// Enter normal mode. egui has already dropped focus on the Esc that got
+    /// us here; anything still focused is set aside so bare keys reach us.
     fn open(&mut self, ctx: &egui::Context) {
-        self.restore_focus = ctx.memory_mut(|m| {
-            let focused = m.focused();
-            if let Some(id) = focused {
+        ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
                 m.surrender_focus(id);
             }
-            focused
         });
         self.pane = Pane::Chat;
-        self.focus_input_on_end = false;
-        self.pending = Some(Pending::Leader);
+        self.pending = Some(Pending::Root);
     }
 
-    /// Back to insert mode: give focus back to whatever held it before, or to
-    /// the active session's input if nothing did (Esc had already dropped it)
-    /// or normal mode moved between sessions.
-    fn end(&mut self, ctx: &egui::Context) {
+    /// Back to insert mode: focus the active session's input. There is no
+    /// earlier focus to hand back, since the Esc that entered normal mode
+    /// dropped it.
+    fn end(&mut self) {
         self.pending = None;
-        let restore = self.restore_focus.take();
-        let focus_input = std::mem::take(&mut self.focus_input_on_end);
-        match restore {
-            Some(id) if !focus_input => ctx.memory_mut(|m| m.request_focus(id)),
-            _ => self.input_focus_due = true,
-        }
+        self.input_focus_due = true;
     }
 
     /// Leave normal mode and leave focus alone: the action opens something
@@ -515,8 +439,6 @@ impl NormalMode {
     /// focus itself, or the user clicked into a text field.
     fn release(&mut self) {
         self.pending = None;
-        self.restore_focus = None;
-        self.focus_input_on_end = false;
     }
 }
 
@@ -598,11 +520,11 @@ fn check_chord(ctx: &egui::Context, chord: &mut NormalMode) -> ChordStep {
     // Esc cancels a half-typed prefix. At the root it's chrome's (the side
     // menu), and normal mode stays on.
     if ctx.input(|i| i.key_pressed(Key::Escape)) {
-        if pending == Pending::Leader {
+        if pending == Pending::Root {
             return ChordStep::LeaveForChrome;
         }
         ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
-        chord.pending = Some(Pending::Leader);
+        chord.pending = Some(Pending::Root);
         return ChordStep::Consumed(None);
     }
 
@@ -620,93 +542,83 @@ fn check_chord(ctx: &egui::Context, chord: &mut NormalMode) -> ChordStep {
     use Then::{Continue, End, Release};
     let (then, action) = match (chord.pane, pending, press.key, press.shift) {
         // Motions: the same keys walk blocks in the chat, sessions in the list.
-        (Pane::Chat, Pending::Leader, Key::J, false) => {
-            (Continue(Pending::Leader), Some(A::BlockCursorDown))
+        (Pane::Chat, Pending::Root, Key::J, false) => {
+            (Continue(Pending::Root), Some(A::BlockCursorDown))
         }
-        (Pane::Chat, Pending::Leader, Key::K, false) => {
-            (Continue(Pending::Leader), Some(A::BlockCursorUp))
+        (Pane::Chat, Pending::Root, Key::K, false) => {
+            (Continue(Pending::Root), Some(A::BlockCursorUp))
         }
-        (Pane::Chat, Pending::Leader, Key::G, true) => {
-            (Continue(Pending::Leader), Some(A::BlockCursorLast))
+        (Pane::Chat, Pending::Root, Key::G, true) => {
+            (Continue(Pending::Root), Some(A::BlockCursorLast))
         }
-        (Pane::Chat, Pending::LeaderG, Key::G, false) => {
-            (Continue(Pending::Leader), Some(A::BlockCursorFirst))
+        (Pane::Chat, Pending::G, Key::G, false) => {
+            (Continue(Pending::Root), Some(A::BlockCursorFirst))
         }
-        (Pane::Sessions, Pending::Leader, Key::J, false) => {
-            (Continue(Pending::Leader), Some(A::SessionPaneNext))
+        (Pane::Sessions, Pending::Root, Key::J, false) => {
+            (Continue(Pending::Root), Some(A::SessionPaneNext))
         }
-        (Pane::Sessions, Pending::Leader, Key::K, false) => {
-            (Continue(Pending::Leader), Some(A::SessionPanePrev))
+        (Pane::Sessions, Pending::Root, Key::K, false) => {
+            (Continue(Pending::Root), Some(A::SessionPanePrev))
         }
-        (Pane::Sessions, Pending::Leader, Key::G, true) => {
-            (Continue(Pending::Leader), Some(A::SessionPaneLast))
+        (Pane::Sessions, Pending::Root, Key::G, true) => {
+            (Continue(Pending::Root), Some(A::SessionPaneLast))
         }
-        (Pane::Sessions, Pending::LeaderG, Key::G, false) => {
-            (Continue(Pending::Leader), Some(A::SessionPaneFirst))
+        (Pane::Sessions, Pending::G, Key::G, false) => {
+            (Continue(Pending::Root), Some(A::SessionPaneFirst))
         }
-        (_, Pending::Leader, Key::G, false) => (Continue(Pending::LeaderG), None),
+        (_, Pending::Root, Key::G, false) => (Continue(Pending::G), None),
 
         // Panes. Enter from the list goes back to the chat and hands it the
         // keyboard: you've picked the session you wanted.
-        (_, Pending::Leader, Key::H, false) => {
-            (Continue(Pending::Leader), Some(A::FocusSessionsPane))
-        }
-        (_, Pending::Leader, Key::L, false) => (Continue(Pending::Leader), Some(A::FocusChatPane)),
-        (Pane::Sessions, Pending::Leader, Key::Enter, false) => (End, Some(A::FocusChatPane)),
+        (_, Pending::Root, Key::H, false) => (Continue(Pending::Root), Some(A::FocusSessionsPane)),
+        (_, Pending::Root, Key::L, false) => (Continue(Pending::Root), Some(A::FocusChatPane)),
+        (Pane::Sessions, Pending::Root, Key::Enter, false) => (End, Some(A::FocusChatPane)),
 
         // Folds, in the chat only.
-        (Pane::Chat, Pending::Leader, Key::Z, false) => (Continue(Pending::LeaderZ), None),
-        (Pane::Chat, Pending::Leader, Key::O, false) => {
-            (Continue(Pending::Leader), Some(A::BlockToggle))
+        (Pane::Chat, Pending::Root, Key::Z, false) => (Continue(Pending::Z), None),
+        (Pane::Chat, Pending::Root, Key::O, false) => {
+            (Continue(Pending::Root), Some(A::BlockToggle))
         }
-        (Pane::Chat, Pending::Leader, Key::Q, false) => (End, Some(A::BlockCursorClear)),
+        (Pane::Chat, Pending::Root, Key::Q, false) => (End, Some(A::BlockCursorClear)),
 
         // Back to insert mode, from either pane.
-        (_, Pending::Leader, Key::I | Key::A, false) => (End, Some(A::InsertMode)),
-        (_, Pending::LeaderZ, Key::A, false) => (Continue(Pending::Leader), Some(A::BlockToggle)),
-        (_, Pending::LeaderZ, Key::O, false) => (Continue(Pending::Leader), Some(A::BlockOpen)),
-        (_, Pending::LeaderZ, Key::C, false) => (Continue(Pending::Leader), Some(A::BlockClose)),
-        (_, Pending::LeaderZ, Key::R, true) => (Continue(Pending::Leader), Some(A::BlockExpandAll)),
-        (_, Pending::LeaderZ, Key::M, true) => {
-            (Continue(Pending::Leader), Some(A::BlockCollapseAll))
-        }
+        (_, Pending::Root, Key::I | Key::A, false) => (End, Some(A::InsertMode)),
+        (_, Pending::Z, Key::A, false) => (Continue(Pending::Root), Some(A::BlockToggle)),
+        (_, Pending::Z, Key::O, false) => (Continue(Pending::Root), Some(A::BlockOpen)),
+        (_, Pending::Z, Key::C, false) => (Continue(Pending::Root), Some(A::BlockClose)),
+        (_, Pending::Z, Key::R, true) => (Continue(Pending::Root), Some(A::BlockExpandAll)),
+        (_, Pending::Z, Key::M, true) => (Continue(Pending::Root), Some(A::BlockCollapseAll)),
 
         // Session keys, from either pane. New-agent and rename open something
         // you type into, so they end the chord; so does the external editor.
-        (_, Pending::Leader, Key::N, false) => (Release, Some(A::NewAgent)),
-        (_, Pending::Leader, Key::C, false) => (Continue(Pending::Leader), Some(A::CloneAgent)),
-        (_, Pending::Leader, Key::R, false) => (Release, Some(A::RenameAgent)),
-        (_, Pending::Leader, Key::D, false) => (Continue(Pending::LeaderD), None),
-        (_, Pending::LeaderD, Key::D, false) => {
-            (Continue(Pending::Leader), Some(A::DeleteActiveSession))
+        (_, Pending::Root, Key::N, false) => (Release, Some(A::NewAgent)),
+        (_, Pending::Root, Key::C, false) => (Continue(Pending::Root), Some(A::CloneAgent)),
+        (_, Pending::Root, Key::R, false) => (Release, Some(A::RenameAgent)),
+        (_, Pending::Root, Key::D, false) => (Continue(Pending::D), None),
+        (_, Pending::D, Key::D, false) => (Continue(Pending::Root), Some(A::DeleteActiveSession)),
+        (_, Pending::Root, Key::V, false) => (Continue(Pending::Root), Some(A::ToggleView)),
+        (_, Pending::Root, Key::M, false) => {
+            (Continue(Pending::Root), Some(A::CyclePermissionMode))
         }
-        (_, Pending::Leader, Key::V, false) => (Continue(Pending::Leader), Some(A::ToggleView)),
-        (_, Pending::Leader, Key::M, false) => {
-            (Continue(Pending::Leader), Some(A::CyclePermissionMode))
+        (_, Pending::Root, Key::E, false) => (End, Some(A::OpenExternalEditor)),
+        (_, Pending::Root, Key::S, false) => (Continue(Pending::Root), Some(A::Interrupt)),
+        (_, Pending::Root, Key::CloseBracket, false) => (Continue(Pending::CloseBracket), None),
+        (_, Pending::Root, Key::OpenBracket, false) => (Continue(Pending::OpenBracket), None),
+        (_, Pending::CloseBracket, Key::Q, false) => {
+            (Continue(Pending::Root), Some(A::FocusQueueNext))
         }
-        (_, Pending::Leader, Key::E, false) => (End, Some(A::OpenExternalEditor)),
-        (_, Pending::Leader, Key::S, false) => (Continue(Pending::Leader), Some(A::Interrupt)),
-        (_, Pending::Leader, Key::CloseBracket, false) => {
-            (Continue(Pending::LeaderCloseBracket), None)
-        }
-        (_, Pending::Leader, Key::OpenBracket, false) => {
-            (Continue(Pending::LeaderOpenBracket), None)
-        }
-        (_, Pending::LeaderCloseBracket, Key::Q, false) => {
-            (Continue(Pending::Leader), Some(A::FocusQueueNext))
-        }
-        (_, Pending::LeaderOpenBracket, Key::Q, false) => {
-            (Continue(Pending::Leader), Some(A::FocusQueuePrev))
+        (_, Pending::OpenBracket, Key::Q, false) => {
+            (Continue(Pending::Root), Some(A::FocusQueuePrev))
         }
 
         // Keys the regular bindings read while the input is unfocused.
         (_, _, key, _) if owned_bare_key(key) => {
-            chord.pending = Some(Pending::Leader);
+            chord.pending = Some(Pending::Root);
             return ChordStep::FallThrough;
         }
 
         // Anything else is swallowed, and drops a half-typed prefix.
-        _ => (Continue(Pending::Leader), None),
+        _ => (Continue(Pending::Root), None),
     };
 
     // Swallow this frame's keys and text so a bare key never leaks into the
@@ -724,13 +636,12 @@ fn check_chord(ctx: &egui::Context, chord: &mut NormalMode) -> ChordStep {
     match &action {
         Some(A::FocusSessionsPane) => chord.pane = Pane::Sessions,
         Some(A::FocusChatPane) => chord.pane = Pane::Chat,
-        Some(action) if action.changes_session() => chord.focus_input_on_end = true,
         _ => {}
     }
 
     match then {
         Continue(next) => chord.pending = Some(next),
-        End => chord.end(ctx),
+        End => chord.end(),
         Release => chord.release(),
     }
     ChordStep::Consumed(action)
@@ -740,8 +651,6 @@ fn check_chord(ctx: &egui::Context, chord: &mut NormalMode) -> ChordStep {
 /// by `Dave::process_keybindings` from the active session and the layout.
 #[derive(Clone, Copy, Debug)]
 pub struct KeyContext {
-    /// The key that opens a chord.
-    pub leader: Leader,
     /// The active session's mode; agentic-only bindings need
     /// [`AiMode::Agentic`].
     pub ai_mode: AiMode,
@@ -779,7 +688,6 @@ pub fn check_keybindings(
     keys: KeyContext,
 ) -> Option<KeyAction> {
     let KeyContext {
-        leader,
         ai_mode,
         sessions_shown,
         interruptible,
@@ -822,19 +730,10 @@ pub fn check_keybindings(
         return None;
     }
 
-    // The leader enters normal mode too; pressed while it is on, it does
-    // nothing.
-    if ctx.input(|i| leader.pressed(i)) {
-        if !chord.is_on() {
-            chord.open(ctx);
-        }
-        return None;
-    }
-
     let action = check_regular_bindings(ctx, keys);
     if let Some(action) = &action {
         if chord.is_on() {
-            chord.after_modified(action, ctx);
+            chord.after_modified(action);
         }
     }
     action
@@ -1056,13 +955,12 @@ mod tests {
     /// through every frame the way `Dave` does, and return the last action
     /// `check_keybindings` detected along the way.
     fn detect_sequence(presses: &[(Modifiers, Key)]) -> Option<KeyAction> {
-        detect_sequence_with(Leader::DEFAULT, presses)
+        detect_sequence_in(FRAME, presses)
     }
 
     /// The session list on screen and a turn running, agentic, with no
     /// pending prompts: every chord key applies.
     const FRAME: KeyContext = KeyContext {
-        leader: Leader::DEFAULT,
         ai_mode: AiMode::Agentic,
         sessions_shown: true,
         interruptible: true,
@@ -1076,11 +974,6 @@ mod tests {
     /// `check_keybindings` as these tests drive it.
     fn check(ctx: &egui::Context, chord: &mut NormalMode, keys: KeyContext) -> Option<KeyAction> {
         check_keybindings(ctx, chord, keys)
-    }
-
-    /// [`detect_sequence`] with `leader` bound in place of the default.
-    fn detect_sequence_with(leader: Leader, presses: &[(Modifiers, Key)]) -> Option<KeyAction> {
-        detect_sequence_in(KeyContext { leader, ..FRAME }, presses)
     }
 
     /// [`detect_sequence`] in `frame`.
@@ -1140,32 +1033,31 @@ mod tests {
             .collect()
     }
 
-    const LEADER: (Modifiers, Key) = (Leader::DEFAULT.modifiers, Leader::DEFAULT.key);
     const ESC: (Modifiers, Key) = (Modifiers::NONE, Key::Escape);
     const NONE: Modifiers = Modifiers::NONE;
     const SHIFT: Modifiers = Modifiers::SHIFT;
     const CTRL_SHIFT: Modifiers = Modifiers::CTRL.plus(Modifiers::SHIFT);
 
     #[test]
-    fn leader_j_moves_the_cursor_down() {
+    fn normal_j_moves_the_cursor_down() {
         assert_eq!(
-            detect_sequence(&[LEADER, (NONE, Key::J)]),
+            detect_sequence(&[ESC, (NONE, Key::J)]),
             Some(KeyAction::BlockCursorDown),
         );
     }
 
     #[test]
-    fn leader_z_shift_r_expands_all() {
+    fn normal_z_shift_r_expands_all() {
         assert_eq!(
-            detect_sequence(&[LEADER, (NONE, Key::Z), (SHIFT, Key::R)]),
+            detect_sequence(&[ESC, (NONE, Key::Z), (SHIFT, Key::R)]),
             Some(KeyAction::BlockExpandAll),
         );
     }
 
     #[test]
-    fn leader_g_g_moves_to_the_first_block() {
+    fn normal_g_g_moves_to_the_first_block() {
         assert_eq!(
-            detect_sequence(&[LEADER, (NONE, Key::G), (NONE, Key::G)]),
+            detect_sequence(&[ESC, (NONE, Key::G), (NONE, Key::G)]),
             Some(KeyAction::BlockCursorFirst),
         );
     }
@@ -1173,7 +1065,7 @@ mod tests {
     #[test]
     fn the_chord_stays_open_so_motions_repeat() {
         assert_eq!(
-            detect_sequence(&[LEADER, (NONE, Key::J), (NONE, Key::K)]),
+            detect_sequence(&[ESC, (NONE, Key::J), (NONE, Key::K)]),
             Some(KeyAction::BlockCursorUp),
         );
     }
@@ -1181,30 +1073,24 @@ mod tests {
     #[test]
     fn pending_tracks_the_chord() {
         assert_eq!(pending_after(&[]), None);
-        assert_eq!(pending_after(&[LEADER]), Some(Pending::Leader));
+        assert_eq!(pending_after(&[ESC]), Some(Pending::Root));
+        assert_eq!(pending_after(&[ESC, (NONE, Key::Z)]), Some(Pending::Z));
+        assert_eq!(pending_after(&[ESC, (NONE, Key::G)]), Some(Pending::G));
         assert_eq!(
-            pending_after(&[LEADER, (NONE, Key::Z)]),
-            Some(Pending::LeaderZ)
+            pending_after(&[ESC, (NONE, Key::Z), (NONE, Key::A)]),
+            Some(Pending::Root),
+            "a finished command drops back to the root, so the strip stays up"
         );
+        assert_eq!(pending_after(&[ESC, (NONE, Key::Q)]), None);
+        assert_eq!(pending_after(&[ESC, (NONE, Key::I)]), None);
         assert_eq!(
-            pending_after(&[LEADER, (NONE, Key::G)]),
-            Some(Pending::LeaderG)
-        );
-        assert_eq!(
-            pending_after(&[LEADER, (NONE, Key::Z), (NONE, Key::A)]),
-            Some(Pending::Leader),
-            "a finished command drops back to the leader, so the strip stays up"
-        );
-        assert_eq!(pending_after(&[LEADER, (NONE, Key::Q)]), None);
-        assert_eq!(pending_after(&[LEADER, (NONE, Key::I)]), None);
-        assert_eq!(
-            pending_after(&[LEADER, (NONE, Key::X)]),
-            Some(Pending::Leader),
+            pending_after(&[ESC, (NONE, Key::X)]),
+            Some(Pending::Root),
             "an unknown key is swallowed and normal mode stays on"
         );
         assert_eq!(
-            pending_after(&[LEADER, (NONE, Key::Z), (NONE, Key::X)]),
-            Some(Pending::Leader),
+            pending_after(&[ESC, (NONE, Key::Z), (NONE, Key::X)]),
+            Some(Pending::Root),
             "and drops a half-typed prefix"
         );
     }
@@ -1216,40 +1102,32 @@ mod tests {
         const H: (Modifiers, Key) = (NONE, Key::H);
         type Presses = &'static [(Modifiers, Key)];
         let prefixes: [(Pane, Pending, Presses); 11] = [
-            (Pane::Chat, Pending::Leader, &[LEADER]),
-            (Pane::Chat, Pending::LeaderZ, &[LEADER, (NONE, Key::Z)]),
-            (Pane::Chat, Pending::LeaderG, &[LEADER, (NONE, Key::G)]),
-            (Pane::Chat, Pending::LeaderD, &[LEADER, (NONE, Key::D)]),
+            (Pane::Chat, Pending::Root, &[ESC]),
+            (Pane::Chat, Pending::Z, &[ESC, (NONE, Key::Z)]),
+            (Pane::Chat, Pending::G, &[ESC, (NONE, Key::G)]),
+            (Pane::Chat, Pending::D, &[ESC, (NONE, Key::D)]),
             (
                 Pane::Chat,
-                Pending::LeaderCloseBracket,
-                &[LEADER, (NONE, Key::CloseBracket)],
+                Pending::CloseBracket,
+                &[ESC, (NONE, Key::CloseBracket)],
             ),
             (
                 Pane::Chat,
-                Pending::LeaderOpenBracket,
-                &[LEADER, (NONE, Key::OpenBracket)],
+                Pending::OpenBracket,
+                &[ESC, (NONE, Key::OpenBracket)],
             ),
-            (Pane::Sessions, Pending::Leader, &[LEADER, H]),
+            (Pane::Sessions, Pending::Root, &[ESC, H]),
+            (Pane::Sessions, Pending::G, &[ESC, H, (NONE, Key::G)]),
+            (Pane::Sessions, Pending::D, &[ESC, H, (NONE, Key::D)]),
             (
                 Pane::Sessions,
-                Pending::LeaderG,
-                &[LEADER, H, (NONE, Key::G)],
-            ),
-            (
-                Pane::Sessions,
-                Pending::LeaderD,
-                &[LEADER, H, (NONE, Key::D)],
+                Pending::CloseBracket,
+                &[ESC, H, (NONE, Key::CloseBracket)],
             ),
             (
                 Pane::Sessions,
-                Pending::LeaderCloseBracket,
-                &[LEADER, H, (NONE, Key::CloseBracket)],
-            ),
-            (
-                Pane::Sessions,
-                Pending::LeaderOpenBracket,
-                &[LEADER, H, (NONE, Key::OpenBracket)],
+                Pending::OpenBracket,
+                &[ESC, H, (NONE, Key::OpenBracket)],
             ),
         ];
         for (pane, pending, prefix) in prefixes {
@@ -1276,21 +1154,21 @@ mod tests {
     }
 
     #[test]
-    fn leader_h_j_switches_sessions_instead_of_moving_the_cursor() {
+    fn normal_h_j_switches_sessions_instead_of_moving_the_cursor() {
         assert_eq!(
-            detect_sequence(&[LEADER, (NONE, Key::H), (NONE, Key::J)]),
+            detect_sequence(&[ESC, (NONE, Key::H), (NONE, Key::J)]),
             Some(KeyAction::SessionPaneNext),
         );
         assert_eq!(
-            detect_sequence(&[LEADER, (NONE, Key::H), (SHIFT, Key::G)]),
+            detect_sequence(&[ESC, (NONE, Key::H), (SHIFT, Key::G)]),
             Some(KeyAction::SessionPaneLast),
         );
     }
 
     #[test]
-    fn leader_h_l_j_is_back_in_the_chat() {
+    fn normal_h_l_j_is_back_in_the_chat() {
         assert_eq!(
-            detect_sequence(&[LEADER, (NONE, Key::H), (NONE, Key::L), (NONE, Key::J)]),
+            detect_sequence(&[ESC, (NONE, Key::H), (NONE, Key::L), (NONE, Key::J)]),
             Some(KeyAction::BlockCursorDown),
         );
     }
@@ -1298,31 +1176,31 @@ mod tests {
     #[test]
     fn every_entry_starts_in_the_chat() {
         assert_eq!(
-            detect_sequence(&[LEADER, (NONE, Key::H), (NONE, Key::I), ESC, (NONE, Key::J)]),
+            detect_sequence(&[ESC, (NONE, Key::H), (NONE, Key::I), ESC, (NONE, Key::J)]),
             Some(KeyAction::BlockCursorDown),
         );
         assert_eq!(
-            detect_sequence(&[LEADER, (NONE, Key::H), LEADER, (NONE, Key::J)]),
+            detect_sequence(&[ESC, (NONE, Key::H), ESC, (NONE, Key::J)]),
             Some(KeyAction::SessionPaneNext),
-            "the leader in normal mode does nothing, so the pane stays",
+            "Esc at the root leaves normal mode on, so the pane stays",
         );
     }
 
     #[test]
     fn enter_from_the_session_list_ends_the_chord() {
         assert_eq!(
-            detect_sequence(&[LEADER, (NONE, Key::H), (NONE, Key::Enter)]),
+            detect_sequence(&[ESC, (NONE, Key::H), (NONE, Key::Enter)]),
             Some(KeyAction::FocusChatPane),
         );
         assert_eq!(
-            pending_after(&[LEADER, (NONE, Key::H), (NONE, Key::Enter)]),
+            pending_after(&[ESC, (NONE, Key::H), (NONE, Key::Enter)]),
             None
         );
     }
 
     #[test]
     fn h_without_a_session_list_does_nothing() {
-        let presses = [LEADER, (NONE, Key::H), (NONE, Key::J)];
+        let presses = [ESC, (NONE, Key::H), (NONE, Key::J)];
         assert_eq!(
             detect_sequence_in(
                 KeyContext {
@@ -1338,42 +1216,42 @@ mod tests {
 
     #[test]
     fn rename_and_new_agent_end_the_chord() {
-        assert_eq!(pending_after(&[LEADER, (NONE, Key::R)]), None);
-        assert_eq!(pending_after(&[LEADER, (NONE, Key::N)]), None);
+        assert_eq!(pending_after(&[ESC, (NONE, Key::R)]), None);
+        assert_eq!(pending_after(&[ESC, (NONE, Key::N)]), None);
         assert_eq!(
-            pending_after(&[LEADER, (NONE, Key::D), (NONE, Key::D)]),
-            Some(Pending::Leader),
+            pending_after(&[ESC, (NONE, Key::D), (NONE, Key::D)]),
+            Some(Pending::Root),
             "dd keeps the chord, so you can walk on to the next session",
         );
     }
 
     #[test]
-    fn leader_s_stops_the_running_turn_from_either_pane() {
+    fn normal_s_stops_the_running_turn_from_either_pane() {
         assert_eq!(
-            detect_sequence(&[LEADER, (NONE, Key::S)]),
+            detect_sequence(&[ESC, (NONE, Key::S)]),
             Some(KeyAction::Interrupt),
         );
         assert_eq!(
-            detect_sequence(&[LEADER, (NONE, Key::H), (NONE, Key::S)]),
+            detect_sequence(&[ESC, (NONE, Key::H), (NONE, Key::S)]),
             Some(KeyAction::Interrupt),
         );
         assert_eq!(
-            pending_after(&[LEADER, (NONE, Key::S)]),
-            Some(Pending::Leader),
+            pending_after(&[ESC, (NONE, Key::S)]),
+            Some(Pending::Root),
             "s keeps the chord open, like the other session keys",
         );
     }
 
     #[test]
-    fn leader_s_with_nothing_running_is_swallowed() {
+    fn normal_s_with_nothing_running_is_swallowed() {
         let idle = KeyContext {
             interruptible: false,
             ..FRAME
         };
-        assert_eq!(detect_sequence_in(idle, &[LEADER, (NONE, Key::S)]), None);
+        assert_eq!(detect_sequence_in(idle, &[ESC, (NONE, Key::S)]), None);
         assert_eq!(
-            pending_after_in(idle, &[LEADER, (NONE, Key::S)]),
-            Some(Pending::Leader),
+            pending_after_in(idle, &[ESC, (NONE, Key::S)]),
+            Some(Pending::Root),
             "the chord stays open",
         );
     }
@@ -1381,7 +1259,7 @@ mod tests {
     #[test]
     fn escape_enters_normal_mode_and_does_not_interrupt() {
         assert_eq!(detect(NONE, Key::Escape), None);
-        assert_eq!(pending_after(&[ESC]), Some(Pending::Leader));
+        assert_eq!(pending_after(&[ESC]), Some(Pending::Root));
     }
 
     #[test]
@@ -1429,7 +1307,7 @@ mod tests {
             (NormalMode::default(), None),
         );
         harness.run();
-        harness.press_key_modifiers(LEADER.0, LEADER.1);
+        harness.press_key_modifiers(ESC.0, ESC.1);
         // Each step is a quarter second of simulated time: a long pause to
         // read a block.
         for _ in 0..40 {
@@ -1464,7 +1342,8 @@ mod tests {
 
     /// A frame with the keybindings in front of a real text field, which
     /// starts out focused like the chat input: egui drops focus from an id
-    /// no widget claims.
+    /// no widget claims. Normal mode's request to focus the input is honoured
+    /// the way `settle_chord_focus` does it.
     fn input_harness(
         input_id: egui::Id,
         keys: KeyContext,
@@ -1472,6 +1351,9 @@ mod tests {
         let mut harness = Harness::new_ui_state(
             move |ui, (chord, text): &mut (NormalMode, String)| {
                 check(ui.ctx(), chord, keys);
+                if chord.take_input_focus() {
+                    ui.memory_mut(|m| m.request_focus(input_id));
+                }
                 ui.add(egui::TextEdit::singleline(text).id(input_id))
                     .accessible_name("test field");
             },
@@ -1487,11 +1369,11 @@ mod tests {
         let input_id = egui::Id::unique("chat_input");
         let mut harness = input_harness(input_id, FRAME);
 
-        harness.press_key_modifiers(LEADER.0, LEADER.1);
+        harness.press_key_modifiers(ESC.0, ESC.1);
         assert_eq!(
             harness.ctx.memory(|m| m.focused()),
             None,
-            "the leader sets the input's focus aside"
+            "Esc sets the input's focus aside"
         );
 
         type_key(&mut harness, Key::J, "j");
@@ -1534,18 +1416,10 @@ mod tests {
     }
 
     #[test]
-    fn escape_j_moves_the_cursor_down() {
-        assert_eq!(
-            detect_sequence(&[ESC, (NONE, Key::J)]),
-            Some(KeyAction::BlockCursorDown),
-        );
-    }
-
-    #[test]
     fn escape_cancels_a_prefix_and_stays_in_normal_mode() {
         assert_eq!(
             pending_after(&[ESC, (NONE, Key::Z), ESC]),
-            Some(Pending::Leader)
+            Some(Pending::Root)
         );
         assert_eq!(
             detect_sequence(&[ESC, (NONE, Key::Z), ESC, (NONE, Key::J)]),
@@ -1597,11 +1471,30 @@ mod tests {
             ..FRAME
         };
         assert_eq!(escape_left_over(overlay, &[ESC]), (true, false));
-        assert_eq!(
-            escape_left_over(overlay, &[LEADER, ESC]),
-            (true, false),
-            "an overlay ends normal mode, and its Esc stays the overlay's"
+    }
+
+    #[test]
+    fn an_overlay_opening_ends_normal_mode_and_keeps_its_esc() {
+        let mut harness = Harness::new_ui_state(
+            |ui, (chord, overlay, left): &mut (NormalMode, bool, bool)| {
+                let keys = KeyContext {
+                    overlay_open: *overlay,
+                    ..FRAME
+                };
+                check(ui.ctx(), chord, keys);
+                *left |= ui.input(|i| i.key_pressed(Key::Escape));
+            },
+            (NormalMode::default(), false, false),
         );
+        harness.run();
+        harness.press_key_modifiers(ESC.0, ESC.1);
+        assert!(harness.state().0.is_on());
+
+        harness.state_mut().1 = true;
+        harness.state_mut().2 = false;
+        harness.press_key_modifiers(ESC.0, ESC.1);
+        assert!(!harness.state().0.is_on(), "the overlay ends normal mode");
+        assert!(harness.state().2, "and its Esc stays the overlay's");
     }
 
     #[test]
@@ -1617,7 +1510,7 @@ mod tests {
     fn ctrl_keys_work_without_leaving_normal_mode() {
         let ctrl_j = (Modifiers::CTRL, Key::J);
         assert_eq!(detect_sequence(&[ESC, ctrl_j]), Some(KeyAction::NextAgent));
-        assert_eq!(pending_after(&[ESC, ctrl_j]), Some(Pending::Leader));
+        assert_eq!(pending_after(&[ESC, ctrl_j]), Some(Pending::Root));
         assert_eq!(
             detect_sequence(&[ESC, ctrl_j, (NONE, Key::J)]),
             Some(KeyAction::BlockCursorDown),
@@ -1646,7 +1539,7 @@ mod tests {
         );
         assert_eq!(
             pending_after_in(pending, &[ESC, (NONE, Key::Num1)]),
-            Some(Pending::Leader),
+            Some(Pending::Root),
         );
     }
 
@@ -1683,45 +1576,6 @@ mod tests {
 
         type_key(&mut harness, Key::J, "j");
         assert_eq!(harness.state().2, "j", "typing lands in the clicked field");
-    }
-
-    #[test]
-    fn the_default_leader_is_the_persisted_default() {
-        assert_eq!(Leader::resolve(&LeaderKey::default()), Leader::DEFAULT);
-    }
-
-    #[test]
-    fn a_rebound_leader_opens_the_chord_and_the_old_one_does_not() {
-        let alt_x = Leader::resolve(&LeaderKey::from_press(Modifiers::ALT, Key::X));
-        assert_eq!(
-            detect_sequence_with(alt_x, &[(Modifiers::ALT, Key::X), (NONE, Key::J)]),
-            Some(KeyAction::BlockCursorDown),
-        );
-        assert_eq!(detect_sequence_with(alt_x, &[LEADER, (NONE, Key::J)]), None);
-    }
-
-    #[test]
-    fn a_leader_key_round_trips_through_its_name() {
-        let leader = LeaderKey::from_press(Modifiers::CTRL | Modifiers::SHIFT, Key::OpenBracket);
-        let json = serde_json::to_string(&leader).unwrap();
-        let back: LeaderKey = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.to_string(), "Ctrl+Shift+[");
-        assert_eq!(
-            Leader::resolve(&back),
-            Leader {
-                modifiers: Modifiers::CTRL | Modifiers::SHIFT,
-                key: Key::OpenBracket,
-            }
-        );
-    }
-
-    #[test]
-    fn an_unknown_leader_name_falls_back_to_the_default() {
-        let bogus = LeaderKey {
-            key: "NotAKey".to_owned(),
-            ..LeaderKey::default()
-        };
-        assert_eq!(Leader::resolve(&bogus), Leader::DEFAULT);
     }
 
     #[test]

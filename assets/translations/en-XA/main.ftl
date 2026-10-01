@@ -136,9 +136,6 @@ Chats_dc22 = {"["}Çhàts{"]"}
 # Label for clear cache button, Storage settings section
 Clear_cache_dccb = {"["}Çléàr çàçhé{"]"}
 
-# Hint under the leader key button explaining how to rebind it
-Click__then_press_a_key_29e7 = {"["}Çlíçk, théñ préss à kéy.{"]"}
-
 # Hover text for editable zap amount
 Click_to_edit_0414 = {"["}Çlíçk tó édít{"]"}
 
@@ -337,9 +334,6 @@ Enter_your_key_0fca = {"["}Éñtér yóúr kéy{"]"}
 # Instructions for entering Nostr credentials
 Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__nsec___You_must_enter_your_private_key_to_be_able_to_post__reply__etc_48e9 = {"["}Éñtér yóúr públíç kéy (ñpúb), ñóstr àddréss (é.g. {$address}), ór prívàté kéy (ñséç). Yóú múst éñtér yóúr prívàté kéy tó bé àblé tó póst, réply, étç.{"]"}
 
-# Hint under the leader key button while it waits for a key
-Esc_cancels_80f8 = {"["}Ésç çàñçéls.{"]"}
-
 # Hint under the session environment settings heading
 Exported_into_every_agent_session_this_host_starts__e_g__HEADWAY_COMMENT_NSEC_FILE_pointing_at_an_agent_key_file__Applies_to_sessions_started_after_saving__Dave_s_own_AGENTIUM_SESSION_variables_always_win_3ac3 = {"["}Éxpórtéd íñtó évéry àgéñt séssíóñ thís hóst stàrts, é.g. HÉÀDWÀY_ÇÓMMÉÑT_ÑSÉÇ_FÍLÉ póíñtíñg àt àñ àgéñt kéy fílé. Àpplíés tó séssíóñs stàrtéd àftér sàvíñg. Dàvé's ówñ ÀGÉÑTÍÚM_SÉSSÍÓÑ vàríàblés àlwàys wíñ.{"]"}
 
@@ -381,9 +375,6 @@ Headway_b5c8 = {"["}Héàdwày{"]"}
 
 # Dave which-key tooltip: move the block cursor to the first block
 First_block_457f = {"["}Fírst blóçk{"]"}
-
-# Shown when a leader key was pressed without Ctrl or Alt
-Hold_Ctrl_or_Alt_with_the_key__Esc_cancels_64ee = {"["}Hóld Çtrl ór Àlt wíth thé kéy. Ésç çàñçéls.{"]"}
 
 # Title for Home column
 Home_8c19 = {"["}Hómé{"]"}
@@ -459,9 +450,6 @@ Last_Note_per_User_17ad = {"["}Làst Ñóté pér Úsér{"]"}
 
 # Dave which-key tooltip: switch to the last session in the list
 Last_session_cdfc = {"["}Làst séssíóñ{"]"}
-
-# Settings label for the key that starts a Dave keyboard chord
-Leader_key_4ce8 = {"["}Léàdér kéy:{"]"}
 
 # Label for Theme Light, Appearance settings section
 Light_7475 = {"["}Líght{"]"}
@@ -666,9 +654,6 @@ Please_select_an_icon_655b = {"["}Pléàsé séléçt àñ íçóñ.{"]"}
 
 # Button label to post a note
 Post_now_8a49 = {"["}Póst ñów{"]"}
-
-# Leader key button while it waits for the new binding
-Press_a_key_094b = {"["}Préss à kéy…{"]"}
 
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = {"["}Préss thé búttóñ bélów tó çópy yóúr móst réçéñt lógs tó yóúr systém's çlípbóàrd. Théñ pàsté ít íñtó yóúr émàíl.{"]"}

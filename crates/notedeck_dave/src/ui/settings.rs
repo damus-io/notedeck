@@ -1,4 +1,4 @@
-use crate::config::{AiProvider, DaveSettings, LeaderKey};
+use crate::config::{AiProvider, DaveSettings};
 use crate::ui::keybind_hint::keybind_hint;
 use notedeck::{tr, Localization};
 use std::collections::BTreeMap;
@@ -13,12 +13,6 @@ pub struct DaveSettingsPanel {
     custom_model: String,
     /// Whether to use custom model input
     use_custom_model: bool,
-    /// The leader-key button was clicked: the next key press becomes the leader.
-    capturing_leader: bool,
-    /// The last press while capturing had no Ctrl or Alt, so it was refused.
-    leader_rejected: bool,
-    /// `editing.leader_key` for display, rebuilt only when it changes.
-    leader_label: String,
     /// `editing.session_env` as editable rows. Seeded when the panel opens and
     /// written back into the settings only on save, so typing never rebuilds
     /// the map.
@@ -100,9 +94,6 @@ impl DaveSettingsPanel {
             editing: DaveSettings::default(),
             custom_model: String::new(),
             use_custom_model: false,
-            capturing_leader: false,
-            leader_rejected: false,
-            leader_label: String::new(),
             env_rows: Vec::new(),
             next_env_row_id: 0,
             focus_new_env_row: false,
@@ -111,12 +102,6 @@ impl DaveSettingsPanel {
 
     pub fn is_open(&self) -> bool {
         self.open
-    }
-
-    /// Whether the panel is waiting for a key press to record as the leader.
-    /// While it is, the app's own keybindings must stand aside.
-    pub fn is_capturing_leader(&self) -> bool {
-        self.open && self.capturing_leader
     }
 
     /// Open the panel with a copy of current settings to edit
@@ -128,9 +113,6 @@ impl DaveSettingsPanel {
             .provider
             .available_models()
             .contains(&current.model.as_str());
-        self.capturing_leader = false;
-        self.leader_rejected = false;
-        self.leader_label = current.leader_key.to_string();
         self.env_rows.clear();
         for (key, value) in &current.session_env {
             self.push_env_row(key.clone(), value.clone());
@@ -159,7 +141,6 @@ impl DaveSettingsPanel {
 
     pub fn close(&mut self) {
         self.open = false;
-        self.capturing_leader = false;
     }
 
     /// Prepare editing state for overlay mode
@@ -167,48 +148,6 @@ impl DaveSettingsPanel {
         if !self.open {
             self.open(current);
         }
-    }
-
-    /// While capturing, record this frame's first key press as the leader.
-    ///
-    /// Esc cancels the capture. A press without Ctrl or Alt is refused, since
-    /// a bare key is something you type. Every key and text event is
-    /// swallowed either way, so the press can neither save (Ctrl+S) nor
-    /// close (Esc) the panel.
-    fn capture_leader(&mut self, ctx: &egui::Context) {
-        let Some((modifiers, key)) = ctx.input(|i| {
-            i.events.iter().find_map(|event| match event {
-                egui::Event::Key {
-                    key,
-                    pressed: true,
-                    repeat: false,
-                    modifiers,
-                    ..
-                } => Some((*modifiers, *key)),
-                _ => None,
-            })
-        }) else {
-            return;
-        };
-        ctx.input_mut(|i| {
-            i.events
-                .retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)))
-        });
-
-        if key == egui::Key::Escape {
-            self.capturing_leader = false;
-            self.leader_rejected = false;
-            return;
-        }
-        if !LeaderKey::is_valid_press(modifiers) {
-            self.leader_rejected = true;
-            return;
-        }
-
-        self.editing.leader_key = LeaderKey::from_press(modifiers, key);
-        self.leader_label = self.editing.leader_key.to_string();
-        self.capturing_leader = false;
-        self.leader_rejected = false;
     }
 
     /// Render settings as a full-panel overlay (replaces the main content)
@@ -220,11 +159,6 @@ impl DaveSettingsPanel {
     ) -> Option<SettingsPanelAction> {
         // Initialize editing state if not already set
         self.prepare_edit(current);
-
-        // Before anything else reads this frame's keys.
-        if self.capturing_leader {
-            self.capture_leader(ui.ctx());
-        }
 
         let mut action: Option<SettingsPanelAction> = None;
         let is_narrow = notedeck::ui::is_narrow(ui.ctx());
@@ -394,50 +328,6 @@ impl DaveSettingsPanel {
                     }
                     ui.end_row();
                 }
-
-                // Leader key: click the button, then press the new binding.
-                ui.label(tr!(
-                    i18n,
-                    "Leader key:",
-                    "Settings label for the key that starts a Dave keyboard chord"
-                ));
-                ui.vertical(|ui| {
-                    let button = if self.capturing_leader {
-                        ui.button(tr!(
-                            i18n,
-                            "Press a key…",
-                            "Leader key button while it waits for the new binding"
-                        ))
-                    } else {
-                        ui.button(self.leader_label.as_str())
-                    };
-                    if button.clicked() {
-                        self.capturing_leader = !self.capturing_leader;
-                        self.leader_rejected = false;
-                    }
-
-                    let hint = if self.leader_rejected {
-                        tr!(
-                            i18n,
-                            "Hold Ctrl or Alt with the key. Esc cancels.",
-                            "Shown when a leader key was pressed without Ctrl or Alt"
-                        )
-                    } else if self.capturing_leader {
-                        tr!(
-                            i18n,
-                            "Esc cancels.",
-                            "Hint under the leader key button while it waits for a key"
-                        )
-                    } else {
-                        tr!(
-                            i18n,
-                            "Click, then press a key.",
-                            "Hint under the leader key button explaining how to rebind it"
-                        )
-                    };
-                    ui.weak(hint);
-                });
-                ui.end_row();
             });
 
         ui.add_space(20.0);
@@ -622,7 +512,6 @@ mod tests {
     use egui::accesskit::Role;
     use egui::{Key, Modifiers};
     use egui_kittest::kittest::Queryable;
-    use egui_kittest::Harness;
     use notedeck::test_harness::PressKey;
 
     /// The panel, the settings it edits, and whatever `overlay_ui` last
@@ -665,73 +554,6 @@ mod tests {
             ]),
             ..DaveSettings::default()
         }
-    }
-
-    /// A settings overlay over default settings, with the leader button
-    /// already clicked so it is waiting for a key.
-    fn capturing_harness() -> Harness<'static, State> {
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .build_ui_state(overlay, State::new(DaveSettings::default()));
-        harness.run();
-        harness.get_by_label("Ctrl+;").click_accesskit();
-        harness.run();
-        assert!(harness.state().panel.is_capturing_leader());
-        harness
-    }
-
-    #[test]
-    fn click_then_press_rebinds_the_leader() {
-        let mut harness = capturing_harness();
-        harness.press_key_modifiers(Modifiers::ALT, Key::X);
-
-        let panel = &harness.state().panel;
-        assert!(!panel.is_capturing_leader());
-        assert_eq!(
-            panel.editing.leader_key,
-            LeaderKey::from_press(Modifiers::ALT, Key::X)
-        );
-        assert_eq!(panel.leader_label, "Alt+X");
-        // The new binding is only staged: it persists on Save.
-        assert!(harness.state().action.is_none());
-    }
-
-    #[test]
-    fn a_bare_key_is_refused_and_capture_continues() {
-        let mut harness = capturing_harness();
-        harness.press_key_modifiers(Modifiers::NONE, Key::J);
-
-        let panel = &harness.state().panel;
-        assert!(panel.is_capturing_leader());
-        assert!(panel.leader_rejected);
-        assert_eq!(panel.editing.leader_key, LeaderKey::default());
-    }
-
-    #[test]
-    fn escape_cancels_the_capture_but_not_the_panel() {
-        let mut harness = capturing_harness();
-        harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
-
-        let state = harness.state();
-        assert!(!state.panel.is_capturing_leader());
-        assert!(state.panel.is_open(), "Esc must not close the panel");
-        assert!(state.action.is_none());
-        assert_eq!(state.panel.editing.leader_key, LeaderKey::default());
-    }
-
-    #[test]
-    fn ctrl_s_while_capturing_is_recorded_not_saved() {
-        let mut harness = capturing_harness();
-        harness.press_key_modifiers(Modifiers::CTRL, Key::S);
-
-        let state = harness.state();
-        assert!(
-            state.action.is_none(),
-            "Ctrl+S was the new leader, not Save"
-        );
-        assert_eq!(
-            state.panel.editing.leader_key,
-            LeaderKey::from_press(Modifiers::CTRL, Key::S)
-        );
     }
 
     /// Editing, removing and adding session env rows all land in the settings
@@ -792,7 +614,6 @@ mod tests {
             ])
         );
         // Everything else passes through untouched.
-        assert_eq!(saved.leader_key, LeaderKey::default());
         assert_eq!(saved.model, DaveSettings::default().model);
     }
 

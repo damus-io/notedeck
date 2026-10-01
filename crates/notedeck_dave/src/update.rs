@@ -553,8 +553,8 @@ pub fn handle_question_response(
 pub enum InputFocus {
     /// Focus the input (see [`request_input_focus`]).
     Request,
-    /// Leave focus alone: a leader chord is walking the session list and
-    /// still holds the keyboard.
+    /// Leave focus alone: normal mode is walking the session list and still
+    /// holds the keyboard.
     Leave,
 }
 
@@ -2836,19 +2836,16 @@ mod tests {
         harness.state_mut().take()
     }
 
-    /// Type the leader then `s` in a real egui frame, with a turn running, and
-    /// return the keybinding it triggers.
-    fn press_leader_s() -> Option<crate::ui::keybindings::KeyAction> {
-        use crate::ui::keybindings::{
-            check_keybindings, KeyAction, KeyContext, Leader, NormalMode,
-        };
+    /// Type Esc then `s` in a real egui frame, with a turn running, and return
+    /// the keybinding it triggers.
+    fn press_escape_s() -> Option<crate::ui::keybindings::KeyAction> {
+        use crate::ui::keybindings::{check_keybindings, KeyAction, KeyContext, NormalMode};
 
         let mut harness = egui_kittest::Harness::new_ui_state(
             |ui, (chord, action): &mut (NormalMode, Option<KeyAction>)| {
                 // Accumulate: `press_key` runs a key-down frame and then a
                 // key-up frame, whose `None` would otherwise clobber the hit.
                 let keys = KeyContext {
-                    leader: Leader::DEFAULT,
                     ai_mode: AiMode::Agentic,
                     sessions_shown: true,
                     interruptible: true,
@@ -2865,7 +2862,7 @@ mod tests {
             (NormalMode::default(), None),
         );
         harness.run();
-        harness.press_key_modifiers(egui::Modifiers::CTRL, egui::Key::Semicolon);
+        harness.press_key_modifiers(egui::Modifiers::NONE, egui::Key::Escape);
         harness.press_key_modifiers(egui::Modifiers::NONE, egui::Key::S);
         harness.state().1.clone()
     }
@@ -2873,7 +2870,7 @@ mod tests {
     /// Both gestures reach the interrupt, and both leave the session usable.
     ///
     /// End-to-end over the real widgets: a click on the rendered Stop button
-    /// and a real `<leader> s` each arrive at the shared interrupt path through
+    /// and a real Esc `s` each arrive at the shared interrupt path through
     /// their own dispatch, and the session still owns a live stream afterwards
     /// either way.
     #[test]
@@ -2902,14 +2899,14 @@ mod tests {
         );
         assert_eq!(stop_backend.interrupt_count(), 1, "Stop aborted the turn");
 
-        // --- `<leader> s`: type the real keys, follow the keybinding.
-        let key_action = press_leader_s();
+        // --- Esc `s`: type the real keys, follow the keybinding.
+        let key_action = press_escape_s();
         assert!(
             matches!(
                 key_action,
                 Some(crate::ui::keybindings::KeyAction::Interrupt)
             ),
-            "<leader> s must trigger Interrupt, got {key_action:?}"
+            "Esc s must trigger Interrupt, got {key_action:?}"
         );
 
         let (s_backend, s_tx) = PersistentStreamFake::new();
@@ -2920,7 +2917,7 @@ mod tests {
         let collapse_state = crate::collapse_state::CollapseState::new();
         let mut home_session = None;
         crate::ui::handle_key_action(
-            key_action.expect("<leader> s raised an action"),
+            key_action.expect("Esc s raised an action"),
             &mut s_sm,
             &mut scene,
             &mut focus_queue,
@@ -2931,11 +2928,7 @@ mod tests {
             &mut home_session,
             &ctx,
         );
-        assert_eq!(
-            s_backend.interrupt_count(),
-            1,
-            "<leader> s aborted the turn"
-        );
+        assert_eq!(s_backend.interrupt_count(), 1, "Esc s aborted the turn");
 
         // --- Both sessions are still reachable by their actor, and agree.
         let (stop, s) = (stop_sm.get(stop_id).unwrap(), s_sm.get(s_id).unwrap());
@@ -2951,7 +2944,7 @@ mod tests {
         );
         for (label, sm, id, tx) in [
             ("Stop", &stop_sm, stop_id, &stop_tx),
-            ("<leader> s", &s_sm, s_id, &s_tx),
+            ("Esc s", &s_sm, s_id, &s_tx),
         ] {
             let session = sm.get(id).expect("session");
             let recvr = session

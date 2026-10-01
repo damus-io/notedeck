@@ -56,7 +56,7 @@ You can use either mode depending on your needs—simple chat for quick Nostr qu
 |----------|--------|
 | `1` / `2` | Accept / Deny permission requests |
 | `Shift+1` / `Shift+2` | Accept / Deny with custom message |
-| `Ctrl+;` `s` | Stop the running turn (leader chord; same as the Stop button) |
+| `Esc` `s` | Stop the running turn (normal mode; same as the Stop button) |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Cycle through agents |
 | `Ctrl+1-9` | Jump to agent by number |
 | `Ctrl+T` | New agent |

@@ -104,7 +104,7 @@ pub struct DaveUi<'a> {
     running_config_ids: Option<&'a std::collections::HashSet<String>>,
     /// Pending image attachments staged for the next send
     pending_images: Option<&'a mut Vec<ImageAttachment>>,
-    /// How far into a leader chord the keyboard is, for the which-key strip.
+    /// How far into a normal-mode chord the keyboard is, for the which-key strip.
     chord: Option<ChordView>,
 }
 
@@ -269,7 +269,7 @@ impl<'a> DaveUi<'a> {
         }
     }
 
-    /// Show the which-key strip for a pending leader chord.
+    /// Show the which-key strip while normal mode is on.
     pub fn chord(mut self, chord: Option<ChordView>) -> Self {
         self.chord = chord;
         self

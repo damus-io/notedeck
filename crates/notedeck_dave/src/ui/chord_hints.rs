@@ -217,9 +217,9 @@ mod tests {
     use egui::Vec2;
     use egui_kittest::Harness;
 
-    /// The chord states' strips, one per row: `<leader>`, `z`, `g` and `d` in
-    /// the chat, then `<leader>` and `g` in the session list, then `<leader>`
-    /// in a narrow chat session (no `h`, no agentic keys).
+    /// The chord states' strips, one per row: the root, `z`, `g` and `d` in
+    /// the chat, then the root and `g` in the session list, then the root in a
+    /// narrow chat session (no `h`, no agentic keys).
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_chord_hint_strips() {
@@ -231,16 +231,16 @@ mod tests {
             interruptible: true,
         };
         let strips = [
-            view(Pane::Chat, Pending::Leader),
-            view(Pane::Chat, Pending::LeaderZ),
-            view(Pane::Chat, Pending::LeaderG),
-            view(Pane::Chat, Pending::LeaderD),
-            view(Pane::Sessions, Pending::Leader),
-            view(Pane::Sessions, Pending::LeaderG),
+            view(Pane::Chat, Pending::Root),
+            view(Pane::Chat, Pending::Z),
+            view(Pane::Chat, Pending::G),
+            view(Pane::Chat, Pending::D),
+            view(Pane::Sessions, Pending::Root),
+            view(Pane::Sessions, Pending::G),
             ChordView {
                 sessions_shown: false,
                 agentic: false,
-                ..view(Pane::Chat, Pending::Leader)
+                ..view(Pane::Chat, Pending::Root)
             },
         ];
         let mut harness = Harness::builder()

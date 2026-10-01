@@ -488,11 +488,6 @@ impl Dave {
     /// Check and dispatch keybindings. Called from render() so that
     /// key consumption only happens when Dave is the active app.
     pub(crate) fn process_keybindings(&mut self, egui_ctx: &egui::Context) {
-        // While the settings panel records a new leader, it owns the keyboard.
-        if self.settings_panel.is_capturing_leader() {
-            return;
-        }
-
         let has_pending_permission = self.first_pending_permission().is_some();
         let has_pending_question = self.has_pending_question();
         let in_tentative_state = self
@@ -517,7 +512,6 @@ impl Dave {
             .get_active()
             .is_some_and(update::session_is_interruptible);
         let keys = KeyContext {
-            leader: self.leader,
             ai_mode: active_ai_mode,
             sessions_shown,
             interruptible,

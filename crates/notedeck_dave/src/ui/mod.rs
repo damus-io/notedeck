@@ -795,7 +795,7 @@ pub enum KeyActionResult {
 /// Run a block-cursor action against the active chat's [`BlockNav`].
 ///
 /// Deliberately leaves `focus_requested` alone, unlike most key actions:
-/// pulling focus back into the input would end a leader chord mid-stride.
+/// pulling focus back into the input would end normal mode mid-stride.
 fn with_block_nav(
     session_manager: &mut SessionManager,
     f: impl FnOnce(&mut BlockNav),
@@ -924,7 +924,7 @@ pub fn handle_key_action(
             );
             KeyActionResult::None
         }
-        // The session-list motions of a leader chord: the same moves as
+        // The session-list motions of normal mode: the same moves as
         // Ctrl+J / Ctrl+K, minus the focus grab, since the chord still holds
         // the keyboard. It hands focus to the new session's input when it ends
         // (`settle_chord_focus`).
@@ -1065,21 +1065,17 @@ pub fn handle_key_action(
     }
 }
 
-/// Keep a pending leader chord in charge of keyboard focus, and hand focus on
-/// when it ends. Runs every frame, after the keybindings are dispatched.
+/// Keep normal mode in charge of keyboard focus, and hand focus to the active
+/// input when it ends. Runs every frame, after the keybindings are dispatched.
 ///
-/// While a chord is pending, an action's request to focus the active input
-/// (a focus-queue jump, cycling the permission mode) is held until the chord
-/// ends: focusing the input mid-chord would put it back under the bare keys.
-/// When a chord that switched sessions ends, focus goes to the active
-/// session's input rather than the id the chord saved, which was the old
-/// session's input and no longer renders.
+/// While normal mode is on, an action's request to focus the active input (a
+/// focus-queue jump, cycling the permission mode) is dropped: focusing the
+/// input mid-mode would put it back under the bare keys, and the input is
+/// focused anyway when normal mode ends — whichever session is active then.
 pub fn settle_chord_focus(chord: &mut NormalMode, session_manager: &mut SessionManager) {
     if chord.view().is_some() {
         if let Some(session) = session_manager.get_active_mut() {
-            if std::mem::take(&mut session.focus_requested) {
-                chord.defer_input_focus();
-            }
+            session.focus_requested = false;
         }
         return;
     }
@@ -1354,7 +1350,7 @@ mod tests {
     use crate::config::AiMode;
     use crate::focus_queue::FocusQueue;
     use crate::session::{SessionId, SessionManager};
-    use crate::ui::keybindings::{check_keybindings, KeyAction, KeyContext, Leader, NormalMode};
+    use crate::ui::keybindings::{check_keybindings, KeyAction, KeyContext, NormalMode};
     use crate::ui::AgentScene;
     use egui::{Key, Modifiers};
     use egui_kittest::Harness;
@@ -1442,7 +1438,6 @@ mod tests {
     /// asked, as `DaveUi::inputbox` does.
     fn chord_frame(ui: &mut egui::Ui, d: &mut Dispatch) {
         let keys = KeyContext {
-            leader: Leader::DEFAULT,
             ai_mode: AiMode::Agentic,
             sessions_shown: true,
             interruptible: false,
@@ -1479,8 +1474,7 @@ mod tests {
         harness.ctx.memory_mut(|m| m.request_focus(input(first)));
         harness.run();
 
-        let leader = (Modifiers::CTRL, Key::Semicolon);
-        harness.press_key_modifiers(leader.0, leader.1);
+        harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
         harness.press_key_modifiers(Modifiers::NONE, Key::H);
         harness.press_key_modifiers(Modifiers::NONE, Key::J);
         assert_eq!(harness.state().session_manager.active_id(), Some(second));
@@ -1519,8 +1513,7 @@ mod tests {
         let [first, second] = harness.state().sessions;
         harness.run();
 
-        let leader = (Modifiers::CTRL, Key::Semicolon);
-        harness.press_key_modifiers(leader.0, leader.1);
+        harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
         // `]q` jumps through the focus queue with a plain focus request.
         harness
             .state_mut()
