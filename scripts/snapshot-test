@@ -105,6 +105,8 @@ suites=(
     # never sets. Swept in they returned early and counted as passes.
     "notedeck_dave|--lib --test dave_button_tests --test ask_question_wrap_tests --test markdown_table_tests --test reference_chip_tests --test diff_view_tests|--skip test_real_codex"
     "notedeck_nostrverse|--test snapshot_tests|"
+    # Not a snapshot: renders a model view on lavapipe and compares pixels.
+    "renderbud|--features egui,test-util --lib|"
     # --test-threads=1 --nocapture: this suite intermittently dies with SIGILL
     # on CI's x86_64 lavapipe (headway:notedeck/man-eight-damp), taking the
     # run's real result with it.

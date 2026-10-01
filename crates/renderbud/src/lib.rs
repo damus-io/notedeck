@@ -9,6 +9,7 @@ mod ibl;
 mod material;
 mod model;
 mod texture;
+mod view;
 mod world;
 
 #[cfg(feature = "egui")]
@@ -21,6 +22,7 @@ pub use camera::{ArcballController, Camera, FlyController, ThirdPersonController
 pub use material::{MaterialGpu, MaterialUniform};
 pub use model::{Aabb, LoadError, Mesh, Model, ModelData, ModelDraw, Vertex};
 pub use texture::upload_rgba8_texture_2d;
+pub use view::ModelView;
 pub use world::{Node, NodeId, ObjectId, Transform, World};
 
 /// Loads glTF models for a [`Renderer`] off its thread: everything a model
@@ -161,7 +163,14 @@ pub struct Renderer {
     outline_pipeline: wgpu::RenderPipeline,
 
     shadow_view: wgpu::TextureView,
+    shadow_sampler: wgpu::Sampler,
     shadow_globals_bg: wgpu::BindGroup,
+
+    /// Layouts kept so a [`ModelView`] can bind its own uniforms to the
+    /// same pipelines.
+    globals_bgl: wgpu::BindGroupLayout,
+    shadow_globals_bgl: wgpu::BindGroupLayout,
+    object_bgl: wgpu::BindGroupLayout,
 
     world: World,
     camera_mode: CameraMode,
@@ -709,7 +718,11 @@ impl Renderer {
             shadow_pipeline,
             outline_pipeline,
             shadow_view,
+            shadow_sampler,
             shadow_globals_bg,
+            globals_bgl,
+            shadow_globals_bgl,
+            object_bgl,
             globals,
             object_buf,
             material,
@@ -1096,12 +1109,7 @@ impl Renderer {
             };
             let dynamic_offset = (i as u64 * self.object_buf.stride) as u32;
             shadow_pass.set_bind_group(1, &self.object_buf.bindgroup, &[dynamic_offset]);
-
-            for d in &model_data.draws {
-                shadow_pass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
-                shadow_pass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint32);
-                shadow_pass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
-            }
+            draw_model(&mut shadow_pass, model_data, false);
         }
     }
 
@@ -1268,13 +1276,7 @@ impl Renderer {
 
             let dynamic_offset = (i as u64 * self.object_buf.stride) as u32;
             rpass.set_bind_group(1, &self.object_buf.bindgroup, &[dynamic_offset]);
-
-            for d in &model_data.draws {
-                rpass.set_bind_group(2, &model_data.materials[d.material_index].bindgroup, &[]);
-                rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
-                rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint32);
-                rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
-            }
+            draw_model(rpass, model_data, true);
         }
 
         // 4. Draw selection outline for selected object
@@ -1292,14 +1294,23 @@ impl Renderer {
                 rpass.set_bind_group(0, &self.shadow_globals_bg, &[]);
                 let dynamic_offset = (sel_idx as u64 * self.object_buf.stride) as u32;
                 rpass.set_bind_group(1, &self.object_buf.bindgroup, &[dynamic_offset]);
-
-                for d in &model_data.draws {
-                    rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
-                    rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint32);
-                    rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
-                }
+                draw_model(rpass, model_data, false);
             }
         }
+    }
+}
+
+/// Draw every mesh of `model_data` with the pipeline and the globals and
+/// object bind groups (0 and 1) already set on `pass`. `materials` binds each
+/// draw's material at group 2; depth-only passes (shadow, outline) skip it.
+fn draw_model(pass: &mut wgpu::RenderPass<'_>, model_data: &ModelData, materials: bool) {
+    for d in &model_data.draws {
+        if materials {
+            pass.set_bind_group(2, &model_data.materials[d.material_index].bindgroup, &[]);
+        }
+        pass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
+        pass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
     }
 }
 
