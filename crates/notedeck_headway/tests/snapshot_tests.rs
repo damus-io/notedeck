@@ -2400,8 +2400,17 @@ fn fixture_glbs() -> [Vec<u8>; 2] {
     ]
 }
 
+/// A model kit's layout: `assets/kit/tower.glb`, whose texture isn't in it
+/// but beside it at `Textures/colormap.png`, and that texture.
+fn fixture_kit() -> (Vec<u8>, Vec<u8>) {
+    (
+        renderbud::test_util::textured_cube_glb([1.0; 4], "Textures/colormap.png"),
+        renderbud::test_util::checker_png(16, [230, 200, 60], [60, 140, 90]),
+    )
+}
+
 /// The subject of [`ReviewFixture::models`].
-const MODEL_SUBJECT: &str = "headway: recolour the queue cube";
+const MODEL_SUBJECT: &str = "headway: recolour the queue cube, add a kit tower";
 
 /// The image diff's three sides: `assets/shot.png` before and after, and the
 /// added `assets/new.png`.
@@ -2551,6 +2560,9 @@ fn build_review_fixture(dir: &std::path::Path) -> ReviewFixture {
     write_bytes("assets/cube.glb", &cube_before);
     dated_commit(dir, "headway: queue cube model", SEED_AT - 900);
     write_bytes("assets/cube.glb", &cube_after);
+    let (tower, colormap) = fixture_kit();
+    write_bytes("assets/kit/tower.glb", &tower);
+    write_bytes("assets/kit/Textures/colormap.png", &colormap);
     let models = dated_commit(dir, MODEL_SUBJECT, SEED_AT - 600);
 
     ReviewFixture {
@@ -2803,17 +2815,21 @@ fn open_model_review(harness: &mut Harness<'static, HeadwayTestState>, fixture: 
     wait_for_any_label(harness, "assets/cube.glb");
 }
 
-/// The captions the model diff shows: the cube before and after, 12
-/// triangles each, sized from the fixture's own bytes.
-fn model_captions() -> [String; 2] {
+/// The captions the model diff shows, top to bottom: the cube before and
+/// after, the kit's texture (an added image), then the kit tower drawn with
+/// it, each sized from the fixture's own bytes.
+fn model_captions() -> [String; 4] {
     let [before, after] = fixture_glbs();
-    let size = |glb: &[u8]| match glb.len() {
+    let (tower, colormap) = fixture_kit();
+    let size = |bytes: &[u8]| match bytes.len() {
         n if n < 1024 => format!("{n} B"),
         n => format!("{:.0} KB", n as f64 / 1024.0),
     };
     [
         format!("before 3D model · 12 triangles · {}", size(&before)),
         format!("after 3D model · 12 triangles · {}", size(&after)),
+        format!("after 16×16 · {}", size(&colormap)),
+        format!("after 3D model · 12 triangles · {}", size(&tower)),
     ]
 }
 
@@ -2842,21 +2858,30 @@ fn review_diff_without_a_renderer_leaves_models_binary() {
     let fixture = review_fixture();
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 900.0));
     open_model_review(&mut harness, &fixture);
-    wait_for_label(&mut harness, "Binary file not shown");
-    assert!(image_labels(&harness).is_empty());
+    wait_for_any_label(&mut harness, "Binary file not shown");
+    assert_eq!(
+        harness.query_all_by_label("Binary file not shown").count(),
+        2
+    );
+    assert!(
+        !image_labels(&harness)
+            .iter()
+            .any(|l| l.contains("3D model"))
+    );
 }
 
 /// Snapshot: the review pane's model diff. A commit that recolours a `.glb`
 /// shows the cube before (orange) and after (blue) side by side, each
-/// captioned with its triangles and size; dragging the after turns it, and
-/// only it.
+/// captioned with its triangles and size; the added kit tower draws with
+/// the checkered texture beside it in `Textures/`, read from the same
+/// commit. Dragging the cube's after turns it, and only it.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_headway_review_model_diff() {
     let fixture = review_fixture();
-    let mut harness = model_harness(egui::Vec2::new(1200.0, 900.0));
+    let mut harness = model_harness(egui::Vec2::new(1200.0, 1300.0));
     open_model_review(&mut harness, &fixture);
-    wait_for_images(&mut harness, 2);
+    wait_for_images(&mut harness, 4);
     assert_eq!(image_labels(&harness), model_captions());
     assert!(harness.query_by_label("Binary file not shown").is_none());
     harness.run_steps(3);

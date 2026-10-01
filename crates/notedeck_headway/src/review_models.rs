@@ -33,16 +33,18 @@ use renderbud::{ModelData, ModelUploader, ModelView};
 
 use crate::review_images::{has_extension, sides_of};
 
-/// Most model files one commit shows; the sides of any past it say they were
-/// left out, unread.
-const MAX_MODELS: usize = 4;
+/// Most model files one commit shows (as many as images); the sides of any
+/// past it say they were left out, unread.
+const MAX_MODELS: usize = 12;
 
 /// Largest side read, in bytes; a bigger one is named by its size, unread.
+/// Also the cap on each file a model refers to (a texture beside it).
 const MAX_MODEL_BYTES: u64 = 32 * 1024 * 1024;
 
-/// Extensions (compared ignoring case) of the files shown as models. Only
-/// self-contained glTF: a `.gltf` usually points at files beside it, which a
-/// blob read can't follow.
+/// Extensions (compared ignoring case) of the binary files shown as models.
+/// (A `.gltf` is JSON, which git diffs as text.) Files a model refers to,
+/// such as the one texture atlas a kit keeps beside many `.glb`s, are read
+/// from the same commit, relative to it.
 const MODEL_EXTENSIONS: [&str; 1] = ["glb"];
 
 /// The size a model is drawn at, in points, before the patch view fits it
@@ -125,7 +127,10 @@ fn read_side(
     match git::blob_bytes(repo_dir, rev, path, MAX_MODEL_BYTES) {
         Ok(Blob::Missing) => None,
         Ok(Blob::TooLarge(bytes)) => Some(FetchedModel::TooLarge(bytes)),
-        Ok(Blob::Bytes(bytes)) => Some(upload(uploader, &bytes)),
+        Ok(Blob::Bytes(bytes)) => {
+            let mut resolve = |uri: &str| beside(repo_dir, rev, path, uri);
+            Some(upload(uploader, &bytes, &mut resolve))
+        }
         Err(e) => {
             tracing::debug!("reading {rev}:{path} for the review diff: {e:?}");
             Some(FetchedModel::Unreadable)
@@ -133,13 +138,54 @@ fn read_side(
     }
 }
 
-/// `bytes` parsed and uploaded, or why not. The file is whatever someone
-/// committed, so a panic in the glTF stack is caught and reads as
-/// unreadable rather than taking the load down with it.
+/// The file `uri` names, relative to the model at `model_path`, as of
+/// `rev`: how a model's texture beside it is found. `None` when the commit
+/// hasn't got it (or it's over [`MAX_MODEL_BYTES`]).
+fn beside(repo_dir: &Path, rev: &str, model_path: &str, uri: &str) -> Option<Vec<u8>> {
+    let path = resolve_relative(model_path, uri)?;
+    match git::blob_bytes(repo_dir, rev, &path, MAX_MODEL_BYTES) {
+        Ok(Blob::Bytes(bytes)) => Some(bytes),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::debug!("reading {rev}:{path} for a review model: {e:?}");
+            None
+        }
+    }
+}
+
+/// The repo path `uri` names relative to the file at `from`, with `.` and
+/// `..` folded away; `None` for an absolute URI or one that climbs out of
+/// the repo.
+fn resolve_relative(from: &str, uri: &str) -> Option<String> {
+    if uri.starts_with('/') || uri.contains("://") {
+        return None;
+    }
+    let mut parts: Vec<&str> = from.split('/').collect();
+    parts.pop(); // the model's own name
+    for part in uri.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// `bytes` parsed and uploaded, asking `resolve` for any file it refers to,
+/// or why not. The file is whatever someone committed, so a panic in the
+/// glTF stack is caught and reads as unreadable rather than taking the load
+/// down with it.
 #[profiling::function]
-fn upload(uploader: &ModelUploader, bytes: &[u8]) -> FetchedModel {
+fn upload(
+    uploader: &ModelUploader,
+    bytes: &[u8],
+    resolve: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
+) -> FetchedModel {
     let uploaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        uploader.upload_gltf_slice(bytes)
+        uploader.upload_gltf_slice_with(bytes, resolve)
     }));
     match uploaded {
         Ok(Ok(data)) => FetchedModel::Uploaded {
@@ -306,15 +352,37 @@ impl Drop for ReviewModels {
 mod tests {
     use super::*;
 
-    /// `.glb` is a model whatever its case; a `.gltf` (which usually points
-    /// at files beside it) and look-alikes aren't.
+    /// `.glb` is a model whatever its case; look-alikes aren't.
     #[test]
     fn model_extensions_are_glb_ignoring_case() {
         for path in ["a/cube.glb", "B.GLB"] {
             assert!(has_extension(path, &MODEL_EXTENSIONS), "{path}");
         }
-        for path in ["scene.gltf", "cube.glb.txt", "glb"] {
+        for path in ["cube.glb.txt", "glb", "scene.gltf"] {
             assert!(!has_extension(path, &MODEL_EXTENSIONS), "{path}");
         }
+    }
+
+    /// A model's URIs resolve against its own directory, folding `.` and
+    /// `..`; one that's absolute or climbs out of the repo resolves to
+    /// nothing.
+    #[test]
+    fn uris_resolve_beside_the_model() {
+        let at = "assets/castle/flag.glb";
+        assert_eq!(
+            resolve_relative(at, "Textures/colormap.png").as_deref(),
+            Some("assets/castle/Textures/colormap.png")
+        );
+        assert_eq!(
+            resolve_relative(at, "./../shared/./atlas.png").as_deref(),
+            Some("assets/shared/atlas.png")
+        );
+        assert_eq!(
+            resolve_relative("top.glb", "tex.png").as_deref(),
+            Some("tex.png")
+        );
+        assert_eq!(resolve_relative(at, "../../../etc/passwd"), None);
+        assert_eq!(resolve_relative(at, "/etc/passwd"), None);
+        assert_eq!(resolve_relative(at, "https://example.com/t.png"), None);
     }
 }
