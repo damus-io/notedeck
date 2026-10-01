@@ -662,8 +662,13 @@ fn compute_tangents(verts: &mut [Vertex], indices: &[u32]) {
         let nrm = to_v3(verts[i].normal).normalize_or_zero();
         let t = tan1[i];
 
-        // Gram–Schmidt: make T perpendicular to N
-        let t_ortho = (t - nrm * nrm.dot(t)).normalize_or_zero();
+        // Gram–Schmidt: make T perpendicular to N. A vertex no triangle gave
+        // a tangent (no UVs, or degenerate ones) gets any perpendicular
+        // instead: the shader normalizes it, and zero would make every lit
+        // pixel NaN, drawn black.
+        let t_ortho = (t - nrm * nrm.dot(t))
+            .try_normalize()
+            .unwrap_or_else(|| any_perpendicular(nrm));
 
         // Handedness: +1 or -1
         let w = if nrm.cross(t_ortho).dot(tan2[i]) < 0.0 {
@@ -674,6 +679,16 @@ fn compute_tangents(verts: &mut [Vertex], indices: &[u32]) {
 
         verts[i].tangent = [t_ortho.x, t_ortho.y, t_ortho.z, w];
     }
+}
+
+/// A unit vector perpendicular to `n` (or the X axis when `n` is zero).
+fn any_perpendicular(n: glam::Vec3) -> glam::Vec3 {
+    let axis = if n.x.abs() < 0.9 {
+        glam::Vec3::X
+    } else {
+        glam::Vec3::Y
+    };
+    n.cross(axis).try_normalize().unwrap_or(glam::Vec3::X)
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -721,5 +736,32 @@ impl Aabb {
         let dx = (p.x - self.max.x).max(self.min.x - p.x).max(0.0);
         let dz = (p.z - self.max.z).max(self.min.z - p.z).max(0.0);
         (dx * dx + dz * dz).sqrt()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A mesh with no UVs still gets unit tangents perpendicular to its
+    /// normals, never zero (which the shader would turn into NaN).
+    #[test]
+    fn tangents_without_uvs_are_unit_and_perpendicular() {
+        let normal = [0.0, 0.0, 1.0];
+        let mut verts: Vec<Vertex> = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+            .into_iter()
+            .map(|pos| Vertex {
+                pos,
+                normal,
+                uv: [0.0, 0.0],
+                tangent: [0.0; 4],
+            })
+            .collect();
+        compute_tangents(&mut verts, &[0, 1, 2]);
+        for v in &verts {
+            let t = Vec3::new(v.tangent[0], v.tangent[1], v.tangent[2]);
+            assert!((t.length() - 1.0).abs() < 1e-5, "{t}");
+            assert!(t.dot(Vec3::from(normal)).abs() < 1e-5, "{t}");
+        }
     }
 }
