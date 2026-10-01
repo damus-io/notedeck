@@ -17,7 +17,7 @@ mod patch_view;
 pub use patch::{
     DiffSide, FilePatch, FileStatus, GitPatch, Hunk, LineKind, LineSpan, PatchLine, Span,
 };
-pub use patch_images::{FileImages, ImageSide, PatchImage};
+pub use patch_images::{FileImages, ImageSide, ModelGesture, ModelInput, PatchImage, PatchModel};
 pub use patch_view::{
     git_patch_ui, git_patch_ui_with, GitPatchState, NoteDrawer, PatchNote, PatchNoteKind,
     PatchScroll, PatchSelection,

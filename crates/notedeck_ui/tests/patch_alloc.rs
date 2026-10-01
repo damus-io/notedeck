@@ -17,7 +17,8 @@ use egui::{CentralPanel, Context, Pos2, RawInput, Rect};
 use notedeck::Localization;
 use notedeck_testing::alloc::{measure, CountingAllocator};
 use notedeck_ui::diff::{
-    git_patch_ui, FileImages, GitPatch, GitPatchState, ImageSide, PatchImage, PatchScroll,
+    git_patch_ui, FileImages, GitPatch, GitPatchState, ImageSide, PatchImage, PatchModel,
+    PatchScroll,
 };
 
 #[global_allocator]
@@ -113,13 +114,9 @@ index 1111111..2222222 100644
 Binary files a/shot.png and b/shot.png differ
 ";
 
-/// One steady-state frame of [`IMAGE_PATCH`] with its before and after
-/// uploaded once, as a caller does when its load lands, and the file
-/// `collapsed` or not.
-fn image_frame_allocs(collapsed: bool) -> u64 {
-    let patch = GitPatch::parse(IMAGE_PATCH);
-    let ctx = Context::default();
-    let mut state = GitPatchState::new(&patch, &mut Localization::default());
+/// The before and after of a changed PNG, uploaded to `ctx` once, as a
+/// caller does when its load lands.
+fn uploaded_images(ctx: &Context) -> FileImages {
     let side = |w, h| {
         Some(ImageSide::Shown(PatchImage {
             texture: ctx.load_texture(
@@ -132,11 +129,36 @@ fn image_frame_allocs(collapsed: bool) -> u64 {
             bytes: 4096,
         }))
     };
-    let images = FileImages {
+    FileImages {
         old: side(300, 200),
         new: side(320, 240),
+    }
+}
+
+/// The before and after of a changed 3D model, as textures the caller
+/// renders into (any id will do: nothing here samples them).
+fn rendered_models(_ctx: &Context) -> FileImages {
+    let side = |id| {
+        Some(ImageSide::Model(PatchModel {
+            texture: egui::TextureId::User(id),
+            size: egui::vec2(320.0, 240.0),
+            triangles: 12,
+            bytes: 4096,
+        }))
     };
-    state.set_file_images(0, images, &mut Localization::default());
+    FileImages {
+        old: side(1),
+        new: side(2),
+    }
+}
+
+/// One steady-state frame of [`IMAGE_PATCH`] with the sides `sides` makes
+/// and the file `collapsed` or not.
+fn image_frame_allocs(sides: fn(&Context) -> FileImages, collapsed: bool) -> u64 {
+    let patch = GitPatch::parse(IMAGE_PATCH);
+    let ctx = Context::default();
+    let mut state = GitPatchState::new(&patch, &mut Localization::default());
+    state.set_file_images(0, sides(&ctx), &mut Localization::default());
     state.set_collapsed(0, collapsed);
     let input = RawInput {
         screen_rect: Some(Rect::from_min_size(
@@ -159,8 +181,17 @@ fn image_frame_allocs(collapsed: bool) -> u64 {
 /// the same file collapsed (only its header).
 #[test]
 fn image_rows_do_not_allocate_per_frame() {
-    let shown = image_frame_allocs(false);
-    let hidden = image_frame_allocs(true);
+    let shown = image_frame_allocs(uploaded_images, false);
+    let hidden = image_frame_allocs(uploaded_images, true);
+    assert_eq!(shown.saturating_sub(hidden), 0);
+}
+
+/// Nor does a visible 3D model at rest: it paints the caller's texture like
+/// an image, and its drag sense records nothing until it's dragged.
+#[test]
+fn model_rows_do_not_allocate_per_frame() {
+    let shown = image_frame_allocs(rendered_models, false);
+    let hidden = image_frame_allocs(rendered_models, true);
     assert_eq!(shown.saturating_sub(hidden), 0);
 }
 

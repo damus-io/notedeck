@@ -10,7 +10,7 @@
 //! repaints the same view lays none of them out again.
 
 use super::patch::{FilePatch, FileStatus, GitPatch, LineKind};
-use super::patch_images::{images_ui, FileImages, ImageGeometry, ShownImages};
+use super::patch_images::{images_ui, FileImages, ImageGeometry, ModelInput, ShownImages};
 use super::{
     file_extension, DiffTag, RowGalleys, DELETE_COLOR, DIFF_FONT_SIZE, INSERT_COLOR,
     LINE_NUMBER_COLOR,
@@ -205,6 +205,9 @@ pub struct GitPatchState {
     /// How big image rows are this pass; measured before the rows are laid
     /// out, so a file's row count and its drawing agree.
     image_geometry: ImageGeometry,
+    /// A drag or double-click on a 3D model side, waiting for the caller
+    /// (see [`GitPatchState::take_model_input`]).
+    model_input: Option<ModelInput>,
 }
 
 /// Laid-out diff lines, kept across passes so a line is laid out once, when
@@ -612,6 +615,13 @@ impl GitPatchState {
         }
         self.images[file] = ShownImages::new(images, i18n);
         self.galleys.captions.retain(|&(f, _), _| f != file);
+    }
+
+    /// The drag or double-click on a 3D model side from the latest pass, if
+    /// any, for the caller to turn that side's camera and render it again.
+    /// Taking it clears it.
+    pub fn take_model_input(&mut self) -> Option<ModelInput> {
+        self.model_input.take()
     }
 
     /// File `f`'s images, if it has any side to draw.
@@ -1152,7 +1162,7 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
                 Some(galleys.caption(f, side, text, ui))
             };
             let captions = [caption(0), caption(1)];
-            images_ui(
+            let gesture = images_ui(
                 images,
                 captions,
                 part,
@@ -1160,6 +1170,13 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
                 image_indent(ui),
                 ui,
             );
+            if let Some((side, gesture)) = gesture {
+                state.model_input = Some(ModelInput {
+                    file: f,
+                    side,
+                    gesture,
+                });
+            }
         }
         Row::HunkHeader(f, h) => {
             let header = patch.text(patch.files()[f].hunks[h].header);
@@ -1713,7 +1730,9 @@ fn split_path(path: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diff::{DiffSide, FileImages, ImageSide, LineSpan, PatchImage};
+    use crate::diff::{
+        DiffSide, FileImages, ImageSide, LineSpan, ModelGesture, PatchImage, PatchModel,
+    };
     use egui::accesskit::Role;
     use egui_kittest::{
         kittest::{NodeT, Queryable},
@@ -2545,6 +2564,76 @@ Binary files a/data.bin and b/data.bin differ
 
         state.set_collapsed(0, true);
         assert_eq!(state.layout(patch), total - image_rows);
+    }
+
+    /// A model side is captioned with its triangles and size, drawn like an
+    /// image, and a drag on it or a double-click comes back as that side's
+    /// [`ModelInput`].
+    #[test]
+    fn model_sides_report_drags_and_double_clicks() {
+        let mut harness = harness(GitPatch::parse(IMAGES), 900.0);
+        let mut i18n = Localization::no_bidi();
+        let model = |id, triangles, bytes| {
+            Some(ImageSide::Model(PatchModel {
+                texture: egui::TextureId::User(id),
+                size: egui::vec2(160.0, 120.0),
+                triangles,
+                bytes,
+            }))
+        };
+        let models = FileImages {
+            old: model(1, 12, 2048),
+            new: model(2, 1, 812),
+        };
+        harness.state_mut().1.set_file_images(0, models, &mut i18n);
+        harness.run();
+        let after = "after 3D model · 1 triangle · 812 B";
+        assert_eq!(shown(&harness, "before 3D model · 12 triangles · 2 KB"), 2);
+        assert_eq!(shown(&harness, after), 2, "image + caption");
+        assert_eq!(harness.query_all_by_role(Role::Image).count(), 2);
+        assert_eq!(harness.state_mut().1.take_model_input(), None);
+
+        let center = harness
+            .query_all_by_label(after)
+            .find(|n| n.accesskit_node().role() == Role::Image)
+            .expect("after model drawn")
+            .rect()
+            .center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        harness.event(egui::Event::PointerMoved(center));
+        harness.event(button(true));
+        harness.step();
+        harness.event(egui::Event::PointerMoved(center + egui::vec2(30.0, 10.0)));
+        harness.step();
+        let input = harness.state_mut().1.take_model_input().expect("a drag");
+        assert_eq!((input.file, input.side), (0, DiffSide::New));
+        let ModelGesture::Orbit(delta) = input.gesture else {
+            panic!("expected an orbit, got {:?}", input.gesture);
+        };
+        assert!(delta.x > 0.0, "{delta:?}");
+        harness.event(button(false));
+        harness.step();
+        harness.state_mut().1.take_model_input();
+
+        // A frame per press and release, close enough in time to count as
+        // a double-click (kittest otherwise steps a quarter second a frame).
+        harness.event(egui::Event::PointerMoved(center));
+        harness.step();
+        for (i, pressed) in [true, false, true, false].into_iter().enumerate() {
+            harness.input_mut().time = Some(100.0 + i as f64 * 0.05);
+            harness.event(button(pressed));
+            harness.step();
+        }
+        let input = harness.state_mut().1.take_model_input();
+        assert_eq!(
+            input.map(|i| (i.side, i.gesture)),
+            Some((DiffSide::New, ModelGesture::Reset))
+        );
     }
 
     /// With no side it can draw, the file keeps one note row, saying why.

@@ -6,11 +6,20 @@
 //! them off the UI thread, uploads each once as a texture and hands the pair
 //! over with [`GitPatchState::set_file_images`](super::GitPatchState::set_file_images).
 //! Captions are formatted there, once; a frame only paints.
+//!
+//! A 3D model side ([`ImageSide::Model`]) is drawn the same way, from a
+//! texture the caller renders the model into. Dragging it, or double-clicking
+//! it, is reported back as a [`ModelInput`]
+//! ([`GitPatchState::take_model_input`](super::GitPatchState::take_model_input))
+//! for the caller to turn its camera and render again; the widget never
+//! touches the GPU.
 
 use egui::epaint::{Brush, RectShape};
-use egui::{Color32, Rect, Role, Sense, TextureHandle, Ui, WidgetInfo};
-use notedeck::{tr, Localization};
+use egui::{Color32, Rect, Role, Sense, TextureHandle, TextureId, Ui, WidgetInfo};
+use notedeck::{tr, tr_plural, Localization};
 use std::sync::Arc;
+
+use super::DiffSide;
 
 /// Tallest an image is drawn, in points; wider or taller ones are scaled
 /// down to fit, keeping their aspect.
@@ -34,6 +43,43 @@ pub enum ImageSide {
     Unreadable,
     /// Not read: the commit has more images than the caller will show.
     Omitted,
+    /// A 3D model, rendered by the caller into a texture it owns. Drags and
+    /// double-clicks on it come back as [`ModelInput`]s.
+    Model(PatchModel),
+}
+
+/// A 3D model side, as a texture the caller renders into and re-renders
+/// when the user turns it.
+#[derive(Clone, Debug)]
+pub struct PatchModel {
+    /// The caller's texture (a registered native one, say). The caller keeps
+    /// it alive and frees it; the widget only paints it.
+    pub texture: TextureId,
+    /// The size to draw it at, in points, before fitting to the column.
+    pub size: egui::Vec2,
+    /// How many triangles the model draws, for the caption.
+    pub triangles: u32,
+    /// The blob's size.
+    pub bytes: u64,
+}
+
+/// A gesture on a 3D model side, for the caller to apply to its camera.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ModelGesture {
+    /// Dragged this far, in points, this frame.
+    Orbit(egui::Vec2),
+    /// Double-clicked: put the camera back where it started.
+    Reset,
+}
+
+/// A [`ModelGesture`] on one side of one file's model.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModelInput {
+    /// Index into the patch's files.
+    pub file: usize,
+    /// Which version of the file.
+    pub side: DiffSide,
+    pub gesture: ModelGesture,
 }
 
 /// A decoded side of an image file, uploaded as a texture.
@@ -68,6 +114,8 @@ pub(super) struct ShownImages {
 /// One column of a [`ShownImages`].
 #[derive(Clone)]
 pub(super) struct ShownSide {
+    /// Which version of the file this column shows.
+    pub(super) which: DiffSide,
     /// `None` when the side couldn't be shown; its caption says why.
     pub(super) texture: Option<SideTexture>,
     /// `before 1200×800 · 142 KB`, or `before: too large to show (9.1 MB)`.
@@ -79,22 +127,44 @@ pub(super) struct ShownSide {
 /// would allocate, and cloning this one doesn't.
 #[derive(Clone)]
 pub(super) struct SideTexture {
-    /// Keeps the texture alive while the side is shown.
-    handle: TextureHandle,
+    /// Keeps an image's texture alive while the side is shown; `None` for a
+    /// model, whose texture the caller owns.
+    _handle: Option<TextureHandle>,
     brush: Arc<Brush>,
+    size: egui::Vec2,
+    /// A model, which takes drags and double-clicks.
+    model: bool,
 }
 
 impl SideTexture {
-    fn new(handle: TextureHandle) -> Self {
-        let brush = Arc::new(Brush {
-            fill_texture_id: handle.id(),
+    fn image(handle: TextureHandle) -> Self {
+        let size = handle.size_vec2();
+        Self {
+            brush: Self::brush(handle.id()),
+            _handle: Some(handle),
+            size,
+            model: false,
+        }
+    }
+
+    fn model(model: &PatchModel) -> Self {
+        Self {
+            _handle: None,
+            brush: Self::brush(model.texture),
+            size: model.size,
+            model: true,
+        }
+    }
+
+    fn brush(id: TextureId) -> Arc<Brush> {
+        Arc::new(Brush {
+            fill_texture_id: id,
             uv: Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-        });
-        Self { handle, brush }
+        })
     }
 
     fn size(&self) -> egui::Vec2 {
-        self.handle.size_vec2()
+        self.size
     }
 }
 
@@ -113,12 +183,12 @@ impl ShownImages {
             "Label for the new version of a changed image in a diff"
         );
         let mut sides = [
-            images.old.map(|s| (before, s)),
-            images.new.map(|s| (after, s)),
+            images.old.map(|s| (DiffSide::Old, before, s)),
+            images.new.map(|s| (DiffSide::New, after, s)),
         ]
         .into_iter()
         .flatten()
-        .map(|(label, side)| ShownSide::new(&label, side, i18n));
+        .map(|(which, label, side)| ShownSide::new(which, &label, side, i18n));
         let shown = Self {
             sides: [sides.next(), sides.next()],
         };
@@ -159,7 +229,7 @@ impl ShownImages {
 }
 
 impl ShownSide {
-    fn new(label: &str, side: ImageSide, i18n: &mut Localization) -> Self {
+    fn new(which: DiffSide, label: &str, side: ImageSide, i18n: &mut Localization) -> Self {
         let (texture, caption) = match side {
             ImageSide::Shown(image) => {
                 let caption = tr!(
@@ -171,7 +241,19 @@ impl ShownSide {
                     height = image.height.to_string(),
                     size = file_size(image.bytes)
                 );
-                (Some(SideTexture::new(image.texture)), caption)
+                (Some(SideTexture::image(image.texture)), caption)
+            }
+            ImageSide::Model(model) => {
+                let caption = tr_plural!(
+                    i18n,
+                    "{side} 3D model · {count} triangle · {size}",
+                    "{side} 3D model · {count} triangles · {size}",
+                    "Caption under one version of a changed 3D model in a diff: which version, how many triangles it has and its file size",
+                    model.triangles as usize,
+                    side = label,
+                    size = file_size(model.bytes)
+                );
+                (Some(SideTexture::model(&model)), caption)
             }
             ImageSide::TooLarge { bytes } => (
                 None,
@@ -202,7 +284,11 @@ impl ShownSide {
                 ),
             ),
         };
-        Self { texture, caption }
+        Self {
+            which,
+            texture,
+            caption,
+        }
     }
 }
 
@@ -254,6 +340,9 @@ fn fit(size: egui::Vec2, width: f32) -> egui::Vec2 {
 /// right of it. `captions` are the sides' laid-out captions. Paints without a
 /// child `Ui` or any text building, so a steady frame allocates nothing here.
 /// Advances one row, as every row does; the rest of the rows skip.
+///
+/// Returns a model side's drag or double-click this frame, as which side and
+/// what gesture.
 pub(super) fn images_ui(
     images: &ShownImages,
     captions: [Option<Arc<egui::Galley>>; 2],
@@ -261,7 +350,7 @@ pub(super) fn images_ui(
     geometry: ImageGeometry,
     indent: f32,
     ui: &mut Ui,
-) {
+) -> Option<(DiffSide, ModelGesture)> {
     let height = ui.spacing().interact_size.y;
     let min = ui.cursor().min;
     let top = min.y - part as f32 * geometry.step;
@@ -272,6 +361,7 @@ pub(super) fn images_ui(
     let backing = visuals.extreme_bg_color;
     let border = visuals.widgets.noninteractive.bg_stroke;
     let caption_color = visuals.weak_text_color();
+    let mut gesture = None;
     for (i, (side, caption)) in images.sides.iter().zip(captions).enumerate() {
         let (Some(side), Some(caption)) = (side, caption) else {
             continue;
@@ -288,8 +378,18 @@ pub(super) fn images_ui(
             image.brush = Some(texture.brush.clone());
             painter.add(image);
             painter.rect_stroke(rect, 0.0, border, egui::StrokeKind::Outside);
-            let response = ui.interact(rect, id.with(("image", i)), Sense::hover());
+            let sense = if texture.model {
+                Sense::click_and_drag()
+            } else {
+                Sense::hover()
+            };
+            let response = ui.interact(rect, id.with(("image", i)), sense);
             response.widget_info(|| WidgetInfo::labeled(Role::Image, true, &side.caption));
+            if texture.model {
+                gesture = model_gesture(&response)
+                    .map(|g| (side.which, g))
+                    .or(gesture);
+            }
         }
         let caption_min = egui::pos2(x, top + image_height + CAPTION_GAP);
         let caption_rect = Rect::from_min_size(caption_min, caption.size());
@@ -297,6 +397,22 @@ pub(super) fn images_ui(
         response.widget_info(|| WidgetInfo::labeled(Role::Label, true, caption.text()));
         ui.painter().galley(caption_min, caption, caption_color);
     }
+    gesture
+}
+
+/// What `response`, a model side's, asks of its camera this frame, setting
+/// the grab cursor while it's hovered or dragged.
+fn model_gesture(response: &egui::Response) -> Option<ModelGesture> {
+    if response.dragged() {
+        response.ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if response.hovered() {
+        response.ctx.set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    if response.double_clicked() {
+        return Some(ModelGesture::Reset);
+    }
+    let delta = response.drag_delta();
+    (response.dragged() && delta != egui::Vec2::ZERO).then_some(ModelGesture::Orbit(delta))
 }
 
 /// `bytes` for a caption: `812 B`, `142 KB`, `9.1 MB`.

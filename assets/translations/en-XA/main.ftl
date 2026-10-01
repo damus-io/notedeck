@@ -1119,3 +1119,11 @@ name__and__count__others_zapped_your_note_256d =
         [one] {"["}{$name} àñd {$count} óthér zàppéd yóúr ñóté{"]"}
        *[other] {"["}{$name} àñd {$count} óthérs zàppéd yóúr ñóté{"]"}
     }
+
+
+# Caption under one version of a changed 3D model in a diff: which version, how many triangles it has and its file size
+side__3D_model____count__triangles____size_f232 =
+    { $count ->
+        [one] {"["}{$side} 3D módél · {$count} tríàñglé · {$size}{"]"}
+       *[other] {"["}{$side} 3D módél · {$count} tríàñglés · {$size}{"]"}
+    }
