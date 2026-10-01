@@ -5,6 +5,7 @@ members = [
     "crates/agentium-core",
     "crates/agentium_cli",
     "crates/bin_testing",
+    "crates/cli_term",
     "crates/notedeck",
     "crates/notedeck_chrome",
     "crates/notedeck_columns",
@@ -111,6 +112,7 @@ tokenator = { path = "crates/tokenator" }
 md-stream = { path = "crates/md-stream" }
 wordid = { path = "crates/wordid" }
 bin_testing = { path = "crates/bin_testing" }
+cli_term = { path = "crates/cli_term" }
 once_cell = "1.19.0"
 bytemuck = "1.22.0"
 robius-open = "0.1"

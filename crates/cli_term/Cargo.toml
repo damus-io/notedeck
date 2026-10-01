@@ -1,0 +1,8 @@
+[package]
+name = "cli_term"
+edition = "2024"
+version.workspace = true
+description = "Terminal output shared by the standalone CLIs: --color/--pager modes, the pager, and smart-case grep patterns with match highlighting"
+
+[dependencies]
+regex = "1"

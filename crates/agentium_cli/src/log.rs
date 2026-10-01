@@ -1,7 +1,6 @@
 //! `agentium log` — print (or `--follow`) one session's conversation, and the
 //! pager both `log` and `grep` write through.
 
-use std::env;
 use std::io::IsTerminal;
 
 use agentium_core::Engine;
@@ -28,7 +27,7 @@ use crate::transcript::{MessageView, first_after, render_message, render_message
 /// `--json` emits each message's structured [`Message::to_json`] view; `--jsonl`
 /// short-circuits to the reconstructed claude-code JSONL (a different,
 /// `seq`-ordered axis — see below). The whole thing is built into one string and
-/// handed to [`emit`], which routes it through a pager (like `git log`) when
+/// handed to [`cli_term::emit`], which routes it through a pager (like `git log`) when
 /// appropriate.
 ///
 /// [`Message::to_json`]: agentium_core::messages::Message::to_json
@@ -97,7 +96,8 @@ pub(crate) fn cmd_log(
         }
     };
 
-    emit(&output, use_pager)
+    cli_term::emit(&output, use_pager, PAGER_VAR);
+    Ok(())
 }
 
 /// `agentium log <session> --follow` — print the current tail, then keep
@@ -279,7 +279,7 @@ fn emit_follow_status(status: &str, color: bool, as_json: bool) {
 }
 
 /// Join JSONL lines into a single newline-terminated block (empty stays empty),
-/// so the whole archive rides the same [`emit`] path as the rendered transcript.
+/// so the whole archive rides the same [`cli_term::emit`] path as the rendered transcript.
 fn join_lines(lines: Vec<String>) -> String {
     if lines.is_empty() {
         return String::new();
@@ -289,53 +289,9 @@ fn join_lines(lines: Vec<String>) -> String {
     out
 }
 
-/// Write `output` to stdout, or through a pager when `use_pager`.
-///
-/// The pager command comes from `$AGENTIUM_PAGER`, then `$PAGER`, else the
-/// built-in default `less -R` (`-R` so the rendered ANSI color survives —
-/// answering "keep color when it's long"). If the pager can't be spawned (not
-/// installed, empty command), we fall back to printing plainly rather than
-/// failing. A broken pipe (the user quit the pager early) is ignored.
-pub(crate) fn emit(output: &str, use_pager: bool) -> Result<()> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    if !use_pager {
-        print!("{output}");
-        return Ok(());
-    }
-
-    let pager = env::var("AGENTIUM_PAGER")
-        .ok()
-        .or_else(|| env::var("PAGER").ok())
-        .unwrap_or_else(|| "less -R".to_string());
-    let mut parts = pager.split_whitespace();
-    let Some(program) = parts.next() else {
-        print!("{output}");
-        return Ok(());
-    };
-
-    let child = Command::new(program)
-        .args(parts)
-        .stdin(Stdio::piped())
-        .spawn();
-    let mut child = match child {
-        Ok(child) => child,
-        // No usable pager (e.g. `less` absent) — degrade to a plain print.
-        Err(_) => {
-            print!("{output}");
-            return Ok(());
-        }
-    };
-
-    if let Some(mut stdin) = child.stdin.take() {
-        // Ignore the write result: a pager the user quits early closes the pipe,
-        // and that EPIPE is expected, not an error worth surfacing.
-        let _ = stdin.write_all(output.as_bytes());
-    }
-    let _ = child.wait();
-    Ok(())
-}
+/// The variable naming agentium's own pager command, consulted before `$PAGER`
+/// by [`cli_term::emit`].
+pub(crate) const PAGER_VAR: &str = "AGENTIUM_PAGER";
 
 #[cfg(test)]
 mod tests {

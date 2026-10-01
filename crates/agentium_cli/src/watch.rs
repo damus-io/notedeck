@@ -16,13 +16,13 @@ use std::time::Duration;
 
 use agentium_core::Engine;
 use agentium_core::session_fold::{SessionReducer, SessionView, fold_sessions, reduce_delta};
+use cli_term::ColorWhen;
 use nostrdb::{NoteKey, Transaction};
 use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
 
 use crate::list::{ListFilters, ListScope, RowLayout, host_label, session_row};
 use crate::term::{SGR_NEEDS_INPUT, ScreenGuard, fit, now_secs, paint, status_style, stdout_width};
-use crate::transcript::ColorWhen;
 
 /// How often the dashboard redraws with nothing new, so its relative times
 /// ("3m ago") keep aging while every session is quiet.

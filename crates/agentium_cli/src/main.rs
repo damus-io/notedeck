@@ -33,10 +33,11 @@ use agentium_core::Engine;
 use nostrdb_net::Pubkey;
 use regex::Regex;
 
+use cli_term::{CaseMode, ColorWhen, PagerMode, compile_pattern};
 use nostrdb_net::relay::sync::Result;
 
 use config_cmd::{ConfigAction, ConfigFilters, cmd_config};
-use grep::{CaseMode, cmd_grep, compile_pattern};
+use grep::cmd_grep;
 use interrupt::cmd_interrupt;
 use list::{ListFilters, ListScope, cmd_list};
 use log::{cmd_follow, cmd_log};
@@ -45,7 +46,7 @@ use resume::cmd_resume;
 use send::cmd_send;
 use show::cmd_show;
 use spawn::{SpawnOpts, cmd_spawn};
-use transcript::{ColorWhen, MessageView, PagerMode};
+use transcript::MessageView;
 use watch::{WatchOpts, cmd_watch};
 
 /// The CLI's cache/key directory under the platform data dir (e.g.

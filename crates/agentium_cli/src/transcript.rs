@@ -3,6 +3,7 @@
 
 use agentium_core::messages::{Message, PermissionResponseType, SubagentStatus};
 use agentium_core::tools::{ToolCall, ToolResponse, ToolResponses};
+use cli_term::{ColorWhen, PagerMode};
 use nostrdb_net::relay::sync::Result;
 
 use crate::term::{SGR_NEEDS_INPUT, paint};
@@ -39,58 +40,6 @@ pub(crate) struct MessageView {
     /// point-in-time archive, so it conflicts with `--pager`/`--jsonl` (see
     /// [`MessageView::check_follow`]).
     pub(crate) follow: bool,
-}
-
-/// When to ANSI-color the rendered transcript (`--color`). `Auto` follows the
-/// effective sink (a tty or a color-aware pager); `Always`/`Never` force it —
-/// `Always` is how you keep color when piping into your own `less -R`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum ColorWhen {
-    Auto,
-    Always,
-    Never,
-}
-
-impl ColorWhen {
-    /// Parse the `--color` value; anything else is an error naming the choices.
-    pub(crate) fn parse(s: &str) -> Result<ColorWhen> {
-        match s {
-            "auto" => Ok(ColorWhen::Auto),
-            "always" => Ok(ColorWhen::Always),
-            "never" => Ok(ColorWhen::Never),
-            other => Err(format!("--color must be auto|always|never, got '{other}'").into()),
-        }
-    }
-
-    /// Resolve to on/off. `sink_supports_color` is whether the effective output
-    /// (tty or color-aware pager) can render ANSI — the `Auto` signal.
-    pub(crate) fn enabled(self, sink_supports_color: bool) -> bool {
-        match self {
-            ColorWhen::Auto => sink_supports_color,
-            ColorWhen::Always => true,
-            ColorWhen::Never => false,
-        }
-    }
-}
-
-/// Whether to page `log` output (`--pager`/`--no-pager`). `Auto` pages only when
-/// stdout is a tty (so a pipe stays unpaged); the flags force it either way.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum PagerMode {
-    Auto,
-    Always,
-    Never,
-}
-
-impl PagerMode {
-    /// Resolve to on/off given whether stdout is a terminal.
-    pub(crate) fn enabled(self, stdout_tty: bool) -> bool {
-        match self {
-            PagerMode::Auto => stdout_tty,
-            PagerMode::Always => true,
-            PagerMode::Never => false,
-        }
-    }
 }
 
 impl MessageView {
@@ -585,26 +534,6 @@ pub(crate) mod tests {
         // The header is colored; the indented body is not repainted.
         assert!(out.starts_with("\x1b[36muser\x1b[0m\n"));
         assert!(out.contains("\n  body\n"));
-    }
-
-    #[test]
-    fn color_when_resolves_against_sink() {
-        // auto follows the sink; always/never override it.
-        assert!(ColorWhen::Auto.enabled(true));
-        assert!(!ColorWhen::Auto.enabled(false));
-        assert!(ColorWhen::Always.enabled(false));
-        assert!(!ColorWhen::Never.enabled(true));
-        assert_eq!(ColorWhen::parse("always").unwrap(), ColorWhen::Always);
-        assert!(ColorWhen::parse("technicolor").is_err());
-    }
-
-    #[test]
-    fn pager_mode_resolves_against_tty() {
-        // auto pages only for a tty; the flags force it either way.
-        assert!(PagerMode::Auto.enabled(true));
-        assert!(!PagerMode::Auto.enabled(false));
-        assert!(PagerMode::Always.enabled(false));
-        assert!(!PagerMode::Never.enabled(true));
     }
 
     #[test]

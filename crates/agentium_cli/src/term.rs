@@ -59,15 +59,9 @@ pub(crate) fn col(s: &str, width: usize) -> String {
     format!("{s:<width$}")
 }
 
-/// Wrap `s` in an SGR color when `enabled` (stdout is a tty), else return it
-/// plain. `sgr` is the numeric code(s), e.g. `"32"` or `"33"`.
-pub(crate) fn paint(enabled: bool, sgr: &str, s: &str) -> String {
-    if enabled {
-        format!("\x1b[{sgr}m{s}\x1b[0m")
-    } else {
-        s.to_string()
-    }
-}
+/// SGR painting is shared with the other CLIs (see [`cli_term::paint`]); it is
+/// re-exported here beside the rest of this crate's terminal formatting.
+pub(crate) use cli_term::paint;
 
 /// The current Unix time in seconds.
 pub(crate) fn now_secs() -> u64 {
@@ -239,11 +233,5 @@ mod tests {
         assert_eq!(fit(&painted, 2), painted);
         // …and a clipped painted line is reset so the color can't bleed.
         assert_eq!(fit(&paint(true, "32", "hello"), 3), "\x1b[32mhe…\x1b[0m");
-    }
-
-    #[test]
-    fn paint_gates_on_flag() {
-        assert_eq!(paint(false, "32", "x"), "x");
-        assert_eq!(paint(true, "32", "x"), "\x1b[32mx\x1b[0m");
     }
 }

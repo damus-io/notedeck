@@ -186,6 +186,7 @@ dependencies = [
  "agentium-core",
  "bech32",
  "bin_testing",
+ "cli_term",
  "enostr",
  "hex",
  "libc",
@@ -1733,6 +1734,13 @@ dependencies = [
  "tracing",
  "typed-builder",
  "uuid",
+]
+
+[[package]]
+name = "cli_term"
+version = "0.11.0-beta.1"
+dependencies = [
+ "regex",
 ]
 
 [[package]]

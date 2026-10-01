@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 agentium-core = { workspace = true }
+cli_term = { workspace = true }
 nostrdb_net = { workspace = true }
 enostr = { workspace = true }
 nostrdb = { workspace = true }
