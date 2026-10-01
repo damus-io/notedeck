@@ -1,4 +1,5 @@
 use crate::{fonts, NotedeckTextStyle};
+use egui::scroll_area::DragScroll;
 use egui::style::Interaction;
 use egui::style::Selection;
 use egui::style::WidgetVisuals;
@@ -304,6 +305,9 @@ pub fn add_custom_style(is_mobile: bool, style: &mut Style) {
     style.interaction = Interaction {
         tooltip_delay: 0.1,
         show_tooltips_only_when_still: false,
+        // egui only drag-scrolls on touch screens by default; keep
+        // click-and-drag scrolling with a mouse on desktop too.
+        drag_to_scroll: DragScroll::Always,
         ..Interaction::default()
     };
 
