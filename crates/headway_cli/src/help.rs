@@ -93,9 +93,17 @@ title, description, metadata, relationships and comment thread.",
         summary: "Print what to work on next (the ready frontier)",
         usage: &["next [--in <container>] [--ready] [-n <k>]"],
         details: "\
-Walk a container's work-order and print the cards whose blockers are all
-cleared — what can be picked up right now. Each is printed as a
-headway:<board>/<word-id> ref, ready to paste into another command.
+Walk a container's work-order and print the cards that are not done and
+whose blockers are all cleared — what can be picked up right now. Each is
+printed as a headway:<board>/<word-id> ref, ready to paste into another
+command.
+
+A card is done when it sits in a terminal column, or when it has at
+least one live (non-archived) subissue and every one of them is done —
+recursively, so an epic of finished sub-epics is done too. A finished
+epic stays in its column, but `next` never hands it out and nothing
+stays blocked on it. A card with no live subissues is done only by its
+column. An empty result means the container's work is all done.
 
 A read-only command: it never signs or publishes. It needs the board
 named explicitly (`--board`, or an `--in` ref that carries one) so an
@@ -393,7 +401,8 @@ With a parent, <card> becomes its subissue; with the parent omitted,
         usage: &["block <card> --on <blocker>", "block <card> <blocker>"],
         details: "\
 A dependency edge, independent of the parent axis: a blocked card drops
-out of the `next` frontier until its blocker reaches a terminal column.
+out of the `next` frontier until its blocker is done — in a terminal
+column, or an epic whose live subissues are all done.
 The edge may cross boards. Cycles are refused.",
         options: &[(
             "--on <card>",

@@ -15,7 +15,7 @@ use super::parse::{
 };
 use super::view::{
     ActivityKind, ActivityView, ArchivedCard, BoardView, CardView, ColumnView, CommentView,
-    EdgeRef, ReviewCommentView, ReviewView, SubissueView,
+    EdgeRef, ReviewCommentView, ReviewView, SubissueView, subissues_all_done,
 };
 
 /// Accumulates headway events into the maps needed to resolve effective board
@@ -34,6 +34,40 @@ struct PlacementKey {
     board_id: String,
     issue_id: [u8; 32],
 }
+
+/// One live (non-deleted, non-archived) placement of a card, with its per-board
+/// doneness already judged.
+struct LivePlacement<'a> {
+    board_author: &'a [u8; 32],
+    board_id: &'a str,
+    col: &'a str,
+    /// Done on that board = sitting in one of its terminal columns.
+    done: bool,
+}
+
+/// Where a card sits across every board it is placed on — the positional half
+/// of its doneness (see [`BoardReducer::issue_done`] for the rollup half).
+struct ChildPlacements<'a> {
+    live: Vec<LivePlacement<'a>>,
+    /// No live placement, but at least one archived one.
+    archived: bool,
+}
+
+impl ChildPlacements<'_> {
+    /// Positionally done: every live placement sits in a terminal column, or the
+    /// card is archived everywhere it's placed.
+    fn positionally_done(&self) -> bool {
+        if self.live.is_empty() {
+            self.archived
+        } else {
+            self.live.iter().all(|p| p.done)
+        }
+    }
+}
+
+/// Per-board cache of each card's rolled-up doneness while one board finalizes,
+/// so walking a deep epic for every card and edge that names it stays linear.
+type DoneMemo = HashMap<[u8; 32], bool>;
 
 /// One raw event retained for the activity timeline: a clone of the parsed
 /// event as it arrived, kept even after a newer one supersedes it in the
@@ -577,39 +611,26 @@ impl BoardReducer {
                 .is_some_and(|c| c.author == r.author)
     }
 
-    /// Resolve one child of a parent card into a [`SubissueView`], deriving its
-    /// doneness from its placements. Returns `None` when the child issue is
-    /// unknown or has been tombstoned off every board it was placed on (it
-    /// vanishes from the parent exactly like it vanishes from boards).
-    /// `board_id`/`board_author` are the board being rendered, used to prefer
-    /// its column when the child is placed on several boards.
-    fn subissue_view(
-        &self,
-        child_id: &[u8; 32],
-        board_author: &[u8; 32],
-        board_id: &str,
-        seq: Option<String>,
-    ) -> Option<SubissueView> {
+    /// The authorised relations naming `parent` as their parent — the edges that
+    /// make up its direct subissues, in hash order (callers sort). Authorised
+    /// against the rendered board's author like every other relation read.
+    fn child_relations<'a>(
+        &'a self,
+        parent: &'a [u8; 32],
+        board_author: &'a [u8; 32],
+    ) -> impl Iterator<Item = &'a RelationEvent> + 'a {
+        self.relations
+            .values()
+            .filter(move |r| r.parent_id.as_ref() == Some(parent))
+            .filter(move |r| self.relation_authorised(r, board_author))
+    }
+
+    /// Where `child_id` sits across every board: its live placements with their
+    /// per-board positional doneness, and whether it is archived somewhere.
+    /// Returns `None` when the issue is unknown or has been tombstoned off every
+    /// board it was placed on (it vanishes exactly like it vanishes from boards).
+    fn child_placements(&self, child_id: &[u8; 32]) -> Option<ChildPlacements<'_>> {
         let child = self.issues.get(child_id)?;
-        let authorised =
-            |who: &[u8; 32]| self.trusts_all() || who == &child.author || who == board_author;
-
-        let title = self
-            .subjects
-            .get(child_id)
-            .filter(|s| authorised(&s.author))
-            .map(|s| s.subject.clone())
-            .unwrap_or_else(|| child.subject.clone());
-
-        /// One live (non-deleted, non-archived) placement of the child, with its
-        /// per-board doneness already judged.
-        struct LivePlacement<'a> {
-            board_author: &'a [u8; 32],
-            board_id: &'a str,
-            col: &'a str,
-            /// Done on that board = sitting in its last column.
-            done: bool,
-        }
 
         // The child's winning placements, one per board, authorised like the
         // board fold: by the child's author or that placement's board author.
@@ -652,28 +673,96 @@ impl BoardReducer {
             return None;
         }
 
+        Some(ChildPlacements {
+            archived: live.is_empty() && archived_somewhere,
+            live,
+        })
+    }
+
+    /// Is the card `id` (placed as `placements`) done? Done is positional — every
+    /// live placement in a terminal column, or archived everywhere — or rolled up:
+    /// the card has at least one live subissue and every one of those is done, by
+    /// this same rule ([`subissues_all_done`]). So a finished epic, and an epic of
+    /// finished sub-epics, is done wherever it sits, while a leaf keeps the purely
+    /// positional rule.
+    ///
+    /// `memo` caches the rollup per card for one board's finalize (it depends on
+    /// `board_author`, which authorises the relations walked). A card is marked
+    /// not-done before its subtree is walked, so a subissue cycle that slipped
+    /// past the write-time guard terminates instead of recursing forever.
+    fn issue_done(
+        &self,
+        id: &[u8; 32],
+        placements: &ChildPlacements,
+        board_author: &[u8; 32],
+        memo: &mut DoneMemo,
+    ) -> bool {
+        if placements.positionally_done() {
+            return true;
+        }
+        if let Some(&done) = memo.get(id) {
+            return done;
+        }
+        memo.insert(*id, false);
+
+        let live_children_done = self
+            .child_relations(id, board_author)
+            .filter_map(|r| Some((r.child_id, self.child_placements(&r.child_id)?)))
+            .filter(|(_, p)| !p.archived)
+            .map(|(child, p)| self.issue_done(&child, &p, board_author, memo));
+        let done = subissues_all_done(live_children_done);
+
+        memo.insert(*id, done);
+        done
+    }
+
+    /// Resolve one child of a parent card into a [`SubissueView`], deriving its
+    /// doneness from its placements and its own subissues ([`Self::issue_done`]).
+    /// Returns `None` when the child issue is unknown or has been tombstoned off
+    /// every board it was placed on (it vanishes from the parent exactly like it
+    /// vanishes from boards). `board_id`/`board_author` are the board being
+    /// rendered, used to prefer its column when the child is placed on several
+    /// boards.
+    fn subissue_view(
+        &self,
+        child_id: &[u8; 32],
+        board_author: &[u8; 32],
+        board_id: &str,
+        seq: Option<String>,
+        memo: &mut DoneMemo,
+    ) -> Option<SubissueView> {
+        let child = self.issues.get(child_id)?;
+        let authorised =
+            |who: &[u8; 32]| self.trusts_all() || who == &child.author || who == board_author;
+
+        let title = self
+            .subjects
+            .get(child_id)
+            .filter(|s| authorised(&s.author))
+            .map(|s| s.subject.clone())
+            .unwrap_or_else(|| child.subject.clone());
+
+        let mut placements = self.child_placements(child_id)?;
+        let done = self.issue_done(child_id, &placements, board_author, memo);
+
         // Prefer the rendered board's column; else the first by board id so the
         // result doesn't churn with hash order.
-        live.sort_by(|a, b| (a.board_author, a.board_id).cmp(&(b.board_author, b.board_id)));
-        let column = live
+        placements
+            .live
+            .sort_by(|a, b| (a.board_author, a.board_id).cmp(&(b.board_author, b.board_id)));
+        let column = placements
+            .live
             .iter()
             .find(|p| p.board_author == board_author && p.board_id == board_id)
-            .or_else(|| live.first())
+            .or_else(|| placements.live.first())
             .map(|p| p.col.to_owned());
-
-        let archived = live.is_empty() && archived_somewhere;
-        let done = if live.is_empty() {
-            archived
-        } else {
-            live.iter().all(|p| p.done)
-        };
 
         Some(SubissueView {
             id: NoteId::new(*child_id),
             title,
             column,
             done,
-            archived,
+            archived: placements.archived,
             seq,
         })
     }
@@ -691,6 +780,7 @@ impl BoardReducer {
         board_id: &str,
         rank: String,
         placed_at: u64,
+        memo: &mut DoneMemo,
     ) -> CardView {
         // Authority: the card author or the board author may amend the card (or,
         // on a shared board, any team-key holder — see `BoardReducer::trusts_all`).
@@ -840,12 +930,7 @@ impl BoardReducer {
         // This card as a parent: every issue whose authorised relation names it.
         // One level only — a cycle renders as two cards pointing at each other,
         // never a loop (the write path refuses to create one; see store::apply).
-        let children: Vec<&RelationEvent> = self
-            .relations
-            .values()
-            .filter(|r| r.parent_id.as_ref() == Some(&issue.id))
-            .filter(|r| self.relation_authorised(r, board_author))
-            .collect();
+        let children: Vec<&RelationEvent> = self.child_relations(&issue.id, board_author).collect();
         // Each child's work-order rank is scoped to THIS card as its container,
         // authorised like the relation edge: the child's author, this parent's
         // author, or the board author may sequence it.
@@ -882,7 +967,9 @@ impl BoardReducer {
         });
         let subissues = children
             .into_iter()
-            .filter_map(|(r, seq)| self.subissue_view(&r.child_id, board_author, board_id, seq))
+            .filter_map(|(r, seq)| {
+                self.subissue_view(&r.child_id, board_author, board_id, seq, memo)
+            })
             .collect();
 
         // Board-root work-order rank for this card, authorised like its own
@@ -894,11 +981,12 @@ impl BoardReducer {
             .map(|e| e.rank.clone());
 
         // Resolve one dependency edge to the referenced card's title + cleared
-        // state, reusing the subissue doneness logic (positional: last column /
-        // archived). `None` when the referenced card is unknown or tombstoned off
-        // every board — a vanished card no longer participates in the edge.
-        let edge = |id: &[u8; 32]| {
-            self.subissue_view(id, board_author, board_id, None)
+        // state, reusing the subissue doneness logic (terminal column / archived,
+        // or every live subissue done). `None` when the referenced card is unknown
+        // or tombstoned off every board — a vanished card no longer participates
+        // in the edge.
+        let mut edge = |id: &[u8; 32]| {
+            self.subissue_view(id, board_author, board_id, None, memo)
                 .map(|s| EdgeRef {
                     id: s.id,
                     title: s.title,
@@ -911,7 +999,7 @@ impl BoardReducer {
             .blockers
             .get(&issue.id)
             .filter(|b| self.blocker_authorised(b, board_author))
-            .map(|b| b.blockers.iter().filter_map(&edge).collect())
+            .map(|b| b.blockers.iter().filter_map(&mut edge).collect())
             .unwrap_or_default();
 
         // This card as a blocker: the reverse edges — every authorised set that
@@ -998,6 +1086,9 @@ impl BoardReducer {
             let mut fallback: Vec<(u64, CardView)> = Vec::new();
             let mut archived: Vec<ArchivedCard> = Vec::new();
             let col_ids: Vec<&str> = board.columns.iter().map(|c| c.id.as_str()).collect();
+            // Rolled-up doneness depends on this board's author (it authorises the
+            // relations walked), so the cache lives for one board only.
+            let mut done_memo = DoneMemo::new();
 
             // Placement-driven membership: each live placement targeting this
             // board puts its issue on the board, in the placement's column.
@@ -1023,6 +1114,7 @@ impl BoardReducer {
                     board_id,
                     placement.rank.clone(),
                     placement.created_at,
+                    &mut done_memo,
                 );
 
                 match placement.col.as_str() {
@@ -1051,7 +1143,14 @@ impl BoardReducer {
                 {
                     continue;
                 }
-                let card = self.card_view(issue, &board.author, board_id, String::new(), 0);
+                let card = self.card_view(
+                    issue,
+                    &board.author,
+                    board_id,
+                    String::new(),
+                    0,
+                    &mut done_memo,
+                );
                 fallback.push((issue.created_at, card));
             }
 
@@ -2238,6 +2337,142 @@ mod tests {
         ));
         let view = &reduce(&events)[0];
         assert!(view.card(a).unwrap().blocked_by.is_empty());
+    }
+
+    /// A card blocked on an epic whose subissues are all done is unblocked and
+    /// ready, while the finished epic stays in its column but is never ready
+    /// itself. An epic whose only subissue is archived is a leaf, not done, so
+    /// it keeps holding its blocked card back.
+    #[test]
+    fn reduce_clears_blockers_on_a_finished_epic() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("done", "Done"),
+        ];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+        let issue = |title: &str, at: u64| build_issue(&addr, title, "").created_at(at);
+
+        let epic = note_id(&owner, issue("Epic", 1_000));
+        let c1 = note_id(&owner, issue("C1", 1_001));
+        let c2 = note_id(&owner, issue("C2", 1_002));
+        let waiting = note_id(&owner, issue("Waiting", 1_003));
+        let shelf = note_id(&owner, issue("Shelf", 1_004));
+        let shelved = note_id(&owner, issue("Shelved", 1_005));
+        let stuck = note_id(&owner, issue("Stuck", 1_006));
+
+        let mut events = vec![parse_owned(build_board("b1", "Board", "", &cols), &owner)];
+        for (title, at) in [
+            ("Epic", 1_000),
+            ("C1", 1_001),
+            ("C2", 1_002),
+            ("Waiting", 1_003),
+            ("Shelf", 1_004),
+            ("Shelved", 1_005),
+            ("Stuck", 1_006),
+        ] {
+            events.push(parse_owned(issue(title, at), &owner));
+        }
+        for (id, col) in [
+            (&epic, "todo"),
+            (&c1, "done"),
+            (&c2, "done"),
+            (&waiting, "todo"),
+            (&shelf, "todo"),
+            (&stuck, "todo"),
+        ] {
+            events.push(parse_owned(
+                build_placement("b1", &addr, id, col, "m"),
+                &owner,
+            ));
+        }
+        events.extend([
+            parse_owned(
+                build_archive_placement("b1", &addr, &shelved, "done", "m"),
+                &owner,
+            ),
+            parse_owned(build_relation(&c1, Some(&epic)), &owner),
+            parse_owned(build_relation(&c2, Some(&epic)), &owner),
+            parse_owned(build_relation(&shelved, Some(&shelf)), &owner),
+            parse_owned(build_blockers(&waiting, &[epic]), &owner),
+            parse_owned(build_blockers(&stuck, &[shelf]), &owner),
+        ]);
+
+        let view = &reduce(&events)[0];
+        // The epic is done by rollup but stays where it sits.
+        assert!(view.card_is_done(epic));
+        assert!(view.columns[0].cards.iter().any(|c| c.id == epic));
+        // Its blocked card is cleared.
+        let card = view.card(waiting).unwrap();
+        assert!(card.blocked_by[0].done);
+        assert!(!card.is_blocked());
+        // Only-archived subissues make a leaf: positional, so not done.
+        assert!(!view.card_is_done(shelf));
+        assert!(view.card(stuck).unwrap().is_blocked());
+
+        let root = Container::BoardRoot("b1".to_string());
+        let ready: Vec<NoteId> = crate::traversal::ready(view, &root)
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ready, vec![waiting, shelf]);
+    }
+
+    /// Done rolls up through nesting: an epic whose only subissue is a sub-epic
+    /// of finished cards is done, clears what it blocks, and is never ready.
+    #[test]
+    fn reduce_rolls_doneness_up_through_nested_epics() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("done", "Done"),
+        ];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+        let issue = |title: &str, at: u64| build_issue(&addr, title, "").created_at(at);
+
+        let top = note_id(&owner, issue("Top", 1_000));
+        let sub_epic = note_id(&owner, issue("Sub-epic", 1_001));
+        let leaf = note_id(&owner, issue("Leaf", 1_002));
+        let after = note_id(&owner, issue("After", 1_003));
+
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(issue("Top", 1_000), &owner),
+            parse_owned(issue("Sub-epic", 1_001), &owner),
+            parse_owned(issue("Leaf", 1_002), &owner),
+            parse_owned(issue("After", 1_003), &owner),
+            parse_owned(build_placement("b1", &addr, &top, "todo", "a"), &owner),
+            parse_owned(build_placement("b1", &addr, &sub_epic, "todo", "b"), &owner),
+            parse_owned(build_placement("b1", &addr, &leaf, "done", "m"), &owner),
+            parse_owned(build_placement("b1", &addr, &after, "todo", "c"), &owner),
+            parse_owned(build_relation(&sub_epic, Some(&top)), &owner),
+            parse_owned(build_relation(&leaf, Some(&sub_epic)), &owner),
+            parse_owned(build_blockers(&after, &[top]), &owner),
+        ];
+
+        let view = &reduce(&events)[0];
+        assert!(view.card_is_done(sub_epic));
+        assert!(view.card_is_done(top));
+        assert!(view.card(top).unwrap().subissues[0].done);
+        assert!(!view.card(after).unwrap().is_blocked());
+
+        let root = Container::BoardRoot("b1".to_string());
+        let ready: Vec<NoteId> = crate::traversal::ready(view, &root)
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ready, vec![after]);
+        assert!(crate::traversal::ready(view, &Container::Card(*top.bytes())).is_empty());
     }
 
     /// A blocker set from someone who is neither the blocked card's author nor the

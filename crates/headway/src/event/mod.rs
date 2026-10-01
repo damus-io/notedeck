@@ -83,5 +83,5 @@ pub use resolve::{
 };
 pub use view::{
     ActivityKind, ActivityView, ArchivedCard, BoardView, CardView, ColumnView, CommentView,
-    EdgeRef, ReviewCommentView, ReviewView, SubissueView,
+    EdgeRef, ReviewCommentView, ReviewView, SubissueView, subissues_all_done,
 };

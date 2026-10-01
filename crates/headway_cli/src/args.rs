@@ -116,7 +116,10 @@ pub(crate) enum Command {
         other: String,
     },
     /// Print what to work on next: walk a container's work-order and show the
-    /// ready frontier (see [`traversal`](headway::traversal)). A read command — it never signs.
+    /// ready frontier (see [`traversal`](headway::traversal)). A card whose live
+    /// subissues are all done counts as done, so a finished epic is never
+    /// printed and never holds a blocked card back. A read command — it never
+    /// signs.
     Next {
         /// `--in`: the container. A card ref (its subissues) or the board slug
         /// (board root); omitted means the board root. Shares the `seq --in`

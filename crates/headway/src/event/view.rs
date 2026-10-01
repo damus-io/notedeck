@@ -105,9 +105,32 @@ pub enum ActivityKind {
     },
 }
 
+/// The rollup half of headway's one definition of done: a card with at least one
+/// live (non-archived) subissue is done when every one of those is done. Takes
+/// the doneness of the live subissues only, so callers filter archived ones out
+/// first. An empty set is *not* done — a card with no live subissues is a leaf,
+/// done only by where it sits, so a plain card or a freshly cut epic never
+/// counts as finished.
+///
+/// The reducer applies it recursively while resolving [`SubissueView::done`] and
+/// [`EdgeRef::done`], and [`BoardView::card_is_done`] applies it over those
+/// already-rolled-up subissues, so a finished epic is never handed out as work
+/// and never holds a blocked card back — while staying in whatever column it sits.
+pub fn subissues_all_done(live_done: impl IntoIterator<Item = bool>) -> bool {
+    let mut any = false;
+    for done in live_done {
+        if !done {
+            return false;
+        }
+        any = true;
+    }
+    any
+}
+
 /// A direct subissue of a card, resolved for display on its parent. Doneness is
-/// positional — derived from where the child sits on its board(s) — never a
-/// stored checkbox (see `crates/notedeck_headway/docs/subissues-design.md`).
+/// derived — from where the child sits on its board(s), or from its own
+/// subissues all being done ([`subissues_all_done`]) — never a stored checkbox
+/// (see `crates/notedeck_headway/docs/subissues-design.md`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubissueView {
     pub id: NoteId,
@@ -117,8 +140,9 @@ pub struct SubissueView {
     /// there is one, else the first by board id for determinism. `None` when the
     /// child is unplaced or archived everywhere.
     pub column: Option<String>,
-    /// Done = every live placement sits in the last column of its board, or the
-    /// child is archived everywhere it's placed.
+    /// Done = every live placement sits in a terminal column of its board, or the
+    /// child is archived everywhere it's placed, or it has live subissues and
+    /// every one of them is done (recursively, see [`subissues_all_done`]).
     pub done: bool,
     /// The child has no live placement but at least one archived one.
     pub archived: bool,
@@ -130,8 +154,8 @@ pub struct SubissueView {
 
 /// A dependency edge resolved for display: the other card's id, resolved title,
 /// and whether it is *cleared*. For a card's `blocked_by` edges, `done` means the
-/// blocker sits in its board's last column (or is archived everywhere) — the same
-/// positional doneness as a subissue. Symmetric for the reverse `blocks` edges,
+/// blocker is done by the same rule as a subissue ([`SubissueView::done`]): in a
+/// terminal column, archived everywhere, or every live subissue of it done. Symmetric for the reverse `blocks` edges,
 /// where `done` reflects the blocked card. See [`CardView::blocked_by`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EdgeRef {
@@ -223,6 +247,18 @@ impl CardView {
     pub fn is_blocked(&self) -> bool {
         self.blocked_by.iter().any(|b| !b.done)
     }
+
+    /// Does this card have at least one live subissue, all of them done? Such a
+    /// card is done wherever it sits ([`subissues_all_done`]); a card with no live
+    /// subissues is a leaf and this is `false`.
+    pub fn subissues_done(&self) -> bool {
+        subissues_all_done(
+            self.subissues
+                .iter()
+                .filter(|s| !s.archived)
+                .map(|s| s.done),
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -282,14 +318,18 @@ impl BoardView {
         )
     }
 
-    /// Whether card `id` sits in a terminal ("done") column of this board — the
-    /// folded-view analogue of [`SubissueView::done`]. `false` when the card is
-    /// archived or off-board (not in a live column). Shared by
-    /// [`crate::traversal`] and [`crate::graph`] so doneness is decided one way.
+    /// Whether card `id` is done — the folded-view analogue of
+    /// [`SubissueView::done`]: it sits in a terminal ("done") column of this
+    /// board, or it has live subissues and every one is done
+    /// ([`CardView::subissues_done`]; each subissue's `done` is already rolled up
+    /// by the reducer, so this is recursive). The card keeps its column either
+    /// way. `false` when the card is archived or off-board (not in a live
+    /// column). Shared by [`crate::traversal`] and [`crate::graph`] so doneness
+    /// is decided one way.
     pub fn card_is_done(&self, id: NoteId) -> bool {
         self.columns
             .iter()
-            .find(|col| col.cards.iter().any(|c| c.id == id))
-            .is_some_and(|col| self.column_is_terminal(&col.id))
+            .find_map(|col| col.cards.iter().find(|c| c.id == id).map(|c| (col, c)))
+            .is_some_and(|(col, card)| self.column_is_terminal(&col.id) || card.subissues_done())
     }
 }

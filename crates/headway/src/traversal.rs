@@ -45,7 +45,8 @@ pub fn work_order<'v>(view: &'v BoardView, container: &Container) -> Vec<&'v Car
 /// The ready frontier of `container`'s [`work_order`]: the members that can be
 /// picked up *now*, in work-order. More than one card can be ready at once — that
 /// is the parallel-dispatch signal an AI acts on. A card is ready when it is:
-/// - not done (not sitting in its board's last column), and
+/// - not done ([`is_done`] — not in a terminal column, and not a parent whose
+///   live subissues are all done: a finished epic is never handed out), and
 /// - not blocked ([`is_blocked`] — no dependency edge points at an unfinished
 ///   blocker), and
 /// - not a parent with unfinished subissues: its real work is those children,
@@ -114,16 +115,18 @@ fn member_order(view: &BoardView, container: &Container) -> Vec<NoteId> {
 }
 
 /// A card is done when it sits in one of its board's *terminal* ("Done"-style)
-/// columns, mirroring [`crate::event::SubissueView::done`] — there is no stored
-/// done flag. A board that marks no terminal column falls back to its last
-/// column (see [`crate::event::column_is_terminal`]).
+/// columns, or when it has at least one live subissue and every one of them is
+/// done — recursively, so an epic of finished sub-epics is done too. Mirrors
+/// [`crate::event::SubissueView::done`]; there is no stored done flag. A board
+/// that marks no terminal column falls back to its last column (see
+/// [`crate::event::column_is_terminal`]).
 fn is_done(view: &BoardView, id: NoteId) -> bool {
     view.card_is_done(id)
 }
 
 /// Does `card` have at least one subissue still to do? Such a card is a branch
 /// whose work lives in its children, so it is not itself part of the ready
-/// frontier. Uses the reducer's positional [`crate::event::SubissueView::done`]
+/// frontier. Uses the reducer's rolled-up [`crate::event::SubissueView::done`]
 /// and skips archived children.
 fn has_open_subissue(card: &CardView) -> bool {
     card.subissues.iter().any(|s| !s.done && !s.archived)
@@ -305,6 +308,46 @@ mod tests {
         let root = Container::BoardRoot("b".to_string());
         assert_eq!(ids(&work_order(&view, &root)), [1, 2, 3, 4]);
         assert_eq!(ids(&ready(&view, &root)), [2, 3]);
+    }
+
+    #[test]
+    fn ready_excludes_a_parent_whose_subissues_are_all_done() {
+        // Card 1 sits in the non-terminal backlog, but both its subissues are
+        // done: it is done itself, so it is never handed out as work — and with
+        // its children done too, nothing in the subtree is ready.
+        let mut parent = card(1, Some("a"), 1);
+        parent.subissues = vec![sub(2, true), sub(3, true)];
+        let children = [2, 3].map(|n| {
+            let mut c = card(n, None, n as u64);
+            c.parent = Some(parent.id);
+            c
+        });
+        let standalone = card(4, Some("b"), 4);
+        let [c2, c3] = children;
+        let view = board(vec![parent, c2, c3, standalone], &[2, 3]);
+
+        assert!(view.card_is_done(NoteId::new([1; 32])));
+        let root = Container::BoardRoot("b".to_string());
+        assert_eq!(ids(&ready(&view, &root)), [4]);
+    }
+
+    #[test]
+    fn ready_keeps_leaves_with_no_live_subissues() {
+        // Card 1 has no subissues and card 2 only an archived one: both are
+        // leaves under the positional rule, so — sitting in backlog — both are
+        // ready. "All subissues done" over an empty set must not finish a card.
+        let mut only_archived = card(2, Some("b"), 2);
+        only_archived.subissues = vec![SubissueView {
+            archived: true,
+            column: None,
+            ..sub(3, true)
+        }];
+        let view = board(vec![card(1, Some("a"), 1), only_archived], &[]);
+
+        assert!(!view.card_is_done(NoteId::new([1; 32])));
+        assert!(!view.card_is_done(NoteId::new([2; 32])));
+        let root = Container::BoardRoot("b".to_string());
+        assert_eq!(ids(&ready(&view, &root)), [1, 2]);
     }
 
     #[test]
