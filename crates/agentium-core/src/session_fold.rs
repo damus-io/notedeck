@@ -27,14 +27,10 @@
 use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 
 use crate::session_events::{get_tag_value, AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND};
 use crate::session_loader::{SessionState, DELETED_STATUS};
-
-/// Upper bound on session-state events folded in one seed query. Far above any
-/// realistic per-account session count; the incremental path folds later
-/// arrivals as deltas rather than re-querying.
-const SEED_QUERY_LIMIT: i32 = 10_000;
 
 /// One session's current folded state plus the note id of the kind-31988 event it
 /// came from. Dave's parser resolves a word-id to [`note_id`](Self::note_id); its
@@ -118,13 +114,18 @@ impl SessionReducer {
         if note.content().starts_with('{') {
             return false;
         }
-        let Some(state) = SessionState::from_note(note, None) else {
+        let Some(session_id) = get_tag_value(note, "d") else {
             return false; // no d-tag: not a session-state event we can key.
         };
-        let held = self.latest.get(&state.claude_session_id);
-        if held.is_some_and(|held| held.state.created_at > state.created_at) {
+        // The seed walk visits every revision nostrdb kept, so reject an older one
+        // off its borrowed d-tag before `from_note` allocates the full projection.
+        let held = self.latest.get(session_id);
+        if held.is_some_and(|held| held.state.created_at > note.created_at()) {
             return false; // an older revision than the one we hold — ignore.
         }
+        let Some(state) = SessionState::from_note(note, Some(session_id)) else {
+            return false;
+        };
         // First time we see this session id: compute its word-id once (SHA-256 →
         // BIP-39) and record the reverse mapping. On later revisions the mapping
         // already exists, so `resolve` never re-hashes.
@@ -170,15 +171,16 @@ impl SessionReducer {
             return false; // a conversation message with no session id — nothing to key.
         };
         let created_at = note.created_at();
-        let newer = self
-            .last_msg_activity
-            .get(session_id)
-            .is_none_or(|&seen| created_at > seen);
-        if !newer {
-            return false;
+        // Advance a known session in place, so a streaming session allocates its
+        // key once rather than once per message.
+        match self.last_msg_activity.get_mut(session_id) {
+            Some(seen) if created_at <= *seen => return false,
+            Some(seen) => *seen = created_at,
+            None => {
+                self.last_msg_activity
+                    .insert(session_id.to_string(), created_at);
+            }
         }
-        self.last_msg_activity
-            .insert(session_id.to_string(), created_at);
         if let Some(view) = self.latest.get_mut(session_id) {
             view.last_activity = view.last_activity.max(created_at);
         }
@@ -220,13 +222,73 @@ impl SessionReducer {
         let session_id = self.wordid_index.get(words)?;
         self.latest.get(session_id).map(|v| v.note_id)
     }
+
+    /// Fold each live session's newest conversation message into its
+    /// [`last_activity`](SessionView::last_activity), one indexed lookup per
+    /// session ([`newest_message_at`]).
+    ///
+    /// Tombstones are skipped: a deletion is almost always published after the
+    /// session's last message, so its state `created_at` stands in for its last
+    /// activity. That leaves a handful of lookups instead of a walk over every
+    /// message the account ever streamed, which is where nearly all of the
+    /// seed's time went.
+    fn seed_live_activity(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) {
+        for (session_id, view) in &mut self.latest {
+            if view.state.status == DELETED_STATUS {
+                continue;
+            }
+            let Some(newest) = newest_message_at(ndb, txn, author, session_id) else {
+                continue;
+            };
+            view.last_activity = view.last_activity.max(newest);
+            // Recorded too, so a later state revision folds it back in.
+            let seen = self
+                .last_msg_activity
+                .entry(session_id.clone())
+                .or_default();
+            *seen = (*seen).max(newest);
+        }
+    }
 }
 
-/// The seed filter selecting `author`'s kind-31988 session-state events — the
-/// projection-bearing half of the fold (title/status/word-id). Kept kind-scoped
-/// (rather than the combined [`session_feed_filter`]) so the seed query for the
-/// session *set* can't be crowded out of [`SEED_QUERY_LIMIT`] by conversation
-/// volume, and so tests can await state commits alone.
+/// The `created_at` of `author`'s newest kind-1988 message in `session_id`, or
+/// `None` if the session has none.
+///
+/// Matches on the `d` tag alone and checks the author in Rust, as
+/// `session_loader`'s per-session conversation filter does: with `.authors()`
+/// the planner would pick the `(author, kind)` plan and walk every message the
+/// account has. Without it, the tag plan seeks straight to this session's
+/// notes, newest first, so the first one by `author` is the answer.
+fn newest_message_at(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: &Pubkey,
+    session_id: &str,
+) -> Option<u64> {
+    let filter = Filter::new()
+        .kinds([AI_CONVERSATION_KIND as u64])
+        .tags([session_id], 'd')
+        .build();
+    ndb.try_fold(txn, &[filter], None, |_, note| {
+        if note.pubkey() == author.bytes() {
+            ControlFlow::Break(Some(note.created_at()))
+        } else {
+            ControlFlow::Continue(None)
+        }
+    })
+    .ok()
+    .flatten()
+}
+
+/// A filter selecting only `author`'s kind-31988 session-state events, the
+/// projection-bearing half of the fold (title/status/word-id). It seeds the fold
+/// ([`fold_sessions`]), and also serves a watcher that cares only about the
+/// session *set* and tests that await state commits alone.
+///
+/// Deliberately unbounded, like headway's `headway_filter`: in a fold walk a
+/// `limit` caps the notes *visited*, and nostrdb keeps every revision of a
+/// session's replaceable state, so any cap would eventually drop the oldest
+/// sessions out of the seed.
 pub fn session_state_filter(author: &Pubkey) -> Filter {
     Filter::new()
         .kinds([AI_SESSION_STATE_KIND as u64])
@@ -234,23 +296,12 @@ pub fn session_state_filter(author: &Pubkey) -> Filter {
         .build()
 }
 
-/// The seed filter selecting `author`'s kind-1988 conversation messages — the
-/// last-activity half of the fold. Queried newest-first and capped, so it seeds
-/// recent activity (all a staleness read needs) without walking the whole
-/// message history.
-pub fn session_conversation_filter(author: &Pubkey) -> Filter {
-    Filter::new()
-        .kinds([AI_CONVERSATION_KIND as u64])
-        .authors([author.bytes()])
-        .build()
-}
-
-/// The live subscription filter: `author`'s session-state (kind-31988) *and*
-/// conversation (kind-1988) events in one filter, so both advance the fold. State
-/// events drive the title/status projection; conversation events advance
+/// The live feed filter: `author`'s session-state (kind-31988) *and* conversation
+/// (kind-1988) events in one filter, so both advance the fold. State events
+/// drive the title/status projection; conversation events advance
 /// [`SessionView::last_activity`] so a streaming session reads fresh without a
-/// reader querying ndb. Seeding is split across the two kind-scoped filters above
-/// (see [`fold_sessions`]).
+/// reader querying ndb. This drives the live subscription that keeps the fold
+/// current; the seed reads the two kinds separately (see [`fold_sessions`]).
 pub fn session_feed_filter(author: &Pubkey) -> Filter {
     Filter::new()
         .kinds([AI_CONVERSATION_KIND as u64, AI_SESSION_STATE_KIND as u64])
@@ -258,33 +309,31 @@ pub fn session_feed_filter(author: &Pubkey) -> Filter {
         .build()
 }
 
-/// Seed a reducer by folding all of `author`'s existing session-state (kind-31988)
-/// and recent conversation (kind-1988) events — the one-time seed before a
-/// subscription takes over. `None` on a query error, so a caller can re-attempt.
+/// Seed a reducer with every one of `author`'s sessions and their last
+/// activity, the one-time seed before a [`session_feed_filter`] subscription
+/// takes over. `None` on a query error, so a caller can re-attempt.
 ///
-/// Conversation activity folds *first* so that when a state event lands its
-/// [`last_activity`](SessionView::last_activity) already reflects the newest
-/// message; the two kinds are queried separately (not through the combined
-/// [`session_feed_filter`]) so a busy message history can't push session-state
-/// events out of the [`SEED_QUERY_LIMIT`] window and drop sessions from the fold.
+/// The session set is one unbounded [`Ndb::fold`] over [`session_state_filter`],
+/// the way headway's `fold_board` loads a board: the reduction runs inside
+/// nostrdb's `(author, kind)` index walk, newest revision first, so no result
+/// buffer is built, older revisions are rejected before they are parsed, and
+/// nothing is truncated. Activity then comes from one lookup per live session
+/// ([`SessionReducer::seed_live_activity`]) rather than a walk over the whole
+/// conversation history, which outweighs the state revisions several times over.
+#[profiling::function]
 pub fn fold_sessions(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<SessionReducer> {
-    let mut reducer = SessionReducer::default();
-    let activity = ndb
-        .query(
+    let mut reducer = ndb
+        .fold(
             txn,
-            &[session_conversation_filter(author)],
-            SEED_QUERY_LIMIT,
+            &[session_state_filter(author)],
+            SessionReducer::default(),
+            |mut acc, note| {
+                acc.ingest(&note);
+                acc
+            },
         )
         .ok()?;
-    for result in &activity {
-        reducer.ingest(&result.note);
-    }
-    let states = ndb
-        .query(txn, &[session_state_filter(author)], SEED_QUERY_LIMIT)
-        .ok()?;
-    for result in &states {
-        reducer.ingest(&result.note);
-    }
+    reducer.seed_live_activity(ndb, txn, author);
     Some(reducer)
 }
 
@@ -496,5 +545,76 @@ mod tests {
         assert!(reduce_delta(&mut r, &ndb, &txn, &delta).is_empty());
         assert_eq!(view(&r, "s1").unwrap().last_activity, 3_000);
         assert_eq!(view(&r, "s2").unwrap().state.display_title(), "Two");
+    }
+
+    /// The seed resolves the newest revision of every session and a live session's
+    /// newest message regardless of ingest order, ignoring another author's
+    /// message under the same session id: messages older and newer than the
+    /// state, stale revisions, and a tombstone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn seed_resolves_every_revision_and_newest_message() {
+        let (_dir, ndb) = temp_ndb();
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&TEST_SECKEY)
+            .expect("keypair")
+            .pubkey;
+        // Author-free, so it also sees the foreign message commit.
+        let sub = ndb
+            .subscribe(&[Filter::new()
+                .kinds([AI_CONVERSATION_KIND as u64, AI_SESSION_STATE_KIND as u64])
+                .build()])
+            .expect("subscribe");
+        let notes = [
+            message_note("live", 500),
+            state_note("live", "Live v1", "working", 1_000),
+            state_note("live", "Live v3", "idle", 3_000),
+            state_note("live", "Live v2", "working", 2_000),
+            message_note("live", 4_000),
+            message_note("live", 3_500),
+            NoteBuilder::new()
+                .kind(AI_CONVERSATION_KIND)
+                .content("someone else's message")
+                .created_at(9_000)
+                .start_tag()
+                .tag_str("d")
+                .tag_str("live")
+                .sign(&[9u8; 32])
+                .build()
+                .expect("foreign message"),
+            state_note("gone", "Gone", "working", 1_000),
+            state_note("gone", "Gone", DELETED_STATUS, 2_000),
+            message_note("quiet", 100),
+            state_note("quiet", "Quiet", "idle", 900),
+        ];
+        for note in &notes {
+            let frame = nostrdb_net::ClientMessage::event(note)
+                .expect("client message")
+                .to_json()
+                .expect("frame json");
+            ndb.process_event_with(&frame, nostrdb::IngestMetadata::new().client(true))
+                .expect("ingest");
+        }
+        ndb.wait_for_all_notes_within(sub, notes.len() as u32, Duration::from_secs(5))
+            .await
+            .expect("notes should commit");
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let r = fold_sessions(&ndb, &txn, &author).expect("seed");
+
+        let live = view(&r, "live").expect("live session");
+        assert_eq!(live.state.display_title(), "Live v3");
+        assert_eq!(
+            live.last_activity, 4_000,
+            "newest of ours, not the foreign 9_000"
+        );
+        let quiet = view(&r, "quiet").expect("quiet session");
+        assert_eq!(
+            quiet.last_activity, 900,
+            "state newer than its only message"
+        );
+        assert!(
+            view(&r, "gone").is_none(),
+            "tombstone wins over the older live revision"
+        );
+        assert_eq!(r.views_including_deleted().count(), 3);
     }
 }
