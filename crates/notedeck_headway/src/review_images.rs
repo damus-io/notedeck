@@ -56,10 +56,15 @@ enum FetchedSide {
 
 /// Whether `path` names an image [`fetch`] decodes.
 fn is_image(path: &str) -> bool {
+    has_extension(path, &IMAGE_EXTENSIONS)
+}
+
+/// Whether `path`'s extension is one of `extensions`, ignoring case.
+pub(crate) fn has_extension(path: &str, extensions: &[&str]) -> bool {
     Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| IMAGE_EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)))
+        .is_some_and(|e| extensions.iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
 /// Read and decode both sides of every binary image file `patch` (commit
@@ -95,7 +100,7 @@ pub(crate) fn fetch(repo_dir: &Path, sha: &str, patch: &GitPatch) -> Vec<Fetched
 }
 
 /// Which sides `file` has: an added file no before, a deleted one no after.
-fn sides_of(file: &FilePatch) -> (bool, bool) {
+pub(crate) fn sides_of(file: &FilePatch) -> (bool, bool) {
     (
         file.status != FileStatus::Added,
         file.status != FileStatus::Deleted,

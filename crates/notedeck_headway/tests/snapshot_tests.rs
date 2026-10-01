@@ -2360,8 +2360,11 @@ struct ReviewFixture {
     /// Touches `src/keys.rs` again, for the queue's second card.
     verdicts: String,
     /// Changes the PNG `assets/shot.png` (added by the commit before it) and
-    /// adds `assets/new.png`: the image diff. The fixture's head.
+    /// adds `assets/new.png`: the image diff.
     images: String,
+    /// Recolours the 3D model `assets/cube.glb` (added by the commit before
+    /// it): the model diff. The fixture's head.
+    models: String,
     /// The root commit: the repo identity the records carry.
     root: String,
 }
@@ -2388,6 +2391,17 @@ fn fixture_png(w: u32, h: u32, card: [u8; 3], bar: bool) -> Vec<u8> {
         .expect("encode fixture png");
     out.into_inner()
 }
+
+/// The model diff's two sides: `assets/cube.glb` orange, then blue.
+fn fixture_glbs() -> [Vec<u8>; 2] {
+    [
+        renderbud::test_util::cube_glb([0.9, 0.35, 0.1, 1.0]),
+        renderbud::test_util::cube_glb([0.15, 0.4, 0.9, 1.0]),
+    ]
+}
+
+/// The subject of [`ReviewFixture::models`].
+const MODEL_SUBJECT: &str = "headway: recolour the queue cube";
 
 /// The image diff's three sides: `assets/shot.png` before and after, and the
 /// added `assets/new.png`.
@@ -2533,11 +2547,18 @@ fn build_review_fixture(dir: &std::path::Path) -> ReviewFixture {
         SEED_AT - 1200,
     );
 
+    let [cube_before, cube_after] = fixture_glbs();
+    write_bytes("assets/cube.glb", &cube_before);
+    dated_commit(dir, "headway: queue cube model", SEED_AT - 900);
+    write_bytes("assets/cube.glb", &cube_after);
+    let models = dated_commit(dir, MODEL_SUBJECT, SEED_AT - 600);
+
     ReviewFixture {
         dir: dir.to_string_lossy().into_owned(),
         queue,
         verdicts,
         images,
+        models,
         root,
     }
 }
@@ -2573,7 +2594,7 @@ fn review_fixture() -> ReviewFixture {
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
-    if head(fixed).as_deref() == Some(fixture.images.as_str()) {
+    if head(fixed).as_deref() == Some(fixture.models.as_str()) {
         return fixture;
     }
     if fixed.exists() {
@@ -2583,7 +2604,7 @@ fn review_fixture() -> ReviewFixture {
         // Another run renamed its copy in first; it's the same repo.
         assert_eq!(
             head(fixed).as_deref(),
-            Some(fixture.images.as_str()),
+            Some(fixture.models.as_str()),
             "a concurrent run left a different review fixture at {dir}"
         );
     }
@@ -2746,8 +2767,13 @@ fn image_labels(harness: &Harness<'static, HeadwayTestState>) -> Vec<String> {
 
 /// Pump frames until the image diff's three images are on screen.
 fn wait_for_image_captions(harness: &mut Harness<'static, HeadwayTestState>) {
+    wait_for_images(harness, 3);
+}
+
+/// Pump frames until `count` images (or models) are on screen.
+fn wait_for_images(harness: &mut Harness<'static, HeadwayTestState>, count: usize) {
     let deadline = Instant::now() + SETTLE_TIMEOUT;
-    while image_labels(harness).len() < 3 {
+    while image_labels(harness).len() < count {
         assert!(
             Instant::now() < deadline,
             "timed out waiting for the image diff: {:?}",
@@ -2755,6 +2781,137 @@ fn wait_for_image_captions(harness: &mut Harness<'static, HeadwayTestState>) {
         );
         harness.run_ok();
     }
+}
+
+/// Seed one In Review card whose record names [`ReviewFixture::models`], and
+/// open the review queue on it, waiting for the model's file header.
+fn open_model_review(harness: &mut Harness<'static, HeadwayTestState>, fixture: &ReviewFixture) {
+    record_local_checkout(harness, fixture);
+    let card = harness_card_id(harness, QUEUE_CARDS[0]);
+    move_to_in_review(harness, card);
+    add_fixture_record(
+        harness,
+        card,
+        &fixture.models,
+        MODEL_SUBJECT,
+        None,
+        None,
+        fixture,
+    );
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    wait_for_label(harness, "1 / 1");
+    wait_for_any_label(harness, "assets/cube.glb");
+}
+
+/// The captions the model diff shows: the cube before and after, 12
+/// triangles each, sized from the fixture's own bytes.
+fn model_captions() -> [String; 2] {
+    let [before, after] = fixture_glbs();
+    let size = |glb: &[u8]| match glb.len() {
+        n if n < 1024 => format!("{n} B"),
+        n => format!("{:.0} KB", n as f64 / 1024.0),
+    };
+    [
+        format!("before 3D model · 12 triangles · {}", size(&before)),
+        format!("after 3D model · 12 triangles · {}", size(&after)),
+    ]
+}
+
+/// A harness like [`headway_harness`] whose host also has the shared 3D
+/// renderer, on the same lavapipe device the snapshot samples textures from,
+/// so the review pane can draw models.
+fn model_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
+    let render_state = notedeck::software_render_state();
+    let mut state = headway_state();
+    state
+        .notedeck
+        .set_renderer3d(notedeck::Renderer3d::new(render_state.clone()));
+    let mut harness = harness_builder(size)
+        .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+            render_state,
+        ))
+        .build_ui_state(render_headway, state);
+    wait_for_board(&mut harness);
+    harness
+}
+
+/// With no 3D renderer (headless, or a window without wgpu) a changed `.glb`
+/// keeps "Binary file not shown" rather than failing the load.
+#[test]
+fn review_diff_without_a_renderer_leaves_models_binary() {
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 900.0));
+    open_model_review(&mut harness, &fixture);
+    wait_for_label(&mut harness, "Binary file not shown");
+    assert!(image_labels(&harness).is_empty());
+}
+
+/// Snapshot: the review pane's model diff. A commit that recolours a `.glb`
+/// shows the cube before (orange) and after (blue) side by side, each
+/// captioned with its triangles and size; dragging the after turns it, and
+/// only it.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_model_diff() {
+    let fixture = review_fixture();
+    let mut harness = model_harness(egui::Vec2::new(1200.0, 900.0));
+    open_model_review(&mut harness, &fixture);
+    wait_for_images(&mut harness, 2);
+    assert_eq!(image_labels(&harness), model_captions());
+    assert!(harness.query_by_label("Binary file not shown").is_none());
+    harness.run_steps(3);
+    harness.snapshot("headway_review_model_diff");
+
+    // The caption, less the bidi marks Fluent wraps its placeables in.
+    let after_caption = &model_captions()[1];
+    let after = harness
+        .query_all(egui_kittest::kittest::By::new().role(egui::accesskit::Role::Image))
+        .find(|n| {
+            let label = n.accesskit_node().label().unwrap_or_default();
+            label
+                .chars()
+                .filter(|c| !matches!(c, '\u{2068}' | '\u{2069}'))
+                .eq(after_caption.chars())
+        })
+        .expect("after model drawn")
+        .rect();
+    let before_drag = harness.render().expect("render");
+    let at = after.center();
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(button(true));
+    harness.step();
+    for step in 1..=6 {
+        harness.event(egui::Event::PointerMoved(
+            at + egui::vec2(20.0 * step as f32, 0.0),
+        ));
+        harness.step();
+    }
+    harness.event(button(false));
+    harness.run_steps(3);
+    let after_drag = harness.render().expect("render");
+    let region = |img: &image::RgbaImage, r: egui::Rect| {
+        let ppp = img.width() as f32 / 1200.0;
+        image::imageops::crop_imm(
+            img,
+            (r.min.x * ppp) as u32,
+            (r.min.y * ppp) as u32,
+            (r.width() * ppp) as u32,
+            (r.height() * ppp) as u32,
+        )
+        .to_image()
+    };
+    assert_ne!(
+        region(&before_drag, after),
+        region(&after_drag, after),
+        "dragging the after model turns it"
+    );
+    harness.snapshot("headway_review_model_diff_orbited");
 }
 
 /// A commit that changes a PNG shows it before and after in the review

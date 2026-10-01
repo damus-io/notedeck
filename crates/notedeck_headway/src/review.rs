@@ -27,10 +27,11 @@ use std::time::{Duration, Instant};
 use headway::event::{ReviewFields, ReviewView};
 use headway::git::{self, CommitPatch, Found, GitError, ResolveCtx, Resolved};
 use nostrdb_net::NoteId;
-use notedeck::{Localization, Waker};
+use notedeck::{Localization, Renderer3d, Waker};
 use notedeck_ui::diff::{GitPatch, GitPatchState};
 
 use crate::review_images::{self, FetchedImages};
+use crate::review_models::{self, FetchedModels, ReviewModels};
 
 /// The patch size the pane loads before cutting it off (as `headway diff`).
 const MAX_PATCH_BYTES: usize = 4 << 20;
@@ -71,6 +72,9 @@ pub(crate) struct ReviewJob {
     pub checkouts: Vec<PathBuf>,
     /// Where the headway-owned bare cache repos live.
     pub cache_root: PathBuf,
+    /// The host's 3D renderer, to load the commit's changed models with;
+    /// `None` leaves them "Binary file not shown".
+    pub renderer: Option<Renderer3d>,
 }
 
 /// One load's state, as the pane draws it.
@@ -175,6 +179,10 @@ pub(crate) struct LoadedReview {
     pub commit: CommitPatch,
     pub patch: GitPatch,
     pub patch_state: GitPatchState,
+    /// The views of the commit's changed 3D models, turned by drags the
+    /// patch view reports; `None` when it changes none (or there's no
+    /// renderer).
+    pub models: Option<ReviewModels>,
 }
 
 /// A commit's author line, formatted once when its load lands rather than
@@ -202,14 +210,16 @@ impl Byline {
     }
 }
 
-/// What the worker sends back: the resolution, the parsed patch and its
-/// changed images decoded, before the UI thread attaches the localized
-/// [`GitPatchState`] and uploads the images.
+/// What the worker sends back: the resolution, the parsed patch, its changed
+/// images decoded and its changed models uploaded, before the UI thread
+/// attaches the localized [`GitPatchState`], uploads the images and makes
+/// the models' views.
 struct Fetched {
     resolved: Resolved,
     commit: CommitPatch,
     patch: GitPatch,
     images: Vec<FetchedImages>,
+    models: Vec<FetchedModels>,
 }
 
 /// The review pane's loads: started on demand, cached per [`ReviewSource`], and
@@ -322,12 +332,19 @@ impl ReviewLoader {
 
     /// Take every result the workers have sent since the last frame. Each
     /// patch's view state is built here, on the UI thread, where the
-    /// localization it formats its labels with lives, and its images are
-    /// uploaded to `ctx`, once.
-    pub(crate) fn poll(&mut self, ctx: &egui::Context, i18n: &mut Localization) {
+    /// localization it formats its labels with lives, its images are
+    /// uploaded to `ctx` and its models' views made on `renderer`, once.
+    pub(crate) fn poll(
+        &mut self,
+        ctx: &egui::Context,
+        renderer: Option<&Renderer3d>,
+        i18n: &mut Localization,
+    ) {
         while let Ok((source, result)) = self.rx.try_recv() {
             let load = match result {
-                Ok(fetched) => ReviewLoad::Ready(Box::new(loaded(fetched, source, ctx, i18n))),
+                Ok(fetched) => {
+                    ReviewLoad::Ready(Box::new(loaded(fetched, source, ctx, renderer, i18n)))
+                }
                 Err(e) => ReviewLoad::Failed(e),
             };
             self.loads.insert(
@@ -376,11 +393,18 @@ fn load(job: &ReviewJob, local_host: &str) -> Result<Fetched, GitError> {
     let commit = git::commit_patch(&resolved.repo_dir, &resolved.sha, MAX_PATCH_BYTES)?;
     let patch = GitPatch::parse(commit.patch.clone());
     let images = review_images::fetch(&resolved.repo_dir, &resolved.sha, &patch);
+    let models = review_models::fetch(
+        &resolved.repo_dir,
+        &resolved.sha,
+        &patch,
+        job.renderer.as_ref(),
+    );
     Ok(Fetched {
         resolved,
         commit,
         patch,
         images,
+        models,
     })
 }
 
@@ -398,6 +422,7 @@ fn loaded(
     fetched: Fetched,
     source: ReviewSource,
     ctx: &egui::Context,
+    renderer: Option<&Renderer3d>,
     i18n: &mut Localization,
 ) -> LoadedReview {
     let Fetched {
@@ -405,15 +430,24 @@ fn loaded(
         commit,
         patch,
         images,
+        models,
     } = fetched;
     let mut patch_state = GitPatchState::new(&patch, i18n).with_id_salt((source, &commit.sha));
     review_images::upload(images, &commit.sha, &mut patch_state, ctx, i18n);
+    let models = ReviewModels::upload(
+        models,
+        &mut patch_state,
+        renderer,
+        ctx.pixels_per_point(),
+        i18n,
+    );
     LoadedReview {
         source: resolved.source_label().into_owned(),
         source_hover: resolved.to_string(),
         by_trailer: resolved.how == Found::ByTrailer,
         byline: Byline::of(&commit),
         patch_state,
+        models,
         commit,
         patch,
     }

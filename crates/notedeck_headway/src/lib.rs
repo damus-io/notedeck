@@ -15,6 +15,7 @@ mod nav;
 mod renderers;
 mod review;
 mod review_images;
+mod review_models;
 mod tools;
 mod ui;
 

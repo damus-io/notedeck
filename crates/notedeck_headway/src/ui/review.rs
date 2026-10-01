@@ -821,7 +821,9 @@ pub(super) fn review_pane_ui(
         source,
         &mut review.loader,
     );
-    review.loader.poll(ui.ctx(), app_ctx.i18n);
+    review
+        .loader
+        .poll(ui.ctx(), app_ctx.renderer3d, app_ctx.i18n);
     // A queue key's scroll goes to the diff if it's in; one asked of a diff
     // still loading is dropped rather than jumping it once it lands.
     if let Some(request) = review.scroll.take()
@@ -922,6 +924,7 @@ fn start_load(
             .path(notedeck::DataPathType::Cache)
             .join("headway")
             .join("git"),
+        renderer: app_ctx.renderer3d.cloned(),
     };
     loader.start(source, job, app_ctx.waker.clone());
 }
@@ -1464,8 +1467,25 @@ fn load_ui(
 
 /// The loaded diff, with `record`'s posted comments drawn whole under their
 /// lines — author and all, from their events in the db
-/// ([`posted_comment_ui`]). A pane with no record has none to draw.
+/// ([`posted_comment_ui`]). A pane with no record has none to draw. A drag
+/// on one of its 3D models turns that model's view.
 fn patch_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    loaded: &mut LoadedReview,
+    record: Option<&ReviewView>,
+) {
+    diff_ui(ui, theme, app_ctx, loaded, record);
+    if let Some(input) = loaded.patch_state.take_model_input()
+        && let Some(models) = &mut loaded.models
+    {
+        models.apply(input);
+    }
+}
+
+/// [`patch_ui`]'s diff itself.
+fn diff_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,

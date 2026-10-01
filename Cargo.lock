@@ -6039,6 +6039,7 @@ dependencies = [
  "notedeck_testing",
  "notedeck_ui",
  "profiling",
+ "renderbud",
  "serde",
  "serde_json",
  "tempfile",

@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 image = { workspace = true }
 profiling = { workspace = true }
+renderbud = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
@@ -26,6 +27,7 @@ egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 notedeck = { workspace = true, features = ["snapshot-testing"] }
 notedeck_testing = { workspace = true }
+renderbud = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
 
