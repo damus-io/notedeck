@@ -3985,6 +3985,53 @@ fn a_detail_review_row_click_acts_on_its_own_record() {
     );
 }
 
+/// Where [`a_review_records_deploy_links_open_the_live_build`]'s record says
+/// its commit's build is live.
+const DEPLOY_URL: &str = "https://example.com/builds/3d4e5f607182/";
+
+/// Behavioural (no lavapipe): a record's `deploy` URL is a click away wherever
+/// its explainer is — the detail's Review row and sidebar ("Deployed ↗") and
+/// the review pane's title row ("Deployed build") each open the live build.
+#[test]
+fn a_review_records_deploy_links_open_the_live_build() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 900.0));
+    let card = harness_card_id(&mut harness, DETAIL_REVIEW_CARD);
+    let sha = "3d4e5f60718293a4b5c6d7e8f9012345678ab9c0";
+    apply_demo_action(
+        &mut harness,
+        store::BoardAction::AddReview {
+            card,
+            review: event::ReviewFields {
+                commit: Some(sha.to_string()),
+                title: Some("polyadvent: deploy the web build".to_string()),
+                host: Some(REVIEW_HOST.to_string()),
+                deploy: Some(DEPLOY_URL.to_string()),
+                ..Default::default()
+            },
+        },
+    );
+    harness.get_by_label(DETAIL_REVIEW_CARD).click();
+    wait_for_any_label(&mut harness, "Deployed ↗");
+
+    // The body's Review row and the sidebar's block.
+    let links = harness.get_all_by_label("Deployed ↗").count();
+    assert_eq!(links, 2, "the row and the sidebar each link the build");
+    for i in 0..links {
+        harness
+            .get_all_by_label("Deployed ↗")
+            .nth(i)
+            .expect("a deploy link")
+            .click_accesskit();
+        assert_eq!(opened_url(&mut harness).as_deref(), Some(DEPLOY_URL));
+    }
+
+    // The review pane's title row.
+    harness.press_key(egui::Key::R);
+    wait_for_label(&mut harness, "Deployed build");
+    harness.get_by_label("Deployed build").click_accesskit();
+    assert_eq!(opened_url(&mut harness).as_deref(), Some(DEPLOY_URL));
+}
+
 /// Stands in for Dave's `agentium:` reference parser, which the harness
 /// doesn't load: each session it knows resolves to its kind-1 note, drawn by
 /// [`StubSessionRenderer`].

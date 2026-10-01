@@ -1,7 +1,7 @@
 //! What the shared card-action keys ([`crate::keys::CardAction`]) do to a
-//! card, whichever view pressed them: open its explainer or agentium session,
-//! open its review, move it to Done, send it back with a reason, archive it,
-//! step to its neighbour. [`crate::keys::apply_card_action`] picks the method
+//! card, whichever view pressed them: open its explainer, deployed build or
+//! agentium session, open its review, move it to Done, send it back with a
+//! reason, archive it, step to its neighbour. [`crate::keys::apply_card_action`] picks the method
 //! for the key and the view; these are the steps it takes. Also the `X`
 //! composer the send-back asks its reason in, drawn over any view.
 
@@ -160,6 +160,27 @@ impl BoardUiState {
         match url {
             Some(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
             None => self.set_notice(QueueNotice::NoExplainer, ctx.input(|i| i.time)),
+        }
+    }
+
+    /// Open the deployed build of `card`'s `record` in a browser tab. `None`
+    /// is the [`acted_record`]; a click on a record's own link in the detail's
+    /// Review section names that record. Only a record with a deploy draws
+    /// the link, so one without has nothing to say.
+    ///
+    /// [`acted_record`]: Self::acted_record
+    pub(crate) fn open_deploy(
+        &self,
+        ctx: &egui::Context,
+        view: &BoardView,
+        card: NoteId,
+        record: Option<NoteId>,
+    ) {
+        let url = find_card(view, card)
+            .and_then(|(_, card)| self.card_record(card, record))
+            .and_then(|r| r.fields.deploy.as_deref());
+        if let Some(url) = url {
+            ctx.open_url(egui::OpenUrl::new_tab(url));
         }
     }
 

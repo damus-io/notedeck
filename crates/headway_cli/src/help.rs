@@ -367,8 +367,10 @@ this is refused there.",
     Command {
         name: "review",
         group: Group::Cards,
-        summary: "Record a commit for review on a card (host, path, session, explainer)",
-        usage: &["review <card> [--commit <rev>] [--explainer <url>] [--agentium <ref>]"],
+        summary: "Record a commit for review on a card (host, path, session, explainer, deploy)",
+        usage: &[
+            "review <card> [--commit <rev>] [--explainer <url>] [--deploy <url>] [--agentium <ref>]",
+        ],
         details: "\
 Appends a review record to the card: the commit's full sha and subject,
 the branch, this host's name, the repo toplevel and the repo identity
@@ -376,12 +378,18 @@ the branch, this host's name, the repo toplevel and the repo identity
 comes from --agentium, else $AGENTIUM_SESSION when it is one. A card
 can hold several records, one per commit and host. Refuses outside a
 git repo or when the rev doesn't resolve; a dirty tree is fine, since
-the commit is what's recorded. Prints the recorded fields.",
+the commit is what's recorded. When the commit's build was deployed
+somewhere it can be opened and tried, --deploy records that URL so a
+reviewer can go straight to it. Prints the recorded fields.",
         options: &[
             ("--commit <rev>", "The commit to record [default: HEAD]"),
             (
                 "--explainer <url>",
                 "URL of the explainer page for the work",
+            ),
+            (
+                "--deploy <url>",
+                "URL where this commit's build is live, to open and try it",
             ),
             (
                 "--agentium <ref>",
@@ -399,6 +407,7 @@ the commit is what's recorded. Prints the recorded fields.",
         examples: &[
             "headway review headway:headway/report-raven-expand --explainer https://claude.ai/artifact/...",
             "headway review headway:headway/report-raven-expand --commit abc123 --repo-dir ~/src/notedeck",
+            "headway review headway:gamedev/blur-affair-manage --deploy https://example.com/builds/2866273e28a5/",
         ],
     },
     Command {

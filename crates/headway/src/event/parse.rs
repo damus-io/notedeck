@@ -888,6 +888,7 @@ pub(crate) mod tests {
             repo: Some("0123456789abcdef0123456789abcdef01234567".into()),
             agentium: Some("agentium:actress-mango-possible".into()),
             explainer: Some("https://claude.ai/artifact/abc".into()),
+            deploy: Some("https://example.com/builds/5ec55a6aaf57/".into()),
             remote: Some("jex0:repos/notedeck".into()),
         }
     }

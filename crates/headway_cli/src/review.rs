@@ -20,6 +20,8 @@ pub(crate) struct ReviewFlags {
     pub(crate) commit: Option<String>,
     /// `--explainer`: URL of the explainer page for the work.
     pub(crate) explainer: Option<String>,
+    /// `--deploy`: URL where a build of the commit is live.
+    pub(crate) deploy: Option<String>,
     /// `--agentium`: the session ref; defaults to `$AGENTIUM_SESSION`.
     pub(crate) agentium: Option<String>,
     /// `--remote`: an explicit fetch URL for the commit.
@@ -58,6 +60,7 @@ pub(crate) fn gather(flags: ReviewFlags) -> Result<ReviewFields> {
                 .and_then(|s| agentium_ref(&s)),
         },
         explainer: flags.explainer,
+        deploy: flags.deploy,
         remote: flags.remote,
         commit: Some(commit),
     })

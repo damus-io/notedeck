@@ -74,6 +74,11 @@ pub(crate) enum CardAction {
     /// record a review pane shows, else the newest; a click on one record's
     /// link in the detail's Review section names it.
     Explainer(Option<NoteId>),
+    /// Open the deployed build of the card's record, where its commit can be
+    /// opened and tried. A click only, with no key: `None` is the record a
+    /// review pane shows, else the newest; a click on one record's link in
+    /// the detail's Review section names it.
+    Deploy(Option<NoteId>),
     /// `s`/`S`: open the agentium session of the card's record, `S` asking
     /// it for a `/code-review` of its work. `None` (the key) is the record a
     /// review pane shows, else the newest; a click on one record's session
@@ -162,6 +167,7 @@ pub(crate) fn apply_card_action(
             ActionView::Detail => {}
         },
         CardAction::Explainer(record) => state.open_explainer(ctx, view, card, record),
+        CardAction::Deploy(record) => state.open_deploy(ctx, view, card, record),
         CardAction::Session(how, record) => state.open_card_session(view, card, how, record, now),
         CardAction::Review(record) => match at {
             ActionView::Queue => state.newest_record(card),

@@ -981,10 +981,10 @@ struct QueueHeader<'a> {
 /// nothing has to share its width with the title: it wraps rather than
 /// elides.
 ///
-/// Returns what a click raised — ↓/↑, the explainer or either session icon as
-/// the [`CardAction`] the pane applies as the matching key would, or "Send N
-/// comments" while the record has drafts. ← Back and the copy icon act here,
-/// as they have no key of their own.
+/// Returns what a click raised — ↓/↑, the explainer, the deployed build or
+/// either session icon as the [`CardAction`] the pane applies as the matching
+/// key would, or "Send N comments" while the record has drafts. ← Back and
+/// the copy icon act here, as they have no key of their own.
 fn review_topbar_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1133,11 +1133,12 @@ fn queue_nav_ui(
 /// The header's title row: the card's title as a heading, wrapping onto as
 /// many lines as it takes, and right of it the record's actions as small round
 /// icons — copy the card ref, then, when the record has them, open its session
-/// (`s`), review in its session (`S`) and its explainer (`e`). The icons are a
-/// fixed size, so the title's width is the row less their count's worth.
+/// (`s`), review in its session (`S`), its deployed build and its explainer
+/// (`e`). The icons are a fixed size, so the title's width is the row less
+/// their count's worth.
 ///
-/// Returns the [`CardAction`] an icon's key would raise; the copy icon copies
-/// here.
+/// Returns the [`CardAction`] an icon raises, the one its key would where it
+/// has one; the copy icon copies here.
 fn title_row_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1148,7 +1149,8 @@ fn title_row_ui(
 ) -> Option<TopbarClick> {
     let session = fields.is_some_and(|f| f.agentium.is_some());
     let explainer = fields.is_some_and(|f| f.explainer.is_some());
-    let icons = 1 + 2 * usize::from(session) + usize::from(explainer);
+    let deploy = fields.is_some_and(|f| f.deploy.is_some());
+    let icons = 1 + 2 * usize::from(session) + usize::from(explainer) + usize::from(deploy);
     let mut acted = None;
     ui.horizontal_top(|ui| {
         let gap = ui.spacing().item_spacing.x;
@@ -1187,6 +1189,16 @@ fn title_row_ui(
                 )
             {
                 acted = Some(TopbarClick::Card(CardAction::Explainer(None)));
+            }
+            if deploy
+                && icon(
+                    ui,
+                    notedeck_ui::app_images::universe_image(),
+                    "Deployed build",
+                    "Open the deployed build of this commit",
+                )
+            {
+                acted = Some(TopbarClick::Card(CardAction::Deploy(None)));
             }
             if session
                 && icon(
@@ -1513,6 +1525,9 @@ fn diff_ui(
 /// The detail's explainer links' text.
 const EXPLAINER: &str = "Explainer ↗";
 
+/// The detail's deployed-build links' text.
+const DEPLOY: &str = "Deployed ↗";
+
 /// [`agentium_chip_ui`] no wider than `max_width`: a longer session title
 /// ellipsizes, and its full text shows on hover. `true` when it was clicked.
 fn session_chip_ui(
@@ -1696,8 +1711,9 @@ impl ReviewSection {
 /// A click comes back as a [`CardAction`] naming the record it was on, for
 /// the detail to apply through [`crate::keys::apply_card_action`] as the
 /// sidebar's clicks and the keys are: a row's sha or subject is
-/// `Review(Some(record))`, its explainer `Explainer(Some(record))`, and the
-/// button `r`'s own `Review(None)`.
+/// `Review(Some(record))`, its explainer `Explainer(Some(record))`, its
+/// deployed build `Deploy(Some(record))`, and the button `r`'s own
+/// `Review(None)`.
 pub(super) fn review_section_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1778,10 +1794,11 @@ pub(super) fn review_section_ui(
 /// and the commit subject, elided to the row (in full on hover); then, indented
 /// under the subject in small muted text, where it was made — `location`
 /// (`host:path`, elided in its middle), `⎇ branch` — its agentium session chip
-/// and its explainer link, `·` between those it has. A click on the sha or the
-/// subject is [`CardAction::Review`] of this record, on its session chip
-/// [`CardAction::Session`] of it, on the explainer [`CardAction::Explainer`]
-/// of it. `keyed` (the newest row) has the sha and explainer hovers name
+/// its explainer link and its deployed-build link, `·` between those it has. A
+/// click on the sha or the subject is [`CardAction::Review`] of this record,
+/// on its session chip [`CardAction::Session`] of it, on the explainer
+/// [`CardAction::Explainer`] of it, on the deploy [`CardAction::Deploy`] of
+/// it. `keyed` (the newest row) has the sha and explainer hovers name
 /// their keys.
 ///
 /// A record with inline review comments gets a third line, "N review
@@ -1851,6 +1868,12 @@ fn record_row_ui(
                 dot(ui);
                 if record_explainer_ui(ui, theme, url, keyed).clicked() {
                     picked = Some(CardAction::Explainer(Some(record.id)));
+                }
+            }
+            if let Some(url) = fields.deploy.as_deref() {
+                dot(ui);
+                if record_deploy_ui(ui, theme, url).clicked() {
+                    picked = Some(CardAction::Deploy(Some(record.id)));
                 }
             }
         });
@@ -1941,15 +1964,26 @@ fn record_explainer_ui(
     })
 }
 
+/// A record's small accent "Deployed ↗" link to the live build of its commit,
+/// shared by the detail's Review section rows and its sidebar block. Its hover
+/// shows the url.
+fn record_deploy_ui(ui: &mut egui::Ui, theme: &ColorTheme, url: &str) -> egui::Response {
+    sidebar_link(ui, theme, DEPLOY).on_hover_ui(|ui| {
+        ui.label("Open the deployed build");
+        ui.label(egui::RichText::new(url).small().color(theme.text_muted));
+    })
+}
+
 /// The card detail sidebar's Review block: the newest record's sha pill and
-/// subject, its agentium session chip, its explainer, and, with several
-/// records, an "All N records ›" line into the pane. On a wide pane the sidebar stays put beside the scrolling thread, so
+/// subject, its agentium session chip, its explainer, its deployed build, and,
+/// with several records, an "All N records ›" line into the pane. On a wide pane the sidebar stays put beside the scrolling thread, so
 /// the review is a click away however far down the comments someone has read.
 ///
 /// Each affordance is the mouse twin of a detail key, and its hover names the
 /// key: the sha and the records line are `r`, the explainer is `e`. The
-/// session chip is `s`, though its hover is the chip's own. A click comes
-/// back as that key's [`CardAction`] for the detail to apply through
+/// session chip is `s`, though its hover is the chip's own; the deployed
+/// build has no key. A click comes back as that key's [`CardAction`] (the
+/// deploy's [`CardAction::Deploy`]) for the detail to apply through
 /// [`crate::keys::apply_card_action`], the path the keys take, so a click and
 /// its key can't drift apart. Draws nothing for a card with no records.
 pub(super) fn review_sidebar_ui(
@@ -2000,6 +2034,13 @@ pub(super) fn review_sidebar_ui(
         ui.add_space(SPACING_XS);
         if record_explainer_ui(ui, theme, url, true).clicked() {
             picked = Some(CardAction::Explainer(None));
+        }
+    }
+
+    if let Some(url) = fields.deploy.as_deref() {
+        ui.add_space(SPACING_XS);
+        if record_deploy_ui(ui, theme, url).clicked() {
+            picked = Some(CardAction::Deploy(None));
         }
     }
 

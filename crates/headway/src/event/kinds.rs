@@ -78,7 +78,8 @@ pub const KIND_RELATED: u32 = 30625;
 /// event carrying the structured metadata an agent records on a card when it
 /// finishes work — the commit (sha, subject, branch), where it lives (`host`,
 /// repo toplevel `path`, repo identity `repo` = root commit sha, optional explicit
-/// fetch `remote`), the `agentium` session that did it and the `explainer` URL.
+/// fetch `remote`), the `agentium` session that did it, the `explainer` URL and
+/// the `deploy` URL where a build of the commit is live.
 /// `e` = the card's issue id, so the card-anchored fan-out
 /// ([`card_meta_filter`](super::card_meta_filter)) reaches it; content is empty.
 /// Append-only rather than addressable so one card accumulates a record per

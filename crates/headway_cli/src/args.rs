@@ -519,6 +519,7 @@ impl Cli {
                 "-s" | "--case-sensitive" => case = CaseMode::Sensitive,
                 "--commit" => review.commit = Some(value("--commit")?),
                 "--explainer" => review.explainer = Some(value("--explainer")?),
+                "--deploy" => review.deploy = Some(value("--deploy")?),
                 "--agentium" => review.agentium = Some(value("--agentium")?),
                 "--remote" => review.remote = Some(value("--remote")?),
                 "--repo-dir" => review.repo_dir = Some(value("--repo-dir")?),

@@ -304,6 +304,8 @@ pub struct ReviewFields {
     pub agentium: Option<String>,
     /// URL of the explainer page published for the work.
     pub explainer: Option<String>,
+    /// URL where a build of this commit is deployed, to open and try it.
+    pub deploy: Option<String>,
     /// An explicit fetch URL for the commit, overriding the host-derived one.
     pub remote: Option<String>,
 }
@@ -312,7 +314,7 @@ impl ReviewFields {
     /// Every field paired with its wire tag name, in wire order. The one place
     /// the tag names are spelled: the builder writes from it, the JSON renders
     /// from it and [`ReviewFields::slot_mut`] parses into the same names.
-    pub fn tags(&self) -> [(&'static str, Option<&str>); 9] {
+    pub fn tags(&self) -> [(&'static str, Option<&str>); 10] {
         [
             ("commit", self.commit.as_deref()),
             ("title", self.title.as_deref()),
@@ -322,6 +324,7 @@ impl ReviewFields {
             ("repo", self.repo.as_deref()),
             ("agentium", self.agentium.as_deref()),
             ("explainer", self.explainer.as_deref()),
+            ("deploy", self.deploy.as_deref()),
             ("remote", self.remote.as_deref()),
         ]
     }
@@ -338,6 +341,7 @@ impl ReviewFields {
             "repo" => &mut self.repo,
             "agentium" => &mut self.agentium,
             "explainer" => &mut self.explainer,
+            "deploy" => &mut self.deploy,
             "remote" => &mut self.remote,
             _ => return None,
         })

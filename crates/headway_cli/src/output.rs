@@ -378,8 +378,8 @@ fn print_comment(c: &CommentView) {
 
 /// Print one review record in the card-detail view, newest first as
 /// [`CardView::reviews`] holds them: the short sha and subject, then where the
-/// commit lives (`host:path (branch)`), the session and the explainer, each on
-/// its own line and only when recorded.
+/// commit lives (`host:path (branch)`), the session, the explainer and the
+/// deploy, each on its own line and only when recorded.
 fn print_review(r: &ReviewView) {
     let f = &r.fields;
     let sha = f
@@ -403,9 +403,13 @@ fn print_review(r: &ReviewView) {
             .map_or(String::new(), |b| format!(" ({b})"));
         println!("        {place}{branch}");
     }
-    for line in [f.agentium.as_deref(), f.explainer.as_deref()]
-        .into_iter()
-        .flatten()
+    for line in [
+        f.agentium.as_deref(),
+        f.explainer.as_deref(),
+        f.deploy.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
     {
         println!("        {line}");
     }

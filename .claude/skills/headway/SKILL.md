@@ -190,7 +190,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `grep <pattern> [--in <c>] [-i\|-s] [--archived] [--all] [--json]` | Search card text (title, description, comments, review comments) and print each matching line under its card's ref (see Searching cards) |
 | `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment or a review comment |
 | `comment <card> --path <f> --line <a[-b]> [--old] [--record <sha>] <text...>` | Inline review comment on a review record's commit (newest record by default); `--record` alone comments on the whole commit |
-| `review <card> [--explainer <url>] [--commit <rev>]` | Record a commit for review on the card: sha, title, branch, host, repo path and `agentium:` ref, read from git in `--repo-dir` (default cwd) and `$AGENTIUM_SESSION` |
+| `review <card> [--explainer <url>] [--deploy <url>] [--commit <rev>]` | Record a commit for review on the card: sha, title, branch, host, repo path and `agentium:` ref, read from git in `--repo-dir` (default cwd) and `$AGENTIUM_SESSION`; `--deploy` is the URL where this commit's build is live |
 | `diff <card> [--record <sha>]` | Print the commit the card's newest review record names (`git show`-style), fetching it from the recording host if this one lacks it; falls back to the card's `Headway:` trailer |
 | `delete <card>` | Remove a card (reversible tombstone) |
 | `archive <card>` | Archive a card off the board |
@@ -271,9 +271,11 @@ the container for `seq`/`next`. `headway <command> --help` lists a command's own
 flags without the rest.
 
 When a card's work is committed, record it with `headway review <card>` from the
-checkout (plus `--explainer <url>` when there is one) before the done comment. The
-record is the machine-readable twin of that comment: headway reads it to show the
-commit's diff. `show <card>` lists a card's records under **review**, and
+checkout (plus `--explainer <url>` when there is one, and `--deploy <url>` when
+the commit's build was deployed somewhere it can be opened and tried) before the
+done comment. The record is the machine-readable twin of that comment: headway
+reads it to show the commit's diff, and the app's review pane links the
+explainer and the deployed build beside it. `show <card>` lists a card's records under **review**, and
 `headway diff <card>` prints the commit itself: it looks in the recorded
 checkout, then any checkout of the same repo (matched by root commit), then a
 bare cache under the headway-cli data dir, and fetches over ssh from the
