@@ -173,6 +173,7 @@ pub(crate) fn upload(
         let images = FileImages {
             old: old.map(|s| side("old", s)),
             new: new.map(|s| side("new", s)),
+            ..Default::default()
         };
         state.set_file_images(file, images, i18n);
     }

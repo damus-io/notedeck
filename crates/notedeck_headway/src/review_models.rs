@@ -26,7 +26,8 @@ use std::path::Path;
 use headway::git::{self, Blob};
 use notedeck::{Localization, Renderer3d};
 use notedeck_ui::diff::{
-    DiffSide, FileImages, GitPatch, GitPatchState, ImageSide, ModelGesture, ModelInput, PatchModel,
+    DiffSide, FileImages, GitPatch, GitPatchState, ImageSide, MediaKind, ModelGesture, ModelInput,
+    PatchModel,
 };
 use renderbud::{ModelData, ModelUploader, ModelView};
 
@@ -199,6 +200,7 @@ impl ReviewModels {
             let images = FileImages {
                 old: old.map(|s| models.side(file, DiffSide::Old, s, size)),
                 new: new.map(|s| models.side(file, DiffSide::New, s, size)),
+                kind: MediaKind::Model,
             };
             state.set_file_images(file, images, i18n);
         }

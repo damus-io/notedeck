@@ -1731,7 +1731,7 @@ fn split_path(path: &str) -> (&str, &str) {
 mod tests {
     use super::*;
     use crate::diff::{
-        DiffSide, FileImages, ImageSide, LineSpan, ModelGesture, PatchImage, PatchModel,
+        DiffSide, FileImages, ImageSide, LineSpan, MediaKind, ModelGesture, PatchImage, PatchModel,
     };
     use egui::accesskit::Role;
     use egui_kittest::{
@@ -2507,11 +2507,13 @@ Binary files a/data.bin and b/data.bin differ
         let shot = FileImages {
             old: Some(image_side(&ctx, 120, 80, 142 * 1024)),
             new: Some(image_side(&ctx, 160, 90, 9_542_000)),
+            ..Default::default()
         };
         state.set_file_images(0, shot, &mut i18n);
         let added = FileImages {
             old: None,
             new: Some(image_side(&ctx, 64, 64, 812)),
+            ..Default::default()
         };
         state.set_file_images(1, added, &mut i18n);
         harness.run();
@@ -2584,6 +2586,7 @@ Binary files a/data.bin and b/data.bin differ
         let models = FileImages {
             old: model(1, 12, 2048),
             new: model(2, 1, 812),
+            kind: MediaKind::Model,
         };
         harness.state_mut().1.set_file_images(0, models, &mut i18n);
         harness.run();
@@ -2644,11 +2647,25 @@ Binary files a/data.bin and b/data.bin differ
         let big = FileImages {
             old: Some(ImageSide::TooLarge { bytes: 9_542_000 }),
             new: Some(ImageSide::Omitted),
+            ..Default::default()
         };
         harness.state_mut().1.set_file_images(0, big, &mut i18n);
         harness.run();
         assert_eq!(shown(&harness, "before: too large to show (9.1 MB)"), 1);
         assert_eq!(shown(&harness, "Binary file not shown"), 2);
         assert_eq!(harness.query_all_by_role(Role::Image).count(), 0);
+
+        // A model's sides say "3D model", not "image".
+        let model = FileImages {
+            old: Some(ImageSide::Unreadable),
+            new: Some(ImageSide::Omitted),
+            kind: MediaKind::Model,
+        };
+        harness.state_mut().1.set_file_images(1, model, &mut i18n);
+        harness.run();
+        assert_eq!(
+            shown(&harness, "before: not a 3D model that could be read"),
+            1
+        );
     }
 }

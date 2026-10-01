@@ -1127,3 +1127,9 @@ side__3D_model____count__triangles____size_f232 =
         [one] {"["}{$side} 3D módél · {$count} tríàñglé · {$size}{"]"}
        *[other] {"["}{$side} 3D módél · {$count} tríàñglés · {$size}{"]"}
     }
+
+# Caption for a version of a changed 3D model that failed to load in a diff
+side___not_a_3D_model_that_could_be_read_d28f = {"["}{$side}: ñót à 3D módél thàt çóúld bé réàd{"]"}
+
+# Caption for a version of a changed 3D model skipped because the commit has too many models
+side___not_shown__the_commit_changes_too_many_3D_models_955c = {"["}{$side}: ñót shówñ, thé çómmít çhàñgés tóó màñy 3D módéls{"]"}

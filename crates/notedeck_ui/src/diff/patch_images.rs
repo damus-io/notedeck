@@ -101,6 +101,17 @@ pub struct PatchImage {
 pub struct FileImages {
     pub old: Option<ImageSide>,
     pub new: Option<ImageSide>,
+    /// What the file is, for the captions of sides that couldn't be shown.
+    pub kind: MediaKind,
+}
+
+/// What a changed binary file shown in the diff is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MediaKind {
+    #[default]
+    Image,
+    /// A 3D model.
+    Model,
 }
 
 /// A file's images as the view draws them: its sides left to right (before
@@ -188,7 +199,7 @@ impl ShownImages {
         ]
         .into_iter()
         .flatten()
-        .map(|(which, label, side)| ShownSide::new(which, &label, side, i18n));
+        .map(|(which, label, side)| ShownSide::new(which, &label, side, images.kind, i18n));
         let shown = Self {
             sides: [sides.next(), sides.next()],
         };
@@ -229,7 +240,13 @@ impl ShownImages {
 }
 
 impl ShownSide {
-    fn new(which: DiffSide, label: &str, side: ImageSide, i18n: &mut Localization) -> Self {
+    fn new(
+        which: DiffSide,
+        label: &str,
+        side: ImageSide,
+        kind: MediaKind,
+        i18n: &mut Localization,
+    ) -> Self {
         let (texture, caption) = match side {
             ImageSide::Shown(image) => {
                 let caption = tr!(
@@ -265,12 +282,30 @@ impl ShownSide {
                     size = file_size(bytes)
                 ),
             ),
+            ImageSide::Unreadable if kind == MediaKind::Model => (
+                None,
+                tr!(
+                    i18n,
+                    "{side}: not a 3D model that could be read",
+                    "Caption for a version of a changed 3D model that failed to load in a diff",
+                    side = label
+                ),
+            ),
             ImageSide::Unreadable => (
                 None,
                 tr!(
                     i18n,
                     "{side}: not an image that could be read",
                     "Caption for a version of a changed image that failed to decode in a diff",
+                    side = label
+                ),
+            ),
+            ImageSide::Omitted if kind == MediaKind::Model => (
+                None,
+                tr!(
+                    i18n,
+                    "{side}: not shown, the commit changes too many 3D models",
+                    "Caption for a version of a changed 3D model skipped because the commit has too many models",
                     side = label
                 ),
             ),

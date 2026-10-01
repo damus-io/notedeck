@@ -17,8 +17,8 @@ use egui::{CentralPanel, Context, Pos2, RawInput, Rect};
 use notedeck::Localization;
 use notedeck_testing::alloc::{measure, CountingAllocator};
 use notedeck_ui::diff::{
-    git_patch_ui, FileImages, GitPatch, GitPatchState, ImageSide, PatchImage, PatchModel,
-    PatchScroll,
+    git_patch_ui, FileImages, GitPatch, GitPatchState, ImageSide, MediaKind, PatchImage,
+    PatchModel, PatchScroll,
 };
 
 #[global_allocator]
@@ -132,6 +132,7 @@ fn uploaded_images(ctx: &Context) -> FileImages {
     FileImages {
         old: side(300, 200),
         new: side(320, 240),
+        ..Default::default()
     }
 }
 
@@ -149,6 +150,7 @@ fn rendered_models(_ctx: &Context) -> FileImages {
     FileImages {
         old: side(1),
         new: side(2),
+        kind: MediaKind::Model,
     }
 }
 
