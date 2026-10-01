@@ -8,6 +8,7 @@ name = "headway"
 path = "src/main.rs"
 
 [dependencies]
+cli_term = { workspace = true }
 headway = { workspace = true }
 nostrdb_net = { workspace = true }
 enostr = { workspace = true }

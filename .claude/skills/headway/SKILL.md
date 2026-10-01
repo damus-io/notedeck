@@ -187,7 +187,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `estimate <card> <n>` | Set an estimate — a number (or `none` to clear) |
 | `seq <card> <pos> [--in <c>]` | Position a card in a container's work-order (see Work order) |
 | `next [--in <c>] [--ready] [-n <k>]` | Print the ready frontier — what to work on next (see Work order) |
-| `grep <pattern> [--in <c>] [-i\|-s] [--archived] [--all] [--json]` | Search card text (title, description, comments, review comments) and print each matching line under its card's ref (see Searching cards) |
+| `grep <pattern> [--in <c>] [-i\|-s] [--archived] [--all] [--color <when>] [--[no-]pager] [--json]` | Search card text (title, description, comments, review comments) and print each matching line under its card's ref (see Searching cards) |
 | `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment or a review comment |
 | `comment <card> --path <f> --line <a[-b]> [--old] [--record <sha>] <text...>` | Inline review comment on a review record's commit (newest record by default); `--record` alone comments on the whole commit |
 | `review <card> [--explainer <url>] [--deploy <url>] [--commit <rev>]` | Record a commit for review on the card: sha, title, branch, host, repo path and `agentium:` ref, read from git in `--repo-dir` (default cwd) and `$AGENTIUM_SESSION`; `--deploy` is the URL where this commit's build is live |
@@ -395,6 +395,13 @@ searched. It's a read command — it never signs.
   searches only that card **and everything under it** (the card itself is
   included, unlike `next --in`); `--in <board-slug>` is the whole board.
 - Archived cards are skipped unless `--archived`.
+- On a terminal the matches are **colored and paged**, like `git grep` and
+  `agentium grep`: the pager is `$HEADWAY_PAGER`, else `$PAGER`, else
+  `less -R`. Piped, output is plain and unpaged. `--no-pager` / `--pager` force
+  paging off or on; `--color auto|always|never` overrides coloring
+  (`--color always` keeps the highlight when piping into your own `less -R`).
+  Agents reading the output should pass `--no-pager` or `--json`, though a pipe
+  already turns both off.
 - `--json` is an array with one object per matching card — `ref`, `id`,
   `board`, `title`, `column` (`archived` for an archived card) and `matches`
   (`[{field, text}]`, `field` one of `title`/`desc`/`comment`/`review`).

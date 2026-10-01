@@ -130,7 +130,9 @@ persisted current board between commands.",
         name: "grep",
         group: Group::Reading,
         summary: "Search card text (titles, descriptions, comments) across a board",
-        usage: &["grep <pattern> [--in <container>] [-i | -s] [--archived] [--all]"],
+        usage: &[
+            "grep <pattern> [--in <c>] [-i|-s] [--archived] [--all] [--color <when>] [--[no-]pager]",
+        ],
         details: "\
 Print every line of card text that matches <pattern>, grouped under the
 card's headway:<board>/<word-id> ref, with the field it came from: the
@@ -145,7 +147,11 @@ matches any case, and a pattern with an uppercase letter matches exactly.
 Searches the current board (or the one --in names); --all searches every
 board you can read. Archived cards are skipped unless --archived. One
 fold of each board covers every card, so it stays one relay sync however
-many cards match. A read-only command: it never signs or publishes.",
+many cards match. A read-only command: it never signs or publishes.
+
+On a terminal the matches are colored and paged, like `git grep`; piped,
+they are neither. The pager is $HEADWAY_PAGER, else $PAGER, else
+`less -R`.",
         options: &[
             (
                 "--in <c>",
@@ -164,6 +170,15 @@ many cards match. A read-only command: it never signs or publishes.",
                 "--all",
                 "Search every board you can read, not just this one",
             ),
+            (
+                "--color <when>",
+                "auto (default) | always | never. `always` keeps color when piping into your own pager (e.g. `less -SR`)",
+            ),
+            (
+                "--pager",
+                "Page the matches even when stdout isn't a terminal",
+            ),
+            ("--no-pager", "Never page; write straight to stdout"),
             (
                 "--json",
                 "Machine-readable output: one object per card, its matches grouped under it",

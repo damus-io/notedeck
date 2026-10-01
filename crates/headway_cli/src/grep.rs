@@ -1,13 +1,15 @@
-//! `headway grep` — search card text across a board (or every board), and the
-//! smart-case pattern compilation behind it.
+//! `headway grep` — search card text across a board (or every board).
 //!
 //! Modelled on `agentium grep` (crates/agentium_cli/src/grep.rs): each matching
 //! line printed under its owner's full, pasteable ref, smart-case by default,
-//! and `--json` grouped per owner rather than one flat row per hit.
+//! paged and colored the same way, and `--json` grouped per owner rather than
+//! one flat row per hit. The smart-case compilation, highlighting, pager and
+//! `--color`/`--pager` modes are agentium's own, shared through [`cli_term`].
 
 use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 
+use cli_term::{ColorWhen, PagerMode, highlight, paint};
 use nostrdb_net::relay::sync::Result;
 use regex::Regex;
 use serde_json::json;
@@ -28,14 +30,22 @@ use crate::output::plain_ref;
 /// set computed before the pass (see [`subtree_ids`]). Archived cards are
 /// searched only when `include_archived` (`--archived`) asks for them, like
 /// `show` lists them.
+///
+/// The text output goes through a pager when stdout is a terminal, like
+/// `git grep` and `agentium grep` (`--pager`/`--no-pager` force it either
+/// way), and is colored for the effective sink unless `--color` says otherwise
+/// — `--color always` keeps the highlight when piping into your own `less -R`.
 pub(crate) fn cmd_grep(
     boards: &[BoardView],
     subtree: Option<[u8; 32]>,
     pattern: &Regex,
     include_archived: bool,
-    as_json: bool,
+    out: GrepOutput,
 ) -> Result<()> {
-    let color = std::io::stdout().is_terminal();
+    let stdout_tty = std::io::stdout().is_terminal();
+    let use_pager = !out.json && out.pager.enabled(stdout_tty);
+    let color = out.color.enabled(stdout_tty || use_pager);
+    let as_json = out.json;
     let mut rows: Vec<serde_json::Value> = Vec::new();
     let mut output = String::new();
 
@@ -82,9 +92,22 @@ pub(crate) fn cmd_grep(
         println!("no matches");
         return Ok(());
     }
-    print!("{output}");
+    cli_term::emit(&output, use_pager, PAGER_VAR);
     Ok(())
 }
+
+/// How `grep`'s results are written: `--json`, or text under the `--color`
+/// and `--pager`/`--no-pager` modes. JSON is never paged or colored.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GrepOutput {
+    pub(crate) json: bool,
+    pub(crate) color: ColorWhen,
+    pub(crate) pager: PagerMode,
+}
+
+/// The variable naming headway's own pager command, consulted before `$PAGER`
+/// by [`cli_term::emit`] — the counterpart of agentium's `$AGENTIUM_PAGER`.
+const PAGER_VAR: &str = "HEADWAY_PAGER";
 
 /// The cards `grep` reads on `view`, each with where it sits: its column's
 /// name, or `archived` (the word `show <card>` uses) for an archived card,
@@ -251,125 +274,12 @@ const SGR_BOLD: &str = "1";
 const SGR_DIM: &str = "90";
 /// The field label is dimmed too, so the matched text is what stands out.
 const SGR_FIELD: &str = SGR_DIM;
-/// Bold red for the matched span — `grep --color`'s own convention.
-const SGR_MATCH: &str = "1;31";
-
-/// Wrap `s` in the SGR sequence `sgr` when `color` is on.
-fn paint(color: bool, sgr: &str, s: &str) -> String {
-    if color {
-        format!("\x1b[{sgr}m{s}\x1b[0m")
-    } else {
-        s.to_string()
-    }
-}
-
-/// Copy `line`, wrapping every match of `pattern` in [`SGR_MATCH`]. A no-op
-/// (returning the line unchanged) when color is off, so the plain output stays
-/// byte-for-byte the source text.
-///
-/// Zero-width matches are skipped rather than painted: a pattern like `a*`
-/// matches the empty string at every position, and highlighting those would
-/// bury the line in escape codes without marking anything.
-fn highlight(pattern: &Regex, line: &str, color: bool) -> String {
-    if !color {
-        return line.to_string();
-    }
-    let mut out = String::with_capacity(line.len());
-    let mut end = 0;
-    for m in pattern.find_iter(line) {
-        if m.start() == m.end() {
-            continue;
-        }
-        out.push_str(&line[end..m.start()]);
-        out.push_str(&paint(true, SGR_MATCH, m.as_str()));
-        end = m.end();
-    }
-    out.push_str(&line[end..]);
-    out
-}
-
-/// How `grep` decides case sensitivity — the same three modes as
-/// `agentium grep`.
-///
-/// The default is [`Smart`](CaseMode::Smart) rather than grep(1)'s
-/// case-sensitive, because card text is prose: the needles worth typing are
-/// names — `NoteView`, `RelayPool`, `Dave` — written capitalized on the card
-/// and lowercase in the shell. A literal reading of grep(1) answers "no
-/// matches" to a search whose subject fills the board.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum CaseMode {
-    /// The default: insensitive unless the pattern itself carries case.
-    Smart,
-    /// `-i`/`--ignore-case` — always insensitive.
-    Insensitive,
-    /// `-s`/`--case-sensitive` — always sensitive, grep(1)'s own default.
-    Sensitive,
-}
-
-impl CaseMode {
-    /// Whether `pattern` should be compiled case-insensitively under this mode.
-    fn insensitive_for(self, pattern: &str) -> bool {
-        match self {
-            CaseMode::Smart => !pattern_carries_case(pattern),
-            CaseMode::Insensitive => true,
-            CaseMode::Sensitive => false,
-        }
-    }
-}
-
-/// Whether the user spelled case into `pattern` — smart-case's entire signal.
-///
-/// Only uppercase in the *matched text* counts. An escape carries its uppercase
-/// in the syntax instead: `\W` and `\S` are negated classes, and a Unicode class
-/// names its property (`\p{Lu}`, `\P{Greek}`) rather than the characters it
-/// matches. So the scan skips an escaped character, and the braced or
-/// single-letter body after `\p`/`\P`.
-fn pattern_carries_case(pattern: &str) -> bool {
-    let mut chars = pattern.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            if c.is_uppercase() {
-                return true;
-            }
-            continue;
-        }
-        match chars.next() {
-            // `\p{Lu}` (braced) or `\pL` (single-letter shorthand).
-            Some('p') | Some('P') => {
-                if chars.as_str().starts_with('{') {
-                    for c in chars.by_ref() {
-                        if c == '}' {
-                            break;
-                        }
-                    }
-                } else {
-                    chars.next();
-                }
-            }
-            // Any other escape: the one skipped character is all of it.
-            _ => {}
-        }
-    }
-    false
-}
-
-/// Compile `grep`'s pattern, folding the case decision in as the regex's own
-/// case-insensitive flag rather than lowercasing haystack and needle (which
-/// would break the highlight offsets).
-///
-/// Compiled during argument parsing so an unparseable pattern fails before
-/// any relay work, with the regex crate's own diagnostic.
-pub(crate) fn compile_pattern(pattern: &str, case: CaseMode) -> Result<Regex> {
-    regex::RegexBuilder::new(pattern)
-        .case_insensitive(case.insensitive_for(pattern))
-        .build()
-        .map_err(|e| format!("invalid search pattern '{pattern}': {e}").into())
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use cli_term::{CaseMode, compile_pattern};
     use headway::event::{ArchivedCard, ColumnView, CommentView, Priority, SubissueView};
     use nostrdb_net::NoteId;
 
@@ -446,32 +356,6 @@ mod tests {
 
     fn re(pattern: &str) -> Regex {
         compile_pattern(pattern, CaseMode::Smart).unwrap()
-    }
-
-    #[test]
-    fn smart_case_folds_only_a_lowercase_pattern() {
-        assert!(re("relay").is_match("the Relay pool"));
-        assert!(!re("Relay").is_match("the relay pool"));
-        assert!(
-            compile_pattern("Relay", CaseMode::Insensitive)
-                .unwrap()
-                .is_match("the relay pool")
-        );
-        assert!(
-            !compile_pattern("relay", CaseMode::Sensitive)
-                .unwrap()
-                .is_match("the Relay pool")
-        );
-        assert!(compile_pattern("(", CaseMode::Smart).is_err());
-    }
-
-    #[test]
-    fn smart_case_ignores_uppercase_inside_escapes() {
-        for pattern in ["\\Werror", "\\S+ error", "\\p{Lu}error", "\\pLerror"] {
-            assert!(!pattern_carries_case(pattern), "{pattern}");
-        }
-        assert!(pattern_carries_case("\\w+Error"));
-        assert!(pattern_carries_case("\\p{Lu}Error"));
     }
 
     /// Title, description, comments and review comments are searched, per
@@ -553,15 +437,5 @@ mod tests {
             grep_match_line(&m, &re("relay"), 7, false),
             "  title    relay\n"
         );
-    }
-
-    #[test]
-    fn highlight_paints_only_real_matches() {
-        let cat = re("cat");
-        assert_eq!(highlight(&cat, "a cat and a cat", false), "a cat and a cat");
-        let painted = highlight(&cat, "a cat and a cat", true);
-        assert_eq!(painted.matches(SGR_MATCH).count(), 2);
-        assert!(painted.starts_with("a "));
-        assert_eq!(highlight(&re("x*"), "abc", true), "abc");
     }
 }

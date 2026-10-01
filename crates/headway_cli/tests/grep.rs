@@ -54,6 +54,11 @@ fn knows_grep(bin: &Path) -> bool {
 /// the developer's persisted board can't leak in. Asserts a clean exit and
 /// returns stdout.
 fn headway(bin: &Path, url: &str, db: &str, extra: &[&str]) -> String {
+    headway_env(bin, url, db, extra, &[])
+}
+
+/// [`headway`] with `envs` set on the run too.
+fn headway_env(bin: &Path, url: &str, db: &str, extra: &[&str], envs: &[(&str, &str)]) -> String {
     let nsec = nsec();
     let out = Command::new(bin)
         .args(["--nsec", &nsec, "--relay", url, "--db", db])
@@ -61,6 +66,9 @@ fn headway(bin: &Path, url: &str, db: &str, extra: &[&str]) -> String {
         .env("HEADWAY_BOARD", "headway")
         .env_remove("HEADWAY_COMMENT_NSEC")
         .env_remove("HEADWAY_COMMENT_NSEC_FILE")
+        .env_remove("HEADWAY_PAGER")
+        .env_remove("PAGER")
+        .envs(envs.iter().copied())
         .output()
         .expect("run headway");
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -232,7 +240,8 @@ fn grep_searches_card_text_across_the_board() {
     assert_eq!(rows.len(), 4, "{rows:?}");
 
     // The plain rendering: each card headed by its full ref, its matching
-    // lines beneath with the field they came from.
+    // lines beneath with the field they came from. Piped, it is neither colored
+    // nor paged.
     let out = headway(bin, url, db, &["grep", "fine now"]);
     assert!(
         out.starts_with(&format!("{child}  child task  (Backlog)\n")),
@@ -242,8 +251,38 @@ fn grep_searches_card_text_across_the_board() {
         out.contains("  comment  the relay looks fine now\n"),
         "{out}"
     );
+    assert!(!out.contains('\x1b'), "no color into a pipe: {out:?}");
     assert_eq!(
         headway(bin, url, db, &["grep", "zzz-no-such-text"]).trim(),
         "no matches"
     );
+
+    // `--color always` keeps the highlight into a pipe: the matched span is
+    // painted bold red, grep's own convention.
+    let out = headway(bin, url, db, &["grep", "fine now", "--color", "always"]);
+    assert!(
+        out.contains(&format!("\x1b[{}mfine now\x1b[0m", cli_term::SGR_MATCH)),
+        "{out:?}"
+    );
+
+    // `--pager` pages even into a pipe, through `$HEADWAY_PAGER` — here a pager
+    // that marks every line it is fed, so its output proves the text went
+    // through it. Unix only: the stand-in pager is `sed`.
+    if !cfg!(unix) {
+        return;
+    }
+    let paged = headway_env(
+        bin,
+        url,
+        db,
+        &["grep", "fine now", "--pager"],
+        &[("HEADWAY_PAGER", "sed s/^/paged:/")],
+    );
+    // Colored, too: `--color auto` follows the effective sink, and the default
+    // pager (`less -R`) renders color.
+    assert!(
+        paged.starts_with(&format!("paged:\x1b[1m{child}\x1b[0m  child task")),
+        "{paged:?}"
+    );
+    assert!(paged.lines().all(|l| l.starts_with("paged:")), "{paged}");
 }

@@ -647,7 +647,12 @@ async fn run() -> Result<()> {
                 },
                 _ => None,
             };
-            grep::cmd_grep(&boards, subtree, &pattern, show_archived, as_json)?;
+            let out = grep::GrepOutput {
+                json: as_json,
+                color: cli.color,
+                pager: cli.pager,
+            };
+            grep::cmd_grep(&boards, subtree, &pattern, show_archived, out)?;
         }
 
         // Read command: resolve the card's review record to a commit (fetching

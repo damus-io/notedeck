@@ -3978,6 +3978,7 @@ version = "0.11.0-beta.1"
 dependencies = [
  "bech32",
  "bin_testing",
+ "cli_term",
  "enostr",
  "futures-util",
  "headway",

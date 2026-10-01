@@ -5,6 +5,7 @@
 use std::env;
 use std::ffi::OsString;
 
+use cli_term::{CaseMode, ColorWhen, PagerMode, compile_pattern};
 use nostrdb_net::Pubkey;
 use regex::Regex;
 
@@ -13,7 +14,6 @@ use headway::store;
 
 use nostrdb_net::relay::sync::Result;
 
-use crate::grep::{CaseMode, compile_pattern};
 use crate::review::{self, ReviewFlags};
 use crate::{APP, help};
 
@@ -410,6 +410,11 @@ pub(crate) struct Cli {
     /// `show` renders, and `grep` searches, every board in the cache instead of
     /// just the current one.
     pub(crate) all: bool,
+    /// `--color`: when `grep` colors its text output (see [`ColorWhen`]).
+    pub(crate) color: ColorWhen,
+    /// `--pager`/`--no-pager`: whether `grep` pages its text output (see
+    /// [`PagerMode`]).
+    pub(crate) pager: PagerMode,
     /// `migrate` reports what it would re-seal and publishes nothing. The seal is
     /// irreversible once it reaches a relay, so the dry run is how you look first.
     pub(crate) dry_run: bool,
@@ -476,6 +481,9 @@ impl Cli {
         let mut count: Option<usize> = None;
         // `grep`'s case mode, folded into the compiled pattern.
         let mut case = CaseMode::Smart;
+        // `grep`'s output modes: page and color only for a terminal unless told.
+        let mut color = ColorWhen::Auto;
+        let mut pager = PagerMode::Auto;
         let mut review = ReviewFlags::default();
         // `diff --record`: which review record to show. `comment` shares it,
         // with its other review flags.
@@ -517,6 +525,9 @@ impl Cli {
                 "--ready" => ready = true,
                 "-i" | "--ignore-case" => case = CaseMode::Insensitive,
                 "-s" | "--case-sensitive" => case = CaseMode::Sensitive,
+                "--color" => color = ColorWhen::parse(&value("--color")?)?,
+                "--pager" => pager = PagerMode::Always,
+                "--no-pager" => pager = PagerMode::Never,
                 "--commit" => review.commit = Some(value("--commit")?),
                 "--explainer" => review.explainer = Some(value("--explainer")?),
                 "--deploy" => review.deploy = Some(value("--deploy")?),
@@ -673,6 +684,8 @@ impl Cli {
             json,
             archived,
             all,
+            color,
+            pager,
             dry_run,
             new_channel,
             command,
@@ -1461,6 +1474,22 @@ mod tests {
         assert_eq!(cli.board, "notedeck");
         assert!(cli.board_explicit);
         assert!(parse(&["grep", "x", "--all"]).all);
+    }
+
+    /// `--color` and `--pager`/`--no-pager` parse into the output modes `grep`
+    /// renders under, both following the terminal unless given, and a bad
+    /// `--color` value is refused by name.
+    #[test]
+    fn grep_parses_color_and_pager() {
+        let cli = parse(&["grep", "x"]);
+        assert_eq!((cli.color, cli.pager), (ColorWhen::Auto, PagerMode::Auto));
+        let cli = parse(&["grep", "x", "--color", "always", "--no-pager"]);
+        assert_eq!(
+            (cli.color, cli.pager),
+            (ColorWhen::Always, PagerMode::Never)
+        );
+        assert_eq!(parse(&["--pager", "grep", "x"]).pager, PagerMode::Always);
+        assert!(parse_err(&["grep", "x", "--color", "loud"]).contains("--color"));
     }
 
     /// A missing, unparseable or split pattern fails at parse time, before any
