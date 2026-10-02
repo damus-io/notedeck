@@ -22,7 +22,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::event::{self, BoardView};
+use crate::event::{self, BoardView, ReviewFields};
 
 /// A git invocation that failed: either `git` couldn't be run at all, or it ran
 /// and exited non-zero. `stderr` is git's own message, trimmed.
@@ -134,17 +134,40 @@ pub fn host_name() -> Option<String> {
 
 /// The checkouts on this host worth trying before the bare cache: `first` (the
 /// CLI's own working checkout, say), then every `path` a review record on the
-/// board says was recorded on `local_host`. Deduplicated, in that order.
+/// board says was recorded on `local_host` or that is a directory on this
+/// machine. Deduplicated, in that order.
 pub fn known_checkouts(view: &BoardView, local_host: &str, first: Option<PathBuf>) -> Vec<PathBuf> {
-    let recorded = event::all_cards(view)
-        .flat_map(|c| c.reviews.iter())
-        .filter(|r| r.fields.host.as_deref() == Some(local_host))
-        .filter_map(|r| r.fields.path.as_deref())
-        .map(PathBuf::from);
-    let mut out: Vec<PathBuf> = Vec::new();
-    for path in first.into_iter().chain(recorded) {
-        if !out.contains(&path) {
-            out.push(path);
+    let records = event::all_cards(view).flat_map(|c| c.reviews.iter().map(|r| &r.fields));
+    local_paths(records, local_host, first)
+}
+
+/// [`known_checkouts`] over bare records. A path recorded under another
+/// hostname still counts when it exists here: the hostname is only a hint (a
+/// Mac renames itself with its network), and the resolver checks each
+/// checkout's repo identity before using it. Each unique foreign path is
+/// stat'ed once.
+fn local_paths<'a>(
+    records: impl Iterator<Item = &'a ReviewFields>,
+    local_host: &str,
+    first: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = first.into_iter().collect();
+    let mut foreign: Vec<&str> = Vec::new();
+    for record in records {
+        let Some(path) = record.path.as_deref() else {
+            continue;
+        };
+        if out.iter().any(|p| p.as_os_str() == path) {
+            continue;
+        }
+        let here = record.host.as_deref() == Some(local_host);
+        if !here && foreign.contains(&path) {
+            continue;
+        }
+        if here || Path::new(path).is_dir() {
+            out.push(PathBuf::from(path));
+        } else {
+            foreign.push(path);
         }
     }
     out
@@ -170,6 +193,34 @@ mod tests {
         assert_eq!(branch_name("HEAD"), None);
         assert_eq!(branch_name(""), None);
         assert_eq!(branch_name("headway"), Some("headway".to_string()));
+    }
+
+    /// A path recorded under another hostname is a known checkout when it
+    /// exists here and not when it doesn't; this host's paths always count,
+    /// `first` leads, and nothing repeats.
+    #[test]
+    fn known_checkouts_take_foreign_paths_that_exist_here() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = |name: &str| tmp.path().join(name).to_str().unwrap().to_string();
+        std::fs::create_dir(tmp.path().join("renamed")).unwrap();
+        let rec = |host: &str, path: String| ReviewFields {
+            host: Some(host.to_string()),
+            path: Some(path),
+            ..Default::default()
+        };
+        let records = [
+            rec("J497044J94.local", path("renamed")),
+            rec("elsewhere", path("gone")),
+            rec("here", path("mine")),
+            rec("elsewhere", path("gone")),
+            rec("here", path("gone")),
+            rec("here", path("first")),
+        ];
+        let got = local_paths(records.iter(), "here", Some(PathBuf::from(path("first"))));
+        let want: Vec<PathBuf> = ["first", "renamed", "mine", "gone"]
+            .map(|n| PathBuf::from(path(n)))
+            .into();
+        assert_eq!(got, want);
     }
 
     /// Several roots pick the smallest, so every clone agrees.
