@@ -29,6 +29,7 @@
 //! as a sibling; the author-keyed leg is what generalizes.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
 use nostrdb_net::Pubkey;
@@ -99,7 +100,9 @@ struct CachedAuthor<R: Reducer> {
     /// `finalize` walks the whole reducer into an owned `Vec`; without this memo
     /// every inline reference re-walked it *twice* a frame — once to resolve, once
     /// to render — so N on-screen references cost 2·N finalizes per frame.
-    finalized: Option<Vec<R::View>>,
+    /// Shared (`Rc`) so [`views`](RealtimeCache::views) can hand a reader the
+    /// whole set without copying it.
+    finalized: Option<Rc<[R::View]>>,
     /// Keys the subscription drained but that weren't yet visible under the read
     /// txn they were polled with (committed after that txn's snapshot — see
     /// [`Reducer::reduce_delta`]). Retried on the next advance with a fresher
@@ -342,14 +345,41 @@ impl<R: Reducer> RealtimeCache<R> {
         author: &Pubkey,
         read: impl FnOnce(&[R::View]) -> T,
     ) -> Option<T> {
+        self.memoized(ndb, txn, author).map(|views| read(views))
+    }
+
+    /// Advance `author`'s reducer and hand back a shared handle to the memoized
+    /// views — the same finalize [`with_views`](Self::with_views) reads, without
+    /// the closure. Cloning the handle bumps a refcount; it never copies a view.
+    /// For a reader that has to drop the cache borrow before it draws (a render
+    /// that re-enters the cache to resolve inline references) yet still read the
+    /// views while drawing. `None` until the reducer seeds.
+    #[profiling::function]
+    pub fn views(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        author: &Pubkey,
+    ) -> Option<Rc<[R::View]>> {
+        self.memoized(ndb, txn, author).map(Rc::clone)
+    }
+
+    /// Advance `author`'s reducer and borrow its memoized finalize, rebuilding it
+    /// if a fold invalidated it — the single place a finalize is spent, shared by
+    /// [`with_views`](Self::with_views) and [`views`](Self::views).
+    fn memoized(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        author: &Pubkey,
+    ) -> Option<&Rc<[R::View]>> {
         self.advance(ndb, txn, author);
         let entry = self.authors.get_mut(author)?;
         if entry.finalized.is_none() {
-            entry.finalized = Some(entry.reducer.as_ref()?.finalize());
+            entry.finalized = Some(entry.reducer.as_ref()?.finalize().into());
             self.stats.finalizes += 1;
         }
-        let entry = self.authors.get(author)?;
-        Some(read(entry.finalized.as_ref()?))
+        entry.finalized.as_ref()
     }
 
     /// Advance `author`'s reducer, then run `read` against the *raw* folded
