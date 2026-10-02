@@ -234,8 +234,9 @@ pub struct AgenticSessionData {
     /// Newest note the conversation poll has handed this session, or a
     /// restore loaded into its chat.
     ///
-    /// nostrdb delivers notes in the order it stores them, so every note of
-    /// this session stored at or before this key has been through the poll.
+    /// nostrdb delivers notes in the order it stores them, and a restore loads
+    /// only notes the poll has already passed, so every note of this session
+    /// stored at or before this key has been through the poll or that restore.
     /// A rebuild folds only up to here: a note stored since is still on its
     /// way through the poll, which must see it unseen to run its side effects
     /// (a remote user message is dispatched and fanned out from there).
@@ -1757,11 +1758,15 @@ impl ChatSession {
     /// compaction is under way. Remote sessions already show the fold, and
     /// chat-mode sessions publish nothing to fold.
     ///
-    /// A user message waiting to be dispatched isn't at rest either: a turn is
-    /// about to start. The dispatch sends the chat's trailing user messages,
-    /// and the fold places a message by when it was typed, which can be above
-    /// the host's last row (a phone sending as the turn finished). Swapping
-    /// the chat then would leave nothing trailing to dispatch.
+    /// A chat that ends on a user turn ([`has_pending_user_message`]) isn't
+    /// at rest either, whether or not that turn has been dispatched yet: a
+    /// turn is about to start. The dispatch sends the chat's trailing user
+    /// messages, and the fold places a message by when it was typed, which
+    /// can be above the host's last row (a phone sending as the turn
+    /// finished). Swapping the chat then would leave nothing trailing to
+    /// dispatch. A permission reply row is not a user turn.
+    ///
+    /// [`has_pending_user_message`]: Self::has_pending_user_message
     pub fn at_rest(&self) -> bool {
         let Some(agentic) = &self.agentic else {
             return false;

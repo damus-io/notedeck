@@ -437,8 +437,14 @@ fn remote_user_message<'n>(
 /// loaded) the batch conservatively takes the slow path, so a missed seeding
 /// can only cost an extra rebuild, never misorder.
 ///
+/// Every note in the batch, seen or not, advances `seen_through`: the poll has
+/// now handed it over, so a rebuild may fold it (see
+/// [`rebuild_chat_from_fold`]).
+///
 /// For **local** sessions only incoming remote user messages are appended (the
-/// live streaming path owns local display); those are never rebuilt from ndb.
+/// live streaming path owns local display). Each is appended where it
+/// arrived, and the reconcile at rest swaps the chat for the fold later (see
+/// [`reconcile::maybe_reconcile_at_rest`]).
 pub(crate) fn process_conversation_notes<'a>(
     mut notes: Vec<nostrdb::Note<'a>>,
     session: &mut session::ChatSession,
@@ -698,11 +704,11 @@ pub(crate) fn process_conversation_notes<'a>(
 ///
 /// This is the single source of truth for a remote session's display order,
 /// and what a local session's chat becomes at rest (see
-/// [`reconcile::maybe_reconcile_at_rest`]). Loads every note for the session
-/// sorted by [`EventOrder`](session_loader::EventOrder), so the result is a
-/// pure, total function of the persisted event set, independent of the order
-/// events arrived or were ingested (the fresh-machine backfill case), then
-/// installs it with [`apply_loaded_chat`].
+/// [`reconcile::maybe_reconcile_at_rest`]). Loads the session's notes the poll
+/// has handed over, sorted by [`EventOrder`](session_loader::EventOrder), so
+/// the result is a pure, total function of that event set, independent of the
+/// order events arrived or were ingested (the fresh-machine backfill case),
+/// then installs it with [`apply_loaded_chat`].
 ///
 /// Only notes the poll has handed the session are folded (see
 /// `AgenticSessionData::seen_through`). `txn` is opened after the poll, so it
@@ -741,7 +747,10 @@ pub(crate) fn rebuild_chat_from_fold(
             through,
             &agentic.seen_note_ids,
         ),
-        // Nothing has come through the poll, so none of it can be racing it.
+        // Unreachable in production: a rebuild only follows a poll batch, a
+        // reconcile only follows the poll handing back the host's own notes,
+        // and a restore seeds the key, so by then a note has come through.
+        // Only a test rebuilds a session the poll never fed.
         None => session_loader::load_session_messages_for_author(ndb, txn, author, claude_sid),
     };
     for note_id in agentic.unindexed_self_notes.ids() {

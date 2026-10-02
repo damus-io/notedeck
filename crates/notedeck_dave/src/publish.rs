@@ -886,4 +886,47 @@ mod tests {
             .expect("a local session publishes on any dirty");
         assert_eq!(lp.hostname, "phone-host", "local publish uses this machine");
     }
+
+    /// A note nostrdb never took never comes back through the conversation
+    /// subscription, so neither publish path records it as waiting to: the
+    /// reconcile at rest, which waits for every recorded note, would wait on
+    /// it forever, and the dedup set would skip it if it ever did arrive.
+    ///
+    /// The note here is an inner event too big for NIP-44 to carry, which
+    /// [`pns_ingest`] can't wrap.
+    #[test]
+    fn a_note_nostrdb_refused_is_not_recorded() {
+        let tmp = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+        let sk = test_secret_key();
+        let refused = || session_events::BuiltEvent {
+            note_json: "x".repeat(70_000),
+            note_id: [7; 32],
+            kind: session_events::AI_CONVERSATION_KIND,
+        };
+        assert!(
+            !pns_ingest(&ndb, &refused().note_json, &sk),
+            "NIP-44 can't carry the note"
+        );
+
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        let agentic = session.agentic.as_mut().unwrap();
+        assert_eq!(
+            ingest_session_event(agentic, Ok(refused()), "refused note", &ndb, &sk),
+            None
+        );
+        let first =
+            ingest_built_live_events(&mut session, &ndb, &sk, |_, _, _| Ok(vec![refused()]));
+        assert!(first.is_some(), "the built note is still handed back");
+
+        let agentic = session.agentic.as_ref().unwrap();
+        assert!(agentic.unindexed_self_notes.is_empty());
+        assert!(!agentic.seen_note_ids.contains(&[7; 32]));
+        assert!(!agentic.fold_dirty, "the chat gained no published row");
+    }
 }

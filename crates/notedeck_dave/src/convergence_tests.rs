@@ -16,6 +16,11 @@
 //! scenario must converge there without a drift, and leave the host's chat
 //! equal to the fold.
 //!
+//! A remote [`Observer`] watches every scenario too. After each step it is fed
+//! what nostrdb indexed the way the conversation poll feeds a remote session,
+//! mostly appending rows one batch at a time, and its chat must equal the fold
+//! at every step.
+//!
 //! A scenario that fails today is `#[ignore]`d with the converge card that
 //! fixes it; that card un-ignores it.
 
@@ -23,8 +28,8 @@ use crate::backend::shared::prepare_prompt_and_images;
 use crate::backend::{AiBackend, BackendType};
 use crate::config::AiMode;
 use crate::conversation::{
-    handle_remote_permission_response, process_conversation_notes, subscribe_conversation_events,
-    ProcessedNotes,
+    handle_remote_permission_response, process_conversation_notes, rebuild_chat_from_fold,
+    subscribe_conversation_events, ProcessedNotes,
 };
 use crate::conversation_feed::ConversationFeed;
 use crate::messages::{
@@ -37,13 +42,16 @@ use crate::publish::{
     update_statuses_and_publish_auto_resolved,
 };
 use crate::reconcile::{maybe_reconcile_at_rest, Drift, ReconcileOutcome};
-use crate::session::{ChatSession, CompactIntent, SessionId, SessionManager};
+use crate::session::{ChatSession, CompactIntent, SessionId, SessionManager, SessionSource};
 use crate::stream_events::{
-    apply_response, dispatch_turn, handle_stream_end, ApplyCtx, DispatchCtx,
+    apply_response, dispatch_turn, handle_stream_end, reconcile_ended_turns, ApplyCtx, DispatchCtx,
 };
 use crate::tests::{test_config, test_dave, test_secret_key};
 use crate::tools::{Tool, ToolResponses};
-use crate::{embedded_engine, DaveApiResponse, ExecutedTool, Message, PermissionResponse};
+use crate::update::PermissionPublish;
+use crate::{
+    embedded_engine, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
+};
 use agentium_core::session_events::{
     build_live_event_at, build_live_events, build_permission_response_event,
     build_session_state_event, BuiltEvent, LiveEventTags, ThreadingState, AI_CONVERSATION_KIND,
@@ -53,7 +61,7 @@ use agentium_core::session_loader::{
     load_session_messages_for_author, view_signature, EventOrder, RowSig,
 };
 use claude_agent_sdk_rs::PermissionMode;
-use nostrdb::{Filter, IngestMetadata, Ndb, SubscriptionStream, Transaction};
+use nostrdb::{Filter, IngestMetadata, Ndb, NoteKey, SubscriptionStream, Transaction};
 use notedeck::{DataPath, Waker};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -124,6 +132,13 @@ struct Host {
     /// The session's conversation notes as they commit, subscribed before
     /// anything was published.
     indexed: IndexWatch,
+    /// The PNS envelopes those notes arrived in, as they commit.
+    envelopes: IndexWatch,
+    /// Notes indexed since the observer was last fed, in the order nostrdb
+    /// delivered them.
+    unobserved: Vec<NoteKey>,
+    /// A remote device watching the session, fed after every step.
+    observer: Observer,
     _dir: TempDir,
 }
 
@@ -134,6 +149,7 @@ impl Host {
         let sk = test_secret_key();
         assert!(ndb.add_key(&sk), "ndb must accept the PNS key");
         let indexed = IndexWatch::new(&ndb);
+        let envelopes = IndexWatch::envelopes(&ndb);
         let mut sessions = SessionManager::new();
         let sid = sessions.new_session(PathBuf::from("/tmp"), AiMode::Agentic, BackendType::Claude);
         sessions
@@ -151,6 +167,9 @@ impl Host {
             permission_rxs: Vec::new(),
             needs_send: HashSet::new(),
             indexed,
+            envelopes,
+            unobserved: Vec::new(),
+            observer: Observer::new(),
             _dir: dir,
         }
     }
@@ -265,13 +284,36 @@ impl Host {
                 }
                 step => self.apply(step),
             }
+            self.assert_observer_matches_fold().await;
         }
     }
 
     /// Wait until every note the host has published so far is indexed.
     async fn settle(&mut self) {
         let ids = self.published_note_ids();
-        self.indexed.wait_for(&self.ndb, &ids).await;
+        self.wait_indexed(&ids).await;
+    }
+
+    /// Wait until every note in `ids` is indexed, keeping the new arrivals
+    /// for the observer.
+    async fn wait_indexed(&mut self, ids: &HashSet<[u8; 32]>) {
+        let arrived = self.indexed.wait_for(&self.ndb, ids).await;
+        self.unobserved.extend(arrived);
+    }
+
+    /// Feed the observer what has been indexed since it was last fed, as one
+    /// poll batch, and assert its chat is the fold.
+    async fn assert_observer_matches_fold(&mut self) {
+        self.settle().await;
+        let keys = std::mem::take(&mut self.unobserved);
+        let author = self.author();
+        self.observer.poll(&self.ndb, &keys, &author, None);
+        let sk = self.secret_key.unwrap();
+        assert_eq!(
+            view_signature(&self.observer.session.chat),
+            fold_signature(&self.ndb, &sk),
+            "the observer's chat and the fold disagree"
+        );
     }
 
     /// Wait for everything published so far to be indexed, then assert the
@@ -290,6 +332,8 @@ impl Host {
             "{at}: the host's chat and the fold over its notes disagree"
         );
 
+        // Each note came in its own envelope, which the backfill re-ingests.
+        self.envelopes.wait_for_count(ids.len()).await;
         let backfilled = reversed_backfill_signature(&self.ndb, &sk, &ids).await;
         assert_eq!(
             fold, backfilled,
@@ -340,8 +384,14 @@ impl Host {
     /// Hand the host its published notes back the way the conversation poll
     /// does once they are indexed, then reconcile at rest, as the poll does.
     fn poll_and_reconcile(&mut self) -> ReconcileOutcome {
+        self.poll_own_notes();
+        self.reconcile_now()
+    }
+
+    /// Hand the host its published notes back the way the conversation poll
+    /// does once they are indexed, without the reconcile that follows.
+    fn poll_own_notes(&mut self) {
         let ids = self.published_note_ids();
-        let author = self.author();
         let sid = self.sid;
         let txn = Transaction::new(&self.ndb).unwrap();
         let notes = ids
@@ -357,8 +407,6 @@ impl Host {
             self.secret_key.as_ref(),
             &self.ndb,
         );
-        drop(txn);
-        maybe_reconcile_at_rest(session, &self.ndb, &author)
     }
 
     /// Store a note another device published, and wait until it is indexed.
@@ -370,7 +418,7 @@ impl Host {
         ));
         let mut ids = self.published_note_ids();
         ids.insert(note.note_id);
-        self.indexed.wait_for(&self.ndb, &ids).await;
+        self.wait_indexed(&ids).await;
     }
 
     /// Restart the host. Everything it published is indexed, then a fresh
@@ -565,12 +613,14 @@ impl AiBackend for ScriptBackend {
     fn set_permission_mode(&self, _session_id: String, _mode: PermissionMode, _waker: Waker) {}
 }
 
-/// Counts the scenario session's conversation notes as they commit to an ndb.
+/// Counts the notes matching a filter as they commit to an ndb: the scenario
+/// session's conversation notes ([`IndexWatch::new`]), or the PNS envelopes
+/// they arrive in ([`IndexWatch::envelopes`]).
 ///
 /// Subscribed before anything is ingested, so nothing slips past it. Waiting
 /// counts deliveries rather than polling for ids: each published note matches
-/// the session filter and is written once, so N deliveries is exactly "N
-/// committed". The stream is held for the whole scenario because dropping it
+/// the filter and is written once, so N deliveries is exactly "N committed".
+/// The stream is held for the whole scenario because dropping it
 /// unsubscribes.
 struct IndexWatch {
     stream: SubscriptionStream,
@@ -579,10 +629,28 @@ struct IndexWatch {
 
 impl IndexWatch {
     fn new(ndb: &Ndb) -> Self {
-        let filter = Filter::new()
-            .kinds([AI_CONVERSATION_KIND as u64])
-            .tags([SESSION], 'd')
-            .build();
+        Self::matching(
+            ndb,
+            Filter::new()
+                .kinds([AI_CONVERSATION_KIND as u64])
+                .tags([SESSION], 'd')
+                .build(),
+        )
+    }
+
+    /// Counts kind-1080 envelopes. nostrdb indexes a note unwrapped from one
+    /// apart from the envelope itself, so a note being indexed doesn't mean
+    /// its envelope is yet.
+    fn envelopes(ndb: &Ndb) -> Self {
+        Self::matching(
+            ndb,
+            Filter::new()
+                .kinds([nostrdb_net::pns::PNS_KIND as u64])
+                .build(),
+        )
+    }
+
+    fn matching(ndb: &Ndb, filter: Filter) -> Self {
         let sub = ndb.subscribe(&[filter]).unwrap();
         IndexWatch {
             stream: SubscriptionStream::new(ndb.clone(), sub),
@@ -590,18 +658,34 @@ impl IndexWatch {
         }
     }
 
+    /// Wait until `count` notes in all have been indexed.
+    async fn wait_for_count(&mut self, count: usize) {
+        let pending = count.saturating_sub(self.delivered);
+        if pending == 0 {
+            return;
+        }
+        let arrived = self
+            .stream
+            .wait_for_notes(pending, INGEST_TIMEOUT)
+            .await
+            .expect("the envelopes were never indexed");
+        self.delivered += arrived.len();
+    }
+
     /// Wait until every note in `ids` — all this ndb's session notes so far —
-    /// is indexed.
-    async fn wait_for(&mut self, ndb: &Ndb, ids: &HashSet<[u8; 32]>) {
+    /// is indexed. Returns the notes that arrived while waiting, in the order
+    /// nostrdb delivered them.
+    async fn wait_for(&mut self, ndb: &Ndb, ids: &HashSet<[u8; 32]>) -> Vec<NoteKey> {
         let pending = ids.len().saturating_sub(self.delivered);
-        if pending > 0 {
-            let arrived = self
-                .stream
+        let arrived = if pending > 0 {
+            self.stream
                 .wait_for_notes(pending, INGEST_TIMEOUT)
                 .await
-                .expect("the host's published notes were never indexed");
-            self.delivered += arrived.len();
-        }
+                .expect("the host's published notes were never indexed")
+        } else {
+            Vec::new()
+        };
+        self.delivered += arrived.len();
         let txn = Transaction::new(ndb).unwrap();
         for id in ids {
             assert!(
@@ -609,6 +693,72 @@ impl IndexWatch {
                 "a published note arrived under a different id"
             );
         }
+        arrived
+    }
+}
+
+/// A remote device watching the scenario's session: a remote session over the
+/// same notes, fed the way the conversation poll feeds one.
+///
+/// An observer shows the fold, but builds it two ways. A batch that sorts
+/// after its tail is appended row by row ([`process_conversation_notes`]'s
+/// fast path), and any other rebuilds the chat from ndb
+/// ([`rebuild_chat_from_fold`]). The appended rows can drift from the fold on
+/// their own, which checks on the loader alone never see.
+struct Observer {
+    session: ChatSession,
+    /// Batches that added rows by appending them, without a rebuild.
+    appended_batches: usize,
+}
+
+impl Observer {
+    fn new() -> Self {
+        let mut session = ChatSession::new(
+            2,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.source = SessionSource::Remote;
+        session.agentic.as_mut().unwrap().event_id = SESSION.to_string();
+        Observer {
+            session,
+            appended_batches: 0,
+        }
+    }
+
+    /// Hand the session one poll batch, `keys`, then rebuild it if the batch
+    /// asked to, as `Dave::deliver_conversation_notes` does. `secret_key` signs
+    /// whatever the batch's side effects publish; without one they publish
+    /// nothing.
+    fn poll(
+        &mut self,
+        ndb: &Ndb,
+        keys: &[NoteKey],
+        author: &nostrdb_net::Pubkey,
+        secret_key: Option<&[u8; 32]>,
+    ) -> ProcessedNotes {
+        let txn = Transaction::new(ndb).unwrap();
+        let notes = keys
+            .iter()
+            .map(|key| ndb.get_note_by_key(&txn, *key).unwrap())
+            .collect();
+        let rows = self.session.chat.len();
+        let processed =
+            process_conversation_notes(notes, &mut self.session, 2, true, secret_key, ndb);
+        drop(txn);
+        if processed.rebuild_chat {
+            self.rebuild(ndb, author);
+        } else if self.session.chat.len() > rows {
+            self.appended_batches += 1;
+        }
+        processed
+    }
+
+    /// Rebuild the chat from ndb, as the poll's rebuild pass does.
+    fn rebuild(&mut self, ndb: &Ndb, author: &nostrdb_net::Pubkey) {
+        let txn = Transaction::new(ndb).unwrap();
+        rebuild_chat_from_fold(&mut self.session, ndb, &txn, author);
     }
 }
 
@@ -1700,4 +1850,737 @@ async fn note_stored_after_the_poll_waits_for_the_next_one() {
         "the next poll delivers it as a message to dispatch"
     );
     assert!(host.session().should_dispatch_remote_message());
+}
+
+/// The observer is fed live. Past its first batch, which rebuilds because
+/// nothing has seeded its tail yet, a turn's rows reach it by appending, so
+/// the per-step check compares the fast path against the fold and not only a
+/// rebuild.
+#[tokio::test]
+async fn observer_appends_a_turn_live() {
+    let mut script = Vec::from(user_turn("look at the file"));
+    script.extend([
+        token("let me read it"),
+        running("t1", "Read", "src/lib.rs"),
+        executed("t1", "Read", "src/lib.rs", None),
+        token("it is short"),
+        Step::StreamEnd,
+    ]);
+    let host = driven(script).await;
+    assert!(
+        host.observer.appended_batches >= 2,
+        "the tool's batch and the closing segment append: {} batches did",
+        host.observer.appended_batches
+    );
+}
+
+/// A finished turn, its notes back through the poll, reconciled at rest.
+async fn rested() -> Host {
+    let mut script = Vec::from(user_turn("hello"));
+    script.extend([token("hi"), Step::StreamEnd]);
+    let mut host = driven(script).await;
+    assert_eq!(host.poll_and_reconcile(), ReconcileOutcome::Converged);
+    host
+}
+
+/// One condition of [`ChatSession::at_rest`] holds a session off the
+/// reconcile, and only that one.
+///
+/// `hold` puts a rested session in the state. Everything else the reconcile
+/// waits for is then made true — every note it published is back through the
+/// poll, and there is work to do — so only `gate` stands in the way. `release`
+/// takes the session back out, after which it reconciles.
+async fn assert_rest_gate(gate: &str, hold: Vec<Step>, release: Vec<Step>) {
+    let mut host = rested().await;
+
+    host.drive(hold).await;
+    host.settle().await;
+    host.poll_own_notes();
+    let agentic = host.session().agentic.as_mut().unwrap();
+    assert!(
+        agentic.unindexed_self_notes.is_empty(),
+        "{gate}: every note the host published is back"
+    );
+    agentic.fold_dirty = true;
+    assert!(
+        !host.session().at_rest(),
+        "{gate}: the session isn't at rest"
+    );
+    assert_eq!(
+        host.reconcile_now(),
+        ReconcileOutcome::NotReady,
+        "{gate}: the session must not reconcile"
+    );
+
+    host.drive(release).await;
+    host.settle().await;
+    assert_eq!(
+        host.poll_and_reconcile(),
+        ReconcileOutcome::Converged,
+        "{gate}: released, the session rests"
+    );
+}
+
+/// Mid-turn between rows: a tool finished and nothing is streaming, but the
+/// turn is still dispatched.
+#[tokio::test]
+async fn rest_gate_dispatched() {
+    let mut hold = Vec::from(user_turn("run it"));
+    hold.extend([
+        running("t1", "Bash", "cargo test"),
+        executed("t1", "Bash", "exit 0", None),
+    ]);
+    assert_rest_gate(
+        "dispatched",
+        hold,
+        vec![token("tests pass"), Step::StreamEnd],
+    )
+    .await;
+}
+
+/// The backend's task for the session is still running.
+#[tokio::test]
+async fn rest_gate_backend_task() {
+    assert_rest_gate(
+        "backend task",
+        vec![Step::Act(Box::new(|host: &mut Host| {
+            host.session().task_handle = Some(tokio::spawn(async {}));
+        }))],
+        vec![Step::Act(Box::new(|host: &mut Host| {
+            host.session().task_handle = None;
+        }))],
+    )
+    .await;
+}
+
+/// A spontaneous wake-up turn streams while the session is idle: no
+/// dispatch, but an assistant segment is open.
+#[tokio::test]
+async fn rest_gate_wake_up_streaming_while_idle() {
+    assert_rest_gate(
+        "wake-up segment",
+        vec![token("woke up")],
+        vec![Step::StreamEnd],
+    )
+    .await;
+}
+
+/// A wake-up turn's tool is running, with no dispatch and no open segment.
+#[tokio::test]
+async fn rest_gate_running_tool() {
+    assert_rest_gate(
+        "running tool",
+        vec![running("t1", "Bash", "sleep 1")],
+        vec![executed("t1", "Bash", "exit 0", None), Step::StreamEnd],
+    )
+    .await;
+}
+
+/// A permission request waits for an answer.
+#[tokio::test]
+async fn rest_gate_pending_permission() {
+    let id = uuid::Uuid::new_v4();
+    assert_rest_gate(
+        "pending permission",
+        vec![Step::Permission(PermissionRequest::pending(
+            id,
+            "Bash".to_string(),
+            serde_json::json!({ "command": "rm -rf target" }),
+        ))],
+        vec![
+            Step::RemoteAnswer(id, RemoteAnswer::Deny("not now")),
+            Step::StreamEnd,
+        ],
+    )
+    .await;
+}
+
+/// A compaction is under way.
+#[tokio::test]
+async fn rest_gate_compaction() {
+    assert_rest_gate(
+        "compaction",
+        vec![Step::Backend(DaveApiResponse::CompactionStarted)],
+        vec![
+            Step::Backend(DaveApiResponse::CompactionComplete(CompactionInfo {
+                pre_tokens: 120_000,
+            })),
+            Step::StreamEnd,
+        ],
+    )
+    .await;
+}
+
+/// A user message waits at the end of the chat to be dispatched.
+#[tokio::test]
+async fn rest_gate_waiting_user_message() {
+    assert_rest_gate(
+        "waiting user message",
+        vec![Step::Send("and another thing")],
+        vec![Step::Dispatch, token("noted"), Step::StreamEnd],
+    )
+    .await;
+}
+
+/// A remote session already shows the fold, so it never reconciles.
+#[tokio::test]
+async fn rest_gate_remote_session() {
+    assert_rest_gate(
+        "remote session",
+        vec![Step::Act(Box::new(|host: &mut Host| {
+            host.session().source = SessionSource::Remote;
+        }))],
+        vec![Step::Act(Box::new(|host: &mut Host| {
+            host.session().source = SessionSource::Local;
+        }))],
+    )
+    .await;
+}
+
+/// A chat-mode backend publishes nothing to fold.
+#[tokio::test]
+async fn rest_gate_chat_mode_backend() {
+    assert_rest_gate(
+        "chat-mode backend",
+        vec![Step::Act(Box::new(|host: &mut Host| {
+            host.session().backend_type = BackendType::OpenAI;
+        }))],
+        vec![Step::Act(Box::new(|host: &mut Host| {
+            host.session().backend_type = BackendType::Claude;
+        }))],
+    )
+    .await;
+}
+
+/// A row the host shows in the middle of its chat but never published is
+/// drift at that row, against the fold's row there.
+#[tokio::test]
+async fn reconcile_reports_middle_row_drift() {
+    let mut script = Vec::from(user_turn("hello"));
+    script.extend([
+        token("hi"),
+        Step::StreamEnd,
+        Step::Act(Box::new(|host: &mut Host| {
+            host.session()
+                .chat
+                .insert(1, Message::System("only on the host".to_string()));
+        })),
+    ]);
+    let mut host = driven(script).await;
+
+    assert_eq!(
+        host.poll_and_reconcile(),
+        ReconcileOutcome::Drifted(Drift {
+            index: 1,
+            host: Some(RowSig::System("only on the host".to_string())),
+            fold: Some(RowSig::Assistant("hi".to_string())),
+        })
+    );
+    let sk = host.secret_key.unwrap();
+    assert_eq!(
+        view_signature(&host.session().chat),
+        fold_signature(&host.ndb, &sk)
+    );
+}
+
+/// A published row the host no longer shows is drift too: the fold has a row
+/// past the end of the host's chat, which the reconcile puts back.
+#[tokio::test]
+async fn reconcile_reports_fold_only_row() {
+    let mut script = Vec::from(user_turn("run it"));
+    script.extend([
+        running("t1", "Bash", "cargo test"),
+        executed("t1", "Bash", "exit 0", None),
+        token("tests pass"),
+        Step::StreamEnd,
+        Step::Act(Box::new(|host: &mut Host| {
+            host.session().chat.pop();
+        })),
+    ]);
+    let mut host = driven(script).await;
+
+    assert_eq!(
+        host.poll_and_reconcile(),
+        ReconcileOutcome::Drifted(Drift {
+            index: 2,
+            host: None,
+            fold: Some(RowSig::Assistant("tests pass".to_string())),
+        })
+    );
+    let sk = host.secret_key.unwrap();
+    assert_eq!(
+        view_signature(&host.session().chat),
+        fold_signature(&host.ndb, &sk)
+    );
+}
+
+/// A background subagent whose row the reconcile moves still finds it when
+/// it completes: the reconcile re-indexes the rows it installs.
+///
+/// The row moves because the host showed a row above it that it never
+/// published (drift, which no correct host has today), so the fold puts the
+/// subagent one row higher than the host had it.
+#[tokio::test]
+async fn reconcile_moves_a_background_subagent_row() {
+    let mut script = Vec::from(user_turn("explore in the background"));
+    script.extend([
+        Step::Act(Box::new(|host: &mut Host| {
+            host.session()
+                .chat
+                .push(Message::System("only on the host".to_string()));
+        })),
+        Step::Backend(DaveApiResponse::SubagentSpawned(SubagentInfo {
+            task_id: "s1".to_string(),
+            description: "Map the loader".to_string(),
+            subagent_type: "Explore".to_string(),
+            status: SubagentStatus::Running,
+            output: String::new(),
+            max_output_size: 4000,
+            tool_results: Vec::new(),
+            background: true,
+        })),
+        token("it runs in the background"),
+        Step::StreamEnd,
+    ]);
+    let mut host = driven(script).await;
+    let subagent_row =
+        |host: &mut Host| host.session().agentic.as_ref().unwrap().subagent_indices["s1"];
+    assert_eq!(subagent_row(&mut host), 2);
+    assert!(matches!(
+        host.poll_and_reconcile(),
+        ReconcileOutcome::Drifted(Drift { index: 1, .. })
+    ));
+    assert_eq!(subagent_row(&mut host), 1, "the index follows the row");
+
+    host.drive(vec![
+        Step::Backend(DaveApiResponse::SubagentCompleted {
+            task_id: "s1".to_string(),
+            result: "mapped it".to_string(),
+        }),
+        Step::Settle,
+    ])
+    .await;
+    let completed = host.session().chat.iter().any(|message| {
+        matches!(message, Message::Subagent(info)
+            if info.task_id == "s1" && info.status == SubagentStatus::Completed)
+    });
+    assert!(completed, "the completion found the moved row");
+    assert_eq!(host.poll_and_reconcile(), ReconcileOutcome::Converged);
+}
+
+/// The request row with id `id` in `chat`.
+fn permission_row(chat: &[Message], id: uuid::Uuid) -> &PermissionRequest {
+    chat.iter()
+        .find_map(|message| match message {
+            Message::PermissionRequest(req) if req.id == id => Some(req),
+            _ => None,
+        })
+        .expect("the request's row")
+}
+
+/// The fold over the host's notes.
+fn fold_messages(host: &Host) -> Vec<Message> {
+    let author = host.author();
+    let txn = Transaction::new(&host.ndb).unwrap();
+    load_session_messages_for_author(&host.ndb, &txn, &author, SESSION).messages
+}
+
+/// A permission's tool input too big for the wire is cut in its note, so the
+/// fold shows a cut copy and the view inferred from it: here a plan review of
+/// a cut plan. The host keeps its whole input, and the view built from that,
+/// through the reconcile.
+#[tokio::test]
+async fn reconcile_keeps_permission_tool_input() {
+    let id = uuid::Uuid::new_v4();
+    let input = serde_json::json!({
+        "plan": "- a step of the plan\n".repeat(2 * MAX_WIRE_EVENT_BYTES / 20),
+    });
+    let mut script = Vec::from(user_turn("plan it"));
+    script.extend([
+        Step::Permission(PermissionRequest::pending(
+            id,
+            "ExitPlanMode".to_string(),
+            input.clone(),
+        )),
+        Step::RemoteAnswer(id, RemoteAnswer::Deny("too long")),
+        token("ok, a shorter one"),
+        Step::StreamEnd,
+    ]);
+    let mut host = driven(script).await;
+
+    // The view renders the plan, so a cut plan renders shorter.
+    let view_len = |req: &PermissionRequest| format!("{:?}", req.view).len();
+    let host_view = view_len(permission_row(&host.session().chat, id));
+    let fold = fold_messages(&host);
+    let folded = permission_row(&fold, id);
+    assert_ne!(folded.tool_input, input, "the wire cut the input");
+    assert!(
+        view_len(folded) < host_view,
+        "the fold's view is of the cut input"
+    );
+
+    assert_eq!(host.poll_and_reconcile(), ReconcileOutcome::Converged);
+    let kept = permission_row(&host.session().chat, id);
+    assert_eq!(kept.tool_input, input, "the host kept its whole input");
+    assert_eq!(view_len(kept), host_view, "and the view built from it");
+}
+
+/// A question's answer summary isn't sent, so the fold's question row has
+/// none. The host keeps the one it computed through the reconcile.
+#[tokio::test]
+async fn reconcile_keeps_question_answer_summary() {
+    let id = uuid::Uuid::new_v4();
+    let mut script = Vec::from(user_turn("which way?"));
+    script.extend([
+        ask_question(id),
+        Step::Settle,
+        answer_question(id),
+        token("going with the fold"),
+        Step::StreamEnd,
+    ]);
+    let mut host = driven(script).await;
+
+    assert!(permission_row(&host.session().chat, id)
+        .answer_summary
+        .is_some());
+    assert!(
+        permission_row(&fold_messages(&host), id)
+            .answer_summary
+            .is_none(),
+        "the wire has no answer summary"
+    );
+
+    assert_eq!(host.poll_and_reconcile(), ReconcileOutcome::Converged);
+    assert!(
+        permission_row(&host.session().chat, id)
+            .answer_summary
+            .is_some(),
+        "the host kept its summary"
+    );
+}
+
+/// Output too big for the wire from a tool a subagent ran is published cut,
+/// nested in the subagent's row in the fold. The host keeps the whole output
+/// on the nested tool through the reconcile.
+#[tokio::test]
+async fn reconcile_keeps_subagent_tool_output() {
+    let output = "line \"quoted\"\n".repeat(2 * MAX_WIRE_EVENT_BYTES / 14);
+    let mut script = Vec::from(user_turn("explore"));
+    script.extend([
+        Step::Backend(DaveApiResponse::SubagentSpawned(SubagentInfo {
+            task_id: "s1".to_string(),
+            description: "Map the loader".to_string(),
+            subagent_type: "Explore".to_string(),
+            status: SubagentStatus::Running,
+            output: String::new(),
+            max_output_size: 4000,
+            tool_results: Vec::new(),
+            background: false,
+        })),
+        Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
+            tool_name: "Bash".to_string(),
+            summary: "yes".to_string(),
+            output: Some(output.clone()),
+            parent_task_id: Some("s1".to_string()),
+            file_update: None,
+            tool_use_id: Some("t1".to_string()),
+        })),
+        Step::Backend(DaveApiResponse::SubagentCompleted {
+            task_id: "s1".to_string(),
+            result: "found it".to_string(),
+        }),
+        Step::StreamEnd,
+    ]);
+    let mut host = driven(script).await;
+
+    let nested_output = |chat: &[Message]| {
+        chat.iter()
+            .find_map(|message| match message {
+                Message::Subagent(info) => info.tool_results.first()?.output.clone(),
+                _ => None,
+            })
+            .expect("the subagent's row has its tool, with output")
+    };
+    assert!(
+        nested_output(&fold_messages(&host)).len() < output.len(),
+        "the wire carries a cut copy"
+    );
+
+    assert_eq!(host.poll_and_reconcile(), ReconcileOutcome::Converged);
+    assert_eq!(
+        nested_output(&host.session().chat),
+        output,
+        "the host kept the whole output"
+    );
+}
+
+/// Images aren't sent, so the fold's user row has none. The host keeps the
+/// images it sent through the reconcile.
+#[tokio::test]
+async fn reconcile_keeps_user_images() {
+    let mut script = vec![Step::Act(Box::new(|host: &mut Host| {
+        let session = host.sessions.get_mut(host.sid).unwrap();
+        record_user_message(
+            session,
+            &host.ndb,
+            host.secret_key.as_ref(),
+            "what is this?".to_string(),
+            vec![ImageAttachment::new(
+                vec![0x89, b'P', b'N', b'G'],
+                "image/png",
+            )],
+        );
+    }))];
+    script.extend([Step::Dispatch, token("a png"), Step::StreamEnd]);
+    let mut host = driven(script).await;
+
+    let images = |chat: &[Message]| match chat.first() {
+        Some(Message::User(user)) => user.images.len(),
+        other => panic!("the user's message comes first, not {other:?}"),
+    };
+    assert_eq!(images(&fold_messages(&host)), 0, "the wire has no images");
+
+    assert_eq!(host.poll_and_reconcile(), ReconcileOutcome::Converged);
+    assert_eq!(images(&host.session().chat), 1, "the host kept its image");
+}
+
+/// The end of a turn reconciles each session that ended (see
+/// [`reconcile_ended_turns`]), but not one about to dispatch again or compact,
+/// nor one whose turn didn't end.
+#[tokio::test]
+async fn ended_turns_reconcile_unless_more_is_coming() {
+    let mut script = Vec::from(user_turn("hello"));
+    script.extend([token("hi"), Step::StreamEnd]);
+    let mut host = driven(script).await;
+    host.poll_own_notes();
+    let sid = host.sid;
+    let author = host.author();
+    let none = HashSet::new();
+    let only = HashSet::from([sid]);
+    let dirty = |host: &mut Host| host.session().agentic.as_ref().unwrap().fold_dirty;
+
+    let end = |host: &mut Host, ended: &[SessionId], send, compact| {
+        reconcile_ended_turns(&mut host.sessions, ended, send, compact, &host.ndb, &author);
+    };
+    end(&mut host, &[], &none, &none);
+    assert!(dirty(&mut host), "a session whose turn didn't end waits");
+    end(&mut host, &[sid], &only, &none);
+    assert!(dirty(&mut host), "one about to dispatch again waits");
+    end(&mut host, &[sid], &none, &only);
+    assert!(dirty(&mut host), "one about to compact waits");
+    end(&mut host, &[sid], &none, &none);
+    assert!(!dirty(&mut host), "a turn that ended at rest reconciles");
+}
+
+/// The conversation poll delivers a batch to a local session and then
+/// reconciles it (`Dave::deliver_conversation_notes`), so a turn whose last
+/// notes come back through the poll ends with the host's chat as the fold.
+#[tokio::test]
+async fn poll_delivery_reconciles_a_local_session() {
+    let mut script = Vec::from(user_turn("hello"));
+    script.extend([token("hi"), Step::StreamEnd]);
+    let mut host = driven(script).await;
+    let sk = host.secret_key.unwrap();
+    let author = host.author();
+    let keys: Vec<NoteKey> = {
+        let txn = Transaction::new(&host.ndb).unwrap();
+        host.published_note_ids()
+            .iter()
+            .map(|id| host.ndb.get_notekey_by_id(&txn, id).unwrap())
+            .collect()
+    };
+
+    let data_dir = TempDir::new().unwrap();
+    let mut dave = test_dave(&DataPath::new(data_dir.path()));
+    dave.session_manager = std::mem::take(&mut host.sessions);
+    let remote = dave.deliver_conversation_notes(
+        &host.ndb,
+        Some(&sk),
+        &author,
+        HashMap::from([(host.sid, keys)]),
+    );
+    host.sessions = std::mem::take(&mut dave.session_manager);
+
+    assert!(remote.is_empty(), "the batch is the host's own notes");
+    let agentic = host.session().agentic.as_ref().unwrap();
+    assert!(agentic.unindexed_self_notes.is_empty());
+    assert!(!agentic.fold_dirty, "the delivery reconciled the session");
+    assert_eq!(
+        view_signature(&host.session().chat),
+        fold_signature(&host.ndb, &sk)
+    );
+}
+
+/// Answering a remote session's request publishes a response but records
+/// nothing on that session: its reply row comes from the echo of the note,
+/// which a recorded note would be skipped as. Answering a local session's
+/// request records it, as the host's own note.
+#[tokio::test]
+async fn answering_a_remote_request_records_nothing() {
+    let id = uuid::Uuid::new_v4();
+    let mut script = Vec::from(user_turn("clean up"));
+    script.extend([
+        Step::Permission(PermissionRequest::pending(
+            id,
+            "Bash".to_string(),
+            serde_json::json!({ "command": "rm -rf target" }),
+        )),
+        Step::Settle,
+    ]);
+    let mut host = driven(script).await;
+    let sk = host.secret_key.unwrap();
+    let engine = embedded_engine(&host.ndb, &sk).unwrap();
+    let publish = PermissionPublish {
+        perm_id: id,
+        event_session_id: SESSION.to_string(),
+        request_note_id: host
+            .session()
+            .agentic
+            .as_ref()
+            .unwrap()
+            .permissions
+            .request_note_ids[&id],
+        allowed: true,
+        message: None,
+        cancel_turn: false,
+    };
+    let recorded = |host: &mut Host| host.published_note_ids().len();
+
+    host.session().source = SessionSource::Remote;
+    let before = recorded(&mut host);
+    publish_user_permission_response(&mut host.sessions, &engine, &publish);
+    assert_eq!(
+        recorded(&mut host),
+        before,
+        "a remote session records nothing"
+    );
+    let arrived = host
+        .indexed
+        .stream
+        .wait_for_notes(1, INGEST_TIMEOUT)
+        .await
+        .expect("the response was published");
+    host.indexed.delivered += arrived.len();
+    {
+        let txn = Transaction::new(&host.ndb).unwrap();
+        let response = host.ndb.get_note_by_key(&txn, arrived[0]).unwrap();
+        assert_eq!(
+            agentium_core::session_events::get_tag_value(&response, "role"),
+            Some("permission_response")
+        );
+    }
+
+    host.session().source = SessionSource::Local;
+    publish_user_permission_response(&mut host.sessions, &engine, &publish);
+    assert_eq!(
+        recorded(&mut host),
+        before + 1,
+        "a local session records its own response"
+    );
+}
+
+/// A remote session's rebuild folds only what the poll has handed it
+/// (`seen_through`). A note stored after the poll ran, before a rebuild
+/// (an earlier batch's), is left out of that rebuild and not marked seen. The
+/// next poll then delivers it as new and runs its side effects: here the
+/// observer's runtime allowlist auto-accepts the request.
+#[tokio::test]
+async fn remote_rebuild_leaves_a_late_note_to_the_next_poll() {
+    let id = uuid::Uuid::new_v4();
+    let input = serde_json::json!({ "command": "ls -la" });
+    let mut host = driven(Vec::from(user_turn("list files"))).await;
+    let grant = input.clone();
+    host.observer
+        .session
+        .agentic
+        .as_mut()
+        .unwrap()
+        .add_runtime_allow("Bash", &grant);
+
+    // Applied without driving, so the observer isn't fed the request.
+    host.apply(Step::Permission(PermissionRequest::pending(
+        id,
+        "Bash".to_string(),
+        input,
+    )));
+    host.settle().await;
+    let request_note = host
+        .session()
+        .agentic
+        .as_ref()
+        .unwrap()
+        .permissions
+        .request_note_ids[&id];
+
+    let author = host.author();
+    host.observer.rebuild(&host.ndb, &author);
+    let observed = &host.observer.session;
+    assert!(
+        !observed
+            .chat
+            .iter()
+            .any(|m| matches!(m, Message::PermissionRequest(_))),
+        "the rebuild leaves out the note the poll hasn't handed over"
+    );
+    assert!(!observed
+        .agentic
+        .as_ref()
+        .unwrap()
+        .seen_note_ids
+        .contains(&request_note));
+
+    let keys = std::mem::take(&mut host.unobserved);
+    let sk = host.secret_key.unwrap();
+    host.observer.poll(&host.ndb, &keys, &author, Some(&sk));
+    let req = permission_row(&host.observer.session.chat, id);
+    assert_eq!(
+        req.response,
+        Some(crate::messages::PermissionResponseType::Allowed),
+        "the next poll ran the request's auto-accept"
+    );
+    assert!(req.auto_accepted);
+}
+
+/// A note another device stamped with `queued`, as a sender does while the
+/// session is mid-turn.
+fn remote_queued_note(text: &str) -> BuiltEvent {
+    build_live_event_at(
+        text,
+        "user",
+        SESSION,
+        None,
+        LiveEventTags {
+            queued: true,
+            ..Default::default()
+        },
+        &mut ThreadingState::new(),
+        &test_secret_key(),
+        now_ms(),
+    )
+    .unwrap()
+}
+
+/// Two messages from other devices reach the host mid-turn in the reverse of
+/// the order they were typed. The host queues them as they arrive and
+/// dispatches them in that order, and their dispatch markers put them in that
+/// order in the fold too.
+#[tokio::test]
+async fn remote_messages_arriving_out_of_order_mid_turn() {
+    let typed_first = remote_queued_note("typed first");
+    tokio::time::sleep(Duration::from_millis(2)).await;
+    let typed_second = remote_queued_note("typed second");
+
+    let mut script = Vec::from(user_turn("hello"));
+    script.extend([
+        token("working "),
+        Step::Deliver(typed_second),
+        Step::Deliver(typed_first),
+        token("on it"),
+        Step::StreamEnd,
+        Step::ExpectRedispatch(Some("typed second\ntyped first")),
+        Step::Dispatch,
+        token("both of them"),
+        Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
 }
