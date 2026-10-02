@@ -17,7 +17,8 @@ use super::widgets::{
 };
 use super::{BoardUiState, EditMode, find_card, notice_ui, pane_hints_ui, seed_edit_mode};
 use crate::event::{
-    self, ActivityKind, ActivityView, BoardView, ColumnPos, CommentView, Priority, ReviewView,
+    self, ActivityKind, ActivityView, BoardView, ColumnPos, ColumnView, CommentView, Priority,
+    ReviewView,
 };
 use crate::keys::{ActionView, CardAction, apply_card_action};
 use crate::nav::NavPos;
@@ -122,16 +123,15 @@ pub(super) fn card_detail_pane_ui(
         terminal: view.columns[current_col].terminal,
         card_ref: headway::wordid::card_ref(&view.id, card_id.bytes()),
         current_col,
-        title: card.title.clone(),
-        desc: card.description.clone(),
-        labels: card.labels.clone(),
+        title: &card.title,
+        desc: &card.description,
+        labels: &card.labels,
         priority: card.priority,
-        // Owned copy so the body can render the status pill and column chips.
-        columns: view.columns.iter().map(|c| c.name.clone()).collect(),
+        columns: &view.columns,
         created_at: card.created_at,
         updated_at: card.updated_at,
-        comments: card.comments.clone(),
-        activity: card.activity.clone(),
+        comments: &card.comments,
+        activity: &card.activity,
         parent: card.parent.map(|pid| DetailParent {
             id: pid,
             title: find_card(view, pid).map(|(_, p)| p.title.clone()),
@@ -311,22 +311,27 @@ struct DetailCtx<'a> {
     /// the board slug plus the word-encoded event id (see [`headway::wordid`]).
     card_ref: String,
     current_col: usize,
-    title: String,
-    desc: String,
-    labels: Vec<String>,
+    /// The card's title, description and labels as folded — borrowed off the
+    /// frame's view like [`reviews`](Self::reviews). The editable title and
+    /// description render from `BoardUiState`'s buffers; these are what an edit
+    /// is compared against.
+    title: &'a str,
+    desc: &'a str,
+    labels: &'a [String],
     /// The card's resolved priority, shown as an editable row in the sidebar.
     priority: Priority,
-    columns: Vec<String>,
+    /// The board's live columns, for the status pill and column chips.
+    columns: &'a [ColumnView],
     /// When the card was created / last amended (see [`CardView`](crate::event::CardView)), rendered
     /// as relative times next to the card ref.
     created_at: u64,
     updated_at: u64,
     /// The card's comment thread, oldest first. Rendered flat (replies aren't
     /// indented yet) but each carries its `parent` for forward-compatibility.
-    comments: Vec<CommentView>,
+    comments: &'a [CommentView],
     /// The card's derived activity timeline (created / moved / renamed / …),
     /// oldest first, interleaved chronologically with the comments.
-    activity: Vec<ActivityView>,
+    activity: &'a [ActivityView],
     /// The card's parent, when it's a subissue (rendered as a breadcrumb).
     parent: Option<DetailParent>,
     /// The card's subissues, precomputed for the checklist rows.
@@ -1256,7 +1261,7 @@ fn detail_labels_section_ui(
     section_label(ui, theme, "Labels");
     ui.add_space(SPACING_XS);
     ui.horizontal_wrapped(|ui| {
-        for label in &ctx.labels {
+        for label in ctx.labels {
             if detail_label_chip_ui(ui, theme, label) {
                 *outcome = DetailOutcome::RemoveLabel(label.clone());
             }
@@ -1347,7 +1352,8 @@ fn detail_status_row_ui(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = SPACING_XS;
         status_icon_ui(ui, theme, StatusIcon::for_column(ctx.current_col, n), 14.0);
-        let name = egui::RichText::new(&ctx.columns[ctx.current_col]).color(theme.text_primary);
+        let name =
+            egui::RichText::new(&ctx.columns[ctx.current_col].name).color(theme.text_primary);
         // Flatten the dropdown's idle state so the row reads as plain text
         // (Linear-style); hover still highlights it as clickable.
         ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
@@ -1357,7 +1363,7 @@ fn detail_status_row_ui(
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = SPACING_XS;
                     status_icon_ui(ui, theme, StatusIcon::for_column(i, n), 14.0);
-                    if ui.selectable_label(selected, col).clicked() {
+                    if ui.selectable_label(selected, &col.name).clicked() {
                         if !selected {
                             *outcome = DetailOutcome::MoveTo(i);
                         }
@@ -1851,7 +1857,7 @@ fn resolve_detail_outcome(
         DetailOutcome::AddLabel => {
             let new = state.new_label.trim().to_string();
             if !new.is_empty() && !ctx.labels.contains(&new) {
-                let mut labels = ctx.labels.clone();
+                let mut labels = ctx.labels.to_vec();
                 labels.push(new);
                 *action = Some(BoardAction::SetLabels {
                     card: ctx.card_id,
