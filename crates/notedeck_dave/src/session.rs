@@ -541,17 +541,22 @@ impl DispatchState {
 /// `turn_has_content` is the single signal that distinguishes those two cases —
 /// a tool call can be a turn's first output without any token, so the state
 /// alone is not enough.
+///
+/// A viewer that recorded no dispatch (a remote observer, whose state is
+/// `Idle` and `turn_has_content` false) can't tell the cases apart, and assumes
+/// the run begins with the dispatched message — except after a permission
+/// reply row. A reply answers a request in the middle of a turn, which then
+/// carries on, so the run after it was sent mid-turn and is queued.
 fn turn_content_boundary(
     chat: &[Message],
     dispatch_state: DispatchState,
     turn_has_content: bool,
 ) -> usize {
-    let after_content = chat
-        .iter()
-        .rposition(|m| !m.is_user_turn())
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let skip = if turn_has_content {
+    let last_content = chat.iter().rposition(|m| !m.is_user_turn());
+    let after_content = last_content.map(|i| i + 1).unwrap_or(0);
+    let after_reply = last_content
+        .is_some_and(|i| matches!(&chat[i], Message::User(user) if user.permission_reply));
+    let skip = if turn_has_content || (after_reply && dispatch_state.dispatched_count() == 0) {
         0
     } else {
         dispatch_state.dispatched_count().max(1)
@@ -1168,7 +1173,10 @@ impl ChatSession {
                     Message::Assistant(_) | Message::CompactionComplete(_) => {
                         return AgentStatus::Done;
                     }
-                    Message::User(_) => return AgentStatus::Idle, // Waiting for response
+                    // Waiting for response. A permission reply row is the
+                    // turn's content, not a message waiting, so it is skipped
+                    // like the request it answers.
+                    m if m.is_user_turn() => return AgentStatus::Idle,
                     Message::Error(_) => return AgentStatus::Error,
                     _ => continue,
                 }
@@ -2791,6 +2799,10 @@ mod tests {
         session.insert_turn_content(Message::User(UserMessage::permission_reply(
             "Approach: Fold",
         )));
+        // The request reaching the host is the backend responding: the turn is
+        // `Streaming`, where any trailing user turn is redispatched. (Still
+        // `AwaitingResponse { count: 1 }`, the check would pass either way.)
+        session.dispatch_state.backend_responded();
         assert!(
             !session.needs_redispatch_after_stream_end(),
             "a turn ending on a reply row must not redispatch it"
@@ -3140,6 +3152,78 @@ mod tests {
             vec!["queued"],
             "only the message after the dispatched one should be queued"
         );
+    }
+
+    /// A remote observer records no dispatch, so it assumes the trailing
+    /// user run begins with the message being worked on. A reply row answers a
+    /// request mid-turn, so a message after it was sent while that turn ran
+    /// and is queued — as it was before reply rows stopped counting as user
+    /// turns.
+    #[test]
+    fn queued_indicator_remote_after_permission_reply() {
+        use crate::messages::{PermissionRequest, UserMessage};
+
+        let mut session = test_session();
+        session.chat.push(Message::User("which way?".into()));
+        session
+            .chat
+            .push(Message::Assistant(AssistantMessage::from_text(
+                "let me ask".into(),
+            )));
+        session
+            .chat
+            .push(Message::PermissionRequest(PermissionRequest::pending(
+                Uuid::new_v4(),
+                "AskUserQuestion".to_string(),
+                serde_json::json!({}),
+            )));
+        session
+            .chat
+            .push(Message::User(UserMessage::permission_reply(
+                "Approach: Fold",
+            )));
+
+        assert!(
+            queued_texts(&session, true, DispatchState::Idle).is_empty(),
+            "the reply row is the turn's content, never queued"
+        );
+
+        session.chat.push(Message::User("also, hurry".into()));
+        assert_eq!(
+            queued_texts(&session, true, DispatchState::Idle),
+            vec!["also, hurry"],
+            "a message after the reply waits for the turn it was sent during"
+        );
+    }
+
+    /// A turn that ends on a permission reply row ended with the agent's
+    /// output, not on a message waiting for one: the reply is skipped like
+    /// the request it answers, and the status is `Done`.
+    #[test]
+    fn status_done_when_turn_ends_on_permission_reply() {
+        use crate::messages::{PermissionRequest, PermissionResponseType, UserMessage};
+
+        let mut session = test_session();
+        session.chat.push(Message::User("which way?".into()));
+        session
+            .chat
+            .push(Message::Assistant(AssistantMessage::from_text(
+                "let me ask".into(),
+            )));
+        let mut request = PermissionRequest::pending(
+            Uuid::new_v4(),
+            "AskUserQuestion".to_string(),
+            serde_json::json!({}),
+        );
+        request.response = Some(PermissionResponseType::Allowed);
+        session.chat.push(Message::PermissionRequest(request));
+        session
+            .chat
+            .push(Message::User(UserMessage::permission_reply(
+                "Approach: Fold",
+            )));
+
+        assert_eq!(session.derive_status(), AgentStatus::Done);
     }
 
     #[test]

@@ -552,6 +552,34 @@ pub(crate) fn publish_auto_accept_response(
     ingest_session_event(agentic, built, "auto-accept response event", ndb, sk);
 }
 
+/// Update every session's status, then publish the auto-accept responses for
+/// the permissions the runtime allowlist resolved on the way (see
+/// [`SessionManager::update_all_statuses`]), so observers stop showing them
+/// pending. Without a key the statuses still update and nothing is published.
+/// Returns what was resolved.
+///
+/// The per-frame pass in `Dave::update` calls this; so do tests, which then
+/// exercise the path the app runs rather than a copy of its loop.
+///
+/// [`SessionManager::update_all_statuses`]: session::SessionManager::update_all_statuses
+pub(crate) fn update_statuses_and_publish_auto_resolved(
+    sessions: &mut session::SessionManager,
+    ndb: &nostrdb::Ndb,
+    sk: Option<&[u8; 32]>,
+) -> Vec<session::AutoResolved> {
+    let resolved = sessions.update_all_statuses();
+    let Some(sk) = sk else {
+        return resolved;
+    };
+    for auto in &resolved {
+        let Some(session) = sessions.get_mut(auto.session) else {
+            continue;
+        };
+        publish_auto_accept_response(session, auto.perm_id, ndb, sk);
+    }
+    resolved
+}
+
 impl Dave {
     /// Publish kind-31988 state events for sessions whose status changed.
     pub(crate) fn publish_dirty_session_states(&mut self, ctx: &mut AppContext<'_>) {
@@ -645,30 +673,6 @@ impl Dave {
                 ctx.ndb,
                 &sk,
             );
-        }
-    }
-
-    /// Publish the auto-accept responses for permissions the runtime allowlist
-    /// resolved this frame (see [`SessionManager::update_all_statuses`]), so
-    /// observers stop showing them pending.
-    ///
-    /// [`SessionManager::update_all_statuses`]: session::SessionManager::update_all_statuses
-    pub(crate) fn publish_auto_resolved(
-        &mut self,
-        ctx: &AppContext<'_>,
-        resolved: &[session::AutoResolved],
-    ) {
-        if resolved.is_empty() {
-            return;
-        }
-        let Some(sk) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) else {
-            return;
-        };
-        for auto in resolved {
-            let Some(session) = self.session_manager.get_mut(auto.session) else {
-                continue;
-            };
-            publish_auto_accept_response(session, auto.perm_id, ctx.ndb, &sk);
         }
     }
 

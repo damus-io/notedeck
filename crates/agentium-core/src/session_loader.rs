@@ -724,6 +724,10 @@ pub enum RowSig {
         /// indicator. A host that dispatched a message without clearing this,
         /// or without the marker that clears it in the fold, disagrees here.
         queued: bool,
+        /// A permission response's reply text rather than a user turn: never
+        /// queued or redispatched (see [`Message::is_user_turn`]). A view that
+        /// renders a reply as a plain user message would redispatch it.
+        permission_reply: bool,
     },
     /// An assistant segment's text, trimmed: the host accumulates raw tokens,
     /// whose leading and trailing whitespace a viewer never sees.
@@ -785,6 +789,7 @@ fn row_signature(message: &Message) -> RowSig {
         Message::User(user) => RowSig::User {
             text: user.as_str().to_string(),
             queued: user.queued,
+            permission_reply: user.permission_reply,
         },
         Message::Assistant(msg) => RowSig::Assistant(msg.text().trim().to_string()),
         Message::ToolCalls(calls) => RowSig::ToolCalls(calls.len()),

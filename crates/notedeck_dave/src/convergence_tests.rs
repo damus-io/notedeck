@@ -19,6 +19,7 @@
 //! A scenario that fails today is `#[ignore]`d with the converge card that
 //! fixes it; that card un-ignores it.
 
+use crate::backend::shared::prepare_prompt_and_images;
 use crate::backend::{AiBackend, BackendType};
 use crate::config::AiMode;
 use crate::conversation::{
@@ -32,7 +33,8 @@ use crate::messages::{
 };
 use crate::pns_runtime::PnsLocalState;
 use crate::publish::{
-    pns_ingest, publish_auto_accept_response, publish_user_permission_response, record_user_message,
+    pns_ingest, publish_user_permission_response, record_user_message,
+    update_statuses_and_publish_auto_resolved,
 };
 use crate::reconcile::{maybe_reconcile_at_rest, Drift, ReconcileOutcome};
 use crate::session::{ChatSession, CompactIntent, SessionId, SessionManager};
@@ -81,6 +83,10 @@ enum Step {
     Permission(PermissionRequest),
     /// The backend ends the turn.
     StreamEnd,
+    /// What the turn that just ended left to redispatch: `None` when the host
+    /// asked for no redispatch, else the prompt the backend would be sent —
+    /// the trailing user turns it collects from the chat.
+    ExpectRedispatch(Option<&'static str>),
     /// Wait until everything published so far is indexed: the moment a user
     /// takes to read a request before answering it, whose answer is built
     /// from the request's note in ndb.
@@ -112,6 +118,9 @@ struct Host {
     /// Response channels of the permission requests the backend sent, kept
     /// open so resolving a request does not log a closed-channel error.
     permission_rxs: Vec<oneshot::Receiver<PermissionResponse>>,
+    /// Sessions the last stream end asked to redispatch, as the app's update
+    /// loop collects them. A dispatch takes the session back out.
+    needs_send: HashSet<SessionId>,
     /// The session's conversation notes as they commit, subscribed before
     /// anything was published.
     indexed: IndexWatch,
@@ -140,6 +149,7 @@ impl Host {
             ndb,
             secret_key: Some(sk),
             permission_rxs: Vec::new(),
+            needs_send: HashSet::new(),
             indexed,
             _dir: dir,
         }
@@ -173,6 +183,7 @@ impl Host {
                     waker: &waker,
                 };
                 dispatch_turn(session, &ScriptBackend, &ctx);
+                self.needs_send.remove(&sid);
             }
             Step::Backend(res) => {
                 let ctx = ApplyCtx {
@@ -206,9 +217,20 @@ impl Host {
                 sid,
                 &self.secret_key,
                 &self.ndb,
-                &mut HashSet::new(),
+                &mut self.needs_send,
                 &mut HashSet::new(),
             ),
+            Step::ExpectRedispatch(expected) => {
+                let redispatch = self.needs_send.contains(&sid).then(|| {
+                    // The resumed-session form: the trailing user turns.
+                    prepare_prompt_and_images(&session.chat, &Some(String::new())).0
+                });
+                assert_eq!(
+                    redispatch.as_deref(),
+                    expected,
+                    "what the turn left to redispatch"
+                );
+            }
             Step::Act(act) => act(self),
             Step::Settle
             | Step::Deliver(_)
@@ -744,7 +766,12 @@ fn executed(
 #[tokio::test]
 async fn plain_turn() {
     let mut script = Vec::from(user_turn("hello"));
-    script.extend([token("hi "), token("there"), Step::StreamEnd]);
+    script.extend([
+        token("hi "),
+        token("there"),
+        Step::StreamEnd,
+        Step::ExpectRedispatch(None),
+    ]);
     assert_host_matches_fold(script).await;
 }
 
@@ -866,7 +893,7 @@ async fn failed_error() {
 #[tokio::test]
 async fn empty_response_error() {
     let mut script = Vec::from(user_turn("anyone there?"));
-    script.push(Step::StreamEnd);
+    script.extend([Step::StreamEnd, Step::ExpectRedispatch(None)]);
     assert_host_matches_fold(script).await;
 }
 
@@ -912,13 +939,12 @@ async fn allow_always_resolves_pending() {
         Step::Act(Box::new(move |host: &mut Host| {
             let agentic = host.session().agentic.as_mut().unwrap();
             agentic.add_runtime_allow("Bash", &grant);
-            let resolved = host.sessions.update_all_statuses();
+            let resolved = update_statuses_and_publish_auto_resolved(
+                &mut host.sessions,
+                &host.ndb,
+                host.secret_key.as_ref(),
+            );
             assert_eq!(resolved.len(), 1, "the grant covers the pending request");
-            let sk = host.secret_key.unwrap();
-            for auto in resolved {
-                let session = host.sessions.get_mut(auto.session).unwrap();
-                publish_auto_accept_response(session, auto.perm_id, &host.ndb, &sk);
-            }
         })),
         running("t1", "Bash", "cargo build"),
         executed("t1", "Bash", "exit 0", None),
@@ -975,6 +1001,52 @@ async fn question_reply() {
         answer_question(id),
         token("going with the fold"),
         Step::StreamEnd,
+        Step::ExpectRedispatch(None),
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// G4: a turn can end on a question's reply row. The reply reached the model
+/// with the response, so the host redispatches nothing; a host that took the
+/// row for a user turn would send the answers again as a new prompt.
+#[tokio::test]
+async fn turn_ends_on_question_reply() {
+    let id = uuid::Uuid::new_v4();
+    let mut script = Vec::from(user_turn("which way?"));
+    script.extend([
+        ask_question(id),
+        Step::Settle,
+        answer_question(id),
+        Step::StreamEnd,
+        Step::ExpectRedispatch(None),
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// G5 with G4: a message queued right behind a reply row is redispatched on
+/// its own, without the reply; and once dispatched, a message queued before
+/// the next turn's first token still waits below that turn's reply.
+#[tokio::test]
+async fn queued_send_right_behind_question_reply() {
+    let id = uuid::Uuid::new_v4();
+    let mut script = Vec::from(user_turn("which way?"));
+    script.extend([
+        ask_question(id),
+        Step::Settle,
+        answer_question(id),
+        Step::Send("also, hurry"),
+        Step::StreamEnd,
+        Step::ExpectRedispatch(Some("also, hurry")),
+        Step::AssertConverged("while the queued message waits"),
+        Step::Dispatch,
+        Step::Send("and one more"),
+        token("hurrying"),
+        Step::StreamEnd,
+        Step::ExpectRedispatch(Some("and one more")),
+        Step::Dispatch,
+        token("one more, done"),
+        Step::StreamEnd,
+        Step::ExpectRedispatch(None),
     ]);
     assert_host_matches_fold(script).await;
 }
@@ -1032,6 +1104,7 @@ async fn compact_and_proceed() {
         })),
         token("compacted"),
         Step::StreamEnd,
+        Step::ExpectRedispatch(Some(crate::session::PROCEED_MESSAGE)),
         Step::Dispatch,
         token("implementing"),
         Step::StreamEnd,
@@ -1050,9 +1123,11 @@ async fn queued_send_redispatch() {
         Step::Send("second, while you work"),
         token("the first"),
         Step::StreamEnd,
+        Step::ExpectRedispatch(Some("second, while you work")),
         Step::Dispatch,
         token("now the second"),
         Step::StreamEnd,
+        Step::ExpectRedispatch(None),
     ]);
     assert_host_matches_fold(script).await;
 }
@@ -1102,6 +1177,7 @@ async fn queued_send_behind_question_reply() {
         answer_question(id),
         token("going with the fold"),
         Step::StreamEnd,
+        Step::ExpectRedispatch(Some("also, hurry")),
         Step::AssertConverged("while the queued message waits"),
         Step::Dispatch,
         token("hurrying"),
@@ -1121,6 +1197,7 @@ async fn two_queued_in_one_turn() {
         Step::Send("third"),
         token("the first"),
         Step::StreamEnd,
+        Step::ExpectRedispatch(Some("second\nthird")),
         Step::AssertConverged("while both wait"),
         Step::Dispatch,
         token("the second and third"),
@@ -1137,6 +1214,7 @@ async fn queued_send_after_an_empty_response() {
     script.extend([
         Step::Send("hello?"),
         Step::StreamEnd,
+        Step::ExpectRedispatch(Some("hello?")),
         Step::AssertConverged("while the queued message waits"),
         Step::Dispatch,
         token("here now"),
