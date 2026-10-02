@@ -1956,6 +1956,21 @@ impl ChatSession {
         pos
     }
 
+    /// Show the reply text a permission response carries as a user row, as
+    /// the fold renders that response's note (see
+    /// `session_loader::render_conversation_note`).
+    /// [`permission_reply_message`](crate::messages::permission_reply_message)
+    /// drops empty and canned-placeholder reasons, so a plain allow or deny
+    /// adds no row. The reply is this turn's content, not a queued message, so
+    /// it goes in through [`insert_turn_content`](Self::insert_turn_content).
+    pub fn insert_permission_reply(&mut self, message: Option<&str>) {
+        if let Some(reply) = crate::messages::permission_reply_message(message) {
+            self.insert_turn_content(Message::User(
+                crate::messages::UserMessage::permission_reply(reply),
+            ));
+        }
+    }
+
     /// Count trailing user messages at the end of the chat.
     pub fn trailing_user_count(&self) -> usize {
         self.chat

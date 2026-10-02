@@ -319,17 +319,10 @@ pub struct PermissionPublish {
     pub cancel_turn: bool,
 }
 
-/// Surface the reply text a permission response carries inline as a user
-/// message, so there's a visible record of what was said, matching the
-/// note-render path that reconstructs it on reload / for a remote observer (see
-/// `session_loader::render_conversation_note`). `permission_reply_message`
-/// drops empty and canned-placeholder reasons so a plain allow/deny adds no
-/// bubble. Shared by the plain permission and question-set answer paths.
-///
-/// The reply is this turn's content, not a queued message: it goes in through
-/// [`ChatSession::insert_turn_content`], so the model's next text lands below
-/// it (as in the fold, where the response note sorts before that text) and a
-/// message queued during the turn stays the trailing run.
+/// Surface the reply text a permission response this device just issued
+/// carries as a user row ([`ChatSession::insert_permission_reply`]), so there's
+/// a visible record of what was said. Shared by the plain permission and
+/// question-set answer paths.
 ///
 /// Only a local session pushes. A local host never renders its own
 /// `permission_response` note live (`process_conversation_notes` takes the
@@ -340,11 +333,7 @@ fn push_local_permission_reply(session: &mut ChatSession, message: Option<&str>)
     if session.is_remote() {
         return;
     }
-    if let Some(reply) = crate::messages::permission_reply_message(message) {
-        session.insert_turn_content(Message::User(
-            crate::messages::UserMessage::permission_reply(reply),
-        ));
-    }
+    session.insert_permission_reply(message);
 }
 
 /// Handle a permission response (from UI button or keybinding).

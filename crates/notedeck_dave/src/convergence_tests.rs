@@ -22,12 +22,13 @@
 use crate::backend::{AiBackend, BackendType};
 use crate::config::AiMode;
 use crate::conversation::{
-    process_conversation_notes, subscribe_conversation_events, ProcessedNotes,
+    handle_remote_permission_response, process_conversation_notes, subscribe_conversation_events,
+    ProcessedNotes,
 };
 use crate::conversation_feed::ConversationFeed;
 use crate::messages::{
-    CompactionInfo, PendingPermission, PermissionRequest, QuestionAnswer, RunningTool,
-    SubagentInfo, SubagentStatus,
+    format_question_answers, CompactionInfo, PendingPermission, PermissionRequest, QuestionAnswer,
+    RunningTool, SubagentInfo, SubagentStatus,
 };
 use crate::pns_runtime::PnsLocalState;
 use crate::publish::{
@@ -42,9 +43,9 @@ use crate::tests::{test_config, test_dave, test_secret_key};
 use crate::tools::{Tool, ToolResponses};
 use crate::{embedded_engine, DaveApiResponse, ExecutedTool, Message, PermissionResponse};
 use agentium_core::session_events::{
-    build_live_event_at, build_live_events, build_session_state_event, BuiltEvent, LiveEventTags,
-    ThreadingState, AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND, DISPATCHED_ROLE,
-    MAX_WIRE_EVENT_BYTES,
+    build_live_event_at, build_live_events, build_permission_response_event,
+    build_session_state_event, BuiltEvent, LiveEventTags, ThreadingState, AI_CONVERSATION_KIND,
+    AI_SESSION_STATE_KIND, DISPATCHED_ROLE, MAX_WIRE_EVENT_BYTES,
 };
 use agentium_core::session_loader::{
     load_session_messages_for_author, view_signature, EventOrder, RowSig,
@@ -89,6 +90,10 @@ enum Step {
     /// A note another device published reaches the host: it is stored, then
     /// the conversation poll hands it over.
     Deliver(BuiltEvent),
+    /// Another device (a phone, the `agentium` CLI) answers the permission
+    /// request with this id: its response note is stored, then the host's action poll
+    /// resolves the request with it and the conversation poll hands it over.
+    RemoteAnswer(uuid::Uuid, RemoteAnswer),
     /// The host restarts: its session comes back from ndb through startup's
     /// background restore, and the script carries on with it.
     Restart,
@@ -205,7 +210,11 @@ impl Host {
                 &mut HashSet::new(),
             ),
             Step::Act(act) => act(self),
-            Step::Settle | Step::Deliver(_) | Step::Restart | Step::AssertConverged(_) => {
+            Step::Settle
+            | Step::Deliver(_)
+            | Step::RemoteAnswer(..)
+            | Step::Restart
+            | Step::AssertConverged(_) => {
                 unreachable!(
                     "settling, delivery, restarts and checkpoints are async; `drive` awaits them"
                 )
@@ -220,6 +229,12 @@ impl Host {
                 Step::Settle => self.settle().await,
                 Step::Deliver(note) => {
                     self.store_remote(&note).await;
+                    self.poll_note(&note.note_id);
+                }
+                Step::RemoteAnswer(perm_id, answer) => {
+                    let note = self.remote_response(perm_id, answer);
+                    self.store_remote(&note).await;
+                    self.poll_action(&note.note_id);
                     self.poll_note(&note.note_id);
                 }
                 Step::Restart => self.restart().await,
@@ -418,6 +433,60 @@ impl Host {
             .expect("the session state was never indexed");
     }
 
+    /// The response another device publishes to request `perm_id`, built
+    /// from the request's note as the engine does
+    /// (`Engine::respond_permission` / `Engine::respond_question`).
+    fn remote_response(&mut self, perm_id: uuid::Uuid, answer: RemoteAnswer) -> BuiltEvent {
+        let session = self.session();
+        let request_note_id = session
+            .agentic
+            .as_ref()
+            .unwrap()
+            .permissions
+            .request_note_ids[&perm_id];
+        let (allowed, message) = match answer {
+            RemoteAnswer::Deny(reason) => (false, reason.to_string()),
+            RemoteAnswer::FirstOptions => {
+                let questions = session.chat.iter().find_map(|msg| match msg {
+                    Message::PermissionRequest(req) if req.id == perm_id => req.view.question_set(),
+                    _ => None,
+                });
+                let answers: Vec<QuestionAnswer> = questions
+                    .expect("a question set")
+                    .questions
+                    .iter()
+                    .map(|_| QuestionAnswer {
+                        selected: vec![0],
+                        other_text: None,
+                    })
+                    .collect();
+                (true, format_question_answers(questions, &answers))
+            }
+        };
+        build_permission_response_event(
+            &perm_id,
+            &request_note_id,
+            allowed,
+            Some(&message),
+            false,
+            false,
+            SESSION,
+            &mut ThreadingState::new(),
+            &test_secret_key(),
+        )
+        .unwrap()
+    }
+
+    /// Hand the session one stored conversation action the way the host's
+    /// action poll (`Dave::poll_remote_conversation_actions`) does.
+    fn poll_action(&mut self, note_id: &[u8; 32]) {
+        let sid = self.sid;
+        let txn = Transaction::new(&self.ndb).unwrap();
+        let note = self.ndb.get_note_by_id(&txn, note_id).unwrap();
+        let session = self.sessions.get_mut(sid).unwrap();
+        handle_remote_permission_response(&note, session);
+    }
+
     /// Hand the session one stored note the way the conversation poll does.
     fn poll_note(&mut self, note_id: &[u8; 32]) -> ProcessedNotes {
         let sid = self.sid;
@@ -433,6 +502,14 @@ impl Host {
             &self.ndb,
         )
     }
+}
+
+/// How another device answers a permission request ([`Step::RemoteAnswer`]).
+enum RemoteAnswer {
+    /// Deny it, with the reason the user typed.
+    Deny(&'static str),
+    /// Answer its question set with each question's first option.
+    FirstOptions,
 }
 
 /// The backend a script plays: its responses arrive as [`Step::Backend`], so
@@ -897,6 +974,42 @@ async fn question_reply() {
         Step::Settle,
         answer_question(id),
         token("going with the fold"),
+        Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// A question set another device answers shows the formatted answers as a
+/// user reply row on the host, as the fold does from the same response note.
+#[tokio::test]
+async fn remote_question_reply() {
+    let id = uuid::Uuid::new_v4();
+    let mut script = Vec::from(user_turn("which way?"));
+    script.extend([
+        ask_question(id),
+        Step::Settle,
+        Step::RemoteAnswer(id, RemoteAnswer::FirstOptions),
+        token("going with the fold"),
+        Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// A deny another device sends with a reason shows that reason as a user
+/// reply row on the host, as the fold does from the same response note.
+#[tokio::test]
+async fn remote_deny_with_message() {
+    let id = uuid::Uuid::new_v4();
+    let mut script = Vec::from(user_turn("clean up"));
+    script.extend([
+        Step::Permission(PermissionRequest::pending(
+            id,
+            "Bash".to_string(),
+            serde_json::json!({ "command": "rm -rf target" }),
+        )),
+        Step::Settle,
+        Step::RemoteAnswer(id, RemoteAnswer::Deny("use cargo clean instead")),
+        token("ok, cargo clean"),
         Step::StreamEnd,
     ]);
     assert_host_matches_fold(script).await;

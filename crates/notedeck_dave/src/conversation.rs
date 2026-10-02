@@ -95,7 +95,7 @@ impl Dave {
 
             match session_events::get_tag_value(&note, "role") {
                 Some("permission_response") => {
-                    handle_remote_permission_response(&note, agentic, &mut session.chat);
+                    handle_remote_permission_response(&note, session);
                 }
                 Some("set_permission_mode") => {
                     let content = note.content();
@@ -864,12 +864,22 @@ fn handle_remote_permission_request(
     }
 }
 
-/// Handle a remote permission response from a kind-1988 event.
-fn handle_remote_permission_response(
+/// Handle a remote permission response from a kind-1988 event on a local
+/// session: first-response-wins, so it resolves the request only while its
+/// oneshot is still pending.
+///
+/// A winning response also shows the reply text it carries (a deny reason, a
+/// question set's formatted answers) as a user row, as the fold renders the
+/// same note. The local click paths push that row as they publish (see
+/// `update::push_local_permission_reply`); a response another device issued
+/// arrives only here.
+pub(crate) fn handle_remote_permission_response(
     note: &nostrdb::Note,
-    agentic: &mut session::AgenticSessionData,
-    chat: &mut [Message],
+    session: &mut session::ChatSession,
 ) {
+    let Some(agentic) = &mut session.agentic else {
+        return;
+    };
     let Some(perm_id_str) = session_events::get_tag_value(note, "perm-id") else {
         tracing::warn!("permission_response event missing perm-id tag");
         return;
@@ -885,6 +895,7 @@ fn handle_remote_permission_response(
     let allowed = decoded.response_type == crate::messages::PermissionResponseType::Allowed;
 
     if let Some(sender) = agentic.permissions.pending.remove(&perm_id) {
+        session.insert_permission_reply(message.as_deref());
         let response = if allowed {
             PermissionResponse::Allow { message }
         } else if cancel_turn {
@@ -896,7 +907,7 @@ fn handle_remote_permission_response(
                 reason: message.unwrap_or_else(|| messages::DEFAULT_REMOTE_DENY_REASON.to_string()),
             }
         };
-        for msg in chat.iter_mut() {
+        for msg in session.chat.iter_mut() {
             if let Message::PermissionRequest(req) = msg {
                 if req.id == perm_id {
                     req.response = Some(decoded.response_type);
