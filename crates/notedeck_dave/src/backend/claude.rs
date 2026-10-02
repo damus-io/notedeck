@@ -20,12 +20,14 @@ use dashmap::DashMap;
 use futures::future::BoxFuture;
 use futures::StreamExt;
 use notedeck::Waker;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
+use tokio::time::Instant;
 
 /// Build a list of `UserContentBlock`s from image attachments and optional prompt text.
 /// Images are placed first, then the text block (if non-empty).
@@ -729,7 +731,165 @@ struct PermissionRequestInternal {
     response_tx: oneshot::Sender<PermissionResult>,
 }
 
-/// Session actor task that owns a single ClaudeClient with persistent connection
+/// How long a session's Claude CLI may sit idle before its actor stops it.
+///
+/// Each CLI is a node process holding hundreds of MB, and a session keeps its
+/// actor until the session is deleted, so a long `/autowork` chain leaves dozens
+/// of finished sessions' CLIs resident. Stopping an idle one is free to undo:
+/// the next query reconnects with `--resume` (see [`session_actor`]).
+const IDLE_REAP_AFTER: Duration = Duration::from_secs(60 * 60);
+
+/// Decides when a session's Claude CLI has been idle long enough to stop.
+///
+/// The CLI is only stopped between turns with no background task running: a
+/// `run_in_background` task lives inside the CLI process and would die with
+/// it. A pending permission prompt needs no tracking here — the actor awaits
+/// the user's answer inline, so it is not waiting on the idle timer meanwhile.
+struct IdleTracker {
+    /// The last command or CLI message the session saw.
+    last_activity: Instant,
+    /// A turn (user-initiated or a background-task wake-up) has started and
+    /// its `Result` has not arrived yet.
+    turn_active: bool,
+    /// `tool_use_id`s of background tasks that started but have not sent
+    /// their `task_notification`.
+    background_tasks: HashSet<String>,
+}
+
+impl IdleTracker {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_activity: now,
+            turn_active: false,
+            background_tasks: HashSet::new(),
+        }
+    }
+
+    /// Something happened that isn't a turn starting (a permission answer, a
+    /// mode change, an interrupt).
+    fn touch(&mut self, now: Instant) {
+        self.last_activity = now;
+    }
+
+    /// A query was handed to the CLI, so a turn is underway until its `Result`.
+    fn turn_started(&mut self, now: Instant) {
+        self.last_activity = now;
+        self.turn_active = true;
+    }
+
+    /// Account for one message from the CLI.
+    fn on_message(&mut self, now: Instant, message: &ClaudeMessage) {
+        self.last_activity = now;
+        match message {
+            ClaudeMessage::Result(_) => self.turn_active = false,
+            // Turn content. A wake-up turn starts with no command from us, so
+            // its first message is what marks it underway.
+            ClaudeMessage::Assistant(_) | ClaudeMessage::User(_) => self.turn_active = true,
+            ClaudeMessage::System(system_msg) => {
+                let tool_use_id = || {
+                    system_msg
+                        .data
+                        .get("tool_use_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                };
+                match system_msg.subtype.as_str() {
+                    "task_started" => {
+                        if let Some(id) = tool_use_id() {
+                            self.background_tasks.insert(id);
+                        }
+                    }
+                    "task_notification" => {
+                        if let Some(id) = tool_use_id() {
+                            self.background_tasks.remove(&id);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// When the CLI may be stopped, or `None` while work is outstanding.
+    fn deadline(&self) -> Option<Instant> {
+        if self.turn_active || !self.background_tasks.is_empty() {
+            return None;
+        }
+        Some(self.last_activity + IDLE_REAP_AFTER)
+    }
+}
+
+/// Session state that must outlive any one CLI connection, since an idle CLI
+/// is stopped and a fresh one resumed in its place.
+struct ActorState {
+    /// Refreshed from each Query/Compact command so wake-up turns (which
+    /// carry no command) can still request repaints.
+    waker: Waker,
+    /// `pending_tools`/`subagent_stack` must outlive a single turn: a
+    /// `run_in_background` task's tool_use lands in one turn while its
+    /// tool_result / completion lands in a later wake-up turn, so attribution
+    /// needs them to survive across turns.
+    pending_tools: HashMap<String, (String, serde_json::Value)>,
+    subagent_stack: Vec<String>,
+    /// Tracks the harness task list across turns. `TaskCreate`/`TaskUpdate`
+    /// are incremental, so this must outlive the per-query loop.
+    task_tracker: TaskTracker,
+    /// Set when the user exits a tool call; suppresses the rest of that turn's
+    /// messages until its `Result`, then clears at the turn boundary.
+    cancel_current_turn: bool,
+    /// Set when the user stops the running turn (Stop, or a tool exit); tells
+    /// the turn's closing `Result` not to surface as an error. Cleared at that
+    /// `Result` and by the next user turn.
+    stopped_by_user: bool,
+    idle: IdleTracker,
+    /// The mode the next CLI starts in: the spawn-time mode, then whatever the
+    /// user last switched to, so a resumed CLI keeps the mode the UI shows.
+    permission_mode: PermissionMode,
+    /// The Claude CLI session to `--resume` when (re)connecting: the one the
+    /// session was restored from, then whatever the CLI's `init` reports.
+    cli_session_id: Option<String>,
+}
+
+impl ActorState {
+    /// Note what a CLI message says about the session before it is handled.
+    fn observe(&mut self, message: &ClaudeMessage) {
+        self.idle.on_message(Instant::now(), message);
+        if let ClaudeMessage::System(system_msg) = message {
+            if system_msg.subtype == "init" {
+                if let Some(id) = &system_msg.session_id {
+                    self.cli_session_id = Some(id.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Why [`run_connected`] stopped driving its CLI.
+enum ConnectedExit {
+    /// The session was shut down, or the backend dropped its handle.
+    Shutdown,
+    /// The CLI exited on its own.
+    StreamClosed,
+    /// Nothing happened for [`IDLE_REAP_AFTER`]; the CLI can be stopped.
+    Idle,
+}
+
+/// Sleep until `deadline`, or forever when there is none.
+async fn sleep_until_deadline(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Session actor task that owns the session's Claude CLI.
+///
+/// The CLI is started lazily by the first Query or Compact, stopped after
+/// [`IDLE_REAP_AFTER`] of inactivity, and started again — resuming the same
+/// CLI session — by the next one. The actor itself, and with it the UI's
+/// response channel, lives until the session is shut down, so stopping an
+/// idle CLI is invisible to the UI.
 #[allow(clippy::too_many_arguments)]
 async fn session_actor(
     session_id: String,
@@ -801,103 +961,138 @@ async fn session_actor(
         tracing::trace!("Claude CLI stderr: {}", msg);
     });
 
-    // Log if we're resuming a session
-    if let Some(ref resume_id) = resume_session_id {
-        tracing::info!(
-            "Session {} will resume Claude session: {}",
-            session_id,
-            resume_id
-        );
-    }
-
-    // Create client once - this maintains the persistent connection
-    // Using match to handle the TypedBuilder's strict type requirements
-    let mut options = match (&cwd, &resume_session_id) {
-        (Some(dir), Some(resume_id)) => ClaudeAgentOptions::builder()
-            .permission_mode(permission_mode)
-            .stderr_callback(stderr_callback)
-            .can_use_tool(can_use_tool)
-            .include_partial_messages(true)
-            .cwd(dir)
-            .resume(resume_id)
-            .build(),
-        (Some(dir), None) => ClaudeAgentOptions::builder()
-            .permission_mode(permission_mode)
-            .stderr_callback(stderr_callback)
-            .can_use_tool(can_use_tool)
-            .include_partial_messages(true)
-            .cwd(dir)
-            .build(),
-        (None, Some(resume_id)) => ClaudeAgentOptions::builder()
-            .permission_mode(permission_mode)
-            .stderr_callback(stderr_callback)
-            .can_use_tool(can_use_tool)
-            .include_partial_messages(true)
-            .resume(resume_id)
-            .build(),
-        (None, None) => ClaudeAgentOptions::builder()
-            .permission_mode(permission_mode)
-            .stderr_callback(stderr_callback)
-            .can_use_tool(can_use_tool)
-            .include_partial_messages(true)
-            .build(),
-    };
-    if model.is_some() {
-        options.model = model;
-    }
+    // The options every connection shares; the resume id and permission mode
+    // are filled in per connection from `ActorState`.
+    let mut base_options = ClaudeAgentOptions::builder()
+        .stderr_callback(stderr_callback)
+        .can_use_tool(can_use_tool)
+        .include_partial_messages(true)
+        .build();
+    base_options.cwd = cwd;
+    base_options.model = model;
     // Export the session env (the configured `session_env` plus this session's
     // agentium identity; see `shared::session_env`) into the spawned CLI.
-    options.env.extend(session_env);
-    let mut client = ClaudeClient::new(options);
+    base_options.env.extend(session_env);
 
-    // Connect once - this starts the subprocess
-    if let Err(err) = client.connect().await {
-        tracing::error!("Session {} failed to connect: {}", session_id, err);
-        // Report the failure on the session channel, then drain commands until
-        // shutdown so callers don't block on a dead session.
-        let _ = response_tx.send(DaveApiResponse::Failed(format!(
-            "Failed to connect to Claude: {}",
-            err
-        )));
-        while let Some(cmd) = command_rx.recv().await {
-            if matches!(cmd, SessionCommand::Shutdown) {
-                break;
-            }
+    let mut state = ActorState {
+        waker: initial_waker,
+        pending_tools: HashMap::new(),
+        subagent_stack: Vec::new(),
+        task_tracker: TaskTracker::new(),
+        cancel_current_turn: false,
+        stopped_by_user: false,
+        idle: IdleTracker::new(Instant::now()),
+        permission_mode,
+        cli_session_id: resume_session_id,
+    };
+
+    // No CLI runs until there is something for it to do.
+    while let Some(wake_cmd) = wait_dormant(&mut command_rx, &mut state).await {
+        let mut options = base_options.clone();
+        options.resume = state.cli_session_id.clone();
+        options.permission_mode = Some(state.permission_mode);
+        if let Some(resume_id) = &options.resume {
+            tracing::info!(
+                "Session {} will resume Claude session: {}",
+                session_id,
+                resume_id
+            );
         }
-        return;
+
+        let mut client = ClaudeClient::new(options);
+        if let Err(err) = client.connect().await {
+            tracing::error!("Session {} failed to connect: {}", session_id, err);
+            // Report the failure for the command that needed the CLI, then stay
+            // dormant so the next one retries.
+            let _ = response_tx.send(DaveApiResponse::Failed(format!(
+                "Failed to connect to Claude: {}",
+                err
+            )));
+            state.waker.wake();
+            continue;
+        }
+        tracing::debug!("Session {} connected successfully", session_id);
+
+        let exit = run_connected(
+            &client,
+            wake_cmd,
+            &session_id,
+            &mut command_rx,
+            &mut perm_rx,
+            &response_tx,
+            &mut state,
+        )
+        .await;
+
+        if let Err(err) = client.disconnect().await {
+            tracing::warn!("Error disconnecting session {}: {}", session_id, err);
+        }
+
+        match exit {
+            ConnectedExit::Idle => {
+                tracing::info!(
+                    "Session {} idle for {:?}, stopped its Claude CLI",
+                    session_id,
+                    IDLE_REAP_AFTER
+                );
+            }
+            ConnectedExit::Shutdown | ConnectedExit::StreamClosed => break,
+        }
     }
+    tracing::debug!("Session {} actor exited", session_id);
+}
 
-    tracing::debug!("Session {} connected successfully", session_id);
+/// Wait, with no CLI running, for a command that needs one.
+///
+/// Returns the Query or Compact that should start the CLI, or `None` once the
+/// session shuts down. Mode changes are recorded for the next CLI to start
+/// in; an interrupt has nothing to stop.
+async fn wait_dormant(
+    command_rx: &mut tokio_mpsc::Receiver<SessionCommand>,
+    state: &mut ActorState,
+) -> Option<SessionCommand> {
+    while let Some(cmd) = command_rx.recv().await {
+        match cmd {
+            SessionCommand::Query { .. } | SessionCommand::Compact { .. } => return Some(cmd),
+            SessionCommand::SetPermissionMode { mode, waker } => {
+                state.permission_mode = mode;
+                waker.wake();
+            }
+            SessionCommand::Interrupt { waker } => waker.wake(),
+            SessionCommand::Shutdown => return None,
+        }
+    }
+    None
+}
 
-    // Tracks the harness task list across turns. `TaskCreate`/`TaskUpdate` are
-    // incremental, so this must outlive the per-query loop below.
-    let mut task_tracker = TaskTracker::new();
-
-    // Persistent per-session state. `pending_tools`/`subagent_stack` must
-    // outlive a single turn: a `run_in_background` task's tool_use lands in one
-    // turn while its tool_result / completion lands in a later wake-up turn, so
-    // attribution needs them to survive across turns.
-    let mut waker = initial_waker;
-    let mut pending_tools: HashMap<String, (String, serde_json::Value)> = HashMap::new();
-    let mut subagent_stack: Vec<String> = Vec::new();
-    // Set when the user exits a tool call; suppresses the rest of that turn's
-    // messages until its `Result`, then clears at the turn boundary.
-    let mut cancel_current_turn = false;
-    // Set when the user stops the running turn (Stop, or a tool exit); tells
-    // the turn's closing `Result` not to surface as an error. Cleared at that
-    // `Result` and by the next user turn.
-    let mut stopped_by_user = false;
-
+/// Drive one connected CLI until the session shuts down, the CLI exits, or it
+/// has sat idle for [`IDLE_REAP_AFTER`].
+///
+/// `wake_cmd` is the command that started this CLI; it is handled first.
+async fn run_connected(
+    client: &ClaudeClient,
+    wake_cmd: SessionCommand,
+    session_id: &str,
+    command_rx: &mut tokio_mpsc::Receiver<SessionCommand>,
+    perm_rx: &mut tokio_mpsc::Receiver<PermissionRequestInternal>,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    state: &mut ActorState,
+) -> ConnectedExit {
     // Pump the CLI message stream continuously, not just while servicing a
     // Query. This is the non-breaking `receive_messages()` variant, held for the
-    // whole actor lifetime, so spontaneous wake-up turns (a background task
+    // whole connection, so spontaneous wake-up turns (a background task
     // completing) flow through the same handler as user-initiated turns. All
     // client calls below are `&self` (query_with_content_and_session /
-    // interrupt / set_permission_mode) so they coexist with this borrow;
-    // `disconnect` (&mut) runs only after the loop, once the stream is dropped.
+    // interrupt / set_permission_mode) so they coexist with this borrow; the
+    // caller's `disconnect` (&mut) runs once this returns and the stream drops.
     let mut message_stream = client.receive_messages();
 
+    if let Some(exit) = handle_command(wake_cmd, client, session_id, response_tx, state).await {
+        return exit;
+    }
+
     loop {
+        let idle_deadline = state.idle.deadline();
         tokio::select! {
             biased;
 
@@ -905,64 +1100,10 @@ async fn session_actor(
             cmd = command_rx.recv() => {
                 let Some(cmd) = cmd else {
                     // Command channel closed — the backend dropped the handle.
-                    break;
+                    return ConnectedExit::Shutdown;
                 };
-                match cmd {
-                    SessionCommand::Query { prompt, images, waker: query_waker, .. } => {
-                        // A fresh user turn: refresh waker and clear any leftover
-                        // cancellation from a previous turn.
-                        waker = query_waker;
-                        cancel_current_turn = false;
-                        stopped_by_user = false;
-                        let blocks = build_content_blocks(&images, &prompt);
-                        if let Err(err) = client
-                            .query_with_content_and_session(blocks, &session_id)
-                            .await
-                        {
-                            tracing::error!("Session {} query error: {}", session_id, err);
-                            let _ = response_tx.send(DaveApiResponse::Failed(err.to_string()));
-                        }
-                    }
-                    SessionCommand::Interrupt { waker: interrupt_waker } => {
-                        tracing::debug!("Session {} received interrupt", session_id);
-                        stopped_by_user = true;
-                        if let Err(err) = client.interrupt().await {
-                            tracing::error!("Failed to send interrupt: {}", err);
-                        }
-                        // The stream ends naturally with a Result; the CLI
-                        // preserves session history.
-                        interrupt_waker.wake();
-                    }
-                    SessionCommand::SetPermissionMode { mode, waker: mode_waker } => {
-                        tracing::debug!(
-                            "Session {} setting permission mode to {:?}",
-                            session_id,
-                            mode
-                        );
-                        if let Err(err) = client.set_permission_mode(mode).await {
-                            tracing::error!("Failed to set permission mode: {}", err);
-                        }
-                        mode_waker.wake();
-                    }
-                    SessionCommand::Compact { waker: compact_waker, .. } => {
-                        // Claude compaction is driven by sending `/compact` as a
-                        // query on the persistent channel (see compact_session).
-                        waker = compact_waker;
-                        if let Err(err) = client
-                            .query_with_content_and_session(
-                                vec![UserContentBlock::text("/compact")],
-                                &session_id,
-                            )
-                            .await
-                        {
-                            tracing::error!("Session {} compact error: {}", session_id, err);
-                            let _ = response_tx.send(DaveApiResponse::Failed(err.to_string()));
-                        }
-                    }
-                    SessionCommand::Shutdown => {
-                        tracing::debug!("Session actor {} shutting down", session_id);
-                        break;
-                    }
+                if let Some(exit) = handle_command(cmd, client, session_id, response_tx, state).await {
+                    return exit;
                 }
             }
 
@@ -970,20 +1111,21 @@ async fn session_actor(
             Some(perm_req) = perm_rx.recv() => {
                 handle_permission_request(
                     perm_req,
-                    &client,
-                    &session_id,
-                    &response_tx,
-                    &waker,
-                    &mut cancel_current_turn,
+                    client,
+                    session_id,
+                    response_tx,
+                    &state.waker,
+                    &mut state.cancel_current_turn,
                 )
                 .await;
+                state.idle.touch(Instant::now());
             }
 
             // The continuous CLI message stream.
             msg = message_stream.next() => {
                 let Some(result) = msg else {
                     // Stream closed — the CLI exited. Nothing more will arrive.
-                    break;
+                    return ConnectedExit::StreamClosed;
                 };
                 let message = match result {
                     Ok(message) => message,
@@ -994,11 +1136,12 @@ async fn session_actor(
                         continue;
                     }
                 };
+                state.observe(&message);
 
                 // While a turn is cancelled, drop its remaining messages until
                 // the Result, which we still handle (to emit completion) before
                 // clearing the flag at the turn boundary.
-                if cancel_current_turn {
+                if state.cancel_current_turn {
                     match cancelled_turn_message_action(&message) {
                         CancelledTurnMessageAction::Ignore => {
                             tracing::debug!(
@@ -1008,8 +1151,8 @@ async fn session_actor(
                             continue;
                         }
                         CancelledTurnMessageAction::FinishTurn => {
-                            cancel_current_turn = false;
-                            stopped_by_user = true;
+                            state.cancel_current_turn = false;
+                            state.stopped_by_user = true;
                         }
                     }
                 }
@@ -1017,26 +1160,115 @@ async fn session_actor(
                 let is_result = matches!(message, ClaudeMessage::Result(_));
                 handle_stream_message(
                     message,
-                    &response_tx,
-                    &waker,
-                    &mut pending_tools,
-                    &mut subagent_stack,
-                    &mut task_tracker,
-                    stopped_by_user,
+                    response_tx,
+                    &state.waker,
+                    &mut state.pending_tools,
+                    &mut state.subagent_stack,
+                    &mut state.task_tracker,
+                    state.stopped_by_user,
                 );
                 if is_result {
-                    stopped_by_user = false;
+                    state.stopped_by_user = false;
                 }
+            }
+
+            // Nothing in flight and nothing heard for the idle window.
+            _ = sleep_until_deadline(idle_deadline) => {
+                return ConnectedExit::Idle;
             }
         }
     }
+}
 
-    // Drop the stream's borrow of `client` before the &mut disconnect.
-    drop(message_stream);
-    if let Err(err) = client.disconnect().await {
-        tracing::warn!("Error disconnecting session {}: {}", session_id, err);
+/// Handle one command against a connected CLI. Returns an exit when the
+/// command ends the session.
+async fn handle_command(
+    cmd: SessionCommand,
+    client: &ClaudeClient,
+    session_id: &str,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    state: &mut ActorState,
+) -> Option<ConnectedExit> {
+    match cmd {
+        SessionCommand::Query {
+            prompt,
+            images,
+            waker: query_waker,
+            ..
+        } => {
+            // A fresh user turn: refresh waker and clear any leftover
+            // cancellation from a previous turn.
+            state.waker = query_waker;
+            state.cancel_current_turn = false;
+            state.stopped_by_user = false;
+            let blocks = build_content_blocks(&images, &prompt);
+            match client
+                .query_with_content_and_session(blocks, session_id)
+                .await
+            {
+                Ok(()) => state.idle.turn_started(Instant::now()),
+                Err(err) => {
+                    tracing::error!("Session {} query error: {}", session_id, err);
+                    let _ = response_tx.send(DaveApiResponse::Failed(err.to_string()));
+                }
+            }
+        }
+        SessionCommand::Interrupt {
+            waker: interrupt_waker,
+        } => {
+            tracing::debug!("Session {} received interrupt", session_id);
+            state.stopped_by_user = true;
+            state.idle.touch(Instant::now());
+            if let Err(err) = client.interrupt().await {
+                tracing::error!("Failed to send interrupt: {}", err);
+            }
+            // The stream ends naturally with a Result; the CLI
+            // preserves session history.
+            interrupt_waker.wake();
+        }
+        SessionCommand::SetPermissionMode {
+            mode,
+            waker: mode_waker,
+        } => {
+            tracing::debug!(
+                "Session {} setting permission mode to {:?}",
+                session_id,
+                mode
+            );
+            state.permission_mode = mode;
+            state.idle.touch(Instant::now());
+            if let Err(err) = client.set_permission_mode(mode).await {
+                tracing::error!("Failed to set permission mode: {}", err);
+            }
+            mode_waker.wake();
+        }
+        SessionCommand::Compact {
+            waker: compact_waker,
+            ..
+        } => {
+            // Claude compaction is driven by sending `/compact` as a
+            // query on the persistent channel (see compact_session).
+            state.waker = compact_waker;
+            match client
+                .query_with_content_and_session(
+                    vec![UserContentBlock::text("/compact")],
+                    session_id,
+                )
+                .await
+            {
+                Ok(()) => state.idle.turn_started(Instant::now()),
+                Err(err) => {
+                    tracing::error!("Session {} compact error: {}", session_id, err);
+                    let _ = response_tx.send(DaveApiResponse::Failed(err.to_string()));
+                }
+            }
+        }
+        SessionCommand::Shutdown => {
+            tracing::debug!("Session actor {} shutting down", session_id);
+            return Some(ConnectedExit::Shutdown);
+        }
     }
-    tracing::debug!("Session {} actor exited", session_id);
+    None
 }
 
 impl AiBackend for ClaudeBackend {
@@ -1883,5 +2115,98 @@ mod tests {
             failed,
             vec!["Claude Code ended the turn (error_during_execution)".to_string()]
         );
+    }
+
+    /// One CLI message, in the wire shape the CLI emits it.
+    fn wire(message: serde_json::Value) -> ClaudeMessage {
+        serde_json::from_value(message).expect("message should deserialize")
+    }
+
+    fn assistant_text() -> ClaudeMessage {
+        wire(serde_json::json!({
+            "type": "assistant",
+            "message": { "content": [{ "type": "text", "text": "working" }] }
+        }))
+    }
+
+    fn turn_result() -> ClaudeMessage {
+        wire(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": false,
+            "num_turns": 1,
+            "session_id": "sess-1"
+        }))
+    }
+
+    fn task_system(subtype: &str, tool_use_id: &str) -> ClaudeMessage {
+        wire(serde_json::json!({
+            "type": "system",
+            "subtype": subtype,
+            "task_type": "local_bash",
+            "tool_use_id": tool_use_id,
+            "status": "completed"
+        }))
+    }
+
+    /// A turn in flight is never reaped, however long it runs; its `Result`
+    /// opens the idle window, measured from the last thing the CLI said.
+    #[test]
+    fn idle_deadline_waits_for_the_turn_to_finish() {
+        let t0 = Instant::now();
+        let mut idle = IdleTracker::new(t0);
+        assert_eq!(idle.deadline(), Some(t0 + IDLE_REAP_AFTER));
+
+        idle.turn_started(t0);
+        assert_eq!(idle.deadline(), None, "a sent query is a turn in flight");
+
+        let t1 = t0 + Duration::from_secs(2 * 60 * 60);
+        idle.on_message(t1, &assistant_text());
+        assert_eq!(idle.deadline(), None, "a long turn is not idle");
+
+        let t2 = t1 + Duration::from_secs(5);
+        idle.on_message(t2, &turn_result());
+        assert_eq!(idle.deadline(), Some(t2 + IDLE_REAP_AFTER));
+    }
+
+    /// A wake-up turn starts without a command from us; its first message
+    /// must still hold the CLI open until its `Result`.
+    #[test]
+    fn idle_deadline_holds_for_a_spontaneous_wake_up_turn() {
+        let t0 = Instant::now();
+        let mut idle = IdleTracker::new(t0);
+        idle.on_message(t0, &assistant_text());
+        assert_eq!(idle.deadline(), None);
+        idle.on_message(t0, &turn_result());
+        assert!(idle.deadline().is_some());
+    }
+
+    /// A `run_in_background` task lives in the CLI process: stopping the CLI
+    /// between turns would kill it, so the window stays shut until the task
+    /// reports back.
+    #[test]
+    fn idle_deadline_waits_for_background_tasks() {
+        let t0 = Instant::now();
+        let mut idle = IdleTracker::new(t0);
+        idle.turn_started(t0);
+        idle.on_message(t0, &task_system("task_started", "toolu_bg"));
+        idle.on_message(t0, &turn_result());
+        assert_eq!(idle.deadline(), None, "background task still running");
+
+        let t1 = t0 + Duration::from_secs(90 * 60);
+        idle.on_message(t1, &task_system("task_notification", "toolu_bg"));
+        assert_eq!(idle.deadline(), Some(t1 + IDLE_REAP_AFTER));
+    }
+
+    /// Any activity between turns pushes the window out.
+    #[test]
+    fn idle_deadline_moves_with_activity() {
+        let t0 = Instant::now();
+        let mut idle = IdleTracker::new(t0);
+        let t1 = t0 + Duration::from_secs(30 * 60);
+        idle.touch(t1);
+        assert_eq!(idle.deadline(), Some(t1 + IDLE_REAP_AFTER));
     }
 }
