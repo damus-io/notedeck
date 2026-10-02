@@ -4,7 +4,7 @@
 //! they carry.
 
 use crate::backend::BackendType;
-use crate::publish::{ingest_live_event, pns_ingest};
+use crate::publish::{ingest_live_event, publish_auto_accept_response};
 use crate::{
     messages, reconcile, session, session_events, session_loader, Dave, Message,
     PermissionResponse, SessionId,
@@ -461,6 +461,9 @@ pub(crate) fn process_conversation_notes<'a>(
     let mut queue_moved = false;
     // Whether a new note is part of a message split across notes.
     let mut split_arrived = false;
+    // Requests this session's runtime allowlist covers, auto-accepted after
+    // the loop (see `auto_accept_remote_request`).
+    let mut auto_accepts: Vec<uuid::Uuid> = Vec::new();
 
     // Sort this batch by wall-clock time at millisecond resolution, keyed off
     // the same `EventOrder` the loader uses. For remote sessions display order
@@ -563,7 +566,7 @@ pub(crate) fn process_conversation_notes<'a>(
         // in-place updates (marking a permission responded).
         match role {
             Some("permission_request") => {
-                handle_remote_permission_request(note, content, agentic, secret_key, ndb);
+                auto_accepts.extend(handle_remote_permission_request(note, content, agentic));
             }
             Some("permission_response") => {
                 // Track that this permission was responded to, and reflect it on
@@ -630,6 +633,14 @@ pub(crate) fn process_conversation_notes<'a>(
                 );
             }
         }
+    }
+
+    // Once every response in the batch is recorded, so a request the host
+    // already answered, as it does one its own allowlist covers, isn't
+    // answered a second time; and before the display pass, which renders the
+    // decision this records.
+    for perm_id in auto_accepts {
+        auto_accept_remote_request(session, perm_id, secret_key, ndb);
     }
 
     // Reflect the new displayable notes. Fast path: if they all sort after
@@ -793,28 +804,22 @@ pub(crate) fn apply_loaded_chat(
 
 /// Handle a remote permission request from a kind-1988 conversation event.
 ///
-/// Runs only the side effects — records the request note id and, if the runtime
-/// allowlist auto-accepts, records the response and publishes it. The chat
-/// message itself is rendered by the loader on the caller's rebuild (with the
-/// in-memory `responded` overlay), so this never appends to chat.
+/// Records the request note id, which a response links to, and returns the
+/// perm id when this session's runtime allowlist covers the tool, for the
+/// caller to auto-accept once the rest of the batch is processed (see
+/// [`auto_accept_remote_request`]). The chat message itself is rendered by the
+/// loader on the caller's rebuild (with the in-memory `responded` overlay), so
+/// this never appends to chat.
 fn handle_remote_permission_request(
     note: &nostrdb::Note,
     content: &str,
     agentic: &mut session::AgenticSessionData,
-    secret_key: Option<&[u8; 32]>,
-    ndb: &nostrdb::Ndb,
-) {
-    let Ok(content_json) = serde_json::from_str::<serde_json::Value>(content) else {
-        return;
-    };
-    let tool_name = content_json["tool_name"]
-        .as_str()
-        .unwrap_or("unknown")
-        .to_string();
+) -> Option<uuid::Uuid> {
+    let content_json = serde_json::from_str::<serde_json::Value>(content).ok()?;
+    let tool_name = content_json["tool_name"].as_str().unwrap_or("unknown");
     let tool_input = content_json
         .get("tool_input")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
+        .unwrap_or(&serde_json::Value::Null);
     let perm_id = session_events::get_tag_value(note, "perm-id")
         .and_then(|s| uuid::Uuid::parse_str(s).ok())
         .unwrap_or_else(uuid::Uuid::new_v4);
@@ -825,18 +830,37 @@ fn handle_remote_permission_request(
         .request_note_ids
         .insert(perm_id, *note.id());
 
-    // Runtime allowlist auto-accept
-    if !agentic.should_runtime_allow(&tool_name, &tool_input) {
+    agentic
+        .should_runtime_allow(tool_name, tool_input)
+        .then_some(perm_id)
+}
+
+/// Auto-accept a remote request this session's runtime allowlist covers,
+/// unless it already has a response.
+///
+/// The host publishes its own `permission_response{auto}` for a request its
+/// allowlist covers, and the user's "Allow Always" usually grants the same
+/// tool on both devices. Answering again would be harmless to the backend,
+/// whose oneshot is already gone, but doubles the note on the wire and in
+/// the fold.
+///
+/// Records the decision in memory, so the overlay renders it as allowed (and
+/// expanded) before the response round-trips through ndb, then publishes it
+/// the way a local auto-accept is ([`publish_auto_accept_response`]); the
+/// host's private-sync Session fans it out so the remote backend sees it.
+fn auto_accept_remote_request(
+    session: &mut session::ChatSession,
+    perm_id: uuid::Uuid,
+    secret_key: Option<&[u8; 32]>,
+    ndb: &nostrdb::Ndb,
+) {
+    let Some(agentic) = session.agentic.as_mut() else {
+        return;
+    };
+    if agentic.permissions.responded.contains_key(&perm_id) {
         return;
     }
-
-    tracing::info!(
-        "runtime allow: auto-accepting remote '{}' for this session",
-        tool_name,
-    );
-    // Record the decision in memory so the rebuild overlay renders it as allowed
-    // (and expanded) even before the ingested response round-trips back through
-    // the relay.
+    tracing::info!("runtime allow: auto-accepting remote request {perm_id} for this session");
     agentic.permissions.responded.insert(
         perm_id,
         crate::messages::PermissionDecision {
@@ -845,22 +869,7 @@ fn handle_remote_permission_request(
         },
     );
     if let Some(sk) = secret_key {
-        let sid = agentic.event_session_id().to_string();
-        if let Ok(evt) = session_events::build_permission_response_event(
-            &perm_id,
-            note.id(),
-            true,
-            None,
-            false,
-            true,
-            &sid,
-            &mut agentic.live_threading,
-            sk,
-        ) {
-            // Ingest locally; the host's private-sync Session fans the envelope
-            // out to the relay so the remote backend sees the auto-accept.
-            pns_ingest(ndb, &evt.note_json, sk);
-        }
+        publish_auto_accept_response(session, perm_id, ndb, sk);
     }
 }
 
@@ -933,6 +942,7 @@ pub(crate) fn handle_remote_permission_response(
 mod tests {
     use super::*;
     use crate::config::AiMode;
+    use crate::publish::pns_ingest;
     use crate::session::SessionSource;
     use crate::session_events::{
         build_live_event, build_permission_request_event, LiveEventTags, ThreadingState,
@@ -2303,9 +2313,8 @@ mod tests {
     }
 
     /// When both permission_request and permission_response arrive in the
-    /// same batch, the response may sort before the request. The request
-    /// handler checks `responded` — it must use the stored decision, not
-    /// hardcode Allowed.
+    /// same batch, the response may sort before the request. Either way the
+    /// row must show the stored decision, not Allowed.
     #[tokio::test]
     async fn test_permission_denied_single_batch() {
         let sk = test_secret_key();
@@ -2492,5 +2501,111 @@ mod tests {
             "auto-accept provenance must survive the ndb rebuild so the row \
              starts expanded on a fresh machine"
         );
+    }
+
+    /// An observer whose runtime allowlist covers a tool the host's allowlist
+    /// also covers (the user clicked "Allow Always" on both) receives the
+    /// request and the host's `auto` response in one batch, and publishes
+    /// nothing itself: the request is already answered. A request the host
+    /// left pending, in a later batch, is still auto-accepted and published,
+    /// which shows the observer would have published the first one.
+    #[tokio::test]
+    async fn observer_skips_auto_accept_for_an_answered_request() {
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+        let session_id_str = "perm-observer-auto";
+        let tool_input = serde_json::json!({"command": "cargo test --all"});
+        let answered = uuid::Uuid::new_v4();
+        let pending = uuid::Uuid::new_v4();
+
+        let answered_req = build_permission_request_event(
+            &answered,
+            "Bash",
+            &tool_input,
+            session_id_str,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        let host_auto_resp = session_events::build_permission_response_event(
+            &answered,
+            &answered_req.note_id,
+            true,  // allowed
+            None,  // no message
+            false, // not a turn interrupt
+            true,  // auto-accepted by the host's allowlist
+            session_id_str,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        let pending_req = build_permission_request_event(
+            &pending,
+            "Bash",
+            &tool_input,
+            session_id_str,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        for event in [&answered_req, &host_auto_resp, &pending_req] {
+            store(&ndb, event).await;
+        }
+
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Remote,
+        );
+        session.source = SessionSource::Remote;
+        let agentic = session.agentic.as_mut().unwrap();
+        agentic.event_id = session_id_str.to_string();
+        agentic.add_runtime_allow("Bash", &tool_input).unwrap();
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let note = |evt: &session_events::BuiltEvent| {
+            ndb.get_note_by_id(&txn, &evt.note_id).expect("stored note")
+        };
+
+        process_conversation_notes(
+            vec![note(&answered_req), note(&host_auto_resp)],
+            &mut session,
+            1,
+            true,
+            Some(&sk),
+            &ndb,
+        );
+        let agentic = session.agentic.as_ref().unwrap();
+        assert!(
+            agentic.unindexed_self_notes.is_empty(),
+            "the observer must not answer a request the host already answered"
+        );
+        let decision = agentic.permissions.responded[&answered];
+        assert_eq!(
+            decision.response,
+            crate::messages::PermissionResponseType::Allowed
+        );
+        assert!(decision.auto_accepted, "the host's response says auto");
+
+        process_conversation_notes(
+            vec![note(&pending_req)],
+            &mut session,
+            1,
+            true,
+            Some(&sk),
+            &ndb,
+        );
+        let agentic = session.agentic.as_ref().unwrap();
+        assert_eq!(
+            agentic.unindexed_self_notes.ids().count(),
+            1,
+            "an unanswered allowlisted request is auto-accepted and published"
+        );
+        let decision = agentic.permissions.responded[&pending];
+        assert!(decision.auto_accepted);
     }
 }

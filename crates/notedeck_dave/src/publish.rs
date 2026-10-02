@@ -522,8 +522,9 @@ pub(crate) fn publish_permission_request(
 /// gave a request without a user click, so observers, a restart and the CLI
 /// show it resolved (and auto-accepted) rather than pending.
 ///
-/// Mirrors the remote auto-accept in `conversation.rs`. Skipped when the
-/// request itself was never published: there is no note to answer.
+/// An observer auto-accepting a remote session's request publishes through
+/// here too (see `conversation::auto_accept_remote_request`). Skipped when the
+/// request's note id was never recorded: there is no note to answer.
 pub(crate) fn publish_auto_accept_response(
     session: &mut ChatSession,
     perm_id: uuid::Uuid,
