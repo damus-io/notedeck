@@ -23,41 +23,28 @@ pub fn find_board<'a>(
 }
 
 /// Pick the board with `board_id` authored by `author` out of a reducer's
-/// resolved boards, if it exists. Finalizes the reducer; a caller resolving many
-/// references against one reducer per frame should finalize once and reuse the
-/// result via [`find_board`] instead.
+/// resolved boards, if it exists. Finalizes the reducer and moves the one board
+/// out of it; a caller resolving many references against one reducer per frame
+/// should finalize once and borrow through [`find_board`] instead.
 #[profiling::function]
 pub fn pick_board(reducer: &BoardReducer, author: &Pubkey, board_id: &str) -> Option<BoardView> {
-    find_board(&reducer.finalize(), author, board_id).cloned()
+    reducer
+        .finalize()
+        .into_iter()
+        .find(|v| v.id == board_id && &v.author == author.bytes())
 }
 
-/// Pick a single card's *resolved* [`CardView`] (latest subject, labels, cover
-/// and placement applied) out of a folded board, by the issue's note id.
-/// Searches the live columns and the archived set. `None` if the board or the
-/// card within it is absent. Unlike parsing the kind-1621 note directly — which
-/// only yields its creation-time snapshot — this reflects later edits.
-#[profiling::function]
-pub fn pick_card(
-    reducer: &BoardReducer,
-    author: &Pubkey,
-    board_id: &str,
-    issue_id: &[u8; 32],
-) -> Option<CardView> {
-    card_in_board(&pick_board(reducer, author, board_id)?, issue_id)
-}
-
-/// Pick a card's resolved [`CardView`] out of an *already-finalized* board,
-/// searching its live columns then its archived set. The re-finalize-free core of
-/// [`pick_card`]: the inline render path finalizes once per frame and resolves
-/// each referenced card through this.
-pub fn card_in_board(view: &BoardView, issue_id: &[u8; 32]) -> Option<CardView> {
+/// Borrow a card's resolved [`CardView`] (latest subject, labels, cover and
+/// placement applied) out of an *already-finalized* board, searching its live
+/// columns then its archived set. Unlike parsing the kind-1621 note directly —
+/// which only yields its creation-time snapshot — this reflects later edits.
+pub fn card_in_board<'a>(view: &'a BoardView, issue_id: &[u8; 32]) -> Option<&'a CardView> {
     let want = NoteId::new(*issue_id);
     view.columns
         .iter()
         .flat_map(|col| col.cards.iter())
         .chain(view.archived.iter().map(|a| &a.card))
         .find(|card| card.id == want)
-        .cloned()
 }
 
 /// A card's position among a board's live columns: which column it sits in and
@@ -72,40 +59,31 @@ pub struct ColumnPos {
 }
 
 /// A card resolved for inline display: its [`CardView`] plus the live
-/// [`ColumnPos`] used to show a status indicator. See [`pick_card_with_column`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResolvedCard {
-    /// The card's resolved state (latest subject, labels and cover applied).
-    pub card: CardView,
+/// [`ColumnPos`] used to show a status indicator. See
+/// [`card_with_column_in_board`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedCard<'a> {
+    /// The card's resolved state (latest subject, labels and cover applied),
+    /// borrowed from the board it was resolved in.
+    pub card: &'a CardView,
     /// The card's live column position, or `None` when it is archived (not in a
     /// live column).
     pub column: Option<ColumnPos>,
 }
 
-/// Like [`pick_card`], but also resolves the card's live [`ColumnPos`] so an
-/// inline reference can show a status indicator. Returns `None` when the board
-/// or card is absent.
-#[profiling::function]
-pub fn pick_card_with_column(
-    reducer: &BoardReducer,
-    author: &Pubkey,
-    board_id: &str,
-    issue_id: &[u8; 32],
-) -> Option<ResolvedCard> {
-    card_with_column_in_board(&pick_board(reducer, author, board_id)?, issue_id)
-}
-
 /// Resolve a card *and* its live [`ColumnPos`] out of an *already-finalized*
-/// board. The re-finalize-free core of [`pick_card_with_column`]: the inline chip
-/// render path finalizes once per frame and resolves each referenced card through
-/// this.
-pub fn card_with_column_in_board(view: &BoardView, issue_id: &[u8; 32]) -> Option<ResolvedCard> {
+/// board, borrowing the card. The inline chip render path finalizes once per
+/// fold (memoized) and resolves each referenced card through this.
+pub fn card_with_column_in_board<'a>(
+    view: &'a BoardView,
+    issue_id: &[u8; 32],
+) -> Option<ResolvedCard<'a>> {
     let want = NoteId::new(*issue_id);
     let count = view.columns.len();
     for (index, col) in view.columns.iter().enumerate() {
         if let Some(card) = col.cards.iter().find(|c| c.id == want) {
             return Some(ResolvedCard {
-                card: card.clone(),
+                card,
                 column: Some(ColumnPos { index, count }),
             });
         }
@@ -114,21 +92,21 @@ pub fn card_with_column_in_board(view: &BoardView, issue_id: &[u8; 32]) -> Optio
         .iter()
         .map(|a| &a.card)
         .find(|card| card.id == want)
-        .cloned()
         .map(|card| ResolvedCard { card, column: None })
 }
 
 /// A card resolved for inline display together with the board it currently lives
 /// on. For a card that was moved across boards this is the *destination* board —
 /// where [`finalize`](BoardReducer::finalize) actually places it — not the origin
-/// board recorded in the card's `a` tag. See [`locate_card`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LocatedCard {
+/// board recorded in the card's `a` tag. See [`locate_card_in_boards`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocatedCard<'a> {
     /// The board the card is live on — the [`BoardView`] this resolution came
     /// from, and the board a click on the card should open.
-    pub board_id: String,
-    /// The card's resolved state (latest subject, labels and cover applied).
-    pub card: CardView,
+    pub board_id: &'a str,
+    /// The card's resolved state (latest subject, labels and cover applied),
+    /// borrowed from the board set it was located in.
+    pub card: &'a CardView,
     /// The card's live [`ColumnPos`], or `None` when it is archived (off the live
     /// columns).
     pub column: Option<ColumnPos>,
@@ -150,24 +128,15 @@ pub struct LocatedCard {
 /// multi-board placement resolves to its most-recently-touched board. `None` when
 /// the card is on no board of this author (deleted everywhere, or its board isn't
 /// folded — the caller falls back to the card's creation-time snapshot).
-pub fn locate_card(
-    reducer: &BoardReducer,
+///
+/// Works over an *already-finalized* board set and borrows the card out of it:
+/// the inline render path finalizes once per fold (memoized) and locates each
+/// referenced card through this without copying it.
+pub fn locate_card_in_boards<'a>(
+    boards: &'a [BoardView],
     author: &Pubkey,
     issue_id: &[u8; 32],
-) -> Option<LocatedCard> {
-    locate_card_in_boards(&reducer.finalize(), author, issue_id)
-}
-
-/// Resolve a card across an *already-finalized* board set, preferring a live
-/// column placement over an archived one and the newest placement among live
-/// boards. The re-finalize-free core of [`locate_card`]: the inline render path
-/// finalizes once per frame (memoized) and locates each referenced card through
-/// this, mirroring [`card_with_column_in_board`]'s split from [`pick_card_with_column`].
-pub fn locate_card_in_boards(
-    boards: &[BoardView],
-    author: &Pubkey,
-    issue_id: &[u8; 32],
-) -> Option<LocatedCard> {
+) -> Option<LocatedCard<'a>> {
     let want = NoteId::new(*issue_id);
     boards
         .iter()
@@ -178,8 +147,8 @@ pub fn locate_card_in_boards(
             for (index, col) in board.columns.iter().enumerate() {
                 if let Some(card) = col.cards.iter().find(|c| c.id == want) {
                     return Some(LocatedCard {
-                        board_id: board.id.clone(),
-                        card: card.clone(),
+                        board_id: &board.id,
+                        card,
                         column: Some(ColumnPos { index, count }),
                     });
                 }
@@ -189,9 +158,8 @@ pub fn locate_card_in_boards(
                 .iter()
                 .map(|a| &a.card)
                 .find(|c| c.id == want)
-                .cloned()
                 .map(|card| LocatedCard {
-                    board_id: board.id.clone(),
+                    board_id: &board.id,
                     card,
                     column: None,
                 })
@@ -341,11 +309,11 @@ mod tests {
     use crate::event::parse::parse;
     use crate::event::view::ColumnView;
 
-    /// [`pick_card`] resolves a single card to its *current* state — the latest
+    /// [`card_in_board`] resolves a single card to its *current* state — the latest
     /// subject and label edits applied — not the issue's creation-time snapshot,
     /// and returns `None` for an unknown card id.
     #[test]
-    fn pick_card_resolves_current_state() {
+    fn card_in_board_resolves_current_state() {
         let owner = FullKeypair::generate();
         let addr = board_address(&owner.pubkey, "b1");
         let cols = vec![ColumnDef::new("todo", "Todo")];
@@ -369,16 +337,17 @@ mod tests {
             reducer.ingest(event.clone());
         }
 
-        let card = pick_card(&reducer, &owner.pubkey, "b1", i1.bytes()).unwrap();
+        let board = pick_board(&reducer, &owner.pubkey, "b1").unwrap();
+        let card = card_in_board(&board, i1.bytes()).unwrap();
         assert_eq!(card.title, "Renamed");
         assert_eq!(card.labels, vec!["bug".to_string()]);
 
         // Unknown card id -> None.
-        assert!(pick_card(&reducer, &owner.pubkey, "b1", &[0u8; 32]).is_none());
+        assert!(card_in_board(&board, &[0u8; 32]).is_none());
     }
 
     #[test]
-    fn pick_card_with_column_resolves_position() {
+    fn card_with_column_in_board_resolves_position() {
         let owner = FullKeypair::generate();
         let addr = board_address(&owner.pubkey, "b1");
         let cols = vec![
@@ -405,16 +374,17 @@ mod tests {
             reducer.ingest(event.clone());
         }
 
-        let resolved = pick_card_with_column(&reducer, &owner.pubkey, "b1", i1.bytes()).unwrap();
+        let board = pick_board(&reducer, &owner.pubkey, "b1").unwrap();
+        let resolved = card_with_column_in_board(&board, i1.bytes()).unwrap();
         assert_eq!(resolved.card.title, "In the middle");
         assert_eq!(resolved.column, Some(ColumnPos { index: 1, count: 3 }));
 
         // Unknown card id -> None.
-        assert!(pick_card_with_column(&reducer, &owner.pubkey, "b1", &[0u8; 32]).is_none());
+        assert!(card_with_column_in_board(&board, &[0u8; 32]).is_none());
     }
 
     /// A card moved across boards keeps its origin board in its `a` tag but lives
-    /// on the destination via its placement. [`locate_card`] resolves it on the
+    /// on the destination via its placement. [`locate_card_in_boards`] resolves it on the
     /// destination (where it's actually shown), not the stale origin — the board
     /// an inline chip must read for its status and a click must open.
     #[test]
@@ -466,7 +436,8 @@ mod tests {
 
         // The moved card resolves on dave (the live placement), not its `a`-tag
         // origin — with its real column position.
-        let located = locate_card(&reducer, &owner.pubkey, moved.bytes()).unwrap();
+        let boards = reducer.finalize();
+        let located = locate_card_in_boards(&boards, &owner.pubkey, moved.bytes()).unwrap();
         assert_eq!(located.board_id, "dave");
         assert_eq!(located.card.title, "Moved");
         assert_eq!(located.column, Some(ColumnPos { index: 2, count: 5 }));
@@ -474,18 +445,20 @@ mod tests {
         // The bug this guards: the board-scoped resolver keyed on the origin `a`-tag
         // board finds the card deleted there and returns nothing.
         assert!(
-            pick_card_with_column(&reducer, &owner.pubkey, "notedeck", moved.bytes()).is_none(),
+            find_board(&boards, &owner.pubkey, "notedeck")
+                .and_then(|b| card_with_column_in_board(b, moved.bytes()))
+                .is_none(),
             "card is deleted on its origin board"
         );
 
         // An orphan (no placement anywhere) still resolves on its origin board via
         // the finalize fallback — first column.
-        let located = locate_card(&reducer, &owner.pubkey, orphan.bytes()).unwrap();
+        let located = locate_card_in_boards(&boards, &owner.pubkey, orphan.bytes()).unwrap();
         assert_eq!(located.board_id, "notedeck");
         assert_eq!(located.column, Some(ColumnPos { index: 0, count: 5 }));
 
         // Unknown card id -> None.
-        assert!(locate_card(&reducer, &owner.pubkey, &[0u8; 32]).is_none());
+        assert!(locate_card_in_boards(&boards, &owner.pubkey, &[0u8; 32]).is_none());
     }
 
     /// A minimal live card carrying only the id resolution keys off. Every other

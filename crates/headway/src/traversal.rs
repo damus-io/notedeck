@@ -377,18 +377,18 @@ mod tests {
     fn is_blocked_tracks_unfinished_blocker_edges() {
         // No edges: not blocked. An unfinished blocker edge holds the card back;
         // a cleared (done) one does not.
-        let mut plain = card(1, None, 1);
-        assert!(!is_blocked(&board(vec![plain.clone()], &[]), &plain));
-
-        plain.blocked_by = vec![blocker(2, false)];
-        assert!(is_blocked(&board(vec![plain.clone()], &[]), &plain));
-
-        plain.blocked_by = vec![blocker(2, true)];
-        assert!(!is_blocked(&board(vec![plain.clone()], &[]), &plain));
+        let blocked = |edges: Vec<crate::event::EdgeRef>| {
+            let mut plain = card(1, None, 1);
+            plain.blocked_by = edges;
+            let view = board(vec![plain], &[]);
+            is_blocked(&view, &view.columns[0].cards[0])
+        };
+        assert!(!blocked(vec![]));
+        assert!(blocked(vec![blocker(2, false)]));
+        assert!(!blocked(vec![blocker(2, true)]));
 
         // Mixed: one still-open blocker is enough to block.
-        plain.blocked_by = vec![blocker(2, true), blocker(3, false)];
-        assert!(is_blocked(&board(vec![plain.clone()], &[]), &plain));
+        assert!(blocked(vec![blocker(2, true), blocker(3, false)]));
     }
 
     #[test]

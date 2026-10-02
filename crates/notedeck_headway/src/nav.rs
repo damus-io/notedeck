@@ -507,8 +507,7 @@ mod tests {
     /// another, and each departure once.
     #[test]
     fn seen_cards_names_each_card_that_left_once() {
-        use crate::cursor::tests::{id, square_grid};
-        use crate::event::CardView;
+        use crate::cursor::tests::{card_n, square_grid};
 
         let mut seen = SeenCards::default();
         let mut view = square_grid();
@@ -519,11 +518,7 @@ mod tests {
         assert_eq!(seen.departed(&view), vec![gone]);
         assert!(seen.departed(&view).is_empty(), "named once");
 
-        let arrived = view.columns[0].cards[0].clone();
-        view.columns[2].cards.push(CardView {
-            id: id(42),
-            ..arrived
-        });
+        view.columns[2].cards.push(card_n(42, "arrived"));
         assert!(
             seen.departed(&view).is_empty(),
             "an arrival isn't a departure"

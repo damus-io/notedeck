@@ -47,24 +47,21 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
             return notedeck::KindRenderResponse::new(ui.weak("invalid headway issue"));
         };
         let author = Pubkey::new(issue.board_author);
-        // Resolve the card off the (cached) folded board and draw the shape the
+        // Resolve the card off the (cached) folded boards and draw the shape the
         // context asks for: a compact chip inline in prose, the full card as a
-        // block embed. Resolve across *all* the author's boards, not the card's
-        // `a`-tag board: a cross-board move leaves the `a` tag on the origin board
-        // while the card lives on the destination (see [`event::locate_card`]).
-        // `.and_then` resolves owned data so the cache borrow drops before drawing.
-        // Locate the card across *all* the author's boards off the memoized
-        // finalize (see [`with_boards`]), not the card's `a`-tag board: a
-        // cross-board move leaves the `a` tag on the origin while the card lives
-        // on the destination (see [`event::locate_card`]). Resolve to owned data
-        // so the cache borrow drops before drawing.
-        let located = self
+        // block embed. Locate it across *all* the author's boards, not the card's
+        // `a`-tag board: a cross-board move leaves the `a` tag on the origin
+        // while the card lives on the destination (see
+        // [`event::locate_card_in_boards`]). The boards come back as a shared
+        // handle to the memoized finalize, so the cache borrow drops before
+        // drawing and the card is borrowed out of it rather than copied.
+        let boards = self
             .cache
             .borrow_mut()
-            .with_boards(note_context.ndb, req.txn, &author, |boards| {
-                event::locate_card_in_boards(boards, &author, &issue.id)
-            })
-            .flatten();
+            .all_boards(note_context.ndb, req.txn, &author);
+        let located = boards
+            .as_deref()
+            .and_then(|boards| event::locate_card_in_boards(boards, &author, &issue.id));
         let response = match req.context {
             notedeck::RenderContext::Inline => match located {
                 Some(located) => card_chip_ui(ui, &theme, &located.card.title, located.column),
@@ -72,7 +69,7 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
                 None => card_chip_ui(ui, &theme, &issue.subject, None),
             },
             _ => match located {
-                Some(located) => card_inline_ui(ui, &theme, &located.card),
+                Some(located) => card_inline_ui(ui, &theme, located.card),
                 // Card on no folded board: show the creation-time snapshot.
                 None => issue_inline_ui(ui, &theme, &issue),
             },

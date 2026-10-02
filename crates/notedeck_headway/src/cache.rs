@@ -3,6 +3,8 @@
 //! shared-board leg. The foreground board and every inline widget read it.
 
 use std::collections::HashMap;
+use std::ops::Deref;
+use std::rc::Rc;
 
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
 use nostrdb_net::Pubkey;
@@ -83,12 +85,52 @@ struct SharedBoard {
     reducer: Option<BoardReducer>,
     /// Memoized finalize of `reducer` — the shared-board analogue of the memo the
     /// generic [`RealtimeCache`](notedeck::RealtimeCache) keeps for the per-author
-    /// leg, rebuilt lazily after a re-fold.
-    finalized: Option<Vec<BoardView>>,
+    /// leg, rebuilt lazily after a re-fold. Shared so [`BoardRef`] can hand it
+    /// out without copying.
+    finalized: Option<Rc<[BoardView]>>,
     /// Subscription to `{kinds:[1081], authors:[team_pubkey]}` — every edit to the
     /// board is published as one such envelope, so a poll reporting new notes means
     /// the board changed (a member's edit unwrapped) and we re-fold.
     sub: Option<Subscription>,
+}
+
+/// A zero-copy handle to one folded board: the memoized board set it lives in
+/// plus its position there. Derefs to the [`BoardView`]; cloning bumps a
+/// refcount rather than copying cards.
+///
+/// The foreground render resolves the active board through [`BoardCache`] and
+/// then has to drop the cache borrow before drawing, because a description that
+/// references another card resolves through the same cache mid-draw. A plain
+/// `&BoardView` can't outlive that borrow, and an owned copy deep-clones every
+/// card, comment and activity row each frame; this handle keeps the memo alive
+/// instead.
+#[derive(Clone)]
+pub(crate) struct BoardRef {
+    boards: Rc<[BoardView]>,
+    index: usize,
+}
+
+impl BoardRef {
+    /// The board `board_id` authored by `author` within `boards`, if present.
+    pub(crate) fn find(boards: Rc<[BoardView]>, author: &[u8; 32], board_id: &str) -> Option<Self> {
+        let index = boards
+            .iter()
+            .position(|v| v.id == board_id && &v.author == author)?;
+        Some(Self { boards, index })
+    }
+
+    /// The first board in `boards` — a shared fold's only board — if it has one.
+    fn first(boards: Rc<[BoardView]>) -> Option<Self> {
+        (!boards.is_empty()).then_some(Self { boards, index: 0 })
+    }
+}
+
+impl Deref for BoardRef {
+    type Target = BoardView;
+
+    fn deref(&self) -> &BoardView {
+        &self.boards[self.index]
+    }
 }
 
 /// What one [`BoardCache::poll_shared`] pass found.
@@ -126,8 +168,10 @@ impl BoardCache {
     /// hasn't seeded yet. Delegates to
     /// [`RealtimeCache::with_views`](notedeck::RealtimeCache::with_views): the
     /// foreground board and every inline widget resolve through it, so on a steady
-    /// frame the first read finalizes and the rest reuse the memo. `read` extracts
-    /// owned data from the borrowed slice so the cache borrow drops before drawing.
+    /// frame the first read finalizes and the rest reuse the memo. `read` runs
+    /// under the cache borrow, so it should pull out what it needs (an id, a
+    /// title) rather than draw; a reader that must draw from the boards takes
+    /// [`board`](Self::board) or [`all_boards`](Self::all_boards) instead.
     pub(crate) fn with_boards<R>(
         &mut self,
         ndb: &Ndb,
@@ -141,7 +185,8 @@ impl BoardCache {
     /// Fold and pick a single board (`board_id`) authored by `author`, seeding the
     /// reducer on first touch. `None` before the first fold or when no such board
     /// exists. The foreground board, a cross-board move target and an inline board
-    /// widget all resolve through this.
+    /// widget all resolve through this. A [`BoardRef`] into the memo, so it copies
+    /// nothing.
     #[profiling::function]
     pub(crate) fn board(
         &mut self,
@@ -149,28 +194,24 @@ impl BoardCache {
         txn: &Transaction,
         author: &Pubkey,
         board_id: &str,
-    ) -> Option<BoardView> {
-        self.with_boards(ndb, txn, author, |boards| {
-            event::find_board(boards, author, board_id).cloned()
-        })
-        .flatten()
+    ) -> Option<BoardRef> {
+        BoardRef::find(self.all_boards(ndb, txn, author)?, author.bytes(), board_id)
     }
 
-    /// Every board `author` currently holds, seeding on first touch. The foreground
-    /// render derives *both* the active board and the switcher list from this
-    /// single fold (memoized, see [`with_boards`](Self::with_boards)) rather than
-    /// finalizing per read. Clones the memoized vec once (the foreground reads it
-    /// once per frame); inline widgets take [`board`](Self::board) instead, which
-    /// extracts a single board without cloning the whole set.
+    /// Every board `author` currently holds, seeding on first touch; `None` until
+    /// the reducer seeds. The foreground render derives *both* the active board
+    /// and the switcher list from this single fold (memoized, see
+    /// [`with_boards`](Self::with_boards)) rather than finalizing per read. A
+    /// shared handle to the memo, so a frame's read is a refcount bump, not a copy
+    /// of every board.
     #[profiling::function]
     pub(crate) fn all_boards(
         &mut self,
         ndb: &Ndb,
         txn: &Transaction,
         author: &Pubkey,
-    ) -> Vec<BoardView> {
-        self.with_boards(ndb, txn, author, |boards| boards.to_vec())
-            .unwrap_or_default()
+    ) -> Option<Rc<[BoardView]>> {
+        self.authors.views(ndb, txn, author)
     }
 
     /// Advance every joined shared board: ensure a kind-1081 envelope subscription
@@ -245,17 +286,17 @@ impl BoardCache {
         txn: &Transaction,
         board_addr: &str,
         team_pubkeys: &[Pubkey],
-    ) -> Option<BoardView> {
+    ) -> Option<BoardRef> {
         let entry = self.shared.entry(board_addr.to_string()).or_default();
         if entry.reducer.is_none() {
             entry.reducer = event::fold_shared_board(ndb, txn, board_addr, team_pubkeys);
         }
         if entry.finalized.is_none() {
-            entry.finalized = Some(entry.reducer.as_ref()?.finalize());
+            entry.finalized = Some(entry.reducer.as_ref()?.finalize().into());
         }
         // fold_shared_board folds a single coordinate, so its finalize yields the
         // one board (empty until the board definition has arrived).
-        entry.finalized.as_ref()?.first().cloned()
+        BoardRef::first(Rc::clone(entry.finalized.as_ref()?))
     }
 }
 
@@ -326,13 +367,13 @@ pub(crate) mod tests {
         }
 
         /// Fold and pick the default board out of the cache, if present.
-        fn view(&mut self) -> Option<BoardView> {
+        fn view(&mut self) -> Option<BoardRef> {
             self.board(store::BOARD_ID)
         }
 
         /// Fold and pick an arbitrary board — exercises reading a board other than
         /// the default out of the one per-account reducer.
-        fn board(&mut self, board_id: &str) -> Option<BoardView> {
+        fn board(&mut self, board_id: &str) -> Option<BoardRef> {
             let txn = Transaction::new(&self.ndb).unwrap();
             self.cache.board(&self.ndb, &txn, &self.kp.pubkey, board_id)
         }
@@ -340,7 +381,8 @@ pub(crate) mod tests {
         /// Every board folded for this account, summarized for the switcher.
         fn boards(&mut self) -> Vec<BoardSummary> {
             let txn = Transaction::new(&self.ndb).unwrap();
-            board_summaries(&self.cache.all_boards(&self.ndb, &txn, &self.kp.pubkey))
+            let boards = self.cache.all_boards(&self.ndb, &txn, &self.kp.pubkey);
+            board_summaries(boards.as_deref().unwrap_or(&[]))
         }
 
         /// Fold until the default board satisfies `pred` (ingest is async).
@@ -592,7 +634,7 @@ pub(crate) mod tests {
 
         // One read cycle (what a renderer does each frame): bring the cached
         // reducer up to date and fold out the board.
-        let fold = |cache: &mut BoardCache, ndb: &Ndb| -> Option<BoardView> {
+        let fold = |cache: &mut BoardCache, ndb: &Ndb| -> Option<BoardRef> {
             let txn = Transaction::new(ndb).unwrap();
             cache.board(ndb, &txn, &kp.pubkey, store::BOARD_ID)
         };

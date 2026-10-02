@@ -1236,6 +1236,24 @@ mod tests {
 
     /// Build a full board (board + two issues + placements) and reduce it,
     /// checking columns, ordering and the metadata overrides.
+    /// Move the first board's first card out of a [`reduce`] result. Views
+    /// aren't `Clone` (the per-frame render borrows them), so a test that wants an
+    /// owned card takes it rather than copying it.
+    fn first_card(views: Vec<BoardView>) -> CardView {
+        let board = views.into_iter().next().expect("a board");
+        let column = board.columns.into_iter().next().expect("a column");
+        column.cards.into_iter().next().expect("a card")
+    }
+
+    /// The live card `id` on the first board of a [`reduce`] result.
+    fn find_card(views: &[BoardView], id: NoteId) -> &CardView {
+        views[0].columns[0]
+            .cards
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap()
+    }
+
     #[test]
     fn reduce_builds_board_view() {
         let owner = FullKeypair::generate();
@@ -1322,7 +1340,7 @@ mod tests {
 
         // Untouched card: updated_at falls back to creation, and the (later)
         // placement doesn't drag it forward.
-        let card = reduce(&events)[0].columns[0].cards[0].clone();
+        let card = first_card(reduce(&events));
         assert_eq!(card.created_at, 1_000);
         assert_eq!(card.updated_at, 1_000);
 
@@ -1331,7 +1349,7 @@ mod tests {
             build_subject_edit(&i1, "Renamed").created_at(2_000),
             &owner,
         ));
-        let card = reduce(&events)[0].columns[0].cards[0].clone();
+        let card = first_card(reduce(&events));
         assert_eq!(card.created_at, 1_000);
         assert_eq!(card.updated_at, 2_000);
 
@@ -1556,7 +1574,7 @@ mod tests {
             parse_owned(build_field(&i1, Field::Due, "2026-07-30"), &owner),
             parse_owned(build_field(&i1, Field::Estimate, "3"), &owner),
         ];
-        let card = |events: &[HeadwayEvent]| reduce(events)[0].columns[0].cards[0].clone();
+        let card = |events: &[HeadwayEvent]| first_card(reduce(events));
         let c = card(&events);
         assert_eq!(c.priority, Priority::Low);
         assert_eq!(c.due.unwrap().to_string(), "2026-07-30");
@@ -2803,14 +2821,7 @@ mod tests {
             parse_owned(build_relation(&child, Some(&e1)).created_at(2_000), &owner),
         ];
 
-        let find = |views: &Vec<BoardView>, id: NoteId| -> CardView {
-            views[0].columns[0]
-                .cards
-                .iter()
-                .find(|c| c.id == id)
-                .unwrap()
-                .clone()
-        };
+        let find = find_card;
 
         // A stranger's relation must not re-parent the card. (Like every
         // overlay, ingest is authority-blind and authority is applied at

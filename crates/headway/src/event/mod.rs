@@ -78,8 +78,7 @@ pub use rank::rank_between;
 pub use reduce::{BoardReducer, reduce};
 pub use resolve::{
     ColumnPos, LocatedCard, ResolvedCard, all_cards, card_in_board, card_with_column_in_board,
-    find_board, locate_card, locate_card_in_boards, pick_board, pick_card, pick_card_with_column,
-    resolve_card, resolve_card_by_wordid,
+    find_board, locate_card_in_boards, pick_board, resolve_card, resolve_card_by_wordid,
 };
 pub use view::{
     ActivityKind, ActivityView, ArchivedCard, BoardView, CardView, ColumnView, CommentView,

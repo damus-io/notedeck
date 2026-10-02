@@ -19,7 +19,7 @@ mod review_models;
 mod tools;
 mod ui;
 
-use cache::BoardCache;
+use cache::{BoardCache, BoardRef};
 pub use nav::{HeadwayRoute, ReviewTarget};
 use nav::{NavReconcile, SeenCards, reconcile_nav};
 pub use renderers::{HeadwayBoardRenderer, HeadwayIssueRenderer, HeadwayRefParser};
@@ -259,7 +259,7 @@ impl Headway {
                             &channels,
                         )
                     })
-                    .map(|v| v.title)
+                    .map(|v| v.title.clone())
                     .unwrap_or_else(|| coord.slug.clone());
                 Some(BoardSummary {
                     owner: coord.owner,
@@ -398,10 +398,11 @@ impl Headway {
                 self.board_cache
                     .borrow_mut()
                     .with_boards(ctx.ndb, &txn, author, |boards| {
-                        event::locate_card_in_boards(boards, author, card.bytes())
+                        event::locate_card_in_boards(boards, author, card.bytes()).map(|located| {
+                            event::BoardCoord::new(*author.bytes(), located.board_id.to_owned())
+                        })
                     })
                     .flatten()
-                    .map(|located| event::BoardCoord::new(*author.bytes(), located.board_id))
             });
             if let Some(placed) = placed {
                 target.board = placed;
@@ -887,15 +888,13 @@ impl Headway {
         // Sync (subscription poll, private-relay fan-out, auto-seed) already ran
         // in `update` this frame; read the folded boards off the same shared cache
         // (a cold, Headway-never-opened session seeds it lazily on this read). One
-        // finalize backs both the active board and the switcher list.
-        let own_boards = Transaction::new(ctx.ndb)
-            .ok()
-            .map(|txn| {
-                self.board_cache
-                    .borrow_mut()
-                    .all_boards(ctx.ndb, &txn, &author)
-            })
-            .unwrap_or_default();
+        // finalize backs both the active board and the switcher list, and it's a
+        // shared handle to the memo: a steady frame copies no boards.
+        let own_boards: Option<Rc<[BoardView]>> = Transaction::new(ctx.ndb).ok().and_then(|txn| {
+            self.board_cache
+                .borrow_mut()
+                .all_boards(ctx.ndb, &txn, &author)
+        });
 
         // Is the active board shared? Matched by coordinate against the roster (see
         // `active_shared_team`) — which is what fixes owner-blindness: a board you
@@ -930,9 +929,8 @@ impl Headway {
             None => {
                 let active = self.active();
                 own_boards
-                    .iter()
-                    .find(|v| v.id == active.slug && v.author == active.owner)
-                    .cloned()
+                    .clone()
+                    .and_then(|boards| BoardRef::find(boards, &active.owner, &active.slug))
             }
         };
         // The switcher list, needed before the board renders because an unfolded
@@ -941,7 +939,7 @@ impl Headway {
         // before we render: a description that references another card resolves
         // through `self.board_cache` *during* `board_ui`, so holding a borrow
         // across the render would panic the `RefCell`.
-        let boards = self.board_summaries_with_shared(ctx, &own_boards);
+        let boards = self.board_summaries_with_shared(ctx, own_boards.as_deref().unwrap_or(&[]));
 
         let Some(view) = view else {
             // No board folded yet. `update` auto-seeds one for a signing account;

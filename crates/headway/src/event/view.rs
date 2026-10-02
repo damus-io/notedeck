@@ -167,7 +167,7 @@ pub struct EdgeRef {
 }
 
 /// A card as rendered: a stable id plus its resolved fields.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct CardView {
     pub id: NoteId,
     /// The issue author. Needed to address comments at the card (NIP-22 root
@@ -261,7 +261,7 @@ impl CardView {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ColumnView {
     pub id: String,
     pub name: String,
@@ -275,13 +275,13 @@ pub struct ColumnView {
 /// An archived card plus the column it was archived from, for the archived view
 /// and restore. `from` is `None` if the card was archived before origin
 /// tracking existed, or its origin column has since been forgotten.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ArchivedCard {
     pub card: CardView,
     pub from: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct BoardView {
     pub id: String,
     pub author: [u8; 32],

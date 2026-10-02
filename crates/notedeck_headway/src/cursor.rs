@@ -206,7 +206,7 @@ pub(crate) mod tests {
 
     /// A card with a distinct id `n` whose title is `title`. Tests filter on
     /// the title, so `"keep"`/`"drop"` decide visibility under a `keep` query.
-    fn card_n(n: u8, title: &str) -> CardView {
+    pub(crate) fn card_n(n: u8, title: &str) -> CardView {
         CardView {
             id: id(n),
             ..card(title, "", &[])
