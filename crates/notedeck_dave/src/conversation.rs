@@ -699,6 +699,15 @@ pub(crate) fn process_conversation_notes<'a>(
 /// the poll processed it, and a remote user message would show without ever
 /// being dispatched. It comes through the next poll instead.
 ///
+/// This device's own notes are the exception, both ways:
+/// - one stored past the cap is folded anyway. It is already in
+///   `seen_note_ids` (see `record_self_note`), so it has no side effect left
+///   for the poll to run, and the poll would skip it. Capping it out would drop
+///   a message the user just sent to a remote session from the chat until some
+///   later rebuild;
+/// - one nostrdb hasn't stored yet can't be folded, so it is no longer marked
+///   seen: the poll then treats it as new when it arrives and shows it.
+///
 /// The fold is O(session) and runs on the UI thread: once per turn for a local
 /// session, and on each out-of-order batch for a remote one.
 #[profiling::function]
@@ -708,17 +717,27 @@ pub(crate) fn rebuild_chat_from_fold(
     txn: &Transaction,
     author: &nostrdb_net::Pubkey,
 ) {
-    let Some(agentic) = session.agentic.as_ref() else {
+    let Some(agentic) = session.agentic.as_mut() else {
         return;
     };
     let claude_sid = agentic.event_session_id();
     let loaded = match agentic.seen_through {
-        Some(through) => {
-            session_loader::load_session_messages_through(ndb, txn, author, claude_sid, through)
-        }
+        Some(through) => session_loader::load_session_messages_seen_through(
+            ndb,
+            txn,
+            author,
+            claude_sid,
+            through,
+            &agentic.seen_note_ids,
+        ),
         // Nothing has come through the poll, so none of it can be racing it.
         None => session_loader::load_session_messages_for_author(ndb, txn, author, claude_sid),
     };
+    for note_id in agentic.unindexed_self_notes.ids() {
+        if !loaded.note_ids.contains(note_id) {
+            agentic.seen_note_ids.remove(note_id);
+        }
+    }
     apply_loaded_chat(session, loaded);
 }
 
@@ -1841,6 +1860,195 @@ mod tests {
             expected,
             "the live fold must match a from-scratch rebuild"
         );
+    }
+
+    /// Every user and assistant row's text, in chat order.
+    fn chat_texts(chat: &[Message]) -> Vec<&str> {
+        chat.iter()
+            .filter_map(|m| match m {
+                Message::User(user) => Some(user.as_str()),
+                Message::Assistant(a) => Some(a.text()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Hand the session the stored conversation note whose content is `text`
+    /// through the poll, and rebuild when the batch asks for it, as
+    /// `poll_remote_conversation_events` does. Returns whether it rebuilt.
+    fn deliver(
+        ndb: &Ndb,
+        session: &mut session::ChatSession,
+        sk: &[u8; 32],
+        author: &nostrdb_net::Pubkey,
+        text: &str,
+    ) -> bool {
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let txn = Transaction::new(ndb).unwrap();
+        let batch: Vec<_> = ndb
+            .query(&txn, std::slice::from_ref(&filter), 128)
+            .unwrap()
+            .iter()
+            .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
+            .filter(|n| n.content() == text)
+            .collect();
+        assert_eq!(batch.len(), 1, "exactly one {text:?} note is stored");
+        let result = process_conversation_notes(batch, session, 1, true, Some(sk), ndb);
+        if result.rebuild_chat {
+            rebuild_chat_from_fold(session, ndb, &txn, author);
+        }
+        result.rebuild_chat
+    }
+
+    /// A remote session with the host's assistant note `A` shown, and `H`, a
+    /// host note stamped before it, built but not stored: once stored and
+    /// delivered, `H` sorts before the tail and forces a rebuild.
+    async fn remote_session_behind_an_early_note(
+        ndb: &Ndb,
+        session_id: &str,
+    ) -> (session::ChatSession, session_events::BuiltEvent) {
+        let sk = test_secret_key();
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let mut threading = ThreadingState::new();
+        let mut host = |text: &str| {
+            build_live_event(
+                text,
+                "assistant",
+                session_id,
+                None,
+                LiveEventTags::default(),
+                &mut threading,
+                &sk,
+            )
+            .unwrap()
+        };
+        let h = host("H");
+        let a = host("A");
+
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.source = SessionSource::Remote;
+        session.agentic.as_mut().unwrap().event_id = session_id.to_string();
+
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        ndb.process_event_with(&a.to_event_json(), IngestMetadata::new().client(true))
+            .unwrap();
+        let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+        assert!(deliver(ndb, &mut session, &sk, &author, "A"));
+        assert_eq!(chat_texts(&session.chat), ["A"]);
+        (session, h)
+    }
+
+    /// Store `evt` and wait until nostrdb has it.
+    async fn store(ndb: &Ndb, evt: &session_events::BuiltEvent) {
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        ndb.process_event_with(&evt.to_event_json(), IngestMetadata::new().client(true))
+            .unwrap();
+        let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+    }
+
+    /// A controller's send on a remote session is marked seen when it is built.
+    /// If the poll delivers an earlier-stored host note that forces a rebuild
+    /// before the send comes back through it, the rebuild still folds the send
+    /// (headway:dave/pledge-pilot-bind): capping it out left it hidden, since
+    /// its arrival is skipped as seen and asks for no rebuild.
+    #[tokio::test]
+    async fn capped_rebuild_keeps_an_unpolled_own_send() {
+        let sk = test_secret_key();
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        assert!(ndb.add_key(&sk), "ndb must accept the PNS key");
+        let (mut session, h) = remote_session_behind_an_early_note(&ndb, "own-send-cap").await;
+
+        // H is stored, then the controller sends M: stored after H.
+        store(&ndb, &h).await;
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        crate::publish::record_user_message(&mut session, &ndb, Some(&sk), "M".into(), vec![]);
+        let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+        assert_eq!(chat_texts(&session.chat), ["A", "M"]);
+
+        // Only H comes through the poll; it sorts before A, so the chat is
+        // rebuilt through H's key. M must survive it.
+        assert!(deliver(&ndb, &mut session, &sk, &author, "H"));
+        assert_eq!(chat_texts(&session.chat), ["H", "A", "M"]);
+
+        // M comes through: already shown, so no rebuild and no second row.
+        assert!(!deliver(&ndb, &mut session, &sk, &author, "M"));
+        assert_eq!(chat_texts(&session.chat), ["H", "A", "M"]);
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let fold =
+            session_loader::load_session_messages_for_author(&ndb, &txn, &author, "own-send-cap");
+        assert_eq!(chat_texts(&session.chat), chat_texts(&fold.messages));
+    }
+
+    /// An own send nostrdb hasn't stored when a rebuild runs can't be folded.
+    /// The rebuild stops treating it as seen, so the poll shows it when it
+    /// arrives rather than skipping it.
+    #[tokio::test]
+    async fn rebuild_leaves_an_unstored_own_send_to_the_poll() {
+        let sk = test_secret_key();
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let session_id = "own-send-unstored";
+        let (mut session, h) = remote_session_behind_an_early_note(&ndb, session_id).await;
+
+        // The send as `ingest_remote_user_message` records it, with the note
+        // still on its way into nostrdb.
+        let m = build_live_event(
+            "M",
+            "user",
+            session_id,
+            None,
+            LiveEventTags::default(),
+            &mut ThreadingState::new(),
+            &sk,
+        )
+        .unwrap();
+        session.chat.push(Message::User(messages::UserMessage {
+            note_id: Some(m.note_id),
+            ..messages::UserMessage::from("M")
+        }));
+        session
+            .agentic
+            .as_mut()
+            .unwrap()
+            .record_self_note(m.note_id);
+
+        store(&ndb, &h).await;
+        assert!(deliver(&ndb, &mut session, &sk, &author, "H"));
+        assert_eq!(
+            chat_texts(&session.chat),
+            ["H", "A"],
+            "not stored: not folded"
+        );
+
+        store(&ndb, &m).await;
+        deliver(&ndb, &mut session, &sk, &author, "M");
+        assert_eq!(chat_texts(&session.chat), ["H", "A", "M"]);
     }
 
     /// A denied permission_response event must set PermissionResponseType::Denied

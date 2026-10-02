@@ -185,6 +185,11 @@ impl UnindexedNotes {
         }
     }
 
+    /// The notes still waiting to be handed back.
+    pub fn ids(&self) -> impl Iterator<Item = &[u8; 32]> {
+        self.published.keys()
+    }
+
     /// Every note published has been handed back.
     pub fn is_empty(&self) -> bool {
         self.published.is_empty()
