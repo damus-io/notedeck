@@ -109,20 +109,22 @@ pub fn exit_tool_call(
 // Plan Mode
 // =============================================================================
 
-/// Add the current pending permission's tool to the session's runtime allowlist.
-/// Returns the key that was added (for logging), or None if no pending permission.
-pub fn allow_always(session_manager: &mut SessionManager) -> Option<String> {
+/// Add the tool of the active session's permission request `request_id` to the
+/// session's runtime allowlist — the request the "Allow Always" answers, so the
+/// grant covers what the user was looking at. Returns the key that was added
+/// (for logging), or None if there is no such request.
+pub fn allow_always(
+    session_manager: &mut SessionManager,
+    request_id: uuid::Uuid,
+) -> Option<String> {
     let session = session_manager.get_active_mut()?;
     let agentic = session.agentic.as_mut()?;
 
-    // Find the last pending (unresponded) permission request
-    let (tool_name, tool_input) = session.chat.iter().rev().find_map(|msg| {
-        if let crate::messages::Message::PermissionRequest(req) = msg {
-            if req.response.is_none() {
-                return Some((req.tool_name.clone(), req.tool_input.clone()));
-            }
+    let (tool_name, tool_input) = session.chat.iter().find_map(|msg| match msg {
+        crate::messages::Message::PermissionRequest(req) if req.id == request_id => {
+            Some((req.tool_name.clone(), req.tool_input.clone()))
         }
-        None
+        _ => None,
     })?;
 
     let key = agentic.add_runtime_allow(&tool_name, &tool_input);

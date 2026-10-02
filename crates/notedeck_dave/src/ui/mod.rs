@@ -866,8 +866,8 @@ pub fn handle_key_action(
             KeyActionResult::None
         }
         KeyAction::AllowAlways => {
-            update::allow_always(session_manager);
             if let Some(request_id) = update::first_pending_permission(session_manager) {
+                update::allow_always(session_manager, request_id);
                 let result = update::handle_permission_response(
                     session_manager,
                     request_id,
@@ -883,8 +883,10 @@ pub fn handle_key_action(
             KeyActionResult::None
         }
         KeyAction::TentativeAllowAlways => {
-            update::allow_always(session_manager);
-            set_tentative_state(session_manager, PermissionMessageState::TentativeAccept);
+            set_tentative_state(
+                session_manager,
+                PermissionMessageState::TentativeAllowAlways,
+            );
             KeyActionResult::None
         }
         KeyAction::CancelTentative => {
@@ -1130,9 +1132,14 @@ pub fn handle_send_action(
         .unwrap_or(PermissionMessageState::None);
 
     match tentative_state {
-        PermissionMessageState::TentativeAccept => {
+        PermissionMessageState::TentativeAccept | PermissionMessageState::TentativeAllowAlways => {
             let is_exit_plan_mode = update::has_pending_exit_plan_mode(session_manager);
             if let Some(request_id) = update::first_pending_permission(session_manager) {
+                // The grant lands with the answer, never before it: see
+                // `PermissionMessageState::TentativeAllowAlways`.
+                if tentative_state == PermissionMessageState::TentativeAllowAlways {
+                    update::allow_always(session_manager, request_id);
+                }
                 let message = session_manager
                     .get_active()
                     .map(|s| s.input.clone())
@@ -1253,7 +1260,7 @@ pub fn handle_ui_action(
             UiActionResult::Handled
         }
         DaveAction::AllowAlways { request_id } => {
-            update::allow_always(session_manager);
+            update::allow_always(session_manager, request_id);
             update::handle_permission_response(
                 session_manager,
                 request_id,
@@ -1265,8 +1272,10 @@ pub fn handle_ui_action(
             )
         }
         DaveAction::TentativeAllowAlways => {
-            update::allow_always(session_manager);
-            set_tentative_state(session_manager, PermissionMessageState::TentativeAccept);
+            set_tentative_state(
+                session_manager,
+                PermissionMessageState::TentativeAllowAlways,
+            );
             UiActionResult::Handled
         }
         DaveAction::QuestionResponse {

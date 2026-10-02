@@ -48,9 +48,13 @@ use crate::stream_events::{
 };
 use crate::tests::{test_config, test_dave, test_secret_key};
 use crate::tools::{Tool, ToolResponses};
+use crate::ui::{
+    handle_send_action, handle_ui_action, DaveAction, SendActionResult, UiActionResult,
+};
 use crate::update::PermissionPublish;
 use crate::{
-    embedded_engine, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
+    embedded_engine, DaveApiResponse, DaveOverlay, ExecutedTool, ImageAttachment, Message,
+    PermissionResponse,
 };
 use agentium_core::session_events::{
     build_live_event_at, build_live_events, build_permission_response_event,
@@ -1100,6 +1104,168 @@ async fn allow_always_resolves_pending() {
         executed("t1", "Bash", "exit 0", None),
         token("built"),
         Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// The user puts an answer to the pending request on hold to type a message
+/// first, as Shift+1/2/3 (or Shift and its button) does in the app.
+fn hold_answer(tentative: DaveAction) -> Step {
+    Step::Act(Box::new(move |host: &mut Host| {
+        let result = handle_ui_action(
+            tentative,
+            &mut host.sessions,
+            &ScriptBackend,
+            &mut DaveOverlay::None,
+            &mut false,
+            &egui::Context::default(),
+        );
+        assert!(matches!(result, UiActionResult::Handled));
+    }))
+}
+
+/// The user types `message` and presses Send on an answer held by
+/// [`hold_answer`]; the host publishes the response.
+fn send_held_answer(message: &'static str) -> Step {
+    Step::Act(Box::new(move |host: &mut Host| {
+        host.session().input = message.to_string();
+        let SendActionResult::NeedsRelayPublish(publish) = handle_send_action(
+            &mut host.sessions,
+            &ScriptBackend,
+            &egui::Context::default(),
+        ) else {
+            panic!("a held answer to a published request publishes a response");
+        };
+        let sk = host.secret_key.unwrap();
+        let engine = embedded_engine(&host.ndb, &sk).unwrap();
+        publish_user_permission_response(&mut host.sessions, &engine, &publish);
+    }))
+}
+
+/// The user rows in the host's chat that read `text`.
+fn user_rows(host: &mut Host, text: &str) -> usize {
+    host.session()
+        .chat
+        .iter()
+        .filter(|m| matches!(m, Message::User(u) if u.text == text))
+        .count()
+}
+
+/// An "Allow Always" held for a message waits for it. The per-frame status
+/// pass leaves the request pending while the user types, rather than taking
+/// it as an auto-accept and dropping the message; the grant lands with the
+/// send. So the request shows the user's answer and their reply row, on the
+/// host and in the fold, and the grant still auto-accepts the next matching
+/// request.
+#[tokio::test]
+async fn held_allow_always_waits_for_its_message() {
+    let (id, next) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    let input = serde_json::json!({ "command": "cargo build" });
+    let grant = input.clone();
+    let mut script = Vec::from(user_turn("build it"));
+    script.extend([
+        running("t1", "Bash", "cargo build"),
+        Step::Permission(PermissionRequest::pending(
+            id,
+            "Bash".to_string(),
+            input.clone(),
+        )),
+        Step::Settle,
+        hold_answer(DaveAction::TentativeAllowAlways),
+        Step::Act(Box::new(move |host: &mut Host| {
+            let resolved = update_statuses_and_publish_auto_resolved(
+                &mut host.sessions,
+                &host.ndb,
+                host.secret_key.as_ref(),
+            );
+            assert!(resolved.is_empty(), "a held answer is not an auto-accept");
+            let agentic = host.session().agentic.as_ref().unwrap();
+            assert!(
+                !agentic.should_runtime_allow("Bash", &grant),
+                "the grant waits for the send"
+            );
+        })),
+        send_held_answer("release profile only"),
+        executed("t1", "Bash", "exit 0", None),
+        running("t2", "Bash", "cargo build"),
+        Step::Permission(PermissionRequest::pending(next, "Bash".to_string(), input)),
+        executed("t2", "Bash", "exit 0", None),
+        Step::Act(Box::new(move |host: &mut Host| {
+            let chat = &host.session().chat;
+            let answered = permission_row(chat, id);
+            assert_eq!(
+                answered.response,
+                Some(crate::messages::PermissionResponseType::Allowed)
+            );
+            assert!(!answered.auto_accepted, "the user answered it");
+            assert!(
+                permission_row(chat, next).auto_accepted,
+                "the grant covers the next request"
+            );
+            assert_eq!(user_rows(host, "release profile only"), 1);
+        })),
+        token("built"),
+        Step::StreamEnd,
+        Step::ExpectRedispatch(None),
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// A deny held for a reason. The backend hands the reason to the model as a
+/// user turn of its own (`deliver_denial_reply`), which the CLI never echoes
+/// back as a chat row, and the host shows it once as the response's reply row,
+/// as the fold does from the response note. The reply reached the model with
+/// the denial, so the turn ends with nothing to redispatch: a host that took
+/// the row for a user turn would send the reason a second time.
+#[tokio::test]
+async fn held_deny_with_reason() {
+    let id = uuid::Uuid::new_v4();
+    let mut script = Vec::from(user_turn("clean up"));
+    script.extend([
+        running("t1", "Bash", "rm -rf target"),
+        Step::Permission(PermissionRequest::pending(
+            id,
+            "Bash".to_string(),
+            serde_json::json!({ "command": "rm -rf target" }),
+        )),
+        Step::Settle,
+        hold_answer(DaveAction::TentativeDeny),
+        send_held_answer("use cargo clean instead"),
+        executed("t1", "Bash", "denied", None),
+        token("ok, cargo clean"),
+        Step::Act(Box::new(|host: &mut Host| {
+            assert_eq!(user_rows(host, "use cargo clean instead"), 1);
+        })),
+        Step::StreamEnd,
+        Step::ExpectRedispatch(None),
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// [`held_deny_with_reason`] where the CLI answers the reason's user turn in
+/// a turn of its own after the denied one ends: that turn streams in as a
+/// wake-up, publishes like any other, and the fold records it.
+#[tokio::test]
+async fn held_deny_with_reason_answered_in_its_own_turn() {
+    let id = uuid::Uuid::new_v4();
+    let mut script = Vec::from(user_turn("clean up"));
+    script.extend([
+        running("t1", "Bash", "rm -rf target"),
+        Step::Permission(PermissionRequest::pending(
+            id,
+            "Bash".to_string(),
+            serde_json::json!({ "command": "rm -rf target" }),
+        )),
+        Step::Settle,
+        hold_answer(DaveAction::TentativeDeny),
+        send_held_answer("use cargo clean instead"),
+        executed("t1", "Bash", "denied", None),
+        Step::StreamEnd,
+        Step::ExpectRedispatch(None),
+        Step::AssertConverged("after the denied turn"),
+        token("ok, cargo clean"),
+        Step::StreamEnd,
+        Step::ExpectRedispatch(None),
     ]);
     assert_host_matches_fold(script).await;
 }

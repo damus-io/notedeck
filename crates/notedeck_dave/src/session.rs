@@ -177,6 +177,11 @@ pub enum PermissionMessageState {
     TentativeAccept,
     /// User pressed Shift+2, waiting for message then will Deny
     TentativeDeny,
+    /// User pressed Shift+3, waiting for message then will Allow and add the
+    /// tool to the runtime allowlist. The grant waits for the send too: added
+    /// up front, the per-frame auto-resolve pass would accept the request as
+    /// an auto-accept before the message was typed, and drop it.
+    TentativeAllowAlways,
 }
 
 // PermissionTracker is platform-neutral session state; it now lives in the
