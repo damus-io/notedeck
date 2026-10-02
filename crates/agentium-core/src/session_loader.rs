@@ -902,6 +902,18 @@ pub fn fold_tool(messages: &mut [Message], msg: Message) -> Option<Message> {
 /// it lives in one place rather than being spelled `"deleted"` at each site.
 pub const DELETED_STATUS: &str = "deleted";
 
+/// Whether a kind-31988 `status` says the session is in the middle of a turn:
+/// streaming (`working`), or waiting on the user's answer to a permission or
+/// question (`needs_input`), after which the same turn carries on.
+///
+/// A message sent to such a session is `queued`: the host takes it once the
+/// turn ends, so a fold keeps it at the tail until the host's dispatch marker
+/// says where it joined (see [`is_queued_note`]). A sender that isn't the host
+/// only knows the status, so this is what it decides by.
+pub fn status_in_turn(status: &str) -> bool {
+    matches!(status, "working" | "needs_input")
+}
+
 /// A persisted session state from a kind-31988 event.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionState {

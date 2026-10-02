@@ -267,11 +267,12 @@ fn ingest_remote_user_message(
     ndb: &nostrdb::Ndb,
     secret_key: &[u8; 32],
     text: &str,
+    queued: bool,
 ) -> Option<session_events::BuiltEvent> {
     let agentic = session.agentic.as_mut()?;
     let session_id = agentic.event_session_id().to_string();
     let engine = embedded_engine(ndb, secret_key)?;
-    match engine.prepare_message(&session_id, text) {
+    match engine.prepare_message(&session_id, text, queued) {
         Ok(events) => {
             // The engine ingested them already.
             for event in &events {
@@ -294,9 +295,8 @@ fn ingest_remote_user_message(
 /// Shared by the interactive send ([`Dave::handle_user_send`]) and the
 /// programmatic one ([`Dave::add_user_message_for_session`]).
 ///
-/// `queued` tags a local session's note as sent while a turn was in flight
-/// (see [`record_dispatch`]). A remote controller send is never tagged: the
-/// host decides whether it queues.
+/// `queued` tags the note as sent while a turn was in flight (see
+/// [`record_dispatch`] and [`record_user_message`]).
 pub(crate) fn build_user_send_event(
     session: &mut ChatSession,
     ndb: &nostrdb::Ndb,
@@ -305,7 +305,7 @@ pub(crate) fn build_user_send_event(
     queued: bool,
 ) -> Option<session_events::BuiltEvent> {
     if session.is_remote() {
-        ingest_remote_user_message(session, ndb, secret_key, text)
+        ingest_remote_user_message(session, ndb, secret_key, text, queued)
     } else {
         ingest_live_event(
             session,
@@ -328,6 +328,12 @@ pub(crate) fn build_user_send_event(
 /// [`build_user_send_event`]), appends it to chat, and retitles the session.
 /// Whether to dispatch it is the caller's call. A message sent while a turn is
 /// in flight is queued: it waits at the end of the chat, and its note says so.
+///
+/// A local session knows whether it has dispatched a turn. A remote one only
+/// knows the host's status, so a send to a session that is working or waiting
+/// on input is queued. The host queues every remote message anyway and marks
+/// where it dispatched it; the tag keeps this device and every observer from
+/// showing it inside the reply until that marker arrives.
 pub(crate) fn record_user_message(
     session: &mut ChatSession,
     ndb: &nostrdb::Ndb,
@@ -335,7 +341,11 @@ pub(crate) fn record_user_message(
     text: String,
     images: Vec<ImageAttachment>,
 ) {
-    let queued = session.is_dispatched();
+    let queued = if session.is_remote() {
+        session_loader::status_in_turn(session.status().as_str())
+    } else {
+        session.is_dispatched()
+    };
     let note_id = secret_key
         .and_then(|sk| build_user_send_event(session, ndb, sk, &text, queued))
         .map(|event| event.note_id);

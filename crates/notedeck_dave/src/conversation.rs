@@ -2051,6 +2051,98 @@ mod tests {
         assert_eq!(chat_texts(&session.chat), ["H", "A", "M"]);
     }
 
+    /// A controller's send to a remote session that is working is queued
+    /// (headway:dave/pottery-brother-tooth): before any dispatch marker exists
+    /// it waits after the reply still streaming, on this device and in the
+    /// fold every other one shows, rather than sitting inside that reply. The
+    /// host's marker then puts it where the host dispatched it.
+    #[tokio::test]
+    async fn controller_send_to_a_working_session_waits_at_the_tail() {
+        let sk = test_secret_key();
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        assert!(ndb.add_key(&sk), "ndb must accept the PNS key");
+        let session_id = "controller-queued-send";
+        let (mut session, _) = remote_session_behind_an_early_note(&ndb, session_id).await;
+        session.agentic.as_mut().unwrap().remote_status =
+            Some(crate::agent_status::AgentStatus::Working);
+        session.update_status();
+
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        crate::publish::record_user_message(&mut session, &ndb, Some(&sk), "M".into(), vec![]);
+        let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+        let Some(Message::User(sent)) = session.chat.last() else {
+            panic!("the send is the last row");
+        };
+        assert!(sent.queued, "a send to a working session is queued");
+        let m_id = sent.note_id.expect("the send has a note");
+
+        // The host's reply keeps streaming, stamped after M. Its own clock
+        // must read later than M's, so wait out the millisecond.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let mut threading = ThreadingState::new();
+        let mut host = |text: &str, role: &str, tags: LiveEventTags<'_>| {
+            build_live_event(text, role, session_id, None, tags, &mut threading, &sk).unwrap()
+        };
+        let b = host("B", "assistant", LiveEventTags::default());
+        store(&ndb, &b).await;
+        deliver(&ndb, &mut session, &sk, &author, "B");
+        assert_eq!(chat_texts(&session.chat), ["A", "B", "M"]);
+
+        let fold = |session: &session::ChatSession| {
+            let txn = Transaction::new(&ndb).unwrap();
+            let fold =
+                session_loader::load_session_messages_for_author(&ndb, &txn, &author, session_id);
+            assert_eq!(chat_texts(&session.chat), chat_texts(&fold.messages));
+        };
+        fold(&session);
+
+        // The turn ends and the host dispatches M, then answers it.
+        let marker = host(
+            "",
+            session_events::DISPATCHED_ROLE,
+            LiveEventTags {
+                refs: Some(&m_id),
+                ..Default::default()
+            },
+        );
+        store(&ndb, &marker).await;
+        assert!(deliver(&ndb, &mut session, &sk, &author, ""));
+        assert!(
+            matches!(session.chat.last(), Some(Message::User(u)) if !u.queued),
+            "dispatched: off the queue"
+        );
+        let c = host("C", "assistant", LiveEventTags::default());
+        store(&ndb, &c).await;
+        deliver(&ndb, &mut session, &sk, &author, "C");
+        assert_eq!(chat_texts(&session.chat), ["A", "B", "M", "C"]);
+        fold(&session);
+    }
+
+    /// A controller's send to an idle remote session starts the next turn
+    /// straight away, so it isn't queued: an older host that publishes no
+    /// dispatch marker would leave a queued note at the tail for good.
+    #[tokio::test]
+    async fn controller_send_to_an_idle_session_is_not_queued() {
+        let sk = test_secret_key();
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        assert!(ndb.add_key(&sk), "ndb must accept the PNS key");
+        let (mut session, _) = remote_session_behind_an_early_note(&ndb, "controller-idle").await;
+        session.agentic.as_mut().unwrap().remote_status =
+            Some(crate::agent_status::AgentStatus::Done);
+        session.update_status();
+
+        crate::publish::record_user_message(&mut session, &ndb, Some(&sk), "M".into(), vec![]);
+        assert!(matches!(session.chat.last(), Some(Message::User(u)) if !u.queued));
+    }
+
     /// A denied permission_response event must set PermissionResponseType::Denied
     /// on the matching chat PermissionRequest, not hardcode Allowed.
     ///
