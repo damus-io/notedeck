@@ -2309,8 +2309,7 @@ async fn reconcile_moves_a_background_subagent_row() {
         Step::StreamEnd,
     ]);
     let mut host = driven(script).await;
-    let subagent_row =
-        |host: &mut Host| host.session().agentic.as_ref().unwrap().subagent_indices["s1"];
+    let subagent_row = |host: &mut Host| host.session().turn_rows().subagent("s1").unwrap();
     assert_eq!(subagent_row(&mut host), 2);
     assert!(matches!(
         host.poll_and_reconcile(),

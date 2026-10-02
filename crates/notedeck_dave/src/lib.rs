@@ -29,6 +29,7 @@ mod session_commands;
 pub mod session_discovery;
 mod session_restore_loader;
 mod stream_events;
+mod turn_rows;
 mod view;
 
 // The pure, egui-free engine modules live in the platform-neutral

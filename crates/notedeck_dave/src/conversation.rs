@@ -778,8 +778,9 @@ pub(crate) fn rebuild_chat_from_fold(
 ///   restore replays what the poll dropped before the session existed right
 ///   after this (see `Dave::drain_session_restore`), so the tail has no gap
 ///   behind it;
-/// - subagent rows are re-indexed, since a background subagent outlives its
-///   turn and finds its row through that index;
+/// - the turn's tracked rows are re-indexed against the new chat
+///   ([`ChatSession::replace_chat`](session::ChatSession::replace_chat)),
+///   since a background subagent outlives its turn and finds its row there;
 /// - in-memory permission decisions the fold can't know yet are laid over
 ///   it: an auto-accept recorded this poll, its response not yet ingested,
 ///   would otherwise render as pending (and collapsed).
@@ -787,7 +788,7 @@ pub(crate) fn apply_loaded_chat(
     session: &mut session::ChatSession,
     loaded: session_loader::LoadedSession,
 ) {
-    session.chat = loaded.messages;
+    session.replace_chat(loaded.messages);
 
     let Some(agentic) = &mut session.agentic else {
         return;
@@ -796,7 +797,6 @@ pub(crate) fn apply_loaded_chat(
     agentic.seen_through = agentic.seen_through.max(loaded.max_key);
     agentic.tail_order = loaded.max_order;
     agentic.permissions.merge_loaded(loaded.permissions);
-    agentic.reindex_rows(&session.chat);
 
     for msg in session.chat.iter_mut() {
         let Message::PermissionRequest(req) = msg else {

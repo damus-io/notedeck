@@ -1427,7 +1427,7 @@ mod tests {
 
         let agentic = session.agentic.as_ref().unwrap();
         assert_eq!(agentic.tail_order, max_order, "the tail is seeded");
-        assert_eq!(agentic.subagent_indices.get("s1"), Some(&1));
+        assert_eq!(session.turn_rows().subagent("s1"), Some(1));
         assert!(matches!(&session.chat[1], Message::Subagent(info) if info.background));
 
         session.complete_subagent("s1", "mapped it");

@@ -649,13 +649,9 @@ fn handle_subagent_spawned(session: &mut session::ChatSession, subagent: Subagen
         subagent.subagent_type,
         subagent.description
     );
-    let task_id = subagent.task_id.clone();
-    // Insert before queued user messages (keeping them trailing) and record the
-    // position the subagent row actually landed at.
-    let idx = session.insert_turn_content(Message::Subagent(subagent));
-    if let Some(agentic) = &mut session.agentic {
-        agentic.subagent_indices.insert(task_id, idx);
-    }
+    // Insert before queued user messages, keeping them trailing; this records
+    // the row's position for the subagent's output and completion.
+    session.insert_turn_content(Message::Subagent(subagent));
 }
 
 /// Publish a subagent's current lifecycle state (after a spawn, completion or
@@ -674,8 +670,8 @@ fn publish_subagent(
     ndb: &nostrdb::Ndb,
 ) -> Option<session_events::BuiltEvent> {
     let sk = secret_key.as_ref()?;
+    let idx = session.turn_rows().subagent(task_id)?;
     let agentic = session.agentic.as_mut()?;
-    let idx = *agentic.subagent_indices.get(task_id)?;
     let Some(Message::Subagent(info)) = session.chat.get(idx) else {
         return None;
     };
