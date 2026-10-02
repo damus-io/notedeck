@@ -1202,6 +1202,40 @@ fn hydrate_session_from_state(
 }
 
 #[cfg(test)]
+impl Dave {
+    /// Start the background restore of `account`'s sessions from `ndb` the
+    /// way `ensure_pns_local_state` does, and wait until the worker has read
+    /// its snapshot and sent every session, without draining any of it.
+    /// Returns the waker to hand [`Dave::drain_session_restore`].
+    pub(crate) async fn run_restore_worker(
+        &mut self,
+        ndb: &nostrdb::Ndb,
+        account: nostrdb_net::Pubkey,
+    ) -> Waker {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let wakes = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = wakes.clone();
+        let waker = Waker::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        if let Some(feed) = &mut self.conversation_feed {
+            feed.begin_restore();
+        }
+        self.session_restore_loader
+            .start(waker.clone(), ndb.clone());
+        self.session_restore_loader.restore_account(account);
+        // The worker wakes once after `Started` and once after `Finished`.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while wakes.load(Ordering::SeqCst) < 2 {
+            assert!(std::time::Instant::now() < deadline, "restore worker hung");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        waker
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::AiMode;
@@ -1522,27 +1556,7 @@ mod tests {
         /// and wait until the worker has read its snapshot and sent every
         /// session (without draining any of it).
         async fn run_restore_worker(&mut self) -> notedeck::Waker {
-            let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let counter = wakes.clone();
-            let waker = notedeck::Waker::new(move || {
-                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            });
-            if let Some(feed) = &mut self.dave.conversation_feed {
-                feed.begin_restore();
-            }
-            self.dave
-                .session_restore_loader
-                .start(waker.clone(), self.ndb.clone());
-            self.dave
-                .session_restore_loader
-                .restore_account(self.account);
-            // The worker wakes once after `Started` and once after `Finished`.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while wakes.load(std::sync::atomic::Ordering::SeqCst) < 2 {
-                assert!(std::time::Instant::now() < deadline, "restore worker hung");
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-            waker
+            self.dave.run_restore_worker(&self.ndb, self.account).await
         }
 
         /// Drain everything the worker sent, as `update` does each frame.

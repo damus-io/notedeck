@@ -920,16 +920,34 @@ pub fn build_live_event(
     threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
-    let event = live_event_at(
+    build_live_event_at(
         content,
         role,
         session_id,
         cwd,
-        &tags,
-        None,
+        tags,
         threading,
         secret_key,
         now_millis(),
+    )
+}
+
+/// [`build_live_event`] stamped at `at_ms` (unix milliseconds) instead of now:
+/// a note from a device whose clock reads `at_ms`, which may run ahead of or
+/// behind this one's.
+#[allow(clippy::too_many_arguments)]
+pub fn build_live_event_at(
+    content: &str,
+    role: &str,
+    session_id: &str,
+    cwd: Option<&str>,
+    tags: LiveEventTags<'_>,
+    threading: &mut ThreadingState,
+    secret_key: &[u8; 32],
+    at_ms: u64,
+) -> Result<BuiltEvent, EventBuildError> {
+    let event = live_event_at(
+        content, role, session_id, cwd, &tags, None, threading, secret_key, at_ms,
     )?;
     threading.record(None, event.note_id, true);
     Ok(event)

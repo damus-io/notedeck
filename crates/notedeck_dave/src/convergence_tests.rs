@@ -21,11 +21,15 @@
 
 use crate::backend::{AiBackend, BackendType};
 use crate::config::AiMode;
-use crate::conversation::{process_conversation_notes, ProcessedNotes};
+use crate::conversation::{
+    process_conversation_notes, subscribe_conversation_events, ProcessedNotes,
+};
+use crate::conversation_feed::ConversationFeed;
 use crate::messages::{
     CompactionInfo, PendingPermission, PermissionRequest, QuestionAnswer, RunningTool,
     SubagentInfo, SubagentStatus,
 };
+use crate::pns_runtime::PnsLocalState;
 use crate::publish::{
     pns_ingest, publish_auto_accept_response, publish_user_permission_response, record_user_message,
 };
@@ -34,19 +38,20 @@ use crate::session::{ChatSession, CompactIntent, SessionId, SessionManager};
 use crate::stream_events::{
     apply_response, dispatch_turn, handle_stream_end, ApplyCtx, DispatchCtx,
 };
-use crate::tests::{test_config, test_secret_key};
+use crate::tests::{test_config, test_dave, test_secret_key};
 use crate::tools::{Tool, ToolResponses};
 use crate::{embedded_engine, DaveApiResponse, ExecutedTool, Message, PermissionResponse};
 use agentium_core::session_events::{
-    build_live_event, build_live_events, BuiltEvent, LiveEventTags, ThreadingState,
-    AI_CONVERSATION_KIND, DISPATCHED_ROLE, MAX_WIRE_EVENT_BYTES,
+    build_live_event_at, build_live_events, build_session_state_event, BuiltEvent, LiveEventTags,
+    ThreadingState, AI_CONVERSATION_KIND, AI_SESSION_STATE_KIND, DISPATCHED_ROLE,
+    MAX_WIRE_EVENT_BYTES,
 };
 use agentium_core::session_loader::{
     load_session_messages_for_author, view_signature, EventOrder, RowSig,
 };
 use claude_agent_sdk_rs::PermissionMode;
-use nostrdb::{Filter, Ndb, SubscriptionStream, Transaction};
-use notedeck::Waker;
+use nostrdb::{Filter, IngestMetadata, Ndb, SubscriptionStream, Transaction};
+use notedeck::{DataPath, Waker};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
@@ -84,6 +89,9 @@ enum Step {
     /// A note another device published reaches the host: it is stored, then
     /// the conversation poll hands it over.
     Deliver(BuiltEvent),
+    /// The host restarts: its session comes back from ndb through startup's
+    /// background restore, and the script carries on with it.
+    Restart,
     /// A checkpoint mid-script: once everything published so far is indexed,
     /// the host's chat and the fold agree, in either ingestion order. Named
     /// for the failure message.
@@ -197,8 +205,10 @@ impl Host {
                 &mut HashSet::new(),
             ),
             Step::Act(act) => act(self),
-            Step::Settle | Step::Deliver(_) | Step::AssertConverged(_) => {
-                unreachable!("settling, delivery and checkpoints are async; `drive` awaits them")
+            Step::Settle | Step::Deliver(_) | Step::Restart | Step::AssertConverged(_) => {
+                unreachable!(
+                    "settling, delivery, restarts and checkpoints are async; `drive` awaits them"
+                )
             }
         }
     }
@@ -212,6 +222,7 @@ impl Host {
                     self.store_remote(&note).await;
                     self.poll_note(&note.note_id);
                 }
+                Step::Restart => self.restart().await,
                 Step::AssertConverged(at) => {
                     self.assert_converged(at).await;
                 }
@@ -323,6 +334,88 @@ impl Host {
         let mut ids = self.published_note_ids();
         ids.insert(note.note_id);
         self.indexed.wait_for(&self.ndb, &ids).await;
+    }
+
+    /// Restart the host. Everything it published is indexed, then a fresh
+    /// [`Dave`](crate::Dave) restores the session from ndb the way startup
+    /// does: the background worker folds it ([`load_session_messages_for_author`])
+    /// and [`drain_session_restore`](crate::Dave::drain_session_restore)
+    /// installs it. The host carries on with the restored session in place of
+    /// the one it had.
+    async fn restart(&mut self) {
+        self.settle().await;
+        let published = self.published_note_ids();
+        let sk = self.secret_key.unwrap();
+        let account = self.author();
+
+        let data_dir = TempDir::new().unwrap();
+        let mut dave = test_dave(&DataPath::new(data_dir.path()));
+        dave.pns_local_state = Some(PnsLocalState {
+            account,
+            has_secret_key: true,
+        });
+        self.store_local_state(&dave.hostname).await;
+        let sub = subscribe_conversation_events(&self.ndb, account).unwrap();
+        dave.conversation_feed = Some(ConversationFeed::new(sub));
+
+        let waker = dave.run_restore_worker(&self.ndb, account).await;
+        let replayed = dave.drain_session_restore(&self.ndb, Some(&sk), &waker);
+        assert!(
+            replayed.is_empty(),
+            "the host had every note before it went down"
+        );
+
+        self.sessions = std::mem::take(&mut dave.session_manager);
+        self.sid = self
+            .sessions
+            .iter()
+            .find(|session| {
+                session
+                    .agentic
+                    .as_ref()
+                    .is_some_and(|agentic| agentic.event_session_id() == SESSION)
+            })
+            .expect("the session was restored")
+            .id;
+        assert!(!self.session().is_remote(), "it is restored as this host's");
+        assert_eq!(
+            self.published_note_ids(),
+            published,
+            "the restored session has seen every note it published"
+        );
+    }
+
+    /// Store the session's kind-31988 state as this host, `hostname`, last
+    /// published it, so a restart restores it as a local session.
+    async fn store_local_state(&self, hostname: &str) {
+        let state = build_session_state_event(
+            SESSION,
+            "Convergence",
+            None,
+            "/tmp",
+            "idle",
+            None,
+            hostname,
+            "/home/dev",
+            "claude",
+            "default",
+            Some("cli-convergence"),
+            None,
+            None,
+            None,
+            1_000,
+            &self.secret_key.unwrap(),
+        )
+        .unwrap();
+        let filter = Filter::new().kinds([AI_SESSION_STATE_KIND as u64]).build();
+        let sub = self.ndb.subscribe(&[filter]).unwrap();
+        self.ndb
+            .process_event_with(&state.to_event_json(), IngestMetadata::new().client(true))
+            .unwrap();
+        self.ndb
+            .wait_for_notes(sub, 1)
+            .await
+            .expect("the session state was never indexed");
     }
 
     /// Hand the session one stored note the way the conversation poll does.
@@ -509,7 +602,13 @@ async fn assert_host_matches_fold_then(script: Vec<Step>, after_poll: ReconcileO
 /// A user message another device (a phone, the `agentium` CLI) sends to the
 /// session: stamped now, stored whenever the scenario says.
 fn remote_user_note(text: &str) -> BuiltEvent {
-    build_live_event(
+    remote_user_note_at(text, now_ms())
+}
+
+/// [`remote_user_note`] from a device whose clock reads `at_ms` (unix
+/// milliseconds), which may run ahead of the host's.
+fn remote_user_note_at(text: &str, at_ms: u64) -> BuiltEvent {
+    build_live_event_at(
         text,
         "user",
         SESSION,
@@ -517,8 +616,17 @@ fn remote_user_note(text: &str) -> BuiltEvent {
         LiveEventTags::default(),
         &mut ThreadingState::new(),
         &test_secret_key(),
+        at_ms,
     )
     .unwrap()
+}
+
+/// The host's clock, in unix milliseconds.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
 /// The steps that open every turn: a user message, dispatched.
@@ -987,6 +1095,72 @@ async fn late_remote_message_after_the_reply() {
         token("hi"),
         Step::StreamEnd,
         Step::Deliver(typed),
+        Step::Dispatch,
+        token("got your message"),
+        Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// A restart between turns. The host restores the session from ndb (its
+/// chat, dedup set, threading and fold tail) and the next turn carries on
+/// from there: the restored rows and the new ones are in the same place on
+/// the host and in the fold.
+#[tokio::test]
+async fn restart_then_send() {
+    let mut script = Vec::from(user_turn("hello"));
+    script.extend([
+        token("hi"),
+        Step::StreamEnd,
+        Step::Restart,
+        Step::AssertConverged("after the restart"),
+    ]);
+    script.extend(user_turn("again"));
+    script.extend([token("hi again"), Step::StreamEnd]);
+    assert_host_matches_fold(script).await;
+}
+
+/// [`send_behind_a_message_still_waiting`] through a real restart. The
+/// message the turn ended without dispatching comes back from ndb at the
+/// tail, still waiting, and a message sent then is dispatched behind it.
+#[tokio::test]
+async fn restart_then_send_behind_a_message_still_waiting() {
+    let mut script = Vec::from(user_turn("first"));
+    script.extend([
+        token("working on "),
+        Step::Send("second, while you work"),
+        token("the first"),
+        Step::StreamEnd,
+        Step::Restart,
+        Step::AssertConverged("restored with the message waiting"),
+        Step::Act(Box::new(|host: &mut Host| {
+            let Some(Message::User(waiting)) = host.session().chat.last() else {
+                panic!("the waiting message is restored as the trailing row");
+            };
+            assert_eq!(waiting.as_str(), "second, while you work");
+            assert!(waiting.queued, "it is restored still waiting");
+        })),
+        Step::Send("hello?"),
+        Step::Dispatch,
+        token("both, then"),
+        Step::StreamEnd,
+    ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// A phone whose clock runs ahead sends a message after the turn ended. Its
+/// stamp is later than everything the host publishes next, the reply to it
+/// included, but the host shows it where it arrived, above that reply. Its
+/// dispatch marker, on the host's clock, must place it there in the fold
+/// too.
+#[tokio::test]
+async fn remote_message_from_a_clock_running_ahead() {
+    let ahead = remote_user_note_at("sent from a phone running fast", now_ms() + 5_000);
+    let mut script = Vec::from(user_turn("hello"));
+    script.extend([
+        token("hi"),
+        Step::StreamEnd,
+        Step::Deliver(ahead),
         Step::Dispatch,
         token("got your message"),
         Step::StreamEnd,
