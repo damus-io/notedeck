@@ -608,6 +608,12 @@ argument.
 - Edits print `ok (N events)`; offline edits append `— offline, not forwarded to
   the app`, meaning they're cached but haven't reached the running notedeck yet.
 - `seed` errors if a board already exists; that's expected — just `show` instead.
+- A board seeded on one machine reaches the account's other machines through
+  the running notedecks' private relay. Its key-share travels twice, as a
+  gift-wrap and as a PNS note, because a private relay may serve gift-wraps only
+  to an authenticated reader. If a board is missing on one machine, run any
+  `headway` command on the machine that has it (each cache sends its boards' PNS
+  key-shares once), give the notedecks a moment to sync, and list again there.
 - The cache lives at `<data-dir>/headway-cli` unless `--db` overrides it. The CLI
   and the running app converge through the relay, so either side's edits show up
   on the other after a reconcile.

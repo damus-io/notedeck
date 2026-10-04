@@ -912,12 +912,16 @@ fn a_board_whose_selfshare_never_flushed_is_joinable_by_deriving_its_root() {
 
     // Pre-record the root as already-flushed, so the reconnect below pushes the
     // board's content up but never its self-share — the production state.
+    // Both carriers' markers: the gift-wrap's, and the PNS copy's
+    // (headway:headway/pepper-rack-usual), so no key-share goes up at all.
     let root = nostrdb_net::sns::derive_board_root(&SECRET, "stranded");
-    std::fs::write(
-        owner_dir.path().join("flushed_selfshares"),
-        format!("{}\n", hex::encode(root)),
-    )
-    .expect("write marker");
+    for marker in ["flushed_selfshares", "flushed_pns_selfshares"] {
+        std::fs::write(
+            owner_dir.path().join(marker),
+            format!("{}\n", hex::encode(root)),
+        )
+        .expect("write marker");
+    }
 
     let reconnect = headway(&url, owner, &["--board", "stranded", "show"]);
     assert!(
@@ -954,6 +958,174 @@ fn a_board_whose_selfshare_never_flushed_is_joinable_by_deriving_its_root() {
     assert!(
         !err.contains("by deriving"),
         "an unknown slug must not mint a key-share for a phantom channel:\n{err}"
+    );
+}
+
+/// Spawn an embedded relay over a fresh nostrdb, standing in for one machine's
+/// running notedeck. Returns the relay handle (keep it alive), its URL, and its
+/// store for inspection. The temp dir must outlive the store.
+fn spawn_machine(
+    dir: &tempfile::TempDir,
+) -> (nostrdb_net::relay::server::RelayHandle, String, Ndb) {
+    let ndb = Ndb::new(
+        dir.path().to_str().unwrap(),
+        &test_config().set_ingester_threads(1),
+    )
+    .expect("machine ndb");
+    let store = ndb.clone();
+    let relay =
+        nostrdb_net::relay::server::spawn(ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+    (relay, url, store)
+}
+
+/// Carry what a private relay that auth-gates gift-wraps carries between two
+/// machines: every kind-1080 PNS and kind-1081 SNS note in `from`, and no
+/// kind-1059. relay.jb55.com refuses unauthenticated 1059 reads, and notedeck
+/// does not answer NIP-42, so that is all that crosses
+/// (headway:headway/pepper-rack-usual). Returns once `to` holds every one.
+fn carry_private_notes(from: &Ndb, to: &Ndb) {
+    let filter = || Filter::new().kinds([1080u64, 1081]).build();
+    let jsons: Vec<String> = {
+        let txn = Transaction::new(from).expect("txn");
+        from.query(&txn, &[filter()], 10_000)
+            .expect("query")
+            .iter()
+            .map(|r| r.note.json().expect("note json"))
+            .collect()
+    };
+    assert!(!jsons.is_empty(), "nothing to carry");
+    for json in &jsons {
+        to.process_event(&format!("[\"EVENT\",\"_carry\",{json}]"))
+            .expect("carry note");
+    }
+    for _ in 0..50 {
+        let txn = Transaction::new(to).expect("txn");
+        if to.query(&txn, &[filter()], 10_000).map_or(0, |r| r.len()) >= jsons.len() {
+            return;
+        }
+        drop(txn);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("the carried notes never landed");
+}
+
+/// Poll `headway board` until its listing names `slug`, without ever naming the
+/// board on the command line, so the board must come from the roster rather than
+/// from deriving its root. Panics on timeout.
+fn lists_board_until(url: &str, db: &str, slug: &str) {
+    let mut last = String::new();
+    for _ in 0..50 {
+        let out = headway(url, db, &["board"]);
+        last = String::from_utf8_lossy(&out.stdout).into_owned();
+        if last.split_whitespace().any(|word| word == slug) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("`headway board` never listed '{slug}':\n{last}");
+}
+
+/// A board seeded on one machine shows up on another that never receives its
+/// kind-1059 self-share (headway:headway/pepper-rack-usual).
+///
+/// Each machine is its own embedded relay, as each runs its own notedeck. The
+/// private relay between them carries only PNS and SNS notes, because it serves
+/// gift-wraps only to an authenticated reader. Before the fix the board's content
+/// crossed but the key to read it didn't, so the second machine's `headway board`
+/// never listed it. The seed's PNS-carried self-share is the key that does cross.
+#[test]
+fn a_board_seeded_on_one_machine_appears_on_another_without_its_gift_wrap() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let _guard = rt.enter();
+    let (hydra_dir, monad_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (_hydra_relay, hydra_url, hydra_store) = spawn_machine(&hydra_dir);
+    let (_monad_relay, monad_url, monad_store) = spawn_machine(&monad_dir);
+
+    // Seed and add a card on the first machine.
+    let hydra_cli = tempfile::tempdir().expect("hydra cli");
+    let hydra = hydra_cli.path().to_str().unwrap();
+    let seed = headway(&hydra_url, hydra, &["--board", "tune-assistant", "seed"]);
+    assert!(
+        seed.status.success(),
+        "seed: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    let add = headway(
+        &hydra_url,
+        hydra,
+        &["--board", "tune-assistant", "add", "Port it"],
+    );
+    assert!(
+        add.status.success(),
+        "add: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    wait_for_envelope(&hydra_store);
+
+    carry_private_notes(&hydra_store, &monad_store);
+    assert_eq!(
+        giftwraps_to(&monad_store, &author()),
+        0,
+        "the gift-wrap must not cross, or this test proves nothing"
+    );
+
+    // The second machine lists the board without being told its slug, and folds it.
+    let monad_cli = tempfile::tempdir().expect("monad cli");
+    let monad = monad_cli.path().to_str().unwrap();
+    lists_board_until(&monad_url, monad, "tune-assistant");
+    let board = show_board_until(&monad_url, monad, "tune-assistant", 1);
+    assert_eq!(board["title"], "tune-assistant", "{board:#}");
+}
+
+/// A board whose cache flushed its kind-1059 self-share before the PNS copy
+/// existed still sends the copy, once (headway:headway/pepper-rack-usual).
+///
+/// This is the state of the boards already seeded on hydra: the gift-wrap marker
+/// records their roots, so the gift-wrap flush never runs again. The PNS copy has
+/// its own marker, so the next run sends it, and a fresh cache that can't read any
+/// 1059 lists the board from that copy alone. A later run doesn't resend it.
+#[test]
+fn an_already_flushed_board_sends_its_pns_self_share_once() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let _guard = rt.enter();
+    let relay_dir = tempfile::tempdir().unwrap();
+    let (_relay, url, store) = spawn_machine(&relay_dir);
+    let dead = "ws://127.0.0.1:1";
+
+    // Seed offline so no gift-wrap ever reaches the relay, then mark the root as
+    // gift-wrap-flushed: the pre-fix cache state.
+    let owner_dir = tempfile::tempdir().expect("owner dir");
+    let owner = owner_dir.path().to_str().unwrap();
+    assert!(
+        headway(dead, owner, &["--board", "oot", "seed"])
+            .status
+            .success(),
+        "offline seed"
+    );
+    let root = nostrdb_net::sns::derive_board_root(&SECRET, "oot");
+    std::fs::write(
+        owner_dir.path().join("flushed_selfshares"),
+        format!("{}\n", hex::encode(root)),
+    )
+    .expect("write marker");
+
+    let reconnect = headway(&url, owner, &["--board", "oot", "show"]);
+    assert!(
+        String::from_utf8_lossy(&reconnect.stderr).contains("flushed 1 own self-share"),
+        "the reconnect must flush the PNS copy and only that:\n{}",
+        String::from_utf8_lossy(&reconnect.stderr)
+    );
+    assert_eq!(giftwraps_to(&store, &author()), 0, "no gift-wrap went up");
+
+    let fresh_dir = tempfile::tempdir().expect("fresh dir");
+    lists_board_until(&url, fresh_dir.path().to_str().unwrap(), "oot");
+
+    let again = headway(&url, owner, &["--board", "oot", "show"]);
+    assert!(
+        !String::from_utf8_lossy(&again.stderr).contains("own self-share"),
+        "a flushed PNS copy must not be resent:\n{}",
+        String::from_utf8_lossy(&again.stderr)
     );
 }
 

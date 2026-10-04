@@ -41,8 +41,8 @@ use crate::output::{
     print_cards, print_next,
 };
 use crate::sync::{
-    flush_own_selfshares, plaintext_sync_filter, pull_giftwraps, recover_derived_board,
-    sync_envelopes,
+    flush_own_selfshares, plaintext_sync_filter, pull_giftwraps, pull_pns_keyshares,
+    recover_derived_board, sync_envelopes,
 };
 
 /// The CLI's cache/key directory under the platform data dir (e.g.
@@ -222,6 +222,13 @@ async fn run() -> Result<()> {
     // plaintext edits no other client can read.
     if let Some(relay) = relay.as_mut() {
         pull_giftwraps(relay, &ndb, &me).await;
+    }
+    // The same key-shares for our own boards, carried over PNS: the copy that
+    // reaches this device when a private relay won't serve it the gift-wrap
+    // (headway:headway/pepper-rack-usual). Deriving the PNS stream needs the
+    // signing key, so a read-only `--author` run skips it.
+    if let (Some(relay), Some((secret, _))) = (relay.as_mut(), cli.secret.as_ref()) {
+        pull_pns_keyshares(relay, &ndb, secret).await;
     }
     // Join every shared board we hold a key for. Registering a root re-peels any
     // envelope that arrived before it, so it is safe for this to run after the sync
