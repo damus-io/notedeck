@@ -252,6 +252,61 @@ fn seed_title_flag_overrides_slug() {
     );
 }
 
+/// `seed -t <title>` seeds the board its title names, never the current one
+/// (headway:headway/pepper-rack-usual). The repro: with `headway` already
+/// seeded and current, `seed -t "Tune Assistant"` answered "board 'headway'
+/// already exists". It must instead seed `tune-assistant` titled "Tune
+/// Assistant", and a bare `seed` must refuse rather than guess.
+#[test]
+fn seed_with_only_a_title_seeds_the_titled_board_not_the_current_one() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &test_config().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let _guard = rt.enter();
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    // The current board (`HEADWAY_BOARD=headway`, see `headway_as`) exists.
+    assert!(
+        headway(&url, db, &["--board", "headway", "seed"])
+            .status
+            .success(),
+        "seed the current board"
+    );
+
+    let seed = headway(&url, db, &["seed", "-t", "Tune Assistant"]);
+    assert!(
+        seed.status.success(),
+        "seed -t must seed the titled board, not the current one: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&seed.stdout).contains("'tune-assistant'"),
+        "seed should report the slug it derived: {}",
+        String::from_utf8_lossy(&seed.stdout)
+    );
+    let board = show_board_until_cols(&url, db, "tune-assistant", 5);
+    assert_eq!(board["title"], "Tune Assistant", "{board:#}");
+
+    // Nothing to name the board by: refuse, and seed nothing.
+    let bare = headway(&url, db, &["seed"]);
+    assert!(!bare.status.success(), "a bare seed must refuse");
+    assert!(
+        String::from_utf8_lossy(&bare.stderr).contains("never uses the persisted current board"),
+        "{}",
+        String::from_utf8_lossy(&bare.stderr)
+    );
+}
+
 #[test]
 fn seed_show_and_add_round_trip() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
@@ -273,7 +328,7 @@ fn seed_show_and_add_round_trip() {
     let db = cli_dir.path().to_str().unwrap();
 
     // Seed the default board through the relay.
-    let seed = headway(&url, db, &["seed"]);
+    let seed = headway(&url, db, &["--board", "headway", "seed"]);
     assert!(
         seed.status.success(),
         "seed failed: {}",
@@ -366,7 +421,7 @@ fn offline_edits_flush_on_reconnect() {
     let db = cli_dir.path().to_str().unwrap();
 
     // Seed offline: the sealed board-def lands in the CLI cache, none reach the relay.
-    let seed = headway(dead, db, &["seed"]);
+    let seed = headway(dead, db, &["--board", "headway", "seed"]);
     assert!(seed.status.success(), "offline seed should still succeed");
 
     // Reconnect and run a plain `show`: the reconcile must push the stranded seed
@@ -402,7 +457,12 @@ fn reconcile_converges_after_replacing_a_placement() {
     let cli_dir = tempfile::tempdir().expect("cli dir");
     let db = cli_dir.path().to_str().unwrap();
 
-    assert!(headway(&url, db, &["seed"]).status.success(), "seed");
+    assert!(
+        headway(&url, db, &["--board", "headway", "seed"])
+            .status
+            .success(),
+        "seed"
+    );
     show_until_cols(&url, db, 5);
     // The default board is card-less, so add a card to have something to move.
     assert!(
@@ -480,7 +540,9 @@ fn multiple_boards_are_independent() {
 
     // Seed the default board and a separate `work` board on the same key.
     assert!(
-        headway(&url, db, &["seed"]).status.success(),
+        headway(&url, db, &["--board", "headway", "seed"])
+            .status
+            .success(),
         "seed default"
     );
     assert!(
@@ -527,7 +589,7 @@ fn multiple_boards_are_independent() {
 /// is on the relay from creation, so a fresh cache holding the account key can
 /// join and read it. Panics if the seed fails.
 fn seed_and_seal(url: &str, db: &str) {
-    let seed = headway(url, db, &["seed"]);
+    let seed = headway(url, db, &["--board", "headway", "seed"]);
     assert!(
         seed.status.success(),
         "seed failed: {}",
@@ -679,7 +741,9 @@ fn sealed_board_converges_without_plaintext_leak() {
     // nothing of these kinds ever reaches the relay and the only way the board can
     // sync up is as sealed envelopes. (No `migrate` needed — seed is born-sealed.)
     assert!(
-        headway(dead, db, &["seed"]).status.success(),
+        headway(dead, db, &["--board", "headway", "seed"])
+            .status
+            .success(),
         "offline seed"
     );
 

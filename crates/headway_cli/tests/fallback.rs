@@ -183,7 +183,12 @@ fn falls_back_to_nip01_when_relay_lacks_negentropy() {
     // Seed against the negentropy-less relay: reconcile fails over to a full
     // NIP-01 sync, and the seed's events still publish up to the relay's store.
     let seed_dir = tempfile::tempdir().expect("seed dir");
-    let out = run_timed(&url, seed_dir.path().to_str().unwrap(), &["seed"], 15);
+    let out = run_timed(
+        &url,
+        seed_dir.path().to_str().unwrap(),
+        &["--board", "headway", "seed"],
+        15,
+    );
     assert!(
         out.status.success(),
         "seed failed: {}",
@@ -222,7 +227,12 @@ fn benign_replaced_rejection_does_not_abort() {
     // benign — the relay's state is already at-or-ahead — so the command must
     // succeed and seed the local board rather than erroring out.
     let dir = tempfile::tempdir().expect("dir");
-    let out = run_timed(&url, dir.path().to_str().unwrap(), &["seed"], 15);
+    let out = run_timed(
+        &url,
+        dir.path().to_str().unwrap(),
+        &["--board", "headway", "seed"],
+        15,
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),

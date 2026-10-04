@@ -134,7 +134,7 @@ fn review_records_git_metadata_on_a_card() {
     let cli_dir = tempfile::tempdir().expect("cli dir");
     let db = cli_dir.path().to_str().unwrap();
 
-    let seed = headway(&bin, &url, db, &["seed"]);
+    let seed = headway(&bin, &url, db, &["--board", "headway", "seed"]);
     assert!(
         seed.status.success(),
         "seed: {}",
@@ -249,7 +249,7 @@ fn review_comments_post_show_and_reply() {
     let cli_dir = tempfile::tempdir().expect("cli dir");
     let db = cli_dir.path().to_str().unwrap();
 
-    ok(&bin, &url, db, &["seed"]);
+    ok(&bin, &url, db, &["--board", "headway", "seed"]);
     let added: Value =
         serde_json::from_str(&ok(&bin, &url, db, &["add", "Comment me", "--json"])).unwrap();
     let card = added["ref"].as_str().expect("new card ref").to_string();

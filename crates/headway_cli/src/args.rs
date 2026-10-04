@@ -516,7 +516,7 @@ impl Cli {
                 "--desc" => desc = Some(value("--desc")?),
                 "--desc-file" => desc_file = Some(value("--desc-file")?),
                 "--on" => on = Some(value("--on")?),
-                "--title" => title = Some(value("--title")?),
+                "-t" | "--title" => title = Some(value("--title")?),
                 "--after" => seq.after = Some(value("--after")?),
                 "--before" => seq.before = Some(value("--before")?),
                 "--first" => seq.first = true,
@@ -635,8 +635,24 @@ impl Cli {
                 _ => board = Some(named),
             }
         }
-        // Explicit iff `--board` or a self-routing ref set it above; the env /
-        // persisted / default fallbacks below are implicit (see `board_explicit`).
+        // `seed` creates a board, so it never falls back to the persisted current
+        // board: `headway seed -t "Tune Assistant"` used to seed whatever board
+        // was current (headway:headway/pepper-rack-usual). With no `--board` it
+        // derives the slug from `--title` — the same rule as the GUI's "New
+        // board" ([`store::board_slug`]) — and with neither it refuses, like
+        // `next` and `migrate`.
+        if let Command::Seed { title } = &command
+            && board.is_none()
+        {
+            let title = title.as_deref().ok_or(
+                "seed never uses the persisted current board — pass --board <slug>, \
+                 or --title <title> to derive the slug from the title",
+            )?;
+            board = Some(store::board_slug(title, |_| false));
+        }
+        // Explicit iff `--board`, a self-routing ref, or `seed`'s title set it
+        // above; the env / persisted / default fallbacks below are implicit (see
+        // `board_explicit`).
         let board_explicit = board.is_some();
         let board = board
             .or_else(|| env::var("HEADWAY_BOARD").ok())
@@ -734,7 +750,18 @@ fn parse_command(
         "show" => Command::Show {
             cards: rest.to_vec(),
         },
-        "seed" => Command::Seed { title },
+        "seed" => {
+            // Seed takes no positionals. A stray word used to be dropped
+            // silently, so a mistyped flag seeded the board with its default
+            // title instead of failing.
+            if let Some(stray) = rest.first() {
+                return Err(format!(
+                    "seed takes no arguments, got '{stray}' — pass the title as --title <title>"
+                )
+                .into());
+            }
+            Command::Seed { title }
+        }
         "migrate" => Command::Migrate,
         "share" => Command::Share {
             recipient: Pubkey::parse(&arg(rest, 0, name)?)
@@ -1517,6 +1544,38 @@ mod tests {
     fn migrate_board_explicitness() {
         assert!(!parse(&["migrate"]).board_explicit);
         assert!(parse(&["migrate", "--board", "commerce"]).board_explicit);
+    }
+
+    /// `seed` never seeds the persisted current board
+    /// (headway:headway/pepper-rack-usual): with no `--board` it derives the
+    /// slug from `--title` (or `-t`), and with neither it refuses. An explicit
+    /// `--board` still wins over the title.
+    #[test]
+    fn seed_derives_its_slug_from_the_title_or_refuses() {
+        let cli = parse(&["seed", "-t", "Tune Assistant"]);
+        assert_eq!(cli.board, "tune-assistant");
+        assert!(cli.board_explicit);
+        assert!(matches!(
+            cli.command,
+            Command::Seed { title: Some(ref t) } if t == "Tune Assistant"
+        ));
+
+        let cli = parse(&["--board", "tune", "seed", "--title", "Tune Assistant"]);
+        assert_eq!(cli.board, "tune");
+
+        let err = parse_err(&["seed"]);
+        assert!(
+            err.contains("never uses the persisted current board"),
+            "{err}"
+        );
+    }
+
+    /// A stray positional to `seed` is an error, not silently dropped — the
+    /// mistyped title that led to the wrong board being seeded.
+    #[test]
+    fn seed_rejects_stray_arguments() {
+        let err = parse_err(&["--board", "tune", "seed", "Tune Assistant"]);
+        assert!(err.contains("seed takes no arguments"), "{err}");
     }
 
     /// `share` takes its recipient as an npub or as hex, and names the key it
