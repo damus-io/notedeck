@@ -811,6 +811,16 @@ impl IdleTracker {
         }
     }
 
+    /// The CLI is gone, and with it any turn or background task it was
+    /// running. Returns whether that cut off work in flight.
+    fn cli_lost(&mut self, now: Instant) -> bool {
+        let work_lost = self.turn_active || !self.background_tasks.is_empty();
+        self.last_activity = now;
+        self.turn_active = false;
+        self.background_tasks.clear();
+        work_lost
+    }
+
     /// When the CLI may be stopped, or `None` while work is outstanding.
     fn deadline(&self) -> Option<Instant> {
         if self.turn_active || !self.background_tasks.is_empty() {
@@ -852,6 +862,21 @@ struct ActorState {
 }
 
 impl ActorState {
+    /// A session's state before its first CLI starts.
+    fn new(waker: Waker, permission_mode: PermissionMode, cli_session_id: Option<String>) -> Self {
+        Self {
+            waker,
+            pending_tools: HashMap::new(),
+            subagent_stack: Vec::new(),
+            task_tracker: TaskTracker::new(),
+            cancel_current_turn: false,
+            stopped_by_user: false,
+            idle: IdleTracker::new(Instant::now()),
+            permission_mode,
+            cli_session_id,
+        }
+    }
+
     /// Note what a CLI message says about the session before it is handled.
     fn observe(&mut self, message: &ClaudeMessage) {
         self.idle.on_message(Instant::now(), message);
@@ -869,8 +894,12 @@ impl ActorState {
 enum ConnectedExit {
     /// The session was shut down, or the backend dropped its handle.
     Shutdown,
-    /// The CLI exited on its own.
-    StreamClosed,
+    /// The CLI's output ended: it exited, or the SDK stopped reading it.
+    StreamClosed {
+        /// The SDK's error just before the end, if the stream did not end
+        /// cleanly (an unreadable or over-long line, a read error).
+        error: Option<String>,
+    },
     /// Nothing happened for [`IDLE_REAP_AFTER`]; the CLI can be stopped.
     Idle,
 }
@@ -883,20 +912,24 @@ async fn sleep_until_deadline(deadline: Option<Instant>) {
     }
 }
 
+/// The largest single line of Claude CLI output (one JSON message) a session
+/// accepts.
+///
+/// The SDK's 10 MB default is too small for real tool results. An image Read
+/// carries its base64 twice on one line (~1.3 MB for a 500 KB screenshot, so
+/// a full-size image is over 10 MB), and a PDF Read can be larger still. The
+/// cap is there to bound memory against a runaway line, not to trim
+/// legitimate output. A line over it ends the CLI's stream, which the actor
+/// reports as a lost turn (see [`report_lost_cli`]).
+const MAX_CLI_LINE_BYTES: usize = 128 * 1024 * 1024;
+
 /// The Claude CLI options a session's every connection starts from, before
 /// the per-session cwd/model/env and per-connection resume id and mode.
 ///
-/// `max_buffer_size` is lifted to `usize::MAX` because the SDK's limit is not
-/// a per-line limit: its stdout reader adds every line to one running total
-/// for the life of the CLI process, and once that passes the limit (10 MB by
-/// default) it stops reading for good — silently, leaving the message channel
-/// open. Nothing more reaches Dave: no tool results, no permission requests,
-/// no `Result`, and an interrupt waits forever on a control response nobody
-/// reads, while the CLI keeps working unseen. An image Read emits its base64
-/// twice on one line (~1.3 MB for a 500 KB screenshot), so a session that
-/// reads a few screenshots freezes on whichever tool result crosses 10 MB.
-/// The limit bought nothing worth keeping: the reader has already buffered a
-/// line in full by the time it checks.
+/// `max_buffer_size` limits each line the CLI writes (see
+/// [`MAX_CLI_LINE_BYTES`]). Before the SDK made it per-line it was a lifetime
+/// total, and a session went silent for good after 10 MB of output
+/// (headway:dave/code-hollow-spy).
 fn session_base_options(
     can_use_tool: claude_agent_sdk_rs::CanUseToolCallback,
 ) -> ClaudeAgentOptions {
@@ -909,7 +942,7 @@ fn session_base_options(
         .stderr_callback(stderr_callback)
         .can_use_tool(can_use_tool)
         .include_partial_messages(true)
-        .max_buffer_size(usize::MAX)
+        .max_buffer_size(MAX_CLI_LINE_BYTES)
         .build()
 }
 
@@ -995,20 +1028,36 @@ async fn session_actor(
     // agentium identity; see `shared::session_env`) into the spawned CLI.
     base_options.env.extend(session_env);
 
-    let mut state = ActorState {
-        waker: initial_waker,
-        pending_tools: HashMap::new(),
-        subagent_stack: Vec::new(),
-        task_tracker: TaskTracker::new(),
-        cancel_current_turn: false,
-        stopped_by_user: false,
-        idle: IdleTracker::new(Instant::now()),
-        permission_mode,
-        cli_session_id: resume_session_id,
-    };
+    let mut state = ActorState::new(initial_waker, permission_mode, resume_session_id);
 
+    serve_session(
+        &session_id,
+        &base_options,
+        &mut command_rx,
+        &mut perm_rx,
+        &response_tx,
+        &mut state,
+    )
+    .await;
+    tracing::debug!("Session {} actor exited", session_id);
+}
+
+/// Run the session's CLI connections until the session shuts down.
+///
+/// A CLI is started (resuming the session's CLI session, if it has one) for
+/// the first Query or Compact, and stopped when it goes idle or its output
+/// ends. Either way the session goes dormant until the next command, which
+/// starts a fresh CLI.
+async fn serve_session(
+    session_id: &str,
+    base_options: &ClaudeAgentOptions,
+    command_rx: &mut tokio_mpsc::Receiver<SessionCommand>,
+    perm_rx: &mut tokio_mpsc::Receiver<PermissionRequestInternal>,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    state: &mut ActorState,
+) {
     // No CLI runs until there is something for it to do.
-    while let Some(wake_cmd) = wait_dormant(&mut command_rx, &mut state).await {
+    while let Some(wake_cmd) = wait_dormant(command_rx, state).await {
         let mut options = base_options.clone();
         options.resume = state.cli_session_id.clone();
         options.permission_mode = Some(state.permission_mode);
@@ -1037,11 +1086,11 @@ async fn session_actor(
         let exit = run_connected(
             &client,
             wake_cmd,
-            &session_id,
-            &mut command_rx,
-            &mut perm_rx,
-            &response_tx,
-            &mut state,
+            session_id,
+            command_rx,
+            perm_rx,
+            response_tx,
+            state,
         )
         .await;
 
@@ -1057,10 +1106,57 @@ async fn session_actor(
                     IDLE_REAP_AFTER
                 );
             }
-            ConnectedExit::Shutdown | ConnectedExit::StreamClosed => break,
+            ConnectedExit::StreamClosed { error } => {
+                report_lost_cli(session_id, error, response_tx, state);
+            }
+            ConnectedExit::Shutdown => break,
         }
     }
-    tracing::debug!("Session {} actor exited", session_id);
+}
+
+/// Account for a CLI whose output ended, and end any turn it cut off.
+///
+/// The session stays up and goes dormant: the next message starts a fresh CLI
+/// that `--resume`s the same CLI session, as after an idle stop. A lost turn is
+/// reported rather than retried. The CLI's own transcript has whatever it
+/// finished, the user sees why the turn stopped, and nothing re-prompts the
+/// model on its own (which could loop on whatever killed the stream).
+fn report_lost_cli(
+    session_id: &str,
+    error: Option<String>,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    state: &mut ActorState,
+) {
+    let work_lost = state.idle.cli_lost(Instant::now());
+    state.cancel_current_turn = false;
+    state.stopped_by_user = false;
+    // Tool and subagent attribution died with the CLI's turn.
+    state.pending_tools.clear();
+    state.subagent_stack.clear();
+
+    let reason = error.unwrap_or_else(|| "the Claude CLI exited".to_string());
+    if !work_lost {
+        tracing::info!(
+            "Session {} lost its Claude CLI between turns ({}); the next query resumes it",
+            session_id,
+            reason
+        );
+        return;
+    }
+
+    tracing::error!(
+        "Session {} lost its Claude CLI mid-turn: {}",
+        session_id,
+        reason
+    );
+    let _ = response_tx.send(DaveApiResponse::Failed(format!(
+        "Lost the connection to Claude mid-turn: {reason}. Send a message to resume the session."
+    )));
+    // The turn's Result will never come, so end the turn here.
+    let _ = response_tx.send(DaveApiResponse::QueryComplete(
+        crate::messages::UsageInfo::default(),
+    ));
+    state.waker.wake();
 }
 
 /// Wait, with no CLI running, for a command that needs one.
@@ -1107,6 +1203,9 @@ async fn run_connected(
     // interrupt / set_permission_mode) so they coexist with this borrow; the
     // caller's `disconnect` (&mut) runs once this returns and the stream drops.
     let mut message_stream = client.receive_messages();
+    // The latest stream error, kept until a message reads fine. When the SDK
+    // stops reading the CLI it yields the reason and then ends the stream.
+    let mut last_error: Option<String> = None;
 
     if let Some(exit) = handle_command(wake_cmd, client, session_id, response_tx, state).await {
         return exit;
@@ -1145,15 +1244,21 @@ async fn run_connected(
             // The continuous CLI message stream.
             msg = message_stream.next() => {
                 let Some(result) = msg else {
-                    // Stream closed — the CLI exited. Nothing more will arrive.
-                    return ConnectedExit::StreamClosed;
+                    // Stream closed: the CLI exited, or the SDK stopped reading
+                    // it. Nothing more will arrive from this CLI.
+                    return ConnectedExit::StreamClosed { error: last_error };
                 };
                 let message = match result {
-                    Ok(message) => message,
+                    Ok(message) => {
+                        last_error = None;
+                        message
+                    }
                     Err(err) => {
-                        // Non-fatal: unknown message types (e.g. rate_limit_event)
-                        // fail to deserialize but the stream continues.
+                        // Non-fatal unless the stream ends right after it:
+                        // unknown message types (e.g. rate_limit_event) fail to
+                        // deserialize but the stream continues.
                         tracing::warn!("Claude stream message skipped: {}", err);
+                        last_error = Some(err.to_string());
                         continue;
                     }
                 };
@@ -1483,12 +1588,12 @@ cat > /dev/null
     /// headway:dave/code-hollow-spy): three parallel screenshot Reads, and the
     /// third result never arrived while the agent worked on unseen.
     ///
-    /// The SDK counts every stdout line against one lifetime total and stops
-    /// reading once it passes `max_buffer_size`, so with its default the
-    /// session's 10th MiB is the last thing Dave ever reads: the later tool
-    /// results and the `Result` never come and this times out. Driving a CLI
-    /// with [`session_base_options`] — what every session connects with — must
-    /// deliver all of it.
+    /// The SDK used to count every stdout line against one lifetime total and
+    /// stop reading once it passed `max_buffer_size`, so the session's 10th
+    /// MiB was the last thing Dave ever read: the later tool results and the
+    /// `Result` never came and this timed out. The SDK's limit is per line
+    /// now; driving a CLI with [`session_base_options`] — what every session
+    /// connects with — must still deliver all of it.
     #[cfg(unix)]
     #[tokio::test]
     async fn session_keeps_reading_past_ten_megabytes_of_cli_output() {
@@ -1551,6 +1656,171 @@ cat > /dev/null
              {FAKE_CLI_BIG_RESULTS} tool results before the stream went quiet"
         );
         assert_eq!(tool_results, FAKE_CLI_BIG_RESULTS);
+    }
+
+    /// A stand-in `claude` whose first run breaks its output stream: after the
+    /// query it reports its CLI session, writes a line that is not UTF-8 and
+    /// then hangs without exiting, even once stdin closes (like a CLI blocked
+    /// on a stdout nobody reads). Run with `--resume fake-session` it answers
+    /// the query with a `result` and waits for stdin to close.
+    #[cfg(unix)]
+    const FAKE_CLI_BREAKS_ITS_STREAM: &str = r#"#!/bin/sh
+case "$*" in *--version*) echo "2.1.288 (Claude Code)"; exit 0 ;; esac
+read -r init
+id=$(printf '%s' "$init" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$id"
+read -r query
+case "$*" in
+  *"--resume fake-session"*)
+    printf '{"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"fake-session"}\n'
+    cat > /dev/null
+    ;;
+  *)
+    printf '{"type":"system","subtype":"init","session_id":"fake-session"}\n'
+    printf '\377\376\n'
+    exec sleep 3600
+    ;;
+esac
+"#;
+
+    /// A short description of `responses` for assertion messages
+    /// (`DaveApiResponse` is not `Debug`).
+    fn describe(responses: &[DaveApiResponse]) -> Vec<String> {
+        responses
+            .iter()
+            .map(|r| match r {
+                DaveApiResponse::Failed(err) => format!("Failed({err})"),
+                DaveApiResponse::QueryComplete(_) => "QueryComplete".to_string(),
+                _ => "other".to_string(),
+            })
+            .collect()
+    }
+
+    /// Wait for the session to send a response matching `want`, failing after
+    /// a minute. Returns every response seen up to and including the match.
+    async fn responses_until(
+        rx: &mpsc::Receiver<DaveApiResponse>,
+        want: impl Fn(&DaveApiResponse) -> bool,
+    ) -> Vec<DaveApiResponse> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut seen = Vec::new();
+        loop {
+            match rx.try_recv() {
+                Ok(response) => {
+                    let done = want(&response);
+                    seen.push(response);
+                    if done {
+                        return seen;
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "the session went silent; responses so far: {:?}",
+                        describe(&seen)
+                    );
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    panic!(
+                        "the session actor exited; responses so far: {:?}",
+                        describe(&seen)
+                    )
+                }
+            }
+        }
+    }
+
+    /// A query for the session, as the backend sends it.
+    fn query(waker: &Waker) -> SessionCommand {
+        SessionCommand::Query {
+            prompt: "go".to_string(),
+            images: vec![],
+            response_tx: None,
+            waker: waker.clone(),
+        }
+    }
+
+    /// When the SDK stops reading a CLI mid-turn, the session must say so and
+    /// end the turn, not hang. It used to wait forever: the SDK left the
+    /// message stream open with nothing feeding it, so no error, no `Result`,
+    /// and the idle reaper never fired on a turn still in flight. Then the
+    /// next message must bring the session back by resuming the CLI session.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_reports_a_dead_cli_stream_and_resumes_on_the_next_query() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = dir.path().join("claude");
+        std::fs::write(&cli, FAKE_CLI_BREAKS_ITS_STREAM).expect("write fake cli");
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake cli");
+
+        let allow_all: claude_agent_sdk_rs::CanUseToolCallback = Arc::new(|_, _, _| {
+            Box::pin(async {
+                PermissionResult::Allow(PermissionResultAllow {
+                    updated_input: None,
+                    updated_permissions: None,
+                })
+            })
+        });
+        let mut options = session_base_options(allow_all);
+        options.cli_path = Some(cli);
+        options.skip_version_check = true;
+
+        let waker = CountingWaker::new();
+        let (command_tx, mut command_rx) = tokio_mpsc::channel(4);
+        let (_perm_tx, mut perm_rx) = tokio_mpsc::channel(4);
+        let (response_tx, response_rx) = mpsc::channel();
+        let mut state = ActorState::new(waker.waker().clone(), PermissionMode::Default, None);
+        let session = tokio::spawn(async move {
+            serve_session(
+                "dave-session",
+                &options,
+                &mut command_rx,
+                &mut perm_rx,
+                &response_tx,
+                &mut state,
+            )
+            .await;
+        });
+
+        command_tx.send(query(waker.waker())).await.unwrap();
+        let first_turn = responses_until(&response_rx, |r| {
+            matches!(r, DaveApiResponse::QueryComplete(_))
+        })
+        .await;
+        let failure = first_turn.iter().find_map(|r| match r {
+            DaveApiResponse::Failed(err) => Some(err.as_str()),
+            _ => None,
+        });
+        let failure =
+            failure.unwrap_or_else(|| panic!("no error reported: {:?}", describe(&first_turn)));
+        assert!(
+            failure.contains("UTF-8"),
+            "the error should say why the stream ended: {failure}"
+        );
+
+        // The broken CLI is stopped and a new one resumes `fake-session`.
+        command_tx.send(query(waker.waker())).await.unwrap();
+        let second_turn = responses_until(&response_rx, |r| {
+            matches!(r, DaveApiResponse::QueryComplete(_))
+        })
+        .await;
+        assert!(
+            !second_turn
+                .iter()
+                .any(|r| matches!(r, DaveApiResponse::Failed(_))),
+            "the resumed CLI answers normally: {:?}",
+            describe(&second_turn)
+        );
+
+        command_tx.send(SessionCommand::Shutdown).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(30), session)
+            .await
+            .expect("the session shuts down")
+            .unwrap();
     }
 
     /// The reason for the whole fix: when the user's reply goes out as its own
