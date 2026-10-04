@@ -8,8 +8,9 @@
 //! runs in four steps, each described on the function that does it:
 //!
 //! 1. [`pick_target`]: which repo on this host the commit should end up in — the
-//!    recorded path itself, a known checkout of the same repo (matched by repo
-//!    identity, the root commit), or a headway-owned bare cache.
+//!    recorded path itself when it's a checkout here (whatever the recorded
+//!    hostname), a known checkout of the same repo (matched by repo identity,
+//!    the root commit), or a headway-owned bare cache.
 //! 2. Is the commit already there? Then it's [`Found::Local`].
 //! 3. [`fetch_source`] + [`fetch`]: where to fetch it from, and the fetch itself
 //!    (by sha, then by branch when the server refuses a sha want).
@@ -50,7 +51,9 @@ pub struct ResolveCtx<'a> {
 pub enum Target {
     /// The record's own `path`: the record was made on this host.
     Recorded,
-    /// One of [`ResolveCtx::known_checkouts`], matched by repo identity.
+    /// A checkout matched by repo identity: one of
+    /// [`ResolveCtx::known_checkouts`], or the record's own `path` when the
+    /// record names another host.
     Checkout,
     /// The headway-owned bare cache under [`ResolveCtx::cache_root`].
     Cache,
@@ -320,24 +323,36 @@ fn cap_at_line(bytes: &[u8], max: usize) -> (&[u8], bool) {
 /// Step 1: the repo on this host the commit should be found or fetched into,
 /// first match wins:
 ///
-/// 1. the record's own `path`, when the record was made on this host and that
-///    path is still a checkout of the same repo;
+/// 1. the record's own `path`, when it is a checkout of the same repo on this
+///    machine — [`Target::Recorded`] when the record's `host` is this one,
+///    [`Target::Checkout`] when it isn't;
 /// 2. the first of [`ResolveCtx::known_checkouts`] whose repo identity matches;
 /// 3. the bare cache `<cache_root>/<repo>.git`, created on first use.
+///
+/// The recorded path is tried whatever its `host` says, because a hostname is
+/// only a hint: macOS renames a machine with its network, so a record made
+/// here can name a host this machine no longer answers to. The repo identity
+/// is the check that counts, and a same-repo checkout at that path is as good
+/// a target as any known checkout even when it is a different machine's
+/// namesake.
 ///
 /// A record with no repo identity can't be matched or cached, so any checkout
 /// is taken as a guess; with none it's an error.
 fn pick_target(record: &ReviewFields, ctx: &ResolveCtx) -> Result<(PathBuf, Target), GitError> {
     let repo = record.repo.as_deref();
-    let recorded_here = record
-        .host
-        .as_deref()
-        .is_some_and(|h| host_matches(h, ctx.local_host));
-    if recorded_here
-        && let Some(path) = record.path.as_deref().map(PathBuf::from)
+    if let Some(path) = record.path.as_deref().map(PathBuf::from)
         && same_repo(&path, repo)
     {
-        return Ok((path, Target::Recorded));
+        let recorded_here = record
+            .host
+            .as_deref()
+            .is_some_and(|h| host_matches(h, ctx.local_host));
+        let target = if recorded_here {
+            Target::Recorded
+        } else {
+            Target::Checkout
+        };
+        return Ok((path, target));
     }
     if let Some(dir) = ctx.known_checkouts.iter().find(|d| same_repo(d, repo)) {
         return Ok((dir.clone(), Target::Checkout));
@@ -736,6 +751,13 @@ mod tests {
         }
     }
 
+    /// `rec` as another machine would have recorded it: its `path` is moved
+    /// to one that doesn't exist here, so only its `remote` reaches it.
+    fn from_elsewhere(mut rec: ReviewFields) -> ReviewFields {
+        rec.path = Some("/nonexistent/elsewhere/repo".to_string());
+        rec
+    }
+
     /// A resolve context for host `here` with `cache` and `checkouts`.
     fn ctx<'a>(cache: &'a Path, checkouts: &'a [PathBuf]) -> ResolveCtx<'a> {
         ResolveCtx {
@@ -798,6 +820,26 @@ mod tests {
         assert_eq!(got.sha, sha);
     }
 
+    /// A record whose host has since been renamed (a Mac picks its hostname
+    /// up from the network) is still found in its recorded path, which is a
+    /// checkout of the same repo here — no fetch from the old name, no cache.
+    #[test]
+    fn renamed_host_finds_the_commit_in_its_recorded_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        init_repo(&repo);
+        let sha = commit(&repo, "a", "work");
+        let cache = tmp.path().join("cache");
+
+        let rec = record(&repo, &sha, "J497044J94.local");
+        let got = resolve(&rec, CARD, &ctx(&cache, &[])).unwrap();
+        assert_eq!(got.how, Found::Local);
+        assert_eq!(got.target, Target::Checkout);
+        assert_eq!(got.repo_dir, repo);
+        assert_eq!(got.sha, sha);
+        assert!(!cache.exists(), "cache untouched");
+    }
+
     /// A record from another host whose commit this checkout lacks is fetched
     /// into the checkout (FETCH_HEAD only, no new refs), from `record.remote`.
     #[test]
@@ -810,7 +852,7 @@ mod tests {
         let sha = commit(&theirs, "a", "their work");
         let refs_before = run(&mine, &["for-each-ref"]);
 
-        let mut rec = record(&theirs, &sha, "elsewhere");
+        let mut rec = from_elsewhere(record(&theirs, &sha, "elsewhere"));
         rec.remote = Some(theirs.to_str().unwrap().to_string());
         let checkouts = [mine.clone()];
         let got = resolve(&rec, CARD, &ctx(&tmp.path().join("cache"), &checkouts)).unwrap();
@@ -836,7 +878,7 @@ mod tests {
         let sha = commit(&theirs, "a", "their work");
         let cache = tmp.path().join("cache");
 
-        let mut rec = record(&theirs, &sha, "elsewhere");
+        let mut rec = from_elsewhere(record(&theirs, &sha, "elsewhere"));
         rec.remote = Some(theirs.to_str().unwrap().to_string());
         let got = resolve(&rec, CARD, &ctx(&cache, &[])).unwrap();
         assert_eq!(got.target, Target::Cache);
@@ -894,7 +936,7 @@ mod tests {
         commit(&theirs, "b", "later work"); // `sha` is no longer the tip
         run(&mine, &["config", "protocol.version", "0"]);
 
-        let mut rec = record(&theirs, &sha, "elsewhere");
+        let mut rec = from_elsewhere(record(&theirs, &sha, "elsewhere"));
         rec.remote = Some(theirs.to_str().unwrap().to_string());
         let checkouts = [mine.clone()];
         let got = resolve(&rec, CARD, &ctx(&tmp.path().join("cache"), &checkouts)).unwrap();
@@ -951,7 +993,7 @@ mod tests {
         init_repo(&unrelated);
         let sha = commit(&theirs, "a", "their work");
 
-        let mut rec = record(&theirs, &sha, "elsewhere");
+        let mut rec = from_elsewhere(record(&theirs, &sha, "elsewhere"));
         rec.remote = Some(theirs.to_str().unwrap().to_string());
         let checkouts = [unrelated.clone()];
         let got = resolve(&rec, CARD, &ctx(&tmp.path().join("cache"), &checkouts)).unwrap();
@@ -972,7 +1014,7 @@ mod tests {
         let theirs = tmp.path().join("theirs");
         init_repo(&theirs);
         let sha = commit(&theirs, "a", "their work");
-        let mut rec = record(&theirs, &sha, "elsewhere");
+        let mut rec = from_elsewhere(record(&theirs, &sha, "elsewhere"));
         rec.remote = Some(tmp.path().join("missing").to_str().unwrap().to_string());
         let err = resolve(&rec, CARD, &ctx(&tmp.path().join("cache"), &[])).unwrap_err();
         assert!(

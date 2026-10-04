@@ -9,9 +9,11 @@ use crate::config::AiMode;
 use crate::focus_queue::FocusPriority;
 use crate::git_status::GitStatusCache;
 use crate::messages::{
-    CompactionInfo, ExecutedTool, QuestionAnswer, RunningTool, SessionInfo, SubagentStatus,
+    CompactionInfo, ExecutedTool, QuestionAnswer, RunningTool, SessionInfo, SubagentInfo,
+    SubagentStatus,
 };
 use crate::session_events::ThreadingState;
+use crate::turn_rows::TurnRows;
 use crate::ui::BlockNav;
 use crate::{DaveApiResponse, Message};
 use claude_agent_sdk_rs::PermissionMode;
@@ -177,6 +179,11 @@ pub enum PermissionMessageState {
     TentativeAccept,
     /// User pressed Shift+2, waiting for message then will Deny
     TentativeDeny,
+    /// User pressed Shift+3, waiting for message then will Allow and add the
+    /// tool to the runtime allowlist. The grant waits for the send too: added
+    /// up front, the per-frame auto-resolve pass would accept the request as
+    /// an auto-accept before the message was typed, and drop it.
+    TentativeAllowAlways,
 }
 
 // PermissionTracker is platform-neutral session state; it now lives in the
@@ -203,13 +210,6 @@ pub struct AgenticSessionData {
     pub cwd: PathBuf,
     /// Session info from Claude Code CLI (tools, model, agents, etc.)
     pub session_info: Option<SessionInfo>,
-    /// Indices of subagent messages in chat (keyed by task_id)
-    pub subagent_indices: HashMap<String, usize>,
-    /// Indices of in-flight `Message::ToolRunning` rows in chat, keyed by the
-    /// originating `tool_use` id. A row is upgraded in place to its completed
-    /// `ToolResponse` when the matching result lands (`place_tool_result`), and
-    /// any still-running row is finalized at turn end (`finalize_running_tools`).
-    pub running_tool_indices: HashMap<String, usize>,
     /// Compaction lifecycle state. `None` = idle.
     pub compact_intent: Option<CompactIntent>,
     /// Info from the last completed compaction (for display)
@@ -234,8 +234,9 @@ pub struct AgenticSessionData {
     /// Newest note the conversation poll has handed this session, or a
     /// restore loaded into its chat.
     ///
-    /// nostrdb delivers notes in the order it stores them, so every note of
-    /// this session stored at or before this key has been through the poll.
+    /// nostrdb delivers notes in the order it stores them, and a restore loads
+    /// only notes the poll has already passed, so every note of this session
+    /// stored at or before this key has been through the poll or that restore.
     /// A rebuild folds only up to here: a note stored since is still on its
     /// way through the poll, which must see it unseen to run its side effects
     /// (a remote user message is dispatched and fanned out from there).
@@ -292,8 +293,6 @@ impl AgenticSessionData {
             question_index: HashMap::new(),
             cwd,
             session_info: None,
-            subagent_indices: HashMap::new(),
-            running_tool_indices: HashMap::new(),
             compact_intent: None,
             last_compaction: None,
             resume_session_id: None,
@@ -371,27 +370,6 @@ impl AgenticSessionData {
         self.fold_dirty = true;
     }
 
-    /// Point `subagent_indices` at the subagent rows of a chat that was just
-    /// replaced, and forget every running tool.
-    ///
-    /// Runs on every install of a fold (`apply_loaded_chat`): a local
-    /// session's reconcile at rest, a remote session's rebuild, which can land
-    /// mid-turn, and restore. A rebuilt chat has new row positions. A
-    /// background subagent keeps running after its turn ends, and its
-    /// completion finds its row through this map. `running_tool_indices` only
-    /// tracks a local session's live stream: its chat is rebuilt only at rest,
-    /// when no tool is running, and a remote session's rows come from notes,
-    /// so no running row is left to track.
-    pub fn reindex_rows(&mut self, chat: &[Message]) {
-        self.subagent_indices.clear();
-        self.running_tool_indices.clear();
-        for (idx, message) in chat.iter().enumerate() {
-            if let Message::Subagent(info) = message {
-                self.subagent_indices.insert(info.task_id.clone(), idx);
-            }
-        }
-    }
-
     /// Stable Nostr event identity (d-tag for kind-1988 / kind-31988).
     ///
     /// This is always available — every session gets a UUID at creation.
@@ -417,70 +395,6 @@ impl AgenticSessionData {
             .as_ref()
             .and_then(|i| i.claude_session_id.as_deref())
             .or(self.resume_session_id.as_deref())
-    }
-
-    /// Update a subagent's output (appending new content, keeping only the tail)
-    pub fn update_subagent_output(
-        &mut self,
-        chat: &mut [Message],
-        task_id: &str,
-        new_output: &str,
-    ) {
-        if let Some(&idx) = self.subagent_indices.get(task_id) {
-            if let Some(Message::Subagent(subagent)) = chat.get_mut(idx) {
-                subagent.output.push_str(new_output);
-                // Keep only the most recent content up to max_output_size.
-                // Must find a valid UTF-8 char boundary to avoid panics.
-                if subagent.output.len() > subagent.max_output_size {
-                    let mut keep_from = subagent.output.len() - subagent.max_output_size;
-                    while !subagent.output.is_char_boundary(keep_from) {
-                        keep_from += 1;
-                    }
-                    subagent.output = subagent.output[keep_from..].to_string();
-                }
-            }
-        }
-    }
-
-    /// Mark a subagent as completed
-    pub fn complete_subagent(&mut self, chat: &mut [Message], task_id: &str, result: &str) {
-        if let Some(&idx) = self.subagent_indices.get(task_id) {
-            if let Some(Message::Subagent(subagent)) = chat.get_mut(idx) {
-                subagent.status = SubagentStatus::Completed;
-                subagent.output = result.to_string();
-            }
-        }
-    }
-
-    /// Mark a subagent as failed
-    pub fn fail_subagent(&mut self, chat: &mut [Message], task_id: &str, error: &str) {
-        if let Some(&idx) = self.subagent_indices.get(task_id) {
-            if let Some(Message::Subagent(subagent)) = chat.get_mut(idx) {
-                subagent.status = SubagentStatus::Failed;
-                subagent.output = error.to_string();
-            }
-        }
-    }
-
-    /// Try to fold a tool result into its parent subagent.
-    /// Returns None if folded, Some(result) if it couldn't be folded.
-    pub fn fold_tool_result(
-        &self,
-        chat: &mut [Message],
-        result: ExecutedTool,
-    ) -> Option<ExecutedTool> {
-        let Some(parent_id) = result.parent_task_id.as_ref() else {
-            return Some(result);
-        };
-        let Some(&idx) = self.subagent_indices.get(parent_id) else {
-            return Some(result);
-        };
-        if let Some(Message::Subagent(subagent)) = chat.get_mut(idx) {
-            subagent.tool_results.push(result);
-            None
-        } else {
-            Some(result)
-        }
     }
 }
 
@@ -541,17 +455,22 @@ impl DispatchState {
 /// `turn_has_content` is the single signal that distinguishes those two cases —
 /// a tool call can be a turn's first output without any token, so the state
 /// alone is not enough.
+///
+/// A viewer that recorded no dispatch (a remote observer, whose state is
+/// `Idle` and `turn_has_content` false) can't tell the cases apart, and assumes
+/// the run begins with the dispatched message — except after a permission
+/// reply row. A reply answers a request in the middle of a turn, which then
+/// carries on, so the run after it was sent mid-turn and is queued.
 fn turn_content_boundary(
     chat: &[Message],
     dispatch_state: DispatchState,
     turn_has_content: bool,
 ) -> usize {
-    let after_content = chat
-        .iter()
-        .rposition(|m| !m.is_user_turn())
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let skip = if turn_has_content {
+    let last_content = chat.iter().rposition(|m| !m.is_user_turn());
+    let after_content = last_content.map(|i| i + 1).unwrap_or(0);
+    let after_reply = last_content
+        .is_some_and(|i| matches!(&chat[i], Message::User(user) if user.permission_reply));
+    let skip = if turn_has_content || (after_reply && dispatch_state.dispatched_count() == 0) {
         0
     } else {
         dispatch_state.dispatched_count().max(1)
@@ -606,12 +525,23 @@ pub struct ChatSession {
     /// content exists, content must skip past the dispatched user(s); afterwards
     /// it appends after the prior content but still before queued user messages.
     turn_has_content: bool,
-    /// Chat index of the assistant segment still receiving tokens, if any. Set
-    /// when [`append_token`](Self::append_token) starts a new assistant row and
-    /// taken by [`close_open_assistant`](Self::close_open_assistant) when the
-    /// segment ends — at the next row the turn inserts, or at stream end — so
-    /// each segment is published once, in its place in the turn.
-    open_assistant_idx: Option<usize>,
+    /// Chat positions of the rows the turn comes back to: the assistant
+    /// segment still receiving tokens, in-flight tool rows and subagent rows.
+    ///
+    /// The open segment is recorded when [`append_token`](Self::append_token)
+    /// starts a new assistant row and taken by
+    /// [`close_open_assistant`](Self::close_open_assistant) when the segment
+    /// ends (at the next row the turn inserts, or at stream end), so each
+    /// segment is published once, in its place in the turn. A running tool
+    /// row is upgraded in place when its result lands
+    /// ([`place_tool_result`](Self::place_tool_result)) or finalized at turn
+    /// end ([`finalize_running_tools`](Self::finalize_running_tools)).
+    ///
+    /// Rows go into the middle of `chat` only through
+    /// [`insert_turn_content`](Self::insert_turn_content) and the whole chat
+    /// is replaced only through [`replace_chat`](Self::replace_chat), which
+    /// keep these positions pointing at their rows.
+    turn_rows: TurnRows,
     /// Cached status for the agent (derived from session state)
     cached_status: AgentStatus,
     /// Set when cached_status changes, cleared after publishing state event
@@ -689,7 +619,7 @@ impl ChatSession {
             task_handle: None,
             dispatch_state: DispatchState::Idle,
             turn_has_content: false,
-            open_assistant_idx: None,
+            turn_rows: TurnRows::default(),
             cached_status: AgentStatus::Idle,
             state_dirty: true,
             focus_requested: false,
@@ -761,7 +691,7 @@ impl ChatSession {
             task_handle: None,
             dispatch_state: DispatchState::Idle,
             turn_has_content: false,
-            open_assistant_idx: None,
+            turn_rows: TurnRows::default(),
             cached_status: AgentStatus::Pending,
             state_dirty: false, // placeholder should not publish state events
             focus_requested: false,
@@ -941,24 +871,59 @@ impl ChatSession {
         self.agentic.as_ref().map(|a| &a.cwd)
     }
 
+    /// Chat positions of the rows the current turn comes back to (see
+    /// [`TurnRows`]).
+    pub fn turn_rows(&self) -> &TurnRows {
+        &self.turn_rows
+    }
+
+    /// Replace the whole chat, re-indexing the rows the turn tracks against
+    /// the new one.
+    pub fn replace_chat(&mut self, chat: Vec<Message>) {
+        self.chat = chat;
+        self.turn_rows.reindex(&self.chat);
+    }
+
+    /// The subagent row for `task_id`, if it is still at its recorded
+    /// position.
+    fn subagent_mut(&mut self, task_id: &str) -> Option<&mut SubagentInfo> {
+        let idx = self.turn_rows.subagent(task_id)?;
+        match self.chat.get_mut(idx) {
+            Some(Message::Subagent(subagent)) => Some(subagent),
+            _ => None,
+        }
+    }
+
     /// Update a subagent's output (appending new content, keeping only the tail)
     pub fn update_subagent_output(&mut self, task_id: &str, new_output: &str) {
-        if let Some(ref mut agentic) = self.agentic {
-            agentic.update_subagent_output(&mut self.chat, task_id, new_output);
+        let Some(subagent) = self.subagent_mut(task_id) else {
+            return;
+        };
+        subagent.output.push_str(new_output);
+        // Keep only the most recent content up to max_output_size.
+        // Must find a valid UTF-8 char boundary to avoid panics.
+        if subagent.output.len() > subagent.max_output_size {
+            let mut keep_from = subagent.output.len() - subagent.max_output_size;
+            while !subagent.output.is_char_boundary(keep_from) {
+                keep_from += 1;
+            }
+            subagent.output = subagent.output[keep_from..].to_string();
         }
     }
 
     /// Mark a subagent as completed
     pub fn complete_subagent(&mut self, task_id: &str, result: &str) {
-        if let Some(ref mut agentic) = self.agentic {
-            agentic.complete_subagent(&mut self.chat, task_id, result);
+        if let Some(subagent) = self.subagent_mut(task_id) {
+            subagent.status = SubagentStatus::Completed;
+            subagent.output = result.to_string();
         }
     }
 
     /// Mark a subagent as failed
     pub fn fail_subagent(&mut self, task_id: &str, error: &str) {
-        if let Some(ref mut agentic) = self.agentic {
-            agentic.fail_subagent(&mut self.chat, task_id, error);
+        if let Some(subagent) = self.subagent_mut(task_id) {
+            subagent.status = SubagentStatus::Failed;
+            subagent.output = error.to_string();
         }
     }
 
@@ -970,10 +935,7 @@ impl ChatSession {
     /// doing work even though no foreground turn is in flight, so
     /// [`status`](Self::status) reports `Working`.
     pub fn has_running_background_subagent(&self) -> bool {
-        let Some(agentic) = &self.agentic else {
-            return false;
-        };
-        agentic.subagent_indices.values().any(|&idx| {
+        self.turn_rows.subagent_rows().any(|idx| {
             matches!(
                 self.chat.get(idx),
                 Some(Message::Subagent(info))
@@ -985,38 +947,32 @@ impl ChatSession {
     /// Try to fold a tool result into its parent subagent.
     /// Returns None if folded, Some(result) if it couldn't be folded.
     pub fn fold_tool_result(&mut self, result: ExecutedTool) -> Option<ExecutedTool> {
-        if let Some(ref agentic) = self.agentic {
-            agentic.fold_tool_result(&mut self.chat, result)
-        } else {
-            Some(result)
-        }
+        let Some(parent_id) = result.parent_task_id.as_deref() else {
+            return Some(result);
+        };
+        let Some(subagent) = self.subagent_mut(parent_id) else {
+            return Some(result);
+        };
+        subagent.tool_results.push(result);
+        None
     }
 
-    /// Push an in-flight `Message::ToolRunning` row and record its chat index so
-    /// the matching result can upgrade it in place. Mirrors how a subagent row
-    /// is pushed on spawn (`handle_subagent_spawned`): the index is tracked only
-    /// when agentic state exists, which is where running tools originate.
+    /// Insert an in-flight `Message::ToolRunning` row before any queued user
+    /// messages. [`insert_turn_content`](Self::insert_turn_content) records
+    /// its position so the matching result can upgrade it in place.
     pub fn push_running_tool(&mut self, running: RunningTool) {
-        let tool_use_id = running.tool_use_id.clone();
-        // Insert before any queued user messages so they stay trailing, and
-        // record the position the row actually landed at.
-        let idx = self.insert_turn_content(Message::ToolRunning(running));
-        if let Some(agentic) = &mut self.agentic {
-            agentic.running_tool_indices.insert(tool_use_id, idx);
-        }
+        self.insert_turn_content(Message::ToolRunning(running));
     }
 
     /// Place a completed foreground tool result into chat. When it correlates to
     /// an in-flight running row (by `tool_use_id`), that row is upgraded in
-    /// place — no index shift, so sibling `subagent_indices` /
-    /// `running_tool_indices` stay valid and message ordering is preserved.
+    /// place — no new row, so message ordering is preserved.
     /// Otherwise (no running row, or a stale index) the result is appended.
     pub fn place_tool_result(&mut self, result: ExecutedTool) {
-        let running_idx = result.tool_use_id.as_ref().and_then(|id| {
-            self.agentic
-                .as_mut()
-                .and_then(|agentic| agentic.running_tool_indices.remove(id))
-        });
+        let running_idx = result
+            .tool_use_id
+            .as_deref()
+            .and_then(|id| self.turn_rows.take_running_tool(id));
         let message = Message::ToolResponse(crate::tools::ToolResponse::executed_tool(result));
         match running_idx {
             Some(idx) if matches!(self.chat.get(idx), Some(Message::ToolRunning(_))) => {
@@ -1033,25 +989,14 @@ impl ChatSession {
     /// Resolve any still-running tool rows at a turn boundary. A tool whose
     /// result never arrived (an interrupted turn) would otherwise keep spinning
     /// forever; convert each dangling `Message::ToolRunning` to its terminal
-    /// static `ToolResponse` in place and clear the index map.
+    /// static `ToolResponse` in place and stop tracking it.
     ///
     /// Returns the results it made up, in chat order, so the caller can
     /// publish them: without a `tool_result` note the fold would keep showing
     /// the tool as running.
     pub fn finalize_running_tools(&mut self) -> Vec<ExecutedTool> {
-        let Some(agentic) = &mut self.agentic else {
-            return Vec::new();
-        };
-        // Collect first: draining the map while indexing `self.chat` would be a
-        // double &mut borrow. This runs at the turn boundary, not per frame, so
-        // the small allocation is fine.
-        let mut dangling: Vec<usize> = agentic
-            .running_tool_indices
-            .drain()
-            .map(|(_, i)| i)
-            .collect();
-        // The map drains in hash order; publish in the order the rows show.
-        dangling.sort_unstable();
+        // Publish in the order the rows show.
+        let dangling = self.turn_rows.drain_running_tools();
         let mut finalized = Vec::with_capacity(dangling.len());
         for idx in dangling {
             let Some(Message::ToolRunning(running)) = self.chat.get(idx) else {
@@ -1168,7 +1113,10 @@ impl ChatSession {
                     Message::Assistant(_) | Message::CompactionComplete(_) => {
                         return AgentStatus::Done;
                     }
-                    Message::User(_) => return AgentStatus::Idle, // Waiting for response
+                    // Waiting for response. A permission reply row is the
+                    // turn's content, not a message waiting, so it is skipped
+                    // like the request it answers.
+                    m if m.is_user_turn() => return AgentStatus::Idle,
                     Message::Error(_) => return AgentStatus::Error,
                     _ => continue,
                 }
@@ -1749,11 +1697,15 @@ impl ChatSession {
     /// compaction is under way. Remote sessions already show the fold, and
     /// chat-mode sessions publish nothing to fold.
     ///
-    /// A user message waiting to be dispatched isn't at rest either: a turn is
-    /// about to start. The dispatch sends the chat's trailing user messages,
-    /// and the fold places a message by when it was typed, which can be above
-    /// the host's last row (a phone sending as the turn finished). Swapping
-    /// the chat then would leave nothing trailing to dispatch.
+    /// A chat that ends on a user turn ([`has_pending_user_message`]) isn't
+    /// at rest either, whether or not that turn has been dispatched yet: a
+    /// turn is about to start. The dispatch sends the chat's trailing user
+    /// messages, and the fold places a message by when it was typed, which
+    /// can be above the host's last row (a phone sending as the turn
+    /// finished). Swapping the chat then would leave nothing trailing to
+    /// dispatch. A permission reply row is not a user turn.
+    ///
+    /// [`has_pending_user_message`]: Self::has_pending_user_message
     pub fn at_rest(&self) -> bool {
         let Some(agentic) = &self.agentic else {
             return false;
@@ -1762,8 +1714,8 @@ impl ChatSession {
             && self.backend_type.is_agentic()
             && self.task_handle.is_none()
             && !self.is_dispatched()
-            && self.open_assistant_idx.is_none()
-            && agentic.running_tool_indices.is_empty()
+            && !self.turn_rows.has_open_assistant()
+            && !self.turn_rows.has_running_tools()
             && agentic.permissions.pending.is_empty()
             && agentic.compact_intent.is_none()
             && !self.has_pending_user_message()
@@ -1818,9 +1770,10 @@ impl ChatSession {
             // `insert_turn_content` so it lands after the dispatched user
             // message(s) and this turn's prior content, but before any queued
             // user messages (which must stay trailing to trigger redispatch).
+            // `insert_turn_content` records it as the open segment.
             let mut msg = crate::messages::AssistantMessage::new();
             msg.push_token(token);
-            self.open_assistant_idx = Some(self.insert_turn_content(Message::Assistant(msg)));
+            self.insert_turn_content(Message::Assistant(msg));
         }
     }
 
@@ -1831,7 +1784,7 @@ impl ChatSession {
     /// longer a streaming assistant (the chat was replaced under it) or is
     /// empty. Each segment is returned at most once.
     pub fn close_open_assistant(&mut self) -> Option<String> {
-        let idx = self.open_assistant_idx.take()?;
+        let idx = self.turn_rows.take_open_assistant()?;
         let Some(Message::Assistant(msg)) = self.chat.get_mut(idx) else {
             return None;
         };
@@ -1853,19 +1806,16 @@ impl ChatSession {
     /// row in place ([`place_tool_result`](Self::place_tool_result)); this
     /// mirrors the conditions those two apply.
     pub fn tool_result_inserts_row(&self, result: &ExecutedTool) -> bool {
-        let Some(agentic) = &self.agentic else {
-            return true;
-        };
         let folds = result
             .parent_task_id
-            .as_ref()
-            .and_then(|id| agentic.subagent_indices.get(id))
-            .is_some_and(|&idx| matches!(self.chat.get(idx), Some(Message::Subagent(_))));
+            .as_deref()
+            .and_then(|id| self.turn_rows.subagent(id))
+            .is_some_and(|idx| matches!(self.chat.get(idx), Some(Message::Subagent(_))));
         let upgrades = result
             .tool_use_id
-            .as_ref()
-            .and_then(|id| agentic.running_tool_indices.get(id))
-            .is_some_and(|&idx| matches!(self.chat.get(idx), Some(Message::ToolRunning(_))));
+            .as_deref()
+            .and_then(|id| self.turn_rows.running_tool(id))
+            .is_some_and(|idx| matches!(self.chat.get(idx), Some(Message::ToolRunning(_))));
         !folds && !upgrades
     }
 
@@ -1946,14 +1896,29 @@ impl ChatSession {
 
     /// Insert this turn's content at [`turn_content_pos`](Self::turn_content_pos),
     /// preserving the trailing queued-user invariant, and return the index it
-    /// landed at so callers that track message positions (running tools,
-    /// subagents) can record it. New content always lands after this turn's prior
-    /// content, so previously-recorded indices never shift.
+    /// landed at. A streaming assistant, running tool or subagent row is
+    /// recorded in [`TurnRows`], which also moves any recorded row the insert
+    /// shifts.
     pub fn insert_turn_content(&mut self, message: Message) -> usize {
         let pos = self.turn_content_pos();
-        self.chat.insert(pos, message);
+        self.turn_rows.insert(&mut self.chat, pos, message);
         self.turn_has_content = true;
         pos
+    }
+
+    /// Show the reply text a permission response carries as a user row, as
+    /// the fold renders that response's note (see
+    /// `session_loader::render_conversation_note`).
+    /// [`permission_reply_message`](crate::messages::permission_reply_message)
+    /// drops empty and canned-placeholder reasons, so a plain allow or deny
+    /// adds no row. The reply is this turn's content, not a queued message, so
+    /// it goes in through [`insert_turn_content`](Self::insert_turn_content).
+    pub fn insert_permission_reply(&mut self, message: Option<&str>) {
+        if let Some(reply) = crate::messages::permission_reply_message(message) {
+            self.insert_turn_content(Message::User(
+                crate::messages::UserMessage::permission_reply(reply),
+            ));
+        }
     }
 
     /// Count trailing user messages at the end of the chat.
@@ -2776,6 +2741,10 @@ mod tests {
         session.insert_turn_content(Message::User(UserMessage::permission_reply(
             "Approach: Fold",
         )));
+        // The request reaching the host is the backend responding: the turn is
+        // `Streaming`, where any trailing user turn is redispatched. (Still
+        // `AwaitingResponse { count: 1 }`, the check would pass either way.)
+        session.dispatch_state.backend_responded();
         assert!(
             !session.needs_redispatch_after_stream_end(),
             "a turn ending on a reply row must not redispatch it"
@@ -3127,6 +3096,78 @@ mod tests {
         );
     }
 
+    /// A remote observer records no dispatch, so it assumes the trailing
+    /// user run begins with the message being worked on. A reply row answers a
+    /// request mid-turn, so a message after it was sent while that turn ran
+    /// and is queued — as it was before reply rows stopped counting as user
+    /// turns.
+    #[test]
+    fn queued_indicator_remote_after_permission_reply() {
+        use crate::messages::{PermissionRequest, UserMessage};
+
+        let mut session = test_session();
+        session.chat.push(Message::User("which way?".into()));
+        session
+            .chat
+            .push(Message::Assistant(AssistantMessage::from_text(
+                "let me ask".into(),
+            )));
+        session
+            .chat
+            .push(Message::PermissionRequest(PermissionRequest::pending(
+                Uuid::new_v4(),
+                "AskUserQuestion".to_string(),
+                serde_json::json!({}),
+            )));
+        session
+            .chat
+            .push(Message::User(UserMessage::permission_reply(
+                "Approach: Fold",
+            )));
+
+        assert!(
+            queued_texts(&session, true, DispatchState::Idle).is_empty(),
+            "the reply row is the turn's content, never queued"
+        );
+
+        session.chat.push(Message::User("also, hurry".into()));
+        assert_eq!(
+            queued_texts(&session, true, DispatchState::Idle),
+            vec!["also, hurry"],
+            "a message after the reply waits for the turn it was sent during"
+        );
+    }
+
+    /// A turn that ends on a permission reply row ended with the agent's
+    /// output, not on a message waiting for one: the reply is skipped like
+    /// the request it answers, and the status is `Done`.
+    #[test]
+    fn status_done_when_turn_ends_on_permission_reply() {
+        use crate::messages::{PermissionRequest, PermissionResponseType, UserMessage};
+
+        let mut session = test_session();
+        session.chat.push(Message::User("which way?".into()));
+        session
+            .chat
+            .push(Message::Assistant(AssistantMessage::from_text(
+                "let me ask".into(),
+            )));
+        let mut request = PermissionRequest::pending(
+            Uuid::new_v4(),
+            "AskUserQuestion".to_string(),
+            serde_json::json!({}),
+        );
+        request.response = Some(PermissionResponseType::Allowed);
+        session.chat.push(Message::PermissionRequest(request));
+        session
+            .chat
+            .push(Message::User(UserMessage::permission_reply(
+                "Approach: Fold",
+            )));
+
+        assert_eq!(session.derive_status(), AgentStatus::Done);
+    }
+
     #[test]
     fn test_friendly_model_name_known_models() {
         for model in BackendType::Claude.available_models() {
@@ -3243,9 +3284,7 @@ mod tests {
         let task_id = subagent.task_id.clone();
         let idx = session.chat.len();
         session.chat.push(Message::Subagent(subagent));
-        if let Some(ref mut agentic) = session.agentic {
-            agentic.subagent_indices.insert(task_id.clone(), idx);
-        }
+        session.turn_rows.reindex(&session.chat);
 
         session.update_subagent_output(&task_id, "first ");
         session.update_subagent_output(&task_id, "second");
@@ -3265,9 +3304,7 @@ mod tests {
         let task_id = subagent.task_id.clone();
         let idx = session.chat.len();
         session.chat.push(Message::Subagent(subagent));
-        if let Some(ref mut agentic) = session.agentic {
-            agentic.subagent_indices.insert(task_id.clone(), idx);
-        }
+        session.turn_rows.reindex(&session.chat);
 
         session.update_subagent_output(&task_id, "partial output");
         session.complete_subagent(&task_id, "final result");
@@ -3290,13 +3327,8 @@ mod tests {
             .push(Message::User("do background work".into()));
         let mut subagent = make_subagent("toolu_root", "background task");
         subagent.background = true;
-        let idx = session.chat.len();
         session.chat.push(Message::Subagent(subagent));
-        if let Some(ref mut agentic) = session.agentic {
-            agentic
-                .subagent_indices
-                .insert("toolu_root".to_string(), idx);
-        }
+        session.turn_rows.reindex(&session.chat);
         session.task_handle = None;
 
         session.update_status();
@@ -3319,11 +3351,8 @@ mod tests {
         // A foreground subagent (background: false) must not by itself hold the
         // session in Working after the turn ends.
         let subagent = make_subagent("toolu_fg", "foreground task");
-        let idx = session.chat.len();
         session.chat.push(Message::Subagent(subagent));
-        if let Some(ref mut agentic) = session.agentic {
-            agentic.subagent_indices.insert("toolu_fg".to_string(), idx);
-        }
+        session.turn_rows.reindex(&session.chat);
         session.task_handle = None;
 
         session.update_status();
@@ -3337,9 +3366,7 @@ mod tests {
         let task_id = subagent.task_id.clone();
         let idx = session.chat.len();
         session.chat.push(Message::Subagent(subagent));
-        if let Some(ref mut agentic) = session.agentic {
-            agentic.subagent_indices.insert(task_id.clone(), idx);
-        }
+        session.turn_rows.reindex(&session.chat);
 
         session.fail_subagent(&task_id, "it crashed");
 
@@ -3359,9 +3386,7 @@ mod tests {
         let task_id = subagent.task_id.clone();
         let idx = session.chat.len();
         session.chat.push(Message::Subagent(subagent));
-        if let Some(ref mut agentic) = session.agentic {
-            agentic.subagent_indices.insert(task_id.clone(), idx);
-        }
+        session.turn_rows.reindex(&session.chat);
 
         // Push output that exceeds max_output_size
         session
@@ -3389,9 +3414,7 @@ mod tests {
         let task_id = subagent.task_id.clone();
         let idx = session.chat.len();
         session.chat.push(Message::Subagent(subagent));
-        if let Some(ref mut agentic) = session.agentic {
-            agentic.subagent_indices.insert(task_id.clone(), idx);
-        }
+        session.turn_rows.reindex(&session.chat);
 
         // "OK🌍" = 6 bytes (O=1, K=1, 🌍=4)
         session.update_subagent_output(&task_id, "OK🌍");
@@ -3435,9 +3458,7 @@ mod tests {
         let task_id = subagent.task_id.clone();
         let idx = session.chat.len();
         session.chat.push(Message::Subagent(subagent));
-        if let Some(ref mut agentic) = session.agentic {
-            agentic.subagent_indices.insert(task_id.clone(), idx);
-        }
+        session.turn_rows.reindex(&session.chat);
 
         // "你好" = 6 bytes (3 per CJK char)
         session.update_subagent_output(&task_id, "你好");
@@ -3456,12 +3477,9 @@ mod tests {
     fn fold_tool_result_into_subagent() {
         let mut session = test_session();
         let subagent = make_subagent("task-1", "exploring");
-        let task_id = subagent.task_id.clone();
         let idx = session.chat.len();
         session.chat.push(Message::Subagent(subagent));
-        if let Some(ref mut agentic) = session.agentic {
-            agentic.subagent_indices.insert(task_id.clone(), idx);
-        }
+        session.turn_rows.reindex(&session.chat);
 
         let result = crate::messages::ExecutedTool {
             tool_name: "Read".to_string(),
@@ -3539,15 +3557,7 @@ mod tests {
             session.chat.get(idx),
             Some(Message::ToolRunning(_))
         ));
-        assert_eq!(
-            session
-                .agentic
-                .as_ref()
-                .unwrap()
-                .running_tool_indices
-                .get("t1"),
-            Some(&idx)
-        );
+        assert_eq!(session.turn_rows.running_tool("t1"), Some(idx));
 
         session.place_tool_result(executed_tool("t1", "Read"));
 
@@ -3558,12 +3568,7 @@ mod tests {
             session.chat.get(idx),
             Some(Message::ToolResponse(_))
         ));
-        assert!(session
-            .agentic
-            .as_ref()
-            .unwrap()
-            .running_tool_indices
-            .is_empty());
+        assert!(!session.turn_rows.has_running_tools());
     }
 
     #[test]
@@ -3590,12 +3595,7 @@ mod tests {
             session.chat.get(0),
             Some(Message::ToolResponse(_))
         ));
-        assert!(session
-            .agentic
-            .as_ref()
-            .unwrap()
-            .running_tool_indices
-            .is_empty());
+        assert!(!session.turn_rows.has_running_tools());
     }
 
     // ---- edge case: silent failures ----

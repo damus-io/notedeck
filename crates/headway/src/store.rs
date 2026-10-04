@@ -21,6 +21,7 @@ use crate::event::{
     build_related, build_relation, build_review, build_review_comment, build_sequence,
     build_subject_edit, rank_between,
 };
+use crate::teams;
 
 /// The single board headway manages for now. Multi-board support will turn this
 /// into a per-board identifier carried on [`crate::Headway`].
@@ -463,9 +464,10 @@ pub fn create_shared_board(
 
     // Self key-share: hand the root to ourselves so the board joins the roster (see
     // notedeck_headway `teams_from_ndb`) and syncs across our own devices — the same
-    // gift-wrap [`share_board`] sends a co-member, addressed to us.
+    // gift-wrap [`share_board`] sends a co-member, addressed to us, plus its PNS
+    // copy for the devices that can't read the gift-wrap ([`self_share_board`]).
     let board_addr = board_address(author, board_id);
-    if !share_board(ndb, secret, author, &board_addr, team_root, publisher) {
+    if !self_share_board(ndb, secret, &board_addr, team_root, publisher) {
         return false;
     }
 
@@ -524,6 +526,120 @@ pub fn share_board(
     true
 }
 
+/// Self-share an own board's `team_root` over **both** key-share carriers: the
+/// kind-1059 gift-wrap [`share_board`] sends, and the PNS-wrapped copy
+/// [`pns_share_board`] sends. Either one puts the board in this account's roster
+/// on any device that can read it.
+///
+/// Both are needed because neither reaches every device on its own. relay.jb55.com
+/// serves a 1059 only to an authenticated reader, and notedeck does not answer
+/// NIP-42, so a board seeded on one machine never appeared on another
+/// (headway:headway/pepper-rack-usual). The PNS copy fixes that, and the 1059
+/// still serves clients that predate it. Returns `false` if the account can't
+/// sign or either wrap/ingest step fails.
+pub fn self_share_board(
+    ndb: &Ndb,
+    secret: &[u8; 32],
+    board_addr: &str,
+    team_root: &[u8; 32],
+    publisher: &mut dyn Publisher,
+) -> bool {
+    let Some(me) = nostrdb_net::FullKeypair::from_secret_bytes(secret) else {
+        return false;
+    };
+    share_board(ndb, secret, &me.pubkey, board_addr, team_root, publisher)
+        && pns_share_board(ndb, secret, board_addr, team_root, None, publisher)
+}
+
+/// Self-share an own board's `team_root` as a PNS-wrapped kind-1082 key-share:
+/// the share rumor [`nostrdb_net::sns::wrap_keyshare`] would gift-wrap, signed by
+/// the account and wrapped in a kind-1080 note tagged with the account's
+/// [`teams::pns_keyshare_marker`]. Ingests it and hands it to `publisher`.
+///
+/// The PNS stream is the account's private note channel and every device already
+/// syncs it, so this carries the key to a board wherever that stream goes, with
+/// no gift-wrap to read. nostrdb peels the 1080 into a 1082 rumor whose receiver is
+/// the account (the same convention it uses for a gift-wrap), so
+/// [`teams::teams_from_ndb`] and notedeck's host roster pick it up unchanged. The
+/// marker tag is what lets a client pull just these few notes out of a PNS stream
+/// that also carries every dave session and notebook note.
+///
+/// `epoch` is carried as on any key-share. A re-share of an epoch-bumped root must
+/// pass its epoch, or the copy could rank as an older generation than it is.
+/// Returns `false` if the account can't sign or a wrap/ingest step fails.
+pub fn pns_share_board(
+    ndb: &Ndb,
+    account_secret: &[u8; 32],
+    board_addr: &str,
+    team_root: &[u8; 32],
+    epoch: Option<u32>,
+    publisher: &mut dyn Publisher,
+) -> bool {
+    let Some(frame) = pns_keyshare_frame(account_secret, board_addr, team_root, epoch) else {
+        return false;
+    };
+    if ndb
+        .process_event_with(&frame, IngestMetadata::new().client(true))
+        .is_err()
+    {
+        return false;
+    }
+    publisher.publish(&frame);
+    true
+}
+
+/// The `["EVENT", …]` frame of a PNS-carried self-share (see [`pns_share_board`]).
+fn pns_keyshare_frame(
+    account_secret: &[u8; 32],
+    board_addr: &str,
+    team_root: &[u8; 32],
+    epoch: Option<u32>,
+) -> Option<String> {
+    let now = now_secs();
+    // The same tags `wrap_keyshare` writes, so `parse_keyshare` reads both copies
+    // alike. The `alt` tag (NIP-31) describes the note and also keeps this rumor's
+    // id distinct from its gift-wrapped twin. The two are otherwise byte-identical
+    // within one second, so nostrdb would keep one rumor and link it to only one
+    // wrapper, and the host would forward only that wrapper.
+    let mut rumor = NoteBuilder::new()
+        .kind(nostrdb_net::sns::KEYSHARE_KIND)
+        .content("")
+        .created_at(now)
+        .start_tag()
+        .tag_str("team_root")
+        .tag_str(&hex::encode(team_root))
+        .start_tag()
+        .tag_str("a")
+        .tag_str(board_addr)
+        .start_tag()
+        .tag_str("alt")
+        .tag_str("headway board key-share to self, carried over PNS");
+    if let Some(epoch) = epoch {
+        rumor = rumor
+            .start_tag()
+            .tag_str("epoch")
+            .tag_str(&epoch.to_string());
+    }
+    let rumor_json = rumor.sign(account_secret).build()?.json().ok()?;
+
+    let pns_keys = nostrdb_net::pns::derive_pns_keys(account_secret);
+    let content = nostrdb_net::pns::encrypt(&pns_keys.conversation_key, &rumor_json).ok()?;
+    let marker = teams::pns_keyshare_marker(account_secret);
+    let wrapper = NoteBuilder::new()
+        .kind(nostrdb_net::pns::PNS_KIND)
+        .content(&content)
+        .created_at(now)
+        .start_tag()
+        .tag_str(teams::PNS_KEYSHARE_TAG)
+        .tag_str(&marker)
+        .sign(&pns_keys.keypair.secret_key.secret_bytes())
+        .build()?;
+    nostrdb_net::ClientMessage::event(&wrapper)
+        .ok()?
+        .to_json()
+        .ok()
+}
+
 /// Migrate an existing single-writer **plaintext** board to SNS in place, sealing
 /// it under `team_root` so it can be shared — without losing card ids, ranks, or
 /// history (unlike delete-and-recreate). The board coordinate is unchanged (it's
@@ -570,7 +686,7 @@ pub fn migrate_board_to_sns(
     let board_addr = board_address(author, board_id);
 
     // Join the roster so the board resolves as a channel (and is shareable).
-    if !share_board(ndb, secret, author, &board_addr, team_root, publisher) {
+    if !self_share_board(ndb, secret, &board_addr, team_root, publisher) {
         return 0;
     }
 

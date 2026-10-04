@@ -60,8 +60,8 @@ pub(crate) struct Drift {
 /// Swap a local session's chat for the fold over its notes, if it is at rest.
 ///
 /// Runs only when all of these hold:
-/// - the session is at rest ([`ChatSession::at_rest`]), which includes no
-///   user message waiting to be dispatched;
+/// - the session is at rest ([`ChatSession::at_rest`]), which includes its
+///   chat not ending on a user turn;
 /// - its chat gained a row since its last reconcile (`fold_dirty`);
 /// - nostrdb has handed back every note it published
 ///   (`unindexed_self_notes` is empty), so the fold is complete.
@@ -183,6 +183,11 @@ impl UnindexedNotes {
         if self.published.is_empty() {
             self.stall_warned = false;
         }
+    }
+
+    /// The notes still waiting to be handed back.
+    pub fn ids(&self) -> impl Iterator<Item = &[u8; 32]> {
+        self.published.keys()
     }
 
     /// Every note published has been handed back.

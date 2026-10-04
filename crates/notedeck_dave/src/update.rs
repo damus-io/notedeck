@@ -109,20 +109,22 @@ pub fn exit_tool_call(
 // Plan Mode
 // =============================================================================
 
-/// Add the current pending permission's tool to the session's runtime allowlist.
-/// Returns the key that was added (for logging), or None if no pending permission.
-pub fn allow_always(session_manager: &mut SessionManager) -> Option<String> {
+/// Add the tool of the active session's permission request `request_id` to the
+/// session's runtime allowlist — the request the "Allow Always" answers, so the
+/// grant covers what the user was looking at. Returns the key that was added
+/// (for logging), or None if there is no such request.
+pub fn allow_always(
+    session_manager: &mut SessionManager,
+    request_id: uuid::Uuid,
+) -> Option<String> {
     let session = session_manager.get_active_mut()?;
     let agentic = session.agentic.as_mut()?;
 
-    // Find the last pending (unresponded) permission request
-    let (tool_name, tool_input) = session.chat.iter().rev().find_map(|msg| {
-        if let crate::messages::Message::PermissionRequest(req) = msg {
-            if req.response.is_none() {
-                return Some((req.tool_name.clone(), req.tool_input.clone()));
-            }
+    let (tool_name, tool_input) = session.chat.iter().find_map(|msg| match msg {
+        crate::messages::Message::PermissionRequest(req) if req.id == request_id => {
+            Some((req.tool_name.clone(), req.tool_input.clone()))
         }
-        None
+        _ => None,
     })?;
 
     let key = agentic.add_runtime_allow(&tool_name, &tool_input);
@@ -319,17 +321,10 @@ pub struct PermissionPublish {
     pub cancel_turn: bool,
 }
 
-/// Surface the reply text a permission response carries inline as a user
-/// message, so there's a visible record of what was said, matching the
-/// note-render path that reconstructs it on reload / for a remote observer (see
-/// `session_loader::render_conversation_note`). `permission_reply_message`
-/// drops empty and canned-placeholder reasons so a plain allow/deny adds no
-/// bubble. Shared by the plain permission and question-set answer paths.
-///
-/// The reply is this turn's content, not a queued message: it goes in through
-/// [`ChatSession::insert_turn_content`], so the model's next text lands below
-/// it (as in the fold, where the response note sorts before that text) and a
-/// message queued during the turn stays the trailing run.
+/// Surface the reply text a permission response this device just issued
+/// carries as a user row ([`ChatSession::insert_permission_reply`]), so there's
+/// a visible record of what was said. Shared by the plain permission and
+/// question-set answer paths.
 ///
 /// Only a local session pushes. A local host never renders its own
 /// `permission_response` note live (`process_conversation_notes` takes the
@@ -340,11 +335,7 @@ fn push_local_permission_reply(session: &mut ChatSession, message: Option<&str>)
     if session.is_remote() {
         return;
     }
-    if let Some(reply) = crate::messages::permission_reply_message(message) {
-        session.insert_turn_content(Message::User(
-            crate::messages::UserMessage::permission_reply(reply),
-        ));
-    }
+    session.insert_permission_reply(message);
 }
 
 /// Handle a permission response (from UI button or keybinding).

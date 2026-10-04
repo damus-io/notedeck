@@ -142,18 +142,15 @@ impl Dave {
             }
         }
 
-        // A turn that published nothing at its end has every note indexed
-        // already, so no conversation poll will come along to reconcile it.
-        // One about to dispatch again or compact is not at rest.
         let author = *app_ctx.accounts.selected_account_pubkey();
-        for session_id in ended {
-            if needs_send.contains(&session_id) || needs_compact.contains(&session_id) {
-                continue;
-            }
-            if let Some(session) = self.session_manager.get_mut(session_id) {
-                reconcile::maybe_reconcile_at_rest(session, app_ctx.ndb, &author);
-            }
-        }
+        reconcile_ended_turns(
+            &mut self.session_manager,
+            &ended,
+            &needs_send,
+            &needs_compact,
+            app_ctx.ndb,
+            &author,
+        );
 
         ProcessEventsResult {
             needs_send,
@@ -164,6 +161,31 @@ impl Dave {
     /// Dispatch a compact request to the backend for the active session.
     pub(crate) fn dispatch_compact(&mut self, bt: BackendType, ui: &egui::Ui) {
         dispatch_compact_for_active(&mut self.session_manager, &self.backends, bt, ui.ctx());
+    }
+}
+
+/// Reconcile each session whose turn ended this drain
+/// ([`reconcile::maybe_reconcile_at_rest`]).
+///
+/// A turn that published nothing at its end has every note indexed already,
+/// so no conversation poll will come along to reconcile it. One about to
+/// dispatch again (`needs_send`) or compact (`needs_compact`) is not at rest,
+/// so it is skipped.
+pub(crate) fn reconcile_ended_turns(
+    sessions: &mut session::SessionManager,
+    ended: &[SessionId],
+    needs_send: &HashSet<SessionId>,
+    needs_compact: &HashSet<SessionId>,
+    ndb: &nostrdb::Ndb,
+    author: &nostrdb_net::Pubkey,
+) {
+    for &session_id in ended {
+        if needs_send.contains(&session_id) || needs_compact.contains(&session_id) {
+            continue;
+        }
+        if let Some(session) = sessions.get_mut(session_id) {
+            reconcile::maybe_reconcile_at_rest(session, ndb, author);
+        }
     }
 }
 
@@ -627,13 +649,9 @@ fn handle_subagent_spawned(session: &mut session::ChatSession, subagent: Subagen
         subagent.subagent_type,
         subagent.description
     );
-    let task_id = subagent.task_id.clone();
-    // Insert before queued user messages (keeping them trailing) and record the
-    // position the subagent row actually landed at.
-    let idx = session.insert_turn_content(Message::Subagent(subagent));
-    if let Some(agentic) = &mut session.agentic {
-        agentic.subagent_indices.insert(task_id, idx);
-    }
+    // Insert before queued user messages, keeping them trailing; this records
+    // the row's position for the subagent's output and completion.
+    session.insert_turn_content(Message::Subagent(subagent));
 }
 
 /// Publish a subagent's current lifecycle state (after a spawn, completion or
@@ -652,8 +670,8 @@ fn publish_subagent(
     ndb: &nostrdb::Ndb,
 ) -> Option<session_events::BuiltEvent> {
     let sk = secret_key.as_ref()?;
+    let idx = session.turn_rows().subagent(task_id)?;
     let agentic = session.agentic.as_mut()?;
-    let idx = *agentic.subagent_indices.get(task_id)?;
     let Some(Message::Subagent(info)) = session.chat.get(idx) else {
         return None;
     };

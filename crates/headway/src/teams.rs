@@ -115,6 +115,62 @@ pub fn giftwrap_filter(author: &Pubkey) -> Filter {
         .build()
 }
 
+/// Name of the tag on a PNS-carried self-share's kind-1080 wrapper that holds
+/// its [`pns_keyshare_marker`]. Single-letter so relays index it and a `#z`
+/// filter can select it. No NIP gives `z` a meaning; the value is opaque.
+pub const PNS_KEYSHARE_TAG: &str = "z";
+
+/// The `#z` value that marks the account's PNS-carried self-shares (see
+/// `store::pns_share_board`) out of its whole kind-1080 PNS stream.
+///
+/// A self-share also travels PNS-wrapped because a kind-1059 gift-wrap can be
+/// unreadable from another device: relay.jb55.com refuses every unauthenticated
+/// 1059 `REQ`, and notedeck does not answer NIP-42, so a board seeded on one
+/// machine never reached the other (headway:headway/pepper-rack-usual). A 1080
+/// is read by author and is not gated. But the account's PNS stream is large (it
+/// also carries dave sessions and notebook notes), and a wrapper hides its inner
+/// kind, so this marker is what lets a client pull just the key-shares.
+///
+/// The value is 16 bytes, hex-encoded, derived from the account's *PNS* secret.
+/// Only the account can compute it, so it does not mark the notes as headway's
+/// to an outside observer. Board roots are derived from the account secret,
+/// never the PNS secret, so no slug can make the marker reveal part of a board's
+/// root. It is 32 hex characters, not 64: nostrdb stores a 64-hex tag value as
+/// a binary id, which a string `#z` filter never matches.
+pub fn pns_keyshare_marker(account_secret: &[u8; 32]) -> String {
+    let pns = nostrdb_net::pns::derive_pns_keys(account_secret);
+    let derived = nostrdb_net::sns::derive_board_root(
+        &pns.keypair.secret_key.secret_bytes(),
+        "headway/pns-keyshare",
+    );
+    hex::encode(&derived[..16])
+}
+
+/// Filter for the account's PNS-carried self-shares: its kind-1080 wrappers
+/// tagged with [`pns_keyshare_marker`]. nostrdb peels each into a kind-1082
+/// rumor addressed to the account, so [`teams_from_ndb`] reads it like a
+/// gift-wrapped share. Unbounded, like [`giftwrap_filter`].
+///
+/// Selects by kind and marker, then checks the PNS author in Rust. An
+/// `authors` + `kinds` + tag filter makes nostrdb walk the author-kind index,
+/// which here is every note in the account's PNS stream (about 524k on monad):
+/// seconds on a cold cache, long enough to stall a negentropy pull. The marker
+/// alone is already specific to the account. The author check drops a copy
+/// someone else published under the same tag, which nostrdb couldn't unwrap
+/// anyway.
+pub fn pns_keyshare_filter(account_secret: &[u8; 32]) -> Filter {
+    let pns_author = *nostrdb_net::pns::derive_pns_keys(account_secret)
+        .keypair
+        .pubkey
+        .bytes();
+    let marker = pns_keyshare_marker(account_secret);
+    Filter::new()
+        .kinds([nostrdb_net::pns::PNS_KIND as u64])
+        .tags([marker.as_str()], 'z')
+        .custom(move |note| note.pubkey() == &pns_author)
+        .build()
+}
+
 /// The shared boards `author` has joined, reconstructed from nostrdb.
 ///
 /// The roster lives in the db, not on disk: every joined board arrived as a
@@ -127,6 +183,10 @@ pub fn giftwrap_filter(author: &Pubkey) -> Filter {
 /// membership survives restarts and rides the account's NIP-59 inbox across devices
 /// with no config file. Shares that name no board are dropped (unfoldable); exact
 /// `(team_root, board_addr)` duplicates are collapsed.
+///
+/// A self-share also arrives PNS-wrapped ([`pns_keyshare_filter`]). nostrdb
+/// records the account as a PNS rumor's receiver, just as for a gift-wrap, so
+/// the same query and receiver check read both carriers.
 ///
 /// **Accept policy.** Returning a share here *is* accepting it. Today that's
 /// auto-accept: any `1082` nostrdb unwrapped for us joins its board (the SNS doc
@@ -495,5 +555,61 @@ mod tests {
         assert_eq!(teams.len(), 1);
         assert_eq!(teams[0].board_addr, board_addr);
         assert_eq!(teams[0].root_bytes(), Some(root));
+    }
+
+    /// A self-share carried only over PNS, with no gift-wrap anywhere, still joins
+    /// the board (headway:headway/pepper-rack-usual). This is the path that reaches a
+    /// device whose relay won't serve it the 1059. nostrdb records the account as
+    /// the PNS rumor's receiver, so the roster's receiver check accepts it, and the
+    /// epoch survives the trip.
+    ///
+    /// The marker filter must select that wrapper and nothing else from the PNS
+    /// stream. That stream also carries untagged account-private notes, such as the
+    /// board-preference note saved here; a client pulling by the marker must not
+    /// drag them along.
+    #[test]
+    fn pns_self_share_joins_own_board_without_a_gift_wrap() {
+        let (_dir, ndb) = ndb();
+        let me = FullKeypair::generate();
+        let secret = me.secret_key.secret_bytes();
+        ndb.add_key(&secret);
+
+        let root = test_root(0x07);
+        let board_addr = format!("30619:{}:tune-assistant", me.pubkey.hex());
+        assert!(crate::store::pns_share_board(
+            &ndb,
+            &secret,
+            &board_addr,
+            &root,
+            Some(2),
+            &mut crate::store::NoPublish,
+        ));
+        crate::store::save_board_pref(
+            &ndb,
+            &me.pubkey,
+            &secret,
+            &crate::event::BoardCoord::new(*me.pubkey.bytes(), "tune-assistant"),
+            &mut crate::store::NoPublish,
+        );
+
+        let teams = wait_teams(&ndb, &me.pubkey, 1);
+        assert_eq!(teams.len(), 1);
+        assert_eq!(teams[0].board_addr, board_addr);
+        assert_eq!(teams[0].root_bytes(), Some(root));
+        assert_eq!(teams[0].epoch, Some(2));
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let tagged = ndb
+            .query(&txn, &[pns_keyshare_filter(&secret)], 10)
+            .unwrap();
+        assert_eq!(tagged.len(), 1, "the marker selects just the key-share");
+        let all_pns = Filter::new()
+            .kinds([nostrdb_net::pns::PNS_KIND as u64])
+            .build();
+        assert_eq!(
+            ndb.query(&txn, &[all_pns], 10).unwrap().len(),
+            2,
+            "the board-pref note is in the PNS stream but not marked"
+        );
     }
 }

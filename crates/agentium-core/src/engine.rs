@@ -393,6 +393,12 @@ impl Engine {
     /// A message too big for one note goes as several (see
     /// [`build_live_events`](crate::session_events::build_live_events)).
     ///
+    /// The message is tagged `queued` when the session's latest kind-31988
+    /// state says it is mid-turn (see
+    /// [`status_in_turn`](crate::session_loader::status_in_turn)), so every
+    /// fold keeps it after the reply still streaming until the host marks
+    /// where it dispatched it.
+    ///
     /// Returns the [`BuiltEvent`](crate::session_events::BuiltEvent) it published,
     /// the first when there are several, so a caller (e.g. `agentium send`) can
     /// report the message's event id; callers that don't need it just discard
@@ -402,7 +408,8 @@ impl Engine {
         session_id: &str,
         text: &str,
     ) -> Result<crate::session_events::BuiltEvent, EngineError> {
-        let mut built = self.make_user_message(session_id, text)?;
+        let queued = self.session_in_turn(session_id);
+        let mut built = self.make_user_message(session_id, text, queued)?;
         for event in &built {
             self.publish_session_event(event)?;
         }
@@ -417,12 +424,17 @@ impl Engine {
     ///
     /// A message too big for one note comes back as several, first part first
     /// (see [`build_live_events`](crate::session_events::build_live_events)).
+    ///
+    /// `queued` tags it as sent while the session was mid-turn. The caller
+    /// decides, unlike [`send_message`](Engine::send_message), because it shows
+    /// the message itself and its row must agree with the note.
     pub fn prepare_message(
         &self,
         session_id: &str,
         text: &str,
+        queued: bool,
     ) -> Result<Vec<crate::session_events::BuiltEvent>, EngineError> {
-        let built = self.make_user_message(session_id, text)?;
+        let built = self.make_user_message(session_id, text, queued)?;
         for event in &built {
             self.wrap_and_ingest(event)?;
         }
@@ -432,11 +444,12 @@ impl Engine {
     /// Build the inner kind-1988 `user` events threaded onto the session's
     /// existing conversation (no ingest, no publish): one, or several parts
     /// for a message too big for one note. A brand-new session simply starts a
-    /// fresh thread.
+    /// fresh thread. `queued` tags them as sent mid-turn.
     fn make_user_message(
         &self,
         session_id: &str,
         text: &str,
+        queued: bool,
     ) -> Result<Vec<crate::session_events::BuiltEvent>, EngineError> {
         let mut threading = self.session_threading(session_id);
         let cwd = self.session_cwd(session_id);
@@ -445,7 +458,10 @@ impl Engine {
             "user",
             session_id,
             cwd.as_deref(),
-            crate::session_events::LiveEventTags::default(),
+            crate::session_events::LiveEventTags {
+                queued,
+                ..Default::default()
+            },
             &mut threading,
             &self.seckey(),
         )
@@ -880,6 +896,22 @@ impl Engine {
             session_id,
         )?;
         (!state.cwd.is_empty()).then_some(state.cwd)
+    }
+
+    /// Whether the session's latest kind-31988 state says it is mid-turn (see
+    /// [`status_in_turn`](crate::session_loader::status_in_turn)). An unknown
+    /// session isn't.
+    fn session_in_turn(&self, session_id: &str) -> bool {
+        let Ok(txn) = Transaction::new(&self.ndb) else {
+            return false;
+        };
+        crate::session_loader::latest_valid_session_for_author(
+            &self.ndb,
+            &txn,
+            &self.account.pubkey,
+            session_id,
+        )
+        .is_some_and(|state| crate::session_loader::status_in_turn(&state.status))
     }
 
     /// Wrap a freshly-built inner event in its PNS envelope and ingest it locally
@@ -1370,7 +1402,7 @@ mod tests {
         publish_prepared(&controller, &response, &url);
 
         let message = controller
-            .prepare_message(session_id, "also add a test")
+            .prepare_message(session_id, "also add a test", false)
             .expect("prepare message");
         for part in &message {
             publish_prepared(&controller, part, &url);
@@ -1689,7 +1721,7 @@ mod tests {
         let engine = Engine::embedded(ndb, TEST_SECKEY).expect("embedded engine");
 
         let built = engine
-            .prepare_message("chat-session", "hello remote host")
+            .prepare_message("chat-session", "hello remote host", false)
             .expect("prepare message");
         assert_eq!(built.len(), 1);
 
@@ -1703,6 +1735,83 @@ mod tests {
             .await,
             "the prepared user message should be ingested and queryable locally"
         );
+    }
+
+    /// `send_message` tags a message `queued` when the session's state says it
+    /// is mid-turn, so every fold keeps it after the streaming reply until the
+    /// host's dispatch marker arrives. An idle session's message isn't tagged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_message_queues_while_the_session_is_working() {
+        use crate::session_events::{
+            build_session_state_event, is_queued_note, AI_SESSION_STATE_KIND,
+        };
+
+        let tmp = TempDir::new().expect("tmp dir");
+        let engine = Engine::open(tmp.path().to_str().expect("path"), TEST_SECKEY).expect("open");
+
+        // The state the CLI resolves its selector against, as the host publishes it.
+        let seed_status = |session_id: &str, status: &str| {
+            let state = build_session_state_event(
+                session_id,
+                "Title",
+                None,
+                "/tmp",
+                status,
+                None,
+                "host",
+                "/home",
+                "claude",
+                "default",
+                None,
+                None,
+                None,
+                None,
+                1_770_000_000,
+                &TEST_SECKEY,
+            )
+            .expect("state event");
+            pns_seed(engine.ndb(), &state.note_json);
+            state.note_id
+        };
+        // Send into a session with `status`, and whether the note is queued.
+        let send_queued = |session_id: &'static str, status: &'static str| {
+            let engine = &engine;
+            let state_id = seed_status(session_id, status);
+            async move {
+                assert!(
+                    await_note(
+                        engine.ndb(),
+                        state_id,
+                        AI_SESSION_STATE_KIND as u64,
+                        Duration::from_secs(5)
+                    )
+                    .await,
+                    "the state should be ingested"
+                );
+                let built = engine.send_message(session_id, "hi").expect("send");
+                assert!(
+                    await_note(
+                        engine.ndb(),
+                        built.note_id,
+                        AI_CONVERSATION_KIND as u64,
+                        Duration::from_secs(5)
+                    )
+                    .await,
+                    "the message should be ingested"
+                );
+                let txn = Transaction::new(engine.ndb()).expect("txn");
+                let note = engine
+                    .ndb()
+                    .get_note_by_id(&txn, &built.note_id)
+                    .expect("note");
+                is_queued_note(&note)
+            }
+        };
+
+        assert!(send_queued("working-session", "working").await);
+        assert!(send_queued("asking-session", "needs_input").await);
+        assert!(!send_queued("idle-session", "idle").await);
+        assert!(!send_queued("done-session", "done").await);
     }
 
     /// The build-only permission response resolves its request from the db just

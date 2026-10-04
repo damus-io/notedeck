@@ -2376,6 +2376,18 @@ fn tentative_send_ui(
                 *action = Some(DaveAction::TentativeDeny);
             }
         }
+        PermissionMessageState::TentativeAllowAlways => {
+            if ui
+                .link(
+                    egui::RichText::new(format!("✓ Will {accept_label} always"))
+                        .color(egui::Color32::from_rgb(100, 180, 100))
+                        .strong(),
+                )
+                .clicked()
+            {
+                *action = Some(DaveAction::TentativeDeny);
+            }
+        }
         PermissionMessageState::TentativeDeny => {
             if ui
                 .link(

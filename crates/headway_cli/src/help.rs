@@ -580,16 +580,25 @@ edit.",
         name: "seed",
         group: Group::Boards,
         summary: "Create the target board (born sealed)",
-        usage: &["seed [--title <t>]"],
+        usage: &["seed --board <slug> [--title <t>]", "seed --title <t>"],
         details: "\
-Creates the board named by `--board` as a team-of-one SNS channel,
-sealed from note #1, so it can later be shared without re-sealing
-anything.",
+Creates a board as a team-of-one SNS channel, sealed from note #1, so it
+can later be shared without re-sealing anything.
+
+The board is the one `--board` (or a self-routing card ref) names. With
+no `--board`, the slug is derived from `--title`: lowercased, with every
+run of other characters collapsed to `-`, so \"Tune Assistant\" seeds
+`tune-assistant`. Seed never uses the persisted current board or
+$HEADWAY_BOARD; with neither `--board` nor `--title` it refuses rather
+than seed whichever board happens to be current.",
         options: &[(
-            "--title <t>",
-            "Display title. Defaults to the board's slug, so a non-default board is never accidentally titled \"Headway\"",
+            "-t, --title <t>",
+            "Display title. Defaults to the board's slug, so a non-default board is never accidentally titled \"Headway\". Without --board, also the source of the slug",
         )],
-        examples: &["headway seed --board ios-port --title \"iOS Port\""],
+        examples: &[
+            "headway seed --board ios-port --title \"iOS Port\"",
+            "headway seed -t \"Tune Assistant\"    # seeds tune-assistant",
+        ],
     },
     Command {
         name: "rename",

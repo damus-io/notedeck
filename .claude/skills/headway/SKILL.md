@@ -93,7 +93,10 @@ error, not a silent resolution on the wrong board.
 `headway board` with **no argument** is a harmless read — it lists the boards in
 the cache and marks the current one with `*`; use it to discover slugs. Just
 don't rely on its persisted `*` selection for edits. To create a board that
-doesn't exist yet, `headway --board work seed`.
+doesn't exist yet, `headway --board work seed`, or `headway seed -t "Tune
+Assistant"` to derive the slug (`tune-assistant`) from the title. `seed` never
+falls back to the persisted current board or `$HEADWAY_BOARD`: with neither
+`--board` nor `--title` it refuses, like `next` and `migrate`.
 
 ## The golden rule: `show` before you edit
 
@@ -171,7 +174,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | Command | What it does |
 | --- | --- |
 | `show [cards...] [--archived] [--all] [--json]` | Print the board, or only the given cards (`--archived` lists archived cards; `--all` prints every board) |
-| `seed` | Create the default board if none exists |
+| `seed [--board <slug>] [-t\|--title <t>]` | Create a board (born sealed): the `--board` slug, else one derived from `--title`; refuses with neither |
 | `add <title...> [--col <c>] [-l <labels>] [--parent <card>] [--desc <text>\|--desc-file <path>]` | Add a card (defaults to the first column; `-l`/`--label` tags it; `--parent` creates it as a subissue; `--desc`/`--desc-file` sets its description at creation) |
 | `move <card> --col <c> [--row <n>]` | Move a card to a column (optional position) |
 | `title <card> <title...>` | Edit a card's title |
@@ -605,6 +608,12 @@ argument.
 - Edits print `ok (N events)`; offline edits append `— offline, not forwarded to
   the app`, meaning they're cached but haven't reached the running notedeck yet.
 - `seed` errors if a board already exists; that's expected — just `show` instead.
+- A board seeded on one machine reaches the account's other machines through
+  the running notedecks' private relay. Its key-share travels twice, as a
+  gift-wrap and as a PNS note, because a private relay may serve gift-wraps only
+  to an authenticated reader. If a board is missing on one machine, run any
+  `headway` command on the machine that has it (each cache sends its boards' PNS
+  key-shares once), give the notedecks a moment to sync, and list again there.
 - The cache lives at `<data-dir>/headway-cli` unless `--db` overrides it. The CLI
   and the running app converge through the relay, so either side's edits show up
   on the other after a reconcile.

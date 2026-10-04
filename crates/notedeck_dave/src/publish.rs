@@ -267,11 +267,12 @@ fn ingest_remote_user_message(
     ndb: &nostrdb::Ndb,
     secret_key: &[u8; 32],
     text: &str,
+    queued: bool,
 ) -> Option<session_events::BuiltEvent> {
     let agentic = session.agentic.as_mut()?;
     let session_id = agentic.event_session_id().to_string();
     let engine = embedded_engine(ndb, secret_key)?;
-    match engine.prepare_message(&session_id, text) {
+    match engine.prepare_message(&session_id, text, queued) {
         Ok(events) => {
             // The engine ingested them already.
             for event in &events {
@@ -294,9 +295,8 @@ fn ingest_remote_user_message(
 /// Shared by the interactive send ([`Dave::handle_user_send`]) and the
 /// programmatic one ([`Dave::add_user_message_for_session`]).
 ///
-/// `queued` tags a local session's note as sent while a turn was in flight
-/// (see [`record_dispatch`]). A remote controller send is never tagged: the
-/// host decides whether it queues.
+/// `queued` tags the note as sent while a turn was in flight (see
+/// [`record_dispatch`] and [`record_user_message`]).
 pub(crate) fn build_user_send_event(
     session: &mut ChatSession,
     ndb: &nostrdb::Ndb,
@@ -305,7 +305,7 @@ pub(crate) fn build_user_send_event(
     queued: bool,
 ) -> Option<session_events::BuiltEvent> {
     if session.is_remote() {
-        ingest_remote_user_message(session, ndb, secret_key, text)
+        ingest_remote_user_message(session, ndb, secret_key, text, queued)
     } else {
         ingest_live_event(
             session,
@@ -328,6 +328,12 @@ pub(crate) fn build_user_send_event(
 /// [`build_user_send_event`]), appends it to chat, and retitles the session.
 /// Whether to dispatch it is the caller's call. A message sent while a turn is
 /// in flight is queued: it waits at the end of the chat, and its note says so.
+///
+/// A local session knows whether it has dispatched a turn. A remote one only
+/// knows the host's status, so a send to a session that is working or waiting
+/// on input is queued. The host queues every remote message anyway and marks
+/// where it dispatched it; the tag keeps this device and every observer from
+/// showing it inside the reply until that marker arrives.
 pub(crate) fn record_user_message(
     session: &mut ChatSession,
     ndb: &nostrdb::Ndb,
@@ -335,7 +341,11 @@ pub(crate) fn record_user_message(
     text: String,
     images: Vec<ImageAttachment>,
 ) {
-    let queued = session.is_dispatched();
+    let queued = if session.is_remote() {
+        session_loader::status_in_turn(session.status().as_str())
+    } else {
+        session.is_dispatched()
+    };
     let note_id = secret_key
         .and_then(|sk| build_user_send_event(session, ndb, sk, &text, queued))
         .map(|event| event.note_id);
@@ -512,8 +522,9 @@ pub(crate) fn publish_permission_request(
 /// gave a request without a user click, so observers, a restart and the CLI
 /// show it resolved (and auto-accepted) rather than pending.
 ///
-/// Mirrors the remote auto-accept in `conversation.rs`. Skipped when the
-/// request itself was never published: there is no note to answer.
+/// An observer auto-accepting a remote session's request publishes through
+/// here too (see `conversation::auto_accept_remote_request`). Skipped when the
+/// request's note id was never recorded: there is no note to answer.
 pub(crate) fn publish_auto_accept_response(
     session: &mut ChatSession,
     perm_id: uuid::Uuid,
@@ -540,6 +551,34 @@ pub(crate) fn publish_auto_accept_response(
         sk,
     );
     ingest_session_event(agentic, built, "auto-accept response event", ndb, sk);
+}
+
+/// Update every session's status, then publish the auto-accept responses for
+/// the permissions the runtime allowlist resolved on the way (see
+/// [`SessionManager::update_all_statuses`]), so observers stop showing them
+/// pending. Without a key the statuses still update and nothing is published.
+/// Returns what was resolved.
+///
+/// The per-frame pass in `Dave::update` calls this; so do tests, which then
+/// exercise the path the app runs rather than a copy of its loop.
+///
+/// [`SessionManager::update_all_statuses`]: session::SessionManager::update_all_statuses
+pub(crate) fn update_statuses_and_publish_auto_resolved(
+    sessions: &mut session::SessionManager,
+    ndb: &nostrdb::Ndb,
+    sk: Option<&[u8; 32]>,
+) -> Vec<session::AutoResolved> {
+    let resolved = sessions.update_all_statuses();
+    let Some(sk) = sk else {
+        return resolved;
+    };
+    for auto in &resolved {
+        let Some(session) = sessions.get_mut(auto.session) else {
+            continue;
+        };
+        publish_auto_accept_response(session, auto.perm_id, ndb, sk);
+    }
+    resolved
 }
 
 impl Dave {
@@ -635,30 +674,6 @@ impl Dave {
                 ctx.ndb,
                 &sk,
             );
-        }
-    }
-
-    /// Publish the auto-accept responses for permissions the runtime allowlist
-    /// resolved this frame (see [`SessionManager::update_all_statuses`]), so
-    /// observers stop showing them pending.
-    ///
-    /// [`SessionManager::update_all_statuses`]: session::SessionManager::update_all_statuses
-    pub(crate) fn publish_auto_resolved(
-        &mut self,
-        ctx: &AppContext<'_>,
-        resolved: &[session::AutoResolved],
-    ) {
-        if resolved.is_empty() {
-            return;
-        }
-        let Some(sk) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) else {
-            return;
-        };
-        for auto in resolved {
-            let Some(session) = self.session_manager.get_mut(auto.session) else {
-                continue;
-            };
-            publish_auto_accept_response(session, auto.perm_id, ctx.ndb, &sk);
         }
     }
 
@@ -870,5 +885,48 @@ mod tests {
         let lp = session_state_publish_params(&local, "local-sid", "phone-host", &ndb, &account)
             .expect("a local session publishes on any dirty");
         assert_eq!(lp.hostname, "phone-host", "local publish uses this machine");
+    }
+
+    /// A note nostrdb never took never comes back through the conversation
+    /// subscription, so neither publish path records it as waiting to: the
+    /// reconcile at rest, which waits for every recorded note, would wait on
+    /// it forever, and the dedup set would skip it if it ever did arrive.
+    ///
+    /// The note here is an inner event too big for NIP-44 to carry, which
+    /// [`pns_ingest`] can't wrap.
+    #[test]
+    fn a_note_nostrdb_refused_is_not_recorded() {
+        let tmp = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+        let sk = test_secret_key();
+        let refused = || session_events::BuiltEvent {
+            note_json: "x".repeat(70_000),
+            note_id: [7; 32],
+            kind: session_events::AI_CONVERSATION_KIND,
+        };
+        assert!(
+            !pns_ingest(&ndb, &refused().note_json, &sk),
+            "NIP-44 can't carry the note"
+        );
+
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        let agentic = session.agentic.as_mut().unwrap();
+        assert_eq!(
+            ingest_session_event(agentic, Ok(refused()), "refused note", &ndb, &sk),
+            None
+        );
+        let first =
+            ingest_built_live_events(&mut session, &ndb, &sk, |_, _, _| Ok(vec![refused()]));
+        assert!(first.is_some(), "the built note is still handed back");
+
+        let agentic = session.agentic.as_ref().unwrap();
+        assert!(agentic.unindexed_self_notes.is_empty());
+        assert!(!agentic.seen_note_ids.contains(&[7; 32]));
+        assert!(!agentic.fold_dirty, "the chat gained no published row");
     }
 }

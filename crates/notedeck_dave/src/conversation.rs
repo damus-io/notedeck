@@ -4,7 +4,7 @@
 //! they carry.
 
 use crate::backend::BackendType;
-use crate::publish::{ingest_live_event, pns_ingest};
+use crate::publish::{ingest_live_event, publish_auto_accept_response};
 use crate::{
     messages, reconcile, session, session_events, session_loader, Dave, Message,
     PermissionResponse, SessionId,
@@ -95,7 +95,7 @@ impl Dave {
 
             match session_events::get_tag_value(&note, "role") {
                 Some("permission_response") => {
-                    handle_remote_permission_response(&note, agentic, &mut session.chat);
+                    handle_remote_permission_response(&note, session);
                 }
                 Some("set_permission_mode") => {
                     let content = note.content();
@@ -437,8 +437,14 @@ fn remote_user_message<'n>(
 /// loaded) the batch conservatively takes the slow path, so a missed seeding
 /// can only cost an extra rebuild, never misorder.
 ///
+/// Every note in the batch, seen or not, advances `seen_through`: the poll has
+/// now handed it over, so a rebuild may fold it (see
+/// [`rebuild_chat_from_fold`]).
+///
 /// For **local** sessions only incoming remote user messages are appended (the
-/// live streaming path owns local display); those are never rebuilt from ndb.
+/// live streaming path owns local display). Each is appended where it
+/// arrived, and the reconcile at rest swaps the chat for the fold later (see
+/// [`reconcile::maybe_reconcile_at_rest`]).
 pub(crate) fn process_conversation_notes<'a>(
     mut notes: Vec<nostrdb::Note<'a>>,
     session: &mut session::ChatSession,
@@ -461,6 +467,9 @@ pub(crate) fn process_conversation_notes<'a>(
     let mut queue_moved = false;
     // Whether a new note is part of a message split across notes.
     let mut split_arrived = false;
+    // Requests this session's runtime allowlist covers, auto-accepted after
+    // the loop (see `auto_accept_remote_request`).
+    let mut auto_accepts: Vec<uuid::Uuid> = Vec::new();
 
     // Sort this batch by wall-clock time at millisecond resolution, keyed off
     // the same `EventOrder` the loader uses. For remote sessions display order
@@ -563,7 +572,7 @@ pub(crate) fn process_conversation_notes<'a>(
         // in-place updates (marking a permission responded).
         match role {
             Some("permission_request") => {
-                handle_remote_permission_request(note, content, agentic, secret_key, ndb);
+                auto_accepts.extend(handle_remote_permission_request(note, content, agentic));
             }
             Some("permission_response") => {
                 // Track that this permission was responded to, and reflect it on
@@ -632,6 +641,14 @@ pub(crate) fn process_conversation_notes<'a>(
         }
     }
 
+    // Once every response in the batch is recorded, so a request the host
+    // already answered, as it does one its own allowlist covers, isn't
+    // answered a second time; and before the display pass, which renders the
+    // decision this records.
+    for perm_id in auto_accepts {
+        auto_accept_remote_request(session, perm_id, secret_key, ndb);
+    }
+
     // Reflect the new displayable notes. Fast path: if they all sort after
     // what's already shown (`tail_order`), append them in order using the same
     // renderer the loader uses — byte-identical to a rebuild, O(batch). Slow
@@ -687,17 +704,26 @@ pub(crate) fn process_conversation_notes<'a>(
 ///
 /// This is the single source of truth for a remote session's display order,
 /// and what a local session's chat becomes at rest (see
-/// [`reconcile::maybe_reconcile_at_rest`]). Loads every note for the session
-/// sorted by [`EventOrder`](session_loader::EventOrder), so the result is a
-/// pure, total function of the persisted event set, independent of the order
-/// events arrived or were ingested (the fresh-machine backfill case), then
-/// installs it with [`apply_loaded_chat`].
+/// [`reconcile::maybe_reconcile_at_rest`]). Loads the session's notes the poll
+/// has handed over, sorted by [`EventOrder`](session_loader::EventOrder), so
+/// the result is a pure, total function of that event set, independent of the
+/// order events arrived or were ingested (the fresh-machine backfill case),
+/// then installs it with [`apply_loaded_chat`].
 ///
 /// Only notes the poll has handed the session are folded (see
 /// `AgenticSessionData::seen_through`). `txn` is opened after the poll, so it
 /// can hold a note stored since; folding that one would mark it seen before
 /// the poll processed it, and a remote user message would show without ever
 /// being dispatched. It comes through the next poll instead.
+///
+/// This device's own notes are the exception, both ways:
+/// - one stored past the cap is folded anyway. It is already in
+///   `seen_note_ids` (see `record_self_note`), so it has no side effect left
+///   for the poll to run, and the poll would skip it. Capping it out would drop
+///   a message the user just sent to a remote session from the chat until some
+///   later rebuild;
+/// - one nostrdb hasn't stored yet can't be folded, so it is no longer marked
+///   seen: the poll then treats it as new when it arrives and shows it.
 ///
 /// The fold is O(session) and runs on the UI thread: once per turn for a local
 /// session, and on each out-of-order batch for a remote one.
@@ -708,17 +734,30 @@ pub(crate) fn rebuild_chat_from_fold(
     txn: &Transaction,
     author: &nostrdb_net::Pubkey,
 ) {
-    let Some(agentic) = session.agentic.as_ref() else {
+    let Some(agentic) = session.agentic.as_mut() else {
         return;
     };
     let claude_sid = agentic.event_session_id();
     let loaded = match agentic.seen_through {
-        Some(through) => {
-            session_loader::load_session_messages_through(ndb, txn, author, claude_sid, through)
-        }
-        // Nothing has come through the poll, so none of it can be racing it.
+        Some(through) => session_loader::load_session_messages_seen_through(
+            ndb,
+            txn,
+            author,
+            claude_sid,
+            through,
+            &agentic.seen_note_ids,
+        ),
+        // Unreachable in production: a rebuild only follows a poll batch, a
+        // reconcile only follows the poll handing back the host's own notes,
+        // and a restore seeds the key, so by then a note has come through.
+        // Only a test rebuilds a session the poll never fed.
         None => session_loader::load_session_messages_for_author(ndb, txn, author, claude_sid),
     };
+    for note_id in agentic.unindexed_self_notes.ids() {
+        if !loaded.note_ids.contains(note_id) {
+            agentic.seen_note_ids.remove(note_id);
+        }
+    }
     apply_loaded_chat(session, loaded);
 }
 
@@ -739,8 +778,9 @@ pub(crate) fn rebuild_chat_from_fold(
 ///   restore replays what the poll dropped before the session existed right
 ///   after this (see `Dave::drain_session_restore`), so the tail has no gap
 ///   behind it;
-/// - subagent rows are re-indexed, since a background subagent outlives its
-///   turn and finds its row through that index;
+/// - the turn's tracked rows are re-indexed against the new chat
+///   ([`ChatSession::replace_chat`](session::ChatSession::replace_chat)),
+///   since a background subagent outlives its turn and finds its row there;
 /// - in-memory permission decisions the fold can't know yet are laid over
 ///   it: an auto-accept recorded this poll, its response not yet ingested,
 ///   would otherwise render as pending (and collapsed).
@@ -748,7 +788,7 @@ pub(crate) fn apply_loaded_chat(
     session: &mut session::ChatSession,
     loaded: session_loader::LoadedSession,
 ) {
-    session.chat = loaded.messages;
+    session.replace_chat(loaded.messages);
 
     let Some(agentic) = &mut session.agentic else {
         return;
@@ -757,7 +797,6 @@ pub(crate) fn apply_loaded_chat(
     agentic.seen_through = agentic.seen_through.max(loaded.max_key);
     agentic.tail_order = loaded.max_order;
     agentic.permissions.merge_loaded(loaded.permissions);
-    agentic.reindex_rows(&session.chat);
 
     for msg in session.chat.iter_mut() {
         let Message::PermissionRequest(req) = msg else {
@@ -774,28 +813,22 @@ pub(crate) fn apply_loaded_chat(
 
 /// Handle a remote permission request from a kind-1988 conversation event.
 ///
-/// Runs only the side effects — records the request note id and, if the runtime
-/// allowlist auto-accepts, records the response and publishes it. The chat
-/// message itself is rendered by the loader on the caller's rebuild (with the
-/// in-memory `responded` overlay), so this never appends to chat.
+/// Records the request note id, which a response links to, and returns the
+/// perm id when this session's runtime allowlist covers the tool, for the
+/// caller to auto-accept once the rest of the batch is processed (see
+/// [`auto_accept_remote_request`]). The chat message itself is rendered by the
+/// loader on the caller's rebuild (with the in-memory `responded` overlay), so
+/// this never appends to chat.
 fn handle_remote_permission_request(
     note: &nostrdb::Note,
     content: &str,
     agentic: &mut session::AgenticSessionData,
-    secret_key: Option<&[u8; 32]>,
-    ndb: &nostrdb::Ndb,
-) {
-    let Ok(content_json) = serde_json::from_str::<serde_json::Value>(content) else {
-        return;
-    };
-    let tool_name = content_json["tool_name"]
-        .as_str()
-        .unwrap_or("unknown")
-        .to_string();
+) -> Option<uuid::Uuid> {
+    let content_json = serde_json::from_str::<serde_json::Value>(content).ok()?;
+    let tool_name = content_json["tool_name"].as_str().unwrap_or("unknown");
     let tool_input = content_json
         .get("tool_input")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
+        .unwrap_or(&serde_json::Value::Null);
     let perm_id = session_events::get_tag_value(note, "perm-id")
         .and_then(|s| uuid::Uuid::parse_str(s).ok())
         .unwrap_or_else(uuid::Uuid::new_v4);
@@ -806,18 +839,37 @@ fn handle_remote_permission_request(
         .request_note_ids
         .insert(perm_id, *note.id());
 
-    // Runtime allowlist auto-accept
-    if !agentic.should_runtime_allow(&tool_name, &tool_input) {
+    agentic
+        .should_runtime_allow(tool_name, tool_input)
+        .then_some(perm_id)
+}
+
+/// Auto-accept a remote request this session's runtime allowlist covers,
+/// unless it already has a response.
+///
+/// The host publishes its own `permission_response{auto}` for a request its
+/// allowlist covers, and the user's "Allow Always" usually grants the same
+/// tool on both devices. Answering again would be harmless to the backend,
+/// whose oneshot is already gone, but doubles the note on the wire and in
+/// the fold.
+///
+/// Records the decision in memory, so the overlay renders it as allowed (and
+/// expanded) before the response round-trips through ndb, then publishes it
+/// the way a local auto-accept is ([`publish_auto_accept_response`]); the
+/// host's private-sync Session fans it out so the remote backend sees it.
+fn auto_accept_remote_request(
+    session: &mut session::ChatSession,
+    perm_id: uuid::Uuid,
+    secret_key: Option<&[u8; 32]>,
+    ndb: &nostrdb::Ndb,
+) {
+    let Some(agentic) = session.agentic.as_mut() else {
+        return;
+    };
+    if agentic.permissions.responded.contains_key(&perm_id) {
         return;
     }
-
-    tracing::info!(
-        "runtime allow: auto-accepting remote '{}' for this session",
-        tool_name,
-    );
-    // Record the decision in memory so the rebuild overlay renders it as allowed
-    // (and expanded) even before the ingested response round-trips back through
-    // the relay.
+    tracing::info!("runtime allow: auto-accepting remote request {perm_id} for this session");
     agentic.permissions.responded.insert(
         perm_id,
         crate::messages::PermissionDecision {
@@ -826,31 +878,26 @@ fn handle_remote_permission_request(
         },
     );
     if let Some(sk) = secret_key {
-        let sid = agentic.event_session_id().to_string();
-        if let Ok(evt) = session_events::build_permission_response_event(
-            &perm_id,
-            note.id(),
-            true,
-            None,
-            false,
-            true,
-            &sid,
-            &mut agentic.live_threading,
-            sk,
-        ) {
-            // Ingest locally; the host's private-sync Session fans the envelope
-            // out to the relay so the remote backend sees the auto-accept.
-            pns_ingest(ndb, &evt.note_json, sk);
-        }
+        publish_auto_accept_response(session, perm_id, ndb, sk);
     }
 }
 
-/// Handle a remote permission response from a kind-1988 event.
-fn handle_remote_permission_response(
+/// Handle a remote permission response from a kind-1988 event on a local
+/// session: first-response-wins, so it resolves the request only while its
+/// oneshot is still pending.
+///
+/// A winning response also shows the reply text it carries (a deny reason, a
+/// question set's formatted answers) as a user row, as the fold renders the
+/// same note. The local click paths push that row as they publish (see
+/// `update::push_local_permission_reply`); a response another device issued
+/// arrives only here.
+pub(crate) fn handle_remote_permission_response(
     note: &nostrdb::Note,
-    agentic: &mut session::AgenticSessionData,
-    chat: &mut [Message],
+    session: &mut session::ChatSession,
 ) {
+    let Some(agentic) = &mut session.agentic else {
+        return;
+    };
     let Some(perm_id_str) = session_events::get_tag_value(note, "perm-id") else {
         tracing::warn!("permission_response event missing perm-id tag");
         return;
@@ -866,6 +913,7 @@ fn handle_remote_permission_response(
     let allowed = decoded.response_type == crate::messages::PermissionResponseType::Allowed;
 
     if let Some(sender) = agentic.permissions.pending.remove(&perm_id) {
+        session.insert_permission_reply(message.as_deref());
         let response = if allowed {
             PermissionResponse::Allow { message }
         } else if cancel_turn {
@@ -877,7 +925,7 @@ fn handle_remote_permission_response(
                 reason: message.unwrap_or_else(|| messages::DEFAULT_REMOTE_DENY_REASON.to_string()),
             }
         };
-        for msg in chat.iter_mut() {
+        for msg in session.chat.iter_mut() {
             if let Message::PermissionRequest(req) = msg {
                 if req.id == perm_id {
                     req.response = Some(decoded.response_type);
@@ -903,6 +951,7 @@ fn handle_remote_permission_response(
 mod tests {
     use super::*;
     use crate::config::AiMode;
+    use crate::publish::pns_ingest;
     use crate::session::SessionSource;
     use crate::session_events::{
         build_live_event, build_permission_request_event, LiveEventTags, ThreadingState,
@@ -1843,6 +1892,287 @@ mod tests {
         );
     }
 
+    /// Every user and assistant row's text, in chat order.
+    fn chat_texts(chat: &[Message]) -> Vec<&str> {
+        chat.iter()
+            .filter_map(|m| match m {
+                Message::User(user) => Some(user.as_str()),
+                Message::Assistant(a) => Some(a.text()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Hand the session the stored conversation note whose content is `text`
+    /// through the poll, and rebuild when the batch asks for it, as
+    /// `poll_remote_conversation_events` does. Returns whether it rebuilt.
+    fn deliver(
+        ndb: &Ndb,
+        session: &mut session::ChatSession,
+        sk: &[u8; 32],
+        author: &nostrdb_net::Pubkey,
+        text: &str,
+    ) -> bool {
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let txn = Transaction::new(ndb).unwrap();
+        let batch: Vec<_> = ndb
+            .query(&txn, std::slice::from_ref(&filter), 128)
+            .unwrap()
+            .iter()
+            .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
+            .filter(|n| n.content() == text)
+            .collect();
+        assert_eq!(batch.len(), 1, "exactly one {text:?} note is stored");
+        let result = process_conversation_notes(batch, session, 1, true, Some(sk), ndb);
+        if result.rebuild_chat {
+            rebuild_chat_from_fold(session, ndb, &txn, author);
+        }
+        result.rebuild_chat
+    }
+
+    /// A remote session with the host's assistant note `A` shown, and `H`, a
+    /// host note stamped before it, built but not stored: once stored and
+    /// delivered, `H` sorts before the tail and forces a rebuild.
+    async fn remote_session_behind_an_early_note(
+        ndb: &Ndb,
+        session_id: &str,
+    ) -> (session::ChatSession, session_events::BuiltEvent) {
+        let sk = test_secret_key();
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let mut threading = ThreadingState::new();
+        let mut host = |text: &str| {
+            build_live_event(
+                text,
+                "assistant",
+                session_id,
+                None,
+                LiveEventTags::default(),
+                &mut threading,
+                &sk,
+            )
+            .unwrap()
+        };
+        let h = host("H");
+        let a = host("A");
+
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.source = SessionSource::Remote;
+        session.agentic.as_mut().unwrap().event_id = session_id.to_string();
+
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        ndb.process_event_with(&a.to_event_json(), IngestMetadata::new().client(true))
+            .unwrap();
+        let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+        assert!(deliver(ndb, &mut session, &sk, &author, "A"));
+        assert_eq!(chat_texts(&session.chat), ["A"]);
+        (session, h)
+    }
+
+    /// Store `evt` and wait until nostrdb has it.
+    async fn store(ndb: &Ndb, evt: &session_events::BuiltEvent) {
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        ndb.process_event_with(&evt.to_event_json(), IngestMetadata::new().client(true))
+            .unwrap();
+        let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+    }
+
+    /// A controller's send on a remote session is marked seen when it is built.
+    /// If the poll delivers an earlier-stored host note that forces a rebuild
+    /// before the send comes back through it, the rebuild still folds the send
+    /// (headway:dave/pledge-pilot-bind): capping it out left it hidden, since
+    /// its arrival is skipped as seen and asks for no rebuild.
+    #[tokio::test]
+    async fn capped_rebuild_keeps_an_unpolled_own_send() {
+        let sk = test_secret_key();
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        assert!(ndb.add_key(&sk), "ndb must accept the PNS key");
+        let (mut session, h) = remote_session_behind_an_early_note(&ndb, "own-send-cap").await;
+
+        // H is stored, then the controller sends M: stored after H.
+        store(&ndb, &h).await;
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        crate::publish::record_user_message(&mut session, &ndb, Some(&sk), "M".into(), vec![]);
+        let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+        assert_eq!(chat_texts(&session.chat), ["A", "M"]);
+
+        // Only H comes through the poll; it sorts before A, so the chat is
+        // rebuilt through H's key. M must survive it.
+        assert!(deliver(&ndb, &mut session, &sk, &author, "H"));
+        assert_eq!(chat_texts(&session.chat), ["H", "A", "M"]);
+
+        // M comes through: already shown, so no rebuild and no second row.
+        assert!(!deliver(&ndb, &mut session, &sk, &author, "M"));
+        assert_eq!(chat_texts(&session.chat), ["H", "A", "M"]);
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let fold =
+            session_loader::load_session_messages_for_author(&ndb, &txn, &author, "own-send-cap");
+        assert_eq!(chat_texts(&session.chat), chat_texts(&fold.messages));
+    }
+
+    /// An own send nostrdb hasn't stored when a rebuild runs can't be folded.
+    /// The rebuild stops treating it as seen, so the poll shows it when it
+    /// arrives rather than skipping it.
+    #[tokio::test]
+    async fn rebuild_leaves_an_unstored_own_send_to_the_poll() {
+        let sk = test_secret_key();
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let session_id = "own-send-unstored";
+        let (mut session, h) = remote_session_behind_an_early_note(&ndb, session_id).await;
+
+        // The send as `ingest_remote_user_message` records it, with the note
+        // still on its way into nostrdb.
+        let m = build_live_event(
+            "M",
+            "user",
+            session_id,
+            None,
+            LiveEventTags::default(),
+            &mut ThreadingState::new(),
+            &sk,
+        )
+        .unwrap();
+        session.chat.push(Message::User(messages::UserMessage {
+            note_id: Some(m.note_id),
+            ..messages::UserMessage::from("M")
+        }));
+        session
+            .agentic
+            .as_mut()
+            .unwrap()
+            .record_self_note(m.note_id);
+
+        store(&ndb, &h).await;
+        assert!(deliver(&ndb, &mut session, &sk, &author, "H"));
+        assert_eq!(
+            chat_texts(&session.chat),
+            ["H", "A"],
+            "not stored: not folded"
+        );
+
+        store(&ndb, &m).await;
+        deliver(&ndb, &mut session, &sk, &author, "M");
+        assert_eq!(chat_texts(&session.chat), ["H", "A", "M"]);
+    }
+
+    /// A controller's send to a remote session that is working is queued
+    /// (headway:dave/pottery-brother-tooth): before any dispatch marker exists
+    /// it waits after the reply still streaming, on this device and in the
+    /// fold every other one shows, rather than sitting inside that reply. The
+    /// host's marker then puts it where the host dispatched it.
+    #[tokio::test]
+    async fn controller_send_to_a_working_session_waits_at_the_tail() {
+        let sk = test_secret_key();
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        assert!(ndb.add_key(&sk), "ndb must accept the PNS key");
+        let session_id = "controller-queued-send";
+        let (mut session, _) = remote_session_behind_an_early_note(&ndb, session_id).await;
+        session.agentic.as_mut().unwrap().remote_status =
+            Some(crate::agent_status::AgentStatus::Working);
+        session.update_status();
+
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        crate::publish::record_user_message(&mut session, &ndb, Some(&sk), "M".into(), vec![]);
+        let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+        let Some(Message::User(sent)) = session.chat.last() else {
+            panic!("the send is the last row");
+        };
+        assert!(sent.queued, "a send to a working session is queued");
+        let m_id = sent.note_id.expect("the send has a note");
+
+        // The host's reply keeps streaming, stamped after M. Its own clock
+        // must read later than M's, so wait out the millisecond.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let mut threading = ThreadingState::new();
+        let mut host = |text: &str, role: &str, tags: LiveEventTags<'_>| {
+            build_live_event(text, role, session_id, None, tags, &mut threading, &sk).unwrap()
+        };
+        let b = host("B", "assistant", LiveEventTags::default());
+        store(&ndb, &b).await;
+        deliver(&ndb, &mut session, &sk, &author, "B");
+        assert_eq!(chat_texts(&session.chat), ["A", "B", "M"]);
+
+        let fold = |session: &session::ChatSession| {
+            let txn = Transaction::new(&ndb).unwrap();
+            let fold =
+                session_loader::load_session_messages_for_author(&ndb, &txn, &author, session_id);
+            assert_eq!(chat_texts(&session.chat), chat_texts(&fold.messages));
+        };
+        fold(&session);
+
+        // The turn ends and the host dispatches M, then answers it.
+        let marker = host(
+            "",
+            session_events::DISPATCHED_ROLE,
+            LiveEventTags {
+                refs: Some(&m_id),
+                ..Default::default()
+            },
+        );
+        store(&ndb, &marker).await;
+        assert!(deliver(&ndb, &mut session, &sk, &author, ""));
+        assert!(
+            matches!(session.chat.last(), Some(Message::User(u)) if !u.queued),
+            "dispatched: off the queue"
+        );
+        let c = host("C", "assistant", LiveEventTags::default());
+        store(&ndb, &c).await;
+        deliver(&ndb, &mut session, &sk, &author, "C");
+        assert_eq!(chat_texts(&session.chat), ["A", "B", "M", "C"]);
+        fold(&session);
+    }
+
+    /// A controller's send to an idle remote session starts the next turn
+    /// straight away, so it isn't queued: an older host that publishes no
+    /// dispatch marker would leave a queued note at the tail for good.
+    #[tokio::test]
+    async fn controller_send_to_an_idle_session_is_not_queued() {
+        let sk = test_secret_key();
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        assert!(ndb.add_key(&sk), "ndb must accept the PNS key");
+        let (mut session, _) = remote_session_behind_an_early_note(&ndb, "controller-idle").await;
+        session.agentic.as_mut().unwrap().remote_status =
+            Some(crate::agent_status::AgentStatus::Done);
+        session.update_status();
+
+        crate::publish::record_user_message(&mut session, &ndb, Some(&sk), "M".into(), vec![]);
+        assert!(matches!(session.chat.last(), Some(Message::User(u)) if !u.queued));
+    }
+
     /// A denied permission_response event must set PermissionResponseType::Denied
     /// on the matching chat PermissionRequest, not hardcode Allowed.
     ///
@@ -1992,9 +2322,8 @@ mod tests {
     }
 
     /// When both permission_request and permission_response arrive in the
-    /// same batch, the response may sort before the request. The request
-    /// handler checks `responded` — it must use the stored decision, not
-    /// hardcode Allowed.
+    /// same batch, the response may sort before the request. Either way the
+    /// row must show the stored decision, not Allowed.
     #[tokio::test]
     async fn test_permission_denied_single_batch() {
         let sk = test_secret_key();
@@ -2181,5 +2510,111 @@ mod tests {
             "auto-accept provenance must survive the ndb rebuild so the row \
              starts expanded on a fresh machine"
         );
+    }
+
+    /// An observer whose runtime allowlist covers a tool the host's allowlist
+    /// also covers (the user clicked "Allow Always" on both) receives the
+    /// request and the host's `auto` response in one batch, and publishes
+    /// nothing itself: the request is already answered. A request the host
+    /// left pending, in a later batch, is still auto-accepted and published,
+    /// which shows the observer would have published the first one.
+    #[tokio::test]
+    async fn observer_skips_auto_accept_for_an_answered_request() {
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+        let session_id_str = "perm-observer-auto";
+        let tool_input = serde_json::json!({"command": "cargo test --all"});
+        let answered = uuid::Uuid::new_v4();
+        let pending = uuid::Uuid::new_v4();
+
+        let answered_req = build_permission_request_event(
+            &answered,
+            "Bash",
+            &tool_input,
+            session_id_str,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        let host_auto_resp = session_events::build_permission_response_event(
+            &answered,
+            &answered_req.note_id,
+            true,  // allowed
+            None,  // no message
+            false, // not a turn interrupt
+            true,  // auto-accepted by the host's allowlist
+            session_id_str,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        let pending_req = build_permission_request_event(
+            &pending,
+            "Bash",
+            &tool_input,
+            session_id_str,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        for event in [&answered_req, &host_auto_resp, &pending_req] {
+            store(&ndb, event).await;
+        }
+
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Remote,
+        );
+        session.source = SessionSource::Remote;
+        let agentic = session.agentic.as_mut().unwrap();
+        agentic.event_id = session_id_str.to_string();
+        agentic.add_runtime_allow("Bash", &tool_input).unwrap();
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let note = |evt: &session_events::BuiltEvent| {
+            ndb.get_note_by_id(&txn, &evt.note_id).expect("stored note")
+        };
+
+        process_conversation_notes(
+            vec![note(&answered_req), note(&host_auto_resp)],
+            &mut session,
+            1,
+            true,
+            Some(&sk),
+            &ndb,
+        );
+        let agentic = session.agentic.as_ref().unwrap();
+        assert!(
+            agentic.unindexed_self_notes.is_empty(),
+            "the observer must not answer a request the host already answered"
+        );
+        let decision = agentic.permissions.responded[&answered];
+        assert_eq!(
+            decision.response,
+            crate::messages::PermissionResponseType::Allowed
+        );
+        assert!(decision.auto_accepted, "the host's response says auto");
+
+        process_conversation_notes(
+            vec![note(&pending_req)],
+            &mut session,
+            1,
+            true,
+            Some(&sk),
+            &ndb,
+        );
+        let agentic = session.agentic.as_ref().unwrap();
+        assert_eq!(
+            agentic.unindexed_self_notes.ids().count(),
+            1,
+            "an unanswered allowlisted request is auto-accepted and published"
+        );
+        let decision = agentic.permissions.responded[&pending];
+        assert!(decision.auto_accepted);
     }
 }

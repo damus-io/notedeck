@@ -154,7 +154,7 @@ fn grep_searches_card_text_across_the_board() {
     let db = cli_dir.path().to_str().unwrap();
     let (bin, url) = (bin.as_path(), url.as_str());
 
-    headway(bin, url, db, &["seed"]);
+    headway(bin, url, db, &["--board", "headway", "seed"]);
     let epic = add(
         bin,
         url,

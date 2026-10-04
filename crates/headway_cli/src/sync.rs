@@ -160,6 +160,50 @@ pub(crate) async fn pull_giftwraps(
     }
 }
 
+/// Pull the account's PNS-carried self-shares into the local cache: the kind-1080
+/// wrappers marked with [`teams::pns_keyshare_marker`]. nostrdb peels each into a
+/// kind-1082 rumor addressed to us, which [`Roster::load`] reads like a gift-wrapped
+/// share.
+///
+/// This is how a board seeded on another of the account's devices reaches this one
+/// when its kind-1059 self-share can't (headway:headway/pepper-rack-usual): a
+/// private relay may serve a 1059 only to an authenticated reader, but it serves
+/// the PNS stream by author. Only the marked wrappers are pulled, never the whole
+/// PNS stream, which also carries every dave session and notebook note.
+///
+/// Pull-only and best-effort, like [`pull_giftwraps`]: our own PNS self-shares go
+/// up as they are written, and [`flush_own_selfshares`] re-sends them once per
+/// cache.
+pub(crate) async fn pull_pns_keyshares(
+    relay: &mut nostrdb_net::relay::sync::Relay,
+    ndb: &Ndb,
+    secret: &[u8; 32],
+) {
+    let filter = teams::pns_keyshare_filter(secret);
+    // No `authors`: the relay's nostrdb would walk the account's whole PNS stream
+    // to apply the tag (see `teams::pns_keyshare_filter`). The marker is already
+    // specific to the account.
+    let tag = format!("#{}", teams::PNS_KEYSHARE_TAG);
+    let wire = json!({
+        "kinds": [nostrdb_net::pns::PNS_KIND],
+        tag: [teams::pns_keyshare_marker(secret)],
+    })
+    .to_string();
+    let before = count_matching(ndb, &filter);
+    if let Err(e) =
+        nostrdb_net::relay::sync::pull_reconcile_windowed(relay, ndb, &wire, RECONCILE_UNTIL).await
+    {
+        eprintln!("warning: couldn't sync own board key-shares: {e}");
+    }
+    // Peel what just arrived if a wrapper landed before the key that unwraps it
+    // was registered — the PNS counterpart of `pull_giftwraps`' catch-up.
+    if count_matching(ndb, &filter) > before
+        && let Ok(txn) = Transaction::new(ndb)
+    {
+        ndb.process_pns(&txn);
+    }
+}
+
 /// Push half of the giftwrap leg (see headway:headway/basic-owner-torch): for
 /// every shared board we OWN, re-publish its kind-1059 self-share so another of
 /// the account's devices — or a co-member — can join it.
@@ -178,6 +222,8 @@ pub(crate) async fn pull_giftwraps(
 /// - **Own boards only** — never re-broadcast a co-member's inbound share.
 /// - **Once per cache** — a per-db marker records the roots already flushed
 ///   ([`flushed_marker_path`]); a fresh cache re-flushes, a repeat run is a no-op.
+///   The PNS copy ([`store::pns_share_board`]) has its own marker, so a cache
+///   that flushed its gift-wraps before the copy existed still sends it once.
 /// - **Real headway channels only** — skip a root whose coordinate doesn't fold a
 ///   headway board. A slug can collide with another app's derived root (the
 ///   notebook canvas also derives `derive_board_root(secret, "notebook")`), and
@@ -195,11 +241,15 @@ pub(crate) async fn flush_own_selfshares(
     // `me` is the signer, not the `--author` being read: a member's roster also
     // holds the owner's roots, which must never be re-wrapped from here.
     let owner_prefix = format!("{}:{}:", event::KIND_BOARD as u64, me.hex());
-    let mut flushed = read_flushed_selfshares(db);
+    let mut flushed = read_flushed(db, GIFTWRAP_MARKER);
+    let mut flushed_pns = read_flushed(db, PNS_MARKER);
     let mut sink = Collect::default();
     let mut newly: Vec<String> = Vec::new();
+    let mut newly_pns: Vec<String> = Vec::new();
     for team in &roster.teams {
-        if !team.board_addr.starts_with(&owner_prefix) || flushed.contains(&team.team_root) {
+        let wrap_due = !flushed.contains(&team.team_root);
+        let pns_due = !flushed_pns.contains(&team.team_root);
+        if !team.board_addr.starts_with(&owner_prefix) || !(wrap_due || pns_due) {
             continue;
         }
         let Some(root) = team.root_bytes() else {
@@ -208,8 +258,17 @@ pub(crate) async fn flush_own_selfshares(
         if !folds_headway_board(ndb, team) {
             continue;
         }
-        if store::share_board(ndb, secret, me, &team.board_addr, &root, &mut sink) {
+        if wrap_due && store::share_board(ndb, secret, me, &team.board_addr, &root, &mut sink) {
             newly.push(team.team_root.clone());
+        }
+        // Tracked apart from the gift-wrap, so a cache that flushed its 1059s
+        // before the PNS copy existed still sends the copy once. Carries the
+        // team's epoch, so an epoch-bumped root keeps its rank on the device that
+        // learns it from this copy alone.
+        if pns_due
+            && store::pns_share_board(ndb, secret, &team.board_addr, &root, team.epoch, &mut sink)
+        {
+            newly_pns.push(team.team_root.clone());
         }
     }
     if sink.0.is_empty() {
@@ -219,8 +278,11 @@ pub(crate) async fn flush_own_selfshares(
         Ok(()) => {
             eprintln!("flushed {} own self-share(s) to the relay", sink.0.len());
             flushed.extend(newly);
-            if let Err(e) = write_flushed_selfshares(db, &flushed) {
-                eprintln!("warning: couldn't record flushed self-shares: {e}");
+            flushed_pns.extend(newly_pns);
+            for (marker, roots) in [(GIFTWRAP_MARKER, &flushed), (PNS_MARKER, &flushed_pns)] {
+                if let Err(e) = write_flushed(db, marker, roots) {
+                    eprintln!("warning: couldn't record flushed self-shares: {e}");
+                }
             }
         }
         Err(e) => eprintln!("warning: couldn't flush self-shares: {e}"),
@@ -295,7 +357,7 @@ pub(crate) async fn recover_derived_board(
     // The board is real. Self-share the root so this device keeps the join and
     // the account's other devices finally get the key-share they never saw.
     let mut sink = Collect::default();
-    if store::share_board(ndb, secret, author, &addr, &root, &mut sink)
+    if store::self_share_board(ndb, secret, &addr, &root, &mut sink)
         && let Err(e) = relay.publish(&sink.0).await
     {
         eprintln!("warning: couldn't publish the recovered self-share: {e}");
@@ -317,21 +379,28 @@ fn folds_headway_board(ndb: &Ndb, team: &teams::Team) -> bool {
     event::load_shared_board(ndb, &txn, &team.board_addr, &[keys.team_keypair.pubkey]).is_some()
 }
 
-/// Path of the per-cache marker listing the `team_root`s whose self-share this
-/// cache has already flushed up (see [`flush_own_selfshares`]). It lives in the db
-/// directory: per-cache, so a fresh cache re-flushes, and — with `--db` — isolated
-/// from the account's real cache, so a test never touches the developer's marker.
-/// Mirrors `open_ndb`'s path logic (`--db` verbatim, else the platform data dir).
-fn flushed_marker_path(db: Option<&str>) -> Option<std::path::PathBuf> {
+/// Marker file of the roots whose kind-1059 self-share this cache has flushed.
+const GIFTWRAP_MARKER: &str = "flushed_selfshares";
+
+/// Marker file of the roots whose PNS-carried self-share this cache has flushed.
+const PNS_MARKER: &str = "flushed_pns_selfshares";
+
+/// Path of the per-cache `marker` file listing the `team_root`s whose self-share
+/// this cache has already flushed up (see [`flush_own_selfshares`]). It lives in
+/// the db directory: per-cache, so a fresh cache re-flushes, and — with `--db` —
+/// isolated from the account's real cache, so a test never touches the developer's
+/// marker. Mirrors `open_ndb`'s path logic (`--db` verbatim, else the platform
+/// data dir).
+fn flushed_marker_path(db: Option<&str>, marker: &str) -> Option<std::path::PathBuf> {
     match db {
-        Some(p) => Some(std::path::PathBuf::from(p).join("flushed_selfshares")),
-        None => nostrdb_net::relay::sync::config_path(APP, "flushed_selfshares").ok(),
+        Some(p) => Some(std::path::PathBuf::from(p).join(marker)),
+        None => nostrdb_net::relay::sync::config_path(APP, marker).ok(),
     }
 }
 
-/// The set of `team_root`s (hex) this cache has already flushed a self-share for.
-fn read_flushed_selfshares(db: Option<&str>) -> std::collections::HashSet<String> {
-    let Some(path) = flushed_marker_path(db) else {
+/// The set of `team_root`s (hex) this cache's `marker` records as flushed.
+fn read_flushed(db: Option<&str>, marker: &str) -> std::collections::HashSet<String> {
+    let Some(path) = flushed_marker_path(db, marker) else {
         return std::collections::HashSet::new();
     };
     std::fs::read_to_string(path)
@@ -345,12 +414,13 @@ fn read_flushed_selfshares(db: Option<&str>) -> std::collections::HashSet<String
         .unwrap_or_default()
 }
 
-/// Persist the flushed-root set (see [`read_flushed_selfshares`]).
-fn write_flushed_selfshares(
+/// Persist a flushed-root set to `marker` (see [`read_flushed`]).
+fn write_flushed(
     db: Option<&str>,
+    marker: &str,
     roots: &std::collections::HashSet<String>,
 ) -> std::io::Result<()> {
-    let Some(path) = flushed_marker_path(db) else {
+    let Some(path) = flushed_marker_path(db, marker) else {
         return Ok(());
     };
     if let Some(dir) = path.parent() {
