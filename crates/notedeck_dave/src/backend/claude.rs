@@ -883,6 +883,36 @@ async fn sleep_until_deadline(deadline: Option<Instant>) {
     }
 }
 
+/// The Claude CLI options a session's every connection starts from, before
+/// the per-session cwd/model/env and per-connection resume id and mode.
+///
+/// `max_buffer_size` is lifted to `usize::MAX` because the SDK's limit is not
+/// a per-line limit: its stdout reader adds every line to one running total
+/// for the life of the CLI process, and once that passes the limit (10 MB by
+/// default) it stops reading for good — silently, leaving the message channel
+/// open. Nothing more reaches Dave: no tool results, no permission requests,
+/// no `Result`, and an interrupt waits forever on a control response nobody
+/// reads, while the CLI keeps working unseen. An image Read emits its base64
+/// twice on one line (~1.3 MB for a 500 KB screenshot), so a session that
+/// reads a few screenshots freezes on whichever tool result crosses 10 MB.
+/// The limit bought nothing worth keeping: the reader has already buffered a
+/// line in full by the time it checks.
+fn session_base_options(
+    can_use_tool: claude_agent_sdk_rs::CanUseToolCallback,
+) -> ClaudeAgentOptions {
+    // A stderr callback to prevent the subprocess from blocking
+    let stderr_callback = Arc::new(|msg: String| {
+        tracing::trace!("Claude CLI stderr: {}", msg);
+    });
+
+    ClaudeAgentOptions::builder()
+        .stderr_callback(stderr_callback)
+        .can_use_tool(can_use_tool)
+        .include_partial_messages(true)
+        .max_buffer_size(usize::MAX)
+        .build()
+}
+
 /// Session actor task that owns the session's Claude CLI.
 ///
 /// The CLI is started lazily by the first Query or Compact, stopped after
@@ -956,18 +986,9 @@ async fn session_actor(
         }
     });
 
-    // A stderr callback to prevent the subprocess from blocking
-    let stderr_callback = Arc::new(|msg: String| {
-        tracing::trace!("Claude CLI stderr: {}", msg);
-    });
-
     // The options every connection shares; the resume id and permission mode
     // are filled in per connection from `ActorState`.
-    let mut base_options = ClaudeAgentOptions::builder()
-        .stderr_callback(stderr_callback)
-        .can_use_tool(can_use_tool)
-        .include_partial_messages(true)
-        .build();
+    let mut base_options = session_base_options(can_use_tool);
     base_options.cwd = cwd;
     base_options.model = model;
     // Export the session env (the configured `session_env` plus this session's
@@ -1432,6 +1453,105 @@ impl AiBackend for ClaudeBackend {
 mod tests {
     use super::*;
     use crate::backend::CountingWaker;
+
+    /// Number of 1 MiB tool results the fake CLI below emits for one query:
+    /// past the SDK's 10 MB default, like a session that has read a handful
+    /// of screenshots (each image Read is a ~1.3 MB stdout line).
+    const FAKE_CLI_BIG_RESULTS: usize = 12;
+
+    /// A stand-in `claude` that answers the SDK's initialize handshake, then
+    /// answers the first query with [`FAKE_CLI_BIG_RESULTS`] 1 MiB tool
+    /// results and a `result`, and stays up until stdin closes.
+    #[cfg(unix)]
+    const FAKE_CLI: &str = r#"#!/bin/sh
+case "$*" in *--version*) echo "2.1.288 (Claude Code)"; exit 0 ;; esac
+read -r init
+id=$(printf '%s' "$init" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$id"
+read -r query
+pad=$(head -c 1048576 /dev/zero | tr '\0' a)
+i=0
+while [ "$i" -lt "$BIG_RESULTS" ]; do
+  printf '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_%s","content":"%s"}]}}\n' "$i" "$pad"
+  i=$((i + 1))
+done
+printf '{"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"fake"}\n'
+cat > /dev/null
+"#;
+
+    /// Regression for a session freezing mid-batch (agentium:good-slot-service,
+    /// headway:dave/code-hollow-spy): three parallel screenshot Reads, and the
+    /// third result never arrived while the agent worked on unseen.
+    ///
+    /// The SDK counts every stdout line against one lifetime total and stops
+    /// reading once it passes `max_buffer_size`, so with its default the
+    /// session's 10th MiB is the last thing Dave ever reads: the later tool
+    /// results and the `Result` never come and this times out. Driving a CLI
+    /// with [`session_base_options`] — what every session connects with — must
+    /// deliver all of it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_keeps_reading_past_ten_megabytes_of_cli_output() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = dir.path().join("claude");
+        std::fs::write(&cli, FAKE_CLI).expect("write fake cli");
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake cli");
+
+        let allow_all: claude_agent_sdk_rs::CanUseToolCallback = Arc::new(|_, _, _| {
+            Box::pin(async {
+                PermissionResult::Allow(PermissionResultAllow {
+                    updated_input: None,
+                    updated_permissions: None,
+                })
+            })
+        });
+        let mut options = session_base_options(allow_all);
+        options.cli_path = Some(cli);
+        options.skip_version_check = true;
+        options
+            .env
+            .insert("BIG_RESULTS".to_string(), FAKE_CLI_BIG_RESULTS.to_string());
+
+        let mut client = ClaudeClient::new(options);
+        client.connect().await.expect("connect to fake cli");
+        client
+            .query_with_content_and_session(vec![UserContentBlock::text("go")], "default")
+            .await
+            .expect("send query");
+
+        let mut tool_results = 0;
+        let mut messages = client.receive_messages();
+        let finished = tokio::time::timeout(Duration::from_secs(20), async {
+            while let Some(message) = messages.next().await {
+                match message.expect("parse cli message") {
+                    ClaudeMessage::User(_) => tool_results += 1,
+                    ClaudeMessage::Result(_) => return true,
+                    _ => {}
+                }
+            }
+            false
+        })
+        .await;
+        drop(messages);
+        // Only a CLI whose output was read can be shut down cleanly. When the
+        // reader has died, the fake blocks writing to a full stdout pipe and
+        // `disconnect` would wait on it forever; dropping the client instead
+        // kills it.
+        if finished == Ok(true) {
+            client.disconnect().await.expect("disconnect fake cli");
+        }
+
+        assert_eq!(
+            finished,
+            Ok(true),
+            "the turn's Result never arrived; read {tool_results} of \
+             {FAKE_CLI_BIG_RESULTS} tool results before the stream went quiet"
+        );
+        assert_eq!(tool_results, FAKE_CLI_BIG_RESULTS);
+    }
 
     /// The reason for the whole fix: when the user's reply goes out as its own
     /// user turn, the tool result must contain *none* of their words.
