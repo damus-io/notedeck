@@ -245,14 +245,16 @@ fn card_json(
     })
 }
 
-/// The header line introducing a card's matches: its full ref (bold, and
-/// untruncated so it pastes straight into `show`/`comment`), its title, and
-/// the column it sits in, dimmed.
+/// The header line introducing a card's matches, styled like a `git log
+/// --oneline` row: its full ref in yellow where the commit hash would be
+/// (untruncated, so it pastes straight into `show`/`comment`), its title in
+/// bold, and the column it sits in, dimmed. The ref and title used to share
+/// one weight, which read as a single run with no visible title.
 fn grep_header(view: &BoardView, card: &CardView, column: &str, color: bool) -> String {
     format!(
         "{}  {}  {}\n",
-        paint(color, SGR_BOLD, &plain_ref(view, &card.id)),
-        card.title,
+        paint(color, SGR_REF, &plain_ref(view, &card.id)),
+        paint(color, SGR_TITLE, &card.title),
         paint(color, SGR_DIM, &format!("({column})")),
     )
 }
@@ -268,8 +270,10 @@ fn grep_match_line(m: &GrepMatch, pattern: &Regex, width: usize, color: bool) ->
     )
 }
 
-/// Bold, for the card ref leading each group.
-const SGR_BOLD: &str = "1";
+/// Yellow, `git log`'s commit-hash color, for the card ref leading each group.
+const SGR_REF: &str = "33";
+/// Bold, so the card's title is what the eye lands on in each header.
+const SGR_TITLE: &str = "1";
 /// Dim grey, as `show` dims its refs, for the column after a card's title.
 const SGR_DIM: &str = "90";
 /// The field label is dimmed too, so the matched text is what stands out.
@@ -422,6 +426,18 @@ mod tests {
         assert!(header.starts_with(&format!("{}  relay reconnect", plain_ref(&view, &c.id))));
         assert!(header.starts_with("headway:work/"), "{header:?}");
         assert!(header.ends_with("(Todo)\n"), "{header:?}");
+
+        // Colored, the ref, title and column each get their own style, so the
+        // title reads as a title rather than a continuation of the ref.
+        let painted = grep_header(&view, c, "Todo", true);
+        let expected = format!(
+            "{}  {}  {}\n",
+            paint(true, SGR_REF, &plain_ref(&view, &c.id)),
+            paint(true, SGR_TITLE, "relay reconnect"),
+            paint(true, SGR_DIM, "(Todo)"),
+        );
+        assert_eq!(painted, expected);
+        assert_ne!(SGR_REF, SGR_TITLE);
 
         let m = GrepMatch {
             field: Field::Comment,
