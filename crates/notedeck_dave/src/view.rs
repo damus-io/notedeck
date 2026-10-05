@@ -487,7 +487,10 @@ impl Dave {
 
     /// Check and dispatch keybindings. Called from render() so that
     /// key consumption only happens when Dave is the active app.
-    pub(crate) fn process_keybindings(&mut self, egui_ctx: &egui::Context) {
+    ///
+    /// Returns the [`AppAction`] a key asks chrome to perform (`s` opening the
+    /// active session's issue), if any.
+    pub(crate) fn process_keybindings(&mut self, egui_ctx: &egui::Context) -> Option<AppAction> {
         let has_pending_permission = self.first_pending_permission().is_some();
         let has_pending_question = self.has_pending_question();
         let in_tentative_state = self
@@ -511,10 +514,16 @@ impl Dave {
             .session_manager
             .get_active()
             .is_some_and(update::session_is_interruptible);
+        // Normal mode's `s` needs an issue to open.
+        let has_issue = self
+            .session_manager
+            .get_active()
+            .is_some_and(|s| s.details.issue_url.is_some());
         let keys = KeyContext {
             ai_mode: active_ai_mode,
             sessions_shown,
             interruptible,
+            has_issue,
             has_pending_permission,
             has_pending_question,
             in_tentative_state,
@@ -524,14 +533,19 @@ impl Dave {
                 m.has_focus(id) || m.had_focus_last_frame(id)
             }),
         };
-        if let Some(key_action) = check_keybindings(egui_ctx, &mut self.normal_mode, keys) {
-            self.handle_key_action(key_action, egui_ctx);
-        }
+        let app_action = check_keybindings(egui_ctx, &mut self.normal_mode, keys)
+            .and_then(|key_action| self.handle_key_action(key_action, egui_ctx));
         ui::settle_normal_mode_focus(&mut self.normal_mode, &mut self.session_manager);
+        app_action
     }
 
-    /// Handle a keybinding action
-    fn handle_key_action(&mut self, key_action: KeyAction, egui_ctx: &egui::Context) {
+    /// Handle a keybinding action, returning the [`AppAction`] it asks chrome
+    /// to perform, if any.
+    fn handle_key_action(
+        &mut self,
+        key_action: KeyAction,
+        egui_ctx: &egui::Context,
+    ) -> Option<AppAction> {
         let bt = self
             .session_manager
             .get_active()
@@ -582,8 +596,13 @@ impl Dave {
             KeyActionResult::PublishModeCommand(cmd) => {
                 self.pending_mode_commands.push(cmd);
             }
+            // Chrome resolves the URI: a `headway:` ref opens its card.
+            KeyActionResult::OpenUri(uri) => {
+                return Some(AppAction::Open(notedeck::OpenUri::new(uri)));
+            }
             KeyActionResult::None => {}
         }
+        None
     }
 
     /// Handle the Send action, including tentative permission states

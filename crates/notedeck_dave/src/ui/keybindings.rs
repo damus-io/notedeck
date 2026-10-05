@@ -26,9 +26,13 @@ pub enum KeyAction {
     PreviousAgent,
     /// Spawn a new agent (Ctrl+T)
     NewAgent,
-    /// Stop the active session's running turn (normal s), the same
+    /// Stop the active session's running turn (normal S), the same
     /// thing the Stop button does
     Interrupt,
+    /// Open the issue the active session works — its `issue_url`, e.g. a
+    /// headway card — through chrome (normal s), the reverse of headway's
+    /// `s` from a card to its session
+    OpenIssue,
     /// Toggle between scene view and classic view
     ToggleView,
     /// Cycle permission mode: Manual → Plan → Accept Edits → Auto (Ctrl+M)
@@ -139,6 +143,8 @@ pub struct NormalMode {
     /// Whether the active session has a running turn to stop, as of the last
     /// frame.
     interruptible: bool,
+    /// Whether the active session has an issue to open, as of the last frame.
+    has_issue: bool,
     /// Normal mode ended wanting the active input focused; taken by
     /// [`Self::take_input_focus`].
     input_focus_due: bool,
@@ -182,8 +188,10 @@ pub struct NormalView {
     pub sessions_shown: bool,
     /// The agentic-only keys (`c`, `v`, `m`, `]q`, `[q`) apply.
     pub agentic: bool,
-    /// `s` has a running turn to stop.
+    /// `S` has a running turn to stop.
     pub interruptible: bool,
+    /// `s` has an issue to open.
+    pub has_issue: bool,
 }
 
 /// One continuation normal mode accepts, as the which-key strip shows it.
@@ -230,8 +238,12 @@ const SESSION_VIEW: &[ChordHint] = &[
     hint("e", KeyAction::OpenExternalEditor),
 ];
 
-/// Turn keys, from either pane.
-const SESSION_TURN: &[ChordHint] = &[hint("s", KeyAction::Interrupt)];
+/// Turn keys, from either pane. `s` jumps to the issue the session works and
+/// `S` stops its turn.
+const SESSION_TURN: &[ChordHint] = &[
+    hint("s", KeyAction::OpenIssue),
+    hint("S", KeyAction::Interrupt),
+];
 
 /// Back to insert mode, from either pane.
 const INSERT: &[ChordHint] = &[
@@ -342,13 +354,14 @@ impl NormalView {
     }
 
     /// Whether `action` does anything this frame: `h` needs the session list
-    /// on screen, `s` a running turn, and the agentic-only keys an agentic
+    /// on screen, `s` an issue, `S` a running turn, and the agentic-only keys an agentic
     /// session. A key that doesn't is swallowed without leaving normal mode, and
     /// the strip leaves it out.
     pub fn offers(self, action: &KeyAction) -> bool {
         match action {
             KeyAction::FocusSessionsPane => self.sessions_shown,
             KeyAction::Interrupt => self.interruptible,
+            KeyAction::OpenIssue => self.has_issue,
             action if action.agentic_only() => self.agentic,
             _ => true,
         }
@@ -381,6 +394,7 @@ impl NormalMode {
             sessions_shown: self.sessions_shown,
             agentic: self.agentic,
             interruptible: self.interruptible,
+            has_issue: self.has_issue,
         }
     }
 
@@ -409,11 +423,12 @@ impl NormalMode {
 
     /// Record what this frame offers normal mode. With the session list off
     /// screen (a narrow layout, the scene view) it falls back to the chat.
-    fn observe(&mut self, sessions_shown: bool, agentic: bool, interruptible: bool) {
-        self.sessions_shown = sessions_shown;
-        self.agentic = agentic;
-        self.interruptible = interruptible;
-        if !sessions_shown {
+    fn observe(&mut self, keys: &KeyContext) {
+        self.sessions_shown = keys.sessions_shown;
+        self.agentic = keys.ai_mode == AiMode::Agentic;
+        self.interruptible = keys.interruptible;
+        self.has_issue = keys.has_issue;
+        if !keys.sessions_shown {
             self.pane = Pane::Chat;
         }
     }
@@ -633,7 +648,8 @@ fn check_normal_mode(ctx: &egui::Context, mode: &mut NormalMode, tentative: bool
             (Continue(Pending::Root), Some(A::CyclePermissionMode))
         }
         (_, Pending::Root, Key::E, false) => (End, Some(A::OpenExternalEditor)),
-        (_, Pending::Root, Key::S, false) => (Continue(Pending::Root), Some(A::Interrupt)),
+        (_, Pending::Root, Key::S, false) => (Continue(Pending::Root), Some(A::OpenIssue)),
+        (_, Pending::Root, Key::S, true) => (Continue(Pending::Root), Some(A::Interrupt)),
         (_, Pending::Root, Key::CloseBracket, false) => (Continue(Pending::CloseBracket), None),
         (_, Pending::Root, Key::OpenBracket, false) => (Continue(Pending::OpenBracket), None),
         (_, Pending::CloseBracket, Key::Q, false) => {
@@ -688,8 +704,10 @@ pub struct KeyContext {
     pub ai_mode: AiMode,
     /// The session list is on screen, for normal mode's `h`.
     pub sessions_shown: bool,
-    /// The active session has a running turn, for normal mode's `s`.
+    /// The active session has a running turn, for normal mode's `S`.
     pub interruptible: bool,
+    /// The active session has an issue to open, for normal mode's `s`.
+    pub has_issue: bool,
     /// A permission request is waiting, for the bare `1` / `2` / `3` keys.
     pub has_pending_permission: bool,
     /// The waiting request is a question set, which takes the number keys
@@ -721,17 +739,15 @@ pub fn check_keybindings(
     mode: &mut NormalMode,
     keys: KeyContext,
 ) -> Option<KeyAction> {
+    mode.observe(&keys);
     let KeyContext {
         ai_mode,
-        sessions_shown,
-        interruptible,
         in_tentative_state,
         overlay_open,
         renaming,
         ..
     } = keys;
     let is_agentic = ai_mode == AiMode::Agentic;
-    mode.observe(sessions_shown, is_agentic, interruptible);
 
     // An overlay is modal: normal mode's keys are the chat's.
     if overlay_open && mode.is_on() {
@@ -999,6 +1015,7 @@ mod tests {
         ai_mode: AiMode::Agentic,
         sessions_shown: true,
         interruptible: true,
+        has_issue: true,
         has_pending_permission: false,
         has_pending_question: false,
         in_tentative_state: false,
@@ -1172,6 +1189,7 @@ mod tests {
                 sessions_shown: true,
                 agentic: true,
                 interruptible: true,
+                has_issue: true,
             };
             assert_eq!(pending_after(prefix), Some(pending), "{pane:?} {prefix:?}");
             let groups = view.hints().iter().chain(view.session_keys());
@@ -1261,14 +1279,47 @@ mod tests {
     }
 
     #[test]
-    fn normal_s_stops_the_running_turn_from_either_pane() {
+    fn normal_shift_s_stops_the_running_turn_from_either_pane() {
         assert_eq!(
-            detect_sequence(&[ESC, (NONE, Key::S)]),
+            detect_sequence(&[ESC, (SHIFT, Key::S)]),
             Some(KeyAction::Interrupt),
         );
         assert_eq!(
-            detect_sequence(&[ESC, (NONE, Key::H), (NONE, Key::S)]),
+            detect_sequence(&[ESC, (NONE, Key::H), (SHIFT, Key::S)]),
             Some(KeyAction::Interrupt),
+        );
+        assert_eq!(
+            pending_after(&[ESC, (SHIFT, Key::S)]),
+            Some(Pending::Root),
+            "S keeps normal mode on, like the other session keys",
+        );
+    }
+
+    #[test]
+    fn normal_shift_s_with_nothing_running_is_swallowed() {
+        let idle = KeyContext {
+            interruptible: false,
+            ..FRAME
+        };
+        assert_eq!(detect_sequence_in(idle, &[ESC, (SHIFT, Key::S)]), None);
+        assert_eq!(
+            pending_after_in(idle, &[ESC, (SHIFT, Key::S)]),
+            Some(Pending::Root),
+            "normal mode stays on",
+        );
+    }
+
+    /// `s` jumps to the session's issue from either pane — and never stops the
+    /// turn, which moved to `S` so the two can't be confused.
+    #[test]
+    fn normal_s_opens_the_sessions_issue_from_either_pane() {
+        assert_eq!(
+            detect_sequence(&[ESC, (NONE, Key::S)]),
+            Some(KeyAction::OpenIssue),
+        );
+        assert_eq!(
+            detect_sequence(&[ESC, (NONE, Key::H), (NONE, Key::S)]),
+            Some(KeyAction::OpenIssue),
         );
         assert_eq!(
             pending_after(&[ESC, (NONE, Key::S)]),
@@ -1278,14 +1329,14 @@ mod tests {
     }
 
     #[test]
-    fn normal_s_with_nothing_running_is_swallowed() {
-        let idle = KeyContext {
-            interruptible: false,
+    fn normal_s_without_an_issue_is_swallowed() {
+        let unlinked = KeyContext {
+            has_issue: false,
             ..FRAME
         };
-        assert_eq!(detect_sequence_in(idle, &[ESC, (NONE, Key::S)]), None);
+        assert_eq!(detect_sequence_in(unlinked, &[ESC, (NONE, Key::S)]), None);
         assert_eq!(
-            pending_after_in(idle, &[ESC, (NONE, Key::S)]),
+            pending_after_in(unlinked, &[ESC, (NONE, Key::S)]),
             Some(Pending::Root),
             "normal mode stays on",
         );

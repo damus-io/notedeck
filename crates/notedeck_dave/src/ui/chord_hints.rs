@@ -206,6 +206,16 @@ fn describe(i18n: &mut Localization, action: &KeyAction) -> Option<String> {
             "Previous in focus queue",
             "Dave which-key tooltip: jump to the previous session waiting for attention"
         ),
+        KeyAction::OpenIssue => tr!(
+            i18n,
+            "Open the session's issue",
+            "Dave which-key tooltip: open the issue (e.g. headway card) the active session works"
+        ),
+        KeyAction::Interrupt => tr!(
+            i18n,
+            "Stop the turn",
+            "Dave which-key tooltip: stop the active session's running turn"
+        ),
         _ => return None,
     })
 }
@@ -229,6 +239,7 @@ mod tests {
             sessions_shown: true,
             agentic: true,
             interruptible: true,
+            has_issue: true,
         };
         let strips = [
             view(Pane::Chat, Pending::Root),
