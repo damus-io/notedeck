@@ -281,7 +281,9 @@ fn grep_searches_card_text_across_the_board() {
     // Colored, too: `--color auto` follows the effective sink, and the default
     // pager (`less -R`) renders color.
     assert!(
-        paged.starts_with(&format!("paged:\x1b[1m{child}\x1b[0m  child task")),
+        paged.starts_with(&format!(
+            "paged:\x1b[33m{child}\x1b[0m  \x1b[1mchild task\x1b[0m"
+        )),
         "{paged:?}"
     );
     assert!(paged.lines().all(|l| l.starts_with("paged:")), "{paged}");
