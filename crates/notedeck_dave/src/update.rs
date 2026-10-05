@@ -675,6 +675,21 @@ pub fn cycle_prev_agent(
     );
 }
 
+/// The session that should take `id`'s place in the list once `id` is gone:
+/// the row below it in visual order, or the row above when it is the last.
+/// `None` when `id` isn't on screen (a collapsed folder) or is the only row.
+pub fn visual_neighbor(
+    session_manager: &mut SessionManager,
+    collapse: &crate::collapse_state::CollapseState,
+    id: SessionId,
+) -> Option<SessionId> {
+    let ids = session_manager.visual_order(collapse);
+    let pos = ids.iter().position(|&other| other == id)?;
+    ids.get(pos + 1)
+        .or_else(|| pos.checked_sub(1).and_then(|prev| ids.get(prev)))
+        .copied()
+}
+
 /// Switch to the last agent in the visual display order.
 pub fn switch_to_last_agent(
     session_manager: &mut SessionManager,

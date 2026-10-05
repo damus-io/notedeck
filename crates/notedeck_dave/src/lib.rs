@@ -965,18 +965,40 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
         }
 
+        // Deleting the active session keeps your place in the list: the row
+        // below takes over, so a run of `dd`s (or Deletes) walks down it.
+        // Left to itself the manager falls back to the most recent session,
+        // wherever that sits.
+        let neighbor = if self.session_manager.active_id() == Some(id) {
+            update::visual_neighbor(&mut self.session_manager, &self.collapse_state, id)
+        } else {
+            None
+        };
+
         let bt = self
             .session_manager
             .get(id)
             .map(|s| s.backend_type)
             .unwrap_or(BackendType::Remote);
-        update::delete_session(
+        let deleted = update::delete_session(
             &mut self.session_manager,
             &mut self.focus_queue,
             get_backend(&self.backends, bt),
             &mut self.directory_picker,
             id,
         );
+
+        // No focus request: a chord's `dd` still holds the keyboard, and the
+        // Delete key never asked for the input either.
+        if let (true, Some(next)) = (deleted, neighbor) {
+            update::switch_session(
+                &mut self.session_manager,
+                &mut self.scene,
+                self.show_scene,
+                next,
+                update::InputFocus::Leave,
+            );
+        }
     }
 
     /// If only one agentic backend is available, return it. Otherwise None
@@ -1744,6 +1766,52 @@ mod tests {
             tomb.spawn_id.as_deref(),
             Some("spawn-1"),
             "the spawn linkage must survive the tombstone"
+        );
+    }
+
+    /// Deleting the active session keeps your place in the list: the row below
+    /// takes over, or the row above when it was the last. A run of `dd`s used
+    /// to bounce to the most recent session instead, wherever it sat.
+    #[test]
+    fn deleting_the_active_session_lands_on_its_list_neighbour() {
+        let base_dir = TempDir::new().unwrap();
+        let data_path = DataPath::new(base_dir.path());
+        let mut dave = test_dave(&data_path);
+
+        for cwd in ["/tmp/a", "/tmp/b", "/tmp/c", "/tmp/d"] {
+            dave.session_manager.new_session(
+                PathBuf::from(cwd),
+                AiMode::Agentic,
+                BackendType::Remote,
+            );
+        }
+        let rows = dave.session_manager.visual_order(&dave.collapse_state);
+        let [first, second, third, last] = rows[..] else {
+            panic!("four rows, got {rows:?}");
+        };
+        // Make the top row the most recent, so falling back to recency would
+        // land somewhere other than the neighbour.
+        dave.session_manager.touch(first);
+        assert_eq!(
+            dave.session_manager.visual_order(&dave.collapse_state),
+            rows,
+            "touching a session doesn't reorder the list"
+        );
+
+        dave.session_manager.switch_to(second);
+        dave.delete_session(second);
+        assert_eq!(dave.session_manager.active_id(), Some(third), "row below");
+
+        dave.session_manager.switch_to(last);
+        dave.delete_session(last);
+        assert_eq!(
+            dave.session_manager.active_id(),
+            Some(third),
+            "the last row falls back to the row above"
+        );
+        assert!(
+            !dave.session_manager.get(third).unwrap().focus_requested,
+            "a delete doesn't pull focus into the input"
         );
     }
 
