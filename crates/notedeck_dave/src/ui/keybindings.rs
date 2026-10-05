@@ -67,9 +67,9 @@ pub enum KeyAction {
     BlockOpen,
     /// Collapse the block under the cursor (normal zc)
     BlockClose,
-    /// Expand every collapsible block (normal zR, Ctrl+Shift+E)
+    /// Expand every collapsible block (normal zr, Ctrl+Shift+E)
     BlockExpandAll,
-    /// Collapse every collapsible block (normal zM, Ctrl+Shift+M)
+    /// Collapse every collapsible block (normal zm, Ctrl+Shift+M)
     BlockCollapseAll,
     /// Drop the block cursor, so the transcript follows new output again (normal q)
     BlockCursorClear,
@@ -292,8 +292,8 @@ const Z_HINTS: &[&[ChordHint]] = &[
         hint("c", KeyAction::BlockClose),
     ],
     &[
-        hint("R", KeyAction::BlockExpandAll),
-        hint("M", KeyAction::BlockCollapseAll),
+        hint("r", KeyAction::BlockExpandAll),
+        hint("m", KeyAction::BlockCollapseAll),
     ],
 ];
 
@@ -616,8 +616,10 @@ fn check_normal_mode(ctx: &egui::Context, mode: &mut NormalMode, tentative: bool
         (_, Pending::Z, Key::A, false) => (Continue(Pending::Root), Some(A::BlockToggle)),
         (_, Pending::Z, Key::O, false) => (Continue(Pending::Root), Some(A::BlockOpen)),
         (_, Pending::Z, Key::C, false) => (Continue(Pending::Root), Some(A::BlockClose)),
-        (_, Pending::Z, Key::R, true) => (Continue(Pending::Root), Some(A::BlockExpandAll)),
-        (_, Pending::Z, Key::M, true) => (Continue(Pending::Root), Some(A::BlockCollapseAll)),
+        // `zr` / `zm`, with or without Shift: vim's `zR` / `zM`, but the
+        // shifted press doesn't arrive reliably.
+        (_, Pending::Z, Key::R, _) => (Continue(Pending::Root), Some(A::BlockExpandAll)),
+        (_, Pending::Z, Key::M, _) => (Continue(Pending::Root), Some(A::BlockCollapseAll)),
 
         // Session keys, from either pane. New-agent and rename open something
         // you type into, so they leave normal mode; so does the external editor.
