@@ -70,6 +70,11 @@ pub(crate) struct SpawnOpts {
     /// in, already normalized to a canonical wire spelling. `None` leaves the
     /// host's own default in place.
     pub(crate) permission_mode: Option<String>,
+    /// `--issue-url`: the issue the new session works (e.g. a
+    /// `headway:<board>/<word-id>` card), already checked to be a URI. It rides
+    /// the command and the host copies it onto the session's state. `None`
+    /// links no issue.
+    pub(crate) issue_url: Option<String>,
     /// `--idempotency-key`: the caller's own name for this *request*, overriding
     /// the one derived from the request's fields. Useful when the caller has a
     /// better notion of identity than the fields give — retrying "the spawn for
@@ -298,19 +303,16 @@ pub(crate) async fn cmd_spawn(
     // aged out of the recent window) as the same spawn rather than a second one.
     // `--allow-duplicate` omits it: opting out of the guard has to opt out of the
     // host's dedupe too, or the host would just re-impose it.
+    let request = SpawnOptions {
+        title: opts.title.as_deref(),
+        prompt: opts.prompt.as_deref(),
+        permission_mode: opts.permission_mode.as_deref(),
+        issue_url: opts.issue_url.as_deref(),
+        idempotency_key: None,
+    };
     let idempotency_key = (!opts.allow_duplicate).then(|| {
         opts.idempotency_key.clone().unwrap_or_else(|| {
-            spawn_idempotency_key(
-                &target.host,
-                &target.cwd,
-                &target.backend,
-                &SpawnOptions {
-                    title: opts.title.as_deref(),
-                    prompt: opts.prompt.as_deref(),
-                    permission_mode: opts.permission_mode.as_deref(),
-                    idempotency_key: None,
-                },
-            )
+            spawn_idempotency_key(&target.host, &target.cwd, &target.backend, &request)
         })
     });
 
@@ -337,10 +339,8 @@ pub(crate) async fn cmd_spawn(
         &target.cwd,
         &target.backend,
         &SpawnOptions {
-            title: opts.title.as_deref(),
-            prompt: opts.prompt.as_deref(),
-            permission_mode: opts.permission_mode.as_deref(),
             idempotency_key: idempotency_key.as_deref(),
+            ..request
         },
     )?;
 
@@ -483,6 +483,7 @@ mod tests {
             title: None,
             prompt: None,
             permission_mode: None,
+            issue_url: None,
             idempotency_key: None,
             allow_duplicate: false,
             wait: false,

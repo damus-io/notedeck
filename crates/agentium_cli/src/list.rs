@@ -334,6 +334,7 @@ pub(crate) mod tests {
             created_at,
             cli_session_id: None,
             spawn_id: None,
+            issue_url: None,
             project: None,
             project_root: None,
         }

@@ -637,6 +637,9 @@ Onboarding_4a25 = Onboarding
 # Button label to open email client
 Open_Email_25e9 = Open Email
 
+# Dave which-key tooltip: open the issue (e.g. headway card) the active session works
+Open_the_session_s_issue_74f1 = Open the session's issue
+
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = Open your default email client to get help from the Damus team
 
@@ -903,6 +906,9 @@ Step_2_d08d = Step 2
 
 # Button to interrupt/stop the AI operation
 Stop_5b38 = Stop
+
+# Dave which-key tooltip: stop the active session's running turn
+Stop_the_turn_7ecf = Stop the turn
 
 # Label for storage settings section
 Storage_ed65 = Storage

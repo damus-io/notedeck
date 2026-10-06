@@ -1476,6 +1476,7 @@ pub fn build_session_state_event(
     permission_mode: &str,
     cli_session_id: Option<&str>,
     spawn_id: Option<&str>,
+    issue_url: Option<&str>,
     project: Option<&str>,
     project_root: Option<&str>,
     created_at: u64,
@@ -1515,6 +1516,12 @@ pub fn build_session_state_event(
     // Spawn command UUID linking this session to the request that created it.
     if let Some(sid) = spawn_id {
         builder = builder.start_tag().tag_str("spawn_id").tag_str(sid);
+    }
+
+    // The issue the session is working (e.g. a `headway:<board>/<word-id>`
+    // card), set at spawn time. Stored verbatim; absent when none was given.
+    if let Some(url) = issue_url.filter(|u| !u.is_empty()) {
+        builder = builder.start_tag().tag_str("issue_url").tag_str(url);
     }
 
     // Project the session's cwd belongs to. `project-root` is the git repo root
@@ -1605,6 +1612,12 @@ pub struct SpawnOptions<'a> {
     /// with no idempotency at all — which is also what an older host that doesn't
     /// read the tag effectively has.
     pub idempotency_key: Option<&'a str>,
+    /// The issue the new session is working (`issue_url` tag), as a URI such as
+    /// `headway:<board>/<word-id>`. The host copies it onto the session's
+    /// kind-31988 state, so every observer can jump from the session to its
+    /// issue. Stored verbatim; `None`/empty links no issue. Ignored on a resume,
+    /// which keeps the value its rehydrated state already carries.
+    pub issue_url: Option<&'a str>,
 }
 
 /// How long a host and client treat a spawn's [`idempotency_key`] as still
@@ -1626,8 +1639,8 @@ pub const SPAWN_DEDUPE_WINDOW_SECS: u64 = 600;
 ///
 /// The digest covers exactly the fields that decide *what session you get*: the
 /// target host, the cwd it runs in, the backend, and each of `opts`' spawn
-/// extras (title, first prompt, permission mode). Two spawns differing in any of
-/// them are different requests and get different keys.
+/// extras (title, first prompt, permission mode, issue). Two spawns differing
+/// in any of them are different requests and get different keys.
 ///
 /// [`SpawnOptions::idempotency_key`] itself is excluded — it names the request,
 /// so it cannot be an input to its own name. That also makes the function safe to
@@ -1657,6 +1670,7 @@ pub fn spawn_idempotency_key(
         opts.title.unwrap_or(""),
         opts.prompt.unwrap_or(""),
         opts.permission_mode.unwrap_or(""),
+        opts.issue_url.unwrap_or(""),
     ] {
         hasher.update((field.len() as u64).to_le_bytes());
         hasher.update(field.as_bytes());
@@ -1688,8 +1702,10 @@ pub fn spawn_idempotency_key(
 /// stamps an `idempotency_key` tag naming the *request*, so a host that already
 /// materialized a session for that key answers with it rather than creating a
 /// second (see [`SpawnOptions::idempotency_key`] and
-/// [`spawn_idempotency_key`]). Each empty/absent field simply omits its tag,
-/// leaving the host's own default in place.
+/// [`spawn_idempotency_key`]); a non-empty `issue_url` stamps an `issue_url`
+/// tag naming the issue the session works, which the host copies onto its
+/// kind-31988 state. Each empty/absent field simply omits its tag, leaving the
+/// host's own default in place.
 pub fn build_spawn_command_event(
     target_host: &str,
     cwd: &str,
@@ -1745,6 +1761,11 @@ pub fn build_spawn_command_event(
         // so reviving it twice is idempotent on its own and needs no key.
         if let Some(key) = opts.idempotency_key.filter(|k| !k.is_empty()) {
             builder = builder.start_tag().tag_str("idempotency_key").tag_str(key);
+        }
+        // The issue the session is working, which the host copies onto its
+        // kind-31988 state. A resumed session already carries its own.
+        if let Some(url) = opts.issue_url.filter(|u| !u.is_empty()) {
+            builder = builder.start_tag().tag_str("issue_url").tag_str(url);
         }
     }
 
@@ -2920,6 +2941,7 @@ mod tests {
             "plan",
             None,
             None,
+            Some("headway:dave/some-card-ref"),
             None,
             None,
             1_770_000_000,
@@ -2944,6 +2966,7 @@ mod tests {
         assert!(json.contains(r#""hostname","my-laptop"#));
         assert!(json.contains(r#""backend","claude"#));
         assert!(json.contains(r#""permission-mode","plan"#));
+        assert!(json.contains(r#""issue_url","headway:dave/some-card-ref"#));
         // created_at is the caller-supplied value (monotonic per session)
         assert!(json.contains(r#""created_at":1770000000"#), "json: {json}");
     }
@@ -2981,6 +3004,49 @@ mod tests {
         assert!(!json.contains("permission_mode"), "json: {json}");
         // No idempotency key → no tag, so the host has nothing to dedupe on.
         assert!(!json.contains("idempotency_key"), "json: {json}");
+        // No issue → no tag, so the session links nothing.
+        assert!(!json.contains("issue_url"), "json: {json}");
+    }
+
+    /// A spawn's issue rides the command so the host can copy it onto the new
+    /// session's state; a resume keeps the issue its rehydrated state carries,
+    /// so the builder drops it with the other new-session-only tags.
+    #[test]
+    fn spawn_command_carries_issue_url_on_new_spawns_only() {
+        let sk = test_secret_key();
+        let opts = SpawnOptions {
+            issue_url: Some("headway:dave/some-card-ref"),
+            ..Default::default()
+        };
+        let spawn =
+            build_spawn_command_event("host-a", "/tmp/proj", "claude", &opts, "spawn-1", None, &sk)
+                .unwrap();
+        assert!(
+            spawn
+                .note_json
+                .contains(r#""issue_url","headway:dave/some-card-ref"#),
+            "json: {}",
+            spawn.note_json
+        );
+
+        let resume = build_spawn_command_event(
+            "host-a",
+            "/tmp/proj",
+            "claude",
+            &opts,
+            "spawn-1",
+            Some(&ResumeSpawn {
+                target_session_id: "sess-1",
+                cli_session_id: "cli-1",
+            }),
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            !resume.note_json.contains("issue_url"),
+            "json: {}",
+            resume.note_json
+        );
     }
 
     #[test]
@@ -3138,6 +3204,18 @@ mod tests {
                     "claude",
                     &SpawnOptions {
                         permission_mode: Some("acceptEdits"),
+                        ..base_opts
+                    },
+                ),
+            ),
+            (
+                "issue_url",
+                spawn_idempotency_key(
+                    "host-a",
+                    "/tmp/proj",
+                    "claude",
+                    &SpawnOptions {
+                        issue_url: Some("headway:dave/other-card"),
                         ..base_opts
                     },
                 ),

@@ -362,6 +362,9 @@ fn render_detail(
     out.push_str(&field("session", &s.claude_session_id));
     out.push_str(&field("cli session", &dash(s.cli_session_id.as_deref())));
     out.push_str(&field("spawn id", &dash(s.spawn_id.as_deref())));
+    if let Some(issue) = s.issue_url.as_deref().filter(|i| !i.is_empty()) {
+        out.push_str(&field("issue", issue));
+    }
     out.push_str(&field(
         "host",
         if s.hostname.is_empty() {
@@ -533,6 +536,24 @@ mod tests {
         assert!(out.contains("7 messages"));
         assert!(out.contains("pending permissions"));
         assert!(out.contains("aaaa1111  Bash"), "{out}");
+    }
+
+    /// The issue line shows only when the session was spawned with one, like
+    /// the indicator — most sessions have none, so a dash row would be noise.
+    #[test]
+    fn render_detail_shows_issue_only_when_set() {
+        let summary = ConversationSummary {
+            message_count: 0,
+            pending: vec![],
+            subagents: vec![],
+        };
+        let mut s = session("mac", "t", "idle", 0);
+        let out = render_detail(&s, &[], None, &summary, 0, false);
+        assert!(!out.contains("issue"), "{out}");
+
+        s.issue_url = Some("headway:dave/receive-east-neutral".into());
+        let out = render_detail(&s, &[], None, &summary, 0, false);
+        assert!(out.contains("headway:dave/receive-east-neutral"), "{out}");
     }
 
     #[test]

@@ -76,6 +76,30 @@ fn parse_mode_flag(value: &str) -> Result<String> {
         })
 }
 
+/// Validate a `--issue-url` value: a URI naming the issue the session works.
+///
+/// Stored verbatim, so this only checks it *is* a URI — a non-empty
+/// `scheme:rest` with an RFC 3986 scheme. That rejects a bare headway word-id
+/// (or `board/word-id`), which looks plausible but names no board and so can't
+/// be opened from the session; the error points at the routable form instead.
+fn parse_issue_url_flag(value: &str) -> Result<String> {
+    let value = value.trim();
+    let has_scheme = value.split_once(':').is_some_and(|(scheme, rest)| {
+        let mut chars = scheme.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+            && !rest.is_empty()
+    });
+    if !has_scheme {
+        return Err(format!(
+            "--issue-url '{value}' is not a URI — for a headway card use \
+             headway:<board>/<word-id>"
+        )
+        .into());
+    }
+    Ok(value.to_string())
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     // Terminate quietly on a closed pipe (`agentium list | head`) instead of
@@ -156,8 +180,9 @@ enum Command {
     /// same worktree on the same host. `--title` gives the session an explicit,
     /// sticky title; `--prompt` (which implies `--wait`) delivers a first `user`
     /// message once the session exists; `--permission-mode` picks the mode the
-    /// session's agent starts in. `--allow-duplicate` opts out of both duplicate
-    /// defences (the pre-publish guard and the host's idempotency key).
+    /// session's agent starts in; `--issue-url` links the session to the issue
+    /// (e.g. headway card) it works. `--allow-duplicate` opts out of both
+    /// duplicate defences (the pre-publish guard and the host's idempotency key).
     Spawn {
         host: Option<String>,
         cwd: Option<String>,
@@ -167,6 +192,8 @@ enum Command {
         /// Already normalized to a canonical wire spelling by
         /// [`parse_mode_flag`], so an alias can never reach the command event.
         permission_mode: Option<String>,
+        /// Already checked to be a URI by [`parse_issue_url_flag`].
+        issue_url: Option<String>,
         idempotency_key: Option<String>,
         allow_duplicate: bool,
         wait: bool,
@@ -360,6 +387,7 @@ async fn run() -> Result<()> {
             title,
             prompt,
             permission_mode,
+            issue_url,
             idempotency_key,
             allow_duplicate,
             wait,
@@ -372,6 +400,7 @@ async fn run() -> Result<()> {
                 title,
                 prompt,
                 permission_mode,
+                issue_url,
                 idempotency_key,
                 allow_duplicate,
                 wait,
@@ -518,6 +547,7 @@ impl Cli {
         let mut prompt = None;
         let mut prompt_file = None;
         let mut permission_mode = None;
+        let mut issue_url = None;
         let mut idempotency_key = None;
         let mut allow_duplicate = false;
         let mut wait = false;
@@ -586,6 +616,7 @@ impl Cli {
                 "--permission-mode" => {
                     permission_mode = Some(parse_mode_flag(&value("--permission-mode")?)?)
                 }
+                "--issue-url" => issue_url = Some(parse_issue_url_flag(&value("--issue-url")?)?),
                 "--idempotency-key" => idempotency_key = Some(value("--idempotency-key")?),
                 "--allow-duplicate" => allow_duplicate = true,
                 "--wait" => wait = true,
@@ -677,6 +708,7 @@ impl Cli {
                 title,
                 prompt,
                 permission_mode,
+                issue_url,
                 idempotency_key,
                 allow_duplicate,
                 wait,
@@ -881,7 +913,8 @@ COMMANDS:
                       --prompt <text> rides the command so the host delivers it as
                       the session's first message (delivery no longer depends on
                       --wait, so a slow host still gets the prompt);
-                      --permission-mode picks the mode its agent starts in. --json emits
+                      --permission-mode picks the mode its agent starts in;
+                      --issue-url links it to the card it works. --json emits
                       {{ spawn_id, host, session }} on one line. A spawn that looks
                       like a retry of a recent one (same host+cwd+title) is refused,
                       naming the session it would have duplicated; the host also
@@ -1005,10 +1038,13 @@ OPTIONS:
                       auto | bypass. Asking for it in --prompt does NOT work — the
                       backend has already started by the time it reads that
                       message. bypass does no safety checking at all.
+    --issue-url <uri> The issue the session works, e.g. headway:<board>/<word-id>.
+                      Recorded on the session's state (`show` prints it) so
+                      pressing s on the session in Dave opens the card.
     --idempotency-key <k>
                       Name this *request*, so a retry of it is recognized as the
                       same spawn. Defaults to a digest of the request itself
-                      (host+cwd+backend+title+prompt+mode), which already makes an
+                      (host+cwd+backend+title+prompt+mode+issue), which already makes an
                       identical re-run safe; pass your own when you have a better
                       notion of identity (a job id, say).
     --allow-duplicate Really spawn a second session the duplicate guard would
@@ -1619,6 +1655,45 @@ mod tests {
                 assert_eq!(wait_timeout, Some(45));
             }
             _ => panic!("expected Spawn"),
+        }
+    }
+
+    /// `--issue-url` keeps a URI verbatim (trimmed) and refuses anything without
+    /// a scheme — a bare headway word-id names no board, so it couldn't be
+    /// opened from the session.
+    #[test]
+    fn spawn_issue_url_must_be_a_uri() {
+        let cli = parse_cli(&[
+            "--nsec",
+            TEST_NSEC,
+            "--issue-url",
+            " headway:dave/receive-east-neutral ",
+            "spawn",
+        ])
+        .unwrap()
+        .unwrap();
+        match cli.command {
+            Command::Spawn { issue_url, .. } => {
+                assert_eq!(
+                    issue_url.as_deref(),
+                    Some("headway:dave/receive-east-neutral")
+                );
+            }
+            _ => panic!("expected Spawn"),
+        }
+
+        for bad in [
+            "",
+            "receive-east-neutral",
+            "dave/receive-east-neutral",
+            "headway:",
+            "1x:y",
+        ] {
+            let err = parse_cli(&["--nsec", TEST_NSEC, "--issue-url", bad, "spawn"])
+                .err()
+                .unwrap_or_else(|| panic!("{bad:?} should be refused"))
+                .to_string();
+            assert!(err.contains("headway:<board>/<word-id>"), "{bad:?}: {err}");
         }
     }
 

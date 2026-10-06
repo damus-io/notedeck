@@ -2842,9 +2842,9 @@ mod tests {
         harness.state_mut().take()
     }
 
-    /// Type Esc then `s` in a real egui frame, with a turn running, and return
+    /// Type Esc then `S` in a real egui frame, with a turn running, and return
     /// the keybinding it triggers.
-    fn press_escape_s() -> Option<crate::ui::keybindings::KeyAction> {
+    fn press_escape_shift_s() -> Option<crate::ui::keybindings::KeyAction> {
         use crate::ui::keybindings::{check_keybindings, KeyAction, KeyContext, NormalMode};
 
         let mut harness = egui_kittest::Harness::new_ui_state(
@@ -2855,6 +2855,7 @@ mod tests {
                     ai_mode: AiMode::Agentic,
                     sessions_shown: true,
                     interruptible: true,
+                    has_issue: false,
                     has_pending_permission: false,
                     has_pending_question: false,
                     in_tentative_state: false,
@@ -2869,18 +2870,18 @@ mod tests {
         );
         harness.run();
         harness.press_key_modifiers(egui::Modifiers::NONE, egui::Key::Escape);
-        harness.press_key_modifiers(egui::Modifiers::NONE, egui::Key::S);
+        harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::S);
         harness.state().1.clone()
     }
 
     /// Both gestures reach the interrupt, and both leave the session usable.
     ///
     /// End-to-end over the real widgets: a click on the rendered Stop button
-    /// and a real Esc `s` each arrive at the shared interrupt path through
+    /// and a real Esc `S` each arrive at the shared interrupt path through
     /// their own dispatch, and the session still owns a live stream afterwards
     /// either way.
     #[test]
-    fn stop_button_and_chord_s_both_interrupt_without_breaking_the_session() {
+    fn stop_button_and_chord_shift_s_both_interrupt_without_breaking_the_session() {
         let ctx = egui::Context::default();
 
         // --- Stop button: click the real widget, follow the action it raises.
@@ -2905,14 +2906,14 @@ mod tests {
         );
         assert_eq!(stop_backend.interrupt_count(), 1, "Stop aborted the turn");
 
-        // --- Esc `s`: type the real keys, follow the keybinding.
-        let key_action = press_escape_s();
+        // --- Esc `S`: type the real keys, follow the keybinding.
+        let key_action = press_escape_shift_s();
         assert!(
             matches!(
                 key_action,
                 Some(crate::ui::keybindings::KeyAction::Interrupt)
             ),
-            "Esc s must trigger Interrupt, got {key_action:?}"
+            "Esc S must trigger Interrupt, got {key_action:?}"
         );
 
         let (s_backend, s_tx) = PersistentStreamFake::new();

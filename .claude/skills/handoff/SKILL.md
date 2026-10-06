@@ -29,6 +29,10 @@ a short TL;DR — not the card's full text.)
   in `agentium list` — e.g. the headway card's title or a terse summary of the
   task. Set it with `--title` rather than letting it derive from the first
   message.
+- If the task is a **headway card**, link the session to it with
+  `--issue-url headway:<board>/<word-id>` (the full ref, never a bare word-id —
+  the CLI rejects one). The card is then recorded on the session itself, so
+  `agentium show` names it and `s` on the session in Dave opens it.
 - If the new session should **investigate and get approval before writing code**,
   pass `--permission-mode plan`. Writing "start in plan mode" in the prompt does
   **not** work: the session's backend has already launched in the host's default
@@ -53,8 +57,9 @@ EOF
 echo "$ref"
 ```
 
-Add `--permission-mode plan` when the task should be investigated and approved
-before any code is written.
+Add `--issue-url headway:<board>/<word-id>` when the task is a headway card, and
+`--permission-mode plan` when the task should be investigated and approved before
+any code is written.
 
 That's the whole handoff. Notes:
 

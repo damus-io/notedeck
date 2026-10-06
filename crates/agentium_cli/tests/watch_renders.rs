@@ -291,6 +291,7 @@ async fn watch_redraws_on_a_live_status_change() {
         None,
         None,
         None,
+        None,
         now,
         &SECKEY,
     )

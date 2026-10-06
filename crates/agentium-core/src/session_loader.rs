@@ -939,6 +939,10 @@ pub struct SessionState {
     pub cli_session_id: Option<String>,
     /// Spawn command UUID linking this session to the request that created it.
     pub spawn_id: Option<String>,
+    /// The issue the session is working, as a URI such as
+    /// `headway:<board>/<word-id>`, set by `agentium spawn --issue-url`.
+    /// Absent when the session was spawned without one.
+    pub issue_url: Option<String>,
     /// Display slug of the project the cwd belongs to (git repo root basename).
     /// Absent on old events / non-git cwds — grouping then derives it from the cwd.
     pub project: Option<String>,
@@ -1008,6 +1012,7 @@ impl SessionState {
             created_at: note.created_at(),
             cli_session_id: get_tag_value(note, "cli_session").map(|s| s.to_string()),
             spawn_id: get_tag_value(note, "spawn_id").map(|s| s.to_string()),
+            issue_url: get_tag_value(note, "issue_url").map(|s| s.to_string()),
             project: get_tag_value(note, "project").map(|s| s.to_string()),
             project_root: get_tag_value(note, "project-root").map(|s| s.to_string()),
         })
@@ -1039,6 +1044,7 @@ impl SessionState {
             self.permission_mode.as_deref().unwrap_or("default"),
             self.cli_session_id.as_deref(),
             self.spawn_id.as_deref(),
+            self.issue_url.as_deref(),
             self.project.as_deref(),
             self.project_root.as_deref(),
             self.created_at,
@@ -2113,6 +2119,7 @@ mod tests {
             created_at: 0,
             cli_session_id: cli.map(|s| s.to_string()),
             spawn_id: None,
+            issue_url: None,
             project: None,
             project_root: None,
         }
@@ -3333,7 +3340,7 @@ mod tests {
     ) -> String {
         crate::session_events::build_session_state_event(
             session_id, "t", None, cwd, "idle", None, hostname, "/home/u", "claude", "default",
-            None, None, None, None, created_at, sk,
+            None, None, None, None, None, created_at, sk,
         )
         .unwrap()
         .to_event_json()
@@ -3408,6 +3415,7 @@ mod tests {
             created_at,
             cli_session_id: None,
             spawn_id: None,
+            issue_url: None,
             project: None,
             project_root: None,
         };
@@ -3470,6 +3478,51 @@ mod tests {
             kept,
             (0..10).map(|i| format!("/proj/{i:02}")).collect::<Vec<_>>(),
             "the cwd tiebreak decides which ten paths clear the cap",
+        );
+    }
+
+    /// [`SessionState::build_event`] and [`SessionState::from_note`] are exact
+    /// inverses: a state with every optional field set survives the trip through
+    /// a signed kind-31988 note unchanged. A field the builder forgets to write
+    /// (or the parser to read) comes back `None` and fails here.
+    #[tokio::test]
+    async fn session_state_round_trips_through_its_note() {
+        let sk = test_secret_key();
+        let dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
+
+        let state = SessionState {
+            claude_session_id: "round-trip".to_string(),
+            title: "derived".to_string(),
+            custom_title: Some("custom".to_string()),
+            cwd: "/home/u/proj".to_string(),
+            status: "working".to_string(),
+            indicator: Some("needs_input".to_string()),
+            hostname: "host".to_string(),
+            home_dir: "/home/u".to_string(),
+            backend: Some("claude".to_string()),
+            permission_mode: Some("plan".to_string()),
+            created_at: 1_770_000_000,
+            cli_session_id: Some("cli-1".to_string()),
+            spawn_id: Some("spawn-1".to_string()),
+            issue_url: Some("headway:dave/some-card".to_string()),
+            project: Some("proj".to_string()),
+            project_root: Some("/home/u/proj".to_string()),
+        };
+        let event = state.build_event(&sk).unwrap().to_event_json();
+        let filter = Filter::new()
+            .kinds([crate::session_events::AI_SESSION_STATE_KIND as u64])
+            .build();
+        ingest_all(&ndb, &filter, &[event]).await;
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let results = ndb.query(&txn, &[filter], 1).unwrap();
+        let note = &results.first().expect("the state landed").note;
+        let parsed = SessionState::from_note(note, None).expect("parses");
+
+        assert_eq!(
+            serde_json::to_value(&parsed).unwrap(),
+            serde_json::to_value(&state).unwrap(),
         );
     }
 

@@ -792,6 +792,9 @@ pub enum KeyActionResult {
     PublishModeCommand(update::ModeCommandPublish),
     /// Interrupt command needs relay publishing (observer → host).
     PublishInterruptCommand(update::InterruptPublish),
+    /// Open this URI (the active session's issue) through chrome, which routes
+    /// a `headway:` ref to its card.
+    OpenUri(String),
 }
 
 /// Run a block-cursor action against the active chat's [`BlockNav`].
@@ -985,6 +988,10 @@ pub fn handle_key_action(
             Some(cmd) => KeyActionResult::PublishInterruptCommand(cmd),
             None => KeyActionResult::None,
         },
+        KeyAction::OpenIssue => session_manager
+            .get_active()
+            .and_then(|s| s.details.issue_url.clone())
+            .map_or(KeyActionResult::None, KeyActionResult::OpenUri),
         KeyAction::ToggleView => KeyActionResult::ToggleView,
         KeyAction::CyclePermissionMode => {
             let publish = update::cycle_permission_mode(session_manager, backend, ctx);
@@ -1359,7 +1366,9 @@ pub fn handle_ui_action(
 #[cfg(test)]
 mod tests {
     use super::dave::input_id;
-    use super::{dispatch_open_terminal, handle_key_action, settle_normal_mode_focus};
+    use super::{
+        dispatch_open_terminal, handle_key_action, settle_normal_mode_focus, KeyActionResult,
+    };
     use crate::backend::RemoteOnlyBackend;
     use crate::collapse_state::CollapseState;
     use crate::config::AiMode;
@@ -1411,7 +1420,7 @@ mod tests {
             }
         }
 
-        fn dispatch(&mut self, action: KeyAction, ctx: &egui::Context) {
+        fn dispatch(&mut self, action: KeyAction, ctx: &egui::Context) -> KeyActionResult {
             handle_key_action(
                 action,
                 &mut self.session_manager,
@@ -1423,12 +1432,32 @@ mod tests {
                 false,
                 &mut None,
                 ctx,
-            );
+            )
         }
 
         fn focus_requested(&self, id: SessionId) -> bool {
             self.session_manager.get(id).unwrap().focus_requested
         }
+    }
+
+    /// `s` hands chrome the active session's issue URI verbatim, and does
+    /// nothing for a session spawned without one.
+    #[test]
+    fn open_issue_opens_the_active_sessions_issue() {
+        let mut d = Dispatch::new();
+        let ctx = egui::Context::default();
+        assert!(matches!(
+            d.dispatch(KeyAction::OpenIssue, &ctx),
+            KeyActionResult::None
+        ));
+
+        let [first, _] = d.sessions;
+        d.session_manager.get_mut(first).unwrap().details.issue_url =
+            Some("headway:dave/receive-east-neutral".to_string());
+        assert!(matches!(
+            d.dispatch(KeyAction::OpenIssue, &ctx),
+            KeyActionResult::OpenUri(uri) if uri == "headway:dave/receive-east-neutral"
+        ));
     }
 
     #[test]
@@ -1463,6 +1492,7 @@ mod tests {
             ai_mode: AiMode::Agentic,
             sessions_shown: true,
             interruptible: false,
+            has_issue: false,
             has_pending_permission: update::first_pending_permission(&d.session_manager).is_some(),
             has_pending_question: false,
             in_tentative_state,

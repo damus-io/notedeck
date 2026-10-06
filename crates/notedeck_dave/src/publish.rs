@@ -161,6 +161,7 @@ pub(crate) fn session_state_snapshot(
         created_at,
         cli_session_id: agentic.cli_resume_id().map(|s| s.to_string()),
         spawn_id: session.spawn_id.clone(),
+        issue_url: session.details.issue_url.clone(),
         project: session.details.project_slug.clone(),
         project_root: session
             .details
@@ -818,6 +819,7 @@ mod tests {
             "claude",
             "default",
             Some(sid),
+            None,
             None,
             None,
             None,

@@ -83,6 +83,9 @@ struct SpawnCommand {
     /// duplicate-spawn dedupe on. Absent when the CLI was told
     /// `--allow-duplicate`.
     idempotency_key: Option<String>,
+    /// The `issue_url` tag naming the issue the session works, which a real
+    /// host copies onto the session's kind-31988 state.
+    issue_url: Option<String>,
 }
 
 /// Wait (bounded) for the helper host to see a kind-31989 spawn command in its
@@ -108,6 +111,7 @@ async fn await_spawn_command(host: &Engine) -> Option<SpawnCommand> {
             .map(|s| s.to_string()),
         idempotency_key: session_events::get_tag_value(note, "idempotency_key")
             .map(|s| s.to_string()),
+        issue_url: session_events::get_tag_value(note, "issue_url").map(|s| s.to_string()),
     })
 }
 
@@ -136,6 +140,8 @@ async fn spawn_wait_resolves_and_prompt_lands() {
     // the explicit flags, not a current session).
     let cli_dir = TempDir::new().expect("cli tmp");
     let db_path = cli_dir.path().to_str().expect("path").to_string();
+    // A copy for the closure, so `cli_dir` itself stays here for the `show` below.
+    let home = cli_dir.path().to_path_buf();
     let url_for_cli = url.clone();
     let bin = agentium_bin();
 
@@ -161,10 +167,12 @@ async fn spawn_wait_resolves_and_prompt_lands() {
                 // to the canonical wire spelling before publishing.
                 "--permission-mode",
                 "acceptEdits",
+                "--issue-url",
+                "headway:dave/receive-east-neutral",
                 "--wait",
             ])
-            .env("XDG_DATA_HOME", cli_dir.path())
-            .env("HOME", cli_dir.path())
+            .env("XDG_DATA_HOME", &home)
+            .env("HOME", &home)
             .output()
             .expect("run agentium spawn")
     });
@@ -187,6 +195,8 @@ async fn spawn_wait_resolves_and_prompt_lands() {
         "default",
         Some(""),
         Some(&command.spawn_id),
+        // A real host copies the command's issue onto the session's state.
+        command.issue_url.as_deref(),
         None,
         None,
         1_770_000_000,
@@ -232,6 +242,36 @@ async fn spawn_wait_resolves_and_prompt_lands() {
         command.permission_mode.as_deref(),
         Some("accept_edits"),
         "the spawn command should carry --permission-mode, canonically spelled"
+    );
+
+    // And the issue, verbatim, for the host to record on the session's state.
+    assert_eq!(
+        command.issue_url.as_deref(),
+        Some("headway:dave/receive-east-neutral"),
+        "the spawn command should carry --issue-url as its `issue_url` tag"
+    );
+
+    // `show` reads the issue back off the state the host answered with.
+    let shown = Command::new(agentium_bin())
+        .args([
+            "--nsec",
+            NSEC,
+            "--db",
+            cli_dir.path().to_str().expect("path"),
+            "--relay",
+            &url,
+            "show",
+            SPAWNED_SID,
+        ])
+        .env("XDG_DATA_HOME", cli_dir.path())
+        .env("HOME", cli_dir.path())
+        .output()
+        .expect("run agentium show");
+    let shown_out = String::from_utf8_lossy(&shown.stdout);
+    assert!(
+        shown.status.success() && shown_out.contains("headway:dave/receive-east-neutral"),
+        "show should print the session's issue:\n{shown_out}\nstderr:\n{}",
+        String::from_utf8_lossy(&shown.stderr)
     );
 
     relay.shutdown();
@@ -448,6 +488,7 @@ async fn a_repeated_spawn_publishes_one_command() {
         "default",
         Some(""),
         Some(&command.spawn_id),
+        None,
         None,
         None,
         session_events::now_secs(),

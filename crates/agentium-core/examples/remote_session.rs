@@ -185,6 +185,7 @@ fn desktop_open_session(seeder: &Session, relay: &str) {
         None,
         None,
         None,
+        None,
         now_secs(),
         &DEVICE_KEY,
     )

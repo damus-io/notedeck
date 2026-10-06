@@ -57,6 +57,10 @@ struct SpawnRequest {
     /// shows immediately and no later message overwrites it; `None` lets the
     /// title derive from the first message as before.
     custom_title: Option<String>,
+    /// The issue the session works, from the command's `issue_url` tag
+    /// (e.g. `headway:<board>/<word-id>`). Stamped into the new session's
+    /// details so it rides every kind-31988 state the session publishes.
+    issue_url: Option<String>,
     /// The new session's first `user` message, from the command's `prompt`
     /// tag. Delivered locally the moment the session is materialized, so a
     /// spawner's first message lands even when this host answered too slowly
@@ -180,6 +184,9 @@ fn decode_session_command(
             let custom_title = session_events::get_tag_value(note, "custom_title")
                 .filter(|t| !t.is_empty())
                 .map(|s| s.to_string());
+            let issue_url = session_events::get_tag_value(note, "issue_url")
+                .filter(|t| !t.is_empty())
+                .map(|s| s.to_string());
             let prompt = session_events::get_tag_value(note, "prompt")
                 .filter(|t| !t.is_empty())
                 .map(|s| s.to_string());
@@ -211,6 +218,7 @@ fn decode_session_command(
                     backend,
                     spawn_id,
                     custom_title,
+                    issue_url,
                     prompt,
                     permission_mode,
                     idempotency_key,
@@ -260,6 +268,7 @@ impl Dave {
             backend,
             spawn_id,
             custom_title,
+            issue_url,
             prompt,
             permission_mode,
             idempotency_key,
@@ -317,6 +326,7 @@ impl Dave {
             if let Some(title) = custom_title {
                 session.details.custom_title = Some(title);
             }
+            session.details.issue_url = issue_url;
             // Set the mode *here*, before the first message is queued below:
             // `dispatch` reads it to build the backend's options, and that
             // dispatch happens later in this same frame. Applying it afterwards —
@@ -600,6 +610,7 @@ mod tests {
                 title: Some("Wire the widget"),
                 permission_mode: Some("plan"),
                 idempotency_key: Some("key-abc"),
+                issue_url: Some("headway:dave/wire-the-widget"),
                 ..Default::default()
             },
             "spawn-2",
@@ -659,6 +670,10 @@ mod tests {
         assert_eq!(request.custom_title.as_deref(), Some("Wire the widget"));
         assert_eq!(request.permission_mode, Some(PermissionMode::Plan));
         assert_eq!(
+            request.issue_url.as_deref(),
+            Some("headway:dave/wire-the-widget")
+        );
+        assert_eq!(
             request.idempotency_key.as_deref(),
             Some("key-abc"),
             "the request identity must survive decode, or nothing can dedupe on it",
@@ -676,6 +691,7 @@ mod tests {
         };
         assert_eq!(request.permission_mode, None);
         assert_eq!(request.idempotency_key, None);
+        assert_eq!(request.issue_url, None);
 
         // The target-host gate drops commands meant for another host.
         assert!(
@@ -693,6 +709,7 @@ mod tests {
             backend: BackendType::Claude,
             spawn_id: Some(spawn_id.to_string()),
             custom_title: Some("Fix the parser".to_string()),
+            issue_url: Some("headway:dave/fix-the-parser".to_string()),
             prompt: Some("read crates/foo and fix it".to_string()),
             permission_mode: None,
             idempotency_key: key.map(str::to_string),
@@ -721,6 +738,23 @@ mod tests {
         let (created, prompt) = first.expect("a prompted spawn delivers its first message");
         assert_eq!(prompt, "read crates/foo and fix it");
         assert_eq!(dave.session_manager.iter().count(), before + 1);
+        // The spawn's issue lands on the session, and from there in every
+        // kind-31988 state it publishes.
+        let spawned = dave
+            .session_manager
+            .get(created)
+            .expect("session materialized");
+        assert_eq!(
+            spawned.details.issue_url.as_deref(),
+            Some("headway:dave/fix-the-parser")
+        );
+        assert_eq!(
+            crate::publish::session_state_snapshot(spawned, "idle".into(), "h".into(), 1)
+                .expect("agentic session")
+                .issue_url
+                .as_deref(),
+            Some("headway:dave/fix-the-parser"),
+        );
 
         // Clear the flag a fresh session is born with, so the assertion below
         // measures what the *retry* did rather than what creation already did.

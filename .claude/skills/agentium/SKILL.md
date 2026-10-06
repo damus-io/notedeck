@@ -326,6 +326,7 @@ agentium spawn --host mbp --cwd ~/dev/notedeck --wait   # print the new agentium
 agentium spawn --title "Fix the parser" --wait   # give it an explicit, sticky title
 agentium spawn --host mbp --cwd ~/proj --prompt "run the tests" --wait
 agentium spawn --permission-mode plan --prompt "design the migration" --wait  # plan first
+agentium spawn --title "Fix the parser" --issue-url headway:dave/<word-id> --wait  # link its card
 agentium spawn --host mbp --cwd ~/proj --wait --json    # {spawn_id,host,session,event_id}
 agentium spawn --host mbp --cwd ~/proj --wait --wait-timeout 60   # give a slow host longer
 agentium spawn --title "Fix the parser" --prompt-file - <<'EOF'   # heredoc a long first message
@@ -369,6 +370,17 @@ Flags:
   backend's mode is chosen, but reach for it deliberately.) To change the mode of
   an *already running* session, use dave's Ctrl+M / mode badge — there is no CLI
   verb for that yet.
+- `--issue-url <uri>` — the issue the new session **works**, as a URI —
+  `headway:<board>/<word-id>` for a headway card. It rides the spawn command and
+  the host records it verbatim on the session's kind-31988 state (tag
+  `issue_url`), so every observer sees it: `show` prints it as an `issue` line,
+  `list --json`/`show --json` carry it as `issue_url`, and pressing **`s`** on the
+  session in Dave's normal mode opens the card (the reverse of headway's `s`,
+  which jumps from a card to its session). A value with no `scheme:` is rejected
+  before publishing — a bare word-id names no board, so it couldn't be opened.
+  **Pass it whenever the session works a headway card** (`/handoff` and
+  `/autowork` do). It is set on spawn only; a resumed session keeps the issue its
+  state already carries.
 - `--prompt-file <path>` — the escaping-free alternative to `--prompt`: read the
   first message from a file, or from stdin when `<path>` is `-`, so a long
   multi-line prompt can heredoc in with no shell-escaping (the `/handoff` flow
@@ -410,7 +422,7 @@ Two defences also stand behind you:
   duplicated plus how to follow it. Untitled spawns aren't guarded (there is
   nothing to compare), so they lean on the second defence.
 - Every spawn carries an `idempotency_key` derived from the request itself
-  (host+cwd+backend+title+prompt+mode). A host that has already materialized a
+  (host+cwd+backend+title+prompt+mode+issue). A host that has already materialized a
   session for that key **answers the repeat with that session** instead of
   creating another, and does not re-deliver its prompt. Pass
   `--idempotency-key <k>` to name the request yourself when you have a better

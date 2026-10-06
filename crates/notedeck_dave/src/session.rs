@@ -67,6 +67,11 @@ pub struct SessionDetails {
     pub title: String,
     /// User-set title that takes precedence over the auto-generated one.
     pub custom_title: Option<String>,
+    /// The issue this session works, as a URI such as
+    /// `headway:<board>/<word-id>` — set when it was spawned with
+    /// `agentium spawn --issue-url`, and synced through kind-31988 state.
+    /// `s` in normal mode opens it.
+    pub issue_url: Option<String>,
     pub hostname: String,
     pub cwd: Option<PathBuf>,
     /// Home directory of the machine where this session originated.
@@ -630,6 +635,7 @@ impl ChatSession {
             details: SessionDetails {
                 title: "New Chat".to_string(),
                 custom_title: None,
+                issue_url: None,
                 hostname: String::new(),
                 cwd: details_cwd,
                 home_dir: dirs::home_dir()
@@ -702,6 +708,7 @@ impl ChatSession {
             details: SessionDetails {
                 title: "Connecting...".to_string(),
                 custom_title: None,
+                issue_url: None,
                 hostname,
                 cwd: Some(cwd),
                 home_dir: String::new(),

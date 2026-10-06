@@ -1535,9 +1535,7 @@ impl notedeck::App for Dave {
 
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         ui::own_item_spacing(ui);
-        self.process_keybindings(ui.ctx());
-
-        let mut app_action: Option<AppAction> = None;
+        let mut app_action: Option<AppAction> = self.process_keybindings(ui.ctx());
 
         // Check if we should send a desktop notification (when unfocused and NeedsInput)
         self.notification_state

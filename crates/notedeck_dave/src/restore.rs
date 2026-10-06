@@ -680,6 +680,8 @@ impl Dave {
                 let new_status = AgentStatus::from_status_str(status_str);
                 let new_custom_title =
                     session_events::get_tag_value(&note, "custom_title").map(|s| s.to_string());
+                let new_issue_url =
+                    session_events::get_tag_value(&note, "issue_url").map(|s| s.to_string());
                 let new_hostname = session_events::get_tag_value(&note, "hostname").unwrap_or("");
                 for session in self.session_manager.iter_mut() {
                     let is_remote = session.is_remote();
@@ -697,6 +699,10 @@ impl Dave {
                             // custom_title syncs for both local and remote
                             if new_custom_title.is_some() {
                                 session.details.custom_title = new_custom_title.clone();
+                            }
+                            // So does the issue the session works.
+                            if new_issue_url.is_some() {
+                                session.details.issue_url = new_issue_url.clone();
                             }
                             if let Some(backend) = backend_tag {
                                 session.backend_type = backend;
@@ -1135,6 +1141,7 @@ fn hydrate_session_from_state(
     };
 
     session.details.custom_title = state.custom_title.clone();
+    session.details.issue_url = state.issue_url.clone();
     session.spawn_id = state.spawn_id.clone();
 
     // Restore focus indicator from the state event.
@@ -1269,6 +1276,7 @@ mod tests {
             created_at: 1_770_000_123,
             cli_session_id: cli.map(str::to_string),
             spawn_id: Some("spawn-xyz".to_string()),
+            issue_url: Some("headway:dave/some-card".to_string()),
             project: None,
             project_root: None,
         }
@@ -1316,6 +1324,11 @@ mod tests {
         assert_eq!(agentic.resume_session_id.as_deref(), Some("cli-uuid-123"));
         // Dedup set seeded so live polling won't double-append restored notes.
         assert_eq!(agentic.seen_note_ids, note_ids);
+        // The session keeps the issue it was spawned for, so `s` still opens it.
+        assert_eq!(
+            manager.get(sid).unwrap().details.issue_url.as_deref(),
+            Some("headway:dave/some-card")
+        );
     }
 
     /// An empty `cli_session` means the backend never started: there is nothing
@@ -1497,6 +1510,7 @@ mod tests {
                 "claude",
                 "default",
                 Some("cli-boundary"),
+                None,
                 None,
                 None,
                 None,
@@ -1758,6 +1772,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             1_000,
             &sk,
         )
@@ -1839,6 +1854,7 @@ mod tests {
                 "claude",
                 "default",
                 Some(&format!("cli-{i}")),
+                None,
                 None,
                 None,
                 None,
@@ -1944,6 +1960,7 @@ mod tests {
                 "claude",
                 "default",
                 Some("cli-abc"),
+                None,
                 None,
                 None,
                 None,
@@ -2217,6 +2234,7 @@ mod tests {
             "claude",
             "default",
             Some("cli-abc"),
+            None,
             None,
             None,
             None,
