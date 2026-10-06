@@ -4,7 +4,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-use nostrdb::{Config, Filter, Ndb, Transaction};
+use nostrdb::{Config, Filter, Ndb, Subscription, Transaction};
 use serde_json::Value;
 
 /// A [`Config`] with a small mapsize, for tests.
@@ -979,13 +979,41 @@ fn spawn_machine(
     (relay, url, store)
 }
 
+/// The notes a private relay that auth-gates gift-wraps carries between two
+/// machines: kind-1080 PNS and kind-1081 SNS, never kind-1059.
+fn private_notes_filter() -> Filter {
+    Filter::new().kinds([1080u64, 1081]).build()
+}
+
+/// Wait until a machine's `store` has ingested every PNS and SNS note the CLI
+/// cache at `cli_db` holds, i.e. everything the CLI published to that machine.
+///
+/// The CLI exiting is not enough: the embedded relay answers `OK` once a note is
+/// queued for nostrdb's ingester, not once it is stored, so the last command's
+/// notes can still be in the queue. `sub` is a [`private_notes_filter`]
+/// subscription on `store`, taken before the CLI's first write, so the one
+/// bounded wait counts every note that has landed since.
+fn wait_for_published(rt: &tokio::runtime::Runtime, store: &Ndb, sub: Subscription, cli_db: &str) {
+    let published = {
+        let cache = Ndb::new(cli_db, &Config::new()).expect("open the cli cache");
+        let txn = Transaction::new(&cache).expect("txn");
+        cache
+            .query(&txn, &[private_notes_filter()], 10_000)
+            .expect("query")
+            .len()
+    };
+    assert!(published > 0, "the cli published nothing");
+    rt.block_on(store.wait_for_all_notes_within(sub, published as u32, Duration::from_secs(10)))
+        .unwrap_or_else(|e| panic!("the machine never ingested the cli's {published} notes: {e}"));
+}
+
 /// Carry what a private relay that auth-gates gift-wraps carries between two
 /// machines: every kind-1080 PNS and kind-1081 SNS note in `from`, and no
 /// kind-1059. relay.jb55.com refuses unauthenticated 1059 reads, and notedeck
 /// does not answer NIP-42, so that is all that crosses
 /// (headway:headway/pepper-rack-usual). Returns once `to` holds every one.
 fn carry_private_notes(from: &Ndb, to: &Ndb) {
-    let filter = || Filter::new().kinds([1080u64, 1081]).build();
+    let filter = private_notes_filter;
     let jsons: Vec<String> = {
         let txn = Transaction::new(from).expect("txn");
         from.query(&txn, &[filter()], 10_000)
@@ -1041,6 +1069,9 @@ fn a_board_seeded_on_one_machine_appears_on_another_without_its_gift_wrap() {
     let (hydra_dir, monad_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let (_hydra_relay, hydra_url, hydra_store) = spawn_machine(&hydra_dir);
     let (_monad_relay, monad_url, monad_store) = spawn_machine(&monad_dir);
+    let hydra_sub = hydra_store
+        .subscribe(&[private_notes_filter()])
+        .expect("subscribe");
 
     // Seed and add a card on the first machine.
     let hydra_cli = tempfile::tempdir().expect("hydra cli");
@@ -1061,7 +1092,9 @@ fn a_board_seeded_on_one_machine_appears_on_another_without_its_gift_wrap() {
         "add: {}",
         String::from_utf8_lossy(&add.stderr)
     );
-    wait_for_envelope(&hydra_store);
+    // Waiting for any envelope is not enough: the seed's satisfy it while the
+    // card's are still queued, and the carry would leave the card behind.
+    wait_for_published(&rt, &hydra_store, hydra_sub, hydra);
 
     carry_private_notes(&hydra_store, &monad_store);
     assert_eq!(
