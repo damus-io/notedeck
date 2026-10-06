@@ -13,6 +13,7 @@
 mod config_cmd;
 mod grep;
 mod interrupt;
+mod link;
 mod list;
 mod log;
 mod permission;
@@ -39,6 +40,7 @@ use nostrdb_net::relay::sync::Result;
 use config_cmd::{ConfigAction, ConfigFilters, cmd_config};
 use grep::cmd_grep;
 use interrupt::cmd_interrupt;
+use link::cmd_link;
 use list::{ListFilters, ListScope, cmd_list};
 use log::{cmd_follow, cmd_log};
 use permission::{Decision, ResponseOpts, cmd_mode, cmd_respond};
@@ -76,13 +78,14 @@ fn parse_mode_flag(value: &str) -> Result<String> {
         })
 }
 
-/// Validate a `--issue-url` value: a URI naming the issue the session works.
+/// Validate an issue URL — `spawn --issue-url`'s value or `link`'s argument,
+/// named by `what` in the error: a URI naming the issue the session works.
 ///
 /// Stored verbatim, so this only checks it *is* a URI — a non-empty
 /// `scheme:rest` with an RFC 3986 scheme. That rejects a bare headway word-id
 /// (or `board/word-id`), which looks plausible but names no board and so can't
 /// be opened from the session; the error points at the routable form instead.
-fn parse_issue_url_flag(value: &str) -> Result<String> {
+fn parse_issue_url(value: &str, what: &str) -> Result<String> {
     let value = value.trim();
     let has_scheme = value.split_once(':').is_some_and(|(scheme, rest)| {
         let mut chars = scheme.chars();
@@ -92,7 +95,7 @@ fn parse_issue_url_flag(value: &str) -> Result<String> {
     });
     if !has_scheme {
         return Err(format!(
-            "--issue-url '{value}' is not a URI — for a headway card use \
+            "{what} '{value}' is not a URI — for a headway card use \
              headway:<board>/<word-id>"
         )
         .into());
@@ -192,7 +195,7 @@ enum Command {
         /// Already normalized to a canonical wire spelling by
         /// [`parse_mode_flag`], so an alias can never reach the command event.
         permission_mode: Option<String>,
-        /// Already checked to be a URI by [`parse_issue_url_flag`].
+        /// Already checked to be a URI by [`parse_issue_url`].
         issue_url: Option<String>,
         idempotency_key: Option<String>,
         allow_duplicate: bool,
@@ -219,6 +222,14 @@ enum Command {
         /// Already normalized to a canonical wire spelling by
         /// [`parse_mode_flag`]: the host reads an unknown string as `default`.
         mode: String,
+    },
+    /// Link a live session to the issue it works (`link`, `issue_url = Some`) or
+    /// clear its link (`unlink`, `None`) on its host, after the fact — for a
+    /// session spawned without `--issue-url`.
+    Link {
+        session: String,
+        /// Already checked to be a URI by [`parse_issue_url`].
+        issue_url: Option<String>,
     },
     /// List, show, add, edit or remove run configs (kind-31991): the named
     /// shell commands Dave's run bar launches in a session's host+cwd.
@@ -266,6 +277,7 @@ impl Command {
             | Command::Interrupt { .. }
             | Command::Respond { .. }
             | Command::Mode { .. }
+            | Command::Link { .. }
             | Command::Login { .. }
             | Command::Logout => true,
         }
@@ -414,6 +426,9 @@ async fn run() -> Result<()> {
         }
         Command::Mode { session, mode } => {
             cmd_mode(&engine, &read_pk, &session, &mode, cli.json).await?
+        }
+        Command::Link { session, issue_url } => {
+            cmd_link(&engine, &read_pk, &session, issue_url.as_deref(), cli.json).await?
         }
         Command::Config { action } => {
             let filters = ConfigFilters {
@@ -616,7 +631,9 @@ impl Cli {
                 "--permission-mode" => {
                     permission_mode = Some(parse_mode_flag(&value("--permission-mode")?)?)
                 }
-                "--issue-url" => issue_url = Some(parse_issue_url_flag(&value("--issue-url")?)?),
+                "--issue-url" => {
+                    issue_url = Some(parse_issue_url(&value("--issue-url")?, "--issue-url")?)
+                }
                 "--idempotency-key" => idempotency_key = Some(value("--idempotency-key")?),
                 "--allow-duplicate" => allow_duplicate = true,
                 "--wait" => wait = true,
@@ -798,6 +815,14 @@ fn parse_command(
             session: arg(rest, 0, name)?,
             mode: parse_mode_flag(&arg(rest, 1, name)?)?,
         },
+        "link" => Command::Link {
+            session: arg(rest, 0, name)?,
+            issue_url: Some(parse_issue_url(&arg(rest, 1, name)?, "<issue-url>")?),
+        },
+        "unlink" => Command::Link {
+            session: arg(rest, 0, name)?,
+            issue_url: None,
+        },
         "login" => Command::Login {
             nsec: arg(rest, 0, name)?,
         },
@@ -938,6 +963,16 @@ COMMANDS:
                       to Ctrl+M in Dave: default (aka manual) | plan |
                       accept_edits | auto | bypass. --json emits {{ session,
                       event_id, mode }}.
+    link <session> <issue-url>
+                      Link a live session to the issue it works, after the fact
+                      — `spawn --issue-url` for a session spawned without it, so
+                      `show` names the card and `s` in Dave opens it. For a
+                      headway card the URL is headway:<board>/<word-id>. The
+                      session's host applies it and republishes the session;
+                      link waits up to 10s for that and fails if it doesn't
+                      come (a host built before `link` ignores the command).
+                      --json emits {{ session, issue_url, event_id, unchanged }}.
+    unlink <session>  Clear a live session's issue link, the same way.
     config [list]     List run configs — the named shell commands Dave's run
                       bar launches in a host+cwd — on every host, grouped host →
                       cwd. --host/--cwd narrow it (substring, like list); --json
@@ -1517,6 +1552,62 @@ mod tests {
         assert!(err.to_string().contains("yolo"), "{err}");
         // Both positionals are required.
         assert!(parse_cli(&["--nsec", TEST_NSEC, "mode", "agentium:a-b-c"]).is_err());
+    }
+
+    /// `link <sel> <issue-url>` checks the URL like `spawn --issue-url` does;
+    /// `unlink <sel>` clears. Both need the relay, since only the host can
+    /// apply them.
+    #[test]
+    fn link_and_unlink_parse() {
+        let cli = parse_cli(&[
+            "--nsec",
+            TEST_NSEC,
+            "link",
+            "agentium:a-b-c",
+            "headway:gamedev/wall-harsh-hip",
+        ])
+        .unwrap()
+        .unwrap();
+        match cli.command {
+            Command::Link { session, issue_url } => {
+                assert_eq!(session, "agentium:a-b-c");
+                assert_eq!(issue_url.as_deref(), Some("headway:gamedev/wall-harsh-hip"));
+            }
+            _ => panic!("expected Link"),
+        }
+
+        let cli = parse_cli(&["--nsec", TEST_NSEC, "unlink", "agentium:a-b-c"])
+            .unwrap()
+            .unwrap();
+        match cli.command {
+            Command::Link { session, issue_url } => {
+                assert_eq!(session, "agentium:a-b-c");
+                assert_eq!(issue_url, None);
+            }
+            _ => panic!("expected Link"),
+        }
+
+        // A bare word-id names no board, so it is refused with the routable form.
+        let Err(err) = parse_cli(&[
+            "--nsec",
+            TEST_NSEC,
+            "link",
+            "agentium:a-b-c",
+            "wall-harsh-hip",
+        ]) else {
+            panic!("a bare word-id must be refused");
+        };
+        assert!(
+            err.to_string().contains("headway:<board>/<word-id>"),
+            "{err}"
+        );
+        // Both positionals are required for link, the selector for unlink.
+        assert!(parse_cli(&["--nsec", TEST_NSEC, "link", "agentium:a-b-c"]).is_err());
+        assert!(parse_cli(&["--nsec", TEST_NSEC, "unlink"]).is_err());
+        assert!(
+            parse_cli(&["--nsec", TEST_NSEC, "--no-sync", "unlink", "agentium:a-b-c"]).is_err(),
+            "--no-sync must be refused: only the host can apply it"
+        );
     }
 
     #[test]

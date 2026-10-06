@@ -1992,6 +1992,72 @@ pub fn build_interrupt_event(
     Ok(event)
 }
 
+/// The `role` of a kind-1988 set-issue command (see [`build_set_issue_event`]).
+pub const SET_ISSUE_ROLE: &str = "set_issue";
+
+/// Build a kind-1988 command event that links a session to the issue it works,
+/// or unlinks it.
+///
+/// The issue is part of the session's kind-31988 state, which only the
+/// session's host publishes, so a session spawned without `--issue-url` can't
+/// be linked by writing that state from anywhere else. This command asks the
+/// host to do it instead: the host subscribes for these (`role = "set_issue"`,
+/// `t = ai-command`), sets the session's `issue_url` and republishes its state.
+///
+/// The content is `{"issue_url": "<uri>"}` to link, or `{"issue_url": null}` to
+/// clear the link. [`decode_set_issue`] reads it back.
+pub fn build_set_issue_event(
+    issue_url: Option<&str>,
+    session_id: &str,
+    threading: &mut ThreadingState,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    let content = serde_json::json!({
+        "issue_url": issue_url.filter(|u| !u.is_empty()),
+    })
+    .to_string();
+
+    let now_ms = now_millis();
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_ms / 1000));
+
+    builder = builder.start_tag().tag_str("d").tag_str(session_id);
+
+    // Ordering tags: `ms` sub-second (primary tiebreak), `seq` monotonic index.
+    // Every kind-1988 conversation event carries a `seq` — see the
+    // `no_conversation_event_is_seqless` invariant test.
+    builder = stamp_ms_tag(builder, Some(now_ms));
+    let seq_str = threading.seq.to_string();
+    builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
+
+    builder = builder.start_tag().tag_str("role").tag_str(SET_ISSUE_ROLE);
+    builder = builder
+        .start_tag()
+        .tag_str("source")
+        .tag_str("notedeck-dave");
+    builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
+    builder = builder.start_tag().tag_str("t").tag_str("ai-command");
+
+    let event = finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)?;
+    threading.record(None, event.note_id, false);
+    Ok(event)
+}
+
+/// Decode a set-issue command's content (see [`build_set_issue_event`]).
+///
+/// `Some(Some(uri))` links the session to `uri`, `Some(None)` clears its link,
+/// and `None` means the content is not a set-issue payload at all — no JSON
+/// object, or no `issue_url` key — which the host ignores rather than reading
+/// as a clear, so a malformed command can't silently drop a link.
+pub fn decode_set_issue(content: &str) -> Option<Option<String>> {
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    match value.get("issue_url")? {
+        serde_json::Value::Null => Some(None),
+        serde_json::Value::String(s) if s.is_empty() => Some(None),
+        serde_json::Value::String(s) => Some(Some(s.clone())),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2821,6 +2887,12 @@ mod tests {
         let interrupt = build_interrupt_event(session_id, &mut threading, &sk).unwrap();
         assert_has_seq(&interrupt.note_json);
 
+        // Set-issue command, both linking and clearing.
+        for issue in [Some("headway:dave/some-card"), None] {
+            let set_issue = build_set_issue_event(issue, session_id, &mut threading, &sk).unwrap();
+            assert_has_seq(&set_issue.note_json);
+        }
+
         // Subagent lifecycle note.
         let subagent = build_subagent_event(
             &crate::messages::SubagentInfo {
@@ -2868,6 +2940,50 @@ mod tests {
         // No payload beyond the empty object — the session id in the `d` tag is
         // all the host needs.
         assert!(json.contains(r#""content":"{}""#));
+    }
+
+    /// A set-issue command round-trips through [`decode_set_issue`]: a URI
+    /// links, `None` clears, and either way it is a tagged ai-command.
+    #[test]
+    fn set_issue_event_round_trips_link_and_clear() {
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+
+        let link = build_set_issue_event(
+            Some("headway:gamedev/wall-harsh-hip"),
+            "s",
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        assert_eq!(link.kind, AI_CONVERSATION_KIND);
+        assert!(link.note_json.contains(r#"["role","set_issue"]"#));
+        assert!(link.note_json.contains(r#"["t","ai-command"]"#));
+        assert!(link.note_json.contains(r#"["d","s"]"#));
+
+        let clear = build_set_issue_event(None, "s", &mut threading, &sk).unwrap();
+        // An empty URI is a clear too, not a link to "".
+        let empty = build_set_issue_event(Some(""), "s", &mut threading, &sk).unwrap();
+
+        let content = |json: &str| {
+            let v: serde_json::Value = serde_json::from_str(json).unwrap();
+            v["content"].as_str().unwrap().to_string()
+        };
+        assert_eq!(
+            decode_set_issue(&content(&link.note_json)),
+            Some(Some("headway:gamedev/wall-harsh-hip".to_string()))
+        );
+        assert_eq!(decode_set_issue(&content(&clear.note_json)), Some(None));
+        assert_eq!(decode_set_issue(&content(&empty.note_json)), Some(None));
+    }
+
+    /// Content that isn't a set-issue payload decodes to `None`, never to a
+    /// clear, so a malformed command can't drop a session's link.
+    #[test]
+    fn decode_set_issue_ignores_malformed_content() {
+        assert_eq!(decode_set_issue("{}"), None);
+        assert_eq!(decode_set_issue("not json"), None);
+        assert_eq!(decode_set_issue(r#"{"issue_url":3}"#), None);
     }
 
     #[test]

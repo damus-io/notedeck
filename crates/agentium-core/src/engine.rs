@@ -861,6 +861,31 @@ impl Engine {
             .map_err(|e| EngineError::Build(e.to_string()))
     }
 
+    /// Link a session to the issue it works (`Some(uri)`), or clear its link
+    /// (`None`), on its host.
+    ///
+    /// The issue lives in the session's kind-31988 state, which only the host
+    /// publishes, so this publishes a kind-1988 set-issue command (see
+    /// [`build_set_issue_event`](crate::session_events::build_set_issue_event))
+    /// that the host applies by setting the session's `issue_url` and
+    /// republishing its state. Returns the command so a caller can report its id.
+    pub fn set_issue_url(
+        &self,
+        session_id: &str,
+        issue_url: Option<&str>,
+    ) -> Result<crate::session_events::BuiltEvent, EngineError> {
+        let mut threading = self.session_threading(session_id);
+        let built = crate::session_events::build_set_issue_event(
+            issue_url,
+            session_id,
+            &mut threading,
+            &self.seckey(),
+        )
+        .map_err(|e| EngineError::Build(e.to_string()))?;
+        self.publish_session_event(&built)?;
+        Ok(built)
+    }
+
     /// The 32-byte account secret that signs inner session events.
     fn seckey(&self) -> [u8; 32] {
         self.account.secret_key.secret_bytes()
@@ -1691,6 +1716,29 @@ mod tests {
         engine
             .set_permission_mode("some-session", "plan")
             .expect("set mode");
+    }
+
+    /// `set_issue_url` builds the set-issue command and ingests it locally, so
+    /// the host on this machine sees it without a relay round trip.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn set_issue_url_builds_and_ingests() {
+        let (_dir, ndb) = temp_ndb();
+        let engine = Engine::embedded(ndb, TEST_SECKEY).expect("embedded engine");
+
+        let built = engine
+            .set_issue_url("some-session", Some("headway:dave/some-card"))
+            .expect("set issue");
+        assert!(built.note_json.contains(r#"["role","set_issue"]"#));
+        assert!(
+            await_note(
+                engine.ndb(),
+                built.note_id,
+                AI_CONVERSATION_KIND as u64,
+                Duration::from_secs(5)
+            )
+            .await,
+            "the set-issue command should be ingested and queryable locally"
+        );
     }
 
     /// `prepare_set_permission_mode` ingests the event locally (so local reads
