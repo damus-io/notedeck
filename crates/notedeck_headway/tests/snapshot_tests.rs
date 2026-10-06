@@ -182,6 +182,10 @@ fn headway_state() -> HeadwayTestState {
     // The harness renders on this same thread, so the frozen clock covers
     // every relative time the app draws (e.g. the card detail's "created").
     headway::fmt::freeze_now(SEED_AT);
+    // NoteView's header times go through the host's relative-time cache, not
+    // headway's formatter, so pin that clock too — otherwise the note snapshot
+    // records how long ago SEED_AT was on the day it ran.
+    notedeck.app_context().time_cache.freeze_now(SEED_AT);
 
     // Chrome registers every app's inline-reference contributions at startup
     // (`setup_app_registries`); mirror that here, off *this* Headway instance,
