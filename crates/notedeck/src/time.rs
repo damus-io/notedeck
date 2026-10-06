@@ -252,6 +252,10 @@ pub struct RelativeTimeCache {
     /// The `Localization` cache generation `rendered` was built against;
     /// anything else means the locale changed under us.
     generation: u64,
+
+    /// When set, [`time_ago_since`](Self::time_ago_since) measures against this
+    /// instant instead of the wall clock. See [`freeze_now`](Self::freeze_now).
+    frozen_now: Option<u64>,
 }
 
 impl RelativeTimeCache {
@@ -278,9 +282,23 @@ impl RelativeTimeCache {
             .or_insert_with(|| render_relative_time(i18n, key))
     }
 
-    /// [`time_ago_between`](Self::time_ago_between) against the wall clock.
+    /// Pin what [`time_ago_since`](Self::time_ago_since) treats as "now".
+    ///
+    /// For snapshot tests: a golden image of a note header records its relative
+    /// time, so measuring it off the wall clock makes the image drift as the
+    /// fixture ages ("9mo" becomes "10mo" a month later). Freezing the clock to
+    /// the instant the fixture was seeded at makes the header render the same on
+    /// every run. It lives on this cache, which the host owns and passes down by
+    /// reference, rather than in a global, so it only affects the `Notedeck`
+    /// instance the test froze.
+    pub fn freeze_now(&mut self, now: u64) {
+        self.frozen_now = Some(now);
+    }
+
+    /// [`time_ago_between`](Self::time_ago_between) against the wall clock, or
+    /// against the instant given to [`freeze_now`](Self::freeze_now).
     pub fn time_ago_since(&mut self, i18n: &mut Localization, timestamp: u64) -> &str {
-        let now = unix_time_secs();
+        let now = self.frozen_now.unwrap_or_else(unix_time_secs);
 
         self.time_ago_between(i18n, timestamp, now)
     }
@@ -382,6 +400,20 @@ mod tests {
                 "gap of {gap}s into the future"
             );
         }
+    }
+
+    /// A frozen cache measures against the pinned instant, not the wall clock:
+    /// a timestamp ten months before the freeze reads as ten months old no
+    /// matter what day the test runs on.
+    #[test]
+    fn a_frozen_cache_ignores_the_wall_clock() {
+        let i18n = &mut i18n();
+        let cache = &mut RelativeTimeCache::new();
+        cache.freeze_now(NOW);
+
+        let timestamp = NOW - 10 * ONE_MONTH_IN_SECONDS;
+        let expected = time_ago_between(i18n, timestamp, NOW);
+        assert_eq!(cache.time_ago_since(i18n, timestamp), expected);
     }
 
     /// The relative-time messages have no FTL entries today, so both locales
