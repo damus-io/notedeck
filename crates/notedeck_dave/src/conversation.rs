@@ -132,6 +132,9 @@ impl Dave {
 
                     tracing::info!("remote command: interrupt session {}", session_id);
                 }
+                Some(session_events::SET_ISSUE_ROLE) => {
+                    handle_remote_set_issue(&note, session);
+                }
                 _ => {}
             }
         }
@@ -945,6 +948,28 @@ pub(crate) fn handle_remote_permission_response(
             );
         }
     }
+}
+
+/// Handle a remote set-issue command (see
+/// [`build_set_issue_event`](session_events::build_set_issue_event)) on a
+/// local session: link it to the issue the command names, or clear its link.
+///
+/// Needs no backend — the issue lives only in the session's kind-31988 state —
+/// so marking the session dirty is the whole apply: the next state publish
+/// carries the new link to every reader. A command whose content doesn't decode
+/// is ignored rather than read as a clear.
+pub(crate) fn handle_remote_set_issue(note: &nostrdb::Note, session: &mut session::ChatSession) {
+    let Some(issue_url) = session_events::decode_set_issue(note.content()) else {
+        tracing::warn!("set_issue command with an undecodable payload");
+        return;
+    };
+    tracing::info!(
+        "remote command: link session {} to issue {:?}",
+        session.id,
+        issue_url,
+    );
+    session.details.issue_url = issue_url;
+    session.state_dirty = true;
 }
 
 #[cfg(test)]
@@ -1978,6 +2003,55 @@ mod tests {
         assert!(deliver(ndb, &mut session, &sk, &author, "A"));
         assert_eq!(chat_texts(&session.chat), ["A"]);
         (session, h)
+    }
+
+    /// A set-issue command from another device (the `agentium link` CLI) links
+    /// a local session to its card and marks it dirty, so the next state
+    /// publish carries the link; a clear command unlinks it the same way.
+    #[tokio::test]
+    async fn remote_set_issue_links_and_clears_a_local_session() {
+        let sk = test_secret_key();
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.agentic.as_mut().unwrap().event_id = "set-issue".to_string();
+        session.state_dirty = false;
+
+        let mut threading = ThreadingState::new();
+        let link = session_events::build_set_issue_event(
+            Some("headway:gamedev/wall-harsh-hip"),
+            "set-issue",
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        let clear =
+            session_events::build_set_issue_event(None, "set-issue", &mut threading, &sk).unwrap();
+        let apply = |evt: &session_events::BuiltEvent, session: &mut session::ChatSession| {
+            let txn = Transaction::new(&ndb).unwrap();
+            let note = ndb.get_note_by_id(&txn, &evt.note_id).unwrap();
+            handle_remote_set_issue(&note, session);
+        };
+
+        store(&ndb, &link).await;
+        apply(&link, &mut session);
+        assert_eq!(
+            session.details.issue_url.as_deref(),
+            Some("headway:gamedev/wall-harsh-hip")
+        );
+        assert!(session.state_dirty, "the link must be republished");
+
+        session.state_dirty = false;
+        store(&ndb, &clear).await;
+        apply(&clear, &mut session);
+        assert_eq!(session.details.issue_url, None);
+        assert!(session.state_dirty, "the clear must be republished");
     }
 
     /// Store `evt` and wait until nostrdb has it.

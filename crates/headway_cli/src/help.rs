@@ -135,10 +135,11 @@ persisted current board between commands.",
         ],
         details: "\
 Print every line of card text that matches <pattern>, grouped under the
-card's headway:<board>/<word-id> ref, with the field it came from: the
-title, the description, a comment, or a review comment on one of the
-card's commits. Labels and review records' commit subjects are not
-searched.
+card's headway:<board>/<word-id> ref and title, with the field it came
+from (the title, the description, a comment, or a review comment on one
+of the card's commits) and how long ago it was written. Cards are listed
+most recent first, by their newest matching line. Labels and review
+records' commit subjects are not searched.
 
 <pattern> is a regex. Case is smart by default: an all-lowercase pattern
 matches any case, and a pattern with an uppercase letter matches exactly.
@@ -181,7 +182,7 @@ they are neither. The pager is $HEADWAY_PAGER, else $PAGER, else
             ("--no-pager", "Never page; write straight to stdout"),
             (
                 "--json",
-                "Machine-readable output: one object per card, its matches grouped under it",
+                "Machine-readable output: one object per card, its matches grouped under it, each with a unix created_at",
             ),
         ],
         examples: &[

@@ -932,7 +932,17 @@ impl Notedeck {
         // -p notedeck --lib` dies; with it off, the same 321 tests pass. Tests
         // never play anything, so give them a manager that never opens a device,
         // the same way the private relay pool is left inert just below.
-        let sound = if parsed_args.options.contains(NotedeckOptions::Tests) {
+        //
+        // Headless gets the same treatment: nobody is listening on a server, and
+        // there the device is often present but broken (no audio server for an
+        // SSH/service login). cpal 0.15's ALSA worker answers a POLLERR by
+        // re-polling at once and rodio's default error callback eprintln!s each
+        // one, so a broken PCM is a busy loop flooding stderr for the life of
+        // the process.
+        let sound = if parsed_args
+            .options
+            .intersects(NotedeckOptions::Tests | NotedeckOptions::Headless)
+        {
             crate::SoundManager::silent()
         } else {
             let s = settings.get_settings_mut();

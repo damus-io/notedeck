@@ -145,8 +145,8 @@ terminal width); piped frames aren't clipped. **An agent should use `--once`**
 
 ## Selecting a session
 
-`show`, `log`, `resume`, `send`, `interrupt`, `approve`/`deny`, and `mode` take
-a **session selector** —
+`show`, `log`, `resume`, `send`, `interrupt`, `approve`/`deny`, `mode`, and
+`link`/`unlink` take a **session selector** —
 any of: the raw `claude_session_id` (d-tag), the `cli_session_id`, an
 `agentium:<word-id>` ref (with or without the `agentium:` prefix), a unique id
 prefix, or a unique title substring. For `show` and `log` the selector is
@@ -176,8 +176,8 @@ agentium grep -i wgpu --no-sync        # no relay round-trip at all
 
 It applies to the read commands (`list`, `show`, `log`, `grep`, `watch --once`,
 `config list`/`show`) and is refused for anything that publishes or streams
-(`send`, `spawn`, `resume`, `interrupt`, `approve`/`deny`, `mode`, `config
-add`/`edit`/`rm`, `log --follow`, `watch`), which can't work offline.
+(`send`, `spawn`, `resume`, `interrupt`, `approve`/`deny`, `mode`,
+`link`/`unlink`, `config add`/`edit`/`rm`, `log --follow`, `watch`), which can't work offline.
 
 ## `show` — session detail
 
@@ -379,8 +379,8 @@ Flags:
   which jumps from a card to its session). A value with no `scheme:` is rejected
   before publishing — a bare word-id names no board, so it couldn't be opened.
   **Pass it whenever the session works a headway card** (`/handoff` and
-  `/autowork` do). It is set on spawn only; a resumed session keeps the issue its
-  state already carries.
+  `/autowork` do). A resumed session keeps the issue its state already carries;
+  to link (or unlink) a session after it was spawned, use `link` below.
 - `--prompt-file <path>` — the escaping-free alternative to `--prompt`: read the
   first message from a file, or from stdin when `<path>` is `-`, so a long
   multi-line prompt can heredoc in with no shell-escaping (the `/handoff` flow
@@ -499,6 +499,29 @@ otherwise quietly fall back to `default`).
 agentium mode maple-river-canyon plan
 ```
 
+## `link` / `unlink` — set a session's card after the fact
+
+`link <session> <issue-url>` links a **live** session to the issue it works —
+`spawn --issue-url` for a session that was spawned without it (or by an older
+`agentium`). `unlink <session>` clears the link. Either way `show` and Dave's
+`s` follow the new value.
+
+```bash
+agentium link agentium:maple-river-canyon headway:dave/<word-id>
+agentium unlink agentium:maple-river-canyon
+```
+
+- Only the session's **host** writes its state, so this publishes a kind-1988
+  `set_issue` command the host applies and republishes. `link` then waits up to
+  10s for that republish and reports `linked <ref> to <issue>` only once it
+  lands. With no answer it **fails**: the host is offline (it applies the
+  command when it next syncs) or runs a Dave build from before `link` (which
+  ignores it — rebuild the host).
+- The URL is checked like `--issue-url`: a bare word-id is refused.
+- Linking to the issue it already has publishes nothing and says `(already)`.
+- A deleted session is refused (no host republishes it); `resume` it first.
+- `--json`: one line `{session, issue_url, event_id, unchanged}`.
+
 ## `config` — manage run configs
 
 A run config is what Dave's per-session run bar launches: a named shell command
@@ -530,6 +553,6 @@ agentium config rm build
 ## Command surface
 
 Implemented: `list`, `show`, `log` (incl. `log --follow`, the live `tail -f`),
-`resume`, `send`, `spawn`, `interrupt`, `approve`/`deny`, `mode`, `config`
-(plus `login`/`logout`). A watch dashboard is planned but **not yet
+`resume`, `send`, `spawn`, `interrupt`, `approve`/`deny`, `mode`,
+`link`/`unlink`, `config` (plus `login`/`logout`). A watch dashboard is planned but **not yet
 implemented** — don't invoke it until it lands.

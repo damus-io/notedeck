@@ -385,8 +385,11 @@ first line. Curate with `seq` to make `next` meaningful.
 `headway grep <pattern>` finds the cards that *say* something, without a
 `show --json` + `show <card>` loop: it searches every card's **title,
 description, comment thread and inline review comments** in one run and prints
-each matching line under the card's full `headway:<board>/<word-id>` ref, with
-the field it came from. Labels and review records' commit subjects are not
+each matching line under the card's full `headway:<board>/<word-id>` ref and
+title, with the field it came from and how long ago it was written (`2h ago`).
+Cards are listed **most recent first**, by their newest matching line, across
+every board searched. A comment is dated by itself; a title or description by
+the edit that last set it. Labels and review records' commit subjects are not
 searched. It's a read command — it never signs.
 
 - `<pattern>` is a **regex**, **smart-case** by default: an all-lowercase
@@ -407,7 +410,8 @@ searched. It's a read command — it never signs.
   already turns both off.
 - `--json` is an array with one object per matching card — `ref`, `id`,
   `board`, `title`, `column` (`archived` for an archived card) and `matches`
-  (`[{field, text}]`, `field` one of `title`/`desc`/`comment`/`review`).
+  (`[{field, text, created_at}]`, `field` one of `title`/`desc`/`comment`/`review`,
+`created_at` unix seconds), in the same most-recent-first order.
   "No matches" is `[]` (plain output says `no matches`); either way it exits 0.
 
 ```bash

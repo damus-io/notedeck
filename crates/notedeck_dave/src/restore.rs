@@ -700,8 +700,12 @@ impl Dave {
                             if new_custom_title.is_some() {
                                 session.details.custom_title = new_custom_title.clone();
                             }
-                            // So does the issue the session works.
-                            if new_issue_url.is_some() {
+                            // So does the issue the session works. The host
+                            // owns it, so a remote copy follows the host's
+                            // state exactly: an absent tag means `agentium
+                            // unlink` cleared it, and keeping the old link
+                            // would let this device's next rename republish it.
+                            if is_remote || new_issue_url.is_some() {
                                 session.details.issue_url = new_issue_url.clone();
                             }
                             if let Some(backend) = backend_tag {

@@ -165,7 +165,7 @@ pub(crate) async fn cmd_mode(
 /// Resolve `selector` against the live sessions. A match among only the
 /// tombstoned ones is reported as such (there's no running backend to answer),
 /// and any other miss surfaces the resolver's own error.
-fn resolve_live(
+pub(crate) fn resolve_live(
     engine: &Engine,
     txn: &Transaction,
     author: &Pubkey,
