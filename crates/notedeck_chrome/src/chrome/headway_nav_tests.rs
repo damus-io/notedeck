@@ -155,12 +155,8 @@ fn press(harness: &mut Harness<'_, ChromeState>, modifiers: egui::Modifiers, key
 /// The demo board, folded.
 fn demo_board(ndb: &Ndb, author: &Pubkey) -> event::BoardView {
     let txn = Transaction::new(ndb).expect("txn");
-    let boards = event::fold_board(ndb, &txn, author)
-        .expect("folded")
-        .finalize();
-    event::find_board(&boards, author, store::BOARD_ID)
-        .expect("demo board")
-        .clone()
+    let reducer = event::fold_board(ndb, &txn, author).expect("folded");
+    event::pick_board(&reducer, author, store::BOARD_ID).expect("demo board")
 }
 
 fn card_id(view: &event::BoardView, title: &str) -> NoteId {
