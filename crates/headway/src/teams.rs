@@ -567,12 +567,26 @@ mod tests {
     /// stream. That stream also carries untagged account-private notes, such as the
     /// board-preference note saved here; a client pulling by the marker must not
     /// drag them along.
-    #[test]
-    fn pns_self_share_joins_own_board_without_a_gift_wrap() {
+    ///
+    /// The two wrappers are ingested independently, so the roster filling says
+    /// nothing about the board-pref wrapper: on a loaded runner it can still be
+    /// in the ingester queue when the roster is read. The test subscribes to the
+    /// PNS stream before writing and waits for both wrappers to commit before it
+    /// counts them.
+    #[tokio::test]
+    async fn pns_self_share_joins_own_board_without_a_gift_wrap() {
         let (_dir, ndb) = ndb();
         let me = FullKeypair::generate();
         let secret = me.secret_key.secret_bytes();
         ndb.add_key(&secret);
+
+        let all_pns = Filter::new()
+            .kinds([nostrdb_net::pns::PNS_KIND as u64])
+            .build();
+        // Subscribed before the first write, so neither wrapper can commit unseen.
+        let pns_sub = ndb
+            .subscribe(std::slice::from_ref(&all_pns))
+            .expect("subscribe");
 
         let root = test_root(0x07);
         let board_addr = format!("30619:{}:tune-assistant", me.pubkey.hex());
@@ -591,6 +605,9 @@ mod tests {
             &crate::event::BoardCoord::new(*me.pubkey.bytes(), "tune-assistant"),
             &mut crate::store::NoPublish,
         );
+        ndb.wait_for_all_notes_within(pns_sub, 2, Duration::from_secs(5))
+            .await
+            .expect("the key-share and board-pref wrappers never committed");
 
         let teams = wait_teams(&ndb, &me.pubkey, 1);
         assert_eq!(teams.len(), 1);
@@ -603,9 +620,6 @@ mod tests {
             .query(&txn, &[pns_keyshare_filter(&secret)], 10)
             .unwrap();
         assert_eq!(tagged.len(), 1, "the marker selects just the key-share");
-        let all_pns = Filter::new()
-            .kinds([nostrdb_net::pns::PNS_KIND as u64])
-            .build();
         assert_eq!(
             ndb.query(&txn, &[all_pns], 10).unwrap().len(),
             2,
