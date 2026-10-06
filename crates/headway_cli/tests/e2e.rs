@@ -112,6 +112,18 @@ fn flushed(out: &std::process::Output) -> bool {
     String::from_utf8_lossy(&out.stderr).contains("flushed")
 }
 
+/// Whether a run re-published its own boards' self-shares
+/// (`flush_own_selfshares`), as opposed to any flush at all.
+///
+/// [`flushed`] also matches the envelope reconcile's `flushed N local event(s)`,
+/// which pushes back any envelope of ours the relay lacks. That is correct, and
+/// it happens in a run that follows an edit whose envelope the relay has not
+/// stored yet: the embedded relay answers `OK` once a note is queued for
+/// nostrdb's ingester, not once it is stored.
+fn flushed_selfshares(out: &std::process::Output) -> bool {
+    String::from_utf8_lossy(&out.stderr).contains("own self-share(s)")
+}
+
 fn total_cards(board: &Value) -> usize {
     board["columns"]
         .as_array()
@@ -1361,7 +1373,7 @@ fn member_folds_and_edits_a_board_shared_by_its_owner() {
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(
-            !flushed(&out),
+            !flushed_selfshares(&out),
             "a member run must not flush self-shares (it would re-wrap the owner's root):\n{}",
             String::from_utf8_lossy(&out.stderr)
         );
