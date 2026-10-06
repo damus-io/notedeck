@@ -762,7 +762,14 @@ impl Cli {
             (_, None) => None,
         };
 
-        let list_scope = ListScope::from_flags(all, deleted);
+        // `grep` searches deleted sessions too unless `--deleted` narrows it to
+        // only those: the conversation you're hunting for is as likely to be in
+        // a session you've since closed, and `log` already opens deleted ones.
+        // `list`/`watch` keep live-only as their default.
+        let list_scope = match command {
+            Command::Grep { .. } if !deleted => ListScope::All,
+            _ => ListScope::from_flags(all, deleted),
+        };
         let sync = !no_sync;
 
         Ok(Some(Cli {
@@ -908,10 +915,12 @@ COMMANDS:
                       emits structured message objects, --jsonl the reconstructed
                       claude-code JSONL from the source archive. --follow/-f keeps
                       streaming new messages (and status changes) until Ctrl-C.
-    grep <pattern>    Search message text across every session the list filters
-                      select (--host/--cwd/--status/--backend/--deleted/--all),
-                      printing each matching line under its session's agentium:
-                      ref. <pattern> is a regex; -i folds case. One sync and one
+    grep <pattern>    Search message text across every session, deleted ones
+                      included, that the list filters select
+                      (--host/--cwd/--status/--backend; --deleted for only the
+                      deleted ones), printing each matching line under its
+                      session's agentium: ref. <pattern> is a regex; -i folds
+                      case. One sync and one
                       cache read covers every session, so it is flat in session
                       count where a per-session `log | grep` loop is not. The
                       log filters --role/--tools/--last narrow what is
@@ -1457,6 +1466,24 @@ mod tests {
         // `--all` is a superset of `--deleted`, so it wins in either order.
         assert_eq!(scope(&["--deleted", "--all"]), ListScope::All);
         assert_eq!(scope(&["--all", "--deleted"]), ListScope::All);
+    }
+
+    /// `grep` searches live and deleted sessions by default; `--deleted` still
+    /// narrows it to the deleted ones.
+    #[test]
+    fn grep_searches_every_session_by_default() {
+        let scope = |flags: &[&str]| {
+            let mut argv = vec!["--nsec", TEST_NSEC];
+            argv.extend_from_slice(flags);
+            argv.extend(["grep", "x"]);
+            parse_cli(&argv)
+                .expect("parses")
+                .expect("a command")
+                .list_scope
+        };
+        assert_eq!(scope(&[]), ListScope::All);
+        assert_eq!(scope(&["--all"]), ListScope::All);
+        assert_eq!(scope(&["--deleted"]), ListScope::Deleted);
     }
 
     #[test]

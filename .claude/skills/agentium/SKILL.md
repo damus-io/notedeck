@@ -231,14 +231,15 @@ session's transcript — the streaming *mode* of `log`, not a separate command.
 
 ## `grep` — search message text across sessions
 
-`grep <pattern>` searches every session the `list` filters select and prints each
-matching line under its session's `agentium:` ref. This is the command for
+`grep <pattern>` searches every session the `list` filters select — **deleted
+ones included** — and prints each matching line under its session's `agentium:`
+ref. This is the command for
 "which session was it where I…" — the one that answers across the whole corpus
 instead of one transcript.
 
 ```bash
-agentium grep "resize hook"                       # every live session
-agentium grep -i terminal --cwd Shipwright --all  # case-insensitive, one tree, incl. deleted
+agentium grep "resize hook"                       # every session, live or deleted
+agentium grep -i terminal --cwd Shipwright        # case-insensitive, one tree
 agentium grep '\bTODO\b' --role assistant         # a regex, over Dave's replies only
 agentium grep -i panic --tools                    # search tool call/result text too
 agentium grep -i wgpu --json                      # matches grouped under each session
@@ -248,10 +249,12 @@ The pattern is a **regex** (Rust `regex` syntax); `-i`/`--ignore-case` folds cas
 An unparseable pattern fails immediately, before any relay work.
 
 Which sessions are searched: the same filters `list` takes — `--cwd`, `--host`,
-`--status`, `--backend`, and `--deleted`/`--all` for tombstoned sessions.
+`--status`, `--backend` — except that, unlike `list`, deleted sessions are
+searched by default (`--deleted` narrows to only those; `--all` is accepted and
+changes nothing; `--status <s>` keeps one status, so it also drops deleted).
 Which *messages* are searched: the same filters `log` takes — `--role`,
 `--tools`, `--last`. So `--role assistant` searches only Dave's replies, and
-`--cwd foo --all` searches every session (live or closed) in that tree. Tool
+`--cwd foo` searches every session (live or closed) in that tree. Tool
 traffic is folded by default here too, which matters more than in `log`: a
 `tool_result`'s searched text is its one-line render summary, never its full
 output, so tool hits are mostly the command line that happened to mention the
@@ -270,8 +273,10 @@ for s in $(agentium list --json | jq -r '.[].agentium_uri'); do agentium log "$s
 
 — re-opens the cache and re-reconciles the relay once per session, so it costs
 seconds *per session*. `grep` syncs once and reads every session from one
-transaction. Measured on an 879-session corpus: 3m40s for the loop, 36s for
-`agentium grep --all` (and under a second over the live sessions alone).
+transaction. Measured on an 879-session corpus: 3m40s for the loop. On a
+1832-session cache (35 live), `agentium --no-sync grep` takes ~2.4s warm over
+every session; `--status <s>` (e.g. `--status working`) keeps the search to
+live sessions and comes back in a fraction of a second.
 
 ## `resume` — reopen a closed session
 

@@ -36,7 +36,9 @@ use crate::transcript::{MessageView, message_body, message_role, role_style};
 /// [`session_conversation_filter`]: agentium_core::session_loader
 ///
 /// Session selection is [`load_sessions`] — the same `--host`/`--cwd`/`--status`/
-/// `--backend` filters and `--deleted`/`--all` scope `list` uses. Message
+/// `--backend` filters `list` uses, though `scope` defaults to every session,
+/// deleted ones included, rather than `list`'s live-only (see where the CLI
+/// parses it); `--deleted` narrows it to the deleted ones. Message
 /// selection is the same [`MessageView`] `log` uses, so `--role assistant`
 /// or `--tools` changes *what is searched*, not just what is shown — and since
 /// tool messages are folded by default, a plain `grep` searches the human

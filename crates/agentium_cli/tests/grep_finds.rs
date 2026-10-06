@@ -38,8 +38,9 @@ const KIND_SESSION_STATE: u32 = 31988;
 const KIND_CONVERSATION: u32 = 1988;
 
 /// Seed a signed kind-31988 session-state event. `cwd` varies across the seeded
-/// sessions so the `--cwd` filter has something to select on.
-fn seed_state(ndb: &Ndb, d: &str, title: &str, cwd: &str) {
+/// sessions so the `--cwd` filter has something to select on, and `status` so
+/// a tombstoned (`deleted`) session can sit beside the live ones.
+fn seed_state(ndb: &Ndb, d: &str, title: &str, cwd: &str, status: &str) {
     let note = NoteBuilder::new()
         .kind(KIND_SESSION_STATE)
         .content("")
@@ -51,7 +52,7 @@ fn seed_state(ndb: &Ndb, d: &str, title: &str, cwd: &str) {
         .tag_str(title)
         .start_tag()
         .tag_str("status")
-        .tag_str("idle")
+        .tag_str(status)
         .start_tag()
         .tag_str("hostname")
         .tag_str("macbook")
@@ -132,7 +133,8 @@ fn run_grep(db_path: &str, dir: &TempDir, args: &[&str]) -> String {
 }
 
 /// Seed two sessions in different working directories, each mentioning the
-/// search term in a different role, plus one session that never mentions it.
+/// search term in a different role, one session that never mentions it, and a
+/// deleted session with a word of its own (`postmortem`).
 /// Returns the db path; the db handle is dropped so the subprocess opens the
 /// committed cache cleanly.
 async fn seed_sessions(dir: &TempDir) -> String {
@@ -145,7 +147,7 @@ async fn seed_sessions(dir: &TempDir) -> String {
         .subscribe(std::slice::from_ref(&filter))
         .expect("subscribe");
 
-    seed_state(&ndb, "sess-soh", "Ship of Harkinian", "/home/u/soh");
+    seed_state(&ndb, "sess-soh", "Ship of Harkinian", "/home/u/soh", "idle");
     seed_message(&ndb, "sess-soh", "user", "why does it crash?", 1, 1000);
     seed_message(
         &ndb,
@@ -156,7 +158,7 @@ async fn seed_sessions(dir: &TempDir) -> String {
         2000,
     );
 
-    seed_state(&ndb, "sess-proj", "Other project", "/home/u/proj");
+    seed_state(&ndb, "sess-proj", "Other project", "/home/u/proj", "idle");
     seed_message(
         &ndb,
         "sess-proj",
@@ -167,10 +169,19 @@ async fn seed_sessions(dir: &TempDir) -> String {
     );
     seed_message(&ndb, "sess-proj", "tool_result", "terminal: ok", 2, 2000);
 
-    seed_state(&ndb, "sess-quiet", "Quiet session", "/home/u/quiet");
+    seed_state(&ndb, "sess-quiet", "Quiet session", "/home/u/quiet", "idle");
     seed_message(&ndb, "sess-quiet", "user", "nothing to find here", 1, 1000);
 
-    ndb.wait_for_all_notes(sub, 8)
+    seed_state(
+        &ndb,
+        "sess-gone",
+        "Closed session",
+        "/home/u/gone",
+        "deleted",
+    );
+    seed_message(&ndb, "sess-gone", "user", "write the postmortem", 1, 1000);
+
+    ndb.wait_for_all_notes(sub, 10)
         .await
         .expect("ingest seeded events");
     db_path
@@ -312,4 +323,29 @@ async fn grep_json_groups_matches_under_each_session() {
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0]["role"], "assistant");
     assert_eq!(matches[0]["text"], "the terminal resize hook is missing");
+}
+
+/// Unlike `list`, `grep` searches deleted sessions by default — the
+/// conversation you're hunting for is as likely to be in one you've closed.
+/// `--deleted` narrows to only those, and `--status` to one live status.
+#[tokio::test]
+async fn grep_searches_deleted_sessions_by_default() {
+    let dir = TempDir::new().expect("tempdir");
+    let db_path = seed_sessions(&dir).await;
+
+    let out = run_grep(&db_path, &dir, &["postmortem"]);
+    assert!(
+        out.contains("Closed session") && out.contains("write the postmortem"),
+        "a deleted session is searched without --all: {out}"
+    );
+
+    let out = run_grep(&db_path, &dir, &["--deleted", "-i", "terminal|postmortem"]);
+    assert!(out.contains("Closed session"), "{out}");
+    assert!(
+        !out.contains("Ship of Harkinian"),
+        "--deleted keeps to the deleted sessions: {out}"
+    );
+
+    let out = run_grep(&db_path, &dir, &["--status", "idle", "postmortem"]);
+    assert_eq!(out.trim(), "no matches", "--status idle drops it: {out}");
 }
