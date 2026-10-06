@@ -118,7 +118,7 @@ struct SpawnTarget {
 
 /// Where the *current* session (`$AGENTIUM_SESSION`) runs, for commands whose
 /// target defaults to "here". Every field is `None` when not running inside a
-/// session, or when the ref no longer resolves.
+/// session; see [`current_session`] for when the ref doesn't resolve.
 #[derive(Default)]
 pub(crate) struct CurrentSession {
     pub(crate) host: Option<String>,
@@ -126,10 +126,33 @@ pub(crate) struct CurrentSession {
     pub(crate) backend: Option<String>,
 }
 
+impl CurrentSession {
+    /// This process's own host and working directory, for when we know we're
+    /// inside a session but can't read its state.
+    ///
+    /// The host is right because Dave names its host with the same
+    /// `gethostname()` and runs agents as local subprocesses. The cwd is the
+    /// agent's current directory, which is the session's unless the agent has
+    /// `cd`'d away from it. The backend is unknown and is left to fall back.
+    fn here() -> Self {
+        CurrentSession {
+            host: Some(gethostname::gethostname().to_string_lossy().into_owned()),
+            cwd: std::env::current_dir()
+                .ok()
+                .map(|d| d.to_string_lossy().into_owned()),
+            backend: None,
+        }
+    }
+}
+
 /// Look up the current session's host/cwd/backend from its kind-31988 state,
 /// resolved the way `cmd_show` does with no selector (the `$AGENTIUM_SESSION`
-/// ref, live or deleted). Absent or stale just means every field must come from
-/// a flag, so neither is an error.
+/// ref, live or deleted). Outside a session every field is `None` and must come
+/// from a flag, which isn't an error.
+///
+/// Inside a session whose state isn't in this CLI's cache yet, the fields
+/// come from [`CurrentSession::here`] instead. That happens on a cold cache,
+/// whose first sync is cut off at `SYNC_MAX` before it reaches this session.
 pub(crate) fn current_session(engine: &Engine, author: &Pubkey) -> Result<CurrentSession> {
     use agentium_core::session_loader::{
         load_deleted_session_states_for_author, load_session_states_for_author,
@@ -152,8 +175,9 @@ pub(crate) fn current_session(engine: &Engine, author: &Pubkey) -> Result<Curren
                 cwd: Some(state.cwd.clone()),
                 backend: state.backend.clone(),
             },
-            // A stale/unknown $AGENTIUM_SESSION isn't fatal — fall back to flags.
-            Err(_) => CurrentSession::default(),
+            // Not cached yet, or a stale ref. Either way we are still running
+            // inside that session, so its host and cwd are this machine's.
+            Err(_) => CurrentSession::here(),
         },
     )
 }
@@ -637,6 +661,28 @@ mod tests {
         opts.wait = false;
         opts.prompt = Some("hi".into());
         assert!(opts.effective_wait());
+    }
+
+    /// An unresolvable `$AGENTIUM_SESSION` still targets this machine, so a bare
+    /// spawn on a cold cache doesn't fail with "no host".
+    #[test]
+    fn here_targets_this_host_and_cwd() {
+        let here = CurrentSession::here();
+        let host = gethostname::gethostname().to_string_lossy().into_owned();
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(here.host.as_deref(), Some(host.as_str()));
+        assert_eq!(here.cwd.as_deref(), Some(&*cwd.to_string_lossy()));
+        assert_eq!(here.backend, None);
+
+        let t = merge_spawn_target(
+            &spawn_opts(None, None, None),
+            here.host.as_deref(),
+            here.cwd.as_deref(),
+            here.backend.as_deref(),
+        )
+        .unwrap();
+        assert_eq!(t.host, host);
+        assert_eq!(t.backend, "claude");
     }
 
     #[test]

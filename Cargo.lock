@@ -188,6 +188,7 @@ dependencies = [
  "bin_testing",
  "cli_term",
  "enostr",
+ "gethostname",
  "hex",
  "libc",
  "nostrdb",
