@@ -1159,6 +1159,12 @@ impl notedeck::App for Notebook {
         // read this same cache, so a chip drawn in another app stays as live as the
         // open canvas. On a change, re-project the active canvas (no separate
         // one-shot fold). Keep waking while edits stream in.
+        //
+        // Subscribe before opening the txn: the poll and the reads below share
+        // it, so a first-frame poll that subscribed from inside it would have
+        // `with_canvases` seed from a snapshot older than the subscription and
+        // lose any note committed in between (see `RealtimeCache::subscribe`).
+        self.cache.borrow_mut().subscribe(ctx.ndb, &author);
         let poll = Transaction::new(ctx.ndb)
             .ok()
             .map(|txn| {
@@ -1459,6 +1465,12 @@ struct NotebookCache {
 }
 
 impl NotebookCache {
+    /// Open `author`'s subscription ahead of the frame's read txn. Thin delegate to
+    /// [`RealtimeCache::subscribe`](notedeck::RealtimeCache::subscribe).
+    fn subscribe(&mut self, ndb: &Ndb, author: &Pubkey) {
+        self.authors.subscribe(ndb, author);
+    }
+
     /// Advance `author`'s reducer and report the change — the per-frame pump called
     /// from [`update`](notedeck::App::update). Fan out
     /// [`fresh`](notedeck::PollResponse::fresh) and wake on

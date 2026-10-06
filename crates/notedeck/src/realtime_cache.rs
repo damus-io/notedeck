@@ -227,12 +227,17 @@ impl<R: Reducer> RealtimeCache<R> {
                 // nothing re-seeds afterwards, so it stays missing for the life of
                 // the process — a board permanently one card short.
                 //
-                // A later advance is safe because nostrdb allows one live
-                // transaction per thread (`Transaction::new` fails while another
-                // is open), so whatever `txn` the next advance is handed was
-                // opened after this one was dropped, hence after the subscribe.
-                // Its snapshot therefore holds everything the subscription
-                // doesn't, and the two cover the history between them.
+                // A later advance is safe only if it is handed a *later* txn.
+                // nostrdb allows one live transaction per thread
+                // (`Transaction::new` fails while another is open), so a txn
+                // opened after this one was dropped postdates the subscribe, and
+                // its snapshot holds everything the subscription doesn't. But a
+                // caller that hands this same `txn` to a second advance (a
+                // `poll` followed by a `with_views` on one txn) would seed from
+                // the stale snapshot and lose the window for good. Such a caller
+                // must open the subscription first with
+                // [`subscribe`](Self::subscribe), before its txn, so this branch
+                // never runs for it.
                 //
                 // Reported as a change so the caller's pump schedules that next
                 // frame. Nothing folded yet, but a caller that only wakes on
@@ -304,6 +309,24 @@ impl<R: Reducer> RealtimeCache<R> {
             self.stats.full_reloads += 1;
         }
         changed
+    }
+
+    /// Open `author`'s live subscription now, if it isn't open yet — for a pump
+    /// to call *before* it opens the read txn it hands to [`poll`](Self::poll)
+    /// and the read paths.
+    ///
+    /// The seed folds the history from the caller's txn and takes everything
+    /// after it from the subscription, so the subscription has to predate that
+    /// txn or a note committed between the two is in neither. Subscribing here
+    /// guarantees that, so the first advance can seed at once from any txn opened
+    /// afterwards. Without it, the first advance subscribes from inside the
+    /// caller's txn and has to leave the seed for a later txn (see `advance`),
+    /// which a caller reusing one txn across several advances never provides.
+    pub fn subscribe(&mut self, ndb: &Ndb, author: &Pubkey) {
+        let entry = self.authors.entry(*author).or_default();
+        if entry.sub.is_none() {
+            entry.sub = ndb.subscribe(&[R::filter(author)]).ok();
+        }
     }
 
     /// Advance `author`'s reducer and report the change — the per-frame pump
@@ -715,6 +738,50 @@ mod tests {
             assert!(
                 Instant::now() < deadline,
                 "a note committed between the caller's txn and the first subscribe \
+                 was never folded"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// A pump that reuses its frame's txn for a read after [`RealtimeCache::poll`]
+    /// (notebook's `update` re-projects its canvas from the same txn) hands that
+    /// txn to two advances. If `poll` were the first touch, the second advance
+    /// would seed from a snapshot older than the subscription and lose any note
+    /// committed between them, for good. Subscribing before the txn opens closes
+    /// that window: the seed's snapshot postdates the subscription.
+    #[test]
+    fn a_pump_that_reads_on_its_poll_txn_seeds_every_note_once_subscribed_first() {
+        reset_counters();
+        let (ndb, _dir) = test_ndb();
+        let kp = nostrdb_net::FullKeypair::generate();
+        let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
+        let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();
+
+        // The first frame: subscribe, open the frame txn, and an async ingest
+        // commits before the cache is advanced.
+        cache.subscribe(&ndb, &kp.pubkey);
+        let txn = Transaction::new(&ndb).unwrap();
+        write_note(&ndb, &kp, "one");
+        wait_commit(&ndb, det);
+        cache.poll(&ndb, &txn, &kp.pubkey);
+        cache.with_views(&ndb, &txn, &kp.pubkey, |_| ());
+        drop(txn);
+
+        // Later frames, each with a fresh txn, must converge on the note.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let txn = Transaction::new(&ndb).unwrap();
+            cache.poll(&ndb, &txn, &kp.pubkey);
+            let views = cache
+                .with_views(&ndb, &txn, &kp.pubkey, |views| views.to_vec())
+                .unwrap();
+            if views.len() == 1 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "a note committed between the frame's txn and its first advance \
                  was never folded"
             );
             std::thread::sleep(Duration::from_millis(10));
