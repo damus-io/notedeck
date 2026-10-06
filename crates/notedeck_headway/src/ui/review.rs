@@ -434,7 +434,7 @@ pub(crate) fn send_back_open(
 /// then the comments on lines, in order, each as its place, the lines it's
 /// on quoted as a diff, then what it says:
 ///
-/// ```text
+/// ````text
 /// Review comments on commit <short sha> (card headway:<board>/<word-id>):
 ///
 /// a comment on the whole commit
@@ -444,7 +444,7 @@ pub(crate) fn send_back_open(
 /// +the picked lines
 /// ```
 /// the comment
-/// ```
+/// ````
 ///
 /// The lines are quoted though the events only name them, since the session
 /// may have moved on from the commit since. `None` when the record names no
