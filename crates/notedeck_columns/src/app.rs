@@ -175,13 +175,13 @@ fn handle_egui_events(
 
 /// Route this frame's keyboard/pointer input into the active columns.
 ///
-/// Only reachable with a window: headless there is no input to read, which is
-/// what `AppContext::egui` being `None` says. That was already a no-op there —
-/// the fabricated context's input was always empty — so skipping it changes
-/// nothing except that nothing has to fabricate a context to be read.
-///
-/// (Running this from `update` at all is a separate bug: a backgrounded columns
-/// still consumes Escape. See headway:notedeck/spoil-diary-squirrel.)
+/// Called from [`render_damus`], before the deck draws, so it runs only while
+/// the deck is the view on screen. The chrome calls `update` on every opened
+/// app each frame whether or not it's in front, so reading input there let a
+/// backgrounded columns consume Escape (and the back/forward keys and mouse
+/// buttons) out from under the app the user was typing at. A deep-link pane
+/// doesn't call it either: everything here acts on the deck's columns, which
+/// aren't on screen then.
 fn handle_input(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
     let current_columns =
         get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
@@ -214,10 +214,6 @@ fn handle_input(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
 
 #[profiling::function]
 fn try_process_event(damus: &mut Damus, app_ctx: &mut AppContext<'_>) -> Result<()> {
-    if let Some(ctx) = app_ctx.egui {
-        handle_input(damus, app_ctx, ctx);
-    }
-
     let selected_account_pk = *app_ctx.accounts.selected_account_pubkey();
     // Copied out so the loop below can wake the host while holding disjoint
     // `&mut` reborrows of `app_ctx`.
@@ -454,6 +450,8 @@ pub(crate) fn setup_selected_account_timeline_subs(
 }
 
 fn render_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+    handle_input(damus, app_ctx, ui.ctx());
+
     damus
         .note_options
         .set(NoteOptions::Wide, is_narrow(ui.ctx()));

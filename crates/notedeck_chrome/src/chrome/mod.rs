@@ -29,6 +29,8 @@ use notedeck_ui::expanding_button;
 use std::collections::HashMap;
 
 mod actions;
+#[cfg(all(test, feature = "headway", not(debug_assertions)))]
+mod columns_input_tests;
 mod debug;
 mod frame;
 mod header;
