@@ -67,7 +67,8 @@ mod inner {
         /// A manager that never opens an audio device, for hosts that must not
         /// touch the sound hardware at all — see
         /// [`Notedeck::init`](crate::Notedeck::init) under
-        /// [`NotedeckOptions::Tests`](crate::NotedeckOptions::Tests).
+        /// [`NotedeckOptions::Tests`](crate::NotedeckOptions::Tests) and
+        /// [`NotedeckOptions::Headless`](crate::NotedeckOptions::Headless).
         ///
         /// Not the same as constructing one with `enabled: false`: that still
         /// opens the default output device, and opening it is the part a test
