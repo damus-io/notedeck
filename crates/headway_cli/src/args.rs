@@ -659,6 +659,16 @@ impl Cli {
             .or_else(|| nostrdb_net::relay::sync::read_config(APP, "board"))
             .unwrap_or_else(|| store::BOARD_ID.to_string());
 
+        // `grep` searches every board unless `--board` (or a self-routing ref)
+        // names one or `--in` picks a container. The env / persisted current
+        // board doesn't narrow it — it's an implicit fallback, and a search
+        // that silently skipped the other boards is the miss this default
+        // avoids. (Archived cards are always searched; see `cmd_grep`.)
+        // `--all` is still accepted, and changes nothing here.
+        if let Command::Grep { container, .. } = &command {
+            all |= !board_explicit && container.is_none();
+        }
+
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured — that would
         // keep `login` from replacing a stale or malformed stored key.
@@ -1501,6 +1511,28 @@ mod tests {
         assert_eq!(cli.board, "notedeck");
         assert!(cli.board_explicit);
         assert!(parse(&["grep", "x", "--all"]).all);
+    }
+
+    /// `grep` searches every board by default; naming a board (`--board` or a
+    /// self-routing `--in` ref) or picking a container with `--in` narrows it
+    /// to one.
+    #[test]
+    fn grep_searches_every_board_by_default() {
+        assert!(parse(&["grep", "x"]).all);
+        assert!(!parse(&["--board", "notedeck", "grep", "x"]).all);
+        assert!(
+            !parse(&[
+                "grep",
+                "x",
+                "--in",
+                "headway:notedeck/saddle-because-liquid"
+            ])
+            .all
+        );
+        // A board slug as the container is the current board, not all of them.
+        assert!(!parse(&["grep", "x", "--in", "notedeck"]).all);
+        // `show` keeps its opt-in `--all`.
+        assert!(!parse(&["show"]).all);
     }
 
     /// `--color` and `--pager`/`--no-pager` parse into the output modes `grep`

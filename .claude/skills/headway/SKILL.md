@@ -190,7 +190,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `estimate <card> <n>` | Set an estimate — a number (or `none` to clear) |
 | `seq <card> <pos> [--in <c>]` | Position a card in a container's work-order (see Work order) |
 | `next [--in <c>] [--ready] [-n <k>]` | Print the ready frontier — what to work on next (see Work order) |
-| `grep <pattern> [--in <c>] [-i\|-s] [--archived] [--all] [--color <when>] [--[no-]pager] [--json]` | Search card text (title, description, comments, review comments) and print each matching line under its card's ref (see Searching cards) |
+| `grep <pattern> [--board <b>] [--in <c>] [-i\|-s] [--color <when>] [--[no-]pager] [--json]` | Search card text (title, description, comments, review comments) and print each matching line under its card's ref (see Searching cards) |
 | `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment or a review comment |
 | `comment <card> --path <f> --line <a[-b]> [--old] [--record <sha>] <text...>` | Inline review comment on a review record's commit (newest record by default); `--record` alone comments on the whole commit |
 | `review <card> [--explainer <url>] [--deploy <url>] [--commit <rev>]` | Record a commit for review on the card: sha, title, branch, host, repo path and `agentium:` ref, read from git in `--repo-dir` (default cwd) and `$AGENTIUM_SESSION`; `--deploy` is the URL where this commit's build is live |
@@ -396,11 +396,13 @@ searched. It's a read command — it never signs.
   pattern matches any case, one with an uppercase letter matches exactly. `-i`
   forces case-insensitive, `-s` case-sensitive. Quote a pattern with spaces —
   `grep` takes exactly one.
-- Scope: the current board (or the board a ref names); `--all` searches every
-  board you can read, your own and the ones shared with you. `--in <card>`
-  searches only that card **and everything under it** (the card itself is
-  included, unlike `next --in`); `--in <board-slug>` is the whole board.
-- Archived cards are skipped unless `--archived`.
+- Scope: **every board you can read** by default, your own and the ones shared
+  with you — the current board doesn't narrow it. `--board <b>` searches just
+  that board. `--in <card>` searches only that card **and everything under
+  it** (the card itself is included, unlike `next --in`), on the board its ref
+  names; `--in <board-slug>` is the whole current board.
+- **Archived cards are always searched**; their column shows as `archived`.
+  (`--all` and `--archived` are still accepted and change nothing.)
 - On a terminal the matches are **colored and paged**, like `git grep` and
   `agentium grep`: the pager is `$HEADWAY_PAGER`, else `$PAGER`, else
   `less -R`. Piped, output is plain and unpaged. `--no-pager` / `--pager` force
@@ -416,9 +418,9 @@ searched. It's a read command — it never signs.
 
 ```bash
 headway grep 'relay reconnect' --board notedeck
-headway grep -i nostrdb --all                     # every board you can read
+headway grep -i nostrdb                           # every board you can read
 headway grep sealed --in headway:notedeck/saddle-because-liquid   # one epic
-headway --json grep 'Changelog' --archived | jq -r '.[].ref'
+headway --json grep 'Changelog' | jq -r '.[].ref'
 ```
 
 ## Terminal columns: what counts as "done"

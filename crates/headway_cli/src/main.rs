@@ -624,9 +624,9 @@ async fn run() -> Result<()> {
             print_next(&view, &container, ready, limit, as_json);
         }
 
-        // Read command: search card text. One fold per board searched (just
-        // this one, or every readable board under `--all`) and one pass over
-        // its cards. Never signs.
+        // Read command: search card text. One fold per board searched (every
+        // readable board, unless `--board`/`--in` narrowed it to one — see the
+        // grep default in `args.rs`) and one pass over its cards. Never signs.
         Command::Grep { pattern, container } => {
             let boards = if show_all {
                 if container.is_some() {
@@ -659,7 +659,7 @@ async fn run() -> Result<()> {
                 color: cli.color,
                 pager: cli.pager,
             };
-            grep::cmd_grep(&boards, subtree, &pattern, show_archived, out)?;
+            grep::cmd_grep(&boards, subtree, &pattern, out)?;
         }
 
         // Read command: resolve the card's review record to a commit (fetching

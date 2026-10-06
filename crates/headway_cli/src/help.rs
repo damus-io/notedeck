@@ -129,10 +129,8 @@ persisted current board between commands.",
     Command {
         name: "grep",
         group: Group::Reading,
-        summary: "Search card text (titles, descriptions, comments) across a board",
-        usage: &[
-            "grep <pattern> [--in <c>] [-i|-s] [--archived] [--all] [--color <when>] [--[no-]pager]",
-        ],
+        summary: "Search card text (titles, descriptions, comments) across every board",
+        usage: &["grep <pattern> [--board <b>] [--in <c>] [-i|-s] [--color <when>] [--[no-]pager]"],
         details: "\
 Print every line of card text that matches <pattern>, grouped under the
 card's headway:<board>/<word-id> ref and title, with the field it came
@@ -145,10 +143,11 @@ records' commit subjects are not searched.
 matches any case, and a pattern with an uppercase letter matches exactly.
 -i and -s force one or the other.
 
-Searches the current board (or the one --in names); --all searches every
-board you can read. Archived cards are skipped unless --archived. One
-fold of each board covers every card, so it stays one relay sync however
-many cards match. A read-only command: it never signs or publishes.
+Searches every board you can read, archived cards included (their column
+shows as `archived`). --board <b> narrows it to that board, and --in to a
+card's subtree (on the board its ref names) or a board slug (the current
+board). One fold of each board covers every card, so it stays one relay
+sync however many cards match. A read-only command: it never signs or publishes.
 
 On a terminal the matches are colored and paged, like `git grep`; piped,
 they are neither. The pager is $HEADWAY_PAGER, else $PAGER, else
@@ -166,11 +165,7 @@ they are neither. The pager is $HEADWAY_PAGER, else $PAGER, else
                 "-s, --case-sensitive",
                 "Match case exactly, even for a lowercase pattern",
             ),
-            ("--archived", "Search archived cards too"),
-            (
-                "--all",
-                "Search every board you can read, not just this one",
-            ),
+            ("--board <b>", "Search only this board"),
             (
                 "--color <when>",
                 "auto (default) | always | never. `always` keeps color when piping into your own pager (e.g. `less -SR`)",
@@ -187,7 +182,7 @@ they are neither. The pager is $HEADWAY_PAGER, else $PAGER, else
         ],
         examples: &[
             "headway grep 'relay reconnect' --board notedeck",
-            "headway grep -i nostrdb --all",
+            "headway grep -i nostrdb",
             "headway grep sealed --in headway:notedeck/saddle-because-liquid",
         ],
     },

@@ -4,8 +4,8 @@
 //!
 //! The load-bearing assertions are the ones a `show --json` + `show <card>`
 //! loop can't make cheaply: one invocation covers every card and its comment
-//! thread, `--in` narrows to a subtree, archived cards stay out until asked for,
-//! and `--all` reaches past the current board.
+//! thread across every board, archived cards included, while `--board` narrows
+//! to one board and `--in` to a subtree.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -186,7 +186,7 @@ fn grep_searches_card_text_across_the_board() {
 
     // Wait for every edit to fold: the comment and the archive are the last.
     grep_until(bin, url, db, &["fine now"], 1);
-    let rows = grep_until(bin, url, db, &["relay"], 3);
+    let rows = grep_until(bin, url, db, &["relay"], 5);
 
     // One run covers every card on the board: titles, the description line
     // that matches (not the one that doesn't), and the comment thread. The
@@ -211,20 +211,19 @@ fn grep_searches_card_text_across_the_board() {
             .is_some_and(|t| t > 0),
         "{rows:?}"
     );
-    // No match, no row; archived and other-board cards stay out by default.
-    for absent in [&quiet, &archived, &elsewhere] {
-        assert!(
-            rows.iter().all(|r| &r["ref"] != absent),
-            "{absent}: {rows:?}"
-        );
-    }
+    // No match, no row. Everything else is searched by default: the
+    // archived card and the other board's card too, though the run's current
+    // board (`$HEADWAY_BOARD`) is `headway`.
+    assert!(rows.iter().all(|r| r["ref"] != quiet), "{rows:?}");
     assert!(rows.iter().any(|r| r["ref"] == outside));
+    assert_eq!(row(&rows, &archived)["column"], "archived");
+    assert_eq!(row(&rows, &elsewhere)["board"], "other");
 
     // Case written into the pattern is honoured, and `-i` overrides it.
     let rows = grep(bin, url, db, &["RELAY"]);
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0]["ref"], epic);
-    assert_eq!(grep(bin, url, db, &["-i", "RELAY"]).len(), 3);
+    assert_eq!(grep(bin, url, db, &["-i", "RELAY"]).len(), 5);
     assert!(
         grep(bin, url, db, &["-s", "relay"])
             .iter()
@@ -237,14 +236,20 @@ fn grep_searches_card_text_across_the_board() {
     assert_eq!(refs.len(), 2, "{refs:?}");
     assert!(refs.contains(&epic.as_str()) && refs.contains(&child.as_str()));
 
-    // `--archived` opts the archived card in.
-    let rows = grep(bin, url, db, &["relay", "--archived"]);
+    // `--board` narrows to one board, archived cards still included.
+    let rows = grep(bin, url, db, &["--board", "headway", "relay"]);
+    assert!(rows.iter().all(|r| r["ref"] != elsewhere), "{rows:?}");
     assert_eq!(row(&rows, &archived)["column"], "archived");
-
-    // `--all` reaches the other board too.
-    let rows = grep(bin, url, db, &["relay", "--all"]);
-    assert_eq!(row(&rows, &elsewhere)["board"], "other");
     assert_eq!(rows.len(), 4, "{rows:?}");
+    let rows = grep(bin, url, db, &["--board", "other", "relay"]);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["ref"], elsewhere);
+
+    // The old opt-in flags are still accepted, and change nothing.
+    assert_eq!(
+        grep(bin, url, db, &["relay", "--all", "--archived"]).len(),
+        5
+    );
 
     // The plain rendering: each card headed by its full ref, its matching
     // lines beneath with the field they came from and how long ago they were

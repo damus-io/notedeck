@@ -32,8 +32,9 @@ use crate::output::plain_ref;
 ///
 /// `subtree` (`--in <card>`) keeps only that card and its descendants, as one
 /// set computed before the pass (see [`subtree_ids`]). Archived cards are
-/// searched only when `include_archived` (`--archived`) asks for them, like
-/// `show` lists them.
+/// always searched — a search that silently skips them misses exactly the old
+/// discussion it's usually after — and are marked `archived` where a live card
+/// shows its column.
 ///
 /// The text output goes through a pager when stdout is a terminal, like
 /// `git grep` and `agentium grep` (`--pager`/`--no-pager` force it either
@@ -43,7 +44,6 @@ pub(crate) fn cmd_grep(
     boards: &[BoardView],
     subtree: Option<[u8; 32]>,
     pattern: &Regex,
-    include_archived: bool,
     out: GrepOutput,
 ) -> Result<()> {
     let stdout_tty = std::io::stdout().is_terminal();
@@ -53,7 +53,7 @@ pub(crate) fn cmd_grep(
     let mut hits: Vec<CardHit> = Vec::new();
     for view in boards {
         let within = subtree.map(|root| subtree_ids(view, root));
-        for (card, column) in searched_cards(view, include_archived) {
+        for (card, column) in searched_cards(view) {
             if within
                 .as_ref()
                 .is_some_and(|ids| !ids.contains(card.id.bytes()))
@@ -115,21 +115,13 @@ pub(crate) struct GrepOutput {
 const PAGER_VAR: &str = "HEADWAY_PAGER";
 
 /// The cards `grep` reads on `view`, each with where it sits: its column's
-/// name, or `archived` (the word `show <card>` uses) for an archived card,
-/// which is only included when `include_archived`.
-fn searched_cards(
-    view: &BoardView,
-    include_archived: bool,
-) -> impl Iterator<Item = (&CardView, &str)> {
+/// name, or `archived` (the word `show <card>` uses) for an archived card.
+fn searched_cards(view: &BoardView) -> impl Iterator<Item = (&CardView, &str)> {
     let live = view
         .columns
         .iter()
         .flat_map(|col| col.cards.iter().map(move |c| (c, col.name.as_str())));
-    let archived = view
-        .archived
-        .iter()
-        .filter(move |_| include_archived)
-        .map(|a| (&a.card, "archived"));
+    let archived = view.archived.iter().map(|a| (&a.card, "archived"));
     live.chain(archived)
 }
 
@@ -542,7 +534,7 @@ mod tests {
             Vec::new(),
         );
         let pattern = re("relay");
-        let mut hits: Vec<CardHit> = searched_cards(&view, false)
+        let mut hits: Vec<CardHit> = searched_cards(&view)
             .map(|(card, column)| CardHit {
                 view: &view,
                 card,
@@ -576,16 +568,13 @@ mod tests {
     }
 
     #[test]
-    fn archived_cards_are_searched_only_when_asked() {
+    fn archived_cards_are_searched_and_marked() {
         let view = board(vec![card(1, "live", "")], vec![card(2, "gone", "")]);
-        let titles = |include| -> Vec<(String, String)> {
-            searched_cards(&view, include)
-                .map(|(c, col)| (c.title.clone(), col.to_string()))
-                .collect()
-        };
-        assert_eq!(titles(false), vec![("live".into(), "Todo".into())]);
+        let titles: Vec<(String, String)> = searched_cards(&view)
+            .map(|(c, col)| (c.title.clone(), col.to_string()))
+            .collect();
         assert_eq!(
-            titles(true),
+            titles,
             vec![
                 ("live".into(), "Todo".into()),
                 ("gone".into(), "archived".into())
