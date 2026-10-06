@@ -338,6 +338,10 @@ async fn grep_searches_deleted_sessions_by_default() {
         out.contains("Closed session") && out.contains("write the postmortem"),
         "a deleted session is searched without --all: {out}"
     );
+    // Its header says so, the way `list --all` would.
+    assert!(out.contains("  ⊘ Deleted  Closed session"), "{out}");
+    let out = run_grep(&db_path, &dir, &["resize hook"]);
+    assert!(out.contains("  ○ Idle  Ship of Harkinian"), "{out}");
 
     let out = run_grep(&db_path, &dir, &["--deleted", "-i", "terminal|postmortem"]);
     assert!(out.contains("Closed session"), "{out}");

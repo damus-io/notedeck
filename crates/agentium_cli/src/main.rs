@@ -919,8 +919,8 @@ COMMANDS:
                       included, that the list filters select
                       (--host/--cwd/--status/--backend; --deleted for only the
                       deleted ones), printing each matching line under its
-                      session's agentium: ref. <pattern> is a regex; -i folds
-                      case. One sync and one
+                      session's agentium: ref and status. <pattern> is a regex;
+                      -i folds case. One sync and one
                       cache read covers every session, so it is flat in session
                       count where a per-session `log | grep` loop is not. The
                       log filters --role/--tools/--last narrow what is

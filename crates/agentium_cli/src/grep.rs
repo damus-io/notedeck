@@ -14,7 +14,7 @@ use regex::Regex;
 
 use crate::list::{ListFilters, ListScope, SessionJson, load_sessions};
 use crate::log::PAGER_VAR;
-use crate::term::{SGR_BOLD, abbreviate_home, col, paint};
+use crate::term::{SGR_BOLD, abbreviate_home, col, paint, status_style};
 use crate::transcript::{MessageView, message_body, message_role, role_style};
 
 /// `agentium grep <pattern>` — search message text across every session the
@@ -146,14 +146,18 @@ struct GrepMatch {
 }
 
 /// The header line introducing a session's matches: its full `agentium:` ref
-/// (untruncated, so it can be pasted straight into `log`/`send`), its title, and
+/// (untruncated, so it can be pasted straight into `log`/`send`), its status as
+/// `list` shows it (glyph, label and color, so a deleted or waiting session
+/// reads at a glance now that `grep` searches deleted ones too), its title, and
 /// its home-abbreviated working directory.
 fn grep_header(state: &SessionState, color: bool) -> String {
     let sref = state.agentium_uri();
+    let (glyph, label, sgr) = status_style(&state.status);
     let cwd = abbreviate_home(&state.cwd, &state.home_dir);
     format!(
-        "{}  {}  {}\n",
+        "{}  {}  {}  {}\n",
         paint(color, SGR_BOLD, &sref),
+        paint(color, sgr, &format!("{glyph} {label}")),
         state.display_title(),
         paint(color, "90", &cwd),
     )
@@ -202,6 +206,19 @@ mod tests {
         );
         assert!(header.contains("Hello"));
         assert!(header.contains("~/proj"), "cwd is home-abbreviated");
+        assert!(
+            header.contains(&format!("{}  ● Working  Hello", s.agentium_uri())),
+            "the status sits between the ref and the title: {header:?}"
+        );
+    }
+
+    /// The status is painted in `list`'s color for it, so a deleted session
+    /// reads dim beside a live one.
+    #[test]
+    fn grep_header_colors_the_status() {
+        let s = session("mac", "Gone", "deleted", 0);
+        let header = grep_header(&s, true);
+        assert!(header.contains("\x1b[90m⊘ Deleted\x1b[0m"), "{header:?}");
     }
 
     #[test]

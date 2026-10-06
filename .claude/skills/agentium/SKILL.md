@@ -233,7 +233,8 @@ session's transcript — the streaming *mode* of `log`, not a separate command.
 
 `grep <pattern>` searches every session the `list` filters select — **deleted
 ones included** — and prints each matching line under its session's `agentium:`
-ref. This is the command for
+ref, status (`● Working`, `○ Idle`, `⊘ Deleted`, … — the same glyphs and colors
+`list` uses) and title. This is the command for
 "which session was it where I…" — the one that answers across the whole corpus
 instead of one transcript.
 
