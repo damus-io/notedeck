@@ -141,9 +141,13 @@ impl<'a, 'd> PostView<'a, 'd> {
 
     /// Id for this post view's per-column state.
     ///
-    /// Derived from `ui.id()` (which is unique per column) rather than a global
-    /// constant, so the focus state stored for one column's composer doesn't
-    /// collide with another column's.
+    /// Derived from `ui.scope_id()` (which is unique per column) rather than a
+    /// global constant, so the focus state stored for one column's composer
+    /// doesn't collide with another column's.
+    ///
+    /// The scope differs in every nested `Ui`, so compute this once at the top
+    /// of the composer and pass it down: every reader and writer of the focus
+    /// state must agree on the same id.
     fn id(ui: &egui::Ui) -> egui::Id {
         ui.scope_id().with("post")
     }
@@ -157,7 +161,12 @@ impl<'a, 'd> PostView<'a, 'd> {
         self
     }
 
-    fn editbox(&mut self, txn: &nostrdb::Transaction, ui: &mut egui::Ui) -> EditBoxResponse {
+    fn editbox(
+        &mut self,
+        txn: &nostrdb::Transaction,
+        ui: &mut egui::Ui,
+        state_id: egui::Id,
+    ) -> EditBoxResponse {
         ui.spacing_mut().item_spacing.x = 12.0;
 
         let pfp_size = 24.0;
@@ -257,7 +266,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         let focused = out.response.has_focus();
 
         ui.ctx().data_mut(|d| {
-            d.insert_temp(PostView::id(ui), focused);
+            d.insert_temp(state_id, focused);
         });
 
         EditBoxResponse {
@@ -388,9 +397,11 @@ impl<'a, 'd> PostView<'a, 'd> {
         resp.drag_id
     }
 
-    fn focused(&self, ui: &egui::Ui) -> bool {
+    /// Whether the composer's text box had focus, as recorded by `editbox`
+    /// under `state_id`.
+    fn focused(ui: &egui::Ui, state_id: egui::Id) -> bool {
         ui.ctx()
-            .data(|d| d.get_temp::<bool>(PostView::id(ui)).unwrap_or(false))
+            .data(|d| d.get_temp::<bool>(state_id).unwrap_or(false))
     }
 
     pub fn outer_margin() -> i8 {
@@ -436,7 +447,8 @@ impl<'a, 'd> PostView<'a, 'd> {
             }
         }
 
-        let focused = self.focused(ui);
+        let state_id = PostView::id(ui);
+        let focused = PostView::focused(ui, state_id);
         let stroke = if focused {
             ui.visuals().selection.stroke
         } else {
@@ -460,12 +472,19 @@ impl<'a, 'd> PostView<'a, 'd> {
         }
 
         frame
-            .show(ui, |ui| ui.vertical(|ui| self.input_ui(txn, ui)).inner)
+            .show(ui, |ui| {
+                ui.vertical(|ui| self.input_ui(txn, ui, state_id)).inner
+            })
             .inner
     }
 
-    fn input_ui(&mut self, txn: &Transaction, ui: &mut egui::Ui) -> DragResponse<PostResponse> {
-        let edit_response = ui.horizontal(|ui| self.editbox(txn, ui)).inner;
+    fn input_ui(
+        &mut self,
+        txn: &Transaction,
+        ui: &mut egui::Ui,
+        state_id: egui::Id,
+    ) -> DragResponse<PostResponse> {
+        let edit_response = ui.horizontal(|ui| self.editbox(txn, ui, state_id)).inner;
 
         let note_response = if let PostType::Quote(id) = self.post_type {
             let avail_size = ui.available_size_before_wrap();
@@ -509,7 +528,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         self.transfer_uploads(ui);
         self.show_upload_errors(ui);
 
-        let post_action = ui.horizontal(|ui| self.input_buttons(ui)).inner;
+        let post_action = ui.horizontal(|ui| self.input_buttons(ui, state_id)).inner;
 
         let action = note_response
             .and_then(|nr| nr.action.map(PostAction::QuotedNoteAction))
@@ -525,7 +544,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         })
     }
 
-    fn input_buttons(&mut self, ui: &mut egui::Ui) -> Option<NewPostAction> {
+    fn input_buttons(&mut self, ui: &mut egui::Ui, state_id: egui::Id) -> Option<NewPostAction> {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::BOTTOM), |ui| {
             self.show_upload_media_button(ui);
         });
@@ -543,7 +562,9 @@ impl<'a, 'd> PostView<'a, 'd> {
             });
 
             if post_button_clicked
-                || (!self.draft.buffer.is_empty() && shortcut_pressed && self.focused(ui))
+                || (!self.draft.buffer.is_empty()
+                    && shortcut_pressed
+                    && PostView::focused(ui, state_id))
             {
                 self.note_context.sound.play(notedeck::SoundEffect::Send);
                 let output = self.draft.buffer.output();
@@ -950,5 +971,89 @@ mod preview {
         fn preview(_cfg: PreviewConfig) -> Self::Prev {
             PostPreview::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::ui::search::FocusState;
+    use notedeck::{App, AppContext, AppResponse};
+    use notedeck_testing::device::build_device_with_relays;
+
+    /// Renders one compose `PostView` and records whether it produced a new post.
+    struct ComposeApp {
+        draft: Draft,
+        poster: FullKeypair,
+        posted: Arc<AtomicBool>,
+    }
+
+    impl App for ComposeApp {
+        fn render(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+            let txn = Transaction::new(app.ndb).expect("txn");
+            let mut note_context = app.note_context();
+
+            let resp = PostView::new(
+                &mut note_context,
+                &mut self.draft,
+                PostType::New,
+                self.poster.to_filled(),
+                ui.available_rect_before_wrap(),
+                NoteOptions::default(),
+            )
+            .ui(&txn, ui);
+
+            if let Some(PostResponse {
+                action: Some(PostAction::NewPostAction(_)),
+                ..
+            }) = resp.output
+            {
+                self.posted.store(true, Ordering::SeqCst);
+            }
+
+            AppResponse::none()
+        }
+    }
+
+    /// Ctrl+Enter in a focused composer sends the post.
+    ///
+    /// Regression: the composer recorded its focus under one `Ui` scope and the
+    /// shortcut read it back under another, so the shortcut always saw
+    /// "unfocused" and never fired.
+    #[test]
+    fn ctrl_enter_sends_post_from_focused_composer() {
+        let account = FullKeypair::generate();
+        let posted = Arc::new(AtomicBool::new(false));
+        let app_posted = posted.clone();
+
+        let mut device = build_device_with_relays(
+            &[],
+            &account,
+            Box::new(move |notedeck, _ctx| {
+                let mut draft = Draft::new();
+                draft.focus_state = FocusState::ShouldRequestFocus;
+                notedeck.set_app(ComposeApp {
+                    draft,
+                    poster: FullKeypair::generate(),
+                    posted: app_posted,
+                });
+            }),
+        );
+
+        device.run_ok();
+        device.event(egui::Event::Text("gm".to_owned()));
+        device.run_ok();
+        assert!(!posted.load(Ordering::SeqCst), "typing alone must not post");
+
+        device.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        device.run_ok();
+
+        assert!(
+            posted.load(Ordering::SeqCst),
+            "Ctrl+Enter in the focused composer should send the post"
+        );
     }
 }
