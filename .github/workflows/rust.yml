@@ -205,13 +205,22 @@ jobs:
           name: notedeck-${{ matrix.arch }}-linux.tar.gz
           path: packages/notedeck-${{ matrix.arch }}-linux.tar.gz
 
+      # RPM versions can't contain '-', so semver pre-releases like
+      # 0.11.0-beta.1 are rejected. Map '-' to '~', which rpm sorts before the
+      # release (0.11.0~beta.1 < 0.11.0). cargo deb applies the same mapping on
+      # its own, so both packages carry 0.11.0~beta.1.
+      - name: Compute RPM version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "notedeck_chrome") | .version')
+          echo "RPM_VERSION=$(echo "$version" | sed 's/-/~/g')" >> "$GITHUB_ENV"
+
       - name: Build RPM (Cross)
         if: matrix.arch != runner.arch
-        run: cargo generate-rpm -p crates/notedeck_chrome --target=${{ matrix.arch }}-unknown-linux-gnu
+        run: cargo generate-rpm -p crates/notedeck_chrome --target=${{ matrix.arch }}-unknown-linux-gnu --set-metadata "version = \"$RPM_VERSION\""
 
       - name: Build RPM
         if: matrix.arch == runner.arch
-        run: cargo generate-rpm -p crates/notedeck_chrome
+        run: cargo generate-rpm -p crates/notedeck_chrome --set-metadata "version = \"$RPM_VERSION\""
 
       - name: Build deb (Cross)
         if: matrix.arch != runner.arch
