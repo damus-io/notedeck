@@ -14,12 +14,16 @@ use nostrdb_net::relay::sync::Result;
 use regex::Regex;
 use serde_json::json;
 
-use headway::event::{self, BoardView, CardView};
+use headway::event::{self, ActivityKind, BoardView, CardView};
+use headway::fmt::rel_time;
 
 use crate::output::plain_ref;
 
 /// `headway grep <pattern>` — print every line of card text in `boards` that
-/// `pattern` matches, grouped under each card's `headway:<board>/<word-id>` ref.
+/// `pattern` matches, grouped under each card's `headway:<board>/<word-id>` ref,
+/// each line with how long ago its text was written. Cards come most recent
+/// first: ordered by their newest matching line, across every board searched,
+/// so the live discussion leads and a stale mention sinks.
 ///
 /// Each board was folded once by the caller, and this is one pass over each
 /// board's cards, so a search costs what a single `show` does however many
@@ -45,10 +49,8 @@ pub(crate) fn cmd_grep(
     let stdout_tty = std::io::stdout().is_terminal();
     let use_pager = !out.json && out.pager.enabled(stdout_tty);
     let color = out.color.enabled(stdout_tty || use_pager);
-    let as_json = out.json;
-    let mut rows: Vec<serde_json::Value> = Vec::new();
-    let mut output = String::new();
 
+    let mut hits: Vec<CardHit> = Vec::new();
     for view in boards {
         let within = subtree.map(|root| subtree_ids(view, root));
         for (card, column) in searched_cards(view, include_archived) {
@@ -62,31 +64,34 @@ pub(crate) fn cmd_grep(
             if matches.is_empty() {
                 continue;
             }
-            if as_json {
-                rows.push(card_json(view, card, column, &matches));
-                continue;
-            }
-            if !output.is_empty() {
-                output.push('\n');
-            }
-            output.push_str(&grep_header(view, card, column, color));
-            // Sized to the fields this card actually matched, like agentium
-            // sizes its role column, so a card with only `desc` hits isn't
-            // padded out to `comment`'s width.
-            let width = matches
-                .iter()
-                .map(|m| m.field.as_str().len())
-                .max()
-                .unwrap_or(0);
-            for m in &matches {
-                output.push_str(&grep_match_line(m, pattern, width, color));
-            }
+            hits.push(CardHit {
+                view,
+                card,
+                column,
+                matches,
+            });
         }
     }
+    sort_most_recent_first(&mut hits);
 
-    if as_json {
+    if out.json {
+        let rows: Vec<serde_json::Value> = hits.iter().map(card_json).collect();
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
+    }
+    let mut output = String::new();
+    for hit in &hits {
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(&grep_header(hit.view, hit.card, hit.column, color));
+        // Sized to what this card actually matched, like agentium sizes its
+        // role column, so a card with only `desc` hits isn't padded out to
+        // `comment`'s width.
+        let width = MatchWidths::of(&hit.matches);
+        for m in &hit.matches {
+            output.push_str(&grep_match_line(m, pattern, width, color));
+        }
     }
     if output.is_empty() {
         println!("no matches");
@@ -178,15 +183,54 @@ impl Field {
     }
 }
 
-/// One matching line of a card's text, and the field it came from.
+/// One matching line of a card's text, the field it came from, and when that
+/// text was written (see [`card_matches`]).
 #[derive(Debug, PartialEq, Eq)]
 struct GrepMatch {
     field: Field,
     text: String,
+    /// Unix seconds: the comment's own time, or for the title and description
+    /// the edit that last set them.
+    created_at: u64,
+}
+
+/// A card with at least one match, gathered across every board searched so
+/// the results can be ordered as a whole before any is rendered.
+struct CardHit<'v> {
+    view: &'v BoardView,
+    card: &'v CardView,
+    /// The column it sits in, or `archived`.
+    column: &'v str,
+    /// Its matching lines, in reading order. Never empty.
+    matches: Vec<GrepMatch>,
+}
+
+impl CardHit<'_> {
+    /// When the newest of this card's matching lines was written — what the
+    /// results are ordered by.
+    fn newest(&self) -> u64 {
+        self.matches.iter().map(|m| m.created_at).max().unwrap_or(0)
+    }
+}
+
+/// Order `hits` most recent first, by each card's newest matching line. The
+/// sort is stable, so cards whose newest lines tie (same-second edits) keep
+/// board-then-column order.
+///
+/// The newest *match*, not the card's `updated_at`: a card whose description
+/// mentioned the pattern a month ago and was only moved yesterday is a month-old
+/// hit, and putting it first would bury the cards still talking about it.
+fn sort_most_recent_first(hits: &mut [CardHit]) {
+    hits.sort_by_key(|hit| std::cmp::Reverse(hit.newest()));
 }
 
 /// Every line of `card`'s text that `pattern` matches, in reading order: the
 /// title, the description, the comment thread, then the review comments.
+///
+/// Each line carries when its text was written. A comment has its own time;
+/// the title and description are dated by the edit that last set them — the
+/// newest rename or description edit in the card's activity — falling back to
+/// the card's creation when it was never edited.
 ///
 /// What a card's text is: what people wrote on it. Labels are left out — they
 /// are short tags rather than prose, and a hit on `bug` in every bug-labelled
@@ -197,24 +241,38 @@ struct GrepMatch {
 /// Matched per line, like `grep`: a long description contributes the lines
 /// that match, not its whole body.
 fn card_matches(card: &CardView, pattern: &Regex) -> Vec<GrepMatch> {
-    let comments = card.comments.iter().map(|c| (Field::Comment, &c.body));
-    let reviews = card
-        .reviews
+    let last_set = |is_edit: fn(&ActivityKind) -> bool| {
+        card.activity
+            .iter()
+            .rev()
+            .find(|a| is_edit(&a.kind))
+            .map_or(card.created_at, |a| a.created_at)
+    };
+    let title_at = last_set(|k| matches!(k, ActivityKind::Renamed { .. }));
+    let desc_at = last_set(|k| matches!(k, ActivityKind::DescriptionEdited));
+    let comments = card
+        .comments
         .iter()
-        .flat_map(|r| r.comments.iter().map(|c| (Field::Review, &c.body)));
+        .map(|c| (Field::Comment, &c.body, c.created_at));
+    let reviews = card.reviews.iter().flat_map(|r| {
+        r.comments
+            .iter()
+            .map(|c| (Field::Review, &c.body, c.created_at))
+    });
     [
-        (Field::Title, &card.title),
-        (Field::Description, &card.description),
+        (Field::Title, &card.title, title_at),
+        (Field::Description, &card.description, desc_at),
     ]
     .into_iter()
     .chain(comments)
     .chain(reviews)
-    .flat_map(|(field, text)| {
+    .flat_map(|(field, text, created_at)| {
         text.lines()
             .filter(|line| pattern.is_match(line))
             .map(move |line| GrepMatch {
                 field,
                 text: line.trim_end().to_string(),
+                created_at,
             })
     })
     .collect()
@@ -222,25 +280,28 @@ fn card_matches(card: &CardView, pattern: &Regex) -> Vec<GrepMatch> {
 
 /// The `grep --json` shape for one card: its identity — the same `ref`/`id`
 /// `next --json` emits, plus its board, title and column (`archived` for an
-/// archived card, as `show <card> --json` says) — and its matching lines.
-/// Grouped rather than one row per match, so a card's identity isn't repeated
-/// once per hit.
-fn card_json(
-    view: &BoardView,
-    card: &CardView,
-    column: &str,
-    matches: &[GrepMatch],
-) -> serde_json::Value {
-    let matches: Vec<_> = matches
+/// archived card, as `show <card> --json` says) — and its matching lines, each
+/// with the unix `created_at` the text output renders as "2h ago". Grouped
+/// rather than one row per match, so a card's identity isn't repeated once per
+/// hit.
+fn card_json(hit: &CardHit) -> serde_json::Value {
+    let matches: Vec<_> = hit
+        .matches
         .iter()
-        .map(|m| json!({ "field": m.field.as_str(), "text": m.text }))
+        .map(|m| {
+            json!({
+                "field": m.field.as_str(),
+                "text": m.text,
+                "created_at": m.created_at,
+            })
+        })
         .collect();
     json!({
-        "ref": plain_ref(view, &card.id),
-        "id": card.id.hex(),
-        "board": view.id,
-        "title": card.title,
-        "column": column,
+        "ref": plain_ref(hit.view, &hit.card.id),
+        "id": hit.card.id.hex(),
+        "board": hit.view.id,
+        "title": hit.card.title,
+        "column": hit.column,
         "matches": matches,
     })
 }
@@ -259,13 +320,36 @@ fn grep_header(view: &BoardView, card: &CardView, column: &str, color: bool) -> 
     )
 }
 
-/// One match row: the indented field label padded to `width`, then the
-/// matching line with every occurrence of the pattern highlighted.
-fn grep_match_line(m: &GrepMatch, pattern: &Regex, width: usize, color: bool) -> String {
-    let label = format!("{:<width$}", m.field.as_str());
+/// The padded widths of a card's match rows: its longest field label and its
+/// longest relative time, so the matched text starts in one column per card.
+#[derive(Clone, Copy, Debug)]
+struct MatchWidths {
+    field: usize,
+    time: usize,
+}
+
+impl MatchWidths {
+    /// The widths `matches` need.
+    fn of(matches: &[GrepMatch]) -> MatchWidths {
+        let mut widths = MatchWidths { field: 0, time: 0 };
+        for m in matches {
+            widths.field = widths.field.max(m.field.as_str().len());
+            widths.time = widths.time.max(rel_time(m.created_at).len());
+        }
+        widths
+    }
+}
+
+/// One match row: the indented field label and the line's relative time, both
+/// padded and dimmed, then the matching line with every occurrence of the
+/// pattern highlighted.
+fn grep_match_line(m: &GrepMatch, pattern: &Regex, widths: MatchWidths, color: bool) -> String {
+    let label = format!("{:<width$}", m.field.as_str(), width = widths.field);
+    let when = format!("{:<width$}", rel_time(m.created_at), width = widths.time);
     format!(
-        "  {}  {}\n",
+        "  {}  {}  {}\n",
         paint(color, SGR_FIELD, &label),
+        paint(color, SGR_DIM, &when),
         highlight(pattern, &m.text, color),
     )
 }
@@ -284,7 +368,9 @@ mod tests {
     use super::*;
 
     use cli_term::{CaseMode, compile_pattern};
-    use headway::event::{ArchivedCard, ColumnView, CommentView, Priority, SubissueView};
+    use headway::event::{
+        ActivityView, ArchivedCard, ColumnView, CommentView, Priority, SubissueView,
+    };
     use nostrdb_net::NoteId;
 
     fn id(n: u8) -> NoteId {
@@ -318,12 +404,24 @@ mod tests {
     }
 
     fn comment(n: u8, body: &str) -> CommentView {
+        comment_at(n, body, 0)
+    }
+
+    fn comment_at(n: u8, body: &str, created_at: u64) -> CommentView {
         CommentView {
             id: id(n),
             author: [0; 32],
             parent: None,
             body: body.to_string(),
-            created_at: 0,
+            created_at,
+        }
+    }
+
+    fn activity(kind: ActivityKind, created_at: u64) -> ActivityView {
+        ActivityView {
+            author: [0; 32],
+            created_at,
+            kind,
         }
     }
 
@@ -380,6 +478,84 @@ mod tests {
             ]
         );
         assert!(card_matches(&card(4, "x", ""), &re("relay")).is_empty());
+    }
+
+    /// A comment is dated by itself; the title and description by the edit
+    /// that last set them, else by the card's creation.
+    #[test]
+    fn card_matches_date_each_line_by_when_it_was_written() {
+        let mut c = card(1, "relay reconnect", "the relay stalls");
+        c.created_at = 100;
+        c.comments = vec![comment_at(2, "relay is back", 900)];
+        let times = |c: &CardView| -> Vec<(Field, u64)> {
+            card_matches(c, &re("relay"))
+                .iter()
+                .map(|m| (m.field, m.created_at))
+                .collect()
+        };
+        assert_eq!(
+            times(&c),
+            vec![
+                (Field::Title, 100),
+                (Field::Description, 100),
+                (Field::Comment, 900),
+            ]
+        );
+
+        // The newest edit of each kind wins; other activity doesn't count.
+        c.activity = vec![
+            activity(ActivityKind::DescriptionEdited, 200),
+            activity(
+                ActivityKind::Renamed {
+                    to: "relay reconnect".to_string(),
+                },
+                300,
+            ),
+            activity(ActivityKind::DescriptionEdited, 400),
+            activity(ActivityKind::Archived, 500),
+        ];
+        assert_eq!(
+            times(&c),
+            vec![
+                (Field::Title, 300),
+                (Field::Description, 400),
+                (Field::Comment, 900),
+            ]
+        );
+    }
+
+    /// Cards come newest first, by their newest matching line — not by when
+    /// the card itself last changed — and ties keep the board's order.
+    #[test]
+    fn hits_sort_by_their_newest_match() {
+        let mut old_card_new_comment = card(1, "relay one", "");
+        old_card_new_comment.comments = vec![comment_at(9, "relay again", 500)];
+        let mut stale_mention = card(2, "relay two", "");
+        stale_mention.created_at = 100;
+        stale_mention.updated_at = 1_000;
+        let mut tie_a = card(3, "relay three", "");
+        tie_a.created_at = 300;
+        let mut tie_b = card(4, "relay four", "");
+        tie_b.created_at = 300;
+        let view = board(
+            vec![stale_mention, tie_a, old_card_new_comment, tie_b],
+            Vec::new(),
+        );
+        let pattern = re("relay");
+        let mut hits: Vec<CardHit> = searched_cards(&view, false)
+            .map(|(card, column)| CardHit {
+                view: &view,
+                card,
+                column,
+                matches: card_matches(card, &pattern),
+            })
+            .collect();
+        sort_most_recent_first(&mut hits);
+        let order: Vec<&str> = hits.iter().map(|h| h.card.title.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["relay one", "relay three", "relay four", "relay two"]
+        );
     }
 
     /// `--in` keeps the container and everything under it, archived
@@ -439,19 +615,30 @@ mod tests {
         assert_eq!(painted, expected);
         assert_ne!(SGR_REF, SGR_TITLE);
 
-        let m = GrepMatch {
-            field: Field::Comment,
-            text: "the relay is back".to_string(),
-        };
-        let line = grep_match_line(&m, &re("relay"), 7, false);
-        assert_eq!(line, "  comment  the relay is back\n");
-        let m = GrepMatch {
-            field: Field::Title,
-            text: "relay".to_string(),
-        };
+        // Each row: the field and its relative time, both padded to the
+        // card's widest, then the line.
+        headway::fmt::freeze_now(10_000);
+        let rows = [
+            GrepMatch {
+                field: Field::Comment,
+                text: "the relay is back".to_string(),
+                created_at: 10_000 - 2 * 3600,
+            },
+            GrepMatch {
+                field: Field::Title,
+                text: "relay".to_string(),
+                created_at: 10_000,
+            },
+        ];
+        let widths = MatchWidths::of(&rows);
+        let [comment, title] = &rows;
         assert_eq!(
-            grep_match_line(&m, &re("relay"), 7, false),
-            "  title    relay\n"
+            grep_match_line(comment, &re("relay"), widths, false),
+            "  comment  2h ago    the relay is back\n"
+        );
+        assert_eq!(
+            grep_match_line(title, &re("relay"), widths, false),
+            "  title    just now  relay\n"
         );
     }
 }

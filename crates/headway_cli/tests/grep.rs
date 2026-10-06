@@ -204,6 +204,13 @@ fn grep_searches_card_text_across_the_board() {
     );
     assert_eq!(row(&rows, &child)["column"], "Backlog");
     assert_eq!(row(&rows, &child)["board"], "headway");
+    // Each match carries when its text was written, as unix seconds.
+    assert!(
+        row(&rows, &child)["matches"][0]["created_at"]
+            .as_u64()
+            .is_some_and(|t| t > 0),
+        "{rows:?}"
+    );
     // No match, no row; archived and other-board cards stay out by default.
     for absent in [&quiet, &archived, &elsewhere] {
         assert!(
@@ -240,16 +247,25 @@ fn grep_searches_card_text_across_the_board() {
     assert_eq!(rows.len(), 4, "{rows:?}");
 
     // The plain rendering: each card headed by its full ref, its matching
-    // lines beneath with the field they came from. Piped, it is neither colored
-    // nor paged.
+    // lines beneath with the field they came from and how long ago they were
+    // written. Piped, it is neither colored nor paged.
     let out = headway(bin, url, db, &["grep", "fine now"]);
     assert!(
         out.starts_with(&format!("{child}  child task  (Backlog)\n")),
         "{out}"
     );
+    // The time is "just now" unless this run was slow enough to cross a
+    // minute, so only its shape is pinned.
+    let line = out
+        .lines()
+        .find(|l| l.starts_with("  comment  "))
+        .unwrap_or_else(|| panic!("a comment row: {out}"));
+    let when = line["  comment  ".len()..]
+        .strip_suffix("  the relay looks fine now")
+        .unwrap_or_else(|| panic!("time, then the line: {line:?}"));
     assert!(
-        out.contains("  comment  the relay looks fine now\n"),
-        "{out}"
+        when == "just now" || when.ends_with(" ago"),
+        "a relative time: {when:?}"
     );
     assert!(!out.contains('\x1b'), "no color into a pipe: {out:?}");
     assert_eq!(
