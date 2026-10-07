@@ -107,8 +107,10 @@ Tell the user the new session's ref and how to watch it:
 
     handed off to <ref> — follow it with `agentium log <ref> -f`
 
-Then finish wrapping up *this* session per CLAUDE.md (commit, headway comment +
-move, etc.). The handoff doesn't excuse leaving the current work half-done.
+Then finish wrapping up *this* session per CLAUDE.md: commit, build and publish
+the explainer (`visual-explainer` skill), `headway review <card> --explainer
+<url>`, then the done comment with the hash, title and explainer URL, and move
+the card. The handoff doesn't excuse leaving the current work half-done.
 
 ## Notes
 
