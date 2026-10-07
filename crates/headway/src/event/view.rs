@@ -272,6 +272,21 @@ pub struct ColumnView {
     pub cards: Vec<CardView>,
 }
 
+/// The id of the default board's "someone is working on this" column, and the
+/// selector [`ColumnView::is_in_progress`] matches. Headway has no column state
+/// types yet, so this is the column the CLI's `--col in-progress` names.
+pub const IN_PROGRESS_COLUMN: &str = "in-progress";
+
+impl ColumnView {
+    /// Whether this is the board's In Progress column: a card here is already
+    /// taken, so [`crate::traversal::ready`] never hands it out. Matched the way
+    /// the CLI resolves `--col in-progress` — by id, or by name ignoring case —
+    /// since columns carry no state type to key off.
+    pub fn is_in_progress(&self) -> bool {
+        self.id == IN_PROGRESS_COLUMN || self.name.eq_ignore_ascii_case(IN_PROGRESS_COLUMN)
+    }
+}
+
 /// An archived card plus the column it was archived from, for the archived view
 /// and restore. `from` is `None` if the card was archived before origin
 /// tracking existed, or its origin column has since been forgotten.
@@ -331,5 +346,15 @@ impl BoardView {
             .iter()
             .find_map(|col| col.cards.iter().find(|c| c.id == id).map(|c| (col, c)))
             .is_some_and(|(col, card)| self.column_is_terminal(&col.id) || card.subissues_done())
+    }
+
+    /// Whether card `id` sits in this board's In Progress column
+    /// ([`ColumnView::is_in_progress`]) — someone has picked it up. `false` when
+    /// the card is archived or off-board.
+    pub fn card_is_in_progress(&self, id: NoteId) -> bool {
+        self.columns
+            .iter()
+            .find(|col| col.cards.iter().any(|c| c.id == id))
+            .is_some_and(ColumnView::is_in_progress)
     }
 }

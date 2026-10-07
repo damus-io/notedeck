@@ -120,7 +120,8 @@ pub(crate) enum Command {
     /// Print what to work on next: walk a container's work-order and show the
     /// ready frontier (see [`traversal`](headway::traversal)). A card whose live
     /// subissues are all done counts as done, so a finished epic is never
-    /// printed and never holds a blocked card back. A read command — it never
+    /// printed and never holds a blocked card back; a card already In Progress
+    /// is taken, so it is never printed either. A read command — it never
     /// signs.
     Next {
         /// `--in`: the container. A card ref (its subissues) or the board slug
@@ -132,6 +133,11 @@ pub(crate) enum Command {
         ready: bool,
         /// `-n <k>`: cap the number of cards printed.
         limit: Option<usize>,
+        /// `-l`/`--label`: keep only frontier cards carrying every one of these
+        /// labels. Taken the way `add -l` takes them (repeatable, each value may
+        /// be comma-separated). Filters what is printed, never what counts as
+        /// blocked or done.
+        labels: Vec<String>,
     },
     /// Search card text — title, description, comments and review comments —
     /// for `pattern`, printing each matching line under its card's ref (see
@@ -833,6 +839,7 @@ fn parse_command(
             container: seq.container,
             ready,
             limit: count,
+            labels,
         },
         // One pattern: a second positional is refused rather than silently
         // dropped, since `grep sealed board` most likely meant the phrase.
@@ -1462,6 +1469,7 @@ mod tests {
                 container,
                 ready,
                 limit,
+                labels,
             } => {
                 assert_eq!(
                     container.as_deref(),
@@ -1469,6 +1477,31 @@ mod tests {
                 );
                 assert!(ready);
                 assert_eq!(limit, Some(3));
+                assert!(labels.is_empty());
+            }
+            _ => panic!("expected a Next command"),
+        }
+    }
+
+    /// `next --label` takes labels the way `add -l` does — repeatable, each
+    /// value possibly comma-separated — so `-l a,b --label c` filters on all three.
+    #[test]
+    fn next_parses_labels_like_add() {
+        let cli = parse(&[
+            "next",
+            "--in",
+            "headway:gamedev/leave-swing-install",
+            "--label",
+            "role:model,ui",
+            "-l",
+            "fresh",
+            "-n",
+            "1",
+        ]);
+        match cli.command {
+            Command::Next { labels, limit, .. } => {
+                assert_eq!(labels, ["role:model", "ui", "fresh"]);
+                assert_eq!(limit, Some(1));
             }
             _ => panic!("expected a Next command"),
         }
