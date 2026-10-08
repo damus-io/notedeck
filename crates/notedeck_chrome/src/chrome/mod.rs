@@ -32,6 +32,7 @@ mod actions;
 #[cfg(all(test, feature = "headway", not(debug_assertions)))]
 mod columns_input_tests;
 mod debug;
+mod focus;
 mod frame;
 mod header;
 #[cfg(all(test, feature = "headway", not(debug_assertions)))]
@@ -46,6 +47,7 @@ mod update;
 
 pub use actions::ChromePanelAction;
 use actions::PendingOpen;
+use focus::AppFocus;
 use keyboard::AnimState;
 use nav::{seed_global_nav, PendingPrune};
 #[cfg(feature = "auto-update")]
@@ -64,12 +66,9 @@ pub struct Chrome {
     /// opened apps receive `update()` calls each frame.
     opened: [u16; MAX_APPS / 16],
 
-    /// The last-focused egui widget id for each app (keyed by app index).
-    /// egui drops keyboard focus when a widget isn't rendered for a frame, so
-    /// switching apps (Ctrl+Tab / tab click) would otherwise lose focus until
-    /// the user clicks back in. We remember each app's focus and re-request it
-    /// on switch-back. Generic — no per-app code needed.
-    app_focus: HashMap<usize, egui::Id>,
+    /// What each app had focused when it last rendered, put back when it
+    /// becomes active again (see [`AppFocus`]).
+    app_focus: AppFocus,
 
     /// The active app index from the previous frame, used to detect switches.
     prev_active: i32,
@@ -226,7 +225,7 @@ impl Chrome {
             options: ChromeOptions::default(),
             apps: Vec::new(),
             opened: [0u16; MAX_APPS / 16],
-            app_focus: HashMap::new(),
+            app_focus: AppFocus::default(),
             prev_active: 0,
             tools_snapshot: [0u16; MAX_APPS / 16],
             soft_kb_anim_state: AnimState::default(),
@@ -338,7 +337,7 @@ impl Chrome {
             options: ChromeOptions::default(),
             apps: Vec::new(),
             opened: [0u16; MAX_APPS / 16],
-            app_focus: HashMap::new(),
+            app_focus: AppFocus::default(),
             prev_active: 0,
             tools_snapshot: [0u16; MAX_APPS / 16],
             soft_kb_anim_state: AnimState::default(),

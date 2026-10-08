@@ -298,6 +298,7 @@ impl Chrome {
 #[cfg(all(test, not(feature = "auto-update")))]
 mod global_nav_tests {
     use super::*;
+    use crate::chrome::focus::AppFocus;
     use crate::chrome::keyboard::AnimState;
     use crate::chrome::MAX_APPS;
     use crate::ChromeOptions;
@@ -316,7 +317,7 @@ mod global_nav_tests {
             options: ChromeOptions::default(),
             apps: Vec::new(),
             opened: [0u16; MAX_APPS / 16],
-            app_focus: HashMap::new(),
+            app_focus: AppFocus::default(),
             prev_active: 0,
             tools_snapshot: [0u16; MAX_APPS / 16],
             soft_kb_anim_state: AnimState::default(),
@@ -817,6 +818,7 @@ mod global_nav_tests {
 mod cleanup_tests {
     use super::*;
     use crate::app::NotedeckApp;
+    use crate::chrome::focus::AppFocus;
     use crate::chrome::keyboard::AnimState;
     use crate::chrome::MAX_APPS;
     use crate::ChromeOptions;
@@ -868,7 +870,7 @@ mod cleanup_tests {
                 options: ChromeOptions::default(),
                 apps: vec![NotedeckApp::Other("recorder".into(), Box::new(recorder))],
                 opened: [0u16; MAX_APPS / 16],
-                app_focus: HashMap::new(),
+                app_focus: AppFocus::default(),
                 prev_active: 0,
                 tools_snapshot: [0u16; MAX_APPS / 16],
                 soft_kb_anim_state: AnimState::default(),

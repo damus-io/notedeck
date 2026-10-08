@@ -320,14 +320,7 @@ impl Chrome {
                     // mobile to avoid popping the virtual keyboard on every switch.
                     if self.active != self.prev_active {
                         if !is_compiled_as_mobile() {
-                            if let Some(id) = self.app_focus.get(&(self.active as usize)) {
-                                ui.ctx().memory_mut(|m| m.request_focus(*id));
-                            } else {
-                                // First activation, nothing remembered: ask the
-                                // app's autofocus widget (if any) to grab focus,
-                                // like browser autofocus.
-                                notedeck_ui::request_autofocus(ui.ctx());
-                            }
+                            self.app_focus.restore(ui.ctx(), self.active as usize);
                         }
                         self.prev_active = self.active;
                     }
@@ -369,12 +362,11 @@ impl Chrome {
             self.process_toolbar_action(tb_action, ctx);
         }
 
-        // Remember the active app's currently-focused widget so we can restore
-        // it when the user switches away and back. Only overwrite on Some so the
-        // last real focus is retained even after focus is transiently dropped.
-        if let Some(focused) = ui.ctx().memory(|m| m.focused()) {
-            self.app_focus.insert(self.active as usize, focused);
-        }
+        // Remember what the app that rendered this frame has focused, to put
+        // back when the user switches away and back. That's `prev_active`, not
+        // `active`: an open or back raised mid-render has already moved
+        // `active` on.
+        self.app_focus.remember(ui.ctx(), self.prev_active as usize);
 
         action
     }
