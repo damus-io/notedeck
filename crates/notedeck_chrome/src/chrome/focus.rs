@@ -15,6 +15,10 @@ pub(super) struct AppFocus {
     /// left with Esc, which is different from never having seen the app
     /// (no entry), where the app's autofocus widget may claim focus instead.
     remembered: HashMap<usize, Option<egui::Id>>,
+
+    /// The next [`restore`](Self::restore) puts nothing back (see
+    /// [`land_unfocused`](Self::land_unfocused)).
+    landing_unfocused: bool,
 }
 
 impl AppFocus {
@@ -23,7 +27,11 @@ impl AppFocus {
     /// keys reach its keymap rather than a field the user already left. An
     /// app never seen before asks its autofocus widget (if any) to grab
     /// focus, like browser autofocus.
-    pub(super) fn restore(&self, ctx: &egui::Context, app: usize) {
+    pub(super) fn restore(&mut self, ctx: &egui::Context, app: usize) {
+        if std::mem::take(&mut self.landing_unfocused) {
+            ctx.memory_mut(|m| m.stop_text_input());
+            return;
+        }
         match self.remembered.get(&app) {
             Some(Some(id)) => ctx.memory_mut(|m| m.request_focus(*id)),
             // Clear the outgoing app's focus too: it can still be drawn
@@ -34,6 +42,16 @@ impl AppFocus {
                 notedeck_ui::request_autofocus(ctx);
             }
         }
+    }
+
+    /// Have the next switch land with nothing focused instead of restoring.
+    ///
+    /// For an open (a reference, an inline widget) that switches apps: it
+    /// goes somewhere new in the app, not back to where the user left it, so
+    /// a field they had focused there is stale. The opened view takes focus
+    /// itself if it wants it; otherwise its keys work straight away.
+    pub(super) fn land_unfocused(&mut self) {
+        self.landing_unfocused = true;
     }
 
     /// Note what `app` has focused as a frame it rendered ends, including
@@ -104,7 +122,7 @@ mod tests {
     }
 
     /// Switch away (the field stops drawing) and back, restoring `APP`.
-    fn switch_back(ctx: &egui::Context, focus: &AppFocus) -> Option<egui::Id> {
+    fn switch_back(ctx: &egui::Context, focus: &mut AppFocus) -> Option<egui::Id> {
         pass(ctx, vec![], false, |_| {});
         pass(ctx, vec![], false, |_| {});
         pass(ctx, vec![], true, |ctx| {
@@ -117,7 +135,7 @@ mod tests {
     fn a_focused_field_comes_back() {
         let mut focus = AppFocus::default();
         let ctx = focused_field(&mut focus);
-        assert_eq!(switch_back(&ctx, &focus), Some(field_id()));
+        assert_eq!(switch_back(&ctx, &mut focus), Some(field_id()));
     }
 
     #[test]
@@ -127,7 +145,7 @@ mod tests {
         pass(&ctx, vec![key(Key::Escape)], true, |ctx| {
             focus.remember(ctx, APP)
         });
-        assert_eq!(switch_back(&ctx, &focus), None);
+        assert_eq!(switch_back(&ctx, &mut focus), None);
     }
 
     #[test]
@@ -136,5 +154,15 @@ mod tests {
         let ctx = focused_field(&mut focus);
         pass(&ctx, vec![], true, |ctx| focus.restore(ctx, APP + 1));
         assert_eq!(ctx.memory(|m| m.focused()), None);
+    }
+
+    #[test]
+    fn an_open_lands_with_nothing_focused_once() {
+        let mut focus = AppFocus::default();
+        let ctx = focused_field(&mut focus);
+        focus.land_unfocused();
+        assert_eq!(switch_back(&ctx, &mut focus), None);
+        // Only that switch: the next one restores as usual.
+        assert_eq!(switch_back(&ctx, &mut focus), Some(field_id()));
     }
 }

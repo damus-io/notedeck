@@ -674,3 +674,46 @@ async fn detail_n_then_q_lands_on_the_previous_card() {
     land_on(&mut harness, board + 1, DETAIL);
     about(&harness, CARD, NEXT_CARD);
 }
+
+/// Open the demo card titled `title` from outside Headway, as a click on its
+/// inline widget (or Dave's `s`) does, and wait for its detail to land.
+fn open_from_outside(harness: &mut Harness<'_, ChromeState>, title: &str) {
+    {
+        let state = harness.state_mut();
+        let app_ctx = state.notedeck.app_context();
+        let card = card_id(&demo_board(app_ctx.ndb, &state.kp.pubkey), title);
+        app_ctx
+            .app_actions
+            .push(notedeck::AppAction::Note(notedeck::NoteAction::note(card)));
+    }
+    wait_until(harness, "the opened card's detail, still", |h| {
+        let nav = history(h);
+        !nav.navigating() && !nav.returning() && h.query_by_label(DETAIL).is_some()
+    });
+}
+
+/// A card opened from another app lands with nothing focused, so the
+/// detail's keys (Dave's `s` then `e`) work at once. Before, chrome put back
+/// the field Headway last had focused, here the detail's comment composer,
+/// whose id is the same on every card, and the keys typed into it.
+#[tokio::test]
+async fn a_card_opened_from_another_app_lands_unfocused() {
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = two_in_review(repo.path()).await;
+    open_from_outside(&mut harness, CARD);
+
+    // Type in the comment composer, then leave Headway with it focused.
+    let composer = egui::Id::unique("headway-detail-comment");
+    harness.ctx.memory_mut(|m| m.request_focus(composer));
+    let _ = harness.run_ok();
+    assert_eq!(harness.ctx.memory(|m| m.focused()), Some(composer));
+    harness.state_mut().chrome.switch_to_columns();
+    wait_until(&mut harness, "columns, still", |h| {
+        let nav = history(h);
+        !nav.navigating() && !nav.returning() && h.query_by_label(DETAIL).is_none()
+    });
+
+    open_from_outside(&mut harness, NEXT_CARD);
+    about(&harness, NEXT_CARD, CARD);
+    assert_eq!(harness.ctx.memory(|m| m.focused()), None);
+}

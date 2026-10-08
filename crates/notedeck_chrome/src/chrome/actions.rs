@@ -170,11 +170,30 @@ fn resolve_reference(ctx: &mut AppContext, reference: &str) -> Option<nostrdb_ne
 /// `msg` is an [`OpenUri`](notedeck::OpenUri) message: Dave sends it into the
 /// opened session ([`Dave::open_with_message`](notedeck_dave::Dave::open_with_message)).
 /// The other apps take no message, so it's logged and dropped there.
+///
+/// An open that lands in another app lands with nothing focused (see
+/// [`AppFocus::land_unfocused`](super::AppFocus::land_unfocused)).
+fn open_note_in_owning_app(
+    chrome: &mut Chrome,
+    ctx: &mut AppContext,
+    note_id: nostrdb_net::NoteId,
+    msg: Option<String>,
+) -> bool {
+    let from = chrome.active;
+    let opened = switch_to_owning_app(chrome, ctx, note_id, msg);
+    if opened && chrome.active != from {
+        chrome.app_focus.land_unfocused();
+    }
+    opened
+}
+
+/// The switch half of [`open_note_in_owning_app`]: activate the app that owns
+/// `note_id` and hand it the note.
 #[cfg_attr(
     not(any(feature = "dave", feature = "notebook", feature = "headway")),
     allow(unused_variables)
 )]
-fn open_note_in_owning_app(
+fn switch_to_owning_app(
     chrome: &mut Chrome,
     ctx: &mut AppContext,
     note_id: nostrdb_net::NoteId,
