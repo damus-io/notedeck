@@ -44,6 +44,12 @@ pub enum AppAction {
     /// the registered [`ReferenceParser`](crate::ReferenceParser)s and opens the
     /// note exactly as a click on its inline chip would.
     Open(crate::OpenUri),
+    /// Run a [`ToolKind::Ui`](crate::ToolKind) tool in the app that owns it. The
+    /// shell finds the owner in the [`ToolRegistry`](crate::ToolRegistry) and
+    /// calls its [`App::call_ui_tool`]. Raised by calling a UI tool through
+    /// [`AppContext::call_tool`], which returns it as an
+    /// [`Intent`](crate::ToolOutcome::Intent).
+    CallTool(crate::ToolInvocation),
 }
 
 /// A frame-local queue of [`AppAction`]s raised imperatively *during* rendering
@@ -269,15 +275,59 @@ pub trait App {
         Vec::new()
     }
 
+    /// UI tools this app runs against its own state — move a cursor, open a
+    /// pane — for key bindings, macros and (opted-in) agents to call. The shell
+    /// collects these from its running apps when that set changes, like
+    /// [`tools`](Self::tools), never per frame, and routes each call back here
+    /// through [`call_ui_tool`](Self::call_ui_tool). Names are globally unique,
+    /// snake_case and prefixed with the app (`headway_cursor_down`). The specs
+    /// are marked [`ToolKind::Ui`](crate::ToolKind) on registration. Defaults to
+    /// none.
+    fn ui_tools(&self) -> Vec<crate::ToolSpec> {
+        Vec::new()
+    }
+
+    /// Run the UI tool `name`, one of this app's [`ui_tools`](Self::ui_tools),
+    /// with `args`. Returns [`Data`](crate::ToolOutcome::Data) or an
+    /// [`Error`](crate::ToolOutcome::Error) for the caller, or an
+    /// [`Intent`](crate::ToolOutcome::Intent) the shell routes next (e.g. an
+    /// [`AppAction::Open`]). The default knows no tools.
+    fn call_ui_tool(
+        &mut self,
+        _ctx: &mut AppContext<'_>,
+        name: &str,
+        _args: &serde_json::Value,
+    ) -> crate::ToolOutcome {
+        crate::ToolOutcome::Error(format!("unknown tool '{name}'"))
+    }
+
+    /// Whether the UI tool `name` does anything right now, e.g. "open the
+    /// session's card" only while the session has one. A key bound to a tool
+    /// that isn't available falls through to whatever else would take it.
+    /// Called per key press, and each frame a which-key strip is shown, so it
+    /// must not allocate. Defaults to `true`.
+    fn ui_tool_available(&self, _name: &str) -> bool {
+        true
+    }
+
+    /// The keymap scopes active this frame, most specific first, e.g.
+    /// `["headway.card", "headway"]`. Return one of a few `const` slices picked
+    /// by the app's state; an empty slice means no key bindings apply. Defaults
+    /// to none.
+    fn key_scopes(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Host hook, invoked each frame **only on the top-level app** (the shell):
-    /// return `Some(tools)` to replace the host's agent-tool
+    /// return `Some(update)` to replace the host's
     /// [`ToolRegistry`](crate::ToolRegistry) when the contributed set changes, or
     /// `None` to leave it untouched. The body lives in the shell (it diffs its
-    /// running apps and aggregates their [`tools`](Self::tools)); this defaulted
-    /// declaration exists only so the host can call it across the erased
-    /// `dyn App`, exactly like [`render`](Self::render). Because the host only
-    /// ever invokes it on the top app, an ordinary app can't replace the registry.
-    fn take_tool_update(&mut self) -> Option<Vec<crate::RegisteredTool>> {
+    /// running apps and aggregates their [`tools`](Self::tools) and
+    /// [`ui_tools`](Self::ui_tools)); this defaulted declaration exists only so
+    /// the host can call it across the erased `dyn App`, exactly like
+    /// [`render`](Self::render). Because the host only ever invokes it on the top
+    /// app, an ordinary app can't replace the registry.
+    fn take_tool_update(&mut self) -> Option<crate::ToolUpdate> {
         None
     }
 }
@@ -587,8 +637,8 @@ impl Notedeck {
 
         // Let the shell refresh the agent-tool registry from its running apps
         // before we hand a borrow of it to this frame's AppContext.
-        if let Some(tools) = app.borrow_mut().take_tool_update() {
-            self.registries.tools.reset(tools);
+        if let Some(update) = app.borrow_mut().take_tool_update() {
+            self.apply_tool_update(update);
         }
 
         let mut app_ref = self.notedeck_ref();
@@ -1112,6 +1162,12 @@ impl Notedeck {
     /// dispatch it. Call at startup (see [`App::tools`]).
     pub fn register_tool(&mut self, tool: crate::RegisteredTool) {
         self.registries.tools.register(tool);
+    }
+
+    /// Replace the app-contributed tools with `update`, as each frame does when
+    /// the shell's [`App::take_tool_update`] returns one.
+    pub fn apply_tool_update(&mut self, update: crate::ToolUpdate) {
+        self.registries.tools.reset(update);
     }
 
     pub fn args(&self) -> &Args {

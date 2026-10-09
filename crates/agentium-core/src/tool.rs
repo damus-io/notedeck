@@ -75,6 +75,21 @@ impl ToolArg {
     }
 }
 
+/// Which side of the host a tool runs on.
+///
+/// Both kinds share one name space and one spec type, so a backend lists them
+/// together and tells them apart by [`ToolSpec::kind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolKind {
+    /// Runs over shared, nostr-backed data and returns JSON for the caller. The
+    /// kind an agent backend advertises to its model.
+    Data,
+    /// Runs against one app's own in-memory UI state (move a cursor, open a
+    /// pane), dispatched to that app by the shell. Bound to keys and macros;
+    /// agent backends skip these unless they opt in.
+    Ui,
+}
+
 /// A portable, backend-agnostic description of a tool: what it's called, what it
 /// does, and the arguments it accepts. Reused to build an OpenAI
 /// `FunctionObject` (via [`json_schema`](Self::json_schema)) or an MCP
@@ -84,16 +99,30 @@ pub struct ToolSpec {
     name: &'static str,
     description: &'static str,
     arguments: Vec<ToolArg>,
+    kind: ToolKind,
 }
 
 impl ToolSpec {
-    /// Declare a tool with the given name, description, and arguments.
+    /// Declare a [`ToolKind::Data`] tool with the given name, description, and
+    /// arguments. Chain [`ui`](Self::ui) for a UI tool.
     pub fn new(name: &'static str, description: &'static str, arguments: Vec<ToolArg>) -> Self {
         Self {
             name,
             description,
             arguments,
+            kind: ToolKind::Data,
         }
+    }
+
+    /// Mark this spec as a [`ToolKind::Ui`] tool.
+    pub fn ui(mut self) -> Self {
+        self.kind = ToolKind::Ui;
+        self
+    }
+
+    /// Whether this tool runs over data or against an app's UI state.
+    pub fn kind(&self) -> ToolKind {
+        self.kind
     }
 
     pub fn name(&self) -> &'static str {

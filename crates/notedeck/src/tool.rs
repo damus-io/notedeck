@@ -6,8 +6,20 @@
 //! state, so notedeck models them as a single statically-typed [`ToolCall`]
 //! enum rather than a bag of dynamically-dispatched handlers. A dynamic
 //! per-app handler could only ever touch this same browser state (it never sees
-//! the app's `&mut self`), so it would buy indirection without capability; an
-//! app that wants a tool over its own state handles that in its own update loop.
+//! the app's `&mut self`), so it would buy indirection without capability.
+//!
+//! Tools come in two [`ToolKind`]s that share one name space:
+//!
+//! - **Data** tools — the browser's [`ToolCall`]s and the apps' [`AppTool`]s —
+//!   run over that shared state and return JSON.
+//! - **UI** tools run against one app's own `&mut self` (move a cursor, open a
+//!   pane). An app advertises them with [`App::ui_tools`](crate::App::ui_tools)
+//!   and runs them in [`App::call_ui_tool`](crate::App::call_ui_tool). The
+//!   registry only knows each one's spec and owning app: calling one through it
+//!   yields an [`Intent`](ToolOutcome::Intent) carrying
+//!   [`AppAction::CallTool`], which the shell routes to the owner next. That is
+//!   how an app gets an intent of its own; the browser still owns every other
+//!   kind.
 //!
 //! A tool is described in two portable halves so one declaration serves every
 //! backend:
@@ -30,14 +42,14 @@ use nostrdb::{Ndb, Transaction};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 
-use crate::{Accounts, AppAction, ExplicitPublishApi, NoteCache};
+use crate::{Accounts, AppAction, AppId, ExplicitPublishApi, NoteCache};
 
 /// The portable tool *type* layer — argument types, args, and the tool spec —
 /// lives in [`agentium_core::tool`] so the engine owns it and any platform can
 /// share it. notedeck re-exports it here so `notedeck::tool::ToolSpec` (and the
 /// crate-root `notedeck::ToolSpec`) keep resolving for the browser-level tool
 /// machinery below, which builds specs from these types.
-pub use agentium_core::tool::{ToolArg, ToolArgType, ToolSpec};
+pub use agentium_core::tool::{ToolArg, ToolArgType, ToolKind, ToolSpec};
 
 /// The canonical [`QueryCall`] — the single nostrdb query tool — is likewise
 /// owned by the engine and re-exported here, so `notedeck::tool::QueryCall`
@@ -141,8 +153,8 @@ impl ToolCall {
 /// `&mut self`, yet that is enough to do real work: most app data *is* nostr
 /// data (a headway board or a notebook node is a nostr event), so the tool's
 /// value is its app-specific schema and query logic, not privileged state
-/// access. A tool that needs an app's in-memory state belongs in that app's own
-/// update loop instead.
+/// access. A tool that needs an app's in-memory state is a [`ToolKind::Ui`]
+/// tool instead (see [`App::ui_tools`](crate::App::ui_tools)).
 ///
 /// The trait is *typed*: [`Args`](Self::Args) and [`Output`](Self::Output) are
 /// plain serde types, so an implementor never juggles [`Value`] by hand. The
@@ -160,8 +172,9 @@ pub trait AppTool: Send + Sync {
     fn spec(&self) -> ToolSpec;
 
     /// Run the tool against `cx` with typed `args`, returning typed output or a
-    /// human-readable error to relay to the backend. App tools produce data
-    /// only — the browser owns [`Intent`](ToolOutcome::Intent) side effects.
+    /// human-readable error to relay to the backend. An `AppTool` produces data
+    /// only; a tool with UI side effects is a [`ToolKind::Ui`] tool instead (see
+    /// [`App::call_ui_tool`](crate::App::call_ui_tool)).
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String>;
 }
 
@@ -222,62 +235,173 @@ impl RegisteredTool {
     }
 }
 
-/// A set of app-contributed [`RegisteredTool`]s, indexed by name.
+/// A call to a [`ToolKind::Ui`] tool, on its way from whoever raised it (a key
+/// binding, a macro step, an agent) to the app that owns the tool. Carried by
+/// [`AppAction::CallTool`]; the shell looks the owner up with
+/// [`ToolRegistry::ui_owner`] and hands it to
+/// [`App::call_ui_tool`](crate::App::call_ui_tool).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolInvocation {
+    /// The UI tool's registered name, e.g. `headway_cursor_down`.
+    pub name: String,
+    /// The tool's arguments, `Value::Null` when it takes none.
+    pub args: Value,
+}
+
+impl ToolInvocation {
+    /// A call to the UI tool `name` with `args`.
+    pub fn new(name: impl Into<String>, args: Value) -> Self {
+        Self {
+            name: name.into(),
+            args,
+        }
+    }
+}
+
+/// A registered [`ToolKind::Ui`] tool: its spec and the app slot that runs it.
+/// The registry can't call a UI tool itself (it needs the app's `&mut self`), so
+/// it keeps only enough to advertise it and to tell the shell where it goes.
+#[derive(Debug, Clone)]
+pub struct UiToolEntry {
+    spec: ToolSpec,
+    owner: AppId,
+}
+
+impl UiToolEntry {
+    /// Register `spec` as a UI tool run by the app in slot `owner`. The spec is
+    /// marked [`ToolKind::Ui`] whether or not the app already did.
+    pub fn new(spec: ToolSpec, owner: AppId) -> Self {
+        Self {
+            spec: spec.ui(),
+            owner,
+        }
+    }
+
+    /// The UI tool's spec, always [`ToolKind::Ui`].
+    pub fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    /// The app slot that runs this tool.
+    pub fn owner(&self) -> AppId {
+        self.owner
+    }
+}
+
+/// A fresh set of app-contributed tools for the host's [`ToolRegistry`], built
+/// by the shell from its running apps (see
+/// [`App::take_tool_update`](crate::App::take_tool_update)) and applied with
+/// [`ToolRegistry::reset`].
+#[derive(Default)]
+pub struct ToolUpdate {
+    /// Data tools, from each running app's [`App::tools`](crate::App::tools).
+    pub tools: Vec<RegisteredTool>,
+    /// UI tools, from each running app's
+    /// [`App::ui_tools`](crate::App::ui_tools), tagged with the app's slot.
+    pub ui_tools: Vec<UiToolEntry>,
+}
+
+/// Where a registered name points: into the data tools or the UI tools.
+#[derive(Clone, Copy)]
+enum ToolSlot {
+    Data(usize),
+    Ui(usize),
+}
+
+/// A set of app-contributed tools, data and UI, indexed by one shared name
+/// space.
 ///
-/// Populated once at startup from every [`App::tools`](crate::App::tools) and
-/// exposed read-only on [`AppContext`](crate::AppContext), so a backend can
-/// advertise ([`specs`](Self::specs)) and dispatch ([`call`](Self::call)) app
-/// tools uniformly. Mirrors
-/// [`KindRendererRegistry`](crate::KindRendererRegistry).
+/// Rebuilt by the shell from its running apps and exposed read-only on
+/// [`AppContext`](crate::AppContext), so a backend can advertise
+/// ([`specs`](Self::specs)) and dispatch ([`call`](Self::call)) app tools
+/// uniformly. Mirrors [`KindRendererRegistry`](crate::KindRendererRegistry).
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: Vec<RegisteredTool>,
-    by_name: HashMap<String, usize>,
+    ui_tools: Vec<UiToolEntry>,
+    by_name: HashMap<String, ToolSlot>,
 }
 
 impl ToolRegistry {
-    /// Register an app tool. A duplicate name is logged and skipped, so the
-    /// first registration for a name wins (registration order is app-startup
-    /// order).
+    /// Register an app data tool. A name already taken, by either kind, is
+    /// logged and skipped, so the first registration for a name wins
+    /// (registration order is app-startup order).
     pub fn register(&mut self, tool: RegisteredTool) {
         let name = tool.name();
         if self.by_name.contains_key(name) {
             tracing::warn!("ignoring duplicate agent tool '{name}'");
             return;
         }
-        let idx = self.tools.len();
-        self.by_name.insert(name.to_owned(), idx);
+        self.by_name
+            .insert(name.to_owned(), ToolSlot::Data(self.tools.len()));
         self.tools.push(tool);
     }
 
-    /// Replace the whole registry with `tools`, keeping the same
-    /// duplicate-skipping rules as [`register`](Self::register). The chrome shell
+    /// Register an app UI tool, with the same first-wins rule across both kinds
+    /// as [`register`](Self::register).
+    pub fn register_ui(&mut self, entry: UiToolEntry) {
+        let name = entry.spec.name();
+        if self.by_name.contains_key(name) {
+            tracing::warn!("ignoring duplicate UI tool '{name}'");
+            return;
+        }
+        self.by_name
+            .insert(name.to_owned(), ToolSlot::Ui(self.ui_tools.len()));
+        self.ui_tools.push(entry);
+    }
+
+    /// Replace the whole registry with `update`, data tools first, keeping the
+    /// duplicate-skipping rules of [`register`](Self::register). The chrome shell
     /// calls this to re-derive the app-tool set from the currently-running apps
     /// when that set changes, so a backend only ever sees tools whose app is live
     /// (and therefore syncing its data).
-    pub fn reset(&mut self, tools: impl IntoIterator<Item = RegisteredTool>) {
+    pub fn reset(&mut self, update: ToolUpdate) {
         self.tools.clear();
+        self.ui_tools.clear();
         self.by_name.clear();
-        for tool in tools {
+        for tool in update.tools {
             self.register(tool);
+        }
+        for entry in update.ui_tools {
+            self.register_ui(entry);
         }
     }
 
-    /// The specs for every registered app tool — what a backend advertises.
+    /// The specs for every registered app tool, data tools then UI tools. A
+    /// backend that only wants what a model can use filters on
+    /// [`ToolSpec::kind`].
     pub fn specs(&self) -> impl Iterator<Item = &ToolSpec> {
-        self.tools.iter().map(RegisteredTool::spec)
+        self.tools
+            .iter()
+            .map(RegisteredTool::spec)
+            .chain(self.ui_tools.iter().map(UiToolEntry::spec))
     }
 
-    /// Whether a tool with `name` is registered.
+    /// Whether a tool with `name` is registered, of either kind.
     pub fn contains(&self, name: &str) -> bool {
         self.by_name.contains_key(name)
     }
 
-    /// Dispatch a tool call by `name` with raw JSON `args`, returning an
-    /// [`Error`](ToolOutcome::Error) for an unknown tool.
+    /// The app slot that runs the UI tool `name`, or `None` when `name` is not a
+    /// registered UI tool.
+    pub fn ui_owner(&self, name: &str) -> Option<AppId> {
+        match self.by_name.get(name)? {
+            ToolSlot::Ui(idx) => Some(self.ui_tools[*idx].owner),
+            ToolSlot::Data(_) => None,
+        }
+    }
+
+    /// Dispatch a tool call by `name` with raw JSON `args`. A data tool runs
+    /// here and returns its result. A UI tool can't run here, so it returns an
+    /// [`Intent`](ToolOutcome::Intent) carrying [`AppAction::CallTool`] for the
+    /// shell to route to its owner. An unknown name is an
+    /// [`Error`](ToolOutcome::Error).
     pub fn call(&self, cx: &mut ToolContext, name: &str, args: &Value) -> ToolOutcome {
         match self.by_name.get(name) {
-            Some(&idx) => self.tools[idx].call(cx, args),
+            Some(&ToolSlot::Data(idx)) => self.tools[idx].call(cx, args),
+            Some(&ToolSlot::Ui(_)) => {
+                ToolOutcome::Intent(AppAction::CallTool(ToolInvocation::new(name, args.clone())))
+            }
             None => ToolOutcome::Error(format!("unknown tool '{name}'")),
         }
     }
@@ -396,6 +520,72 @@ mod tests {
         // The duplicate is dropped; only one spec is advertised.
         assert_eq!(reg.specs().filter(|s| s.name() == "echo").count(), 1);
         assert!(reg.contains("echo"));
+    }
+
+    /// A UI tool spec owned by app slot `owner`.
+    fn ui_entry(name: &'static str, owner: usize) -> UiToolEntry {
+        UiToolEntry::new(ToolSpec::new(name, "a UI tool", Vec::new()), AppId(owner))
+    }
+
+    #[test]
+    fn registry_lists_ui_tools_tagged_ui() {
+        let mut reg = ToolRegistry::default();
+        reg.reset(ToolUpdate {
+            tools: vec![RegisteredTool::new(Echo)],
+            ui_tools: vec![ui_entry("test_cursor_down", 3)],
+        });
+
+        let kinds: Vec<_> = reg.specs().map(|s| (s.name(), s.kind())).collect();
+        assert_eq!(
+            kinds,
+            vec![("echo", ToolKind::Data), ("test_cursor_down", ToolKind::Ui)]
+        );
+        assert_eq!(reg.ui_owner("test_cursor_down"), Some(AppId(3)));
+        // A data tool has no owner app to route to.
+        assert_eq!(reg.ui_owner("echo"), None);
+        assert_eq!(reg.ui_owner("nope"), None);
+    }
+
+    #[test]
+    fn calling_a_ui_tool_yields_a_call_tool_intent() {
+        let (_tmp, ndb, mut note_cache, accounts) = test_tool_env();
+        let mut cx = ToolContext {
+            ndb: &ndb,
+            note_cache: &mut note_cache,
+            accounts: &accounts,
+            publish: None,
+        };
+
+        let mut reg = ToolRegistry::default();
+        reg.register_ui(ui_entry("test_cursor_down", 0));
+
+        let args = json!({ "count": 2 });
+        let out = reg.call(&mut cx, "test_cursor_down", &args);
+        let ToolOutcome::Intent(AppAction::CallTool(invocation)) = out else {
+            panic!("expected a CallTool intent");
+        };
+        assert_eq!(invocation, ToolInvocation::new("test_cursor_down", args));
+    }
+
+    #[test]
+    fn duplicate_names_across_kinds_keep_the_first() {
+        // A UI tool registered first keeps its name against a data tool...
+        let mut reg = ToolRegistry::default();
+        reg.register_ui(ui_entry("echo", 1));
+        reg.register(RegisteredTool::new(Echo));
+        let kinds: Vec<_> = reg.specs().map(|s| s.kind()).collect();
+        assert_eq!(kinds, vec![ToolKind::Ui]);
+        assert_eq!(reg.ui_owner("echo"), Some(AppId(1)));
+
+        // ...and a data tool registered first keeps it against a UI tool.
+        let mut reg = ToolRegistry::default();
+        reg.reset(ToolUpdate {
+            tools: vec![RegisteredTool::new(Echo)],
+            ui_tools: vec![ui_entry("echo", 1)],
+        });
+        let kinds: Vec<_> = reg.specs().map(|s| s.kind()).collect();
+        assert_eq!(kinds, vec![ToolKind::Data]);
+        assert_eq!(reg.ui_owner("echo"), None);
     }
 
     #[test]

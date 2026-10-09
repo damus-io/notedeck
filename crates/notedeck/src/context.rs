@@ -174,10 +174,14 @@ impl<'a> AppContext<'a> {
         }
     }
 
-    /// Every agent-tool spec available to a backend: the browser's built-in
-    /// [`ToolCall`](crate::ToolCall) set followed by the app-contributed
-    /// [`tools`](Self::tools). This is the advertise surface (OpenAI `tools`, MCP
+    /// Every tool spec available to a backend: the browser's built-in
+    /// [`ToolCall`](crate::ToolCall) set followed by the app-contributed data
+    /// tools and UI tools. This is the advertise surface (OpenAI `tools`, MCP
     /// `tools/list`); [`call_tool`](Self::call_tool) is the matching dispatch.
+    ///
+    /// Each spec carries its [`kind`](crate::ToolSpec::kind). An agent backend
+    /// should keep only [`ToolKind::Data`](crate::ToolKind) unless it opts in to
+    /// driving the UI.
     pub fn tool_specs(&self) -> Vec<crate::ToolSpec> {
         let mut specs = crate::ToolCall::specs();
         specs.extend(self.registries.tools.specs().cloned());
@@ -188,6 +192,10 @@ impl<'a> AppContext<'a> {
     /// [`tool_context`](Self::tool_context). Browser
     /// [`ToolCall`](crate::ToolCall)s take precedence over app tools of the same
     /// name; an unknown name yields [`ToolOutcome::Error`](crate::ToolOutcome).
+    /// A UI tool can't run here: it yields an
+    /// [`Intent`](crate::ToolOutcome::Intent) carrying
+    /// [`AppAction::CallTool`](crate::AppAction::CallTool), for the caller to
+    /// hand to the shell.
     pub fn call_tool(&mut self, name: &str, args: &serde_json::Value) -> crate::ToolOutcome {
         // Browser tools are privileged and win on a name clash.
         if crate::ToolCall::specs()

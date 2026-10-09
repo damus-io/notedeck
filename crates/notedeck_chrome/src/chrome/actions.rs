@@ -6,7 +6,7 @@
 use super::Chrome;
 use egui::ThemePreference;
 use nostrdb::Transaction;
-use notedeck::{AppAction, AppContext, WalletType};
+use notedeck::{App, AppAction, AppContext, ToolInvocation, ToolOutcome, WalletType};
 use notedeck_columns::timeline::TimelineKind;
 
 pub enum ChromePanelAction {
@@ -328,6 +328,63 @@ fn route_open(
     chrome_handle_app_action(chrome, ctx, AppAction::Note(click), ui);
 }
 
+impl Chrome {
+    /// Run a UI tool in the app that owns it — the one entry point for key
+    /// bindings, macros and [`AppAction::CallTool`]. The owner comes from the
+    /// host's [`ToolRegistry`](notedeck::ToolRegistry). The tool runs whether or
+    /// not its app is in front; switching to it first is the caller's choice.
+    ///
+    /// Returns the app's outcome, or an [`Error`](ToolOutcome::Error) when no
+    /// running app owns `invocation.name`. An [`Intent`](ToolOutcome::Intent) it
+    /// returns is not routed here; [`AppAction::CallTool`] routes it.
+    pub fn call_ui_tool(
+        &mut self,
+        ctx: &mut AppContext,
+        invocation: &ToolInvocation,
+    ) -> ToolOutcome {
+        let name = invocation.name.as_str();
+        let Some(owner) = ctx.registries.tools.ui_owner(name) else {
+            return ToolOutcome::Error(format!("unknown UI tool '{name}'"));
+        };
+        // The registry is rebuilt a frame after an app closes, so it can still
+        // name one that has stopped.
+        let slot = owner.slot();
+        if !self.is_running(slot) {
+            return ToolOutcome::Error(format!("'{name}' belongs to an app that isn't running"));
+        }
+        let Some(app) = self.apps.get_mut(slot) else {
+            return ToolOutcome::Error(format!("no app in slot {slot} for '{name}'"));
+        };
+        app.call_ui_tool(ctx, name, &invocation.args)
+    }
+}
+
+/// Route an [`AppAction::CallTool`]: run the tool in its app, then route an
+/// [`Intent`](ToolOutcome::Intent) it returns like any other action. A tool
+/// that answers with another `CallTool` is dropped, so one call is one hop and
+/// two tools can't call each other forever; a chain of tools is a macro's job.
+fn route_call_tool(
+    chrome: &mut Chrome,
+    ctx: &mut AppContext,
+    invocation: &ToolInvocation,
+    ui: &mut egui::Ui,
+) {
+    match chrome.call_ui_tool(ctx, invocation) {
+        ToolOutcome::Data(_) => {}
+        ToolOutcome::Error(err) => {
+            tracing::warn!("UI tool '{}' dropped: {err}", invocation.name);
+        }
+        ToolOutcome::Intent(AppAction::CallTool(next)) => {
+            tracing::warn!(
+                "UI tool '{}' asked to call '{}'; dropped, a tool call is one hop",
+                invocation.name,
+                next.name
+            );
+        }
+        ToolOutcome::Intent(action) => chrome_handle_app_action(chrome, ctx, action, ui),
+    }
+}
+
 pub(super) fn chrome_handle_app_action(
     chrome: &mut Chrome,
     ctx: &mut AppContext,
@@ -338,6 +395,8 @@ pub(super) fn chrome_handle_app_action(
         AppAction::ToggleChrome => {
             chrome.toggle();
         }
+
+        AppAction::CallTool(invocation) => route_call_tool(chrome, ctx, &invocation, ui),
 
         AppAction::Open(open) => {
             let Some(note_id) = resolve_reference(ctx, &open.reference) else {
@@ -721,5 +780,117 @@ mod open_tests {
         assert!(chrome.pending_open.is_none(), "given up");
         assert_eq!(chrome.global_nav.as_ref().expect("nav").len(), before);
         assert_eq!(chrome.active, headway as i32);
+    }
+}
+
+// Routing an `AppAction::CallTool` to the app that owns the tool, and what the
+// chrome does with the tool's answer.
+#[cfg(test)]
+mod call_tool_tests {
+    use super::*;
+    use notedeck::{AppResponse, Notedeck, ToolSpec};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// Records its call and answers with data.
+    const RECORD: &str = "test_record";
+    /// Answers with an intent to toggle the chrome's drawer.
+    const TOGGLE: &str = "test_toggle_chrome";
+    /// Answers with a call to [`RECORD`], which the chrome must not follow.
+    const CALL_AGAIN: &str = "test_call_again";
+
+    /// An app whose UI tools answer in each of the ways a tool can, recording
+    /// every call that reaches it.
+    struct ToolApp {
+        calls: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl notedeck::App for ToolApp {
+        fn render(&mut self, _ctx: &mut AppContext<'_>, _ui: &mut egui::Ui) -> AppResponse {
+            AppResponse::none()
+        }
+
+        fn ui_tools(&self) -> Vec<ToolSpec> {
+            [RECORD, TOGGLE, CALL_AGAIN]
+                .into_iter()
+                .map(|name| ToolSpec::new(name, "a test tool", Vec::new()))
+                .collect()
+        }
+
+        fn call_ui_tool(
+            &mut self,
+            _ctx: &mut AppContext<'_>,
+            name: &str,
+            _args: &serde_json::Value,
+        ) -> ToolOutcome {
+            self.calls.borrow_mut().push(name.to_owned());
+            match name {
+                TOGGLE => ToolOutcome::Intent(AppAction::ToggleChrome),
+                CALL_AGAIN => ToolOutcome::Intent(AppAction::CallTool(ToolInvocation::new(
+                    RECORD,
+                    serde_json::Value::Null,
+                ))),
+                _ => ToolOutcome::Data(serde_json::Value::Null),
+            }
+        }
+    }
+
+    /// Route `action` through the chrome inside one egui frame.
+    fn route(chrome: &mut Chrome, ctx: &mut AppContext, action: AppAction) {
+        // `run_ui` takes an `FnMut`, so the action is handed over through an
+        // `Option`; it runs once.
+        let mut action = Some(action);
+        let egui_ctx = egui::Context::default();
+        egui_ctx
+            .run_ui(egui::RawInput::default(), |ui| {
+                if let Some(action) = action.take() {
+                    chrome_handle_app_action(chrome, ctx, action, ui);
+                }
+            })
+            .drop_without_applying_deltas();
+    }
+
+    fn call(name: &str) -> AppAction {
+        AppAction::CallTool(ToolInvocation::new(name, serde_json::Value::Null))
+    }
+
+    #[tokio::test]
+    async fn call_tool_reaches_the_owner_and_routes_its_intent_one_hop() {
+        let dir = tempfile::TempDir::new().expect("tmp dir");
+        let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+        let mut notedeck = Notedeck::init(&egui::Context::default(), dir.path(), &args);
+        let mut chrome = Chrome::new_headless(&args, &mut notedeck).expect("chrome");
+
+        let calls = Rc::default();
+        let slot = chrome.add_app(crate::app::NotedeckApp::Other(
+            "test".to_owned(),
+            Box::new(ToolApp {
+                calls: Rc::clone(&calls),
+            }),
+        ));
+        chrome.set_active(slot.slot() as i32);
+        let update = notedeck::App::take_tool_update(&mut chrome).expect("running set changed");
+        notedeck.apply_tool_update(update);
+        let mut ctx = notedeck.app_context();
+
+        // Data: the call reaches the app and nothing else happens.
+        route(&mut chrome, &mut ctx, call(RECORD));
+        assert_eq!(*calls.borrow(), vec![RECORD]);
+
+        // An intent the tool answers with is routed like any app action.
+        // The drawer starts closed, so the toggle starts opening it.
+        assert!(!chrome.nav.drawer_focused && !chrome.nav.navigating);
+        route(&mut chrome, &mut ctx, call(TOGGLE));
+        assert!(chrome.nav.navigating, "the drawer is opening");
+
+        // A tool answering with another tool call is one hop: RECORD never runs.
+        calls.borrow_mut().clear();
+        route(&mut chrome, &mut ctx, call(CALL_AGAIN));
+        assert_eq!(*calls.borrow(), vec![CALL_AGAIN]);
+
+        // An unregistered name never reaches any app.
+        calls.borrow_mut().clear();
+        route(&mut chrome, &mut ctx, call("no_such_tool"));
+        assert!(calls.borrow().is_empty());
     }
 }

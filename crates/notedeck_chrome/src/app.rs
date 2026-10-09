@@ -397,4 +397,93 @@ impl notedeck::App for NotedeckApp {
             NotedeckApp::Other(_name, other) => other.tab_notifications(ctx),
         }
     }
+
+    fn ui_tools(&self) -> Vec<notedeck::ToolSpec> {
+        self.as_app().ui_tools()
+    }
+
+    fn call_ui_tool(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> notedeck::ToolOutcome {
+        self.as_app_mut().call_ui_tool(ctx, name, args)
+    }
+
+    fn ui_tool_available(&self, name: &str) -> bool {
+        self.as_app().ui_tool_available(name)
+    }
+
+    fn key_scopes(&self) -> &'static [&'static str] {
+        self.as_app().key_scopes()
+    }
+}
+
+impl NotedeckApp {
+    /// The wrapped app as a plain [`App`](notedeck::App), for methods that
+    /// forward unchanged to whichever app this is.
+    fn as_app(&self) -> &dyn notedeck::App {
+        match self {
+            #[cfg(feature = "dave")]
+            NotedeckApp::Dave(dave) => &**dave,
+            NotedeckApp::Columns(columns) => &**columns,
+
+            #[cfg(feature = "notebook")]
+            NotedeckApp::Notebook(notebook) => &**notebook,
+
+            #[cfg(feature = "headway")]
+            NotedeckApp::Headway(headway) => &**headway,
+
+            #[cfg(feature = "clndash")]
+            NotedeckApp::ClnDash(clndash) => &**clndash,
+
+            #[cfg(feature = "messages")]
+            NotedeckApp::Messages(dms) => &**dms,
+
+            #[cfg(feature = "dashboard")]
+            NotedeckApp::Dashboard(db) => &**db,
+
+            #[cfg(feature = "horizon")]
+            NotedeckApp::Horizon(horizon) => &**horizon,
+
+            #[cfg(feature = "nostrverse")]
+            NotedeckApp::Nostrverse(nostrverse) => &**nostrverse,
+
+            NotedeckApp::Other(_name, other) => &**other,
+        }
+    }
+
+    /// The wrapped app as a plain mutable [`App`](notedeck::App); see
+    /// [`as_app`](Self::as_app).
+    fn as_app_mut(&mut self) -> &mut dyn notedeck::App {
+        match self {
+            #[cfg(feature = "dave")]
+            NotedeckApp::Dave(dave) => &mut **dave,
+            NotedeckApp::Columns(columns) => &mut **columns,
+
+            #[cfg(feature = "notebook")]
+            NotedeckApp::Notebook(notebook) => &mut **notebook,
+
+            #[cfg(feature = "headway")]
+            NotedeckApp::Headway(headway) => &mut **headway,
+
+            #[cfg(feature = "clndash")]
+            NotedeckApp::ClnDash(clndash) => &mut **clndash,
+
+            #[cfg(feature = "messages")]
+            NotedeckApp::Messages(dms) => &mut **dms,
+
+            #[cfg(feature = "dashboard")]
+            NotedeckApp::Dashboard(db) => &mut **db,
+
+            #[cfg(feature = "horizon")]
+            NotedeckApp::Horizon(horizon) => &mut **horizon,
+
+            #[cfg(feature = "nostrverse")]
+            NotedeckApp::Nostrverse(nostrverse) => &mut **nostrverse,
+
+            NotedeckApp::Other(_name, other) => &mut **other,
+        }
+    }
 }

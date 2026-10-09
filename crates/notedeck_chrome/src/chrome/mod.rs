@@ -404,16 +404,17 @@ impl Chrome {
 }
 
 impl notedeck::App for Chrome {
-    /// Re-derive the host's agent-tool registry from the currently-running apps
+    /// Re-derive the host's tool registry from the currently-running apps
     /// whenever that set changes, so a backend (dave, `notedeck --mcp`) only
-    /// sees tools whose app is live and syncing its data. Called by the host on
-    /// the top app each frame (see `App::take_tool_update`); returns `None` when
-    /// the running set is unchanged so no per-frame allocation happens.
-    fn take_tool_update(&mut self) -> Option<Vec<notedeck::RegisteredTool>> {
-        let all_active = self.options.contains(ChromeOptions::AllAppsActive);
+    /// sees tools whose app is live and syncing its data. Each app's UI tools
+    /// are tagged with its slot, so a call to one reaches the right app (see
+    /// [`Chrome::call_ui_tool`]). Called by the host on the top app each frame
+    /// (see `App::take_tool_update`); returns `None` when the running set is
+    /// unchanged so no per-frame allocation happens.
+    fn take_tool_update(&mut self) -> Option<notedeck::ToolUpdate> {
         let mut running = [0u16; MAX_APPS / 16];
         for i in 0..self.apps.len().min(MAX_APPS) {
-            if all_active || bitset_get(&self.opened, i as u16) {
+            if self.is_running(i) {
                 bitset_set(&mut running, i as u16);
             }
         }
@@ -423,14 +424,22 @@ impl notedeck::App for Chrome {
         }
         self.tools_snapshot = running;
 
-        Some(
+        let running_apps = || {
             self.apps
                 .iter()
                 .enumerate()
-                .filter(|(i, _)| bitset_get(&running, *i as u16))
-                .flat_map(|(_, app)| app.tools())
+                .filter(move |(i, _)| bitset_get(&running, *i as u16))
+        };
+        Some(notedeck::ToolUpdate {
+            tools: running_apps().flat_map(|(_, app)| app.tools()).collect(),
+            ui_tools: running_apps()
+                .flat_map(|(i, app)| {
+                    app.ui_tools()
+                        .into_iter()
+                        .map(move |spec| notedeck::UiToolEntry::new(spec, notedeck::AppId(i)))
+                })
                 .collect(),
-        )
+        })
     }
 
     fn update(&mut self, ctx: &mut notedeck::AppContext) {

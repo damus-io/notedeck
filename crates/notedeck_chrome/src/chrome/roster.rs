@@ -3,6 +3,7 @@
 
 use super::{Chrome, MAX_APPS};
 use crate::app::NotedeckApp;
+use crate::ChromeOptions;
 use notedeck_columns::Damus;
 use oot_bitset::{bitset_clear, bitset_get, bitset_set};
 
@@ -10,14 +11,23 @@ use oot_bitset::{bitset_clear, bitset_get, bitset_set};
 use notedeck_dave::Dave;
 
 impl Chrome {
-    pub fn add_app(&mut self, app: NotedeckApp) {
+    /// Append `app` to the roster, returning its slot.
+    pub fn add_app(&mut self, app: NotedeckApp) -> notedeck::AppId {
         self.apps.push(app);
         // `opened` is a fixed bitset — the new app's bit is already clear.
+        notedeck::AppId(self.apps.len() - 1)
     }
 
     /// Whether the app at index `i` has been opened.
     pub(super) fn is_opened(&self, i: usize) -> bool {
         i < MAX_APPS && bitset_get(&self.opened, i as u16)
+    }
+
+    /// Whether the app at index `i` is running: opened, or every app is kept
+    /// active (`--all-apps-active`). Only running apps get `update()` calls and
+    /// contribute tools.
+    pub(super) fn is_running(&self, i: usize) -> bool {
+        self.options.contains(ChromeOptions::AllAppsActive) || self.is_opened(i)
     }
 
     /// Mark the app at index `i` as opened.
