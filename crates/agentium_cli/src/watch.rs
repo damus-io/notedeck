@@ -34,7 +34,15 @@ const MAX_HOST_WIDTH: usize = 16;
 /// The statuses in dashboard order — the one needing the user first, finished
 /// sessions last. Anything else (a tombstone under `--all`, an unknown token)
 /// sorts after all of them.
-const STATUS_ORDER: [&str; 6] = ["needs_input", "working", "error", "pending", "idle", "done"];
+const STATUS_ORDER: [&str; 7] = [
+    "needs_input",
+    "working",
+    "error",
+    "pending",
+    "waiting",
+    "idle",
+    "done",
+];
 
 /// `watch`'s own flags.
 pub(crate) struct WatchOpts {
@@ -282,6 +290,7 @@ mod tests {
             view("h", "ask", "needs_input", 10),
             view("h", "busy", "working", 20),
             view("h", "pend", "pending", 30),
+            view("h", "parked", "waiting", 40),
             view("h", "tomb", "deleted", 999),
         ];
         let mut rows: Vec<&SessionView> = views.iter().collect();
@@ -289,7 +298,7 @@ mod tests {
         assert_eq!(
             titles(&rows),
             [
-                "ask", "busy", "err", "pend", "idle-new", "idle-old", "done", "tomb"
+                "ask", "busy", "err", "pend", "parked", "idle-new", "idle-old", "done", "tomb"
             ],
         );
     }

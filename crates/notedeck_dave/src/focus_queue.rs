@@ -15,7 +15,12 @@ impl FocusPriority {
             AgentStatus::NeedsInput => Some(Self::NeedsInput),
             AgentStatus::Error => Some(Self::Error),
             AgentStatus::Done => Some(Self::Done),
-            AgentStatus::Idle | AgentStatus::Working | AgentStatus::Pending => None,
+            // Waiting is parked on purpose and resumes by itself, so like
+            // Working it neither raises the indicator nor steals focus.
+            AgentStatus::Idle
+            | AgentStatus::Working
+            | AgentStatus::Pending
+            | AgentStatus::Waiting => None,
         }
     }
 

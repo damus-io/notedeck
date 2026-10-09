@@ -3,6 +3,7 @@ use crate::backend::shared::{self, SessionCommand, SessionHandle};
 use crate::backend::task_tracker::TaskTracker;
 use crate::backend::tool_summary::{extract_response_content, format_tool_summary};
 use crate::backend::traits::AiBackend;
+use crate::backend::wait_tracker::WaitTracker;
 use crate::file_update::FileUpdate;
 use crate::messages::{
     denial_marker_for_model, denial_message_for_model, permission_reply_message,
@@ -20,7 +21,7 @@ use dashmap::DashMap;
 use futures::future::BoxFuture;
 use futures::StreamExt;
 use notedeck::Waker;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -66,7 +67,7 @@ fn tool_result_content_to_value(content: &Option<ToolResultContent>) -> serde_js
 
 /// Tool results are nested in `extra["message"]["content"]` because the SDK's
 /// `UserMessage.content` field doesn't capture the inner message's content array.
-fn parse_user_content_blocks(user_msg: &UserMessage) -> Vec<ContentBlock> {
+pub(super) fn parse_user_content_blocks(user_msg: &UserMessage) -> Vec<ContentBlock> {
     user_msg
         .extra
         .get("message")
@@ -741,9 +742,10 @@ const IDLE_REAP_AFTER: Duration = Duration::from_secs(60 * 60);
 
 /// Decides when a session's Claude CLI has been idle long enough to stop.
 ///
-/// The CLI is only stopped between turns with no background task running: a
-/// `run_in_background` task lives inside the CLI process and would die with
-/// it. A pending permission prompt needs no tracking here — the actor awaits
+/// The CLI is only stopped between turns with nothing waiting to resume the
+/// session: a `run_in_background` task or a cron lives inside the CLI process
+/// and would die with it, and an armed wake-up holds it until it is due. A
+/// pending permission prompt needs no tracking here — the actor awaits
 /// the user's answer inline, so it is not waiting on the idle timer meanwhile.
 struct IdleTracker {
     /// The last command or CLI message the session saw.
@@ -751,9 +753,8 @@ struct IdleTracker {
     /// A turn (user-initiated or a background-task wake-up) has started and
     /// its `Result` has not arrived yet.
     turn_active: bool,
-    /// `tool_use_id`s of background tasks that started but have not sent
-    /// their `task_notification`.
-    background_tasks: HashSet<String>,
+    /// What will resume the session between turns (see [`WaitTracker`]).
+    waits: WaitTracker,
 }
 
 impl IdleTracker {
@@ -761,7 +762,7 @@ impl IdleTracker {
         Self {
             last_activity: now,
             turn_active: false,
-            background_tasks: HashSet::new(),
+            waits: WaitTracker::default(),
         }
     }
 
@@ -777,56 +778,51 @@ impl IdleTracker {
         self.turn_active = true;
     }
 
-    /// Account for one message from the CLI.
-    fn on_message(&mut self, now: Instant, message: &ClaudeMessage) {
+    /// Account for one message from the CLI. Returns whether it started a
+    /// wake-up turn: one no query of ours began.
+    fn on_message(&mut self, now: Instant, message: &ClaudeMessage) -> bool {
         self.last_activity = now;
+        let now_unix = crate::session::now_unix();
+        self.waits.on_message(now, now_unix, message);
         match message {
             ClaudeMessage::Result(_) => self.turn_active = false,
             // Turn content. A wake-up turn starts with no command from us, so
             // its first message is what marks it underway.
-            ClaudeMessage::Assistant(_) | ClaudeMessage::User(_) => self.turn_active = true,
-            ClaudeMessage::System(system_msg) => {
-                let tool_use_id = || {
-                    system_msg
-                        .data
-                        .get("tool_use_id")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string)
-                };
-                match system_msg.subtype.as_str() {
-                    "task_started" => {
-                        if let Some(id) = tool_use_id() {
-                            self.background_tasks.insert(id);
-                        }
-                    }
-                    "task_notification" => {
-                        if let Some(id) = tool_use_id() {
-                            self.background_tasks.remove(&id);
-                        }
-                    }
-                    _ => {}
-                }
+            ClaudeMessage::Assistant(_)
+            | ClaudeMessage::User(_)
+            | ClaudeMessage::StreamEvent(_)
+                if !self.turn_active =>
+            {
+                self.turn_active = true;
+                self.waits.wakeup_turn_started(now_unix);
+                return true;
             }
             _ => {}
         }
+        false
     }
 
     /// The CLI is gone, and with it any turn or background task it was
     /// running. Returns whether that cut off work in flight.
     fn cli_lost(&mut self, now: Instant) -> bool {
-        let work_lost = self.turn_active || !self.background_tasks.is_empty();
+        let work_lost = self.turn_active || self.waits.waiting_on().background_tasks > 0;
         self.last_activity = now;
         self.turn_active = false;
-        self.background_tasks.clear();
+        self.waits.clear();
         work_lost
     }
 
-    /// When the CLI may be stopped, or `None` while work is outstanding.
+    /// When the CLI may be stopped, or `None` while work is outstanding. An
+    /// armed wake-up pushes the window out to an idle stretch after it is due.
     fn deadline(&self) -> Option<Instant> {
-        if self.turn_active || !self.background_tasks.is_empty() {
+        if self.turn_active || self.waits.holds_cli() {
             return None;
         }
-        Some(self.last_activity + IDLE_REAP_AFTER)
+        let from = match self.waits.wakeup_at() {
+            Some(at) => at.max(self.last_activity),
+            None => self.last_activity,
+        };
+        Some(from + IDLE_REAP_AFTER)
     }
 }
 
@@ -877,15 +873,29 @@ impl ActorState {
         }
     }
 
-    /// Note what a CLI message says about the session before it is handled.
-    fn observe(&mut self, message: &ClaudeMessage) {
-        self.idle.on_message(Instant::now(), message);
+    /// Note what a CLI message says about the session before it is handled,
+    /// and tell the UI when a wake-up turn starts or what the session waits
+    /// on changes. Both go out ahead of the message's own content.
+    fn observe(&mut self, message: &ClaudeMessage, response_tx: &mpsc::Sender<DaveApiResponse>) {
+        if self.idle.on_message(Instant::now(), message) {
+            let _ = response_tx.send(DaveApiResponse::WakeupTurnStarted);
+            self.waker.wake();
+        }
+        self.report_waits(response_tx);
         if let ClaudeMessage::System(system_msg) = message {
             if system_msg.subtype == "init" {
                 if let Some(id) = &system_msg.session_id {
                     self.cli_session_id = Some(id.clone());
                 }
             }
+        }
+    }
+
+    /// Send what the session waits on, if it changed since last sent.
+    fn report_waits(&mut self, response_tx: &mpsc::Sender<DaveApiResponse>) {
+        if let Some(waiting_on) = self.idle.waits.take_change() {
+            let _ = response_tx.send(DaveApiResponse::WaitingOn(waiting_on));
+            self.waker.wake();
         }
     }
 }
@@ -1100,6 +1110,10 @@ async fn serve_session(
 
         match exit {
             ConnectedExit::Idle => {
+                // Only a wake-up that never fired can be left; it will not
+                // now, with its CLI stopped.
+                state.idle.waits.clear();
+                state.report_waits(response_tx);
                 tracing::info!(
                     "Session {} idle for {:?}, stopped its Claude CLI",
                     session_id,
@@ -1128,6 +1142,7 @@ fn report_lost_cli(
     state: &mut ActorState,
 ) {
     let work_lost = state.idle.cli_lost(Instant::now());
+    state.report_waits(response_tx);
     state.cancel_current_turn = false;
     state.stopped_by_user = false;
     // Tool and subagent attribution died with the CLI's turn.
@@ -1262,7 +1277,7 @@ async fn run_connected(
                         continue;
                     }
                 };
-                state.observe(&message);
+                state.observe(&message, response_tx);
 
                 // While a turn is cancelled, drop its remaining messages until
                 // the Result, which we still handle (to emit completion) before
@@ -1691,6 +1706,8 @@ esac
             .map(|r| match r {
                 DaveApiResponse::Failed(err) => format!("Failed({err})"),
                 DaveApiResponse::QueryComplete(_) => "QueryComplete".to_string(),
+                DaveApiResponse::WaitingOn(w) => format!("WaitingOn({})", w.background_tasks),
+                DaveApiResponse::WakeupTurnStarted => "WakeupTurnStarted".to_string(),
                 _ => "other".to_string(),
             })
             .collect()
@@ -1814,6 +1831,97 @@ esac
                 .any(|r| matches!(r, DaveApiResponse::Failed(_))),
             "the resumed CLI answers normally: {:?}",
             describe(&second_turn)
+        );
+
+        command_tx.send(SessionCommand::Shutdown).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(30), session)
+            .await
+            .expect("the session shuts down")
+            .unwrap();
+    }
+
+    /// A stand-in `claude` whose turn launches a background Bash task and
+    /// ends, then, a moment later, reports the task done and runs the
+    /// wake-up turn its notification starts.
+    #[cfg(unix)]
+    const FAKE_CLI_BACKGROUND_TASK: &str = r#"#!/bin/sh
+case "$*" in *--version*) echo "2.1.288 (Claude Code)"; exit 0 ;; esac
+read -r init
+id=$(printf '%s' "$init" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$id"
+read -r query
+result='{"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"fake"}'
+printf '{"type":"system","subtype":"task_started","task_type":"local_bash","tool_use_id":"toolu_bg"}\n'
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"watching"}]}}\n'
+printf '%s\n' "$result"
+sleep 0.2
+printf '{"type":"system","subtype":"task_notification","tool_use_id":"toolu_bg","status":"completed"}\n'
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"it fired"}]}}\n'
+printf '%s\n' "$result"
+cat > /dev/null
+"#;
+
+    /// The actor tells the UI what a session is parked on and when the thing
+    /// it is parked on wakes it: the background task's count goes out before
+    /// the launching turn's `QueryComplete`, and its notification clears it
+    /// and marks the wake-up turn before that turn's content.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn background_task_reports_waiting_then_the_wakeup_turn() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = dir.path().join("claude");
+        std::fs::write(&cli, FAKE_CLI_BACKGROUND_TASK).expect("write fake cli");
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake cli");
+
+        let allow_all: claude_agent_sdk_rs::CanUseToolCallback = Arc::new(|_, _, _| {
+            Box::pin(async {
+                PermissionResult::Allow(PermissionResultAllow {
+                    updated_input: None,
+                    updated_permissions: None,
+                })
+            })
+        });
+        let mut options = session_base_options(allow_all);
+        options.cli_path = Some(cli);
+        options.skip_version_check = true;
+
+        let waker = CountingWaker::new();
+        let (command_tx, mut command_rx) = tokio_mpsc::channel(4);
+        let (_perm_tx, mut perm_rx) = tokio_mpsc::channel(4);
+        let (response_tx, response_rx) = mpsc::channel();
+        let mut state = ActorState::new(waker.waker().clone(), PermissionMode::Default, None);
+        let session = tokio::spawn(async move {
+            serve_session(
+                "dave-session",
+                &options,
+                &mut command_rx,
+                &mut perm_rx,
+                &response_tx,
+                &mut state,
+            )
+            .await;
+        });
+
+        command_tx.send(query(waker.waker())).await.unwrap();
+        let is_complete = |r: &DaveApiResponse| matches!(r, DaveApiResponse::QueryComplete(_));
+        let mut seen = responses_until(&response_rx, is_complete).await;
+        seen.extend(responses_until(&response_rx, is_complete).await);
+        let lifecycle: Vec<String> = describe(&seen)
+            .into_iter()
+            .filter(|d| d != "other")
+            .collect();
+        assert_eq!(
+            lifecycle,
+            [
+                "WaitingOn(1)",
+                "QueryComplete",
+                "WaitingOn(0)",
+                "WakeupTurnStarted",
+                "QueryComplete",
+            ]
         );
 
         command_tx.send(SessionCommand::Shutdown).await.unwrap();

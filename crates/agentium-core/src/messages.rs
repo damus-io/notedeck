@@ -966,6 +966,32 @@ impl UsageInfo {
     }
 }
 
+/// What a session has started that will resume it after its foreground turn
+/// ends: the backend's view of the work it is parked on.
+///
+/// Sent as a level ([`DaveApiResponse::WaitingOn`]) whenever it changes, so a
+/// consumer replaces its copy rather than pairing start/stop edges. The
+/// default (nothing outstanding) means nothing will wake the session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WaitingOn {
+    /// Background tasks still running: `run_in_background` Bash commands,
+    /// Monitors, background subagents. Each wakes the session when it ends.
+    pub background_tasks: u32,
+    /// When a `ScheduleWakeup` is due to resume the session, in Unix seconds.
+    pub wakeup_at: Option<u64>,
+    /// Cron jobs (`CronCreate`) that have not fired or been deleted yet.
+    pub crons: u32,
+}
+
+impl WaitingOn {
+    /// Whether anything outstanding will resume the session, as of `now`
+    /// (Unix seconds). A wake-up whose time has passed no longer counts: it
+    /// either started its turn already or is not coming.
+    pub fn is_waiting(&self, now: u64) -> bool {
+        self.background_tasks > 0 || self.crons > 0 || self.wakeup_at.is_some_and(|at| at > now)
+    }
+}
+
 /// Get context window size for a model name.
 /// All current Claude models have 200K context.
 pub fn context_window_for_model(_model: Option<&str>) -> u64 {
@@ -1016,6 +1042,13 @@ pub enum DaveApiResponse {
     QueryComplete(UsageInfo),
     /// TodoWrite tool was called with these todos
     TodoUpdate(serde_json::Value),
+    /// What will resume the session once its foreground turn ends changed;
+    /// the full current set, replacing the last one.
+    WaitingOn(WaitingOn),
+    /// A turn started that no query of ours began: a background task, wake-up
+    /// or cron resumed the session. It ends with a `QueryComplete` like any
+    /// other turn.
+    WakeupTurnStarted,
 }
 
 impl Message {

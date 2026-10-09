@@ -14,6 +14,10 @@ pub enum AgentStatus {
     Done,
     /// Session is a placeholder waiting for the remote host to respond
     Pending,
+    /// The foreground turn has ended, but something the session started (a
+    /// background task, a Monitor, a scheduled wake-up or cron) will resume
+    /// it. Parked on purpose: neither finished nor needing the user.
+    Waiting,
 }
 
 impl AgentStatus {
@@ -26,6 +30,7 @@ impl AgentStatus {
             AgentStatus::Error => egui::Color32::from_rgb(220, 60, 60),  // Red
             AgentStatus::Done => egui::Color32::from_rgb(70, 130, 220),  // Blue
             AgentStatus::Pending => egui::Color32::from_rgb(100, 160, 180), // Muted cyan
+            AgentStatus::Waiting => egui::Color32::from_rgb(150, 120, 210), // Violet
         }
     }
 
@@ -38,6 +43,7 @@ impl AgentStatus {
             AgentStatus::Error => "Error",
             AgentStatus::Done => "Done",
             AgentStatus::Pending => "Pending",
+            AgentStatus::Waiting => "Waiting",
         }
     }
 
@@ -50,6 +56,7 @@ impl AgentStatus {
             AgentStatus::Error => "error",
             AgentStatus::Done => "done",
             AgentStatus::Pending => "pending",
+            AgentStatus::Waiting => "waiting",
         }
     }
 
@@ -62,6 +69,7 @@ impl AgentStatus {
             "error" => Some(AgentStatus::Error),
             "done" => Some(AgentStatus::Done),
             "pending" => Some(AgentStatus::Pending),
+            "waiting" => Some(AgentStatus::Waiting),
             _ => None,
         }
     }
@@ -108,6 +116,45 @@ pub fn stale_color(color: egui::Color32, age_secs: u64) -> egui::Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every status, for the exhaustive round-trip below.
+    const ALL: [AgentStatus; 7] = [
+        AgentStatus::Idle,
+        AgentStatus::Working,
+        AgentStatus::NeedsInput,
+        AgentStatus::Error,
+        AgentStatus::Done,
+        AgentStatus::Pending,
+        AgentStatus::Waiting,
+    ];
+
+    /// The kind-31988 state event carries a status as its `as_str` token and a
+    /// remote reads it back with `from_status_str`; every status, `Waiting`
+    /// included, must survive that trip, and no two may share a token.
+    #[test]
+    fn status_round_trips_through_its_wire_token() {
+        for status in ALL {
+            assert_eq!(
+                AgentStatus::from_status_str(status.as_str()),
+                Some(status),
+                "{status:?} did not round-trip"
+            );
+        }
+        assert_eq!(AgentStatus::Waiting.as_str(), "waiting");
+        let mut tokens: Vec<_> = ALL.iter().map(AgentStatus::as_str).collect();
+        tokens.sort_unstable();
+        tokens.dedup();
+        assert_eq!(tokens.len(), ALL.len(), "two statuses share a wire token");
+    }
+
+    /// Waiting is told apart from Done and Idle at a glance.
+    #[test]
+    fn waiting_has_its_own_color_and_label() {
+        for other in [AgentStatus::Done, AgentStatus::Idle] {
+            assert_ne!(AgentStatus::Waiting.color(), other.color());
+            assert_ne!(AgentStatus::Waiting.label(), other.label());
+        }
+    }
 
     /// A fresh session's color is returned byte-identical (no fade, no round-trip
     /// loss), both below the fresh window and exactly at its edge.

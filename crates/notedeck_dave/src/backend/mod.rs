@@ -8,6 +8,7 @@ pub(crate) mod shared;
 mod task_tracker;
 mod tool_summary;
 pub mod traits;
+mod wait_tracker;
 
 pub(crate) use tool_summary::truncate_output;
 

@@ -21,6 +21,7 @@ pub(crate) fn status_style(status: &str) -> (&'static str, String, &'static str)
         "error" => ("✖", "Error".into(), "31"),
         "done" => ("✓", "Done".into(), "34"),
         "pending" => ("◌", "Pending".into(), "36"),
+        "waiting" => ("◷", "Waiting".into(), "35"),
         "deleted" => ("⊘", "Deleted".into(), "90"),
         other => ("?", other.to_string(), "0"),
     }

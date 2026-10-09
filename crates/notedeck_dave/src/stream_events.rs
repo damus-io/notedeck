@@ -100,6 +100,10 @@ impl Dave {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     ended.push(session_id);
                     if let Some(session) = self.session_manager.get_mut(session_id) {
+                        // The backend is gone, and nothing it held will
+                        // resume the session now.
+                        session.wakeup_turn = false;
+                        session.waiting_on = Default::default();
                         handle_stream_end(
                             session,
                             session_id,
@@ -248,6 +252,8 @@ pub(crate) fn apply_response(
             | DaveApiResponse::CompactionStarted
             | DaveApiResponse::CompactionComplete(_)
             | DaveApiResponse::QueryComplete(_)
+            | DaveApiResponse::WaitingOn(_)
+            | DaveApiResponse::WakeupTurnStarted
     ) {
         session.dispatch_state.backend_responded();
     }
@@ -304,6 +310,7 @@ pub(crate) fn apply_response(
             handle_usage_update(session, info);
         }
         DaveApiResponse::QueryComplete(info) => {
+            session.wakeup_turn = false;
             handle_query_complete(session, info);
             // For a persistent-stream backend this is the turn
             // boundary — the channel stays open, so run stream-end
@@ -314,6 +321,12 @@ pub(crate) fn apply_response(
         DaveApiResponse::TodoUpdate(todos) => {
             tracing::debug!("Todo update for session {}", session_id);
             session.insert_turn_content(Message::TodoUpdate(todos));
+        }
+        DaveApiResponse::WaitingOn(waiting_on) => {
+            session.waiting_on = waiting_on;
+        }
+        DaveApiResponse::WakeupTurnStarted => {
+            session.wakeup_turn = true;
         }
     }
 
@@ -486,7 +499,9 @@ fn closes_assistant_segment(session: &session::ChatSession, res: &DaveApiRespons
         | DaveApiResponse::SubagentCompleted { .. }
         | DaveApiResponse::SubagentFailed { .. }
         | DaveApiResponse::CompactionStarted
-        | DaveApiResponse::QueryComplete(_) => false,
+        | DaveApiResponse::QueryComplete(_)
+        | DaveApiResponse::WaitingOn(_)
+        | DaveApiResponse::WakeupTurnStarted => false,
     }
 }
 
@@ -1268,5 +1283,72 @@ mod tests {
             publish_subagent(&mut session, "unknown-task", &sk, &ndb).is_none(),
             "a task id with no row publishes nothing"
         );
+    }
+
+    /// A session whose turn launched a background task and ended is parked,
+    /// not done: Waiting. The task's notification wakes it into a turn the
+    /// backend began itself, which shows Working, and once that turn ends
+    /// with nothing left outstanding the session is Done.
+    #[test]
+    fn background_task_parks_the_session_waiting_until_it_wakes() {
+        use crate::agent_status::AgentStatus;
+        use crate::messages::{UsageInfo, WaitingOn};
+
+        let mut f = Fixture::new();
+        f.session.chat.push(Message::User("watch the card".into()));
+        f.session.mark_dispatched();
+        f.apply(DaveApiResponse::Token("watching in the background".into()));
+        f.apply(DaveApiResponse::WaitingOn(WaitingOn {
+            background_tasks: 1,
+            ..Default::default()
+        }));
+        f.apply(DaveApiResponse::QueryComplete(UsageInfo::default()));
+        f.stream_end();
+        f.session.update_status();
+        assert_eq!(f.session.status(), AgentStatus::Waiting);
+        assert_eq!(
+            crate::focus_queue::FocusPriority::from_status(f.session.status()),
+            None,
+            "Waiting neither raises the indicator nor steals focus"
+        );
+
+        // The task finishes: its notification ends the wait and wakes the
+        // session into a turn no query began.
+        f.apply(DaveApiResponse::WaitingOn(WaitingOn::default()));
+        f.apply(DaveApiResponse::WakeupTurnStarted);
+        f.session.update_status();
+        assert_eq!(f.session.status(), AgentStatus::Working);
+
+        f.apply(DaveApiResponse::Token("the card moved".into()));
+        f.apply(DaveApiResponse::QueryComplete(UsageInfo::default()));
+        f.stream_end();
+        f.session.update_status();
+        assert_eq!(f.session.status(), AgentStatus::Done);
+    }
+
+    /// A scheduled wake-up holds the session Waiting only until it is due.
+    #[test]
+    fn a_due_wakeup_no_longer_holds_the_session() {
+        use crate::agent_status::AgentStatus;
+        use crate::messages::{UsageInfo, WaitingOn};
+
+        let mut f = Fixture::new();
+        f.session
+            .chat
+            .push(Message::User("check back later".into()));
+        f.session.mark_dispatched();
+        f.apply(DaveApiResponse::Token("scheduled".into()));
+        f.apply(DaveApiResponse::WaitingOn(WaitingOn {
+            wakeup_at: Some(session::now_unix() + 600),
+            ..Default::default()
+        }));
+        f.apply(DaveApiResponse::QueryComplete(UsageInfo::default()));
+        f.stream_end();
+        f.session.update_status();
+        assert_eq!(f.session.status(), AgentStatus::Waiting);
+
+        f.session.waiting_on.wakeup_at = Some(session::now_unix().saturating_sub(1));
+        f.session.update_status();
+        assert_eq!(f.session.status(), AgentStatus::Done);
     }
 }

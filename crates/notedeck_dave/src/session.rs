@@ -520,6 +520,14 @@ pub struct ChatSession {
     /// Handle to the background task processing this session's AI requests.
     /// Aborted on drop to clean up the subprocess.
     pub task_handle: Option<tokio::task::JoinHandle<()>>,
+    /// A wake-up turn (one the backend began on its own, when a background
+    /// task, wake-up or cron resumed the session) is underway. Set by
+    /// [`DaveApiResponse::WakeupTurnStarted`], cleared at its `QueryComplete`.
+    /// Such a turn has no `task_handle`, so this is what shows it Working.
+    pub wakeup_turn: bool,
+    /// What the backend says will resume the session once its foreground turn
+    /// ends ([`DaveApiResponse::WaitingOn`]); drives [`AgentStatus::Waiting`].
+    pub waiting_on: crate::messages::WaitingOn,
     /// Tracks the dispatch lifecycle for redispatch and insert-position logic.
     pub dispatch_state: DispatchState,
     /// Whether the current turn has produced any content (assistant text, a tool
@@ -622,6 +630,8 @@ impl ChatSession {
             pending_images: vec![],
             incoming_tokens: None,
             task_handle: None,
+            wakeup_turn: false,
+            waiting_on: Default::default(),
             dispatch_state: DispatchState::Idle,
             turn_has_content: false,
             turn_rows: TurnRows::default(),
@@ -695,6 +705,8 @@ impl ChatSession {
             input: String::new(),
             incoming_tokens: None,
             task_handle: None,
+            wakeup_turn: false,
+            waiting_on: Default::default(),
             dispatch_state: DispatchState::Idle,
             turn_has_content: false,
             turn_rows: TurnRows::default(),
@@ -1105,11 +1117,23 @@ impl ChatSession {
             return AgentStatus::Working;
         }
 
+        // A wake-up turn is running: the backend resumed the session itself.
+        if self.wakeup_turn {
+            return AgentStatus::Working;
+        }
+
         // A background subagent is still running: the foreground turn has ended
         // (no task handle) but a wake-up turn will resume the session when the
-        // task finishes, so it's still Working.
+        // task finishes. It is spending tokens on the user's behalf meanwhile,
+        // so it stays Working rather than Waiting.
         if self.has_running_background_subagent() {
             return AgentStatus::Working;
+        }
+
+        // The turn has ended, but something the session started (a background
+        // task, wake-up or cron) will resume it: parked, not done.
+        if self.waiting_on.is_waiting(now_unix()) {
+            return AgentStatus::Waiting;
         }
 
         // Check if done (has messages and no active task)
