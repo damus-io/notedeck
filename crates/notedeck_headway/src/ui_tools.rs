@@ -13,6 +13,14 @@
 //! `card: "headway:<board>/<word-id>"` names one explicitly: on the grid the
 //! cursor moves to it first; over a pane it has to be the card showing.
 //!
+//! **Board edits are not UI tools.** Archiving, moving a card (`D` is a move
+//! to Done) and creating one are Headway's data tools ([`crate::tools`]:
+//! `headway_archive_card`, `headway_move_card`, `headway_add_card`), and the
+//! UI picks their result up as the edit folds in, like any other. The keys
+//! that make those edits (`a`, `D`, `H`/`L`/`J`/`K`) still run through
+//! [`crate::keys`] as before; nothing here shadows the data tools' names
+//! (`no_ui_tool_shadows_a_data_tool`).
+//!
 //! This module also answers, from state alone and without allocating, which
 //! tools are [available](available) and which [key scopes](key_scopes) are
 //! active.
@@ -23,7 +31,7 @@ use serde_json::{Value, json};
 
 use notedeck::{ToolArg, ToolArgType, ToolSpec};
 
-use crate::cursor::{CursorMove, Side, Vertical};
+use crate::cursor::CursorMove;
 use crate::keys::{CardAction, CardMove, PaneScroll};
 use crate::ui::{BoardUiState, CardStep, SessionOpen};
 
@@ -35,20 +43,15 @@ pub(crate) const OPEN_EXPLAINER: &str = "headway_open_explainer";
 pub(crate) const OPEN_SESSION: &str = "headway_open_session";
 /// `r`: open the current card's review pane.
 pub(crate) const OPEN_REVIEW: &str = "headway_open_review";
-/// `a`: archive the current card.
-pub(crate) const ARCHIVE_CARD: &str = "headway_archive_card";
-/// `D`: move the current card to the end of Done.
-pub(crate) const DONE_CARD: &str = "headway_done_card";
 /// `X`: send the current card back, asking for a reason.
 pub(crate) const SEND_BACK: &str = "headway_send_back";
 /// `n`/`p`: step to the next/previous card.
 pub(crate) const STEP_CARD: &str = "headway_step_card";
 /// `j`/`k`/`h`/`l`, `gg`/`G`: move the grid's cursor.
 pub(crate) const CURSOR_MOVE: &str = "headway_cursor_move";
-/// `H`/`L`/`J`/`K`: move the grid's cursor card.
-pub(crate) const MOVE_CARD: &str = "headway_move_card";
-/// `c` on the grid: open the add-card composer.
-pub(crate) const ADD_CARD: &str = "headway_add_card";
+/// `c` on the grid: open the add-card composer. Creating the card is the
+/// composer's (or the `headway_add_card` data tool's).
+pub(crate) const COMPOSE_CARD: &str = "headway_compose_card";
 /// `/`: focus the grid's filter.
 pub(crate) const FOCUS_FILTER: &str = "headway_focus_filter";
 /// `R`: the review queue over the board's In Review, or the detail card's.
@@ -67,9 +70,14 @@ pub(crate) const SEND_COMMENTS: &str = "headway_send_comments";
 /// card, or leave the detail for the grid.
 pub(crate) const BACK: &str = "headway_back";
 
-/// A parsed Headway UI tool call. Card tools carry the
-/// [`CardAction`] their key maps to; the rest name what they do in the view
-/// that has them, and do nothing in a view that doesn't.
+/// What a Headway key or UI tool does. Card tools carry the [`CardAction`]
+/// their key maps to; the rest name what they do in the view that has them,
+/// and do nothing in a view that doesn't.
+///
+/// The keys' board edits are here too, so every key goes through one
+/// `apply_*` path: [`CardAction::Archive`], [`CardAction::Done`] and
+/// [`MoveCard`](Self::MoveCard). [`parse`](Self::parse) never produces them:
+/// called by name, those edits are data tools (see the module docs).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum HeadwayUiTool {
     /// A card action, on the current card or the one `card` names (a
@@ -80,7 +88,7 @@ pub(crate) enum HeadwayUiTool {
     },
     /// Move the grid's cursor.
     Cursor(CursorMove),
-    /// Move the grid's cursor card.
+    /// Move the grid's cursor card (`H`/`L`/`J`/`K`). Keys only: a board edit.
     MoveCard(CardMove),
     /// Open the add-card composer in the cursor's column.
     AddCard,
@@ -170,29 +178,6 @@ const CURSOR_TOS: &[&str] = &["down", "up", "left", "right", "first", "last"];
 struct CursorArgs {
     #[serde(default)]
     to: CursorTo,
-}
-
-/// Which way `headway_move_card` moves the cursor card: across columns
-/// (`left`/`right`) or within one (`down`/`up`).
-#[derive(Deserialize, Default, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
-enum MoveDir {
-    #[default]
-    Right,
-    Left,
-    Down,
-    Up,
-}
-
-/// The values of [`MoveDir`].
-const MOVE_DIRS: &[&str] = &["right", "left", "down", "up"];
-
-/// `headway_move_card`'s arguments.
-#[derive(Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct MoveArgs {
-    #[serde(default)]
-    dir: MoveDir,
 }
 
 /// How far `headway_scroll` scrolls: a line, a page or half of one either
@@ -285,12 +270,6 @@ impl HeadwayUiTool {
                 "Open the current card's review pane on its newest record.",
                 vec![],
             ),
-            card_spec(ARCHIVE_CARD, "Archive the current card.", vec![]),
-            card_spec(
-                DONE_CARD,
-                "Move the current card to the end of Done.",
-                vec![],
-            ),
             card_spec(
                 SEND_BACK,
                 "Send the current card back to In Progress, asking for a reason.",
@@ -309,14 +288,7 @@ impl HeadwayUiTool {
             )
             .ui(),
             ToolSpec::new(
-                MOVE_CARD,
-                "Move the grid's cursor card to the next column (left/right) or past its \
-                 neighbour in the column (down/up).",
-                vec![enum_arg("dir", MOVE_DIRS, "Which way the card moves.")],
-            )
-            .ui(),
-            ToolSpec::new(
-                ADD_CARD,
+                COMPOSE_CARD,
                 "Open the add-card composer in the grid cursor's column.",
                 vec![],
             )
@@ -392,8 +364,6 @@ impl HeadwayUiTool {
                 card_target(CardAction::Session(how, None), card)?
             }
             OPEN_REVIEW => card_tool(name, args, CardAction::Review(None))?,
-            ARCHIVE_CARD => card_tool(name, args, CardAction::Archive)?,
-            DONE_CARD => card_tool(name, args, CardAction::Done)?,
             SEND_BACK => card_tool(name, args, CardAction::SendBack)?,
             STEP_CARD => {
                 let StepArgs { card, dir } = parse_args(name, args)?;
@@ -414,16 +384,7 @@ impl HeadwayUiTool {
                     CursorTo::Last => CursorMove::Last,
                 })
             }
-            MOVE_CARD => {
-                let MoveArgs { dir } = parse_args(name, args)?;
-                Self::MoveCard(match dir {
-                    MoveDir::Left => CardMove::Across(Side::Left),
-                    MoveDir::Right => CardMove::Across(Side::Right),
-                    MoveDir::Down => CardMove::Within(Vertical::Down),
-                    MoveDir::Up => CardMove::Within(Vertical::Up),
-                })
-            }
-            ADD_CARD => no_args(name, args, Self::AddCard)?,
+            COMPOSE_CARD => no_args(name, args, Self::AddCard)?,
             FOCUS_FILTER => no_args(name, args, Self::FocusFilter)?,
             OPEN_REVIEW_QUEUE => no_args(name, args, Self::ReviewQueue)?,
             CLEAR => no_args(name, args, Self::Clear)?,
@@ -468,12 +429,12 @@ fn card_tool(name: &str, args: &Value, action: CardAction) -> Result<HeadwayUiTo
 
 /// `action` on `card`, once `card` is checked to be a card reference.
 fn card_target(action: CardAction, card: Option<String>) -> Result<HeadwayUiTool, String> {
-    if let Some(card) = &card {
-        if headway::wordid::parse_ref(card).is_none() {
-            return Err(format!(
-                "'{card}' is not a card reference (headway:<board>/<word-id>)"
-            ));
-        }
+    if let Some(card) = &card
+        && headway::wordid::parse_ref(card).is_none()
+    {
+        return Err(format!(
+            "'{card}' is not a card reference (headway:<board>/<word-id>)"
+        ));
     }
     Ok(HeadwayUiTool::Card { action, card })
 }
@@ -571,13 +532,12 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
         // The detail has nothing to open: its card is open.
         OPEN_CARD => card && at != KeyView::Detail,
         // Says there's no explainer when there's none, as the key does.
-        OPEN_EXPLAINER | OPEN_REVIEW | ARCHIVE_CARD | DONE_CARD | SEND_BACK => card,
+        OPEN_EXPLAINER | OPEN_REVIEW | SEND_BACK => card,
         OPEN_SESSION => card && state.current_has_session(),
         // The grid's step lands a missing cursor on the first card; the
         // queue's steps off a card that has left the board.
         STEP_CARD => card || grid || at == KeyView::Queue,
-        CURSOR_MOVE | ADD_CARD | FOCUS_FILTER => grid,
-        MOVE_CARD => grid && card,
+        CURSOR_MOVE | COMPOSE_CARD | FOCUS_FILTER => grid,
         OPEN_REVIEW_QUEUE => grid || at == KeyView::Detail,
         CLEAR => grid && (card || state.chord.pending().is_some() || state.key_hints_shown()),
         SCROLL | BACK => !grid,
@@ -635,11 +595,14 @@ mod tests {
     fn parse_rejects_bad_args() {
         let bad = [
             (CURSOR_MOVE, json!({ "to": "sideways" })),
-            (MOVE_CARD, json!({ "dir": 3 })),
+            (STEP_CARD, json!({ "dir": 3 })),
             (OPEN_SESSION, json!({ "code_review": "yes" })),
             (OPEN_CARD, json!({ "card": "maple-river-canyon" })),
             (OPEN_CARD, json!({ "bogus": 1 })),
-            (ADD_CARD, json!({ "card": "headway:b/maple-river-canyon" })),
+            (
+                COMPOSE_CARD,
+                json!({ "card": "headway:b/maple-river-canyon" }),
+            ),
             (SCROLL, json!({ "to": "left" })),
             (BACK, json!([])),
         ];
@@ -672,10 +635,6 @@ mod tests {
             }
         );
         assert_eq!(
-            parse(MOVE_CARD, json!({ "dir": "up" })),
-            HeadwayUiTool::MoveCard(CardMove::Within(Vertical::Up))
-        );
-        assert_eq!(
             parse(SCROLL, json!({ "to": "half_up" })),
             HeadwayUiTool::Scroll(PaneScroll::Pages(-0.5))
         );
@@ -683,5 +642,35 @@ mod tests {
             parse(STEP_FILE, json!({ "dir": "prev" })),
             HeadwayUiTool::Scroll(PaneScroll::PrevFile)
         );
+    }
+
+    /// No UI tool takes a data tool's name. The tool registry keeps the first
+    /// of a name and registers data tools first, so a UI tool that shadowed
+    /// one would be dropped and never reach Headway: the bug this replaced,
+    /// when `headway_archive_card`, `headway_move_card` and `headway_add_card`
+    /// were UI tools too.
+    #[test]
+    fn no_ui_tool_shadows_a_data_tool() {
+        let data: Vec<_> = crate::tools::tools().iter().map(|t| t.name()).collect();
+        for spec in HeadwayUiTool::specs() {
+            assert!(
+                !data.contains(&spec.name()),
+                "UI tool {} shadows a data tool",
+                spec.name()
+            );
+        }
+    }
+
+    /// Board edits are data tools: called as UI tools they're unknown.
+    #[test]
+    fn board_edits_are_not_ui_tools() {
+        for name in [
+            "headway_archive_card",
+            "headway_move_card",
+            "headway_add_card",
+            "headway_done_card",
+        ] {
+            assert!(HeadwayUiTool::parse(name, &json!({})).is_err(), "{name}");
+        }
     }
 }

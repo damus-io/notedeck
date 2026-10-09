@@ -6256,8 +6256,9 @@ fn call_ui_tool(
 /// Behavioural (no lavapipe): Headway's UI tools, called by name through
 /// [`App::call_ui_tool`] as chrome calls them, drive the real board: a cursor
 /// move lands the cursor, `headway_open_card` opens its detail and
-/// `headway_back` leaves it. Each is available only where it acts, and bad
-/// arguments come back as an error rather than a queued call.
+/// `headway_back` leaves it. Each is available only where it acts, bad
+/// arguments come back as an error rather than a queued call, and none is
+/// lost in the tool registry to a data tool of the same name.
 #[test]
 fn ui_tools_drive_the_board_through_call_ui_tool() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
@@ -6265,6 +6266,21 @@ fn ui_tools_drive_the_board_through_call_ui_tool() {
     let specs = headway.ui_tools();
     assert!(specs.iter().all(|s| s.kind() == notedeck::ToolKind::Ui));
     assert!(specs.iter().any(|s| s.name() == "headway_open_explainer"));
+
+    // Registered as chrome registers them, data tools first, every UI tool
+    // keeps an owner: none is dropped as a duplicate of a data tool's name.
+    let mut registry = notedeck::ToolRegistry::default();
+    for tool in headway.tools() {
+        registry.register(tool);
+    }
+    for spec in specs {
+        let name = spec.name();
+        registry.register_ui(notedeck::UiToolEntry::new(spec, notedeck::AppId(0)));
+        assert!(
+            registry.ui_owner(name).is_some(),
+            "UI tool {name} lost its name to a data tool"
+        );
+    }
     assert!(headway.ui_tool_available("headway_cursor_move"));
     assert!(!headway.ui_tool_available("headway_open_card"));
     assert!(!headway.ui_tool_available("headway_back"));

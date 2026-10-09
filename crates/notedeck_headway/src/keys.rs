@@ -3062,7 +3062,8 @@ diff --git a/b.txt b/b.txt
         harness.step();
     }
 
-    /// Each card action's keycap and the tool call that stands for it.
+    /// Each card action's keycap and the UI tool call that stands for it.
+    /// `a` and `D` are board edits, which are data tools, not UI tools.
     fn card_action_tools() -> Vec<(&'static str, &'static str, serde_json::Value)> {
         use crate::ui_tools::*;
         use serde_json::json;
@@ -3073,8 +3074,6 @@ diff --git a/b.txt b/b.txt
             ("s", OPEN_SESSION, json!({})),
             ("S", OPEN_SESSION, json!({ "code_review": true })),
             ("r", OPEN_REVIEW, json!({})),
-            ("a", ARCHIVE_CARD, json!({})),
-            ("D", DONE_CARD, json!({})),
             ("X", SEND_BACK, json!({})),
             ("n", STEP_CARD, json!({ "dir": "next" })),
             ("p", STEP_CARD, json!({ "dir": "prev" })),
@@ -3128,11 +3127,7 @@ diff --git a/b.txt b/b.txt
             ("l", CURSOR_MOVE, json!({ "to": "right" })),
             ("gg", CURSOR_MOVE, json!({ "to": "first" })),
             ("G", CURSOR_MOVE, json!({ "to": "last" })),
-            ("H", MOVE_CARD, json!({ "dir": "left" })),
-            ("L", MOVE_CARD, json!({ "dir": "right" })),
-            ("J", MOVE_CARD, json!({ "dir": "down" })),
-            ("K", MOVE_CARD, json!({ "dir": "up" })),
-            ("c", ADD_CARD, json!({})),
+            ("c", COMPOSE_CARD, json!({})),
             ("/", FOCUS_FILTER, json!({})),
             ("R", OPEN_REVIEW_QUEUE, json!({})),
             ("esc", CLEAR, json!({})),
@@ -3176,8 +3171,8 @@ diff --git a/b.txt b/b.txt
         ]
     }
 
-    /// **The tool guard.** In each view, every key and the UI tool standing
-    /// for it, dispatched by name, leave the same state behind: one
+    /// **The tool guard.** In each view, every key that has a UI tool and
+    /// that tool, dispatched by name, leave the same state behind: one
     /// `apply_*` path under both, so moving a key into chrome's keymap (bound
     /// to the tool) can't change what it does.
     #[test]
@@ -3296,11 +3291,9 @@ diff --git a/b.txt b/b.txt
         for name in [
             OPEN_CARD,
             OPEN_SESSION,
-            ARCHIVE_CARD,
             STEP_CARD,
             CURSOR_MOVE,
-            MOVE_CARD,
-            ADD_CARD,
+            COMPOSE_CARD,
             FOCUS_FILTER,
             OPEN_REVIEW_QUEUE,
             CLEAR,
@@ -3314,7 +3307,7 @@ diff --git a/b.txt b/b.txt
         // No cursor: no card to act on and nothing to clear, but `n` and the
         // motions still land one.
         let bare = keys_harness(None);
-        for name in [OPEN_CARD, OPEN_EXPLAINER, MOVE_CARD, CLEAR] {
+        for name in [OPEN_CARD, OPEN_EXPLAINER, CLEAR] {
             assert!(!available(&bare, name), "{name} with no cursor");
         }
         assert!(available(&bare, STEP_CARD));
@@ -3343,7 +3336,7 @@ diff --git a/b.txt b/b.txt
         ] {
             assert!(available(&queue, name), "{name} in the queue");
         }
-        for name in [CURSOR_MOVE, ADD_CARD, OPEN_REVIEW_QUEUE, CLEAR] {
+        for name in [CURSOR_MOVE, COMPOSE_CARD, OPEN_REVIEW_QUEUE, CLEAR] {
             assert!(!available(&queue, name), "{name} in the queue");
         }
 
