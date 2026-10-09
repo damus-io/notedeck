@@ -1,5 +1,6 @@
 # One public chrome frame that tests drive, instead of each suite's own copy
 
+Card: headway:notedeck/shallow-obvious-nerve
 headless chrome tests hand-roll the chrome's frame (tool update, actions, nav,
 render), so each copy drifts from the real one and misses what it skipped.
 

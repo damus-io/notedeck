@@ -1,5 +1,6 @@
 # Separate "this device published it" from "the poll processed it" in Dave
 
+Card: headway:notedeck/cushion-audit-embark
 `seen_note_ids` holds both, so a rebuild or restore has to guess which a note
 is, and bugs where a note is claimed but never processed slip in silently.
 

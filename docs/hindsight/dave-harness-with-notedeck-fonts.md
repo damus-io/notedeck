@@ -1,5 +1,6 @@
 # A Dave kittest harness set up like the chrome: notedeck fonts and app spacing
 
+Card: headway:notedeck/twice-basket-donor
 Dave snapshots build bare harnesses on egui defaults, so layout and baseline bugs
 that only show with notedeck's fonts and spacing never reach a test.
 

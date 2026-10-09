@@ -1,5 +1,6 @@
 # One funnel that shows and publishes a Dave session note
 
+Card: headway:notedeck/submit-toast-monkey
 pushing a turn row and publishing its note are paired by hand at each site, so
 self-note bookkeeping and roles have several near-identical hooks to keep in step.
 

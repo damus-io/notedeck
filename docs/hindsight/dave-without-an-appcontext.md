@@ -1,5 +1,6 @@
 # Drive Dave's update loop from a test without building an AppContext
 
+Card: headway:notedeck/when-exercise-arch
 restore, poll, dispatch and key handling live on Dave methods that take an
 AppContext, so each test suite extracts a ctx struct or steals a SessionManager.
 

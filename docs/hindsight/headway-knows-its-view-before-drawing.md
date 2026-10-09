@@ -1,5 +1,6 @@
 # Headway settles the view it will draw before keys, tools and overlays read it
 
+Card: headway:notedeck/snake-unusual-coast
 which view a frame draws (settled, outgoing, after its drops) is known only
 while drawing, so every per-view transient guesses it from reseeded state.
 
