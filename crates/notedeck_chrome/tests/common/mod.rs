@@ -43,6 +43,8 @@ pub struct FakeState {
     pub current: Option<String>,
     /// The args each [`DATA_TOOL`] call ran with, in order.
     pub marked: mpsc::Receiver<serde_json::Value>,
+    /// The room the app had to lay out in on its last render.
+    pub area: Option<egui::Rect>,
 }
 
 /// [`DATA_TOOL`]: sends its args to the test, which runs it on another
@@ -105,6 +107,7 @@ impl App for FakeApp {
                 .collect()
         });
         state.seen.extend(pressed);
+        state.area = Some(ui.available_rect_before_wrap());
         if state.show_field {
             ui.add(egui::TextEdit::singleline(&mut state.text).id(field_id()));
         }
@@ -171,6 +174,7 @@ impl Fixture {
             text: String::new(),
             current: None,
             marked,
+            area: None,
         }));
         // The fake app alone, as the nav root: switching to it from another
         // app would slide, and a full chrome frame mid-slide trips egui's

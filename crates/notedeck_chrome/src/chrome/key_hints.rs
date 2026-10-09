@@ -102,30 +102,26 @@ impl Chrome {
         Some(self.keys.keymap().hints(scopes, pending, available))
     }
 
-    /// Draw the which-key strip ([`key_hints`](Self::key_hints)) along the
-    /// bottom of `ui`, taking its height from what the app below gets. Does
-    /// nothing, and allocates nothing, when there is nothing to show.
+    /// Draw the which-key strip ([`key_hints`](Self::key_hints)) floating
+    /// along the bottom of `rect`, the app's area, over the app rather than
+    /// taking room from it, so a chord's strip coming and going never moves
+    /// the app (see [`key_hints_overlay`]). Allocates nothing when there is
+    /// nothing to show.
+    ///
+    /// [`key_hints_overlay`]: notedeck_ui::keybind_hint::key_hints_overlay
     #[profiling::function]
-    pub(super) fn key_hints_ui(&self, ctx: &AppContext, ui: &mut egui::Ui) {
-        let Some(hints) = self.key_hints(&ctx.registries.tools) else {
-            return;
-        };
-        if hints.clone().next().is_none() {
-            return;
-        }
-
+    pub(super) fn key_hints_ui(&self, ctx: &AppContext, ui: &egui::Ui, rect: egui::Rect) {
+        let hints = self
+            .key_hints(&ctx.registries.tools)
+            .filter(|hints| hints.clone().next().is_some())
+            .map(|hints| hints.map(|hint| (hint.keycap_iter(), hint.label)));
         let muted = notedeck::ColorTheme::current(ui.ctx()).text_muted;
-        let margin = notedeck::tokens::SPACING_MD as i8;
-        egui::Panel::bottom("chrome-key-hints")
-            .resizable(false)
-            .frame(
-                egui::Frame::new()
-                    .fill(ui.visuals().panel_fill)
-                    .inner_margin(egui::Margin::same(margin)),
-            )
-            .show(ui, |ui| {
-                let hints = hints.map(|hint| (hint.keycap_iter(), hint.label));
-                notedeck_ui::keybind_hint::key_hints_ui(ui, muted, hints);
-            });
+        notedeck_ui::keybind_hint::key_hints_overlay(
+            ui.ctx(),
+            egui::Id::unique("chrome-key-hints"),
+            rect,
+            muted,
+            hints,
+        );
     }
 }

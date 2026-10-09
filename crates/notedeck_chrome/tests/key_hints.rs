@@ -133,6 +133,27 @@ async fn a_pending_chord_shows_only_its_continuations() {
     assert!(f.drew("down"), "the pinned strip is back");
 }
 
+/// The strip floats over the app rather than taking its bottom: the app lays
+/// out in the same room whether a chord's strip or the pinned one shows.
+#[tokio::test]
+async fn the_strip_never_moves_the_app() {
+    let mut f = fixture();
+    let area = |f: &Fixture| f.state.borrow().area.expect("the app rendered");
+    let hidden = area(&f);
+
+    f.key(Key::G);
+    assert!(f.drew("first"), "the chord's strip shows");
+    assert_eq!(area(&f), hidden);
+
+    f.key(Key::G);
+    assert!(!f.drew("first"));
+    assert_eq!(area(&f), hidden);
+
+    question_mark(&mut f);
+    assert!(f.drew("down"), "the pinned strip shows");
+    assert_eq!(area(&f), hidden);
+}
+
 #[tokio::test]
 async fn an_unavailable_tool_is_left_out() {
     let mut f = fixture();

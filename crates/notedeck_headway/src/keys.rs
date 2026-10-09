@@ -692,26 +692,27 @@ mod tests {
             })
     }
 
-    /// Chrome's which-key strip, as it draws it below the app: what finishes
-    /// a pending chord, else, pinned, every key Headway's scopes bind to an
-    /// available tool.
-    fn chrome_strip(ui: &mut egui::Ui, h: &KeysHarness) {
+    /// Chrome's which-key strip, as it floats it over the bottom of the app:
+    /// what finishes a pending chord, else, pinned, every key Headway's
+    /// scopes bind to an available tool.
+    fn chrome_strip(ui: &egui::Ui, h: &KeysHarness) {
         let pending = h.keys.pending();
-        if pending.is_none() && !h.hints_pinned {
-            return;
-        }
         let (state, pinned) = (&h.state, h.hints_pinned);
-        let hints = h
-            .keys
-            .keymap()
-            .hints(chrome_scopes(state), pending, move |name| {
-                tool_available(state, pinned, name)
-            });
+        let hints = (pending.is_some() || pinned).then(|| {
+            h.keys
+                .keymap()
+                .hints(chrome_scopes(state), pending, move |name| {
+                    tool_available(state, pinned, name)
+                })
+                .map(|hint| (hint.keycap_iter(), hint.label))
+        });
         let muted = ColorTheme::current(ui.ctx()).text_muted;
-        notedeck_ui::keybind_hint::key_hints_ui(
-            ui,
+        notedeck_ui::keybind_hint::key_hints_overlay(
+            ui.ctx(),
+            egui::Id::unique("chrome-key-hints"),
+            ui.max_rect(),
             muted,
-            hints.map(|hint| (hint.keycap_iter(), hint.label)),
+            hints,
         );
     }
 

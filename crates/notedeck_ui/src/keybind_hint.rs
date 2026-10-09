@@ -166,6 +166,77 @@ pub fn key_hints_ui<'a, K>(
     });
 }
 
+/// Draw a which-key strip ([`key_hints_ui`]) floating along the bottom of
+/// `rect`, over whatever is drawn there, so that showing or hiding it never
+/// moves what's beneath. `hints` is `None` while it's hidden.
+///
+/// It sits on its own foreground [`egui::Area`] the size of `rect`, which is
+/// click-through (`interactable(false)`): the pointer reaches what's beneath
+/// as if the strip weren't there. Its fill is the panel's, so keycaps stay
+/// readable over a busy view, with a separator along its top edge so it reads
+/// as floating. The strip is laid out once out of sight to learn its height,
+/// then again at the bottom, so it is where it belongs on the frame it first
+/// shows, rather than a frame later as a self-sizing area would be.
+///
+/// egui spends an area's first-ever show measuring it invisibly. While the
+/// strip is hidden this shows the empty area that once, so the strip's first
+/// appearance isn't that invisible pass; after that, hidden, it does nothing
+/// and allocates nothing.
+pub fn key_hints_overlay<'a, K, I>(
+    ctx: &egui::Context,
+    id: egui::Id,
+    rect: Rect,
+    label_color: egui::Color32,
+    hints: Option<I>,
+) where
+    K: IntoIterator<Item = &'a str> + Clone,
+    I: Iterator<Item = (K, &'a str)> + Clone,
+{
+    if hints.is_none() && egui::AreaState::load(ctx, id).is_some() {
+        return;
+    }
+    egui::Area::new(id)
+        .order(egui::Order::Foreground)
+        .fixed_pos(rect.min)
+        .constrain_to(rect)
+        .interactable(false)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            ui.set_min_size(rect.size());
+            let Some(hints) = hints else {
+                return;
+            };
+            let margin = notedeck::tokens::SPACING_MD as i8;
+            let frame = egui::Frame::new()
+                .fill(ui.visuals().panel_fill)
+                .inner_margin(egui::Margin::same(margin));
+            let strip = |ui: &mut Ui, hints: I| {
+                frame
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        key_hints_ui(ui, label_color, hints);
+                    })
+                    .response
+                    .rect
+            };
+
+            let mut measure = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("measure")
+                    .max_rect(rect)
+                    .invisible(),
+            );
+            let height = strip(&mut measure, hints.clone()).height();
+
+            let bottom =
+                Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - height), rect.max);
+            let mut shown = ui.new_child(egui::UiBuilder::new().id_salt("strip").max_rect(bottom));
+            let drawn = strip(&mut shown, hints);
+            let edge = ui.visuals().widgets.noninteractive.bg_stroke;
+            ui.painter().hline(drawn.x_range(), drawn.top(), edge);
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

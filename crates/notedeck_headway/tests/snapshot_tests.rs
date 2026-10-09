@@ -115,33 +115,28 @@ impl ChromeKeys {
         }
     }
 
-    /// The which-key strip along the bottom, as the chrome draws it: a
-    /// pending chord's continuations, else, pinned, Headway's keys.
-    fn strip_ui(&self, ui: &mut egui::Ui, headway: &Headway) {
+    /// The which-key strip floating along the bottom of `rect`, as the
+    /// chrome draws it: a pending chord's continuations, else, pinned,
+    /// Headway's keys.
+    fn strip_ui(&self, ui: &egui::Ui, rect: egui::Rect, headway: &Headway) {
         let pending = self.engine.pending();
-        if pending.is_none() && !self.pinned {
-            return;
-        }
         let pinned = self.pinned;
-        let hints = self
-            .engine
-            .keymap()
-            .hints(Self::scopes(headway), pending, move |name| {
-                Self::available(pinned, headway, name)
-            });
+        let hints = (pending.is_some() || pinned).then(|| {
+            self.engine
+                .keymap()
+                .hints(Self::scopes(headway), pending, move |name| {
+                    Self::available(pinned, headway, name)
+                })
+                .map(|hint| (hint.keycap_iter(), hint.label))
+        });
         let muted = notedeck::ColorTheme::current(ui.ctx()).text_muted;
-        let margin = notedeck::tokens::SPACING_MD as i8;
-        egui::Panel::bottom("chrome-key-hints")
-            .resizable(false)
-            .frame(
-                egui::Frame::new()
-                    .fill(ui.visuals().panel_fill)
-                    .inner_margin(egui::Margin::same(margin)),
-            )
-            .show(ui, |ui| {
-                let hints = hints.map(|hint| (hint.keycap_iter(), hint.label));
-                notedeck_ui::keybind_hint::key_hints_ui(ui, muted, hints);
-            });
+        notedeck_ui::keybind_hint::key_hints_overlay(
+            ui.ctx(),
+            egui::Id::unique("chrome-key-hints"),
+            rect,
+            muted,
+            hints,
+        );
     }
 }
 
@@ -190,11 +185,11 @@ fn render_headway(ui: &mut egui::Ui, state: &mut HeadwayTestState) {
 
         egui::CentralPanel::default().show(ui, |ui| {
             // Mirror the chrome: its keymap takes the frame's key before the
-            // app renders, and its strip reserves the bottom of the app area.
+            // app renders, and its strip floats over the app's area after.
             state
                 .keys
                 .dispatch(ui.ctx(), &mut app_ctx, &mut state.headway);
-            state.keys.strip_ui(ui, &state.headway);
+            let app_rect = ui.available_rect_before_wrap();
             // Mirror the chrome, which zeroes the horizontal item gap for every app
             // (`notedeck_chrome/src/chrome/frame.rs`, `Chrome::show`): a Headway that
             // stops owning its spacing then shows up glued here, as it would live.
@@ -210,6 +205,7 @@ fn render_headway(ui: &mut egui::Ui, state: &mut HeadwayTestState) {
                     state.headway.render(&mut app_ctx, ui);
                 }
             }
+            state.keys.strip_ui(ui, app_rect, &state.headway);
         });
     });
 }

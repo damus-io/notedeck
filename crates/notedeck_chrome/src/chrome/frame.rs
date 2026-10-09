@@ -71,9 +71,9 @@ impl Chrome {
             ChromeRoute::App => {
                 let animate = app_ctx.settings.get_settings_mut().animate_nav_transitions;
 
-                // The which-key strip takes the bottom of the app area before
-                // the app lays out in what's left of it.
-                self.key_hints_ui(app_ctx, ui);
+                // The app's area, for the which-key strip to float over once
+                // the app has drawn in all of it.
+                let app_rect = ui.available_rect_before_wrap();
 
                 // `nav_frame` needs `&mut global_nav` while the render callback
                 // needs `&mut apps` — split-borrow the two fields so both can be
@@ -154,6 +154,8 @@ impl Chrome {
 
                     (frame.response, frame.can_take_drag_from, popped)
                 };
+
+                self.key_hints_ui(app_ctx, ui, app_rect);
 
                 // Split borrows released — free the popped entry's resources by
                 // routing the pop back to the app that owned it.
