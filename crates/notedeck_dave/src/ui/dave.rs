@@ -2,7 +2,7 @@ use super::badge::{BadgeVariant, StatusBadge};
 use super::block_nav::BlockNav;
 use super::diff;
 use super::git_status_ui;
-use super::inspector::{inspector_ui, session_tabs_ui, SessionFacts};
+use super::inspector::{inspector_ui, rate_limit_pill_ui, session_tabs_ui, SessionFacts};
 use super::keybindings::NormalView;
 use super::markdown_ui;
 use super::query_ui::query_call_ui;
@@ -86,6 +86,9 @@ pub struct DaveUi<'a> {
     usage: Option<&'a crate::messages::UsageInfo>,
     /// Context window size for the current model
     context_window: u64,
+    /// The Claude account's rate-limit windows: the account-wide value for a
+    /// local session, the session's own for a remote one.
+    rate_limit: Option<crate::messages::RateLimitInfo>,
     /// Dispatch lifecycle state, used for queued indicator logic.
     dispatch_state: crate::session::DispatchState,
     /// Whether the current turn has produced content yet, used with
@@ -277,6 +280,7 @@ impl<'a> DaveUi<'a> {
             status_dot_color: None,
             usage: None,
             context_window: crate::messages::context_window_for_model(None),
+            rate_limit: None,
             dispatch_state: crate::session::DispatchState::default(),
             turn_has_content: false,
             backend_type: BackendType::Remote,
@@ -453,6 +457,13 @@ impl<'a> DaveUi<'a> {
         self
     }
 
+    /// The account's rate-limit windows, for the Rate limits card and the
+    /// status bar's pill.
+    pub fn rate_limit(mut self, rate_limit: Option<crate::messages::RateLimitInfo>) -> Self {
+        self.rate_limit = rate_limit;
+        self
+    }
+
     fn chat_margin(&self, ctx: &egui::Context) -> i8 {
         if self.flags.contains(DaveUiFlags::Compact) || notedeck::ui::is_narrow(ctx) {
             8
@@ -590,7 +601,7 @@ impl<'a> DaveUi<'a> {
                                             top: 4,
                                             bottom: 0,
                                         })
-                                        .show(ui, |ui| self.status_bar_ui(ui))
+                                        .show(ui, |ui| self.status_bar_ui(app_ctx.i18n, ui))
                                         .inner
                                 })
                                 .inner;
@@ -614,6 +625,7 @@ impl<'a> DaveUi<'a> {
                         let session_id = self.session_id;
                         let is_remote = self.flags.contains(DaveUiFlags::IsRemote);
                         let context_window = self.context_window;
+                        let rate_limit = self.rate_limit;
                         let details_action = self.inspector.as_mut().and_then(|inspected| {
                             let facts = SessionFacts {
                                 status: inspected.status,
@@ -625,6 +637,7 @@ impl<'a> DaveUi<'a> {
                                 cli_session_id: inspected.cli_session_id,
                                 is_remote,
                                 context_window,
+                                rate_limit,
                             };
                             // Scoped by session, so each keeps its own grid
                             // scroll.
@@ -2551,7 +2564,11 @@ fn format_relative_time(unix_secs: u64) -> String {
 
 /// Renders the status bar containing git status, run button, and toggle badges.
 impl DaveUi<'_> {
-    fn status_bar_ui(&mut self, ui: &mut egui::Ui) -> Option<DaveAction> {
+    fn status_bar_ui(
+        &mut self,
+        i18n: &mut notedeck::Localization,
+        ui: &mut egui::Ui,
+    ) -> Option<DaveAction> {
         let is_remote = self.flags.contains(DaveUiFlags::IsRemote);
         let is_agentic = self.ai_mode == AiMode::Agentic;
         let cwd = self.details.and_then(|d| d.cwd.as_deref());
@@ -2608,6 +2625,11 @@ impl DaveUi<'_> {
                                         InspectorSection::Usage,
                                     ));
                                 }
+                                if self.rate_limit_pill_ui(i18n, ui) {
+                                    return Some(DaveAction::OpenInspector(
+                                        InspectorSection::RateLimits,
+                                    ));
+                                }
                             }
                             badge_action
                         })
@@ -2625,6 +2647,19 @@ impl DaveUi<'_> {
             bar_action
         })
         .inner
+    }
+}
+
+impl DaveUi<'_> {
+    /// The status bar's rate-limit pill, shown while the account is near or
+    /// over a limit. True when it was clicked.
+    fn rate_limit_pill_ui(&mut self, i18n: &mut notedeck::Localization, ui: &mut egui::Ui) -> bool {
+        let (Some(info), Some(inspected)) = (self.rate_limit.as_ref(), self.inspector.as_mut())
+        else {
+            return false;
+        };
+        let labels = &mut inspected.inspector.rate_limit_labels;
+        rate_limit_pill_ui(info, labels, i18n, ui).is_some_and(|resp| resp.clicked())
     }
 }
 
@@ -2655,6 +2690,18 @@ fn usage_meter_ui(
     .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// A fill bar's colour by how full it is: green under half, yellow under
+/// 80%, red past that.
+pub(crate) fn fill_color(fraction: f32) -> egui::Color32 {
+    if fraction < 0.5 {
+        egui::Color32::from_rgb(100, 180, 100)
+    } else if fraction < 0.8 {
+        egui::Color32::from_rgb(200, 180, 60)
+    } else {
+        egui::Color32::from_rgb(200, 80, 80)
+    }
+}
+
 /// Renders the usage fill bar showing context window consumption.
 fn usage_bar_ui(
     usage: Option<&crate::messages::UsageInfo>,
@@ -2668,14 +2715,7 @@ fn usage_bar_ui(
     let usage = usage.unwrap();
     let fraction = (total as f64 / context_window as f64).min(1.0) as f32;
 
-    // Color based on fill level: green → yellow → red
-    let bar_color = if fraction < 0.5 {
-        egui::Color32::from_rgb(100, 180, 100)
-    } else if fraction < 0.8 {
-        egui::Color32::from_rgb(200, 180, 60)
-    } else {
-        egui::Color32::from_rgb(200, 80, 80)
-    };
+    let bar_color = fill_color(fraction);
 
     let weak = ui.visuals().weak_text_color();
 

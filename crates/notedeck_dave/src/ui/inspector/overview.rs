@@ -36,6 +36,8 @@ pub struct SessionFacts<'a> {
     pub is_remote: bool,
     /// The model's context window, in tokens, for the Usage card.
     pub context_window: u64,
+    /// The Claude account's rate-limit windows, for the Rate limits card.
+    pub rate_limit: Option<crate::messages::RateLimitInfo>,
 }
 
 /// The Overview card's body.

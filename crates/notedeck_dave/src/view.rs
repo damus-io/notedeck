@@ -257,6 +257,7 @@ impl Dave {
             normal_view,
             &self.run_configs,
             &self.running_session_ids,
+            self.rate_limit,
             app_ctx,
             ui,
         );
@@ -300,6 +301,7 @@ impl Dave {
             normal_view,
             &self.run_configs,
             &self.running_session_ids,
+            self.rate_limit,
             app_ctx,
             ui,
         );
@@ -393,6 +395,7 @@ impl Dave {
             normal_view,
             &self.run_configs,
             &self.running_session_ids,
+            self.rate_limit,
             self.show_session_list,
             app_ctx,
             ui,

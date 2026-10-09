@@ -8,7 +8,8 @@ use crate::file_update::FileUpdate;
 use crate::messages::{
     denial_marker_for_model, denial_message_for_model, permission_reply_message,
     turn_exit_message_for_model, CliState, CompactionInfo, DaveApiResponse, PermissionResponse,
-    RunningTool, SubagentInfo, SubagentStatus,
+    RateLimitInfo, RateLimitStatus, RateLimitWindow, RateLimitWindowKind, RunningTool,
+    SubagentInfo, SubagentStatus,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -242,12 +243,17 @@ fn handle_task_notification(
 enum CancelledTurnMessageAction {
     Ignore,
     FinishTurn,
+    /// Not part of the turn (account state), so handled as usual.
+    Handle,
 }
 
 /// Decide how to handle a Claude stream message after the user has cancelled the turn.
 fn cancelled_turn_message_action(message: &ClaudeMessage) -> CancelledTurnMessageAction {
     match message {
         ClaudeMessage::Result(_) => CancelledTurnMessageAction::FinishTurn,
+        // The account's rate-limit windows, which moved whether or not the
+        // user wants the rest of this turn.
+        ClaudeMessage::RateLimitEvent(_) => CancelledTurnMessageAction::Handle,
         // These variants are still part of the cancelled turn and must not
         // leak into chat after the user exits the tool call.
         ClaudeMessage::Assistant(_)
@@ -498,9 +504,46 @@ fn handle_stream_message(
                 progress.parent_tool_use_id,
             );
         }
+        ClaudeMessage::RateLimitEvent(event) => {
+            let info = rate_limit_info(&event.rate_limit_info);
+            let _ = response_tx.send(DaveApiResponse::RateLimit(info));
+            waker.wake();
+        }
         ClaudeMessage::ControlCancelRequest(_) => {
             // Ignore internal control messages
         }
+    }
+}
+
+/// The account's rate-limit state from a `rate_limit_event`'s info, in the
+/// backend-neutral shape the inspector keeps. A window type or status this
+/// version doesn't know is dropped (an unknown status reads as allowed).
+fn rate_limit_info(info: &claude_agent_sdk_rs::RateLimitInfo) -> RateLimitInfo {
+    use claude_agent_sdk_rs::RateLimitStatus as Wire;
+    let windows = info.unified_windows.as_ref();
+    let window = |pick: fn(&claude_agent_sdk_rs::RateLimitWindows) -> Option<_>| {
+        windows
+            .and_then(pick)
+            .map(|w: claude_agent_sdk_rs::RateLimitWindow| RateLimitWindow {
+                utilization: w.utilization,
+                resets_at: w.resets_at.max(0) as u64,
+            })
+    };
+    RateLimitInfo {
+        status: match info.status {
+            Wire::AllowedWarning => RateLimitStatus::AllowedWarning,
+            Wire::Rejected => RateLimitStatus::Rejected,
+            Wire::Allowed | Wire::Unknown => RateLimitStatus::Allowed,
+        },
+        limiting: info
+            .rate_limit_type
+            .as_deref()
+            .and_then(RateLimitWindowKind::from_wire),
+        utilization: info.utilization,
+        resets_at: info.resets_at.map(|t| t.max(0) as u64),
+        five_hour: window(|w| w.five_hour),
+        seven_day: window(|w| w.seven_day),
+        seven_day_overage_included: window(|w| w.seven_day_overage_included),
     }
 }
 
@@ -1313,8 +1356,8 @@ async fn run_connected(
                     }
                     Err(err) => {
                         // Non-fatal unless the stream ends right after it:
-                        // unknown message types (e.g. rate_limit_event) fail to
-                        // deserialize but the stream continues.
+                        // unknown message types fail to deserialize but the
+                        // stream continues.
                         tracing::warn!("Claude stream message skipped: {}", err);
                         last_error = Some(err.to_string());
                         continue;
@@ -1338,6 +1381,7 @@ async fn run_connected(
                             state.cancel_current_turn = false;
                             state.stopped_by_user = true;
                         }
+                        CancelledTurnMessageAction::Handle => {}
                     }
                 }
 
@@ -1972,6 +2016,121 @@ cat > /dev/null
             .await
             .expect("the session shuts down")
             .unwrap();
+    }
+
+    /// A stand-in `claude` that reports the account's rate-limit windows in
+    /// the middle of a turn, in CLI 2.1.288's shape, then ends the turn.
+    #[cfg(unix)]
+    const FAKE_CLI_RATE_LIMIT: &str = r#"#!/bin/sh
+case "$*" in *--version*) echo "2.1.288 (Claude Code)"; exit 0 ;; esac
+read -r init
+id=$(printf '%s' "$init" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$id"
+read -r query
+printf '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1791590400,"rateLimitType":"five_hour","utilization":0.82,"isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.82,"resetsAt":1791590400},"seven_day":{"utilization":0.41,"resetsAt":1792022400}}},"uuid":"u-1","session_id":"fake"}\n'
+printf '{"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"fake"}\n'
+cat > /dev/null
+"#;
+
+    /// A `rate_limit_event` on the CLI's stream reaches the UI as
+    /// [`DaveApiResponse::RateLimit`], typed, instead of failing to parse and
+    /// being skipped.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rate_limit_event_reaches_the_ui() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = dir.path().join("claude");
+        std::fs::write(&cli, FAKE_CLI_RATE_LIMIT).expect("write fake cli");
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake cli");
+
+        let allow_all: claude_agent_sdk_rs::CanUseToolCallback = Arc::new(|_, _, _| {
+            Box::pin(async {
+                PermissionResult::Allow(PermissionResultAllow {
+                    updated_input: None,
+                    updated_permissions: None,
+                })
+            })
+        });
+        let mut options = session_base_options(allow_all);
+        options.cli_path = Some(cli);
+        options.skip_version_check = true;
+
+        let waker = CountingWaker::new();
+        let (command_tx, mut command_rx) = tokio_mpsc::channel(4);
+        let (_perm_tx, mut perm_rx) = tokio_mpsc::channel(4);
+        let (response_tx, response_rx) = mpsc::channel();
+        let mut state = ActorState::new(waker.waker().clone(), PermissionMode::Default, None);
+        let session = tokio::spawn(async move {
+            serve_session(
+                "dave-session",
+                &options,
+                &mut command_rx,
+                &mut perm_rx,
+                &response_tx,
+                &mut state,
+            )
+            .await;
+        });
+
+        command_tx.send(query(waker.waker())).await.unwrap();
+        let seen = responses_until(&response_rx, |r| {
+            matches!(r, DaveApiResponse::QueryComplete(_))
+        })
+        .await;
+        let limits: Vec<RateLimitInfo> = seen
+            .iter()
+            .filter_map(|r| match r {
+                DaveApiResponse::RateLimit(info) => Some(*info),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            limits,
+            [RateLimitInfo {
+                status: RateLimitStatus::AllowedWarning,
+                limiting: Some(RateLimitWindowKind::FiveHour),
+                utilization: Some(0.82),
+                resets_at: Some(1791590400),
+                five_hour: Some(RateLimitWindow {
+                    utilization: 0.82,
+                    resets_at: 1791590400,
+                }),
+                seven_day: Some(RateLimitWindow {
+                    utilization: 0.41,
+                    resets_at: 1792022400,
+                }),
+                seven_day_overage_included: None,
+            }]
+        );
+        assert!(
+            !seen.iter().any(|r| matches!(r, DaveApiResponse::Failed(_))),
+            "{:?}",
+            describe(&seen)
+        );
+
+        command_tx.send(SessionCommand::Shutdown).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(30), session)
+            .await
+            .expect("the session shuts down")
+            .unwrap();
+    }
+
+    /// A rate-limit report is account state, so a cancelled turn still
+    /// passes it on.
+    #[test]
+    fn cancelled_turn_still_handles_rate_limit_events() {
+        let event = serde_json::from_value::<ClaudeMessage>(serde_json::json!({
+            "type": "rate_limit_event",
+            "rate_limit_info": { "status": "rejected" }
+        }))
+        .expect("rate_limit_event should deserialize");
+        assert_eq!(
+            cancelled_turn_message_action(&event),
+            CancelledTurnMessageAction::Handle
+        );
     }
 
     /// The reason for the whole fix: when the user's reply goes out as its own

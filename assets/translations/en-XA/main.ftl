@@ -1247,3 +1247,51 @@ side___not_a_3D_model_that_could_be_read_d28f = {"["}{$side}: ñót à 3D módé
 
 # Caption for a version of a changed 3D model skipped because the commit has too many models
 side___not_shown__the_commit_changes_too_many_3D_models_955c = {"["}{$side}: ñót shówñ, thé çómmít çhàñgés tóó màñy 3D módéls{"]"}
+
+# Dave session inspector rate limits: note that the limits are per account, not per session
+Account-wide__every_session_on_this_Claude_account_shares_these_windows_7a32 = {"["}Àççóúñt-wídé: évéry séssíóñ óñ thís Çlàúdé àççóúñt shàrés thésé wíñdóws.{"]"}
+
+# Dave session inspector rate limits: the five-hour session window
+k_5-hour_336c = {"["}5-hóúr{"]"}
+
+# Dave session inspector rate limits: the weekly window
+k_7-day_9ea2 = {"["}7-dày{"]"}
+
+# Dave session inspector rate limits: the weekly window for Opus
+k_7-day_Opus_c6c0 = {"["}7-dày Ópús{"]"}
+
+# Dave session inspector rate limits: the weekly window for Sonnet
+k_7-day_Sonnet_e2c8 = {"["}7-dày Sóññét{"]"}
+
+# Dave session inspector rate limits: the weekly window including paid overage
+k_7-day_with_overage_a766 = {"["}7-dày wíth óvéràgé{"]"}
+
+# Dave status bar pill: the Claude account is near a rate limit, with how much of it is used
+Limit__percent_f751 = {"["}Límít {$percent}%{"]"}
+
+# Dave session inspector rate limits status: over a limit, requests refused until it resets
+Limited_until_reset_7e0e = {"["}Límítéd úñtíl rését{"]"}
+
+# Dave session inspector rate limits status: close to a rate limit
+Near_a_limit_fe96 = {"["}Ñéàr à límít{"]"}
+
+# Dave session inspector rate limits: shown before the CLI reports the account's windows
+No_rate-limit_report_yet_c1f0 = {"["}Ñó ràté-límít répórt yét{"]"}
+
+# Dave session inspector rate limits: paid usage past the subscription limits
+Overage_777a = {"["}Óvéràgé{"]"}
+
+# Dave session inspector rate limits: how much of a window is used and when it resets
+percent_____resets__time_7c1d = {"["}{$percent}% · réséts {$time}{"]"}
+
+# Dave status bar pill: the Claude account is over a rate limit
+Rate_limited_5dff = {"["}Ràté límítéd{"]"}
+
+# Dave session inspector rate limits: a window whose reset time has passed
+reset_at__time_2d3d = {"["}rését àt {$time}{"]"}
+
+# Dave session inspector rate limits row
+Status_c3bb = {"["}Stàtús{"]"}
+
+# Dave session inspector rate limits status: under every limit
+Within_limits_9850 = {"["}Wíthíñ límíts{"]"}

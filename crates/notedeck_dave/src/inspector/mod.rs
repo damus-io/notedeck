@@ -14,7 +14,10 @@ mod usage;
 
 pub use usage::{Compaction, Sparkline, Tokens, TurnUsage, UsageHistory, HISTORY_CAP};
 
-use crate::messages::{CliState, DaveApiResponse, SessionInfo, WaitingOn};
+use crate::messages::{
+    CliState, DaveApiResponse, RateLimitInfo, RateLimitStatus, RateLimitWindow,
+    RateLimitWindowKind, SessionInfo, WaitingOn,
+};
 use notedeck::Localization;
 
 /// What a session's Details tab knows about it, folded from the responses its
@@ -39,6 +42,14 @@ pub struct SessionInspector {
     pub usage: UsageHistory,
     /// Display strings the Usage card builds when their inputs change.
     pub usage_labels: UsageLabels,
+    /// The account's rate-limit windows as this session's backend last
+    /// reported them. A local session's card shows the account-wide value on
+    /// `Dave` instead, which any local session may have updated since; this
+    /// one is what a remote session has.
+    pub rate_limit: Option<RateLimitInfo>,
+    /// Display strings the Rate limits card and status-bar pill build when
+    /// their inputs change.
+    pub rate_limit_labels: RateLimitLabels,
 }
 
 impl SessionInspector {
@@ -49,6 +60,9 @@ impl SessionInspector {
         match res {
             DaveApiResponse::SessionInfo(info) => self.session_info = Some(info.clone()),
             DaveApiResponse::CliState(cli) => self.cli = Some(*cli),
+            DaveApiResponse::RateLimit(info) => {
+                self.rate_limit = Some(info.merged_onto(self.rate_limit.as_ref()));
+            }
             _ => self.usage.apply(res, crate::session::now_unix()),
         }
     }
@@ -94,16 +108,46 @@ pub struct UsageLabels {
     pub compactions: LabelMemo<u64>,
 }
 
+/// Most windows a rate-limit report carries: five-hour, seven-day,
+/// seven-day with overage, and the limiting one when it is none of those.
+pub const RATE_LIMIT_WINDOWS: usize = 4;
+
+/// The Rate limits card's computed lines and the status-bar pill's, each
+/// rebuilt only when what it shows changes.
+#[derive(Debug, Default)]
+pub struct RateLimitLabels {
+    /// "Allowed", "Near the limit", "Limited".
+    pub status: LabelMemo<RateLimitStatus>,
+    /// Each shown window's name, by its position in the card.
+    pub names: [LabelMemo<RateLimitWindowKind>; RATE_LIMIT_WINDOWS],
+    /// Each shown window's "82% · resets 3:42 PM", keyed by the window and
+    /// whether its reset time has passed.
+    pub windows: [LabelMemo<(RateLimitWindowKind, RateLimitWindow, bool)>; RATE_LIMIT_WINDOWS],
+    /// The status-bar pill, keyed by status and the limiting window's
+    /// percentage.
+    pub pill: LabelMemo<(RateLimitStatus, u32)>,
+}
+
 /// A localized display string built from a key the first frame it is drawn
 /// with that key, and borrowed on every frame after, so a `*_ui` function can
 /// show a formatted value without formatting it sixty times a second.
 ///
 /// It also rebuilds when the locale changes, which the key doesn't cover.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LabelMemo<K> {
     /// The key and locale generation `text` was built for.
     built_for: Option<(K, u64)>,
     text: String,
+}
+
+// Not derived: an unbuilt memo needs no default key.
+impl<K> Default for LabelMemo<K> {
+    fn default() -> Self {
+        Self {
+            built_for: None,
+            text: String::new(),
+        }
+    }
 }
 
 impl<K: Copy + PartialEq> LabelMemo<K> {
@@ -254,6 +298,76 @@ mod tests {
         assert_eq!(info.tools.len(), 2);
         assert_eq!(info.skills, ["headway"]);
         assert_eq!(inspector.cli.and_then(|cli| cli.reap_at), Some(42));
+    }
+
+    /// A rate-limit report replaces the last, except that one without
+    /// per-window usage (a status change alone) keeps the windows it had.
+    #[test]
+    fn folds_rate_limits_keeping_windows_a_bare_status_lacks() {
+        let five_hour = RateLimitWindow {
+            utilization: 0.82,
+            resets_at: 1_791_590_400,
+        };
+        let mut inspector = SessionInspector::default();
+        inspector.apply(&DaveApiResponse::RateLimit(RateLimitInfo {
+            status: RateLimitStatus::AllowedWarning,
+            five_hour: Some(five_hour),
+            ..Default::default()
+        }));
+        inspector.apply(&DaveApiResponse::RateLimit(RateLimitInfo {
+            status: RateLimitStatus::Rejected,
+            limiting: Some(RateLimitWindowKind::FiveHour),
+            utilization: Some(1.0),
+            resets_at: Some(1_791_590_400),
+            ..Default::default()
+        }));
+
+        let info = inspector.rate_limit.unwrap();
+        assert_eq!(info.status, RateLimitStatus::Rejected);
+        assert_eq!(info.five_hour, Some(five_hour));
+        // With per-window usage, the windows are what the card shows; the
+        // limiting window isn't repeated.
+        assert_eq!(
+            info.windows().collect::<Vec<_>>(),
+            [(RateLimitWindowKind::FiveHour, five_hour)]
+        );
+
+        // A report with windows of its own replaces them.
+        let seven_day = RateLimitWindow {
+            utilization: 0.1,
+            resets_at: 1_792_022_400,
+        };
+        inspector.apply(&DaveApiResponse::RateLimit(RateLimitInfo {
+            seven_day: Some(seven_day),
+            ..Default::default()
+        }));
+        let info = inspector.rate_limit.unwrap();
+        assert_eq!(info.five_hour, None);
+        assert_eq!(info.seven_day, Some(seven_day));
+    }
+
+    /// Without per-window usage, the card shows the limiting window alone.
+    #[test]
+    fn rate_limit_windows_fall_back_to_the_limiting_one() {
+        let info = RateLimitInfo {
+            status: RateLimitStatus::AllowedWarning,
+            limiting: Some(RateLimitWindowKind::SevenDayOpus),
+            utilization: Some(0.9),
+            resets_at: Some(7),
+            ..Default::default()
+        };
+        assert_eq!(
+            info.windows().collect::<Vec<_>>(),
+            [(
+                RateLimitWindowKind::SevenDayOpus,
+                RateLimitWindow {
+                    utilization: 0.9,
+                    resets_at: 7
+                }
+            )]
+        );
+        assert!(info.needs_attention());
+        assert!(!RateLimitInfo::default().needs_attention());
     }
 
     /// A memo builds once per key, not once per call.

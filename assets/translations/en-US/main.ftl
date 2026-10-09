@@ -1247,3 +1247,51 @@ side___not_a_3D_model_that_could_be_read_d28f = {$side}: not a 3D model that cou
 
 # Caption for a version of a changed 3D model skipped because the commit has too many models
 side___not_shown__the_commit_changes_too_many_3D_models_955c = {$side}: not shown, the commit changes too many 3D models
+
+# Dave session inspector rate limits: note that the limits are per account, not per session
+Account-wide__every_session_on_this_Claude_account_shares_these_windows_7a32 = Account-wide: every session on this Claude account shares these windows.
+
+# Dave session inspector rate limits: the five-hour session window
+k_5-hour_336c = 5-hour
+
+# Dave session inspector rate limits: the weekly window
+k_7-day_9ea2 = 7-day
+
+# Dave session inspector rate limits: the weekly window for Opus
+k_7-day_Opus_c6c0 = 7-day Opus
+
+# Dave session inspector rate limits: the weekly window for Sonnet
+k_7-day_Sonnet_e2c8 = 7-day Sonnet
+
+# Dave session inspector rate limits: the weekly window including paid overage
+k_7-day_with_overage_a766 = 7-day with overage
+
+# Dave status bar pill: the Claude account is near a rate limit, with how much of it is used
+Limit__percent_f751 = Limit {$percent}%
+
+# Dave session inspector rate limits status: over a limit, requests refused until it resets
+Limited_until_reset_7e0e = Limited until reset
+
+# Dave session inspector rate limits status: close to a rate limit
+Near_a_limit_fe96 = Near a limit
+
+# Dave session inspector rate limits: shown before the CLI reports the account's windows
+No_rate-limit_report_yet_c1f0 = No rate-limit report yet
+
+# Dave session inspector rate limits: paid usage past the subscription limits
+Overage_777a = Overage
+
+# Dave session inspector rate limits: how much of a window is used and when it resets
+percent_____resets__time_7c1d = {$percent}% · resets {$time}
+
+# Dave status bar pill: the Claude account is over a rate limit
+Rate_limited_5dff = Rate limited
+
+# Dave session inspector rate limits: a window whose reset time has passed
+reset_at__time_2d3d = reset at {$time}
+
+# Dave session inspector rate limits row
+Status_c3bb = Status
+
+# Dave session inspector rate limits status: under every limit
+Within_limits_9850 = Within limits

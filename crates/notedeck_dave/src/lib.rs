@@ -204,6 +204,10 @@ pub struct Dave {
     /// renderer this app registers, so a chip drawn in a note/Dave-chat reads the
     /// same live state as the open surface. Pumped every frame in [`Self::update`].
     session_cache: std::rc::Rc<std::cell::RefCell<session_cache::AgentiumSessionCache>>,
+    /// The Claude account's rate-limit windows, as the newest report from any
+    /// local session left them. Account state, not session state, so every
+    /// local session's Rate limits card and status bar read this one.
+    rate_limit: Option<crate::messages::RateLimitInfo>,
     /// A 3d representation of dave.
     avatar: Option<DaveAvatar>,
     /// Shared tools available to all sessions
@@ -513,6 +517,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session_cache: std::rc::Rc::new(std::cell::RefCell::new(
                 session_cache::AgentiumSessionCache::default(),
             )),
+            rate_limit: None,
             tools: Arc::new(tools),
             model_config,
             show_session_list: false,

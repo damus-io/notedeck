@@ -153,6 +153,9 @@ impl Dave {
                     break;
                 };
 
+                if let DaveApiResponse::RateLimit(info) = &res {
+                    self.rate_limit = Some(info.merged_onto(self.rate_limit.as_ref()));
+                }
                 let outcome = apply_response(session, session_id, res, &ctx);
                 if outcome.needs_send {
                     needs_send.insert(session_id);
@@ -317,6 +320,7 @@ pub(crate) fn apply_response(
             | DaveApiResponse::WaitingOn(_)
             | DaveApiResponse::WakeupTurnStarted
             | DaveApiResponse::CliState(_)
+            | DaveApiResponse::RateLimit(_)
     ) {
         session.dispatch_state.backend_responded();
     }
@@ -391,8 +395,9 @@ pub(crate) fn apply_response(
         DaveApiResponse::WakeupTurnStarted => {
             session.wakeup_turn = true;
         }
-        // Only the inspector keeps it, folded above.
-        DaveApiResponse::CliState(_) => {}
+        // Only the inspector keeps these, folded above (and the account's
+        // rate limits on `Dave`, by the drain loop).
+        DaveApiResponse::CliState(_) | DaveApiResponse::RateLimit(_) => {}
     }
 
     outcome
@@ -567,7 +572,8 @@ fn closes_assistant_segment(session: &session::ChatSession, res: &DaveApiRespons
         | DaveApiResponse::QueryComplete(_)
         | DaveApiResponse::WaitingOn(_)
         | DaveApiResponse::WakeupTurnStarted
-        | DaveApiResponse::CliState(_) => false,
+        | DaveApiResponse::CliState(_)
+        | DaveApiResponse::RateLimit(_) => false,
     }
 }
 

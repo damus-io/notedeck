@@ -97,6 +97,7 @@ fn build_dave_ui<'a>(
     normal_mode: Option<NormalView>,
     run_configs: &'a std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &'a std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
+    account_rate_limit: Option<crate::messages::RateLimitInfo>,
 ) -> DaveUi<'a> {
     let status = session.status();
     let is_working = status == AgentStatus::Working;
@@ -115,6 +116,13 @@ fn build_dave_ui<'a>(
         .unwrap_or(&[]);
     // The IDs of configs currently running for this session
     let running_config_ids = running_sessions.get(&session.id);
+    // Rate limits are the account's. A local session shows the newest report
+    // from any local session; a remote one, what reached it from its host.
+    let rate_limit = if is_remote {
+        session.inspector.rate_limit
+    } else {
+        account_rate_limit.or(session.inspector.rate_limit)
+    };
 
     if let Some(agentic) = &session.agentic {
         session.inspector.set_session_id(agentic.event_session_id());
@@ -144,6 +152,7 @@ fn build_dave_ui<'a>(
     .run_configs(session_run_configs)
     .running_config_ids(running_config_ids)
     .pending_images(&mut session.pending_images)
+    .rate_limit(rate_limit)
     .inspector(Inspected {
         inspector: &mut session.inspector,
         view: &mut session.inspector_view,
@@ -544,6 +553,7 @@ pub fn scene_ui(
     normal_mode: Option<NormalView>,
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
+    account_rate_limit: Option<crate::messages::RateLimitInfo>,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
 ) -> (DaveResponse, SceneViewAction) {
@@ -605,6 +615,7 @@ pub fn scene_ui(
                                     normal_mode,
                                     run_configs,
                                     running_sessions,
+                                    account_rate_limit,
                                 )
                                 .compact(true)
                                 .ui(app_ctx, ui);
@@ -663,6 +674,7 @@ pub fn desktop_ui(
     normal_mode: Option<NormalView>,
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
+    account_rate_limit: Option<crate::messages::RateLimitInfo>,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
 ) -> (DaveResponse, Option<SessionListAction>, bool) {
@@ -761,6 +773,7 @@ pub fn desktop_ui(
                     normal_mode,
                     run_configs,
                     running_sessions,
+                    account_rate_limit,
                 )
                 .ui(app_ctx, ui)
             } else {
@@ -783,6 +796,7 @@ pub fn narrow_ui(
     normal_mode: Option<NormalView>,
     run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
+    account_rate_limit: Option<crate::messages::RateLimitInfo>,
     show_session_list: bool,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
@@ -807,6 +821,7 @@ pub fn narrow_ui(
             normal_mode,
             run_configs,
             running_sessions,
+            account_rate_limit,
         )
         .status_dot_color(dot_color)
         .focus_queue_info(fq_info)
@@ -1785,6 +1800,8 @@ mod tests {
         session_manager: SessionManager,
         model_config: crate::config::ModelConfig,
         set_up: bool,
+        /// The account's rate limits, as `Dave` would hand them in.
+        rate_limit: Option<crate::messages::RateLimitInfo>,
     }
 
     fn session_view_state() -> SessionViewState {
@@ -1813,6 +1830,7 @@ mod tests {
             session_manager,
             model_config: crate::config::ModelConfig::default(),
             set_up: false,
+            rate_limit: None,
         }
     }
 
@@ -1838,6 +1856,7 @@ mod tests {
                 None,
                 &no_configs,
                 &none_running,
+                state.rate_limit,
             )
             .ui(&mut app_ctx, ui);
             if let Some(action) = response.action {
@@ -1866,7 +1885,7 @@ mod tests {
     }
 
     /// Clicking Details swaps the chat for the rail and the section cards
-    /// (the seven without a view yet are stubs); clicking Chat brings the
+    /// (the six without a view yet are stubs); clicking Chat brings the
     /// input box back.
     #[test]
     fn details_tab_shows_every_section_and_chat_brings_the_input_back() {
@@ -1888,8 +1907,9 @@ mod tests {
         harness.get_by_label("Details").click_accesskit();
         harness.run_ok();
 
-        assert_eq!(count_labels(&harness, "Nothing yet"), 7);
+        assert_eq!(count_labels(&harness, "Nothing yet"), 6);
         assert_eq!(count_labels(&harness, "No usage reported yet"), 1);
+        assert_eq!(count_labels(&harness, "No rate-limit report yet"), 1);
         let mut i18n = notedeck::Localization::default();
         for section in InspectorSection::ALL {
             let title = super::inspector::section_title(section, &mut i18n);
@@ -2145,6 +2165,114 @@ mod tests {
         assert_eq!(view.section, InspectorSection::Usage);
     }
 
+    /// Rate limits near the five-hour cap, resetting at fixed times far
+    /// ahead so the labels and snapshot don't move with the clock.
+    fn seed_rate_limits(state: &mut SessionViewState) {
+        use crate::messages::{
+            RateLimitInfo, RateLimitStatus, RateLimitWindow, RateLimitWindowKind,
+        };
+
+        // 2100-01-01 00:00 UTC (a Friday) and a week later.
+        const FIVE_HOUR_RESET: u64 = 4_102_444_800;
+        const SEVEN_DAY_RESET: u64 = FIVE_HOUR_RESET + 7 * 24 * 3600;
+        state.rate_limit = Some(RateLimitInfo {
+            status: RateLimitStatus::AllowedWarning,
+            limiting: Some(RateLimitWindowKind::FiveHour),
+            utilization: Some(0.82),
+            resets_at: Some(FIVE_HOUR_RESET),
+            five_hour: Some(RateLimitWindow {
+                utilization: 0.82,
+                resets_at: FIVE_HOUR_RESET,
+            }),
+            seven_day: Some(RateLimitWindow {
+                utilization: 0.41,
+                resets_at: SEVEN_DAY_RESET,
+            }),
+            seven_day_overage_included: None,
+        });
+    }
+
+    /// The Rate limits card shows the account's windows, from the value
+    /// handed in rather than the session's own, with the account-wide note.
+    #[test]
+    fn rate_limits_show_each_window_and_the_account_note() {
+        let mut harness = session_view_harness(egui::vec2(1100.0, 900.0));
+        seed_rate_limits(harness.state_mut());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .show_details();
+        harness.run_ok();
+
+        assert_eq!(count_labels(&harness, "No rate-limit report yet"), 0);
+        assert_eq!(count_labels(&harness, "Near a limit"), 1);
+        assert_eq!(count_labels(&harness, "5-hour"), 1);
+        assert_eq!(count_labels(&harness, "7-day"), 1);
+        // Fluent wraps each argument in bidi isolation marks.
+        assert_eq!(
+            count_labels_containing(&harness, "\u{2068}82\u{2069}% · resets"),
+            1
+        );
+        assert_eq!(
+            count_labels_containing(&harness, "\u{2068}41\u{2069}% · resets"),
+            1
+        );
+        assert_eq!(count_labels_containing(&harness, "Account-wide"), 1);
+    }
+
+    /// Near a limit, the status bar shows a pill, and clicking it opens
+    /// Details at the Rate limits card. Within limits it shows nothing.
+    #[test]
+    fn the_rate_limit_pill_opens_the_rate_limits_card() {
+        use crate::inspector::{InspectorSection, SessionTab};
+        use egui_kittest::kittest::Queryable;
+
+        let mut harness = session_view_harness(egui::vec2(1100.0, 900.0));
+        harness.state_mut().rate_limit = Some(crate::messages::RateLimitInfo::default());
+        harness.run_ok();
+        assert_eq!(count_labels_containing(&harness, "Limit "), 0);
+
+        seed_rate_limits(harness.state_mut());
+        harness.run_ok();
+        harness
+            .get(egui_kittest::kittest::By::new().label_contains("Limit \u{2068}82"))
+            .click();
+        harness.run_ok();
+
+        let view = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view;
+        assert_eq!(view.tab, SessionTab::Details);
+        assert_eq!(view.section, InspectorSection::RateLimits);
+    }
+
+    /// The Rate limits card near the five-hour cap: the status, a bar per
+    /// window with its reset, and the account-wide note.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_session_rate_limits() {
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1100.0, 760.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        seed_rate_limits(harness.state_mut());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .open(crate::inspector::InspectorSection::RateLimits);
+        harness.run_ok();
+        harness.snapshot("session_rate_limits");
+    }
+
     /// The Usage card after a compaction: the stacked context bar, the
     /// legend, the totals and the sparkline with its compaction mark.
     #[test]
@@ -2188,8 +2316,8 @@ mod tests {
     }
 
     /// An empty session's two tabs: the chat under the tab strip, then
-    /// Details with the rail, an Overview with no init yet and the eight stub
-    /// cards.
+    /// Details with the rail, an Overview, Usage and Rate limits with nothing
+    /// reported yet and the six stub cards.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_session_details_tab() {

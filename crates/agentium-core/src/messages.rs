@@ -1072,6 +1072,157 @@ impl WaitingOn {
     }
 }
 
+/// The account's subscription rate-limit state, from the Claude CLI's
+/// `rate_limit_event`.
+///
+/// The limits belong to the Claude account, not the session: every session
+/// on the account sees the same windows. Sent as a level
+/// ([`DaveApiResponse::RateLimit`]) whenever a window's status, utilization
+/// or reset time moves; fold it with [`Self::merged_onto`].
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RateLimitInfo {
+    /// Whether the limiting window still lets requests through.
+    pub status: RateLimitStatus,
+    /// Which window is limiting, when the CLI says.
+    pub limiting: Option<RateLimitWindowKind>,
+    /// Fraction of the limiting window used (usually 0-1, can exceed 1).
+    pub utilization: Option<f64>,
+    /// When the limiting window resets, in Unix seconds.
+    pub resets_at: Option<u64>,
+    /// The 5-hour session window.
+    pub five_hour: Option<RateLimitWindow>,
+    /// The weekly window.
+    pub seven_day: Option<RateLimitWindow>,
+    /// The weekly window including overage, for accounts that have one.
+    pub seven_day_overage_included: Option<RateLimitWindow>,
+}
+
+impl RateLimitInfo {
+    /// This report folded onto the one before it.
+    ///
+    /// The CLI reports every window only once a response has carried the
+    /// rate-limit headers; an event without them (a status change alone)
+    /// keeps the windows the last one had rather than blanking the card.
+    pub fn merged_onto(self, prev: Option<&RateLimitInfo>) -> RateLimitInfo {
+        let Some(prev) = prev else {
+            return self;
+        };
+        if self.has_windows() {
+            return self;
+        }
+        RateLimitInfo {
+            five_hour: prev.five_hour,
+            seven_day: prev.seven_day,
+            seven_day_overage_included: prev.seven_day_overage_included,
+            ..self
+        }
+    }
+
+    /// Whether the report carries any per-window usage.
+    pub fn has_windows(&self) -> bool {
+        self.five_hour.is_some()
+            || self.seven_day.is_some()
+            || self.seven_day_overage_included.is_some()
+    }
+
+    /// The windows to show, in display order. Without per-window usage, the
+    /// limiting window alone, when the report names it.
+    pub fn windows(&self) -> impl Iterator<Item = (RateLimitWindowKind, RateLimitWindow)> {
+        let limiting = if self.has_windows() {
+            None
+        } else {
+            self.limiting.zip(self.utilization).zip(self.resets_at).map(
+                |((kind, utilization), resets_at)| {
+                    (
+                        kind,
+                        RateLimitWindow {
+                            utilization,
+                            resets_at,
+                        },
+                    )
+                },
+            )
+        };
+        [
+            self.five_hour.map(|w| (RateLimitWindowKind::FiveHour, w)),
+            self.seven_day.map(|w| (RateLimitWindowKind::SevenDay, w)),
+            self.seven_day_overage_included
+                .map(|w| (RateLimitWindowKind::SevenDayOverageIncluded, w)),
+            limiting,
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    /// Whether the account is near or over a limit, which the status bar
+    /// flags.
+    pub fn needs_attention(&self) -> bool {
+        matches!(
+            self.status,
+            RateLimitStatus::AllowedWarning | RateLimitStatus::Rejected
+        )
+    }
+}
+
+/// Whether the limiting rate-limit window still lets requests through.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RateLimitStatus {
+    /// Under the limit.
+    #[default]
+    Allowed,
+    /// Under the limit, but close to it.
+    AllowedWarning,
+    /// Over the limit: requests are refused until the window resets.
+    Rejected,
+}
+
+/// One of the account's rate-limit windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateLimitWindowKind {
+    /// The 5-hour session window.
+    FiveHour,
+    /// The weekly window.
+    SevenDay,
+    /// The weekly window for Opus.
+    SevenDayOpus,
+    /// The weekly window for Sonnet.
+    SevenDaySonnet,
+    /// The weekly window including overage.
+    SevenDayOverageIncluded,
+    /// Paid overage usage.
+    Overage,
+}
+
+impl RateLimitWindowKind {
+    /// The kind for the CLI's `rateLimitType` string, if it is one this
+    /// version knows.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        Some(match s {
+            "five_hour" => Self::FiveHour,
+            "seven_day" => Self::SevenDay,
+            "seven_day_opus" => Self::SevenDayOpus,
+            "seven_day_sonnet" => Self::SevenDaySonnet,
+            "seven_day_overage_included" => Self::SevenDayOverageIncluded,
+            "overage" => Self::Overage,
+            _ => return None,
+        })
+    }
+
+    /// Whether the window is a day or longer, so its reset time needs a day.
+    pub fn is_weekly(self) -> bool {
+        !matches!(self, Self::FiveHour)
+    }
+}
+
+/// How much of one rate-limit window is used, and when it resets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RateLimitWindow {
+    /// Fraction of the window used (usually 0-1, can exceed 1).
+    pub utilization: f64,
+    /// When the window resets, in Unix seconds.
+    pub resets_at: u64,
+}
+
 /// Get context window size for a model name.
 /// All current Claude models have 200K context.
 pub fn context_window_for_model(_model: Option<&str>) -> u64 {
@@ -1132,6 +1283,9 @@ pub enum DaveApiResponse {
     /// The session's CLI process started, stopped, or its idle deadline moved
     /// (Claude backend only); the full current state.
     CliState(CliState),
+    /// The account's rate-limit windows moved (Claude backend only). Account
+    /// state, not session state: fold it with [`RateLimitInfo::merged_onto`].
+    RateLimit(RateLimitInfo),
 }
 
 impl Message {

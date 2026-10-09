@@ -6,9 +6,11 @@
 //! to trace back to where it should have come from.
 
 mod overview;
+mod rate_limits;
 mod usage;
 
 pub use overview::SessionFacts;
+pub use rate_limits::rate_limit_pill_ui;
 
 use crate::inspector::{InspectorSection, InspectorView, SessionInspector, SessionTab};
 use crate::ui::DaveAction;
@@ -232,6 +234,9 @@ fn section_body_ui(
     match section {
         InspectorSection::Overview => overview::overview_ui(inspector, facts, view, i18n, ui),
         InspectorSection::Usage => usage::usage_ui(inspector, facts.context_window, i18n, ui),
+        InspectorSection::RateLimits => {
+            rate_limits::rate_limits_ui(inspector, facts.rate_limit.as_ref(), i18n, ui)
+        }
         _ => empty_state_ui(i18n, ui),
     }
 }
