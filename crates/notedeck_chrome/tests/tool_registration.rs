@@ -124,8 +124,16 @@ async fn ui_tools_are_listed_and_reach_their_app_through_chrome() {
     // collects, as the host does at the top of each frame.
     chrome.set_active(slot.slot() as i32);
     let update = notedeck::App::take_tool_update(&mut chrome).expect("the running set changed");
-    assert_eq!(update.ui_tools.len(), 1);
-    assert_eq!(update.ui_tools[0].owner(), slot);
+    // The app's one UI tool, beside the chrome's own.
+    let app_tools: Vec<_> = update
+        .ui_tools
+        .iter()
+        .filter(|entry| entry.owner() == notedeck::ToolOwner::App(slot))
+        .collect();
+    assert_eq!(app_tools.len(), 1);
+    assert!(update.ui_tools.iter().any(|entry| entry.spec().name()
+        == notedeck_chrome::TOGGLE_KEY_HINTS
+        && entry.owner() == notedeck::ToolOwner::Shell));
     notedeck.apply_tool_update(update);
 
     let mut ctx = notedeck.app_context();

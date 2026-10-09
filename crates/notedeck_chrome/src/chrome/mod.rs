@@ -39,6 +39,7 @@ mod header;
 #[cfg(all(test, feature = "headway", not(debug_assertions)))]
 mod headway_nav_tests;
 mod key_dispatch;
+mod key_hints;
 mod keyboard;
 mod nav;
 mod roster;
@@ -50,6 +51,7 @@ mod update;
 pub use actions::ChromePanelAction;
 use actions::PendingOpen;
 use focus::AppFocus;
+pub use key_hints::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
 use keyboard::AnimState;
 use nav::{seed_global_nav, PendingPrune};
 #[cfg(feature = "auto-update")]
@@ -121,6 +123,10 @@ pub struct Chrome {
     /// Resolves bare key presses against the active app's key scopes and the
     /// keymap, before the app renders (see [`Chrome::dispatch_keys`]).
     keys: KeyEngine,
+
+    /// Which apps have their which-key strip pinned open by `?`, one bit per
+    /// app index (see [`Chrome::key_hints_pinned`]).
+    key_hints: [u16; MAX_APPS / 16],
 
     #[cfg(feature = "auto-update")]
     updater: notedeck::updater::Updater,
@@ -330,6 +336,7 @@ impl Chrome {
             pending_prunes: Vec::new(),
             global_nav_in_flight: false,
             keys: KeyEngine::with_default_keymap(),
+            key_hints: [0u16; MAX_APPS / 16],
             #[cfg(feature = "auto-update")]
             updater: notedeck::updater::Updater::new(
                 ctx.path,
@@ -437,14 +444,18 @@ impl notedeck::App for Chrome {
                 .enumerate()
                 .filter(move |(i, _)| bitset_get(&running, *i as u16))
         };
+        // The chrome's own UI tools go first, so no app can take their names.
+        let chrome_tools = key_hints::chrome_ui_tools()
+            .into_iter()
+            .map(notedeck::UiToolEntry::shell);
         Some(notedeck::ToolUpdate {
             tools: running_apps().flat_map(|(_, app)| app.tools()).collect(),
-            ui_tools: running_apps()
-                .flat_map(|(i, app)| {
+            ui_tools: chrome_tools
+                .chain(running_apps().flat_map(|(i, app)| {
                     app.ui_tools()
                         .into_iter()
                         .map(move |spec| notedeck::UiToolEntry::new(spec, notedeck::AppId(i)))
-                })
+                }))
                 .collect(),
         })
     }

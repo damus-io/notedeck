@@ -91,3 +91,20 @@ fn a_frame_with_no_key_press_does_not_allocate() {
         "a frame waiting on a chord allocated {waiting} times"
     );
 }
+
+/// The which-key strip walks the keymap every frame it shows; listing it, the
+/// full table or a chord's continuations, doesn't allocate (the drawing does).
+#[test]
+fn listing_the_which_key_strip_does_not_allocate() {
+    let keymap = keymap::parse(KEYMAP).expect("keymap");
+    let scopes = keymap::Scopes::new(SCOPES);
+    let pending = keymap::KeySeq::parse("g").ok();
+
+    let (shown, counts) = measure(|| {
+        let full = keymap.hints(scopes, None, |_| true).count();
+        let chord = keymap.hints(scopes, pending, |_| true).count();
+        (full, chord)
+    });
+    assert_eq!(shown, (3, 1));
+    assert_eq!(counts.thread.allocs, 0, "listing allocated");
+}

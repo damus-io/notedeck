@@ -92,3 +92,139 @@ pub fn keybind_hint(ui: &mut Ui, text: &str) -> Response {
 pub fn paint_keybind_hint(ui: &Ui, center: Pos2, text: &str, size: f32) {
     KeybindHint::new(text).size(size).paint_at(ui, center);
 }
+
+/// Height of a keycap in a which-key strip ([`key_hints_ui`]).
+pub const KEYCAP: f32 = 18.0;
+
+/// Extra keycap width per character past the first, so `gg` and `esc` fit.
+pub const KEYCAP_PER_CHAR: f32 = 8.0;
+
+/// Width of the keycap for `key`: [`KEYCAP`] square, widened by
+/// [`KEYCAP_PER_CHAR`] for each character past the first.
+pub fn keycap_width(key: &str) -> f32 {
+    let extra_chars = key.chars().count().saturating_sub(1) as f32;
+    KEYCAP + extra_chars * KEYCAP_PER_CHAR
+}
+
+/// Width a hint takes in a row: its `keys`' keycaps and a label `label_width`
+/// wide, with an `item_gap` after each keycap. The measure [`key_hints_ui`]
+/// wraps on; it lays the hint out from [`keycap_width`] too, so the two agree.
+fn hint_width<'a>(keys: impl IntoIterator<Item = &'a str>, label_width: f32, item_gap: f32) -> f32 {
+    keys.into_iter()
+        .map(|key| keycap_width(key) + item_gap)
+        .sum::<f32>()
+        + label_width
+}
+
+/// Draw a which-key strip: rows of hints, each a run of keycaps followed by its
+/// label in `label_color`, [`SPACING_MD`](notedeck::tokens::SPACING_MD) apart.
+/// A hint is a `(keycaps, label)` pair; keys that share a job share a hint
+/// (`j k  up/down`).
+///
+/// A hint is measured before it is placed and starts a new row if it won't fit
+/// what's left of this one, so a narrow pane wraps whole hints and never splits
+/// a keycap from its label. (egui can't do this by itself: it places a nested
+/// `horizontal` before knowing its width, so the hint would run off the right
+/// edge instead.) Walks `hints` once, lays each label out once, and collects
+/// nothing, so the caller can hand it a lazy iterator over its own tables.
+pub fn key_hints_ui<'a, K>(
+    ui: &mut Ui,
+    label_color: egui::Color32,
+    hints: impl IntoIterator<Item = (K, &'a str)>,
+) where
+    K: IntoIterator<Item = &'a str> + Clone,
+{
+    let gap = notedeck::tokens::SPACING_MD;
+    ui.horizontal_wrapped(|ui| {
+        let item_gap = ui.spacing().item_spacing.x;
+        for (i, (keys, label)) in hints.into_iter().enumerate() {
+            let label = egui::WidgetText::from(egui::RichText::new(label).color(label_color))
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Body,
+                );
+            let width = hint_width(keys.clone(), label.size().x, item_gap);
+            if i > 0 {
+                if gap + item_gap + width > ui.available_size_before_wrap().x {
+                    ui.end_row();
+                } else {
+                    ui.add_space(gap);
+                }
+            }
+            ui.horizontal(|ui| {
+                for key in keys {
+                    KeybindHint::new(key)
+                        .size(KEYCAP)
+                        .width(keycap_width(key))
+                        .show(ui);
+                }
+                ui.label(label);
+            });
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::kittest::{NodeT, Queryable};
+    use egui_kittest::Harness;
+
+    /// Hints wide enough together that a narrow strip can't hold them on one row.
+    const HINTS: &[(&[&str], &str)] = &[
+        (&["j", "k"], "up/down"),
+        (&["h", "l"], "columns"),
+        (&["gg", "G"], "first/last"),
+        (&["esc"], "clear"),
+    ];
+
+    /// Draw [`HINTS`] in a strip `width` wide and return, per label, its box's
+    /// left, top and right edges.
+    fn label_boxes(width: f32) -> Vec<(f64, f64, f64)> {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(width, 200.0))
+            .build_ui(|ui| {
+                let hints = HINTS
+                    .iter()
+                    .map(|(keys, label)| (keys.iter().copied(), *label));
+                key_hints_ui(ui, egui::Color32::GRAY, hints);
+            });
+        harness.run();
+        HINTS
+            .iter()
+            .map(|(_, label)| {
+                let bb = harness
+                    .get_by_label(label)
+                    .accesskit_node()
+                    .bounding_box()
+                    .expect("a hint label has a box");
+                (bb.x0, bb.y0, bb.x1)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_wide_strip_is_one_row() {
+        let boxes = label_boxes(1000.0);
+        assert!(boxes.windows(2).all(|w| w[0].1 == w[1].1), "{boxes:?}");
+    }
+
+    /// Ported from headway's `review_queue_key_hints_wrap_on_a_narrow_pane`:
+    /// on a narrow strip whole hints wrap onto new rows, and every label still
+    /// ends inside the strip.
+    #[test]
+    fn a_narrow_strip_wraps_whole_hints() {
+        let width = 160.0;
+        let boxes = label_boxes(width);
+        assert!(
+            boxes.windows(2).any(|w| w[1].1 > w[0].1),
+            "wrapped: {boxes:?}"
+        );
+        for (left, _, right) in &boxes {
+            assert!(*right <= width as f64, "{boxes:?} runs past {width}");
+            assert!(*left >= 0.0);
+        }
+    }
+}

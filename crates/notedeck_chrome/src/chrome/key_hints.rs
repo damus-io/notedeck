@@ -1,0 +1,131 @@
+//! The which-key strip: a row of keycaps along the bottom of the app area,
+//! generated from the keymap for the active app's key scopes (see
+//! [`Keymap::hints`](crate::keymap::Keymap::hints)).
+//!
+//! It shows itself while a chord is pending, listing what can finish it, and
+//! otherwise the whole table once `?` ([`TOGGLE_KEY_HINTS`]) pins it, per app.
+//! Both are the chrome's own UI tools, owned by the shell rather than an app.
+
+use super::{Chrome, MAX_APPS};
+use crate::keymap::{Hint, Scopes};
+use notedeck::{App, AppContext, ToolOutcome, ToolRegistry, ToolSpec};
+use oot_bitset::{bitset_clear, bitset_get, bitset_set};
+
+/// Pins or unpins the active app's which-key strip. Bound to `?`.
+pub const TOGGLE_KEY_HINTS: &str = "chrome_toggle_key_hints";
+
+/// Unpins the active app's which-key strip; only available while it is pinned,
+/// so its key (Esc) falls through otherwise.
+pub const HIDE_KEY_HINTS: &str = "chrome_hide_key_hints";
+
+/// The chrome's own UI tools, for the host's tool registry.
+pub(super) fn chrome_ui_tools() -> [ToolSpec; 2] {
+    [
+        ToolSpec::new(
+            TOGGLE_KEY_HINTS,
+            "Show or hide the which-key strip listing the active app's key bindings.",
+            Vec::new(),
+        ),
+        ToolSpec::new(
+            HIDE_KEY_HINTS,
+            "Hide the which-key strip, if it is showing.",
+            Vec::new(),
+        ),
+    ]
+}
+
+impl Chrome {
+    /// Run the chrome's own UI tool `name`, or `None` when `name` isn't one.
+    pub(super) fn call_chrome_tool(&mut self, name: &str) -> Option<ToolOutcome> {
+        let pinned = self.key_hints_pinned();
+        let pin = match name {
+            TOGGLE_KEY_HINTS => !pinned,
+            HIDE_KEY_HINTS => false,
+            _ => return None,
+        };
+        let Some(slot) = self.active_slot() else {
+            return Some(ToolOutcome::Error("no app is active".to_owned()));
+        };
+        if pin {
+            bitset_set(&mut self.key_hints, slot as u16);
+        } else {
+            bitset_clear(&mut self.key_hints, slot as u16);
+        }
+        Some(ToolOutcome::Data(serde_json::json!({ "shown": pin })))
+    }
+
+    /// Whether the chrome's own UI tool `name` would do something now, or
+    /// `None` when `name` isn't one. The strip only lists the keymap's
+    /// bindings, so `?` is only taken in an app that reports key scopes; any
+    /// other app keeps the key.
+    pub(super) fn chrome_tool_available(&self, name: &str) -> Option<bool> {
+        match name {
+            TOGGLE_KEY_HINTS => Some(
+                self.apps
+                    .get(self.active as usize)
+                    .is_some_and(|app| !app.key_scopes().is_empty()),
+            ),
+            HIDE_KEY_HINTS => Some(self.key_hints_pinned()),
+            _ => None,
+        }
+    }
+
+    /// Whether `?` has pinned the active app's which-key strip open.
+    pub fn key_hints_pinned(&self) -> bool {
+        self.active_slot()
+            .is_some_and(|slot| bitset_get(&self.key_hints, slot as u16))
+    }
+
+    /// The active app's slot, if it is one the bitsets can track.
+    fn active_slot(&self) -> Option<usize> {
+        usize::try_from(self.active)
+            .ok()
+            .filter(|&slot| slot < MAX_APPS)
+    }
+
+    /// What the which-key strip shows this frame, or `None` when it's
+    /// hidden: the keys that finish a pending chord, else, if `?` pinned it,
+    /// every key the active app's scopes bind to an available tool. `tools` is
+    /// the host's registry, for whether an app's tool is available. Lazy;
+    /// allocates nothing.
+    pub fn key_hints<'a>(
+        &'a self,
+        tools: &'a ToolRegistry,
+    ) -> Option<impl Iterator<Item = Hint<'a>> + Clone + 'a> {
+        let pending = self.keys.pending();
+        if pending.is_none() && !self.key_hints_pinned() {
+            return None;
+        }
+        let app = self.apps.get(self.active as usize)?;
+        let scopes = Scopes::new(app.key_scopes());
+        let available = move |name: &str| self.ui_tool_available(tools, name);
+        Some(self.keys.keymap().hints(scopes, pending, available))
+    }
+
+    /// Draw the which-key strip ([`key_hints`](Self::key_hints)) along the
+    /// bottom of `ui`, taking its height from what the app below gets. Does
+    /// nothing, and allocates nothing, when there is nothing to show.
+    #[profiling::function]
+    pub(super) fn key_hints_ui(&self, ctx: &AppContext, ui: &mut egui::Ui) {
+        let Some(hints) = self.key_hints(&ctx.registries.tools) else {
+            return;
+        };
+        if hints.clone().next().is_none() {
+            return;
+        }
+
+        let muted = notedeck::ColorTheme::current(ui.ctx()).text_muted;
+        let margin = notedeck::tokens::SPACING_MD as i8;
+        egui::Panel::bottom("chrome-key-hints")
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(ui.visuals().panel_fill)
+                    .inner_margin(egui::Margin::same(margin)),
+            )
+            .show(ui, |ui| {
+                let hints = hints.map(|hint| (hint.keycap_iter(), hint.label));
+                notedeck_ui::keybind_hint::key_hints_ui(ui, muted, hints);
+            });
+    }
+}

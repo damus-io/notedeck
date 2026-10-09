@@ -32,7 +32,7 @@ use notedeck::ToolInvocation;
 use serde::Deserialize;
 
 use super::keys::{KeyParseError, KeySeq};
-use super::{BindAction, Binding, Keymap, Macro, MacroStep, Scope};
+use super::{BindAction, Binding, GroupRun, Keymap, Macro, MacroStep, Scope};
 
 /// The file as written.
 #[derive(Deserialize)]
@@ -193,12 +193,17 @@ pub fn parse(src: &str) -> Result<Keymap, KeymapError> {
             action,
             label: bind.label,
             group: bind.group,
+            order: i,
+            keycaps: (0..keys.as_slice().len())
+                .map(|from| keys.keycap(from))
+                .collect(),
         };
         match scopes.iter_mut().find(|s| s.name == bind.scope) {
             Some(scope) => scope.bindings.push(binding),
             None => scopes.push(Scope {
                 name: bind.scope,
                 bindings: vec![binding],
+                groups: Vec::new(),
             }),
         }
     }
@@ -211,6 +216,7 @@ pub fn parse(src: &str) -> Result<Keymap, KeymapError> {
             .bindings
             .sort_by(|a, b| a.keys.as_slice().cmp(b.keys.as_slice()));
         drop_shadowed(scope, &mut warnings);
+        scope.groups = group_runs(&scope.bindings);
     }
     for warning in &warnings {
         tracing::warn!("keymap: {warning}");
@@ -245,6 +251,26 @@ fn drop_shadowed(scope: &mut Scope, warnings: &mut Vec<String>) {
         }
     }
     scope.bindings = kept;
+}
+
+/// The which-key groups of a scope's `bindings`: one run per `group`, in the
+/// order the file first names each, members in file order.
+fn group_runs(bindings: &[Binding]) -> Vec<GroupRun> {
+    let mut by_file: Vec<usize> = (0..bindings.len()).collect();
+    by_file.sort_by_key(|&i| bindings[i].order);
+
+    let mut runs: Vec<GroupRun> = Vec::new();
+    for i in by_file {
+        let name = bindings[i].group.as_deref();
+        match runs.iter_mut().find(|run| run.name.as_deref() == name) {
+            Some(run) => run.members.push(i),
+            None => runs.push(GroupRun {
+                name: name.map(str::to_owned),
+                members: vec![i],
+            }),
+        }
+    }
+    runs
 }
 
 /// A binding's or step's `args` table as the tool's JSON args; `{}` when

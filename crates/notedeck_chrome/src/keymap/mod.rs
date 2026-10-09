@@ -10,12 +10,15 @@
 //!
 //! The keymap is TOML ([`parse`] has the format), parsed once into a
 //! [`Keymap`] whose lookups don't allocate. The built-in bindings live in
-//! [`DEFAULT_KEYMAP`] (`default_keymap.toml`).
+//! [`DEFAULT_KEYMAP`] (`default_keymap.toml`). After the app's scopes comes
+//! [`GLOBAL_SCOPE`], for the chrome's own bindings (`?` for the which-key
+//! strip), which [`Keymap::hints`] draws from the same bindings.
 //!
 //! Text-field keys stay with the apps: the engine does nothing while a widget
 //! has keyboard focus, a popup is open or a drag is under way (see
 //! [`notedeck_ui::chord::focus_taken`]).
 
+mod hints;
 pub mod keys;
 mod parse;
 
@@ -24,11 +27,53 @@ use std::collections::BTreeMap;
 use notedeck::ToolInvocation;
 use notedeck_ui::chord::{self, ChordState};
 
+pub use hints::{Hint, MAX_HINT_KEYS};
 pub use keys::{KeyParseError, KeySeq, KeyStroke, Mods, MAX_SEQ};
 pub use parse::{parse, BindProblem, KeymapError};
 
-/// The built-in keymap, compiled in. Empty until the apps' bindings move into
-/// it; a user's overrides will be merged over it.
+/// The scope searched after every app's own: the chrome's bindings, live in
+/// any app.
+pub const GLOBAL_SCOPE: &str = "global";
+
+/// The scopes a key is resolved in, most specific first: the active app's
+/// [key scopes](notedeck::App::key_scopes), then [`GLOBAL_SCOPE`]. `Copy`, and
+/// walking it doesn't allocate.
+#[derive(Clone, Copy, Debug)]
+pub struct Scopes<'a> {
+    /// The app's scopes, most specific first.
+    app: &'a [&'a str],
+}
+
+impl<'a> Scopes<'a> {
+    /// The app's `scopes`, then [`GLOBAL_SCOPE`].
+    pub fn new(app: &'a [&'a str]) -> Self {
+        Self { app }
+    }
+
+    /// How many scopes there are, the global one included.
+    fn len(self) -> usize {
+        self.app.len() + 1
+    }
+
+    /// The scope at `index`, most specific first.
+    fn get(self, index: usize) -> Option<&'a str> {
+        match self.app.get(index) {
+            Some(scope) => Some(scope),
+            None => (index == self.app.len()).then_some(GLOBAL_SCOPE),
+        }
+    }
+
+    /// The scopes in order.
+    fn iter(self) -> impl Iterator<Item = &'a str> + Clone {
+        self.app
+            .iter()
+            .copied()
+            .chain(std::iter::once(GLOBAL_SCOPE))
+    }
+}
+
+/// The built-in keymap, compiled in: the chrome's global bindings, with the
+/// apps' to follow as they move in; a user's overrides will be merged over it.
 pub const DEFAULT_KEYMAP: &str = include_str!("default_keymap.toml");
 
 /// A parsed keymap: bindings grouped by scope, plus the named macros.
@@ -50,6 +95,26 @@ struct Scope {
     name: String,
     /// Sorted by key sequence; bindings of the same keys keep file order.
     bindings: Vec<Binding>,
+    /// The bindings as the which-key strip lists them: by `group` in the
+    /// order the file first names each, then in file order. Built once at
+    /// load, so the strip never sorts.
+    groups: Vec<GroupRun>,
+}
+
+/// One which-key group of a [`Scope`].
+#[derive(Debug)]
+struct GroupRun {
+    /// The `group` its bindings share; `None` for the ungrouped.
+    name: Option<String>,
+    /// Indices into the scope's `bindings`, in file order.
+    members: Vec<usize>,
+}
+
+impl Scope {
+    /// Its run of the group `name`, if it has bindings in it.
+    fn group(&self, name: Option<&str>) -> Option<&GroupRun> {
+        self.groups.iter().find(|run| run.name.as_deref() == name)
+    }
 }
 
 /// One key sequence bound to something in a scope.
@@ -63,6 +128,28 @@ pub struct Binding {
     pub label: Option<String>,
     /// Its which-key group.
     pub group: Option<String>,
+    /// Its position in the file, for the which-key strip's order.
+    order: usize,
+    /// The which-key keycap of `keys` from each stroke on (`gg`, then `g`),
+    /// so the strip can show what's left of a chord without formatting.
+    keycaps: Vec<String>,
+}
+
+impl Binding {
+    /// Whether it would run now: its tool is `available`. Whether a macro can
+    /// run is its runner's call, so a macro binding always is.
+    fn ready(&self, available: &impl Fn(&str) -> bool) -> bool {
+        match &self.action {
+            BindAction::Tool(invocation) => available(&invocation.name),
+            BindAction::Macro(_) => true,
+        }
+    }
+
+    /// The which-key keycap of the keys left after the first `typed`: `gg`
+    /// for 0, `g` for 1 of `g g`. Empty when `typed` covers them all.
+    pub fn keycap(&self, typed: usize) -> &str {
+        self.keycaps.get(typed).map_or("", String::as_str)
+    }
 }
 
 /// What a binding triggers.
@@ -109,7 +196,7 @@ impl Keymap {
 
     /// What `keys` is in `scope`. Allocation-free.
     pub fn lookup(&self, scope: &str, keys: &[KeyStroke]) -> Match<'_> {
-        let Some(scope) = self.scopes.iter().find(|s| s.name == scope) else {
+        let Some(scope) = self.scope(scope) else {
             return Match::None;
         };
         let bindings = &scope.bindings;
@@ -125,6 +212,11 @@ impl Keymap {
             Some(next) if next.keys.as_slice().starts_with(keys) => Match::Prefix,
             _ => Match::None,
         }
+    }
+
+    /// The bindings of the scope called `name`.
+    fn scope(&self, name: &str) -> Option<&Scope> {
+        self.scopes.iter().find(|scope| scope.name == name)
     }
 
     /// The macro called `name`.
@@ -204,8 +296,9 @@ impl KeyEngine {
         self.chord.pending()
     }
 
-    /// Resolve this frame's key press against `scopes` (most specific first),
-    /// asking `available` whether a bound tool does anything right now.
+    /// Resolve this frame's key press against the app's `scopes` (most
+    /// specific first) and then [`GLOBAL_SCOPE`], asking `available` whether a
+    /// bound tool does anything right now.
     ///
     /// Does nothing while focus is taken (a text field, popup or drag). A press
     /// that completes a binding is swallowed and returned; one that starts or
@@ -221,7 +314,8 @@ impl KeyEngine {
         available: impl Fn(&str) -> bool,
     ) -> Option<KeyDispatch<'_>> {
         let pending = self.chord.tick(ctx);
-        if scopes.is_empty() || chord::focus_taken(ctx) {
+        let scopes = Scopes::new(scopes);
+        if chord::focus_taken(ctx) {
             self.chord.clear();
             return None;
         }
@@ -229,11 +323,17 @@ impl KeyEngine {
 
         let fresh = KeySeq::single(stroke);
         let (seq, found) = match pending.and_then(|prefix| prefix.pushed(stroke)) {
-            Some(seq) => match find(&self.keymap, scopes, &seq, &available) {
-                Found::None => (fresh, find(&self.keymap, scopes, &fresh, &available)),
+            Some(seq) => match find(&self.keymap, scopes, seq.as_slice(), &available) {
+                Found::None => (
+                    fresh,
+                    find(&self.keymap, scopes, fresh.as_slice(), &available),
+                ),
                 found => (seq, found),
             },
-            None => (fresh, find(&self.keymap, scopes, &fresh, &available)),
+            None => (
+                fresh,
+                find(&self.keymap, scopes, fresh.as_slice(), &available),
+            ),
         };
 
         match found {
@@ -264,18 +364,14 @@ impl KeyEngine {
 /// anything in a later one.
 fn find<'a>(
     keymap: &'a Keymap,
-    scopes: &[&str],
-    seq: &KeySeq,
+    scopes: Scopes<'_>,
+    seq: &[KeyStroke],
     available: &impl Fn(&str) -> bool,
 ) -> Found<'a> {
-    for scope in scopes {
-        match keymap.lookup(scope, seq.as_slice()) {
+    for scope in scopes.iter() {
+        match keymap.lookup(scope, seq) {
             Match::Exact(bindings) => {
-                let ready = bindings.iter().find(|b| match &b.action {
-                    BindAction::Tool(invocation) => available(&invocation.name),
-                    // Whether a macro can run is its runner's call.
-                    BindAction::Macro(_) => true,
-                });
+                let ready = bindings.iter().find(|b| b.ready(available));
                 if let Some(binding) = ready {
                     return Found::Fire(binding);
                 }

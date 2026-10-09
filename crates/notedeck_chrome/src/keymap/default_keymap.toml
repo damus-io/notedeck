@@ -2,5 +2,20 @@
 # to a UI tool (or a [macro.<name>]); see crates/notedeck_chrome/src/keymap/parse.rs
 # for the format and keys.rs for the key syntax.
 #
-# Empty for now: the apps still read their own keys, and their bindings move
-# here one app at a time.
+# The "global" scope is searched after the active app's own scopes, so an app
+# binding of the same keys wins. The apps' bindings move in here one app at a
+# time; until then they read their own keys.
+
+[[bind]]
+scope = "global"
+keys  = "?"
+tool  = "chrome_toggle_key_hints"
+label = "keys"
+group = "help"
+
+[[bind]]
+scope = "global"
+keys  = "<Esc>"
+tool  = "chrome_hide_key_hints"
+label = "hide keys"
+group = "help"

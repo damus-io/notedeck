@@ -34,10 +34,8 @@
 use egui::{Key, Modifiers};
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
-use notedeck::tokens::SPACING_MD;
 use notedeck_ui::chord::{self, KeyPress};
 use notedeck_ui::diff::PatchScroll;
-use notedeck_ui::keybind_hint::KeybindHint;
 
 use crate::cursor::{self, CursorMove, Side, Vertical};
 use crate::event::BoardView;
@@ -432,12 +430,6 @@ const PANE_G_STRIP: HintStrip = &[&[KeyHint {
     label: "top",
 }]];
 
-/// Height of a keycap in the strip.
-const KEYCAP: f32 = 18.0;
-
-/// Extra keycap width per character past the first, so `gg` and `esc` fit.
-const KEYCAP_PER_CHAR: f32 = 8.0;
-
 /// The grid's strip this frame, or `None` to leave it out: the `g`
 /// continuation while a `g` is pending, else [`BOARD_STRIP`] if `?` pinned
 /// it. Read after [`board_keys`], so it reflects this frame's key.
@@ -467,59 +459,15 @@ pub(crate) fn pane_key_hints(state: &BoardUiState) -> Option<HintStrip> {
     })
 }
 
-/// Width of the keycap for `key`: [`KEYCAP`] square, widened by
-/// [`KEYCAP_PER_CHAR`] for each character past the first.
-fn keycap_width(key: &str) -> f32 {
-    let extra_chars = key.chars().count().saturating_sub(1) as f32;
-    KEYCAP + extra_chars * KEYCAP_PER_CHAR
-}
-
-/// Width `hint`'s group takes in a row: its keycaps and a label `label_width`
-/// wide, with an `item_gap` after each keycap. The measure [`key_hints_ui`]
-/// wraps on; it lays the group out from [`keycap_width`] too, so the two agree.
-fn hint_group_width(hint: &KeyHint, label_width: f32, item_gap: f32) -> f32 {
-    let caps: f32 = hint.keys.iter().map(|key| keycap_width(key)).sum();
-    caps + item_gap * hint.keys.len() as f32 + label_width
-}
-
-/// Draw `strip` as rows of keycap groups, each keycap run followed by its muted
-/// label, [`SPACING_MD`] apart. A group is measured before it is placed and
-/// starts a new row if it won't fit what's left of this one, so a narrow pane
-/// wraps whole groups and never splits a keycap from its label. (egui can't do
-/// this by itself: it places a nested `horizontal` before knowing its width,
-/// so the group would run off the right edge instead.) Walks the static tables
-/// and lays each label out once.
+/// Draw `strip` with the shared which-key drawer
+/// ([`notedeck_ui::keybind_hint::key_hints_ui`]), its tables one run, labels
+/// muted.
 pub(crate) fn key_hints_ui(ui: &mut egui::Ui, theme: &ColorTheme, strip: HintStrip) {
-    ui.horizontal_wrapped(|ui| {
-        let item_gap = ui.spacing().item_spacing.x;
-        for (i, hint) in strip.iter().flat_map(|table| table.iter()).enumerate() {
-            let label =
-                egui::WidgetText::from(egui::RichText::new(hint.label).color(theme.text_muted))
-                    .into_galley(
-                        ui,
-                        Some(egui::TextWrapMode::Extend),
-                        f32::INFINITY,
-                        egui::TextStyle::Body,
-                    );
-            let width = hint_group_width(hint, label.size().x, item_gap);
-            if i > 0 {
-                if SPACING_MD + item_gap + width > ui.available_size_before_wrap().x {
-                    ui.end_row();
-                } else {
-                    ui.add_space(SPACING_MD);
-                }
-            }
-            ui.horizontal(|ui| {
-                for &key in hint.keys {
-                    KeybindHint::new(key)
-                        .size(KEYCAP)
-                        .width(keycap_width(key))
-                        .show(ui);
-                }
-                ui.label(label);
-            });
-        }
-    });
+    let hints = strip
+        .iter()
+        .flat_map(|table| table.iter())
+        .map(|hint| (hint.keys.iter().copied(), hint.label));
+    notedeck_ui::keybind_hint::key_hints_ui(ui, theme.text_muted, hints);
 }
 
 /// Read this frame's bare key press and apply it to the grid. Runs before the

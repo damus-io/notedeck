@@ -247,6 +247,42 @@ impl fmt::Display for KeyStroke {
     }
 }
 
+impl KeyStroke {
+    /// Whether the stroke's keycap is one bare character, so a run of them
+    /// reads as one word (`gg`, `]q`) without spaces between.
+    fn is_bare_glyph(&self) -> bool {
+        key_glyph(self.key).is_some() && self.mods.without(Mods::SHIFT) == Mods::NONE
+    }
+
+    /// Append the stroke as a which-key keycap: what [`fmt::Display`] writes,
+    /// in the strip's shorter hand — `^f` for Ctrl+F, `esc`, `space`, `↵` for
+    /// Enter, a capital for a shifted letter.
+    fn write_keycap(&self, out: &mut String) {
+        if self.mods.contains(Mods::CTRL) {
+            out.push('^');
+        }
+        let glyph = key_glyph(self.key);
+        let shifted_letter =
+            glyph.is_some_and(|c| c.is_ascii_alphabetic()) && self.mods.contains(Mods::SHIFT);
+        for (bit, prefix) in [(Mods::SHIFT, "S-"), (Mods::ALT, "A-"), (Mods::CMD, "D-")] {
+            if self.mods.contains(bit) && !(bit == Mods::SHIFT && shifted_letter) {
+                out.push_str(prefix);
+            }
+        }
+        match (glyph, self.key) {
+            (Some(c), _) if shifted_letter => out.push(c.to_ascii_uppercase()),
+            (Some(c), _) => out.push(c),
+            (None, Key::Enter) => out.push('\u{21B5}'),
+            (None, Key::Escape) => out.push_str("esc"),
+            (None, Key::ArrowUp) => out.push_str("up"),
+            (None, Key::ArrowDown) => out.push_str("down"),
+            (None, Key::ArrowLeft) => out.push_str("left"),
+            (None, Key::ArrowRight) => out.push_str("right"),
+            (None, key) => out.push_str(&key.name().to_ascii_lowercase()),
+        }
+    }
+}
+
 /// The one ASCII character a key is written as, lowercase for letters, or
 /// `None` for a key written by name (`<Enter>`, `<Up>`).
 fn key_glyph(key: Key) -> Option<char> {
@@ -319,6 +355,23 @@ impl KeySeq {
         *slot = stroke;
         self.len += 1;
         Some(self)
+    }
+
+    /// The keys from stroke `from` on as a which-key keycap: one word when
+    /// every stroke is a bare character (`gg`, `]q`), else space-separated
+    /// (`^w j`); see [`KeyStroke`]'s keycap form for each stroke. Empty when
+    /// `from` is past the end. Built once per binding when a keymap loads.
+    pub fn keycap(&self, from: usize) -> String {
+        let strokes = self.as_slice().get(from..).unwrap_or_default();
+        let spaced = !strokes.iter().all(KeyStroke::is_bare_glyph);
+        let mut out = String::new();
+        for (i, stroke) in strokes.iter().enumerate() {
+            if spaced && i > 0 {
+                out.push(' ');
+            }
+            stroke.write_keycap(&mut out);
+        }
+        out
     }
 
     /// A one-stroke sequence.
@@ -583,5 +636,30 @@ mod tests {
         let b = KeySeq::parse("j").expect("parse");
         assert_eq!(a, b);
         assert_ne!(a, a.pushed(stroke("j")).expect("room"));
+    }
+
+    #[test]
+    fn keycaps_are_the_strips_short_hand() {
+        let keycap = |text: &str| KeySeq::parse(text).expect("parse").keycap(0);
+        assert_eq!(keycap("j"), "j");
+        assert_eq!(keycap("g g"), "gg");
+        assert_eq!(keycap("G"), "G");
+        assert_eq!(keycap("] q"), "]q");
+        assert_eq!(keycap("?"), "?");
+        assert_eq!(keycap("<C-f>"), "^f");
+        assert_eq!(keycap("<Esc>"), "esc");
+        assert_eq!(keycap("<Space>"), "space");
+        assert_eq!(keycap("<Enter>"), "\u{21B5}");
+        assert_eq!(keycap("<S-Space>"), "S-space");
+        assert_eq!(keycap("<C-w> j"), "^w j");
+        assert_eq!(keycap("<Up>"), "up");
+    }
+
+    #[test]
+    fn a_keycap_can_start_partway_through() {
+        let seq = KeySeq::parse("g g").expect("parse");
+        assert_eq!(seq.keycap(1), "g");
+        assert_eq!(seq.keycap(2), "");
+        assert_eq!(seq.keycap(9), "");
     }
 }

@@ -6,7 +6,7 @@
 use super::Chrome;
 use egui::ThemePreference;
 use nostrdb::Transaction;
-use notedeck::{App, AppAction, AppContext, ToolInvocation, ToolOutcome, WalletType};
+use notedeck::{App, AppAction, AppContext, ToolInvocation, ToolOutcome, ToolOwner, WalletType};
 use notedeck_columns::timeline::TimelineKind;
 
 pub enum ChromePanelAction {
@@ -330,9 +330,11 @@ fn route_open(
 
 impl Chrome {
     /// Run a UI tool in the app that owns it — the one entry point for key
-    /// bindings, macros and [`AppAction::CallTool`]. The owner comes from the
-    /// host's [`ToolRegistry`](notedeck::ToolRegistry). The tool runs whether or
-    /// not its app is in front; switching to it first is the caller's choice.
+    /// bindings, macros and [`AppAction::CallTool`]. The chrome's own tools
+    /// (`chrome_*`, e.g. [`TOGGLE_KEY_HINTS`](super::TOGGLE_KEY_HINTS)) run
+    /// here; any other's owner comes from the host's
+    /// [`ToolRegistry`](notedeck::ToolRegistry). The tool runs whether or not
+    /// its app is in front; switching to it first is the caller's choice.
     ///
     /// Returns the app's outcome, or an [`Error`](ToolOutcome::Error) when no
     /// running app owns `invocation.name`. An [`Intent`](ToolOutcome::Intent) it
@@ -343,7 +345,10 @@ impl Chrome {
         invocation: &ToolInvocation,
     ) -> ToolOutcome {
         let name = invocation.name.as_str();
-        let Some(owner) = ctx.registries.tools.ui_owner(name) else {
+        if let Some(outcome) = self.call_chrome_tool(name) {
+            return outcome;
+        }
+        let Some(ToolOwner::App(owner)) = ctx.registries.tools.ui_owner(name) else {
             return ToolOutcome::Error(format!("unknown UI tool '{name}'"));
         };
         // The registry is rebuilt a frame after an app closes, so it can still
@@ -362,7 +367,10 @@ impl Chrome {
     /// it in `tools` and says it's [available](App::ui_tool_available). A key
     /// bound to a tool that isn't falls through. Doesn't allocate.
     pub fn ui_tool_available(&self, tools: &notedeck::ToolRegistry, name: &str) -> bool {
-        let Some(owner) = tools.ui_owner(name) else {
+        if let Some(available) = self.chrome_tool_available(name) {
+            return available;
+        }
+        let Some(ToolOwner::App(owner)) = tools.ui_owner(name) else {
             return false;
         };
         let slot = owner.slot();

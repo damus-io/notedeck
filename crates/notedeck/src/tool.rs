@@ -258,13 +258,23 @@ impl ToolInvocation {
     }
 }
 
-/// A registered [`ToolKind::Ui`] tool: its spec and the app slot that runs it.
-/// The registry can't call a UI tool itself (it needs the app's `&mut self`), so
-/// it keeps only enough to advertise it and to tell the shell where it goes.
+/// Who runs a [`ToolKind::Ui`] tool: an app, or the shell around the apps
+/// (the chrome's own tools, like toggling its which-key strip).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolOwner {
+    /// The app in this slot.
+    App(AppId),
+    /// The shell itself.
+    Shell,
+}
+
+/// A registered [`ToolKind::Ui`] tool: its spec and who runs it. The registry
+/// can't call a UI tool itself (it needs its owner's `&mut self`), so it keeps
+/// only enough to advertise it and to tell the shell where it goes.
 #[derive(Debug, Clone)]
 pub struct UiToolEntry {
     spec: ToolSpec,
-    owner: AppId,
+    owner: ToolOwner,
 }
 
 impl UiToolEntry {
@@ -273,7 +283,15 @@ impl UiToolEntry {
     pub fn new(spec: ToolSpec, owner: AppId) -> Self {
         Self {
             spec: spec.ui(),
-            owner,
+            owner: ToolOwner::App(owner),
+        }
+    }
+
+    /// Register `spec` as a UI tool the shell runs itself.
+    pub fn shell(spec: ToolSpec) -> Self {
+        Self {
+            spec: spec.ui(),
+            owner: ToolOwner::Shell,
         }
     }
 
@@ -282,8 +300,8 @@ impl UiToolEntry {
         &self.spec
     }
 
-    /// The app slot that runs this tool.
-    pub fn owner(&self) -> AppId {
+    /// Who runs this tool.
+    pub fn owner(&self) -> ToolOwner {
         self.owner
     }
 }
@@ -382,9 +400,9 @@ impl ToolRegistry {
         self.by_name.contains_key(name)
     }
 
-    /// The app slot that runs the UI tool `name`, or `None` when `name` is not a
-    /// registered UI tool.
-    pub fn ui_owner(&self, name: &str) -> Option<AppId> {
+    /// Who runs the UI tool `name`, or `None` when `name` is not a registered
+    /// UI tool.
+    pub fn ui_owner(&self, name: &str) -> Option<ToolOwner> {
         match self.by_name.get(name)? {
             ToolSlot::Ui(idx) => Some(self.ui_tools[*idx].owner),
             ToolSlot::Data(_) => None,
@@ -540,7 +558,10 @@ mod tests {
             kinds,
             vec![("echo", ToolKind::Data), ("test_cursor_down", ToolKind::Ui)]
         );
-        assert_eq!(reg.ui_owner("test_cursor_down"), Some(AppId(3)));
+        assert_eq!(
+            reg.ui_owner("test_cursor_down"),
+            Some(ToolOwner::App(AppId(3)))
+        );
         // A data tool has no owner app to route to.
         assert_eq!(reg.ui_owner("echo"), None);
         assert_eq!(reg.ui_owner("nope"), None);
@@ -575,7 +596,7 @@ mod tests {
         reg.register(RegisteredTool::new(Echo));
         let kinds: Vec<_> = reg.specs().map(|s| s.kind()).collect();
         assert_eq!(kinds, vec![ToolKind::Ui]);
-        assert_eq!(reg.ui_owner("echo"), Some(AppId(1)));
+        assert_eq!(reg.ui_owner("echo"), Some(ToolOwner::App(AppId(1))));
 
         // ...and a data tool registered first keeps it against a UI tool.
         let mut reg = ToolRegistry::default();
