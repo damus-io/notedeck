@@ -1836,7 +1836,7 @@ mod tests {
     }
 
     /// Clicking Details swaps the chat for the rail and the section cards
-    /// (the eight without a view yet are stubs); clicking Chat brings the
+    /// (the seven without a view yet are stubs); clicking Chat brings the
     /// input box back.
     #[test]
     fn details_tab_shows_every_section_and_chat_brings_the_input_back() {
@@ -1858,7 +1858,8 @@ mod tests {
         harness.get_by_label("Details").click_accesskit();
         harness.run_ok();
 
-        assert_eq!(count_labels(&harness, "Nothing yet"), 8);
+        assert_eq!(count_labels(&harness, "Nothing yet"), 7);
+        assert_eq!(count_labels(&harness, "No usage reported yet"), 1);
         let mut i18n = notedeck::Localization::default();
         for section in InspectorSection::ALL {
             let title = super::inspector::section_title(section, &mut i18n);
@@ -1997,6 +1998,142 @@ mod tests {
             .source = crate::session::SessionSource::Remote;
         harness.run_ok();
         assert_eq!(count_labels(&harness, "Process"), 0);
+    }
+
+    /// Give the active session four turns of usage: the context climbs, is
+    /// compacted after the third turn and starts again from a summary, with
+    /// the fourth turn's request still live.
+    fn seed_usage(state: &mut SessionViewState) {
+        use crate::messages::{CompactionInfo, DaveApiResponse, UsageInfo};
+
+        let request = |input, cache_creation, cache_read, output| {
+            DaveApiResponse::UsageUpdate(UsageInfo {
+                input_tokens: input,
+                cache_creation_input_tokens: cache_creation,
+                cache_read_input_tokens: cache_read,
+                output_tokens: output,
+                ..Default::default()
+            })
+        };
+        let turn_end = |cost, num_turns| {
+            DaveApiResponse::QueryComplete(UsageInfo {
+                cost_usd: Some(cost),
+                num_turns,
+                ..Default::default()
+            })
+        };
+        let session = state.session_manager.get_active_mut().unwrap();
+        let usage = &mut session.inspector.usage;
+        let responses = [
+            request(3_000, 18_000, 0, 900),
+            turn_end(0.21, 3),
+            request(1_200, 6_000, 64_000, 2_400),
+            turn_end(0.58, 9),
+            request(800, 4_000, 141_000, 1_800),
+            turn_end(1.12, 12),
+            DaveApiResponse::CompactionComplete(CompactionInfo {
+                pre_tokens: 145_800,
+            }),
+            request(2_000, 22_000, 0, 600),
+            turn_end(1.34, 2),
+            request(1_500, 9_000, 24_000, 1_100),
+        ];
+        for (at, res) in responses.iter().enumerate() {
+            usage.apply(res, at as u64);
+        }
+        let agentic = session.agentic.as_mut().unwrap();
+        agentic.usage = UsageInfo {
+            input_tokens: 1_500,
+            cache_creation_input_tokens: 9_000,
+            cache_read_input_tokens: 24_000,
+            output_tokens: 1_100,
+            cost_usd: Some(1.34),
+            num_turns: 2,
+        };
+    }
+
+    /// The Usage card reads the live context, the session's cost and turns,
+    /// and the compaction with the context it left.
+    #[test]
+    fn usage_shows_context_cost_and_compactions() {
+        let mut harness = session_view_harness(egui::vec2(1100.0, 900.0));
+        seed_usage(harness.state_mut());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .show_details();
+        harness.run_ok();
+
+        assert_eq!(count_labels(&harness, "No usage reported yet"), 0);
+        assert_eq!(
+            count_labels_containing(&harness, "· 17%"),
+            1,
+            "live context"
+        );
+        assert_eq!(count_labels_containing(&harness, "cache read"), 1);
+        assert_eq!(count_labels_containing(&harness, "$1.34 · "), 1);
+        // Fluent wraps each argument in bidi isolation marks.
+        assert_eq!(
+            count_labels_containing(&harness, "\u{2068}4\u{2069} turns"),
+            1
+        );
+        assert_eq!(
+            count_labels_containing(&harness, "\u{2068}1\u{2069} compaction"),
+            1
+        );
+        assert_eq!(
+            count_labels_containing(&harness, "\u{2068}145K\u{2069} → \u{2068}24K\u{2069}"),
+            1
+        );
+    }
+
+    /// Clicking the status bar's usage meter opens Details at Usage.
+    #[test]
+    fn the_usage_meter_opens_the_usage_card() {
+        use crate::inspector::{InspectorSection, SessionTab};
+        use egui_kittest::kittest::Queryable;
+
+        let mut harness = session_view_harness(egui::vec2(1100.0, 900.0));
+        seed_usage(harness.state_mut());
+        harness.run_ok();
+
+        harness
+            .get(egui_kittest::kittest::By::new().label_contains("/ 200K"))
+            .click();
+        harness.run_ok();
+
+        let view = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view;
+        assert_eq!(view.tab, SessionTab::Details);
+        assert_eq!(view.section, InspectorSection::Usage);
+    }
+
+    /// The Usage card after a compaction: the stacked context bar, the
+    /// legend, the totals and the sparkline with its compaction mark.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_session_usage() {
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1100.0, 760.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        seed_usage(harness.state_mut());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .show_details();
+        harness.run_ok();
+        harness.snapshot("session_usage");
     }
 
     /// The Overview card with a failed MCP server chip and a plugin error,

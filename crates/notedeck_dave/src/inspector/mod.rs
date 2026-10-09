@@ -10,6 +10,10 @@
 //! session view shows and which section the Details rail points at. It is never
 //! published.
 
+mod usage;
+
+pub use usage::{Compaction, Sparkline, Tokens, TurnUsage, UsageHistory, HISTORY_CAP};
+
 use crate::messages::{CliState, DaveApiResponse, SessionInfo, WaitingOn};
 use notedeck::Localization;
 
@@ -31,6 +35,10 @@ pub struct SessionInspector {
     pub session_ref: Option<String>,
     /// Display strings the Overview builds when their inputs change.
     pub labels: OverviewLabels,
+    /// Context, tokens and cost, turn by turn.
+    pub usage: UsageHistory,
+    /// Display strings the Usage card builds when their inputs change.
+    pub usage_labels: UsageLabels,
 }
 
 impl SessionInspector {
@@ -41,7 +49,7 @@ impl SessionInspector {
         match res {
             DaveApiResponse::SessionInfo(info) => self.session_info = Some(info.clone()),
             DaveApiResponse::CliState(cli) => self.cli = Some(*cli),
-            _ => {}
+            _ => self.usage.apply(res, crate::session::now_unix()),
         }
     }
 
@@ -67,6 +75,23 @@ pub struct OverviewLabels {
     pub skills: LabelMemo<usize>,
     pub plugins: LabelMemo<usize>,
     pub agents: LabelMemo<usize>,
+}
+
+/// The Usage card's computed lines, each rebuilt only when what it shows
+/// changes.
+#[derive(Debug, Default)]
+pub struct UsageLabels {
+    /// "123K / 200K · 62%", keyed by context tokens and window.
+    pub context: LabelMemo<(u64, u64)>,
+    /// The legend under the bar, one count per kind of token: cache read,
+    /// cache write, input, output.
+    pub breakdown: [LabelMemo<u64>; 4],
+    /// Cost and turn counts, keyed by the history's generation.
+    pub totals: LabelMemo<u64>,
+    /// "2 compactions", keyed by the count.
+    pub compactions_heading: LabelMemo<usize>,
+    /// The compaction lines, keyed by the history's generation.
+    pub compactions: LabelMemo<u64>,
 }
 
 /// A localized display string built from a key the first frame it is drawn

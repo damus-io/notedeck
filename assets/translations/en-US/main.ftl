@@ -82,6 +82,12 @@ Advertised_8b3b = Advertised
 # Label for the new version of a changed image in a diff
 after_3c87 = after
 
+# Dave session inspector usage: a compaction, the turn it followed and the context before and after
+after_turn__turn_____before_____after_4a6b = after turn {$turn} · {$before} → {$after}
+
+# Dave session inspector usage: a compaction whose resulting context isn't known yet
+after_turn__turn____from__before_5fd1 = after turn {$turn} · from {$before}
+
 # Title for algorithmic feeds column
 Algo_2452 = Algo
 
@@ -129,6 +135,12 @@ Broadcast_fe43 = Broadcast
 
 # Broadcast the note only to local network relays
 Broadcast_Local_7e50 = Broadcast Local
+
+# Dave session inspector usage: context tokens read from the prompt cache
+cache_read__count_4fa8 = cache read {$count}
+
+# Dave session inspector usage: context tokens written to the prompt cache
+cache_write__count_1f9d = cache write {$count}
 
 # Label for cancel prune database
 Cancel_6c39 = Cancel
@@ -210,6 +222,9 @@ Contacts_7533 = Contacts
 
 # Column title for last notes per contact
 Contacts__last_notes_3f84 = Contacts (last notes)
+
+# Dave session inspector usage row
+Context_1790 = Context
 
 # Title used when viewing an unknown conversation
 Conversation_2b63 = Conversation
@@ -436,6 +451,9 @@ Image_cache_size_3004 = Image cache size:
 # Title for individual user column
 Individual_b776 = Individual
 
+# Dave session inspector usage: uncached context tokens
+input__count_4370 = input {$count}
+
 # Dave which-key tooltip: leave normal mode and focus the chat input
 Insert__type_a_message_bd45 = Insert: type a message
 
@@ -625,6 +643,9 @@ No_messages_yet_3205 = No messages yet
 # Shown when profile search returns no results
 No_profiles_found_3130 = No profiles found
 
+# Dave session inspector usage: shown before the agent's first request finishes
+No_usage_reported_yet_84dc = No usage reported yet
+
 # Empty relay section placeholder
 None_8249 = None
 
@@ -696,6 +717,9 @@ Other_65fa = Other
 
 # Label for others settings section
 Others_7267 = Others
+
+# Dave session inspector usage: tokens the model wrote in its last reply
+output__count_0a95 = output {$count}
 
 # Dave session inspector overview: label before the CLI's output style name
 output_style_f766 = output style
@@ -910,6 +934,9 @@ Select_All_a319 = Select All
 # Button label to send a zap
 Send_1ea4 = Send
 
+# Dave session inspector usage row: cost and turns so far
+Session_3885 = Session
+
 # Dave session inspector overview row
 Session_7dd2 = Session
 
@@ -1048,6 +1075,9 @@ Tasks_2037 = Tasks
 # Dave which-key tooltip: switch between the scene view and the list view
 Toggle_scene_view_867b = Toggle scene view
 
+# Dave session inspector usage: hover over one turn on the context sparkline
+Turn__number_____context_26c6 = Turn {$number} · {$context}
+
 # Placeholder text for the message composer in chats
 Type_a_message_2a19 = Type a message
 
@@ -1167,6 +1197,14 @@ count__background_tasks_a409 =
     }
 
 
+# Dave session inspector usage: heading over the list of conversation compactions
+count__compactions_a5e2 =
+    { $count ->
+        [one] {$count} compaction
+       *[other] {$count} compactions
+    }
+
+
 # Dave session inspector: what a Waiting session is parked on
 count__crons_a409 =
     { $count ->
@@ -1199,6 +1237,14 @@ count__plugins_6b9e =
     }
 
 
+# Dave session inspector usage: model requests across the session's turns
+count__requests_cfa1 =
+    { $count ->
+        [one] {$count} request
+       *[other] {$count} requests
+    }
+
+
 # Dave session inspector: count chip of the agent's skills
 count__skills_c98d =
     { $count ->
@@ -1212,6 +1258,14 @@ count__tools_f94b =
     { $count ->
         [one] {$count} tool
        *[other] {$count} tools
+    }
+
+
+# Dave session inspector usage: turns the session has finished
+count__turns_d471 =
+    { $count ->
+        [one] {$count} turn
+       *[other] {$count} turns
     }
 
 

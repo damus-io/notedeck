@@ -4,3 +4,4 @@ The exporter rewrites both FTL files whole, committing the tree's existing drift
 too, so every card strips that out by hand to keep its commit standalone.
 
 - headway:dave/general-tilt-repeat — ~3 min: wrote a scratch script to merge only this card's 24 keys into HEAD's en-US/en-XA files, leaving 7 unrelated relative-time and 3D-model keys and a reordered block run out
+- headway:dave/question-flush-address — ~5 min: wrote another scratch merge for 13 keys, and found the exporter silently skips any message containing "/" (it reads it as a path), so `{used} / {window}` never reached the FTL and had to become a format!

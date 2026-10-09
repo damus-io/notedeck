@@ -17,11 +17,7 @@ use claude_agent_sdk_rs::PermissionMode;
 use notedeck::{tr, tr_plural, Localization};
 use notedeck_ui::app_images;
 
-use super::MONO_SIZE;
-
-/// Size of the card's proportional text: values, status, notes. Between the
-/// small keys and body text, so it sits level with the mono values.
-const VALUE_SIZE: f32 = 12.5;
+use super::{clock_time, heading_ui, key_ui, mono_ui, value_ui, weak_ui, MONO_SIZE, VALUE_SIZE};
 
 /// What the Overview reads off the session rather than the inspector: state
 /// the session already keeps for the header, status bar and sidebar.
@@ -38,6 +34,8 @@ pub struct SessionFacts<'a> {
     pub cli_session_id: Option<&'a str>,
     /// The session runs on another host, whose CLI process this one can't see.
     pub is_remote: bool,
+    /// The model's context window, in tokens, for the Usage card.
+    pub context_window: u64,
 }
 
 /// The Overview card's body.
@@ -376,36 +374,6 @@ fn status_dot_ui(ui: &mut egui::Ui, color: egui::Color32) {
     ui.painter().circle_filled(rect.center(), 4.0, color);
 }
 
-/// A row's key, in weak small text.
-fn key_ui(ui: &mut egui::Ui, key: &str) {
-    ui.label(egui::RichText::new(key).small().weak());
-}
-
-/// A small weak heading over a group of chips.
-fn heading_ui(ui: &mut egui::Ui, text: &str) {
-    ui.add_space(notedeck::tokens::SPACING_XS);
-    ui.label(egui::RichText::new(text).small().weak());
-}
-
-/// A value in small mono text: ids, versions, paths.
-fn mono_ui(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).font(egui::FontId::monospace(MONO_SIZE)));
-}
-
-/// A value in proportional text.
-fn value_ui(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).font(egui::FontId::proportional(VALUE_SIZE)));
-}
-
-/// A secondary value beside another.
-fn weak_ui(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        egui::RichText::new(text)
-            .font(egui::FontId::proportional(VALUE_SIZE))
-            .weak(),
-    );
-}
-
 /// A small copy-to-clipboard icon button, tinted for the theme.
 fn copy_button_ui(ui: &mut egui::Ui) -> egui::Response {
     let image = if ui.visuals().dark_mode {
@@ -494,15 +462,4 @@ fn cli_text(cli: CliState, i18n: &mut Localization) -> String {
             time = clock_time(at)
         ),
     }
-}
-
-/// A Unix time as a local wall-clock time, like "3:42 PM".
-fn clock_time(unix: u64) -> String {
-    chrono::DateTime::from_timestamp(unix as i64, 0)
-        .map(|t| {
-            t.with_timezone(&chrono::Local)
-                .format("%-I:%M %p")
-                .to_string()
-        })
-        .unwrap_or_default()
 }

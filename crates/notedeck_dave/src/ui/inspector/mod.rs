@@ -6,6 +6,7 @@
 //! to trace back to where it should have come from.
 
 mod overview;
+mod usage;
 
 pub use overview::SessionFacts;
 
@@ -21,6 +22,10 @@ const CARD_MIN_WIDTH: f32 = 330.0;
 
 /// Size of the small mono text: chord labels and data sources.
 const MONO_SIZE: f32 = 10.5;
+
+/// Size of a card's proportional text: values, status, notes. Between the
+/// small keys and body text, so it sits level with the mono values.
+const VALUE_SIZE: f32 = 12.5;
 
 /// Gap between section cards, both ways.
 const CARD_GAP: f32 = notedeck::tokens::SPACING_MD;
@@ -226,6 +231,7 @@ fn section_body_ui(
 ) {
     match section {
         InspectorSection::Overview => overview::overview_ui(inspector, facts, view, i18n, ui),
+        InspectorSection::Usage => usage::usage_ui(inspector, facts.context_window, i18n, ui),
         _ => empty_state_ui(i18n, ui),
     }
 }
@@ -298,7 +304,7 @@ pub fn section_title(section: InspectorSection, i18n: &mut Localization) -> Stri
 fn section_source(section: InspectorSection) -> &'static str {
     match section {
         InspectorSection::Overview => "SessionInfo · system/init",
-        InspectorSection::Usage => "UsageUpdate · QueryComplete",
+        InspectorSection::Usage => "UsageUpdate · QueryComplete · CompactionComplete",
         InspectorSection::RateLimits => "rate_limit_event",
         InspectorSection::Background => "background_tasks_changed · task_progress",
         InspectorSection::Subagents => "SubagentInfo · task_progress",
@@ -307,4 +313,45 @@ fn section_source(section: InspectorSection) -> &'static str {
         InspectorSection::Permissions => "runtime allowlist · PermissionResponse",
         InspectorSection::Outputs => "git log --grep · headway refs",
     }
+}
+
+/// A row's key, in weak small text.
+fn key_ui(ui: &mut egui::Ui, key: &str) {
+    ui.label(egui::RichText::new(key).small().weak());
+}
+
+/// A small weak heading over a group of chips.
+fn heading_ui(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(notedeck::tokens::SPACING_XS);
+    ui.label(egui::RichText::new(text).small().weak());
+}
+
+/// A value in small mono text: ids, versions, paths.
+fn mono_ui(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).font(egui::FontId::monospace(MONO_SIZE)));
+}
+
+/// A value in proportional text.
+fn value_ui(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).font(egui::FontId::proportional(VALUE_SIZE)));
+}
+
+/// A secondary value beside another.
+fn weak_ui(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .font(egui::FontId::proportional(VALUE_SIZE))
+            .weak(),
+    );
+}
+
+/// A Unix time as a local wall-clock time, like "3:42 PM".
+fn clock_time(unix: u64) -> String {
+    chrono::DateTime::from_timestamp(unix as i64, 0)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%-I:%M %p")
+                .to_string()
+        })
+        .unwrap_or_default()
 }

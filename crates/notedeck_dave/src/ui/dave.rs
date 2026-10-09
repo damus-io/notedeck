@@ -633,6 +633,7 @@ impl<'a> DaveUi<'a> {
                         let backend_type = self.backend_type;
                         let session_id = self.session_id;
                         let is_remote = self.flags.contains(DaveUiFlags::IsRemote);
+                        let context_window = self.context_window;
                         let details_action = self.inspector.as_mut().and_then(|inspected| {
                             let facts = SessionFacts {
                                 status: inspected.status,
@@ -643,6 +644,7 @@ impl<'a> DaveUi<'a> {
                                 branch,
                                 cli_session_id: inspected.cli_session_id,
                                 is_remote,
+                                context_window,
                             };
                             // Scoped by session, so each keeps its own grid
                             // scroll.
@@ -2621,7 +2623,11 @@ impl DaveUi<'_> {
                                             .color(ui.visuals().weak_text_color()),
                                     );
                                 }
-                                usage_bar_ui(self.usage, self.context_window, ui);
+                                if usage_meter_ui(self.usage, self.context_window, ui).clicked() {
+                                    return Some(DaveAction::OpenInspector(
+                                        InspectorSection::Usage,
+                                    ));
+                                }
                             }
                             badge_action
                         })
@@ -2643,7 +2649,7 @@ impl DaveUi<'_> {
 }
 
 /// Format a token count in a compact human-readable form (e.g. "45K", "1.2M")
-fn format_tokens(tokens: u64) -> String {
+pub(crate) fn format_tokens(tokens: u64) -> String {
     if tokens >= 1_000_000 {
         format!("{:.1}M", tokens as f64 / 1_000_000.0)
     } else if tokens >= 1_000 {
@@ -2651,6 +2657,22 @@ fn format_tokens(tokens: u64) -> String {
     } else {
         tokens.to_string()
     }
+}
+
+/// The status bar's usage meter (cost, tokens and fill bar) as one clickable
+/// group: a click opens the Details tab at its Usage card.
+fn usage_meter_ui(
+    usage: Option<&crate::messages::UsageInfo>,
+    context_window: u64,
+    ui: &mut egui::Ui,
+) -> egui::Response {
+    let meter = ui.scope(|ui| usage_bar_ui(usage, context_window, ui));
+    ui.interact(
+        meter.response.rect,
+        ui.scope_id().with("dave_usage_meter"),
+        egui::Sense::click(),
+    )
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Renders the usage fill bar showing context window consumption.
