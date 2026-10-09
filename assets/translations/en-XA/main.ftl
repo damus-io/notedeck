@@ -151,6 +151,9 @@ Chats_dc22 = {"["}Çhàts{"]"}
 # Label for clear cache button, Storage settings section
 Clear_cache_dccb = {"["}Çléàr çàçhé{"]"}
 
+# Dave session inspector overview row: the agent CLI's own session id
+CLI_session_5cca = {"["}ÇLÍ séssíóñ{"]"}
+
 # Hover text for editable zap amount
 Click_to_edit_0414 = {"["}Çlíçk tó édít{"]"}
 
@@ -213,6 +216,9 @@ Conversation_2b63 = {"["}Çóñvérsàtíóñ{"]"}
 
 # Fallback title when no direct chat partner is available
 Conversation_babb = {"["}Çóñvérsàtíóñ{"]"}
+
+# Dave session inspector: copy a value
+Copy_8cb4 = {"["}Çópy{"]"}
 
 # Button label to copy logs
 Copy_a688 = {"["}Çópy{"]"}
@@ -343,6 +349,9 @@ Details_cd6b = {"["}Détàíls{"]"}
 # Dave which-key tooltip: show the active session's Details tab (usage, background work, files, …)
 Details_tab_ffd0 = {"["}Détàíls tàb{"]"}
 
+# Dave session inspector overview row
+Directory_7dd2 = {"["}Díréçtóry{"]"}
+
 # Placeholder for hashtag input field
 Enter_the_desired_hashtags_here__for_multiple_space-separated_7a69 = {"["}Éñtér thé désíréd hàshtàgs héré (fór múltíplé spàçé-sépàràtéd){"]"}
 
@@ -406,6 +415,9 @@ Home_8c19 = {"["}Hómé{"]"}
 # Button to go to the Horizon app
 Horizon_41be = {"["}Hórízóñ{"]"}
 
+# Dave session inspector overview row
+Host_7dd2 = {"["}Hóst{"]"}
+
 # Age verification checkbox label
 I_confirm_that_I_am_at_least_17_years_old_b09f = {"["}Í çóñfírm thàt Í àm àt léàst 17 yéàrs óld{"]"}
 
@@ -466,6 +478,9 @@ Keep_track_of_your_notes___replies_a334 = {"["}Kéép tràçk óf yóúr ñóté
 # Confirmation prompt for database pruning
 Keeps_all_profiles_and_your_notes__The_smaller_database_will_be_used_on_next_restart_7b6b = {"["}Kééps àll prófílés àñd yóúr ñótés. Thé smàllér dàtàbàsé wíll bé úséd óñ ñéxt réstàrt.{"]"}
 
+# Dave session inspector overview row: where the CLI got its API credentials
+Key_source_512a = {"["}Kéy sóúrçé{"]"}
+
 # desc
 key_1dee = {"["}kéy{"]"}
 
@@ -508,6 +523,9 @@ Leave_block_navigation_4bcb = {"["}Léàvé blóçk ñàvígàtíóñ{"]"}
 # Label for relay websocket connection limit setting
 Max_websocket_connections_8f75 = {"["}Màx wébsóçkét çóññéçtíóñs:{"]"}
 
+# Dave session inspector overview heading
+MCP_servers_c4b5 = {"["}MÇP sérvérs{"]"}
+
 # Text shown on blurred media from unfollowed users
 Media_from_someone_you_don_t_follow_5611 = {"["}Médíà fróm sóméóñé yóú dóñ't fóllów{"]"}
 
@@ -519,6 +537,12 @@ Messages_are_end-to-end_encrypted__Add_your_nsec_in_Accounts_to_read_and_send_ch
 
 # Button to go to the messaging app
 Messaging_700d = {"["}Méssàgíñg{"]"}
+
+# Dave session inspector overview row
+Mode_7dd2 = {"["}Módé{"]"}
+
+# Dave session inspector overview row
+Model_7dd2 = {"["}Módél{"]"}
 
 # Tooltip for moving a column
 Moves_this_column_to_another_position_0d4b = {"["}Móvés thís çólúmñ tó àñóthér pósítíóñ{"]"}
@@ -591,6 +615,9 @@ No_conversations_yet_52c0 = {"["}Ñó çóñvérsàtíóñs yét{"]"}
 
 # label describing that there are no conversations yet
 No_conversations_yet_df0d = {"["}Ñó çóñvérsàtíóñs yét{"]"}
+
+# Dave session inspector overview: shown before the CLI's system/init message arrives
+No_init_from_the_agent_yet_0cb8 = {"["}Ñó íñít fróm thé àgéñt yét{"]"}
 
 # Chat summary text when the conversation has no messages
 No_messages_yet_3205 = {"["}Ñó méssàgés yét{"]"}
@@ -670,6 +697,9 @@ Other_65fa = {"["}Óthér{"]"}
 # Label for others settings section
 Others_7267 = {"["}Óthérs{"]"}
 
+# Dave session inspector overview: label before the CLI's output style name
+output_style_f766 = {"["}óútpút stylé{"]"}
+
 # Placeholder text for NWC URI input
 Paste_your_NWC_URI_here_b471 = {"["}Pàsté yóúr ÑWÇ ÚRÍ héré...{"]"}
 
@@ -711,6 +741,9 @@ Previous_session_2425 = {"["}Prévíóús séssíóñ{"]"}
 
 # Section header for private sync relays
 Private_sync_560b = {"["}Prívàté syñç{"]"}
+
+# Dave session inspector overview row
+Process_7dd2 = {"["}Próçéss{"]"}
 
 # Button to go to the user's profile
 Profile_c0ba = {"["}Prófílé{"]"}
@@ -823,6 +856,12 @@ Restart_to_apply_f761 = {"["}Réstàrt tó àpply.{"]"}
 # Heading shown above search results
 Results_41bf = {"["}Résúlts{"]"}
 
+# Dave session inspector: the agent CLI process is running and busy, so the idle reaper won't stop it
+Running___held_open_by_work_in_flight_e004 = {"["}Rúññíñg · héld ópéñ by wórk íñ flíght{"]"}
+
+# Dave session inspector: the agent CLI process is running and the idle reaper stops it at this time
+Running___stops_if_idle_until__time_07c0 = {"["}Rúññíñg · stóps íf ídlé úñtíl {$time}{"]"}
+
 # Heading for support section
 Running_into_a_bug_1796 = {"["}Rúññíñg íñtó à búg?{"]"}
 
@@ -871,6 +910,9 @@ Select_All_a319 = {"["}Séléçt Àll{"]"}
 # Button label to send a zap
 Send_1ea4 = {"["}Séñd{"]"}
 
+# Dave session inspector overview row
+Session_7dd2 = {"["}Séssíóñ{"]"}
+
 # Settings section for environment variables exported into agent sessions
 Session_environment_0dda = {"["}Séssíóñ éñvíróñméñt{"]"}
 
@@ -913,6 +955,9 @@ Sort_replies_newest_first_b6c3 = {"["}Sórt réplíés ñéwést fírst:{"]"}
 # Description for contact list column
 Source_the_last_note_for_each_user_in_your_contact_list_e157 = {"["}Sóúrçé thé làst ñóté fór éàçh úsér íñ yóúr çóñtàçt líst{"]"}
 
+# Dave session inspector overview row
+Status_7dd2 = {"["}Stàtús{"]"}
+
 # Description for hashtags column
 Stay_up_to_date_with_a_certain_hashtag_88e3 = {"["}Stày úp tó dàté wíth à çértàíñ hàshtàg{"]"}
 
@@ -942,6 +987,9 @@ Stop_5b38 = {"["}Stóp{"]"}
 
 # Dave which-key tooltip: stop the active session's running turn
 Stop_the_turn_7ecf = {"["}Stóp thé túrñ{"]"}
+
+# Dave session inspector: the agent CLI process is not running
+Stopped___the_next_message_starts_it_e76d = {"["}Stóppéd · thé ñéxt méssàgé stàrts ít{"]"}
 
 # Label for storage settings section
 Storage_ed65 = {"["}Stóràgé{"]"}
@@ -981,6 +1029,9 @@ Theme_4aac = {"["}Thémé:{"]"}
 
 # Button to change the theme (light or dark)
 Theme_7e6b = {"["}Thémé{"]"}
+
+# Dave session inspector overview: host of a local session
+this_machine_21be = {"["}thís màçhíñé{"]"}
 
 # Column title for note thread view
 Thread_0f20 = {"["}Thréàd{"]"}
@@ -1035,6 +1086,9 @@ View_as_092c = {"["}Víéw às{"]"}
 
 # Label for view folder button, Storage settings section
 View_folder_9742 = {"["}Víéw fóldér{"]"}
+
+# Dave session inspector: a Waiting session's scheduled wake-up time
+wake-up_at__time_a608 = {"["}wàké-úp àt {$time}{"]"}
 
 # Column title for wallet management
 Wallet_5e50 = {"["}Wàllét{"]"}
@@ -1097,6 +1151,30 @@ Got__count__results_for___query_85fb =
     }
 
 
+# Dave session inspector: count chip of the subagent types the agent can spawn
+count__agent_types_71c9 =
+    { $count ->
+        [one] {"["}{$count} àgéñt typé{"]"}
+       *[other] {"["}{$count} àgéñt typés{"]"}
+    }
+
+
+# Dave session inspector: what a Waiting session is parked on
+count__background_tasks_a409 =
+    { $count ->
+        [one] {"["}{$count} bàçkgróúñd tàsk{"]"}
+       *[other] {"["}{$count} bàçkgróúñd tàsks{"]"}
+    }
+
+
+# Dave session inspector: what a Waiting session is parked on
+count__crons_a409 =
+    { $count ->
+        [one] {"["}{$count} çróñ{"]"}
+       *[other] {"["}{$count} çróñs{"]"}
+    }
+
+
 # Summary line above a commit's diff: how many files it touches
 count__files_changed_23c6 =
     { $count ->
@@ -1110,6 +1188,30 @@ count__messages_28b1 =
     { $count ->
         [one] {"["}{$count} méssàgé{"]"}
        *[other] {"["}{$count} méssàgés{"]"}
+    }
+
+
+# Dave session inspector: count chip of the agent's plugins
+count__plugins_6b9e =
+    { $count ->
+        [one] {"["}{$count} plúgíñ{"]"}
+       *[other] {"["}{$count} plúgíñs{"]"}
+    }
+
+
+# Dave session inspector: count chip of the agent's skills
+count__skills_c98d =
+    { $count ->
+        [one] {"["}{$count} skíll{"]"}
+       *[other] {"["}{$count} skílls{"]"}
+    }
+
+
+# Dave session inspector: count chip of the agent's tools
+count__tools_f94b =
+    { $count ->
+        [one] {"["}{$count} tóól{"]"}
+       *[other] {"["}{$count} tóóls{"]"}
     }
 
 

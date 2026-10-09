@@ -7,8 +7,8 @@ use crate::backend::wait_tracker::WaitTracker;
 use crate::file_update::FileUpdate;
 use crate::messages::{
     denial_marker_for_model, denial_message_for_model, permission_reply_message,
-    turn_exit_message_for_model, CompactionInfo, DaveApiResponse, PermissionResponse, RunningTool,
-    SubagentInfo, SubagentStatus,
+    turn_exit_message_for_model, CliState, CompactionInfo, DaveApiResponse, PermissionResponse,
+    RunningTool, SubagentInfo, SubagentStatus,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -855,6 +855,9 @@ struct ActorState {
     /// The Claude CLI session to `--resume` when (re)connecting: the one the
     /// session was restored from, then whatever the CLI's `init` reports.
     cli_session_id: Option<String>,
+    /// The CLI process state last sent to the UI, so it is resent only when
+    /// it changes.
+    cli_state_sent: Option<CliState>,
 }
 
 impl ActorState {
@@ -870,6 +873,7 @@ impl ActorState {
             idle: IdleTracker::new(Instant::now()),
             permission_mode,
             cli_session_id,
+            cli_state_sent: None,
         }
     }
 
@@ -891,6 +895,33 @@ impl ActorState {
         }
     }
 
+    /// Tell the UI whether a CLI is running and when the idle reaper will
+    /// stop it, if that changed since last sent.
+    ///
+    /// The deadline is an [`Instant`]; it goes out as Unix seconds, and a
+    /// move of a second or two is the two clocks being read a moment apart,
+    /// not news.
+    fn report_cli_state(&mut self, connected: bool, response_tx: &mpsc::Sender<DaveApiResponse>) {
+        let reap_at = if connected {
+            self.idle.deadline().map(|deadline| {
+                crate::session::now_unix()
+                    + deadline.saturating_duration_since(Instant::now()).as_secs()
+            })
+        } else {
+            None
+        };
+        let state = CliState { connected, reap_at };
+        if self
+            .cli_state_sent
+            .is_some_and(|sent| cli_state_unchanged(sent, state))
+        {
+            return;
+        }
+        self.cli_state_sent = Some(state);
+        let _ = response_tx.send(DaveApiResponse::CliState(state));
+        self.waker.wake();
+    }
+
     /// Send what the session waits on, if it changed since last sent.
     fn report_waits(&mut self, response_tx: &mpsc::Sender<DaveApiResponse>) {
         if let Some(waiting_on) = self.idle.waits.take_change() {
@@ -898,6 +929,16 @@ impl ActorState {
             self.waker.wake();
         }
     }
+}
+
+/// Whether `new` says nothing `sent` didn't: the same connection, and a reap
+/// time within a couple of seconds of it.
+fn cli_state_unchanged(sent: CliState, new: CliState) -> bool {
+    sent.connected == new.connected
+        && match (sent.reap_at, new.reap_at) {
+            (Some(a), Some(b)) => a.abs_diff(b) <= 2,
+            (a, b) => a == b,
+        }
 }
 
 /// Why [`run_connected`] stopped driving its CLI.
@@ -1107,6 +1148,7 @@ async fn serve_session(
         if let Err(err) = client.disconnect().await {
             tracing::warn!("Error disconnecting session {}: {}", session_id, err);
         }
+        state.report_cli_state(false, response_tx);
 
         match exit {
             ConnectedExit::Idle => {
@@ -1228,6 +1270,7 @@ async fn run_connected(
 
     loop {
         let idle_deadline = state.idle.deadline();
+        state.report_cli_state(true, response_tx);
         tokio::select! {
             biased;
 
@@ -2679,6 +2722,43 @@ cat > /dev/null
         assert_eq!(idle.deadline(), None);
         idle.on_message(t0, &turn_result());
         assert!(idle.deadline().is_some());
+    }
+
+    /// The UI hears the CLI start and stop, with a reap time only while
+    /// nothing holds the CLI open, and isn't told the same state twice.
+    #[test]
+    fn cli_state_is_reported_when_it_changes() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = ActorState::new(Waker::noop().clone(), PermissionMode::Default, None);
+
+        state.report_cli_state(true, &tx);
+        state.report_cli_state(true, &tx);
+        state.idle.turn_started(Instant::now());
+        state.report_cli_state(true, &tx);
+        state.report_cli_state(false, &tx);
+
+        let sent: Vec<CliState> = rx
+            .try_iter()
+            .filter_map(|res| match res {
+                DaveApiResponse::CliState(cli) => Some(cli),
+                _ => None,
+            })
+            .collect();
+        let idle_reap = crate::session::now_unix() + IDLE_REAP_AFTER.as_secs();
+        assert_eq!(sent.len(), 3, "the repeat is not resent: {sent:?}");
+        assert!(sent[0].connected);
+        assert!(sent[0]
+            .reap_at
+            .is_some_and(|at| at.abs_diff(idle_reap) <= 2));
+        assert_eq!(
+            sent[1],
+            CliState {
+                connected: true,
+                reap_at: None
+            },
+            "a turn in flight holds the CLI"
+        );
+        assert_eq!(sent[2], CliState::default());
     }
 
     /// A `run_in_background` task lives in the CLI process: stopping the CLI

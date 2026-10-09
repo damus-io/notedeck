@@ -3,7 +3,7 @@ use super::block_nav::BlockNav;
 use super::chord_hints;
 use super::diff;
 use super::git_status_ui;
-use super::inspector::{inspector_ui, session_tabs_ui};
+use super::inspector::{inspector_ui, session_tabs_ui, SessionFacts};
 use super::keybindings::NormalView;
 use super::markdown_ui;
 use super::query_ui::query_call_ui;
@@ -110,7 +110,19 @@ pub struct DaveUi<'a> {
     normal_mode: Option<NormalView>,
     /// The session's inspector state and which tab it shows. `None` draws the
     /// chat with no tab strip.
-    inspector: Option<(&'a SessionInspector, &'a mut InspectorView)>,
+    inspector: Option<Inspected<'a>>,
+}
+
+/// The session the Details tab inspects: its inspector and tab state, plus
+/// the session state the Overview reads that [`DaveUi`] doesn't already hold.
+pub struct Inspected<'a> {
+    pub inspector: &'a mut SessionInspector,
+    pub view: &'a mut InspectorView,
+    pub status: crate::agent_status::AgentStatus,
+    /// What will resume the session if it is Waiting.
+    pub waiting_on: crate::messages::WaitingOn,
+    /// The Claude CLI session id, for `--resume`.
+    pub cli_session_id: Option<&'a str>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -281,13 +293,18 @@ impl<'a> DaveUi<'a> {
     }
 
     /// Give the session view its `Chat | Details` tab strip, drawing Details
-    /// from `inspector` when `view` selects it.
-    pub fn inspector(
-        mut self,
-        inspector: &'a SessionInspector,
-        view: &'a mut InspectorView,
-    ) -> Self {
-        self.inspector = Some((inspector, view));
+    /// from `inspected` when its view selects it.
+    pub fn inspector(mut self, inspected: Inspected<'a>) -> Self {
+        self.inspector = Some(inspected);
+        self
+    }
+
+    /// The Claude CLI session id the Details tab's Overview shows. Set after
+    /// [`Self::inspector`]; ignored without one.
+    pub fn cli_session_id(mut self, id: Option<&'a str>) -> Self {
+        if let Some(inspected) = &mut self.inspector {
+            inspected.cli_session_id = id;
+        }
         self
     }
 
@@ -303,7 +320,7 @@ impl<'a> DaveUi<'a> {
             && self
                 .inspector
                 .as_ref()
-                .is_some_and(|(_, view)| view.tab == SessionTab::Details)
+                .is_some_and(|inspected| inspected.view.tab == SessionTab::Details)
     }
 
     /// Show the which-key strip while normal mode is on.
@@ -513,10 +530,10 @@ impl<'a> DaveUi<'a> {
         // The `Chat | Details` tab strip, under the header.
         let action = if self.shows_tabs() {
             let margin = self.chat_margin(ui.ctx());
-            let tabs_action = self.inspector.as_ref().and_then(|(_, view)| {
+            let tabs_action = self.inspector.as_ref().and_then(|inspected| {
                 ui.horizontal(|ui| {
                     ui.add_space(margin as f32);
-                    session_tabs_ui(view, app_ctx.i18n, ui)
+                    session_tabs_ui(inspected.view, app_ctx.i18n, ui)
                 })
                 .inner
             });
@@ -605,19 +622,45 @@ impl<'a> DaveUi<'a> {
                     }
 
                     if shows_details {
-                        let details_action =
-                            self.inspector.as_mut().and_then(|(inspector, view)| {
-                                // Scoped by session, so each keeps its own
-                                // grid scroll.
-                                let id = ("dave_inspector", self.session_id);
-                                ui.push_id(id, |ui| {
-                                    ui.with_layout(Layout::top_down(Align::Min), |ui| {
-                                        inspector_ui(inspector, view, app_ctx.i18n, ui)
-                                    })
-                                    .inner
+                        let branch = self
+                            .git_status
+                            .as_deref()
+                            .and_then(|git| git.current())
+                            .and_then(|status| status.as_ref().ok())
+                            .and_then(|data| data.branch.as_deref());
+                        let details = self.details;
+                        let permission_mode = self.permission_mode;
+                        let backend_type = self.backend_type;
+                        let session_id = self.session_id;
+                        let is_remote = self.flags.contains(DaveUiFlags::IsRemote);
+                        let details_action = self.inspector.as_mut().and_then(|inspected| {
+                            let facts = SessionFacts {
+                                status: inspected.status,
+                                waiting_on: inspected.waiting_on,
+                                permission_mode,
+                                backend_type,
+                                details,
+                                branch,
+                                cli_session_id: inspected.cli_session_id,
+                                is_remote,
+                            };
+                            // Scoped by session, so each keeps its own grid
+                            // scroll.
+                            let id = ("dave_inspector", session_id);
+                            ui.push_id(id, |ui| {
+                                ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                                    inspector_ui(
+                                        inspected.inspector,
+                                        &facts,
+                                        inspected.view,
+                                        app_ctx.i18n,
+                                        ui,
+                                    )
                                 })
                                 .inner
-                            });
+                            })
+                            .inner
+                        });
                         return DaveResponse {
                             action: details_action,
                         }
@@ -2671,6 +2714,19 @@ fn usage_bar_ui(
     painter.rect_filled(fill_rect, 3.0, bar_color);
 }
 
+/// The status-bar badge for a permission mode: its label and colour, matching
+/// Claude Code's own (Manual neutral, Plan blue, Accept Edits purple, Auto
+/// yellow). Bypass is never reachable from the UI but is drawn red.
+pub(crate) fn permission_mode_badge(mode: PermissionMode) -> (&'static str, BadgeVariant) {
+    match mode {
+        PermissionMode::Default => ("MANUAL", BadgeVariant::Default),
+        PermissionMode::Plan => ("PLAN", BadgeVariant::Info),
+        PermissionMode::AcceptEdits => ("ACCEPT EDITS", BadgeVariant::Purple),
+        PermissionMode::Auto => ("AUTO", BadgeVariant::Warning),
+        PermissionMode::BypassPermissions => ("BYPASS", BadgeVariant::Destructive),
+    }
+}
+
 /// Render clickable permission mode and FOCUS toggle badges. Returns an action if clicked.
 fn toggle_badges_ui(
     ui: &mut egui::Ui,
@@ -2727,17 +2783,8 @@ fn toggle_badges_ui(
     }
 
     // Permission mode badge. Left-click / Ctrl+M cycles Manual → Plan → Accept
-    // Edits → Auto; right-click sets any mode directly. Labels and colors match
-    // Claude Code: Manual (neutral), Plan (blue), Accept Edits (purple), Auto
-    // (yellow — classifier-gated auto-execution). BypassPermissions is never
-    // reachable from the UI but is handled here for exhaustiveness.
-    let (label, variant) = match permission_mode {
-        PermissionMode::Default => ("MANUAL", BadgeVariant::Default),
-        PermissionMode::Plan => ("PLAN", BadgeVariant::Info),
-        PermissionMode::AcceptEdits => ("ACCEPT EDITS", BadgeVariant::Purple),
-        PermissionMode::Auto => ("AUTO", BadgeVariant::Warning),
-        PermissionMode::BypassPermissions => ("BYPASS", BadgeVariant::Destructive),
-    };
+    // Edits → Auto; right-click sets any mode directly.
+    let (label, variant) = permission_mode_badge(permission_mode);
     let mut mode_badge = StatusBadge::new(label).variant(variant);
     if ctrl_held {
         mode_badge = mode_badge.keybind("M");

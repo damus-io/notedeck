@@ -257,6 +257,7 @@ pub(crate) fn apply_response(
             | DaveApiResponse::QueryComplete(_)
             | DaveApiResponse::WaitingOn(_)
             | DaveApiResponse::WakeupTurnStarted
+            | DaveApiResponse::CliState(_)
     ) {
         session.dispatch_state.backend_responded();
     }
@@ -331,6 +332,8 @@ pub(crate) fn apply_response(
         DaveApiResponse::WakeupTurnStarted => {
             session.wakeup_turn = true;
         }
+        // Only the inspector keeps it, folded above.
+        DaveApiResponse::CliState(_) => {}
     }
 
     outcome
@@ -504,7 +507,8 @@ fn closes_assistant_segment(session: &session::ChatSession, res: &DaveApiRespons
         | DaveApiResponse::CompactionStarted
         | DaveApiResponse::QueryComplete(_)
         | DaveApiResponse::WaitingOn(_)
-        | DaveApiResponse::WakeupTurnStarted => false,
+        | DaveApiResponse::WakeupTurnStarted
+        | DaveApiResponse::CliState(_) => false,
     }
 }
 

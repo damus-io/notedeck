@@ -28,7 +28,8 @@ pub mod worktree_creator;
 pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
 pub use block_nav::BlockNav;
 pub use dave::{
-    DaveAction, DaveResponse, DaveUi, InputMode, InputboxLayout, InputboxResult, RunAction,
+    DaveAction, DaveResponse, DaveUi, InputMode, InputboxLayout, InputboxResult, Inspected,
+    RunAction,
 };
 pub use directory_picker::{DirectoryPicker, DirectoryPickerAction};
 pub use host_picker::HostPickerAction;
@@ -80,7 +81,8 @@ fn build_dave_ui<'a>(
     run_configs: &'a std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     running_sessions: &'a std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
 ) -> DaveUi<'a> {
-    let is_working = session.status() == AgentStatus::Working;
+    let status = session.status();
+    let is_working = status == AgentStatus::Working;
     // A placeholder (remote spawn/resume in flight) reports Pending — render it as
     // "connecting…" rather than an empty chat.
     let is_connecting = session.status() == AgentStatus::Pending;
@@ -96,6 +98,10 @@ fn build_dave_ui<'a>(
         .unwrap_or(&[]);
     // The IDs of configs currently running for this session
     let running_config_ids = running_sessions.get(&session.id);
+
+    if let Some(agentic) = &session.agentic {
+        session.inspector.set_session_id(agentic.event_session_id());
+    }
 
     let mut ui_builder = DaveUi::new(
         model_config.trial,
@@ -121,7 +127,13 @@ fn build_dave_ui<'a>(
     .run_configs(session_run_configs)
     .running_config_ids(running_config_ids)
     .pending_images(&mut session.pending_images)
-    .inspector(&session.inspector, &mut session.inspector_view);
+    .inspector(Inspected {
+        inspector: &mut session.inspector,
+        view: &mut session.inspector_view,
+        status,
+        waiting_on: session.waiting_on,
+        cli_session_id: None,
+    });
 
     if let Some(agentic) = &mut session.agentic {
         let model = agentic
@@ -134,7 +146,16 @@ fn build_dave_ui<'a>(
             .question_answers(&mut agentic.question_answers)
             .question_index(&mut agentic.question_index)
             .is_compacting(is_compacting)
-            .usage(&agentic.usage, model);
+            .usage(&agentic.usage, model)
+            // `cli_resume_id()`, spelled out by field so it can borrow beside
+            // the `&mut` fields above.
+            .cli_session_id(
+                agentic
+                    .session_info
+                    .as_ref()
+                    .and_then(|info| info.claude_session_id.as_deref())
+                    .or(agentic.resume_session_id.as_deref()),
+            );
 
         // Only show git status for local sessions
         if !is_remote {
@@ -1749,6 +1770,13 @@ mod tests {
             crate::backend::BackendType::Claude,
         );
         session_manager.switch_to(id);
+        // A fixed d-tag, so the Overview's `agentium:` ref is the same in
+        // every snapshot.
+        session_manager
+            .get_mut(id)
+            .and_then(|session| session.agentic.as_mut())
+            .unwrap()
+            .event_id = "inspector-test-session".into();
         SessionViewState {
             notedeck,
             _tmpdir: tmpdir,
@@ -1807,8 +1835,9 @@ mod tests {
         harness.query_all_by_label(label).count()
     }
 
-    /// Clicking Details swaps the chat for the rail and all nine section
-    /// stubs; clicking Chat brings the input box back.
+    /// Clicking Details swaps the chat for the rail and the section cards
+    /// (the eight without a view yet are stubs); clicking Chat brings the
+    /// input box back.
     #[test]
     fn details_tab_shows_every_section_and_chat_brings_the_input_back() {
         use crate::inspector::InspectorSection;
@@ -1829,7 +1858,7 @@ mod tests {
         harness.get_by_label("Details").click_accesskit();
         harness.run_ok();
 
-        assert_eq!(count_labels(&harness, "Nothing yet"), 9);
+        assert_eq!(count_labels(&harness, "Nothing yet"), 8);
         let mut i18n = notedeck::Localization::default();
         for section in InspectorSection::ALL {
             let title = super::inspector::section_title(section, &mut i18n);
@@ -1844,8 +1873,156 @@ mod tests {
         assert_eq!(count_labels(&harness, "Ask"), 1);
     }
 
+    /// Give the active session what a Claude CLI's init would: a model, two
+    /// MCP servers (one failed), tools, skills, a plugin that loaded and one
+    /// that didn't. Parked on two background tasks with its CLI stopped, so
+    /// nothing on the card depends on the clock or the machine.
+    fn seed_overview(state: &mut SessionViewState) {
+        use crate::messages::{
+            CliState, DaveApiResponse, McpServerInfo, McpServerStatus, PluginError, PluginInfo,
+            SessionInfo, WaitingOn,
+        };
+
+        let info = SessionInfo {
+            tools: vec!["Bash".into(), "Read".into(), "Edit".into()],
+            model: Some("claude-opus-5-5".into()),
+            agents: vec!["general-purpose".into(), "Explore".into()],
+            cli_version: Some("2.1.288".into()),
+            claude_session_id: Some("0b8c1a2e-5f3d-4c7a-9e21-6d4f8b0a1c3e".into()),
+            mcp_servers: vec![
+                McpServerInfo {
+                    name: "linear-server".into(),
+                    status: McpServerStatus::Connected,
+                    source: Some("user".into()),
+                },
+                McpServerInfo {
+                    name: "beads".into(),
+                    status: McpServerStatus::Failed,
+                    source: Some("user".into()),
+                },
+            ],
+            skills: vec!["headway".into(), "autowork".into()],
+            plugins: vec![PluginInfo {
+                name: "notedeck".into(),
+                path: None,
+                version: Some("0.3.1".into()),
+            }],
+            plugin_errors: vec![PluginError {
+                plugin: "broken".into(),
+                kind: "manifest".into(),
+                message: "plugin.json is missing \"name\"".into(),
+            }],
+            output_style: Some("default".into()),
+            api_key_source: Some("none".into()),
+            ..Default::default()
+        };
+        let session = state.session_manager.get_active_mut().unwrap();
+        session.details.model = info.model.clone();
+        session.details.hostname = "monad".into();
+        session.inspector.session_ref = Some("agentium:hood-skirt-lazy".into());
+        session
+            .inspector
+            .apply(&DaveApiResponse::SessionInfo(info.clone()));
+        session
+            .inspector
+            .apply(&DaveApiResponse::CliState(CliState {
+                connected: false,
+                reap_at: None,
+            }));
+        session.agentic.as_mut().unwrap().session_info = Some(info);
+        session.waiting_on = WaitingOn {
+            background_tasks: 2,
+            ..Default::default()
+        };
+        session.update_status();
+        session.inspector_view.show_details();
+    }
+
+    /// The number of nodes whose label contains `text`. A localized string
+    /// with an argument wraps it in bidi isolation marks, so "2 background
+    /// tasks" can't be matched whole.
+    fn count_labels_containing(harness: &Harness<'static, SessionViewState>, text: &str) -> usize {
+        use egui_kittest::kittest::{By, Queryable};
+        harness.query_all(By::new().label_contains(text)).count()
+    }
+
+    /// The Overview shows what the init carried: a chip per MCP server, and
+    /// a count chip that expands to its list on click and folds on a second.
+    #[test]
+    fn overview_shows_init_and_expands_counts() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut harness = session_view_harness(egui::vec2(1100.0, 900.0));
+        seed_overview(harness.state_mut());
+        harness.run_ok();
+
+        assert_eq!(count_labels(&harness, "beads"), 1);
+        assert_eq!(count_labels(&harness, "linear-server"), 1);
+        assert_eq!(count_labels(&harness, "2.1.288"), 1);
+        assert_eq!(count_labels(&harness, "agentium:hood-skirt-lazy"), 1);
+        assert_eq!(count_labels_containing(&harness, "background tasks"), 1);
+        assert_eq!(
+            count_labels(&harness, "Stopped · the next message starts it"),
+            1
+        );
+        assert_eq!(count_labels(&harness, "Edit"), 0, "lists start folded");
+
+        harness
+            .get(egui_kittest::kittest::By::new().label_contains(" tools"))
+            .click_accesskit();
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "Edit"), 1);
+
+        harness
+            .get(egui_kittest::kittest::By::new().label_contains(" tools"))
+            .click_accesskit();
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "Edit"), 0);
+    }
+
+    /// A remote session's CLI runs on its own host, so the Overview has no
+    /// process line to show for it.
+    #[test]
+    fn overview_hides_the_cli_process_of_a_remote_session() {
+        let mut harness = session_view_harness(egui::vec2(1100.0, 900.0));
+        seed_overview(harness.state_mut());
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "Process"), 1);
+
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .source = crate::session::SessionSource::Remote;
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "Process"), 0);
+    }
+
+    /// The Overview card with a failed MCP server chip and a plugin error,
+    /// the skills list expanded.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_session_overview() {
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1100.0, 760.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        seed_overview(harness.state_mut());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .toggle_overview_list(crate::inspector::OverviewList::Skills);
+        harness.run_ok();
+        harness.snapshot("session_overview");
+    }
+
     /// An empty session's two tabs: the chat under the tab strip, then
-    /// Details with the rail and the nine stub cards.
+    /// Details with the rail, an Overview with no init yet and the eight stub
+    /// cards.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_session_details_tab() {

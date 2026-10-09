@@ -726,6 +726,86 @@ pub struct SessionInfo {
     pub cwd: Option<String>,
     /// Session ID from Claude Code
     pub claude_session_id: Option<String>,
+    /// MCP servers the CLI configured, and whether each connected
+    pub mcp_servers: Vec<McpServerInfo>,
+    /// Skills the CLI loaded
+    pub skills: Vec<String>,
+    /// Plugins the CLI loaded
+    pub plugins: Vec<PluginInfo>,
+    /// Plugins that failed to load, and why
+    pub plugin_errors: Vec<PluginError>,
+    /// The output style in effect (e.g. "default")
+    pub output_style: Option<String>,
+    /// API beta flags the CLI enabled
+    pub betas: Vec<String>,
+    /// Where the CLI got its API credentials (e.g. "none", "user")
+    pub api_key_source: Option<String>,
+}
+
+/// One MCP server from the CLI's `system/init` message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServerInfo {
+    pub name: String,
+    pub status: McpServerStatus,
+    /// Where the server's definition came from: `sdk`, `plugin` or a config
+    /// scope. Absent on CLIs that predate the field.
+    pub source: Option<String>,
+}
+
+/// Whether an MCP server connected, as the CLI's `system/init` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpServerStatus {
+    Connected,
+    Failed,
+    NeedsAuth,
+    Pending,
+    Disabled,
+    /// A status this build doesn't know; shown as-is would need the string,
+    /// so it reads as unknown.
+    Unknown,
+}
+
+impl McpServerStatus {
+    /// Parse the CLI's `status` value. Unrecognised values are [`Self::Unknown`].
+    pub fn from_wire(s: &str) -> Self {
+        match s {
+            "connected" => McpServerStatus::Connected,
+            "failed" => McpServerStatus::Failed,
+            "needs-auth" => McpServerStatus::NeedsAuth,
+            "pending" => McpServerStatus::Pending,
+            "disabled" => McpServerStatus::Disabled,
+            _ => McpServerStatus::Unknown,
+        }
+    }
+}
+
+/// One plugin from the CLI's `system/init` message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginInfo {
+    pub name: String,
+    pub path: Option<String>,
+    pub version: Option<String>,
+}
+
+/// A plugin that failed to load, from `system/init`'s `plugin_errors`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginError {
+    pub plugin: String,
+    /// The error's `type` on the wire.
+    pub kind: String,
+    pub message: String,
+}
+
+/// Whether a session's Claude CLI process is running, and when the idle
+/// reaper will stop it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CliState {
+    /// A CLI process is running for the session. When false the session is
+    /// dormant and the next message starts (and resumes) a fresh one.
+    pub connected: bool,
+    /// When the idle reaper will stop the running CLI, in Unix seconds.
+    /// `None` while a turn or background work holds it, or when dormant.
+    pub reap_at: Option<u64>,
 }
 
 /// Status of a subagent spawned by the Task tool
@@ -1049,6 +1129,9 @@ pub enum DaveApiResponse {
     /// or cron resumed the session. It ends with a `QueryComplete` like any
     /// other turn.
     WakeupTurnStarted,
+    /// The session's CLI process started, stopped, or its idle deadline moved
+    /// (Claude backend only); the full current state.
+    CliState(CliState),
 }
 
 impl Message {

@@ -5,6 +5,10 @@
 //! card names its data source in small mono text, so a missing number is easy
 //! to trace back to where it should have come from.
 
+mod overview;
+
+pub use overview::SessionFacts;
+
 use crate::inspector::{InspectorSection, InspectorView, SessionInspector, SessionTab};
 use crate::ui::DaveAction;
 use notedeck::{tr, Localization};
@@ -71,7 +75,8 @@ fn tab_ui(ui: &mut egui::Ui, label: &str, keys: &str, selected: bool) -> egui::R
 
 /// The Details tab: the section rail (wide layouts only) and the card grid.
 pub fn inspector_ui(
-    inspector: &SessionInspector,
+    inspector: &mut SessionInspector,
+    facts: &SessionFacts<'_>,
     view: &mut InspectorView,
     i18n: &mut Localization,
     ui: &mut egui::Ui,
@@ -89,7 +94,7 @@ pub fn inspector_ui(
                 ui.visuals().widgets.noninteractive.bg_stroke,
             );
         }
-        card_grid_ui(inspector, view, i18n, ui);
+        card_grid_ui(inspector, facts, view, i18n, ui);
     });
 
     action
@@ -126,7 +131,8 @@ fn rail_ui(
 
 /// The section cards, as many columns as fit, scrolling vertically.
 fn card_grid_ui(
-    inspector: &SessionInspector,
+    inspector: &mut SessionInspector,
+    facts: &SessionFacts<'_>,
     view: &mut InspectorView,
     i18n: &mut Localization,
     ui: &mut egui::Ui,
@@ -153,8 +159,9 @@ fn card_grid_ui(
                         for row in InspectorSection::ALL.chunks(columns) {
                             ui.horizontal_top(|ui| {
                                 for &section in row {
-                                    let resp =
-                                        section_card_ui(inspector, section, card_width, i18n, ui);
+                                    let resp = section_card_ui(
+                                        inspector, facts, view, section, card_width, i18n, ui,
+                                    );
                                     if scroll_to == Some(section) {
                                         resp.scroll_to_me(Some(egui::Align::TOP));
                                     }
@@ -167,8 +174,11 @@ fn card_grid_ui(
 }
 
 /// One section's card: its title and data source over its body.
+#[allow(clippy::too_many_arguments)]
 fn section_card_ui(
-    inspector: &SessionInspector,
+    inspector: &mut SessionInspector,
+    facts: &SessionFacts<'_>,
+    view: &mut InspectorView,
     section: InspectorSection,
     width: f32,
     i18n: &mut Localization,
@@ -198,20 +208,26 @@ fn section_card_ui(
                         );
                     });
                 });
-                section_body_ui(inspector, section, i18n, ui);
+                section_body_ui(inspector, facts, view, section, i18n, ui);
             });
         })
         .response
 }
 
-/// A section's contents. Every section is a stub until its card fills it in.
+/// A section's contents. A section without a view yet is a stub until its
+/// card fills it in.
 fn section_body_ui(
-    _inspector: &SessionInspector,
-    _section: InspectorSection,
+    inspector: &mut SessionInspector,
+    facts: &SessionFacts<'_>,
+    view: &mut InspectorView,
+    section: InspectorSection,
     i18n: &mut Localization,
     ui: &mut egui::Ui,
 ) {
-    empty_state_ui(i18n, ui);
+    match section {
+        InspectorSection::Overview => overview::overview_ui(inspector, facts, view, i18n, ui),
+        _ => empty_state_ui(i18n, ui),
+    }
 }
 
 /// What a section shows before anything has reached it.

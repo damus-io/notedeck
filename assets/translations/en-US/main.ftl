@@ -151,6 +151,9 @@ Chats_dc22 = Chats
 # Label for clear cache button, Storage settings section
 Clear_cache_dccb = Clear cache
 
+# Dave session inspector overview row: the agent CLI's own session id
+CLI_session_5cca = CLI session
+
 # Hover text for editable zap amount
 Click_to_edit_0414 = Click to edit
 
@@ -213,6 +216,9 @@ Conversation_2b63 = Conversation
 
 # Fallback title when no direct chat partner is available
 Conversation_babb = Conversation
+
+# Dave session inspector: copy a value
+Copy_8cb4 = Copy
 
 # Button label to copy logs
 Copy_a688 = Copy
@@ -343,6 +349,9 @@ Details_cd6b = Details
 # Dave which-key tooltip: show the active session's Details tab (usage, background work, files, …)
 Details_tab_ffd0 = Details tab
 
+# Dave session inspector overview row
+Directory_7dd2 = Directory
+
 # Placeholder for hashtag input field
 Enter_the_desired_hashtags_here__for_multiple_space-separated_7a69 = Enter the desired hashtags here (for multiple space-separated)
 
@@ -406,6 +415,9 @@ Home_8c19 = Home
 # Button to go to the Horizon app
 Horizon_41be = Horizon
 
+# Dave session inspector overview row
+Host_7dd2 = Host
+
 # Age verification checkbox label
 I_confirm_that_I_am_at_least_17_years_old_b09f = I confirm that I am at least 17 years old
 
@@ -466,6 +478,9 @@ Keep_track_of_your_notes___replies_a334 = Keep track of your notes & replies
 # Confirmation prompt for database pruning
 Keeps_all_profiles_and_your_notes__The_smaller_database_will_be_used_on_next_restart_7b6b = Keeps all profiles and your notes. The smaller database will be used on next restart.
 
+# Dave session inspector overview row: where the CLI got its API credentials
+Key_source_512a = Key source
+
 # desc
 key_1dee = key
 
@@ -508,6 +523,9 @@ Leave_block_navigation_4bcb = Leave block navigation
 # Label for relay websocket connection limit setting
 Max_websocket_connections_8f75 = Max websocket connections:
 
+# Dave session inspector overview heading
+MCP_servers_c4b5 = MCP servers
+
 # Text shown on blurred media from unfollowed users
 Media_from_someone_you_don_t_follow_5611 = Media from someone you don't follow
 
@@ -519,6 +537,12 @@ Messages_are_end-to-end_encrypted__Add_your_nsec_in_Accounts_to_read_and_send_ch
 
 # Button to go to the messaging app
 Messaging_700d = Messaging
+
+# Dave session inspector overview row
+Mode_7dd2 = Mode
+
+# Dave session inspector overview row
+Model_7dd2 = Model
 
 # Tooltip for moving a column
 Moves_this_column_to_another_position_0d4b = Moves this column to another position
@@ -591,6 +615,9 @@ No_conversations_yet_52c0 = No conversations yet
 
 # label describing that there are no conversations yet
 No_conversations_yet_df0d = No conversations yet
+
+# Dave session inspector overview: shown before the CLI's system/init message arrives
+No_init_from_the_agent_yet_0cb8 = No init from the agent yet
 
 # Chat summary text when the conversation has no messages
 No_messages_yet_3205 = No messages yet
@@ -670,6 +697,9 @@ Other_65fa = Other
 # Label for others settings section
 Others_7267 = Others
 
+# Dave session inspector overview: label before the CLI's output style name
+output_style_f766 = output style
+
 # Placeholder text for NWC URI input
 Paste_your_NWC_URI_here_b471 = Paste your NWC URI here...
 
@@ -711,6 +741,9 @@ Previous_session_2425 = Previous session
 
 # Section header for private sync relays
 Private_sync_560b = Private sync
+
+# Dave session inspector overview row
+Process_7dd2 = Process
 
 # Button to go to the user's profile
 Profile_c0ba = Profile
@@ -823,6 +856,12 @@ Restart_to_apply_f761 = Restart to apply.
 # Heading shown above search results
 Results_41bf = Results
 
+# Dave session inspector: the agent CLI process is running and busy, so the idle reaper won't stop it
+Running___held_open_by_work_in_flight_e004 = Running · held open by work in flight
+
+# Dave session inspector: the agent CLI process is running and the idle reaper stops it at this time
+Running___stops_if_idle_until__time_07c0 = Running · stops if idle until {$time}
+
 # Heading for support section
 Running_into_a_bug_1796 = Running into a bug?
 
@@ -871,6 +910,9 @@ Select_All_a319 = Select All
 # Button label to send a zap
 Send_1ea4 = Send
 
+# Dave session inspector overview row
+Session_7dd2 = Session
+
 # Settings section for environment variables exported into agent sessions
 Session_environment_0dda = Session environment
 
@@ -913,6 +955,9 @@ Sort_replies_newest_first_b6c3 = Sort replies newest first:
 # Description for contact list column
 Source_the_last_note_for_each_user_in_your_contact_list_e157 = Source the last note for each user in your contact list
 
+# Dave session inspector overview row
+Status_7dd2 = Status
+
 # Description for hashtags column
 Stay_up_to_date_with_a_certain_hashtag_88e3 = Stay up to date with a certain hashtag
 
@@ -942,6 +987,9 @@ Stop_5b38 = Stop
 
 # Dave which-key tooltip: stop the active session's running turn
 Stop_the_turn_7ecf = Stop the turn
+
+# Dave session inspector: the agent CLI process is not running
+Stopped___the_next_message_starts_it_e76d = Stopped · the next message starts it
 
 # Label for storage settings section
 Storage_ed65 = Storage
@@ -981,6 +1029,9 @@ Theme_4aac = Theme:
 
 # Button to change the theme (light or dark)
 Theme_7e6b = Theme
+
+# Dave session inspector overview: host of a local session
+this_machine_21be = this machine
 
 # Column title for note thread view
 Thread_0f20 = Thread
@@ -1035,6 +1086,9 @@ View_as_092c = View as
 
 # Label for view folder button, Storage settings section
 View_folder_9742 = View folder
+
+# Dave session inspector: a Waiting session's scheduled wake-up time
+wake-up_at__time_a608 = wake-up at {$time}
 
 # Column title for wallet management
 Wallet_5e50 = Wallet
@@ -1097,6 +1151,30 @@ Got__count__results_for___query_85fb =
     }
 
 
+# Dave session inspector: count chip of the subagent types the agent can spawn
+count__agent_types_71c9 =
+    { $count ->
+        [one] {$count} agent type
+       *[other] {$count} agent types
+    }
+
+
+# Dave session inspector: what a Waiting session is parked on
+count__background_tasks_a409 =
+    { $count ->
+        [one] {$count} background task
+       *[other] {$count} background tasks
+    }
+
+
+# Dave session inspector: what a Waiting session is parked on
+count__crons_a409 =
+    { $count ->
+        [one] {$count} cron
+       *[other] {$count} crons
+    }
+
+
 # Summary line above a commit's diff: how many files it touches
 count__files_changed_23c6 =
     { $count ->
@@ -1110,6 +1188,30 @@ count__messages_28b1 =
     { $count ->
         [one] {$count} message
        *[other] {$count} messages
+    }
+
+
+# Dave session inspector: count chip of the agent's plugins
+count__plugins_6b9e =
+    { $count ->
+        [one] {$count} plugin
+       *[other] {$count} plugins
+    }
+
+
+# Dave session inspector: count chip of the agent's skills
+count__skills_c98d =
+    { $count ->
+        [one] {$count} skill
+       *[other] {$count} skills
+    }
+
+
+# Dave session inspector: count chip of the agent's tools
+count__tools_f94b =
+    { $count ->
+        [one] {$count} tool
+       *[other] {$count} tools
     }
 
 
