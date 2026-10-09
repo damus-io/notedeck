@@ -24,6 +24,7 @@ use crate::event::{self, BoardView, CardView};
 use crate::keys::{self, BoardPending, PanePending};
 use crate::nav::{NavPos, ReviewTarget};
 use crate::store::BoardAction;
+use crate::ui_tools::HeadwayUiTool;
 
 mod archived;
 mod card_actions;
@@ -102,6 +103,15 @@ pub struct BoardUiState {
     /// (`Memory::any_popup_open`), so this latch is how the keymap knows to
     /// leave keys (Esc, Enter, `a`) to an open menu.
     grid_menu_open: bool,
+    /// UI tools called since the last render pass ([`crate::ui_tools`]),
+    /// drained where the keymaps run ([`crate::keys::pane_tools`],
+    /// [`crate::keys::grid_tools`]) and dropped as the pass ends. Empty, and
+    /// unallocated, on any frame no tool was called.
+    queued_tools: Vec<HeadwayUiTool>,
+    /// Whether the current card's acted record has an agentium session, as
+    /// the last render pass left it ([`latch_tool_state`](Self::latch_tool_state)),
+    /// for `headway_open_session`'s availability, which has no board view.
+    current_has_session: bool,
     /// Whether the which-key strip of board keys is pinned open (toggled with
     /// `?`). It also shows, narrowed, while a `g` chord is pending regardless;
     /// see [`crate::keys::key_hints`].
@@ -494,6 +504,60 @@ impl BoardUiState {
         std::mem::take(&mut self.grid_menu_open)
     }
 
+    /// Read the [`grid_menu_open`](Self::grid_menu_open) latch without taking
+    /// it, for the key scopes chrome asks for before this frame's
+    /// [`crate::keys::board_keys`] takes it.
+    pub(crate) fn grid_menu_open(&self) -> bool {
+        self.grid_menu_open
+    }
+
+    /// Queue a UI tool for the next render pass to run where its key would.
+    pub(crate) fn queue_tool(&mut self, tool: HeadwayUiTool) {
+        self.queued_tools.push(tool);
+    }
+
+    /// Whether any UI tool is waiting for this pass.
+    pub(crate) fn has_queued_tools(&self) -> bool {
+        !self.queued_tools.is_empty()
+    }
+
+    /// Take the oldest queued UI tool, if any.
+    pub(crate) fn next_queued_tool(&mut self) -> Option<HeadwayUiTool> {
+        (!self.queued_tools.is_empty()).then(|| self.queued_tools.remove(0))
+    }
+
+    /// Drop the queued UI tools no view ran this pass: one the graph, an
+    /// open editor or the `X` composer had no use for, or one after a tool
+    /// that changed the view. A tool runs on the pass after its call or not
+    /// at all, never on some later, unrelated frame.
+    pub(crate) fn drop_queued_tools(&mut self) {
+        if !self.queued_tools.is_empty() {
+            tracing::debug!(
+                "headway: {} UI tool(s) had nothing to act on",
+                self.queued_tools.len()
+            );
+            self.queued_tools.clear();
+        }
+    }
+
+    /// Whether the current card's acted record has an agentium session, as
+    /// of the last render pass.
+    pub(crate) fn current_has_session(&self) -> bool {
+        self.current_has_session
+    }
+
+    /// As a render pass ends, note what UI tool availability needs from the
+    /// board view, which [`crate::ui_tools::available`] runs without: whether
+    /// the current card's acted record has an agentium session.
+    pub(crate) fn latch_tool_state(&mut self, view: &BoardView) {
+        let card = crate::ui_tools::key_view(self)
+            .and_then(|at| crate::ui_tools::current_card(self, at))
+            .and_then(|card| find_card(view, card));
+        self.current_has_session = card
+            .and_then(|(_, card)| self.acted_record(card))
+            .is_some_and(|record| record.fields.agentium.is_some());
+    }
+
     /// Whether the which-key strip is pinned open by `?`.
     pub(crate) fn key_hints_shown(&self) -> bool {
         self.show_key_hints
@@ -638,12 +702,18 @@ pub fn board_ui(
     // view; it closes before its keys could take this frame's Enter.
     state.retire_stale_reason();
     let keyed = keys::pane_keys(ui.ctx(), view, state);
+    // UI tools run where the keys do, after them; a frame with a key has no
+    // tool (chrome took the key to call one), so at most one of them edits.
+    let ran_tools = state.has_queued_tools();
+    let keyed = keyed.or(keys::pane_tools(ui.ctx(), view, state));
     state.retire_stale_notice(ui.ctx().cumulative_pass_nr());
-    if keyed.is_some() {
+    if keyed.is_some() || ran_tools {
         // The next card, and an `X`'s follow-up move, want a frame.
         ui.ctx().request_repaint();
     }
     let action = board_pane_ui(ui, theme, app_ctx, view, boards, sync, state);
+    state.drop_queued_tools();
+    state.latch_tool_state(view);
     // A key swallowed the frame's keys, so the pane's edit could only be a
     // drop landing in the same frame; the key wins, as it does over a drop in
     // the grid.
@@ -750,6 +820,8 @@ fn board_pane_ui(
     // stand down during a drag, but should a key action and a drop below ever
     // land in one frame, the drop overwrites it.
     let mut action: Option<BoardAction> = keys::board_keys(ui.ctx(), view, &view_filter, state);
+    // The UI tools left for the grid run where its keys did (see `board_ui`).
+    action = action.or(keys::grid_tools(ui.ctx(), view, &view_filter, state));
     // Drawn after the keys, so a grid `X` shows its composer this frame.
     reason_bar_ui(ui, theme, state);
     // The card a click landed on this frame; opens the detail view next frame.
@@ -924,6 +996,8 @@ pub fn unfolded_board_ui(
     state: &mut BoardUiState,
     message: &str,
 ) {
+    // No board, so no view a UI tool could act on.
+    state.drop_queued_tools();
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {

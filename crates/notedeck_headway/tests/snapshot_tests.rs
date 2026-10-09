@@ -6240,3 +6240,71 @@ fn snapshot_switcher_same_slug_boards() {
     harness.snapshot("headway_switcher_same_slug");
     phase!("done");
 }
+
+/// Call Headway's UI tool `name` with `args` the way chrome's keymap and
+/// macros do, through [`App::call_ui_tool`].
+fn call_ui_tool(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    name: &str,
+    args: serde_json::Value,
+) -> notedeck::ToolOutcome {
+    let state = harness.state_mut();
+    let app_ctx = &mut state.notedeck.app_context();
+    state.headway.call_ui_tool(app_ctx, name, &args)
+}
+
+/// Behavioural (no lavapipe): Headway's UI tools, called by name through
+/// [`App::call_ui_tool`] as chrome calls them, drive the real board: a cursor
+/// move lands the cursor, `headway_open_card` opens its detail and
+/// `headway_back` leaves it. Each is available only where it acts, and bad
+/// arguments come back as an error rather than a queued call.
+#[test]
+fn ui_tools_drive_the_board_through_call_ui_tool() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let headway = &harness.state().headway;
+    let specs = headway.ui_tools();
+    assert!(specs.iter().all(|s| s.kind() == notedeck::ToolKind::Ui));
+    assert!(specs.iter().any(|s| s.name() == "headway_open_explainer"));
+    assert!(headway.ui_tool_available("headway_cursor_move"));
+    assert!(!headway.ui_tool_available("headway_open_card"));
+    assert!(!headway.ui_tool_available("headway_back"));
+
+    let bad = call_ui_tool(
+        &mut harness,
+        "headway_cursor_move",
+        serde_json::json!({ "to": "sideways" }),
+    );
+    assert!(matches!(bad, notedeck::ToolOutcome::Error(_)));
+
+    let moved = call_ui_tool(
+        &mut harness,
+        "headway_cursor_move",
+        serde_json::json!({ "to": "down" }),
+    );
+    assert!(matches!(
+        moved,
+        notedeck::ToolOutcome::Data(serde_json::Value::Null)
+    ));
+    harness.run_ok();
+    assert!(harness.state().headway.cursor().is_some());
+    assert!(
+        harness
+            .state()
+            .headway
+            .ui_tool_available("headway_open_card")
+    );
+
+    call_ui_tool(&mut harness, "headway_open_card", serde_json::Value::Null);
+    wait_for_label(&mut harness, "← Back");
+    assert!(harness.state().headway.ui_tool_available("headway_back"));
+    assert!(
+        !harness
+            .state()
+            .headway
+            .ui_tool_available("headway_open_card")
+    );
+
+    call_ui_tool(&mut harness, "headway_back", serde_json::Value::Null);
+    wait_for_absent(&mut harness, "← Back");
+    wait_for_label(&mut harness, "7 cards · 5 columns");
+}

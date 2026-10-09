@@ -30,6 +30,14 @@
 //! shows over the grid, and [`board_keys`], from the grid's own pane as it
 //! starts. They allocate nothing of their own (bar what a key sends: the
 //! comment and session message an `X` posts, a session open).
+//!
+//! A key goes in two steps: a per-view mapping from the press to the
+//! [`HeadwayUiTool`] it stands for ([`board_key_tool`], [`review_key_tool`],
+//! [`detail_key_tool`]), then that view's `apply_*` ([`apply_grid_tool`],
+//! [`apply_pane_tool`], [`apply_detail_tool`]). The same tools, called by name
+//! through [`crate::ui_tools`], are queued and run by [`pane_tools`] and
+//! [`grid_tools`] right after the keymaps, through the same `apply_*`. Only
+//! the chord's `g`, `?` and the conditional `Esc`s are the keymaps' own.
 
 use egui::{Key, Modifiers};
 use nostrdb_net::NoteId;
@@ -44,6 +52,7 @@ use crate::ui::{
     BoardUiState, CardStep, DetailScroll, QueueNotice, QueueScope, SessionOpen, ViewFilter,
     filter_field_id, find_card, reason_field_id,
 };
+use crate::ui_tools::HeadwayUiTool;
 
 /// Chord steps the board grid can be waiting on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -470,6 +479,30 @@ pub(crate) fn key_hints_ui(ui: &mut egui::Ui, theme: &ColorTheme, strip: HintStr
     notedeck_ui::keybind_hint::key_hints_ui(ui, theme.text_muted, hints);
 }
 
+/// The [`HeadwayUiTool`] a bare press means on the grid, if any: the card
+/// actions, then the grid's own navigation. `g`, `?` and `Esc` are the
+/// keymap's own (a chord, the strip, the conditional clear), not tools.
+fn board_key_tool(press: KeyPress) -> Option<HeadwayUiTool> {
+    if let Some(action) = card_action(press) {
+        return Some(HeadwayUiTool::Card { action, card: None });
+    }
+    Some(match (press.key, press.modifiers.shift) {
+        (Key::J, false) => HeadwayUiTool::Cursor(CursorMove::Down),
+        (Key::K, false) => HeadwayUiTool::Cursor(CursorMove::Up),
+        (Key::H, false) => HeadwayUiTool::Cursor(CursorMove::Left),
+        (Key::L, false) => HeadwayUiTool::Cursor(CursorMove::Right),
+        (Key::G, true) => HeadwayUiTool::Cursor(CursorMove::Last),
+        (Key::C, false) => HeadwayUiTool::AddCard,
+        (Key::Slash, false) => HeadwayUiTool::FocusFilter,
+        (Key::H, true) => HeadwayUiTool::MoveCard(CardMove::Across(Side::Left)),
+        (Key::L, true) => HeadwayUiTool::MoveCard(CardMove::Across(Side::Right)),
+        (Key::J, true) => HeadwayUiTool::MoveCard(CardMove::Within(Vertical::Down)),
+        (Key::K, true) => HeadwayUiTool::MoveCard(CardMove::Within(Vertical::Up)),
+        (Key::R, true) => HeadwayUiTool::ReviewQueue,
+        _ => return None,
+    })
+}
+
 /// Read this frame's bare key press and apply it to the grid. Runs before the
 /// grid lays out. Returns a board edit for the app to apply (a keyboard card
 /// move, an archive, a `D`); navigation mutates `state` directly.
@@ -500,7 +533,7 @@ pub(crate) fn board_keys(
     }
 
     if press.key == Key::Escape {
-        escape(ctx, state, pending);
+        escape(ctx, state);
         return None;
     }
 
@@ -509,65 +542,30 @@ pub(crate) fn board_keys(
     if pending.is_some() {
         state.chord.clear();
         if is_key(press, Key::G) {
-            move_cursor(view, filter, state, CursorMove::First);
+            let first = HeadwayUiTool::Cursor(CursorMove::First);
+            apply_grid_tool(ctx, view, filter, state, &first);
         }
         chord::swallow_key_events(ctx);
         return None;
     }
 
-    let mut action = None;
-    if let Some(card_action) = card_action(press) {
-        let card = state
-            .cursor()
-            .filter(|&c| cursor::locate(view, filter, c).is_some());
-        match (card, card_action) {
-            (Some(card), _) => {
-                action = apply_card_action(
-                    ctx,
-                    view,
-                    state,
-                    card,
-                    card_action,
-                    ActionView::Grid(filter),
-                )
-            }
-            // With no cursor, `n`/`p` land it on the first card as `j`/`k`
-            // do; the other actions have no card to act on.
-            (None, CardAction::Step(step)) => move_cursor(view, filter, state, step_move(step)),
-            (None, _) => {}
+    let action = match (press.key, press.modifiers.shift) {
+        (Key::G, false) => {
+            let now = ctx.input(|i| i.time);
+            state.chord.begin(BoardPending::G, now);
+            None
         }
-    } else {
-        match (press.key, press.modifiers.shift) {
-            (Key::J, false) => move_cursor(view, filter, state, CursorMove::Down),
-            (Key::K, false) => move_cursor(view, filter, state, CursorMove::Up),
-            (Key::H, false) => move_cursor(view, filter, state, CursorMove::Left),
-            (Key::L, false) => move_cursor(view, filter, state, CursorMove::Right),
-            (Key::G, false) => {
-                let now = ctx.input(|i| i.time);
-                state.chord.begin(BoardPending::G, now);
-            }
-            (Key::G, true) => move_cursor(view, filter, state, CursorMove::Last),
-            (Key::C, false) => add_card_at_cursor(view, filter, state),
-            (Key::Slash, false) => ctx.memory_mut(|m| m.request_focus(filter_field_id())),
-            // `?` is Shift+/: a logical `Questionmark` from most layouts, or
-            // the physical slash with Shift from the rest.
-            (Key::Questionmark, _) | (Key::Slash, true) => state.toggle_key_hints(),
-            (Key::H, true) => action = move_card(view, filter, state, CardMove::Across(Side::Left)),
-            (Key::L, true) => {
-                action = move_card(view, filter, state, CardMove::Across(Side::Right))
-            }
-            (Key::J, true) => {
-                action = move_card(view, filter, state, CardMove::Within(Vertical::Down))
-            }
-            (Key::K, true) => {
-                action = move_card(view, filter, state, CardMove::Within(Vertical::Up))
-            }
-            (Key::R, true) => {
-                state.open_review_queue(view, QueueScope::Board, ctx.input(|i| i.time))
-            }
-            _ => return None,
+        // `?` is Shift+/: a logical `Questionmark` from most layouts, or
+        // the physical slash with Shift from the rest.
+        (Key::Questionmark, _) | (Key::Slash, true) => {
+            state.toggle_key_hints();
+            None
         }
-    }
+        _ => {
+            let tool = board_key_tool(press)?;
+            apply_grid_tool(ctx, view, filter, state, &tool)
+        }
+    };
 
     // Load-bearing for `/` and `X`: the filter field and the reason composer
     // lay out focused later this frame and would otherwise type the key. (`c`'s
@@ -575,6 +573,114 @@ pub(crate) fn board_keys(
     // safe, but shouldn't depend on it.)
     chord::swallow_key_events(ctx);
     action
+}
+
+/// Apply `tool` to the grid: what its key does there. Returns the board edit
+/// it makes, if any. A tool the grid has no use for (a pane's scroll, `Back`)
+/// does nothing.
+///
+/// A card tool acts on the cursor card. One naming a card moves the cursor
+/// to it first, so it acts as the key would with the cursor there; a named
+/// card the grid doesn't show is logged and dropped.
+pub(crate) fn apply_grid_tool(
+    ctx: &egui::Context,
+    view: &BoardView,
+    filter: &ViewFilter,
+    state: &mut BoardUiState,
+    tool: &HeadwayUiTool,
+) -> Option<BoardAction> {
+    match tool {
+        HeadwayUiTool::Card { action, card } => {
+            match named_card(view, card.as_deref()) {
+                None => {}
+                Some(Some(named)) if cursor::locate(view, filter, named).is_some() => {
+                    state.set_cursor(named)
+                }
+                Some(_) => {
+                    tracing::warn!("headway: UI tool card isn't showing on the grid; dropped");
+                    return None;
+                }
+            }
+            let card = state
+                .cursor()
+                .filter(|&c| cursor::locate(view, filter, c).is_some());
+            match (card, *action) {
+                (Some(card), action) => {
+                    return apply_card_action(
+                        ctx,
+                        view,
+                        state,
+                        card,
+                        action,
+                        ActionView::Grid(filter),
+                    );
+                }
+                // With no cursor, `n`/`p` land it on the first card as `j`/`k`
+                // do; the other actions have no card to act on.
+                (None, CardAction::Step(step)) => move_cursor(view, filter, state, step_move(step)),
+                (None, _) => {}
+            }
+        }
+        HeadwayUiTool::Cursor(mv) => move_cursor(view, filter, state, *mv),
+        HeadwayUiTool::MoveCard(mv) => return move_card(view, filter, state, *mv),
+        HeadwayUiTool::AddCard => add_card_at_cursor(view, filter, state),
+        HeadwayUiTool::FocusFilter => ctx.memory_mut(|m| m.request_focus(filter_field_id())),
+        HeadwayUiTool::ReviewQueue => {
+            state.open_review_queue(view, QueueScope::Board, ctx.input(|i| i.time))
+        }
+        HeadwayUiTool::Clear => {
+            clear_grid(state);
+        }
+        HeadwayUiTool::Scroll(_)
+        | HeadwayUiTool::Comment
+        | HeadwayUiTool::SendComments
+        | HeadwayUiTool::Back => {}
+    }
+    None
+}
+
+/// The card a card tool names: `None` for a tool on the current card, else
+/// `Some` of the card on `view` its `headway:<board>/<word-id>` reference
+/// resolves to, `Some(None)` when it names no card on this board.
+fn named_card(view: &BoardView, card: Option<&str>) -> Option<Option<NoteId>> {
+    let card = card?;
+    Some(
+        headway::wordid::parse_ref(card)
+            .filter(|(board, _)| *board == view.id)
+            .and_then(|(_, words)| headway::event::resolve_card_by_wordid(view, words)),
+    )
+}
+
+/// Run the UI tools queued on `state` against the grid
+/// ([`apply_grid_tool`]), right after [`board_keys`] and under the same
+/// rules: none while an inline editor, the archived sheet or the `X`
+/// composer has the keyboard, or the graph shows. Stops at a tool that opens
+/// a pane over the grid; what's left is dropped as the frame ends
+/// ([`BoardUiState::drop_queued_tools`]). Returns the first board edit.
+pub(crate) fn grid_tools(
+    ctx: &egui::Context,
+    view: &BoardView,
+    filter: &ViewFilter,
+    state: &mut BoardUiState,
+) -> Option<BoardAction> {
+    let mut action = None;
+    while !state.keys_blocked() && state.selected().is_none() && state.graph_epic().is_none() {
+        let Some(tool) = state.next_queued_tool() else {
+            break;
+        };
+        let edit = apply_grid_tool(ctx, view, filter, state, &tool);
+        action = first_edit(action, edit);
+    }
+    action
+}
+
+/// Keep the first board edit of a frame's tools: a frame applies one, as a
+/// frame of keys makes at most one. A later one is logged and dropped.
+fn first_edit(kept: Option<BoardAction>, edit: Option<BoardAction>) -> Option<BoardAction> {
+    if kept.is_some() && edit.is_some() {
+        tracing::warn!("headway: a second board edit from UI tools in one frame was dropped");
+    }
+    kept.or(edit)
 }
 
 /// The keys of whatever shows over the grid: the `X` composer's
@@ -644,7 +750,8 @@ pub(crate) fn review_pane_keys(
     let press = ctx.input(chord::first_key_press)?;
     if let Some(pages) = page_scroll(press) {
         state.pane_chord.clear();
-        state.scroll_review(PatchScroll::Pages(pages));
+        let scroll = HeadwayUiTool::Scroll(PaneScroll::Pages(pages));
+        apply_pane_tool(ctx, view, state, mode, &scroll);
         chord::swallow_key_events(ctx);
         return None;
     }
@@ -655,72 +762,137 @@ pub(crate) fn review_pane_keys(
     if pending.is_some() {
         state.pane_chord.clear();
         if is_key(press, Key::G) {
-            state.scroll_review(PatchScroll::Top);
+            let top = HeadwayUiTool::Scroll(PaneScroll::Top);
+            apply_pane_tool(ctx, view, state, mode, &top);
         }
         chord::swallow_key_events(ctx);
         return None;
     }
 
-    let card = match mode {
-        PaneMode::Queue => state.queue_card(),
-        PaneMode::Plain => state.review_card(),
-    };
-    let mut action = None;
-    if let Some(card_action) = card_action(press) {
-        let at = match mode {
-            PaneMode::Queue => ActionView::Queue,
-            PaneMode::Plain => ActionView::Pane,
-        };
-        // The queue's cards are a snapshot, so its card can have left the
-        // board since (archived or moved away elsewhere). Stepping off it
-        // still works; acting on it only says it's gone, rather than raising
-        // an edit the store would drop and stepping on as if it had landed.
-        let on_board = card.filter(|&c| find_card(view, c).is_some());
-        match (on_board, card_action, mode) {
-            (Some(card), _, _) => {
-                action = apply_card_action(ctx, view, state, card, card_action, at);
-            }
-            (None, CardAction::Step(step), PaneMode::Queue) => state.step_queue(step),
-            (None, _, _) if card.is_some() => {
-                state.set_notice(QueueNotice::CardGone, ctx.input(|i| i.time));
-            }
-            (None, _, _) => {}
-        }
-    } else {
-        match (press.key, press.modifiers.shift) {
-            (Key::J, false) => state.scroll_review(PatchScroll::Rows(1)),
-            (Key::K, false) => state.scroll_review(PatchScroll::Rows(-1)),
-            (Key::G, false) => state
+    let action = match (press.key, press.modifiers.shift) {
+        (Key::G, false) => {
+            state
                 .pane_chord
-                .begin(PanePending::G, ctx.input(|i| i.time)),
-            (Key::G, true) => state.scroll_review(PatchScroll::Bottom),
-            (Key::C, shift) => {
-                if let Some(card) = card.filter(|&c| find_card(view, c).is_some()) {
-                    let now = ctx.input(|i| i.time);
-                    if shift {
-                        action = state.send_review_comments(view, card, now);
-                    } else {
-                        state.focus_review_composer(view, card, now);
-                    }
-                }
-            }
-            (Key::CloseBracket, false) => state.scroll_review(PatchScroll::NextFile),
-            (Key::OpenBracket, false) => state.scroll_review(PatchScroll::PrevFile),
-            (Key::Questionmark, _) | (Key::Slash, true) => state.toggle_key_hints(),
-            (Key::Q, false) | (Key::Escape, _) => match (mode, card) {
-                (PaneMode::Queue, _) => {
-                    state.close_queue(view);
-                }
-                (PaneMode::Plain, Some(card)) => state.back_to_detail(card),
-                (PaneMode::Plain, None) => {}
-            },
-            _ => return None,
+                .begin(PanePending::G, ctx.input(|i| i.time));
+            None
         }
-    }
+        (Key::Questionmark, _) | (Key::Slash, true) => {
+            state.toggle_key_hints();
+            None
+        }
+        _ => {
+            let tool = review_key_tool(press)?;
+            apply_pane_tool(ctx, view, state, mode, &tool)
+        }
+    };
     // Load-bearing for `X`: the composer takes focus as it lays out this
     // frame and would otherwise type the X.
     chord::swallow_key_events(ctx);
     action
+}
+
+/// The [`HeadwayUiTool`] a bare press means in a review pane, the queue's or
+/// not, if any: the card actions, then scrolling and commenting on the diff
+/// and backing out. `g` and `?` are the keymap's own.
+fn review_key_tool(press: KeyPress) -> Option<HeadwayUiTool> {
+    if let Some(action) = card_action(press) {
+        return Some(HeadwayUiTool::Card { action, card: None });
+    }
+    Some(match (press.key, press.modifiers.shift) {
+        (Key::J, false) => HeadwayUiTool::Scroll(PaneScroll::Rows(1)),
+        (Key::K, false) => HeadwayUiTool::Scroll(PaneScroll::Rows(-1)),
+        (Key::G, true) => HeadwayUiTool::Scroll(PaneScroll::Bottom),
+        (Key::C, false) => HeadwayUiTool::Comment,
+        (Key::C, true) => HeadwayUiTool::SendComments,
+        (Key::CloseBracket, false) => HeadwayUiTool::Scroll(PaneScroll::NextFile),
+        (Key::OpenBracket, false) => HeadwayUiTool::Scroll(PaneScroll::PrevFile),
+        (Key::Q, false) | (Key::Escape, _) => HeadwayUiTool::Back,
+        _ => return None,
+    })
+}
+
+/// Apply `tool` to the review pane `mode` shows: what its key does there.
+/// Returns the board edit it makes, if any. A tool the pane has no use for
+/// (a grid move, the review queue) does nothing.
+///
+/// A card tool acts on the pane's card. One naming another card is logged
+/// and dropped: the pane shows one card.
+pub(crate) fn apply_pane_tool(
+    ctx: &egui::Context,
+    view: &BoardView,
+    state: &mut BoardUiState,
+    mode: PaneMode,
+    tool: &HeadwayUiTool,
+) -> Option<BoardAction> {
+    let card = match mode {
+        PaneMode::Queue => state.queue_card(),
+        PaneMode::Plain => state.review_card(),
+    };
+    match tool {
+        HeadwayUiTool::Card {
+            action,
+            card: named,
+        } => {
+            if !names_current(view, named.as_deref(), card) {
+                return None;
+            }
+            let at = match mode {
+                PaneMode::Queue => ActionView::Queue,
+                PaneMode::Plain => ActionView::Pane,
+            };
+            // The queue's cards are a snapshot, so its card can have left the
+            // board since (archived or moved away elsewhere). Stepping off it
+            // still works; acting on it only says it's gone, rather than raising
+            // an edit the store would drop and stepping on as if it had landed.
+            let on_board = card.filter(|&c| find_card(view, c).is_some());
+            match (on_board, *action, mode) {
+                (Some(card), action, _) => {
+                    return apply_card_action(ctx, view, state, card, action, at);
+                }
+                (None, CardAction::Step(step), PaneMode::Queue) => state.step_queue(step),
+                (None, _, _) if card.is_some() => {
+                    state.set_notice(QueueNotice::CardGone, ctx.input(|i| i.time));
+                }
+                (None, _, _) => {}
+            }
+        }
+        HeadwayUiTool::Scroll(scroll) => state.scroll_review(scroll.patch()),
+        HeadwayUiTool::Comment | HeadwayUiTool::SendComments => {
+            let card = card.filter(|&c| find_card(view, c).is_some())?;
+            let now = ctx.input(|i| i.time);
+            if *tool == HeadwayUiTool::SendComments {
+                return state.send_review_comments(view, card, now);
+            }
+            state.focus_review_composer(view, card, now);
+        }
+        HeadwayUiTool::Back => match (mode, card) {
+            (PaneMode::Queue, _) => {
+                state.close_queue(view);
+            }
+            (PaneMode::Plain, Some(card)) => state.back_to_detail(card),
+            (PaneMode::Plain, None) => {}
+        },
+        HeadwayUiTool::Cursor(_)
+        | HeadwayUiTool::MoveCard(_)
+        | HeadwayUiTool::AddCard
+        | HeadwayUiTool::FocusFilter
+        | HeadwayUiTool::ReviewQueue
+        | HeadwayUiTool::Clear => {}
+    }
+    None
+}
+
+/// Whether a card tool over a pane or the detail may act: it names no card,
+/// or names `current`, the one showing. Logs the refusal.
+fn names_current(view: &BoardView, named: Option<&str>, current: Option<NoteId>) -> bool {
+    match named_card(view, named) {
+        None => true,
+        Some(named) if named.is_some() && named == current => true,
+        Some(_) => {
+            tracing::warn!("headway: UI tool card isn't the one showing; dropped");
+            false
+        }
+    }
 }
 
 /// The card detail's keys: the card actions, then scrolling it by a line
@@ -750,7 +922,8 @@ pub(crate) fn detail_keys(
     let press = ctx.input(chord::first_key_press)?;
     if let Some(pages) = page_scroll(press) {
         state.pane_chord.clear();
-        state.scroll_detail(DetailScroll::Pages(pages));
+        let scroll = HeadwayUiTool::Scroll(PaneScroll::Pages(pages));
+        apply_detail_tool(ctx, view, state, card, &scroll);
         chord::swallow_key_events(ctx);
         return None;
     }
@@ -765,33 +938,183 @@ pub(crate) fn detail_keys(
     if pending.is_some() {
         state.pane_chord.clear();
         if is_key(press, Key::G) {
-            state.scroll_detail(DetailScroll::Top);
+            let top = HeadwayUiTool::Scroll(PaneScroll::Top);
+            apply_detail_tool(ctx, view, state, card, &top);
         }
         chord::swallow_key_events(ctx);
         return None;
     }
 
-    let mut action = None;
-    if let Some(card_action) = card_action(press) {
-        action = apply_card_action(ctx, view, state, card, card_action, ActionView::Detail);
-    } else {
-        match (press.key, press.modifiers.shift) {
-            (Key::J, false) => state.scroll_detail(DetailScroll::Rows(1)),
-            (Key::K, false) => state.scroll_detail(DetailScroll::Rows(-1)),
-            (Key::G, false) => state
+    let action = match (press.key, press.modifiers.shift) {
+        (Key::G, false) => {
+            state
                 .pane_chord
-                .begin(PanePending::G, ctx.input(|i| i.time)),
-            (Key::G, true) => state.scroll_detail(DetailScroll::Bottom),
-            (Key::Questionmark, _) | (Key::Slash, true) => state.toggle_key_hints(),
-            (Key::R, true) => {
-                state.open_review_queue(view, QueueScope::Epic(card), ctx.input(|i| i.time))
-            }
-            (Key::Q, false) | (Key::Escape, _) => state.leave_card(),
-            _ => return None,
+                .begin(PanePending::G, ctx.input(|i| i.time));
+            None
         }
-    }
+        (Key::Questionmark, _) | (Key::Slash, true) => {
+            state.toggle_key_hints();
+            None
+        }
+        _ => {
+            let tool = detail_key_tool(press)?;
+            apply_detail_tool(ctx, view, state, card, &tool)
+        }
+    };
     chord::swallow_key_events(ctx);
     action
+}
+
+/// The [`HeadwayUiTool`] a bare press means in the card detail, if any: the
+/// card actions, then scrolling, the card's review queue and leaving. `g`,
+/// `?` and an `Esc` out of a field are the keymap's own.
+fn detail_key_tool(press: KeyPress) -> Option<HeadwayUiTool> {
+    if let Some(action) = card_action(press) {
+        return Some(HeadwayUiTool::Card { action, card: None });
+    }
+    Some(match (press.key, press.modifiers.shift) {
+        (Key::J, false) => HeadwayUiTool::Scroll(PaneScroll::Rows(1)),
+        (Key::K, false) => HeadwayUiTool::Scroll(PaneScroll::Rows(-1)),
+        (Key::G, true) => HeadwayUiTool::Scroll(PaneScroll::Bottom),
+        (Key::R, true) => HeadwayUiTool::ReviewQueue,
+        (Key::Q, false) | (Key::Escape, _) => HeadwayUiTool::Back,
+        _ => return None,
+    })
+}
+
+/// Apply `tool` to the detail of `card`: what its key does there. Returns
+/// the board edit it makes, if any. A tool the detail has no use for (a grid
+/// move, a diff's file step, a review comment) does nothing.
+///
+/// A card tool acts on `card`. One naming another card is logged and
+/// dropped: the detail shows one card.
+pub(crate) fn apply_detail_tool(
+    ctx: &egui::Context,
+    view: &BoardView,
+    state: &mut BoardUiState,
+    card: NoteId,
+    tool: &HeadwayUiTool,
+) -> Option<BoardAction> {
+    match tool {
+        HeadwayUiTool::Card {
+            action,
+            card: named,
+        } => {
+            if names_current(view, named.as_deref(), Some(card)) {
+                return apply_card_action(ctx, view, state, card, *action, ActionView::Detail);
+            }
+        }
+        HeadwayUiTool::Scroll(scroll) => {
+            if let Some(scroll) = scroll.detail() {
+                state.scroll_detail(scroll);
+            }
+        }
+        HeadwayUiTool::ReviewQueue => {
+            state.open_review_queue(view, QueueScope::Epic(card), ctx.input(|i| i.time))
+        }
+        HeadwayUiTool::Back => state.leave_card(),
+        HeadwayUiTool::Cursor(_)
+        | HeadwayUiTool::MoveCard(_)
+        | HeadwayUiTool::AddCard
+        | HeadwayUiTool::FocusFilter
+        | HeadwayUiTool::Clear
+        | HeadwayUiTool::Comment
+        | HeadwayUiTool::SendComments => {}
+    }
+    None
+}
+
+/// What shows over the grid, for [`pane_tools`]: the queue, a plain review
+/// pane, or the detail of a card on the board.
+#[derive(Clone, Copy)]
+enum ToolPane {
+    Review(PaneMode),
+    Detail(NoteId),
+}
+
+/// The pane [`pane_keys`] would hand this frame's key to, if any.
+fn tool_pane(view: &BoardView, state: &BoardUiState) -> Option<ToolPane> {
+    if state.rejecting() || state.graph_epic().is_some() {
+        return None;
+    }
+    if state.queue_open() {
+        return Some(ToolPane::Review(PaneMode::Queue));
+    }
+    if state.review_card().is_some() {
+        return Some(ToolPane::Review(PaneMode::Plain));
+    }
+    state
+        .selected()
+        .filter(|&c| find_card(view, c).is_some())
+        .map(ToolPane::Detail)
+}
+
+/// Run the UI tools queued on `state` against whatever shows over the grid
+/// ([`apply_pane_tool`], [`apply_detail_tool`]), right after [`pane_keys`].
+/// Each runs in the pane showing as it's taken, so after one that backs out
+/// to the grid the rest are left for [`grid_tools`]. Returns the first board
+/// edit.
+pub(crate) fn pane_tools(
+    ctx: &egui::Context,
+    view: &BoardView,
+    state: &mut BoardUiState,
+) -> Option<BoardAction> {
+    let mut action = None;
+    while let Some(pane) = tool_pane(view, state) {
+        let Some(tool) = state.next_queued_tool() else {
+            break;
+        };
+        let edit = match pane {
+            ToolPane::Review(mode) => apply_pane_tool(ctx, view, state, mode, &tool),
+            ToolPane::Detail(card) => apply_detail_tool(ctx, view, state, card, &tool),
+        };
+        action = first_edit(action, edit);
+    }
+    action
+}
+
+/// A scroll of a review pane's diff or the card detail, as a key or
+/// `headway_scroll`/`headway_step_file` asks for it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PaneScroll {
+    /// By this many lines (negative scrolls up): a diff's rows, the
+    /// detail's `j`/`k` steps.
+    Rows(i32),
+    /// By this many pages (negative scrolls up).
+    Pages(f32),
+    /// To the top (`gg`).
+    Top,
+    /// To the bottom (`G`).
+    Bottom,
+    /// A diff's next file (`]`); nothing in the detail.
+    NextFile,
+    /// A diff's previous file (`[`); nothing in the detail.
+    PrevFile,
+}
+
+impl PaneScroll {
+    /// The diff scroll this is.
+    fn patch(self) -> PatchScroll {
+        match self {
+            Self::Rows(rows) => PatchScroll::Rows(rows as isize),
+            Self::Pages(pages) => PatchScroll::Pages(pages),
+            Self::Top => PatchScroll::Top,
+            Self::Bottom => PatchScroll::Bottom,
+            Self::NextFile => PatchScroll::NextFile,
+            Self::PrevFile => PatchScroll::PrevFile,
+        }
+    }
+
+    /// The detail scroll this is, `None` for a file step.
+    fn detail(self) -> Option<DetailScroll> {
+        Some(match self {
+            Self::Rows(rows) => DetailScroll::Rows(rows),
+            Self::Pages(pages) => DetailScroll::Pages(pages),
+            Self::Top => DetailScroll::Top,
+            Self::Bottom => DetailScroll::Bottom,
+            Self::NextFile | Self::PrevFile => return None,
+        })
+    }
 }
 
 /// The page scroll a press asks for, in pages (negative scrolls up): a whole
@@ -863,8 +1186,8 @@ fn move_cursor(view: &BoardView, filter: &ViewFilter, state: &mut BoardUiState, 
 }
 
 /// A keyboard card move: Shift+H/L across columns, Shift+J/K within one.
-#[derive(Clone, Copy, Debug)]
-enum CardMove {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CardMove {
     /// To the neighbouring column ([`cursor::move_across`]).
     Across(Side),
     /// Past the neighbouring visible card ([`cursor::move_within`]).
@@ -944,17 +1267,25 @@ fn add_card_at_cursor(view: &BoardView, filter: &ViewFilter, state: &mut BoardUi
     state.open_add_card(col);
 }
 
-/// Esc drops the cursor, any pending chord and the which-key strip. It's
-/// consumed only when there was one to drop, so a bare Esc still reaches chrome
-/// (which toggles the side menu).
-fn escape(ctx: &egui::Context, state: &mut BoardUiState, pending: Option<BoardPending>) {
-    if state.cursor().is_none() && pending.is_none() && !state.key_hints_shown() {
-        return;
+/// Esc drops the cursor, any pending chord and the which-key strip
+/// ([`clear_grid`]). It's consumed only when there was one to drop, so a bare
+/// Esc still reaches chrome (which toggles the side menu).
+fn escape(ctx: &egui::Context, state: &mut BoardUiState) {
+    if clear_grid(state) {
+        ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+    }
+}
+
+/// Drop the grid's cursor, any pending chord and the which-key strip: the
+/// grid's `Esc`, and `headway_clear`. Returns whether there was one to drop.
+fn clear_grid(state: &mut BoardUiState) -> bool {
+    if state.cursor().is_none() && state.chord.pending().is_none() && !state.key_hints_shown() {
+        return false;
     }
     state.clear_cursor();
     state.hide_key_hints();
     state.chord.clear();
-    ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+    true
 }
 
 #[cfg(test)]
@@ -1000,7 +1331,8 @@ mod tests {
 
     /// A harness that runs the keymaps over [`grid`] each frame, unfiltered,
     /// as [`crate::ui::board_ui`] does: a queue route's re-snapshot, then
-    /// [`pane_keys`], then [`board_keys`] when no pane shows over the grid.
+    /// [`pane_keys`] and [`pane_tools`], then [`board_keys`] and
+    /// [`grid_tools`] when no pane shows over the grid.
     fn keys_harness(field: Option<egui::Id>) -> Harness<'static, KeysHarness> {
         let mut harness = Harness::new_ui_state(
             |ui, h: &mut KeysHarness| {
@@ -1016,12 +1348,20 @@ mod tests {
                 let showed_pane = pane(&h.state);
                 h.state.retire_stale_reason();
                 let keyed = pane_keys(ui.ctx(), &h.view, &mut h.state);
+                let keyed = keyed.or(pane_tools(ui.ctx(), &h.view, &mut h.state));
                 h.state.retire_stale_notice(ui.ctx().cumulative_pass_nr());
                 let action = if showed_pane || keyed.is_some() {
                     keyed
                 } else {
-                    board_keys(ui.ctx(), &h.view, &filter, &mut h.state)
+                    board_keys(ui.ctx(), &h.view, &filter, &mut h.state).or(grid_tools(
+                        ui.ctx(),
+                        &h.view,
+                        &filter,
+                        &mut h.state,
+                    ))
                 };
+                h.state.drop_queued_tools();
+                h.state.latch_tool_state(&h.view);
                 for effect in h.state.take_effects() {
                     if let BoardEffect::Open(open) = effect {
                         h.session = Some(open);
@@ -2695,5 +3035,357 @@ diff --git a/b.txt b/b.txt
         press(&mut harness, Key::L);
         assert_eq!(harness.state().moved, None);
         assert_eq!(harness.state().state.cursor(), Some(id(4)));
+    }
+
+    /// Everything a keymap test can see a key or a tool do, in any view.
+    #[derive(Debug, PartialEq)]
+    struct AllEffects {
+        grid: Effects,
+        pane: PaneEffects,
+    }
+
+    fn all_effects(harness: &Harness<'static, KeysHarness>) -> AllEffects {
+        AllEffects {
+            grid: effects(harness),
+            pane: pane_effects(harness),
+        }
+    }
+
+    /// Call the UI tool `name` with `args` as chrome would (it lands on
+    /// [`BoardUiState::queue_tool`] via `Headway::call_ui_tool`), and run the
+    /// frame that drains it.
+    fn call_tool(harness: &mut Harness<'static, KeysHarness>, name: &str, args: serde_json::Value) {
+        let tool =
+            HeadwayUiTool::parse(name, &args).unwrap_or_else(|e| panic!("{name} {args}: {e}"));
+        harness.state_mut().state.queue_tool(tool);
+        harness.step();
+        harness.step();
+    }
+
+    /// Each card action's keycap and the tool call that stands for it.
+    fn card_action_tools() -> Vec<(&'static str, &'static str, serde_json::Value)> {
+        use crate::ui_tools::*;
+        use serde_json::json;
+        vec![
+            ("\u{21B5}", OPEN_CARD, json!({})),
+            ("o", OPEN_CARD, json!({})),
+            ("e", OPEN_EXPLAINER, json!({})),
+            ("s", OPEN_SESSION, json!({})),
+            ("S", OPEN_SESSION, json!({ "code_review": true })),
+            ("r", OPEN_REVIEW, json!({})),
+            ("a", ARCHIVE_CARD, json!({})),
+            ("D", DONE_CARD, json!({})),
+            ("X", SEND_BACK, json!({})),
+            ("n", STEP_CARD, json!({ "dir": "next" })),
+            ("p", STEP_CARD, json!({ "dir": "prev" })),
+        ]
+    }
+
+    /// Scrolling a pane: its keycaps and their tool calls.
+    fn scroll_tools() -> Vec<(&'static str, &'static str, serde_json::Value)> {
+        use crate::ui_tools::*;
+        use serde_json::json;
+        vec![
+            ("j", SCROLL, json!({ "to": "down" })),
+            ("k", SCROLL, json!({ "to": "up" })),
+            ("space", SCROLL, json!({ "to": "page_down" })),
+            ("^f", SCROLL, json!({ "to": "page_down" })),
+            ("^b", SCROLL, json!({ "to": "page_up" })),
+            ("^d", SCROLL, json!({ "to": "half_down" })),
+            ("^u", SCROLL, json!({ "to": "half_up" })),
+            ("gg", SCROLL, json!({ "to": "top" })),
+            ("G", SCROLL, json!({ "to": "bottom" })),
+            ("q", BACK, json!({})),
+            ("esc", BACK, json!({})),
+        ]
+    }
+
+    /// One view's keycaps and the tool calls that stand for them, and how to
+    /// open the view with card 5 current.
+    struct ToolTestView {
+        name: &'static str,
+        open: fn() -> Harness<'static, KeysHarness>,
+        keys: Vec<(&'static str, &'static str, serde_json::Value)>,
+    }
+
+    /// [`grid_harness`] with the filter field laid out, so `/` has a field to
+    /// focus.
+    fn grid_with_filter() -> Harness<'static, KeysHarness> {
+        let mut harness = keys_harness(Some(filter_field_id()));
+        harness.state_mut().view = review_board();
+        harness.state_mut().state.set_cursor(id(5));
+        harness.run();
+        harness
+    }
+
+    fn tool_test_views() -> Vec<ToolTestView> {
+        use crate::ui_tools::*;
+        use serde_json::json;
+        let grid = [
+            ("j", CURSOR_MOVE, json!({ "to": "down" })),
+            ("k", CURSOR_MOVE, json!({ "to": "up" })),
+            ("h", CURSOR_MOVE, json!({ "to": "left" })),
+            ("l", CURSOR_MOVE, json!({ "to": "right" })),
+            ("gg", CURSOR_MOVE, json!({ "to": "first" })),
+            ("G", CURSOR_MOVE, json!({ "to": "last" })),
+            ("H", MOVE_CARD, json!({ "dir": "left" })),
+            ("L", MOVE_CARD, json!({ "dir": "right" })),
+            ("J", MOVE_CARD, json!({ "dir": "down" })),
+            ("K", MOVE_CARD, json!({ "dir": "up" })),
+            ("c", ADD_CARD, json!({})),
+            ("/", FOCUS_FILTER, json!({})),
+            ("R", OPEN_REVIEW_QUEUE, json!({})),
+            ("esc", CLEAR, json!({})),
+        ];
+        let review = [
+            ("]", STEP_FILE, json!({ "dir": "next" })),
+            ("[", STEP_FILE, json!({ "dir": "prev" })),
+            ("c", COMMENT, json!({})),
+            ("C", SEND_COMMENTS, json!({})),
+        ];
+        let detail = [("R", OPEN_REVIEW_QUEUE, json!({}))];
+        let with = |extra: &[(&'static str, &'static str, serde_json::Value)], scroll: bool| {
+            let mut keys = card_action_tools();
+            if scroll {
+                keys.extend(scroll_tools());
+            }
+            keys.extend(extra.iter().cloned());
+            keys
+        };
+        vec![
+            ToolTestView {
+                name: "grid",
+                open: grid_with_filter,
+                keys: with(&grid, false),
+            },
+            ToolTestView {
+                name: "queue",
+                open: queue_harness,
+                keys: with(&review, true),
+            },
+            ToolTestView {
+                name: "review pane",
+                open: pane_harness,
+                keys: with(&review, true),
+            },
+            ToolTestView {
+                name: "detail",
+                open: || detail_harness(None),
+                keys: with(&detail, true),
+            },
+        ]
+    }
+
+    /// **The tool guard.** In each view, every key and the UI tool standing
+    /// for it, dispatched by name, leave the same state behind: one
+    /// `apply_*` path under both, so moving a key into chrome's keymap (bound
+    /// to the tool) can't change what it does.
+    #[test]
+    fn every_tool_does_what_its_key_does() {
+        for ToolTestView { name, open, keys } in tool_test_views() {
+            for (cap, tool, args) in keys {
+                let mut by_key = open();
+                for (modifiers, key) in keycap_presses(cap) {
+                    press_with(&mut by_key, modifiers, key);
+                }
+                by_key.step();
+                let mut by_tool = open();
+                call_tool(&mut by_tool, tool, args.clone());
+                assert_eq!(
+                    all_effects(&by_tool),
+                    all_effects(&by_key),
+                    "{tool} {args} vs keycap {cap:?} in the {name}"
+                );
+            }
+        }
+    }
+
+    /// A card tool can name its card. On the grid the cursor moves to it
+    /// first; over a pane only the card showing may be named, and a card
+    /// that isn't on the board is dropped.
+    #[test]
+    fn a_card_tool_can_name_its_card() {
+        use crate::ui_tools::{OPEN_CARD, OPEN_EXPLAINER};
+        let card_ref = |n| headway::wordid::card_ref("headway", id(n).bytes());
+
+        let mut harness = grid_harness();
+        call_tool(
+            &mut harness,
+            OPEN_CARD,
+            serde_json::json!({ "card": card_ref(4) }),
+        );
+        assert_eq!(harness.state().state.cursor(), Some(id(4)));
+        assert_eq!(harness.state().state.selected(), Some(id(4)));
+
+        // Another board's card, or one that isn't anywhere: nothing.
+        let mut harness = grid_harness();
+        let elsewhere = headway::wordid::card_ref("elsewhere", id(4).bytes());
+        call_tool(
+            &mut harness,
+            OPEN_CARD,
+            serde_json::json!({ "card": elsewhere }),
+        );
+        call_tool(
+            &mut harness,
+            OPEN_CARD,
+            serde_json::json!({ "card": card_ref(77) }),
+        );
+        assert_eq!(harness.state().state.cursor(), Some(id(5)));
+        assert_eq!(harness.state().state.selected(), None);
+
+        // The detail shows card 5: naming it acts, naming another doesn't.
+        let mut harness = detail_harness(None);
+        call_tool(
+            &mut harness,
+            OPEN_EXPLAINER,
+            serde_json::json!({ "card": card_ref(4) }),
+        );
+        assert_eq!(harness.state().opened, None);
+        call_tool(
+            &mut harness,
+            OPEN_EXPLAINER,
+            serde_json::json!({ "card": card_ref(5) }),
+        );
+        assert_eq!(
+            harness.state().opened.as_deref(),
+            Some("https://example.com/explainer")
+        );
+    }
+
+    /// A tool the view in front has no use for does nothing, and doesn't
+    /// linger for a later frame.
+    #[test]
+    fn a_tool_with_nothing_to_act_on_is_dropped() {
+        use crate::ui_tools::{CURSOR_MOVE, SCROLL};
+        let mut harness = detail_harness(None);
+        let before = all_effects(&harness);
+        call_tool(
+            &mut harness,
+            CURSOR_MOVE,
+            serde_json::json!({ "to": "down" }),
+        );
+        assert_eq!(all_effects(&harness), before);
+
+        // The graph takes no tools; one called while it's open is gone by the
+        // time it closes.
+        let mut harness = grid_harness();
+        harness.state_mut().state.set_graph_epic(Some(id(5)));
+        call_tool(&mut harness, SCROLL, serde_json::json!({}));
+        call_tool(
+            &mut harness,
+            CURSOR_MOVE,
+            serde_json::json!({ "to": "down" }),
+        );
+        harness.state_mut().state.set_graph_epic(None);
+        harness.step();
+        assert_eq!(harness.state().state.cursor(), Some(id(5)));
+    }
+
+    /// The key scopes, and which tools are available, in each view.
+    #[test]
+    fn scopes_and_availability_follow_the_view() {
+        use crate::ui_tools::*;
+        let scopes = |h: &Harness<'static, KeysHarness>| key_scopes(&h.state().state);
+        let available = |h: &Harness<'static, KeysHarness>, name| {
+            crate::ui_tools::available(&h.state().state, name)
+        };
+
+        // The grid, its cursor on card 5, whose record has a session.
+        let grid = grid_harness();
+        assert_eq!(scopes(&grid), ["headway.grid", "headway.card", "headway"]);
+        for name in [
+            OPEN_CARD,
+            OPEN_SESSION,
+            ARCHIVE_CARD,
+            STEP_CARD,
+            CURSOR_MOVE,
+            MOVE_CARD,
+            ADD_CARD,
+            FOCUS_FILTER,
+            OPEN_REVIEW_QUEUE,
+            CLEAR,
+        ] {
+            assert!(available(&grid, name), "{name} on the grid");
+        }
+        for name in [SCROLL, STEP_FILE, COMMENT, BACK, "headway_nope"] {
+            assert!(!available(&grid, name), "{name} on the grid");
+        }
+
+        // No cursor: no card to act on and nothing to clear, but `n` and the
+        // motions still land one.
+        let bare = keys_harness(None);
+        for name in [OPEN_CARD, OPEN_EXPLAINER, MOVE_CARD, CLEAR] {
+            assert!(!available(&bare, name), "{name} with no cursor");
+        }
+        assert!(available(&bare, STEP_CARD));
+        assert!(available(&bare, CURSOR_MOVE));
+
+        // A card whose record has no session: no session to open.
+        let mut no_session = keys_harness(None);
+        no_session.state_mut().state.set_cursor(id(1));
+        no_session.run();
+        assert!(available(&no_session, OPEN_EXPLAINER));
+        assert!(!available(&no_session, OPEN_SESSION));
+
+        let queue = queue_harness();
+        assert_eq!(
+            scopes(&queue),
+            ["headway.queue", "headway.pane", "headway.card", "headway"]
+        );
+        for name in [
+            OPEN_CARD,
+            OPEN_SESSION,
+            SCROLL,
+            STEP_FILE,
+            COMMENT,
+            SEND_COMMENTS,
+            BACK,
+        ] {
+            assert!(available(&queue, name), "{name} in the queue");
+        }
+        for name in [CURSOR_MOVE, ADD_CARD, OPEN_REVIEW_QUEUE, CLEAR] {
+            assert!(!available(&queue, name), "{name} in the queue");
+        }
+
+        let pane = pane_harness();
+        assert_eq!(scopes(&pane), ["headway.pane", "headway.card", "headway"]);
+        assert!(available(&pane, STEP_FILE));
+        assert!(!available(&pane, OPEN_REVIEW_QUEUE));
+
+        let detail = detail_harness(None);
+        assert_eq!(
+            scopes(&detail),
+            ["headway.detail", "headway.card", "headway"]
+        );
+        for name in [
+            OPEN_EXPLAINER,
+            OPEN_SESSION,
+            SCROLL,
+            OPEN_REVIEW_QUEUE,
+            BACK,
+        ] {
+            assert!(available(&detail, name), "{name} in the detail");
+        }
+        for name in [OPEN_CARD, STEP_FILE, COMMENT, CURSOR_MOVE, CLEAR] {
+            assert!(!available(&detail, name), "{name} in the detail");
+        }
+
+        // The `X` composer's keys are its field's; an open editor or the
+        // graph takes no keys either.
+        let mut rejecting = grid_harness();
+        press_with(&mut rejecting, Modifiers::SHIFT, Key::X);
+        assert!(rejecting.state().state.rejecting());
+        assert!(scopes(&rejecting).is_empty());
+        assert!(!available(&rejecting, OPEN_CARD));
+
+        let mut editing = grid_harness();
+        press(&mut editing, Key::C);
+        assert!(scopes(&editing).is_empty());
+        assert!(!available(&editing, CURSOR_MOVE));
+
+        let mut graph = grid_harness();
+        graph.state_mut().state.set_graph_epic(Some(id(5)));
+        assert!(scopes(&graph).is_empty());
+        assert!(!available(&graph, BACK));
     }
 }

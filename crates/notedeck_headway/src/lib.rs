@@ -18,6 +18,9 @@ mod review_images;
 mod review_models;
 mod tools;
 mod ui;
+mod ui_tools;
+
+use ui_tools::HeadwayUiTool;
 
 use cache::{BoardCache, BoardRef};
 pub use nav::{HeadwayRoute, ReviewTarget};
@@ -539,6 +542,14 @@ pub struct BoardSummary {
     pub title: String,
 }
 
+/// Whether Headway reports its [key scopes](ui_tools::key_scopes) to chrome.
+/// Off while Headway still reads its own keys ([`keys`]): chrome's keymap has
+/// no Headway bindings yet, and reporting scopes would hand `?` to chrome's
+/// which-key strip, which would then list nothing of Headway's. Turned on, and
+/// this removed, when the bindings move into chrome's `default_keymap.toml`
+/// (headway:notedeck/favorite-please-side).
+const REPORT_KEY_SCOPES: bool = false;
+
 impl App for Headway {
     fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
         // Clone the app's one board cache (see `board_cache`) so an issue and its
@@ -563,6 +574,40 @@ impl App for Headway {
 
     fn tools(&self) -> Vec<notedeck::RegisteredTool> {
         tools::tools()
+    }
+
+    fn ui_tools(&self) -> Vec<notedeck::ToolSpec> {
+        HeadwayUiTool::specs()
+    }
+
+    /// Queue the tool for the next render pass, which runs it where its key
+    /// runs (see [`ui_tools`]): the board view it acts on only exists there.
+    /// So a call that parses answers `null` at once, whatever it then does.
+    fn call_ui_tool(
+        &mut self,
+        _ctx: &mut AppContext<'_>,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> notedeck::ToolOutcome {
+        match HeadwayUiTool::parse(name, args) {
+            Ok(tool) => {
+                self.state.queue_tool(tool);
+                notedeck::ToolOutcome::Data(serde_json::Value::Null)
+            }
+            Err(err) => notedeck::ToolOutcome::Error(err),
+        }
+    }
+
+    fn ui_tool_available(&self, name: &str) -> bool {
+        ui_tools::available(&self.state, name)
+    }
+
+    fn key_scopes(&self) -> &'static [&'static str] {
+        if REPORT_KEY_SCOPES {
+            ui_tools::key_scopes(&self.state)
+        } else {
+            &[]
+        }
     }
 
     /// Background sync, run every frame for all *opened* apps (not just the
@@ -953,6 +998,8 @@ impl Headway {
             // fold stays empty — and a shared board whose definition never arrives
             // strands it for good (the bug this replaces).
             let Some(secret) = &signer else {
+                // No board, so no view a UI tool could act on.
+                self.state.drop_queued_tools();
                 empty_state(
                     ui,
                     &theme,

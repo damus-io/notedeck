@@ -17,6 +17,8 @@ use serde_json::Value;
 pub enum ToolArgType {
     String,
     Number,
+    /// `true` or `false`.
+    Boolean,
     /// A string constrained to a fixed set of values (rendered as JSON `enum`).
     Enum(Vec<&'static str>),
 }
@@ -27,6 +29,7 @@ impl ToolArgType {
         match self {
             Self::String => "string",
             Self::Number => "number",
+            Self::Boolean => "boolean",
             Self::Enum(_) => "string",
         }
     }
