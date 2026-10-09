@@ -47,6 +47,22 @@ command reference; the board flows
   editing. If a command fails because you're not logged in, ask the user to run
   `headway login`.
 
+**What you wanted and worked around goes in `docs/hindsight/`.** A helper you
+wrote and deleted, a check that would have caught your miss, a seam the code
+lacks: find its file there, or start one, and add one line naming your card and
+what it cost you. The file is a `# title`, a blank line, a header, a blank
+line, then one `- headway:<board>/<word-id> — <what it cost>` line per card
+(the card's own board, e.g. `- headway:notedeck/<word-id> — …`), so a want's
+count is its number of lines, and `scripts/hindsight.sh` ranks them. The header
+is `Card: headway:<board>/<word-id>` once a card builds the want, then one or
+two lines, unlabelled, on what the want is and what going without it costs;
+rewrite them only when your line changes that. `/hindsights` fills in the card,
+on the `notedeck` board under its `epic,hindsight` card. Search the directory
+first: a near-duplicate splits a count that should be one. Two lanes adding to
+one file keep both lines. The commit that builds a want deletes its file.
+`crates/bin_testing/tests/hindsight.rs` holds the shape; run it with `cargo
+test -p bin_testing --test hindsight`.
+
 ## Committing
 
 Before committing, run the local CI checks:
