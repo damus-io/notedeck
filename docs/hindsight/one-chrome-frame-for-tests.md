@@ -8,3 +8,4 @@ render), so each copy drifts from the real one and misses what it skipped.
 - headway:headway/owner-baby-mother — snapshot_tests' chrome_frame never lands a Back, so the review-pane archive race only showed once the test moved off the copy (8 tests still on it)
 - headway:notedeck/pretty-truly-example — no public way to drive an AppAction through the chrome (chrome_handle_app_action is pub(super)), so the routing test had to live in-crate
 - headway:headway/bottom-crack-kidney — no chrome seam for "resolve then route" an Open, so the reference-open path got no chrome-level test
+- headway:notedeck/ginger-home-mirror — 46 min: chrome's new data-tool dispatch had to be copied into two hand-rolled key harnesses (keys.rs chrome_keys, snapshot_tests ChromeKeys) on top of chrome's own; plus a 10-min ci.py timeout on a cold workspace build
