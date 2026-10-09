@@ -155,8 +155,23 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new(keymap_src: &str) -> Self {
+        Self::with_args(keymap_src, &[])
+    }
+
+    /// A fixture signed in as the account with this secret `nsec` (hex), so
+    /// the chrome can read and write its private notes.
+    pub fn signed_in(keymap_src: &str, nsec: &str) -> Self {
+        Self::with_args(keymap_src, &["--nsec", nsec])
+    }
+
+    /// A fixture whose notedeck also got `extra` on its command line.
+    fn with_args(keymap_src: &str, extra: &[&str]) -> Self {
         let dir = tempfile::TempDir::new().expect("tmp dir");
-        let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+        let args: Vec<String> = ["notedeck-test", "--testrunner"]
+            .iter()
+            .chain(extra)
+            .map(|arg| arg.to_string())
+            .collect();
         let egui_ctx = egui::Context::default();
         let mut notedeck = Notedeck::init(&egui_ctx, dir.path(), &args);
         {

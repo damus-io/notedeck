@@ -210,7 +210,7 @@ impl Chrome {
     /// the chrome's own. An app that isn't running has no tools in the
     /// registry yet, so this asks the apps themselves, which allocates: for a
     /// macro starting and a keymap loading, not for every frame.
-    fn tool_known(&self, ctx: &AppContext, name: &str) -> bool {
+    pub(super) fn tool_known(&self, ctx: &AppContext, name: &str) -> bool {
         self.chrome_tool_available(name).is_some()
             || ctx.registries.tools.contains(name)
             || self.apps.iter().any(|app| {

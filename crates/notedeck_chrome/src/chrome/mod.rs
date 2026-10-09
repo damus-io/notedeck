@@ -48,6 +48,7 @@ mod sidebar;
 mod toolbar;
 #[cfg(feature = "auto-update")]
 mod update;
+mod user_keymap;
 
 pub use actions::ChromePanelAction;
 use actions::PendingOpen;
@@ -57,6 +58,7 @@ use keyboard::AnimState;
 use nav::{seed_global_nav, PendingPrune};
 #[cfg(feature = "auto-update")]
 use update::poll_updater;
+use user_keymap::UserKeymap;
 
 /// Upper bound on the number of apps the running-app bitset can track. One bit
 /// per app index; see [`Chrome::tools_snapshot`].
@@ -133,6 +135,10 @@ pub struct Chrome {
     /// (see [`Chrome::advance_macro`]). One at a time: a newer macro key
     /// replaces it.
     macro_run: Option<MacroRun>,
+
+    /// The selected account's keymap overrides, merged over the defaults
+    /// into `keys` (see [`Chrome::poll_user_keymap`]).
+    user_keymap: UserKeymap,
 
     #[cfg(feature = "auto-update")]
     updater: notedeck::updater::Updater,
@@ -345,6 +351,7 @@ impl Chrome {
             keys: KeyEngine::with_default_keymap(),
             key_hints: [0u16; MAX_APPS / 16],
             macro_run: None,
+            user_keymap: UserKeymap::default(),
             #[cfg(feature = "auto-update")]
             updater: notedeck::updater::Updater::new(
                 ctx.path,
@@ -474,6 +481,8 @@ impl notedeck::App for Chrome {
 
         #[cfg(feature = "auto-update")]
         poll_updater(&mut self.updater, ctx);
+
+        self.poll_user_keymap(ctx);
 
         // Update opened apps every frame so background processing
         // (relay pools, subscriptions, etc.) stays alive.

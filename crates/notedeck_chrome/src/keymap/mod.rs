@@ -34,6 +34,7 @@ mod hints;
 pub mod keys;
 pub mod macros;
 mod parse;
+pub mod user;
 
 use std::collections::BTreeMap;
 
@@ -42,7 +43,7 @@ use notedeck_ui::chord::{self, ChordState};
 
 pub use hints::{Hint, MAX_HINT_KEYS};
 pub use keys::{KeyParseError, KeySeq, KeyStroke, Mods, MAX_SEQ};
-pub use parse::{parse, BindProblem, KeymapError};
+pub use parse::{parse, parse_over, BindProblem, KeymapError};
 
 /// The scope searched after every app's own: the chrome's bindings, live in
 /// any app.
@@ -109,8 +110,18 @@ const ESCAPE: KeyStroke = KeyStroke {
 };
 
 /// The built-in keymap, compiled in: the chrome's global bindings and
-/// Headway's and Dave's; a user's overrides will be merged over it.
+/// Headway's and Dave's. A user's overrides ([`user`]) are merged over it
+/// ([`parse_over`]).
 pub const DEFAULT_KEYMAP: &str = include_str!("default_keymap.toml");
+
+/// The built-in [`DEFAULT_KEYMAP`], parsed. One that doesn't parse is logged
+/// and leaves the keymap empty rather than failing.
+pub fn default_keymap() -> Keymap {
+    parse(DEFAULT_KEYMAP).unwrap_or_else(|err| {
+        tracing::error!("default keymap: {err}; no key bindings");
+        Keymap::default()
+    })
+}
 
 /// A parsed keymap: bindings grouped by scope, plus the named macros.
 #[derive(Debug, Default)]
@@ -345,14 +356,9 @@ impl KeyEngine {
         }
     }
 
-    /// An engine with the built-in [`DEFAULT_KEYMAP`]. A default that doesn't
-    /// parse is logged and leaves the keymap empty rather than failing.
+    /// An engine with the built-in keymap ([`default_keymap`]).
     pub fn with_default_keymap() -> Self {
-        let keymap = parse(DEFAULT_KEYMAP).unwrap_or_else(|err| {
-            tracing::error!("default keymap: {err}; no key bindings");
-            Keymap::default()
-        });
-        Self::new(keymap)
+        Self::new(default_keymap())
     }
 
     /// The bindings in use.

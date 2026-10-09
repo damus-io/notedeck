@@ -331,6 +331,7 @@ mod global_nav_tests {
             keys: KeyEngine::default(),
             key_hints: [0u16; MAX_APPS / 16],
             macro_run: None,
+            user_keymap: Default::default(),
         }
     }
 
@@ -887,6 +888,7 @@ mod cleanup_tests {
                 keys: crate::keymap::KeyEngine::default(),
                 key_hints: [0u16; MAX_APPS / 16],
                 macro_run: None,
+                user_keymap: Default::default(),
             };
             Self {
                 _dir: dir,

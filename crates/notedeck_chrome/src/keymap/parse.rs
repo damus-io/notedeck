@@ -30,6 +30,23 @@
 //! an undefined macro — fails the whole parse with a message naming the
 //! binding, so an editor can reject the save. A binding that is a prefix of
 //! another in the same scope is only a lint: see [`Keymap::warnings`].
+//!
+//! A user's keymap is merged over the defaults with [`parse_over`], in the
+//! same format plus one field:
+//!
+//! ```toml
+//! [[bind]]                  # replaces every default binding of `j` in
+//! scope = "headway.grid"    # headway.grid
+//! keys  = "j"
+//! tool  = "headway_cursor_down"
+//!
+//! [[bind]]                  # removes the default binding of `x`
+//! scope = "headway.grid"
+//! keys  = "x"
+//! unbind = true
+//! ```
+//!
+//! A user `[macro.<name>]` adds a macro or replaces the default of that name.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -53,7 +70,7 @@ struct RawKeymap {
 }
 
 /// One `[[bind]]`.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawBind {
     scope: String,
@@ -64,6 +81,26 @@ struct RawBind {
     label: Option<String>,
     group: Option<String>,
     args: Option<toml::Table>,
+    /// In a user keymap: remove the default binding of these keys rather
+    /// than bind them (see [`parse_over`]).
+    #[serde(default)]
+    unbind: bool,
+    /// Its 1-based position among the `[[bind]]`s of the file it came from,
+    /// for error messages; set by [`read`], so it survives a merge.
+    #[serde(skip)]
+    index: usize,
+}
+
+impl RawBind {
+    /// The error for this binding having `problem`.
+    fn fail(&self, problem: BindProblem) -> KeymapError {
+        KeymapError::Bind {
+            index: self.index,
+            scope: self.scope.clone(),
+            keys: self.keys.clone(),
+            problem,
+        }
+    }
 }
 
 /// One `[macro.<name>]`.
@@ -100,6 +137,15 @@ pub enum KeymapError {
     },
     /// A `[macro.<name>]` with no steps.
     EmptyMacro(String),
+    /// In a user keymap, a macro step names a tool no app has.
+    UnknownStepTool {
+        /// The macro's name.
+        name: String,
+        /// The step's 1-based position.
+        step: usize,
+        /// The tool it names.
+        tool: String,
+    },
 }
 
 /// What is wrong with one `[[bind]]`.
@@ -115,6 +161,12 @@ pub enum BindProblem {
     UnknownMacro(String),
     /// `args` on a macro binding, which takes its args from its steps.
     MacroArgs,
+    /// `unbind` outside a user keymap, where there is nothing to unbind.
+    Unbind,
+    /// `unbind` with a `tool` or `macro`.
+    UnbindWithAction,
+    /// In a user keymap, `tool` names a tool no app has.
+    UnknownTool(String),
 }
 
 impl fmt::Display for KeymapError {
@@ -141,9 +193,19 @@ impl fmt::Display for KeymapError {
                         f,
                         "'args' goes on the macro's steps, not on a macro binding"
                     ),
+                    BindProblem::Unbind => {
+                        write!(f, "'unbind' only applies to a user keymap")
+                    }
+                    BindProblem::UnbindWithAction => {
+                        write!(f, "'unbind' takes no 'tool' or 'macro'")
+                    }
+                    BindProblem::UnknownTool(tool) => write!(f, "no app has a tool '{tool}'"),
                 }
             }
             Self::EmptyMacro(name) => write!(f, "macro '{name}' has no steps"),
+            Self::UnknownStepTool { name, step, tool } => {
+                write!(f, "macro '{name}' step {step}: no app has a tool '{tool}'")
+            }
         }
     }
 }
@@ -152,8 +214,127 @@ impl std::error::Error for KeymapError {}
 
 /// Parse a keymap from TOML. See the module docs for the format.
 pub fn parse(src: &str) -> Result<Keymap, KeymapError> {
-    let raw: RawKeymap = toml::from_str(src).map_err(KeymapError::Toml)?;
+    build(read(src)?, Vec::new())
+}
 
+/// Parse the `user` keymap merged over `defaults`; see the module docs for
+/// what a user keymap can say. `known` says whether some app has a tool by a
+/// name: a user binding or macro step naming one it doesn't fails the whole
+/// merge, so a typo never quietly drops a key. Anything wrong fails it all,
+/// never half-applies; an `unbind` that matches no default binding is only a
+/// warning.
+pub fn parse_over(
+    defaults: &str,
+    user: &str,
+    known: impl Fn(&str) -> bool,
+) -> Result<Keymap, KeymapError> {
+    let mut merged = read(defaults)?;
+    let user = read(user)?;
+    check_user(&user, &known)?;
+    let mut warnings = Vec::new();
+    merged.bind = merge_binds(merged.bind, user.bind, &mut warnings)?;
+    merged.macros.extend(user.macros);
+    build(merged, warnings)
+}
+
+/// `src` as written, each `[[bind]]` numbered.
+fn read(src: &str) -> Result<RawKeymap, KeymapError> {
+    let mut raw: RawKeymap = toml::from_str(src).map_err(KeymapError::Toml)?;
+    for (i, bind) in raw.bind.iter_mut().enumerate() {
+        bind.index = i + 1;
+    }
+    Ok(raw)
+}
+
+/// What only a user keymap is checked for: an `unbind` that also binds, and
+/// a tool `known` says no app has.
+fn check_user(user: &RawKeymap, known: &impl Fn(&str) -> bool) -> Result<(), KeymapError> {
+    for bind in &user.bind {
+        if bind.unbind && (bind.tool.is_some() || bind.macro_name.is_some()) {
+            return Err(bind.fail(BindProblem::UnbindWithAction));
+        }
+        if let Some(tool) = bind.tool.as_deref().filter(|tool| !known(tool)) {
+            return Err(bind.fail(BindProblem::UnknownTool(tool.to_owned())));
+        }
+    }
+    for (name, m) in &user.macros {
+        let unknown = m.steps.iter().enumerate().find(|(_, s)| !known(&s.tool));
+        if let Some((i, step)) = unknown {
+            return Err(KeymapError::UnknownStepTool {
+                name: name.clone(),
+                step: i + 1,
+                tool: step.tool.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// A user `[[bind]]` waiting to be merged.
+struct Override {
+    /// Its keys, parsed, to match the defaults' by.
+    keys: KeySeq,
+    bind: RawBind,
+    /// Whether it has replaced a default binding yet.
+    placed: bool,
+}
+
+/// The `defaults`' bindings with the `user`'s merged over them: every default
+/// binding of a scope and keys the user binds is dropped, and the user's
+/// bindings of them take the place of the first, so the which-key strip
+/// keeps its order. User bindings of keys no default binds go at the end; an
+/// `unbind` only drops, and one that drops nothing is a warning.
+fn merge_binds(
+    defaults: Vec<RawBind>,
+    user: Vec<RawBind>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<RawBind>, KeymapError> {
+    let mut overrides = user
+        .into_iter()
+        .map(|bind| match KeySeq::parse(&bind.keys) {
+            Ok(keys) => Ok(Override {
+                keys,
+                bind,
+                placed: false,
+            }),
+            Err(err) => Err(bind.fail(BindProblem::Keys(err))),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut merged = Vec::with_capacity(defaults.len() + overrides.len());
+    for bind in defaults {
+        // A default that doesn't parse is kept for `build` to report.
+        let keys = KeySeq::parse(&bind.keys).ok();
+        let mut replaced = false;
+        for o in &mut overrides {
+            if o.bind.scope != bind.scope || Some(o.keys) != keys {
+                continue;
+            }
+            replaced = true;
+            if !o.placed && !o.bind.unbind {
+                merged.push(o.bind.clone());
+            }
+            o.placed = true;
+        }
+        if !replaced {
+            merged.push(bind);
+        }
+    }
+    for o in overrides.into_iter().filter(|o| !o.placed) {
+        if o.bind.unbind {
+            warnings.push(format!(
+                "in scope '{}', unbind '{}' matches no default binding",
+                o.bind.scope, o.bind.keys
+            ));
+        } else {
+            merged.push(o.bind);
+        }
+    }
+    Ok(merged)
+}
+
+/// The [`Keymap`] `raw` describes, with `warnings` from merging it.
+fn build(raw: RawKeymap, mut warnings: Vec<String>) -> Result<Keymap, KeymapError> {
     let mut macros = BTreeMap::new();
     for (name, raw_macro) in raw.macros {
         if raw_macro.steps.is_empty() {
@@ -172,22 +353,17 @@ pub fn parse(src: &str) -> Result<Keymap, KeymapError> {
 
     let mut scopes: Vec<Scope> = Vec::new();
     for (i, bind) in raw.bind.into_iter().enumerate() {
-        let fail = |bind: &RawBind, problem| KeymapError::Bind {
-            index: i + 1,
-            scope: bind.scope.clone(),
-            keys: bind.keys.clone(),
-            problem,
-        };
-        let keys = KeySeq::parse(&bind.keys).map_err(|e| fail(&bind, BindProblem::Keys(e)))?;
+        let keys = KeySeq::parse(&bind.keys).map_err(|e| bind.fail(BindProblem::Keys(e)))?;
+        if bind.unbind {
+            return Err(bind.fail(BindProblem::Unbind));
+        }
         let action = match (&bind.tool, &bind.macro_name) {
-            (None, None) => return Err(fail(&bind, BindProblem::NoAction)),
-            (Some(_), Some(_)) => return Err(fail(&bind, BindProblem::BothActions)),
+            (None, None) => return Err(bind.fail(BindProblem::NoAction)),
+            (Some(_), Some(_)) => return Err(bind.fail(BindProblem::BothActions)),
             (None, Some(name)) if !macros.contains_key(name) => {
-                return Err(fail(&bind, BindProblem::UnknownMacro(name.clone())))
+                return Err(bind.fail(BindProblem::UnknownMacro(name.clone())))
             }
-            (None, Some(_)) if bind.args.is_some() => {
-                return Err(fail(&bind, BindProblem::MacroArgs))
-            }
+            (None, Some(_)) if bind.args.is_some() => return Err(bind.fail(BindProblem::MacroArgs)),
             (None, Some(name)) => BindAction::Macro(name.clone()),
             (Some(tool), None) => {
                 BindAction::Tool(ToolInvocation::new(tool.clone(), args_json(bind.args)))
@@ -219,7 +395,6 @@ pub fn parse(src: &str) -> Result<Keymap, KeymapError> {
         }
     }
 
-    let mut warnings = Vec::new();
     for scope in &mut scopes {
         // Stable, so bindings of the same keys keep their file order: the
         // first one whose tool is available wins.
@@ -600,5 +775,223 @@ mod tests {
             keymap.lookup("s", &[shift_slash]),
             Match::Exact([_])
         ));
+    }
+
+    /// Defaults to merge user keymaps over in the `parse_over` tests.
+    const DEFAULTS: &str = r#"
+        [[bind]]
+        scope = "grid"
+        keys = "j"
+        tool = "down"
+        group = "move"
+
+        [[bind]]
+        scope = "grid"
+        keys = "<Esc>"
+        tool = "clear"
+
+        [[bind]]
+        scope = "grid"
+        keys = "k"
+        tool = "up"
+        group = "move"
+
+        [[bind]]
+        scope = "grid"
+        keys = "<Esc>"
+        tool = "close"
+
+        [[bind]]
+        scope = "grid"
+        keys = "E"
+        macro = "explain"
+
+        [macro.explain]
+        label = "explain"
+        steps = [ { tool = "open" }, { tool = "explain" } ]
+    "#;
+
+    /// Every tool [`DEFAULTS`] and the user keymaps below name.
+    fn known(tool: &str) -> bool {
+        matches!(
+            tool,
+            "down" | "up" | "clear" | "close" | "open" | "explain" | "first" | "other"
+        )
+    }
+
+    /// The tools bound to `text` in `scope`, in the order they'd be tried.
+    fn tools_at(keymap: &Keymap, scope: &str, text: &str) -> Vec<String> {
+        match keymap.lookup(scope, keys(text).as_slice()) {
+            Match::Exact(bindings) => bindings
+                .iter()
+                .map(|b| match &b.action {
+                    BindAction::Tool(invocation) => invocation.name.clone(),
+                    BindAction::Macro(name) => format!("macro:{name}"),
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The error message merging `user` over [`DEFAULTS`] fails with.
+    fn over_error(user: &str) -> String {
+        match parse_over(DEFAULTS, user, known) {
+            Ok(_) => panic!("expected an error from:\n{user}"),
+            Err(err) => err.to_string(),
+        }
+    }
+
+    #[test]
+    fn an_empty_user_keymap_is_the_defaults() {
+        let keymap = parse_over(DEFAULTS, "", known).expect("merge");
+        assert_eq!(tools_at(&keymap, "grid", "j"), ["down"]);
+        assert_eq!(tools_at(&keymap, "grid", "<Esc>"), ["clear", "close"]);
+        assert!(keymap.warnings().is_empty());
+    }
+
+    #[test]
+    fn a_user_binding_replaces_every_default_of_its_keys() {
+        let keymap = parse_over(
+            DEFAULTS,
+            r#"
+            [[bind]]
+            scope = "grid"
+            keys = "j"
+            tool = "first"
+            group = "move"
+
+            [[bind]]
+            scope = "grid"
+            keys = "<Esc>"
+            tool = "other"
+
+            [[bind]]
+            scope = "card"
+            keys = "j"
+            tool = "down"
+
+            [[bind]]
+            scope = "grid"
+            keys = "x"
+            tool = "other"
+            "#,
+            known,
+        )
+        .expect("merge");
+
+        assert_eq!(tools_at(&keymap, "grid", "j"), ["first"]);
+        assert_eq!(tools_at(&keymap, "grid", "<Esc>"), ["other"]);
+        assert_eq!(tools_at(&keymap, "grid", "k"), ["up"], "untouched");
+        assert_eq!(tools_at(&keymap, "card", "j"), ["down"], "a new scope");
+        assert_eq!(tools_at(&keymap, "grid", "x"), ["other"], "a new key");
+
+        // The replacement keeps the default's place in its which-key group.
+        let grid = keymap.scope("grid").expect("grid");
+        let run = grid.group(Some("move")).expect("move group");
+        let order: Vec<_> = run
+            .members
+            .iter()
+            .map(|&i| grid.bindings[i].keys.to_string())
+            .collect();
+        assert_eq!(order, ["j", "k"]);
+    }
+
+    #[test]
+    fn unbind_removes_a_default_binding() {
+        let keymap = parse_over(
+            DEFAULTS,
+            r#"
+            [[bind]]
+            scope = "grid"
+            keys = "<Esc>"
+            unbind = true
+
+            [[bind]]
+            scope = "grid"
+            keys = "q"
+            unbind = true
+            "#,
+            known,
+        )
+        .expect("merge");
+
+        assert!(tools_at(&keymap, "grid", "<Esc>").is_empty());
+        assert_eq!(tools_at(&keymap, "grid", "j"), ["down"]);
+        assert_eq!(
+            keymap.warnings(),
+            ["in scope 'grid', unbind 'q' matches no default binding"]
+        );
+    }
+
+    #[test]
+    fn a_user_macro_replaces_the_default_of_its_name_or_adds_one() {
+        let keymap = parse_over(
+            DEFAULTS,
+            r#"
+            [macro.explain]
+            steps = [ { tool = "open" } ]
+
+            [macro.mine]
+            label = "mine"
+            steps = [ { tool = "first" }, { tool = "down" } ]
+
+            [[bind]]
+            scope = "grid"
+            keys = "M"
+            macro = "mine"
+            "#,
+            known,
+        )
+        .expect("merge");
+
+        let explain = keymap.macro_named("explain").expect("explain");
+        assert_eq!(explain.steps.len(), 1);
+        assert_eq!(explain.label, None, "replaced whole, label too");
+        assert_eq!(tools_at(&keymap, "grid", "E"), ["macro:explain"]);
+        assert_eq!(tools_at(&keymap, "grid", "M"), ["macro:mine"]);
+        assert_eq!(keymap.macro_named("mine").expect("mine").steps.len(), 2);
+    }
+
+    #[test]
+    fn an_unknown_tool_fails_the_merge() {
+        let msg = over_error("[[bind]]\nscope = \"grid\"\nkeys = \"j\"\ntool = \"dwn\"\n");
+        assert_eq!(
+            msg,
+            "bind #1 (scope 'grid', keys 'j'): no app has a tool 'dwn'"
+        );
+
+        let msg = over_error("[macro.m]\nsteps = [{ tool = \"open\" }, { tool = \"nope\" }]\n");
+        assert_eq!(msg, "macro 'm' step 2: no app has a tool 'nope'");
+    }
+
+    #[test]
+    fn a_bad_user_keymap_fails_the_merge_whole() {
+        assert!(over_error("[[bind]\n").contains("bind"));
+
+        // The second binding is bad, so the first never applies either.
+        let msg = over_error(
+            "[[bind]]\nscope = \"grid\"\nkeys = \"j\"\ntool = \"up\"\n\
+             [[bind]]\nscope = \"grid\"\nkeys = \"<Nope>\"\ntool = \"up\"\n",
+        );
+        assert!(
+            msg.starts_with("bind #2 (scope 'grid', keys '<Nope>'): "),
+            "{msg}"
+        );
+
+        let msg =
+            over_error("[[bind]]\nscope = \"grid\"\nkeys = \"j\"\nunbind = true\ntool = \"up\"\n");
+        assert!(msg.contains("'unbind' takes no 'tool' or 'macro'"), "{msg}");
+
+        let msg = over_error("[[bind]]\nscope = \"grid\"\nkeys = \"j\"\nmacro = \"nope\"\n");
+        assert!(msg.contains("macro 'nope' is not defined"), "{msg}");
+    }
+
+    #[test]
+    fn unbind_outside_a_user_keymap_fails() {
+        let msg = error("[[bind]]\nscope = \"s\"\nkeys = \"j\"\nunbind = true\n");
+        assert!(
+            msg.contains("'unbind' only applies to a user keymap"),
+            "{msg}"
+        );
     }
 }
