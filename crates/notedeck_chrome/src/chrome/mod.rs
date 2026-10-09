@@ -2,6 +2,7 @@
 //#[cfg(target_arch = "wasm32")]
 //use wasm_bindgen::prelude::*;
 use crate::app::NotedeckApp;
+use crate::keymap::macros::MacroRun;
 use crate::keymap::KeyEngine;
 use crate::ChromeOptions;
 use eframe::CreationContext;
@@ -127,6 +128,11 @@ pub struct Chrome {
     /// Which apps have their which-key strip pinned open by `?`, one bit per
     /// app index (see [`Chrome::key_hints_pinned`]).
     key_hints: [u16; MAX_APPS / 16],
+
+    /// The macro a key started, while it waits for its next step to settle
+    /// (see [`Chrome::advance_macro`]). One at a time: a newer macro key
+    /// replaces it.
+    macro_run: Option<MacroRun>,
 
     #[cfg(feature = "auto-update")]
     updater: notedeck::updater::Updater,
@@ -311,6 +317,7 @@ impl Chrome {
         drop(notedeck_ref);
 
         setup_app_registries(notedeck, &chrome.apps);
+        chrome.log_keymap_problems(&notedeck.app_context());
 
         Ok(chrome)
     }
@@ -337,6 +344,7 @@ impl Chrome {
             global_nav_in_flight: false,
             keys: KeyEngine::with_default_keymap(),
             key_hints: [0u16; MAX_APPS / 16],
+            macro_run: None,
             #[cfg(feature = "auto-update")]
             updater: notedeck::updater::Updater::new(
                 ctx.path,
@@ -363,6 +371,7 @@ impl Chrome {
         }
         chrome.set_active(0);
         setup_app_registries(notedeck, &chrome.apps);
+        chrome.log_keymap_problems(&notedeck.app_context());
         chrome
     }
 
@@ -496,6 +505,10 @@ impl notedeck::App for Chrome {
         // Apply any navigation requests apps enqueued while rendering to the
         // global history, then re-derive the active app.
         self.drain_nav_requests(ctx);
+
+        // With this frame's navigation applied, a macro waiting on it may
+        // run its next step.
+        self.advance_macro(ctx, ui);
 
         // Fallback keybindings — only fire if no app consumed the key.
         self.handle_fallback_keybindings(ui.ctx());

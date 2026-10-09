@@ -36,13 +36,14 @@ jobs:
 
       # Headway through the real chrome with nav slides on, as the app ships,
       # and the chrome's global history under a real egui_nav drag; and
-      # Columns' keyboard input with another app in front.
+      # Columns' keyboard input with another app in front; and the shipped
+      # `E` macro, which opens a card in Headway from Dave.
       # Release only: during a slide egui_nav draws two routes of one app on
       # two layers with the same widget ids, which egui debug-asserts against
       # (compiled out in release). See
       # crates/notedeck_chrome/src/chrome/headway_nav_tests.rs.
       - name: Run Nav Slide Tests (Release, Real Chrome)
-        run: cargo test --release -p notedeck_chrome --features headway --lib -- headway_nav_tests global_nav_tests::slide_tests columns_input_tests
+        run: cargo test --release -p notedeck_chrome --features headway --lib --test keymap_macros -- headway_nav_tests global_nav_tests::slide_tests columns_input_tests session_explainer
         env:
           CI: true
 

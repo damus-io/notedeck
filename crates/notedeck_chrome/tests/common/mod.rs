@@ -300,7 +300,7 @@ impl Fixture {
 }
 
 /// Push the text of every text shape in `shape` onto `out`.
-fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
+pub fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
     match shape {
         egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
         egui::Shape::Vec(shapes) => {

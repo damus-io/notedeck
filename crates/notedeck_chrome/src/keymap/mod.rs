@@ -21,12 +21,18 @@
 //! [current ref](notedeck::App::current_ref). A binding naming it is ready
 //! only while the app has one, so without one its keys fall through.
 //!
+//! A binding can run a **macro** instead: a named list of tool calls the
+//! chrome runs one after another, each once the one before has settled (see
+//! [`macros`]), so one key can open something in one app and act on it in
+//! another.
+//!
 //! Text-field keys stay with the apps: the engine does nothing while a widget
 //! has keyboard focus, a popup is open or a drag is under way (see
 //! [`notedeck_ui::chord::focus_taken`]).
 
 mod hints;
 pub mod keys;
+pub mod macros;
 mod parse;
 
 use std::collections::BTreeMap;
@@ -169,14 +175,23 @@ pub struct Binding {
 
 impl Binding {
     /// Whether it would run now: its tool is `available`, and the app has a
-    /// current ref if its args name one. Whether a macro can run is its
-    /// runner's call, so a macro binding always is.
-    fn ready(&self, scopes: Scopes<'_>, available: &impl Fn(&str) -> bool) -> bool {
+    /// current ref if its args name one. A macro binding is ready when its
+    /// first step's tool is, since that step runs as the key fires; whether
+    /// the later ones can is for the macro runner to find out.
+    fn ready(
+        &self,
+        keymap: &Keymap,
+        scopes: Scopes<'_>,
+        available: &impl Fn(&str) -> bool,
+    ) -> bool {
         match &self.action {
             BindAction::Tool(invocation) => {
                 available(&invocation.name) && (!self.uses_current || scopes.current.is_some())
             }
-            BindAction::Macro(_) => true,
+            BindAction::Macro(name) => keymap
+                .macro_named(name)
+                .and_then(|m| m.steps.first())
+                .is_some_and(|step| available(&step.invocation.name)),
         }
     }
 
@@ -263,6 +278,24 @@ impl Keymap {
     /// The macro called `name`.
     pub fn macro_named(&self, name: &str) -> Option<&Macro> {
         self.macros.get(name)
+    }
+
+    /// One line per macro step whose tool `known` says no app has, e.g.
+    /// `macro 'x' step 2: no app has a tool 'y'`, in macro-name order.
+    pub fn macro_problems(&self, known: impl Fn(&str) -> bool) -> Vec<String> {
+        let mut problems = Vec::new();
+        for (name, m) in &self.macros {
+            for (i, step) in m.steps.iter().enumerate() {
+                let tool = &step.invocation.name;
+                if !known(tool) {
+                    problems.push(format!(
+                        "macro '{name}' step {}: no app has a tool '{tool}'",
+                        i + 1
+                    ));
+                }
+            }
+        }
+        problems
     }
 
     /// Lints from loading it: bindings dropped because a shorter binding in
@@ -421,7 +454,7 @@ fn find<'a>(
     for scope in scopes.iter() {
         match keymap.lookup(scope, seq) {
             Match::Exact(bindings) => {
-                let ready = bindings.iter().find(|b| b.ready(scopes, available));
+                let ready = bindings.iter().find(|b| b.ready(keymap, scopes, available));
                 if let Some(binding) = ready {
                     return Found::Fire(binding);
                 }

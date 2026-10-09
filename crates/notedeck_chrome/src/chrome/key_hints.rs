@@ -77,7 +77,7 @@ impl Chrome {
     }
 
     /// The active app's slot, if it is one the bitsets can track.
-    fn active_slot(&self) -> Option<usize> {
+    pub(super) fn active_slot(&self) -> Option<usize> {
         usize::try_from(self.active)
             .ok()
             .filter(|&slot| slot < MAX_APPS)

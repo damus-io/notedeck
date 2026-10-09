@@ -245,6 +245,11 @@ impl Navigator {
         self.replace(app, Rc::new(route));
     }
 
+    /// Whether no request is queued.
+    pub fn is_empty(&self) -> bool {
+        self.requests.is_empty()
+    }
+
     /// Take the queued requests, leaving the queue empty. Called by the chrome
     /// once per frame after render; the moved-out `Vec` hands off this frame's
     /// allocation.

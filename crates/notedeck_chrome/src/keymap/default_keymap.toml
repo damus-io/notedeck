@@ -679,6 +679,14 @@ tool  = "dave_open_issue"
 label = "open issue"
 group = "turn"
 
+# `s` then Headway's `e`, in one key: see [macro.session-explainer] below.
+[[bind]]
+scope = "dave.normal"
+keys  = "E"
+macro = "session-explainer"
+label = "card explainer"
+group = "turn"
+
 [[bind]]
 scope = "dave.normal"
 keys  = "S"
@@ -701,3 +709,17 @@ tool  = "dave_focus_queue"
 args  = { dir = "prev" }
 label = "focus queue"
 group = "queue"
+
+# ── Macros ──────────────────────────────────────────────────────────────────
+#
+# A macro is a list of tool calls, run one after another, each once the one
+# before has settled: whatever it opened has resolved and come to the front,
+# drawn a frame, and offers the next tool (crates/notedeck_chrome/src/keymap/
+# macros.rs). A step that doesn't settle within 3s aborts the run.
+
+# Open the session's card in Headway, then its explainer. Dave never learns
+# what an explainer is; a session with no card has no `dave_open_issue`, so
+# its `E` falls through.
+[macro.session-explainer]
+label = "card explainer"
+steps = [ { tool = "dave_open_issue" }, { tool = "headway_open_explainer" } ]
