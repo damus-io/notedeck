@@ -91,6 +91,10 @@ pub enum KeyAction {
     SessionPaneLast,
     /// Leave normal mode for the chat input (`i` / `a`)
     InsertMode,
+    /// Show the active session's Details tab (normal gd)
+    ShowDetails,
+    /// Show the active session's chat tab (normal gc)
+    ShowChat,
 }
 
 impl KeyAction {
@@ -158,7 +162,7 @@ pub enum Pending {
     Root,
     /// `z`: waiting for `a` / `o` / `c` / `R` / `M`.
     Z,
-    /// `g`: waiting for the second `g`.
+    /// `g`: waiting for `g`, `d` or `c`.
     G,
     /// `d`: waiting for the second `d`.
     D,
@@ -236,6 +240,14 @@ const SESSION_VIEW: &[ChordHint] = &[
     hint("v", KeyAction::ToggleView),
     hint("m", KeyAction::CyclePermissionMode),
     hint("e", KeyAction::OpenExternalEditor),
+    hint("gd", KeyAction::ShowDetails),
+    hint("gc", KeyAction::ShowChat),
+];
+
+/// What `g` accepts besides the pane's own `gg`: the session tabs.
+const G_TAB_HINTS: &[ChordHint] = &[
+    hint("d", KeyAction::ShowDetails),
+    hint("c", KeyAction::ShowChat),
 ];
 
 /// Turn keys, from either pane. `s` jumps to the issue the session works and
@@ -310,10 +322,10 @@ const Z_HINTS: &[&[ChordHint]] = &[
 ];
 
 /// What `g` accepts in the chat pane.
-const CHAT_G_HINTS: &[&[ChordHint]] = &[&[hint("g", KeyAction::BlockCursorFirst)]];
+const CHAT_G_HINTS: &[&[ChordHint]] = &[&[hint("g", KeyAction::BlockCursorFirst)], G_TAB_HINTS];
 
 /// What `g` accepts in the sessions pane.
-const SESSIONS_G_HINTS: &[&[ChordHint]] = &[&[hint("g", KeyAction::SessionPaneFirst)]];
+const SESSIONS_G_HINTS: &[&[ChordHint]] = &[&[hint("g", KeyAction::SessionPaneFirst)], G_TAB_HINTS];
 
 /// What `d` accepts.
 const D_HINTS: &[&[ChordHint]] = &[&[hint("d", KeyAction::DeleteActiveSession)]];
@@ -626,6 +638,9 @@ fn check_normal_mode(ctx: &egui::Context, mode: &mut NormalMode, tentative: bool
         (Pane::Sessions, Pending::Root, Key::G, true) => Act(A::SessionPaneLast),
         (Pane::Sessions, Pending::G, Key::G, false) => Act(A::SessionPaneFirst),
         (_, Pending::Root, Key::G, false) => Prefix(Pending::G),
+        // The session's tabs, from either pane.
+        (_, Pending::G, Key::D, false) => Act(A::ShowDetails),
+        (_, Pending::G, Key::C, false) => Act(A::ShowChat),
 
         // Panes. Enter from the list goes back to the chat and hands it the
         // keyboard: you've picked the session you wanted.

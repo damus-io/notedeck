@@ -7,6 +7,7 @@ pub mod diff;
 pub mod directory_picker;
 mod git_status_ui;
 pub mod host_picker;
+pub mod inspector;
 pub mod keybind_hint;
 pub mod keybindings;
 pub mod markdown_ui;
@@ -119,7 +120,8 @@ fn build_dave_ui<'a>(
     .last_activity(session.last_activity)
     .run_configs(session_run_configs)
     .running_config_ids(running_config_ids)
-    .pending_images(&mut session.pending_images);
+    .pending_images(&mut session.pending_images)
+    .inspector(&session.inspector, &mut session.inspector_view);
 
     if let Some(agentic) = &mut session.agentic {
         let model = agentic
@@ -993,6 +995,18 @@ pub fn handle_key_action(
             .and_then(|s| s.details.issue_url.clone())
             .map_or(KeyActionResult::None, KeyActionResult::OpenUri),
         KeyAction::ToggleView => KeyActionResult::ToggleView,
+        KeyAction::ShowDetails => {
+            if let Some(session) = session_manager.get_active_mut() {
+                session.inspector_view.show_details();
+            }
+            KeyActionResult::None
+        }
+        KeyAction::ShowChat => {
+            if let Some(session) = session_manager.get_active_mut() {
+                session.inspector_view.show_chat();
+            }
+            KeyActionResult::None
+        }
         KeyAction::CyclePermissionMode => {
             let publish = update::cycle_permission_mode(session_manager, backend, ctx);
             if let Some(session) = session_manager.get_active_mut() {
@@ -1358,6 +1372,19 @@ pub fn handle_ui_action(
             )
         }
         DaveAction::Compact => UiActionResult::Compact,
+        DaveAction::OpenInspector(section) => {
+            if let Some(session) = session_manager.get_active_mut() {
+                session.inspector_view.open(section);
+            }
+            UiActionResult::Handled
+        }
+        DaveAction::ShowChat => {
+            if let Some(session) = session_manager.get_active_mut() {
+                session.inspector_view.show_chat();
+                session.focus_requested = true;
+            }
+            UiActionResult::Handled
+        }
         // All run actions are intercepted and handled in lib.rs before reaching here
         DaveAction::Run(_) => UiActionResult::Handled,
     }
@@ -1671,5 +1698,171 @@ mod tests {
         });
 
         assert!(launched_cwd.into_inner().is_none());
+    }
+
+    /// `gd` opens the active session's Details tab; the other session keeps its
+    /// chat, and coming back finds Details still open, until `gc`.
+    #[test]
+    fn session_tab_survives_switching_sessions() {
+        use crate::inspector::SessionTab;
+
+        let mut d = Dispatch::new();
+        let ctx = egui::Context::default();
+        let [first, second] = d.sessions;
+        let tab = |d: &Dispatch, id| d.session_manager.get(id).unwrap().inspector_view.tab;
+
+        d.dispatch(KeyAction::ShowDetails, &ctx);
+        assert_eq!(tab(&d, first), SessionTab::Details);
+
+        d.dispatch(KeyAction::SessionPaneNext, &ctx);
+        assert_eq!(d.session_manager.active_id(), Some(second));
+        assert_eq!(tab(&d, second), SessionTab::Chat);
+
+        d.dispatch(KeyAction::SessionPanePrev, &ctx);
+        assert_eq!(d.session_manager.active_id(), Some(first));
+        assert_eq!(tab(&d, first), SessionTab::Details);
+
+        d.dispatch(KeyAction::ShowChat, &ctx);
+        assert_eq!(tab(&d, first), SessionTab::Chat);
+    }
+
+    /// A Dave session view rendered with a real `AppContext`, with the UI's
+    /// actions fed back through [`super::handle_ui_action`] as the app does.
+    struct SessionViewState {
+        notedeck: notedeck::Notedeck,
+        _tmpdir: tempfile::TempDir,
+        session_manager: SessionManager,
+        model_config: crate::config::ModelConfig,
+        set_up: bool,
+    }
+
+    fn session_view_state() -> SessionViewState {
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let ctx = egui::Context::default();
+        // `--testrunner` gives the account no relays, so nothing connects.
+        let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+        let notedeck = notedeck::Notedeck::init(&ctx, tmpdir.path(), &args);
+        let mut session_manager = SessionManager::new();
+        let id = session_manager.new_session(
+            PathBuf::from("/tmp/inspector"),
+            AiMode::Agentic,
+            crate::backend::BackendType::Claude,
+        );
+        session_manager.switch_to(id);
+        SessionViewState {
+            notedeck,
+            _tmpdir: tmpdir,
+            session_manager,
+            model_config: crate::config::ModelConfig::default(),
+            set_up: false,
+        }
+    }
+
+    fn render_session_view(ui: &mut egui::Ui, state: &mut SessionViewState) {
+        notedeck::test_harness::full_window(ui, |ui| {
+            if !state.set_up {
+                state.notedeck.setup(ui.ctx());
+                state.set_up = true;
+            }
+            // The app's root panel paints this; a bare harness doesn't.
+            ui.painter()
+                .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
+            let no_configs = std::collections::HashMap::new();
+            let none_running = std::collections::HashMap::new();
+            let mut app_ctx = state.notedeck.app_context();
+            let Some(session) = state.session_manager.get_active_mut() else {
+                return;
+            };
+            let response = super::build_dave_ui(
+                session,
+                &state.model_config,
+                false,
+                None,
+                &no_configs,
+                &none_running,
+            )
+            .ui(&mut app_ctx, ui);
+            if let Some(action) = response.action {
+                super::handle_ui_action(
+                    action,
+                    &mut state.session_manager,
+                    &RemoteOnlyBackend,
+                    &mut crate::DaveOverlay::None,
+                    &mut false,
+                    ui.ctx(),
+                );
+            }
+        });
+    }
+
+    fn session_view_harness(size: egui::Vec2) -> Harness<'static, SessionViewState> {
+        notedeck::test_harness::lenient_builder()
+            .with_size(size)
+            .build_ui_state(render_session_view, session_view_state())
+    }
+
+    /// The number of nodes labelled `label`.
+    fn count_labels(harness: &Harness<'static, SessionViewState>, label: &str) -> usize {
+        use egui_kittest::kittest::Queryable;
+        harness.query_all_by_label(label).count()
+    }
+
+    /// Clicking Details swaps the chat for the rail and all nine section
+    /// stubs; clicking Chat brings the input box back.
+    #[test]
+    fn details_tab_shows_every_section_and_chat_brings_the_input_back() {
+        use crate::inspector::InspectorSection;
+        use egui_kittest::kittest::Queryable;
+
+        let mut harness = session_view_harness(egui::vec2(1100.0, 900.0));
+        harness.run_ok();
+        assert!(
+            harness.query_by_label("Nothing yet").is_none(),
+            "the chat tab shows no inspector"
+        );
+        assert_eq!(
+            count_labels(&harness, "Ask"),
+            1,
+            "the chat tab has the input box"
+        );
+
+        harness.get_by_label("Details").click_accesskit();
+        harness.run_ok();
+
+        assert_eq!(count_labels(&harness, "Nothing yet"), 9);
+        let mut i18n = notedeck::Localization::default();
+        for section in InspectorSection::ALL {
+            let title = super::inspector::section_title(section, &mut i18n);
+            // Once on the rail, once on its card.
+            assert_eq!(count_labels(&harness, &title), 2, "{title}");
+        }
+        assert_eq!(count_labels(&harness, "Ask"), 0, "Details has no input box");
+
+        harness.get_by_label("Chat").click_accesskit();
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "Nothing yet"), 0);
+        assert_eq!(count_labels(&harness, "Ask"), 1);
+    }
+
+    /// An empty session's two tabs: the chat under the tab strip, then
+    /// Details with the rail and the nine stub cards.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_session_details_tab() {
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1100.0, 760.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        harness.run_ok();
+        harness.snapshot("session_chat_tab");
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .show_details();
+        harness.run_ok();
+        harness.snapshot("session_details_tab");
     }
 }

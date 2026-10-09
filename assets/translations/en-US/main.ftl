@@ -112,6 +112,9 @@ Ask_dave_anything_33d1 = Ask dave anything...
 # Dave which-key tooltip: point normal mode's motions back at the chat
 Back_to_the_chat_5877 = Back to the chat
 
+# Dave session inspector section: background tasks, monitors, wake-ups and crons
+Background_f543 = Background
+
 # Profile banner URL field label
 Banner_52ef = Banner
 
@@ -135,6 +138,12 @@ Cancel_ed3b = Cancel
 
 # Label for cancel clear cache, Storage settings section
 Cancel_fd8b = Cancel
+
+# Dave session tab: the chat transcript
+Chat_32a7 = Chat
+
+# Dave which-key tooltip: show the active session's chat tab
+Chat_tab_58ab = Chat tab
 
 # Title for the list of chat conversations
 Chats_dc22 = Chats
@@ -328,6 +337,12 @@ Edit_Profile_49e6 = Edit Profile
 # Column title for profile editing
 Edit_Profile_8ad4 = Edit Profile
 
+# Dave session tab: the session inspector (usage, background work, files, …)
+Details_cd6b = Details
+
+# Dave which-key tooltip: show the active session's Details tab (usage, background work, files, …)
+Details_tab_ffd0 = Details tab
+
 # Placeholder for hashtag input field
 Enter_the_desired_hashtags_here__for_multiple_space-separated_7a69 = Enter the desired hashtags here (for multiple space-separated)
 
@@ -375,6 +390,9 @@ Expand_all_blocks_55aa = Expand all blocks
 
 # Dave which-key tooltip: expand the focused block
 Expand_block_c8b3 = Expand block
+
+# Dave session inspector section: scratchpad, task output and edited files
+Files_0f4a = Files
 
 # Button to go to the Headway app
 Headway_b5c8 = Headway
@@ -634,6 +652,9 @@ On_f412 = On
 # Column title for finding users to follow
 Onboarding_4a25 = Onboarding
 
+# Dave session inspector: empty state of a section with no data
+Nothing_yet_59ff = Nothing yet
+
 # Button label to open email client
 Open_Email_25e9 = Open Email
 
@@ -667,11 +688,20 @@ Please_read_and_accept_the_following_terms_to_continue_37de = Please read and ac
 # Error message for missing deck icon
 Please_select_an_icon_655b = Please select an icon.
 
+# Dave session inspector section: commits, cards and pages the session produced
+Outputs_da08 = Outputs
+
+# Dave session inspector section: model, versions, MCP servers, skills
+Overview_d736 = Overview
+
 # Button label to post a note
 Post_now_8a49 = Post now
 
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = Press the button below to copy your most recent logs to your system's clipboard. Then paste it into your email.
+
+# Dave session inspector section: permission mode, answered prompts, always-allow rules
+Permissions_d50b = Permissions
 
 # Dave which-key tooltip: jump to the previous session waiting for attention
 Previous_in_focus_queue_9b0e = Previous in focus queue
@@ -729,6 +759,9 @@ Relays_ab62 = Relays
 
 # Tooltip on the button that removes a session environment variable
 Remove_variable_625d = Remove variable
+
+# Dave session inspector section: the account's rate-limit windows
+Rate_limits_8fef = Rate limits
 
 # Dave which-key tooltip: rename the active session
 Rename_session_cb48 = Rename session
@@ -937,6 +970,9 @@ Terms_of_Service_8a6e = Terms of Service
 # TOS acceptance screen title
 Terms_of_Service_e074 = Terms of Service
 
+# Dave session inspector section: subagents the session spawned
+Subagents_5251 = Subagents
+
 # Message shown when Dave trial period has ended
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = The Dave Nostr AI assistant trial has ended :(. Thanks for testing! Zap-enabled Dave coming soon!
 
@@ -954,6 +990,9 @@ thread_ad1f = thread
 
 # Label shown between chat messages for the current day
 Today_bd04 = Today
+
+# Dave session inspector section: the agent's task list
+Tasks_2037 = Tasks
 
 # Dave which-key tooltip: switch between the scene view and the list view
 Toggle_scene_view_867b = Toggle scene view
@@ -999,6 +1038,9 @@ View_folder_9742 = View folder
 
 # Column title for wallet management
 Wallet_5e50 = Wallet
+
+# Dave session inspector section: context, tokens and cost
+Usage_4257 = Usage
 
 # Button to go to the wallet view
 Wallet_899d = Wallet

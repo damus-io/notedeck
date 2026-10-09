@@ -528,6 +528,12 @@ pub struct ChatSession {
     /// What the backend says will resume the session once its foreground turn
     /// ends ([`DaveApiResponse::WaitingOn`]); drives [`AgentStatus::Waiting`].
     pub waiting_on: crate::messages::WaitingOn,
+    /// What the Details tab knows about this session, folded from its backend's
+    /// responses.
+    pub inspector: crate::inspector::SessionInspector,
+    /// Which tab this session shows (Chat or Details) and where its Details
+    /// rail points. UI state only; never published.
+    pub inspector_view: crate::inspector::InspectorView,
     /// Tracks the dispatch lifecycle for redispatch and insert-position logic.
     pub dispatch_state: DispatchState,
     /// Whether the current turn has produced any content (assistant text, a tool
@@ -632,6 +638,8 @@ impl ChatSession {
             task_handle: None,
             wakeup_turn: false,
             waiting_on: Default::default(),
+            inspector: Default::default(),
+            inspector_view: Default::default(),
             dispatch_state: DispatchState::Idle,
             turn_has_content: false,
             turn_rows: TurnRows::default(),
@@ -707,6 +715,8 @@ impl ChatSession {
             task_handle: None,
             wakeup_turn: false,
             waiting_on: Default::default(),
+            inspector: Default::default(),
+            inspector_view: Default::default(),
             dispatch_state: DispatchState::Idle,
             turn_has_content: false,
             turn_rows: TurnRows::default(),

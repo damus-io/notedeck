@@ -74,6 +74,7 @@ will accept next.
 | `r` | Rename the agent (leaves normal mode for the name field) |
 | `dd` | Delete the agent |
 | `v` | Toggle scene / list view |
+| `gd` / `gc` | Show the session's Details tab / back to the chat |
 | `m` | Cycle permission mode |
 | `e` | Open the external editor (leaves normal mode) |
 | `s` | Stop the running turn (same as the Stop button) |

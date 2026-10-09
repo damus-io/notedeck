@@ -216,6 +216,16 @@ fn describe(i18n: &mut Localization, action: &KeyAction) -> Option<String> {
             "Stop the turn",
             "Dave which-key tooltip: stop the active session's running turn"
         ),
+        KeyAction::ShowDetails => tr!(
+            i18n,
+            "Details tab",
+            "Dave which-key tooltip: show the active session's Details tab (usage, background work, files, …)"
+        ),
+        KeyAction::ShowChat => tr!(
+            i18n,
+            "Chat tab",
+            "Dave which-key tooltip: show the active session's chat tab"
+        ),
         _ => return None,
     })
 }

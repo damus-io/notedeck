@@ -8,3 +8,4 @@ AppContext, so each test suite extracts a ctx struct or steals a SessionManager.
 - headway:dave/year-retire-voyage — Host::restart stands up a throwaway Dave to steal its session_manager because restore lives on Dave, not on a SessionManager
 - headway:headway/left-own-demand — wrote test_host() in restore.rs tests (Notedeck::init --testrunner + select account); pns_outbox_e2e and chip_click tests each hand-roll the same
 - headway:notedeck/use-release-oyster — Dispatch in ui/mod.rs tests owns loose fields rather than a Dave, so the UI-tool tests built a second fixture, and test_dave quietly opens on the DirectoryPicker
+- headway:dave/okay-scale-wrap — hand-rolled SessionViewState in ui/mod.rs tests (Notedeck::init --testrunner, then build_dave_ui and handle_ui_action) just to render one DaveUi and route its clicks

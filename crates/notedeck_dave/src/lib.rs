@@ -10,6 +10,7 @@ mod conversation;
 mod conversation_feed;
 mod focus_queue;
 pub(crate) mod git_status;
+pub mod inspector;
 pub mod ipc;
 pub(crate) mod mesh;
 mod notifications;

@@ -112,6 +112,9 @@ Ask_dave_anything_33d1 = {"["}Àsk dàvé àñythíñg...{"]"}
 # Dave which-key tooltip: point normal mode's motions back at the chat
 Back_to_the_chat_5877 = {"["}Bàçk tó thé çhàt{"]"}
 
+# Dave session inspector section: background tasks, monitors, wake-ups and crons
+Background_f543 = {"["}Bàçkgróúñd{"]"}
+
 # Profile banner URL field label
 Banner_52ef = {"["}Bàññér{"]"}
 
@@ -135,6 +138,12 @@ Cancel_ed3b = {"["}Çàñçél{"]"}
 
 # Label for cancel clear cache, Storage settings section
 Cancel_fd8b = {"["}Çàñçél{"]"}
+
+# Dave session tab: the chat transcript
+Chat_32a7 = {"["}Çhàt{"]"}
+
+# Dave which-key tooltip: show the active session's chat tab
+Chat_tab_58ab = {"["}Çhàt tàb{"]"}
 
 # Title for the list of chat conversations
 Chats_dc22 = {"["}Çhàts{"]"}
@@ -328,6 +337,12 @@ Edit_Profile_49e6 = {"["}Édít Prófílé{"]"}
 # Column title for profile editing
 Edit_Profile_8ad4 = {"["}Édít Prófílé{"]"}
 
+# Dave session tab: the session inspector (usage, background work, files, …)
+Details_cd6b = {"["}Détàíls{"]"}
+
+# Dave which-key tooltip: show the active session's Details tab (usage, background work, files, …)
+Details_tab_ffd0 = {"["}Détàíls tàb{"]"}
+
 # Placeholder for hashtag input field
 Enter_the_desired_hashtags_here__for_multiple_space-separated_7a69 = {"["}Éñtér thé désíréd hàshtàgs héré (fór múltíplé spàçé-sépàràtéd){"]"}
 
@@ -375,6 +390,9 @@ Expand_all_blocks_55aa = {"["}Éxpàñd àll blóçks{"]"}
 
 # Dave which-key tooltip: expand the focused block
 Expand_block_c8b3 = {"["}Éxpàñd blóçk{"]"}
+
+# Dave session inspector section: scratchpad, task output and edited files
+Files_0f4a = {"["}Fílés{"]"}
 
 # Button to go to the Headway app
 Headway_b5c8 = {"["}Héàdwày{"]"}
@@ -634,6 +652,9 @@ On_f412 = {"["}Óñ{"]"}
 # Column title for finding users to follow
 Onboarding_4a25 = {"["}Óñbóàrdíñg{"]"}
 
+# Dave session inspector: empty state of a section with no data
+Nothing_yet_59ff = {"["}Ñóthíñg yét{"]"}
+
 # Button label to open email client
 Open_Email_25e9 = {"["}Ópéñ Émàíl{"]"}
 
@@ -667,11 +688,20 @@ Please_read_and_accept_the_following_terms_to_continue_37de = {"["}Pléàsé ré
 # Error message for missing deck icon
 Please_select_an_icon_655b = {"["}Pléàsé séléçt àñ íçóñ.{"]"}
 
+# Dave session inspector section: commits, cards and pages the session produced
+Outputs_da08 = {"["}Óútpúts{"]"}
+
+# Dave session inspector section: model, versions, MCP servers, skills
+Overview_d736 = {"["}Óvérvíéw{"]"}
+
 # Button label to post a note
 Post_now_8a49 = {"["}Póst ñów{"]"}
 
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = {"["}Préss thé búttóñ bélów tó çópy yóúr móst réçéñt lógs tó yóúr systém's çlípbóàrd. Théñ pàsté ít íñtó yóúr émàíl.{"]"}
+
+# Dave session inspector section: permission mode, answered prompts, always-allow rules
+Permissions_d50b = {"["}Pérmíssíóñs{"]"}
 
 # Dave which-key tooltip: jump to the previous session waiting for attention
 Previous_in_focus_queue_9b0e = {"["}Prévíóús íñ fóçús qúéúé{"]"}
@@ -729,6 +759,9 @@ Relays_ab62 = {"["}Rélàys{"]"}
 
 # Tooltip on the button that removes a session environment variable
 Remove_variable_625d = {"["}Rémóvé vàríàblé{"]"}
+
+# Dave session inspector section: the account's rate-limit windows
+Rate_limits_8fef = {"["}Ràté límíts{"]"}
 
 # Dave which-key tooltip: rename the active session
 Rename_session_cb48 = {"["}Réñàmé séssíóñ{"]"}
@@ -937,6 +970,9 @@ Terms_of_Service_8a6e = {"["}Térms óf Sérvíçé{"]"}
 # TOS acceptance screen title
 Terms_of_Service_e074 = {"["}Térms óf Sérvíçé{"]"}
 
+# Dave session inspector section: subagents the session spawned
+Subagents_5251 = {"["}Súbàgéñts{"]"}
+
 # Message shown when Dave trial period has ended
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = {"["}Thé Dàvé Ñóstr ÀÍ àssístàñt tríàl hàs éñdéd :(. Thàñks fór téstíñg! Zàp-éñàbléd Dàvé çómíñg sóóñ!{"]"}
 
@@ -954,6 +990,9 @@ thread_ad1f = {"["}thréàd{"]"}
 
 # Label shown between chat messages for the current day
 Today_bd04 = {"["}Tódày{"]"}
+
+# Dave session inspector section: the agent's task list
+Tasks_2037 = {"["}Tàsks{"]"}
 
 # Dave which-key tooltip: switch between the scene view and the list view
 Toggle_scene_view_867b = {"["}Tógglé sçéñé víéw{"]"}
@@ -999,6 +1038,9 @@ View_folder_9742 = {"["}Víéw fóldér{"]"}
 
 # Column title for wallet management
 Wallet_5e50 = {"["}Wàllét{"]"}
+
+# Dave session inspector section: context, tokens and cost
+Usage_4257 = {"["}Úsàgé{"]"}
 
 # Button to go to the wallet view
 Wallet_899d = {"["}Wàllét{"]"}

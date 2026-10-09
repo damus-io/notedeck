@@ -3,6 +3,7 @@ use super::block_nav::BlockNav;
 use super::chord_hints;
 use super::diff;
 use super::git_status_ui;
+use super::inspector::{inspector_ui, session_tabs_ui};
 use super::keybindings::NormalView;
 use super::markdown_ui;
 use super::query_ui::query_call_ui;
@@ -15,6 +16,7 @@ use crate::{
     file_update::FileUpdate,
     focus_queue::FocusPriority,
     git_status::GitStatusCache,
+    inspector::{InspectorSection, InspectorView, SessionInspector, SessionTab},
     messages::{
         ApprovalPromptInput, AssistantMessage, CompactionInfo, ExecutedTool, ImageAttachment,
         Message, PermissionRequest, PermissionResponse, PermissionResponseType, PermissionView,
@@ -106,6 +108,9 @@ pub struct DaveUi<'a> {
     pending_images: Option<&'a mut Vec<ImageAttachment>>,
     /// Normal mode and how far into a chord it is, for the which-key strip.
     normal_mode: Option<NormalView>,
+    /// The session's inspector state and which tab it shows. `None` draws the
+    /// chat with no tab strip.
+    inspector: Option<(&'a SessionInspector, &'a mut InspectorView)>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -223,6 +228,11 @@ pub enum DaveAction {
     FocusQueueNext,
     /// All run-config and process-control actions
     Run(RunAction),
+    /// Show the Details tab at this section (the tab strip, the section rail,
+    /// and deep links from the status bar)
+    OpenInspector(InspectorSection),
+    /// Show the chat tab again
+    ShowChat,
 }
 
 impl<'a> DaveUi<'a> {
@@ -266,7 +276,34 @@ impl<'a> DaveUi<'a> {
             running_config_ids: None,
             pending_images: None,
             normal_mode: None,
+            inspector: None,
         }
+    }
+
+    /// Give the session view its `Chat | Details` tab strip, drawing Details
+    /// from `inspector` when `view` selects it.
+    pub fn inspector(
+        mut self,
+        inspector: &'a SessionInspector,
+        view: &'a mut InspectorView,
+    ) -> Self {
+        self.inspector = Some((inspector, view));
+        self
+    }
+
+    /// Whether the session view draws its tab strip: everywhere but the
+    /// compact scene panel, given an inspector to draw.
+    fn shows_tabs(&self) -> bool {
+        self.inspector.is_some() && !self.flags.contains(DaveUiFlags::Compact)
+    }
+
+    /// Whether the Details tab replaces the chat this frame.
+    fn shows_details(&self) -> bool {
+        self.shows_tabs()
+            && self
+                .inspector
+                .as_ref()
+                .is_some_and(|(_, view)| view.tab == SessionTab::Details)
     }
 
     /// Show the which-key strip while normal mode is on.
@@ -410,10 +447,17 @@ impl<'a> DaveUi<'a> {
 
     fn chat_frame(&self, ctx: &egui::Context) -> egui::Frame {
         let margin = self.chat_margin(ctx);
+        // The tab strip already clears the header; without it the chat leaves
+        // room for the header itself.
+        let top = if self.shows_tabs() {
+            notedeck::tokens::SPACING_MD as i8
+        } else {
+            50
+        };
         egui::Frame::new().inner_margin(egui::Margin {
             left: margin,
             right: margin,
-            top: 50,
+            top,
             bottom: 0,
         })
     }
@@ -466,24 +510,48 @@ impl<'a> DaveUi<'a> {
             result.action
         };
 
+        // The `Chat | Details` tab strip, under the header.
+        let action = if self.shows_tabs() {
+            let margin = self.chat_margin(ui.ctx());
+            let tabs_action = self.inspector.as_ref().and_then(|(_, view)| {
+                ui.horizontal(|ui| {
+                    ui.add_space(margin as f32);
+                    session_tabs_ui(view, app_ctx.i18n, ui)
+                })
+                .inner
+            });
+            ui.separator();
+            tabs_action.or(action)
+        } else {
+            action
+        };
+        let shows_details = self.shows_details();
+
         egui::Frame::NONE
             .show(ui, |ui| {
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     let margin = self.chat_margin(ui.ctx());
                     let bottom_margin = 100;
 
-                    let mut r = egui::Frame::new()
-                        .outer_margin(egui::Margin {
-                            left: margin,
-                            right: margin,
-                            top: 0,
-                            bottom: bottom_margin,
-                        })
-                        .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_SM as i8))
-                        .fill(input_fill(ui.visuals(), self.normal_mode.is_some()))
-                        .corner_radius(notedeck::tokens::RADIUS_LG)
-                        .show(ui, |ui| self.inputbox(app_ctx, ui))
-                        .inner;
+                    // Details has no input box, only the input's bottom
+                    // margin under the status bar.
+                    let mut r = if shows_details {
+                        ui.add_space(bottom_margin as f32);
+                        DaveResponse::default()
+                    } else {
+                        egui::Frame::new()
+                            .outer_margin(egui::Margin {
+                                left: margin,
+                                right: margin,
+                                top: 0,
+                                bottom: bottom_margin,
+                            })
+                            .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_SM as i8))
+                            .fill(input_fill(ui.visuals(), self.normal_mode.is_some()))
+                            .corner_radius(notedeck::tokens::RADIUS_LG)
+                            .show(ui, |ui| self.inputbox(app_ctx, ui))
+                            .inner
+                    };
 
                     // Which-key strip: what normal mode accepts next, just
                     // above the input it took focus from.
@@ -534,6 +602,26 @@ impl<'a> DaveUi<'a> {
                                 r = DaveResponse::new(action).or(r);
                             }
                         }
+                    }
+
+                    if shows_details {
+                        let details_action =
+                            self.inspector.as_mut().and_then(|(inspector, view)| {
+                                // Scoped by session, so each keeps its own
+                                // grid scroll.
+                                let id = ("dave_inspector", self.session_id);
+                                ui.push_id(id, |ui| {
+                                    ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                                        inspector_ui(inspector, view, app_ctx.i18n, ui)
+                                    })
+                                    .inner
+                                })
+                                .inner
+                            });
+                        return DaveResponse {
+                            action: details_action,
+                        }
+                        .or(r);
                     }
 
                     let chat_response = egui::ScrollArea::vertical()

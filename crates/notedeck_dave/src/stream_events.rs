@@ -230,6 +230,9 @@ pub(crate) fn apply_response(
 ) -> ApplyOutcome {
     let mut outcome = ApplyOutcome::default();
 
+    // The inspector reads every response before the match below consumes it.
+    session.inspector.apply(&res);
+
     // A response that adds a row ends the assistant segment before it. Publish
     // that segment first, so it is stamped ahead of this response's own note
     // and sorts in its place in the turn.
