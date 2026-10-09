@@ -46,20 +46,12 @@ fn insert_negentropy_record(storage: &mut NegentropyStorageVector, created_at: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::test_config;
+    use crate::test_util::TempNdb;
     use negentropy::{Item, NegentropyStorageBase};
     use nostrdb::{IngestMetadata, NoteBuilder};
     use nostrdb_net::FullKeypair;
     use nostrdb_net::NoteId;
     use std::time::{Duration, Instant};
-    use tempfile::TempDir;
-
-    /// Creates one temporary `nostrdb` instance for negentropy adapter tests.
-    fn test_ndb() -> (TempDir, Ndb) {
-        let tmp = TempDir::new().expect("tmp dir");
-        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
-        (tmp, ndb)
-    }
 
     /// Builds and ingests one signed text note into `nostrdb`.
     fn ingest_text_note(ndb: &Ndb, kind: u32, content: &str, created_at: u64) -> NoteId {
@@ -100,7 +92,7 @@ mod tests {
     /// set containing only notes matched by the filter.
     #[test]
     fn builder_builds_storage_from_matching_local_notes_only() {
-        let (_tmp, ndb) = test_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let matching_first = ingest_text_note(&ndb, 1, "first", 1_776_000_010);
         let _non_matching = ingest_text_note(&ndb, 7, "skip", 1_776_000_020);
         let matching_second = ingest_text_note(&ndb, 1, "second", 1_776_000_030);
@@ -130,7 +122,7 @@ mod tests {
     /// Large filters can still be evaluated by the direct nostrdb-backed builder.
     #[test]
     fn builder_builds_storage_for_filter_larger_than_json_buffer() {
-        let (_tmp, ndb) = test_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let matching = ingest_text_note(&ndb, 1, "large filter match", 1_776_000_060);
         wait_for_note(&ndb, matching);
 
@@ -184,7 +176,7 @@ mod tests {
     /// The direct nostrdb presence check should distinguish present from missing ids.
     #[test]
     fn local_presence_filter_distinguishes_present_and_missing_ids() {
-        let (_tmp, ndb) = test_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let present = ingest_text_note(&ndb, 1, "present", 1_776_000_040);
         wait_for_note(&ndb, present);
         let missing = NoteId::new({

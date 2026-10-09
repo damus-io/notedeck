@@ -131,12 +131,19 @@ impl StaticImgTexCache {
     }
 }
 
+/// The image a request shows and the image it writes to the disk cache, which
+/// keeps full resolution when the request wants a smaller display copy.
+struct DisplayAndDiskImages {
+    display: egui::ColorImage,
+    disk: egui::ColorImage,
+}
+
 /// Builds display output and disk output for a static image request.
 fn parse_display_and_disk_images(
     content_type: Option<&str>,
     bytes: &[u8],
     imgtype: ImageType,
-) -> Result<(egui::ColorImage, egui::ColorImage), crate::Error> {
+) -> Result<DisplayAndDiskImages, crate::Error> {
     let display_img = parse_img_response(content_type, bytes, imgtype)?;
 
     let disk_img = if should_persist_full_content(imgtype) {
@@ -145,7 +152,10 @@ fn parse_display_and_disk_images(
         display_img.clone()
     };
 
-    Ok((display_img, disk_img))
+    Ok(DisplayAndDiskImages {
+        display: display_img,
+        disk: disk_img,
+    })
 }
 
 /// Loads a cached static image, resizing only when the stored image exceeds the requested [`ImageType`].
@@ -202,15 +212,17 @@ async fn fetch_static_img_from_net(
 
     tracing::trace!("static img from net: parsing http request from {url}");
     JobOutput::Next(JobRun::Sync(Box::new(move || {
-        let (display_img, disk_img) =
-            match parse_display_and_disk_images(res.content_type.as_deref(), &res.bytes, imgtype) {
-                Ok(imgs) => imgs,
-                Err(e) => {
-                    return JobOutput::Complete(CompleteResponse::new(MediaJobResult::StaticImg(
-                        Err(e),
-                    )));
-                }
-            };
+        let DisplayAndDiskImages {
+            display: display_img,
+            disk: disk_img,
+        } = match parse_display_and_disk_images(res.content_type.as_deref(), &res.bytes, imgtype) {
+            Ok(imgs) => imgs,
+            Err(e) => {
+                return JobOutput::Complete(CompleteResponse::new(MediaJobResult::StaticImg(Err(
+                    e,
+                ))));
+            }
+        };
 
         let display_texture_handle = load_texture_checked(
             &ctx,

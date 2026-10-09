@@ -258,15 +258,17 @@ async fn from_net_run(
 
     JobOutput::Next(JobRun::Sync(Box::new(move || {
         tracing::trace!("Starting animated img from net job for {url}");
-        let (display_anim, disk_frames) =
-            match build_display_and_disk_animation(ctx, request_key, res.bytes, imgtype) {
-                Ok(output) => output,
-                Err(e) => {
-                    return JobOutput::Complete(CompleteResponse::new(MediaJobResult::Animation(
-                        Err(e),
-                    )));
-                }
-            };
+        let DisplayAndDiskAnimation {
+            display: display_anim,
+            disk_frames,
+        } = match build_display_and_disk_animation(ctx, request_key, res.bytes, imgtype) {
+            Ok(output) => output,
+            Err(e) => {
+                return JobOutput::Complete(CompleteResponse::new(MediaJobResult::Animation(Err(
+                    e,
+                ))));
+            }
+        };
 
         JobOutput::Complete(
             CompleteResponse::new(MediaJobResult::Animation(Ok(display_anim))).run_no_output(
@@ -281,13 +283,20 @@ async fn from_net_run(
     })))
 }
 
+/// The animation a request shows and the frames it writes to the disk cache,
+/// which keep full resolution when the request wants a smaller display copy.
+struct DisplayAndDiskAnimation {
+    display: Animation,
+    disk_frames: Vec<ImageFrame>,
+}
+
 /// Builds the animation returned to UI and the frame set persisted to disk.
 fn build_display_and_disk_animation(
     ctx: egui::Context,
     request_key: TextureRequestKey,
     gif_bytes: Vec<u8>,
     imgtype: ImageType,
-) -> Result<(Animation, Vec<ImageFrame>), Error> {
+) -> Result<DisplayAndDiskAnimation, Error> {
     let display_pkg = generate_anim_pkg(ctx, request_key, gif_bytes.clone(), move |img| {
         process_image(imgtype, img)
     })?;
@@ -304,7 +313,10 @@ fn build_display_and_disk_animation(
         display_frames
     };
 
-    Ok((display_anim, disk_frames))
+    Ok(DisplayAndDiskAnimation {
+        display: display_anim,
+        disk_frames,
+    })
 }
 
 fn generate_anim_pkg(

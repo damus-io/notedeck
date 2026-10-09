@@ -55,11 +55,12 @@ impl AccountStorage {
         }
     }
 
-    pub fn rw(self) -> (AccountStorageReader, AccountStorageWriter) {
-        (
-            AccountStorageReader::new(self.clone()),
-            AccountStorageWriter::new(self),
-        )
+    /// Split the storage into its reading and writing halves.
+    pub fn rw(self) -> AccountStorageRw {
+        AccountStorageRw {
+            reader: AccountStorageReader::new(self.clone()),
+            writer: AccountStorageWriter::new(self),
+        }
     }
 
     fn persist_account(&self, account: &UserAccountSerializable) -> Result<()> {
@@ -139,6 +140,13 @@ impl AccountStorageWriter {
             Ok(())
         }
     }
+}
+
+/// An [`AccountStorage`] split by [`AccountStorage::rw`] into its reading and
+/// writing halves.
+pub struct AccountStorageRw {
+    pub reader: AccountStorageReader,
+    pub writer: AccountStorageWriter,
 }
 
 pub struct AccountStorageReader {
@@ -263,7 +271,7 @@ mod tests {
     #[test]
     fn test_basic() {
         let kp = nostrdb_net::FullKeypair::generate().to_keypair();
-        let (reader, writer) = AccountStorage::mock().unwrap().rw();
+        let AccountStorageRw { reader, writer } = AccountStorage::mock().unwrap().rw();
         let resp = writer.write_account(&UserAccountSerializable::new(kp.clone()));
 
         assert!(resp.is_ok());
@@ -276,7 +284,7 @@ mod tests {
     #[test]
     fn test_secret_persisted_in_keyring_not_on_disk() {
         let kp = nostrdb_net::FullKeypair::generate().to_keypair();
-        let (reader, writer) = AccountStorage::mock().unwrap().rw();
+        let AccountStorageRw { reader, writer } = AccountStorage::mock().unwrap().rw();
 
         writer
             .write_account(&UserAccountSerializable::new(kp.clone()))
@@ -309,7 +317,7 @@ mod tests {
     #[test]
     fn test_remove_key_removes_secret() {
         let kp = nostrdb_net::FullKeypair::generate().to_keypair();
-        let (reader, writer) = AccountStorage::mock().unwrap().rw();
+        let AccountStorageRw { reader, writer } = AccountStorage::mock().unwrap().rw();
 
         writer
             .write_account(&UserAccountSerializable::new(kp.clone()))
@@ -333,7 +341,7 @@ mod tests {
     #[test]
     fn test_file_backed_persists_secret_on_disk() {
         let kp = nostrdb_net::FullKeypair::generate().to_keypair();
-        let (reader, writer) = AccountStorage::mock_file().unwrap().rw();
+        let AccountStorageRw { reader, writer } = AccountStorage::mock_file().unwrap().rw();
 
         writer
             .write_account(&UserAccountSerializable::new(kp.clone()))
@@ -391,7 +399,7 @@ mod tests {
     fn test_select_key() {
         let kp = nostrdb_net::FullKeypair::generate().to_keypair();
 
-        let (reader, writer) = AccountStorage::mock().unwrap().rw();
+        let AccountStorageRw { reader, writer } = AccountStorage::mock().unwrap().rw();
         let _ = writer.write_account(&UserAccountSerializable::new(kp.clone()));
         assert_num_storage(&reader.get_accounts(), 1);
 
@@ -405,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_get_selected_key_when_no_file() {
-        let storage = AccountStorage::mock().unwrap().rw().0;
+        let storage = AccountStorage::mock().unwrap().rw().reader;
 
         // Should return Ok(None) when no key has been selected
         match storage.get_selected_key() {

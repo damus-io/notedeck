@@ -928,7 +928,11 @@ impl BridgeOutboxSettlement {
         let mut actions = Vec::new();
         let mut pending = VecDeque::from([scoped_delta]);
         while let Some(scoped_delta) = pending.pop_front() {
-            let (scoped_output, scoped_outbox_ops, scoped_effects) = scoped_delta.into_parts();
+            let ScopedSubDelta {
+                output: scoped_output,
+                outbox_ops: scoped_outbox_ops,
+                effects: scoped_effects,
+            } = scoped_delta;
             self.append_scoped_output_actions(&mut actions, scoped_output);
             for effect in scoped_effects.into_effects() {
                 actions.push(BridgeSettlementAction::StartScopedEffect(effect));
@@ -1310,14 +1314,13 @@ async fn wait_for_timer(timer: Option<Instant>) -> Option<Instant> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::test_config;
+    use crate::test_util::TempNdb;
     use crate::{
         test_utils::{nip65_write_relay_note_for_test, wait_for_nip65_for_test},
         SubConfig, SubKey, SubOwnerKey, SubRelayPolicy, SubScope,
     };
     use enostr::{FullKeypair, RelayStatus};
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-    use tempfile::TempDir;
 
     fn relay() -> NormRelayUrl {
         NormRelayUrl::new("wss://relay-nip11-bridge.example.com").expect("relay")
@@ -1325,12 +1328,6 @@ mod tests {
 
     fn send_filter(filter: Filter) -> SendFilter {
         SendFilter::try_from_filter(filter).expect("sendable test filter")
-    }
-
-    fn test_ndb() -> (TempDir, Ndb) {
-        let tmp = TempDir::new().expect("tmp dir");
-        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
-        (tmp, ndb)
     }
 
     fn author_outbox_config(author: Pubkey) -> SubConfig {
@@ -1377,7 +1374,7 @@ mod tests {
     #[test]
     fn unrelated_outbox_event_does_not_emit_scoped_facts() {
         crate::app::install_crypto();
-        let (_tmp, ndb) = test_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let author = FullKeypair::generate();
         let author_relay = "wss://author-route.example.com";
         let note = nip65_write_relay_note_for_test(&author, &[author_relay]);
@@ -1461,7 +1458,7 @@ mod tests {
     #[test]
     fn max_websocket_limit_control_does_not_require_selected_account() {
         crate::app::install_crypto();
-        let (_tmp, ndb) = test_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let (input_sender, _input_receiver) = mpsc::unbounded_channel();
         let (event_sender, _event_receiver) = std::sync::mpsc::channel();
         let event_sink = RemoteBridgeEventSink::new(event_sender, Arc::new(|| {}));

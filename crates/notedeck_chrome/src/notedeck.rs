@@ -82,7 +82,7 @@ fn setup_logging(path: &DataPath) -> Option<WorkerGuard> {
 }
 
 fn resolve_native_title(args_raw: &[String]) -> (String, bool) {
-    let (args, _) = Args::parse(args_raw);
+    let args = Args::parse(args_raw).args;
     let show_title = args.options.contains(NotedeckOptions::ShowTitle);
     let title = args.title.unwrap_or_else(|| "Damus Notedeck".to_string());
     (title, show_title)
@@ -112,7 +112,7 @@ async fn async_main() {
 
     // Headless runtime mode: skip eframe/winit entirely and drive every app's
     // background update() loop from an owned run loop on this Tokio runtime.
-    let (parsed, _) = Args::parse(&args_raw);
+    let parsed = Args::parse(&args_raw).args;
     if parsed.options.contains(NotedeckOptions::Headless) {
         run_headless(base_path, args_raw).await;
         return;
@@ -260,7 +260,7 @@ pub fn main() {
 #[cfg(test)]
 mod tests {
     use super::{resolve_native_title, Notedeck};
-    use notedeck::{Args, DataPath, NotedeckOptions};
+    use notedeck::{Args, DataPath, NotedeckOptions, ParsedArgs};
     use notedeck_columns::Damus;
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
@@ -414,7 +414,10 @@ mod tests {
             "second".to_string(),
         ];
 
-        let (parsed, unrecognized) = Args::parse(&args[1..]);
+        let ParsedArgs {
+            args: parsed,
+            unrecognized,
+        } = Args::parse(&args[1..]);
         assert!(unrecognized.is_empty());
 
         let (title, show_title, builder) = apply_window_builder_for_args(&args);
@@ -437,7 +440,10 @@ mod tests {
         ];
 
         for args in cases {
-            let (parsed, unrecognized) = Args::parse(&args[1..]);
+            let ParsedArgs {
+                args: parsed,
+                unrecognized,
+            } = Args::parse(&args[1..]);
             assert!(unrecognized.is_empty());
 
             let (title, show_title, builder) = apply_window_builder_for_args(&args);

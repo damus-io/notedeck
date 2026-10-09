@@ -10,9 +10,9 @@ use super::fact::ScopedSubOutput;
 /// Scoped-sub output from one runtime transition.
 #[derive(Default)]
 pub(crate) struct ScopedSubDelta {
-    outbox_ops: ScopedSubOutboxOps,
-    output: ScopedSubOutput,
-    effects: ScopedSubEffects,
+    pub(crate) outbox_ops: ScopedSubOutboxOps,
+    pub(crate) output: ScopedSubOutput,
+    pub(crate) effects: ScopedSubEffects,
 }
 
 impl ScopedSubDelta {
@@ -41,9 +41,45 @@ impl ScopedSubDelta {
         self.output.extend(other.output);
         self.effects.extend(other.effects);
     }
+}
 
-    pub(crate) fn into_parts(self) -> (ScopedSubOutput, ScopedSubOutboxOps, ScopedSubEffects) {
-        (self.output, self.outbox_ops, self.effects)
+/// A scoped-sub step's own result and the outbox ops it staged to realize it,
+/// which the caller hands on to the bridge.
+pub(crate) struct Staged<T> {
+    pub(crate) value: T,
+    pub(crate) outbox_ops: ScopedSubOutboxOps,
+}
+
+impl<T> Staged<T> {
+    /// A result that staged no outbox ops.
+    pub(crate) fn without_ops(value: T) -> Self {
+        Self {
+            value,
+            outbox_ops: ScopedSubOutboxOps::default(),
+        }
+    }
+
+    /// Move the staged ops onto `outbox_ops` and keep the result.
+    pub(crate) fn stage_into(self, outbox_ops: &mut ScopedSubOutboxOps) -> T {
+        outbox_ops.extend(self.outbox_ops);
+        self.value
+    }
+}
+
+/// A runtime transition's own result and the delta (outbox ops, readiness
+/// facts and effects) it produced.
+pub(crate) struct Applied<T> {
+    pub(crate) value: T,
+    pub(crate) delta: ScopedSubDelta,
+}
+
+impl<T> Applied<T> {
+    /// A result whose transition changed nothing outside the runtime.
+    pub(crate) fn without_delta(value: T) -> Self {
+        Self {
+            value,
+            delta: ScopedSubDelta::default(),
+        }
     }
 }
 

@@ -161,10 +161,9 @@ impl AccountRelayData {
         &self,
         ndb: &Ndb,
         txn: &Transaction,
-    ) -> Option<(u64, BTreeSet<RelaySpec>)> {
+    ) -> Option<RelayListProjection> {
         let ndb_projection = self.newest_nip65_projection(ndb, txn);
         Self::effective_projection(self.pending_advertised.as_ref(), ndb_projection.as_ref())
-            .map(|projection| (projection.created_at, projection.advertised))
     }
 
     pub(crate) fn accept_local_relay_list(&mut self, projection: RelayListProjection) {

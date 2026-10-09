@@ -10,7 +10,7 @@ use crate::Error;
 use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, UnknownIds, Waker,
+    DataPathType, Directory, Images, NoteAction, NoteCache, ParsedArgs, UnknownIds, Waker,
 };
 use crate::{JobCache, JobPool, MediaJobs};
 use egui::Margin;
@@ -798,7 +798,10 @@ impl Notedeck {
         install_crypto();
 
         // Skip the first argument, which is the program name.
-        let (parsed_args, unrecognized_args) = Args::parse(&args[1..]);
+        let ParsedArgs {
+            args: parsed_args,
+            unrecognized: unrecognized_args,
+        } = Args::parse(&args[1..]);
 
         let data_path = parsed_args
             .datapath
@@ -1498,7 +1501,7 @@ mod prune_swap_tests {
     /// settings UI's [`Args::db_prune_path`] and the `compact/` directory
     /// [`try_swap_pruned_db`] looks in ever drift apart.
     fn test_paths(base: &Path) -> TestPaths {
-        let (args, _unrecognized) = Args::parse(&[]);
+        let ParsedArgs { args, .. } = Args::parse(&[]);
         let data_path = DataPath::new(base);
 
         let db = args.db_path(&data_path);

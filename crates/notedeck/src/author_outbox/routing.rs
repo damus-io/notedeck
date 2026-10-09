@@ -235,10 +235,9 @@ fn copy_tag_field<'a>(
 mod tests {
     use super::*;
     use crate::author_outbox::RelayDirectorySnapshot;
-    use crate::test_util::test_config;
+    use crate::test_util::TempNdb;
     use crate::test_utils::{nip65_note_for_test, wait_for_nip65_for_test};
     use serde_json::Value;
-    use tempfile::TempDir;
 
     fn route_filter(filter: &Filter, directory: &impl RelayDirectoryRead) -> Vec<RoutedFilter> {
         route_filter_at_index(0, filter, directory)
@@ -261,13 +260,6 @@ mod tests {
         authors
     }
 
-    fn new_ndb() -> (TempDir, nostrdb::Ndb) {
-        let tmp = TempDir::new().expect("tmp dir");
-        let ndb =
-            nostrdb::Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
-        (tmp, ndb)
-    }
-
     fn local_relay_list_fixture(
         ndb: &mut nostrdb::Ndb,
         authors: impl IntoIterator<Item = Pubkey>,
@@ -278,7 +270,7 @@ mod tests {
 
     #[test]
     fn route_filter_emits_relay_sized_filters_and_preserves_other_fields() {
-        let (_tmp, mut ndb) = new_ndb();
+        let TempNdb { dir: _tmp, mut ndb } = TempNdb::new();
         let relay_a = relay("wss://relay-a.example.com");
         let relay_b = relay("wss://relay-b.example.com");
         let author_a = enostr::FullKeypair::generate();
@@ -342,7 +334,7 @@ mod tests {
 
     #[test]
     fn route_filter_keeps_large_author_sets_together_per_relay() {
-        let (_tmp, mut ndb) = new_ndb();
+        let TempNdb { dir: _tmp, mut ndb } = TempNdb::new();
         let relay_a = relay("wss://relay-a.example.com");
         let authors = (0..65)
             .map(|_| enostr::FullKeypair::generate())
@@ -381,7 +373,7 @@ mod tests {
 
     #[test]
     fn route_filter_omits_explicit_none_and_missing_authors() {
-        let (_tmp, mut ndb) = new_ndb();
+        let TempNdb { dir: _tmp, mut ndb } = TempNdb::new();
         let author_known = enostr::FullKeypair::generate();
         let author_none = enostr::FullKeypair::generate();
         let author_missing = enostr::FullKeypair::generate();
@@ -430,7 +422,7 @@ mod tests {
 
     #[test]
     fn route_filter_refuses_custom_filters() {
-        let (_tmp, mut ndb) = new_ndb();
+        let TempNdb { dir: _tmp, mut ndb } = TempNdb::new();
         let author = enostr::FullKeypair::generate();
         let pubkey = author.pubkey;
         let filter = Filter::new()
@@ -456,7 +448,7 @@ mod tests {
 
     #[test]
     fn route_filter_preserves_non_author_fields_when_rewriting_authors() {
-        let (_tmp, mut ndb) = new_ndb();
+        let TempNdb { dir: _tmp, mut ndb } = TempNdb::new();
         let relay_a = relay("wss://relay-a.example.com");
         let author_a = enostr::FullKeypair::generate();
         let author_b = enostr::FullKeypair::generate();

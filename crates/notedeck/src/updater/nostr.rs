@@ -469,15 +469,22 @@ pub mod test_helpers {
         0x17, 0x98,
     ];
 
+    /// A signed kind 3063 (Software Asset) event, framed for ingest.
+    pub struct SignedAssetEvent {
+        /// The `["EVENT", "test_sub", {…}]` frame.
+        pub event: String,
+        /// The note id, for a release event to reference.
+        pub id: [u8; 32],
+    }
+
     /// Build a properly signed kind 3063 (Software Asset) event.
-    /// Returns the event JSON string and the note id bytes.
     pub fn build_signed_asset_event(
         seckey: &[u8; 32],
         version: &str,
         platform: &str,
         url: &str,
         sha256: &str,
-    ) -> (String, [u8; 32]) {
+    ) -> SignedAssetEvent {
         let note = NoteBuilder::new()
             .kind(ASSET_KIND as u32)
             .content("")
@@ -509,7 +516,10 @@ pub mod test_helpers {
         let id = *note.id();
         let json = note.json().expect("serialize note to json");
         let event_str = format!(r#"["EVENT", "test_sub", {json}]"#);
-        (event_str, id)
+        SignedAssetEvent {
+            event: event_str,
+            id,
+        }
     }
 
     /// Build a properly signed kind 30063 (Software Release) event
@@ -617,19 +627,17 @@ pub mod test_helpers {
 mod tests {
     use super::test_helpers::*;
     use super::*;
-    use crate::test_util::test_config;
-    use nostrdb::{IngestMetadata, Ndb};
-    use tempfile::TempDir;
+    use crate::test_util::{test_config, TempNdb};
+    use nostrdb::IngestMetadata;
 
     /// Hex pubkey string for use with make_*_event_json (skip_validation tests)
     const TEST_PUBKEY_HEX: &str =
         "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 
-    fn test_ndb() -> (TempDir, Ndb) {
-        let tmp = TempDir::new().unwrap();
-        let cfg = test_config().skip_validation(true);
-        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &cfg).unwrap();
-        (tmp, ndb)
+    /// A temporary nostrdb that skips signature checks, so tests can ingest
+    /// hand-built event JSON.
+    fn test_ndb() -> TempNdb {
+        TempNdb::with_config(&test_config().skip_validation(true))
     }
 
     #[test]
@@ -723,7 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_latest_release_nip82() {
-        let (_tmp, ndb) = test_ndb();
+        let TempNdb { dir: _tmp, ndb } = test_ndb();
         let platform = target_platform_tag();
         let expected_sha = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
 
@@ -779,7 +787,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_latest_release_wrong_platform() {
-        let (_tmp, ndb) = test_ndb();
+        let TempNdb { dir: _tmp, ndb } = test_ndb();
 
         // Use a platform that doesn't match
         let wrong_platform = if target_platform_tag().contains("linux") {
@@ -830,7 +838,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_latest_release_picks_highest_version() {
-        let (_tmp, ndb) = test_ndb();
+        let TempNdb { dir: _tmp, ndb } = test_ndb();
         let platform = target_platform_tag();
 
         // Two releases: v98 and v99
@@ -903,7 +911,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_latest_release_older_version() {
-        let (_tmp, ndb) = test_ndb();
+        let TempNdb { dir: _tmp, ndb } = test_ndb();
         let platform = target_platform_tag();
 
         let asset_id = "1100000000000000000000000000000000000000000000000000000000000001";

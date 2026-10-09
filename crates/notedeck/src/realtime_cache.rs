@@ -467,7 +467,7 @@ impl<R: Reducer> RealtimeCache<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::test_config;
+    use crate::test_util::TempNdb;
     use nostrdb::Ndb;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{Duration, Instant};
@@ -564,12 +564,6 @@ mod tests {
         COUNTERS.finalizes.store(0, Ordering::SeqCst);
     }
 
-    fn test_ndb() -> (Ndb, tempfile::TempDir) {
-        let dir = tempfile::TempDir::new().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
-        (ndb, dir)
-    }
-
     /// Write one `TEST_KIND` note authored by `kp` and ingest it locally,
     /// mirroring the store's client-ingest path (a hand-built relay frame won't
     /// pass validation). Each note carries a distinct `d` tag so it's a distinct
@@ -621,7 +615,7 @@ mod tests {
     #[test]
     fn seeds_once_then_folds_deltas() {
         reset_counters();
-        let (ndb, _dir) = test_ndb();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
         let kp = nostrdb_net::FullKeypair::generate();
         let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
 
@@ -673,7 +667,7 @@ mod tests {
     #[test]
     fn finalizes_once_per_fold() {
         reset_counters();
-        let (ndb, _dir) = test_ndb();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
         let kp = nostrdb_net::FullKeypair::generate();
         let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
 
@@ -709,7 +703,7 @@ mod tests {
     #[test]
     fn seeds_a_note_committed_between_the_callers_txn_and_the_first_subscribe() {
         reset_counters();
-        let (ndb, _dir) = test_ndb();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
         let kp = nostrdb_net::FullKeypair::generate();
         let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
         let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();
@@ -753,7 +747,7 @@ mod tests {
     #[test]
     fn a_pump_that_reads_on_its_poll_txn_seeds_every_note_once_subscribed_first() {
         reset_counters();
-        let (ndb, _dir) = test_ndb();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
         let kp = nostrdb_net::FullKeypair::generate();
         let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
         let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();
@@ -794,7 +788,7 @@ mod tests {
     #[test]
     fn retries_deltas_committed_after_the_read_txn() {
         reset_counters();
-        let (ndb, _dir) = test_ndb();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
         let kp = nostrdb_net::FullKeypair::generate();
         let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
         let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();
@@ -842,7 +836,7 @@ mod tests {
     #[test]
     fn a_read_does_not_swallow_fresh_from_the_next_poll() {
         reset_counters();
-        let (ndb, _dir) = test_ndb();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
         let kp = nostrdb_net::FullKeypair::generate();
         let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
         let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();

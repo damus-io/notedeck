@@ -87,7 +87,7 @@ pub use account::FALLBACK_PUBKEY;
 pub use app::{
     App, AppAction, AppActionQueue, AppResponse, Notedeck, NotedeckRemoteConfig, TabNotifications,
 };
-pub use args::Args;
+pub use args::{Args, ParsedArgs};
 pub use async_loader::{worker_count, AsyncLoader};
 pub use context::{AppContext, SoftKeyboardContext};
 pub use enostr::FullHistoryConfig;

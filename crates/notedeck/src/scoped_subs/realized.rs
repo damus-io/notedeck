@@ -6,7 +6,7 @@ use super::live::LiveSubState;
 use super::live::{AuthorOutboxLiveRefresh, ScopedSubLiveRuntime};
 use super::planner::{LivePlan, ScopedSubPlan};
 use super::route_work::RouteWorkResult;
-use super::{ScopedSubDelta, ScopedSubOutboxOps, ScopedSubOutput};
+use super::{Applied, ScopedSubDelta, ScopedSubOutboxOps, ScopedSubOutput, Staged};
 
 /// Live and full-history outbox ids currently realized for retained scoped subs.
 #[derive(Default)]
@@ -29,6 +29,22 @@ struct LivePlanApplication<'a> {
     previous: Option<&'a SubConfig>,
     spec: &'a SubConfig,
     live: LivePlan<'a>,
+}
+
+/// One author-outbox routed live leg that has an outbox id: the relay it
+/// reads and the id it reads it with.
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct RoutedLiveLeg {
+    pub(super) relay: NormRelayUrl,
+    pub(super) live_id: OutboxSubId,
+}
+
+/// A [`RoutedLiveLeg`] with the author sets its filters carry.
+#[cfg(test)]
+pub(super) struct RoutedLiveAuthorSets {
+    pub(super) leg: RoutedLiveLeg,
+    pub(super) author_sets: Vec<Vec<enostr::Pubkey>>,
 }
 
 #[derive(Clone, Debug)]
@@ -72,13 +88,16 @@ impl ScopedSubRealizedState {
         &mut self,
         ids: &OutboxIdRegistry,
         application: ActivePlanApplication<'_>,
-    ) -> (RouteWorkResult, ScopedSubDelta) {
+    ) -> Applied<RouteWorkResult> {
         let mut delta = self.apply_full_history(
             ids,
             &application.scoped,
             application.plan.full_history_targets,
         );
-        let (result, ops) = self.apply_live_plan(
+        let Staged {
+            value: result,
+            outbox_ops,
+        } = self.apply_live_plan(
             ids,
             LivePlanApplication {
                 account_read_relays: application.account_read_relays,
@@ -88,15 +107,18 @@ impl ScopedSubRealizedState {
                 live: application.plan.live,
             },
         );
-        delta.extend(ScopedSubDelta::new(ScopedSubOutput::default(), ops));
-        (result, delta)
+        delta.extend(ScopedSubDelta::new(ScopedSubOutput::default(), outbox_ops));
+        Applied {
+            value: result,
+            delta,
+        }
     }
 
     fn apply_live_plan(
         &mut self,
         ids: &OutboxIdRegistry,
         application: LivePlanApplication<'_>,
-    ) -> (RouteWorkResult, ScopedSubOutboxOps) {
+    ) -> Staged<RouteWorkResult> {
         match application.live {
             LivePlan::Single => {
                 let outbox_ops = match application.previous {
@@ -114,7 +136,10 @@ impl ScopedSubRealizedState {
                         application.spec,
                     ),
                 };
-                (RouteWorkResult::Complete, outbox_ops)
+                Staged {
+                    value: RouteWorkResult::Complete,
+                    outbox_ops,
+                }
             }
             LivePlan::AccountsReadPlusExplicit => {
                 let outbox_ops = self.live.ensure_accounts_read_plus_explicit_live_sub(
@@ -124,7 +149,10 @@ impl ScopedSubRealizedState {
                     application.spec,
                     application.previous,
                 );
-                (RouteWorkResult::Complete, outbox_ops)
+                Staged {
+                    value: RouteWorkResult::Complete,
+                    outbox_ops,
+                }
             }
             LivePlan::AccountsReadWithAuthorOutbox {
                 plan_generation,
@@ -245,10 +273,7 @@ impl ScopedSubRealizedState {
     }
 
     #[cfg(test)]
-    pub(super) fn routed_live_legs_for_test(
-        &self,
-        scoped: &ScopedSubKey,
-    ) -> Vec<(NormRelayUrl, OutboxSubId)> {
+    pub(super) fn routed_live_legs_for_test(&self, scoped: &ScopedSubKey) -> Vec<RoutedLiveLeg> {
         let Some(live) = self.live.get(scoped) else {
             return Vec::new();
         };
@@ -262,7 +287,12 @@ impl ScopedSubRealizedState {
                     routed
                         .legs
                         .values()
-                        .filter_map(|leg| leg.live_id.map(|live_id| (leg.relay.clone(), live_id)))
+                        .filter_map(|leg| {
+                            leg.live_id.map(|live_id| RoutedLiveLeg {
+                                relay: leg.relay.clone(),
+                                live_id,
+                            })
+                        })
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -273,7 +303,7 @@ impl ScopedSubRealizedState {
     pub(super) fn routed_live_author_sets_for_test(
         &self,
         scoped: &ScopedSubKey,
-    ) -> Vec<(NormRelayUrl, OutboxSubId, Vec<Vec<enostr::Pubkey>>)> {
+    ) -> Vec<RoutedLiveAuthorSets> {
         let Some(LiveSubState::AccountsReadWithAuthorOutbox(state)) = self.live.get(scoped) else {
             return Vec::new();
         };
@@ -287,7 +317,13 @@ impl ScopedSubRealizedState {
             .values()
             .filter_map(|leg| {
                 let live_id = leg.live_id?;
-                Some((leg.relay.clone(), live_id, leg.author_sets_for_test()))
+                Some(RoutedLiveAuthorSets {
+                    leg: RoutedLiveLeg {
+                        relay: leg.relay.clone(),
+                        live_id,
+                    },
+                    author_sets: leg.author_sets_for_test(),
+                })
             })
             .collect()
     }

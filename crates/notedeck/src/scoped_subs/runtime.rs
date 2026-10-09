@@ -20,7 +20,10 @@ use super::realized::{ActivePlanApplication, ScopedSubRealizedState};
 use super::route_work::RouteWorkResult;
 use super::store::{ScopedSubStore, ScopedSubStoreRelease};
 use super::transition::{effective_sub_transition, ActiveSubTransition, EffectiveSubTransition};
-use super::{ScopedSubCommand, ScopedSubDelta, ScopedSubFact, ScopedSubOutboxOps, ScopedSubOutput};
+use super::{
+    Applied, ScopedSubCommand, ScopedSubDelta, ScopedSubFact, ScopedSubOutboxOps, ScopedSubOutput,
+    Staged,
+};
 
 /// Bridge-owned realization of retained scoped-sub declarations.
 ///
@@ -134,23 +137,19 @@ fn build_scoped_sub_plan<'a>(
     spec: &SubConfig,
     account_read_relays: &HashSet<NormRelayUrl>,
     author_outbox_advance: AuthorOutboxPlanAdvance<'a>,
-) -> (ScopedSubPlan<'a>, bool) {
-    let plan_pending = matches!(&author_outbox_advance, AuthorOutboxPlanAdvance::Pending);
+) -> ScopedSubPlan<'a> {
     let author_outbox_routes = match author_outbox_advance {
         AuthorOutboxPlanAdvance::Ready { routes, generation } => Some((routes, generation)),
         AuthorOutboxPlanAdvance::Pending | AuthorOutboxPlanAdvance::NotAuthorOutbox => None,
     };
-    (
-        plan_scoped_sub(spec, account_read_relays, author_outbox_routes),
-        plan_pending,
-    )
+    plan_scoped_sub(spec, account_read_relays, author_outbox_routes)
 }
 
 fn apply_scoped_sub_plan(
     realized: &mut ScopedSubRealizedState,
     ids: &OutboxIdRegistry,
     application: ActivePlanApplication<'_>,
-) -> (RouteWorkResult, ScopedSubDelta) {
+) -> Applied<RouteWorkResult> {
     realized.apply_active_plan(ids, application)
 }
 
@@ -165,7 +164,7 @@ fn advance_author_outbox_plan(
     author_outbox_plans: &mut AuthorOutboxPlanRuntime,
     realized: &mut ScopedSubRealizedState,
     application: AuthorOutboxPlanApplication<'_>,
-) -> (RouteWorkResult, bool, ScopedSubDelta) {
+) -> Applied<RouteWorkResult> {
     let AuthorOutboxPlanApplication {
         context,
         scoped,
@@ -179,9 +178,12 @@ fn advance_author_outbox_plan(
         account_read_relays: context.account_read_relays,
         spec: next,
     });
-    let (plan, plan_pending) =
-        build_scoped_sub_plan(next, context.account_read_relays, advance_result.advance);
-    let (result, realized_delta) = apply_scoped_sub_plan(
+    let plan_pending = matches!(&advance_result.advance, AuthorOutboxPlanAdvance::Pending);
+    let plan = build_scoped_sub_plan(next, context.account_read_relays, advance_result.advance);
+    let Applied {
+        value: result,
+        delta: realized_delta,
+    } = apply_scoped_sub_plan(
         realized,
         context.ids,
         ActivePlanApplication {
@@ -198,7 +200,10 @@ fn advance_author_outbox_plan(
         advance_result.effects,
     );
     delta.extend(realized_delta);
-    (result, plan_pending, delta)
+    Applied {
+        value: ScopedSubRuntime::route_work_result_after_plan_pending(result, plan_pending),
+        delta,
+    }
 }
 
 impl ScopedSubRuntime {
@@ -229,10 +234,10 @@ impl ScopedSubRuntime {
         relay: &NormRelayUrl,
         status: Option<RelayReqStatus>,
     ) -> ScopedSubDelta {
-        let (outbox_ops, effects) = self
+        let outbox_ops = self
             .author_outbox_plans
             .apply_relay_req_status(id, relay, status);
-        ScopedSubDelta::new_with_effects(ScopedSubOutput::default(), outbox_ops, effects)
+        ScopedSubDelta::new(ScopedSubOutput::default(), outbox_ops)
     }
 
     /// Apply one completed author-outbox plan job and realize the scoped
@@ -259,11 +264,12 @@ impl ScopedSubRuntime {
         account_read_relays: &HashSet<NormRelayUrl>,
         completion: AuthorOutboxPlanJobCompletion,
     ) -> ScopedSubDelta {
-        let mut outbox_ops = ScopedSubOutboxOps::default();
-        let (scoped_keys, ops) =
-            self.author_outbox_plans
-                .apply_plan_slot_ready(ids, completion, account_read_relays);
-        outbox_ops.extend(ops);
+        let Staged {
+            value: scoped_keys,
+            outbox_ops,
+        } = self
+            .author_outbox_plans
+            .apply_plan_slot_ready(ids, completion, account_read_relays);
         if scoped_keys.is_empty() {
             return ScopedSubDelta::new(ScopedSubOutput::default(), outbox_ops);
         }
@@ -286,10 +292,8 @@ impl ScopedSubRuntime {
         &mut self,
         now: Instant,
     ) -> ScopedSubDelta {
-        let (outbox_ops, effects) = self
-            .author_outbox_plans
-            .apply_relay_list_discovery_retry_due(now);
-        ScopedSubDelta::new_with_effects(ScopedSubOutput::default(), outbox_ops, effects)
+        self.author_outbox_plans
+            .apply_relay_list_discovery_retry_due(now)
     }
 
     /// Apply one committed live-sub EOSE aggregate fact and emit readiness
@@ -398,16 +402,18 @@ impl ScopedSubRuntime {
                 config,
             } => {
                 let scoped = Self::scoped_key_for_account(account_pubkey, scope, key);
-                let (_, command_delta) = self.set_owner_config_for_account(
-                    context.ids,
-                    context.selected_account_pubkey,
-                    context.account_read_relays,
-                    account_pubkey,
-                    owner,
-                    scope,
-                    key,
-                    config,
-                );
+                let command_delta = self
+                    .set_owner_config_for_account(
+                        context.ids,
+                        context.selected_account_pubkey,
+                        context.account_read_relays,
+                        account_pubkey,
+                        owner,
+                        scope,
+                        key,
+                        config,
+                    )
+                    .delta;
                 delta.extend(command_delta);
                 vec![scoped]
             }
@@ -419,7 +425,10 @@ impl ScopedSubRuntime {
                 config,
             } => {
                 let scoped = Self::scoped_key_for_account(account_pubkey, scope, key);
-                let (changed, command_delta) = self.ensure_owner_config_for_account(
+                let Applied {
+                    value: changed,
+                    delta: command_delta,
+                } = self.ensure_owner_config_for_account(
                     context.ids,
                     context.selected_account_pubkey,
                     context.account_read_relays,
@@ -443,20 +452,25 @@ impl ScopedSubRuntime {
                 key,
             } => {
                 let scoped = Self::scoped_key_for_account(account_pubkey, scope, key);
-                let (_, command_delta) = self.clear_owner_config_for_account(
-                    context.ids,
-                    context.selected_account_pubkey,
-                    context.account_read_relays,
-                    account_pubkey,
-                    owner,
-                    key,
-                    scope,
-                );
+                let command_delta = self
+                    .clear_owner_config_for_account(
+                        context.ids,
+                        context.selected_account_pubkey,
+                        context.account_read_relays,
+                        account_pubkey,
+                        owner,
+                        key,
+                        scope,
+                    )
+                    .delta;
                 delta.extend(command_delta);
                 vec![scoped]
             }
             ScopedSubCommand::DropOwner { owner } => {
-                let (changed, command_delta) = self.drop_owner_with_relays_collect(
+                let Applied {
+                    value: changed,
+                    delta: command_delta,
+                } = self.drop_owner_with_relays_collect(
                     context.ids,
                     context.selected_account_pubkey,
                     context.account_read_relays,
@@ -497,7 +511,7 @@ impl ScopedSubRuntime {
         scope: SubScope,
         key: SubKey,
         config: SubConfig,
-    ) -> (SetSubResult, ScopedSubDelta) {
+    ) -> Applied<SetSubResult> {
         match scope {
             SubScope::Account if account_pubkey != selected_account_pubkey => self
                 .set_inactive_account_sub_with_effects(
@@ -532,27 +546,29 @@ impl ScopedSubRuntime {
         scope: SubScope,
         key: SubKey,
         config: SubConfig,
-    ) -> (bool, ScopedSubDelta) {
+    ) -> Applied<bool> {
         let scoped = Self::scoped_key(resolve_scope_for_account(&scope, account_pubkey), key);
         if self.store.owner_owns(owner, &scoped) {
-            return (false, ScopedSubDelta::default());
+            return Applied::without_delta(false);
         }
         if self.store.contains_desired(&scoped) {
             self.store.register_ownership(owner, &scoped);
-            return (true, ScopedSubDelta::default());
+            return Applied::without_delta(true);
         }
 
-        let (_, delta) = self.set_owner_config_for_account(
-            ids,
-            selected_account_pubkey,
-            account_read_relays,
-            account_pubkey,
-            owner,
-            scope,
-            key,
-            config,
-        );
-        (true, delta)
+        let delta = self
+            .set_owner_config_for_account(
+                ids,
+                selected_account_pubkey,
+                account_read_relays,
+                account_pubkey,
+                owner,
+                scope,
+                key,
+                config,
+            )
+            .delta;
+        Applied { value: true, delta }
     }
 
     /// Create-or-update desired state for one `(owner, key)`.
@@ -570,7 +586,7 @@ impl ScopedSubRuntime {
         scope: SubScope,
         key: SubKey,
         config: SubConfig,
-    ) -> (SetSubResult, ScopedSubDelta) {
+    ) -> Applied<SetSubResult> {
         let resolved_scope = resolve_scope(&scope, selected_account_pubkey);
         let scoped = Self::scoped_key(resolved_scope, key);
 
@@ -580,11 +596,11 @@ impl ScopedSubRuntime {
             .store
             .set_owner_config(scoped.clone(), owner, config.clone());
         let Some(config) = change.next else {
-            return (SetSubResult::Unchanged, ScopedSubDelta::default());
+            return Applied::without_delta(SetSubResult::Unchanged);
         };
         let previous = change.previous;
         if previous.as_ref() == Some(&config) {
-            return (SetSubResult::Unchanged, ScopedSubDelta::default());
+            return Applied::without_delta(SetSubResult::Unchanged);
         }
 
         let result = if previous.is_some() {
@@ -594,9 +610,13 @@ impl ScopedSubRuntime {
         };
         let context =
             ScopedSubRuntimeContext::new(ids, selected_account_pubkey, account_read_relays);
-        let (_, delta) =
-            self.apply_desired_config_transition(context, scoped, previous.as_ref(), Some(&config));
-        (result, delta)
+        let delta = self
+            .apply_desired_config_transition(context, scoped, previous.as_ref(), Some(&config))
+            .delta;
+        Applied {
+            value: result,
+            delta,
+        }
     }
 
     /// Apply one store-derived desired-state transition for a scoped key.
@@ -606,7 +626,7 @@ impl ScopedSubRuntime {
         scoped: ScopedSubKey,
         previous: Option<&SubConfig>,
         next: Option<&SubConfig>,
-    ) -> (RouteWorkResult, ScopedSubDelta) {
+    ) -> Applied<RouteWorkResult> {
         match effective_sub_transition(context.selected_account_pubkey, scoped, previous, next) {
             EffectiveSubTransition::Removed { scoped, previous } => {
                 let was_active = scoped.is_active_for_account(context.selected_account_pubkey);
@@ -617,7 +637,10 @@ impl ScopedSubRuntime {
                     self.author_outbox_plans.remove_scoped(&scoped),
                 );
                 delta.extend(self.realized.remove_scoped(context.ids, &scoped));
-                (RouteWorkResult::Complete, delta)
+                Applied {
+                    value: RouteWorkResult::Complete,
+                    delta,
+                }
             }
             EffectiveSubTransition::Inactive {
                 scoped,
@@ -634,7 +657,10 @@ impl ScopedSubRuntime {
                     ));
                 }
                 delta.extend(self.realized.remove_scoped(context.ids, &scoped));
-                (RouteWorkResult::Complete, delta)
+                Applied {
+                    value: RouteWorkResult::Complete,
+                    delta,
+                }
             }
             EffectiveSubTransition::Active(transition) => {
                 let scoped = transition.scoped.clone();
@@ -644,9 +670,9 @@ impl ScopedSubRuntime {
                     Some(transition.next),
                     true,
                 );
-                let (result, delta) = self.realize_active_config(context, transition);
-                Self::trace_deferred_route_work(&scoped, result);
-                (result, delta)
+                let applied = self.realize_active_config(context, transition);
+                Self::trace_deferred_route_work(&scoped, applied.value);
+                applied
             }
         }
     }
@@ -661,12 +687,12 @@ impl ScopedSubRuntime {
         scoped: ScopedSubKey,
         previous: Option<&SubConfig>,
         spec: &SubConfig,
-    ) -> (RouteWorkResult, ScopedSubDelta) {
+    ) -> Applied<RouteWorkResult> {
         if !scoped.is_active_for_account(context.selected_account_pubkey) {
-            return (
-                RouteWorkResult::Complete,
-                self.realized.remove_scoped(context.ids, &scoped),
-            );
+            return Applied {
+                value: RouteWorkResult::Complete,
+                delta: self.realized.remove_scoped(context.ids, &scoped),
+            };
         }
 
         self.realize_active_config(
@@ -688,13 +714,13 @@ impl ScopedSubRuntime {
         &mut self,
         context: ScopedSubRuntimeContext<'_>,
         transition: ActiveSubTransition<'_>,
-    ) -> (RouteWorkResult, ScopedSubDelta) {
+    ) -> Applied<RouteWorkResult> {
         let ActiveSubTransition {
             scoped,
             previous,
             next,
         } = transition;
-        let (result, plan_pending, delta) = advance_author_outbox_plan(
+        advance_author_outbox_plan(
             &mut self.author_outbox_plans,
             &mut self.realized,
             AuthorOutboxPlanApplication {
@@ -703,11 +729,6 @@ impl ScopedSubRuntime {
                 previous,
                 next,
             },
-        );
-
-        (
-            Self::route_work_result_after_plan_pending(result, plan_pending),
-            delta,
         )
     }
 
@@ -751,7 +772,7 @@ impl ScopedSubRuntime {
         owner: SubOwnerKey,
         key: SubKey,
         scope: SubScope,
-    ) -> (ClearSubResult, ScopedSubDelta) {
+    ) -> Applied<ClearSubResult> {
         let scoped = Self::scoped_key(resolve_scope_for_account(&scope, account_pubkey), key);
         let release = self.store.clear_owner_binding(owner, &scoped);
         self.apply_store_release(
@@ -871,27 +892,32 @@ impl ScopedSubRuntime {
         selected_account_pubkey: Pubkey,
         account_read_relays: &HashSet<NormRelayUrl>,
         owner: SubOwnerKey,
-    ) -> (Vec<ScopedSubKey>, ScopedSubDelta) {
+    ) -> Applied<Vec<ScopedSubKey>> {
         let Some(scoped_keys) = self.store.take_owner(owner) else {
-            return (Vec::new(), ScopedSubDelta::default());
+            return Applied::without_delta(Vec::new());
         };
 
         let mut changed = Vec::new();
         let mut delta = ScopedSubDelta::default();
         for scoped in scoped_keys {
             let release = self.store.release_owner(owner, &scoped);
-            let (_, release_delta) = self.apply_store_release(
-                ids,
-                selected_account_pubkey,
-                account_read_relays,
-                &scoped,
-                release,
-            );
+            let release_delta = self
+                .apply_store_release(
+                    ids,
+                    selected_account_pubkey,
+                    account_read_relays,
+                    &scoped,
+                    release,
+                )
+                .delta;
             delta.extend(release_delta);
             changed.push(scoped);
         }
 
-        (changed, delta)
+        Applied {
+            value: changed,
+            delta,
+        }
     }
 
     /// Apply selected-account scoped-sub lifecycle changes and emit readiness
@@ -1011,8 +1037,10 @@ impl ScopedSubRuntime {
             }
 
             let scoped_for_log = scoped.clone();
-            let (result, restore_delta) =
-                self.realize_retained_active_config(context, scoped, None, &spec);
+            let Applied {
+                value: result,
+                delta: restore_delta,
+            } = self.realize_retained_active_config(context, scoped, None, &spec);
             delta.extend(restore_delta);
             Self::trace_deferred_route_work(&scoped_for_log, result);
         }
@@ -1050,12 +1078,9 @@ impl ScopedSubRuntime {
 
         for removal in purge.removed {
             let previous = removal.removed_config;
-            let (_, removal_delta) = self.apply_desired_config_transition(
-                context,
-                removal.scoped,
-                previous.as_ref(),
-                None,
-            );
+            let removal_delta = self
+                .apply_desired_config_transition(context, removal.scoped, previous.as_ref(), None)
+                .delta;
             delta.extend(removal_delta);
         }
         delta
@@ -1110,8 +1135,10 @@ impl ScopedSubRuntime {
             }
 
             let scoped_for_log = scoped.clone();
-            let (result, realize_delta) =
-                self.realize_retained_active_config(context, scoped, Some(&spec), &spec);
+            let Applied {
+                value: result,
+                delta: realize_delta,
+            } = self.realize_retained_active_config(context, scoped, Some(&spec), &spec);
             delta.extend(realize_delta);
             Self::trace_deferred_route_work(&scoped_for_log, result);
         }
@@ -1135,7 +1162,7 @@ impl ScopedSubRuntime {
         owner: SubOwnerKey,
         key: SubKey,
         config: SubConfig,
-    ) -> (SetSubResult, ScopedSubDelta) {
+    ) -> Applied<SetSubResult> {
         debug_assert_ne!(account_pubkey, selected_account_pubkey);
 
         let scoped = Self::scoped_key(ResolvedSubScope::Account(account_pubkey), key);
@@ -1148,17 +1175,17 @@ impl ScopedSubRuntime {
             .store
             .set_owner_config(scoped.clone(), owner, config.clone());
         let Some(config) = change.next else {
-            let (_, delta) = self.apply_desired_config_transition(
-                context,
-                scoped,
-                change.previous.as_ref(),
-                None,
-            );
-            return (SetSubResult::Unchanged, delta);
+            let delta = self
+                .apply_desired_config_transition(context, scoped, change.previous.as_ref(), None)
+                .delta;
+            return Applied {
+                value: SetSubResult::Unchanged,
+                delta,
+            };
         };
         let previous = change.previous;
         if previous.as_ref() == Some(&config) {
-            return (SetSubResult::Unchanged, ScopedSubDelta::default());
+            return Applied::without_delta(SetSubResult::Unchanged);
         }
 
         let result = if previous.is_some() {
@@ -1166,9 +1193,13 @@ impl ScopedSubRuntime {
         } else {
             SetSubResult::Created
         };
-        let (_, delta) =
-            self.apply_desired_config_transition(context, scoped, previous.as_ref(), Some(&config));
-        (result, delta)
+        let delta = self
+            .apply_desired_config_transition(context, scoped, previous.as_ref(), Some(&config))
+            .delta;
+        Applied {
+            value: result,
+            delta,
+        }
     }
 
     /// Apply retained author-outbox plans for every active scoped key.
@@ -1236,7 +1267,10 @@ impl ScopedSubRuntime {
                 continue;
             }
 
-            let (result, scoped_delta) = self.apply_author_outbox_plan_for_scoped_key(
+            let Applied {
+                value: result,
+                delta: scoped_delta,
+            } = self.apply_author_outbox_plan_for_scoped_key(
                 ids,
                 selected_account_pubkey,
                 baseline_relays,
@@ -1263,9 +1297,9 @@ impl ScopedSubRuntime {
         selected_account_pubkey: Pubkey,
         baseline_relays: &HashSet<NormRelayUrl>,
         scoped: ScopedSubKey,
-    ) -> (RouteWorkResult, ScopedSubDelta) {
+    ) -> Applied<RouteWorkResult> {
         let Some(spec) = self.store.desired(&scoped).cloned() else {
-            return (RouteWorkResult::Complete, ScopedSubDelta::default());
+            return Applied::without_delta(RouteWorkResult::Complete);
         };
 
         debug_assert!(
@@ -1273,7 +1307,7 @@ impl ScopedSubRuntime {
             "author-outbox plan application received non-author-outbox scoped key: {scoped:?}",
         );
         if !spec.uses_author_outbox() {
-            return (RouteWorkResult::Complete, ScopedSubDelta::default());
+            return Applied::without_delta(RouteWorkResult::Complete);
         }
 
         let context = ScopedSubRuntimeContext::new(ids, selected_account_pubkey, baseline_relays);
@@ -1287,36 +1321,44 @@ impl ScopedSubRuntime {
         account_read_relays: &HashSet<NormRelayUrl>,
         scoped: &ScopedSubKey,
         release: ScopedSubStoreRelease,
-    ) -> (ClearSubResult, ScopedSubDelta) {
+    ) -> Applied<ClearSubResult> {
         let context =
             ScopedSubRuntimeContext::new(ids, selected_account_pubkey, account_read_relays);
         match release {
-            ScopedSubStoreRelease::NotFound => {
-                (ClearSubResult::NotFound, ScopedSubDelta::default())
-            }
+            ScopedSubStoreRelease::NotFound => Applied::without_delta(ClearSubResult::NotFound),
             ScopedSubStoreRelease::StillInUse {
                 previous_config,
                 next_config,
             } => {
                 if previous_config != next_config {
-                    let (_, delta) = self.apply_desired_config_transition(
-                        context,
-                        scoped.clone(),
-                        previous_config.as_ref(),
-                        next_config.as_ref(),
-                    );
-                    return (ClearSubResult::StillInUse, delta);
+                    let delta = self
+                        .apply_desired_config_transition(
+                            context,
+                            scoped.clone(),
+                            previous_config.as_ref(),
+                            next_config.as_ref(),
+                        )
+                        .delta;
+                    return Applied {
+                        value: ClearSubResult::StillInUse,
+                        delta,
+                    };
                 }
-                (ClearSubResult::StillInUse, ScopedSubDelta::default())
+                Applied::without_delta(ClearSubResult::StillInUse)
             }
             ScopedSubStoreRelease::Cleared { removed_config } => {
-                let (_, delta) = self.apply_desired_config_transition(
-                    context,
-                    scoped.clone(),
-                    removed_config.as_ref(),
-                    None,
-                );
-                (ClearSubResult::Cleared, delta)
+                let delta = self
+                    .apply_desired_config_transition(
+                        context,
+                        scoped.clone(),
+                        removed_config.as_ref(),
+                        None,
+                    )
+                    .delta;
+                Applied {
+                    value: ClearSubResult::Cleared,
+                    delta,
+                }
             }
         }
     }
@@ -1340,7 +1382,7 @@ impl ScopedSubRuntime {
         selected_account_pubkey: Pubkey,
         key: SubKey,
         scope: SubScope,
-    ) -> Vec<(NormRelayUrl, OutboxSubId)> {
+    ) -> Vec<super::realized::RoutedLiveLeg> {
         let resolved_scope = resolve_scope(&scope, selected_account_pubkey);
         let scoped = Self::scoped_key(resolved_scope, key);
         self.realized.routed_live_legs_for_test(&scoped)
@@ -1351,7 +1393,7 @@ impl ScopedSubRuntime {
         selected_account_pubkey: Pubkey,
         key: SubKey,
         scope: SubScope,
-    ) -> Vec<(NormRelayUrl, OutboxSubId, Vec<Vec<Pubkey>>)> {
+    ) -> Vec<super::realized::RoutedLiveAuthorSets> {
         let resolved_scope = resolve_scope(&scope, selected_account_pubkey);
         let scoped = Self::scoped_key(resolved_scope, key);
         self.realized.routed_live_author_sets_for_test(&scoped)

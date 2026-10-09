@@ -1070,7 +1070,7 @@ impl PrivateRelaySync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::test_config;
+    use crate::test_util::TempNdb;
     use crate::{
         remote_data::{RemoteIntent, RemoteIntentBatchBuilder, RemotePublishCommand},
         ExplicitPublishApi,
@@ -1078,7 +1078,6 @@ mod tests {
     use enostr::NormRelayUrl;
     use nostrdb::{IngestMetadata, NoteBuilder};
     use nostrdb_net::FullKeypair;
-    use tempfile::TempDir;
 
     /// Frame a signed note as the `["EVENT", {…}]` envelope `ingest` hands the
     /// publisher.
@@ -1147,13 +1146,6 @@ mod tests {
 
     // ===== fan_out_unseen_notes =====
 
-    /// A temporary nostrdb for the seen-on fan-out tests.
-    fn test_ndb() -> (TempDir, Ndb) {
-        let tmp = TempDir::new().expect("tmp dir");
-        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
-        (tmp, ndb)
-    }
-
     /// Ingest one signed kind-1 note, recording it as seen on `seen_on` — mirroring
     /// how a note reaches nostrdb from a relay (the embedded relay for CLI ingests,
     /// or a private relay for inbound-synced notes).
@@ -1207,7 +1199,7 @@ mod tests {
     /// been seen on the private relay, so it's fanned out there — the bug fix.
     #[tokio::test]
     async fn unseen_note_is_fanned_out_to_private_relay() {
-        let (_tmp, ndb) = test_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let sub = ndb
             .subscribe(&[Filter::new().kinds([1]).build()])
             .expect("sub");
@@ -1224,7 +1216,7 @@ mod tests {
     /// sync) is not echoed straight back out to it.
     #[tokio::test]
     async fn note_already_seen_on_private_relay_is_not_refanned() {
-        let (_tmp, ndb) = test_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let sub = ndb
             .subscribe(&[Filter::new().kinds([1]).build()])
             .expect("sub");
@@ -1243,7 +1235,7 @@ mod tests {
     /// defeat sealed sharing entirely.
     #[tokio::test]
     async fn unwrapped_rumor_is_not_fanned_out() {
-        let (_tmp, ndb) = test_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         // Register the team root so ndb auto-unwraps the envelope on ingest.
         let mut root = [0u8; 32];
         root[0] = 0x11;
@@ -1308,7 +1300,7 @@ mod tests {
     /// An empty private relay set is a no-op even with fresh notes to consider.
     #[tokio::test]
     async fn fan_out_unseen_empty_relays_is_noop() {
-        let (_tmp, ndb) = test_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let sub = ndb
             .subscribe(&[Filter::new().kinds([1]).build()])
             .expect("sub");
@@ -1325,10 +1317,18 @@ mod tests {
     /// wall clock is read.
     const HOST_TEST_TS: u64 = 1_700_000_000;
 
+    /// A kind-1080 PNS envelope wrapping a signed inner note, as a test
+    /// ingests it.
+    struct PnsEnvelopeFrame {
+        /// The `["EVENT", {…}]` ingest frame.
+        frame: String,
+        envelope_id: [u8; 32],
+        inner_id: [u8; 32],
+    }
+
     /// Build the kind-1080 PNS envelope wrapping a signed inner kind-1 note for
-    /// `secret`'s account, returning the `["EVENT", {…}]` ingest frame, the
-    /// envelope id, and the inner note id.
-    fn pns_envelope_frame(secret: &[u8; 32]) -> (String, [u8; 32], [u8; 32]) {
+    /// `secret`'s account.
+    fn pns_envelope_frame(secret: &[u8; 32]) -> PnsEnvelopeFrame {
         let pns_keys = nostrdb_net::pns::derive_pns_keys(secret);
         let inner = NoteBuilder::new()
             .kind(1)
@@ -1343,7 +1343,11 @@ mod tests {
                 .expect("pns envelope");
         let envelope_id = *envelope.id();
         let frame = format!("[\"EVENT\",{}]", envelope.json().expect("envelope json"));
-        (frame, envelope_id, inner_id)
+        PnsEnvelopeFrame {
+            frame,
+            envelope_id,
+            inner_id,
+        }
     }
 
     /// Whether `ndb` holds note `id` yet (queryable == committed).
@@ -1365,7 +1369,10 @@ mod tests {
 
         // A shared private relay backed by its own opaque db (never seeded with the
         // account key, so it only ever holds the envelope, never the inner note).
-        let (_relay_dir, relay_ndb) = test_ndb();
+        let TempNdb {
+            dir: _relay_dir,
+            ndb: relay_ndb,
+        } = TempNdb::new();
         let relay = server::spawn(relay_ndb.clone(), "127.0.0.1:0".parse().expect("addr"))
             .expect("spawn relay");
         let url = NormRelayUrl::new(&relay.url()).expect("relay url");
@@ -1373,11 +1380,18 @@ mod tests {
 
         let account = FullKeypair::generate();
         let secret = account.secret_key.secret_bytes();
-        let (frame, envelope_id, inner_id) = pns_envelope_frame(&secret);
+        let PnsEnvelopeFrame {
+            frame,
+            envelope_id,
+            inner_id,
+        } = pns_envelope_frame(&secret);
 
         // Device A: declare the host sub first (so its fan-out poll observes the
         // envelope), then author the envelope into the local db.
-        let (_a_dir, mut ndb_a) = test_ndb();
+        let TempNdb {
+            dir: _a_dir,
+            ndb: mut ndb_a,
+        } = TempNdb::new();
         ndb_a.add_key(&secret);
         let mut host_a = HostPrivateSync::new();
         host_a.update(&mut ndb_a, &account.pubkey, &secret, relays, &[]);
@@ -1404,7 +1418,10 @@ mod tests {
 
         // Device B: backfill the account's private stream; nostrdb auto-unwraps the
         // envelope (B is seeded with the account key) so the inner note is queryable.
-        let (_b_dir, mut ndb_b) = test_ndb();
+        let TempNdb {
+            dir: _b_dir,
+            ndb: mut ndb_b,
+        } = TempNdb::new();
         ndb_b.add_key(&secret);
         let mut host_b = HostPrivateSync::new();
         let mut delivered = false;
@@ -1431,7 +1448,7 @@ mod tests {
     async fn host_sync_local_only_is_settled() {
         let account = FullKeypair::generate();
         let secret = account.secret_key.secret_bytes();
-        let (_dir, mut ndb) = test_ndb();
+        let TempNdb { dir: _dir, mut ndb } = TempNdb::new();
 
         let mut host = HostPrivateSync::new();
         assert!(host.settled(), "a fresh host has nothing pending");
@@ -1498,7 +1515,7 @@ mod tests {
     /// to a different account), including a board-less share the sync path keeps.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn roster_reads_shares_for_recipient_only() {
-        let (_dir, ndb) = test_ndb();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
         let author = FullKeypair::generate();
         let other = FullKeypair::generate();
         let sender = FullKeypair::generate();
@@ -1541,7 +1558,10 @@ mod tests {
 
         // A shared private relay over its own opaque db — never seeded with the root,
         // so it only ever holds the opaque 1081 envelope, never the inner rumor.
-        let (_relay_dir, relay_ndb) = test_ndb();
+        let TempNdb {
+            dir: _relay_dir,
+            ndb: relay_ndb,
+        } = TempNdb::new();
         let relay = server::spawn(relay_ndb.clone(), "127.0.0.1:0".parse().expect("addr"))
             .expect("spawn relay");
         let url = NormRelayUrl::new(&relay.url()).expect("relay url");
@@ -1579,7 +1599,10 @@ mod tests {
         // Device B: seed the account key and a key-share for the root (as its NIP-59
         // inbox would carry), so the host derives the channel from the roster,
         // registers the root, backfills the 1081, and auto-unwraps the inner rumor.
-        let (_b_dir, mut ndb_b) = test_ndb();
+        let TempNdb {
+            dir: _b_dir,
+            ndb: mut ndb_b,
+        } = TempNdb::new();
         ndb_b.add_key(&secret);
         let sharer = FullKeypair::generate();
         ingest_giftwrap(
@@ -1621,7 +1644,10 @@ mod tests {
         let sns_keys = nostrdb_net::sns::derive_sns_keys(&root).expect("sns keys");
         let app_roots = std::slice::from_ref(&root);
 
-        let (_relay_dir, relay_ndb) = test_ndb();
+        let TempNdb {
+            dir: _relay_dir,
+            ndb: relay_ndb,
+        } = TempNdb::new();
         let relay = server::spawn(relay_ndb.clone(), "127.0.0.1:0".parse().expect("addr"))
             .expect("spawn relay");
         let url = NormRelayUrl::new(&relay.url()).expect("relay url");
@@ -1633,7 +1659,10 @@ mod tests {
         // Device A: register the root (opens the local 1081 sub), then locally
         // ingest a sealed envelope exactly as the notebook store's `ingest_sealed`
         // does — the host, not the app, fans it out on the next pump.
-        let (_a_dir, mut ndb_a) = test_ndb();
+        let TempNdb {
+            dir: _a_dir,
+            ndb: mut ndb_a,
+        } = TempNdb::new();
         ndb_a.add_key(&secret);
         let mut host_a = HostPrivateSync::new();
         host_a.update(&mut ndb_a, &account.pubkey, &secret, relays, app_roots);
@@ -1661,7 +1690,10 @@ mod tests {
             .expect("local envelope ingest");
 
         // Device B: register the SAME derived root (no key-share) and backfill.
-        let (_b_dir, mut ndb_b) = test_ndb();
+        let TempNdb {
+            dir: _b_dir,
+            ndb: mut ndb_b,
+        } = TempNdb::new();
         ndb_b.add_key(&secret);
         let mut host_b = HostPrivateSync::new();
 
@@ -1700,7 +1732,10 @@ mod tests {
         let sns_keys = nostrdb_net::sns::derive_sns_keys(&root).expect("sns keys");
         let app_roots = std::slice::from_ref(&root);
 
-        let (_relay_dir, relay_ndb) = test_ndb();
+        let TempNdb {
+            dir: _relay_dir,
+            ndb: relay_ndb,
+        } = TempNdb::new();
         let relay = server::spawn(relay_ndb.clone(), "127.0.0.1:0".parse().expect("addr"))
             .expect("spawn relay");
         let url = NormRelayUrl::new(&relay.url()).expect("relay url");
@@ -1712,7 +1747,10 @@ mod tests {
         // Device A: seal + locally ingest an envelope FIRST, register the root only
         // afterwards (the app-registers-after-write ordering). add_team_root up front
         // just lets nostrdb unwrap it locally; the outbound fan must still catch it.
-        let (_a_dir, mut ndb_a) = test_ndb();
+        let TempNdb {
+            dir: _a_dir,
+            ndb: mut ndb_a,
+        } = TempNdb::new();
         ndb_a.add_key(&secret);
         assert!(ndb_a.add_team_root(&root));
         let rumor = NoteBuilder::new()
@@ -1740,7 +1778,10 @@ mod tests {
         // already predates the outbound sub this opens.
         let mut host_a = HostPrivateSync::new();
 
-        let (_b_dir, mut ndb_b) = test_ndb();
+        let TempNdb {
+            dir: _b_dir,
+            ndb: mut ndb_b,
+        } = TempNdb::new();
         ndb_b.add_key(&secret);
         let mut host_b = HostPrivateSync::new();
 
@@ -1800,7 +1841,10 @@ mod tests {
         // The shared private relay over its own opaque db: never seeded with the
         // account key or the root, so it only ever holds the gift-wrap and the
         // envelope, never anything it could read out of them.
-        let (_relay_dir, relay_ndb) = test_ndb();
+        let TempNdb {
+            dir: _relay_dir,
+            ndb: relay_ndb,
+        } = TempNdb::new();
         let relay = server::spawn(relay_ndb.clone(), "127.0.0.1:0".parse().expect("addr"))
             .expect("spawn relay");
         let url = NormRelayUrl::new(&relay.url()).expect("relay url");
@@ -1813,7 +1857,10 @@ mod tests {
         // to ourselves — and let nostrdb peel it into the roster. This happens
         // *before* the host exists, the real ordering for a board sealed on a
         // previous run or by the CLI, so only the catch-up leg can fan it.
-        let (_a_dir, mut ndb_a) = test_ndb();
+        let TempNdb {
+            dir: _a_dir,
+            ndb: mut ndb_a,
+        } = TempNdb::new();
         ndb_a.add_key(&secret);
         ingest_giftwrap(
             &ndb_a,
@@ -1850,7 +1897,10 @@ mod tests {
 
         // Device B: a fresh cache holding only the account key, plus the
         // account-level gift-wrap inbox sub against the same private relay.
-        let (_b_dir, mut ndb_b) = test_ndb();
+        let TempNdb {
+            dir: _b_dir,
+            ndb: mut ndb_b,
+        } = TempNdb::new();
         ndb_b.add_key(&secret);
         let giftwrap_filter = Filter::new()
             .kinds([1059])
@@ -1900,7 +1950,7 @@ mod tests {
     /// the private one. Scoping on the peeled rumor's author closes that off.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn foreign_giftwrap_addressed_to_us_is_not_fanned() {
-        let (_dir, ndb) = test_ndb();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
         let account = FullKeypair::generate();
         let stranger = FullKeypair::generate();
         ndb.add_key(&account.secret_key.secret_bytes());
@@ -1950,7 +2000,7 @@ mod tests {
     /// filter; registration is idempotent.
     #[test]
     fn registers_roots_and_derives_channel() {
-        let (_dir, ndb) = test_ndb();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
         let root = test_root(0x44);
         // First registration reaches nostrdb; a repeat is dropped before it does,
         // so nostrdb's fixed root table never sees the same root twice.
@@ -1983,7 +2033,7 @@ mod tests {
     async fn late_root_peels_after_a_roster_grew_one_root_at_a_time() {
         use std::time::Duration;
 
-        let (_dir, mut ndb) = test_ndb();
+        let TempNdb { dir: _dir, mut ndb } = TempNdb::new();
         let account = FullKeypair::generate();
         let secret = account.secret_key.secret_bytes();
         ndb.add_key(&secret);

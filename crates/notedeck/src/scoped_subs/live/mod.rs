@@ -11,7 +11,7 @@ use crate::author_outbox::{RoutedFilterShape, RoutedRelayPriority};
 use super::config::{ScopedSubKey, SubConfig, SubExecution, SubRelayPolicy};
 use super::planner::{AuthorOutboxPlanGeneration, PlannedRoutedRelay};
 use super::route_work::RouteWorkResult;
-use super::ScopedSubOutboxOps;
+use super::{ScopedSubOutboxOps, Staged};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SetSubLiveOp {
@@ -149,8 +149,10 @@ impl BaselineLive {
         spec: &SubConfig,
     ) -> ScopedSubOutboxOps {
         let next_policy = spec.baseline_policy();
-        let (id, outbox_ops) =
-            refresh_baseline_live_id(ids, account_read_relays, self.id, self.policy, spec);
+        let Staged {
+            value: id,
+            outbox_ops,
+        } = refresh_baseline_live_id(ids, account_read_relays, self.id, self.policy, spec);
         self.id = id;
         self.policy = next_policy;
         outbox_ops
@@ -192,16 +194,18 @@ impl<T> AugmentedLive<T> {
         previous: Option<&SubConfig>,
         live_state: LiveSubState,
         fallback_policy: SubRelayPolicy,
-    ) -> (Self, ScopedSubOutboxOps) {
-        let (baseline, outbox_ops) =
-            take_accounts_read_baseline_for_transition(ids, previous, live_state, fallback_policy);
-        (
-            Self {
+    ) -> Staged<Self> {
+        let Staged {
+            value: baseline,
+            outbox_ops,
+        } = take_accounts_read_baseline_for_transition(ids, previous, live_state, fallback_policy);
+        Staged {
+            value: Self {
                 baseline,
                 extra: None,
             },
             outbox_ops,
-        )
+        }
     }
 
     fn refresh_baseline(
@@ -231,7 +235,10 @@ impl AugmentedLive<SharedLive> {
         relays: HashSet<NormRelayUrl>,
         spec: &SubConfig,
     ) -> ScopedSubOutboxOps {
-        let (extra, outbox_ops) = refresh_shared_live(
+        let Staged {
+            value: extra,
+            outbox_ops,
+        } = refresh_shared_live(
             ids,
             self.extra.take().map(|shared| *shared),
             policy,
@@ -261,8 +268,11 @@ impl AugmentedLive<RoutedLiveState> {
         &mut self,
         ids: &OutboxIdRegistry,
         refresh: RoutedLiveRefresh<'_>,
-    ) -> (RouteWorkResult, ScopedSubOutboxOps) {
-        let ((extra, result), outbox_ops) = refresh_routed_live_state(
+    ) -> Staged<RouteWorkResult> {
+        let Staged {
+            value: RefreshedRoutedLive { state, result },
+            outbox_ops,
+        } = refresh_routed_live_state(
             ids,
             self.extra.take().map(|routed| *routed),
             RoutedLivePolicy {
@@ -274,8 +284,11 @@ impl AugmentedLive<RoutedLiveState> {
             refresh.plan_generation,
             refresh.routed_relays,
         );
-        self.extra = extra.map(Box::new);
-        (result, outbox_ops)
+        self.extra = state.map(Box::new);
+        Staged {
+            value: result,
+            outbox_ops,
+        }
     }
 
     pub(super) fn routed(&self) -> Option<&RoutedLiveState> {
@@ -349,7 +362,10 @@ impl ScopedSubLiveRuntime {
         scoped: ScopedSubKey,
         spec: &SubConfig,
     ) -> ScopedSubOutboxOps {
-        let (state, outbox_ops) = subscribe_live(ids, account_read_relays, spec);
+        let Staged {
+            value: state,
+            outbox_ops,
+        } = subscribe_live(ids, account_read_relays, spec);
         if let Some(state) = state {
             self.states.insert(scoped, state);
         }
@@ -395,20 +411,19 @@ impl ScopedSubLiveRuntime {
         let existing = self.states.remove(&scoped);
         let baseline = existing
             .map(|live_state| {
-                let (baseline, ops) = take_accounts_read_baseline_for_transition(
+                take_accounts_read_baseline_for_transition(
                     ids,
                     Some(previous),
                     live_state,
                     spec.baseline_policy(),
-                );
-                outbox_ops.extend(ops);
-                baseline
+                )
+                .stage_into(&mut outbox_ops)
             })
             .unwrap_or_else(|| BaselineLive::empty(spec.baseline_policy()));
 
-        let (live_id, ops) =
-            refresh_baseline_live_id(ids, account_read_relays, baseline.id, baseline.policy, spec);
-        outbox_ops.extend(ops);
+        let live_id =
+            refresh_baseline_live_id(ids, account_read_relays, baseline.id, baseline.policy, spec)
+                .stage_into(&mut outbox_ops);
         if let Some(live_id) = live_id {
             self.states.insert(scoped, LiveSubState::Single(live_id));
         }
@@ -434,10 +449,8 @@ impl ScopedSubLiveRuntime {
         let mut state = match existing {
             Some(LiveSubState::AccountsReadPlusExplicit(state)) => state,
             Some(live_state) => {
-                let (state, ops) =
-                    AugmentedLive::from_transition(ids, previous, live_state, baseline_policy);
-                outbox_ops.extend(ops);
-                state
+                AugmentedLive::from_transition(ids, previous, live_state, baseline_policy)
+                    .stage_into(&mut outbox_ops)
             }
             None => AugmentedLive::empty(baseline_policy),
         };
@@ -471,9 +484,9 @@ impl ScopedSubLiveRuntime {
         &mut self,
         ids: &OutboxIdRegistry,
         refresh: AuthorOutboxLiveRefresh<'_>,
-    ) -> (RouteWorkResult, ScopedSubOutboxOps) {
+    ) -> Staged<RouteWorkResult> {
         let Some(author_outbox_policy) = refresh.spec.author_outbox_policy() else {
-            return (RouteWorkResult::Complete, ScopedSubOutboxOps::default());
+            return Staged::without_ops(RouteWorkResult::Complete);
         };
         let mut outbox_ops = ScopedSubOutboxOps::default();
 
@@ -482,31 +495,26 @@ impl ScopedSubLiveRuntime {
         let mut state = match existing {
             Some(LiveSubState::AccountsReadWithAuthorOutbox(state)) => state,
             Some(live_state) => {
-                let (state, ops) = AugmentedLive::from_transition(
-                    ids,
-                    refresh.previous,
-                    live_state,
-                    baseline_policy,
-                );
-                outbox_ops.extend(ops);
-                state
+                AugmentedLive::from_transition(ids, refresh.previous, live_state, baseline_policy)
+                    .stage_into(&mut outbox_ops)
             }
             None => AugmentedLive::empty(baseline_policy),
         };
 
         let ops = state.refresh_baseline(ids, refresh.account_read_relays, refresh.spec);
         outbox_ops.extend(ops);
-        let (result, ops) = state.refresh_routed(
-            ids,
-            RoutedLiveRefresh {
-                policy: author_outbox_policy,
-                relay_url_source: RelayUrlSource::RemoteAdvertised,
-                route_shape: RoutedFilterShape::from_filters(&refresh.spec.owned_filters()),
-                plan_generation: refresh.plan_generation,
-                routed_relays: refresh.routed_relays,
-            },
-        );
-        outbox_ops.extend(ops);
+        let result = state
+            .refresh_routed(
+                ids,
+                RoutedLiveRefresh {
+                    policy: author_outbox_policy,
+                    relay_url_source: RelayUrlSource::RemoteAdvertised,
+                    route_shape: RoutedFilterShape::from_filters(&refresh.spec.owned_filters()),
+                    plan_generation: refresh.plan_generation,
+                    routed_relays: refresh.routed_relays,
+                },
+            )
+            .stage_into(&mut outbox_ops);
 
         if state.has_live_state() {
             self.states.insert(
@@ -514,7 +522,10 @@ impl ScopedSubLiveRuntime {
                 LiveSubState::AccountsReadWithAuthorOutbox(state),
             );
         }
-        (result, outbox_ops)
+        Staged {
+            value: result,
+            outbox_ops,
+        }
     }
 
     /// Reconcile a desired-config transition whose next execution is single.
@@ -561,9 +572,8 @@ impl ScopedSubLiveRuntime {
                     _ => return outbox_ops,
                 };
 
-                let (live_id, ops) =
-                    refresh_single_live_id(ids, account_read_relays, live_id, spec);
-                outbox_ops.extend(ops);
+                let live_id = refresh_single_live_id(ids, account_read_relays, live_id, spec)
+                    .stage_into(&mut outbox_ops);
                 if live_id.is_none() {
                     self.states.remove(&scoped);
                 }
@@ -584,24 +594,24 @@ fn take_accounts_read_baseline_for_transition(
     previous: Option<&SubConfig>,
     live_state: LiveSubState,
     fallback_policy: SubRelayPolicy,
-) -> (BaselineLive, ScopedSubOutboxOps) {
+) -> Staged<BaselineLive> {
     match live_state {
         LiveSubState::Single(live_id) => {
             // A single live sub is reusable as a baseline only when the previous
             // desired config proves it was selected-account read-relay coverage.
             if let Some(previous) = previous.filter(|spec| is_single_accounts_read(spec)) {
-                return (
-                    BaselineLive {
-                        id: Some(live_id),
-                        policy: previous.baseline_policy(),
-                    },
-                    ScopedSubOutboxOps::default(),
-                );
+                return Staged::without_ops(BaselineLive {
+                    id: Some(live_id),
+                    policy: previous.baseline_policy(),
+                });
             }
 
             let mut outbox_ops = ScopedSubOutboxOps::default();
             outbox_ops.unsubscribe(live_id);
-            (BaselineLive::empty(fallback_policy), outbox_ops)
+            Staged {
+                value: BaselineLive::empty(fallback_policy),
+                outbox_ops,
+            }
         }
         LiveSubState::AccountsReadPlusExplicit(state) => {
             let mut outbox_ops = ScopedSubOutboxOps::default();
@@ -609,7 +619,10 @@ fn take_accounts_read_baseline_for_transition(
             if let Some(shared) = state.extra {
                 outbox_ops.extend(unsubscribe_shared_live(ids, *shared));
             }
-            (state.baseline, outbox_ops)
+            Staged {
+                value: state.baseline,
+                outbox_ops,
+            }
         }
         LiveSubState::AccountsReadWithAuthorOutbox(state) => {
             let mut outbox_ops = ScopedSubOutboxOps::default();
@@ -617,7 +630,10 @@ fn take_accounts_read_baseline_for_transition(
             if let Some(routed) = state.extra {
                 outbox_ops.extend(unsubscribe_routed_live_state(ids, *routed));
             }
-            (state.baseline, outbox_ops)
+            Staged {
+                value: state.baseline,
+                outbox_ops,
+            }
         }
     }
 }
@@ -689,19 +705,25 @@ pub(super) fn subscribe_live(
     ids: &OutboxIdRegistry,
     account_read_relays: &HashSet<NormRelayUrl>,
     spec: &SubConfig,
-) -> (Option<LiveSubState>, ScopedSubOutboxOps) {
-    let (id, outbox_ops) = subscribe_single_live_id(ids, account_read_relays, spec);
-    (id.map(LiveSubState::Single), outbox_ops)
+) -> Staged<Option<LiveSubState>> {
+    let Staged {
+        value: id,
+        outbox_ops,
+    } = subscribe_single_live_id(ids, account_read_relays, spec);
+    Staged {
+        value: id.map(LiveSubState::Single),
+        outbox_ops,
+    }
 }
 
 pub(super) fn subscribe_single_live_id(
     ids: &OutboxIdRegistry,
     account_read_relays: &HashSet<NormRelayUrl>,
     spec: &SubConfig,
-) -> (Option<OutboxSubId>, ScopedSubOutboxOps) {
+) -> Staged<Option<OutboxSubId>> {
     let relays = resolve_relays(account_read_relays, spec);
     if relays.is_empty() {
-        return (None, ScopedSubOutboxOps::default());
+        return Staged::without_ops(None);
     }
 
     let policy = spec.baseline_policy();
@@ -718,7 +740,7 @@ pub(super) fn refresh_baseline_live_id(
     existing: Option<OutboxSubId>,
     existing_policy: SubRelayPolicy,
     spec: &SubConfig,
-) -> (Option<OutboxSubId>, ScopedSubOutboxOps) {
+) -> Staged<Option<OutboxSubId>> {
     let next_policy = spec.baseline_policy();
     let baseline_spec = baseline_sub_config(spec);
     if resolve_relays(account_read_relays, &baseline_spec).is_empty() {
@@ -726,7 +748,10 @@ pub(super) fn refresh_baseline_live_id(
         if let Some(live_id) = existing {
             outbox_ops.unsubscribe(live_id);
         }
-        return (None, outbox_ops);
+        return Staged {
+            value: None,
+            outbox_ops,
+        };
     }
 
     if let Some(live_id) = existing {
@@ -736,9 +761,12 @@ pub(super) fn refresh_baseline_live_id(
 
         let mut outbox_ops = ScopedSubOutboxOps::default();
         outbox_ops.unsubscribe(live_id);
-        let (id, ops) = subscribe_single_live_id(ids, account_read_relays, &baseline_spec);
-        outbox_ops.extend(ops);
-        return (id, outbox_ops);
+        let id = subscribe_single_live_id(ids, account_read_relays, &baseline_spec)
+            .stage_into(&mut outbox_ops);
+        return Staged {
+            value: id,
+            outbox_ops,
+        };
     }
 
     subscribe_single_live_id(ids, account_read_relays, &baseline_spec)
@@ -750,9 +778,9 @@ fn subscribe_shared_live(
     spec: &SubConfig,
     policy: SubRelayPolicy,
     relay_url_source: RelayUrlSource,
-) -> (Option<SharedLive>, ScopedSubOutboxOps) {
+) -> Staged<Option<SharedLive>> {
     if relays.is_empty() || spec.filters().is_empty() {
-        return (None, ScopedSubOutboxOps::default());
+        return Staged::without_ops(None);
     }
 
     let relay_pkgs = RelayUrlPkgs::new(
@@ -763,15 +791,18 @@ fn subscribe_shared_live(
             policy.routing_preference(),
         ),
     );
-    let (live_id, outbox_ops) = stage_live_subscribe(ids, spec.owned_filters(), relay_pkgs);
-    (
-        live_id.map(|live_id| SharedLive {
+    let Staged {
+        value: live_id,
+        outbox_ops,
+    } = stage_live_subscribe(ids, spec.owned_filters(), relay_pkgs);
+    Staged {
+        value: live_id.map(|live_id| SharedLive {
             id: live_id,
             policy,
             relay_url_source,
         }),
         outbox_ops,
-    )
+    }
 }
 
 fn refresh_shared_live(
@@ -781,13 +812,16 @@ fn refresh_shared_live(
     relay_url_source: RelayUrlSource,
     relays: HashSet<NormRelayUrl>,
     spec: &SubConfig,
-) -> (Option<SharedLive>, ScopedSubOutboxOps) {
+) -> Staged<Option<SharedLive>> {
     if relays.is_empty() || spec.filters().is_empty() {
         let mut outbox_ops = ScopedSubOutboxOps::default();
         if let Some(existing) = existing {
             outbox_ops.extend(unsubscribe_shared_live(ids, existing));
         }
-        return (None, outbox_ops);
+        return Staged {
+            value: None,
+            outbox_ops,
+        };
     }
 
     if let Some(existing) = existing {
@@ -800,15 +834,20 @@ fn refresh_shared_live(
                     policy.routing_preference(),
                 ),
             );
-            let (_, outbox_ops) =
-                stage_live_modify(ids, existing.id, spec.owned_filters(), relay_pkgs);
-            return (Some(existing), outbox_ops);
+            let outbox_ops = stage_live_modify(ids, existing.id, spec.owned_filters(), relay_pkgs);
+            return Staged {
+                value: Some(existing),
+                outbox_ops,
+            };
         }
 
         let mut outbox_ops = unsubscribe_shared_live(ids, existing);
-        let (shared, ops) = subscribe_shared_live(ids, relays, spec, policy, relay_url_source);
-        outbox_ops.extend(ops);
-        return (shared, outbox_ops);
+        let shared = subscribe_shared_live(ids, relays, spec, policy, relay_url_source)
+            .stage_into(&mut outbox_ops);
+        return Staged {
+            value: shared,
+            outbox_ops,
+        };
     }
 
     subscribe_shared_live(ids, relays, spec, policy, relay_url_source)
@@ -819,12 +858,15 @@ fn refresh_single_live_id(
     account_read_relays: &HashSet<NormRelayUrl>,
     live_id: OutboxSubId,
     spec: &SubConfig,
-) -> (Option<OutboxSubId>, ScopedSubOutboxOps) {
+) -> Staged<Option<OutboxSubId>> {
     let relays = resolve_relays(account_read_relays, spec);
     if relays.is_empty() {
         let mut outbox_ops = ScopedSubOutboxOps::default();
         outbox_ops.unsubscribe(live_id);
-        return (None, outbox_ops);
+        return Staged {
+            value: None,
+            outbox_ops,
+        };
     }
 
     let policy = spec.baseline_policy();
@@ -832,18 +874,24 @@ fn refresh_single_live_id(
         relays,
         enostr::RelayUrlPolicy::explicit(policy.demand_priority(), policy.routing_preference()),
     );
-    let (_, outbox_ops) = stage_live_modify(ids, live_id, spec.owned_filters(), relay_pkgs);
-    (Some(live_id), outbox_ops)
+    let outbox_ops = stage_live_modify(ids, live_id, spec.owned_filters(), relay_pkgs);
+    Staged {
+        value: Some(live_id),
+        outbox_ops,
+    }
 }
 
 fn stage_live_subscribe(
     ids: &OutboxIdRegistry,
     filters: Vec<Filter>,
     relay_pkgs: RelayUrlPkgs,
-) -> (Option<OutboxSubId>, ScopedSubOutboxOps) {
+) -> Staged<Option<OutboxSubId>> {
     let mut outbox_ops = ScopedSubOutboxOps::default();
     let id = outbox_ops.try_subscribe(ids, filters, relay_pkgs);
-    (id, outbox_ops)
+    Staged {
+        value: id,
+        outbox_ops,
+    }
 }
 
 fn stage_live_modify(
@@ -851,10 +899,10 @@ fn stage_live_modify(
     live_id: OutboxSubId,
     filters: Vec<Filter>,
     relay_pkgs: RelayUrlPkgs,
-) -> (bool, ScopedSubOutboxOps) {
+) -> ScopedSubOutboxOps {
     let mut outbox_ops = ScopedSubOutboxOps::default();
     outbox_ops.set_live(live_id, filters, relay_pkgs);
-    (true, outbox_ops)
+    outbox_ops
 }
 
 fn empty_routed_live_state(
@@ -882,16 +930,13 @@ fn refresh_routed_live_state(
     route_shape: Option<RoutedFilterShape>,
     plan_generation: Option<AuthorOutboxPlanGeneration>,
     routed_relays: &[PlannedRoutedRelay],
-) -> (
-    (Option<RoutedLiveState>, RouteWorkResult),
-    ScopedSubOutboxOps,
-) {
+) -> Staged<RefreshedRoutedLive> {
     let Some(mut next_state) = prepare_routed_live_state(existing, policy, route_shape.clone())
     else {
-        return (
-            (None, RouteWorkResult::Complete),
-            ScopedSubOutboxOps::default(),
-        );
+        return Staged::without_ops(RefreshedRoutedLive {
+            state: None,
+            result: RouteWorkResult::Complete,
+        });
     };
 
     if let Some(generation) = plan_generation {
@@ -903,18 +948,31 @@ fn refresh_routed_live_state(
             routed_relays,
         );
         if apply_result != RouteWorkResult::Complete {
-            return (
-                (
-                    finish_routed_live_state(next_state),
-                    RouteWorkResult::FullRefreshRequired,
-                ),
-                ScopedSubOutboxOps::default(),
-            );
+            return Staged::without_ops(RefreshedRoutedLive {
+                state: finish_routed_live_state(next_state),
+                result: RouteWorkResult::FullRefreshRequired,
+            });
         }
     }
 
-    let (result, outbox_ops) = drain_routed_live_ops(ids, &mut next_state, policy);
-    ((finish_routed_live_state(next_state), result), outbox_ops)
+    let Staged {
+        value: result,
+        outbox_ops,
+    } = drain_routed_live_ops(ids, &mut next_state, policy);
+    Staged {
+        value: RefreshedRoutedLive {
+            state: finish_routed_live_state(next_state),
+            result,
+        },
+        outbox_ops,
+    }
+}
+
+/// What refreshing routed live coverage leaves behind: the routed state to
+/// keep, if any, and whether the route work finished.
+struct RefreshedRoutedLive {
+    state: Option<RoutedLiveState>,
+    result: RouteWorkResult,
 }
 
 fn prepare_routed_live_state(
@@ -1174,7 +1232,7 @@ fn drain_routed_live_ops(
     ids: &OutboxIdRegistry,
     existing: &mut RoutedLiveState,
     policy: RoutedLivePolicy,
-) -> (RouteWorkResult, ScopedSubOutboxOps) {
+) -> Staged<RouteWorkResult> {
     let mut outbox_ops = ScopedSubOutboxOps::default();
     while let Some(live_id) = existing.pending_unsubscribes.pop() {
         outbox_ops.unsubscribe(live_id);
@@ -1221,16 +1279,16 @@ fn drain_routed_live_ops(
                     };
                     let relay_pkgs =
                         RelayUrlPkgs::new(HashSet::from_iter([relay.clone()]), relay_policy);
-                    let (modified, ops) =
-                        stage_live_modify(ids, live_id, next_filters.clone(), relay_pkgs);
-                    outbox_ops.extend(ops);
-                    if modified {
-                        leg.materialized_authors_by_filter_index =
-                            Some(leg.authors_by_filter_index.clone());
-                        leg.materialized_connection_weight =
-                            Some(leg.relay_priority.connection_weight);
-                        leg.pending_route_shape_refresh = false;
-                    }
+                    outbox_ops.extend(stage_live_modify(
+                        ids,
+                        live_id,
+                        next_filters.clone(),
+                        relay_pkgs,
+                    ));
+                    leg.materialized_authors_by_filter_index =
+                        Some(leg.authors_by_filter_index.clone());
+                    leg.materialized_connection_weight = Some(leg.relay_priority.connection_weight);
+                    leg.pending_route_shape_refresh = false;
                     subscribe_after_op = false;
                 }
                 RoutedLiveLegOp::ReplaceLive => {
@@ -1250,8 +1308,8 @@ fn drain_routed_live_ops(
         }
 
         let relay_pkgs = RelayUrlPkgs::new(HashSet::from_iter([relay.clone()]), relay_policy);
-        let (live_id, ops) = stage_live_subscribe(ids, next_filters, relay_pkgs);
-        outbox_ops.extend(ops);
+        let live_id =
+            stage_live_subscribe(ids, next_filters, relay_pkgs).stage_into(&mut outbox_ops);
         let Some(live_id) = live_id else {
             continue;
         };
@@ -1265,7 +1323,10 @@ fn drain_routed_live_ops(
         leg.pending_route_shape_refresh = false;
     }
 
-    (RouteWorkResult::Complete, outbox_ops)
+    Staged {
+        value: RouteWorkResult::Complete,
+        outbox_ops,
+    }
 }
 
 fn routed_leg_relay_policy(policy: RoutedLivePolicy, leg: &RoutedLiveSub) -> RelayUrlPolicy {
@@ -1490,7 +1551,7 @@ mod tests {
         };
         let mut bridge = RemoteOutboxReadModelHarness::default();
 
-        let (state, result) = bridge.with_returned_outbox(|ids| {
+        let RefreshedRoutedLive { state, result } = bridge.with_returned_outbox(|ids| {
             refresh_routed_live_state(
                 ids,
                 None,

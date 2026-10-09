@@ -27,7 +27,8 @@ pub use config::{
 pub use config::{ScopedSubLiveReadiness, ScopedSubReadiness, ScopedSubRelayEoseStatus};
 pub(crate) use fact::{ScopedSubFact, ScopedSubOutput};
 pub(crate) use outbox::{
-    ScopedSubDelta, ScopedSubEffect, ScopedSubEffects, ScopedSubOutboxOp, ScopedSubOutboxOps,
+    Applied, ScopedSubDelta, ScopedSubEffect, ScopedSubEffects, ScopedSubOutboxOp,
+    ScopedSubOutboxOps, Staged,
 };
 pub(crate) use runtime::ScopedSubRuntime;
 pub use state::ScopedSubsState;

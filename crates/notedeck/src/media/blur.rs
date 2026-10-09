@@ -144,15 +144,21 @@ pub fn update_imeta_blurhashes(note: &Note, blurs: &mut HashMap<String, ImageMet
             continue;
         }
 
-        let Some((url, blur)) = find_blur(tag_iter) else {
+        let Some(ImetaBlur { url, meta }) = find_blur(tag_iter) else {
             continue;
         };
 
-        blurs.insert(url.to_string(), blur);
+        blurs.insert(url, meta);
     }
 }
 
-fn find_blur(tag_iter: nostrdb::TagIter<'_>) -> Option<(String, ImageMetadata)> {
+/// An `imeta` tag's media url and the blurhash metadata it carries.
+struct ImetaBlur {
+    url: String,
+    meta: ImageMetadata,
+}
+
+fn find_blur(tag_iter: nostrdb::TagIter<'_>) -> Option<ImetaBlur> {
     let mut url = None;
     let mut blurhash = None;
     let mut dims = None;
@@ -190,13 +196,13 @@ fn find_blur(tag_iter: nostrdb::TagIter<'_>) -> Option<(String, ImageMetadata)> 
         })
     });
 
-    Some((
-        url.to_string(),
-        ImageMetadata {
+    Some(ImetaBlur {
+        url: url.to_string(),
+        meta: ImageMetadata {
             blurhash: blurhash.to_string(),
             dimensions,
         },
-    ))
+    })
 }
 
 #[derive(Clone)]

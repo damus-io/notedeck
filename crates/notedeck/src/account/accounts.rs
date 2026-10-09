@@ -6,7 +6,7 @@ use crate::account::relay::{
     modify_private_relays, write_relays, AccountRelayData, RelayAction, RelayDefaults,
 };
 use crate::scoped_subs::{ScopedSubIdentity, SubConfig, SubKey, SubRelayPolicy};
-use crate::storage::AccountStorageWriter;
+use crate::storage::{AccountStorageRw, AccountStorageWriter};
 use crate::user_account::UserAccountSerializable;
 use crate::{
     AccountStorage, FullHistoryConfig, MuteFun, RemoteApi, ScopedSubApi, SingleUnkIdAction,
@@ -42,16 +42,16 @@ impl Accounts {
         txn: &Transaction,
         unknown_ids: &mut UnknownIds,
     ) -> Self {
-        let (mut cache, unknown_id) = AccountCache::new(UserAccount::new(
+        let mut cache = AccountCache::new(UserAccount::new(
             Keypair::only_pubkey(fallback),
             AccountData::new(fallback.bytes()),
         ));
 
-        unknown_id.process_action(unknown_ids, ndb, txn);
+        SingleUnkIdAction::pubkey(fallback).process_action(unknown_ids, ndb, txn);
 
         let mut storage_writer = None;
         if let Some(keystore) = key_store {
-            let (reader, writer) = keystore.rw();
+            let AccountStorageRw { reader, writer } = keystore.rw();
             match reader.get_accounts() {
                 Ok(accounts) => {
                     for account in accounts {
@@ -422,9 +422,9 @@ impl Accounts {
         };
         let created_after = existing_relay_list
             .as_ref()
-            .map(|(created_at, _)| *created_at);
+            .map(|projection| projection.created_at);
         let (base_advertised, bootstrap_if_empty) = match existing_relay_list.as_ref() {
-            Some((_, advertised)) => (advertised, false),
+            Some(projection) => (&projection.advertised, false),
             None => (&selected.data.relay.advertised, true),
         };
 
@@ -817,6 +817,7 @@ impl AccountNdbSubs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account::relay::RelayListProjection;
     use crate::test_util::test_config;
     use crate::{
         construct_nip65_relays_note, remote_data::RemoteState, JobPool, RelaySpec,
@@ -956,10 +957,7 @@ mod tests {
         }
     }
 
-    fn selected_nip65_projection(
-        ndb: &Ndb,
-        account_pk: &Pubkey,
-    ) -> Option<(u64, std::collections::BTreeSet<RelaySpec>)> {
+    fn selected_nip65_projection(ndb: &Ndb, account_pk: &Pubkey) -> Option<RelayListProjection> {
         let txn = Transaction::new(ndb).expect("txn");
         let filter = Filter::new()
             .authors([account_pk.bytes()])
@@ -976,7 +974,10 @@ mod tests {
         let relays = crate::relayspec::relays_from_nip65_note(&note)
             .into_iter()
             .collect();
-        Some((note.created_at(), relays))
+        Some(RelayListProjection {
+            created_at: note.created_at(),
+            advertised: relays,
+        })
     }
 
     #[tokio::test]

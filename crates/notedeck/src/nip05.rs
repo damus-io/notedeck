@@ -87,7 +87,7 @@ impl Nip05Cache {
 }
 
 async fn validate_nip05(pubkey: &Pubkey, nip05: &str) -> Nip05Status {
-    let Some((user, domain)) = parse_nip05(nip05) else {
+    let Some(Nip05Address { user, domain }) = parse_nip05(nip05) else {
         return Nip05Status::Invalid;
     };
 
@@ -125,7 +125,13 @@ async fn validate_nip05(pubkey: &Pubkey, nip05: &str) -> Nip05Status {
     }
 }
 
-fn parse_nip05(nip05: &str) -> Option<(&str, &str)> {
+/// A NIP-05 identifier split at its `@`: `user@domain`.
+struct Nip05Address<'a> {
+    user: &'a str,
+    domain: &'a str,
+}
+
+fn parse_nip05(nip05: &str) -> Option<Nip05Address<'_>> {
     let at_pos = nip05.find('@')?;
     let user = &nip05[..at_pos];
     let domain = &nip05[at_pos + 1..];
@@ -134,5 +140,5 @@ fn parse_nip05(nip05: &str) -> Option<(&str, &str)> {
         return None;
     }
 
-    Some((user, domain))
+    Some(Nip05Address { user, domain })
 }

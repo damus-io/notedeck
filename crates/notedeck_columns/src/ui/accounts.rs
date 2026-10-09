@@ -102,7 +102,8 @@ impl<'a> AccountsView<'a> {
                 };
 
                 let selected = accounts.cache.selected();
-                for (pk, account) in &accounts.cache {
+                for account in accounts.cache.accounts() {
+                    let pk = &account.key.pubkey;
                     let profile = ndb.get_profile_by_pubkey(&txn, pk).ok();
                     let is_selected = *pk == selected.key.pubkey;
                     let has_nsec = account.key.secret_key.is_some();

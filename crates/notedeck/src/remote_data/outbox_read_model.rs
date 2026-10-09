@@ -5,6 +5,8 @@ use enostr::{
 };
 use hashbrown::HashMap;
 
+use crate::RelayInspectEntry;
+
 /// UI-thread snapshot of committed outbox facts emitted by the bridge.
 #[derive(Default)]
 pub(crate) struct RemoteOutboxReadModel {
@@ -58,12 +60,13 @@ impl RemoteOutboxReadModel {
         self.sub_relay_eose.get(id).copied()
     }
 
-    pub(crate) fn websocket_statuses(
-        &self,
-    ) -> impl Iterator<Item = (&NormRelayUrl, RelayStatus)> + '_ {
+    pub(crate) fn websocket_statuses(&self) -> impl Iterator<Item = RelayInspectEntry<'_>> + '_ {
         self.relay_statuses
             .iter()
-            .map(|(relay, status)| (relay, *status))
+            .map(|(relay_url, status)| RelayInspectEntry {
+                relay_url,
+                status: *status,
+            })
     }
 }
 
@@ -105,9 +108,8 @@ mod tests {
         assert_eq!(
             model
                 .websocket_statuses()
-                .collect::<BTreeMap<_, _>>()
-                .get(&relay_b)
-                .copied(),
+                .find(|entry| entry.relay_url == &relay_b)
+                .map(|entry| entry.status),
             Some(RelayStatus::Disconnected)
         );
         assert_eq!(
@@ -137,9 +139,6 @@ mod tests {
         assert_eq!(model.outbox_sub_relay_eose(&id), None);
         assert!(model
             .websocket_statuses()
-            .collect::<BTreeMap<_, _>>()
-            .get(&relay_a)
-            .copied()
-            .is_none());
+            .all(|entry| entry.relay_url != &relay_a));
     }
 }

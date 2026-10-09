@@ -277,7 +277,10 @@ async fn snapshot_update_bar() {
     }
 
     // Ingest properly signed NIP-82 events (kind 3063 asset + kind 30063 release)
-    let (asset_ev, asset_id) = test_helpers::build_signed_asset_event(
+    let test_helpers::SignedAssetEvent {
+        event: asset_ev,
+        id: asset_id,
+    } = test_helpers::build_signed_asset_event(
         &test_helpers::TEST_SECRET_KEY,
         "99.0.0",
         notedeck::updater::nostr::target_platform_tag(),

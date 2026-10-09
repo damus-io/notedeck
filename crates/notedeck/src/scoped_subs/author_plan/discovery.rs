@@ -6,7 +6,7 @@ use hashbrown::HashSet;
 use nostrdb::Filter;
 use std::time::{Duration, Instant};
 
-use super::super::ScopedSubOutboxOps;
+use super::super::{ScopedSubOutboxOps, Staged};
 
 pub(super) const RELAY_LIST_DISCOVERY_AUTHORS_PER_REQ: usize = 500;
 /// Grace period for slower selected-account read relays after one discovery
@@ -54,7 +54,7 @@ impl RelayListDiscovery {
         id: OutboxSubId,
         relay: &NormRelayUrl,
         status: Option<RelayReqStatus>,
-    ) -> (RelayListDiscoveryAdvance, ScopedSubOutboxOps) {
+    ) -> Staged<RelayListDiscoveryAdvance> {
         let mut outbox_ops = ScopedSubOutboxOps::default();
         for chunk in &mut self.chunks {
             outbox_ops.extend(chunk.apply_relay_req_status(id, relay, status));
@@ -65,15 +65,15 @@ impl RelayListDiscovery {
         } else {
             RelayListDiscoveryAdvance::Waiting
         };
-        (advance, outbox_ops)
+        Staged {
+            value: advance,
+            outbox_ops,
+        }
     }
 
     /// Apply the retained retry deadline to discovery legs whose backoff has
     /// elapsed.
-    pub(super) fn apply_retry_due(
-        &mut self,
-        now: Instant,
-    ) -> (RelayListDiscoveryAdvance, ScopedSubOutboxOps) {
+    pub(super) fn apply_retry_due(&mut self, now: Instant) -> Staged<RelayListDiscoveryAdvance> {
         let mut outbox_ops = ScopedSubOutboxOps::default();
         for chunk in &mut self.chunks {
             outbox_ops.extend(chunk.apply_retry_due(now));
@@ -84,7 +84,10 @@ impl RelayListDiscovery {
         } else {
             RelayListDiscoveryAdvance::Waiting
         };
-        (advance, outbox_ops)
+        Staged {
+            value: advance,
+            outbox_ops,
+        }
     }
 
     pub(super) fn unsubscribe_all(self) -> ScopedSubOutboxOps {
@@ -104,29 +107,25 @@ impl RelayListDiscovery {
 }
 
 impl RelayListDiscoveryChunk {
-    fn new(
-        ids: &OutboxIdRegistry,
-        authors: Vec<Pubkey>,
-        relays: &[NormRelayUrl],
-    ) -> (Self, ScopedSubOutboxOps) {
+    fn new(ids: &OutboxIdRegistry, authors: Vec<Pubkey>, relays: &[NormRelayUrl]) -> Staged<Self> {
         let filter = relay_list_discovery_filter(&authors);
         let mut outbox_ops = ScopedSubOutboxOps::default();
         let legs = relays
             .iter()
             .cloned()
             .map(|relay| {
-                let (leg, ops) = RelayListDiscoveryLeg::new(ids, relay, filter.clone());
-                outbox_ops.extend(ops);
-                leg
+                let leg = RelayListDiscoveryLeg::new(ids, relay, filter.clone());
+                outbox_ops.extend(leg.outbox_ops);
+                leg.value
             })
             .collect();
-        (
-            Self {
+        Staged {
+            value: Self {
                 legs,
                 eose_grace_deadline: None,
             },
             outbox_ops,
-        )
+        }
     }
 
     #[cfg(test)]
@@ -232,15 +231,13 @@ impl RelayListDiscoveryChunk {
 }
 
 impl RelayListDiscoveryLeg {
-    fn new(
-        ids: &OutboxIdRegistry,
-        relay: NormRelayUrl,
-        filter: Filter,
-    ) -> (Self, ScopedSubOutboxOps) {
-        let (id, outbox_ops) =
-            subscribe_relay_list_discovery_leg(ids, relay.clone(), filter.clone());
-        (
-            Self {
+    fn new(ids: &OutboxIdRegistry, relay: NormRelayUrl, filter: Filter) -> Staged<Self> {
+        let Staged {
+            value: id,
+            outbox_ops,
+        } = subscribe_relay_list_discovery_leg(ids, relay.clone(), filter.clone());
+        Staged {
+            value: Self {
                 id: Some(id),
                 relay,
                 filter,
@@ -248,7 +245,7 @@ impl RelayListDiscoveryLeg {
                 retry_after: None,
             },
             outbox_ops,
-        )
+        }
     }
 
     fn apply_relay_req_status(&mut self, status: Option<RelayReqStatus>) -> ScopedSubOutboxOps {
@@ -324,7 +321,7 @@ pub(super) fn start_relay_list_discovery(
     ids: &OutboxIdRegistry,
     authors: HashSet<Pubkey>,
     relays: HashSet<NormRelayUrl>,
-) -> (RelayListDiscovery, ScopedSubOutboxOps) {
+) -> Staged<RelayListDiscovery> {
     let author_chunks = relay_list_discovery_author_chunks(&authors);
     let mut relays = relays.into_iter().collect::<Vec<_>>();
     relays.sort();
@@ -332,22 +329,28 @@ pub(super) fn start_relay_list_discovery(
     let chunks = author_chunks
         .into_iter()
         .map(|authors| {
-            let (chunk, ops) = RelayListDiscoveryChunk::new(ids, authors, &relays);
-            outbox_ops.extend(ops);
-            chunk
+            let chunk = RelayListDiscoveryChunk::new(ids, authors, &relays);
+            outbox_ops.extend(chunk.outbox_ops);
+            chunk.value
         })
         .collect();
-    (RelayListDiscovery { chunks }, outbox_ops)
+    Staged {
+        value: RelayListDiscovery { chunks },
+        outbox_ops,
+    }
 }
 
 fn subscribe_relay_list_discovery_leg(
     ids: &OutboxIdRegistry,
     relay: NormRelayUrl,
     filter: Filter,
-) -> (OutboxSubId, ScopedSubOutboxOps) {
+) -> Staged<OutboxSubId> {
     let id = ids.next_sub_id();
     let outbox_ops = stage_relay_list_discovery_leg(id, relay, filter);
-    (id, outbox_ops)
+    Staged {
+        value: id,
+        outbox_ops,
+    }
 }
 
 fn stage_relay_list_discovery_leg(

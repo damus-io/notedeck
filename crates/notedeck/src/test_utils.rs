@@ -1,7 +1,8 @@
 use crate::{
     remote_data::RemoteOutboxReadModel,
     scoped_subs::{
-        ScopedSubDelta, ScopedSubEffects, ScopedSubOutboxOp, ScopedSubOutboxOps, ScopedSubRuntime,
+        Applied, ScopedSubDelta, ScopedSubEffects, ScopedSubOutboxOp, ScopedSubOutboxOps,
+        ScopedSubRuntime, Staged,
     },
 };
 use enostr::{
@@ -132,7 +133,10 @@ impl RemoteOutboxReadModelHarness {
         R: ReturnedScopedOutboxOps,
     {
         let ids = self.ids.clone();
-        let (result, outbox_ops) = f(&ids).split();
+        let Staged {
+            value: result,
+            outbox_ops,
+        } = f(&ids).split();
         self.ingest_outbox_ops(outbox_ops);
         result
     }
@@ -151,7 +155,10 @@ impl RemoteOutboxReadModelHarness {
                 .get(relay)
                 .copied()
         };
-        let (result, outbox_ops) = f(&relay_req_status).split();
+        let Staged {
+            value: result,
+            outbox_ops,
+        } = f(&relay_req_status).split();
         self.ingest_outbox_ops(outbox_ops);
         result
     }
@@ -161,9 +168,8 @@ impl RemoteOutboxReadModelHarness {
     }
 
     pub(crate) fn ingest_scoped_delta(&mut self, delta: ScopedSubDelta) -> ScopedSubEffects {
-        let (_output, outbox_ops, effects) = delta.into_parts();
-        self.ingest_outbox_ops(outbox_ops);
-        effects
+        self.ingest_outbox_ops(delta.outbox_ops);
+        delta.effects
     }
 
     pub(crate) fn outbox_sub_relay_eose(&self, id: &OutboxSubId) -> Option<OutboxSubRelayEose> {
@@ -219,58 +225,61 @@ impl RemoteOutboxReadModelHarness {
 pub(crate) trait ReturnedScopedOutboxOps {
     type Output;
 
-    fn split(self) -> (Self::Output, ScopedSubOutboxOps);
+    fn split(self) -> Staged<Self::Output>;
 }
 
-impl<T> ReturnedScopedOutboxOps for (T, ScopedSubOutboxOps) {
+/// A scoped-sub result with the non-outbox effects it requested, once the
+/// harness has applied its outbox ops.
+pub(crate) struct WithEffects<T> {
+    pub(crate) value: T,
+    pub(crate) effects: ScopedSubEffects,
+}
+
+impl<T> ReturnedScopedOutboxOps for Staged<T> {
     type Output = T;
 
-    fn split(self) -> (Self::Output, ScopedSubOutboxOps) {
+    fn split(self) -> Staged<Self::Output> {
         self
-    }
-}
-
-impl<T> ReturnedScopedOutboxOps for (T, ScopedSubOutboxOps, ScopedSubEffects) {
-    type Output = (T, ScopedSubEffects);
-
-    fn split(self) -> (Self::Output, ScopedSubOutboxOps) {
-        let (result, outbox_ops, effects) = self;
-        ((result, effects), outbox_ops)
-    }
-}
-
-impl ReturnedScopedOutboxOps for (ScopedSubOutboxOps, ScopedSubEffects) {
-    type Output = ((), ScopedSubEffects);
-
-    fn split(self) -> (Self::Output, ScopedSubOutboxOps) {
-        let (outbox_ops, effects) = self;
-        (((), effects), outbox_ops)
     }
 }
 
 impl ReturnedScopedOutboxOps for ScopedSubOutboxOps {
     type Output = ();
 
-    fn split(self) -> (Self::Output, ScopedSubOutboxOps) {
-        ((), self)
+    fn split(self) -> Staged<Self::Output> {
+        Staged {
+            value: (),
+            outbox_ops: self,
+        }
     }
 }
 
-impl<T> ReturnedScopedOutboxOps for (T, ScopedSubDelta) {
-    type Output = (T, ScopedSubEffects);
+impl<T> ReturnedScopedOutboxOps for Applied<T> {
+    type Output = WithEffects<T>;
 
-    fn split(self) -> (Self::Output, ScopedSubOutboxOps) {
-        let (result, delta) = self;
-        let (_output, outbox_ops, effects) = delta.into_parts();
-        ((result, effects), outbox_ops)
+    fn split(self) -> Staged<Self::Output> {
+        let ScopedSubDelta {
+            outbox_ops,
+            effects,
+            ..
+        } = self.delta;
+        Staged {
+            value: WithEffects {
+                value: self.value,
+                effects,
+            },
+            outbox_ops,
+        }
     }
 }
 
 impl ReturnedScopedOutboxOps for ScopedSubDelta {
-    type Output = ((), ScopedSubEffects);
+    type Output = ScopedSubEffects;
 
-    fn split(self) -> (Self::Output, ScopedSubOutboxOps) {
-        let (_output, outbox_ops, effects) = self.into_parts();
-        (((), effects), outbox_ops)
+    fn split(self) -> Staged<Self::Output> {
+        Staged {
+            value: self.effects,
+            outbox_ops: self.outbox_ops,
+        }
     }
 }

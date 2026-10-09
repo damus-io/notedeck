@@ -9,6 +9,14 @@ use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 /// Default bind address for the embedded localhost nostr relay.
 pub const DEFAULT_LOCAL_RELAY_ADDR: &str = "127.0.0.1:6677";
 
+/// What [`Args::parse`] makes of a command line.
+pub struct ParsedArgs {
+    /// The arguments notedeck recognized.
+    pub args: Args,
+    /// The arguments it did not, which apps may read.
+    pub unrecognized: BTreeSet<String>,
+}
+
 pub struct Args {
     pub relays: Vec<String>,
     pub locale: Option<LanguageIdentifier>,
@@ -41,8 +49,8 @@ impl Args {
         self.db_path(data_path).join("compact")
     }
 
-    // parse arguments, return set of unrecognized args
-    pub fn parse(args: &[String]) -> (Self, BTreeSet<String>) {
+    /// Parse `args`, keeping the ones notedeck does not know for apps to read.
+    pub fn parse(args: &[String]) -> ParsedArgs {
         let mut unrecognized_args = BTreeSet::new();
         let mut res = Args {
             relays: vec![],
@@ -185,7 +193,10 @@ impl Args {
             i += 1;
         }
 
-        (res, unrecognized_args)
+        ParsedArgs {
+            args: res,
+            unrecognized: unrecognized_args,
+        }
     }
 }
 
@@ -195,7 +206,10 @@ mod tests {
 
     fn parse_args(args: &[&str]) -> Args {
         let owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
-        let (parsed, unrecognized) = Args::parse(&owned);
+        let ParsedArgs {
+            args: parsed,
+            unrecognized,
+        } = Args::parse(&owned);
         assert!(
             unrecognized.is_empty(),
             "expected all args to be recognized, got {unrecognized:?}"
@@ -232,7 +246,7 @@ mod tests {
     /// The OS keychain is off by default; secrets go to file-based storage.
     #[test]
     fn parse_keystore_off_by_default() {
-        let (args, unrecognized) = Args::parse(&[]);
+        let ParsedArgs { args, unrecognized } = Args::parse(&[]);
 
         assert!(unrecognized.is_empty());
         assert!(!args.options.contains(NotedeckOptions::UseKeystore));
@@ -241,7 +255,7 @@ mod tests {
     /// Verifies `--use-keystore` opts into OS-backed secure storage.
     #[test]
     fn parse_use_keystore_enables_keystore() {
-        let (args, unrecognized) = Args::parse(&["--use-keystore".to_owned()]);
+        let ParsedArgs { args, unrecognized } = Args::parse(&["--use-keystore".to_owned()]);
 
         assert!(unrecognized.is_empty());
         assert!(args.options.contains(NotedeckOptions::UseKeystore));
@@ -250,7 +264,7 @@ mod tests {
     /// Verifies the test runner path never touches the host keyring.
     #[test]
     fn parse_testrunner_disables_keystore() {
-        let (args, unrecognized) = Args::parse(&["--testrunner".to_owned()]);
+        let ParsedArgs { args, unrecognized } = Args::parse(&["--testrunner".to_owned()]);
 
         assert!(unrecognized.is_empty());
         assert!(args.options.contains(NotedeckOptions::Tests));

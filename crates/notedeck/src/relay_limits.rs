@@ -92,12 +92,19 @@ mod tests {
         }
     }
 
+    /// A local HTTP server that answers one request: where it listens, and
+    /// the task to await once the request was served.
+    struct OneShotHttpServer {
+        addr: SocketAddr,
+        handle: JoinHandle<()>,
+    }
+
     async fn spawn_one_shot_http_server(
         status_line: &str,
         content_type: &str,
         body: &str,
         expected_accept: Option<&str>,
-    ) -> (SocketAddr, JoinHandle<()>) {
+    ) -> OneShotHttpServer {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind localhost");
@@ -137,7 +144,7 @@ mod tests {
             stream.shutdown().await.expect("shutdown stream");
         });
 
-        (addr, handle)
+        OneShotHttpServer { addr, handle }
     }
 
     /// Ensures websocket relay URLs are translated to matching HTTP(S) URIs for NIP-11.
@@ -160,7 +167,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn fetch_nip11_raw_limits_maps_non_success_status_to_http_status_error() {
         install_crypto_provider_for_tests();
-        let (addr, server) = spawn_one_shot_http_server(
+        let OneShotHttpServer {
+            addr,
+            handle: server,
+        } = spawn_one_shot_http_server(
             "503 Service Unavailable",
             "application/nostr+json",
             r#"{"error":"unavailable"}"#,
@@ -180,7 +190,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn fetch_nip11_raw_limits_parses_limitation_fields_on_success() {
         install_crypto_provider_for_tests();
-        let (addr, server) = spawn_one_shot_http_server(
+        let OneShotHttpServer {
+            addr,
+            handle: server,
+        } = spawn_one_shot_http_server(
             "200 OK",
             "application/nostr+json",
             r#"{"limitation":{"max_message_length":16384,"max_subscriptions":300}}"#,
@@ -202,7 +215,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn fetch_nip11_raw_limits_maps_invalid_json_to_json_error() {
         install_crypto_provider_for_tests();
-        let (addr, server) = spawn_one_shot_http_server(
+        let OneShotHttpServer {
+            addr,
+            handle: server,
+        } = spawn_one_shot_http_server(
             "200 OK",
             "application/nostr+json",
             "{ this is not valid json",
@@ -222,7 +238,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn fetch_nip11_raw_limits_defaults_when_limitation_is_missing() {
         install_crypto_provider_for_tests();
-        let (addr, server) = spawn_one_shot_http_server(
+        let OneShotHttpServer {
+            addr,
+            handle: server,
+        } = spawn_one_shot_http_server(
             "200 OK",
             "application/nostr+json",
             r#"{"name":"relay"}"#,

@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_util::test_config;
+use crate::test_util::TempNdb;
 use crate::{
     Accounts, EnsureSubResult, FullHistoryConfig, JobPool, Notedeck, ScopedSubCommand,
     ScopedSubIdentity, ScopedSubReadiness, ScopedSubsState, SubConfig, SubKey, SubOwnerKey,
@@ -18,12 +18,6 @@ use std::{
 };
 use tempfile::TempDir;
 use tokio::sync::Notify;
-
-fn test_ndb() -> (TempDir, Ndb) {
-    let tmp = TempDir::new().expect("tmp dir");
-    let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
-    (tmp, ndb)
-}
 
 fn test_remote_state(ndb: &Ndb, job_pool: &JobPool) -> RemoteState {
     crate::app::install_crypto();
@@ -69,7 +63,13 @@ fn explicit_full_history_config(relay: NormRelayUrl) -> SubConfig {
         .build()
 }
 
-fn signed_text_note_json(content: &str, created_at: u64) -> (String, NoteId) {
+/// A signed kind-1 note as relay JSON, and its id.
+struct SignedTextNote {
+    json: String,
+    id: NoteId,
+}
+
+fn signed_text_note_json(content: &str, created_at: u64) -> SignedTextNote {
     let keypair = FullKeypair::generate();
     let note = NoteBuilder::new()
         .kind(1)
@@ -80,7 +80,7 @@ fn signed_text_note_json(content: &str, created_at: u64) -> (String, NoteId) {
         .expect("signed text note");
     let json = note.json().expect("text note json");
     let id = NoteId::new(*note.id());
-    (json, id)
+    SignedTextNote { json, id }
 }
 
 fn signed_text_note(content: &str, created_at: u64) -> nostrdb::Note<'static> {
@@ -96,7 +96,7 @@ fn signed_text_note(content: &str, created_at: u64) -> nostrdb::Note<'static> {
 
 #[test]
 fn repeated_scoped_sub_ensure_emits_one_ensure_owner_config_command() {
-    let (_tmp, mut ndb) = test_ndb();
+    let TempNdb { dir: _tmp, mut ndb } = TempNdb::new();
     let txn = Transaction::new(&ndb).expect("txn");
     let accounts = test_accounts(&mut ndb, &txn, Vec::new());
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -166,7 +166,7 @@ fn repeated_scoped_sub_ensure_emits_one_ensure_owner_config_command() {
 
 #[test]
 fn ensure_existing_scoped_sub_new_owner_emits_ensure_owner_config_command() {
-    let (_tmp, mut ndb) = test_ndb();
+    let TempNdb { dir: _tmp, mut ndb } = TempNdb::new();
     let txn = Transaction::new(&ndb).expect("txn");
     let accounts = test_accounts(&mut ndb, &txn, Vec::new());
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -243,7 +243,7 @@ fn ensure_existing_scoped_sub_new_owner_emits_ensure_owner_config_command() {
 
 #[test]
 fn account_change_after_queued_publish_stays_in_one_frame_batch() {
-    let (_tmp, mut ndb) = test_ndb();
+    let TempNdb { dir: _tmp, mut ndb } = TempNdb::new();
     let txn = Transaction::new(&ndb).expect("txn");
     let accounts = test_accounts(&mut ndb, &txn, Vec::new());
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -284,9 +284,22 @@ fn account_change_after_queued_publish_stays_in_one_frame_batch() {
     assert!(sections[1].intents().is_empty());
 }
 
-async fn create_text_capture_relay() -> (String, Arc<Mutex<Vec<String>>>, Arc<Notify>) {
+/// A local relay that records the text frames it receives.
+struct CaptureRelay {
+    url: String,
+    /// Every text frame the relay received, in order.
+    captured: Arc<Mutex<Vec<String>>>,
+    /// Signalled whenever a frame is captured.
+    notify: Arc<Notify>,
+}
+
+async fn create_text_capture_relay() -> CaptureRelay {
     let (_handle, relay, captured, notify) = create_shared_text_capture_relay().await;
-    (relay.to_string(), captured, notify)
+    CaptureRelay {
+        url: relay.to_string(),
+        captured,
+        notify,
+    }
 }
 
 async fn wait_for_frame(
@@ -322,7 +335,7 @@ fn captured_neg_open(captured: &Arc<Mutex<Vec<String>>>) -> Option<String> {
         .cloned()
 }
 
-async fn create_event_relay(event_json: String) -> (String, Arc<Mutex<Vec<String>>>, Arc<Notify>) {
+async fn create_event_relay(event_json: String) -> CaptureRelay {
     let (_handle, relay, captured, notify) = create_filtered_capture_relay_with_handler(
         |_| true,
         move || {
@@ -348,7 +361,11 @@ async fn create_event_relay(event_json: String) -> (String, Arc<Mutex<Vec<String
         },
     )
     .await;
-    (relay.to_string(), captured, notify)
+    CaptureRelay {
+        url: relay.to_string(),
+        captured,
+        notify,
+    }
 }
 
 async fn wait_for_condition<T>(
@@ -381,7 +398,11 @@ async fn wait_for_condition<T>(
 
 #[tokio::test]
 async fn notedeck_init_seeds_selected_account_before_immediate_scoped_sub() {
-    let (relay_url, captured, notify) = create_text_capture_relay().await;
+    let CaptureRelay {
+        url: relay_url,
+        captured,
+        notify,
+    } = create_text_capture_relay().await;
     let tmp = TempDir::new().expect("tmp dir");
     let ui_ctx = egui::Context::default();
     let args = vec![
@@ -442,8 +463,12 @@ async fn notedeck_init_seeds_selected_account_before_immediate_scoped_sub() {
 
 #[tokio::test]
 async fn scoped_sub_full_history_runs_inside_bridge() {
-    let (relay_url, captured, notify) = create_text_capture_relay().await;
-    let (_tmp, mut ndb) = test_ndb();
+    let CaptureRelay {
+        url: relay_url,
+        captured,
+        notify,
+    } = create_text_capture_relay().await;
+    let TempNdb { dir: _tmp, mut ndb } = TempNdb::new();
     let txn = Transaction::new(&ndb).expect("txn");
     let accounts = test_accounts(&mut ndb, &txn, Vec::new());
     drop(txn);
@@ -476,9 +501,16 @@ async fn scoped_sub_full_history_runs_inside_bridge() {
 
 #[tokio::test]
 async fn bridge_relay_ingest_writes_events_into_ndb() {
-    let (event_json, note_id) = signed_text_note_json("bridge ingest", 1_776_000_200);
-    let (relay_url, captured, notify) = create_event_relay(event_json).await;
-    let (_tmp, mut ndb) = test_ndb();
+    let SignedTextNote {
+        json: event_json,
+        id: note_id,
+    } = signed_text_note_json("bridge ingest", 1_776_000_200);
+    let CaptureRelay {
+        url: relay_url,
+        captured,
+        notify,
+    } = create_event_relay(event_json).await;
+    let TempNdb { dir: _tmp, mut ndb } = TempNdb::new();
     let txn = Transaction::new(&ndb).expect("txn");
     let accounts = test_accounts(&mut ndb, &txn, Vec::new());
     drop(txn);
@@ -533,9 +565,15 @@ async fn bridge_relay_ingest_writes_events_into_ndb() {
 
 #[tokio::test]
 async fn bridge_eose_fact_updates_scoped_readiness() {
-    let (event_json, _) = signed_text_note_json("bridge readiness eose", 1_776_000_250);
-    let (relay_url, captured, notify) = create_event_relay(event_json).await;
-    let (_tmp, mut ndb) = test_ndb();
+    let SignedTextNote {
+        json: event_json, ..
+    } = signed_text_note_json("bridge readiness eose", 1_776_000_250);
+    let CaptureRelay {
+        url: relay_url,
+        captured,
+        notify,
+    } = create_event_relay(event_json).await;
+    let TempNdb { dir: _tmp, mut ndb } = TempNdb::new();
     let txn = Transaction::new(&ndb).expect("txn");
     let accounts = test_accounts(&mut ndb, &txn, Vec::new());
     drop(txn);
@@ -583,8 +621,12 @@ async fn bridge_eose_fact_updates_scoped_readiness() {
 
 #[tokio::test]
 async fn publish_explicit_broadcasts_to_requested_relay() {
-    let (relay_url, captured, notify) = create_text_capture_relay().await;
-    let (_tmp, ndb) = test_ndb();
+    let CaptureRelay {
+        url: relay_url,
+        captured,
+        notify,
+    } = create_text_capture_relay().await;
+    let TempNdb { dir: _tmp, ndb } = TempNdb::new();
     let job_pool = JobPool::new(2);
     let mut remote = test_remote_state(&ndb, &job_pool);
     let note = signed_text_note("publish explicit", 1_776_000_300);
@@ -611,8 +653,12 @@ async fn publish_explicit_broadcasts_to_requested_relay() {
 
 #[tokio::test]
 async fn publish_accounts_write_broadcasts_to_selected_account_write_relays() {
-    let (relay_url, captured, notify) = create_text_capture_relay().await;
-    let (_tmp, mut ndb) = test_ndb();
+    let CaptureRelay {
+        url: relay_url,
+        captured,
+        notify,
+    } = create_text_capture_relay().await;
+    let TempNdb { dir: _tmp, mut ndb } = TempNdb::new();
     let txn = Transaction::new(&ndb).expect("txn");
     let accounts = test_accounts(&mut ndb, &txn, vec![relay_url.clone()]);
     drop(txn);
@@ -641,8 +687,12 @@ async fn publish_accounts_write_broadcasts_to_selected_account_write_relays() {
 
 #[tokio::test]
 async fn oneshot_uses_selected_account_read_relays() {
-    let (relay_url, captured, notify) = create_text_capture_relay().await;
-    let (_tmp, mut ndb) = test_ndb();
+    let CaptureRelay {
+        url: relay_url,
+        captured,
+        notify,
+    } = create_text_capture_relay().await;
+    let TempNdb { dir: _tmp, mut ndb } = TempNdb::new();
     let txn = Transaction::new(&ndb).expect("txn");
     let accounts = test_accounts(&mut ndb, &txn, vec![relay_url]);
     drop(txn);

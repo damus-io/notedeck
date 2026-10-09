@@ -428,9 +428,8 @@ impl ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{test_util::test_config, UnknownIds, FALLBACK_PUBKEY};
+    use crate::{test_util::TempNdb, UnknownIds, FALLBACK_PUBKEY};
     use serde::Deserialize;
-    use tempfile::TempDir;
 
     /// An app tool whose typed `Args`/`Output` exercise the serde boundary. It
     /// ignores the [`ToolContext`], so registry dispatch is testable without
@@ -466,11 +465,18 @@ mod tests {
         }
     }
 
-    /// A live [`ToolContext`] over a throwaway db, for exercising dispatch. The
-    /// [`TempDir`] and owned pieces are returned so they outlive the borrows.
-    fn test_tool_env() -> (TempDir, Ndb, NoteCache, Accounts) {
-        let tmp = TempDir::new().expect("tmp dir");
-        let mut ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
+    /// The owned pieces a [`ToolContext`] borrows, over a throwaway db. The
+    /// temporary directory is kept so it outlives the borrows.
+    struct ToolEnv {
+        db: TempNdb,
+        note_cache: NoteCache,
+        accounts: Accounts,
+    }
+
+    /// A live [`ToolContext`]'s pieces over a throwaway db, for exercising
+    /// dispatch.
+    fn test_tool_env() -> ToolEnv {
+        let TempNdb { dir, mut ndb } = TempNdb::new();
         let txn = Transaction::new(&ndb).expect("txn");
         let mut unknown_ids = UnknownIds::default();
         let accounts = Accounts::new(
@@ -483,14 +489,22 @@ mod tests {
             &mut unknown_ids,
         );
         drop(txn);
-        (tmp, ndb, NoteCache::default(), accounts)
+        ToolEnv {
+            db: TempNdb { ndb, dir },
+            note_cache: NoteCache::default(),
+            accounts,
+        }
     }
 
     #[test]
     fn registry_dispatches_typed_app_tool() {
-        let (_tmp, ndb, mut note_cache, accounts) = test_tool_env();
+        let ToolEnv {
+            db,
+            mut note_cache,
+            accounts,
+        } = test_tool_env();
         let mut cx = ToolContext {
-            ndb: &ndb,
+            ndb: &db.ndb,
             note_cache: &mut note_cache,
             accounts: &accounts,
             publish: None,
@@ -509,9 +523,13 @@ mod tests {
 
     #[test]
     fn registry_rejects_bad_args_and_unknown_tools() {
-        let (_tmp, ndb, mut note_cache, accounts) = test_tool_env();
+        let ToolEnv {
+            db,
+            mut note_cache,
+            accounts,
+        } = test_tool_env();
         let mut cx = ToolContext {
-            ndb: &ndb,
+            ndb: &db.ndb,
             note_cache: &mut note_cache,
             accounts: &accounts,
             publish: None,
@@ -569,9 +587,13 @@ mod tests {
 
     #[test]
     fn calling_a_ui_tool_yields_a_call_tool_intent() {
-        let (_tmp, ndb, mut note_cache, accounts) = test_tool_env();
+        let ToolEnv {
+            db,
+            mut note_cache,
+            accounts,
+        } = test_tool_env();
         let mut cx = ToolContext {
-            ndb: &ndb,
+            ndb: &db.ndb,
             note_cache: &mut note_cache,
             accounts: &accounts,
             publish: None,

@@ -1,12 +1,12 @@
 use super::*;
-use crate::test_util::test_config;
+use crate::test_util::TempNdb;
 use crate::{
     remote_data::RemoteIntentBatchBuilder,
-    test_utils::RemoteOutboxReadModelHarness,
     test_utils::{
         nip65_write_relay_note_at_for_test, nip65_write_relay_note_for_test,
         wait_for_nip65_at_for_test, wait_for_nip65_for_test,
     },
+    test_utils::{RemoteOutboxReadModelHarness, WithEffects},
     Accounts, UnknownIds, FALLBACK_PUBKEY,
 };
 use config::{ResolvedSubScope, ScopedSubKey, SubExecution};
@@ -16,6 +16,7 @@ use enostr::{
 };
 use hashbrown::HashSet;
 use nostrdb::{Filter, SendFilter};
+use realized::RoutedLiveLeg;
 use std::hash::Hash;
 use tempfile::TempDir;
 
@@ -32,10 +33,17 @@ macro_rules! test_owner {
     };
 }
 
-fn scoped_sub_test_runtime() -> (ScopedSubRuntime, RemoteOutboxReadModelHarness) {
+/// A scoped-sub runtime and the bridge harness whose outbox ids it allocates
+/// from, so the harness can apply the ops the runtime stages.
+struct ScopedSubHarness {
+    runtime: ScopedSubRuntime,
+    bridge: RemoteOutboxReadModelHarness,
+}
+
+fn scoped_sub_test_runtime() -> ScopedSubHarness {
     let bridge = RemoteOutboxReadModelHarness::default();
     let runtime = bridge.scoped_runtime();
-    (runtime, bridge)
+    ScopedSubHarness { runtime, bridge }
 }
 
 fn relay_policy(
@@ -381,12 +389,6 @@ fn make_key(parts: impl Hash) -> SubKey {
     SubKey::new(parts)
 }
 
-fn new_ndb() -> (TempDir, nostrdb::Ndb) {
-    let tmp = TempDir::new().expect("tmp dir");
-    let ndb = nostrdb::Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
-    (tmp, ndb)
-}
-
 fn test_accounts(ndb: &mut nostrdb::Ndb, txn: &nostrdb::Transaction) -> Accounts {
     let mut unknown_ids = UnknownIds::default();
     Accounts::new(
@@ -418,7 +420,7 @@ impl PlannerFixture {
 fn planner_fixture_with_local_relay_lists(
     entries: Vec<(enostr::FullKeypair, Vec<&str>)>,
 ) -> PlannerFixture {
-    let (tmp, ndb) = new_ndb();
+    let TempNdb { dir: tmp, ndb } = TempNdb::new();
     for (account, relays) in &entries {
         let note = nip65_write_relay_note_for_test(account, relays);
         ndb.process_client_event(&note.json().expect("json"))
@@ -462,7 +464,7 @@ fn advance_author_outbox_plans_once_for_test(
     baseline_relays: &HashSet<NormRelayUrl>,
     ndb: &nostrdb::Ndb,
 ) {
-    let (_, effects) = bridge.with_returned_outbox(|ids| {
+    let effects = bridge.with_returned_outbox(|ids| {
         runtime.apply_author_outbox_plans_for_active_scoped_keys_with_effects(
             ids,
             selected_account_pubkey,
@@ -527,7 +529,11 @@ fn collect_scoped_effect_outbox_ops_for_test(
                     account_read_relays,
                     completion,
                 );
-                let (_output, ops, next_effects) = delta.into_parts();
+                let ScopedSubDelta {
+                    outbox_ops: ops,
+                    effects: next_effects,
+                    ..
+                } = delta;
                 outbox_ops.extend(ops);
                 outbox_ops.extend(collect_scoped_effect_outbox_ops_for_test(
                     runtime,
@@ -552,8 +558,11 @@ fn set_sub_with_relays_for_test(
     scope: SubScope,
     key: SubKey,
     config: SubConfig,
-) -> (SetSubResult, ScopedSubOutboxOps) {
-    let (result, delta) = runtime.set_sub_with_relays_with_effects(
+) -> Staged<SetSubResult> {
+    let Applied {
+        value: result,
+        delta,
+    } = runtime.set_sub_with_relays_with_effects(
         ids,
         account_read_relays,
         selected_account_pubkey,
@@ -562,8 +571,10 @@ fn set_sub_with_relays_for_test(
         key,
         config,
     );
-    let (_output, outbox_ops, _effects) = delta.into_parts();
-    (result, outbox_ops)
+    Staged {
+        value: result,
+        outbox_ops: delta.outbox_ops,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -575,8 +586,11 @@ fn set_inactive_account_sub_for_test(
     owner: SubOwnerKey,
     key: SubKey,
     config: SubConfig,
-) -> (SetSubResult, ScopedSubOutboxOps) {
-    let (result, delta) = runtime.set_inactive_account_sub_with_effects(
+) -> Staged<SetSubResult> {
+    let Applied {
+        value: result,
+        delta,
+    } = runtime.set_inactive_account_sub_with_effects(
         ids,
         selected_account_pubkey,
         account_pubkey,
@@ -584,8 +598,10 @@ fn set_inactive_account_sub_for_test(
         key,
         config,
     );
-    let (_output, outbox_ops, _effects) = delta.into_parts();
-    (result, outbox_ops)
+    Staged {
+        value: result,
+        outbox_ops: delta.outbox_ops,
+    }
 }
 
 fn clear_sub_with_selected_for_test(
@@ -595,8 +611,11 @@ fn clear_sub_with_selected_for_test(
     owner: SubOwnerKey,
     key: SubKey,
     scope: SubScope,
-) -> (ClearSubResult, ScopedSubOutboxOps) {
-    let (result, delta) = runtime.clear_owner_config_for_account(
+) -> Staged<ClearSubResult> {
+    let Applied {
+        value: result,
+        delta,
+    } = runtime.clear_owner_config_for_account(
         ids,
         selected_account_pubkey,
         &HashSet::new(),
@@ -605,8 +624,10 @@ fn clear_sub_with_selected_for_test(
         key,
         scope,
     );
-    let (_output, outbox_ops, _effects) = delta.into_parts();
-    (result, outbox_ops)
+    Staged {
+        value: result,
+        outbox_ops: delta.outbox_ops,
+    }
 }
 
 fn drop_owner_with_relays_for_test(
@@ -615,15 +636,20 @@ fn drop_owner_with_relays_for_test(
     selected_account_pubkey: Pubkey,
     account_read_relays: &HashSet<NormRelayUrl>,
     owner: SubOwnerKey,
-) -> (bool, ScopedSubOutboxOps) {
-    let (changed, delta) = runtime.drop_owner_with_relays_collect(
+) -> Staged<bool> {
+    let Applied {
+        value: changed,
+        delta,
+    } = runtime.drop_owner_with_relays_collect(
         ids,
         selected_account_pubkey,
         account_read_relays,
         owner,
     );
-    let (_output, outbox_ops, _effects) = delta.into_parts();
-    (!changed.is_empty(), outbox_ops)
+    Staged {
+        value: !changed.is_empty(),
+        outbox_ops: delta.outbox_ops,
+    }
 }
 
 fn on_account_switched_with_relays_for_test(
@@ -639,8 +665,7 @@ fn on_account_switched_with_relays_for_test(
         new_pk,
         new_account_read_relays,
     );
-    let (_output, outbox_ops, _effects) = delta.into_parts();
-    outbox_ops
+    delta.outbox_ops
 }
 
 fn retarget_selected_account_read_relays_with_relays_for_test(
@@ -654,8 +679,7 @@ fn retarget_selected_account_read_relays_with_relays_for_test(
         selected_account_pubkey,
         account_read_relays,
     );
-    let (_output, outbox_ops, _effects) = delta.into_parts();
-    outbox_ops
+    delta.outbox_ops
 }
 
 fn apply_author_outbox_plans_for_active_scoped_keys_for_test(
@@ -669,8 +693,7 @@ fn apply_author_outbox_plans_for_active_scoped_keys_for_test(
         selected_account_pubkey,
         baseline_relays,
     );
-    let (_output, outbox_ops, _effects) = delta.into_parts();
-    outbox_ops
+    delta.outbox_ops
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -685,7 +708,10 @@ fn set_sub_and_apply_effects_for_test(
     config: SubConfig,
     ndb: &nostrdb::Ndb,
 ) -> SetSubResult {
-    let (result, effects) = bridge.with_returned_outbox(|ids| {
+    let WithEffects {
+        value: result,
+        effects,
+    } = bridge.with_returned_outbox(|ids| {
         runtime.set_sub_with_relays_with_effects(
             ids,
             account_read_relays,
@@ -718,8 +744,11 @@ fn set_sub_with_planner_fixture(
     scope: SubScope,
     key: SubKey,
     config: SubConfig,
-) -> (SetSubResult, ScopedSubOutboxOps) {
-    let (result, delta) = runtime.set_sub_with_relays_with_effects(
+) -> Staged<SetSubResult> {
+    let Applied {
+        value: result,
+        delta,
+    } = runtime.set_sub_with_relays_with_effects(
         ids,
         account_read_relays,
         selected_account_pubkey,
@@ -728,7 +757,11 @@ fn set_sub_with_planner_fixture(
         key,
         config,
     );
-    let (_output, mut outbox_ops, effects) = delta.into_parts();
+    let ScopedSubDelta {
+        mut outbox_ops,
+        effects,
+        ..
+    } = delta;
     if let Some(planner_fixture) = planner_fixture {
         outbox_ops.extend(collect_scoped_effect_outbox_ops_for_test(
             runtime,
@@ -738,7 +771,10 @@ fn set_sub_with_planner_fixture(
             effects,
         ));
     }
-    (result, outbox_ops)
+    Staged {
+        value: result,
+        outbox_ops,
+    }
 }
 
 fn realize_author_outbox_plan_for_test(
@@ -749,7 +785,7 @@ fn realize_author_outbox_plan_for_test(
     planner_fixture: &PlannerFixture,
 ) {
     for _ in 0..4 {
-        let (_, effects) = bridge.with_returned_outbox(|ids| {
+        let effects = bridge.with_returned_outbox(|ids| {
             runtime.apply_author_outbox_plans_for_active_scoped_keys_with_effects(
                 ids,
                 selected_account_pubkey,
@@ -788,13 +824,10 @@ fn single_live_id(runtime: &ScopedSubRuntime, scoped: &ScopedSubKey) -> OutboxSu
     runtime.single_live_id_for_scoped_for_test(scoped)
 }
 
-fn routed_leg_id_for_relay(
-    legs: &[(NormRelayUrl, OutboxSubId)],
-    relay: &NormRelayUrl,
-) -> OutboxSubId {
+fn routed_leg_id_for_relay(legs: &[RoutedLiveLeg], relay: &NormRelayUrl) -> OutboxSubId {
     let matches = legs
         .iter()
-        .filter_map(|(leg_relay, live_id)| (leg_relay == relay).then_some(*live_id))
+        .filter_map(|leg| (&leg.relay == relay).then_some(leg.live_id))
         .collect::<Vec<_>>();
     assert_eq!(
         matches.len(),
@@ -876,7 +909,7 @@ fn assert_routed_live_id_author_sets(
     let mut actual = runtime
         .routed_live_author_sets_for_test(selected_account_pubkey, key, scope)
         .into_iter()
-        .find_map(|(_, id, authors)| (id == live_id).then_some(authors))
+        .find_map(|sets| (sets.leg.live_id == live_id).then_some(sets.author_sets))
         .expect("routed live id")
         .into_iter()
         .map(|authors| {
@@ -969,7 +1002,10 @@ fn accounts_read_plus_observed_config(
 /// Verifies repeated set_sub calls for the same key report true no-op semantics.
 #[test]
 fn set_sub_is_upsert_for_existing_key() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let relays = relay_set("wss://relay-a.example.com");
     let key = SubKey::new(("messages", "dm-list", 7u8));
     let scope = SubScope::Global;
@@ -1009,14 +1045,17 @@ fn set_sub_is_upsert_for_existing_key() {
 
 #[test]
 fn active_same_config_set_sub_does_not_realize_missing_live_state() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
     let owner = test_owner!();
     let key = make_key(("same-config-active-no-live", 1u8));
     let config = base_config(SubScope::Global);
 
     let created = bridge.with_returned_outbox(|ids| {
-        let (result, outbox_ops) = set_sub_with_relays_for_test(
+        let staged = set_sub_with_relays_for_test(
             &mut runtime,
             ids,
             &HashSet::new(),
@@ -1026,12 +1065,12 @@ fn active_same_config_set_sub_does_not_realize_missing_live_state() {
             key,
             config.clone(),
         );
-        assert!(outbox_ops.is_empty());
-        (result, outbox_ops)
+        assert!(staged.outbox_ops.is_empty());
+        staged
     });
 
     let repeated = bridge.with_returned_outbox(|ids| {
-        let (result, outbox_ops) = set_sub_with_relays_for_test(
+        let staged = set_sub_with_relays_for_test(
             &mut runtime,
             ids,
             &relay_set("wss://relay-a.example.com"),
@@ -1041,8 +1080,8 @@ fn active_same_config_set_sub_does_not_realize_missing_live_state() {
             key,
             config,
         );
-        assert!(outbox_ops.is_empty());
-        (result, outbox_ops)
+        assert!(staged.outbox_ops.is_empty());
+        staged
     });
 
     assert_eq!(created, SetSubResult::Created);
@@ -1052,7 +1091,10 @@ fn active_same_config_set_sub_does_not_realize_missing_live_state() {
 
 #[test]
 fn inactive_same_config_set_sub_does_not_release_stale_live_state() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
     let inactive_account = account_pk(0x02);
     let owner = test_owner!();
@@ -1074,7 +1116,7 @@ fn inactive_same_config_set_sub_does_not_release_stale_live_state() {
     });
 
     let repeated = bridge.with_returned_outbox(|ids| {
-        let (result, outbox_ops) = set_inactive_account_sub_for_test(
+        let staged = set_inactive_account_sub_for_test(
             &mut runtime,
             ids,
             selected,
@@ -1083,8 +1125,8 @@ fn inactive_same_config_set_sub_does_not_release_stale_live_state() {
             key,
             config,
         );
-        assert!(outbox_ops.is_empty());
-        (result, outbox_ops)
+        assert!(staged.outbox_ops.is_empty());
+        staged
     });
 
     assert_eq!(created, SetSubResult::Created);
@@ -1110,7 +1152,10 @@ fn ensure_owner_config_command(
 
 #[test]
 fn ensure_owner_config_creates_missing_desired_state() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let relays = relay_set("wss://relay-a.example.com");
     let account = account_pk(0x01);
     let key = SubKey::new(("messages", "dm-list", 8u8));
@@ -1135,7 +1180,10 @@ fn ensure_owner_config_creates_missing_desired_state() {
 /// Verifies repeated `EnsureOwnerConfig` commands attach an owner once.
 #[test]
 fn ensure_owner_config_for_existing_key_is_idempotent() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let relays = relay_set("wss://relay-a.example.com");
     let key = SubKey::new(("messages", "dm-list", 9u8));
     let config_owner = test_owner!();
@@ -1181,10 +1229,9 @@ fn ensure_owner_config_for_existing_key_is_idempotent() {
             &config,
         ),
     );
-    let (second_output, second_ops, second_effects) = second.into_parts();
-    assert!(second_output.is_empty());
-    assert!(second_ops.is_empty());
-    assert!(second_effects.into_effects().is_empty());
+    assert!(second.output.is_empty());
+    assert!(second.outbox_ops.is_empty());
+    assert!(second.effects.into_effects().is_empty());
 
     assert_eq!(runtime.desired_len(), 1);
     assert_eq!(runtime.live_len(), 1);
@@ -1194,7 +1241,10 @@ fn ensure_owner_config_for_existing_key_is_idempotent() {
 /// Verifies `EnsureOwnerConfig` does not mutate existing live filter state.
 #[test]
 fn ensure_owner_config_does_not_modify_existing_live_sub() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let relays = relay_set("wss://relay-a.example.com");
     let key = SubKey::new(("timeline", "home", 1u8));
     let config_owner = test_owner!();
@@ -1249,7 +1299,10 @@ fn ensure_owner_config_does_not_modify_existing_live_sub() {
 
 #[test]
 fn ensure_owner_config_register_only_owner_survives_config_owner_drop() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let relays = relay_set("wss://relay-a.example.com");
     let account = account_pk(0x01);
     let key = SubKey::new(("timeline", "register-only-owner-drop", 1u8));
@@ -1366,7 +1419,10 @@ fn aggregate_relay_eose_status_tracks_unsupported_relays_separately() {
 /// Verifies EOSE status lookup returns Missing when the owner does not own the requested key.
 #[test]
 fn sub_readiness_missing_when_owner_does_not_own_key() {
-    let (runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let status = owner_status(
         &runtime,
         &mut bridge,
@@ -1381,7 +1437,10 @@ fn sub_readiness_missing_when_owner_does_not_own_key() {
 /// Verifies live subscriptions expose aggregate EOSE state without leaking outbox ids.
 #[test]
 fn sub_readiness_live_reports_tracked_relays_and_eose_flags() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let relays = relay_set("wss://relay-a.example.com");
     let slot = test_owner!();
     let key = make_key(("live", 1u8));
@@ -1424,7 +1483,10 @@ fn sub_readiness_live_reports_tracked_relays_and_eose_flags() {
 /// Verifies unsupported desired relay legs remain visible to scoped readiness.
 #[test]
 fn sub_readiness_live_reports_unsupported_desired_relay_legs() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let relay = NormRelayUrl::new("wss://relay-a.example.com").unwrap();
     let relays = HashSet::from([relay.clone()]);
     let slot = test_owner!();
@@ -1468,7 +1530,10 @@ fn sub_readiness_live_reports_unsupported_desired_relay_legs() {
 
 #[test]
 fn outbox_selection_realizes_multiple_live_subs_for_one_logical_key() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("outbox-tracer", 1u8));
@@ -1549,7 +1614,10 @@ fn outbox_selection_realizes_multiple_live_subs_for_one_logical_key() {
 
 #[test]
 fn accounts_read_with_author_outbox_keeps_baseline_for_unresolved_author() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("outbox-composite-unresolved", 1u8));
@@ -1588,7 +1656,10 @@ fn accounts_read_with_author_outbox_keeps_baseline_for_unresolved_author() {
 
 #[test]
 fn accounts_read_with_author_outbox_adds_routed_leg_for_known_author() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("outbox-composite-known", 1u8));
@@ -1627,13 +1698,19 @@ fn accounts_read_with_author_outbox_adds_routed_leg_for_known_author() {
     assert_eq!(live_ids.len(), 2);
     assert_eq!(
         runtime.routed_live_legs_for_test(selected, key, SubScope::Global),
-        vec![(author_relay, live_ids[1])]
+        vec![RoutedLiveLeg {
+            relay: author_relay,
+            live_id: live_ids[1],
+        }]
     );
 }
 
 #[test]
 fn accounts_read_with_author_outbox_counts_routed_leg_as_incomplete_without_committed_eose() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("outbox-composite-queued-routed", 1u8));
@@ -1692,7 +1769,10 @@ fn accounts_read_with_author_outbox_counts_routed_leg_as_incomplete_without_comm
 
 #[test]
 fn accounts_read_with_author_outbox_omits_blocked_remote_advertised_relay() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("outbox-composite-blocked-remote", 1u8));
@@ -1726,7 +1806,10 @@ fn accounts_read_with_author_outbox_omits_blocked_remote_advertised_relay() {
 
 #[test]
 fn accounts_read_plus_explicit_retargets_observed_relay_after_account_read_removes_it() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("thread-observed-retarget", 1u8));
@@ -1793,7 +1876,10 @@ fn accounts_read_plus_explicit_retargets_observed_relay_after_account_read_remov
 
 #[test]
 fn accounts_read_plus_explicit_omits_blocked_observed_relay() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("thread-observed-blocked", 1u8));
@@ -1830,7 +1916,10 @@ fn accounts_read_plus_explicit_omits_blocked_observed_relay() {
 
 #[test]
 fn accounts_read_plus_explicit_adopts_existing_accountsread_baseline() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("explicit-adopts-baseline", 1u8));
@@ -1891,7 +1980,10 @@ fn accounts_read_plus_explicit_adopts_existing_accountsread_baseline() {
 
 #[test]
 fn accounts_read_with_author_outbox_adopts_existing_accountsread_baseline() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("author-outbox-adopts-baseline", 1u8));
@@ -1949,7 +2041,10 @@ fn accounts_read_with_author_outbox_adopts_existing_accountsread_baseline() {
 
 #[test]
 fn accounts_read_plus_explicit_to_single_accountsread_keeps_baseline_and_drops_explicit() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("explicit-to-single-keeps-baseline", 1u8));
@@ -2009,7 +2104,10 @@ fn accounts_read_plus_explicit_to_single_accountsread_keeps_baseline_and_drops_e
 
 #[test]
 fn accounts_read_with_author_outbox_clears_routed_leg_when_author_demand_is_removed() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("outbox-composite-clear-author", 1u8));
@@ -2046,7 +2144,7 @@ fn accounts_read_with_author_outbox_clears_routed_leg_when_author_demand_is_remo
         .into_iter()
         .next()
         .expect("initial routed leg")
-        .1;
+        .live_id;
 
     let updated = contact_outbox_config(Filter::new().kinds([1]).limit(10).build());
     let _ = bridge.with_returned_outbox(|ids| {
@@ -2080,7 +2178,10 @@ fn accounts_read_with_author_outbox_clears_routed_leg_when_author_demand_is_remo
 
 #[test]
 fn accounts_read_plus_explicit_source_change_replaces_additive_sub() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("routed-source-policy", 1u8));
@@ -2139,7 +2240,10 @@ fn accounts_read_plus_explicit_source_change_replaces_additive_sub() {
 
 #[tokio::test]
 async fn author_outbox_full_history_uses_resolved_author_relay_packages() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("outbox-full-history-resolved", 1u8));
@@ -2177,7 +2281,7 @@ async fn author_outbox_full_history_uses_resolved_author_relay_packages() {
     );
     let routed_legs = runtime.routed_live_legs_for_test(selected, key, SubScope::Global);
     assert_eq!(routed_legs.len(), 1);
-    assert_eq!(routed_legs[0].0, author_relay);
+    assert_eq!(routed_legs[0].relay, author_relay);
     let scoped = ScopedSubRuntime::scoped_key(ResolvedSubScope::Global, key);
     assert!(runtime.full_history_id_for_test(&scoped).is_some());
     assert!(full_history_has_relay_pkg(
@@ -2235,7 +2339,7 @@ async fn author_outbox_full_history_uses_resolved_author_relay_packages() {
         runtime
             .routed_live_legs_for_test(selected, key, SubScope::Global)
             .into_iter()
-            .map(|(relay, _)| relay)
+            .map(|leg| leg.relay)
             .collect::<Vec<_>>(),
         vec![author_relay.clone()]
     );
@@ -2255,7 +2359,10 @@ async fn author_outbox_full_history_uses_resolved_author_relay_packages() {
 
 #[tokio::test]
 async fn author_outbox_full_history_is_concurrent_by_default() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("outbox-full-history-concurrent-live", 1u8));
@@ -2304,12 +2411,15 @@ async fn author_outbox_full_history_is_concurrent_by_default() {
     );
     let routed_legs = runtime.routed_live_legs_for_test(selected, key, SubScope::Global);
     assert_eq!(routed_legs.len(), 1);
-    assert_eq!(routed_legs[0].0, author_relay);
+    assert_eq!(routed_legs[0].relay, author_relay);
 }
 
 #[tokio::test]
 async fn author_outbox_full_history_routes_history_filters() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("outbox-full-history-history-filter", 1u8));
@@ -2373,7 +2483,10 @@ async fn author_outbox_full_history_routes_history_filters() {
 
 #[test]
 fn author_outbox_plan_application_reuses_unchanged_routed_live_legs() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("outbox-diff", 1u8));
@@ -2427,14 +2540,14 @@ fn author_outbox_plan_application_reuses_unchanged_routed_live_legs() {
     assert_eq!(initial_legs.len(), 2);
     let relay_a_id = initial_legs
         .iter()
-        .find(|(relay, _)| *relay == relay_a)
+        .find(|leg| leg.relay == relay_a)
         .expect("relay-a leg")
-        .1;
+        .live_id;
     let relay_b_id = initial_legs
         .iter()
-        .find(|(relay, _)| *relay == relay_b)
+        .find(|leg| leg.relay == relay_b)
         .expect("relay-b leg")
-        .1;
+        .live_id;
 
     bridge.with_returned_outbox(|ids| {
         apply_author_outbox_plans_for_active_scoped_keys_for_test(
@@ -2449,18 +2562,18 @@ fn author_outbox_plan_application_reuses_unchanged_routed_live_legs() {
     assert_eq!(refreshed_legs.len(), 2);
     let refreshed_relay_a_id = refreshed_legs
         .iter()
-        .find(|(relay, _)| *relay == relay_a)
+        .find(|leg| leg.relay == relay_a)
         .expect("relay-a leg after refresh")
-        .1;
+        .live_id;
     let refreshed_relay_b_id = refreshed_legs
         .iter()
-        .find(|(relay, _)| *relay == relay_b)
+        .find(|leg| leg.relay == relay_b)
         .expect("relay-b leg after refresh")
-        .1;
+        .live_id;
 
     assert_eq!(refreshed_relay_a_id, relay_a_id);
     assert_eq!(refreshed_relay_b_id, relay_b_id);
-    assert!(!refreshed_legs.iter().any(|(relay, _)| *relay == relay_c));
+    assert!(!refreshed_legs.iter().any(|leg| leg.relay == relay_c));
     assert_routed_live_id_author_sets(
         &runtime,
         selected,
@@ -2473,7 +2586,10 @@ fn author_outbox_plan_application_reuses_unchanged_routed_live_legs() {
 
 #[test]
 fn selected_account_read_retarget_applies_author_outbox_without_churning_baseline() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("outbox-retarget-stable-baseline", 1u8));
@@ -2520,7 +2636,10 @@ fn selected_account_read_retarget_applies_author_outbox_without_churning_baselin
 
 #[test]
 fn author_outbox_plan_application_preserves_multiple_filters_on_same_relay() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("outbox-same-relay-filters", 1u8));
@@ -2604,7 +2723,10 @@ fn author_outbox_plan_application_preserves_multiple_filters_on_same_relay() {
 
 #[test]
 fn author_outbox_replaces_routed_live_legs_when_demand_priority_changes() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let slot = test_owner!();
     let selected = account_pk(0x01);
     let key = make_key(("outbox-priority", 1u8));
@@ -2648,7 +2770,7 @@ fn author_outbox_replaces_routed_live_legs_when_demand_priority_changes() {
         .into_iter()
         .next()
         .expect("initial leg")
-        .1;
+        .live_id;
 
     let updated = SubConfig::builder(vec![filter])
         .accounts_read(relay_policy(
@@ -2686,7 +2808,7 @@ fn author_outbox_replaces_routed_live_legs_when_demand_priority_changes() {
         .into_iter()
         .next()
         .expect("refreshed leg")
-        .1;
+        .live_id;
 
     assert_ne!(initial_leg_id, refreshed_leg_id);
     assert!(!runtime
@@ -2696,7 +2818,10 @@ fn author_outbox_replaces_routed_live_legs_when_demand_priority_changes() {
 
 #[test]
 fn author_outbox_index_deduplicates_authors_within_one_scoped_key() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
     let author = account_pk(0xA1);
     let slot = test_owner!();
@@ -2741,7 +2866,10 @@ fn author_outbox_index_deduplicates_authors_within_one_scoped_key() {
 
 #[test]
 fn author_outbox_index_keeps_shared_author_until_last_scoped_key_drops() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
     let author = account_pk(0xA2);
     let slot_a = test_owner!();
@@ -2814,7 +2942,10 @@ fn author_outbox_index_keeps_shared_author_until_last_scoped_key_drops() {
 
 #[test]
 fn author_outbox_index_switches_active_account_scope() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let account_a = account_pk(0xA3);
     let account_b = account_pk(0xB3);
     let author_a = account_pk(0xA4);
@@ -2873,7 +3004,10 @@ fn author_outbox_index_switches_active_account_scope() {
 
 #[test]
 fn accounts_read_with_author_outbox_account_switch_restores_whole_live_state() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let account_a = account_pk(0xA8);
     let account_b = account_pk(0xB8);
     let relays_a = relay_set("wss://account-a.example.com");
@@ -2940,7 +3074,10 @@ fn accounts_read_with_author_outbox_account_switch_restores_whole_live_state() {
 
 #[test]
 fn inactive_account_set_sub_rebuilds_retained_config_without_live_state() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let account_a = account_pk(0xA9);
     let account_b = account_pk(0xB9);
     let relays_a = relay_set("wss://account-a.example.com");
@@ -3025,7 +3162,10 @@ fn inactive_account_set_sub_rebuilds_retained_config_without_live_state() {
 
 #[test]
 fn inactive_account_set_sub_same_config_is_unchanged() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0xB1);
     let inactive = account_pk(0xA1);
     let slot = test_owner!();
@@ -3061,7 +3201,10 @@ fn inactive_account_set_sub_same_config_is_unchanged() {
 
 #[test]
 fn inactive_account_drop_owner_rebuilds_retained_config_before_switch_back() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0xB2);
     let inactive = account_pk(0xA2);
     let account_relays = relay_set("wss://account-a.example.com");
@@ -3116,7 +3259,7 @@ fn inactive_account_drop_owner_rebuilds_retained_config_before_switch_back() {
         .live_sub_ids_for_test(inactive, key, SubScope::Account)
         .is_empty());
 
-    let (_, effects) = bridge.with_returned_outbox(|ids| {
+    let effects = bridge.with_returned_outbox(|ids| {
         runtime.on_account_switched_with_relays_with_effects(
             ids,
             selected,
@@ -3143,7 +3286,7 @@ fn inactive_account_drop_owner_rebuilds_retained_config_before_switch_back() {
     let routed_relays = runtime
         .routed_live_legs_for_test(inactive, key, SubScope::Account)
         .into_iter()
-        .map(|(relay, _)| relay)
+        .map(|leg| leg.relay)
         .collect::<Vec<_>>();
     assert_eq!(routed_relays, vec![relay_a]);
     assert!(!routed_relays.contains(&relay_b));
@@ -3151,9 +3294,12 @@ fn inactive_account_drop_owner_rebuilds_retained_config_before_switch_back() {
 
 #[test]
 fn author_outbox_plan_application_keeps_frozen_plan_after_relay_list_update() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
-    let (_tmp, ndb) = new_ndb();
+    let TempNdb { dir: _tmp, ndb } = TempNdb::new();
     let author_a = enostr::FullKeypair::generate();
     let author_b = enostr::FullKeypair::generate();
     let key_a = make_key(("outbox-index-plan-refresh", "a"));
@@ -3225,13 +3371,13 @@ fn author_outbox_plan_application_keeps_frozen_plan_after_relay_list_update() {
         .into_iter()
         .next()
         .expect("initial a leg")
-        .1;
+        .live_id;
     let initial_b = runtime
         .routed_live_legs_for_test(selected, key_b, SubScope::Global)
         .into_iter()
         .next()
         .expect("initial b leg")
-        .1;
+        .live_id;
 
     ndb.process_client_event(
         &nip65_write_relay_note_at_for_test(&author_a, &["wss://relay-a-new.example.com"], 2)
@@ -3253,13 +3399,13 @@ fn author_outbox_plan_application_keeps_frozen_plan_after_relay_list_update() {
         .into_iter()
         .next()
         .expect("current a leg")
-        .1;
+        .live_id;
     let current_b = runtime
         .routed_live_legs_for_test(selected, key_b, SubScope::Global)
         .into_iter()
         .next()
         .expect("current b leg")
-        .1;
+        .live_id;
 
     assert_eq!(initial_a, current_a);
     assert_eq!(initial_b, current_b);
@@ -3267,9 +3413,12 @@ fn author_outbox_plan_application_keeps_frozen_plan_after_relay_list_update() {
 
 #[tokio::test]
 async fn author_outbox_plan_application_keeps_frozen_full_history_plan_after_relay_list_update() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
-    let (_tmp, ndb) = new_ndb();
+    let TempNdb { dir: _tmp, ndb } = TempNdb::new();
     let author = enostr::FullKeypair::generate();
     let key = make_key(("outbox-full-history-plan-refresh", "same-frame"));
     let slot = test_owner!();
@@ -3310,7 +3459,7 @@ async fn author_outbox_plan_application_keeps_frozen_full_history_plan_after_rel
         runtime
             .routed_live_legs_for_test(selected, key, SubScope::Global)
             .into_iter()
-            .map(|(relay, _)| relay)
+            .map(|leg| leg.relay)
             .collect::<Vec<_>>(),
         vec![old_relay.clone()]
     );
@@ -3336,7 +3485,7 @@ async fn author_outbox_plan_application_keeps_frozen_full_history_plan_after_rel
         runtime
             .routed_live_legs_for_test(selected, key, SubScope::Global)
             .into_iter()
-            .map(|(relay, _)| relay)
+            .map(|leg| leg.relay)
             .collect::<Vec<_>>(),
         vec![old_relay.clone()]
     );
@@ -3346,9 +3495,12 @@ async fn author_outbox_plan_application_keeps_frozen_full_history_plan_after_rel
 
 #[test]
 fn author_outbox_plan_application_processes_pending_work_to_completion() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
-    let (_tmp, ndb) = new_ndb();
+    let TempNdb { dir: _tmp, ndb } = TempNdb::new();
     let count = 20;
     let mut keys = Vec::new();
 
@@ -3426,9 +3578,12 @@ fn author_outbox_plan_application_processes_pending_work_to_completion() {
 
 #[test]
 fn author_outbox_initial_known_snapshot_limits_single_author_many_relay_live_realization() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
-    let (tmp, ndb) = new_ndb();
+    let TempNdb { dir: tmp, ndb } = TempNdb::new();
     let slot = test_owner!();
     let key = make_key(("outbox-initial-known-single-author-many-relays", "live"));
     let author = enostr::FullKeypair::generate();
@@ -3483,9 +3638,12 @@ fn author_outbox_initial_known_snapshot_limits_single_author_many_relay_live_rea
 
 #[test]
 fn author_outbox_full_plan_application_limits_single_author_many_relay_live_realization() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
-    let (tmp, ndb) = new_ndb();
+    let TempNdb { dir: tmp, ndb } = TempNdb::new();
     let slot = test_owner!();
     let key = make_key(("outbox-full-refresh-single-author-many-relays", "live"));
     let author = enostr::FullKeypair::generate();
@@ -3505,7 +3663,10 @@ fn author_outbox_full_plan_application_limits_single_author_many_relay_live_real
     let planner_fixture = PlannerFixture::new(tmp, ndb.clone());
 
     let empty_relays = HashSet::new();
-    let (_, pending_effects) = bridge.with_returned_outbox(|ids| {
+    let WithEffects {
+        effects: pending_effects,
+        ..
+    } = bridge.with_returned_outbox(|ids| {
         runtime.set_sub_with_relays_with_effects(
             ids,
             &empty_relays,
@@ -3550,9 +3711,12 @@ fn author_outbox_full_plan_application_limits_single_author_many_relay_live_real
 
 #[test]
 fn author_outbox_plan_application_keeps_frozen_many_relay_live_plan_after_empty_relay_list() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
-    let (_tmp, ndb) = new_ndb();
+    let TempNdb { dir: _tmp, ndb } = TempNdb::new();
     let slot = test_owner!();
     let key = make_key(("outbox-single-author-many-relays", "live-removal"));
     let author = enostr::FullKeypair::generate();
@@ -3563,7 +3727,10 @@ fn author_outbox_plan_application_keeps_frozen_many_relay_live_plan_after_empty_
     let relay_refs = relays.iter().map(String::as_str).collect::<Vec<_>>();
 
     let empty_relays = HashSet::new();
-    let (_, pending_effects) = bridge.with_returned_outbox(|ids| {
+    let WithEffects {
+        effects: pending_effects,
+        ..
+    } = bridge.with_returned_outbox(|ids| {
         runtime.set_sub_with_relays_with_effects(
             ids,
             &empty_relays,
@@ -3636,10 +3803,13 @@ fn author_outbox_plan_application_keeps_frozen_many_relay_live_plan_after_empty_
 #[tokio::test]
 async fn author_outbox_plan_application_keeps_frozen_many_relay_full_history_plan_after_empty_relay_list(
 ) {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
     let account_relays = relay_set("wss://account-read-many-history-removal.example.com");
-    let (_tmp, ndb) = new_ndb();
+    let TempNdb { dir: _tmp, ndb } = TempNdb::new();
     let slot = test_owner!();
     let key = make_key(("outbox-single-author-many-relays", "history-removal"));
     let author = enostr::FullKeypair::generate();
@@ -3650,7 +3820,10 @@ async fn author_outbox_plan_application_keeps_frozen_many_relay_full_history_pla
         .collect::<Vec<_>>();
     let relay_refs = relays.iter().map(String::as_str).collect::<Vec<_>>();
 
-    let (_, pending_effects) = bridge.with_returned_outbox(|ids| {
+    let WithEffects {
+        effects: pending_effects,
+        ..
+    } = bridge.with_returned_outbox(|ids| {
         runtime.set_sub_with_relays_with_effects(
             ids,
             &account_relays,
@@ -3729,10 +3902,13 @@ async fn author_outbox_plan_application_keeps_frozen_many_relay_full_history_pla
 
 #[test]
 fn large_known_author_outbox_set_sub_backfills_routed_legs_in_batches() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
     let account_relays = relay_set("wss://account-read.example.com");
-    let (tmp, ndb) = new_ndb();
+    let TempNdb { dir: tmp, ndb } = TempNdb::new();
     let slot = test_owner!();
     let key = make_key(("outbox-known-author-backlog", "same-key"));
     let authors = (0..20)
@@ -3800,10 +3976,13 @@ fn large_known_author_outbox_set_sub_backfills_routed_legs_in_batches() {
 
 #[tokio::test]
 async fn large_known_author_outbox_full_history_backfills_routed_targets_in_batches() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
     let account_relays = relay_set("wss://account-read-history.example.com");
-    let (tmp, ndb) = new_ndb();
+    let TempNdb { dir: tmp, ndb } = TempNdb::new();
     let slot = test_owner!();
     let key = make_key(("outbox-known-history-backlog", "same-key"));
     let authors = (0..20)
@@ -3888,7 +4067,10 @@ async fn large_known_author_outbox_full_history_backfills_routed_targets_in_batc
 
 #[test]
 fn outbox_planning_realizes_the_maximal_routed_set_across_multiple_logical_subs() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
     let author_a = enostr::FullKeypair::generate();
     let author_b = enostr::FullKeypair::generate();
@@ -3957,7 +4139,7 @@ fn outbox_planning_realizes_the_maximal_routed_set_across_multiple_logical_subs(
     let live_a = runtime
         .routed_live_legs_for_test(selected, key_a, SubScope::Global)
         .into_iter()
-        .map(|(_, live_id)| live_id)
+        .map(|leg| leg.live_id)
         .collect::<Vec<_>>();
     let live_b_legs = runtime.routed_live_legs_for_test(selected, key_b, SubScope::Global);
 
@@ -4000,7 +4182,10 @@ fn outbox_planning_realizes_the_maximal_routed_set_across_multiple_logical_subs(
 /// Verifies account switch makes old account-scoped subs inactive and restores them on switch-back.
 #[test]
 fn account_scoped_sub_readiness_transitions_inactive_and_restores_on_switch_back() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let relays_a = relay_set("wss://relay-a.example.com");
     let relays_b = relay_set("wss://relay-b.example.com");
     let account_a = account_pk(0x0A);
@@ -4072,7 +4257,7 @@ fn account_scoped_sub_readiness_transitions_inactive_and_restores_on_switch_back
 
 #[test]
 fn missing_bridge_fact_clears_cached_readiness_without_clearing_ownership() {
-    let (_tmp, mut ndb) = new_ndb();
+    let TempNdb { dir: _tmp, mut ndb } = TempNdb::new();
     let txn = nostrdb::Transaction::new(&ndb).expect("txn");
     let accounts = test_accounts(&mut ndb, &txn);
     let mut state = ScopedSubsState::default();
@@ -4128,7 +4313,10 @@ fn missing_bridge_fact_clears_cached_readiness_without_clearing_ownership() {
 /// Verifies upsert updates a live subscription in place, and replaces it when transport mode changes.
 #[test]
 fn set_sub_upsert_modifies_live_sub() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let key = SubKey::new(("timeline", 1u64));
     let scope = SubScope::Global;
     let relays_a = relay_set("wss://relay-a.example.com");
@@ -4239,7 +4427,10 @@ fn set_sub_upsert_modifies_live_sub() {
 /// Verifies clearing the last owner unsubscribes the live outbox subscription and removes desired state.
 #[test]
 fn clear_sub_unsubscribes_live_subscription() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let key = SubKey::new(("timeline", 1u64));
     let relays = relay_set("wss://relay-a.example.com");
     let slot = test_owner!();
@@ -4303,7 +4494,10 @@ fn clear_sub_unsubscribes_live_subscription() {
 /// Verifies multiple owners share one live sub and only the final clear unsubscribes it.
 #[test]
 fn multiple_owners_share_single_live_sub_until_last_clear() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let relays = relay_set("wss://relay-a.example.com");
     let account = account_pk(0x33);
     let key = SubKey::new(("thread", [9u8; 32]));
@@ -4393,7 +4587,10 @@ fn multiple_owners_share_single_live_sub_until_last_clear() {
 
 #[test]
 fn multiple_owners_with_same_key_union_additive_relays_until_owner_drop() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let account_relays = relay_set("wss://account.example.com");
     let account = account_pk(0x33);
     let key = SubKey::new(("thread", "same-root"));
@@ -4468,7 +4665,10 @@ fn multiple_owners_with_same_key_union_additive_relays_until_owner_drop() {
 
 #[test]
 fn plain_accounts_read_owner_does_not_clear_another_owners_additive_relays() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let account_relays = relay_set("wss://account.example.com");
     let account = account_pk(0x33);
     let key = SubKey::new(("thread", "same-root-with-plain-owner"));
@@ -4548,7 +4748,10 @@ fn plain_accounts_read_owner_does_not_clear_another_owners_additive_relays() {
 /// Verifies dropping an owner clears every scoped sub owned by that owner.
 #[test]
 fn drop_owner_clears_all_owned_subs() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let account = account_pk(0x4A);
     let relays = relay_set("wss://relay-a.example.com");
     let owner = test_owner!();
@@ -4607,7 +4810,10 @@ fn drop_owner_clears_all_owned_subs() {
 /// Verifies account switch unsubscribes the old account scope and restores it when switching back.
 #[test]
 fn account_switch_unsubscribes_old_scope_and_restores_new_scope() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let account_a = account_pk(0xAA);
     let account_b = account_pk(0xBB);
     let relays_a = relay_set("wss://relay-a.example.com");
@@ -4656,7 +4862,10 @@ fn account_switch_unsubscribes_old_scope_and_restores_new_scope() {
 
 #[test]
 fn account_deletion_purges_desired_and_live_state_for_deleted_scope() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let account_a = account_pk(0xA5);
     let account_b = account_pk(0xB5);
     let relays = relay_set("wss://relay-account-delete.example.com");
@@ -4745,7 +4954,10 @@ fn account_deletion_purges_desired_and_live_state_for_deleted_scope() {
 /// Verifies account-scoped and global subscriptions obey the account-switch contract across app domains.
 #[test]
 fn account_switch_contract_with_multiple_apps_and_mixed_scopes() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let account_a = account_pk(0xA1);
     let account_b = account_pk(0xB2);
     let peer_pk = account_pk(0xCC);
@@ -4898,7 +5110,7 @@ struct RetargetReadRelaysTest {
 
 impl RetargetReadRelaysTest {
     fn new() -> Self {
-        let (runtime, bridge) = scoped_sub_test_runtime();
+        let ScopedSubHarness { runtime, bridge } = scoped_sub_test_runtime();
         Self {
             runtime,
             bridge,
@@ -5086,7 +5298,10 @@ fn selected_account_relay_retarget_to_empty_relays_makes_sub_inactive() {
 /// Verifies updating an existing single AccountsRead sub to an empty resolved relay set removes live state.
 #[test]
 fn set_sub_modify_existing_to_empty_accountsread_relays_makes_sub_inactive() {
-    let (mut runtime, mut bridge) = scoped_sub_test_runtime();
+    let ScopedSubHarness {
+        mut runtime,
+        mut bridge,
+    } = scoped_sub_test_runtime();
     let selected = account_pk(0x01);
     let slot = test_owner!();
     let key = make_key(("single-modify-empty-relays", 1u8));

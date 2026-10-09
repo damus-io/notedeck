@@ -5,7 +5,10 @@ use std::time::{Duration, Instant};
 
 use super::config::{ScopedSubKey, SubConfig};
 use super::planner::{AuthorOutboxPlanGeneration, PlannedAuthorOutboxRoutes, PlannedRoutedRelay};
-use super::{ScopedSubEffect, ScopedSubEffects, ScopedSubOutboxOps};
+use super::{
+    Applied, ScopedSubDelta, ScopedSubEffect, ScopedSubEffects, ScopedSubOutboxOps,
+    ScopedSubOutput, Staged,
+};
 use crate::author_outbox::{
     filter_author_pubkeys, plan_author_outbox_augmentation_for_indexed_filters,
     RelayDirectorySnapshot, RoutedFilter, RoutedRelayPriority,
@@ -310,7 +313,15 @@ impl AuthorOutboxPlanRuntime {
             scoped,
         };
         let inputs = AuthorOutboxPlanInputs::new(account_read_relays, spec);
-        let (slot_id, outbox_ops, slot_effects) = self.ensure_owner_slot(owner, inputs);
+        let Applied {
+            value: slot_id,
+            delta:
+                ScopedSubDelta {
+                    outbox_ops,
+                    effects: slot_effects,
+                    ..
+                },
+        } = self.ensure_owner_slot(owner, inputs);
         effects.extend(slot_effects);
         let Some(slot_id) = slot_id else {
             return AuthorOutboxPlanAdvanceResult {
@@ -344,11 +355,7 @@ impl AuthorOutboxPlanRuntime {
         &mut self,
         owner: AuthorOutboxPlanOwner,
         inputs: AuthorOutboxPlanInputs,
-    ) -> (
-        Option<AuthorOutboxPlanSlotId>,
-        ScopedSubOutboxOps,
-        ScopedSubEffects,
-    ) {
+    ) -> Applied<Option<AuthorOutboxPlanSlotId>> {
         let mut outbox_ops = ScopedSubOutboxOps::default();
         let mut effects = ScopedSubEffects::default();
         if let Some(existing_slot_id) = self.owner_slots.get(&owner).copied() {
@@ -357,7 +364,14 @@ impl AuthorOutboxPlanRuntime {
                 .get(&existing_slot_id)
                 .is_some_and(|slot| slot.inputs == inputs)
             {
-                return (Some(existing_slot_id), outbox_ops, effects);
+                return Applied {
+                    value: Some(existing_slot_id),
+                    delta: ScopedSubDelta::new_with_effects(
+                        ScopedSubOutput::default(),
+                        outbox_ops,
+                        effects,
+                    ),
+                };
             }
             outbox_ops.extend(self.remove_owner(&owner));
         }
@@ -369,7 +383,14 @@ impl AuthorOutboxPlanRuntime {
         {
             slot.owners.insert(owner.clone());
             self.owner_slots.insert(owner, *slot_id);
-            return (Some(*slot_id), outbox_ops, effects);
+            return Applied {
+                value: Some(*slot_id),
+                delta: ScopedSubDelta::new_with_effects(
+                    ScopedSubOutput::default(),
+                    outbox_ops,
+                    effects,
+                ),
+            };
         }
 
         let slot_id = self.allocate_slot_id();
@@ -387,7 +408,14 @@ impl AuthorOutboxPlanRuntime {
                 state: Self::building_state(AuthorOutboxBuildStage::Initial),
             },
         );
-        (Some(slot_id), outbox_ops, effects)
+        Applied {
+            value: Some(slot_id),
+            delta: ScopedSubDelta::new_with_effects(
+                ScopedSubOutput::default(),
+                outbox_ops,
+                effects,
+            ),
+        }
     }
 
     fn remove_owner(&mut self, owner: &AuthorOutboxPlanOwner) -> ScopedSubOutboxOps {
@@ -417,7 +445,7 @@ impl AuthorOutboxPlanRuntime {
         id: OutboxSubId,
         relay: &NormRelayUrl,
         status: Option<RelayReqStatus>,
-    ) -> (ScopedSubOutboxOps, ScopedSubEffects) {
+    ) -> ScopedSubOutboxOps {
         let slot_ids = self
             .slots
             .iter()
@@ -428,14 +456,11 @@ impl AuthorOutboxPlanRuntime {
             .collect::<Vec<_>>();
 
         let mut outbox_ops = ScopedSubOutboxOps::default();
-        let mut effects = ScopedSubEffects::default();
         for slot_id in slot_ids {
-            let (ops, slot_effects) =
-                self.apply_relay_req_status_to_discovery_slot(slot_id, id, relay, status);
-            outbox_ops.extend(ops);
-            effects.extend(slot_effects);
+            outbox_ops
+                .extend(self.apply_relay_req_status_to_discovery_slot(slot_id, id, relay, status));
         }
-        (outbox_ops, effects)
+        outbox_ops
     }
 
     /// Apply the completed background-plan wake for one retained plan slot and
@@ -445,21 +470,24 @@ impl AuthorOutboxPlanRuntime {
         ids: &OutboxIdRegistry,
         completion: AuthorOutboxPlanJobCompletion,
         account_read_relays: &HashSet<NormRelayUrl>,
-    ) -> (Vec<ScopedSubKey>, ScopedSubOutboxOps) {
+    ) -> Staged<Vec<ScopedSubKey>> {
         let slot_id = completion.slot_id;
         let outbox_ops = self.apply_build_result(ids, completion, account_read_relays);
         if !self.slot_is_ready(slot_id) {
-            return (Vec::new(), outbox_ops);
+            return Staged {
+                value: Vec::new(),
+                outbox_ops,
+            };
         }
 
-        (self.slot_scoped_keys(slot_id), outbox_ops)
+        Staged {
+            value: self.slot_scoped_keys(slot_id),
+            outbox_ops,
+        }
     }
 
     /// Apply retained relay-list discovery retry and ingestion-wait deadlines.
-    pub(super) fn apply_relay_list_discovery_retry_due(
-        &mut self,
-        now: Instant,
-    ) -> (ScopedSubOutboxOps, ScopedSubEffects) {
+    pub(super) fn apply_relay_list_discovery_retry_due(&mut self, now: Instant) -> ScopedSubDelta {
         let slot_ids = self
             .slots
             .iter()
@@ -473,14 +501,11 @@ impl AuthorOutboxPlanRuntime {
             })
             .collect::<Vec<_>>();
 
-        let mut outbox_ops = ScopedSubOutboxOps::default();
-        let mut effects = ScopedSubEffects::default();
+        let mut delta = ScopedSubDelta::default();
         for slot_id in slot_ids {
-            let (ops, slot_effects) = self.apply_relay_list_timer_due_to_slot(slot_id, now);
-            outbox_ops.extend(ops);
-            effects.extend(slot_effects);
+            delta.extend(self.apply_relay_list_timer_due_to_slot(slot_id, now));
         }
-        (outbox_ops, effects)
+        delta
     }
 
     fn apply_build_result(
@@ -506,7 +531,10 @@ impl AuthorOutboxPlanRuntime {
             && !account_read_relays.is_empty()
         {
             let original_missing_author_count = result.missing_authors.len();
-            let (discovery, outbox_ops) = start_relay_list_discovery(
+            let Staged {
+                value: discovery,
+                outbox_ops,
+            } = start_relay_list_discovery(
                 ids,
                 result.missing_authors,
                 account_read_relays.clone(),
@@ -552,24 +580,27 @@ impl AuthorOutboxPlanRuntime {
         id: OutboxSubId,
         relay: &NormRelayUrl,
         status: Option<RelayReqStatus>,
-    ) -> (ScopedSubOutboxOps, ScopedSubEffects) {
+    ) -> ScopedSubOutboxOps {
         let (discovery_advance, outbox_ops, original_missing_author_count) = {
             let Some(slot) = self.slots.get_mut(&slot_id) else {
-                return (ScopedSubOutboxOps::default(), ScopedSubEffects::default());
+                return ScopedSubOutboxOps::default();
             };
             let AuthorOutboxPlanState::DiscoveringRelays {
                 discovery,
                 original_missing_author_count,
             } = &mut slot.state
             else {
-                return (ScopedSubOutboxOps::default(), ScopedSubEffects::default());
+                return ScopedSubOutboxOps::default();
             };
-            let (advance, outbox_ops) = discovery.apply_relay_req_status(id, relay, status);
+            let Staged {
+                value: advance,
+                outbox_ops,
+            } = discovery.apply_relay_req_status(id, relay, status);
             (advance, outbox_ops, *original_missing_author_count)
         };
 
         if discovery_advance != RelayListDiscoveryAdvance::Complete {
-            return (outbox_ops, ScopedSubEffects::default());
+            return outbox_ops;
         }
 
         if let Some(slot) = self.slots.get_mut(&slot_id) {
@@ -577,23 +608,27 @@ impl AuthorOutboxPlanRuntime {
                 RelayListIngestionWait::new(original_missing_author_count, 1, Instant::now()),
             );
         }
-        (outbox_ops, ScopedSubEffects::default())
+        outbox_ops
     }
 
     fn apply_relay_list_timer_due_to_slot(
         &mut self,
         slot_id: AuthorOutboxPlanSlotId,
         now: Instant,
-    ) -> (ScopedSubOutboxOps, ScopedSubEffects) {
+    ) -> ScopedSubDelta {
         match self.slots.get(&slot_id).map(|slot| &slot.state) {
-            Some(AuthorOutboxPlanState::DiscoveringRelays { .. }) => {
-                self.apply_discovery_retry_due_to_slot(slot_id, now)
-            }
-            Some(AuthorOutboxPlanState::WaitingForRelayListIngestion(_)) => (
-                ScopedSubOutboxOps::default(),
-                self.apply_relay_list_ingestion_wait_due_to_slot(slot_id, now),
+            Some(AuthorOutboxPlanState::DiscoveringRelays { .. }) => ScopedSubDelta::new(
+                ScopedSubOutput::default(),
+                self.apply_discovery_retry_due_to_slot(slot_id, now),
             ),
-            _ => (ScopedSubOutboxOps::default(), ScopedSubEffects::default()),
+            Some(AuthorOutboxPlanState::WaitingForRelayListIngestion(_)) => {
+                ScopedSubDelta::new_with_effects(
+                    ScopedSubOutput::default(),
+                    ScopedSubOutboxOps::default(),
+                    self.apply_relay_list_ingestion_wait_due_to_slot(slot_id, now),
+                )
+            }
+            _ => ScopedSubDelta::default(),
         }
     }
 
@@ -631,24 +666,27 @@ impl AuthorOutboxPlanRuntime {
         &mut self,
         slot_id: AuthorOutboxPlanSlotId,
         now: Instant,
-    ) -> (ScopedSubOutboxOps, ScopedSubEffects) {
+    ) -> ScopedSubOutboxOps {
         let (discovery_advance, outbox_ops, original_missing_author_count) = {
             let Some(slot) = self.slots.get_mut(&slot_id) else {
-                return (ScopedSubOutboxOps::default(), ScopedSubEffects::default());
+                return ScopedSubOutboxOps::default();
             };
             let AuthorOutboxPlanState::DiscoveringRelays {
                 discovery,
                 original_missing_author_count,
             } = &mut slot.state
             else {
-                return (ScopedSubOutboxOps::default(), ScopedSubEffects::default());
+                return ScopedSubOutboxOps::default();
             };
-            let (advance, outbox_ops) = discovery.apply_retry_due(now);
+            let Staged {
+                value: advance,
+                outbox_ops,
+            } = discovery.apply_retry_due(now);
             (advance, outbox_ops, *original_missing_author_count)
         };
 
         if discovery_advance != RelayListDiscoveryAdvance::Complete {
-            return (outbox_ops, ScopedSubEffects::default());
+            return outbox_ops;
         }
 
         if let Some(slot) = self.slots.get_mut(&slot_id) {
@@ -656,7 +694,7 @@ impl AuthorOutboxPlanRuntime {
                 RelayListIngestionWait::new(original_missing_author_count, 1, now),
             );
         }
-        (outbox_ops, ScopedSubEffects::default())
+        outbox_ops
     }
 
     fn cached_plan_from_job_result(
@@ -905,13 +943,12 @@ mod tests {
     };
     use super::*;
     use crate::scoped_subs::ScopedSubOutboxOp;
-    use crate::test_util::test_config;
-    use crate::test_utils::RemoteOutboxReadModelHarness;
+    use crate::test_util::TempNdb;
     use crate::test_utils::{nip65_write_relay_note_for_test, wait_for_nip65_for_test};
+    use crate::test_utils::{RemoteOutboxReadModelHarness, WithEffects};
     use enostr::{FullKeypair, RelayDemandPriority, RelayReqStatus, RelayRoutingPreference};
     use nostrdb::{Filter, Ndb};
     use std::time::{Duration, Instant};
-    use tempfile::TempDir;
 
     use super::super::config::{ResolvedSubScope, SubKey, SubRelayPolicy};
 
@@ -931,12 +968,6 @@ mod tests {
         bytes[0] = (index >> 8) as u8;
         bytes[1] = index as u8;
         Pubkey::new(bytes)
-    }
-
-    fn new_ndb() -> (TempDir, Ndb) {
-        let tmp = TempDir::new().expect("tmp dir");
-        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
-        (tmp, ndb)
     }
 
     fn runtime_with_ndb(ndb: &Ndb) -> AuthorOutboxPlanRuntime {
@@ -980,7 +1011,10 @@ mod tests {
         spec: &SubConfig,
         ndb: &Ndb,
     ) -> TestAdvance {
-        let (advance, effects) = bridge.with_returned_outbox(|_| {
+        let WithEffects {
+            value: advance,
+            effects,
+        } = bridge.with_returned_outbox(|_| {
             let advance_result = runtime.advance(AuthorOutboxPlanAdvanceRequest {
                 account_pubkey: account,
                 scoped: scoped.clone(),
@@ -996,11 +1030,14 @@ mod tests {
                 AuthorOutboxPlanAdvance::Pending => TestAdvance::Pending,
                 AuthorOutboxPlanAdvance::NotAuthorOutbox => TestAdvance::NotAuthorOutbox,
             };
-            (
-                result,
-                advance_result.pre_realization_ops,
-                advance_result.effects,
-            )
+            Applied {
+                value: result,
+                delta: ScopedSubDelta::new_with_effects(
+                    ScopedSubOutput::default(),
+                    advance_result.pre_realization_ops,
+                    advance_result.effects,
+                ),
+            }
         });
         apply_author_outbox_effects_for_test(runtime, bridge, account_read_relays, ndb, effects);
         advance
@@ -1018,9 +1055,7 @@ mod tests {
                 ScopedSubEffect::StartAuthorOutboxPlanJob(request) => {
                     let completion = request.run(ndb.clone());
                     bridge.with_returned_outbox(|ids| {
-                        let (_, outbox_ops) =
-                            runtime.apply_plan_slot_ready(ids, completion, account_read_relays);
-                        outbox_ops
+                        runtime.apply_plan_slot_ready(ids, completion, account_read_relays)
                     });
                 }
             }
@@ -1124,7 +1159,7 @@ mod tests {
 
     #[test]
     fn build_author_outbox_plan_reads_local_nip65_snapshot() {
-        let (_tmp, ndb) = new_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let author = FullKeypair::generate();
         let relay_url = "wss://author-a.example.com";
         let relay = NormRelayUrl::new(relay_url).expect("relay");
@@ -1152,7 +1187,7 @@ mod tests {
 
     #[test]
     fn pending_author_starts_retained_relay_list_discovery() {
-        let (_tmp, ndb) = new_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let account = test_pubkey(0x01);
         let author = test_pubkey(0xA1);
         let account_relay =
@@ -1215,7 +1250,7 @@ mod tests {
 
     #[test]
     fn relay_list_discovery_eose_waits_before_post_discovery_build() {
-        let (_tmp, ndb) = new_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let account = test_pubkey(0x01);
         let author = test_pubkey(0xA2);
         let account_relay =
@@ -1242,13 +1277,12 @@ mod tests {
             .id
             .expect("discovery id");
 
-        let (_ops, effects) =
+        // EOSE starts an ingestion wait rather than immediately rebuilding
+        // routes: `apply_relay_req_status` returns outbox ops only, so it
+        // cannot request a plan job.
+        let _ops =
             runtime.apply_relay_req_status(eose_id, &account_relay, Some(RelayReqStatus::Eose));
 
-        assert!(
-            effects.into_effects().is_empty(),
-            "EOSE should start an ingestion wait, not immediately rebuild routes"
-        );
         assert!(
             runtime.next_deadline().is_some(),
             "ingestion wait should be driven by the existing author-plan timer"
@@ -1257,7 +1291,7 @@ mod tests {
 
     #[test]
     fn relay_list_ingestion_wait_uses_capped_backoff_without_progress_then_finalizes() {
-        let (_tmp, ndb) = new_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let account = test_pubkey(0x01);
         let author = test_pubkey(0xA3);
         let account_relay =
@@ -1280,14 +1314,15 @@ mod tests {
         let eose_id = discovery_mut(&mut runtime, account, &scoped).chunks[0].legs[0]
             .id
             .expect("discovery id");
-        let (_ops, effects) =
+        let _ops =
             runtime.apply_relay_req_status(eose_id, &account_relay, Some(RelayReqStatus::Eose));
-        assert!(effects.into_effects().is_empty());
         assert_eq!(ingestion_wait_attempt(&runtime, account, &scoped), 1);
 
         for expected_attempt in 2..=RELAY_LIST_INGESTION_WAIT_DELAYS.len() as u8 {
             force_ingestion_wait_due(&mut runtime, account, &scoped);
-            let (_ops, effects) = runtime.apply_relay_list_discovery_retry_due(Instant::now());
+            let effects = runtime
+                .apply_relay_list_discovery_retry_due(Instant::now())
+                .effects;
             apply_author_outbox_effects_for_test(
                 &mut runtime,
                 &mut bridge,
@@ -1302,7 +1337,9 @@ mod tests {
         }
 
         force_ingestion_wait_due(&mut runtime, account, &scoped);
-        let (_ops, effects) = runtime.apply_relay_list_discovery_retry_due(Instant::now());
+        let effects = runtime
+            .apply_relay_list_discovery_retry_due(Instant::now())
+            .effects;
         apply_author_outbox_effects_for_test(
             &mut runtime,
             &mut bridge,
@@ -1331,7 +1368,7 @@ mod tests {
 
     #[test]
     fn relay_list_ingestion_wait_finalizes_after_resolving_one_author() {
-        let (_tmp, ndb) = new_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let account = test_pubkey(0x01);
         let author = FullKeypair::generate();
         let account_relay =
@@ -1355,16 +1392,17 @@ mod tests {
         let eose_id = discovery_mut(&mut runtime, account, &scoped).chunks[0].legs[0]
             .id
             .expect("discovery id");
-        let (_ops, effects) =
+        let _ops =
             runtime.apply_relay_req_status(eose_id, &account_relay, Some(RelayReqStatus::Eose));
-        assert!(effects.into_effects().is_empty());
 
         let note = nip65_write_relay_note_for_test(&author, &[routed_relay]);
         ndb.process_client_event(&note.json().expect("json"))
             .expect("ingest discovered relay list");
         wait_for_nip65_for_test(&ndb, &author.pubkey);
         force_ingestion_wait_due(&mut runtime, account, &scoped);
-        let (_ops, effects) = runtime.apply_relay_list_discovery_retry_due(Instant::now());
+        let effects = runtime
+            .apply_relay_list_discovery_retry_due(Instant::now())
+            .effects;
         apply_author_outbox_effects_for_test(
             &mut runtime,
             &mut bridge,
@@ -1393,7 +1431,7 @@ mod tests {
 
     #[test]
     fn duplicate_inputs_share_one_plan_slot() {
-        let (_tmp, ndb) = new_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let account = test_pubkey(0x01);
         let author = test_pubkey(0xA1);
         let account_read_relays =
@@ -1433,7 +1471,7 @@ mod tests {
 
     #[test]
     fn deactivate_account_drops_active_slots_but_keeps_ready_plan() {
-        let (_tmp, ndb) = new_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let account = test_pubkey(0x01);
         let author = test_pubkey(0xA0);
         let account_relay =
@@ -1496,7 +1534,7 @@ mod tests {
 
     #[test]
     fn ready_plan_is_reused_until_inputs_change() {
-        let (_tmp, ndb) = new_ndb();
+        let TempNdb { dir: _tmp, ndb } = TempNdb::new();
         let account = test_pubkey(0x01);
         let author = FullKeypair::generate();
         let relay_a_url = "wss://author-a.example.com";
@@ -1651,8 +1689,10 @@ mod tests {
             NormRelayUrl::new("wss://account-read-b.example.com").expect("relay b"),
         ]);
         let ids = OutboxIdRegistry::new();
-        let (discovery, outbox_ops) =
-            start_relay_list_discovery(&ids, HashSet::from([author]), relays.clone());
+        let Staged {
+            value: discovery,
+            outbox_ops,
+        } = start_relay_list_discovery(&ids, HashSet::from([author]), relays.clone());
         let ops = outbox_ops.into_ops();
 
         assert_eq!(discovery.chunks[0].legs.len(), relays.len());
@@ -1841,10 +1881,10 @@ mod tests {
         assert!(discovery.chunks[0].legs.iter().all(|leg| leg.id.is_none()));
         assert!(discovery.chunks[0].eose_grace_deadline.is_none());
         assert_eq!(
-            bridge.with_returned_outbox_ops(|relay_status| (
-                relay_status(silent_id, &silent_relay),
-                ScopedSubOutboxOps::default(),
-            )),
+            bridge.with_returned_outbox_ops(|relay_status| Staged::without_ops(relay_status(
+                silent_id,
+                &silent_relay
+            ))),
             None
         );
     }
@@ -1929,7 +1969,10 @@ mod tests {
             assert!(leg.retry_after.is_none());
         }
 
-        let (advance, outbox_ops) = discovery.apply_relay_req_status(
+        let Staged {
+            value: advance,
+            outbox_ops,
+        } = discovery.apply_relay_req_status(
             discovery_id,
             &closed_relay,
             Some(RelayReqStatus::Closed),

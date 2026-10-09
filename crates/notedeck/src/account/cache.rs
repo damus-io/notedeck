@@ -1,7 +1,7 @@
 use hashbrown::{hash_map::OccupiedEntry, HashMap};
 use nostrdb_net::Pubkey;
 
-use crate::{SingleUnkIdAction, UserAccount};
+use crate::UserAccount;
 
 pub struct AccountCache {
     selected: Pubkey,
@@ -13,21 +13,19 @@ pub struct AccountCache {
 }
 
 impl AccountCache {
-    pub(super) fn new(fallback: UserAccount) -> (Self, SingleUnkIdAction) {
+    /// A cache holding only `fallback`, which is selected.
+    pub(super) fn new(fallback: UserAccount) -> Self {
         let mut accounts = HashMap::with_capacity(1);
 
         let pk = fallback.key.pubkey;
         accounts.insert(pk, fallback.clone());
 
-        (
-            Self {
-                selected: pk,
-                fallback: pk,
-                fallback_account: fallback,
-                accounts,
-            },
-            SingleUnkIdAction::pubkey(pk),
-        )
+        Self {
+            selected: pk,
+            fallback: pk,
+            fallback_account: fallback,
+            accounts,
+        }
     }
 
     pub fn get(&self, pk: &Pubkey) -> Option<&UserAccount> {
@@ -116,15 +114,6 @@ impl AccountCache {
 
     pub(super) fn accounts_mut(&mut self) -> impl Iterator<Item = &mut UserAccount> {
         self.accounts.values_mut()
-    }
-}
-
-impl<'a> IntoIterator for &'a AccountCache {
-    type Item = (&'a Pubkey, &'a UserAccount);
-    type IntoIter = hashbrown::hash_map::Iter<'a, Pubkey, UserAccount>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.accounts.iter()
     }
 }
 
