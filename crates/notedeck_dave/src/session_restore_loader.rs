@@ -122,6 +122,12 @@ impl SessionRestoreLoader {
     pub fn try_recv(&self) -> Option<SessionRestoreMsg> {
         self.loader.try_recv()
     }
+
+    /// Whether every message the workers have sent so far was received.
+    #[cfg(test)]
+    pub fn is_drained(&self) -> bool {
+        self.loader.is_empty()
+    }
 }
 
 impl Default for SessionRestoreLoader {

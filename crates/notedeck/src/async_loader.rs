@@ -96,6 +96,12 @@ where
 
         rx.try_recv().ok()
     }
+
+    /// Whether no message is waiting to be received (always, before the
+    /// loader starts).
+    pub fn is_empty(&self) -> bool {
+        self.msg_rx.as_ref().is_none_or(|rx| rx.is_empty())
+    }
 }
 
 impl<Cmd, Msg> Drop for AsyncLoader<Cmd, Msg> {

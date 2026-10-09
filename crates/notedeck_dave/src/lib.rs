@@ -30,6 +30,8 @@ mod session_commands;
 pub mod session_discovery;
 mod session_restore_loader;
 mod stream_events;
+#[cfg(test)]
+mod test_support;
 mod turn_rows;
 mod ui_tools;
 mod view;
@@ -404,11 +406,29 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         ))
     }
 
+    /// Build Dave over the host's store, serving the `agentium` CLI on the
+    /// IPC spawn socket.
     pub fn new(
         render_state: Option<&RenderState>,
         ndb: nostrdb::Ndb,
         waker: Waker,
         path: &DataPath,
+    ) -> Self {
+        Self::new_inner(render_state, ndb, waker, path, true)
+    }
+
+    /// [`Dave::new`], choosing whether to listen on the IPC spawn socket.
+    ///
+    /// Listening is not free to do twice: [`ipc::create_listener`] deletes
+    /// and rebinds the one `$XDG_RUNTIME_DIR/notedeck/spawn.sock`, so a Dave
+    /// built in a test with `ipc` on steals the socket from the notedeck
+    /// running on the same machine.
+    pub(crate) fn new_inner(
+        render_state: Option<&RenderState>,
+        ndb: nostrdb::Ndb,
+        waker: Waker,
+        path: &DataPath,
+        ipc: bool,
     ) -> Self {
         let settings_serializer =
             TimedSerializer::new(path, DataPathType::Setting, "dave_settings.json".to_owned());
@@ -484,7 +504,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let directory_picker = DirectoryPicker::new();
 
         // Create IPC listener for external spawn-agent commands
-        let ipc_listener = ipc::create_listener(waker);
+        let ipc_listener = if ipc {
+            ipc::create_listener(waker)
+        } else {
+            None
+        };
 
         let hostname = gethostname::gethostname().to_string_lossy().into_owned();
 
@@ -1640,8 +1664,10 @@ fn activate_app(ctx: &egui::Context) {
 mod tests {
     use super::*;
     use crate::config::AiMode;
+    pub(crate) use crate::test_support::{
+        test_config, test_dave, test_secret_key, TestDave, TestParts,
+    };
 
-    use nostrdb::{Config, Ndb};
     use notedeck::timed_serializer::TimedSerializer;
     use std::path::PathBuf;
     use std::time::Duration;
@@ -1672,57 +1698,6 @@ mod tests {
         );
     }
 
-    pub(crate) fn test_config() -> Config {
-        if cfg!(target_os = "windows") {
-            Config::new().set_mapsize(32 * 1024 * 1024)
-        } else {
-            Config::new()
-        }
-    }
-
-    pub(crate) fn test_secret_key() -> [u8; 32] {
-        let mut key = [0u8; 32];
-        key[0] = 1;
-        key
-    }
-
-    pub(crate) fn test_dave(data_path: &DataPath) -> Dave {
-        let ndb_dir = TempDir::new().unwrap();
-        let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &test_config()).unwrap();
-        seed_agentic_settings(data_path);
-        Dave::new(None, ndb, Waker::noop(), data_path)
-    }
-
-    /// Pin the constructed [`Dave`] to [`AiMode::Agentic`], which every test using
-    /// [`test_dave`] assumes — the session manager starts empty there.
-    ///
-    /// Without this the mode is whatever the machine running the test happens to
-    /// have installed. `Dave::new` falls back to `ModelConfig::default()` when no
-    /// settings are saved, and that is
-    /// `from_env(env, has_binary_on_path("claude"), has_binary_on_path("codex"))`:
-    /// a dev box with the claude CLI resolves to `BackendType::Claude` and so
-    /// Agentic, while CI — where neither CLI is on PATH — falls through to OpenAI
-    /// and so `AiMode::Chat`, which *creates a default session immediately*. That
-    /// phantom session shifts every session count by one, which is exactly how
-    /// these tests passed locally and failed in CI.
-    ///
-    /// Writing settings first takes `Dave::new`'s saved-settings branch instead,
-    /// and `AiProvider::Anthropic` maps to `BackendType::Claude` (see
-    /// `ModelConfig::from_settings`), so the mode is the same everywhere.
-    fn seed_agentic_settings(data_path: &DataPath) {
-        use crate::config::{AiProvider, DaveSettings};
-        let mut settings = TimedSerializer::<DaveSettings>::new(
-            data_path,
-            DataPathType::Setting,
-            "dave_settings.json".to_owned(),
-        )
-        .with_delay(Duration::ZERO);
-        assert!(
-            settings.try_save(DaveSettings::with_provider(AiProvider::Anthropic)),
-            "seed dave settings so the test runs in a deterministic AiMode"
-        );
-    }
-
     /// Deleting a session must carry its `cli_session_id`, `custom_title`,
     /// `spawn_id`, and owning `hostname` into the tombstone. The fat kind-31988
     /// note republishes wholesale on every status change, so the winning
@@ -1733,9 +1708,8 @@ mod tests {
     /// guard for the fat-note carry-forward hazard.
     #[test]
     fn delete_carries_resume_id_title_and_spawn_into_tombstone() {
-        let base_dir = TempDir::new().unwrap();
-        let data_path = DataPath::new(base_dir.path());
-        let mut dave = test_dave(&data_path);
+        let mut test = TestDave::new();
+        let dave = &mut test.dave;
 
         let sid = dave.session_manager.new_resumed_session(
             PathBuf::from("/tmp/proj"),
@@ -1796,17 +1770,12 @@ mod tests {
     /// to bounce to the most recent session instead, wherever it sat.
     #[test]
     fn deleting_the_active_session_lands_on_its_list_neighbour() {
-        let base_dir = TempDir::new().unwrap();
-        let data_path = DataPath::new(base_dir.path());
-        let mut dave = test_dave(&data_path);
-
-        for cwd in ["/tmp/a", "/tmp/b", "/tmp/c", "/tmp/d"] {
-            dave.session_manager.new_session(
-                PathBuf::from(cwd),
-                AiMode::Agentic,
-                BackendType::Remote,
-            );
-        }
+        let mut test = TestDave::new();
+        test.add_sessions(
+            ["/tmp/a", "/tmp/b", "/tmp/c", "/tmp/d"],
+            BackendType::Remote,
+        );
+        let dave = &mut test.dave;
         let rows = dave.session_manager.visual_order(&dave.collapse_state);
         let [first, second, third, last] = rows[..] else {
             panic!("four rows, got {rows:?}");

@@ -29,14 +29,12 @@ use crate::backend::{AiBackend, BackendType};
 use crate::config::AiMode;
 use crate::conversation::{
     deliver_notes, handle_remote_permission_response, process_conversation_notes,
-    rebuild_chat_from_fold, subscribe_conversation_events, ProcessedNotes,
+    rebuild_chat_from_fold, ProcessedNotes,
 };
-use crate::conversation_feed::ConversationFeed;
 use crate::messages::{
     format_question_answers, CompactionInfo, PendingPermission, PermissionRequest, QuestionAnswer,
     RunningTool, SubagentInfo, SubagentStatus,
 };
-use crate::pns_runtime::PnsLocalState;
 use crate::publish::{
     pns_ingest, publish_user_permission_response, record_user_message,
     update_statuses_and_publish_auto_resolved,
@@ -47,7 +45,7 @@ use crate::stream_events::{
     apply_response, dispatch_turn, handle_stream_end, reconcile_ended_turns, ApplyCtx, DispatchCtx,
     HostCtx,
 };
-use crate::tests::{test_config, test_dave, test_secret_key};
+use crate::tests::{test_config, test_secret_key, TestDave};
 use crate::tools::{Tool, ToolResponses};
 use crate::ui::{
     handle_send_action, handle_ui_action, DaveAction, SendActionResult, UiActionResult,
@@ -67,7 +65,7 @@ use agentium_core::session_loader::{
 };
 use claude_agent_sdk_rs::PermissionMode;
 use nostrdb::{Filter, IngestMetadata, Ndb, NoteKey, SubscriptionStream, Transaction};
-use notedeck::{DataPath, Waker};
+use notedeck::Waker;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
@@ -435,27 +433,20 @@ impl Host {
     async fn restart(&mut self) {
         self.settle().await;
         let published = self.published_note_ids();
-        let sk = self.secret_key.unwrap();
-        let account = self.author();
-
-        let data_dir = TempDir::new().unwrap();
-        let mut dave = test_dave(&DataPath::new(data_dir.path()));
-        dave.pns_local_state = Some(PnsLocalState {
-            account,
-            has_secret_key: true,
-        });
-        self.store_local_state(&dave.hostname).await;
-        let sub = subscribe_conversation_events(&self.ndb, account).unwrap();
-        dave.conversation_feed = Some(ConversationFeed::new(sub));
-
-        let waker = dave.run_restore_worker(&self.ndb, account).await;
-        let replayed = dave.drain_session_restore(&HostCtx::signing(&self.ndb, &sk, &waker));
+        let mut restarted = TestDave::over(self.ndb.clone());
+        assert_eq!(
+            restarted.account,
+            self.author(),
+            "it restarts as the same account"
+        );
+        self.store_local_state(&restarted.dave.hostname).await;
+        let replayed = restarted.restore().await;
         assert!(
             replayed.is_empty(),
             "the host had every note before it went down"
         );
 
-        self.sessions = std::mem::take(&mut dave.session_manager);
+        self.sessions = std::mem::take(&mut restarted.dave.session_manager);
         self.sid = self
             .sessions
             .iter()

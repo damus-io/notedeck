@@ -1247,12 +1247,11 @@ impl Dave {
 mod tests {
     use super::*;
     use crate::config::AiMode;
-    use crate::pns_runtime::PnsLocalState;
     use crate::session_events::{build_live_event, LiveEventTags, ThreadingState};
-    use crate::tests::{test_config, test_dave, test_secret_key};
+    use crate::tests::{test_config, test_secret_key, TestDave, TestParts};
     use crate::SessionManager;
     use nostrdb::{IngestMetadata, Ndb};
-    use notedeck::{DataPath, Waker};
+    use notedeck::Waker;
     use std::collections::HashSet;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -1451,50 +1450,26 @@ mod tests {
         assert_eq!(info.status, SubagentStatus::Completed);
     }
 
-    /// A store and a [`Dave`] wired the way `ensure_pns_local_state` wires
-    /// them, for driving the restore/poll boundary: the account's key unwraps
-    /// PNS envelopes, and the conversation feed is created on demand, so a
-    /// test decides which notes predate it.
+    /// A [`TestDave`] for driving the restore/poll boundary: the account's
+    /// key unwraps PNS envelopes, and the conversation feed is created on
+    /// demand, so a test decides which notes predate it.
     struct BoundaryHarness {
-        dave: Dave,
-        ndb: Ndb,
-        sk: [u8; 32],
-        account: nostrdb_net::Pubkey,
+        test: TestDave,
         threading: ThreadingState,
-        _dirs: (TempDir, TempDir),
     }
 
     impl BoundaryHarness {
         fn new() -> Self {
-            let sk = test_secret_key();
-            let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
-                .unwrap()
-                .pubkey;
-            let base_dir = TempDir::new().unwrap();
-            let mut dave = test_dave(&DataPath::new(base_dir.path()));
-            dave.pns_local_state = Some(PnsLocalState {
-                account,
-                has_secret_key: true,
-            });
-            let ndb_dir = TempDir::new().unwrap();
-            let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &test_config()).unwrap();
-            assert!(ndb.add_key(&sk));
             Self {
-                dave,
-                ndb,
-                sk,
-                account,
+                test: TestDave::new(),
                 threading: ThreadingState::new(),
-                _dirs: (base_dir, ndb_dir),
             }
         }
 
         /// Create the shared conversation subscription: notes stored from
         /// here on come through the poll, earlier ones never do.
         fn subscribe(&mut self) {
-            let sub = crate::conversation::subscribe_conversation_events(&self.ndb, self.account)
-                .unwrap();
-            self.dave.conversation_feed = Some(ConversationFeed::new(sub));
+            self.test.subscribe_feed();
         }
 
         /// Store a session's kind-31988 state, hosted on `hostname`.
@@ -1516,17 +1491,19 @@ mod tests {
                 None,
                 None,
                 1_000,
-                &self.sk,
+                &self.test.sk,
             )
             .unwrap();
             let sub = self
+                .test
                 .ndb
                 .subscribe(&[nostrdb::Filter::new().build()])
                 .unwrap();
-            self.ndb
+            self.test
+                .ndb
                 .process_event_with(&state.to_event_json(), IngestMetadata::new().client(true))
                 .unwrap();
-            self.ndb.wait_for_notes(sub, 1).await.unwrap();
+            self.test.ndb.wait_for_notes(sub, 1).await.unwrap();
         }
 
         /// Store a conversation note PNS-wrapped, as it arrives from another
@@ -1540,32 +1517,30 @@ mod tests {
                 None,
                 LiveEventTags::default(),
                 &mut self.threading,
-                &self.sk,
+                &self.test.sk,
             )
             .unwrap();
             let sub = self
+                .test
                 .ndb
                 .subscribe(&[nostrdb::Filter::new()
                     .kinds([session_events::AI_CONVERSATION_KIND as u64])
                     .build()])
                 .unwrap();
             assert!(crate::publish::pns_ingest(
-                &self.ndb,
+                &self.test.ndb,
                 &ev.note_json,
-                &self.sk
+                &self.test.sk
             ));
-            self.ndb.wait_for_notes(sub, 1).await.unwrap();
+            self.test.ndb.wait_for_notes(sub, 1).await.unwrap();
         }
 
         /// One conversation poll; returns the remote user messages and the
         /// envelopes it collected for fan-out.
         fn poll(&mut self) -> (Vec<(SessionId, String)>, Vec<NoteKey>) {
             let mut fan_out = Vec::new();
-            let waker = Waker::noop();
-            let host = HostCtx::signing(&self.ndb, &self.sk, &waker);
-            let msgs = self
-                .dave
-                .poll_remote_conversation_events(&host, &mut fan_out);
+            let TestParts { dave, host } = self.test.parts();
+            let msgs = dave.poll_remote_conversation_events(&host, &mut fan_out);
             (msgs, fan_out)
         }
 
@@ -1573,17 +1548,20 @@ mod tests {
         /// and wait until the worker has read its snapshot and sent every
         /// session (without draining any of it).
         async fn run_restore_worker(&mut self) -> notedeck::Waker {
-            self.dave.run_restore_worker(&self.ndb, self.account).await
+            self.test
+                .dave
+                .run_restore_worker(&self.test.ndb, self.test.account)
+                .await
         }
 
-        /// Drain everything the worker sent, as `update` does each frame.
+        /// Drain everything the worker sent, as `update` does over frames.
         fn drain(&mut self, waker: &notedeck::Waker) -> Vec<(SessionId, String)> {
-            self.dave
-                .drain_session_restore(&HostCtx::signing(&self.ndb, &self.sk, waker))
+            self.test.drain_restore(waker)
         }
 
         fn session_for(&self, sid: &str) -> &ChatSession {
-            self.dave
+            self.test
+                .dave
                 .session_manager
                 .iter()
                 .find(|s| {
@@ -1612,7 +1590,7 @@ mod tests {
     #[tokio::test]
     async fn restore_dispatches_a_message_the_poll_dropped() {
         let mut h = BoundaryHarness::new();
-        let host = h.dave.hostname.clone();
+        let host = h.test.dave.hostname.clone();
         let sid = "restore-local-drop";
         h.store_state(sid, &host).await;
         h.store_note(sid, "assistant", "earlier reply").await;
@@ -1664,13 +1642,18 @@ mod tests {
     #[tokio::test]
     async fn restore_replays_a_dropped_note_inside_its_snapshot() {
         let mut h = BoundaryHarness::new();
-        let host = h.dave.hostname.clone();
+        let host = h.test.dave.hostname.clone();
         let sid = "restore-snapshot-drop";
         h.store_state(sid, &host).await;
         h.store_note(sid, "assistant", "earlier reply").await;
         h.subscribe();
         h.store_note(sid, "user", "from the phone").await;
-        h.dave.conversation_feed.as_mut().unwrap().begin_restore();
+        h.test
+            .dave
+            .conversation_feed
+            .as_mut()
+            .unwrap()
+            .begin_restore();
         h.poll();
 
         let waker = h.run_restore_worker().await;
@@ -1688,7 +1671,7 @@ mod tests {
     #[tokio::test]
     async fn reopen_leaves_an_unpolled_message_to_the_poll() {
         let mut h = BoundaryHarness::new();
-        let host = h.dave.hostname.clone();
+        let host = h.test.dave.hostname.clone();
         let sid = "reopen-unpolled";
         h.store_state(sid, &host).await;
         h.store_note(sid, "assistant", "earlier reply").await;
@@ -1700,16 +1683,17 @@ mod tests {
         h.store_note(sid, "user", "from the phone").await;
 
         let reopened = h
+            .test
             .dave
-            .reopen_session(&h.ndb, h.account, sid)
+            .reopen_session(&h.test.ndb, h.test.account, sid)
             .expect("reopened");
-        let session = h.dave.session_manager.get(reopened).unwrap();
+        let session = h.test.dave.session_manager.get(reopened).unwrap();
         assert_eq!(texts_of(&session.chat), ["earlier reply"]);
 
         let (msgs, _) = h.poll();
         assert_eq!(msgs.len(), 1, "the poll delivers it");
         assert_eq!(msgs[0].1, "from the phone");
-        let session = h.dave.session_manager.get(reopened).unwrap();
+        let session = h.test.dave.session_manager.get(reopened).unwrap();
         assert_eq!(texts_of(&session.chat), ["earlier reply", "from the phone"]);
     }
 
@@ -1720,21 +1704,14 @@ mod tests {
     /// resume button.
     #[tokio::test]
     async fn reopen_revives_deleted_session_with_history() {
-        let sk = test_secret_key();
-        let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
-            .unwrap()
-            .pubkey;
         let sid = "revive-me";
 
-        let base_dir = TempDir::new().unwrap();
-        let data_path = DataPath::new(base_dir.path());
-        let mut dave = test_dave(&data_path);
+        let mut test = TestDave::new();
+        let (sk, account) = (test.sk, test.account);
+        let TestDave { dave, ndb, .. } = &mut test;
         // Publish the tombstone under dave's own hostname so the reopened session
         // is treated as local (and thus publishes an active state to revive it).
         let host = dave.hostname.clone();
-
-        let tmp = TempDir::new().unwrap();
-        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
 
         // Two conversation messages keyed by the session's d-tag.
         let mut threading = ThreadingState::new();
@@ -1795,7 +1772,7 @@ mod tests {
         ndb.wait_for_all_notes(sub, 3).await.unwrap();
 
         let reopened = dave
-            .reopen_session(&ndb, account, sid)
+            .reopen_session(ndb, account, sid)
             .expect("reopen resolves the tombstone");
 
         let session = dave
@@ -1827,20 +1804,13 @@ mod tests {
     /// never moves while every seeded session still materializes.
     #[tokio::test]
     async fn background_restore_preserves_active_session() {
-        let sk = test_secret_key();
-        let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
-            .unwrap()
-            .pubkey;
-
-        let base_dir = TempDir::new().unwrap();
-        let data_path = DataPath::new(base_dir.path());
-        let mut dave = test_dave(&data_path);
+        let mut test = TestDave::new();
+        let (sk, account) = (test.sk, test.account);
+        let TestDave { dave, ndb, .. } = &mut test;
         let host = dave.hostname.clone();
 
-        // Seed several persisted (kind-31988) sessions in a local ndb, authored
+        // Seed several persisted (kind-31988) sessions in the store, authored
         // by the account — the store the restore worker reads.
-        let ndb_dir = TempDir::new().unwrap();
-        let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &test_config()).unwrap();
         const SEEDED: usize = 6;
         let filter = nostrdb::Filter::new().build();
         let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
@@ -1881,11 +1851,11 @@ mod tests {
         assert_eq!(dave.session_manager.active_id(), Some(user_sid));
 
         // Restore reads `pns_local_state.account` to drop stale cross-account
-        // results, so it must be set for the drain to apply anything.
-        dave.pns_local_state = Some(PnsLocalState {
-            account,
-            has_secret_key: true,
-        });
+        // results; the fixture sets it to the account the store is seeded as.
+        assert_eq!(
+            dave.pns_local_state.as_ref().map(|state| state.account),
+            Some(account)
+        );
 
         // A noop waker: this test drives the drain itself rather than
         // waiting to be woken.
@@ -1898,7 +1868,7 @@ mod tests {
         // materialized, asserting focus stays put on each frame.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while dave.session_manager.len() < SEEDED + 1 {
-            dave.drain_session_restore(&HostCtx::signing(&ndb, &sk, &waker));
+            dave.drain_session_restore(&HostCtx::signing(ndb, &sk, &waker));
             assert_eq!(
                 dave.session_manager.active_id(),
                 Some(user_sid),
@@ -1931,22 +1901,10 @@ mod tests {
     /// a chip from any remote on the correct host".
     #[tokio::test]
     async fn deleted_chip_routes_remote_resume_but_revives_local() {
-        let sk = test_secret_key();
-        let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
-            .unwrap()
-            .pubkey;
-
-        let base_dir = TempDir::new().unwrap();
-        let data_path = DataPath::new(base_dir.path());
-        let mut dave = test_dave(&data_path);
-        dave.pns_local_state = Some(PnsLocalState {
-            account,
-            has_secret_key: true,
-        });
+        let mut test = TestDave::new();
+        let sk = test.sk;
+        let TestDave { dave, ndb, .. } = &mut test;
         let local_host = dave.hostname.clone();
-
-        let tmp = TempDir::new().unwrap();
-        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
 
         // Build a tombstone (status=deleted) for a session on `host`, carrying the
         // CLI session id for `claude --resume`.
@@ -1989,7 +1947,7 @@ mod tests {
         // Click the remote chip: a resume command is queued for its host, and a
         // "Connecting…" placeholder stands in until the owning host revives it.
         dave.open(nostrdb_net::NoteId::new(remote_tomb.note_id));
-        dave.process_pending_open(&ndb);
+        dave.process_pending_open(ndb);
         assert_eq!(
             dave.pending_resume_commands.len(),
             1,
@@ -2036,7 +1994,7 @@ mod tests {
         // existing placeholder instead of queuing a second command / stranding a
         // duplicate placeholder.
         dave.open(nostrdb_net::NoteId::new(remote_tomb.note_id));
-        dave.process_pending_open(&ndb);
+        dave.process_pending_open(ndb);
         assert_eq!(
             dave.pending_resume_commands.len(),
             1,
@@ -2059,7 +2017,7 @@ mod tests {
         // Click the local chip: it is revived in place (materialized, dirty) with
         // no additional resume command emitted.
         dave.open(nostrdb_net::NoteId::new(local_tomb.note_id));
-        dave.process_pending_open(&ndb);
+        dave.process_pending_open(ndb);
         assert_eq!(
             dave.pending_resume_commands.len(),
             1,
@@ -2085,9 +2043,8 @@ mod tests {
     /// where "Connecting…" lingered until the pending timeout).
     #[test]
     fn pending_placeholder_for_matches_spawn_by_id_and_resume_by_dtag() {
-        let base_dir = TempDir::new().unwrap();
-        let data_path = DataPath::new(base_dir.path());
-        let mut dave = test_dave(&data_path);
+        let mut test = TestDave::new();
+        let dave = &mut test.dave;
 
         let spawn_id = dave.session_manager.new_pending_placeholder(
             PathBuf::from("/tmp/proj"),
@@ -2250,10 +2207,15 @@ mod tests {
     /// backend dispatch, an empty draft — and a later frame sends nothing more.
     #[tokio::test]
     async fn open_with_message_sends_into_a_live_session_once() {
-        let sk = test_secret_key();
-        let base_dir = TempDir::new().unwrap();
-        let mut dave = test_dave(&DataPath::new(base_dir.path()));
-        let requests = install_counting_backend(&mut dave);
+        let mut test = TestDave::new();
+        let TestDave {
+            dave,
+            ndb,
+            sk,
+            waker,
+            ..
+        } = &mut test;
+        let requests = install_counting_backend(dave);
         let sid = dave.session_manager.new_session(
             PathBuf::from("/tmp/proj"),
             AiMode::Agentic,
@@ -2269,24 +2231,21 @@ mod tests {
             .event_session_id()
             .to_owned();
 
-        let ndb_dir = TempDir::new().unwrap();
-        let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &test_config()).unwrap();
-        let waker = Waker::noop();
-        let host = HostCtx::signing(&ndb, &sk, &waker);
-        let state = state_event(&event_sid, &dave.hostname.clone(), "idle", &sk);
-        ingest(&ndb, &state).await;
+        let host = HostCtx::signing(ndb, sk, waker);
+        let state = state_event(&event_sid, &dave.hostname.clone(), "idle", sk);
+        ingest(ndb, &state).await;
 
         let msg = "launch a /code-review for the work done in this session";
         dave.open_with_message(nostrdb_net::NoteId::new(state.note_id), Some(msg.into()));
         for _frame in 0..2 {
-            if let Some(opened) = dave.process_pending_open(&ndb) {
+            if let Some(opened) = dave.process_pending_open(ndb) {
                 dave.deliver_open_message(opened, &host);
             }
         }
 
         assert_eq!(dave.session_manager.active_id(), Some(sid), "focused");
         assert_eq!(
-            user_texts(&dave, sid),
+            user_texts(dave, sid),
             vec![msg.to_owned()],
             "one user message"
         );
@@ -2303,29 +2262,24 @@ mod tests {
     /// user had there, and nothing is dispatched.
     #[tokio::test]
     async fn open_with_message_drafts_into_a_deleted_session() {
-        let sk = test_secret_key();
-        let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
-            .unwrap()
-            .pubkey;
-        let base_dir = TempDir::new().unwrap();
-        let mut dave = test_dave(&DataPath::new(base_dir.path()));
-        let requests = install_counting_backend(&mut dave);
-        dave.pns_local_state = Some(PnsLocalState {
-            account,
-            has_secret_key: true,
-        });
+        let mut test = TestDave::new();
+        let TestDave {
+            dave,
+            ndb,
+            sk,
+            waker,
+            ..
+        } = &mut test;
+        let requests = install_counting_backend(dave);
 
-        let ndb_dir = TempDir::new().unwrap();
-        let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &test_config()).unwrap();
-        let waker = Waker::noop();
-        let host = HostCtx::signing(&ndb, &sk, &waker);
-        let tomb = state_event("dead-sess", &dave.hostname.clone(), "deleted", &sk);
-        ingest(&ndb, &tomb).await;
+        let host = HostCtx::signing(ndb, sk, waker);
+        let tomb = state_event("dead-sess", &dave.hostname.clone(), "deleted", sk);
+        ingest(ndb, &tomb).await;
 
         let msg = "launch a /code-review";
         dave.open_with_message(nostrdb_net::NoteId::new(tomb.note_id), Some(msg.into()));
         let opened = dave
-            .process_pending_open(&ndb)
+            .process_pending_open(ndb)
             .expect("the tombstone is reopened");
         assert!(!opened.was_live, "a reopened session isn't live yet");
         let sid = opened.session;
@@ -2333,7 +2287,7 @@ mod tests {
 
         let session = dave.session_manager.get(sid).unwrap();
         assert_eq!(session.input, msg, "the message waits in the draft");
-        assert!(user_texts(&dave, sid).is_empty(), "nothing was sent");
+        assert!(user_texts(dave, sid).is_empty(), "nothing was sent");
         assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
@@ -2342,9 +2296,9 @@ mod tests {
     /// silently do nothing.
     #[test]
     fn open_message_drafts_when_no_backend_runs_the_session() {
-        let base_dir = TempDir::new().unwrap();
-        let mut dave = test_dave(&DataPath::new(base_dir.path()));
-        install_counting_backend(&mut dave);
+        let mut test = TestDave::new();
+        let dave = &mut test.dave;
+        install_counting_backend(dave);
         let claude = dave.session_manager.new_session(
             PathBuf::from("/tmp/proj"),
             AiMode::Agentic,

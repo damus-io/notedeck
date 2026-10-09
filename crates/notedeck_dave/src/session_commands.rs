@@ -568,9 +568,8 @@ impl Dave {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::{test_config, test_dave, test_secret_key};
+    use crate::tests::{test_config, test_secret_key, TestDave};
     use nostrdb::{IngestMetadata, Ndb, Transaction};
-    use notedeck::DataPath;
     use tempfile::TempDir;
 
     /// The kind-31989 command-parse branch on the receiving host: a
@@ -729,9 +728,8 @@ mod tests {
     fn applying_one_spawn_request_twice_creates_one_session() {
         const NOW: u64 = 1_800_000_000;
 
-        let base_dir = TempDir::new().unwrap();
-        let data_path = DataPath::new(base_dir.path());
-        let mut dave = test_dave(&data_path);
+        let mut test = TestDave::new();
+        let dave = &mut test.dave;
         let before = dave.session_manager.iter().count();
 
         // First spawn: materializes a session and hands back its first message.
