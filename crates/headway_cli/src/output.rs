@@ -212,6 +212,10 @@ pub(crate) fn print_cards(view: &BoardView, sels: &[String], as_json: bool) -> R
 /// Print the work-order frontier for `next`: the ready cards of `container`, each
 /// as a `headway:board/word-id` ref an agent can paste straight into `move`/`show`.
 ///
+/// Which: `labels` (from `--label`) keeps only cards carrying every one of them,
+/// applied to the frontier before the count, so `--label x -n 1` is the first
+/// ready `x` card rather than the first ready card if it happens to be `x`.
+///
 /// How many: `-n <k>` caps to `k`; otherwise `--ready` prints the whole ready set
 /// (the parallel-dispatch frontier) and the default prints just the single next
 /// card. In JSON mode it's an array of `{ref, id, title}` objects.
@@ -220,9 +224,10 @@ pub(crate) fn print_next(
     container: &Container,
     ready: bool,
     limit: Option<usize>,
+    labels: &[String],
     as_json: bool,
 ) {
-    let frontier = traversal::ready(view, container);
+    let frontier = traversal::ready_labelled(view, container, labels);
     let count = match (ready, limit) {
         (_, Some(k)) => k,
         (true, None) => frontier.len(),
@@ -260,7 +265,7 @@ pub(crate) fn print_next(
         eprintln!(
             "{}",
             nostrdb_net::relay::sync::dim(
-                "nothing ready — the work-order is empty or everything is done"
+                "nothing ready — everything is done, in progress or blocked (or filtered out by --label)"
             )
         );
     }

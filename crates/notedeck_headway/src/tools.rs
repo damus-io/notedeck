@@ -238,7 +238,7 @@ impl AppTool for ReadyItems {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_ready_items",
-            "List the ready frontier of a headway board: the cards workable right now — not done, not blocked by an unfinished prerequisite, and not a parent whose real work is its subissues — in work-order (seq-ranked, then creation order). This is the parallel-dispatch set a pool of agents can fan out over so they respect blocking prerequisites. Omit `container` for the whole board, or pass a card ref to scope to that card's subtree.",
+            "List the ready frontier of a headway board: the cards workable right now — not done, not already In Progress (someone has it), not blocked by an unfinished prerequisite, and not a parent whose real work is its subissues — in work-order (seq-ranked, then creation order). This is the parallel-dispatch set a pool of agents can fan out over so they respect blocking prerequisites. Omit `container` for the whole board, or pass a card ref to scope to that card's subtree.",
             vec![
                 ToolArg::new(
                     "container",

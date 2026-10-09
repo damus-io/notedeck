@@ -607,6 +607,7 @@ async fn run() -> Result<()> {
             container,
             ready,
             limit,
+            labels,
         } => {
             if !board_explicit {
                 return Err(
@@ -621,7 +622,7 @@ async fn run() -> Result<()> {
                 Some(sel) => resolve_container(&view, sel)?,
                 None => Container::BoardRoot(view.id.clone()),
             };
-            print_next(&view, &container, ready, limit, as_json);
+            print_next(&view, &container, ready, limit, &labels, as_json);
         }
 
         // Read command: search card text. One fold per board searched (every

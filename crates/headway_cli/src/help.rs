@@ -91,19 +91,26 @@ title, description, metadata, relationships and comment thread.",
         name: "next",
         group: Group::Reading,
         summary: "Print what to work on next (the ready frontier)",
-        usage: &["next [--in <container>] [--ready] [-n <k>]"],
+        usage: &["next [--in <container>] [--ready] [-n <k>] [-l <label>...]"],
         details: "\
-Walk a container's work-order and print the cards that are not done and
-whose blockers are all cleared — what can be picked up right now. Each is
-printed as a headway:<board>/<word-id> ref, ready to paste into another
-command.
+Walk a container's work-order and print the cards that are not done, not
+already In Progress, and whose blockers are all cleared — what can be
+picked up right now. Each is printed as a headway:<board>/<word-id> ref,
+ready to paste into another command.
+
+A card in the In Progress column (`--col in-progress`, matched by id or
+name) is someone's already, so `next` never hands it out, with or without
+`--ready`; a session resuming its own card should take it by its ref.
+`--label` narrows what is printed to cards carrying every given label;
+it never changes what counts as blocked or done.
 
 A card is done when it sits in a terminal column, or when it has at
 least one live (non-archived) subissue and every one of them is done —
 recursively, so an epic of finished sub-epics is done too. A finished
 epic stays in its column, but `next` never hands it out and nothing
 stays blocked on it. A card with no live subissues is done only by its
-column. An empty result means the container's work is all done.
+column. An empty result means everything left is done, already In
+Progress, blocked, or (with `--label`) unlabelled.
 
 A read-only command: it never signs or publishes. It needs the board
 named explicitly (`--board`, or an `--in` ref that carries one) so an
@@ -119,11 +126,16 @@ persisted current board between commands.",
                 "Print the whole ready set — the parallel-dispatch frontier — not just the first card",
             ),
             ("-n, --count <k>", "Cap how many cards are printed"),
+            (
+                "-l, --label <l>",
+                "Keep only cards carrying this label. Repeatable, and each value may be a comma-separated list; a card must carry all of them",
+            ),
             ("--json", "Machine-readable output"),
         ],
         examples: &[
             "headway next --board headway",
             "headway next --in headway:notedeck/saddle-because-liquid --ready",
+            "headway next --in <milestone> --label role:model -n 1",
         ],
     },
     Command {

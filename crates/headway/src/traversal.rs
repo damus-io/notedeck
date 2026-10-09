@@ -10,8 +10,10 @@
 //! - [`work_order`] — the full depth-first order of a container's members and
 //!   their subtrees, the list you'd render to inspect "everything, in order".
 //! - [`ready`] — the frontier of that order that is *workable right now*: not
-//!   done, not blocked, and not merely a parent whose real work is its children.
-//!   `next` is `ready(..).first()`; `next -n k` is `ready(..).take(k)`.
+//!   done, not already taken (In Progress), not blocked, and not merely a parent
+//!   whose real work is its children.
+//!   `next` is `ready(..).first()`; `next -n k` is `ready(..).take(k)`;
+//!   `next --label l` is [`ready_labelled`].
 //!
 //! Ordering everywhere is the settled fallback `order = (seq if set, else
 //! created_at)`: explicitly sequenced members lead, in rank order, and
@@ -47,6 +49,8 @@ pub fn work_order<'v>(view: &'v BoardView, container: &Container) -> Vec<&'v Car
 /// is the parallel-dispatch signal an AI acts on. A card is ready when it is:
 /// - not done ([`is_done`] — not in a terminal column, and not a parent whose
 ///   live subissues are all done: a finished epic is never handed out), and
+/// - not In Progress ([`BoardView::card_is_in_progress`]) — someone is already
+///   on it, so handing it out would start a second worker on the same card, and
 /// - not blocked ([`is_blocked`] — no dependency edge points at an unfinished
 ///   blocker), and
 /// - not a parent with unfinished subissues: its real work is those children,
@@ -55,9 +59,25 @@ pub fn ready<'v>(view: &'v BoardView, container: &Container) -> Vec<&'v CardView
     work_order(view, container)
         .into_iter()
         .filter(|card| !is_done(view, card.id))
+        .filter(|card| !view.card_is_in_progress(card.id))
         .filter(|card| !is_blocked(view, card))
         .filter(|card| !has_open_subissue(card))
         .collect()
+}
+
+/// [`ready`] narrowed to the cards that carry every label in `labels` (all of
+/// them; an empty `labels` keeps the whole frontier). A filter over the frontier
+/// only: an unlabelled card still blocks, and still counts toward its parent's
+/// doneness, exactly as it would without the filter. Backs `next --label`, so a
+/// role lane picks its next card without hand-filtering the board.
+pub fn ready_labelled<'v>(
+    view: &'v BoardView,
+    container: &Container,
+    labels: &[String],
+) -> Vec<&'v CardView> {
+    let mut frontier = ready(view, container);
+    frontier.retain(|card| labels.iter().all(|l| card.labels.contains(l)));
+    frontier
 }
 
 /// Depth-first pre-order walk shared by [`work_order`]. Pushes each member of
@@ -389,6 +409,66 @@ mod tests {
 
         // Mixed: one still-open blocker is enough to block.
         assert!(blocked(vec![blocker(2, true), blocker(3, false)]));
+    }
+
+    #[test]
+    fn ready_excludes_in_progress_cards() {
+        // Cards 1 and 2 sit side by side, neither done nor blocked; card 1 is in
+        // the In Progress column, so someone already has it. Only card 2 (still
+        // in backlog) is handed out. The column is matched by id, and a board
+        // whose column id differs still matches it by name.
+        for (id, name) in [("in-progress", "Doing"), ("wip", "In-Progress")] {
+            let mut view = board(vec![card(1, Some("a"), 1), card(2, Some("b"), 2)], &[]);
+            let taken = view.columns[0].cards.remove(0);
+            view.columns.insert(
+                1,
+                ColumnView {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    terminal: false,
+                    cards: vec![taken],
+                },
+            );
+            let root = Container::BoardRoot("b".to_string());
+            assert_eq!(ids(&work_order(&view, &root)), [1, 2]);
+            assert_eq!(ids(&ready(&view, &root)), [2], "column {id}/{name}");
+        }
+    }
+
+    #[test]
+    fn ready_labelled_keeps_only_cards_with_every_label() {
+        // Cards 1 and 3 carry `role:model`, card 3 also `ui`; card 2 carries
+        // neither. Card 4 has the label but is blocked by unlabelled card 2: the
+        // filter narrows the frontier, it doesn't make 2 stop blocking.
+        let labelled = |n, labels: &[&str]| {
+            let mut c = card(n, None, n as u64);
+            c.labels = labels.iter().map(|l| l.to_string()).collect();
+            c
+        };
+        let mut blocked = labelled(4, &["role:model"]);
+        blocked.blocked_by = vec![blocker(2, false)];
+        let view = board(
+            vec![
+                labelled(1, &["role:model"]),
+                labelled(2, &[]),
+                labelled(3, &["role:model", "ui"]),
+                blocked,
+            ],
+            &[],
+        );
+        let root = Container::BoardRoot("b".to_string());
+        let want = |ls: &[&str]| -> Vec<String> { ls.iter().map(|l| l.to_string()).collect() };
+
+        assert_eq!(ids(&ready_labelled(&view, &root, &[])), [1, 2, 3]);
+        assert_eq!(
+            ids(&ready_labelled(&view, &root, &want(&["role:model"]))),
+            [1, 3]
+        );
+        assert_eq!(
+            ids(&ready_labelled(&view, &root, &want(&["role:model", "ui"]))),
+            [3]
+        );
+        assert!(ready_labelled(&view, &root, &want(&["nope"])).is_empty());
     }
 
     #[test]
