@@ -81,6 +81,9 @@ pub struct SessionListUi<'a> {
     /// Normal mode is walking the list: wash the active row like the
     /// chat's block cursor, so it's clear where `j` / `k` are.
     chord_cursor: bool,
+    /// The active session changed since the list last drew: scroll its row
+    /// into view this frame. Set by `sessions_list_ui`.
+    scroll_to_active: bool,
 }
 
 impl<'a> SessionListUi<'a> {
@@ -96,6 +99,7 @@ impl<'a> SessionListUi<'a> {
             collapse_state,
             ctrl_held,
             chord_cursor: false,
+            scroll_to_active: false,
         }
     }
 
@@ -157,6 +161,16 @@ impl<'a> SessionListUi<'a> {
     fn sessions_list_ui(&mut self, ui: &mut egui::Ui) -> Option<SessionListAction> {
         let mut action = None;
         let active_id = self.session_manager.active_id();
+        // Follow the active session when something other than a click moves
+        // it (normal mode's gg / G / j / k, dd, Ctrl+J / K, the focus queue),
+        // so it never lands off-screen. A clicked row is already visible, and
+        // scroll_to_me(None) leaves a visible row where it is.
+        let last_active_id = ui.make_persistent_id("session_list_last_active");
+        let last_active = ui.data(|d| d.get_temp::<Option<SessionId>>(last_active_id));
+        self.scroll_to_active = last_active != Some(active_id);
+        if self.scroll_to_active {
+            ui.data_mut(|d| d.insert_temp(last_active_id, active_id));
+        }
         // Sessions Ctrl+J / Ctrl+K (cycle next/previous) would jump to, used to
         // paint a J/K hint on the rows adjacent to the active one while ctrl is
         // held. Mirrors the wrap-around order in update::cycle_agent.
@@ -270,6 +284,10 @@ impl<'a> SessionListUi<'a> {
         };
 
         let mut action = dot_action;
+
+        if is_active && self.scroll_to_active {
+            response.scroll_to_me(None);
+        }
 
         if is_renaming {
             let outcome = renaming
@@ -1719,6 +1737,97 @@ mod tests {
             }
             other => panic!("expected NewSessionInCwd action, got {:?}", other),
         }
+    }
+
+    /// A keyboard move (normal mode's G, Ctrl+J/K, dd's neighbour) can select
+    /// a session scrolled out of the list; the list follows it there. The rows
+    /// are painted, not labelled, so the cwd folder headers between them stand
+    /// in as markers of where the list has scrolled.
+    #[test]
+    fn the_list_scrolls_to_a_session_selected_off_screen() {
+        const HEIGHT: f32 = 300.0;
+        let mut session_manager = SessionManager::new();
+        // Two sessions per cwd, so each cwd gets a labelled folder header.
+        for n in 0..12 {
+            let cwd = PathBuf::from(format!("/tmp/scroll-{n:02}"));
+            for _ in 0..2 {
+                let id =
+                    session_manager.new_session(cwd.clone(), AiMode::Agentic, BackendType::Claude);
+                let session = session_manager.get_mut(id).unwrap();
+                session.details.hostname = "host-a".to_string();
+                session.details.home_dir = String::new();
+            }
+        }
+        session_manager.rebuild_groups();
+        let headers: Vec<String> = session_manager.host_groups()[0]
+            .project_groups
+            .iter()
+            .flat_map(|project| project.cwd_groups.iter())
+            .map(|cwd| cwd.display_cwd.clone())
+            .collect();
+        let collapse_state = CollapseState::new();
+        let rows = session_manager.visual_order(&collapse_state);
+        session_manager.switch_to(rows[0]);
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(300.0, HEIGHT))
+            .build_ui_state(
+                |ui, state: &mut SessionListUiOwnedState| {
+                    SessionListUi::new(
+                        &mut state.session_manager,
+                        &state.focus_queue,
+                        &state.collapse_state,
+                        false,
+                    )
+                    .ui(ui);
+                },
+                SessionListUiOwnedState {
+                    session_manager,
+                    focus_queue: FocusQueue::new(),
+                    collapse_state,
+                    ctrl_held: false,
+                    cwd_label: String::new(),
+                    cwd_path: PathBuf::new(),
+                },
+            );
+        let top_of = |harness: &Harness<'_, SessionListUiOwnedState>, label: &str| {
+            let bounds = harness
+                .get_by_label(label)
+                .accesskit_node()
+                .raw_bounds()
+                .expect("header bounds");
+            bounds.y0 as f32
+        };
+        let last_header = headers.last().unwrap().as_str();
+
+        harness.run();
+        assert!(
+            top_of(&harness, last_header) > HEIGHT,
+            "the last folder starts out below the fold"
+        );
+
+        let last_row = *rows.last().unwrap();
+        harness.state_mut().session_manager.switch_to(last_row);
+        harness.run();
+        let top = top_of(&harness, last_header);
+        assert!(
+            (0.0..HEIGHT).contains(&top),
+            "the list scrolled the selected row into view (header at {top})"
+        );
+
+        // And back up, as gg does.
+        let first_header = headers.first().unwrap().as_str();
+        assert!(
+            top_of(&harness, first_header) < 0.0,
+            "scrolled past the top"
+        );
+        harness.state_mut().session_manager.switch_to(rows[0]);
+        harness.run();
+        let top = top_of(&harness, first_header);
+        assert!(
+            (0.0..HEIGHT).contains(&top),
+            "the list scrolled back up to the first row (header at {top})"
+        );
     }
 
     /// Render a single standalone (cwd) agentic row in isolation so the
