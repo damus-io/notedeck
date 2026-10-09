@@ -3952,15 +3952,14 @@ mod tests {
     }
 
     /// The rows jb55 saw glued in the live app: a `Skill` call and a
-    /// background subagent, drawn the way Dave's render root draws them. The
-    /// chrome's zero horizontal gap is mirrored first, then Dave takes its own
-    /// back with [`crate::ui::own_item_spacing`], exactly as `Dave::render`
-    /// does, so the harness matches the app.
+    /// background subagent, drawn in the `Ui` Dave gets inside the app
+    /// ([`crate::ui::test_frame`]): the chrome's fonts, fill and zero gap, then
+    /// Dave's own gap back.
     fn tool_rows_under_chrome_ui(ui: &mut egui::Ui) {
-        // Mirror `Chrome::show`, which zeroes the gap for every app.
-        ui.spacing_mut().item_spacing.x = 0.0;
-        crate::ui::own_item_spacing(ui);
+        crate::ui::test_frame(ui, tool_rows_ui);
+    }
 
+    fn tool_rows_ui(ui: &mut egui::Ui) {
         let skill = crate::messages::ExecutedTool {
             tool_name: "Skill".to_string(),
             summary: "code-review e8f3670c5e5b".to_string(),
@@ -3990,7 +3989,7 @@ mod tests {
     /// background" flag (headway:headway/skill-either-bench).
     #[test]
     fn tool_row_labels_keep_a_gap_under_the_chrome() {
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::app_builder()
             .with_size(egui::Vec2::new(460.0, 120.0))
             .build_ui(tool_rows_under_chrome_ui);
         harness.run();
@@ -4021,17 +4020,16 @@ mod tests {
         );
     }
 
-    /// The glued rows from the live app, with the app's fonts and the chrome's
-    /// zero gap mirrored. Render with
+    /// The glued rows from the live app, in the app's fonts, fill and spacing.
+    /// Render with
     /// `scripts/snapshot-test snapshot_tool_rows_under_chrome_spacing`.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_tool_rows_under_chrome_spacing() {
-        let mut harness = Harness::builder()
+        let mut harness = notedeck::test_harness::app_builder()
             .with_size(egui::Vec2::new(460.0, 70.0))
             .renderer(notedeck::software_renderer())
             .build_ui(tool_rows_under_chrome_ui);
-        notedeck::fonts::setup_fonts(&harness.ctx);
         harness.run();
         harness.snapshot("tool_rows_under_chrome_spacing");
     }

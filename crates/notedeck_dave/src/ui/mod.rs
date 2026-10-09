@@ -72,6 +72,24 @@ pub fn own_item_spacing(ui: &mut egui::Ui) {
     ui.spacing_mut().item_spacing.x = notedeck::tokens::SPACING_SM;
 }
 
+/// Run `add_contents` in the `Ui` Dave draws in inside the app: the chrome's
+/// setup from [`notedeck::test_harness::app_frame`], then Dave's own root
+/// spacing, as `Dave::render` adds it. `None` on the setup frame.
+///
+/// Integration tests can't reach this (`cfg(test)` only, since
+/// `notedeck/snapshot-testing` is a dev-dependency feature); they compose the
+/// same two calls.
+#[cfg(test)]
+pub(crate) fn test_frame<R>(
+    ui: &mut egui::Ui,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<R> {
+    notedeck::test_harness::app_frame(ui, |ui| {
+        own_item_spacing(ui);
+        add_contents(ui)
+    })
+}
+
 /// Build a DaveUi from a session, wiring up all the common builder fields.
 fn build_dave_ui<'a>(
     session: &'a mut ChatSession,

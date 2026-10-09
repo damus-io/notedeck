@@ -6,12 +6,15 @@
 //! snapshots pin both shapes Dave shows: an Edit (numbered gutter, `-`/`+`
 //! rows, syntax highlighting) and a Write (no gutter, every row `+`).
 //!
-//! The harness uses egui's default visuals, not notedeck's `ColorTheme`, so the
-//! PNGs are a regression baseline rather than a reference for colour contrast.
+//! The harness draws in the `Ui` Dave gets inside the app: notedeck's fonts,
+//! `ColorTheme` visuals and panel fill, the chrome's zero gap with Dave's own
+//! taken back (what `notedeck_dave::ui::test_frame` does for unit tests).
 
 use egui_kittest::Harness;
+use notedeck::test_harness::{app_builder, app_frame};
 use notedeck_dave::file_update::{FileUpdate, FileUpdateType};
 use notedeck_dave::ui::diff::{file_path_header, file_update_ui};
+use notedeck_dave::ui::own_item_spacing;
 
 /// Harness rendering `update` the way Dave's tool view does: the path header
 /// row above the diff body.
@@ -19,12 +22,15 @@ use notedeck_dave::ui::diff::{file_path_header, file_update_ui};
 /// `is_local` is false so the expand-context buttons never read the (absent)
 /// file from disk.
 fn diff_harness(update: FileUpdate, height: f32) -> Harness<'static> {
-    Harness::builder()
+    app_builder()
         .with_size(egui::Vec2::new(520.0, height))
         .renderer(notedeck::software_renderer())
         .build_ui(move |ui| {
-            ui.horizontal(|ui| file_path_header(&update, ui));
-            file_update_ui(&update, false, ui);
+            app_frame(ui, |ui| {
+                own_item_spacing(ui);
+                ui.horizontal(|ui| file_path_header(&update, ui));
+                file_update_ui(&update, false, ui);
+            });
         })
 }
 
