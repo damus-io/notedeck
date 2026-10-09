@@ -2,25 +2,14 @@
 //! dispatch of the UI and keybinding actions they return.
 
 use crate::backend::{BackendType, Model};
-use crate::config::AiMode;
-use crate::ui::keybindings::{KeyAction, KeyContext, NormalView};
-use crate::ui_tools::{self, DaveUiTool};
+use crate::ui::keybindings::{ActiveOffers, KeyAction, KeyContext, NormalView};
+use crate::ui_tools;
 use crate::{
     check_keybindings, focus_queue, get_backend, secret_key_bytes, ui, update, worktree, Dave,
     DaveAction, DaveOverlay, DaveResponse, KeyActionResult, OverlayResult, PendingWorktreeRemoval,
     RunConfigEditor, SceneViewAction, SendActionResult, SessionListAction, UiActionResult,
 };
 use notedeck::{ui::is_narrow, AppAction, AppContext, ToolOutcome};
-
-/// What the active session offers the keys: see [`Dave::active_offers`].
-struct ActiveOffers {
-    /// The active session's mode, or Dave's with no session.
-    ai_mode: AiMode,
-    /// The session has a running turn to stop.
-    interruptible: bool,
-    /// The session has an issue to open.
-    has_issue: bool,
-}
 
 impl Dave {
     pub(crate) fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
@@ -258,13 +247,14 @@ impl Dave {
 
     /// Scene view with RTS-style agent visualization and chat side panel
     fn scene_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        let normal_view = self.normal_view();
         let (dave_response, view_action) = ui::scene_ui(
             &mut self.session_manager,
             &mut self.scene,
             &mut self.focus_queue,
             &self.model_config,
             self.auto_steal.is_enabled(),
-            self.normal_mode.view(),
+            normal_view,
             &self.run_configs,
             &self.running_session_ids,
             app_ctx,
@@ -300,13 +290,14 @@ impl Dave {
 
     /// Desktop layout with sidebar for session list
     fn desktop_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        let normal_view = self.normal_view();
         let (chat_response, session_action, toggle_scene) = ui::desktop_ui(
             &mut self.session_manager,
             &self.focus_queue,
             &self.collapse_state,
             &self.model_config,
             self.auto_steal.is_enabled(),
-            self.normal_mode.view(),
+            normal_view,
             &self.run_configs,
             &self.running_session_ids,
             app_ctx,
@@ -392,13 +383,14 @@ impl Dave {
 
     /// Narrow/mobile layout - shows either session list or chat
     fn narrow_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        let normal_view = self.normal_view();
         let (dave_response, session_action) = ui::narrow_ui(
             &mut self.session_manager,
             &self.focus_queue,
             &self.collapse_state,
             &self.model_config,
             self.auto_steal.is_enabled(),
-            self.normal_mode.view(),
+            normal_view,
             &self.run_configs,
             &self.running_session_ids,
             self.show_session_list,
@@ -498,7 +490,8 @@ impl Dave {
     }
 
     /// What the active session offers the keys this frame, read live; the
-    /// keybindings and the UI tools' availability share it.
+    /// keybindings and the UI tools' availability share it. With no session,
+    /// Dave's own mode.
     fn active_offers(&self) -> ActiveOffers {
         let active = self.session_manager.get_active();
         ActiveOffers {
@@ -510,25 +503,20 @@ impl Dave {
         }
     }
 
-    /// Normal mode as Dave's UI tools see it, or `None` where none applies:
-    /// insert mode, or an overlay over the chat (which ends normal mode on
-    /// its next frame). The session's offers are read live rather than as
-    /// the keys last observed them, so a tool called before Dave renders sees
-    /// the session it acts on.
-    pub(crate) fn tool_view(&self) -> Option<NormalView> {
+    /// Normal mode as the UI and Dave's UI tools see it, or `None` where
+    /// none applies: insert mode, or an overlay over the chat (which ends
+    /// normal mode on its next frame). The session's offers are read live, so
+    /// a tool called before Dave renders sees the session it acts on.
+    pub(crate) fn normal_view(&self) -> Option<NormalView> {
         if !matches!(self.active_overlay, DaveOverlay::None) {
             return None;
         }
-        let mut view = self.normal_mode.view()?;
-        let offers = self.active_offers();
-        view.agentic = offers.ai_mode == AiMode::Agentic;
-        view.interruptible = offers.interruptible;
-        view.has_issue = offers.has_issue;
-        Some(view)
+        self.normal_mode.view(self.active_offers())
     }
 
-    /// Run the UI tool `name` with `args` (see [`crate::ui_tools`]): the same
-    /// action, mode change and dispatch as its chord key. A tool that isn't
+    /// Run the UI tool `name` with `args` (see [`crate::ui_tools`]), as its
+    /// key in chrome's keymap does: [begin](ui_tools::begin_call) it on
+    /// normal mode, then dispatch its action. A tool that isn't
     /// [available](crate::ui_tools::available) is an error; one that is but
     /// has nothing to act on (`dave_focus_pane` at a hidden session list, the
     /// block cursor in a chat with no blocks) does nothing, like its key.
@@ -538,31 +526,25 @@ impl Dave {
         args: &serde_json::Value,
         egui_ctx: &egui::Context,
     ) -> ToolOutcome {
-        let action = match DaveUiTool::parse(name, args) {
-            Ok(action) => action,
+        let view = self.normal_view();
+        let action = match ui_tools::begin_call(&mut self.normal_mode, view, name, args) {
+            Ok(Some(action)) => action,
+            Ok(None) => return ToolOutcome::Data(serde_json::Value::Null),
             Err(err) => return ToolOutcome::Error(err),
         };
-        let Some(tool) = DaveUiTool::from_name(name) else {
-            return ToolOutcome::Error(format!("unknown tool '{name}'"));
-        };
-        if !ui_tools::available(tool, self.tool_view()) {
-            return ToolOutcome::Error(format!("'{name}' is not available now"));
-        }
-        if action == KeyAction::FocusSessionsPane && !self.normal_mode.sessions_shown() {
-            return ToolOutcome::Data(serde_json::Value::Null);
-        }
-        self.normal_mode.after_action(&action);
         match self.dispatch_key_action(action, egui_ctx) {
             Some(app_action) => ToolOutcome::Intent(app_action),
             None => ToolOutcome::Data(serde_json::Value::Null),
         }
     }
 
-    /// Check and dispatch keybindings. Called from render() so that
-    /// key consumption only happens when Dave is the active app.
+    /// Check and dispatch keybindings: Esc into normal mode, and the Ctrl
+    /// ladder. Normal mode's own keys are chrome's keymap's, which calls
+    /// Dave's UI tools before this runs ([`Self::run_ui_tool`]). Called from
+    /// render() so that key consumption only happens when Dave is the active
+    /// app.
     ///
-    /// Returns the [`AppAction`] a key asks chrome to perform (`s` opening the
-    /// active session's issue), if any.
+    /// Returns the [`AppAction`] a key asks chrome to perform, if any.
     pub(crate) fn process_keybindings(&mut self, egui_ctx: &egui::Context) -> Option<AppAction> {
         let has_pending_permission = self.first_pending_permission().is_some();
         let has_pending_question = self.has_pending_question();
@@ -577,16 +559,9 @@ impl Dave {
         let sessions_shown = !is_narrow(egui_ctx)
             && !self.show_scene
             && matches!(self.active_overlay, DaveOverlay::None);
-        let ActiveOffers {
-            ai_mode,
-            interruptible,
-            has_issue,
-        } = self.active_offers();
         let keys = KeyContext {
-            ai_mode,
+            ai_mode: self.active_offers().ai_mode,
             sessions_shown,
-            interruptible,
-            has_issue,
             has_pending_permission,
             has_pending_question,
             in_tentative_state,

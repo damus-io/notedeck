@@ -96,8 +96,14 @@ impl<'a> Scopes<'a> {
     }
 }
 
-/// The built-in keymap, compiled in: the chrome's global bindings, with the
-/// apps' to follow as they move in; a user's overrides will be merged over it.
+/// A bare Esc, which cancels a pending chord.
+const ESCAPE: KeyStroke = KeyStroke {
+    key: egui::Key::Escape,
+    mods: Mods::NONE,
+};
+
+/// The built-in keymap, compiled in: the chrome's global bindings and
+/// Headway's and Dave's; a user's overrides will be merged over it.
 pub const DEFAULT_KEYMAP: &str = include_str!("default_keymap.toml");
 
 /// A parsed keymap: bindings grouped by scope, plus the named macros.
@@ -243,6 +249,12 @@ impl Keymap {
         }
     }
 
+    /// Every binding of the scope `name`, sorted by keys; empty for a scope
+    /// the keymap doesn't name. For tests and an editor that walk a scope.
+    pub fn bindings(&self, scope: &str) -> &[Binding] {
+        self.scope(scope).map_or(&[], |scope| &scope.bindings)
+    }
+
     /// The bindings of the scope called `name`.
     fn scope(&self, name: &str) -> Option<&Scope> {
         self.scopes.iter().find(|scope| scope.name == name)
@@ -336,7 +348,8 @@ impl KeyEngine {
     /// extends a chord is swallowed and kept; anything else clears the chord
     /// and is left for the app. A chord that goes nowhere starts over from the
     /// key that broke it, so `g j` with only `g g` and `j` bound still runs
-    /// `j`. A frame with no key press doesn't allocate.
+    /// `j`, except a bare Esc, which only cancels the chord, as in vim, and is
+    /// swallowed. A frame with no key press doesn't allocate.
     #[profiling::function]
     pub fn resolve(
         &mut self,
@@ -354,6 +367,11 @@ impl KeyEngine {
         let fresh = KeySeq::single(stroke);
         let (seq, found) = match pending.and_then(|prefix| prefix.pushed(stroke)) {
             Some(seq) => match find(&self.keymap, scopes, seq.as_slice(), &available) {
+                Found::None if stroke == ESCAPE => {
+                    self.chord.clear();
+                    chord::swallow_key_events(ctx);
+                    return None;
+                }
                 Found::None => (
                     fresh,
                     find(&self.keymap, scopes, fresh.as_slice(), &available),

@@ -55,8 +55,10 @@ You can use either mode depending on your needs—simple chat for quick Nostr qu
 Dave's keyboard is vim-shaped. **Insert mode** is the default: the chat input
 has focus and keys type into it. **Esc** enters **normal mode**: the input gives
 up focus, dims, and its placeholder turns into a `-- NORMAL --` cue, and bare
-keys become commands. A which-key strip above the input shows what normal mode
-will accept next.
+keys become commands. The keys are notedeck's keymap
+(`crates/notedeck_chrome/src/keymap/default_keymap.toml`, the `dave.*` scopes),
+and `?` pins its which-key strip along the bottom of the window; it also shows
+what can finish a half-typed prefix like `z`.
 
 #### Normal mode
 
@@ -77,13 +79,15 @@ will accept next.
 | `gd` / `gc` | Show the session's Details tab / back to the chat |
 | `m` | Cycle permission mode |
 | `e` | Open the external editor (leaves normal mode) |
-| `s` | Stop the running turn (same as the Stop button) |
+| `s` | Open the issue the session works (e.g. its headway card) |
+| `S` | Stop the running turn (same as the Stop button) |
 | `]q` / `[q` | Next / previous session in the focus queue |
 | `i` / `a` | Back to insert mode |
 | `q` | Drop the block cursor and go back to insert mode |
 | `Esc` | Cancel a half-typed prefix (`z`, `g`, `d`, `]`, `[`); with none, open the side menu |
 
-Normal mode is a latch: it stays on after a command until you leave it.
+Normal mode is a latch: it stays on after a command until you leave it. A
+half-typed prefix lapses after two seconds.
 Clicking into any text field also returns to insert mode. Unknown letters are
 swallowed rather than typed. Ctrl bindings keep working without leaving normal
 mode, and the permission keys below pass straight through.
@@ -128,7 +132,7 @@ doesn't have focus.
 
 - **Diff View** - Syntax-highlighted diff for Edit/Write tool permission requests
 - **Status Badges** - Visual indicators for plan mode, agent status, and keybinds
-- **Keybind Hints** - Contextual hints shown when Ctrl is held, and a which-key strip of normal mode's keys
+- **Keybind Hints** - Contextual hints shown when Ctrl is held, and notedeck's which-key strip of normal mode's keys (`?`)
 - **Directory Picker** - Select working directory when creating sessions
 - **Session Picker** - Resume existing Claude Code sessions
 - **Compaction Status** - Visual indicator when `/compact` is running

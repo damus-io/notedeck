@@ -115,9 +115,6 @@ Ask_b7f4 = {"["}Àsk{"]"}
 # Placeholder text for Dave AI input field
 Ask_dave_anything_33d1 = {"["}Àsk dàvé àñythíñg...{"]"}
 
-# Dave which-key tooltip: point normal mode's motions back at the chat
-Back_to_the_chat_5877 = {"["}Bàçk tó thé çhàt{"]"}
-
 # Dave session inspector section: background tasks, monitors, wake-ups and crons
 Background_f543 = {"["}Bàçkgróúñd{"]"}
 
@@ -154,9 +151,6 @@ Cancel_fd8b = {"["}Çàñçél{"]"}
 # Dave session tab: the chat transcript
 Chat_32a7 = {"["}Çhàt{"]"}
 
-# Dave which-key tooltip: show the active session's chat tab
-Chat_tab_58ab = {"["}Çhàt tàb{"]"}
-
 # Title for the list of chat conversations
 Chats_dc22 = {"["}Çhàts{"]"}
 
@@ -172,20 +166,8 @@ Click_to_edit_0414 = {"["}Çlíçk tó édít{"]"}
 # Button to go to the ClnDash app
 ClnDash_2988 = {"["}ÇlñDàsh{"]"}
 
-# Dave which-key tooltip: start a new agent in the active session's directory
-Clone_agent_3757 = {"["}Çlóñé àgéñt{"]"}
-
-# Dave which-key tooltip: collapse every block in the chat
-Collapse_all_blocks_79ec = {"["}Çóllàpsé àll blóçks{"]"}
-
-# Dave which-key tooltip: collapse the focused block
-Collapse_block_87e0 = {"["}Çóllàpsé blóçk{"]"}
-
 # Button to go to the Columns app
 Columns_7215 = {"["}Çólúmñs{"]"}
-
-# Dave which-key tooltip: open an external editor to write the message
-Compose_in_external_editor_5bf2 = {"["}Çómpósé íñ éxtérñàl édítór{"]"}
 
 # Column title for note composition
 Compose_Note_c094 = {"["}Çómpósé Ñóté{"]"}
@@ -286,9 +268,6 @@ Custom_a69e = {"["}Çústóm{"]"}
 # Column title for zap amount customization
 Customize_Zap_Amount_cfc4 = {"["}Çústómízé Zàp Àmóúñt{"]"}
 
-# Dave which-key tooltip: cycle the active session's permission mode
-Cycle_permission_mode_4d95 = {"["}Çyçlé pérmíssíóñ módé{"]"}
-
 # Damus android beta version label
 Damus_Android_BETA_e76b = {"["}Dàmús Àñdróíd BÉTÀ{"]"}
 
@@ -328,9 +307,6 @@ Default_Deck_fcca = {"["}Défàúlt Déçk{"]"}
 # Button label to delete a deck
 Delete_Deck_bb29 = {"["}Délété Déçk{"]"}
 
-# Dave which-key tooltip: delete the active session
-Delete_session_2527 = {"["}Délété séssíóñ{"]"}
-
 # Tooltip for deleting a column
 Delete_this_column_8d5a = {"["}Délété thís çólúmñ{"]"}
 
@@ -361,9 +337,6 @@ Edit_Profile_8ad4 = {"["}Édít Prófílé{"]"}
 # Dave session tab: the session inspector (usage, background work, files, …)
 Details_cd6b = {"["}Détàíls{"]"}
 
-# Dave which-key tooltip: show the active session's Details tab (usage, background work, files, …)
-Details_tab_ffd0 = {"["}Détàíls tàb{"]"}
-
 # Dave session inspector overview row
 Directory_7dd2 = {"["}Díréçtóry{"]"}
 
@@ -388,9 +361,6 @@ Extreme_1d70 = {"["}Éxtrémé{"]"}
 # Diff placeholder for a file moved with identical content
 File_renamed_without_changes_dd4e = {"["}Fílé réñàméd wíthóút çhàñgés{"]"}
 
-# Dave which-key tooltip: switch to the first session in the list
-First_session_fea9 = {"["}Fírst séssíóñ{"]"}
-
 # Column title for followers
 Followed_by_e8c2 = {"["}Fóllówéd by{"]"}
 
@@ -409,20 +379,11 @@ Hashtag_filter_disabled_a136 = {"["}Hàshtàg fíltér dísàbléd{"]"}
 # Title for hashtags column
 Hashtags_f8e0 = {"["}Hàshtàgs{"]"}
 
-# Dave which-key tooltip: expand every block in the chat
-Expand_all_blocks_55aa = {"["}Éxpàñd àll blóçks{"]"}
-
-# Dave which-key tooltip: expand the focused block
-Expand_block_c8b3 = {"["}Éxpàñd blóçk{"]"}
-
 # Dave session inspector section: scratchpad, task output and edited files
 Files_0f4a = {"["}Fílés{"]"}
 
 # Button to go to the Headway app
 Headway_b5c8 = {"["}Héàdwày{"]"}
-
-# Dave which-key tooltip: move the block cursor to the first block
-First_block_457f = {"["}Fírst blóçk{"]"}
 
 # Title for Home column
 Home_8c19 = {"["}Hómé{"]"}
@@ -453,9 +414,6 @@ Individual_b776 = {"["}Íñdívídúàl{"]"}
 
 # Dave session inspector usage: uncached context tokens
 input__count_4370 = {"["}íñpút {$count}{"]"}
-
-# Dave which-key tooltip: leave normal mode and focus the chat input
-Insert__type_a_message_bd45 = {"["}Íñsért: typé à méssàgé{"]"}
 
 # Error message for invalid zap amount
 Invalid_amount_6630 = {"["}Íñvàlíd àmóúñt{"]"}
@@ -511,9 +469,6 @@ Language_e264 = {"["}Làñgúàgé:{"]"}
 # Title for last note per user column
 Last_Note_per_User_17ad = {"["}Làst Ñóté pér Úsér{"]"}
 
-# Dave which-key tooltip: switch to the last session in the list
-Last_session_cdfc = {"["}Làst séssíóñ{"]"}
-
 # Label for Theme Light, Appearance settings section
 Light_7475 = {"["}Líght{"]"}
 
@@ -526,17 +481,11 @@ Like_this_note_dfb5 = {"["}Líké thís ñóté{"]"}
 # Login page title
 Login_9eef = {"["}Lógíñ{"]"}
 
-# Dave which-key tooltip: move the block cursor to the last block
-Last_block_8ffe = {"["}Làst blóçk{"]"}
-
 # Login button text
 Login_now___let_s_do_this_5630 = {"["}Lógíñ ñów — lét's dó thís!{"]"}
 
 # Label for max hashtags per note, others settings section
 Max_hashtags_per_note_90e5 = {"["}Màx hàshtàgs pér ñóté:{"]"}
-
-# Dave which-key tooltip: drop the block cursor and leave normal mode
-Leave_block_navigation_4bcb = {"["}Léàvé blóçk ñàvígàtíóñ{"]"}
 
 # Label for relay websocket connection limit setting
 Max_websocket_connections_8f75 = {"["}Màx wébsóçkét çóññéçtíóñs:{"]"}
@@ -607,20 +556,11 @@ Names_can_t_contain_spaces_or____This_row_won_t_be_saved_09bc = {"["}Ñàmés ç
 # Session environment row with a value but no variable name
 Needs_a_name__This_row_won_t_be_saved_e7b0 = {"["}Ñééds à ñàmé. Thís rów wóñ't bé sàvéd.{"]"}
 
-# Dave which-key tooltip: start a new agent session
-New_agent_c761 = {"["}Ñéw àgéñt{"]"}
-
 # Title shown when composing a new conversation
 New_Chat_afb4 = {"["}Ñéw Çhàt{"]"}
 
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = {"["}Ñéw tó Ñóstr?{"]"}
-
-# Dave which-key tooltip: jump to the next session waiting for attention
-Next_in_focus_queue_f2e9 = {"["}Ñéxt íñ fóçús qúéúé{"]"}
-
-# Dave which-key tooltip: switch to the next session in the list
-Next_session_0a8f = {"["}Ñéxt séssíóñ{"]"}
 
 # Shown when user has no contacts to display
 No_contacts_yet_cd10 = {"["}Ñó çóñtàçts yét{"]"}
@@ -648,9 +588,6 @@ No_usage_reported_yet_84dc = {"["}Ñó úsàgé répórtéd yét{"]"}
 
 # Empty relay section placeholder
 None_8249 = {"["}Ñóñé{"]"}
-
-# Dave which-key tooltip: move the block cursor down
-Next_block_5ed0 = {"["}Ñéxt blóçk{"]"}
 
 # NIP-05 identity field label
 Nostr_address__NIP-05_identity_74a2 = {"["}Ñóstr àddréss (ÑÍP-05 ídéñtíty){"]"}
@@ -706,9 +643,6 @@ Nothing_yet_59ff = {"["}Ñóthíñg yét{"]"}
 # Button label to open email client
 Open_Email_25e9 = {"["}Ópéñ Émàíl{"]"}
 
-# Dave which-key tooltip: open the issue (e.g. headway card) the active session works
-Open_the_session_s_issue_74f1 = {"["}Ópéñ thé séssíóñ's íssúé{"]"}
-
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = {"["}Ópéñ yóúr défàúlt émàíl çlíéñt tó gét hélp fróm thé Dàmús téàm{"]"}
 
@@ -757,12 +691,6 @@ Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard_
 # Dave session inspector section: permission mode, answered prompts, always-allow rules
 Permissions_d50b = {"["}Pérmíssíóñs{"]"}
 
-# Dave which-key tooltip: jump to the previous session waiting for attention
-Previous_in_focus_queue_9b0e = {"["}Prévíóús íñ fóçús qúéúé{"]"}
-
-# Dave which-key tooltip: switch to the previous session in the list
-Previous_session_2425 = {"["}Prévíóús séssíóñ{"]"}
-
 # Section header for private sync relays
 Private_sync_560b = {"["}Prívàté syñç{"]"}
 
@@ -786,9 +714,6 @@ Pruned_4894 = {"["}Prúñéd!{"]"}
 
 # Status label while database pruning is running
 Pruning_1578 = {"["}Prúñíñg...{"]"}
-
-# Dave which-key tooltip: move the block cursor up
-Previous_block_18f7 = {"["}Prévíóús blóçk{"]"}
 
 # label describing public key
 PUBLIC_ACCOUNT_ID_4394 = {"["}PÚBLÍÇ ÀÇÇÓÚÑT ÍD{"]"}
@@ -819,9 +744,6 @@ Remove_variable_625d = {"["}Rémóvé vàríàblé{"]"}
 
 # Dave session inspector section: the account's rate-limit windows
 Rate_limits_8fef = {"["}Ràté límíts{"]"}
-
-# Dave which-key tooltip: rename the active session
-Rename_session_cb48 = {"["}Réñàmé séssíóñ{"]"}
 
 # Column title for reply composition
 Reply_3bf1 = {"["}Réply{"]"}
@@ -943,9 +865,6 @@ Session_7dd2 = {"["}Séssíóñ{"]"}
 # Settings section for environment variables exported into agent sessions
 Session_environment_0dda = {"["}Séssíóñ éñvíróñméñt{"]"}
 
-# Dave which-key tooltip: point normal mode's motions at the session list
-Session_list_d548 = {"["}Séssíóñ líst{"]"}
-
 # Button to go to the settings view
 Settings_4d83 = {"["}Séttíñgs{"]"}
 
@@ -1012,9 +931,6 @@ Step_2_d08d = {"["}Stép 2{"]"}
 # Button to interrupt/stop the AI operation
 Stop_5b38 = {"["}Stóp{"]"}
 
-# Dave which-key tooltip: stop the active session's running turn
-Stop_the_turn_7ecf = {"["}Stóp thé túrñ{"]"}
-
 # Dave session inspector: the agent CLI process is not running
 Stopped___the_next_message_starts_it_e76d = {"["}Stóppéd · thé ñéxt méssàgé stàrts ít{"]"}
 
@@ -1072,9 +988,6 @@ Today_bd04 = {"["}Tódày{"]"}
 # Dave session inspector section: the agent's task list
 Tasks_2037 = {"["}Tàsks{"]"}
 
-# Dave which-key tooltip: switch between the scene view and the list view
-Toggle_scene_view_867b = {"["}Tógglé sçéñé víéw{"]"}
-
 # Dave session inspector usage: hover over one turn on the context sparkline
 Turn__number_____context_26c6 = {"["}Túrñ {$number} · {$context}{"]"}
 
@@ -1098,9 +1011,6 @@ Use_outbox_relays_9e4d = {"["}Úsé óútbóx rélàys:{"]"}
 
 # Checkbox label for using wallet only for current account
 Use_this_wallet_for_the_current_account_only_61dc = {"["}Úsé thís wàllét fór thé çúrréñt àççóúñt óñly{"]"}
-
-# Dave which-key tooltip: expand or collapse the focused block
-Toggle_block_650e = {"["}Tógglé blóçk{"]"}
 
 # Username and domain identification message
 username___at___domain___will_be_used_for_identification_a4fd = {"["}"{$username}" àt "{$domain}" wíll bé úséd fór ídéñtífíçàtíóñ{"]"}

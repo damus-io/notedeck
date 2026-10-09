@@ -65,6 +65,9 @@ tempfile = { workspace = true }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 eframe = { workspace = true, features = ["accesskit"] }
 notedeck = { workspace = true, features = ["snapshot-testing"] }
+# Chrome owns Dave's normal-mode keymap; the key tests resolve keys through
+# its engine and shipped `default_keymap.toml`, as the app does.
+notedeck_chrome = { workspace = true }
 notedeck_testing = { workspace = true }
 nostr = { workspace = true }
 nostr-relay-builder = "0.37"

@@ -1,7 +1,6 @@
 mod ask_question;
 pub mod badge;
 pub mod block_nav;
-mod chord_hints;
 mod dave;
 pub mod diff;
 pub mod directory_picker;
@@ -1140,7 +1139,7 @@ pub fn settle_normal_mode_focus(
     normal_mode: &mut NormalMode,
     session_manager: &mut SessionManager,
 ) {
-    if normal_mode.view().is_some() {
+    if normal_mode.is_normal() {
         if let Some(session) = session_manager.get_active_mut() {
             session.focus_requested = false;
         }
@@ -1441,8 +1440,11 @@ mod tests {
     use crate::focus_queue::FocusQueue;
     use crate::session::PermissionMessageState;
     use crate::session::{SessionId, SessionManager};
-    use crate::ui::keybindings::{check_keybindings, KeyAction, KeyContext, NormalMode};
+    use crate::ui::keybindings::{
+        check_keybindings, ActiveOffers, KeyAction, KeyContext, NormalMode,
+    };
     use crate::ui::AgentScene;
+    use crate::ui_tools::chrome_keys::ChromeKeys;
     use crate::update;
     use egui::{Key, Modifiers};
     use egui_kittest::Harness;
@@ -1458,6 +1460,8 @@ mod tests {
         focus_queue: FocusQueue,
         collapse_state: CollapseState,
         normal_mode: NormalMode,
+        /// Chrome's keymap, ahead of Dave's keybindings.
+        chrome: ChromeKeys,
         sessions: [SessionId; 2],
     }
 
@@ -1482,6 +1486,7 @@ mod tests {
                 focus_queue: FocusQueue::new(),
                 collapse_state: CollapseState::new(),
                 normal_mode: NormalMode::default(),
+                chrome: ChromeKeys::new(),
                 sessions,
             }
         }
@@ -1545,10 +1550,19 @@ mod tests {
         assert!(d.focus_requested(first));
     }
 
-    /// Dave's frame, cut down: the keybindings and their dispatch, then a
-    /// stand-in for the active session's chat input that takes focus when
-    /// asked, as `DaveUi::inputbox` does.
+    /// Dave's frame, cut down: chrome's keymap and the tool it calls, then
+    /// the keybindings and their dispatch, then a stand-in for the active
+    /// session's chat input that takes focus when asked, as
+    /// `DaveUi::inputbox` does.
     fn normal_mode_frame(ui: &mut egui::Ui, d: &mut Dispatch) {
+        let offers = ActiveOffers {
+            ai_mode: AiMode::Agentic,
+            interruptible: false,
+            has_issue: false,
+        };
+        if let Some(action) = d.chrome.frame(ui.ctx(), &mut d.normal_mode, offers, false) {
+            d.dispatch(action, ui.ctx());
+        }
         let in_tentative_state = d
             .session_manager
             .get_active()
@@ -1557,8 +1571,6 @@ mod tests {
         let keys = KeyContext {
             ai_mode: AiMode::Agentic,
             sessions_shown: true,
-            interruptible: false,
-            has_issue: false,
             has_pending_permission: update::first_pending_permission(&d.session_manager).is_some(),
             has_pending_question: false,
             in_tentative_state,

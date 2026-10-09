@@ -115,9 +115,6 @@ Ask_b7f4 = Ask
 # Placeholder text for Dave AI input field
 Ask_dave_anything_33d1 = Ask dave anything...
 
-# Dave which-key tooltip: point normal mode's motions back at the chat
-Back_to_the_chat_5877 = Back to the chat
-
 # Dave session inspector section: background tasks, monitors, wake-ups and crons
 Background_f543 = Background
 
@@ -154,9 +151,6 @@ Cancel_fd8b = Cancel
 # Dave session tab: the chat transcript
 Chat_32a7 = Chat
 
-# Dave which-key tooltip: show the active session's chat tab
-Chat_tab_58ab = Chat tab
-
 # Title for the list of chat conversations
 Chats_dc22 = Chats
 
@@ -172,20 +166,8 @@ Click_to_edit_0414 = Click to edit
 # Button to go to the ClnDash app
 ClnDash_2988 = ClnDash
 
-# Dave which-key tooltip: start a new agent in the active session's directory
-Clone_agent_3757 = Clone agent
-
-# Dave which-key tooltip: collapse every block in the chat
-Collapse_all_blocks_79ec = Collapse all blocks
-
-# Dave which-key tooltip: collapse the focused block
-Collapse_block_87e0 = Collapse block
-
 # Button to go to the Columns app
 Columns_7215 = Columns
-
-# Dave which-key tooltip: open an external editor to write the message
-Compose_in_external_editor_5bf2 = Compose in external editor
 
 # Column title for note composition
 Compose_Note_c094 = Compose Note
@@ -286,9 +268,6 @@ Custom_a69e = Custom
 # Column title for zap amount customization
 Customize_Zap_Amount_cfc4 = Customize Zap Amount
 
-# Dave which-key tooltip: cycle the active session's permission mode
-Cycle_permission_mode_4d95 = Cycle permission mode
-
 # Damus android beta version label
 Damus_Android_BETA_e76b = Damus Android BETA
 
@@ -328,9 +307,6 @@ Default_Deck_fcca = Default Deck
 # Button label to delete a deck
 Delete_Deck_bb29 = Delete Deck
 
-# Dave which-key tooltip: delete the active session
-Delete_session_2527 = Delete session
-
 # Tooltip for deleting a column
 Delete_this_column_8d5a = Delete this column
 
@@ -361,9 +337,6 @@ Edit_Profile_8ad4 = Edit Profile
 # Dave session tab: the session inspector (usage, background work, files, …)
 Details_cd6b = Details
 
-# Dave which-key tooltip: show the active session's Details tab (usage, background work, files, …)
-Details_tab_ffd0 = Details tab
-
 # Dave session inspector overview row
 Directory_7dd2 = Directory
 
@@ -388,9 +361,6 @@ Extreme_1d70 = Extreme
 # Diff placeholder for a file moved with identical content
 File_renamed_without_changes_dd4e = File renamed without changes
 
-# Dave which-key tooltip: switch to the first session in the list
-First_session_fea9 = First session
-
 # Column title for followers
 Followed_by_e8c2 = Followed by
 
@@ -409,20 +379,11 @@ Hashtag_filter_disabled_a136 = Hashtag filter disabled
 # Title for hashtags column
 Hashtags_f8e0 = Hashtags
 
-# Dave which-key tooltip: expand every block in the chat
-Expand_all_blocks_55aa = Expand all blocks
-
-# Dave which-key tooltip: expand the focused block
-Expand_block_c8b3 = Expand block
-
 # Dave session inspector section: scratchpad, task output and edited files
 Files_0f4a = Files
 
 # Button to go to the Headway app
 Headway_b5c8 = Headway
-
-# Dave which-key tooltip: move the block cursor to the first block
-First_block_457f = First block
 
 # Title for Home column
 Home_8c19 = Home
@@ -453,9 +414,6 @@ Individual_b776 = Individual
 
 # Dave session inspector usage: uncached context tokens
 input__count_4370 = input {$count}
-
-# Dave which-key tooltip: leave normal mode and focus the chat input
-Insert__type_a_message_bd45 = Insert: type a message
 
 # Error message for invalid zap amount
 Invalid_amount_6630 = Invalid amount
@@ -511,9 +469,6 @@ Language_e264 = Language:
 # Title for last note per user column
 Last_Note_per_User_17ad = Last Note per User
 
-# Dave which-key tooltip: switch to the last session in the list
-Last_session_cdfc = Last session
-
 # Label for Theme Light, Appearance settings section
 Light_7475 = Light
 
@@ -526,17 +481,11 @@ Like_this_note_dfb5 = Like this note
 # Login page title
 Login_9eef = Login
 
-# Dave which-key tooltip: move the block cursor to the last block
-Last_block_8ffe = Last block
-
 # Login button text
 Login_now___let_s_do_this_5630 = Login now — let's do this!
 
 # Label for max hashtags per note, others settings section
 Max_hashtags_per_note_90e5 = Max hashtags per note:
-
-# Dave which-key tooltip: drop the block cursor and leave normal mode
-Leave_block_navigation_4bcb = Leave block navigation
 
 # Label for relay websocket connection limit setting
 Max_websocket_connections_8f75 = Max websocket connections:
@@ -607,20 +556,11 @@ Names_can_t_contain_spaces_or____This_row_won_t_be_saved_09bc = Names can't cont
 # Session environment row with a value but no variable name
 Needs_a_name__This_row_won_t_be_saved_e7b0 = Needs a name. This row won't be saved.
 
-# Dave which-key tooltip: start a new agent session
-New_agent_c761 = New agent
-
 # Title shown when composing a new conversation
 New_Chat_afb4 = New Chat
 
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = New to Nostr?
-
-# Dave which-key tooltip: jump to the next session waiting for attention
-Next_in_focus_queue_f2e9 = Next in focus queue
-
-# Dave which-key tooltip: switch to the next session in the list
-Next_session_0a8f = Next session
 
 # Shown when user has no contacts to display
 No_contacts_yet_cd10 = No contacts yet
@@ -648,9 +588,6 @@ No_usage_reported_yet_84dc = No usage reported yet
 
 # Empty relay section placeholder
 None_8249 = None
-
-# Dave which-key tooltip: move the block cursor down
-Next_block_5ed0 = Next block
 
 # NIP-05 identity field label
 Nostr_address__NIP-05_identity_74a2 = Nostr address (NIP-05 identity)
@@ -706,9 +643,6 @@ Nothing_yet_59ff = Nothing yet
 # Button label to open email client
 Open_Email_25e9 = Open Email
 
-# Dave which-key tooltip: open the issue (e.g. headway card) the active session works
-Open_the_session_s_issue_74f1 = Open the session's issue
-
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = Open your default email client to get help from the Damus team
 
@@ -757,12 +691,6 @@ Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard_
 # Dave session inspector section: permission mode, answered prompts, always-allow rules
 Permissions_d50b = Permissions
 
-# Dave which-key tooltip: jump to the previous session waiting for attention
-Previous_in_focus_queue_9b0e = Previous in focus queue
-
-# Dave which-key tooltip: switch to the previous session in the list
-Previous_session_2425 = Previous session
-
 # Section header for private sync relays
 Private_sync_560b = Private sync
 
@@ -786,9 +714,6 @@ Pruned_4894 = Pruned!
 
 # Status label while database pruning is running
 Pruning_1578 = Pruning...
-
-# Dave which-key tooltip: move the block cursor up
-Previous_block_18f7 = Previous block
 
 # label describing public key
 PUBLIC_ACCOUNT_ID_4394 = PUBLIC ACCOUNT ID
@@ -819,9 +744,6 @@ Remove_variable_625d = Remove variable
 
 # Dave session inspector section: the account's rate-limit windows
 Rate_limits_8fef = Rate limits
-
-# Dave which-key tooltip: rename the active session
-Rename_session_cb48 = Rename session
 
 # Column title for reply composition
 Reply_3bf1 = Reply
@@ -943,9 +865,6 @@ Session_7dd2 = Session
 # Settings section for environment variables exported into agent sessions
 Session_environment_0dda = Session environment
 
-# Dave which-key tooltip: point normal mode's motions at the session list
-Session_list_d548 = Session list
-
 # Button to go to the settings view
 Settings_4d83 = Settings
 
@@ -1012,9 +931,6 @@ Step_2_d08d = Step 2
 # Button to interrupt/stop the AI operation
 Stop_5b38 = Stop
 
-# Dave which-key tooltip: stop the active session's running turn
-Stop_the_turn_7ecf = Stop the turn
-
 # Dave session inspector: the agent CLI process is not running
 Stopped___the_next_message_starts_it_e76d = Stopped · the next message starts it
 
@@ -1072,9 +988,6 @@ Today_bd04 = Today
 # Dave session inspector section: the agent's task list
 Tasks_2037 = Tasks
 
-# Dave which-key tooltip: switch between the scene view and the list view
-Toggle_scene_view_867b = Toggle scene view
-
 # Dave session inspector usage: hover over one turn on the context sparkline
 Turn__number_____context_26c6 = Turn {$number} · {$context}
 
@@ -1098,9 +1011,6 @@ Use_outbox_relays_9e4d = Use outbox relays:
 
 # Checkbox label for using wallet only for current account
 Use_this_wallet_for_the_current_account_only_61dc = Use this wallet for the current account only
-
-# Dave which-key tooltip: expand or collapse the focused block
-Toggle_block_650e = Toggle block
 
 # Username and domain identification message
 username___at___domain___will_be_used_for_identification_a4fd = "{$username}" at "{$domain}" will be used for identification

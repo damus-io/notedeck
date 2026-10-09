@@ -1,13 +1,13 @@
-//! Dave's **UI tools**: the actions behind its normal-mode chord, by name, so
-//! chrome's keymap, its macros and (opted-in) agents can run them (see
+//! Dave's **UI tools**: the actions behind its normal-mode keys, by name.
+//! Chrome's keymap binds the keys to them (`default_keymap.toml`, the `dave.*`
+//! scopes), and its macros and (opted-in) agents can run them too (see
 //! [`notedeck::App::ui_tools`]).
 //!
-//! Each tool parses into the [`KeyAction`] its chord key produces, and runs
-//! through the same dispatch (`Dave::dispatch_key_action`), so a key and its
-//! tool called by name have one effect. What an action does to normal mode
-//! itself — `i` ending it, `h` pointing the motions at the session list — is
-//! [`NormalMode::after_action`](crate::ui::keybindings::NormalMode::after_action),
-//! which both paths call.
+//! Each tool parses into a [`KeyAction`] and runs through Dave's dispatch
+//! (`Dave::dispatch_key_action`), the same one the Ctrl ladder uses. What an
+//! action does to normal mode itself — `i` ending it, `h` pointing the motions
+//! at the session list — is
+//! [`NormalMode::after_action`], which [`begin_call`] runs.
 //!
 //! The tools are live only in normal mode, like the keys: this module answers
 //! from state alone, without allocating, which tools are
@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 
 use notedeck::{ToolArg, ToolArgType, ToolSpec};
 
-use crate::ui::keybindings::{KeyAction, NormalView, Pane};
+use crate::ui::keybindings::{KeyAction, NormalMode, NormalView, Pane};
 
 /// `j`/`k`/`gg`/`G`/`q` in the chat: move or drop the block cursor.
 pub(crate) const BLOCK_CURSOR: &str = "dave_block_cursor";
@@ -51,6 +51,8 @@ pub(crate) const OPEN_ISSUE: &str = "dave_open_issue";
 pub(crate) const INTERRUPT: &str = "dave_interrupt";
 /// `]q` / `[q`: step through the focus queue.
 pub(crate) const FOCUS_QUEUE: &str = "dave_focus_queue";
+/// `gd` / `gc`: show the active session's Details or Chat tab.
+pub(crate) const SESSION_TAB: &str = "dave_session_tab";
 
 /// One of Dave's UI tools, by name. Its arguments pick the [`KeyAction`]
 /// ([`parse`](Self::parse)); availability takes none ([`available`]).
@@ -71,6 +73,7 @@ pub(crate) enum DaveUiTool {
     OpenIssue,
     Interrupt,
     FocusQueue,
+    SessionTab,
 }
 
 /// Where `dave_block_cursor` takes the block cursor.
@@ -136,6 +139,17 @@ enum Dir {
 /// The values of [`Dir`].
 const DIRS: &[&str] = &["next", "prev"];
 
+/// Which of the session's tabs `dave_session_tab` shows.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum Tab {
+    Chat,
+    Details,
+}
+
+/// The values of [`Tab`].
+const TABS: &[&str] = &["chat", "details"];
+
 /// `dave_block_cursor`'s arguments.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -171,6 +185,13 @@ struct QueueArgs {
     dir: Dir,
 }
 
+/// `dave_session_tab`'s arguments.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TabArgs {
+    tab: Tab,
+}
+
 /// An argument-free tool's arguments: none.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -183,7 +204,7 @@ fn enum_arg(name: &'static str, values: &'static [&'static str], doc: &'static s
 
 impl DaveUiTool {
     /// Every tool, in the order [`specs`](Self::specs) lists them.
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::BlockCursor,
         Self::Block,
         Self::FocusPane,
@@ -199,6 +220,7 @@ impl DaveUiTool {
         Self::OpenIssue,
         Self::Interrupt,
         Self::FocusQueue,
+        Self::SessionTab,
     ];
 
     /// The tool's name.
@@ -219,6 +241,7 @@ impl DaveUiTool {
             Self::OpenIssue => OPEN_ISSUE,
             Self::Interrupt => INTERRUPT,
             Self::FocusQueue => FOCUS_QUEUE,
+            Self::SessionTab => SESSION_TAB,
         }
     }
 
@@ -282,6 +305,11 @@ impl DaveUiTool {
                 "Step to the next or previous session in the focus queue.",
                 vec![enum_arg("dir", DIRS, "Which way to step.")],
             ),
+            Self::SessionTab => (
+                "Show the active session's Chat tab or its Details tab (usage, background \
+                 work, files, …).",
+                vec![enum_arg("tab", TABS, "The tab to show.")],
+            ),
         };
         ToolSpec::new(self.name(), description, args).ui()
     }
@@ -344,6 +372,13 @@ impl DaveUiTool {
                     Dir::Prev => A::FocusQueuePrev,
                 }
             }
+            Self::SessionTab => {
+                let TabArgs { tab } = parse_args(name, args)?;
+                match tab {
+                    Tab::Chat => A::ShowChat,
+                    Tab::Details => A::ShowDetails,
+                }
+            }
             Self::InsertMode => no_args(name, args, A::InsertMode)?,
             Self::NewAgent => no_args(name, args, A::NewAgent)?,
             Self::CloneAgent => no_args(name, args, A::CloneAgent)?,
@@ -355,28 +390,6 @@ impl DaveUiTool {
             Self::OpenIssue => no_args(name, args, A::OpenIssue)?,
             Self::Interrupt => no_args(name, args, A::Interrupt)?,
         })
-    }
-
-    /// The action [`NormalView::offers`] is asked about for this tool, when
-    /// one stands for all its arguments: every action an agentic-only tool
-    /// takes is agentic-only. `None` for the pane tools, which answer by pane.
-    fn gate(self) -> Option<KeyAction> {
-        use KeyAction as A;
-        match self {
-            Self::BlockCursor | Self::Block | Self::SessionCursor => None,
-            Self::FocusPane => Some(A::FocusChatPane),
-            Self::InsertMode => Some(A::InsertMode),
-            Self::NewAgent => Some(A::NewAgent),
-            Self::CloneAgent => Some(A::CloneAgent),
-            Self::RenameAgent => Some(A::RenameAgent),
-            Self::DeleteSession => Some(A::DeleteActiveSession),
-            Self::ToggleView => Some(A::ToggleView),
-            Self::CyclePermissionMode => Some(A::CyclePermissionMode),
-            Self::ExternalEditor => Some(A::OpenExternalEditor),
-            Self::OpenIssue => Some(A::OpenIssue),
-            Self::Interrupt => Some(A::Interrupt),
-            Self::FocusQueue => Some(A::FocusQueueNext),
-        }
     }
 }
 
@@ -394,9 +407,10 @@ fn no_args(name: &str, args: &Value, action: KeyAction) -> Result<KeyAction, Str
 /// Whether `tool` does anything now. `normal` is normal mode as Dave sees it
 /// this frame, or `None` outside it (insert mode, an overlay open, renaming),
 /// where no tool is available. In it, the block tools need the chat pane and
-/// the session cursor the session list; the rest are
-/// [`NormalView::offers`]: an issue for `dave_open_issue`, a running turn for
-/// `dave_interrupt`, an agentic session for the agentic-only tools.
+/// the session cursor the session list; `dave_open_issue` needs an issue,
+/// `dave_interrupt` a running turn, and the agentic-only tools an agentic
+/// session. A key bound to a tool that isn't available falls through to Dave,
+/// whose normal mode swallows it.
 ///
 /// `dave_focus_pane` is available whatever its pane: availability takes no
 /// arguments, and pointing at a session list that isn't shown does nothing,
@@ -408,8 +422,47 @@ pub(crate) fn available(tool: DaveUiTool, normal: Option<NormalView>) -> bool {
     match tool {
         DaveUiTool::BlockCursor | DaveUiTool::Block => view.pane == Pane::Chat,
         DaveUiTool::SessionCursor => view.pane == Pane::Sessions,
-        tool => tool.gate().is_some_and(|action| view.offers(&action)),
+        DaveUiTool::OpenIssue => view.has_issue,
+        DaveUiTool::Interrupt => view.interruptible,
+        DaveUiTool::CloneAgent
+        | DaveUiTool::ToggleView
+        | DaveUiTool::CyclePermissionMode
+        | DaveUiTool::FocusQueue => view.agentic,
+        DaveUiTool::FocusPane
+        | DaveUiTool::InsertMode
+        | DaveUiTool::NewAgent
+        | DaveUiTool::RenameAgent
+        | DaveUiTool::DeleteSession
+        | DaveUiTool::ExternalEditor
+        | DaveUiTool::SessionTab => true,
     }
+}
+
+/// The first half of calling the UI tool `name` with `args` in normal mode
+/// `view`: check it, and change `mode` as the action does
+/// ([`NormalMode::after_action`]). Returns the action left for Dave to
+/// dispatch, or `None` when the call does nothing (`dave_focus_pane` at a
+/// session list that isn't shown, as `h` there). An unknown tool, bad
+/// arguments or a tool that isn't [available] is an error, and leaves `mode`
+/// alone.
+pub(crate) fn begin_call(
+    mode: &mut NormalMode,
+    view: Option<NormalView>,
+    name: &str,
+    args: &Value,
+) -> Result<Option<KeyAction>, String> {
+    let action = DaveUiTool::parse(name, args)?;
+    let Some(tool) = DaveUiTool::from_name(name) else {
+        return Err(format!("unknown tool '{name}'"));
+    };
+    if !available(tool, view) {
+        return Err(format!("'{name}' is not available now"));
+    }
+    if action == KeyAction::FocusSessionsPane && !mode.sessions_shown() {
+        return Ok(None);
+    }
+    mode.after_action(&action);
+    Ok(Some(action))
 }
 
 /// Normal mode in the session list.
@@ -431,12 +484,10 @@ pub(crate) fn key_scopes(normal: Option<NormalView>) -> &'static [&'static str] 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::keybindings::Pending;
 
-    /// Normal mode at its root in `pane`, with everything on offer.
+    /// Normal mode in `pane`, with everything on offer.
     fn view(pane: Pane) -> NormalView {
         NormalView {
-            pending: Pending::Root,
             pane,
             sessions_shown: true,
             agentic: true,
@@ -494,6 +545,8 @@ mod tests {
             (EXTERNAL_EDITOR, json!({}), A::OpenExternalEditor),
             (OPEN_ISSUE, json!({}), A::OpenIssue),
             (INTERRUPT, json!({}), A::Interrupt),
+            (SESSION_TAB, json!({"tab": "details"}), A::ShowDetails),
+            (SESSION_TAB, json!({"tab": "chat"}), A::ShowChat),
         ];
         for (name, args, want) in cases {
             assert_eq!(DaveUiTool::parse(name, &args), Ok(want), "{name} {args}");
@@ -515,7 +568,7 @@ mod tests {
     }
 
     /// The truth table: nothing outside normal mode; the pane tools by pane;
-    /// the rest as the chord's keys offer them.
+    /// the rest by what the active session offers.
     #[test]
     fn availability_follows_the_mode_the_pane_and_the_session() {
         for tool in DaveUiTool::ALL {
@@ -757,5 +810,73 @@ mod dispatch_tests {
         f.dave.active_overlay = DaveOverlay::Settings;
         assert!(f.dave.key_scopes().is_empty());
         assert!(!f.dave.ui_tool_available(INSERT_MODE));
+    }
+}
+
+/// Chrome's part of a Dave frame, for Dave's own key tests: chrome's key
+/// engine on the shipped `default_keymap.toml`, resolving the frame's press
+/// against normal mode's [key scopes](key_scopes) ahead of Dave, as the app
+/// does, and the tool it's bound to begun on normal mode as
+/// `Dave::run_ui_tool` begins it ([`begin_call`]). Chrome's own tools (`?`'s
+/// strip) aren't offered, so their keys reach Dave.
+#[cfg(test)]
+pub(crate) mod chrome_keys {
+    use super::*;
+    use crate::ui::keybindings::ActiveOffers;
+    use notedeck::ToolInvocation;
+    use notedeck_chrome::keymap::{KeyDispatch, KeyEngine, Scopes};
+
+    /// The engine, and every call it made.
+    pub(crate) struct ChromeKeys {
+        engine: KeyEngine,
+        /// The tool calls the keys made, oldest first.
+        pub(crate) calls: Vec<ToolInvocation>,
+    }
+
+    impl ChromeKeys {
+        pub(crate) fn new() -> Self {
+            let engine = KeyEngine::with_default_keymap();
+            assert!(engine.keymap().warnings().is_empty());
+            Self {
+                engine,
+                calls: Vec::new(),
+            }
+        }
+
+        /// The engine, for its keymap and pending chord.
+        pub(crate) fn engine(&self) -> &KeyEngine {
+            &self.engine
+        }
+
+        /// Resolve this frame's press against `mode` with the active
+        /// session's `offers` (no scopes under an overlay, as
+        /// `Dave::normal_view` says), and begin the tool it's bound to.
+        /// Returns the action left for Dave to dispatch. A binding whose
+        /// call fails is a broken keymap, so it panics.
+        pub(crate) fn frame(
+            &mut self,
+            ctx: &egui::Context,
+            mode: &mut NormalMode,
+            offers: ActiveOffers,
+            overlay_open: bool,
+        ) -> Option<KeyAction> {
+            let view = if overlay_open {
+                None
+            } else {
+                mode.view(offers)
+            };
+            let available =
+                |name: &str| DaveUiTool::from_name(name).is_some_and(|tool| available(tool, view));
+            let Some(KeyDispatch::Tool(call)) =
+                self.engine
+                    .resolve(ctx, Scopes::new(key_scopes(view)), available)
+            else {
+                return None;
+            };
+            let action = begin_call(mode, view, &call.name, &call.args)
+                .unwrap_or_else(|err| panic!("keymap binds {} {}: {err}", call.name, call.args));
+            self.calls.push(call);
+            action
+        }
     }
 }

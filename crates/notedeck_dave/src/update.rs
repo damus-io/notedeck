@@ -2842,36 +2842,46 @@ mod tests {
         harness.state_mut().take()
     }
 
-    /// Type Esc then `S` in a real egui frame, with a turn running, and return
-    /// the keybinding it triggers.
+    /// Type Esc then `S` in a real egui frame, with a turn running, through
+    /// chrome's keymap and then Dave's keybindings, and return the action it
+    /// triggers.
     fn press_escape_shift_s() -> Option<crate::ui::keybindings::KeyAction> {
-        use crate::ui::keybindings::{check_keybindings, KeyAction, KeyContext, NormalMode};
+        use crate::ui::keybindings::{
+            check_keybindings, ActiveOffers, KeyAction, KeyContext, NormalMode,
+        };
+        use crate::ui_tools::chrome_keys::ChromeKeys;
 
         let mut harness = egui_kittest::Harness::new_ui_state(
-            |ui, (chord, action): &mut (NormalMode, Option<KeyAction>)| {
+            |ui, (mode, chrome, action): &mut (NormalMode, ChromeKeys, Option<KeyAction>)| {
                 // Accumulate: `press_key` runs a key-down frame and then a
                 // key-up frame, whose `None` would otherwise clobber the hit.
+                let offers = ActiveOffers {
+                    ai_mode: AiMode::Agentic,
+                    interruptible: true,
+                    has_issue: false,
+                };
+                if let Some(a) = chrome.frame(ui.ctx(), mode, offers, false) {
+                    *action = Some(a);
+                }
                 let keys = KeyContext {
                     ai_mode: AiMode::Agentic,
                     sessions_shown: true,
-                    interruptible: true,
-                    has_issue: false,
                     has_pending_permission: false,
                     has_pending_question: false,
                     in_tentative_state: false,
                     overlay_open: false,
                     renaming: false,
                 };
-                if let Some(a) = check_keybindings(ui.ctx(), chord, keys) {
+                if let Some(a) = check_keybindings(ui.ctx(), mode, keys) {
                     *action = Some(a);
                 }
             },
-            (NormalMode::default(), None),
+            (NormalMode::default(), ChromeKeys::new(), None),
         );
         harness.run();
         harness.press_key_modifiers(egui::Modifiers::NONE, egui::Key::Escape);
         harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::S);
-        harness.state().1.clone()
+        harness.state().2.clone()
     }
 
     /// Both gestures reach the interrupt, and both leave the session usable.

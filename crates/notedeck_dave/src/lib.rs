@@ -1574,13 +1574,13 @@ impl notedeck::App for Dave {
 
     fn ui_tool_available(&self, name: &str) -> bool {
         ui_tools::DaveUiTool::from_name(name)
-            .is_some_and(|tool| ui_tools::available(tool, self.tool_view()))
+            .is_some_and(|tool| ui_tools::available(tool, self.normal_view()))
     }
 
     /// Normal mode's scopes, by pane; none in insert mode or under an overlay
     /// (see [`ui_tools::key_scopes`]).
     fn key_scopes(&self) -> &'static [&'static str] {
-        ui_tools::key_scopes(self.tool_view())
+        ui_tools::key_scopes(self.normal_view())
     }
 
     fn tab_notifications(&self, _ctx: &AppContext<'_>) -> notedeck::TabNotifications {

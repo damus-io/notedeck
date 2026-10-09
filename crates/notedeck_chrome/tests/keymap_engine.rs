@@ -92,6 +92,21 @@ async fn a_chord_broken_by_a_bound_key_runs_that_key() {
     assert_eq!(f.pending(), None);
 }
 
+/// Esc only cancels a chord, as in vim: it runs nothing, and the app never
+/// sees it. With no chord pending it's the app's.
+#[tokio::test]
+async fn esc_cancels_a_pending_chord() {
+    let mut f = fixture();
+    f.key(Key::G);
+    f.key(Key::Escape);
+    assert_eq!(f.calls(), Vec::<String>::new());
+    assert_eq!(f.pending(), None);
+    assert_eq!(f.seen(), [], "the Esc only dropped the g");
+
+    f.key(Key::Escape);
+    assert_eq!(f.seen(), [Key::Escape]);
+}
+
 #[tokio::test]
 async fn a_focused_text_field_keeps_its_keys() {
     let mut f = fixture();

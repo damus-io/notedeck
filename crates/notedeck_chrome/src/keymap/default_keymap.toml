@@ -3,8 +3,8 @@
 # for the format and keys.rs for the key syntax.
 #
 # The "global" scope is searched after the active app's own scopes, so an app
-# binding of the same keys wins. The apps' bindings move in here one app at a
-# time; until then they read their own keys.
+# binding of the same keys wins. Headway's and Dave's bindings live here; the
+# apps read no bare keys of their own.
 #
 # `label` and `group` are the which-key strip's: adjacent bindings of one
 # group with the same label share one hint (`j k  up/down`).
@@ -408,3 +408,296 @@ keys  = "<Esc>"
 tool  = "headway_back"
 label = "back"
 group = "detail"
+
+# ── Dave ────────────────────────────────────────────────────────────────────
+#
+# Dave's normal mode: Esc in the chat input enters it, and while it is on Dave
+# reports these scopes (crates/notedeck_dave/src/ui_tools.rs, `key_scopes`):
+#
+#   chat      dave.chat, dave.normal, dave
+#   sessions  dave.sessions, dave.normal, dave
+#
+# `h` / `l` switch between the two panes: `j k g g G` walk the chat's blocks
+# in one and the session list in the other. Insert mode reports none, so
+# every key types. Esc at normal mode's root isn't bound here: it falls
+# through to the side menu, and normal mode stays on. The permission keys
+# (`1 2 3 !`), a question's digits and Enter, and Delete are Dave's own, read
+# while the input is unfocused.
+
+# The chat pane: the block cursor and the folds.
+
+[[bind]]
+scope = "dave.chat"
+keys  = "j"
+tool  = "dave_block_cursor"
+args  = { to = "down" }
+label = "next/prev block"
+group = "blocks"
+
+[[bind]]
+scope = "dave.chat"
+keys  = "k"
+tool  = "dave_block_cursor"
+args  = { to = "up" }
+label = "next/prev block"
+group = "blocks"
+
+[[bind]]
+scope = "dave.chat"
+keys  = "g g"
+tool  = "dave_block_cursor"
+args  = { to = "first" }
+label = "first/last"
+group = "blocks"
+
+[[bind]]
+scope = "dave.chat"
+keys  = "G"
+tool  = "dave_block_cursor"
+args  = { to = "last" }
+label = "first/last"
+group = "blocks"
+
+[[bind]]
+scope = "dave.chat"
+keys  = "z a"
+tool  = "dave_block"
+args  = { op = "toggle" }
+label = "toggle"
+group = "fold"
+
+[[bind]]
+scope = "dave.chat"
+keys  = "o"
+tool  = "dave_block"
+args  = { op = "toggle" }
+label = "toggle"
+group = "fold"
+
+[[bind]]
+scope = "dave.chat"
+keys  = "z o"
+tool  = "dave_block"
+args  = { op = "open" }
+label = "expand"
+group = "fold"
+
+[[bind]]
+scope = "dave.chat"
+keys  = "z c"
+tool  = "dave_block"
+args  = { op = "close" }
+label = "collapse"
+group = "fold"
+
+# `zr` / `zm` with or without Shift: vim's `zR` / `zM`, but the shifted press
+# doesn't arrive reliably.
+
+[[bind]]
+scope = "dave.chat"
+keys  = "z r"
+tool  = "dave_block"
+args  = { op = "expand_all" }
+label = "expand all"
+group = "fold all"
+
+[[bind]]
+scope = "dave.chat"
+keys  = "z R"
+tool  = "dave_block"
+args  = { op = "expand_all" }
+label = "expand all"
+group = "fold all"
+
+[[bind]]
+scope = "dave.chat"
+keys  = "z m"
+tool  = "dave_block"
+args  = { op = "collapse_all" }
+label = "collapse all"
+group = "fold all"
+
+[[bind]]
+scope = "dave.chat"
+keys  = "z M"
+tool  = "dave_block"
+args  = { op = "collapse_all" }
+label = "collapse all"
+group = "fold all"
+
+[[bind]]
+scope = "dave.chat"
+keys  = "q"
+tool  = "dave_block_cursor"
+args  = { to = "clear" }
+label = "leave blocks"
+group = "exit"
+
+# The session list pane: switch sessions without focusing their input. Enter
+# picks the one you're on and hands its input the keyboard.
+
+[[bind]]
+scope = "dave.sessions"
+keys  = "j"
+tool  = "dave_session_cursor"
+args  = { to = "next" }
+label = "next/prev session"
+group = "sessions"
+
+[[bind]]
+scope = "dave.sessions"
+keys  = "k"
+tool  = "dave_session_cursor"
+args  = { to = "prev" }
+label = "next/prev session"
+group = "sessions"
+
+[[bind]]
+scope = "dave.sessions"
+keys  = "g g"
+tool  = "dave_session_cursor"
+args  = { to = "first" }
+label = "first/last"
+group = "sessions"
+
+[[bind]]
+scope = "dave.sessions"
+keys  = "G"
+tool  = "dave_session_cursor"
+args  = { to = "last" }
+label = "first/last"
+group = "sessions"
+
+[[bind]]
+scope = "dave.sessions"
+keys  = "<Enter>"
+tool  = "dave_insert_mode"
+label = "pick"
+group = "exit"
+
+# Either pane: the panes, back to the input, and the session's own keys.
+
+[[bind]]
+scope = "dave.normal"
+keys  = "h"
+tool  = "dave_focus_pane"
+args  = { pane = "sessions" }
+label = "session list"
+group = "pane"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "l"
+tool  = "dave_focus_pane"
+args  = { pane = "chat" }
+label = "chat"
+group = "pane"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "i"
+tool  = "dave_insert_mode"
+label = "insert"
+group = "exit"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "a"
+tool  = "dave_insert_mode"
+label = "insert"
+group = "exit"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "n"
+tool  = "dave_new_agent"
+label = "new"
+group = "session"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "c"
+tool  = "dave_clone_agent"
+label = "clone"
+group = "session"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "r"
+tool  = "dave_rename_agent"
+label = "rename"
+group = "session"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "d d"
+tool  = "dave_delete_session"
+label = "delete"
+group = "session"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "v"
+tool  = "dave_toggle_view"
+label = "scene view"
+group = "view"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "m"
+tool  = "dave_cycle_permission_mode"
+label = "permission mode"
+group = "view"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "e"
+tool  = "dave_external_editor"
+label = "editor"
+group = "view"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "g d"
+tool  = "dave_session_tab"
+args  = { tab = "details" }
+label = "details/chat tab"
+group = "view"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "g c"
+tool  = "dave_session_tab"
+args  = { tab = "chat" }
+label = "details/chat tab"
+group = "view"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "s"
+tool  = "dave_open_issue"
+label = "open issue"
+group = "turn"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "S"
+tool  = "dave_interrupt"
+label = "stop turn"
+group = "turn"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "] q"
+tool  = "dave_focus_queue"
+args  = { dir = "next" }
+label = "focus queue"
+group = "queue"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "[ q"
+tool  = "dave_focus_queue"
+args  = { dir = "prev" }
+label = "focus queue"
+group = "queue"

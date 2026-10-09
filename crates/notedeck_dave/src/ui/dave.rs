@@ -1,6 +1,5 @@
 use super::badge::{BadgeVariant, StatusBadge};
 use super::block_nav::BlockNav;
-use super::chord_hints;
 use super::diff;
 use super::git_status_ui;
 use super::inspector::{inspector_ui, session_tabs_ui, SessionFacts};
@@ -569,25 +568,6 @@ impl<'a> DaveUi<'a> {
                             .show(ui, |ui| self.inputbox(app_ctx, ui))
                             .inner
                     };
-
-                    // Which-key strip: what normal mode accepts next, just
-                    // above the input it took focus from.
-                    if let Some(normal_mode) = self.normal_mode {
-                        let w = ui.available_width();
-                        let h = chord_hints::strip_height(ui, normal_mode);
-                        ui.allocate_ui(egui::vec2(w, h), |ui| {
-                            egui::Frame::new()
-                                .outer_margin(egui::Margin {
-                                    left: margin,
-                                    right: margin,
-                                    top: 4,
-                                    bottom: 0,
-                                })
-                                .show(ui, |ui| {
-                                    chord_hints::chord_hints_ui(ui, app_ctx.i18n, normal_mode)
-                                });
-                        });
-                    }
 
                     {
                         let has_git = self.git_status.is_some();
