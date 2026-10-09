@@ -241,6 +241,7 @@ impl BoardUiState {
         self.review.close();
         self.selected = None;
         self.detail_for = None;
+        self.detail_field_focused = false;
     }
 
     /// Leave the queue for the current card's detail. The queue keeps its
@@ -293,21 +294,22 @@ impl BoardUiState {
 
     /// Note, as a detail pass ends, whether a widget in it holds the
     /// keyboard (the title or description editor, a composer), for
-    /// [`esc_left_a_field`](Self::esc_left_a_field) to read next pass.
+    /// [`detail_field_focused`](Self::detail_field_focused) to read next pass.
     pub(crate) fn latch_detail_focus(&mut self, ctx: &egui::Context) {
-        self.detail_focus_pass = ctx
-            .memory(|m| m.focused().is_some())
-            .then(|| ctx.cumulative_pass_nr());
+        self.detail_field_focused = ctx.memory(|m| m.focused().is_some());
     }
 
-    /// Whether a widget held the keyboard as the last pass ended, so this
-    /// pass's Esc is one egui has already spent: it drops a text field's focus
-    /// on Esc as the pass begins, before any keymap reads the press. The detail
-    /// keys then only swallow it, and the field commits its edit as it lays
-    /// out, rather than the detail closing over an uncommitted edit.
-    pub(crate) fn esc_left_a_field(&self, ctx: &egui::Context) -> bool {
-        self.detail_focus_pass
-            .is_some_and(|pass| pass + 1 == ctx.cumulative_pass_nr())
+    /// Whether a widget in the detail held the keyboard as the last detail
+    /// pass ended. If nothing holds it now, this pass's key is an Esc egui has
+    /// already spent: it drops a text field's focus on Esc as the pass begins,
+    /// before chrome's keymap (which stands down only while a widget has
+    /// focus) reads the press. So `headway_back` isn't available
+    /// ([`crate::ui_tools::available`]): the Esc falls through to the detail,
+    /// whose field commits its edit as it lays out and whose backstop
+    /// swallows the key, rather than the detail closing over the edit. The
+    /// next Esc leaves the card.
+    pub(crate) fn detail_field_focused(&self) -> bool {
+        self.detail_field_focused
     }
 
     /// `D`: move `card` to the end of the Done column. On the queue's current

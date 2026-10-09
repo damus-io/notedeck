@@ -70,14 +70,19 @@ struct ChromeState {
     fonts_installed: bool,
 }
 
-/// One real chrome frame. The first only installs fonts, which egui applies
-/// on the next pass.
+/// One real chrome frame, as the host runs it. The first only installs
+/// fonts, which egui applies on the next pass.
 fn chrome_frame(ui: &mut egui::Ui, state: &mut ChromeState) {
     notedeck::test_harness::full_window(ui, |ui| {
         if !state.fonts_installed {
             state.notedeck.setup(ui.ctx());
             state.fonts_installed = true;
             return;
+        }
+        // As the host does each frame: the tool registry follows the running
+        // apps, so chrome's keymap can find Headway's UI tools.
+        if let Some(update) = App::take_tool_update(&mut state.chrome) {
+            state.notedeck.apply_tool_update(update);
         }
         let mut app_ctx = state.notedeck.app_context();
         state.chrome.update(&mut app_ctx);

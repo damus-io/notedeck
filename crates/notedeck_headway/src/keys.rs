@@ -1,48 +1,40 @@
-//! Headway's **bare-key keymaps**, one per view: the board grid
-//! ([`board_keys`]), the review pane in the queue or opened from a card
-//! ([`review_pane_keys`]), and the card detail ([`detail_keys`]).
+//! What Headway's **key actions** do, one `apply_*` per view: the board grid
+//! ([`apply_grid_tool`]), the review pane in the queue or opened from a card
+//! ([`apply_pane_tool`]), and the card detail ([`apply_detail_tool`]).
 //!
-//! Keys come in two classes.
+//! Headway reads no keys of its own. Chrome's keymap (`default_keymap.toml` in
+//! `notedeck_chrome`) binds each key, in the [key scopes](crate::ui_tools::key_scopes)
+//! of the view in front, to one of Headway's UI tools ([`crate::ui_tools`]);
+//! the tool is queued on [`BoardUiState`] and run here as the board renders,
+//! by [`pane_tools`] for whatever shows over the grid and [`grid_tools`] for
+//! the grid, so a key and the same tool called by name have one effect.
+//!
+//! The actions come in two classes.
 //!
 //! - **Card actions** act on *the current card* — the grid's cursor card, the
 //!   queue's card, a review pane's card, the open detail's card — and mean the
-//!   same thing in every view: `Enter`/`o` open it, `e` its explainer, `s`/`S`
-//!   its agentium session (`S` asking for a code review), `r` its review, `a`
-//!   archive, `D` done, `X` send back with a reason, `n`/`p` next/previous
-//!   card. One table ([`CARD_ACTION_HINTS`]), one mapping ([`card_action`]) and
-//!   one dispatcher ([`apply_card_action`]), which each view's keymap tries
-//!   before its own navigation.
+//!   same thing in every view: open it, its explainer, its agentium session
+//!   (optionally asking for a code review), its review, archive, done, send
+//!   back with a reason, next/previous card. One enum ([`CardAction`]) and
+//!   one dispatcher ([`apply_card_action`]), which every view shares.
 //! - **Navigation** keeps its meaning while its target is whatever the view
-//!   shows: `j`/`k` down/up (the grid's cursor; the diff or the detail
-//!   scrolls), `gg`/`G` first/last, `Ctrl-d`/`Ctrl-u` half a page, `]`/`[` the
-//!   next/previous file of a diff, `q`/`Esc` back out, `?` the which-key strip.
-//!   The grid adds `h`/`l` across columns, `H`/`L`/`J`/`K` to move the cursor
-//!   card, `c` to create a card, `/` to filter and `R` for the review queue
-//!   over In Review; the detail's `R` opens the queue over the card's own In
-//!   Review descendants.
+//!   shows: the grid's cursor and its card moves, a pane's or the detail's
+//!   scroll ([`PaneScroll`]), backing out.
 //!
-//! The chord mechanics (reading the press, timing out a pending `g`, swallowing
-//! handled keys) are [`notedeck_ui::chord`]'s; the grid math is
-//! [`crate::cursor`]'s. This module is only the mapping between them, plus the
-//! which-key strips ([`key_hints_ui`]) that document it. Each view's keys
-//! have one owner, which runs once per frame before any of that view's
-//! widgets lay out: [`pane_keys`], from [`crate::ui::board_ui`], for whatever
-//! shows over the grid, and [`board_keys`], from the grid's own pane as it
-//! starts. They allocate nothing of their own (bar what a key sends: the
-//! comment and session message an `X` posts, a session open).
+//! What stays here as keys:
 //!
-//! A key goes in two steps: a per-view mapping from the press to the
-//! [`HeadwayUiTool`] it stands for ([`board_key_tool`], [`review_key_tool`],
-//! [`detail_key_tool`]), then that view's `apply_*` ([`apply_grid_tool`],
-//! [`apply_pane_tool`], [`apply_detail_tool`]). The same tools, called by name
-//! through [`crate::ui_tools`], are queued and run by [`pane_tools`] and
-//! [`grid_tools`] right after the keymaps, through the same `apply_*`. Only
-//! the chord's `g`, `?` and the conditional `Esc`s are the keymaps' own.
+//! - the board edits `a` (archive), `D` (done) and `H`/`L`/`J`/`K` (move the
+//!   cursor card) ([`edit_keys`]). They're data tools (`crate::tools`), which
+//!   chrome's keymap can't call yet, so Headway reads them itself and queues
+//!   them through the same `apply_*` path;
+//! - the text fields': the `X` composer's Enter and Esc ([`reason_keys`]),
+//!   which run while its field has the keyboard, where chrome's keymap stands
+//!   down. (The detail's Esc out of a field is an availability rule instead:
+//!   [`BoardUiState::detail_field_focused`].)
 
 use egui::{Key, Modifiers};
 use nostrdb_net::NoteId;
-use notedeck::ColorTheme;
-use notedeck_ui::chord::{self, KeyPress};
+use notedeck_ui::chord;
 use notedeck_ui::diff::PatchScroll;
 
 use crate::cursor::{self, CursorMove, Side, Vertical};
@@ -54,28 +46,13 @@ use crate::ui::{
 };
 use crate::ui_tools::HeadwayUiTool;
 
-/// Chord steps the board grid can be waiting on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BoardPending {
-    /// `g` was pressed; a second `g` jumps to the top of the column.
-    G,
-}
-
-/// Chord steps the review pane and the card detail can be waiting on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PanePending {
-    /// `g` was pressed; a second `g` scrolls to the top.
-    G,
-}
-
 /// An action on the current card, the same in every view that has one (see
-/// the module docs). Read off a key by [`card_action`], applied by
-/// [`apply_card_action`].
+/// the module docs), applied by [`apply_card_action`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CardAction {
     /// `Enter`/`o`: open the card's detail. The detail itself has nothing to
-    /// open, so its strip leaves the key out ([`DETAIL_ACTION_HINTS`]); a
-    /// plain review pane backs out to it.
+    /// open, so the tool isn't available there; a plain review pane backs out
+    /// to it.
     Open,
     /// `e`: open the explainer of the card's record. `None` (the key) is the
     /// record a review pane shows, else the newest; a click on one record's
@@ -104,27 +81,6 @@ pub(crate) enum CardAction {
     /// `n`/`p`: the next/previous card — the grid's cursor, the queue's card,
     /// or the neighbouring card in the column of a detail or review pane.
     Step(CardStep),
-}
-
-/// The [`CardAction`] a press means, if any. Bare presses only; Shift picks
-/// the capital.
-pub(crate) fn card_action(press: KeyPress) -> Option<CardAction> {
-    if !press.is_bare() {
-        return None;
-    }
-    Some(match (press.key, press.modifiers.shift) {
-        (Key::Enter, _) | (Key::O, false) => CardAction::Open,
-        (Key::E, false) => CardAction::Explainer(None),
-        (Key::S, false) => CardAction::Session(SessionOpen::Plain, None),
-        (Key::S, true) => CardAction::Session(SessionOpen::CodeReview, None),
-        (Key::R, false) => CardAction::Review(None),
-        (Key::A, false) => CardAction::Archive,
-        (Key::D, true) => CardAction::Done,
-        (Key::X, true) => CardAction::SendBack,
-        (Key::N, false) => CardAction::Step(CardStep::Next),
-        (Key::P, false) => CardAction::Step(CardStep::Prev),
-        _ => return None,
-    })
 }
 
 /// The view a [`CardAction`] was pressed in, for the few actions whose effect
@@ -224,357 +180,6 @@ fn step_move(step: CardStep) -> CursorMove {
     }
 }
 
-/// One keycap group in the which-key strip: keys that share a job, and the job.
-#[derive(Debug)]
-pub(crate) struct KeyHint {
-    /// The group's keycaps, as drawn. A chord (`gg`) is one keycap; a capital
-    /// is the shifted key.
-    pub keys: &'static [&'static str],
-    /// What the group does, drawn muted after its keycaps.
-    pub label: &'static str,
-}
-
-/// A which-key strip: hint tables drawn one after another, as one run.
-pub(crate) type HintStrip = &'static [&'static [KeyHint]];
-
-/// The [`CardAction`] keys, in every view's strip. The `card_actions_mean_the
-/// _same_in_every_view` test replays each keycap in all four views.
-pub(crate) const CARD_ACTION_HINTS: &[KeyHint] = &[
-    KeyHint {
-        keys: &["\u{21B5}", "o"],
-        label: "open",
-    },
-    KeyHint {
-        keys: &["e"],
-        label: "explainer",
-    },
-    KeyHint {
-        keys: &["s", "S"],
-        label: "session/review",
-    },
-    KeyHint {
-        keys: &["r"],
-        label: "review diff",
-    },
-    KeyHint {
-        keys: &["a"],
-        label: "archive",
-    },
-    KeyHint {
-        keys: &["D"],
-        label: "done",
-    },
-    KeyHint {
-        keys: &["X"],
-        label: "send back",
-    },
-    KeyHint {
-        keys: &["n", "p"],
-        label: "next/prev card",
-    },
-];
-
-/// The grid's own navigation. Every key here, and in [`CARD_ACTION_HINTS`],
-/// is replayed through [`board_keys`] by the `every_hint_does_what_it_says`
-/// test, so the strip can't drift from the keymap.
-pub(crate) const BOARD_NAV_HINTS: &[KeyHint] = &[
-    KeyHint {
-        keys: &["j", "k"],
-        label: "up/down",
-    },
-    KeyHint {
-        keys: &["h", "l"],
-        label: "columns",
-    },
-    KeyHint {
-        keys: &["gg", "G"],
-        label: "first/last",
-    },
-    KeyHint {
-        keys: &["H", "L"],
-        label: "move card",
-    },
-    KeyHint {
-        keys: &["J", "K"],
-        label: "reorder",
-    },
-    KeyHint {
-        keys: &["c"],
-        label: "new",
-    },
-    KeyHint {
-        keys: &["R"],
-        label: "review queue",
-    },
-    KeyHint {
-        keys: &["/"],
-        label: "filter",
-    },
-    KeyHint {
-        keys: &["esc"],
-        label: "clear",
-    },
-];
-
-/// Scrolling a review pane's diff, in the queue or not. `^f` is Ctrl+F.
-pub(crate) const REVIEW_NAV_HINTS: &[KeyHint] = &[
-    KeyHint {
-        keys: &["j", "k"],
-        label: "scroll",
-    },
-    KeyHint {
-        keys: &["space", "^f", "^b"],
-        label: "page",
-    },
-    KeyHint {
-        keys: &["^d", "^u"],
-        label: "half page",
-    },
-    KeyHint {
-        keys: &["gg", "G"],
-        label: "top/bottom",
-    },
-    KeyHint {
-        keys: &["]", "["],
-        label: "next/prev file",
-    },
-];
-
-/// Commenting in a review pane: on the lines picked in its diff (a click on
-/// a line's numbers, shift-click for a run, a hunk's header for all of it),
-/// or, with none picked, on the commit as a whole.
-pub(crate) const REVIEW_COMMENT_HINTS: &[KeyHint] = &[
-    KeyHint {
-        keys: &["c"],
-        label: "comment (picked lines or commit)",
-    },
-    KeyHint {
-        keys: &["C"],
-        label: "send comments",
-    },
-];
-
-/// Leaving the review queue, for the grid.
-pub(crate) const QUEUE_EXIT_HINTS: &[KeyHint] = &[KeyHint {
-    keys: &["q", "esc"],
-    label: "leave",
-}];
-
-/// Leaving a plain review pane, for its card's detail.
-pub(crate) const PANE_EXIT_HINTS: &[KeyHint] = &[KeyHint {
-    keys: &["q", "esc"],
-    label: "back to card",
-}];
-
-/// The card actions the detail offers: all of [`CARD_ACTION_HINTS`] bar the
-/// first, `open`, which it has nothing for (the card is open). The key still
-/// maps to [`CardAction::Open`] there, so a card action means the same in
-/// every view; the strip just doesn't advertise a no-op.
-pub(crate) const DETAIL_ACTION_HINTS: &[KeyHint] = match CARD_ACTION_HINTS.split_first() {
-    Some((_open, rest)) => rest,
-    None => &[],
-};
-
-/// Scrolling the card detail, reviewing what's under it, and leaving it for
-/// the grid. Every key here, and in [`DETAIL_ACTION_HINTS`], is replayed
-/// through [`detail_keys`] by the `every_detail_hint_does_what_it_says` test.
-pub(crate) const DETAIL_NAV_HINTS: &[KeyHint] = &[
-    KeyHint {
-        keys: &["j", "k"],
-        label: "scroll",
-    },
-    KeyHint {
-        keys: &["space", "^f", "^b"],
-        label: "page",
-    },
-    KeyHint {
-        keys: &["^d", "^u"],
-        label: "half page",
-    },
-    KeyHint {
-        keys: &["gg", "G"],
-        label: "top/bottom",
-    },
-    KeyHint {
-        keys: &["R"],
-        label: "review queue here",
-    },
-    KeyHint {
-        keys: &["q", "esc"],
-        label: "back",
-    },
-];
-
-/// The grid's strip: its navigation, then the card actions.
-pub(crate) const BOARD_STRIP: HintStrip = &[BOARD_NAV_HINTS, CARD_ACTION_HINTS];
-
-/// The review queue's strip.
-pub(crate) const QUEUE_STRIP: HintStrip = &[
-    CARD_ACTION_HINTS,
-    REVIEW_NAV_HINTS,
-    REVIEW_COMMENT_HINTS,
-    QUEUE_EXIT_HINTS,
-];
-
-/// A plain review pane's strip: the queue's, bar how it's left.
-pub(crate) const PANE_STRIP: HintStrip = &[
-    CARD_ACTION_HINTS,
-    REVIEW_NAV_HINTS,
-    REVIEW_COMMENT_HINTS,
-    PANE_EXIT_HINTS,
-];
-
-/// The card detail's strip.
-pub(crate) const DETAIL_STRIP: HintStrip = &[DETAIL_ACTION_HINTS, DETAIL_NAV_HINTS];
-
-/// The grid's strip while a `g` is pending: only the key that completes it.
-const G_STRIP: HintStrip = &[&[KeyHint {
-    keys: &["g"],
-    label: "first card",
-}]];
-
-/// A review pane's or the detail's strip while a `g` is pending.
-const PANE_G_STRIP: HintStrip = &[&[KeyHint {
-    keys: &["g"],
-    label: "top",
-}]];
-
-/// The grid's strip this frame, or `None` to leave it out: the `g`
-/// continuation while a `g` is pending, else [`BOARD_STRIP`] if `?` pinned
-/// it. Read after [`board_keys`], so it reflects this frame's key.
-pub(crate) fn key_hints(state: &BoardUiState) -> Option<HintStrip> {
-    if state.chord.pending() == Some(BoardPending::G) {
-        return Some(G_STRIP);
-    }
-    state.key_hints_shown().then_some(BOARD_STRIP)
-}
-
-/// The strip of whichever pane shows over the grid — the queue, a plain
-/// review pane or the detail — as [`key_hints`] is the grid's (the `?` pin is
-/// shared).
-pub(crate) fn pane_key_hints(state: &BoardUiState) -> Option<HintStrip> {
-    if state.pane_chord.pending() == Some(PanePending::G) {
-        return Some(PANE_G_STRIP);
-    }
-    if !state.key_hints_shown() {
-        return None;
-    }
-    Some(if state.queue_open() {
-        QUEUE_STRIP
-    } else if state.review_card().is_some() {
-        PANE_STRIP
-    } else {
-        DETAIL_STRIP
-    })
-}
-
-/// Draw `strip` with the shared which-key drawer
-/// ([`notedeck_ui::keybind_hint::key_hints_ui`]), its tables one run, labels
-/// muted.
-pub(crate) fn key_hints_ui(ui: &mut egui::Ui, theme: &ColorTheme, strip: HintStrip) {
-    let hints = strip
-        .iter()
-        .flat_map(|table| table.iter())
-        .map(|hint| (hint.keys.iter().copied(), hint.label));
-    notedeck_ui::keybind_hint::key_hints_ui(ui, theme.text_muted, hints);
-}
-
-/// The [`HeadwayUiTool`] a bare press means on the grid, if any: the card
-/// actions, then the grid's own navigation. `g`, `?` and `Esc` are the
-/// keymap's own (a chord, the strip, the conditional clear), not tools.
-fn board_key_tool(press: KeyPress) -> Option<HeadwayUiTool> {
-    if let Some(action) = card_action(press) {
-        return Some(HeadwayUiTool::Card { action, card: None });
-    }
-    Some(match (press.key, press.modifiers.shift) {
-        (Key::J, false) => HeadwayUiTool::Cursor(CursorMove::Down),
-        (Key::K, false) => HeadwayUiTool::Cursor(CursorMove::Up),
-        (Key::H, false) => HeadwayUiTool::Cursor(CursorMove::Left),
-        (Key::L, false) => HeadwayUiTool::Cursor(CursorMove::Right),
-        (Key::G, true) => HeadwayUiTool::Cursor(CursorMove::Last),
-        (Key::C, false) => HeadwayUiTool::AddCard,
-        (Key::Slash, false) => HeadwayUiTool::FocusFilter,
-        (Key::H, true) => HeadwayUiTool::MoveCard(CardMove::Across(Side::Left)),
-        (Key::L, true) => HeadwayUiTool::MoveCard(CardMove::Across(Side::Right)),
-        (Key::J, true) => HeadwayUiTool::MoveCard(CardMove::Within(Vertical::Down)),
-        (Key::K, true) => HeadwayUiTool::MoveCard(CardMove::Within(Vertical::Up)),
-        (Key::R, true) => HeadwayUiTool::ReviewQueue,
-        _ => return None,
-    })
-}
-
-/// Read this frame's bare key press and apply it to the grid. Runs before the
-/// grid lays out. Returns a board edit for the app to apply (a keyboard card
-/// move, an archive, a `D`); navigation mutates `state` directly.
-///
-/// Keys are left alone — and any pending chord dropped — while something else
-/// owns the keyboard: a focused text field, an open menu or popup, an inline
-/// editor, the archived sheet or the `X` composer, or a card drag. Presses
-/// with Ctrl/Alt/Cmd fall through to app and chrome shortcuts.
-pub(crate) fn board_keys(
-    ctx: &egui::Context,
-    view: &BoardView,
-    filter: &ViewFilter,
-    state: &mut BoardUiState,
-) -> Option<BoardAction> {
-    let pending = state.chord.tick(ctx);
-    // Taken unconditionally so the latch always reflects just last frame.
-    let menu_open = state.take_grid_menu_open();
-
-    if keyboard_taken(ctx, state, menu_open) {
-        state.chord.clear();
-        return None;
-    }
-
-    let press = ctx.input(chord::first_key_press)?;
-    if !press.is_bare() {
-        state.chord.clear();
-        return None;
-    }
-
-    if press.key == Key::Escape {
-        escape(ctx, state);
-        return None;
-    }
-
-    // With a `g` pending, only a second `g` means anything; every other key
-    // just cancels the chord.
-    if pending.is_some() {
-        state.chord.clear();
-        if is_key(press, Key::G) {
-            let first = HeadwayUiTool::Cursor(CursorMove::First);
-            apply_grid_tool(ctx, view, filter, state, &first);
-        }
-        chord::swallow_key_events(ctx);
-        return None;
-    }
-
-    let action = match (press.key, press.modifiers.shift) {
-        (Key::G, false) => {
-            let now = ctx.input(|i| i.time);
-            state.chord.begin(BoardPending::G, now);
-            None
-        }
-        // `?` is Shift+/: a logical `Questionmark` from most layouts, or
-        // the physical slash with Shift from the rest.
-        (Key::Questionmark, _) | (Key::Slash, true) => {
-            state.toggle_key_hints();
-            None
-        }
-        _ => {
-            let tool = board_key_tool(press)?;
-            apply_grid_tool(ctx, view, filter, state, &tool)
-        }
-    };
-
-    // Load-bearing for `/` and `X`: the filter field and the reason composer
-    // lay out focused later this frame and would otherwise type the key. (`c`'s
-    // composer only grabs focus after its first layout, so it happens to be
-    // safe, but shouldn't depend on it.)
-    chord::swallow_key_events(ctx);
-    action
-}
-
 /// Apply `tool` to the grid: what its key does there. Returns the board edit
 /// it makes, if any. A tool the grid has no use for (a pane's scroll, `Back`)
 /// does nothing.
@@ -628,9 +233,9 @@ pub(crate) fn apply_grid_tool(
         HeadwayUiTool::ReviewQueue => {
             state.open_review_queue(view, QueueScope::Board, ctx.input(|i| i.time))
         }
-        HeadwayUiTool::Clear => {
-            clear_grid(state);
-        }
+        // The grid's `Esc`. Chrome's keymap owns the pending chord and the
+        // which-key strip, so all that's left to drop is the cursor.
+        HeadwayUiTool::Clear => state.clear_cursor(),
         HeadwayUiTool::Scroll(_)
         | HeadwayUiTool::Comment
         | HeadwayUiTool::SendComments
@@ -652,9 +257,10 @@ fn named_card(view: &BoardView, card: Option<&str>) -> Option<Option<NoteId>> {
 }
 
 /// Run the UI tools queued on `state` against the grid
-/// ([`apply_grid_tool`]), right after [`board_keys`] and under the same
-/// rules: none while an inline editor, the archived sheet or the `X`
-/// composer has the keyboard, or the graph shows. Stops at a tool that opens
+/// ([`apply_grid_tool`]) as the grid starts to lay out, so a tool that
+/// focuses a field (`/`, `c`) has it laid out focused this frame. None run
+/// while an inline editor, the archived sheet or the `X` composer has the
+/// keyboard, or the graph shows. Stops at a tool that opens
 /// a pane over the grid; what's left is dropped as the frame ends
 /// ([`BoardUiState::drop_queued_tools`]). Returns the first board edit.
 pub(crate) fn grid_tools(
@@ -683,41 +289,7 @@ fn first_edit(kept: Option<BoardAction>, edit: Option<BoardAction>) -> Option<Bo
     kept.or(edit)
 }
 
-/// The keys of whatever shows over the grid: the `X` composer's
-/// ([`reason_keys`]) while it's open, in the view it was asked in; else the review
-/// pane's in the queue or opened from a card ([`review_pane_keys`]); else the
-/// open detail's ([`detail_keys`]). Nothing for the grid (its keys are
-/// [`board_keys`], run as it lays out) or the dependency graph.
-///
-/// Runs before anything lays out, so a key that leaves a view (`q`, a verdict
-/// on the queue's last card, `Enter` onto a card) has the view it lands on
-/// draw this same frame rather than a blank one, and a handled key is
-/// swallowed before a field could type it. Returns the key's board edit.
-pub(crate) fn pane_keys(
-    ctx: &egui::Context,
-    view: &BoardView,
-    state: &mut BoardUiState,
-) -> Option<BoardAction> {
-    if state.rejecting() {
-        state.pane_chord.clear();
-        return reason_keys(ctx, view, state);
-    }
-    if state.graph_epic().is_some() {
-        return None;
-    }
-    if state.queue_open() {
-        return review_pane_keys(ctx, view, state, PaneMode::Queue);
-    }
-    if state.review_card().is_some() {
-        return review_pane_keys(ctx, view, state, PaneMode::Plain);
-    }
-    if state.selected().is_some() {
-        return detail_keys(ctx, view, state);
-    }
-    None
-}
-
-/// Which review pane [`review_pane_keys`] drives: they differ only in what
+/// Which review pane [`apply_pane_tool`] drives: they differ only in what
 /// `n`/`p` step through and where `q`/`Esc` go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PaneMode {
@@ -727,88 +299,6 @@ pub(crate) enum PaneMode {
     /// A review pane opened from a card: `n`/`p` step to the neighbouring
     /// card's review in its column, `q` backs out to the card's detail.
     Plain,
-}
-
-/// A review pane's keys, in the queue or opened from a card: the card
-/// actions, then scrolling the diff by a line (`j`/`k`), a page
-/// (`Space`/`Shift-Space`, `Ctrl-f`/`Ctrl-b`), half a page
-/// (`Ctrl-d`/`Ctrl-u`), to its ends (`gg`/`G`) or by file (`]`/`[`), `c` to
-/// write a comment on the picked lines and `C` to send the comments, `?` and
-/// `q`/`Esc`. Left alone under the grid's rules, bar its own overlays: a
-/// focused widget, an open popup or menu, or a drag.
-pub(crate) fn review_pane_keys(
-    ctx: &egui::Context,
-    view: &BoardView,
-    state: &mut BoardUiState,
-    mode: PaneMode,
-) -> Option<BoardAction> {
-    let pending = state.pane_chord.tick(ctx);
-    if chord::focus_taken(ctx) {
-        state.pane_chord.clear();
-        return None;
-    }
-    let press = ctx.input(chord::first_key_press)?;
-    if let Some(pages) = page_scroll(press) {
-        state.pane_chord.clear();
-        let scroll = HeadwayUiTool::Scroll(PaneScroll::Pages(pages));
-        apply_pane_tool(ctx, view, state, mode, &scroll);
-        chord::swallow_key_events(ctx);
-        return None;
-    }
-    if !press.is_bare() {
-        state.pane_chord.clear();
-        return None;
-    }
-    if pending.is_some() {
-        state.pane_chord.clear();
-        if is_key(press, Key::G) {
-            let top = HeadwayUiTool::Scroll(PaneScroll::Top);
-            apply_pane_tool(ctx, view, state, mode, &top);
-        }
-        chord::swallow_key_events(ctx);
-        return None;
-    }
-
-    let action = match (press.key, press.modifiers.shift) {
-        (Key::G, false) => {
-            state
-                .pane_chord
-                .begin(PanePending::G, ctx.input(|i| i.time));
-            None
-        }
-        (Key::Questionmark, _) | (Key::Slash, true) => {
-            state.toggle_key_hints();
-            None
-        }
-        _ => {
-            let tool = review_key_tool(press)?;
-            apply_pane_tool(ctx, view, state, mode, &tool)
-        }
-    };
-    // Load-bearing for `X`: the composer takes focus as it lays out this
-    // frame and would otherwise type the X.
-    chord::swallow_key_events(ctx);
-    action
-}
-
-/// The [`HeadwayUiTool`] a bare press means in a review pane, the queue's or
-/// not, if any: the card actions, then scrolling and commenting on the diff
-/// and backing out. `g` and `?` are the keymap's own.
-fn review_key_tool(press: KeyPress) -> Option<HeadwayUiTool> {
-    if let Some(action) = card_action(press) {
-        return Some(HeadwayUiTool::Card { action, card: None });
-    }
-    Some(match (press.key, press.modifiers.shift) {
-        (Key::J, false) => HeadwayUiTool::Scroll(PaneScroll::Rows(1)),
-        (Key::K, false) => HeadwayUiTool::Scroll(PaneScroll::Rows(-1)),
-        (Key::G, true) => HeadwayUiTool::Scroll(PaneScroll::Bottom),
-        (Key::C, false) => HeadwayUiTool::Comment,
-        (Key::C, true) => HeadwayUiTool::SendComments,
-        (Key::CloseBracket, false) => HeadwayUiTool::Scroll(PaneScroll::NextFile),
-        (Key::OpenBracket, false) => HeadwayUiTool::Scroll(PaneScroll::PrevFile),
-        (Key::Q, false) | (Key::Escape, _) => HeadwayUiTool::Back,
-        _ => return None,
-    })
 }
 
 /// Apply `tool` to the review pane `mode` shows: what its key does there.
@@ -895,93 +385,6 @@ fn names_current(view: &BoardView, named: Option<&str>, current: Option<NoteId>)
     }
 }
 
-/// The card detail's keys: the card actions, then scrolling it by a line
-/// (`j`/`k`), a page (`Space`/`Shift-Space`, `Ctrl-f`/`Ctrl-b`), half a page
-/// (`Ctrl-d`/`Ctrl-u`) or to its ends (`gg`/`G`), `R` for a review queue over
-/// the card's In Review descendants, `?` and `q`/`Esc` back to the grid.
-/// Left alone while a widget has the keyboard — the comment composer, the
-/// title, description and label editors — or a popup, menu or drag does.
-///
-/// An `Esc` pressed in one of those editors only leaves the editor: egui
-/// drops the field's focus before this runs, so it's told apart by the focus
-/// the last pass ended with ([`BoardUiState::esc_left_a_field`]) and
-/// swallowed, and the field commits its edit as the detail lays out. The
-/// next `Esc` leaves the card.
-pub(crate) fn detail_keys(
-    ctx: &egui::Context,
-    view: &BoardView,
-    state: &mut BoardUiState,
-) -> Option<BoardAction> {
-    let pending = state.pane_chord.tick(ctx);
-    if chord::focus_taken(ctx) {
-        state.pane_chord.clear();
-        return None;
-    }
-    // A selection that hasn't folded in yet draws the grid; leave its keys be.
-    let card = state.selected().filter(|&c| find_card(view, c).is_some())?;
-    let press = ctx.input(chord::first_key_press)?;
-    if let Some(pages) = page_scroll(press) {
-        state.pane_chord.clear();
-        let scroll = HeadwayUiTool::Scroll(PaneScroll::Pages(pages));
-        apply_detail_tool(ctx, view, state, card, &scroll);
-        chord::swallow_key_events(ctx);
-        return None;
-    }
-    if !press.is_bare() {
-        state.pane_chord.clear();
-        return None;
-    }
-    if press.key == Key::Escape && state.esc_left_a_field(ctx) {
-        chord::swallow_key_events(ctx);
-        return None;
-    }
-    if pending.is_some() {
-        state.pane_chord.clear();
-        if is_key(press, Key::G) {
-            let top = HeadwayUiTool::Scroll(PaneScroll::Top);
-            apply_detail_tool(ctx, view, state, card, &top);
-        }
-        chord::swallow_key_events(ctx);
-        return None;
-    }
-
-    let action = match (press.key, press.modifiers.shift) {
-        (Key::G, false) => {
-            state
-                .pane_chord
-                .begin(PanePending::G, ctx.input(|i| i.time));
-            None
-        }
-        (Key::Questionmark, _) | (Key::Slash, true) => {
-            state.toggle_key_hints();
-            None
-        }
-        _ => {
-            let tool = detail_key_tool(press)?;
-            apply_detail_tool(ctx, view, state, card, &tool)
-        }
-    };
-    chord::swallow_key_events(ctx);
-    action
-}
-
-/// The [`HeadwayUiTool`] a bare press means in the card detail, if any: the
-/// card actions, then scrolling, the card's review queue and leaving. `g`,
-/// `?` and an `Esc` out of a field are the keymap's own.
-fn detail_key_tool(press: KeyPress) -> Option<HeadwayUiTool> {
-    if let Some(action) = card_action(press) {
-        return Some(HeadwayUiTool::Card { action, card: None });
-    }
-    Some(match (press.key, press.modifiers.shift) {
-        (Key::J, false) => HeadwayUiTool::Scroll(PaneScroll::Rows(1)),
-        (Key::K, false) => HeadwayUiTool::Scroll(PaneScroll::Rows(-1)),
-        (Key::G, true) => HeadwayUiTool::Scroll(PaneScroll::Bottom),
-        (Key::R, true) => HeadwayUiTool::ReviewQueue,
-        (Key::Q, false) | (Key::Escape, _) => HeadwayUiTool::Back,
-        _ => return None,
-    })
-}
-
 /// Apply `tool` to the detail of `card`: what its key does there. Returns
 /// the board edit it makes, if any. A tool the detail has no use for (a grid
 /// move, a diff's file step, a review comment) does nothing.
@@ -1032,7 +435,9 @@ enum ToolPane {
     Detail(NoteId),
 }
 
-/// The pane [`pane_keys`] would hand this frame's key to, if any.
+/// The pane a queued tool runs in, if one shows over the grid: nothing while
+/// the `X` composer is open or the graph shows (see
+/// [`crate::ui_tools::key_view`]).
 fn tool_pane(view: &BoardView, state: &BoardUiState) -> Option<ToolPane> {
     if state.rejecting() || state.graph_epic().is_some() {
         return None;
@@ -1050,7 +455,9 @@ fn tool_pane(view: &BoardView, state: &BoardUiState) -> Option<ToolPane> {
 }
 
 /// Run the UI tools queued on `state` against whatever shows over the grid
-/// ([`apply_pane_tool`], [`apply_detail_tool`]), right after [`pane_keys`].
+/// ([`apply_pane_tool`], [`apply_detail_tool`]), before anything lays out, so
+/// a tool that leaves its view (`q`, a verdict on the queue's last card,
+/// `Enter` onto a card) has the view it lands on draw this same frame.
 /// Each runs in the pane showing as it's taken, so after one that backs out
 /// to the grid the rest are left for [`grid_tools`]. Returns the first board
 /// edit.
@@ -1117,34 +524,13 @@ impl PaneScroll {
     }
 }
 
-/// The page scroll a press asks for, in pages (negative scrolls up): a whole
-/// page for `Space`/`Shift-Space` and vi's `Ctrl-f`/`Ctrl-b`, which lands
-/// exactly in a diff (see [`PatchScroll::Pages`]), half of one for vi's
-/// `Ctrl-d`/`Ctrl-u`. Safe to take: chrome's only Ctrl binding is Ctrl+Tab,
-/// and these views put no focus on a button a Space would press.
-fn page_scroll(press: KeyPress) -> Option<f32> {
-    let m = press.modifiers;
-    if press.key == Key::Space && press.is_bare() {
-        return Some(if m.shift { -1.0 } else { 1.0 });
-    }
-    if !m.ctrl || m.alt || m.shift {
-        return None;
-    }
-    match press.key {
-        Key::F => Some(1.0),
-        Key::B => Some(-1.0),
-        Key::D => Some(0.5),
-        Key::U => Some(-0.5),
-        _ => None,
-    }
-}
-
 /// The `X` composer's keys: Enter posts the reason (an empty one does
 /// nothing), Esc cancels. Both are consumed before the field sees them, and
 /// the field's focus goes with the composer. While another widget has the
 /// keyboard they're left to it ([`BoardUiState::reason_keys_live`]); the
-/// view's own keys stay down either way.
-fn reason_keys(
+/// view's own keys stay down either way (its [key scopes](crate::ui_tools::key_scopes)
+/// are empty while the composer is open). Runs before anything lays out.
+pub(crate) fn reason_keys(
     ctx: &egui::Context,
     view: &BoardView,
     state: &mut BoardUiState,
@@ -1166,16 +552,44 @@ fn reason_keys(
     action
 }
 
-/// Whether something other than the grid owns the keyboard this frame.
-fn keyboard_taken(ctx: &egui::Context, state: &BoardUiState, menu_open: bool) -> bool {
-    // The grid's `menu_button`s report through `menu_open`, which egui's popup
-    // memory can't see (see `chord::focus_taken`).
-    chord::focus_taken(ctx) || menu_open || state.keys_blocked()
-}
-
-/// A bare, unshifted `key`.
-fn is_key(press: KeyPress, key: Key) -> bool {
-    press.key == key && !press.modifiers.shift
+/// The board-edit keys Headway still reads itself: `a` archives the current
+/// card and `D` moves it to the end of Done, in every view that has one;
+/// `H`/`L`/`J`/`K` move the grid's cursor card across columns or within one.
+/// Board edits are data tools, which chrome's keymap only calls once a
+/// binding can name the current card (headway:notedeck/ginger-home-mirror),
+/// so until then they're read here and queued as the tool they stand for, to
+/// run through [`pane_tools`] or [`grid_tools`] like any other this frame.
+///
+/// Under chrome's rules: nothing while a widget has the keyboard, a popup,
+/// menu or drag is up, or no view takes keys ([`crate::ui_tools::key_view`]:
+/// the `X` composer, the graph, an inline editor, a grid menu). Bare presses
+/// only, Shift picking the capital. Runs before anything lays out.
+pub(crate) fn edit_keys(ctx: &egui::Context, state: &mut BoardUiState) {
+    let Some(at) = crate::ui_tools::key_view(state) else {
+        return;
+    };
+    if chord::focus_taken(ctx) {
+        return;
+    }
+    let Some(press) = ctx.input(chord::first_key_press) else {
+        return;
+    };
+    if !press.is_bare() {
+        return;
+    }
+    let grid = at == crate::ui_tools::KeyView::Grid;
+    let card = |action| HeadwayUiTool::Card { action, card: None };
+    let tool = match (press.key, press.modifiers.shift) {
+        (Key::A, false) => card(CardAction::Archive),
+        (Key::D, true) => card(CardAction::Done),
+        (Key::H, true) if grid => HeadwayUiTool::MoveCard(CardMove::Across(Side::Left)),
+        (Key::L, true) if grid => HeadwayUiTool::MoveCard(CardMove::Across(Side::Right)),
+        (Key::J, true) if grid => HeadwayUiTool::MoveCard(CardMove::Within(Vertical::Down)),
+        (Key::K, true) if grid => HeadwayUiTool::MoveCard(CardMove::Within(Vertical::Up)),
+        _ => return,
+    };
+    state.queue_tool(tool);
+    chord::swallow_key_events(ctx);
 }
 
 /// Step the cursor, scrolling its new card into view.
@@ -1267,27 +681,6 @@ fn add_card_at_cursor(view: &BoardView, filter: &ViewFilter, state: &mut BoardUi
     state.open_add_card(col);
 }
 
-/// Esc drops the cursor, any pending chord and the which-key strip
-/// ([`clear_grid`]). It's consumed only when there was one to drop, so a bare
-/// Esc still reaches chrome (which toggles the side menu).
-fn escape(ctx: &egui::Context, state: &mut BoardUiState) {
-    if clear_grid(state) {
-        ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
-    }
-}
-
-/// Drop the grid's cursor, any pending chord and the which-key strip: the
-/// grid's `Esc`, and `headway_clear`. Returns whether there was one to drop.
-fn clear_grid(state: &mut BoardUiState) -> bool {
-    if state.cursor().is_none() && state.chord.pending().is_none() && !state.key_hints_shown() {
-        return false;
-    }
-    state.clear_cursor();
-    state.hide_key_hints();
-    state.chord.clear();
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1297,7 +690,12 @@ mod tests {
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
     use headway::event::{ReviewFields, ReviewView};
+    use notedeck::ColorTheme;
     use notedeck::test_harness::PressKey;
+    use notedeck_chrome::keymap::{KeyDispatch, KeyEngine, Scopes};
+    use notedeck_chrome::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
+
+    use crate::ui_tools::{available, key_scopes};
 
     /// What a keymap test frame reads and leaves behind.
     struct KeysHarness {
@@ -1327,12 +725,81 @@ mod tests {
         /// The `(card, record, comments)` of the last `AddReviewComments`
         /// the keymap returned.
         review_comments: Option<(NoteId, NoteId, Vec<crate::store::NewReviewComment>)>,
+        /// Chrome's key engine with the shipped keymap, run ahead of the board
+        /// each frame as chrome runs it ahead of the app ([`chrome_keys`]).
+        keys: KeyEngine,
+        /// Whether `?` pinned chrome's which-key strip.
+        hints_pinned: bool,
     }
 
-    /// A harness that runs the keymaps over [`grid`] each frame, unfiltered,
-    /// as [`crate::ui::board_ui`] does: a queue route's re-snapshot, then
-    /// [`pane_keys`] and [`pane_tools`], then [`board_keys`] and
-    /// [`grid_tools`] when no pane shows over the grid.
+    /// Whether the chrome's own tool, or Headway's UI tool, `name` is
+    /// available, as chrome asks its keymap: `?` only while Headway reports
+    /// scopes, Esc's strip-hide only while it's pinned.
+    fn tool_available(state: &BoardUiState, pinned: bool, name: &str) -> bool {
+        match name {
+            TOGGLE_KEY_HINTS => !key_scopes(state).is_empty(),
+            HIDE_KEY_HINTS => pinned,
+            name => available(state, name),
+        }
+    }
+
+    /// Chrome's part of a frame, ahead of Headway's render: the key engine
+    /// resolving this frame's press against Headway's scopes, and the tool it's bound to called (queued, as
+    /// `Headway::call_ui_tool` does), or the strip toggled.
+    fn chrome_keys(ctx: &egui::Context, h: &mut KeysHarness) {
+        let KeysHarness {
+            keys,
+            state,
+            hints_pinned,
+            ..
+        } = h;
+        let pinned = *hints_pinned;
+        let dispatch = keys.resolve(ctx, key_scopes(state), |name| {
+            tool_available(state, pinned, name)
+        });
+        let Some(KeyDispatch::Tool(call)) = dispatch else {
+            return;
+        };
+        match call.name.as_str() {
+            TOGGLE_KEY_HINTS => *hints_pinned = !pinned,
+            HIDE_KEY_HINTS => *hints_pinned = false,
+            name => {
+                let tool = HeadwayUiTool::parse(name, &call.args)
+                    .unwrap_or_else(|e| panic!("keymap binds {name} {}: {e}", call.args));
+                state.queue_tool(tool);
+            }
+        }
+    }
+
+    /// Chrome's which-key strip, as it draws it below the app: what finishes
+    /// a pending chord, else, pinned, every key Headway's scopes bind to an
+    /// available tool.
+    fn chrome_strip(ui: &mut egui::Ui, h: &KeysHarness) {
+        let pending = h.keys.pending();
+        if pending.is_none() && !h.hints_pinned {
+            return;
+        }
+        let (state, pinned) = (&h.state, h.hints_pinned);
+        let hints = h
+            .keys
+            .keymap()
+            .hints(Scopes::new(key_scopes(state)), pending, move |name| {
+                tool_available(state, pinned, name)
+            });
+        let muted = ColorTheme::current(ui.ctx()).text_muted;
+        notedeck_ui::keybind_hint::key_hints_ui(
+            ui,
+            muted,
+            hints.map(|hint| (hint.keycap_iter(), hint.label)),
+        );
+    }
+
+    /// A harness that runs Headway's keys over [`grid`] each frame,
+    /// unfiltered: chrome's keymap first ([`chrome_keys`]), then as
+    /// [`crate::ui::board_ui`] does, the edit keys ([`edit_keys`]), a queue
+    /// route's re-snapshot,
+    /// [`reason_keys`] and [`pane_tools`], then [`grid_tools`] when no pane
+    /// shows over the grid; chrome's strip last.
     fn keys_harness(field: Option<egui::Id>) -> Harness<'static, KeysHarness> {
         let mut harness = Harness::new_ui_state(
             |ui, h: &mut KeysHarness| {
@@ -1344,24 +811,21 @@ mod tests {
                 let pane = |s: &BoardUiState| {
                     s.queue_open() || s.review_card().is_some() || s.selected().is_some()
                 };
+                chrome_keys(ui.ctx(), h);
+                edit_keys(ui.ctx(), &mut h.state);
+                h.state.reset_grid_menu_open();
                 h.state.refresh_queue(&h.view, ui.ctx().input(|i| i.time));
                 let showed_pane = pane(&h.state);
                 h.state.retire_stale_reason();
-                let keyed = pane_keys(ui.ctx(), &h.view, &mut h.state);
+                let keyed = reason_keys(ui.ctx(), &h.view, &mut h.state);
                 let keyed = keyed.or(pane_tools(ui.ctx(), &h.view, &mut h.state));
                 h.state.retire_stale_notice(ui.ctx().cumulative_pass_nr());
                 let action = if showed_pane || keyed.is_some() {
                     keyed
                 } else {
-                    board_keys(ui.ctx(), &h.view, &filter, &mut h.state).or(grid_tools(
-                        ui.ctx(),
-                        &h.view,
-                        &filter,
-                        &mut h.state,
-                    ))
+                    grid_tools(ui.ctx(), &h.view, &filter, &mut h.state)
                 };
                 h.state.drop_queued_tools();
-                h.state.latch_tool_state(&h.view);
                 for effect in h.state.take_effects() {
                     if let BoardEffect::Open(open) = effect {
                         h.session = Some(open);
@@ -1400,14 +864,7 @@ mod tests {
                 }
                 // As the detail's pass ends, after its fields laid out.
                 h.state.latch_detail_focus(ui.ctx());
-                let hints = if pane(&h.state) {
-                    pane_key_hints(&h.state)
-                } else {
-                    key_hints(&h.state)
-                };
-                if let Some(hints) = hints {
-                    key_hints_ui(ui, &ColorTheme::current(ui.ctx()), hints);
-                }
+                chrome_strip(ui, h);
             },
             KeysHarness {
                 view: grid(),
@@ -1421,6 +878,8 @@ mod tests {
                 opened: None,
                 session: None,
                 review_comments: None,
+                keys: KeyEngine::with_default_keymap(),
+                hints_pinned: false,
             },
         );
         harness.run();
@@ -1481,21 +940,24 @@ mod tests {
 
         press(&mut harness, Key::G);
         assert_eq!(harness.state().state.cursor(), Some(id(3)), "one g waits");
-        assert_eq!(harness.state().state.chord.pending(), Some(BoardPending::G));
+        assert_eq!(pending(&harness).as_deref(), Some("g"));
         press(&mut harness, Key::G);
         assert_eq!(harness.state().state.cursor(), Some(id(1)));
-        assert_eq!(harness.state().state.chord.pending(), None);
+        assert_eq!(pending(&harness), None);
     }
 
+    /// A `g` that goes nowhere starts over from the key that broke it, so
+    /// `g j` still moves down (chrome's chord rule; Headway's own keymap
+    /// dropped the `j`).
     #[test]
-    fn g_then_another_key_cancels_without_moving() {
+    fn g_then_another_key_runs_that_key() {
         let mut harness = keys_harness(None);
         harness.state_mut().state.set_cursor(id(1));
 
         press(&mut harness, Key::G);
         press(&mut harness, Key::J);
-        assert_eq!(harness.state().state.cursor(), Some(id(1)));
-        assert_eq!(harness.state().state.chord.pending(), None);
+        assert_eq!(harness.state().state.cursor(), Some(id(2)));
+        assert_eq!(pending(&harness), None);
     }
 
     #[test]
@@ -1508,12 +970,12 @@ mod tests {
         for _ in 0..9 {
             harness.step();
         }
-        assert_eq!(harness.state().state.chord.pending(), None);
+        assert_eq!(pending(&harness), None);
 
         // So the next `g` starts a fresh chord instead of completing one.
         press(&mut harness, Key::G);
         assert_eq!(harness.state().state.cursor(), Some(id(3)));
-        assert_eq!(harness.state().state.chord.pending(), Some(BoardPending::G));
+        assert_eq!(pending(&harness).as_deref(), Some("g"));
     }
 
     #[test]
@@ -1590,6 +1052,8 @@ mod tests {
     #[derive(Debug, PartialEq)]
     struct Effects {
         cursor: Option<NoteId>,
+        /// Chrome's which-key strip is pinned.
+        hints: bool,
         selected: Option<NoteId>,
         /// An inline editor (the `c` composer) is open.
         editing: bool,
@@ -1610,6 +1074,7 @@ mod tests {
         let h = harness.state();
         Effects {
             cursor: h.state.cursor(),
+            hints: h.hints_pinned,
             selected: h.state.selected(),
             editing: h.state.keys_blocked(),
             focused: harness.ctx.memory(|m| m.focused()),
@@ -1624,9 +1089,17 @@ mod tests {
         }
     }
 
-    /// The presses a keycap stands for: `gg` is two, a capital is Shift plus the
-    /// letter, `^d` is Ctrl+D, and the named keycaps are their keys.
+    /// The presses a which-key keycap stands for: `gg` is two, a capital is
+    /// Shift plus the letter, `^d` is Ctrl+D, `S-space` Shift+Space, and the
+    /// named keycaps are their keys.
     fn keycap_presses(cap: &str) -> Vec<(Modifiers, Key)> {
+        if let Some(rest) = cap.strip_prefix("S-") {
+            let presses = keycap_presses(rest);
+            return presses
+                .into_iter()
+                .map(|(modifiers, key)| (modifiers | Modifiers::SHIFT, key))
+                .collect();
+        }
         match cap {
             "\u{21B5}" => return vec![(Modifiers::NONE, Key::Enter)],
             "esc" => return vec![(Modifiers::NONE, Key::Escape)],
@@ -1641,7 +1114,8 @@ mod tests {
             .map(|c| {
                 let key = Key::from_name(&c.to_string())
                     .unwrap_or_else(|| panic!("keycap {cap:?}: no key for {c:?}"));
-                let modifiers = if c.is_ascii_uppercase() {
+                let shifted = c.is_ascii_uppercase() || c == '?';
+                let modifiers = if shifted {
                     Modifiers::SHIFT
                 } else {
                     Modifiers::NONE
@@ -1651,20 +1125,52 @@ mod tests {
             .collect()
     }
 
-    /// Every keycap in `strip`, with the label of its group.
-    fn strip_keycaps(strip: HintStrip) -> impl Iterator<Item = (&'static str, &'static str)> {
-        strip
-            .iter()
-            .flat_map(|table| table.iter())
-            .flat_map(|hint| hint.keys.iter().map(move |&cap| (cap, hint.label)))
+    /// The chord chrome's engine is holding, as keymap keys (`g`).
+    fn pending(harness: &Harness<'static, KeysHarness>) -> Option<String> {
+        harness.state().keys.pending().map(|seq| seq.to_string())
     }
 
-    /// Replay every keycap in [`BOARD_STRIP`] from the middle of a 3×3 board
-    /// and check it did *something*, so the strip can't advertise a key the
-    /// keymap dropped or misspelled.
+    /// Chrome's strip as it stands, `(keycap, label)` per keycap: what finishes
+    /// a pending chord, else everything, as if `?` pinned it.
+    fn strip_now(harness: &Harness<'static, KeysHarness>) -> Vec<(String, String)> {
+        let h = harness.state();
+        let state = &h.state;
+        h.keys
+            .keymap()
+            .hints(
+                Scopes::new(key_scopes(state)),
+                h.keys.pending(),
+                move |name| tool_available(state, true, name),
+            )
+            .flat_map(|hint| {
+                hint.keycap_iter()
+                    .map(move |cap| (cap.to_owned(), hint.label.to_owned()))
+            })
+            .collect()
+    }
+
+    /// The labels of chrome's pinned strip over `harness`'s view, in order,
+    /// one per hint.
+    fn strip_labels(harness: &Harness<'static, KeysHarness>) -> Vec<String> {
+        let mut labels: Vec<String> = Vec::new();
+        for (_, label) in strip_now(harness) {
+            if labels.last() != Some(&label) {
+                labels.push(label);
+            }
+        }
+        labels
+    }
+
+    /// Replay every keycap of chrome's strip over the grid from the middle of
+    /// a 3×3 board and check it did *something*, so the strip can't advertise
+    /// a key the keymap sends nowhere.
     #[test]
     fn every_hint_does_what_it_says() {
-        for (cap, label) in strip_keycaps(BOARD_STRIP) {
+        let mut grid = keys_harness(Some(filter_field_id()));
+        grid.state_mut().view = square_grid();
+        grid.state_mut().state.set_cursor(id(5));
+        grid.run();
+        for (cap, label) in strip_now(&grid) {
             // The filter field is laid out so `/`'s focus request has a
             // widget to land on.
             let mut harness = keys_harness(Some(filter_field_id()));
@@ -1673,7 +1179,7 @@ mod tests {
             harness.run();
             let before = effects(&harness);
 
-            for (modifiers, key) in keycap_presses(cap) {
+            for (modifiers, key) in keycap_presses(&cap) {
                 press_with(&mut harness, modifiers, key);
             }
             assert_ne!(
@@ -1686,12 +1192,13 @@ mod tests {
 
     #[test]
     fn question_mark_toggles_the_strip() {
-        let mut harness = keys_harness(None);
-        assert!(!harness.state().state.key_hints_shown());
+        // With a cursor, so the card actions are available to list.
+        let mut harness = grid_harness();
+        assert!(!harness.state().hints_pinned);
         assert!(harness.query_by_label("up/down").is_none());
 
         press_with(&mut harness, Modifiers::SHIFT, Key::Questionmark);
-        assert!(harness.state().state.key_hints_shown());
+        assert!(harness.state().hints_pinned);
         assert!(harness.query_by_label("up/down").is_some());
         assert!(
             harness.query_by_label("session/review").is_some(),
@@ -1700,14 +1207,24 @@ mod tests {
 
         // The other way a layout can report `?`.
         press_with(&mut harness, Modifiers::SHIFT, Key::Slash);
-        assert!(!harness.state().state.key_hints_shown());
+        assert!(!harness.state().hints_pinned);
         assert!(harness.query_by_label("up/down").is_none());
 
-        // Esc closes it too, and eats itself doing so.
+        // Esc closes it too, and eats itself doing so: once the grid's own
+        // Esc has dropped the cursor (the strip is chrome's, the cursor
+        // Headway's, so it takes one each).
         press_with(&mut harness, Modifiers::SHIFT, Key::Questionmark);
         press(&mut harness, Key::Escape);
-        assert!(!harness.state().state.key_hints_shown());
+        assert_eq!(harness.state().state.cursor(), None);
+        assert!(harness.state().hints_pinned);
+        press(&mut harness, Key::Escape);
+        assert!(!harness.state().hints_pinned);
         assert!(!harness.state().esc_left, "Esc consumed");
+        press(&mut harness, Key::Escape);
+        assert!(
+            harness.state().esc_left,
+            "nothing left to drop: Esc is chrome's"
+        );
     }
 
     #[test]
@@ -1716,21 +1233,25 @@ mod tests {
         harness.state_mut().state.set_cursor(id(2));
 
         press(&mut harness, Key::G);
-        assert!(harness.query_by_label("first card").is_some());
+        assert_eq!(
+            strip_now(&harness),
+            [("g".to_owned(), "first/last".to_owned())]
+        );
+        assert!(harness.query_by_label("first/last").is_some());
         assert!(harness.query_by_label("up/down").is_none());
 
         // Even over a pinned strip, the g continuation wins while it's pending.
         press(&mut harness, Key::G);
-        assert!(harness.query_by_label("first card").is_none());
+        assert!(harness.query_by_label("first/last").is_none());
         press_with(&mut harness, Modifiers::SHIFT, Key::Questionmark);
         press(&mut harness, Key::G);
-        assert!(harness.query_by_label("first card").is_some());
+        assert!(harness.query_by_label("first/last").is_some());
         assert!(harness.query_by_label("up/down").is_none());
 
         // Once the chord completes, the pinned strip is back.
         press(&mut harness, Key::G);
-        assert!(harness.query_by_label("first card").is_none());
         assert!(harness.query_by_label("up/down").is_some());
+        assert_eq!(harness.state().state.cursor(), Some(id(1)));
     }
 
     #[test]
@@ -2103,8 +1624,8 @@ mod tests {
         harness
     }
 
-    /// **The guard.** Every keycap in [`CARD_ACTION_HINTS`], pressed in each
-    /// of the four views with card 5 current (the grid's cursor, the queue's
+    /// **The guard.** Every card action's key (the keymap's and
+    /// [`edit_keys`]'), pressed in each of the four views with card 5 current (the grid's cursor, the queue's
     /// card, a plain review pane's, the detail's), applies the same
     /// [`CardAction`] to card 5. The per-view `every_*_hint` tests only show
     /// that a key does *something*; this shows it means the same thing.
@@ -2128,20 +1649,31 @@ mod tests {
                 open: || detail_harness(None),
             },
         ];
-        for (cap, label) in strip_keycaps(&[CARD_ACTION_HINTS]) {
+        let by_tool = card_action_tools().into_iter().map(|(cap, tool, args)| {
+            let HeadwayUiTool::Card { action, .. } = HeadwayUiTool::parse(tool, &args).unwrap()
+            else {
+                panic!("{tool} is no card tool");
+            };
+            (cap, tool, action)
+        });
+        // The board edits, read by `edit_keys` rather than bound to a tool.
+        let edits = [("a", CardAction::Archive), ("D", CardAction::Done)]
+            .map(|(cap, action)| (cap, "edit_keys", action));
+        for (cap, tool, action) in by_tool.chain(edits) {
             let presses = keycap_presses(cap);
             let [(modifiers, key)] = presses[..] else {
                 panic!("card action {cap:?} is one press");
             };
-            let expected = card_action(KeyPress { key, modifiers })
-                .unwrap_or_else(|| panic!("keycap {cap:?} ({label}) is no card action"));
             for ActionTestView { name, open } in &views {
                 let mut harness = open();
                 press_with(&mut harness, modifiers, key);
+                // The detail's card is open already: `open` isn't offered there.
+                let expected = (*name != "detail" || tool != crate::ui_tools::OPEN_CARD)
+                    .then_some((action, id(5)));
                 assert_eq!(
                     harness.state().state.last_card_action,
-                    Some((expected, id(5))),
-                    "keycap {cap:?} ({label}) in the {name}"
+                    expected,
+                    "keycap {cap:?} ({tool}) in the {name}"
                 );
             }
         }
@@ -2187,17 +1719,17 @@ mod tests {
             notice: h.state.notice(),
             opened: h.opened.clone(),
             session: h.session.clone(),
-            hints: h.state.key_hints_shown(),
+            hints: h.hints_pinned,
             commenting: h.state.commenting_on_commit(),
         }
     }
 
-    /// Replay every keycap in [`QUEUE_STRIP`] from the middle of a three-card
-    /// queue and check it did *something*, so the queue's strip can't
-    /// advertise a key its keymap dropped.
+    /// Replay every keycap of chrome's strip over the queue from the middle of
+    /// a three-card queue and check it did *something*, so the strip can't
+    /// advertise a key the keymap sends nowhere.
     #[test]
     fn every_queue_hint_does_what_it_says() {
-        for (cap, label) in strip_keycaps(QUEUE_STRIP).chain([("?", "hints")]) {
+        for (cap, label) in strip_now(&queue_harness()) {
             let mut harness = queue_harness();
             if cap == "r" {
                 // `r` only goes back to the newest record, so start from
@@ -2208,7 +1740,7 @@ mod tests {
                 }));
             }
             let before = pane_effects(&harness);
-            for (modifiers, key) in keycap_presses(cap) {
+            for (modifiers, key) in keycap_presses(&cap) {
                 press_with(&mut harness, modifiers, key);
             }
             assert_ne!(
@@ -2219,11 +1751,11 @@ mod tests {
         }
     }
 
-    /// Replay every keycap in [`PANE_STRIP`] in a plain review pane, as
+    /// Replay every keycap of the strip in a plain review pane, as
     /// [`every_queue_hint_does_what_it_says`] does in the queue.
     #[test]
     fn every_review_pane_hint_does_what_it_says() {
-        for (cap, label) in strip_keycaps(PANE_STRIP).chain([("?", "hints")]) {
+        for (cap, label) in strip_now(&pane_harness()) {
             let mut harness = pane_harness();
             if cap == "r" {
                 // `r` goes back to the newest record, so start from another
@@ -2234,7 +1766,7 @@ mod tests {
                 }));
             }
             let before = pane_effects(&harness);
-            for (modifiers, key) in keycap_presses(cap) {
+            for (modifiers, key) in keycap_presses(&cap) {
                 press_with(&mut harness, modifiers, key);
             }
             assert_ne!(
@@ -2245,15 +1777,15 @@ mod tests {
         }
     }
 
-    /// Replay every keycap in [`DETAIL_STRIP`] on card 5's detail, as
+    /// Replay every keycap of the strip on card 5's detail, as
     /// [`every_queue_hint_does_what_it_says`] does in the queue. `R` finds
     /// nothing in review under card 5, and says so.
     #[test]
     fn every_detail_hint_does_what_it_says() {
-        for (cap, label) in strip_keycaps(DETAIL_STRIP).chain([("?", "hints")]) {
+        for (cap, label) in strip_now(&detail_harness(None)) {
             let mut harness = detail_harness(None);
             let before = pane_effects(&harness);
-            for (modifiers, key) in keycap_presses(cap) {
+            for (modifiers, key) in keycap_presses(&cap) {
                 press_with(&mut harness, modifiers, key);
             }
             assert_ne!(
@@ -2268,16 +1800,69 @@ mod tests {
     /// use for, and only that.
     #[test]
     fn the_detail_strip_drops_only_open() {
-        let detail: Vec<_> = strip_keycaps(&[DETAIL_ACTION_HINTS]).collect();
-        let all: Vec<_> = strip_keycaps(&[CARD_ACTION_HINTS]).collect();
-        let (dropped, kept): (Vec<_>, Vec<_>) = all.into_iter().partition(|(cap, _)| {
-            let [(modifiers, key)] = keycap_presses(cap)[..] else {
-                panic!("card action {cap:?} is one press");
-            };
-            card_action(KeyPress { key, modifiers }) == Some(CardAction::Open)
-        });
-        assert_eq!(detail, kept);
-        assert_eq!(dropped, vec![("\u{21B5}", "open"), ("o", "open")]);
+        let detail = strip_now(&detail_harness(None));
+        for (cap, tool, _) in card_action_tools() {
+            let shown = detail.iter().any(|(shown, _)| shown == cap);
+            assert_eq!(
+                shown,
+                tool != crate::ui_tools::OPEN_CARD,
+                "{cap:?} ({tool})"
+            );
+        }
+    }
+
+    /// Chrome's strip reads as Headway's own did: each view's labels in the
+    /// order its strip listed them (the card actions after the grid's own
+    /// keys, before a pane's), then chrome's `?`. Bar the board edits (`a`,
+    /// `D`, `H L J K`), which Headway still reads itself ([`edit_keys`]) and
+    /// so aren't the keymap's to list.
+    #[test]
+    fn strips_read_as_before() {
+        const CARD: &[&str] = &[
+            "open",
+            "explainer",
+            "session/review",
+            "review diff",
+            "send back",
+            "next/prev card",
+        ];
+        const SCROLL: &[&str] = &["scroll", "page", "half page", "top/bottom"];
+        const DIFF: &[&str] = &[
+            "next/prev file",
+            "comment (picked lines or commit)",
+            "send comments",
+        ];
+        let grid: &[&str] = &[
+            "up/down",
+            "columns",
+            "first/last",
+            "new",
+            "review queue",
+            "filter",
+            "clear",
+        ];
+        let views = [
+            ("grid", grid_harness(), [grid, CARD].concat()),
+            (
+                "queue",
+                queue_harness(),
+                [CARD, SCROLL, DIFF, &["leave"]].concat(),
+            ),
+            (
+                "review pane",
+                pane_harness(),
+                [CARD, SCROLL, DIFF, &["back to card"]].concat(),
+            ),
+            (
+                "detail",
+                detail_harness(None),
+                [&CARD[1..], SCROLL, &["review queue here", "back"]].concat(),
+            ),
+        ];
+        for (name, harness, mut expected) in views {
+            expected.push("keys");
+            assert_eq!(strip_labels(&harness), expected, "the {name}'s strip");
+        }
     }
 
     /// Esc backs the detail out to the grid, eaten on the way so chrome
@@ -2300,11 +1885,15 @@ mod tests {
         harness.run();
         assert_eq!(harness.ctx.memory(|m| m.focused()), Some(field));
 
+        // The keymap leaves that Esc to the detail, whose own pass eats it as
+        // it ends (not drawn here; `esc_in_the_title_editor_commits_and_keeps
+        // _the_detail` runs the real one).
         press(&mut harness, Key::Escape);
         assert_eq!(harness.ctx.memory(|m| m.focused()), None, "field left");
         assert_eq!(harness.state().state.selected(), Some(id(5)), "card kept");
-        assert!(!harness.state().esc_left, "Esc consumed");
+        assert!(harness.state().esc_left, "left to the detail");
 
+        harness.state_mut().esc_left = false;
         press(&mut harness, Key::Escape);
         assert_eq!(harness.state().state.selected(), None);
         assert!(!harness.state().esc_left, "Esc consumed");
@@ -2504,7 +2093,7 @@ diff --git a/b.txt b/b.txt
         press_with(&mut harness, Modifiers::SHIFT, Key::G);
         assert_eq!(scroll(&harness), Some(PatchScroll::Bottom));
         press(&mut harness, Key::G);
-        assert!(harness.query_by_label("top").is_some(), "g hint up");
+        assert!(harness.query_by_label("top/bottom").is_some(), "g hint up");
         press(&mut harness, Key::G);
         assert_eq!(scroll(&harness), Some(PatchScroll::Top));
         press(&mut harness, Key::CloseBracket);
@@ -3285,9 +2874,10 @@ diff --git a/b.txt b/b.txt
             crate::ui_tools::available(&h.state().state, name)
         };
 
+        const GRID: [&str; 3] = ["headway.grid", "headway.card", "headway"];
         // The grid, its cursor on card 5, whose record has a session.
         let grid = grid_harness();
-        assert_eq!(scopes(&grid), ["headway.grid", "headway.card", "headway"]);
+        assert_eq!(scopes(&grid), GRID);
         for name in [
             OPEN_CARD,
             OPEN_SESSION,
@@ -3313,17 +2903,24 @@ diff --git a/b.txt b/b.txt
         assert!(available(&bare, STEP_CARD));
         assert!(available(&bare, CURSOR_MOVE));
 
-        // A card whose record has no session: no session to open.
+        // A card whose record has no session: `s` still takes the key, to
+        // say so.
         let mut no_session = keys_harness(None);
         no_session.state_mut().state.set_cursor(id(1));
         no_session.run();
         assert!(available(&no_session, OPEN_EXPLAINER));
-        assert!(!available(&no_session, OPEN_SESSION));
+        assert!(available(&no_session, OPEN_SESSION));
 
         let queue = queue_harness();
         assert_eq!(
             scopes(&queue),
-            ["headway.queue", "headway.pane", "headway.card", "headway"]
+            [
+                "headway.card",
+                "headway.scroll",
+                "headway.diff",
+                "headway.queue",
+                "headway"
+            ]
         );
         for name in [
             OPEN_CARD,
@@ -3341,14 +2938,28 @@ diff --git a/b.txt b/b.txt
         }
 
         let pane = pane_harness();
-        assert_eq!(scopes(&pane), ["headway.pane", "headway.card", "headway"]);
+        assert_eq!(
+            scopes(&pane),
+            [
+                "headway.card",
+                "headway.scroll",
+                "headway.diff",
+                "headway.pane",
+                "headway"
+            ]
+        );
         assert!(available(&pane, STEP_FILE));
         assert!(!available(&pane, OPEN_REVIEW_QUEUE));
 
         let detail = detail_harness(None);
         assert_eq!(
             scopes(&detail),
-            ["headway.detail", "headway.card", "headway"]
+            [
+                "headway.card",
+                "headway.scroll",
+                "headway.detail",
+                "headway"
+            ]
         );
         for name in [
             OPEN_EXPLAINER,

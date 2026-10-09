@@ -26,7 +26,7 @@ use super::widgets::{
     count_badge, detail_heading, pill_height, round_icon_button, secondary_action_button,
     section_label, status_icon_ui, text_pill, tinted_control, tinted_pill,
 };
-use super::{BoardUiState, find_card, pane_hints_ui};
+use super::{BoardUiState, find_card};
 use crate::keys::{ActionView, CardAction, apply_card_action};
 use crate::nav::{NavPos, ReviewTarget};
 use crate::review::{
@@ -669,12 +669,12 @@ impl ReviewQueue {
     }
 }
 
-/// Draw the review queue: the which-key strip while it's pinned or a `g` is
-/// pending, and the review pane for the queue's current card in the rest (its
+/// Draw the review queue: the review pane for the queue's current card (its
 /// breadcrumb bar carries where the pane is in the queue and the ↓/↑ to step
 /// it, see [`QueueHeader`]). Starts the next card's load too, so stepping to it
-/// is instant. The queue's keys ([`crate::keys::review_pane_keys`]) have
-/// already run this frame, and any `X` composer is drawn above. Returns the
+/// is instant. The queue's keys (chrome's keymap, run through
+/// [`crate::keys::pane_tools`]) have already run this frame, and any `X`
+/// composer is drawn above. Returns the
 /// board edit a header click made, as [`review_pane_ui`] does.
 pub(super) fn review_queue_ui(
     ui: &mut egui::Ui,
@@ -691,8 +691,6 @@ pub(super) fn review_queue_ui(
     if let Some((_, next)) = state.queue.next_card().and_then(|c| find_card(view, c)) {
         prefetch(app_ctx, view, next, &mut state.review.loader);
     }
-
-    pane_hints_ui(ui, theme, state);
 
     let Some((col, card)) = find_card(view, current) else {
         // A card that left the board since the snapshot (archived, moved to
@@ -758,7 +756,7 @@ fn prefetch(
 /// two-row header ([`review_topbar_ui`]), the record picker when there are
 /// several, the commit line, the resolve status with the record's session,
 /// and the commit's diff filling the rest. ← Back closes it, as `q`/`Esc` do
-/// ([`crate::keys::review_pane_keys`]).
+/// (`headway_back`, through [`crate::keys::apply_pane_tool`]).
 ///
 /// The header's icon clicks raise the [`CardAction`] their key does and are
 /// applied here exactly as the key would be, so a click and a key can't

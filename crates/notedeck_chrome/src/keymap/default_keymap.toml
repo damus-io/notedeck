@@ -5,6 +5,9 @@
 # The "global" scope is searched after the active app's own scopes, so an app
 # binding of the same keys wins. The apps' bindings move in here one app at a
 # time; until then they read their own keys.
+#
+# `label` and `group` are the which-key strip's: adjacent bindings of one
+# group with the same label share one hint (`j k  up/down`).
 
 [[bind]]
 scope = "global"
@@ -19,3 +22,341 @@ keys  = "<Esc>"
 tool  = "chrome_hide_key_hints"
 label = "hide keys"
 group = "help"
+
+# ── Headway ─────────────────────────────────────────────────────────────────
+#
+# Headway reports a stack of these scopes per view (crates/notedeck_headway/
+# src/ui_tools.rs, `key_scopes`):
+#
+#   grid    headway.grid, headway.card
+#   queue   headway.card, headway.scroll, headway.diff, headway.queue
+#   pane    headway.card, headway.scroll, headway.diff, headway.pane
+#   detail  headway.card, headway.scroll, headway.detail
+#
+# No two scopes of one stack bind the same keys, so their order only sets the
+# which-key strip's: a view's own navigation and the card actions in the order
+# the strip has always listed them. Which binding runs where is the tools'
+# availability: `headway_open_card` is not offered in the detail (its card is
+# open), `headway_clear` only with a cursor to drop, so Esc falls through.
+#
+# Not here: the board edits `a` (archive), `D` (done) and `H L J K` (move the
+# cursor card). They're data tools, which the keymap can't call yet, so
+# Headway still reads those keys itself (crates/notedeck_headway/src/keys.rs,
+# `edit_keys`).
+
+# The card actions: the current card, the same in every view.
+
+[[bind]]
+scope = "headway.card"
+keys  = "<Enter>"
+tool  = "headway_open_card"
+label = "open"
+group = "card"
+
+[[bind]]
+scope = "headway.card"
+keys  = "o"
+tool  = "headway_open_card"
+label = "open"
+group = "card"
+
+[[bind]]
+scope = "headway.card"
+keys  = "e"
+tool  = "headway_open_explainer"
+label = "explainer"
+group = "card"
+
+[[bind]]
+scope = "headway.card"
+keys  = "s"
+tool  = "headway_open_session"
+label = "session/review"
+group = "card"
+
+[[bind]]
+scope = "headway.card"
+keys  = "S"
+tool  = "headway_open_session"
+args  = { code_review = true }
+label = "session/review"
+group = "card"
+
+[[bind]]
+scope = "headway.card"
+keys  = "r"
+tool  = "headway_open_review"
+label = "review diff"
+group = "card"
+
+[[bind]]
+scope = "headway.card"
+keys  = "X"
+tool  = "headway_send_back"
+label = "send back"
+group = "card"
+
+[[bind]]
+scope = "headway.card"
+keys  = "n"
+tool  = "headway_step_card"
+args  = { dir = "next" }
+label = "next/prev card"
+group = "card"
+
+[[bind]]
+scope = "headway.card"
+keys  = "p"
+tool  = "headway_step_card"
+args  = { dir = "prev" }
+label = "next/prev card"
+group = "card"
+
+# The board grid.
+
+[[bind]]
+scope = "headway.grid"
+keys  = "j"
+tool  = "headway_cursor_move"
+args  = { to = "down" }
+label = "up/down"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "k"
+tool  = "headway_cursor_move"
+args  = { to = "up" }
+label = "up/down"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "h"
+tool  = "headway_cursor_move"
+args  = { to = "left" }
+label = "columns"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "l"
+tool  = "headway_cursor_move"
+args  = { to = "right" }
+label = "columns"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "g g"
+tool  = "headway_cursor_move"
+args  = { to = "first" }
+label = "first/last"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "G"
+tool  = "headway_cursor_move"
+args  = { to = "last" }
+label = "first/last"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "c"
+tool  = "headway_compose_card"
+label = "new"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "R"
+tool  = "headway_open_review_queue"
+label = "review queue"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "/"
+tool  = "headway_focus_filter"
+label = "filter"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "<Esc>"
+tool  = "headway_clear"
+label = "clear"
+group = "grid"
+
+# Scrolling a review pane's diff or the card detail.
+
+[[bind]]
+scope = "headway.scroll"
+keys  = "j"
+tool  = "headway_scroll"
+args  = { to = "down" }
+label = "scroll"
+group = "scroll"
+
+[[bind]]
+scope = "headway.scroll"
+keys  = "k"
+tool  = "headway_scroll"
+args  = { to = "up" }
+label = "scroll"
+group = "scroll"
+
+[[bind]]
+scope = "headway.scroll"
+keys  = "<Space>"
+tool  = "headway_scroll"
+args  = { to = "page_down" }
+label = "page"
+group = "scroll"
+
+[[bind]]
+scope = "headway.scroll"
+keys  = "<C-f>"
+tool  = "headway_scroll"
+args  = { to = "page_down" }
+label = "page"
+group = "scroll"
+
+[[bind]]
+scope = "headway.scroll"
+keys  = "<C-b>"
+tool  = "headway_scroll"
+args  = { to = "page_up" }
+label = "page"
+group = "scroll"
+
+[[bind]]
+scope = "headway.scroll"
+keys  = "<S-Space>"
+tool  = "headway_scroll"
+args  = { to = "page_up" }
+label = "page"
+group = "scroll"
+
+[[bind]]
+scope = "headway.scroll"
+keys  = "<C-d>"
+tool  = "headway_scroll"
+args  = { to = "half_down" }
+label = "half page"
+group = "scroll"
+
+[[bind]]
+scope = "headway.scroll"
+keys  = "<C-u>"
+tool  = "headway_scroll"
+args  = { to = "half_up" }
+label = "half page"
+group = "scroll"
+
+[[bind]]
+scope = "headway.scroll"
+keys  = "g g"
+tool  = "headway_scroll"
+args  = { to = "top" }
+label = "top/bottom"
+group = "scroll"
+
+[[bind]]
+scope = "headway.scroll"
+keys  = "G"
+tool  = "headway_scroll"
+args  = { to = "bottom" }
+label = "top/bottom"
+group = "scroll"
+
+# A review pane's diff, in the queue or opened from a card: its files, and
+# commenting on the lines picked in it (or, with none picked, the commit).
+
+[[bind]]
+scope = "headway.diff"
+keys  = "]"
+tool  = "headway_step_file"
+args  = { dir = "next" }
+label = "next/prev file"
+group = "diff"
+
+[[bind]]
+scope = "headway.diff"
+keys  = "["
+tool  = "headway_step_file"
+args  = { dir = "prev" }
+label = "next/prev file"
+group = "diff"
+
+[[bind]]
+scope = "headway.diff"
+keys  = "c"
+tool  = "headway_comment"
+label = "comment (picked lines or commit)"
+group = "comment"
+
+[[bind]]
+scope = "headway.diff"
+keys  = "C"
+tool  = "headway_send_comments"
+label = "send comments"
+group = "comment"
+
+# Leaving the review queue, for the grid (or an epic's detail).
+
+[[bind]]
+scope = "headway.queue"
+keys  = "q"
+tool  = "headway_back"
+label = "leave"
+group = "exit"
+
+[[bind]]
+scope = "headway.queue"
+keys  = "<Esc>"
+tool  = "headway_back"
+label = "leave"
+group = "exit"
+
+# Leaving a review pane opened from a card, for the card's detail.
+
+[[bind]]
+scope = "headway.pane"
+keys  = "q"
+tool  = "headway_back"
+label = "back to card"
+group = "exit"
+
+[[bind]]
+scope = "headway.pane"
+keys  = "<Esc>"
+tool  = "headway_back"
+label = "back to card"
+group = "exit"
+
+# The card detail: a review queue over its In Review subissues, and back to
+# the grid.
+
+[[bind]]
+scope = "headway.detail"
+keys  = "R"
+tool  = "headway_open_review_queue"
+label = "review queue here"
+group = "detail"
+
+[[bind]]
+scope = "headway.detail"
+keys  = "q"
+tool  = "headway_back"
+label = "back"
+group = "detail"
+
+[[bind]]
+scope = "headway.detail"
+keys  = "<Esc>"
+tool  = "headway_back"
+label = "back"
+group = "detail"

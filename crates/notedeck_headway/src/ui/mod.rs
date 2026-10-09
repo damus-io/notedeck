@@ -17,11 +17,10 @@ use std::collections::{HashMap, HashSet};
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM};
-use notedeck_ui::chord::ChordState;
 
 use crate::BoardSummary;
 use crate::event::{self, BoardView, CardView};
-use crate::keys::{self, BoardPending, PanePending};
+use crate::keys;
 use crate::nav::{NavPos, ReviewTarget};
 use crate::store::BoardAction;
 use crate::ui_tools::HeadwayUiTool;
@@ -89,33 +88,19 @@ pub struct BoardUiState {
     /// out, or the board swapped under it) drops the request instead of leaving
     /// it stuck to fire on some later, unrelated frame.
     scroll_this_frame: bool,
-    /// How far into a board-key chord (`gg`) the grid is. Ticked and advanced
-    /// by [`crate::keys::board_keys`].
-    pub(crate) chord: ChordState<BoardPending>,
-    /// The `gg` chord of the review pane (queue or not) or the detail, ticked
-    /// by [`crate::keys::review_pane_keys`] and [`crate::keys::detail_keys`].
-    /// Only one of them shows at a time, so they share it.
-    pub(crate) pane_chord: ChordState<PanePending>,
     /// Set by the grid's own drop-down menus (board switcher, View, column ⋯)
-    /// on each frame they're open, and taken by the next frame's
-    /// [`crate::keys::board_keys`]. egui 0.31's `menu_button` keeps its open
-    /// state in a private per-bar slot, not the popup memory
-    /// (`Memory::any_popup_open`), so this latch is how the keymap knows to
-    /// leave keys (Esc, Enter, `a`) to an open menu.
+    /// on each pass they're open, read by chrome (through
+    /// [`crate::ui_tools::key_scopes`]) before the next pass renders, and
+    /// reset as that pass starts. egui's `menu_button` keeps its open state in
+    /// a private per-bar slot, not the popup memory (`Memory::any_popup_open`)
+    /// that chrome's focus gate checks, so this latch is how the keymap knows
+    /// to leave keys (Esc, Enter, `a`) to an open menu.
     grid_menu_open: bool,
     /// UI tools called since the last render pass ([`crate::ui_tools`]),
-    /// drained where the keymaps run ([`crate::keys::pane_tools`],
+    /// drained as the board renders ([`crate::keys::pane_tools`],
     /// [`crate::keys::grid_tools`]) and dropped as the pass ends. Empty, and
     /// unallocated, on any frame no tool was called.
     queued_tools: Vec<HeadwayUiTool>,
-    /// Whether the current card's acted record has an agentium session, as
-    /// the last render pass left it ([`latch_tool_state`](Self::latch_tool_state)),
-    /// for `headway_open_session`'s availability, which has no board view.
-    current_has_session: bool,
-    /// Whether the which-key strip of board keys is pinned open (toggled with
-    /// `?`). It also shows, narrowed, while a `g` chord is pending regardless;
-    /// see [`crate::keys::key_hints`].
-    show_key_hints: bool,
     /// Which card the detail edit buffers below were seeded from. When this
     /// differs from `selected`, the buffers are refreshed from the board.
     detail_for: Option<NoteId>,
@@ -235,11 +220,11 @@ pub struct BoardUiState {
     reason: Option<ReasonComposer>,
     /// A scroll the detail's keys asked of it, applied on its next pass.
     detail_scroll: Option<DetailScroll>,
-    /// The egui pass at whose end a widget in the detail held the keyboard,
-    /// if the last detail pass ended that way: what tells the detail's Esc
-    /// that it only unfocused a field ([`BoardUiState::esc_left_a_field`]).
-    detail_focus_pass: Option<u64>,
-    /// The last card action a keymap applied, and to which card: what the
+    /// Whether a widget in the detail held the keyboard as the last detail
+    /// pass ended: what tells the detail's Esc that it only unfocused a field
+    /// ([`BoardUiState::detail_field_focused`]). Dropped with the card.
+    detail_field_focused: bool,
+    /// The last card action a tool applied, and to which card: what the
     /// `card_actions_mean_the_same_in_every_view` test compares across views.
     #[cfg(test)]
     pub(crate) last_card_action: Option<(keys::CardAction, NoteId)>,
@@ -431,7 +416,6 @@ impl BoardUiState {
             }
         };
         self.review.close();
-        self.pane_chord.clear();
         self.reason = None;
         self.notice = None;
         landed
@@ -459,6 +443,9 @@ impl BoardUiState {
     /// then mutate the selection (a click, a close), and the app diffs the result
     /// back into a nav request.
     pub fn set_selected(&mut self, selected: Option<NoteId>) {
+        if self.selected != selected {
+            self.detail_field_focused = false;
+        }
         self.selected = selected;
     }
 
@@ -489,8 +476,7 @@ impl BoardUiState {
 
     /// Whether a board-level overlay owns the keyboard: an inline editor (card
     /// composer, column rename, new column/board), the archived sheet, the `X`
-    /// composer, or the review queue (whose own keys are
-    /// [`crate::keys::review_pane_keys`]).
+    /// composer, or the review queue (whose keys are its own scopes').
     pub(crate) fn keys_blocked(&self) -> bool {
         self.edit != InlineEdit::None
             || self.showing_archived
@@ -498,15 +484,14 @@ impl BoardUiState {
             || self.queue.is_open()
     }
 
-    /// Take the [`grid_menu_open`](Self::grid_menu_open) latch: whether one of
-    /// the grid's drop-down menus was open last frame.
-    pub(crate) fn take_grid_menu_open(&mut self) -> bool {
-        std::mem::take(&mut self.grid_menu_open)
+    /// Reset the [`grid_menu_open`](Self::grid_menu_open) latch as a render
+    /// pass starts, for the menus still open to set again as they draw.
+    pub(crate) fn reset_grid_menu_open(&mut self) {
+        self.grid_menu_open = false;
     }
 
-    /// Read the [`grid_menu_open`](Self::grid_menu_open) latch without taking
-    /// it, for the key scopes chrome asks for before this frame's
-    /// [`crate::keys::board_keys`] takes it.
+    /// Whether one of the grid's drop-down menus was open as the last render
+    /// pass drew, for the key scopes chrome asks for before this pass renders.
     pub(crate) fn grid_menu_open(&self) -> bool {
         self.grid_menu_open
     }
@@ -538,39 +523,6 @@ impl BoardUiState {
             );
             self.queued_tools.clear();
         }
-    }
-
-    /// Whether the current card's acted record has an agentium session, as
-    /// of the last render pass.
-    pub(crate) fn current_has_session(&self) -> bool {
-        self.current_has_session
-    }
-
-    /// As a render pass ends, note what UI tool availability needs from the
-    /// board view, which [`crate::ui_tools::available`] runs without: whether
-    /// the current card's acted record has an agentium session.
-    pub(crate) fn latch_tool_state(&mut self, view: &BoardView) {
-        let card = crate::ui_tools::key_view(self)
-            .and_then(|at| crate::ui_tools::current_card(self, at))
-            .and_then(|card| find_card(view, card));
-        self.current_has_session = card
-            .and_then(|(_, card)| self.acted_record(card))
-            .is_some_and(|record| record.fields.agentium.is_some());
-    }
-
-    /// Whether the which-key strip is pinned open by `?`.
-    pub(crate) fn key_hints_shown(&self) -> bool {
-        self.show_key_hints
-    }
-
-    /// Show the which-key strip if it's hidden, hide it if it's showing.
-    pub(crate) fn toggle_key_hints(&mut self) {
-        self.show_key_hints = !self.show_key_hints;
-    }
-
-    /// Hide the which-key strip (Esc).
-    pub(crate) fn hide_key_hints(&mut self) {
-        self.show_key_hints = false;
     }
 }
 
@@ -692,18 +644,25 @@ pub fn board_ui(
     sync: SyncStatus,
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
-    // The keys of the queue, a review pane, the detail or the `X` composer
-    // run before anything lays out, so one that leaves its view (`q`, a
-    // verdict on the queue's last card, Enter onto the card) has the view it
-    // lands on draw this same frame rather than a blank one. (The grid's run
-    // as it lays out, in `board_pane_ui`.)
+    // The board-edit keys chrome's keymap doesn't bind yet, queued with the
+    // tools chrome called; read under last pass's grid-menu latch, as chrome
+    // read the key scopes.
+    keys::edit_keys(ui.ctx(), state);
+    // The grid's menus re-latch as they draw this pass.
+    state.reset_grid_menu_open();
+    // The UI tools chrome's keymap called for the queue, a review pane or the
+    // detail, and the `X` composer's keys, run before anything lays out, so
+    // one that leaves its view (`q`, a verdict on the queue's last card,
+    // Enter onto the card) has the view it lands on draw this same frame
+    // rather than a blank one. (The grid's run as it lays out, in
+    // `board_pane_ui`.)
     state.refresh_queue(view, ui.ctx().input(|i| i.time));
     // A route reseed or last frame's click may have left the `X` composer's
     // view; it closes before its keys could take this frame's Enter.
     state.retire_stale_reason();
-    let keyed = keys::pane_keys(ui.ctx(), view, state);
-    // UI tools run where the keys do, after them; a frame with a key has no
-    // tool (chrome took the key to call one), so at most one of them edits.
+    let keyed = keys::reason_keys(ui.ctx(), view, state);
+    // While the composer is open no view takes tools, so at most one of them
+    // edits.
     let ran_tools = state.has_queued_tools();
     let keyed = keyed.or(keys::pane_tools(ui.ctx(), view, state));
     state.retire_stale_notice(ui.ctx().cumulative_pass_nr());
@@ -713,7 +672,6 @@ pub fn board_ui(
     }
     let action = board_pane_ui(ui, theme, app_ctx, view, boards, sync, state);
     state.drop_queued_tools();
-    state.latch_tool_state(view);
     // A key swallowed the frame's keys, so the pane's edit could only be a
     // drop landing in the same frame; the key wins, as it does over a drop in
     // the grid.
@@ -763,7 +721,6 @@ fn board_pane_ui(
     if let Some(card) = state.review.card() {
         if let Some((col, card)) = find_card(view, card) {
             reason_bar_ui(ui, theme, state);
-            pane_hints_ui(ui, theme, state);
             return review_pane_ui(ui, theme, app_ctx, view, col, card, state);
         }
         state.review.close();
@@ -811,17 +768,16 @@ fn board_pane_ui(
         hide_subissues: state.hide_subissues,
     };
 
-    // Board keys (j/k/h/l, gg/G, c, /, ?, Esc, the card actions; H/J/K/L move
-    // the cursor card, returned as the action a drop would raise). Only the grid
-    // reaches here — the graph, the review panes and the detail returned above
-    // and have their own keys —
-    // and it runs before any grid widget lays out, so a key it handles is
-    // swallowed before a field that `c` or `/` focuses could type it. The keys
-    // stand down during a drag, but should a key action and a drop below ever
-    // land in one frame, the drop overwrites it.
-    let mut action: Option<BoardAction> = keys::board_keys(ui.ctx(), view, &view_filter, state);
-    // The UI tools left for the grid run where its keys did (see `board_ui`).
-    action = action.or(keys::grid_tools(ui.ctx(), view, &view_filter, state));
+    // The grid's UI tools (j/k/h/l, gg/G, c, /, Esc and the card actions,
+    // through chrome's keymap), and the edit keys `edit_keys` queued with
+    // them (H/J/K/L move the cursor card, returned as the action a drop would
+    // raise; a archives, D moves to Done). Only the grid reaches here — the graph, the
+    // review panes and the detail returned above — and they run before any
+    // grid widget lays out, so a field that `c` or `/` focuses lays out
+    // focused this frame (chrome swallowed the key, so it types nothing).
+    // Chrome's keymap stands down during a drag, but should a tool and a drop
+    // below ever land in one frame, the drop overwrites it.
+    let mut action: Option<BoardAction> = keys::grid_tools(ui.ctx(), view, &view_filter, state);
     // Drawn after the keys, so a grid `X` shows its composer this frame.
     reason_bar_ui(ui, theme, state);
     // The card a click landed on this frame; opens the detail view next frame.
@@ -924,20 +880,6 @@ fn board_pane_ui(
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_MD);
-
-            // The which-key strip (`?`, or a pending `g`). Reserved from the
-            // bottom before the columns lay out, since their scroll area takes
-            // every point of height left; the columns size off what remains.
-            if let Some(hints) = keys::key_hints(state) {
-                egui::Panel::bottom("headway-key-hints")
-                    .resizable(false)
-                    .show_separator_line(false)
-                    .frame(egui::Frame::new().inner_margin(egui::Margin {
-                        top: SPACING_MD as i8,
-                        ..Default::default()
-                    }))
-                    .show(ui, |ui| keys::key_hints_ui(ui, theme, hints));
-            }
 
             egui::ScrollArea::horizontal()
                 .auto_shrink([false, false])
@@ -1050,26 +992,6 @@ fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<Notice>,
     ui.label(egui::RichText::new(shown.text()).color(theme.warning));
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_secs_f64(left));
-}
-
-/// The which-key strip of the pane showing over the grid ([`keys::pane_key_hints`]:
-/// the queue's, a plain review pane's or the detail's), while `?` pins it or a
-/// `g` is pending. Reserved from the bottom before the pane lays out, since the
-/// pane's scroll area takes every point of height left (as the grid's strip).
-fn pane_hints_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &BoardUiState) {
-    let Some(strip) = keys::pane_key_hints(state) else {
-        return;
-    };
-    egui::Panel::bottom("headway-pane-key-hints")
-        .resizable(false)
-        .show_separator_line(false)
-        .frame(egui::Frame::new().inner_margin(egui::Margin {
-            left: SPACING_LG as i8,
-            right: SPACING_LG as i8,
-            top: SPACING_MD as i8,
-            bottom: SPACING_MD as i8,
-        }))
-        .show(ui, |ui| keys::key_hints_ui(ui, theme, strip));
 }
 
 /// Find a card anywhere on the board, returning its column index and view.

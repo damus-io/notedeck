@@ -6048,6 +6048,7 @@ dependencies = [
  "nostrdb",
  "nostrdb_net",
  "notedeck",
+ "notedeck_chrome",
  "notedeck_testing",
  "notedeck_ui",
  "profiling",

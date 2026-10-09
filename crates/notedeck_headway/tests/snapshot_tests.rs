@@ -7,6 +7,8 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use nostrdb::{Filter, IngestMetadata, Ndb, NoteBuilder, Subscription, Transaction};
 use nostrdb_net::{FullKeypair, Keypair, NoteId, Pubkey};
 use notedeck::{App, AppContext, Notedeck};
+use notedeck_chrome::keymap::{KeyDispatch, KeyEngine, Scopes};
+use notedeck_chrome::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
 use notedeck_headway::{Headway, event, store};
 
 /// The two-party suite's SNS helpers; here we reuse only its gift-wrap key-share
@@ -33,6 +35,90 @@ struct HeadwayTestState {
     /// a test can exercise the board↔card port's seeding both ways (a `Card` token
     /// shows the detail, a `Board`/`()` token returns to the grid).
     nav_token: Option<std::rc::Rc<dyn std::any::Any>>,
+    /// Chrome's part of the keyboard: Headway reads no keys of its own.
+    keys: ChromeKeys,
+}
+
+/// What the chrome does with Headway's keys, stood in for here: its key
+/// engine, with the shipped keymap, resolves each frame's press against
+/// Headway's key scopes before Headway renders and calls the UI tool it's
+/// bound to; `?` pins the which-key strip the chrome draws below the app.
+struct ChromeKeys {
+    engine: KeyEngine,
+    /// Whether `?` pinned the strip.
+    pinned: bool,
+}
+
+impl ChromeKeys {
+    fn new() -> Self {
+        Self {
+            engine: KeyEngine::with_default_keymap(),
+            pinned: false,
+        }
+    }
+
+    /// Whether chrome's own tool, or Headway's UI tool, `name` is available,
+    /// as chrome asks: `?` only while Headway reports scopes, the strip's
+    /// Esc only while it's pinned.
+    fn available(pinned: bool, headway: &Headway, name: &str) -> bool {
+        match name {
+            TOGGLE_KEY_HINTS => !headway.key_scopes().is_empty(),
+            HIDE_KEY_HINTS => pinned,
+            name => headway.ui_tool_available(name),
+        }
+    }
+
+    /// Resolve this frame's key press and run what it's bound to.
+    fn dispatch(&mut self, ctx: &egui::Context, app_ctx: &mut AppContext, headway: &mut Headway) {
+        let pinned = self.pinned;
+        let scopes = headway.key_scopes();
+        let dispatch = self
+            .engine
+            .resolve(ctx, scopes, |name| Self::available(pinned, headway, name));
+        let Some(KeyDispatch::Tool(call)) = dispatch else {
+            return;
+        };
+        match call.name.as_str() {
+            TOGGLE_KEY_HINTS => self.pinned = !pinned,
+            HIDE_KEY_HINTS => self.pinned = false,
+            name => {
+                if let notedeck::ToolOutcome::Error(err) =
+                    headway.call_ui_tool(app_ctx, name, &call.args)
+                {
+                    panic!("keymap's {name} {}: {err}", call.args);
+                }
+            }
+        }
+    }
+
+    /// The which-key strip along the bottom, as the chrome draws it: a
+    /// pending chord's continuations, else, pinned, Headway's keys.
+    fn strip_ui(&self, ui: &mut egui::Ui, headway: &Headway) {
+        let pending = self.engine.pending();
+        if pending.is_none() && !self.pinned {
+            return;
+        }
+        let pinned = self.pinned;
+        let hints =
+            self.engine
+                .keymap()
+                .hints(Scopes::new(headway.key_scopes()), pending, move |name| {
+                    Self::available(pinned, headway, name)
+                });
+        let muted = notedeck::ColorTheme::current(ui.ctx()).text_muted;
+        let margin = notedeck::tokens::SPACING_MD as i8;
+        egui::Panel::bottom("chrome-key-hints")
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(ui.visuals().panel_fill)
+                    .inner_margin(egui::Margin::same(margin)),
+            )
+            .show(ui, |ui| {
+                let hints = hints.map(|hint| (hint.keycap_iter(), hint.label));
+                notedeck_ui::keybind_hint::key_hints_ui(ui, muted, hints);
+            });
+    }
 }
 
 fn render_headway(ui: &mut egui::Ui, state: &mut HeadwayTestState) {
@@ -79,6 +165,12 @@ fn render_headway(ui: &mut egui::Ui, state: &mut HeadwayTestState) {
         }
 
         egui::CentralPanel::default().show(ui, |ui| {
+            // Mirror the chrome: its keymap takes the frame's key before the
+            // app renders, and its strip reserves the bottom of the app area.
+            state
+                .keys
+                .dispatch(ui.ctx(), &mut app_ctx, &mut state.headway);
+            state.keys.strip_ui(ui, &state.headway);
             // Mirror the chrome, which zeroes the horizontal item gap for every app
             // (`notedeck_chrome/src/chrome/frame.rs`, `Chrome::show`): a Headway that
             // stops owning its spacing then shows up glued here, as it would live.
@@ -207,6 +299,7 @@ fn headway_state() -> HeadwayTestState {
         fonts_installed: false,
         ref_note: None,
         nav_token: None,
+        keys: ChromeKeys::new(),
     }
 }
 
@@ -3176,13 +3269,11 @@ fn review_header_icons_are_their_keys() {
 
 /// The queue's key-strip labels, in strip order: what [`assert_queue_hints_fit`]
 /// checks for.
-const QUEUE_HINT_LABELS: [&str; 15] = [
+const QUEUE_HINT_LABELS: [&str; 13] = [
     "open",
     "explainer",
     "session/review",
     "review diff",
-    "archive",
-    "done",
     "send back",
     "next/prev card",
     "scroll",
@@ -4803,24 +4894,24 @@ fn snapshot_headway_board_cursor() {
     harness.snapshot("headway_board_cursor");
 }
 
-/// `?` pins the which-key strip of board keys under the columns and a second
+/// `?` pins chrome's which-key strip of board keys and a second
 /// `?` puts it away; a pending `g` shows just its continuation meanwhile.
 #[test]
 fn question_mark_toggles_the_key_hint_strip() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
-    assert!(harness.query_by_label("move card").is_none());
+    assert!(harness.query_by_label("columns").is_none());
 
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
-    wait_for_label(&mut harness, "move card");
+    wait_for_label(&mut harness, "columns");
 
     press_board_keys(&mut harness, &[egui::Key::G]);
-    wait_for_label(&mut harness, "first card");
-    assert!(harness.query_by_label("move card").is_none());
+    wait_for_label(&mut harness, "first/last");
+    assert!(harness.query_by_label("columns").is_none());
     press_board_keys(&mut harness, &[egui::Key::G]);
-    wait_for_label(&mut harness, "move card");
+    wait_for_label(&mut harness, "columns");
 
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
-    wait_for_absent(&mut harness, "move card");
+    wait_for_absent(&mut harness, "columns");
 }
 
 /// Snapshot: the board with the which-key strip pinned open under the columns,

@@ -15,7 +15,7 @@ use super::widgets::{
     STATUS_DONE, StatusIcon, count_badge, detail_heading, label_color, priority_icon_ui,
     priority_label, secondary_action_button, section_label, status_icon_ui,
 };
-use super::{BoardUiState, EditMode, find_card, notice_ui, pane_hints_ui, seed_edit_mode};
+use super::{BoardUiState, EditMode, find_card, notice_ui, seed_edit_mode};
 use crate::event::{
     self, ActivityKind, ActivityView, BoardView, ColumnPos, ColumnView, CommentView, Priority,
     ReviewView,
@@ -58,8 +58,9 @@ struct SubissueDropGap {
 /// it) with the card's properties (status, labels, actions) in a fixed right
 /// sidebar on wide panes, stacked inline on narrow ones. Edits are emitted as
 /// [`BoardAction`]s (title/description commit on focus loss); dismissing
-/// (back / ✕) clears the selection. Its keys, `Esc` among them, are
-/// [`crate::keys::detail_keys`]'s, read before this lays out.
+/// (back / ✕) clears the selection. Its keys, `Esc` among them, are chrome's
+/// keymap's, run through [`crate::keys::apply_detail_tool`] before this lays
+/// out.
 pub(super) fn card_detail_pane_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -170,7 +171,6 @@ pub(super) fn card_detail_pane_ui(
     };
 
     let mut outcome = DetailOutcome::None;
-    pane_hints_ui(ui, theme, state);
     let here = state.nav_pos();
 
     egui::Frame::new()

@@ -542,14 +542,6 @@ pub struct BoardSummary {
     pub title: String,
 }
 
-/// Whether Headway reports its [key scopes](ui_tools::key_scopes) to chrome.
-/// Off while Headway still reads its own keys ([`keys`]): chrome's keymap has
-/// no Headway bindings yet, and reporting scopes would hand `?` to chrome's
-/// which-key strip, which would then list nothing of Headway's. Turned on, and
-/// this removed, when the bindings move into chrome's `default_keymap.toml`
-/// (headway:notedeck/favorite-please-side).
-const REPORT_KEY_SCOPES: bool = false;
-
 impl App for Headway {
     fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
         // Clone the app's one board cache (see `board_cache`) so an issue and its
@@ -602,12 +594,10 @@ impl App for Headway {
         ui_tools::available(&self.state, name)
     }
 
+    /// The scopes of the view in front, which chrome's `default_keymap.toml`
+    /// binds Headway's keys in (see [`ui_tools::key_scopes`]).
     fn key_scopes(&self) -> &'static [&'static str] {
-        if REPORT_KEY_SCOPES {
-            ui_tools::key_scopes(&self.state)
-        } else {
-            &[]
-        }
+        ui_tools::key_scopes(&self.state)
     }
 
     /// Background sync, run every frame for all *opened* apps (not just the

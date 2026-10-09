@@ -2,11 +2,13 @@
 //! keymap, its macros and (opted-in) agents can run them (see
 //! [`notedeck::App::ui_tools`]).
 //!
-//! A tool is parsed here into a [`HeadwayUiTool`] and queued on
-//! [`BoardUiState`]; [`crate::keys`] drains the queue where its keymaps run,
-//! through the same `apply_*` helpers the keys call, because the board view a
-//! tool acts on only exists inside the render pass. So a tool and its key
-//! have one effect, in one order.
+//! Chrome's keymap (`default_keymap.toml` in `notedeck_chrome`) binds
+//! Headway's keys, in the [key scopes](key_scopes) of the view in front, to
+//! these tools. A tool is parsed here into a [`HeadwayUiTool`] and queued on
+//! [`BoardUiState`]; [`crate::keys`] drains the queue as the board renders,
+//! through its `apply_*` helpers, because the board view a tool acts on only
+//! exists inside the render pass. So a key and its tool called by name have
+//! one effect, in one order.
 //!
 //! **Card tools** act on *the current card*: the open detail's, the queue's
 //! or a review pane's card, else the grid's cursor. An optional
@@ -56,7 +58,7 @@ pub(crate) const COMPOSE_CARD: &str = "headway_compose_card";
 pub(crate) const FOCUS_FILTER: &str = "headway_focus_filter";
 /// `R`: the review queue over the board's In Review, or the detail card's.
 pub(crate) const OPEN_REVIEW_QUEUE: &str = "headway_open_review_queue";
-/// The grid's `Esc`: drop the cursor, a pending chord and the hint strip.
+/// The grid's `Esc`: drop the cursor.
 pub(crate) const CLEAR: &str = "headway_clear";
 /// `j`/`k`, `Space`, `^d`/`^u`, `gg`/`G` over a pane: scroll it.
 pub(crate) const SCROLL: &str = "headway_scroll";
@@ -301,12 +303,7 @@ impl HeadwayUiTool {
                 vec![],
             )
             .ui(),
-            ToolSpec::new(
-                CLEAR,
-                "Drop the grid's cursor, a pending key chord and the key hints.",
-                vec![],
-            )
-            .ui(),
+            ToolSpec::new(CLEAR, "Drop the board grid's cursor.", vec![]).ui(),
             ToolSpec::new(
                 SCROLL,
                 "Scroll the review pane's diff or the card detail.",
@@ -459,8 +456,7 @@ pub(crate) enum KeyView {
     Detail,
 }
 
-/// The view whose keys and tools are live, picked as
-/// [`crate::keys::pane_keys`] picks its keymap: nothing while the `X`
+/// The view whose keys and tools are live: nothing while the `X`
 /// composer is open (its Enter/Esc are its field's) or the dependency graph
 /// is; else the queue, a review pane, the detail; else the grid, unless an
 /// inline editor, the archived sheet or one of the grid's menus has the
@@ -484,12 +480,32 @@ pub(crate) fn key_view(state: &BoardUiState) -> Option<KeyView> {
     Some(KeyView::Grid)
 }
 
-/// The queue's key scopes.
-const QUEUE_SCOPES: &[&str] = &["headway.queue", "headway.pane", "headway.card", "headway"];
-/// A plain review pane's key scopes.
-const PANE_SCOPES: &[&str] = &["headway.pane", "headway.card", "headway"];
+/// The queue's key scopes. Bound in chrome's `default_keymap.toml`. No two
+/// scopes of one view's stack bind the same keys, so the order only sets the
+/// which-key strip's: the card actions first, then the view's own keys, as
+/// Headway's strips have always read; the grid lists its own first.
+const QUEUE_SCOPES: &[&str] = &[
+    "headway.card",
+    "headway.scroll",
+    "headway.diff",
+    "headway.queue",
+    "headway",
+];
+/// A plain review pane's key scopes: the queue's, bar how it's left.
+const PANE_SCOPES: &[&str] = &[
+    "headway.card",
+    "headway.scroll",
+    "headway.diff",
+    "headway.pane",
+    "headway",
+];
 /// The detail's key scopes.
-const DETAIL_SCOPES: &[&str] = &["headway.detail", "headway.card", "headway"];
+const DETAIL_SCOPES: &[&str] = &[
+    "headway.card",
+    "headway.scroll",
+    "headway.detail",
+    "headway",
+];
 /// The grid's key scopes.
 const GRID_SCOPES: &[&str] = &["headway.grid", "headway.card", "headway"];
 
@@ -517,9 +533,8 @@ pub(crate) fn current_card(state: &BoardUiState, at: KeyView) -> Option<nostrdb_
 }
 
 /// Whether the UI tool `name` does anything in the view in front: a card tool
-/// needs a current card (and `headway_open_session` one whose record has a
-/// session), a grid tool the grid, a pane tool a pane. `headway_clear` is
-/// available only with something to clear, so an `Esc` with nothing to clear
+/// needs a current card, a grid tool the grid, a pane tool a pane. `headway_clear` is
+/// available only with a cursor to drop, so an `Esc` with nothing to clear
 /// falls through to chrome. Unknown names aren't. Doesn't allocate.
 pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
     let Some(at) = key_view(state) else {
@@ -531,16 +546,18 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
     match name {
         // The detail has nothing to open: its card is open.
         OPEN_CARD => card && at != KeyView::Detail,
-        // Says there's no explainer when there's none, as the key does.
-        OPEN_EXPLAINER | OPEN_REVIEW | SEND_BACK => card,
-        OPEN_SESSION => card && state.current_has_session(),
+        // Say there's no explainer, or no session, when there's none, so
+        // the key answers rather than falling through.
+        OPEN_EXPLAINER | OPEN_SESSION | OPEN_REVIEW | SEND_BACK => card,
         // The grid's step lands a missing cursor on the first card; the
         // queue's steps off a card that has left the board.
         STEP_CARD => card || grid || at == KeyView::Queue,
         CURSOR_MOVE | COMPOSE_CARD | FOCUS_FILTER => grid,
         OPEN_REVIEW_QUEUE => grid || at == KeyView::Detail,
-        CLEAR => grid && (card || state.chord.pending().is_some() || state.key_hints_shown()),
-        SCROLL | BACK => !grid,
+        CLEAR => grid && card,
+        SCROLL => !grid,
+        // An Esc that only left a detail field mustn't leave the card too.
+        BACK => !grid && !(at == KeyView::Detail && state.detail_field_focused()),
         STEP_FILE => review,
         COMMENT | SEND_COMMENTS => review && card,
         _ => false,

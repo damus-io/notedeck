@@ -1,0 +1,385 @@
+//! Headway's keys through the real chrome: Headway reads no keys of its own
+//! (bar its board edits), so every one goes chrome's keymap → the shipped
+//! `default_keymap.toml` → Headway's UI tool. A headless chrome runs the real
+//! Headway, on a seeded demo board, behind a wrapper that records each UI tool
+//! call reaching it; keys go in as real chrome frames.
+//!
+//! What each key then does to the board is Headway's own tests' business
+//! (`notedeck_headway`'s `keys.rs` tests run the same engine and keymap); these
+//! check the wiring: Headway's key scopes reach the engine, availability goes
+//! through the registry to Headway, the call lands on Headway, and the keymap
+//! names only tools Headway owns.
+
+#![cfg(feature = "headway")]
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Duration;
+
+use egui::{Event, Key, Modifiers};
+use nostrdb::Filter;
+use nostrdb_net::FullKeypair;
+use notedeck::{App, AppContext, AppResponse, Notedeck, ToolInvocation, ToolOutcome, ToolSpec};
+use notedeck_chrome::keymap::DEFAULT_KEYMAP;
+use notedeck_chrome::{Chrome, NotedeckApp};
+use notedeck_headway::{store, Headway};
+use serde_json::{json, Value};
+
+/// The grid's summary line once the demo board has folded.
+const GRID: &str = "7 cards · 5 columns";
+
+/// How many frames a wait for the board gives up after.
+const SETTLE_FRAMES: usize = 600;
+
+/// One UI tool call that reached Headway.
+type Call = (String, Value);
+
+/// Headway, recording every UI tool call chrome hands it before passing it on.
+struct Recording {
+    headway: Headway,
+    calls: Rc<RefCell<Vec<Call>>>,
+}
+
+impl App for Recording {
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
+        self.headway.update(ctx);
+    }
+
+    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        self.headway.render(ctx, ui)
+    }
+
+    fn render_nav(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        ui: &mut egui::Ui,
+        token: &Rc<dyn std::any::Any>,
+    ) -> AppResponse {
+        self.headway.render_nav(ctx, ui, token)
+    }
+
+    fn tools(&self) -> Vec<notedeck::RegisteredTool> {
+        self.headway.tools()
+    }
+
+    fn ui_tools(&self) -> Vec<ToolSpec> {
+        self.headway.ui_tools()
+    }
+
+    fn call_ui_tool(&mut self, ctx: &mut AppContext<'_>, name: &str, args: &Value) -> ToolOutcome {
+        self.calls
+            .borrow_mut()
+            .push((name.to_owned(), args.clone()));
+        self.headway.call_ui_tool(ctx, name, args)
+    }
+
+    fn ui_tool_available(&self, name: &str) -> bool {
+        self.headway.ui_tool_available(name)
+    }
+
+    fn key_scopes(&self) -> &'static [&'static str] {
+        self.headway.key_scopes()
+    }
+}
+
+/// A headless chrome with the recording Headway in front, on the demo board.
+struct Fixture {
+    _dir: tempfile::TempDir,
+    egui_ctx: egui::Context,
+    notedeck: Notedeck,
+    chrome: Chrome,
+    calls: Rc<RefCell<Vec<Call>>>,
+    /// The input time of the next frame.
+    time: f64,
+    /// Every piece of text the last frame painted.
+    drawn: Vec<String>,
+}
+
+impl Fixture {
+    /// Seed the demo board as a fresh account, start the chrome with Headway
+    /// alone (the nav root, so nothing slides) and wait for the grid.
+    async fn new() -> Self {
+        let dir = tempfile::TempDir::new().expect("tmp dir");
+        let kp = FullKeypair::generate();
+        let args: Vec<String> = [
+            "notedeck-test",
+            "--testrunner",
+            "--nsec",
+            &kp.secret_key.to_secret_hex(),
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let egui_ctx = egui::Context::default();
+        let mut notedeck = Notedeck::init(&egui_ctx, dir.path(), &args);
+        {
+            let app_ctx = notedeck.app_context();
+            app_ctx.settings.complete_welcome();
+            app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
+            let ndb = &*app_ctx.ndb;
+            let sub = ndb
+                .subscribe(&[Filter::new().authors([kp.pubkey.bytes()]).build()])
+                .expect("subscribe");
+            let written = store::seed_demo_board(
+                ndb,
+                &kp.pubkey,
+                &kp.secret_key.secret_bytes(),
+                store::BOARD_ID,
+                1_700_000_000,
+                &mut store::NoPublish,
+            );
+            let written = u32::try_from(written).expect("a demo board's worth of notes");
+            ndb.wait_for_all_notes_within(sub, written, Duration::from_secs(10))
+                .await
+                .expect("the demo board seeds");
+        }
+        notedeck.setup(&egui_ctx);
+
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let headway = Recording {
+            headway: Headway::new(),
+            calls: Rc::clone(&calls),
+        };
+        let mut chrome = Chrome::new_headless_with_apps(
+            &mut notedeck,
+            [NotedeckApp::Other("headway".to_owned(), Box::new(headway))],
+        );
+        let update = App::take_tool_update(&mut chrome).expect("the running set changed");
+        notedeck.apply_tool_update(update);
+
+        let mut fixture = Self {
+            _dir: dir,
+            egui_ctx,
+            notedeck,
+            chrome,
+            calls,
+            time: 0.0,
+            drawn: Vec::new(),
+        };
+        fixture.wait_to_draw(GRID);
+        fixture
+    }
+
+    /// One real chrome frame, `update` then `render`, with `events` as input.
+    fn frame(&mut self, events: Vec<Event>) {
+        let input = egui::RawInput {
+            time: Some(self.time),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        self.time += 1.0 / 60.0;
+        let Self {
+            egui_ctx,
+            notedeck,
+            chrome,
+            drawn,
+            ..
+        } = self;
+        let mut app_ctx = notedeck.app_context();
+        let output = egui_ctx.run_ui(input, |ui| {
+            chrome.update(&mut app_ctx);
+            egui::CentralPanel::default().show(ui, |ui| {
+                chrome.render(&mut app_ctx, ui);
+            });
+        });
+        drawn.clear();
+        for clipped in &output.shapes {
+            collect_text(&clipped.shape, drawn);
+        }
+        output.drop_without_applying_deltas();
+    }
+
+    /// Run frames until `text` is painted, or panic.
+    fn wait_to_draw(&mut self, text: &str) {
+        for _ in 0..SETTLE_FRAMES {
+            self.frame(Vec::new());
+            if self.drew(text) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("{text:?} never drawn; last frame drew {:?}", self.drawn);
+    }
+
+    /// Whether the last frame painted exactly `text`.
+    fn drew(&self, text: &str) -> bool {
+        self.drawn.iter().any(|drawn| drawn == text)
+    }
+
+    /// One frame with `key` pressed (typing `text`, if any) and released, then
+    /// one to let it land.
+    fn press(&mut self, modifiers: Modifiers, key: Key, text: Option<&str>) {
+        let event = |pressed| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        };
+        let mut events = vec![event(true)];
+        if let Some(text) = text {
+            events.push(Event::Text(text.to_owned()));
+        }
+        events.push(event(false));
+        self.frame(events);
+        self.frame(Vec::new());
+    }
+
+    /// Press a bare key.
+    fn key(&mut self, key: Key) {
+        self.press(Modifiers::NONE, key, None);
+    }
+
+    /// Take the UI tool calls that reached Headway since the last take.
+    fn take_calls(&self) -> Vec<Call> {
+        std::mem::take(&mut *self.calls.borrow_mut())
+    }
+}
+
+/// Push the text of every text shape in `shape` onto `out`.
+fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
+    match shape {
+        egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+        egui::Shape::Vec(shapes) => {
+            for shape in shapes {
+                collect_text(shape, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A call of `name` with `args`.
+fn call(name: &str, args: Value) -> Call {
+    (name.to_owned(), args)
+}
+
+/// The shipped keymap as written: every `[[bind]]`'s scope, tool and args.
+fn default_bindings() -> Vec<(String, String, Value)> {
+    let table: toml::Table = DEFAULT_KEYMAP.parse().expect("the default keymap is TOML");
+    let binds = table["bind"].as_array().expect("[[bind]] entries");
+    binds
+        .iter()
+        .filter_map(|bind| {
+            let scope = bind["scope"].as_str()?.to_owned();
+            let tool = bind.get("tool")?.as_str()?.to_owned();
+            let args = bind
+                .get("args")
+                .map(|args| serde_json::to_value(args).expect("args as JSON"))
+                .unwrap_or(Value::Null);
+            Some((scope, tool, args))
+        })
+        .collect()
+}
+
+/// Every Headway binding in the shipped keymap names a UI tool Headway owns
+/// in the host's registry (not a data tool, which the keymap can't call, nor
+/// a name a data tool shadows), and Headway takes its args.
+#[tokio::test]
+async fn every_headway_binding_names_a_headway_ui_tool() {
+    let mut f = Fixture::new().await;
+    let headway = notedeck::AppId(0);
+    let bindings: Vec<_> = default_bindings()
+        .into_iter()
+        .filter(|(scope, _, _)| scope.starts_with("headway"))
+        .collect();
+    assert!(bindings.len() > 30, "Headway's keymap is in: {bindings:?}");
+
+    for (scope, tool, args) in bindings {
+        let owner = f.notedeck.app_context().registries.tools.ui_owner(&tool);
+        assert!(
+            matches!(owner, Some(notedeck::ToolOwner::App(id)) if id == headway),
+            "{scope} binds {tool}, which isn't Headway's UI tool ({owner:?})"
+        );
+        let invocation = ToolInvocation::new(tool.clone(), args.clone());
+        let outcome = f
+            .chrome
+            .call_ui_tool(&mut f.notedeck.app_context(), &invocation);
+        if let ToolOutcome::Error(err) = outcome {
+            panic!("{scope} binds {tool} {args}: {err}");
+        }
+    }
+}
+
+/// On the grid, keys reach Headway's tools through chrome, `g g` as a
+/// chord; `?` pins chrome's strip of Headway's keys; Esc drops the cursor,
+/// then the strip, and then, with nothing left, isn't Headway's.
+#[tokio::test]
+async fn grid_keys_reach_headway_through_chrome() {
+    let mut f = Fixture::new().await;
+
+    f.key(Key::J);
+    f.key(Key::L);
+    f.key(Key::G);
+    assert_eq!(
+        f.take_calls(),
+        [
+            call("headway_cursor_move", json!({ "to": "down" })),
+            call("headway_cursor_move", json!({ "to": "right" })),
+        ],
+        "g waits for its second key"
+    );
+    f.key(Key::G);
+    assert_eq!(
+        f.take_calls(),
+        [call("headway_cursor_move", json!({ "to": "first" }))]
+    );
+
+    f.press(Modifiers::SHIFT, Key::Questionmark, Some("?"));
+    assert!(f.chrome.key_hints_pinned());
+    for text in ["up/down", "columns", "first/last", "open", "explainer"] {
+        assert!(f.drew(text), "{text:?} not in the strip: {:?}", f.drawn);
+    }
+    assert!(f.take_calls().is_empty(), "? is chrome's");
+
+    f.key(Key::Escape);
+    assert_eq!(f.take_calls(), [call("headway_clear", json!({}))]);
+    assert!(f.chrome.key_hints_pinned(), "the strip is chrome's Esc");
+    f.key(Key::Escape);
+    assert!(!f.chrome.key_hints_pinned());
+    f.key(Key::Escape);
+    assert!(
+        f.take_calls().is_empty(),
+        "nothing to clear: Esc isn't Headway's"
+    );
+}
+
+/// The board-edit keys (`a`, `D`, `H L J K`) aren't the keymap's: Headway
+/// reads them itself, so they call no UI tool. (The views over the grid
+/// slide in through egui_nav, which debug builds can't draw; their keys
+/// through chrome are `headway_nav_tests`', in release.)
+#[tokio::test]
+async fn board_edit_keys_stay_headways_own() {
+    let mut f = Fixture::new().await;
+    f.key(Key::J);
+    assert_eq!(
+        f.take_calls(),
+        [call("headway_cursor_move", json!({ "to": "down" }))]
+    );
+    for key in [Key::H, Key::L, Key::J, Key::K, Key::D] {
+        f.press(Modifiers::SHIFT, key, None);
+    }
+    f.key(Key::A);
+    assert!(
+        f.take_calls().is_empty(),
+        "board edits are Headway's own keys"
+    );
+}
+
+/// A focused text field keeps its keys: `/` focuses the grid's filter, and
+/// what's typed then goes into it, not to the keymap.
+#[tokio::test]
+async fn a_focused_field_keeps_its_keys() {
+    let mut f = Fixture::new().await;
+    f.press(Modifiers::NONE, Key::Slash, Some("/"));
+    assert_eq!(f.take_calls(), [call("headway_focus_filter", json!({}))]);
+
+    f.press(Modifiers::NONE, Key::J, Some("j"));
+    f.press(Modifiers::NONE, Key::K, Some("k"));
+    assert!(f.take_calls().is_empty(), "the filter took j and k");
+    f.wait_to_draw("jk");
+}
