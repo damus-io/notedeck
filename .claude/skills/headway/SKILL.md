@@ -188,6 +188,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `unrelate <card> --to <other>` | Remove the relation (from either endpoint) |
 | `due <card> <date>` | Set a due date (`YYYY-MM-DD`, or `none` to clear) |
 | `estimate <card> <n>` | Set an estimate — a number (or `none` to clear) |
+| `seq <card> [--in <c>] [--json]` | Print where a card sits in a container's work-order: its place, neighbours, and how many ready cards are ahead (see Work order) |
 | `seq <card> <pos> [--in <c>]` | Position a card in a container's work-order (see Work order) |
 | `next [--in <c>] [--ready] [-n <k>]` | Print the ready frontier — what to work on next (see Work order) |
 | `grep <pattern> [--board <b>] [--in <c>] [-i\|-s] [--color <when>] [--[no-]pager] [--json]` | Search card text (title, description, comments, review comments) and print each matching line under its card's ref (see Searching cards) |
@@ -345,6 +346,16 @@ and write it:
   `next --ready` prints the whole frontier; `next -n <k>` caps it at `k`. More
   than one card can be ready at once — that's the parallel-dispatch signal
   (independent cards you could hand to different workers at the same time).
+- `headway seq <card>`, with no position flag, prints where the card sits in
+  that order and writes nothing: its place in the whole walk (`31 of 40`), the
+  cards just before and after it, whether it has a rank of its own or is placed
+  by creation time, how many *ready* cards `next` would hand out ahead of it,
+  and why it isn't ready itself if it isn't (done, In Progress, blocked by a
+  card, or has open subissues). The two counts differ on purpose: the place
+  counts every card, "ready ahead" only the frontier. A card the container's
+  walk never reaches is an error. `--json` gives `{ref, container, index, of,
+  sequenced, before, after, ready_ahead, ready, not_ready_why}`. Use it rather
+  than `next --ready | grep -n`, which drops blocked and In Progress cards.
 - `headway seq <card> <pos>` positions a card in a container's work-order, which
   is how you *curate* the order `next` reads. `<pos>` is `--first`, `--last`,
   `--after <card>`, or `--before <card>`.
@@ -359,12 +370,15 @@ current board).
 headway --board dave next               # the single best next card
 headway --board dave next --ready       # the whole ready frontier, in order
 headway --board dave next -n 3          # the top 3
+headway seq <card>                      # where <card> sits in the board-root order
+headway seq <epic-child> --in <epic>    # where it sits within its epic
 headway seq <card> --first --in dave    # make <card> the first board-root task
 headway seq <epic-child> --after <sib> --in <epic>   # order within an epic
 ```
 
 **What "ready" means.** A card is ready when it is *not done* (not sitting in a
-**terminal** column — see "Terminal columns" below), *not blocked* (no `block`
+**terminal** column — see "Terminal columns" below), *not In Progress* (someone
+already has it), *not blocked* (no `block`
 edge pointing at an unfinished card — see Dependencies), and *not a parent with
 unfinished subissues* (an epic's real work is its children, which are in the
 frontier themselves, so the epic card isn't dispatchable). On the default board
@@ -373,8 +387,9 @@ and `next` will *not* resurface it — matching an integration-test-at-the-end f
 where review-stage work no longer blocks its dependents.
 
 **Ordering, and the priority caveat.** Within a container, members run in
-`seq`-order where a `seq` has been set, else creation order (the board root falls
-back to spatial column order). `next` does **not** sort by the `priority` field —
+`seq`-order where a `seq` has been set, else creation order — the board root
+included. The walk is depth-first: each card is followed by its own subissues
+before the next card. `next` does **not** sort by the `priority` field —
 priority is a human-facing label, not an input to the frontier. So a board where
 nobody has run `seq` has no real work-order: `next --ready` is just the board in
 default order, and you should judge the biggest win yourself rather than trust the

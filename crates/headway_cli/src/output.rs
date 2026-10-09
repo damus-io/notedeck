@@ -9,7 +9,8 @@ use headway::event::{
     ReviewLocation, ReviewView, resolve_card,
 };
 use headway::store::{self, DeclineReason};
-use headway::{traversal, wordid};
+use headway::traversal::{self, NotReady};
+use headway::wordid;
 
 use nostrdb_net::relay::sync::Result;
 
@@ -269,6 +270,92 @@ pub(crate) fn print_next(
             )
         );
     }
+}
+
+/// Print where `card` sits in `container`'s work-order for `seq <card>` with no
+/// position flag: its index in the whole walk, its neighbours, whether it has
+/// a rank of its own, and how much of the ready frontier is ahead of it.
+///
+/// Both counts are printed because they answer different questions: "31 of
+/// 40" is the place in the order, "22 ready ahead" is how many cards `next`
+/// would hand out first. Errors when the walk never reaches the card.
+pub(crate) fn print_seq_place(
+    view: &BoardView,
+    container: &Container,
+    card: NoteId,
+    as_json: bool,
+) -> Result<()> {
+    let container_ref = match container {
+        Container::BoardRoot(slug) => slug.clone(),
+        Container::Card(id) => plain_ref(view, &NoteId::new(*id)),
+    };
+    let in_name = match container {
+        Container::BoardRoot(_) => format!("{container_ref} (board root)"),
+        Container::Card(_) => container_ref.clone(),
+    };
+    let place = traversal::place(view, container, card).ok_or_else(|| {
+        format!(
+            "{} is not in the work order of {in_name}",
+            plain_ref(view, &card)
+        )
+    })?;
+    let title = |id: NoteId| view.card(id).map_or("", |c| c.title.as_str());
+    let why = place.not_ready.map(|r| match r {
+        NotReady::Done => "done".to_string(),
+        NotReady::InProgress => "In Progress".to_string(),
+        NotReady::Blocked { by } => format!("blocked by {}", plain_ref(view, &by)),
+        NotReady::OpenSubissues => "has open subissues".to_string(),
+    });
+
+    if as_json {
+        let neighbour = |id: Option<NoteId>| {
+            id.map(|id| json!({ "ref": plain_ref(view, &id), "title": title(id) }))
+        };
+        let obj = json!({
+            "ref": plain_ref(view, &card),
+            "container": container_ref,
+            "index": place.index,
+            "of": place.of,
+            "sequenced": place.sequenced,
+            "before": neighbour(place.before),
+            "after": neighbour(place.after),
+            "ready_ahead": place.ready_ahead,
+            "ready": place.ready(),
+            "not_ready_why": why,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&obj).unwrap_or_else(|_| "null".into())
+        );
+        return Ok(());
+    }
+
+    let dim = nostrdb_net::relay::sync::dim;
+    let neighbour = |id: Option<NoteId>, end: &str| match id {
+        Some(id) => format!("{}  {}", plain_ref(view, &id), dim(title(id))),
+        None => dim(end),
+    };
+    println!("{}  {}", plain_ref(view, &card), dim(title(card)));
+    println!("  order   {} of {} in {in_name}", place.index, place.of);
+    println!(
+        "  rank    {}",
+        if place.sequenced {
+            "sequenced"
+        } else {
+            "unsequenced: placed by when it was made"
+        }
+    );
+    println!("  before  {}", neighbour(place.before, "(first)"));
+    println!("  after   {}", neighbour(place.after, "(last)"));
+    println!(
+        "  ready   {} ready ahead; {}",
+        place.ready_ahead,
+        match &why {
+            None => "this one is ready".to_string(),
+            Some(why) => format!("not ready: {why}"),
+        }
+    );
+    Ok(())
 }
 
 /// A card's `headway:<board>/<word-id>` ref, undimmed — unlike [`card_ref`],

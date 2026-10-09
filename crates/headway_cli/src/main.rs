@@ -38,7 +38,7 @@ use crate::boards::{Roster, list_boards, list_shared_with_me, load_board};
 use crate::edit::{Collect, build_action, resolve_container};
 use crate::output::{
     card_count, declined_message, plain_ref, print_all_boards, print_board, print_boards,
-    print_cards, print_next,
+    print_cards, print_next, print_seq_place,
 };
 use crate::sync::{
     flush_own_selfshares, plaintext_sync_filter, pull_giftwraps, pull_pns_keyshares,
@@ -623,6 +623,19 @@ async fn run() -> Result<()> {
                 None => Container::BoardRoot(view.id.clone()),
             };
             print_next(&view, &container, ready, limit, &labels, as_json);
+        }
+
+        // Read command: where one card sits in a container's work-order. Never
+        // signs. Like `show` it reads whichever board the card ref routes to.
+        Command::SeqQuery { card, container } => {
+            let view = load_board(&ndb, &roster, &author, &board)
+                .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
+            let card = resolve_card(&view, &card)?;
+            let container = match container.as_deref() {
+                Some(sel) => resolve_container(&view, sel)?,
+                None => Container::BoardRoot(view.id.clone()),
+            };
+            print_seq_place(&view, &container, card, as_json)?;
         }
 
         // Read command: search card text. One fold per board searched (every

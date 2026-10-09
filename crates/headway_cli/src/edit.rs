@@ -157,6 +157,7 @@ pub(crate) fn build_action(view: &BoardView, command: Command) -> Result<BoardAc
             terminal,
         },
         Command::Show { .. }
+        | Command::SeqQuery { .. }
         | Command::Next { .. }
         | Command::Grep { .. }
         | Command::Diff { .. }

@@ -540,11 +540,20 @@ meaning and never affects `next`. May cross boards.",
     Command {
         name: "seq",
         group: Group::Structure,
-        summary: "Position a card in a container's work-order",
-        usage: &["seq <card> <--first|--last|--after <c>|--before <c>> [--in <container>]"],
+        summary: "Show or set where a card sits in a container's work-order",
+        usage: &[
+            "seq <card> [--in <container>]",
+            "seq <card> <--first|--last|--after <c>|--before <c>> [--in <container>]",
+        ],
         details: "\
-The work-order is what `next` walks. Exactly one position flag is
-required.",
+The work-order is what `next` walks. With no position flag, seq only
+reads: it prints the card's place in the order (\"31 of 40\"), the
+cards just before and after it, whether it has a rank of its own, how
+many ready cards `next` would hand out ahead of it, and why it isn't
+ready itself, if it isn't. --json gives the same as an object. A card
+the container's walk never reaches is an error.
+
+With one position flag, seq moves the card instead.",
         options: &[
             ("--first", "Put it at the front of the order"),
             ("--last", "Put it at the back"),
@@ -556,6 +565,8 @@ required.",
             ),
         ],
         examples: &[
+            "headway seq headway:headway/report-raven-expand",
+            "headway seq headway:headway/report-raven-expand --in headway:headway/layer-ticket-vintage --json",
             "headway seq headway:headway/report-raven-expand --first",
             "headway seq headway:headway/report-raven-expand --after headway:headway/fatal-girl-note --in headway:headway/layer-ticket-vintage",
         ],

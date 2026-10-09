@@ -14,6 +14,8 @@
 //!   whose real work is its children.
 //!   `next` is `ready(..).first()`; `next -n k` is `ready(..).take(k)`;
 //!   `next --label l` is [`ready_labelled`].
+//! - [`place`] — where one card sits in that order, and how much of the
+//!   frontier is ahead of it (`seq <card>` with no position flag).
 //!
 //! Ordering everywhere is the settled fallback `order = (seq if set, else
 //! created_at)`: explicitly sequenced members lead, in rank order, and
@@ -51,18 +53,113 @@ pub fn work_order<'v>(view: &'v BoardView, container: &Container) -> Vec<&'v Car
 ///   live subissues are all done: a finished epic is never handed out), and
 /// - not In Progress ([`BoardView::card_is_in_progress`]) — someone is already
 ///   on it, so handing it out would start a second worker on the same card, and
-/// - not blocked ([`is_blocked`] — no dependency edge points at an unfinished
+/// - not blocked ([`open_blocker`] — no dependency edge points at an unfinished
 ///   blocker), and
 /// - not a parent with unfinished subissues: its real work is those children,
 ///   which are already in the frontier, so the branch itself isn't dispatchable.
 pub fn ready<'v>(view: &'v BoardView, container: &Container) -> Vec<&'v CardView> {
     work_order(view, container)
         .into_iter()
-        .filter(|card| !is_done(view, card.id))
-        .filter(|card| !view.card_is_in_progress(card.id))
-        .filter(|card| !is_blocked(view, card))
-        .filter(|card| !has_open_subissue(card))
+        .filter(|card| not_ready(view, card).is_none())
         .collect()
+}
+
+/// Why a card is left out of the [`ready`] frontier: the first of `ready`'s
+/// rules it fails, checked in the same order `ready` lists them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotReady {
+    /// In a terminal column, or a parent whose live subissues are all done.
+    Done,
+    /// In the In Progress column: someone already has it.
+    InProgress,
+    /// Held back by an unfinished blocker; `by` is the first such edge.
+    Blocked { by: NoteId },
+    /// A parent with subissues still to do — its work is those children.
+    OpenSubissues,
+}
+
+/// The one predicate behind [`ready`]: `None` when `card` is workable now,
+/// else the reason it isn't. [`place`] counts with it too, so a card's
+/// "ready ahead" count can never disagree with what `next` hands out.
+pub fn not_ready(view: &BoardView, card: &CardView) -> Option<NotReady> {
+    if is_done(view, card.id) {
+        return Some(NotReady::Done);
+    }
+    if view.card_is_in_progress(card.id) {
+        return Some(NotReady::InProgress);
+    }
+    if let Some(by) = open_blocker(view, card) {
+        return Some(NotReady::Blocked { by });
+    }
+    if has_open_subissue(card) {
+        return Some(NotReady::OpenSubissues);
+    }
+    None
+}
+
+/// Where a card sits in a container's [`work_order`]: the answer to `headway
+/// seq <card>` with no position flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Place {
+    /// 1-based position in the work-order walk.
+    pub index: usize,
+    /// How many cards the walk has in all.
+    pub of: usize,
+    /// The card carries an explicit rank within its own parent (the board root
+    /// for a top-level card). `false` means it is placed by creation time,
+    /// behind every sequenced sibling.
+    pub sequenced: bool,
+    /// The card just ahead of it in the walk, `None` when it is first.
+    pub before: Option<NoteId>,
+    /// The card just behind it in the walk, `None` when it is last.
+    pub after: Option<NoteId>,
+    /// How many cards ahead of it are in the [`ready`] frontier — what `next`
+    /// would hand out before reaching it.
+    pub ready_ahead: usize,
+    /// Why the card itself is not ready, `None` when it is.
+    pub not_ready: Option<NotReady>,
+}
+
+impl Place {
+    /// The card is in the ready frontier itself.
+    pub fn ready(&self) -> bool {
+        self.not_ready.is_none()
+    }
+}
+
+/// Where `card` sits in `container`'s [`work_order`], or `None` when the walk
+/// never reaches it (it isn't under that container, or isn't live on the
+/// board). One walk, counted with the same [`not_ready`] predicate [`ready`]
+/// filters on.
+pub fn place(view: &BoardView, container: &Container, card: NoteId) -> Option<Place> {
+    let order = work_order(view, container);
+    let at = order.iter().position(|c| c.id == card)?;
+    let target = order[at];
+    let ready_ahead = order[..at]
+        .iter()
+        .filter(|c| not_ready(view, c).is_none())
+        .count();
+    Some(Place {
+        index: at + 1,
+        of: order.len(),
+        sequenced: is_sequenced(view, target),
+        before: at.checked_sub(1).map(|i| order[i].id),
+        after: order.get(at + 1).map(|c| c.id),
+        ready_ahead,
+        not_ready: not_ready(view, target),
+    })
+}
+
+/// Does `card` carry an explicit work-order rank within its own parent? A
+/// subissue's rank lives on its parent's [`crate::event::SubissueView::seq`]; a
+/// top-level card's on its own [`CardView::seq`] (the board root's order).
+fn is_sequenced(view: &BoardView, card: &CardView) -> bool {
+    let Some(parent) = card.parent else {
+        return card.seq.is_some();
+    };
+    view.card(parent)
+        .and_then(|p| p.subissues.iter().find(|s| s.id == card.id))
+        .is_some_and(|s| s.seq.is_some())
 }
 
 /// [`ready`] narrowed to the cards that carry every label in `labels` (all of
@@ -152,13 +249,14 @@ fn has_open_subissue(card: &CardView) -> bool {
     card.subissues.iter().any(|s| !s.done && !s.archived)
 }
 
-/// Blocking seam: is `card` held back by an unfinished blocker? A card is blocked
-/// while any of its dependency edges points at a card that isn't cleared (done or
-/// archived) — the reducer resolves that per-edge state, so this is a pure read
-/// (see [`CardView::is_blocked`]). Inheriting an ancestor container's blockers is
-/// a future refinement; today only a card's own edges hold it back.
-fn is_blocked(_view: &BoardView, card: &CardView) -> bool {
-    card.is_blocked()
+/// Blocking seam: the first unfinished blocker holding `card` back, if any. A
+/// card is blocked while any of its dependency edges points at a card that isn't
+/// cleared (done or archived) — the reducer resolves that per-edge state, so this
+/// is a pure read (see [`CardView::is_blocked`]). Inheriting an ancestor
+/// container's blockers is a future refinement; today only a card's own edges
+/// hold it back.
+fn open_blocker(_view: &BoardView, card: &CardView) -> Option<NoteId> {
+    card.blocked_by.iter().find(|b| !b.done).map(|b| b.id)
 }
 
 #[cfg(test)]
@@ -394,14 +492,14 @@ mod tests {
     }
 
     #[test]
-    fn is_blocked_tracks_unfinished_blocker_edges() {
+    fn open_blocker_tracks_unfinished_blocker_edges() {
         // No edges: not blocked. An unfinished blocker edge holds the card back;
         // a cleared (done) one does not.
         let blocked = |edges: Vec<crate::event::EdgeRef>| {
             let mut plain = card(1, None, 1);
             plain.blocked_by = edges;
             let view = board(vec![plain], &[]);
-            is_blocked(&view, &view.columns[0].cards[0])
+            open_blocker(&view, &view.columns[0].cards[0]).is_some()
         };
         assert!(!blocked(vec![]));
         assert!(blocked(vec![blocker(2, false)]));
@@ -483,5 +581,115 @@ mod tests {
         );
         let root = Container::BoardRoot("b".to_string());
         assert_eq!(ids(&ready(&view, &root)), [1, 3]);
+    }
+
+    /// A board root walk of six top-level cards plus one subissue, with a
+    /// blocked card and an In Progress card ahead of the unsequenced card 5:
+    /// `1 2(blocked) 3(in progress) 4 5 6 8(child of 6)`.
+    fn place_fixture() -> BoardView {
+        let mut blocked = card(2, Some("b"), 2);
+        blocked.blocked_by = vec![blocker(9, false)];
+        let mut parent = card(6, None, 60);
+        parent.subissues = vec![SubissueView {
+            seq: Some("a".to_string()),
+            ..sub(8, false)
+        }];
+        let mut child = card(8, None, 80);
+        child.parent = Some(parent.id);
+        let mut view = board(
+            vec![
+                card(1, Some("a"), 1),
+                blocked,
+                card(3, Some("c"), 3),
+                card(4, Some("d"), 4),
+                card(5, None, 50),
+                parent,
+                child,
+            ],
+            &[],
+        );
+        let at = view.columns[0]
+            .cards
+            .iter()
+            .position(|c| c.id.bytes()[0] == 3)
+            .unwrap();
+        let taken = view.columns[0].cards.remove(at);
+        view.columns.insert(
+            1,
+            ColumnView {
+                id: "in-progress".to_string(),
+                name: "In Progress".to_string(),
+                terminal: false,
+                cards: vec![taken],
+            },
+        );
+        view
+    }
+
+    #[test]
+    fn place_agrees_with_work_order_for_every_card() {
+        let view = place_fixture();
+        let root = Container::BoardRoot("b".to_string());
+        let order = work_order(&view, &root);
+        assert_eq!(ids(&order), [1, 2, 3, 4, 5, 6, 8]);
+        for (i, c) in order.iter().enumerate() {
+            let place = place(&view, &root, c.id).expect("card is in the walk");
+            assert_eq!(place.index, i + 1, "card {}", c.id.bytes()[0]);
+            assert_eq!(place.of, order.len());
+            assert_eq!(place.before, i.checked_sub(1).map(|j| order[j].id));
+            assert_eq!(place.after, order.get(i + 1).map(|n| n.id));
+        }
+    }
+
+    #[test]
+    fn place_counts_only_ready_cards_ahead() {
+        // Four cards are ahead of card 5, but 2 is blocked and 3 is In
+        // Progress: `next` would hand out only 1 and 4 before it.
+        let view = place_fixture();
+        let root = Container::BoardRoot("b".to_string());
+        let id = |n: u8| NoteId::new([n; 32]);
+
+        let five = place(&view, &root, id(5)).unwrap();
+        assert_eq!(five.index, 5);
+        assert_eq!(five.ready_ahead, 2);
+        assert!(five.ready());
+        assert_eq!(five.ready_ahead, {
+            let frontier = ready(&view, &root);
+            frontier.iter().position(|c| c.id == id(5)).unwrap()
+        });
+
+        let two = place(&view, &root, id(2)).unwrap();
+        assert_eq!(two.not_ready, Some(NotReady::Blocked { by: id(9) }));
+        let three = place(&view, &root, id(3)).unwrap();
+        assert_eq!(three.not_ready, Some(NotReady::InProgress));
+        assert_eq!(
+            place(&view, &root, id(6)).unwrap().not_ready,
+            Some(NotReady::OpenSubissues)
+        );
+    }
+
+    #[test]
+    fn place_reports_whether_the_card_is_sequenced() {
+        // Card 1 has a board-root rank, card 5 none; subissue 8 is ranked within
+        // its parent 6 even though its own board-root `seq` is unset.
+        let view = place_fixture();
+        let root = Container::BoardRoot("b".to_string());
+        let id = |n: u8| NoteId::new([n; 32]);
+        assert!(place(&view, &root, id(1)).unwrap().sequenced);
+        assert!(!place(&view, &root, id(5)).unwrap().sequenced);
+        assert!(place(&view, &root, id(8)).unwrap().sequenced);
+
+        let under_six = place(&view, &Container::Card([6; 32]), id(8)).unwrap();
+        assert_eq!((under_six.index, under_six.of), (1, 1));
+        assert_eq!((under_six.before, under_six.after), (None, None));
+    }
+
+    #[test]
+    fn place_is_none_outside_the_container() {
+        let view = place_fixture();
+        let id = |n: u8| NoteId::new([n; 32]);
+        assert_eq!(place(&view, &Container::Card([6; 32]), id(5)), None);
+        let root = Container::BoardRoot("b".to_string());
+        assert_eq!(place(&view, &root, id(42)), None);
     }
 }

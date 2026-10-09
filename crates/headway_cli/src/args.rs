@@ -90,6 +90,14 @@ pub(crate) enum Command {
         spec: SeqSpec,
         container: Option<String>,
     },
+    /// `seq <card>` with no position flag: print where the card sits in a
+    /// container's work-order (see [`traversal::place`](headway::traversal::place)).
+    /// `container` takes the same selector as [`Command::Seq`]. A read command —
+    /// it never signs.
+    SeqQuery {
+        card: String,
+        container: Option<String>,
+    },
     /// Make a card a subissue of another card, or detach it (no parent given).
     Parent {
         card: String,
@@ -282,18 +290,25 @@ struct SeqFlags {
     container: Option<String>,
 }
 
-/// Validate that exactly one position flag was given and turn it into a [`SeqSpec`].
-fn seq_spec(flags: &SeqFlags) -> Result<SeqSpec> {
+/// Validate that at most one position flag was given and turn it into a
+/// [`SeqSpec`]. `None` means no flag at all: `seq <card>` is then a query of
+/// where the card sits ([`Command::SeqQuery`]), not a move.
+fn seq_spec(flags: &SeqFlags) -> Result<Option<SeqSpec>> {
     let count = flags.after.is_some() as u8
         + flags.before.is_some() as u8
         + flags.first as u8
         + flags.last as u8;
-    if count != 1 {
+    if count > 1 {
         return Err(
-            "seq needs exactly one of --after <card> / --before <card> / --first / --last".into(),
+            "seq takes one of --after <card> / --before <card> / --first / --last \
+             (none prints where the card sits)"
+                .into(),
         );
     }
-    Ok(if let Some(a) = &flags.after {
+    if count == 0 {
+        return Ok(None);
+    }
+    Ok(Some(if let Some(a) = &flags.after {
         SeqSpec::After(a.clone())
     } else if let Some(b) = &flags.before {
         SeqSpec::Before(b.clone())
@@ -301,7 +316,7 @@ fn seq_spec(flags: &SeqFlags) -> Result<SeqSpec> {
         SeqSpec::First
     } else {
         SeqSpec::Last
-    })
+    }))
 }
 
 impl Command {
@@ -336,6 +351,10 @@ impl Command {
                 if let SeqSpec::After(a) | SeqSpec::Before(a) = spec {
                     selectors.push(a);
                 }
+                selectors.extend(container.as_deref());
+            }
+            Command::SeqQuery { card, container } => {
+                selectors.push(card);
                 selectors.extend(container.as_deref());
             }
             Command::Next { container, .. } | Command::Grep { container, .. } => {
@@ -830,10 +849,16 @@ fn parse_command(
             card: card()?,
             points: arg(rest, 1, name)?,
         },
-        "seq" => Command::Seq {
-            card: card()?,
-            spec: seq_spec(&seq)?,
-            container: seq.container,
+        "seq" => match seq_spec(&seq)? {
+            Some(spec) => Command::Seq {
+                card: card()?,
+                spec,
+                container: seq.container,
+            },
+            None => Command::SeqQuery {
+                card: card()?,
+                container: seq.container,
+            },
         },
         "next" => Command::Next {
             container: seq.container,
@@ -1591,6 +1616,35 @@ mod tests {
         assert!(parse_err(&["grep"]).contains("missing an argument"));
         assert!(parse_err(&["grep", "("]).contains("invalid search pattern"));
         assert!(parse_err(&["grep", "sealed", "board"]).contains("one pattern"));
+    }
+
+    /// `seq <card>` with no position flag is the query, with or without `--in`;
+    /// one flag is still a move, and two are still refused.
+    #[test]
+    fn seq_without_a_position_flag_is_a_query() {
+        match parse(&["seq", "headway:headway/a-b-c"]).command {
+            Command::SeqQuery { card, container } => {
+                assert_eq!(card, "headway:headway/a-b-c");
+                assert_eq!(container, None);
+            }
+            _ => panic!("expected a seq query"),
+        }
+        match parse(&["seq", "a-b-c", "--in", "headway:headway/d-e-f"]).command {
+            Command::SeqQuery { container, .. } => {
+                assert_eq!(container.as_deref(), Some("headway:headway/d-e-f"))
+            }
+            _ => panic!("expected a seq query"),
+        }
+        assert!(matches!(
+            parse(&["seq", "a-b-c", "--first"]).command,
+            Command::Seq {
+                spec: SeqSpec::First,
+                ..
+            }
+        ));
+        let err = parse_err(&["seq", "a-b-c", "--first", "--after", "d-e-f"]);
+        assert!(err.contains("one of --after"), "{err}");
+        assert!(parse_err(&["seq"]).contains("missing"));
     }
 
     /// `--board` marks the board explicit for the statelessness guard; a bare
