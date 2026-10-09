@@ -88,6 +88,9 @@ after_turn__turn_____before_____after_4a6b = after turn {$turn} · {$before} →
 # Dave session inspector usage: a compaction whose resulting context isn't known yet
 after_turn__turn____from__before_5fd1 = after turn {$turn} · from {$before}
 
+# Dave session inspector background: badge for a background subagent
+agent_6107 = agent
+
 # Title for algorithmic feeds column
 Algo_2452 = Algo
 
@@ -120,6 +123,9 @@ Background_f543 = Background
 
 # Profile banner URL field label
 Banner_52ef = Banner
+
+# Dave session inspector background: badge for a background shell command
+bash_6b84 = bash
 
 # Label for the old version of a changed image in a diff
 before_ebeb = before
@@ -250,6 +256,9 @@ Copy_Pubkey_9cc4 = Copy Pubkey
 # Copy the text content of the note to clipboard
 Copy_Text_f81c = Copy Text
 
+# Dave session inspector background: tool calls a background task has made
+count__tool_uses_5ec5 = {$count} tool uses
+
 # Button to create a new account
 Create_Account_6994 = Create Account
 
@@ -261,6 +270,9 @@ Create_Deck_16b7 = Create Deck
 
 # Column title for creating a people list
 Create_People_List_3067 = Create People List
+
+# Dave session inspector background: badge for a cron job
+cron_04c8 = cron
 
 # Column title for custom timelines
 Custom_a69e = Custom
@@ -321,6 +333,15 @@ domain___will_be_used_for_identification_b67e = "{$domain}" will be used for ide
 
 # Button to indicate that the user is done going through the onboarding process.
 Done_50dd = Done
+
+# Dave session inspector background: when a wake-up is due
+due__time_a95d = due {$time}
+
+# Dave session inspector background: a wake-up whose time has come
+due_a642 = due
+
+# Dave session inspector background: a cron job saved to disk, outliving the CLI
+durable_3015 = durable
 
 # Column title for editing deck
 Edit_Deck_4018 = Edit Deck
@@ -409,6 +430,9 @@ Icon_b0ab = Icon
 # Label for Image cache size, Storage settings section
 Image_cache_size_3004 = Image cache size:
 
+# Dave session inspector background: time until a wake-up is due
+in__duration_8099 = in {$duration}
+
 # Title for individual user column
 Individual_b776 = Individual
 
@@ -423,6 +447,9 @@ Invalid_key_4726 = Invalid key.
 
 # Error message for invalid Nostr Wallet Connect URI
 Invalid_NWC_URI_031b = Invalid NWC URI
+
+# Dave session inspector background: a cron job's id
+job__id_13a0 = job {$id}
 
 # Button to dismiss welcome and browse the app without an account
 Just_browsing_17ed = Just browsing
@@ -466,6 +493,9 @@ Keys_435f = Keys
 # Label for language, Appearance settings section
 Language_e264 = Language:
 
+# Dave session inspector background: the tool a background task called last
+last__tool_27ff = last {$tool}
+
 # Title for last note per user column
 Last_Note_per_User_17ad = Last Note per User
 
@@ -490,6 +520,9 @@ Max_hashtags_per_note_90e5 = Max hashtags per note:
 # Label for relay websocket connection limit setting
 Max_websocket_connections_8f75 = Max websocket connections:
 
+# Dave session inspector background: badge for a long-running MCP tool call
+mcp_e7ba = mcp
+
 # Dave session inspector overview heading
 MCP_servers_c4b5 = MCP servers
 
@@ -510,6 +543,9 @@ Mode_7dd2 = Mode
 
 # Dave session inspector overview row
 Model_7dd2 = Model
+
+# Dave session inspector background: badge for a Monitor watching a command or socket
+monitor_3ba0 = monitor
 
 # Tooltip for moving a column
 Moves_this_column_to_another_position_0d4b = Moves this column to another position
@@ -619,6 +655,9 @@ Notes_03fb = Notes
 # Filter label for notes and replies view
 Notes___Replies_1ec2 = Notes & Replies
 
+# Dave session inspector background: no background tasks, wake-ups or crons
+Nothing_running_in_the_background_d67c = Nothing running in the background
+
 # Column title for notifications
 Notifications_d673 = Notifications
 
@@ -639,6 +678,9 @@ Onboarding_4a25 = Onboarding
 
 # Dave session inspector: empty state of a section with no data
 Nothing_yet_59ff = Nothing yet
+
+# Dave session inspector background: a cron job that fires once
+one-shot_f4a4 = one-shot
 
 # Button label to open email client
 Open_Email_25e9 = Open Email
@@ -729,6 +771,9 @@ Reactions_68e3 = Reactions
 
 # Label for read-only profile mode
 Read_only_82ff = Read only
+
+# Dave session inspector background: a cron job that fires on every match
+recurring_8830 = recurring
 
 # Tooltip for refreshing a one-shot feed
 Refresh_feed_e03d = Refresh feed
@@ -856,6 +901,9 @@ Select_All_a319 = Select All
 # Button label to send a zap
 Send_1ea4 = Send
 
+# Dave session inspector background: a cron job that dies with the CLI
+session-only_6cca = session-only
+
 # Dave session inspector usage row: cost and turns so far
 Session_3885 = Session
 
@@ -955,6 +1003,12 @@ Support_email_44d9 = Support email:
 # Button text to load blurred media
 Tap_to_Load_4b05 = Tap to Load
 
+# Dave session inspector background: a background task's id
+task__id_4fa1 = task {$id}
+
+# Dave session inspector background: badge for a background task of an unknown kind
+task_e7a3 = task
+
 # Column title for TOS acceptance screen
 Terms_of_Service_8a6e = Terms of Service
 
@@ -987,6 +1041,9 @@ Today_bd04 = Today
 
 # Dave session inspector section: the agent's task list
 Tasks_2037 = Tasks
+
+# Dave session inspector background: tokens a background task has used
+tokens__tok_87e0 = {$tokens} tok
 
 # Dave session inspector usage: hover over one turn on the context sparkline
 Turn__number_____context_26c6 = Turn {$number} · {$context}
@@ -1027,8 +1084,14 @@ View_as_092c = View as
 # Label for view folder button, Storage settings section
 View_folder_9742 = View folder
 
+# Dave status bar pill: the session is parked on this many background tasks, wake-ups and crons
+Waiting____count_6c71 = Waiting · {$count}
+
 # Dave session inspector: a Waiting session's scheduled wake-up time
 wake-up_at__time_a608 = wake-up at {$time}
+
+# Dave session inspector background: badge for a scheduled wake-up
+wake-up_be9a = wake-up
 
 # Column title for wallet management
 Wallet_5e50 = Wallet
@@ -1050,6 +1113,9 @@ Welcome_5cce = Welcome
 
 # Welcome screen title
 Welcome_to_Notedeck_e2e7 = Welcome to Notedeck
+
+# Dave session inspector background: badge for a background workflow
+workflow_dd36 = workflow
 
 # Placeholder for note input field
 Write_a_banger_note_here_bad2 = Write a banger note here...

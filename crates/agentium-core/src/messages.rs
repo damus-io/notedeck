@@ -1072,6 +1072,120 @@ impl WaitingOn {
     }
 }
 
+/// One thing a session has running or scheduled outside its foreground turn:
+/// the detail behind a [`WaitingOn`] count.
+///
+/// Sent as a level ([`DaveApiResponse::BackgroundWork`]), newest first,
+/// whenever any entry changes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackgroundEntry {
+    /// The CLI's task id, the cron job id, or `"wakeup"` for the one armed
+    /// `ScheduleWakeup`.
+    pub id: String,
+    /// When the entry was first seen, in Unix seconds.
+    pub started_at: u64,
+    pub work: BackgroundWork,
+}
+
+impl BackgroundEntry {
+    /// Where the CLI writes the entry's output, when it is a task that said.
+    pub fn output_file(&self) -> Option<&str> {
+        match &self.work {
+            BackgroundWork::Task(task) => task.output_file.as_deref(),
+            _ => None,
+        }
+    }
+}
+
+/// What a [`BackgroundEntry`] is.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackgroundWork {
+    /// A task the CLI runs: a background Bash command, a Monitor, a
+    /// background subagent, …
+    Task(BackgroundTask),
+    /// An armed `ScheduleWakeup`.
+    Wakeup {
+        /// When it is due, in Unix seconds.
+        due_at: u64,
+        /// Why the model scheduled it (the tool's `reason`).
+        reason: String,
+        /// What the wake-up turn will be sent (the tool's `prompt`).
+        prompt: String,
+    },
+    /// A `CronCreate` job that has not fired (one-shot) or been deleted.
+    Cron {
+        /// The five-field cron expression.
+        expr: String,
+        prompt: String,
+        /// Fires on every match rather than once.
+        recurring: bool,
+        /// Persisted by the CLI, so it outlives the process.
+        durable: bool,
+    },
+}
+
+/// A background task's detail, from the CLI's `task_started`,
+/// `task_progress` and `background_tasks_changed` and the tool call that
+/// launched it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BackgroundTask {
+    pub kind: BackgroundTaskKind,
+    /// The CLI's description of the task.
+    pub description: String,
+    /// The command a Bash task or Monitor runs, from its launching tool call.
+    pub command: Option<String>,
+    /// Where the CLI writes the task's output, when it said.
+    pub output_file: Option<String>,
+    /// Running totals from the latest `task_progress`.
+    pub usage: Option<TaskUsage>,
+    /// The tool the task last called (subagents).
+    pub last_tool_name: Option<String>,
+    /// The CLI's latest one-line summary of the task's progress.
+    pub summary: Option<String>,
+}
+
+/// What runs a background task, from the CLI's `task_type` and, for a
+/// Monitor, the tool that launched it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackgroundTaskKind {
+    /// A `run_in_background` (or backgrounded) Bash command: `local_bash`.
+    Bash,
+    /// A Monitor watching a command or socket: `monitor_mcp`, `monitor_ws`,
+    /// or a `local_bash` the Monitor tool launched.
+    Monitor,
+    /// A background subagent: `local_agent`.
+    Agent,
+    /// A long-running MCP tool call: `mcp_task`.
+    Mcp,
+    /// A workflow: `local_workflow`.
+    Workflow,
+    /// A task type this version doesn't know.
+    #[default]
+    Other,
+}
+
+impl BackgroundTaskKind {
+    /// The kind for the CLI's `task_type`.
+    pub fn from_task_type(task_type: &str) -> Self {
+        match task_type {
+            "local_bash" => Self::Bash,
+            "monitor_mcp" | "monitor_ws" => Self::Monitor,
+            "local_agent" => Self::Agent,
+            "mcp_task" => Self::Mcp,
+            "local_workflow" => Self::Workflow,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// A background task's running totals, from `task_progress`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TaskUsage {
+    pub total_tokens: u64,
+    pub tool_uses: u64,
+    pub duration_ms: u64,
+}
+
 /// The account's subscription rate-limit state, from the Claude CLI's
 /// `rate_limit_event`.
 ///
@@ -1276,6 +1390,9 @@ pub enum DaveApiResponse {
     /// What will resume the session once its foreground turn ends changed;
     /// the full current set, replacing the last one.
     WaitingOn(WaitingOn),
+    /// The detail behind [`Self::WaitingOn`] changed: every background task,
+    /// wake-up and cron, newest first, replacing the last list.
+    BackgroundWork(Vec<BackgroundEntry>),
     /// A turn started that no query of ours began: a background task, wake-up
     /// or cron resumed the session. It ends with a `QueryComplete` like any
     /// other turn.

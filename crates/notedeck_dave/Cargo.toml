@@ -26,6 +26,7 @@ nostrdb = { workspace = true }
 crossbeam-channel = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
+poll-promise = { workspace = true }
 rand = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 bytemuck = {workspace = true }

@@ -10,8 +10,10 @@
 //! session view shows and which section the Details rail points at. It is never
 //! published.
 
+mod background;
 mod usage;
 
+pub use background::{BackgroundParts, BackgroundRow, BackgroundState, OutputTails};
 pub use usage::{Compaction, Sparkline, Tokens, TurnUsage, UsageHistory, HISTORY_CAP};
 
 use crate::messages::{
@@ -50,6 +52,9 @@ pub struct SessionInspector {
     /// Display strings the Rate limits card and status-bar pill build when
     /// their inputs change.
     pub rate_limit_labels: RateLimitLabels,
+    /// Background tasks, wake-ups and crons, with their display rows and
+    /// output tails.
+    pub background: BackgroundState,
 }
 
 impl SessionInspector {
@@ -63,6 +68,7 @@ impl SessionInspector {
             DaveApiResponse::RateLimit(info) => {
                 self.rate_limit = Some(info.merged_onto(self.rate_limit.as_ref()));
             }
+            DaveApiResponse::BackgroundWork(entries) => self.background.set(entries.clone()),
             _ => self.usage.apply(res, crate::session::now_unix()),
         }
     }
@@ -133,32 +139,33 @@ pub struct RateLimitLabels {
 /// show a formatted value without formatting it sixty times a second.
 ///
 /// It also rebuilds when the locale changes, which the key doesn't cover.
+/// `T` is the built value: one string by default, or a whole list of rows.
 #[derive(Debug)]
-pub struct LabelMemo<K> {
+pub struct LabelMemo<K, T = String> {
     /// The key and locale generation `text` was built for.
     built_for: Option<(K, u64)>,
-    text: String,
+    text: T,
 }
 
 // Not derived: an unbuilt memo needs no default key.
-impl<K> Default for LabelMemo<K> {
+impl<K, T: Default> Default for LabelMemo<K, T> {
     fn default() -> Self {
         Self {
             built_for: None,
-            text: String::new(),
+            text: T::default(),
         }
     }
 }
 
-impl<K: Copy + PartialEq> LabelMemo<K> {
-    /// The text for `key`, built with `build` if the key or the locale
+impl<K: Copy + PartialEq, T> LabelMemo<K, T> {
+    /// The value for `key`, built with `build` if the key or the locale
     /// changed since the last call.
     pub fn get(
         &mut self,
         key: K,
         i18n: &mut Localization,
-        build: impl FnOnce(K, &mut Localization) -> String,
-    ) -> &str {
+        build: impl FnOnce(K, &mut Localization) -> T,
+    ) -> &T {
         let built_for = (key, i18n.cache_generation());
         if self.built_for != Some(built_for) {
             self.text = build(key, i18n);

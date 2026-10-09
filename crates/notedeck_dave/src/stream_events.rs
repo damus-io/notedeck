@@ -175,6 +175,7 @@ impl Dave {
                         // resume the session now.
                         session.wakeup_turn = false;
                         session.waiting_on = Default::default();
+                        session.inspector.background.set(Vec::new());
                         handle_stream_end(
                             session,
                             session_id,
@@ -318,6 +319,7 @@ pub(crate) fn apply_response(
             | DaveApiResponse::CompactionComplete(_)
             | DaveApiResponse::QueryComplete(_)
             | DaveApiResponse::WaitingOn(_)
+            | DaveApiResponse::BackgroundWork(_)
             | DaveApiResponse::WakeupTurnStarted
             | DaveApiResponse::CliState(_)
             | DaveApiResponse::RateLimit(_)
@@ -397,7 +399,9 @@ pub(crate) fn apply_response(
         }
         // Only the inspector keeps these, folded above (and the account's
         // rate limits on `Dave`, by the drain loop).
-        DaveApiResponse::CliState(_) | DaveApiResponse::RateLimit(_) => {}
+        DaveApiResponse::CliState(_)
+        | DaveApiResponse::RateLimit(_)
+        | DaveApiResponse::BackgroundWork(_) => {}
     }
 
     outcome
@@ -571,6 +575,7 @@ fn closes_assistant_segment(session: &session::ChatSession, res: &DaveApiRespons
         | DaveApiResponse::CompactionStarted
         | DaveApiResponse::QueryComplete(_)
         | DaveApiResponse::WaitingOn(_)
+        | DaveApiResponse::BackgroundWork(_)
         | DaveApiResponse::WakeupTurnStarted
         | DaveApiResponse::CliState(_)
         | DaveApiResponse::RateLimit(_) => false,

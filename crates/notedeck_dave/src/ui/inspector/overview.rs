@@ -38,6 +38,8 @@ pub struct SessionFacts<'a> {
     pub context_window: u64,
     /// The Claude account's rate-limit windows, for the Rate limits card.
     pub rate_limit: Option<crate::messages::RateLimitInfo>,
+    /// Now, in Unix seconds, for ages and countdowns.
+    pub now_unix: u64,
 }
 
 /// The Overview card's body.

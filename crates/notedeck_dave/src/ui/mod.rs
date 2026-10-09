@@ -1802,6 +1802,8 @@ mod tests {
         set_up: bool,
         /// The account's rate limits, as `Dave` would hand them in.
         rate_limit: Option<crate::messages::RateLimitInfo>,
+        /// The clock the Details tab reads, pinned for snapshots.
+        now_unix: Option<u64>,
     }
 
     fn session_view_state() -> SessionViewState {
@@ -1831,6 +1833,7 @@ mod tests {
             model_config: crate::config::ModelConfig::default(),
             set_up: false,
             rate_limit: None,
+            now_unix: None,
         }
     }
 
@@ -1849,7 +1852,7 @@ mod tests {
             let Some(session) = state.session_manager.get_active_mut() else {
                 return;
             };
-            let response = super::build_dave_ui(
+            let mut dave_ui = super::build_dave_ui(
                 session,
                 &state.model_config,
                 false,
@@ -1857,8 +1860,11 @@ mod tests {
                 &no_configs,
                 &none_running,
                 state.rate_limit,
-            )
-            .ui(&mut app_ctx, ui);
+            );
+            if let Some(now) = state.now_unix {
+                dave_ui = dave_ui.now_unix(now);
+            }
+            let response = dave_ui.ui(&mut app_ctx, ui);
             if let Some(action) = response.action {
                 super::handle_ui_action(
                     action,
@@ -1885,7 +1891,7 @@ mod tests {
     }
 
     /// Clicking Details swaps the chat for the rail and the section cards
-    /// (the six without a view yet are stubs); clicking Chat brings the
+    /// (the five without a view yet are stubs); clicking Chat brings the
     /// input box back.
     #[test]
     fn details_tab_shows_every_section_and_chat_brings_the_input_back() {
@@ -1907,7 +1913,11 @@ mod tests {
         harness.get_by_label("Details").click_accesskit();
         harness.run_ok();
 
-        assert_eq!(count_labels(&harness, "Nothing yet"), 6);
+        assert_eq!(count_labels(&harness, "Nothing yet"), 5);
+        assert_eq!(
+            count_labels(&harness, "Nothing running in the background"),
+            1
+        );
         assert_eq!(count_labels(&harness, "No usage reported yet"), 1);
         assert_eq!(count_labels(&harness, "No rate-limit report yet"), 1);
         let mut i18n = notedeck::Localization::default();
@@ -2250,6 +2260,232 @@ mod tests {
             .inspector_view;
         assert_eq!(view.tab, SessionTab::Details);
         assert_eq!(view.section, InspectorSection::RateLimits);
+    }
+
+    /// One of each kind of background entry, as of `now`: a Bash task with
+    /// an output file (written to `dir`), a Monitor, a background subagent
+    /// with progress, a wake-up and a cron. Also marks the session Waiting
+    /// on them.
+    fn seed_background(state: &mut SessionViewState, now: u64, dir: &std::path::Path) {
+        use crate::messages::{
+            BackgroundEntry, BackgroundTask, BackgroundTaskKind, BackgroundWork, DaveApiResponse,
+            TaskUsage, WaitingOn,
+        };
+
+        let output = dir.join("b7k2q.output");
+        std::fs::write(
+            &output,
+            "card    headway:dave/trade-marine-bless\ncolumn  In Progress\n\
+             title   dave: a Waiting status\nchecked 22 times\nstill waiting\n",
+        )
+        .unwrap();
+        let task = |id: &str, ago: u64, task: BackgroundTask| BackgroundEntry {
+            id: id.into(),
+            started_at: now - ago,
+            work: BackgroundWork::Task(task),
+        };
+        let entries = vec![
+            BackgroundEntry {
+                id: "wakeup".into(),
+                started_at: now - 30,
+                work: BackgroundWork::Wakeup {
+                    due_at: now + 6 * 60 + 12,
+                    reason: "check the CI run".into(),
+                    prompt: "/loop check CI".into(),
+                },
+            },
+            task(
+                "m41xd",
+                8 * 60,
+                BackgroundTask {
+                    kind: BackgroundTaskKind::Monitor,
+                    description: "watch CI for failures".into(),
+                    command: Some("tail -f target/ci.log | grep --line-buffered FAIL".into()),
+                    ..Default::default()
+                },
+            ),
+            task(
+                "a9f3",
+                12 * 60,
+                BackgroundTask {
+                    kind: BackgroundTaskKind::Agent,
+                    description: "Survey CLI schemas".into(),
+                    usage: Some(TaskUsage {
+                        total_tokens: 12_400,
+                        tool_uses: 7,
+                        duration_ms: 720_000,
+                    }),
+                    last_tool_name: Some("Grep".into()),
+                    ..Default::default()
+                },
+            ),
+            BackgroundEntry {
+                id: "3fa9".into(),
+                started_at: now - 20 * 60,
+                work: BackgroundWork::Cron {
+                    expr: "*/30 * * * *".into(),
+                    prompt: "summarize new comments on the epic".into(),
+                    recurring: true,
+                    durable: false,
+                },
+            },
+            task(
+                "b7k2q",
+                22 * 60,
+                BackgroundTask {
+                    kind: BackgroundTaskKind::Bash,
+                    description: "wait for review".into(),
+                    command: Some(
+                        "until headway show trade-marine-bless | grep -q in-review; do sleep 60; done"
+                            .into(),
+                    ),
+                    output_file: Some(output.to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+            ),
+        ];
+
+        state.now_unix = Some(now);
+        let session = state.session_manager.get_active_mut().unwrap();
+        session
+            .inspector
+            .apply(&DaveApiResponse::BackgroundWork(entries));
+        session.waiting_on = WaitingOn {
+            background_tasks: 3,
+            wakeup_at: Some(crate::session::now_unix() + 3600),
+            crons: 1,
+        };
+        session.update_status();
+    }
+
+    /// The Background card lists every entry with its badge, title and age
+    /// or countdown, and a local task's output tail once its read lands.
+    #[test]
+    fn background_lists_each_entry_with_its_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = session_view_harness(egui::vec2(1100.0, 1400.0));
+        let now = crate::session::now_unix();
+        seed_background(harness.state_mut(), now, dir.path());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .show_details();
+        harness.run_ok();
+
+        assert_eq!(
+            count_labels(&harness, "Nothing running in the background"),
+            0
+        );
+        for badge in ["bash", "monitor", "agent", "wake-up", "cron"] {
+            assert_eq!(count_labels(&harness, badge), 1, "{badge}");
+        }
+        assert_eq!(count_labels(&harness, "22m"), 1);
+        assert_eq!(count_labels(&harness, "recurring"), 1);
+        assert_eq!(
+            count_labels_containing(&harness, "in \u{2068}6m 12s\u{2069}"),
+            1
+        );
+        assert_eq!(count_labels(&harness, "check the CI run"), 1);
+        assert_eq!(count_labels(&harness, "*/30 * * * *"), 1);
+        assert_eq!(count_labels_containing(&harness, "last \u{2068}Grep"), 1);
+
+        // The tail is read off the UI thread; wait for it to land.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while count_labels_containing(&harness, "still waiting") == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the output tail never landed"
+            );
+            harness.step();
+        }
+        assert_eq!(
+            count_labels_containing(&harness, "headway:dave/trade-marine-bless"),
+            1,
+            "the tail is the last five lines"
+        );
+    }
+
+    /// A remote session's tasks show no tail: their files are on its host.
+    #[test]
+    fn a_remote_session_shows_no_output_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = session_view_harness(egui::vec2(1100.0, 1400.0));
+        seed_background(harness.state_mut(), crate::session::now_unix(), dir.path());
+        let session = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap();
+        session.source = crate::session::SessionSource::Remote;
+        session.inspector_view.show_details();
+        for _ in 0..20 {
+            harness.step();
+        }
+        assert_eq!(count_labels(&harness, "bash"), 1);
+        assert_eq!(count_labels_containing(&harness, "still waiting"), 0);
+    }
+
+    /// A Waiting session's status bar shows how many things will resume
+    /// it, and clicking the pill opens Details at the Background card.
+    #[test]
+    fn the_waiting_pill_opens_the_background_card() {
+        use crate::inspector::{InspectorSection, SessionTab};
+        use egui_kittest::kittest::Queryable;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = session_view_harness(egui::vec2(1100.0, 900.0));
+        harness.run_ok();
+        assert_eq!(count_labels_containing(&harness, "Waiting · "), 0);
+
+        seed_background(harness.state_mut(), crate::session::now_unix(), dir.path());
+        harness.run_ok();
+        harness
+            .get(egui_kittest::kittest::By::new().label_contains("Waiting · \u{2068}5"))
+            .click();
+        harness.run_ok();
+
+        let view = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view;
+        assert_eq!(view.tab, SessionTab::Details);
+        assert_eq!(view.section, InspectorSection::Background);
+    }
+
+    /// The Background card with one entry of each kind: a Bash task with
+    /// its output tail, a Monitor, a subagent, a wake-up and a cron.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_session_background() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1100.0, 760.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        // 2100-01-01 00:00 UTC, so the wake-up's due time holds still.
+        seed_background(harness.state_mut(), 4_102_444_800, dir.path());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .open(crate::inspector::InspectorSection::Background);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while count_labels_containing(&harness, "still waiting") == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the tail never landed"
+            );
+            harness.step();
+        }
+        harness.run_ok();
+        harness.snapshot("session_background");
     }
 
     /// The Rate limits card near the five-hour cap: the status, a bar per

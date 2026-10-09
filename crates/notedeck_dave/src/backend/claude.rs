@@ -965,12 +965,21 @@ impl ActorState {
         self.waker.wake();
     }
 
-    /// Send what the session waits on, if it changed since last sent.
+    /// Send what the session waits on, and the entries behind it, if either
+    /// changed since last sent.
     fn report_waits(&mut self, response_tx: &mpsc::Sender<DaveApiResponse>) {
-        if let Some(waiting_on) = self.idle.waits.take_change() {
-            let _ = response_tx.send(DaveApiResponse::WaitingOn(waiting_on));
-            self.waker.wake();
+        let waiting_on = self.idle.waits.take_change();
+        let entries = self.idle.waits.take_entries_change();
+        if waiting_on.is_none() && entries.is_none() {
+            return;
         }
+        if let Some(waiting_on) = waiting_on {
+            let _ = response_tx.send(DaveApiResponse::WaitingOn(waiting_on));
+        }
+        if let Some(entries) = entries {
+            let _ = response_tx.send(DaveApiResponse::BackgroundWork(entries));
+        }
+        self.waker.wake();
     }
 }
 

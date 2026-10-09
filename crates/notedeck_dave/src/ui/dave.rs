@@ -2,7 +2,9 @@ use super::badge::{BadgeVariant, StatusBadge};
 use super::block_nav::BlockNav;
 use super::diff;
 use super::git_status_ui;
-use super::inspector::{inspector_ui, rate_limit_pill_ui, session_tabs_ui, SessionFacts};
+use super::inspector::{
+    inspector_ui, rate_limit_pill_ui, session_tabs_ui, waiting_pill_ui, SessionFacts,
+};
 use super::keybindings::NormalView;
 use super::markdown_ui;
 use super::query_ui::query_call_ui;
@@ -89,6 +91,10 @@ pub struct DaveUi<'a> {
     /// The Claude account's rate-limit windows: the account-wide value for a
     /// local session, the session's own for a remote one.
     rate_limit: Option<crate::messages::RateLimitInfo>,
+    /// The clock the Details tab reads, in Unix seconds; `None` reads the
+    /// system clock. Pinned by snapshot tests so ages and countdowns hold
+    /// still.
+    now_unix: Option<u64>,
     /// Dispatch lifecycle state, used for queued indicator logic.
     dispatch_state: crate::session::DispatchState,
     /// Whether the current turn has produced content yet, used with
@@ -281,6 +287,7 @@ impl<'a> DaveUi<'a> {
             usage: None,
             context_window: crate::messages::context_window_for_model(None),
             rate_limit: None,
+            now_unix: None,
             dispatch_state: crate::session::DispatchState::default(),
             turn_has_content: false,
             backend_type: BackendType::Remote,
@@ -464,6 +471,12 @@ impl<'a> DaveUi<'a> {
         self
     }
 
+    /// Pin the clock the Details tab reads (see `now_unix` on the struct).
+    pub fn now_unix(mut self, now_unix: u64) -> Self {
+        self.now_unix = Some(now_unix);
+        self
+    }
+
     fn chat_margin(&self, ctx: &egui::Context) -> i8 {
         if self.flags.contains(DaveUiFlags::Compact) || notedeck::ui::is_narrow(ctx) {
             8
@@ -626,6 +639,7 @@ impl<'a> DaveUi<'a> {
                         let is_remote = self.flags.contains(DaveUiFlags::IsRemote);
                         let context_window = self.context_window;
                         let rate_limit = self.rate_limit;
+                        let now_unix = self.now_unix.unwrap_or_else(crate::session::now_unix);
                         let details_action = self.inspector.as_mut().and_then(|inspected| {
                             let facts = SessionFacts {
                                 status: inspected.status,
@@ -638,6 +652,7 @@ impl<'a> DaveUi<'a> {
                                 is_remote,
                                 context_window,
                                 rate_limit,
+                                now_unix,
                             };
                             // Scoped by session, so each keeps its own grid
                             // scroll.
@@ -2630,6 +2645,11 @@ impl DaveUi<'_> {
                                         InspectorSection::RateLimits,
                                     ));
                                 }
+                                if self.waiting_pill_ui(i18n, ui) {
+                                    return Some(DaveAction::OpenInspector(
+                                        InspectorSection::Background,
+                                    ));
+                                }
                             }
                             badge_action
                         })
@@ -2660,6 +2680,19 @@ impl DaveUi<'_> {
         };
         let labels = &mut inspected.inspector.rate_limit_labels;
         rate_limit_pill_ui(info, labels, i18n, ui).is_some_and(|resp| resp.clicked())
+    }
+
+    /// The status bar's Waiting pill, shown while the session is parked on
+    /// background work that will resume it. True when it was clicked.
+    fn waiting_pill_ui(&mut self, i18n: &mut notedeck::Localization, ui: &mut egui::Ui) -> bool {
+        let Some(inspected) = self.inspector.as_mut() else {
+            return false;
+        };
+        if inspected.status != crate::agent_status::AgentStatus::Waiting {
+            return false;
+        }
+        let memo = &mut inspected.inspector.background.waiting_pill;
+        waiting_pill_ui(inspected.waiting_on, memo, i18n, ui).clicked()
     }
 }
 

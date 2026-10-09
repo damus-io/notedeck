@@ -88,6 +88,9 @@ after_turn__turn_____before_____after_4a6b = {"["}àftér túrñ {$turn} · {$be
 # Dave session inspector usage: a compaction whose resulting context isn't known yet
 after_turn__turn____from__before_5fd1 = {"["}àftér túrñ {$turn} · fróm {$before}{"]"}
 
+# Dave session inspector background: badge for a background subagent
+agent_6107 = {"["}àgéñt{"]"}
+
 # Title for algorithmic feeds column
 Algo_2452 = {"["}Àlgó{"]"}
 
@@ -120,6 +123,9 @@ Background_f543 = {"["}Bàçkgróúñd{"]"}
 
 # Profile banner URL field label
 Banner_52ef = {"["}Bàññér{"]"}
+
+# Dave session inspector background: badge for a background shell command
+bash_6b84 = {"["}bàsh{"]"}
 
 # Label for the old version of a changed image in a diff
 before_ebeb = {"["}béfóré{"]"}
@@ -250,6 +256,9 @@ Copy_Pubkey_9cc4 = {"["}Çópy Púbkéy{"]"}
 # Copy the text content of the note to clipboard
 Copy_Text_f81c = {"["}Çópy Téxt{"]"}
 
+# Dave session inspector background: tool calls a background task has made
+count__tool_uses_5ec5 = {"["}{$count} tóól úsés{"]"}
+
 # Button to create a new account
 Create_Account_6994 = {"["}Çréàté Àççóúñt{"]"}
 
@@ -261,6 +270,9 @@ Create_Deck_16b7 = {"["}Çréàté Déçk{"]"}
 
 # Column title for creating a people list
 Create_People_List_3067 = {"["}Çréàté Péóplé Líst{"]"}
+
+# Dave session inspector background: badge for a cron job
+cron_04c8 = {"["}çróñ{"]"}
 
 # Column title for custom timelines
 Custom_a69e = {"["}Çústóm{"]"}
@@ -321,6 +333,15 @@ domain___will_be_used_for_identification_b67e = {"["}"{$domain}" wíll bé úsé
 
 # Button to indicate that the user is done going through the onboarding process.
 Done_50dd = {"["}Dóñé{"]"}
+
+# Dave session inspector background: when a wake-up is due
+due__time_a95d = {"["}dúé {$time}{"]"}
+
+# Dave session inspector background: a wake-up whose time has come
+due_a642 = {"["}dúé{"]"}
+
+# Dave session inspector background: a cron job saved to disk, outliving the CLI
+durable_3015 = {"["}dúràblé{"]"}
 
 # Column title for editing deck
 Edit_Deck_4018 = {"["}Édít Déçk{"]"}
@@ -409,6 +430,9 @@ Icon_b0ab = {"["}Íçóñ{"]"}
 # Label for Image cache size, Storage settings section
 Image_cache_size_3004 = {"["}Ímàgé çàçhé sízé:{"]"}
 
+# Dave session inspector background: time until a wake-up is due
+in__duration_8099 = {"["}íñ {$duration}{"]"}
+
 # Title for individual user column
 Individual_b776 = {"["}Íñdívídúàl{"]"}
 
@@ -423,6 +447,9 @@ Invalid_key_4726 = {"["}Íñvàlíd kéy.{"]"}
 
 # Error message for invalid Nostr Wallet Connect URI
 Invalid_NWC_URI_031b = {"["}Íñvàlíd ÑWÇ ÚRÍ{"]"}
+
+# Dave session inspector background: a cron job's id
+job__id_13a0 = {"["}jób {$id}{"]"}
 
 # Button to dismiss welcome and browse the app without an account
 Just_browsing_17ed = {"["}Júst brówsíñg{"]"}
@@ -466,6 +493,9 @@ Keys_435f = {"["}Kéys{"]"}
 # Label for language, Appearance settings section
 Language_e264 = {"["}Làñgúàgé:{"]"}
 
+# Dave session inspector background: the tool a background task called last
+last__tool_27ff = {"["}làst {$tool}{"]"}
+
 # Title for last note per user column
 Last_Note_per_User_17ad = {"["}Làst Ñóté pér Úsér{"]"}
 
@@ -490,6 +520,9 @@ Max_hashtags_per_note_90e5 = {"["}Màx hàshtàgs pér ñóté:{"]"}
 # Label for relay websocket connection limit setting
 Max_websocket_connections_8f75 = {"["}Màx wébsóçkét çóññéçtíóñs:{"]"}
 
+# Dave session inspector background: badge for a long-running MCP tool call
+mcp_e7ba = {"["}mçp{"]"}
+
 # Dave session inspector overview heading
 MCP_servers_c4b5 = {"["}MÇP sérvérs{"]"}
 
@@ -510,6 +543,9 @@ Mode_7dd2 = {"["}Módé{"]"}
 
 # Dave session inspector overview row
 Model_7dd2 = {"["}Módél{"]"}
+
+# Dave session inspector background: badge for a Monitor watching a command or socket
+monitor_3ba0 = {"["}móñítór{"]"}
 
 # Tooltip for moving a column
 Moves_this_column_to_another_position_0d4b = {"["}Móvés thís çólúmñ tó àñóthér pósítíóñ{"]"}
@@ -619,6 +655,9 @@ Notes_03fb = {"["}Ñótés{"]"}
 # Filter label for notes and replies view
 Notes___Replies_1ec2 = {"["}Ñótés & Réplíés{"]"}
 
+# Dave session inspector background: no background tasks, wake-ups or crons
+Nothing_running_in_the_background_d67c = {"["}Ñóthíñg rúññíñg íñ thé bàçkgróúñd{"]"}
+
 # Column title for notifications
 Notifications_d673 = {"["}Ñótífíçàtíóñs{"]"}
 
@@ -639,6 +678,9 @@ Onboarding_4a25 = {"["}Óñbóàrdíñg{"]"}
 
 # Dave session inspector: empty state of a section with no data
 Nothing_yet_59ff = {"["}Ñóthíñg yét{"]"}
+
+# Dave session inspector background: a cron job that fires once
+one-shot_f4a4 = {"["}óñé-shót{"]"}
 
 # Button label to open email client
 Open_Email_25e9 = {"["}Ópéñ Émàíl{"]"}
@@ -729,6 +771,9 @@ Reactions_68e3 = {"["}Réàçtíóñs{"]"}
 
 # Label for read-only profile mode
 Read_only_82ff = {"["}Réàd óñly{"]"}
+
+# Dave session inspector background: a cron job that fires on every match
+recurring_8830 = {"["}réçúrríñg{"]"}
 
 # Tooltip for refreshing a one-shot feed
 Refresh_feed_e03d = {"["}Réfrésh fééd{"]"}
@@ -856,6 +901,9 @@ Select_All_a319 = {"["}Séléçt Àll{"]"}
 # Button label to send a zap
 Send_1ea4 = {"["}Séñd{"]"}
 
+# Dave session inspector background: a cron job that dies with the CLI
+session-only_6cca = {"["}séssíóñ-óñly{"]"}
+
 # Dave session inspector usage row: cost and turns so far
 Session_3885 = {"["}Séssíóñ{"]"}
 
@@ -955,6 +1003,12 @@ Support_email_44d9 = {"["}Súppórt émàíl:{"]"}
 # Button text to load blurred media
 Tap_to_Load_4b05 = {"["}Tàp tó Lóàd{"]"}
 
+# Dave session inspector background: a background task's id
+task__id_4fa1 = {"["}tàsk {$id}{"]"}
+
+# Dave session inspector background: badge for a background task of an unknown kind
+task_e7a3 = {"["}tàsk{"]"}
+
 # Column title for TOS acceptance screen
 Terms_of_Service_8a6e = {"["}Térms óf Sérvíçé{"]"}
 
@@ -987,6 +1041,9 @@ Today_bd04 = {"["}Tódày{"]"}
 
 # Dave session inspector section: the agent's task list
 Tasks_2037 = {"["}Tàsks{"]"}
+
+# Dave session inspector background: tokens a background task has used
+tokens__tok_87e0 = {"["}{$tokens} tók{"]"}
 
 # Dave session inspector usage: hover over one turn on the context sparkline
 Turn__number_____context_26c6 = {"["}Túrñ {$number} · {$context}{"]"}
@@ -1027,8 +1084,14 @@ View_as_092c = {"["}Víéw às{"]"}
 # Label for view folder button, Storage settings section
 View_folder_9742 = {"["}Víéw fóldér{"]"}
 
+# Dave status bar pill: the session is parked on this many background tasks, wake-ups and crons
+Waiting____count_6c71 = {"["}Wàítíñg · {$count}{"]"}
+
 # Dave session inspector: a Waiting session's scheduled wake-up time
 wake-up_at__time_a608 = {"["}wàké-úp àt {$time}{"]"}
+
+# Dave session inspector background: badge for a scheduled wake-up
+wake-up_be9a = {"["}wàké-úp{"]"}
 
 # Column title for wallet management
 Wallet_5e50 = {"["}Wàllét{"]"}
@@ -1050,6 +1113,9 @@ Welcome_5cce = {"["}Wélçómé{"]"}
 
 # Welcome screen title
 Welcome_to_Notedeck_e2e7 = {"["}Wélçómé tó Ñótédéçk{"]"}
+
+# Dave session inspector background: badge for a background workflow
+workflow_dd36 = {"["}wórkflów{"]"}
 
 # Placeholder for note input field
 Write_a_banger_note_here_bad2 = {"["}Wríté à bàñgér ñóté héré...{"]"}

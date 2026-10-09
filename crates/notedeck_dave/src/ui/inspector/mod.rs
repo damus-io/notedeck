@@ -5,10 +5,12 @@
 //! card names its data source in small mono text, so a missing number is easy
 //! to trace back to where it should have come from.
 
+mod background;
 mod overview;
 mod rate_limits;
 mod usage;
 
+pub use background::waiting_pill_ui;
 pub use overview::SessionFacts;
 pub use rate_limits::rate_limit_pill_ui;
 
@@ -237,6 +239,13 @@ fn section_body_ui(
         InspectorSection::RateLimits => {
             rate_limits::rate_limits_ui(inspector, facts.rate_limit.as_ref(), i18n, ui)
         }
+        InspectorSection::Background => background::background_ui(
+            &mut inspector.background,
+            facts.is_remote,
+            facts.now_unix,
+            i18n,
+            ui,
+        ),
         _ => empty_state_ui(i18n, ui),
     }
 }
