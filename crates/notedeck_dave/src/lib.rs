@@ -30,6 +30,7 @@ pub mod session_discovery;
 mod session_restore_loader;
 mod stream_events;
 mod turn_rows;
+mod ui_tools;
 mod view;
 
 // The pure, egui-free engine modules live in the platform-neutral
@@ -1548,6 +1549,37 @@ impl notedeck::App for Dave {
         }
 
         AppResponse::action(app_action)
+    }
+
+    /// The normal-mode chord's actions, by name (see [`ui_tools`]).
+    fn ui_tools(&self) -> Vec<notedeck::ToolSpec> {
+        ui_tools::DaveUiTool::specs()
+    }
+
+    /// Run a UI tool now, the way its chord key would. Dave's dispatch needs
+    /// the window's egui context (folds and the rename field live in its
+    /// memory), so headless there is nothing to run against.
+    fn call_ui_tool(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> notedeck::ToolOutcome {
+        let Some(egui_ctx) = ctx.egui else {
+            return notedeck::ToolOutcome::Error(format!("'{name}' needs a window"));
+        };
+        self.run_ui_tool(name, args, egui_ctx)
+    }
+
+    fn ui_tool_available(&self, name: &str) -> bool {
+        ui_tools::DaveUiTool::from_name(name)
+            .is_some_and(|tool| ui_tools::available(tool, self.tool_view()))
+    }
+
+    /// Normal mode's scopes, by pane; none in insert mode or under an overlay
+    /// (see [`ui_tools::key_scopes`]).
+    fn key_scopes(&self) -> &'static [&'static str] {
+        ui_tools::key_scopes(self.tool_view())
     }
 
     fn tab_notifications(&self, _ctx: &AppContext<'_>) -> notedeck::TabNotifications {

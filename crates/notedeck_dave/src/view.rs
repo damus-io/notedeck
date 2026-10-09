@@ -2,13 +2,25 @@
 //! dispatch of the UI and keybinding actions they return.
 
 use crate::backend::{BackendType, Model};
-use crate::ui::keybindings::{KeyAction, KeyContext};
+use crate::config::AiMode;
+use crate::ui::keybindings::{KeyAction, KeyContext, NormalView};
+use crate::ui_tools::{self, DaveUiTool};
 use crate::{
     check_keybindings, focus_queue, get_backend, secret_key_bytes, ui, update, worktree, Dave,
     DaveAction, DaveOverlay, DaveResponse, KeyActionResult, OverlayResult, PendingWorktreeRemoval,
     RunConfigEditor, SceneViewAction, SendActionResult, SessionListAction, UiActionResult,
 };
-use notedeck::{ui::is_narrow, AppAction, AppContext};
+use notedeck::{ui::is_narrow, AppAction, AppContext, ToolOutcome};
+
+/// What the active session offers the keys: see [`Dave::active_offers`].
+struct ActiveOffers {
+    /// The active session's mode, or Dave's with no session.
+    ai_mode: AiMode,
+    /// The session has a running turn to stop.
+    interruptible: bool,
+    /// The session has an issue to open.
+    has_issue: bool,
+}
 
 impl Dave {
     pub(crate) fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
@@ -485,6 +497,67 @@ impl Dave {
         update::has_pending_question(&self.session_manager)
     }
 
+    /// What the active session offers the keys this frame, read live; the
+    /// keybindings and the UI tools' availability share it.
+    fn active_offers(&self) -> ActiveOffers {
+        let active = self.session_manager.get_active();
+        ActiveOffers {
+            ai_mode: active.map(|s| s.ai_mode).unwrap_or(self.ai_mode),
+            // Normal mode's `S` needs a running turn to stop.
+            interruptible: active.is_some_and(update::session_is_interruptible),
+            // Normal mode's `s` needs an issue to open.
+            has_issue: active.is_some_and(|s| s.details.issue_url.is_some()),
+        }
+    }
+
+    /// Normal mode as Dave's UI tools see it, or `None` where none applies:
+    /// insert mode, or an overlay over the chat (which ends normal mode on
+    /// its next frame). The session's offers are read live rather than as
+    /// the keys last observed them, so a tool called before Dave renders sees
+    /// the session it acts on.
+    pub(crate) fn tool_view(&self) -> Option<NormalView> {
+        if !matches!(self.active_overlay, DaveOverlay::None) {
+            return None;
+        }
+        let mut view = self.normal_mode.view()?;
+        let offers = self.active_offers();
+        view.agentic = offers.ai_mode == AiMode::Agentic;
+        view.interruptible = offers.interruptible;
+        view.has_issue = offers.has_issue;
+        Some(view)
+    }
+
+    /// Run the UI tool `name` with `args` (see [`crate::ui_tools`]): the same
+    /// action, mode change and dispatch as its chord key. A tool that isn't
+    /// [available](crate::ui_tools::available) is an error; one that is but
+    /// has nothing to act on (`dave_focus_pane` at a hidden session list, the
+    /// block cursor in a chat with no blocks) does nothing, like its key.
+    pub(crate) fn run_ui_tool(
+        &mut self,
+        name: &str,
+        args: &serde_json::Value,
+        egui_ctx: &egui::Context,
+    ) -> ToolOutcome {
+        let action = match DaveUiTool::parse(name, args) {
+            Ok(action) => action,
+            Err(err) => return ToolOutcome::Error(err),
+        };
+        let Some(tool) = DaveUiTool::from_name(name) else {
+            return ToolOutcome::Error(format!("unknown tool '{name}'"));
+        };
+        if !ui_tools::available(tool, self.tool_view()) {
+            return ToolOutcome::Error(format!("'{name}' is not available now"));
+        }
+        if action == KeyAction::FocusSessionsPane && !self.normal_mode.sessions_shown() {
+            return ToolOutcome::Data(serde_json::Value::Null);
+        }
+        self.normal_mode.after_action(&action);
+        match self.dispatch_key_action(action, egui_ctx) {
+            Some(app_action) => ToolOutcome::Intent(app_action),
+            None => ToolOutcome::Data(serde_json::Value::Null),
+        }
+    }
+
     /// Check and dispatch keybindings. Called from render() so that
     /// key consumption only happens when Dave is the active app.
     ///
@@ -499,28 +572,18 @@ impl Dave {
             .and_then(|s| s.agentic.as_ref())
             .map(|a| a.permission_message_state != crate::session::PermissionMessageState::None)
             .unwrap_or(false);
-        let active_ai_mode = self
-            .session_manager
-            .get_active()
-            .map(|s| s.ai_mode)
-            .unwrap_or(self.ai_mode);
         // Normal mode's `h` needs the session list on screen: the desktop layout,
         // with no overlay covering it.
         let sessions_shown = !is_narrow(egui_ctx)
             && !self.show_scene
             && matches!(self.active_overlay, DaveOverlay::None);
-        // Normal mode's `s` needs a running turn to stop.
-        let interruptible = self
-            .session_manager
-            .get_active()
-            .is_some_and(update::session_is_interruptible);
-        // Normal mode's `s` needs an issue to open.
-        let has_issue = self
-            .session_manager
-            .get_active()
-            .is_some_and(|s| s.details.issue_url.is_some());
+        let ActiveOffers {
+            ai_mode,
+            interruptible,
+            has_issue,
+        } = self.active_offers();
         let keys = KeyContext {
-            ai_mode: active_ai_mode,
+            ai_mode,
             sessions_shown,
             interruptible,
             has_issue,
@@ -533,8 +596,28 @@ impl Dave {
                 m.has_focus(id) || m.had_focus_last_frame(id)
             }),
         };
-        let app_action = check_keybindings(egui_ctx, &mut self.normal_mode, keys)
-            .and_then(|key_action| self.handle_key_action(key_action, egui_ctx));
+        match check_keybindings(egui_ctx, &mut self.normal_mode, keys) {
+            Some(action) => self.dispatch_key_action(action, egui_ctx),
+            // Focus settles every frame, key or not: a request made while
+            // normal mode is on waits for it to end.
+            None => {
+                ui::settle_normal_mode_focus(&mut self.normal_mode, &mut self.session_manager);
+                None
+            }
+        }
+    }
+
+    /// Run `key_action`, whether a key or a UI tool asked for it, after
+    /// [`NormalMode::after_action`](ui::keybindings::NormalMode::after_action)
+    /// has changed the mode: dispatch it, then settle keyboard focus the way
+    /// normal mode wants it — held while the mode is on, handed to the
+    /// (possibly new) active session's input when it ends.
+    fn dispatch_key_action(
+        &mut self,
+        key_action: KeyAction,
+        egui_ctx: &egui::Context,
+    ) -> Option<AppAction> {
+        let app_action = self.handle_key_action(key_action, egui_ctx);
         ui::settle_normal_mode_focus(&mut self.normal_mode, &mut self.session_manager);
         app_action
     }

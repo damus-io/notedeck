@@ -1,0 +1,761 @@
+//! Dave's **UI tools**: the actions behind its normal-mode chord, by name, so
+//! chrome's keymap, its macros and (opted-in) agents can run them (see
+//! [`notedeck::App::ui_tools`]).
+//!
+//! Each tool parses into the [`KeyAction`] its chord key produces, and runs
+//! through the same dispatch (`Dave::dispatch_key_action`), so a key and its
+//! tool called by name have one effect. What an action does to normal mode
+//! itself — `i` ending it, `h` pointing the motions at the session list — is
+//! [`NormalMode::after_action`](crate::ui::keybindings::NormalMode::after_action),
+//! which both paths call.
+//!
+//! The tools are live only in normal mode, like the keys: this module answers
+//! from state alone, without allocating, which tools are
+//! [available](available) and which [key scopes](key_scopes) are active.
+
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+use notedeck::{ToolArg, ToolArgType, ToolSpec};
+
+use crate::ui::keybindings::{KeyAction, NormalView, Pane};
+
+/// `j`/`k`/`gg`/`G`/`q` in the chat: move or drop the block cursor.
+pub(crate) const BLOCK_CURSOR: &str = "dave_block_cursor";
+/// `za`/`o`, `zo`, `zc`, `zr`, `zm`: fold the chat's blocks.
+pub(crate) const BLOCK: &str = "dave_block";
+/// `h` / `l`: point the motions at the session list or the chat.
+pub(crate) const FOCUS_PANE: &str = "dave_focus_pane";
+/// `j`/`k`/`gg`/`G` in the session list: switch sessions.
+pub(crate) const SESSION_CURSOR: &str = "dave_session_cursor";
+/// `i` / `a`: leave normal mode for the chat input.
+pub(crate) const INSERT_MODE: &str = "dave_insert_mode";
+/// `n`: start a new agent.
+pub(crate) const NEW_AGENT: &str = "dave_new_agent";
+/// `c`: clone the active agent.
+pub(crate) const CLONE_AGENT: &str = "dave_clone_agent";
+/// `r`: rename the active agent.
+pub(crate) const RENAME_AGENT: &str = "dave_rename_agent";
+/// `dd`: delete the active session.
+pub(crate) const DELETE_SESSION: &str = "dave_delete_session";
+/// `v`: flip between the scene and the classic view.
+pub(crate) const TOGGLE_VIEW: &str = "dave_toggle_view";
+/// `m`: cycle the permission mode.
+pub(crate) const CYCLE_PERMISSION_MODE: &str = "dave_cycle_permission_mode";
+/// `e`: compose the message in an external editor.
+pub(crate) const EXTERNAL_EDITOR: &str = "dave_external_editor";
+/// `s`: open the issue the active session works.
+pub(crate) const OPEN_ISSUE: &str = "dave_open_issue";
+/// `S`: stop the active session's running turn.
+pub(crate) const INTERRUPT: &str = "dave_interrupt";
+/// `]q` / `[q`: step through the focus queue.
+pub(crate) const FOCUS_QUEUE: &str = "dave_focus_queue";
+
+/// One of Dave's UI tools, by name. Its arguments pick the [`KeyAction`]
+/// ([`parse`](Self::parse)); availability takes none ([`available`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DaveUiTool {
+    BlockCursor,
+    Block,
+    FocusPane,
+    SessionCursor,
+    InsertMode,
+    NewAgent,
+    CloneAgent,
+    RenameAgent,
+    DeleteSession,
+    ToggleView,
+    CyclePermissionMode,
+    ExternalEditor,
+    OpenIssue,
+    Interrupt,
+    FocusQueue,
+}
+
+/// Where `dave_block_cursor` takes the block cursor.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum BlockTo {
+    Down,
+    Up,
+    First,
+    Last,
+    Clear,
+}
+
+/// The values of [`BlockTo`], as the spec advertises them.
+const BLOCK_TOS: &[&str] = &["down", "up", "first", "last", "clear"];
+
+/// What `dave_block` does to the chat's blocks.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum BlockOp {
+    Toggle,
+    Open,
+    Close,
+    ExpandAll,
+    CollapseAll,
+}
+
+/// The values of [`BlockOp`].
+const BLOCK_OPS: &[&str] = &["toggle", "open", "close", "expand_all", "collapse_all"];
+
+/// Which pane `dave_focus_pane` points the motions at.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum PaneArg {
+    Sessions,
+    Chat,
+}
+
+/// The values of [`PaneArg`].
+const PANES: &[&str] = &["sessions", "chat"];
+
+/// Where `dave_session_cursor` moves in the session list.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum SessionTo {
+    Next,
+    Prev,
+    First,
+    Last,
+}
+
+/// The values of [`SessionTo`].
+const SESSION_TOS: &[&str] = &["next", "prev", "first", "last"];
+
+/// Next or previous, for `dave_focus_queue`.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum Dir {
+    Next,
+    Prev,
+}
+
+/// The values of [`Dir`].
+const DIRS: &[&str] = &["next", "prev"];
+
+/// `dave_block_cursor`'s arguments.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BlockCursorArgs {
+    to: BlockTo,
+}
+
+/// `dave_block`'s arguments.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BlockArgs {
+    op: BlockOp,
+}
+
+/// `dave_focus_pane`'s arguments.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaneArgs {
+    pane: PaneArg,
+}
+
+/// `dave_session_cursor`'s arguments.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionArgs {
+    to: SessionTo,
+}
+
+/// `dave_focus_queue`'s arguments.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QueueArgs {
+    dir: Dir,
+}
+
+/// An argument-free tool's arguments: none.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NoArgs {}
+
+/// A required enum argument named `name` over `values`.
+fn enum_arg(name: &'static str, values: &'static [&'static str], doc: &'static str) -> ToolArg {
+    ToolArg::new(name, ToolArgType::Enum(values.to_vec()), doc).required(true)
+}
+
+impl DaveUiTool {
+    /// Every tool, in the order [`specs`](Self::specs) lists them.
+    pub(crate) const ALL: [Self; 15] = [
+        Self::BlockCursor,
+        Self::Block,
+        Self::FocusPane,
+        Self::SessionCursor,
+        Self::InsertMode,
+        Self::NewAgent,
+        Self::CloneAgent,
+        Self::RenameAgent,
+        Self::DeleteSession,
+        Self::ToggleView,
+        Self::CyclePermissionMode,
+        Self::ExternalEditor,
+        Self::OpenIssue,
+        Self::Interrupt,
+        Self::FocusQueue,
+    ];
+
+    /// The tool's name.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::BlockCursor => BLOCK_CURSOR,
+            Self::Block => BLOCK,
+            Self::FocusPane => FOCUS_PANE,
+            Self::SessionCursor => SESSION_CURSOR,
+            Self::InsertMode => INSERT_MODE,
+            Self::NewAgent => NEW_AGENT,
+            Self::CloneAgent => CLONE_AGENT,
+            Self::RenameAgent => RENAME_AGENT,
+            Self::DeleteSession => DELETE_SESSION,
+            Self::ToggleView => TOGGLE_VIEW,
+            Self::CyclePermissionMode => CYCLE_PERMISSION_MODE,
+            Self::ExternalEditor => EXTERNAL_EDITOR,
+            Self::OpenIssue => OPEN_ISSUE,
+            Self::Interrupt => INTERRUPT,
+            Self::FocusQueue => FOCUS_QUEUE,
+        }
+    }
+
+    /// The tool called `name`, if Dave has one.
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|tool| tool.name() == name)
+    }
+
+    /// The spec of every Dave UI tool, for [`notedeck::App::ui_tools`].
+    pub(crate) fn specs() -> Vec<ToolSpec> {
+        Self::ALL.into_iter().map(Self::spec).collect()
+    }
+
+    /// This tool's spec.
+    fn spec(self) -> ToolSpec {
+        let (description, args) = match self {
+            Self::BlockCursor => (
+                "Move the chat's block cursor through its collapsible blocks, or drop it \
+                 (clear) so the transcript follows new output and normal mode ends.",
+                vec![enum_arg("to", BLOCK_TOS, "Where the cursor goes.")],
+            ),
+            Self::Block => (
+                "Fold the chat's blocks: toggle, open or close the one under the block \
+                 cursor, or expand or collapse them all.",
+                vec![enum_arg("op", BLOCK_OPS, "What to do.")],
+            ),
+            Self::FocusPane => (
+                "Point normal mode's motions at the session list or the chat.",
+                vec![enum_arg("pane", PANES, "The pane to move through.")],
+            ),
+            Self::SessionCursor => (
+                "Switch sessions from the session list, without focusing the input.",
+                vec![enum_arg("to", SESSION_TOS, "Which session to switch to.")],
+            ),
+            Self::InsertMode => (
+                "Leave normal mode and focus the active session's chat input.",
+                vec![],
+            ),
+            Self::NewAgent => ("Start a new agent session.", vec![]),
+            Self::CloneAgent => (
+                "Clone the active agent into a new session in the same directory.",
+                vec![],
+            ),
+            Self::RenameAgent => ("Rename the active session.", vec![]),
+            Self::DeleteSession => ("Delete the active session.", vec![]),
+            Self::ToggleView => ("Flip between the scene view and the classic view.", vec![]),
+            Self::CyclePermissionMode => (
+                "Cycle the active session's permission mode: Manual, Plan, Accept Edits, Auto.",
+                vec![],
+            ),
+            Self::ExternalEditor => (
+                "Compose the active session's message in an external editor.",
+                vec![],
+            ),
+            Self::OpenIssue => (
+                "Open the issue the active session works, e.g. its headway card.",
+                vec![],
+            ),
+            Self::Interrupt => ("Stop the active session's running turn.", vec![]),
+            Self::FocusQueue => (
+                "Step to the next or previous session in the focus queue.",
+                vec![enum_arg("dir", DIRS, "Which way to step.")],
+            ),
+        };
+        ToolSpec::new(self.name(), description, args).ui()
+    }
+
+    /// Parse a call of the tool `name` with `args` (an object, or `null` for
+    /// none) into the [`KeyAction`] its key produces. Errors on an unknown
+    /// tool, arguments that aren't an object, a missing or unknown argument,
+    /// or a value outside an argument's enum.
+    pub(crate) fn parse(name: &str, args: &Value) -> Result<KeyAction, String> {
+        let none = json!({});
+        let args = if args.is_null() { &none } else { args };
+        if !args.is_object() {
+            return Err(format!("'{name}' arguments must be an object, not {args}"));
+        }
+        let Some(tool) = Self::from_name(name) else {
+            return Err(format!("unknown tool '{name}'"));
+        };
+        use KeyAction as A;
+        Ok(match tool {
+            Self::BlockCursor => {
+                let BlockCursorArgs { to } = parse_args(name, args)?;
+                match to {
+                    BlockTo::Down => A::BlockCursorDown,
+                    BlockTo::Up => A::BlockCursorUp,
+                    BlockTo::First => A::BlockCursorFirst,
+                    BlockTo::Last => A::BlockCursorLast,
+                    BlockTo::Clear => A::BlockCursorClear,
+                }
+            }
+            Self::Block => {
+                let BlockArgs { op } = parse_args(name, args)?;
+                match op {
+                    BlockOp::Toggle => A::BlockToggle,
+                    BlockOp::Open => A::BlockOpen,
+                    BlockOp::Close => A::BlockClose,
+                    BlockOp::ExpandAll => A::BlockExpandAll,
+                    BlockOp::CollapseAll => A::BlockCollapseAll,
+                }
+            }
+            Self::FocusPane => {
+                let PaneArgs { pane } = parse_args(name, args)?;
+                match pane {
+                    PaneArg::Sessions => A::FocusSessionsPane,
+                    PaneArg::Chat => A::FocusChatPane,
+                }
+            }
+            Self::SessionCursor => {
+                let SessionArgs { to } = parse_args(name, args)?;
+                match to {
+                    SessionTo::Next => A::SessionPaneNext,
+                    SessionTo::Prev => A::SessionPanePrev,
+                    SessionTo::First => A::SessionPaneFirst,
+                    SessionTo::Last => A::SessionPaneLast,
+                }
+            }
+            Self::FocusQueue => {
+                let QueueArgs { dir } = parse_args(name, args)?;
+                match dir {
+                    Dir::Next => A::FocusQueueNext,
+                    Dir::Prev => A::FocusQueuePrev,
+                }
+            }
+            Self::InsertMode => no_args(name, args, A::InsertMode)?,
+            Self::NewAgent => no_args(name, args, A::NewAgent)?,
+            Self::CloneAgent => no_args(name, args, A::CloneAgent)?,
+            Self::RenameAgent => no_args(name, args, A::RenameAgent)?,
+            Self::DeleteSession => no_args(name, args, A::DeleteActiveSession)?,
+            Self::ToggleView => no_args(name, args, A::ToggleView)?,
+            Self::CyclePermissionMode => no_args(name, args, A::CyclePermissionMode)?,
+            Self::ExternalEditor => no_args(name, args, A::OpenExternalEditor)?,
+            Self::OpenIssue => no_args(name, args, A::OpenIssue)?,
+            Self::Interrupt => no_args(name, args, A::Interrupt)?,
+        })
+    }
+
+    /// The action [`NormalView::offers`] is asked about for this tool, when
+    /// one stands for all its arguments: every action an agentic-only tool
+    /// takes is agentic-only. `None` for the pane tools, which answer by pane.
+    fn gate(self) -> Option<KeyAction> {
+        use KeyAction as A;
+        match self {
+            Self::BlockCursor | Self::Block | Self::SessionCursor => None,
+            Self::FocusPane => Some(A::FocusChatPane),
+            Self::InsertMode => Some(A::InsertMode),
+            Self::NewAgent => Some(A::NewAgent),
+            Self::CloneAgent => Some(A::CloneAgent),
+            Self::RenameAgent => Some(A::RenameAgent),
+            Self::DeleteSession => Some(A::DeleteActiveSession),
+            Self::ToggleView => Some(A::ToggleView),
+            Self::CyclePermissionMode => Some(A::CyclePermissionMode),
+            Self::ExternalEditor => Some(A::OpenExternalEditor),
+            Self::OpenIssue => Some(A::OpenIssue),
+            Self::Interrupt => Some(A::Interrupt),
+            Self::FocusQueue => Some(A::FocusQueueNext),
+        }
+    }
+}
+
+/// Deserialize `args` for the tool `name`.
+fn parse_args<T: DeserializeOwned>(name: &str, args: &Value) -> Result<T, String> {
+    T::deserialize(args).map_err(|e| format!("failed to parse '{name}' arguments: {e}"))
+}
+
+/// `action`, once `args` is checked to hold nothing.
+fn no_args(name: &str, args: &Value, action: KeyAction) -> Result<KeyAction, String> {
+    let NoArgs {} = parse_args(name, args)?;
+    Ok(action)
+}
+
+/// Whether `tool` does anything now. `normal` is normal mode as Dave sees it
+/// this frame, or `None` outside it (insert mode, an overlay open, renaming),
+/// where no tool is available. In it, the block tools need the chat pane and
+/// the session cursor the session list; the rest are
+/// [`NormalView::offers`]: an issue for `dave_open_issue`, a running turn for
+/// `dave_interrupt`, an agentic session for the agentic-only tools.
+///
+/// `dave_focus_pane` is available whatever its pane: availability takes no
+/// arguments, and pointing at a session list that isn't shown does nothing,
+/// as `h` does.
+pub(crate) fn available(tool: DaveUiTool, normal: Option<NormalView>) -> bool {
+    let Some(view) = normal else {
+        return false;
+    };
+    match tool {
+        DaveUiTool::BlockCursor | DaveUiTool::Block => view.pane == Pane::Chat,
+        DaveUiTool::SessionCursor => view.pane == Pane::Sessions,
+        tool => tool.gate().is_some_and(|action| view.offers(&action)),
+    }
+}
+
+/// Normal mode in the session list.
+const SESSIONS_SCOPES: &[&str] = &["dave.sessions", "dave.normal", "dave"];
+/// Normal mode in the chat.
+const CHAT_SCOPES: &[&str] = &["dave.chat", "dave.normal", "dave"];
+
+/// The key scopes active for `normal` (see [`available`] for what `None`
+/// covers): the pane's, then normal mode's, then Dave's. None outside normal
+/// mode, where keys are typing.
+pub(crate) fn key_scopes(normal: Option<NormalView>) -> &'static [&'static str] {
+    match normal.map(|view| view.pane) {
+        None => &[],
+        Some(Pane::Sessions) => SESSIONS_SCOPES,
+        Some(Pane::Chat) => CHAT_SCOPES,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::keybindings::Pending;
+
+    /// Normal mode at its root in `pane`, with everything on offer.
+    fn view(pane: Pane) -> NormalView {
+        NormalView {
+            pending: Pending::Root,
+            pane,
+            sessions_shown: true,
+            agentic: true,
+            interruptible: true,
+            has_issue: true,
+        }
+    }
+
+    #[test]
+    fn every_tool_round_trips_its_name_and_is_a_ui_tool() {
+        let specs = DaveUiTool::specs();
+        assert_eq!(specs.len(), DaveUiTool::ALL.len());
+        for (tool, spec) in DaveUiTool::ALL.into_iter().zip(&specs) {
+            assert_eq!(DaveUiTool::from_name(tool.name()), Some(tool));
+            assert_eq!(spec.name(), tool.name());
+            assert_eq!(spec.kind(), notedeck::ToolKind::Ui);
+            assert!(spec.name().starts_with("dave_"), "{}", spec.name());
+        }
+    }
+
+    /// Each tool's arguments name the chord key's action.
+    #[test]
+    fn tools_parse_into_their_keys_actions() {
+        use KeyAction as A;
+        let cases = [
+            (BLOCK_CURSOR, json!({"to": "down"}), A::BlockCursorDown),
+            (BLOCK_CURSOR, json!({"to": "up"}), A::BlockCursorUp),
+            (BLOCK_CURSOR, json!({"to": "first"}), A::BlockCursorFirst),
+            (BLOCK_CURSOR, json!({"to": "last"}), A::BlockCursorLast),
+            (BLOCK_CURSOR, json!({"to": "clear"}), A::BlockCursorClear),
+            (BLOCK, json!({"op": "toggle"}), A::BlockToggle),
+            (BLOCK, json!({"op": "open"}), A::BlockOpen),
+            (BLOCK, json!({"op": "close"}), A::BlockClose),
+            (BLOCK, json!({"op": "expand_all"}), A::BlockExpandAll),
+            (BLOCK, json!({"op": "collapse_all"}), A::BlockCollapseAll),
+            (
+                FOCUS_PANE,
+                json!({"pane": "sessions"}),
+                A::FocusSessionsPane,
+            ),
+            (FOCUS_PANE, json!({"pane": "chat"}), A::FocusChatPane),
+            (SESSION_CURSOR, json!({"to": "next"}), A::SessionPaneNext),
+            (SESSION_CURSOR, json!({"to": "prev"}), A::SessionPanePrev),
+            (SESSION_CURSOR, json!({"to": "first"}), A::SessionPaneFirst),
+            (SESSION_CURSOR, json!({"to": "last"}), A::SessionPaneLast),
+            (FOCUS_QUEUE, json!({"dir": "next"}), A::FocusQueueNext),
+            (FOCUS_QUEUE, json!({"dir": "prev"}), A::FocusQueuePrev),
+            (INSERT_MODE, Value::Null, A::InsertMode),
+            (NEW_AGENT, json!({}), A::NewAgent),
+            (CLONE_AGENT, json!({}), A::CloneAgent),
+            (RENAME_AGENT, json!({}), A::RenameAgent),
+            (DELETE_SESSION, json!({}), A::DeleteActiveSession),
+            (TOGGLE_VIEW, json!({}), A::ToggleView),
+            (CYCLE_PERMISSION_MODE, json!({}), A::CyclePermissionMode),
+            (EXTERNAL_EDITOR, json!({}), A::OpenExternalEditor),
+            (OPEN_ISSUE, json!({}), A::OpenIssue),
+            (INTERRUPT, json!({}), A::Interrupt),
+        ];
+        for (name, args, want) in cases {
+            assert_eq!(DaveUiTool::parse(name, &args), Ok(want), "{name} {args}");
+        }
+    }
+
+    #[test]
+    fn bad_calls_are_errors() {
+        for (name, args) in [
+            ("dave_nope", json!({})),
+            (BLOCK_CURSOR, json!({})),
+            (BLOCK_CURSOR, json!({"to": "sideways"})),
+            (BLOCK, json!({"op": "toggle", "extra": 1})),
+            (NEW_AGENT, json!({"now": true})),
+            (INSERT_MODE, json!([])),
+        ] {
+            assert!(DaveUiTool::parse(name, &args).is_err(), "{name} {args}");
+        }
+    }
+
+    /// The truth table: nothing outside normal mode; the pane tools by pane;
+    /// the rest as the chord's keys offer them.
+    #[test]
+    fn availability_follows_the_mode_the_pane_and_the_session() {
+        for tool in DaveUiTool::ALL {
+            assert!(!available(tool, None), "{tool:?} outside normal mode");
+        }
+
+        for tool in DaveUiTool::ALL {
+            let in_chat = available(tool, Some(view(Pane::Chat)));
+            let in_sessions = available(tool, Some(view(Pane::Sessions)));
+            match tool {
+                DaveUiTool::BlockCursor | DaveUiTool::Block => {
+                    assert!(in_chat && !in_sessions, "{tool:?}")
+                }
+                DaveUiTool::SessionCursor => assert!(!in_chat && in_sessions, "{tool:?}"),
+                _ => assert!(in_chat && in_sessions, "{tool:?}"),
+            }
+        }
+
+        let bare = NormalView {
+            agentic: false,
+            interruptible: false,
+            has_issue: false,
+            sessions_shown: false,
+            ..view(Pane::Chat)
+        };
+        for tool in DaveUiTool::ALL {
+            let off = matches!(
+                tool,
+                DaveUiTool::OpenIssue
+                    | DaveUiTool::Interrupt
+                    | DaveUiTool::CloneAgent
+                    | DaveUiTool::ToggleView
+                    | DaveUiTool::CyclePermissionMode
+                    | DaveUiTool::FocusQueue
+            ) || tool == DaveUiTool::SessionCursor;
+            assert_eq!(available(tool, Some(bare)), !off, "{tool:?}");
+        }
+    }
+
+    #[test]
+    fn scopes_follow_the_mode_and_the_pane() {
+        assert!(key_scopes(None).is_empty());
+        assert_eq!(
+            key_scopes(Some(view(Pane::Chat))),
+            ["dave.chat", "dave.normal", "dave"]
+        );
+        assert_eq!(
+            key_scopes(Some(view(Pane::Sessions))),
+            ["dave.sessions", "dave.normal", "dave"]
+        );
+    }
+}
+
+/// The tools on a real [`Dave`](crate::Dave), called through
+/// [`App::call_ui_tool`](notedeck::App::call_ui_tool) with a host's
+/// [`AppContext`](notedeck::AppContext), the way chrome calls them.
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use crate::backend::BackendType;
+    use crate::config::AiMode;
+    use crate::tests::test_dave;
+    use crate::{Dave, DaveOverlay, SessionId};
+    use notedeck::{App, AppAction, DataPath, Notedeck, ToolOutcome};
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// A test [`Dave`] with two agentic sessions, the first active, in normal
+    /// mode in the chat, beside a host to hand its tools an `AppContext`.
+    struct Fixture {
+        _dirs: [TempDir; 2],
+        egui: egui::Context,
+        notedeck: Notedeck,
+        dave: Dave,
+        sessions: [SessionId; 2],
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let host_dir = TempDir::new().unwrap();
+            let dave_dir = TempDir::new().unwrap();
+            let egui = egui::Context::default();
+            let args = ["notedeck-test".to_owned(), "--testrunner".to_owned()];
+            let notedeck = Notedeck::init(&egui, host_dir.path(), &args);
+            let mut dave = test_dave(&DataPath::new(dave_dir.path()));
+            let sessions = ["/tmp/tool-a", "/tmp/tool-b"].map(|cwd| {
+                dave.session_manager.new_session(
+                    PathBuf::from(cwd),
+                    AiMode::Agentic,
+                    BackendType::Remote,
+                )
+            });
+            dave.session_manager.switch_to(sessions[0]);
+            for id in sessions {
+                dave.session_manager.get_mut(id).unwrap().focus_requested = false;
+            }
+            // An empty agentic Dave opens on the directory picker; the
+            // sessions above are what it would have picked.
+            dave.active_overlay = DaveOverlay::None;
+            dave.normal_mode.open(&egui);
+            Fixture {
+                _dirs: [host_dir, dave_dir],
+                egui,
+                notedeck,
+                dave,
+                sessions,
+            }
+        }
+
+        /// Call the tool `name` as chrome does.
+        fn call(&mut self, name: &str, args: Value) -> ToolOutcome {
+            let mut ctx = self.notedeck.app_context();
+            self.dave.call_ui_tool(&mut ctx, name, &args)
+        }
+
+        fn focus_requested(&self, id: SessionId) -> bool {
+            self.dave.session_manager.get(id).unwrap().focus_requested
+        }
+    }
+
+    fn is_null(outcome: &ToolOutcome) -> bool {
+        matches!(outcome, ToolOutcome::Data(Value::Null))
+    }
+
+    /// The session-list `j`, as a tool: it switches sessions and leaves the
+    /// keyboard with normal mode; `dave_insert_mode` then hands the new
+    /// session's input focus, as `i` does.
+    #[test]
+    fn the_session_cursor_switches_without_grabbing_focus() {
+        let mut f = Fixture::new();
+        let [first, second] = f.sessions;
+        assert!(
+            matches!(
+                f.call(SESSION_CURSOR, json!({"to": "next"})),
+                ToolOutcome::Error(_)
+            ),
+            "the session cursor is the session list's"
+        );
+
+        // `h` reaches the list only once a frame has seen it on screen; the
+        // tool and the key share what it then does.
+        f.dave
+            .normal_mode
+            .after_action(&KeyAction::FocusSessionsPane);
+        assert_eq!(f.dave.key_scopes(), SESSIONS_SCOPES);
+        assert!(f.dave.ui_tool_available(SESSION_CURSOR));
+        assert!(!f.dave.ui_tool_available(BLOCK_CURSOR));
+
+        assert!(is_null(&f.call(SESSION_CURSOR, json!({"to": "next"}))));
+        assert_eq!(f.dave.session_manager.active_id(), Some(second));
+        assert!(!f.focus_requested(first));
+        assert!(!f.focus_requested(second), "normal mode holds the keyboard");
+
+        assert!(is_null(&f.call(INSERT_MODE, Value::Null)));
+        assert!(!f.dave.normal_mode.is_normal());
+        assert!(
+            f.focus_requested(second),
+            "the new session's input takes it"
+        );
+        assert!(f.dave.key_scopes().is_empty());
+        for tool in DaveUiTool::ALL {
+            assert!(!f.dave.ui_tool_available(tool.name()), "{tool:?}");
+        }
+        assert!(matches!(
+            f.call(NEW_AGENT, Value::Null),
+            ToolOutcome::Error(_)
+        ));
+    }
+
+    /// `s`, as a tool: chrome gets the session's issue to open, and without
+    /// one the tool isn't offered.
+    #[test]
+    fn open_issue_hands_chrome_the_sessions_issue() {
+        let mut f = Fixture::new();
+        assert!(!f.dave.ui_tool_available(OPEN_ISSUE));
+        assert!(matches!(
+            f.call(OPEN_ISSUE, Value::Null),
+            ToolOutcome::Error(_)
+        ));
+
+        let [first, _] = f.sessions;
+        f.dave
+            .session_manager
+            .get_mut(first)
+            .unwrap()
+            .details
+            .issue_url = Some("headway:notedeck/use-release-oyster".to_owned());
+        assert!(f.dave.ui_tool_available(OPEN_ISSUE));
+        match f.call(OPEN_ISSUE, Value::Null) {
+            ToolOutcome::Intent(AppAction::Open(open)) => {
+                assert_eq!(open.reference, "headway:notedeck/use-release-oyster")
+            }
+            _ => panic!("expected an open intent"),
+        }
+        assert!(f.dave.normal_mode.is_normal(), "s keeps normal mode on");
+    }
+
+    /// `dd`, `v`, `n`, `q` and `l`, as tools, do what their keys do.
+    #[test]
+    fn session_and_view_tools_do_what_their_keys_do() {
+        let mut f = Fixture::new();
+        let [first, second] = f.sessions;
+
+        assert!(is_null(&f.call(DELETE_SESSION, Value::Null)));
+        assert!(f.dave.session_manager.get(first).is_none());
+        assert_eq!(f.dave.session_manager.active_id(), Some(second));
+        assert!(f.dave.normal_mode.is_normal(), "dd keeps normal mode on");
+
+        let scene = f.dave.show_scene;
+        assert!(is_null(&f.call(TOGGLE_VIEW, Value::Null)));
+        assert_eq!(f.dave.show_scene, !scene);
+
+        assert!(is_null(&f.call(FOCUS_PANE, json!({"pane": "chat"}))));
+        assert_eq!(f.dave.key_scopes(), CHAT_SCOPES);
+
+        assert!(is_null(&f.call(BLOCK_CURSOR, json!({"to": "clear"}))));
+        assert!(!f.dave.normal_mode.is_normal(), "q ends normal mode");
+        assert!(f.focus_requested(second));
+
+        f.dave.normal_mode.open(&f.egui);
+        f.dave
+            .session_manager
+            .get_mut(second)
+            .unwrap()
+            .focus_requested = false;
+        let _ = f.call(NEW_AGENT, Value::Null);
+        assert!(!f.dave.normal_mode.is_normal(), "n leaves normal mode");
+        assert!(
+            !f.focus_requested(second),
+            "n leaves focus to the picker it opens"
+        );
+    }
+
+    /// An overlay over the chat takes Dave's keys, so it takes its tools too.
+    #[test]
+    fn an_overlay_offers_no_scopes_or_tools() {
+        let mut f = Fixture::new();
+        assert_eq!(f.dave.key_scopes(), CHAT_SCOPES);
+        f.dave.active_overlay = DaveOverlay::Settings;
+        assert!(f.dave.key_scopes().is_empty());
+        assert!(!f.dave.ui_tool_available(INSERT_MODE));
+    }
+}

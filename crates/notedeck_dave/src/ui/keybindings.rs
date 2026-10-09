@@ -404,16 +404,31 @@ impl NormalMode {
         std::mem::take(&mut self.input_focus_due)
     }
 
-    /// A regular binding ran while normal mode was on: a Ctrl binding, or a
-    /// bare key normal mode let through (a permission answer). It stays on,
-    /// like vim, unless the binding opened something you type into: those
-    /// leave it the way their normal-mode keys do. A tentative permission
-    /// answer (`!`, Shift+2, Shift+3) waits for a message typed into the
-    /// input, so it hands the input focus.
-    fn after_modified(&mut self, action: &KeyAction) {
+    /// `action` ran — from a chord, a Ctrl binding, or its UI tool called by
+    /// name (`crate::ui_tools`) — and this is what it does to normal mode
+    /// itself, the same whichever way it came:
+    ///
+    /// - `h` / `l` point the motions at the session list or the chat.
+    /// - While normal mode is on, an action that opens something you type
+    ///   into leaves it the way its normal-mode key does: `i` / `a`, `q`, the
+    ///   external editor and a tentative permission answer (`!`, Shift+2,
+    ///   Shift+3, which waits for a message typed into the input) hand the
+    ///   input focus; `n` and `r` leave focus to the picker or the rename
+    ///   field they open. Anything else keeps normal mode on, like vim.
+    pub(crate) fn after_action(&mut self, action: &KeyAction) {
+        match action {
+            KeyAction::FocusSessionsPane => self.pane = Pane::Sessions,
+            KeyAction::FocusChatPane => self.pane = Pane::Chat,
+            _ => {}
+        }
+        if !self.is_normal() {
+            return;
+        }
         match action {
             KeyAction::NewAgent | KeyAction::RenameAgent => self.release(),
-            KeyAction::OpenExternalEditor
+            KeyAction::InsertMode
+            | KeyAction::BlockCursorClear
+            | KeyAction::OpenExternalEditor
             | KeyAction::TentativeAccept
             | KeyAction::TentativeDeny
             | KeyAction::TentativeAllowAlways => self.end(),
@@ -433,14 +448,25 @@ impl NormalMode {
         }
     }
 
-    /// Whether normal mode is on.
-    fn is_on(&self) -> bool {
+    /// Whether normal mode is on: bare keys are commands, not typing. Dave's
+    /// key scopes and UI tools are live only then.
+    pub fn is_normal(&self) -> bool {
         self.pending.is_some()
+    }
+
+    /// Which pane the motions move through.
+    pub fn pane(&self) -> Pane {
+        self.pane
+    }
+
+    /// Whether the session list was on screen last frame, so `h` can reach it.
+    pub fn sessions_shown(&self) -> bool {
+        self.sessions_shown
     }
 
     /// Enter normal mode. egui has already dropped focus on the Esc that got
     /// us here; anything still focused is set aside so bare keys reach us.
-    fn open(&mut self, ctx: &egui::Context) {
+    pub(crate) fn open(&mut self, ctx: &egui::Context) {
         ctx.memory_mut(|m| {
             if let Some(id) = m.focused() {
                 m.surrender_focus(id);
@@ -466,14 +492,18 @@ impl NormalMode {
     }
 }
 
-/// Where normal mode goes after a key.
-enum Then {
-    /// Stay open, waiting in this state.
-    Continue(Pending),
-    /// End, handing focus back.
-    End,
-    /// End without touching focus (see [`NormalMode::release`]).
-    Release,
+/// What a key means to normal mode, before it runs.
+enum Chord {
+    /// A prefix (`z`, `g`, `d`, `]`, `[`): wait for the rest.
+    Prefix(Pending),
+    /// A command; what it does to the mode itself is
+    /// [`NormalMode::after_action`]'s.
+    Act(KeyAction),
+    /// Enter on the session list: back to the chat, and out of normal mode
+    /// into the input, on the session you picked.
+    Pick,
+    /// A key normal mode doesn't know: swallowed, dropping a half-typed prefix.
+    Swallow,
 }
 
 /// A key press, as normal mode reads it.
@@ -583,81 +613,57 @@ fn check_normal_mode(ctx: &egui::Context, mode: &mut NormalMode, tentative: bool
         return NormalStep::FallThrough;
     }
 
+    use Chord::{Act, Pick, Prefix, Swallow};
     use KeyAction as A;
-    use Then::{Continue, End, Release};
-    let (then, action) = match (mode.pane, pending, press.key, press.shift) {
+    let chord = match (mode.pane, pending, press.key, press.shift) {
         // Motions: the same keys walk blocks in the chat, sessions in the list.
-        (Pane::Chat, Pending::Root, Key::J, false) => {
-            (Continue(Pending::Root), Some(A::BlockCursorDown))
-        }
-        (Pane::Chat, Pending::Root, Key::K, false) => {
-            (Continue(Pending::Root), Some(A::BlockCursorUp))
-        }
-        (Pane::Chat, Pending::Root, Key::G, true) => {
-            (Continue(Pending::Root), Some(A::BlockCursorLast))
-        }
-        (Pane::Chat, Pending::G, Key::G, false) => {
-            (Continue(Pending::Root), Some(A::BlockCursorFirst))
-        }
-        (Pane::Sessions, Pending::Root, Key::J, false) => {
-            (Continue(Pending::Root), Some(A::SessionPaneNext))
-        }
-        (Pane::Sessions, Pending::Root, Key::K, false) => {
-            (Continue(Pending::Root), Some(A::SessionPanePrev))
-        }
-        (Pane::Sessions, Pending::Root, Key::G, true) => {
-            (Continue(Pending::Root), Some(A::SessionPaneLast))
-        }
-        (Pane::Sessions, Pending::G, Key::G, false) => {
-            (Continue(Pending::Root), Some(A::SessionPaneFirst))
-        }
-        (_, Pending::Root, Key::G, false) => (Continue(Pending::G), None),
+        (Pane::Chat, Pending::Root, Key::J, false) => Act(A::BlockCursorDown),
+        (Pane::Chat, Pending::Root, Key::K, false) => Act(A::BlockCursorUp),
+        (Pane::Chat, Pending::Root, Key::G, true) => Act(A::BlockCursorLast),
+        (Pane::Chat, Pending::G, Key::G, false) => Act(A::BlockCursorFirst),
+        (Pane::Sessions, Pending::Root, Key::J, false) => Act(A::SessionPaneNext),
+        (Pane::Sessions, Pending::Root, Key::K, false) => Act(A::SessionPanePrev),
+        (Pane::Sessions, Pending::Root, Key::G, true) => Act(A::SessionPaneLast),
+        (Pane::Sessions, Pending::G, Key::G, false) => Act(A::SessionPaneFirst),
+        (_, Pending::Root, Key::G, false) => Prefix(Pending::G),
 
         // Panes. Enter from the list goes back to the chat and hands it the
         // keyboard: you've picked the session you wanted.
-        (_, Pending::Root, Key::H, false) => (Continue(Pending::Root), Some(A::FocusSessionsPane)),
-        (_, Pending::Root, Key::L, false) => (Continue(Pending::Root), Some(A::FocusChatPane)),
-        (Pane::Sessions, Pending::Root, Key::Enter, false) => (End, Some(A::FocusChatPane)),
+        (_, Pending::Root, Key::H, false) => Act(A::FocusSessionsPane),
+        (_, Pending::Root, Key::L, false) => Act(A::FocusChatPane),
+        (Pane::Sessions, Pending::Root, Key::Enter, false) => Pick,
 
         // Folds, in the chat only.
-        (Pane::Chat, Pending::Root, Key::Z, false) => (Continue(Pending::Z), None),
-        (Pane::Chat, Pending::Root, Key::O, false) => {
-            (Continue(Pending::Root), Some(A::BlockToggle))
-        }
-        (Pane::Chat, Pending::Root, Key::Q, false) => (End, Some(A::BlockCursorClear)),
+        (Pane::Chat, Pending::Root, Key::Z, false) => Prefix(Pending::Z),
+        (Pane::Chat, Pending::Root, Key::O, false) => Act(A::BlockToggle),
+        (Pane::Chat, Pending::Root, Key::Q, false) => Act(A::BlockCursorClear),
 
         // Back to insert mode, from either pane.
-        (_, Pending::Root, Key::I | Key::A, false) => (End, Some(A::InsertMode)),
-        (_, Pending::Z, Key::A, false) => (Continue(Pending::Root), Some(A::BlockToggle)),
-        (_, Pending::Z, Key::O, false) => (Continue(Pending::Root), Some(A::BlockOpen)),
-        (_, Pending::Z, Key::C, false) => (Continue(Pending::Root), Some(A::BlockClose)),
+        (_, Pending::Root, Key::I | Key::A, false) => Act(A::InsertMode),
+        (_, Pending::Z, Key::A, false) => Act(A::BlockToggle),
+        (_, Pending::Z, Key::O, false) => Act(A::BlockOpen),
+        (_, Pending::Z, Key::C, false) => Act(A::BlockClose),
         // `zr` / `zm`, with or without Shift: vim's `zR` / `zM`, but the
         // shifted press doesn't arrive reliably.
-        (_, Pending::Z, Key::R, _) => (Continue(Pending::Root), Some(A::BlockExpandAll)),
-        (_, Pending::Z, Key::M, _) => (Continue(Pending::Root), Some(A::BlockCollapseAll)),
+        (_, Pending::Z, Key::R, _) => Act(A::BlockExpandAll),
+        (_, Pending::Z, Key::M, _) => Act(A::BlockCollapseAll),
 
         // Session keys, from either pane. New-agent and rename open something
         // you type into, so they leave normal mode; so does the external editor.
-        (_, Pending::Root, Key::N, false) => (Release, Some(A::NewAgent)),
-        (_, Pending::Root, Key::C, false) => (Continue(Pending::Root), Some(A::CloneAgent)),
-        (_, Pending::Root, Key::R, false) => (Release, Some(A::RenameAgent)),
-        (_, Pending::Root, Key::D, false) => (Continue(Pending::D), None),
-        (_, Pending::D, Key::D, false) => (Continue(Pending::Root), Some(A::DeleteActiveSession)),
-        (_, Pending::Root, Key::V, false) => (Continue(Pending::Root), Some(A::ToggleView)),
-        (_, Pending::Root, Key::M, false) => {
-            (Continue(Pending::Root), Some(A::CyclePermissionMode))
-        }
-        (_, Pending::Root, Key::E, false) => (End, Some(A::OpenExternalEditor)),
-        (_, Pending::Root, Key::S, false) => (Continue(Pending::Root), Some(A::OpenIssue)),
-        (_, Pending::Root, Key::S, true) => (Continue(Pending::Root), Some(A::Interrupt)),
-        (_, Pending::Root, Key::CloseBracket, false) => (Continue(Pending::CloseBracket), None),
-        (_, Pending::Root, Key::OpenBracket, false) => (Continue(Pending::OpenBracket), None),
-        (_, Pending::CloseBracket, Key::Q, false) => {
-            (Continue(Pending::Root), Some(A::FocusQueueNext))
-        }
-        (_, Pending::OpenBracket, Key::Q, false) => {
-            (Continue(Pending::Root), Some(A::FocusQueuePrev))
-        }
+        (_, Pending::Root, Key::N, false) => Act(A::NewAgent),
+        (_, Pending::Root, Key::C, false) => Act(A::CloneAgent),
+        (_, Pending::Root, Key::R, false) => Act(A::RenameAgent),
+        (_, Pending::Root, Key::D, false) => Prefix(Pending::D),
+        (_, Pending::D, Key::D, false) => Act(A::DeleteActiveSession),
+        (_, Pending::Root, Key::V, false) => Act(A::ToggleView),
+        (_, Pending::Root, Key::M, false) => Act(A::CyclePermissionMode),
+        (_, Pending::Root, Key::E, false) => Act(A::OpenExternalEditor),
+        (_, Pending::Root, Key::S, false) => Act(A::OpenIssue),
+        (_, Pending::Root, Key::S, true) => Act(A::Interrupt),
+        (_, Pending::Root, Key::CloseBracket, false) => Prefix(Pending::CloseBracket),
+        (_, Pending::Root, Key::OpenBracket, false) => Prefix(Pending::OpenBracket),
+        (_, Pending::CloseBracket, Key::Q, false) => Act(A::FocusQueueNext),
+        (_, Pending::OpenBracket, Key::Q, false) => Act(A::FocusQueuePrev),
 
         // Keys the regular bindings read while the input is unfocused.
         (_, _, key, _) if owned_bare_key(key) => {
@@ -666,7 +672,7 @@ fn check_normal_mode(ctx: &egui::Context, mode: &mut NormalMode, tentative: bool
         }
 
         // Anything else is swallowed, and drops a half-typed prefix.
-        _ => (Continue(Pending::Root), None),
+        _ => Swallow,
     };
 
     // Swallow this frame's keys and text so a bare key never leaks into the
@@ -676,22 +682,31 @@ fn check_normal_mode(ctx: &egui::Context, mode: &mut NormalMode, tentative: bool
             .retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)))
     });
 
-    // A key that does nothing here (`h` with no session list, `v` in a chat
-    // session) is swallowed and normal mode carries on.
-    let view = mode.view_at(pending);
-    let action = action.filter(|action| view.offers(action));
-
-    match &action {
-        Some(A::FocusSessionsPane) => mode.pane = Pane::Sessions,
-        Some(A::FocusChatPane) => mode.pane = Pane::Chat,
-        _ => {}
-    }
-
-    match then {
-        Continue(next) => mode.pending = Some(next),
-        End => mode.end(),
-        Release => mode.release(),
-    }
+    let action = match chord {
+        Prefix(next) => {
+            mode.pending = Some(next);
+            None
+        }
+        Swallow => {
+            mode.pending = Some(Pending::Root);
+            None
+        }
+        // A key that does nothing here (`h` with no session list, `v` in a
+        // chat session) is swallowed and normal mode carries on.
+        Act(action) => {
+            mode.pending = Some(Pending::Root);
+            let action = Some(action).filter(|action| mode.view_at(pending).offers(action));
+            if let Some(action) = &action {
+                mode.after_action(action);
+            }
+            action
+        }
+        Pick => {
+            mode.after_action(&A::FocusChatPane);
+            mode.end();
+            Some(A::FocusChatPane)
+        }
+    };
     NormalStep::Consumed(action)
 }
 
@@ -750,7 +765,7 @@ pub fn check_keybindings(
     let is_agentic = ai_mode == AiMode::Agentic;
 
     // An overlay is modal: normal mode's keys are the chat's.
-    if overlay_open && mode.is_on() {
+    if overlay_open && mode.is_normal() {
         mode.release();
     }
 
@@ -772,7 +787,7 @@ pub fn check_keybindings(
 
     // Esc in insert mode enters normal mode, unless an overlay or the rename
     // field owns it. The keys that follow land next frame.
-    if !mode.is_on()
+    if !mode.is_normal()
         && !overlay_open
         && !renaming
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape))
@@ -783,9 +798,7 @@ pub fn check_keybindings(
 
     let action = check_regular_bindings(ctx, keys);
     if let Some(action) = &action {
-        if mode.is_on() {
-            mode.after_modified(action);
-        }
+        mode.after_action(action);
     }
     action
 }
@@ -1206,6 +1219,78 @@ mod tests {
         }
     }
 
+    /// Normal mode as a key or a UI tool leaves it.
+    #[derive(Debug, PartialEq)]
+    struct ModeAfter {
+        on: bool,
+        pane: Pane,
+        input_focus: bool,
+    }
+
+    impl ModeAfter {
+        fn of(mode: &mut NormalMode) -> Self {
+            ModeAfter {
+                on: mode.is_normal(),
+                pane: mode.pane(),
+                input_focus: mode.take_input_focus(),
+            }
+        }
+    }
+
+    /// A UI tool called by name changes normal mode exactly as its chord key
+    /// does (`crate::ui_tools` maps each tool to the key's action): they share
+    /// [`NormalMode::after_action`]. Enter on the session list is
+    /// `dave_insert_mode` as a tool, which leaves the mode the same way.
+    #[test]
+    fn every_root_key_and_its_tool_leave_normal_mode_alike() {
+        const H: (Modifiers, Key) = (NONE, Key::H);
+        let ctx = egui::Context::default();
+        for (pane, prefix) in [(Pane::Chat, vec![ESC]), (Pane::Sessions, vec![ESC, H])] {
+            let view = NormalView {
+                pending: Pending::Root,
+                pane,
+                sessions_shown: true,
+                agentic: true,
+                interruptible: true,
+                has_issue: true,
+            };
+            let groups = view.hints().iter().chain(view.session_keys());
+            for hint in groups.flat_map(|group| group.iter()) {
+                let mut presses = prefix.clone();
+                presses.extend(hint_presses(hint.keys));
+                let mut harness = Harness::new_ui_state(
+                    |ui, mode: &mut NormalMode| {
+                        check(ui.ctx(), mode, FRAME);
+                    },
+                    NormalMode::default(),
+                );
+                harness.run();
+                for (modifiers, key) in &presses {
+                    harness.press_key_modifiers(*modifiers, *key);
+                }
+                let by_key = ModeAfter::of(harness.state_mut());
+
+                let mut mode = NormalMode::default();
+                mode.open(&ctx);
+                if pane == Pane::Sessions {
+                    mode.after_action(&KeyAction::FocusSessionsPane);
+                }
+                let action = if hint.keys == ENTER {
+                    KeyAction::InsertMode
+                } else {
+                    hint.action.clone()
+                };
+                mode.after_action(&action);
+                let mut by_tool = ModeAfter::of(&mut mode);
+                if !by_tool.on {
+                    // Off, the pane is moot: the next Esc starts in the chat.
+                    by_tool.pane = by_key.pane;
+                }
+                assert_eq!(by_key, by_tool, "{pane:?} {:?}", hint.keys);
+            }
+        }
+    }
+
     #[test]
     fn normal_h_j_switches_sessions_instead_of_moving_the_cursor() {
         assert_eq!(
@@ -1472,7 +1557,7 @@ mod tests {
         type_key(&mut harness, Key::W, "w");
         assert_eq!(harness.ctx.memory(|m| m.focused()), None);
         assert_eq!(harness.state().1, "", "an unknown key is swallowed");
-        assert!(harness.state().0.is_on(), "and normal mode stays on");
+        assert!(harness.state().0.is_normal(), "and normal mode stays on");
 
         // `i` ends normal mode and hands focus back in the same frame, so its
         // own text must not follow the focus into the input.
@@ -1490,7 +1575,7 @@ mod tests {
         let mut harness = input_harness(input_id, FRAME);
 
         type_key(&mut harness, Key::Escape, "");
-        assert!(harness.state().0.is_on());
+        assert!(harness.state().0.is_normal());
         assert_eq!(harness.ctx.memory(|m| m.focused()), None);
 
         type_key(&mut harness, Key::J, "j");
@@ -1540,7 +1625,7 @@ mod tests {
         }
         harness.state_mut().1 = false;
         harness.press_key_modifiers(last.0, last.1);
-        (harness.state().1, harness.state().0.is_on())
+        (harness.state().1, harness.state().0.is_normal())
     }
 
     #[test]
@@ -1590,7 +1675,7 @@ mod tests {
             });
             harness.step();
         }
-        (harness.state().1, harness.state().0.is_on())
+        (harness.state().1, harness.state().0.is_normal())
     }
 
     #[test]
@@ -1644,7 +1729,7 @@ mod tests {
             );
         harness.run();
         harness.press_key_modifiers(ESC.0, ESC.1);
-        assert!(harness.state().0.is_on());
+        assert!(harness.state().0.is_normal());
 
         // The answer went tentative some other way (a click) while normal
         // mode stayed on.
@@ -1657,7 +1742,7 @@ mod tests {
         harness.press_key_modifiers(ESC.0, ESC.1);
         assert_eq!(harness.state().2, Some(KeyAction::CancelTentative));
         assert!(!harness.state().3, "the Esc is not chrome's");
-        assert!(harness.state().0.is_on(), "and normal mode stays on");
+        assert!(harness.state().0.is_normal(), "and normal mode stays on");
     }
 
     #[test]
@@ -1722,12 +1807,15 @@ mod tests {
         );
         harness.run();
         harness.press_key_modifiers(ESC.0, ESC.1);
-        assert!(harness.state().0.is_on());
+        assert!(harness.state().0.is_normal());
 
         harness.state_mut().1 = true;
         harness.state_mut().2 = false;
         harness.press_key_modifiers(ESC.0, ESC.1);
-        assert!(!harness.state().0.is_on(), "the overlay ends normal mode");
+        assert!(
+            !harness.state().0.is_normal(),
+            "the overlay ends normal mode"
+        );
         assert!(harness.state().2, "and its Esc stays the overlay's");
     }
 
@@ -1795,12 +1883,12 @@ mod tests {
         harness.run();
 
         type_key(&mut harness, Key::Escape, "");
-        assert!(harness.state().0.is_on());
+        assert!(harness.state().0.is_normal());
 
         // A click into the other field focuses it.
         harness.ctx.memory_mut(|m| m.request_focus(other_id));
         harness.run();
-        assert!(!harness.state().0.is_on(), "normal mode ends");
+        assert!(!harness.state().0.is_normal(), "normal mode ends");
         assert_eq!(
             harness.ctx.memory(|m| m.focused()),
             Some(other_id),
