@@ -1,5 +1,6 @@
 # A kittest text lookup that matches values too and prints the tree on a miss
 
+Card: headway:notedeck/invite-rubber-mind
 `wait_for_label` matches names only, and a missed query says nothing about what
 was on screen, so value-bearing widgets cost an inline query and a guess.
 
