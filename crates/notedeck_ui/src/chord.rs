@@ -64,6 +64,21 @@ pub fn swallow_key_events(ctx: &egui::Context) {
     });
 }
 
+/// Whether a widget, popup, menu or drag holds the keyboard this frame, so a
+/// bare key press belongs to it rather than to a keymap.
+///
+/// Call it before any widget runs this frame, so the focus it reads is the one
+/// the key press was typed into. A menu an app draws without egui's popup
+/// memory (e.g. `menu_button`) isn't seen here; the app has to gate on that
+/// itself.
+pub fn focus_taken(ctx: &egui::Context) -> bool {
+    ctx.memory(|m| m.focused().is_some())
+        // Combo boxes, menus and right-click context menus are all popups.
+        || egui::Popup::is_any_open(ctx)
+        || egui::DragAndDrop::has_any_payload(ctx)
+        || ctx.dragged_id().is_some()
+}
+
 /// Progress through a multi-key chord. `P` is the app's own "what's pending"
 /// enum. Owned by the app state — no globals (AGENTS.md rule 6).
 ///

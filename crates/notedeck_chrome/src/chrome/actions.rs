@@ -357,6 +357,21 @@ impl Chrome {
         };
         app.call_ui_tool(ctx, name, &invocation.args)
     }
+
+    /// Whether the UI tool `name` would do something now: a running app owns
+    /// it in `tools` and says it's [available](App::ui_tool_available). A key
+    /// bound to a tool that isn't falls through. Doesn't allocate.
+    pub fn ui_tool_available(&self, tools: &notedeck::ToolRegistry, name: &str) -> bool {
+        let Some(owner) = tools.ui_owner(name) else {
+            return false;
+        };
+        let slot = owner.slot();
+        self.is_running(slot)
+            && self
+                .apps
+                .get(slot)
+                .is_some_and(|app| app.ui_tool_available(name))
+    }
 }
 
 /// Route an [`AppAction::CallTool`]: run the tool in its app, then route an

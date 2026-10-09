@@ -2,6 +2,7 @@
 //#[cfg(target_arch = "wasm32")]
 //use wasm_bindgen::prelude::*;
 use crate::app::NotedeckApp;
+use crate::keymap::KeyEngine;
 use crate::ChromeOptions;
 use eframe::CreationContext;
 use notedeck::AppResponse;
@@ -37,6 +38,7 @@ mod frame;
 mod header;
 #[cfg(all(test, feature = "headway", not(debug_assertions)))]
 mod headway_nav_tests;
+mod key_dispatch;
 mod keyboard;
 mod nav;
 mod roster;
@@ -115,6 +117,10 @@ pub struct Chrome {
     /// drag-back sets neither of the stack's own transition flags, so this is
     /// what holds a prune over one.
     global_nav_in_flight: bool,
+
+    /// Resolves bare key presses against the active app's key scopes and the
+    /// keymap, before the app renders (see [`Chrome::dispatch_keys`]).
+    keys: KeyEngine,
 
     #[cfg(feature = "auto-update")]
     updater: notedeck::updater::Updater,
@@ -220,32 +226,7 @@ impl Chrome {
             .path(notedeck::DataPathType::Cache)
             .join("wasm_apps");
 
-        let mut chrome = Chrome {
-            active: 0,
-            options: ChromeOptions::default(),
-            apps: Vec::new(),
-            opened: [0u16; MAX_APPS / 16],
-            app_focus: AppFocus::default(),
-            prev_active: 0,
-            tools_snapshot: [0u16; MAX_APPS / 16],
-            soft_kb_anim_state: AnimState::default(),
-            repaint_causes: HashMap::new(),
-            nav: DrawerRouter::default(),
-            global_nav: Some(seed_global_nav()),
-            pending_open: None,
-            pending_prunes: Vec::new(),
-            global_nav_in_flight: false,
-            #[cfg(feature = "auto-update")]
-            updater: notedeck::updater::Updater::new(
-                app_ref.app_ctx.path,
-                &app_ref.app_ctx.ndb,
-                app_ref.app_ctx.waker.clone(),
-                notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY,
-                notedeck::updater::nostr::ReleaseChannel::from_setting(
-                    app_ref.app_ctx.settings.release_channel(),
-                ),
-            ),
-        };
+        let mut chrome = Chrome::bare(&app_ref.app_ctx);
 
         if !app_args.iter().any(|arg| arg == "--no-columns-app") {
             let columns = Damus::new(&mut app_ref.app_ctx, app_args);
@@ -328,11 +309,12 @@ impl Chrome {
         Ok(chrome)
     }
 
-    /// Create a Chrome for snapshot tests — no eframe CreationContext needed.
-    #[cfg(feature = "auto-update")]
-    pub fn new_test(ctx: &mut notedeck::AppContext, args: &[String]) -> Self {
-        let damus = Damus::new(ctx, args);
-        let mut chrome = Chrome {
+    /// A chrome with no apps yet, its global nav seeded on slot 0 and the
+    /// built-in keymap loaded. Every constructor starts here. `ctx` only
+    /// feeds the updater.
+    #[cfg_attr(not(feature = "auto-update"), allow(unused_variables))]
+    fn bare(ctx: &notedeck::AppContext) -> Self {
+        Chrome {
             active: 0,
             options: ChromeOptions::default(),
             apps: Vec::new(),
@@ -347,16 +329,41 @@ impl Chrome {
             pending_open: None,
             pending_prunes: Vec::new(),
             global_nav_in_flight: false,
+            keys: KeyEngine::with_default_keymap(),
+            #[cfg(feature = "auto-update")]
             updater: notedeck::updater::Updater::new(
                 ctx.path,
-                &ctx.ndb,
+                ctx.ndb,
                 ctx.waker.clone(),
                 notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY,
                 notedeck::updater::nostr::ReleaseChannel::from_setting(
                     ctx.settings.release_channel(),
                 ),
             ),
-        };
+        }
+    }
+
+    /// A headless chrome running exactly `apps`, the first of them in front
+    /// as the global nav's root, so it shows without an app-switch slide.
+    /// For tests that drive one app through real chrome frames.
+    pub fn new_headless_with_apps(
+        notedeck: &mut Notedeck,
+        apps: impl IntoIterator<Item = NotedeckApp>,
+    ) -> Self {
+        let mut chrome = Chrome::bare(&notedeck.app_context());
+        for app in apps {
+            chrome.add_app(app);
+        }
+        chrome.set_active(0);
+        setup_app_registries(notedeck, &chrome.apps);
+        chrome
+    }
+
+    /// Create a Chrome for snapshot tests — no eframe CreationContext needed.
+    #[cfg(feature = "auto-update")]
+    pub fn new_test(ctx: &mut notedeck::AppContext, args: &[String]) -> Self {
+        let damus = Damus::new(ctx, args);
+        let mut chrome = Chrome::bare(ctx);
         chrome.add_app(NotedeckApp::Columns(Box::new(damus)));
         chrome.set_active(0);
         chrome

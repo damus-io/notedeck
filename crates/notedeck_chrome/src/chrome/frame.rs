@@ -324,6 +324,10 @@ impl Chrome {
                         }
                         self.prev_active = self.active;
                     }
+                    // The keymap reads the key press before the app renders,
+                    // so a key it binds never reaches the app; focus has just
+                    // been restored, so a refocused text field keeps its keys.
+                    self.dispatch_keys(ctx, ui);
                     action = self.panel(ctx, ui, keyboard_height);
                 });
 

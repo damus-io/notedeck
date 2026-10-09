@@ -689,7 +689,7 @@ pub(crate) fn review_pane_keys(
     mode: PaneMode,
 ) -> Option<BoardAction> {
     let pending = state.pane_chord.tick(ctx);
-    if focus_taken(ctx) {
+    if chord::focus_taken(ctx) {
         state.pane_chord.clear();
         return None;
     }
@@ -793,7 +793,7 @@ pub(crate) fn detail_keys(
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
     let pending = state.pane_chord.tick(ctx);
-    if focus_taken(ctx) {
+    if chord::focus_taken(ctx) {
         state.pane_chord.clear();
         return None;
     }
@@ -898,21 +898,8 @@ fn reason_keys(
 /// Whether something other than the grid owns the keyboard this frame.
 fn keyboard_taken(ctx: &egui::Context, state: &BoardUiState, menu_open: bool) -> bool {
     // The grid's `menu_button`s report through `menu_open`, which egui's popup
-    // memory can't see (see `focus_taken`).
-    focus_taken(ctx) || menu_open || state.keys_blocked()
-}
-
-/// Whether a widget, popup, menu or drag holds the keyboard this frame: the
-/// part of [`keyboard_taken`] that isn't the grid's own state, shared with
-/// the pane keymaps.
-fn focus_taken(ctx: &egui::Context) -> bool {
-    // Read before any widget runs this frame, so this is the focus the key
-    // press was typed into.
-    ctx.memory(|m| m.focused().is_some())
-        // Combo boxes, menus and right-click context menus are all popups.
-        || egui::Popup::is_any_open(ctx)
-        || egui::DragAndDrop::has_any_payload(ctx)
-        || ctx.dragged_id().is_some()
+    // memory can't see (see `chord::focus_taken`).
+    chord::focus_taken(ctx) || menu_open || state.keys_blocked()
 }
 
 /// A bare, unshifted `key`.

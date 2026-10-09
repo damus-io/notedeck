@@ -301,6 +301,7 @@ mod global_nav_tests {
     use crate::chrome::focus::AppFocus;
     use crate::chrome::keyboard::AnimState;
     use crate::chrome::MAX_APPS;
+    use crate::keymap::KeyEngine;
     use crate::ChromeOptions;
     use egui_nav::{NavAction, ReturnType};
     use notedeck::ActiveNavEntry;
@@ -327,6 +328,7 @@ mod global_nav_tests {
             pending_open: None,
             pending_prunes: Vec::new(),
             global_nav_in_flight: false,
+            keys: KeyEngine::default(),
         }
     }
 
@@ -880,6 +882,7 @@ mod cleanup_tests {
                 pending_open: None,
                 pending_prunes: Vec::new(),
                 global_nav_in_flight: false,
+                keys: crate::keymap::KeyEngine::default(),
             };
             Self {
                 _dir: dir,

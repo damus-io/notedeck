@@ -1,0 +1,6 @@
+# Notedeck's built-in keymap. Each [[bind]] maps a key sequence in a key scope
+# to a UI tool (or a [macro.<name>]); see crates/notedeck_chrome/src/keymap/parse.rs
+# for the format and keys.rs for the key syntax.
+#
+# Empty for now: the apps still read their own keys, and their bindings move
+# here one app at a time.
