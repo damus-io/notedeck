@@ -5,6 +5,8 @@
 
 use crate::backend::BackendType;
 use crate::publish::{ingest_live_event, publish_auto_accept_response};
+use crate::session::SessionManager;
+use crate::stream_events::HostCtx;
 use crate::{
     messages, reconcile, session, session_events, session_loader, Dave, Message,
     PermissionResponse, SessionId,
@@ -184,10 +186,10 @@ impl Dave {
     /// guard, never leaking cleartext).
     pub(crate) fn poll_remote_conversation_events(
         &mut self,
-        ndb: &nostrdb::Ndb,
-        secret_key: Option<&[u8; 32]>,
+        host: &HostCtx<'_>,
         fan_out_keys: &mut Vec<NoteKey>,
     ) -> Vec<(SessionId, String)> {
+        let ndb = host.ndb;
         let remote_user_messages: Vec<(SessionId, String)> = Vec::new();
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
             return remote_user_messages;
@@ -265,88 +267,88 @@ impl Dave {
         // Drop the read txn before delivery, which opens its own.
         drop(txn);
 
-        self.deliver_conversation_notes(ndb, secret_key, &account, by_session)
+        deliver_notes(&mut self.session_manager, host, by_session)
     }
+}
 
-    /// Hand each session its batch of conversation notes, as the poll does:
-    /// run [`process_conversation_notes`] on it, then rebuild the remote
-    /// sessions whose batch reordered their chat and try the reconcile at rest
-    /// on the local ones. Returns the remote user messages to dispatch.
-    ///
-    /// Shared by the poll and a background restore's replay of the notes the
-    /// poll dropped before the session existed (see
-    /// [`ConversationFeed`](crate::conversation_feed::ConversationFeed)), so a
-    /// replayed note gets exactly the handling a polled one does.
-    pub(crate) fn deliver_conversation_notes(
-        &mut self,
-        ndb: &nostrdb::Ndb,
-        secret_key: Option<&[u8; 32]>,
-        account: &nostrdb_net::Pubkey,
-        by_session: HashMap<SessionId, Vec<NoteKey>>,
-    ) -> Vec<(SessionId, String)> {
-        let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
-        let mut rebuild_ids: Vec<SessionId> = Vec::new();
-        // Local sessions that got notes: each may now be at rest with all of
-        // its own notes indexed.
-        let mut reconcile_ids: Vec<SessionId> = Vec::new();
+/// Hand each session its batch of conversation notes, as the poll does: run
+/// [`process_conversation_notes`] on it, then rebuild the remote sessions whose
+/// batch reordered their chat and try the reconcile at rest on the local ones.
+/// Returns the remote user messages to dispatch.
+///
+/// Shared by the poll and a background restore's replay of the notes the poll
+/// dropped before the session existed (see
+/// [`ConversationFeed`](crate::conversation_feed::ConversationFeed)), so a
+/// replayed note gets exactly the handling a polled one does. It touches only
+/// the sessions, so a test delivers through it with no [`Dave`].
+pub(crate) fn deliver_notes(
+    sessions: &mut SessionManager,
+    host: &HostCtx<'_>,
+    by_session: HashMap<SessionId, Vec<NoteKey>>,
+) -> Vec<(SessionId, String)> {
+    let (ndb, secret_key, account) = (host.ndb, host.sk(), &host.author);
+    let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
+    let mut rebuild_ids: Vec<SessionId> = Vec::new();
+    // Local sessions that got notes: each may now be at rest with all of
+    // its own notes indexed.
+    let mut reconcile_ids: Vec<SessionId> = Vec::new();
 
-        let txn = match Transaction::new(ndb) {
-            Ok(txn) => txn,
-            Err(_) => return remote_user_messages,
+    let txn = match Transaction::new(ndb) {
+        Ok(txn) => txn,
+        Err(_) => return remote_user_messages,
+    };
+    for (session_id, keys) in by_session {
+        let Some(session) = sessions.get_mut(session_id) else {
+            continue;
         };
-        for (session_id, keys) in by_session {
-            let Some(session) = self.session_manager.get_mut(session_id) else {
-                continue;
-            };
-            let is_remote = session.is_remote();
-            if !is_remote {
-                reconcile_ids.push(session_id);
-            }
-            let notes: Vec<_> = keys
-                .iter()
-                .filter_map(|key| ndb.get_note_by_key(&txn, *key).ok())
-                .collect();
-
-            let result =
-                process_conversation_notes(notes, session, session_id, is_remote, secret_key, ndb);
-            remote_user_messages.extend(result.remote_user_messages);
-            if result.rebuild_chat {
-                rebuild_ids.push(session_id);
-            }
+        let is_remote = session.is_remote();
+        if !is_remote {
+            reconcile_ids.push(session_id);
         }
+        let notes: Vec<_> = keys
+            .iter()
+            .filter_map(|key| ndb.get_note_by_key(&txn, *key).ok())
+            .collect();
 
-        // Drop the read txn before the rebuild pass, which opens its own fresh
-        // transaction per session (avoids nested transactions).
-        drop(txn);
-
-        // A new displayable note landed for each of these remote sessions:
-        // rebuild each chat from ndb in sorted order. This is the single display
-        // path for remote sessions, so the result is independent of arrival/poll
-        // order. Done after the processing loop so each rebuild uses a fresh
-        // transaction (no nested txns).
-        for session_id in rebuild_ids {
-            let Ok(txn) = Transaction::new(ndb) else {
-                continue;
-            };
-            let Some(session) = self.session_manager.get_mut(session_id) else {
-                continue;
-            };
-            rebuild_chat_from_fold(session, ndb, &txn, account);
-            tracing::debug!(
-                "rebuilt remote session {} chat from ndb ({} messages)",
-                session_id,
-                session.chat.len(),
-            );
+        let result =
+            process_conversation_notes(notes, session, session_id, is_remote, secret_key, ndb);
+        remote_user_messages.extend(result.remote_user_messages);
+        if result.rebuild_chat {
+            rebuild_ids.push(session_id);
         }
-
-        for session_id in reconcile_ids {
-            if let Some(session) = self.session_manager.get_mut(session_id) {
-                reconcile::maybe_reconcile_at_rest(session, ndb, account);
-            }
-        }
-
-        remote_user_messages
     }
+
+    // Drop the read txn before the rebuild pass, which opens its own fresh
+    // transaction per session (avoids nested transactions).
+    drop(txn);
+
+    // A new displayable note landed for each of these remote sessions:
+    // rebuild each chat from ndb in sorted order. This is the single display
+    // path for remote sessions, so the result is independent of arrival/poll
+    // order. Done after the processing loop so each rebuild uses a fresh
+    // transaction (no nested txns).
+    for session_id in rebuild_ids {
+        let Ok(txn) = Transaction::new(ndb) else {
+            continue;
+        };
+        let Some(session) = sessions.get_mut(session_id) else {
+            continue;
+        };
+        rebuild_chat_from_fold(session, ndb, &txn, account);
+        tracing::debug!(
+            "rebuilt remote session {} chat from ndb ({} messages)",
+            session_id,
+            session.chat.len(),
+        );
+    }
+
+    for session_id in reconcile_ids {
+        if let Some(session) = sessions.get_mut(session_id) {
+            reconcile::maybe_reconcile_at_rest(session, ndb, account);
+        }
+    }
+
+    remote_user_messages
 }
 
 /// Subscribe to every kind-1988 conversation event authored by `account`.

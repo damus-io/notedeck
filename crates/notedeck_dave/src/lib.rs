@@ -68,6 +68,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::string::ToString;
 use std::sync::Arc;
+pub use stream_events::HostCtx;
 use stream_events::{
     dispatch_compact_for_session, dispatch_turn, DispatchCtx, ProcessEventsResult,
 };
@@ -368,18 +369,6 @@ fn get_backend(
         .or_else(|| backends.get(&BackendType::Remote))
         .unwrap()
         .as_ref()
-}
-
-fn calculate_user_id(keypair: KeypairUnowned) -> String {
-    use sha2::{Digest, Sha256};
-    // pubkeys have degraded privacy, don't do that
-    let key_input = keypair
-        .secret_key
-        .map(|sk| sk.as_secret_bytes())
-        .unwrap_or(keypair.pubkey.bytes());
-    let hex_key = hex::encode(key_input);
-    let input = format!("{hex_key}notedeck_dave_user_id");
-    hex::encode(Sha256::digest(input))
 }
 
 impl Dave {
@@ -1087,7 +1076,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     pub fn add_user_message_for_session(
         &mut self,
         sid: SessionId,
-        app_ctx: &AppContext,
+        host: &HostCtx<'_>,
         user_text: String,
         images: Vec<ImageAttachment>,
     ) -> bool {
@@ -1095,8 +1084,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return false;
         };
 
-        let sk = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair());
-        record_user_message(session, app_ctx.ndb, sk.as_ref(), user_text, images);
+        record_user_message(session, host.ndb, host.sk(), user_text, images);
 
         // Remote sessions: the event above publishes it to the host; there's no
         // local backend to send it to.
@@ -1117,12 +1105,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext) {
+        let host = HostCtx::from_app(app_ctx);
         // Check for /cd command first (agentic only)
-        let sk = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair());
         let cd_result = self
             .session_manager
             .get_active_mut()
-            .and_then(|session| update::handle_cd_command(session, app_ctx.ndb, &sk));
+            .and_then(|session| update::handle_cd_command(session, host.ndb, &host.secret_key));
 
         // If /cd command was processed, add to recent directories
         if let Some(Ok(path)) = cd_result {
@@ -1156,13 +1144,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         };
         let user_text = std::mem::take(&mut session.input);
         let images = std::mem::take(&mut session.pending_images);
-        if self.add_user_message_for_session(sid, app_ctx, user_text, images) {
-            self.send_user_message_for(sid, app_ctx, app_ctx.waker);
+        if self.add_user_message_for_session(sid, &host, user_text, images) {
+            self.send_user_message_for(sid, &host);
         }
     }
 
     /// Send a message for a specific session by ID
-    fn send_user_message_for(&mut self, sid: SessionId, app_ctx: &AppContext, waker: &Waker) {
+    fn send_user_message_for(&mut self, sid: SessionId, host: &HostCtx<'_>) {
         let Some(session) = self.session_manager.get_mut(sid) else {
             return;
         };
@@ -1174,15 +1162,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         }
 
-        let account = app_ctx.accounts.get_selected_account();
-        let sk = secret_key_bytes(account.keypair());
         let ctx = DispatchCtx {
-            ndb: app_ctx.ndb,
-            secret_key: sk.as_ref(),
-            user_id: calculate_user_id(account.keypair()),
+            host,
             tools: self.tools.clone(),
             session_env: &self.settings.session_env,
-            waker,
         };
         dispatch_turn(
             session,
@@ -1223,6 +1206,12 @@ impl notedeck::App for Dave {
         // mut-borrowed elsewhere.
         let waker = ctx.waker;
 
+        // What the per-frame work below needs from the host, built once. It
+        // holds its own handle on ndb (a refcount bump) rather than a borrow of
+        // `ctx`, which is mut-borrowed between its uses.
+        let ndb = ctx.ndb.clone();
+        let host = HostCtx::new(&ndb, ctx.accounts.get_selected_account().keypair(), waker);
+
         // Ensure the background session-restore worker is running (idempotent).
         self.session_restore_loader
             .start(waker.clone(), ctx.ndb.clone());
@@ -1230,7 +1219,7 @@ impl notedeck::App for Dave {
         // Focus a session whose inline chip was clicked (or that was opened by
         // URI) in another app, then send it the open's message, if any.
         if let Some(opened) = self.process_pending_open(ctx.ndb) {
-            self.deliver_open_message(opened, ctx);
+            self.deliver_open_message(opened, &host);
         }
         self.ensure_pns_local_state(ctx);
         // The account's inbound PNS 1080 sync (and its settle signal, read via
@@ -1245,7 +1234,7 @@ impl notedeck::App for Dave {
         let pending = std::mem::take(&mut self.pending_summaries);
         for note_id in pending {
             if let Some(sid) = self.build_summary_session(ctx.ndb, &note_id) {
-                self.send_user_message_for(sid, ctx, waker);
+                self.send_user_message_for(sid, &host);
             }
         }
 
@@ -1261,8 +1250,7 @@ impl notedeck::App for Dave {
         // Drain background-restored sessions into the manager (a few per frame).
         // Replaying what the poll dropped before a session existed can yield
         // remote user messages, dispatched below with the poll's.
-        let sk_bytes = secret_key_bytes(ctx.accounts.get_selected_account().keypair());
-        let restored_user_msgs = self.drain_session_restore(ctx.ndb, sk_bytes.as_ref(), ctx.waker);
+        let restored_user_msgs = self.drain_session_restore(&host);
 
         // Advance the shared inline-session cache backing `agentium:` chips.
         self.pump_session_cache(ctx);
@@ -1272,7 +1260,7 @@ impl notedeck::App for Dave {
         // dispatch it to the backend now (we hold the egui context it needs).
         let spawned_with_prompt = self.poll_session_command_events(ctx);
         for sid in spawned_with_prompt {
-            self.send_user_message_for(sid, ctx, waker);
+            self.send_user_message_for(sid, &host);
         }
 
         // Poll for live run-config updates from PNS relay
@@ -1284,8 +1272,7 @@ impl notedeck::App for Dave {
         // the message is already in chat, so it will be included when the
         // current stream finishes and we re-dispatch.
         let mut fan_out_keys: Vec<NoteKey> = Vec::new();
-        let remote_user_msgs =
-            self.poll_remote_conversation_events(ctx.ndb, sk_bytes.as_ref(), &mut fan_out_keys);
+        let remote_user_msgs = self.poll_remote_conversation_events(&host, &mut fan_out_keys);
 
         // Re-broadcast each freshly-arrived conversation envelope to the account's
         // private relays it hasn't reached yet. This is the outbound half of
@@ -1324,7 +1311,7 @@ impl notedeck::App for Dave {
                 .get(sid)
                 .is_some_and(|s| s.should_dispatch_remote_message());
             if should_dispatch {
-                self.send_user_message_for(sid, ctx, waker);
+                self.send_user_message_for(sid, &host);
             }
         }
 
@@ -1338,7 +1325,7 @@ impl notedeck::App for Dave {
         let ProcessEventsResult {
             needs_send: sessions_needing_send,
             needs_compact: sessions_needing_compact,
-        } = self.process_events(ctx);
+        } = self.process_events(&host);
 
         // Build permission response events from remote sessions
         self.publish_pending_perm_responses(ctx);
@@ -1438,11 +1425,10 @@ impl notedeck::App for Dave {
 
         // Update all session statuses after processing events, publishing the
         // responses of any permissions the runtime allowlist just resolved
-        let sk = secret_key_bytes(ctx.accounts.get_selected_account().keypair());
         publish::update_statuses_and_publish_auto_resolved(
             &mut self.session_manager,
-            ctx.ndb,
-            sk.as_ref(),
+            host.ndb,
+            host.sk(),
         );
 
         // Publish kind-31988 state events for sessions whose status changed
@@ -1521,7 +1507,7 @@ impl notedeck::App for Dave {
                 "Session {}: dispatching queued message via send_user_message_for",
                 session_id
             );
-            self.send_user_message_for(session_id, ctx, waker);
+            self.send_user_message_for(session_id, &host);
         }
 
         // Dispatch compact queries for sessions in compact-and-proceed flow

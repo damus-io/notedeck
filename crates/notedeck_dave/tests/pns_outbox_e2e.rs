@@ -19,7 +19,7 @@ use nostr_relay_builder::prelude::{MemoryDatabase, NostrEventsDatabase};
 use nostrdb::{Filter, FilterBuilder, NoteBuilder, Transaction};
 use nostrdb_net::FullKeypair;
 use notedeck::{App, AppContext, AppResponse, DataPathType, RelayAction};
-use notedeck_dave::{session_events, session_loader, AiProvider, Dave, DaveSettings};
+use notedeck_dave::{session_events, session_loader, AiProvider, Dave, DaveSettings, HostCtx};
 use notedeck_testing::{
     fixtures::{
         add_account_to_device, nostr_pubkey, process_relay_action_on_device,
@@ -78,9 +78,10 @@ impl ControllableDave {
         while let Ok(command) = self.command_rx.try_recv() {
             match command {
                 ControllableDaveCommand::AddUserMessage { session_id, text } => {
+                    let host = HostCtx::from_app(ctx);
                     let _ =
                         self.dave
-                            .add_user_message_for_session(session_id, ctx, text, Vec::new());
+                            .add_user_message_for_session(session_id, &host, text, Vec::new());
                 }
             }
         }

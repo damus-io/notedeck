@@ -3,7 +3,7 @@
 //! our own spawn/resume commands for a remote host.
 
 use crate::backend::{BackendType, Model};
-use crate::{session_events, session_loader, update, Dave, DaveOverlay, SessionId};
+use crate::{session_events, session_loader, update, Dave, DaveOverlay, HostCtx, SessionId};
 use claude_agent_sdk_rs::PermissionMode;
 use nostrdb::Transaction;
 use notedeck::AppContext;
@@ -468,9 +468,10 @@ impl Dave {
         // returns whether the backend should be dispatched now (true for a fresh,
         // idle local session). Actual dispatch is the caller's job — it holds the
         // `egui::Context`.
+        let host = HostCtx::from_app(ctx);
         let mut needs_dispatch = Vec::new();
         for (sid, prompt) in first_prompts {
-            if self.add_user_message_for_session(sid, ctx, prompt, Vec::new()) {
+            if self.add_user_message_for_session(sid, &host, prompt, Vec::new()) {
                 needs_dispatch.push(sid);
             }
         }

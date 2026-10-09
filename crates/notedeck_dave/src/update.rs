@@ -2670,25 +2670,25 @@ mod tests {
         }
     }
 
-    /// Dispatch a turn exactly the way `Dave::send_user_message_for` does: only
-    /// install a receiver when the backend minted one, because a persistent
-    /// backend's `None` means "you already hold the session's channel".
+    /// Dispatch a turn the way `Dave::send_user_message_for` does, through
+    /// the real [`stream_events::dispatch_turn`](crate::stream_events::dispatch_turn)
+    /// on a throwaway host: it installs a receiver only when the backend minted
+    /// one, because a persistent backend's `None` means "you already hold the
+    /// session's channel".
     fn dispatch_turn(session: &mut ChatSession, backend: &dyn crate::backend::AiBackend) {
-        let (rx, _handle) = backend.stream_request(
-            vec![],
-            std::sync::Arc::new(std::collections::HashMap::new()),
-            None,
-            String::new(),
-            format!("dave-session-{}", session.id),
-            std::collections::BTreeMap::new(),
-            None,
-            None,
-            PermissionMode::Default,
-            notedeck::Waker::noop(),
-        );
-        if let Some(rx) = rx {
-            session.incoming_tokens = Some(rx);
-        }
+        use crate::stream_events::{DispatchCtx, HostCtx};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb =
+            nostrdb::Ndb::new(dir.path().to_str().unwrap(), &crate::tests::test_config()).unwrap();
+        let waker = notedeck::Waker::noop();
+        let host = HostCtx::signing(&ndb, &crate::tests::test_secret_key(), &waker);
+        let ctx = DispatchCtx {
+            host: &host,
+            tools: Default::default(),
+            session_env: &Default::default(),
+        };
+        crate::stream_events::dispatch_turn(session, backend, &ctx);
     }
 
     /// Set up a local agentic session mid-turn on a persistent-stream backend.

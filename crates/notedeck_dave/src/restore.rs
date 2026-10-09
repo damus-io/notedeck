@@ -6,13 +6,14 @@
 use crate::agent_status::AgentStatus;
 use crate::backend::BackendType;
 use crate::conversation_feed::{self, ConversationFeed};
+use crate::stream_events::HostCtx;
 use crate::{
-    focus_queue, get_backend, secret_key_bytes, session, session_converter, session_events,
-    session_loader, session_restore_loader, update, AiMode, ChatSession, Dave, DaveOverlay,
-    SessionId,
+    conversation, focus_queue, get_backend, secret_key_bytes, session, session_converter,
+    session_events, session_loader, session_restore_loader, update, AiMode, ChatSession, Dave,
+    DaveOverlay, SessionId,
 };
 use nostrdb::{NoteKey, Subscription, Transaction};
-use notedeck::{AppContext, Waker};
+use notedeck::AppContext;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -240,15 +241,15 @@ impl Dave {
     /// A session that can't take input yet (see
     /// [`open_message_delivery`](Self::open_message_delivery)) gets the message in
     /// its input draft instead, so it is never lost silently.
-    pub(crate) fn deliver_open_message(&mut self, opened: OpenedSession, app_ctx: &AppContext) {
+    pub(crate) fn deliver_open_message(&mut self, opened: OpenedSession, host: &HostCtx<'_>) {
         let Some(msg) = opened.msg else {
             return;
         };
         let sid = opened.session;
         match self.open_message_delivery(sid, opened.was_live) {
             OpenMessageDelivery::Send => {
-                if self.add_user_message_for_session(sid, app_ctx, msg, Vec::new()) {
-                    self.send_user_message_for(sid, app_ctx, app_ctx.waker);
+                if self.add_user_message_for_session(sid, host, msg, Vec::new()) {
+                    self.send_user_message_for(sid, host);
                 }
             }
             OpenMessageDelivery::Draft(reason) => {
@@ -347,12 +348,8 @@ impl Dave {
     /// every note is history or goes through the poll's processing, once.
     /// Returns the remote user messages that replay produced, for the caller
     /// to dispatch as it does the poll's.
-    pub(crate) fn drain_session_restore(
-        &mut self,
-        ndb: &nostrdb::Ndb,
-        secret_key: Option<&[u8; 32]>,
-        waker: &Waker,
-    ) -> Vec<(SessionId, String)> {
+    pub(crate) fn drain_session_restore(&mut self, host: &HostCtx<'_>) -> Vec<(SessionId, String)> {
+        let (ndb, waker) = (host.ndb, host.waker);
         // Messages tagged with a different account are stale (the user switched
         // accounts while an in-flight restore was streaming); drop them.
         let current = self.pns_local_state.as_ref().map(|state| state.account);
@@ -483,8 +480,8 @@ impl Dave {
         }
 
         let remote_user_messages = match current {
-            Some(account) if !replays.is_empty() => {
-                self.deliver_conversation_notes(ndb, secret_key, &account, replays)
+            Some(_) if !replays.is_empty() => {
+                conversation::deliver_notes(&mut self.session_manager, host, replays)
             }
             _ => Vec::new(),
         };
@@ -1222,12 +1219,12 @@ impl Dave {
         &mut self,
         ndb: &nostrdb::Ndb,
         account: nostrdb_net::Pubkey,
-    ) -> Waker {
+    ) -> notedeck::Waker {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let wakes = std::sync::Arc::new(AtomicUsize::new(0));
         let counter = wakes.clone();
-        let waker = Waker::new(move || {
+        let waker = notedeck::Waker::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
         });
         if let Some(feed) = &mut self.conversation_feed {
@@ -1255,7 +1252,7 @@ mod tests {
     use crate::tests::{test_config, test_dave, test_secret_key};
     use crate::SessionManager;
     use nostrdb::{IngestMetadata, Ndb};
-    use notedeck::DataPath;
+    use notedeck::{DataPath, Waker};
     use std::collections::HashSet;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -1564,9 +1561,11 @@ mod tests {
         /// envelopes it collected for fan-out.
         fn poll(&mut self) -> (Vec<(SessionId, String)>, Vec<NoteKey>) {
             let mut fan_out = Vec::new();
-            let msgs =
-                self.dave
-                    .poll_remote_conversation_events(&self.ndb, Some(&self.sk), &mut fan_out);
+            let waker = Waker::noop();
+            let host = HostCtx::signing(&self.ndb, &self.sk, &waker);
+            let msgs = self
+                .dave
+                .poll_remote_conversation_events(&host, &mut fan_out);
             (msgs, fan_out)
         }
 
@@ -1580,7 +1579,7 @@ mod tests {
         /// Drain everything the worker sent, as `update` does each frame.
         fn drain(&mut self, waker: &notedeck::Waker) -> Vec<(SessionId, String)> {
             self.dave
-                .drain_session_restore(&self.ndb, Some(&self.sk), waker)
+                .drain_session_restore(&HostCtx::signing(&self.ndb, &self.sk, waker))
         }
 
         fn session_for(&self, sid: &str) -> &ChatSession {
@@ -1899,7 +1898,7 @@ mod tests {
         // materialized, asserting focus stays put on each frame.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while dave.session_manager.len() < SEEDED + 1 {
-            dave.drain_session_restore(&ndb, Some(&sk), &waker);
+            dave.drain_session_restore(&HostCtx::signing(&ndb, &sk, &waker));
             assert_eq!(
                 dave.session_manager.active_id(),
                 Some(user_sid),
@@ -2194,22 +2193,6 @@ mod tests {
         requests
     }
 
-    /// A notedeck host whose selected account signs with `sk`, so the send path
-    /// (which needs a full `AppContext`) runs exactly as in the app.
-    fn test_host(dir: &std::path::Path, sk: &[u8; 32]) -> notedeck::Notedeck {
-        let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-        let mut host = notedeck::Notedeck::init(&egui::Context::default(), dir, &args);
-        let full = nostrdb_net::FullKeypair::from_secret_bytes(sk).unwrap();
-        {
-            let mut app_ctx = host.app_context();
-            let _ = app_ctx
-                .accounts
-                .add_account(nostrdb_net::Keypair::from_secret(full.secret_key.clone()));
-            app_ctx.select_account(&full.pubkey);
-        }
-        host
-    }
-
     /// Ingest `event` into `ndb` and wait until it is queryable.
     async fn ingest(ndb: &Ndb, event: &session_events::BuiltEvent) {
         let filter = nostrdb::Filter::new().build();
@@ -2286,17 +2269,18 @@ mod tests {
             .event_session_id()
             .to_owned();
 
-        let host_dir = TempDir::new().unwrap();
-        let mut host = test_host(host_dir.path(), &sk);
-        let app_ctx = host.app_context();
+        let ndb_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let waker = Waker::noop();
+        let host = HostCtx::signing(&ndb, &sk, &waker);
         let state = state_event(&event_sid, &dave.hostname.clone(), "idle", &sk);
-        ingest(app_ctx.ndb, &state).await;
+        ingest(&ndb, &state).await;
 
         let msg = "launch a /code-review for the work done in this session";
         dave.open_with_message(nostrdb_net::NoteId::new(state.note_id), Some(msg.into()));
         for _frame in 0..2 {
-            if let Some(opened) = dave.process_pending_open(app_ctx.ndb) {
-                dave.deliver_open_message(opened, &app_ctx);
+            if let Some(opened) = dave.process_pending_open(&ndb) {
+                dave.deliver_open_message(opened, &host);
             }
         }
 
@@ -2331,20 +2315,21 @@ mod tests {
             has_secret_key: true,
         });
 
-        let host_dir = TempDir::new().unwrap();
-        let mut host = test_host(host_dir.path(), &sk);
-        let app_ctx = host.app_context();
+        let ndb_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let waker = Waker::noop();
+        let host = HostCtx::signing(&ndb, &sk, &waker);
         let tomb = state_event("dead-sess", &dave.hostname.clone(), "deleted", &sk);
-        ingest(app_ctx.ndb, &tomb).await;
+        ingest(&ndb, &tomb).await;
 
         let msg = "launch a /code-review";
         dave.open_with_message(nostrdb_net::NoteId::new(tomb.note_id), Some(msg.into()));
         let opened = dave
-            .process_pending_open(app_ctx.ndb)
+            .process_pending_open(&ndb)
             .expect("the tombstone is reopened");
         assert!(!opened.was_live, "a reopened session isn't live yet");
         let sid = opened.session;
-        dave.deliver_open_message(opened, &app_ctx);
+        dave.deliver_open_message(opened, &host);
 
         let session = dave.session_manager.get(sid).unwrap();
         assert_eq!(session.input, msg, "the message waits in the draft");

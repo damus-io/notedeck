@@ -17,6 +17,7 @@ use crate::{
     SessionInfo, SubagentInfo, ToolCall, ToolCalls, ToolResponse, ToolResponses,
 };
 use nostrdb::Transaction;
+use nostrdb_net::KeypairUnowned;
 use notedeck::{AppContext, Waker};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -29,17 +30,85 @@ pub(crate) struct ProcessEventsResult {
     pub(crate) needs_compact: HashSet<SessionId>,
 }
 
+/// What Dave's per-frame work needs from the host: where events go, who signs
+/// them, and how to wake.
+///
+/// [`Dave::update`](notedeck::App::update) builds one from its
+/// [`AppContext`] each frame and hands it down; a test builds one over its own
+/// ndb and key ([`HostCtx::new`]) and drives the same code with no
+/// `AppContext` at all.
+pub struct HostCtx<'a> {
+    /// Where published events are PNS-ingested (the host fans them out).
+    pub(crate) ndb: &'a nostrdb::Ndb,
+    /// The account's signing key, copied out (an `AppContext` only lends it);
+    /// `None` publishes nothing.
+    pub(crate) secret_key: Option<[u8; 32]>,
+    /// The account whose notes Dave folds and reconciles against.
+    pub(crate) author: nostrdb_net::Pubkey,
+    /// How a backend's worker asks for another pass when it has output.
+    pub(crate) waker: &'a Waker,
+}
+
+impl<'a> HostCtx<'a> {
+    /// A host acting as `keypair`'s account over `ndb`.
+    pub fn new(ndb: &'a nostrdb::Ndb, keypair: KeypairUnowned<'_>, waker: &'a Waker) -> Self {
+        let author = *keypair.pubkey;
+        HostCtx {
+            ndb,
+            secret_key: secret_key_bytes(keypair),
+            author,
+            waker,
+        }
+    }
+
+    /// The app host's view: its ndb and waker, acting as the selected account.
+    pub fn from_app(app: &'a AppContext<'_>) -> Self {
+        Self::new(
+            app.ndb,
+            app.accounts.get_selected_account().keypair(),
+            app.waker,
+        )
+    }
+
+    /// A host signing as `secret_key`'s account, for tests that drive Dave's
+    /// per-frame work over their own ndb.
+    #[cfg(test)]
+    pub(crate) fn signing(ndb: &'a nostrdb::Ndb, secret_key: &[u8; 32], waker: &'a Waker) -> Self {
+        let keypair = nostrdb_net::FullKeypair::from_secret_bytes(secret_key)
+            .expect("a valid secret key")
+            .to_keypair();
+        Self::new(ndb, (&keypair).into(), waker)
+    }
+
+    /// The signing key, if the account has one.
+    pub(crate) fn sk(&self) -> Option<&[u8; 32]> {
+        self.secret_key.as_ref()
+    }
+
+    /// The account's anonymous id, which backends pass to the provider: a
+    /// hash of the secret key, or of the pubkey for a watch-only account.
+    pub(crate) fn user_id(&self) -> String {
+        use sha2::{Digest, Sha256};
+        // pubkeys have degraded privacy, don't do that
+        let key_input = self
+            .secret_key
+            .as_ref()
+            .map(|sk| sk.as_slice())
+            .unwrap_or(self.author.bytes());
+        let hex_key = hex::encode(key_input);
+        let input = format!("{hex_key}notedeck_dave_user_id");
+        hex::encode(Sha256::digest(input))
+    }
+}
+
 impl Dave {
     /// Process incoming tokens from the ai backend for ALL sessions.
-    pub(crate) fn process_events(&mut self, app_ctx: &AppContext) -> ProcessEventsResult {
+    pub(crate) fn process_events(&mut self, host: &HostCtx<'_>) -> ProcessEventsResult {
         let mut needs_send: HashSet<SessionId> = HashSet::new();
         let mut needs_compact: HashSet<SessionId> = HashSet::new();
         // Sessions whose turn ended this drain, to reconcile once it's over.
         let mut ended: Vec<SessionId> = Vec::new();
         let active_id = self.session_manager.active_id();
-
-        // Extract secret key once for live event generation
-        let secret_key = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair());
 
         // Get all session IDs to process
         let session_ids = self.session_manager.session_ids();
@@ -67,8 +136,7 @@ impl Dave {
                 .map(|b| b.persistent_stream())
                 .unwrap_or(false);
             let ctx = ApplyCtx {
-                ndb: app_ctx.ndb,
-                secret_key: &secret_key,
+                host,
                 persistent_stream,
             };
             let mut turn_ended = false;
@@ -107,8 +175,7 @@ impl Dave {
                         handle_stream_end(
                             session,
                             session_id,
-                            &secret_key,
-                            app_ctx.ndb,
+                            host,
                             &mut needs_send,
                             &mut needs_compact,
                         );
@@ -125,8 +192,7 @@ impl Dave {
                             handle_stream_end(
                                 session,
                                 session_id,
-                                &secret_key,
-                                app_ctx.ndb,
+                                host,
                                 &mut needs_send,
                                 &mut needs_compact,
                             );
@@ -146,14 +212,12 @@ impl Dave {
             }
         }
 
-        let author = *app_ctx.accounts.selected_account_pubkey();
         reconcile_ended_turns(
             &mut self.session_manager,
             &ended,
             &needs_send,
             &needs_compact,
-            app_ctx.ndb,
-            &author,
+            host,
         );
 
         ProcessEventsResult {
@@ -180,27 +244,22 @@ pub(crate) fn reconcile_ended_turns(
     ended: &[SessionId],
     needs_send: &HashSet<SessionId>,
     needs_compact: &HashSet<SessionId>,
-    ndb: &nostrdb::Ndb,
-    author: &nostrdb_net::Pubkey,
+    host: &HostCtx<'_>,
 ) {
     for &session_id in ended {
         if needs_send.contains(&session_id) || needs_compact.contains(&session_id) {
             continue;
         }
         if let Some(session) = sessions.get_mut(session_id) {
-            reconcile::maybe_reconcile_at_rest(session, ndb, author);
+            reconcile::maybe_reconcile_at_rest(session, host.ndb, &host.author);
         }
     }
 }
 
-/// What [`apply_response`] needs from outside the session: the database the
-/// live events are ingested into, the key they are signed with, and how the
-/// backend ends a turn.
+/// What [`apply_response`] needs from outside the session: the host its live
+/// events are ingested into and signed by, and how the backend ends a turn.
 pub(crate) struct ApplyCtx<'a> {
-    /// Where published live events are PNS-ingested (the host fans them out).
-    pub(crate) ndb: &'a nostrdb::Ndb,
-    /// The account's signing key; `None` publishes nothing.
-    pub(crate) secret_key: &'a Option<[u8; 32]>,
+    pub(crate) host: &'a HostCtx<'a>,
     /// Whether the backend keeps one channel for the whole session, so a turn
     /// ends on an explicit `QueryComplete` rather than a disconnect.
     pub(crate) persistent_stream: bool,
@@ -237,13 +296,13 @@ pub(crate) fn apply_response(
     // that segment first, so it is stamped ahead of this response's own note
     // and sorts in its place in the turn.
     if closes_assistant_segment(session, &res) {
-        flush_open_assistant(session, ctx.ndb, ctx.secret_key);
+        flush_open_assistant(session, ctx.host.ndb, &ctx.host.secret_key);
     }
 
     // Publish the live event for this response. Centralised here so every
     // response type that needs relay propagation is handled in one place.
-    if let Some(sk) = ctx.secret_key {
-        publish_response(session, &res, ctx.ndb, sk);
+    if let Some(sk) = ctx.host.sk() {
+        publish_response(session, &res, ctx.host.ndb, sk);
     }
 
     // Backend produced real content — transition dispatch
@@ -270,13 +329,13 @@ pub(crate) fn apply_response(
             session.append_token(&token);
         }
         DaveApiResponse::ToolCalls(toolcalls) => {
-            outcome.needs_send = handle_tool_calls(session, &toolcalls, ctx.ndb);
+            outcome.needs_send = handle_tool_calls(session, &toolcalls, ctx.host.ndb);
         }
         DaveApiResponse::ToolRunning(running) => {
             session.push_running_tool(running);
         }
         DaveApiResponse::PermissionRequest(pending) => {
-            handle_permission_request(session, pending, ctx.secret_key, ctx.ndb);
+            handle_permission_request(session, pending, &ctx.host.secret_key, ctx.host.ndb);
         }
         DaveApiResponse::ToolResult(result) => {
             handle_tool_result(session, result);
@@ -287,18 +346,18 @@ pub(crate) fn apply_response(
         DaveApiResponse::SubagentSpawned(subagent) => {
             let task_id = subagent.task_id.clone();
             handle_subagent_spawned(session, subagent);
-            publish_subagent(session, &task_id, ctx.secret_key, ctx.ndb);
+            publish_subagent(session, &task_id, &ctx.host.secret_key, ctx.host.ndb);
         }
         DaveApiResponse::SubagentOutput { task_id, output } => {
             session.update_subagent_output(&task_id, &output);
         }
         DaveApiResponse::SubagentCompleted { task_id, result } => {
             session.complete_subagent(&task_id, &result);
-            publish_subagent(session, &task_id, ctx.secret_key, ctx.ndb);
+            publish_subagent(session, &task_id, &ctx.host.secret_key, ctx.host.ndb);
         }
         DaveApiResponse::SubagentFailed { task_id, error } => {
             session.fail_subagent(&task_id, &error);
-            publish_subagent(session, &task_id, ctx.secret_key, ctx.ndb);
+            publish_subagent(session, &task_id, &ctx.host.secret_key, ctx.host.ndb);
         }
         DaveApiResponse::CompactionStarted => {
             if let Some(agentic) = &mut session.agentic {
@@ -791,11 +850,11 @@ fn handle_session_info(session: &mut session::ChatSession, info: SessionInfo) {
 pub(crate) fn handle_stream_end(
     session: &mut session::ChatSession,
     session_id: SessionId,
-    secret_key: &Option<[u8; 32]>,
-    ndb: &nostrdb::Ndb,
+    host: &HostCtx<'_>,
     needs_send: &mut HashSet<SessionId>,
     needs_compact: &mut HashSet<SessionId>,
 ) {
+    let (ndb, secret_key) = (host.ndb, &host.secret_key);
     // Publish the segment the turn ended on. A turn that wrote no text since
     // its last row publishes nothing here — never an earlier turn's text.
     flush_open_assistant(session, ndb, secret_key);
@@ -949,20 +1008,16 @@ pub(crate) fn dispatch_compact_for_session(
     }
 }
 
-/// What starting a turn takes from outside the session: where its dispatch
-/// markers go, and what the backend is handed alongside the chat.
+/// What starting a turn takes from outside the session: the host its dispatch
+/// markers go to (and whose account and waker the backend is handed), and
+/// what else the backend gets alongside the chat.
 pub(crate) struct DispatchCtx<'a> {
-    pub(crate) ndb: &'a nostrdb::Ndb,
-    /// Signs the dispatch markers; `None` publishes none.
-    pub(crate) secret_key: Option<&'a [u8; 32]>,
-    /// The account's hashed id, which backends pass to the provider.
-    pub(crate) user_id: String,
+    pub(crate) host: &'a HostCtx<'a>,
     pub(crate) tools: Arc<HashMap<String, Tool>>,
     /// The configured extra environment for subprocess backends; the
     /// session's agentium identity is layered over it
     /// ([`session_env`](crate::backend::shared::session_env)).
     pub(crate) session_env: &'a BTreeMap<String, String>,
-    pub(crate) waker: &'a Waker,
 }
 
 /// Start a turn: hand `session`'s trailing user message(s) to `backend`.
@@ -979,7 +1034,7 @@ pub(crate) fn dispatch_turn(
     backend: &dyn AiBackend,
     ctx: &DispatchCtx<'_>,
 ) {
-    record_dispatch(session, ctx.ndb, ctx.secret_key);
+    record_dispatch(session, ctx.host.ndb, ctx.host.sk());
 
     let session_id = format!("dave-session-{}", session.id);
     // The stable kind-31988 d-tag (UUID), distinct from the ephemeral
@@ -1012,13 +1067,13 @@ pub(crate) fn dispatch_turn(
         messages,
         ctx.tools.clone(),
         model_name,
-        ctx.user_id.clone(),
+        ctx.host.user_id(),
         session_id,
         session_env,
         cwd,
         resume_session_id,
         permission_mode,
-        ctx.waker.clone(),
+        ctx.host.waker.clone(),
     );
     if let Some(rx) = rx {
         session.incoming_tokens = Some(rx);
@@ -1045,12 +1100,12 @@ mod tests {
             .and_then(|t| t[1].as_str())
     }
 
-    /// An agentic session, its ndb and a signing key, for driving responses
-    /// through [`apply_response`].
+    /// An agentic session and the host it runs on (its ndb, signing as
+    /// [`test_secret_key`]), for driving responses through [`apply_response`].
     struct Fixture {
         session: session::ChatSession,
         ndb: Ndb,
-        secret_key: Option<[u8; 32]>,
+        waker: Waker,
         _dir: TempDir,
     }
 
@@ -1067,29 +1122,33 @@ mod tests {
             Fixture {
                 session,
                 ndb,
-                secret_key: Some(test_secret_key()),
+                waker: Waker::noop(),
                 _dir: dir,
             }
         }
 
+        /// The host the session runs on.
+        fn host<'a>(ndb: &'a Ndb, waker: &'a Waker) -> HostCtx<'a> {
+            HostCtx::signing(ndb, &test_secret_key(), waker)
+        }
+
         fn apply(&mut self, res: DaveApiResponse) {
+            let host = Self::host(&self.ndb, &self.waker);
             let ctx = ApplyCtx {
-                ndb: &self.ndb,
-                secret_key: &self.secret_key,
+                host: &host,
                 persistent_stream: true,
             };
             apply_response(&mut self.session, 1, res, &ctx);
         }
 
         fn stream_end(&mut self) {
-            handle_stream_end(
-                &mut self.session,
-                1,
-                &self.secret_key,
-                &self.ndb,
-                &mut HashSet::new(),
-                &mut HashSet::new(),
-            );
+            self.stream_end_into(&mut HashSet::new());
+        }
+
+        /// End the turn, collecting a redispatch into `needs_send`.
+        fn stream_end_into(&mut self, needs_send: &mut HashSet<SessionId>) {
+            let host = Self::host(&self.ndb, &self.waker);
+            handle_stream_end(&mut self.session, 1, &host, needs_send, &mut HashSet::new());
         }
 
         /// How many notes the session has published so far.
@@ -1119,6 +1178,40 @@ mod tests {
             file_update: None,
             tool_use_id: tool_use_id.map(str::to_string),
         }
+    }
+
+    /// The anonymous user id as Dave derived it from the selected account's
+    /// keypair before [`HostCtx`], kept here to pin the id providers see.
+    fn calculate_user_id(keypair: KeypairUnowned) -> String {
+        use sha2::{Digest, Sha256};
+        let key_input = keypair
+            .secret_key
+            .map(|sk| sk.as_secret_bytes())
+            .unwrap_or(keypair.pubkey.bytes());
+        let hex_key = hex::encode(key_input);
+        let input = format!("{hex_key}notedeck_dave_user_id");
+        hex::encode(Sha256::digest(input))
+    }
+
+    /// A host hands backends the same user id the account's keypair always
+    /// gave: the secret key's hash, or the pubkey's for a watch-only account.
+    #[test]
+    fn host_user_id_is_the_keypairs() {
+        let f = Fixture::new();
+        let full = nostrdb_net::FullKeypair::from_secret_bytes(&test_secret_key())
+            .unwrap()
+            .to_keypair();
+        let watch_only = nostrdb_net::Keypair::only_pubkey(full.pubkey);
+
+        for keypair in [&full, &watch_only] {
+            let host = HostCtx::new(&f.ndb, keypair.into(), &f.waker);
+            assert_eq!(host.user_id(), calculate_user_id(keypair.into()));
+        }
+        assert_ne!(
+            HostCtx::new(&f.ndb, (&full).into(), &f.waker).user_id(),
+            HostCtx::new(&f.ndb, (&watch_only).into(), &f.waker).user_id(),
+            "a watch-only account hashes its pubkey, not a key it lacks"
+        );
     }
 
     /// A turn that writes no text publishes no assistant note — before the
@@ -1205,14 +1298,7 @@ mod tests {
             .push(Message::User("queued".to_string().into()));
 
         let mut needs_send = HashSet::new();
-        handle_stream_end(
-            &mut f.session,
-            1,
-            &f.secret_key,
-            &f.ndb,
-            &mut needs_send,
-            &mut HashSet::new(),
-        );
+        f.stream_end_into(&mut needs_send);
 
         assert!(
             needs_send.contains(&1),

@@ -28,8 +28,8 @@ use crate::backend::shared::prepare_prompt_and_images;
 use crate::backend::{AiBackend, BackendType};
 use crate::config::AiMode;
 use crate::conversation::{
-    handle_remote_permission_response, process_conversation_notes, rebuild_chat_from_fold,
-    subscribe_conversation_events, ProcessedNotes,
+    deliver_notes, handle_remote_permission_response, process_conversation_notes,
+    rebuild_chat_from_fold, subscribe_conversation_events, ProcessedNotes,
 };
 use crate::conversation_feed::ConversationFeed;
 use crate::messages::{
@@ -45,6 +45,7 @@ use crate::reconcile::{maybe_reconcile_at_rest, Drift, ReconcileOutcome};
 use crate::session::{ChatSession, CompactIntent, SessionId, SessionManager, SessionSource};
 use crate::stream_events::{
     apply_response, dispatch_turn, handle_stream_end, reconcile_ended_turns, ApplyCtx, DispatchCtx,
+    HostCtx,
 };
 use crate::tests::{test_config, test_dave, test_secret_key};
 use crate::tools::{Tool, ToolResponses};
@@ -127,6 +128,8 @@ struct Host {
     sid: SessionId,
     ndb: Ndb,
     secret_key: Option<[u8; 32]>,
+    /// The waker the host hands its backend; nothing listens.
+    waker: Waker,
     /// Response channels of the permission requests the backend sent, kept
     /// open so resolving a request does not log a closed-channel error.
     permission_rxs: Vec<oneshot::Receiver<PermissionResponse>>,
@@ -168,6 +171,7 @@ impl Host {
             sid,
             ndb,
             secret_key: Some(sk),
+            waker: Waker::noop(),
             permission_rxs: Vec::new(),
             needs_send: HashSet::new(),
             indexed,
@@ -182,36 +186,35 @@ impl Host {
         self.sessions.get_mut(self.sid).unwrap()
     }
 
+    /// What the app's update loop hands Dave's per-frame work, over this
+    /// host's ndb and key. A free fn of the fields, so it can be held while a
+    /// session is borrowed out of `sessions`.
+    fn host_ctx<'a>(ndb: &'a Ndb, secret_key: &Option<[u8; 32]>, waker: &'a Waker) -> HostCtx<'a> {
+        HostCtx::signing(ndb, secret_key.as_ref().unwrap(), waker)
+    }
+
     /// Apply one scripted step through the host's real code path.
     fn apply(&mut self, step: Step) {
         let sid = self.sid;
+        let host = Self::host_ctx(&self.ndb, &self.secret_key, &self.waker);
         let session = self.sessions.get_mut(sid).unwrap();
         match step {
-            Step::Send(text) => record_user_message(
-                session,
-                &self.ndb,
-                self.secret_key.as_ref(),
-                text.to_string(),
-                Vec::new(),
-            ),
+            Step::Send(text) => {
+                record_user_message(session, host.ndb, host.sk(), text.to_string(), Vec::new())
+            }
             Step::Dispatch => {
-                let waker = Waker::noop();
                 let session_env = BTreeMap::new();
                 let ctx = DispatchCtx {
-                    ndb: &self.ndb,
-                    secret_key: self.secret_key.as_ref(),
-                    user_id: String::new(),
+                    host: &host,
                     tools: Arc::default(),
                     session_env: &session_env,
-                    waker: &waker,
                 };
                 dispatch_turn(session, &ScriptBackend, &ctx);
                 self.needs_send.remove(&sid);
             }
             Step::Backend(res) => {
                 let ctx = ApplyCtx {
-                    ndb: &self.ndb,
-                    secret_key: &self.secret_key,
+                    host: &host,
                     persistent_stream: true,
                 };
                 apply_response(session, sid, res, &ctx);
@@ -220,8 +223,7 @@ impl Host {
                 let (response_tx, rx) = oneshot::channel();
                 self.permission_rxs.push(rx);
                 let ctx = ApplyCtx {
-                    ndb: &self.ndb,
-                    secret_key: &self.secret_key,
+                    host: &host,
                     persistent_stream: true,
                 };
                 let pending = PendingPermission {
@@ -238,8 +240,7 @@ impl Host {
             Step::StreamEnd => handle_stream_end(
                 session,
                 sid,
-                &self.secret_key,
-                &self.ndb,
+                &host,
                 &mut self.needs_send,
                 &mut HashSet::new(),
             ),
@@ -448,7 +449,7 @@ impl Host {
         dave.conversation_feed = Some(ConversationFeed::new(sub));
 
         let waker = dave.run_restore_worker(&self.ndb, account).await;
-        let replayed = dave.drain_session_restore(&self.ndb, Some(&sk), &waker);
+        let replayed = dave.drain_session_restore(&HostCtx::signing(&self.ndb, &sk, &waker));
         assert!(
             replayed.is_empty(),
             "the host had every note before it went down"
@@ -733,7 +734,7 @@ impl Observer {
     }
 
     /// Hand the session one poll batch, `keys`, then rebuild it if the batch
-    /// asked to, as `Dave::deliver_conversation_notes` does. `secret_key` signs
+    /// asked to, as [`deliver_notes`] does. `secret_key` signs
     /// whatever the batch's side effects publish; without one they publish
     /// nothing.
     fn poll(
@@ -2520,13 +2521,13 @@ async fn ended_turns_reconcile_unless_more_is_coming() {
     let mut host = driven(script).await;
     host.poll_own_notes();
     let sid = host.sid;
-    let author = host.author();
     let none = HashSet::new();
     let only = HashSet::from([sid]);
     let dirty = |host: &mut Host| host.session().agentic.as_ref().unwrap().fold_dirty;
 
     let end = |host: &mut Host, ended: &[SessionId], send, compact| {
-        reconcile_ended_turns(&mut host.sessions, ended, send, compact, &host.ndb, &author);
+        let ctx = Host::host_ctx(&host.ndb, &host.secret_key, &host.waker);
+        reconcile_ended_turns(&mut host.sessions, ended, send, compact, &ctx);
     };
     end(&mut host, &[], &none, &none);
     assert!(dirty(&mut host), "a session whose turn didn't end waits");
@@ -2539,7 +2540,7 @@ async fn ended_turns_reconcile_unless_more_is_coming() {
 }
 
 /// The conversation poll delivers a batch to a local session and then
-/// reconciles it (`Dave::deliver_conversation_notes`), so a turn whose last
+/// reconciles it ([`deliver_notes`]), so a turn whose last
 /// notes come back through the poll ends with the host's chat as the fold.
 #[tokio::test]
 async fn poll_delivery_reconciles_a_local_session() {
@@ -2547,7 +2548,6 @@ async fn poll_delivery_reconciles_a_local_session() {
     script.extend([token("hi"), Step::StreamEnd]);
     let mut host = driven(script).await;
     let sk = host.secret_key.unwrap();
-    let author = host.author();
     let keys: Vec<NoteKey> = {
         let txn = Transaction::new(&host.ndb).unwrap();
         host.published_note_ids()
@@ -2556,16 +2556,8 @@ async fn poll_delivery_reconciles_a_local_session() {
             .collect()
     };
 
-    let data_dir = TempDir::new().unwrap();
-    let mut dave = test_dave(&DataPath::new(data_dir.path()));
-    dave.session_manager = std::mem::take(&mut host.sessions);
-    let remote = dave.deliver_conversation_notes(
-        &host.ndb,
-        Some(&sk),
-        &author,
-        HashMap::from([(host.sid, keys)]),
-    );
-    host.sessions = std::mem::take(&mut dave.session_manager);
+    let ctx = Host::host_ctx(&host.ndb, &host.secret_key, &host.waker);
+    let remote = deliver_notes(&mut host.sessions, &ctx, HashMap::from([(host.sid, keys)]));
 
     assert!(remote.is_empty(), "the batch is the host's own notes");
     let agentic = host.session().agentic.as_ref().unwrap();
