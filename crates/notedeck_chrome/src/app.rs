@@ -418,6 +418,10 @@ impl notedeck::App for NotedeckApp {
     fn key_scopes(&self) -> &'static [&'static str] {
         self.as_app().key_scopes()
     }
+
+    fn current_ref(&self) -> Option<&str> {
+        self.as_app().current_ref()
+    }
 }
 
 impl NotedeckApp {

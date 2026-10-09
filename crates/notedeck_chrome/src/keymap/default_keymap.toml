@@ -39,10 +39,10 @@ group = "help"
 # availability: `headway_open_card` is not offered in the detail (its card is
 # open), `headway_clear` only with a cursor to drop, so Esc falls through.
 #
-# Not here: the board edits `a` (archive), `D` (done) and `H L J K` (move the
-# cursor card). They're data tools, which the keymap can't call yet, so
-# Headway still reads those keys itself (crates/notedeck_headway/src/keys.rs,
-# `edit_keys`).
+# The board edits `a` (archive), `D` (done) and `H L J K` (move the cursor
+# card) are Headway's data tools on "{current}", the current card. The view
+# follows each edit as it folds in: the grid's cursor steps off an archived
+# card, the review queue steps on past one that left In Review.
 
 # The card actions: the current card, the same in every view.
 
@@ -87,6 +87,22 @@ scope = "headway.card"
 keys  = "r"
 tool  = "headway_open_review"
 label = "review diff"
+group = "card"
+
+[[bind]]
+scope = "headway.card"
+keys  = "a"
+tool  = "headway_archive_card"
+args  = { card = "{current}" }
+label = "archive"
+group = "card"
+
+[[bind]]
+scope = "headway.card"
+keys  = "D"
+tool  = "headway_move_card"
+args  = { card = "{current}", column = "done" }
+label = "done"
 group = "card"
 
 [[bind]]
@@ -160,6 +176,38 @@ keys  = "G"
 tool  = "headway_cursor_move"
 args  = { to = "last" }
 label = "first/last"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "H"
+tool  = "headway_move_card"
+args  = { card = "{current}", to = "left" }
+label = "move card"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "L"
+tool  = "headway_move_card"
+args  = { card = "{current}", to = "right" }
+label = "move card"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "J"
+tool  = "headway_move_card"
+args  = { card = "{current}", to = "down" }
+label = "reorder"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "K"
+tool  = "headway_move_card"
+args  = { card = "{current}", to = "up" }
+label = "reorder"
 group = "grid"
 
 [[bind]]

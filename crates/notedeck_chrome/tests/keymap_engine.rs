@@ -8,6 +8,7 @@ mod common;
 use common::{field_id, Fixture};
 use egui::{Key, Modifiers};
 use notedeck_ui::chord::CHORD_TIMEOUT;
+use serde_json::json;
 
 /// The test keymap: one binding per behaviour under test.
 const KEYMAP: &str = r#"
@@ -35,6 +36,12 @@ tool = "fake_gated"
 scope = "elsewhere"
 keys = "k"
 tool = "fake_down"
+
+[[bind]]
+scope = "fake"
+keys = "m"
+tool = "fake_mark"
+args = { card = "{current}", note = "on {current}", n = 1 }
 "#;
 
 /// A [`Fixture`] with [`KEYMAP`] loaded.
@@ -134,4 +141,31 @@ async fn a_modified_key_matches_only_a_modified_binding() {
     f.press(Modifiers::CTRL | Modifiers::COMMAND, Key::F, None);
     assert_eq!(f.calls(), ["fake_page"]);
     assert_eq!(f.seen(), [Key::J, Key::F]);
+}
+
+/// A key bound to a data tool runs it at once, its args' `{current}` the
+/// app's current ref, wherever it appears in a string; no UI tool runs and
+/// the app never sees the key.
+#[tokio::test]
+async fn a_data_tool_binding_runs_on_the_current_ref() {
+    let mut f = fixture();
+    f.state.borrow_mut().current = Some("fake:one".to_owned());
+    f.frame(Vec::new());
+    f.key(Key::M);
+    assert_eq!(
+        f.marked(),
+        [json!({ "card": "fake:one", "note": "on fake:one", "n": 1 })]
+    );
+    assert_eq!(f.calls(), Vec::<String>::new());
+    assert_eq!(f.seen(), [], "the keymap swallowed m");
+}
+
+/// Without a current ref, a binding naming `{current}` is unavailable and
+/// its key reaches the app.
+#[tokio::test]
+async fn without_a_current_ref_its_binding_falls_through() {
+    let mut f = fixture();
+    f.key(Key::M);
+    assert_eq!(f.marked(), Vec::<serde_json::Value>::new());
+    assert_eq!(f.seen(), [Key::M]);
 }

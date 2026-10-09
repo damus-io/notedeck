@@ -10,9 +10,7 @@ use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::SPACING_LG;
 
-use super::review::{
-    DONE, IN_PROGRESS, Notice, QueueNotice, SessionOpen, send_back_open, session_open,
-};
+use super::review::{IN_PROGRESS, Notice, QueueNotice, SessionOpen, send_back_open, session_open};
 use super::{BoardEffect, BoardUiState, find_card};
 use crate::nav::NavPos;
 use crate::store::BoardAction;
@@ -310,26 +308,6 @@ impl BoardUiState {
     /// next Esc leaves the card.
     pub(crate) fn detail_field_focused(&self) -> bool {
         self.detail_field_focused
-    }
-
-    /// `D`: move `card` to the end of the Done column. On the queue's current
-    /// card the queue steps on, as it does after any verdict. `None` (and a
-    /// notice) on a board without a Done column.
-    pub(crate) fn accept_card(
-        &mut self,
-        view: &BoardView,
-        card: NoteId,
-        now: f64,
-    ) -> Option<BoardAction> {
-        find_card(view, card)?;
-        let Some(to_col) = DONE.index(view) else {
-            self.set_notice(QueueNotice::NoDoneColumn, now);
-            return None;
-        };
-        if self.queue.current() == Some(card) {
-            self.advance_queue(view, now);
-        }
-        Some(move_to_end(view, card, to_col))
     }
 
     /// `X`: open the reason composer for `card`. Nothing opens on a board it

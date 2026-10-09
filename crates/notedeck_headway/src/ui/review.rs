@@ -174,17 +174,19 @@ const IN_REVIEW: QueueColumn = QueueColumn {
     name: "In Review",
 };
 
-/// Where `D` sends a card.
-pub(crate) const DONE: QueueColumn = QueueColumn {
-    id: "done",
-    name: "Done",
-};
-
 /// Where `X` sends a card back to.
 pub(crate) const IN_PROGRESS: QueueColumn = QueueColumn {
     id: "in-progress",
     name: "In Progress",
 };
+
+/// Whether `card` is in `view`'s In Review column.
+pub(crate) fn in_review(view: &BoardView, card: NoteId) -> bool {
+    let Some(col) = IN_REVIEW.index(view) else {
+        return false;
+    };
+    find_card(view, card).is_some_and(|(at, _)| at == col)
+}
 
 impl QueueColumn {
     /// This column's index on `view`, by id, else by name.
@@ -319,8 +321,6 @@ pub(crate) enum QueueNotice {
     QueueDone,
     /// `e` on a card whose record has no explainer.
     NoExplainer,
-    /// `D` on a board with no Done column.
-    NoDoneColumn,
     /// `X` on a board with no In Progress column.
     NoInProgressColumn,
     /// `s`/`S` on a card whose record names no agentium session.
@@ -361,7 +361,6 @@ impl QueueNotice {
             QueueNotice::NothingInReviewUnder => "Nothing in review under this card",
             QueueNotice::QueueDone => "Review queue done",
             QueueNotice::NoExplainer => "No explainer on this record",
-            QueueNotice::NoDoneColumn => "No Done column on this board",
             QueueNotice::NoInProgressColumn => "No In Progress column on this board",
             QueueNotice::NoSession => "No agentium session on this record",
             QueueNotice::CardGone => "This card has left the board",

@@ -611,6 +611,31 @@ async fn pane_a_from_the_detail_ends_on_the_board() {
     );
 }
 
+/// `a` on a card's detail archives it through Headway's data tool, and once
+/// the archive folds in, the card's entry goes and the history ends on the
+/// grid. The key no longer backs the detail out itself: the prune that takes
+/// a card archived elsewhere off the history takes this one too.
+#[tokio::test]
+async fn detail_a_ends_on_the_board() {
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = two_in_review(repo.path()).await;
+    let board = board_depth(&harness);
+
+    harness.get_by_label(CARD).click();
+    land_on(&mut harness, board + 1, DETAIL);
+
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::A);
+    land_on(&mut harness, board, "6 cards · 5 columns");
+    assert!(
+        harness.query_by_label(DETAIL).is_none(),
+        "no detail left over the grid"
+    );
+    assert!(
+        !history(&harness).can_go_forward(),
+        "nothing to go forward to"
+    );
+}
+
 /// A card archived on another device while its review pane is open (grid
 /// `r`, no key pressed here) takes the pane's entry and its detail's with
 /// it: the history ends on the grid. Before, the pane closed onto the

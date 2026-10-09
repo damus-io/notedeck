@@ -97,8 +97,8 @@ impl Chrome {
             return None;
         }
         let app = self.apps.get(self.active as usize)?;
-        let scopes = Scopes::new(app.key_scopes());
-        let available = move |name: &str| self.ui_tool_available(tools, name);
+        let scopes = Scopes::new(app.key_scopes()).with_current(app.current_ref());
+        let available = move |name: &str| self.key_tool_available(tools, name);
         Some(self.keys.keymap().hints(scopes, pending, available))
     }
 

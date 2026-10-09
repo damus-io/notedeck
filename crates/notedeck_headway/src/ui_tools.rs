@@ -18,10 +18,10 @@
 //! **Board edits are not UI tools.** Archiving, moving a card (`D` is a move
 //! to Done) and creating one are Headway's data tools ([`crate::tools`]:
 //! `headway_archive_card`, `headway_move_card`, `headway_add_card`), and the
-//! UI picks their result up as the edit folds in, like any other. The keys
-//! that make those edits (`a`, `D`, `H`/`L`/`J`/`K`) still run through
-//! [`crate::keys`] as before; nothing here shadows the data tools' names
-//! (`no_ui_tool_shadows_a_data_tool`).
+//! UI picks their result up as the edit folds in, like any other. Chrome's
+//! keymap binds the keys that make them (`a`, `D`, `H`/`L`/`J`/`K`) to those
+//! data tools on the [current card](CurrentRef); nothing here shadows their
+//! names (`no_ui_tool_shadows_a_data_tool`).
 //!
 //! This module also answers, from state alone and without allocating, which
 //! tools are [available](available) and which [key scopes](key_scopes) are
@@ -34,7 +34,7 @@ use serde_json::{Value, json};
 use notedeck::{ToolArg, ToolArgType, ToolSpec};
 
 use crate::cursor::CursorMove;
-use crate::keys::{CardAction, CardMove, PaneScroll};
+use crate::keys::{CardAction, PaneScroll};
 use crate::ui::{BoardUiState, CardStep, SessionOpen};
 
 /// `Enter`/`o`: open the current card's detail.
@@ -75,11 +75,6 @@ pub(crate) const BACK: &str = "headway_back";
 /// What a Headway key or UI tool does. Card tools carry the [`CardAction`]
 /// their key maps to; the rest name what they do in the view that has them,
 /// and do nothing in a view that doesn't.
-///
-/// The keys' board edits are here too, so every key goes through one
-/// `apply_*` path: [`CardAction::Archive`], [`CardAction::Done`] and
-/// [`MoveCard`](Self::MoveCard). [`parse`](Self::parse) never produces them:
-/// called by name, those edits are data tools (see the module docs).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum HeadwayUiTool {
     /// A card action, on the current card or the one `card` names (a
@@ -90,8 +85,6 @@ pub(crate) enum HeadwayUiTool {
     },
     /// Move the grid's cursor.
     Cursor(CursorMove),
-    /// Move the grid's cursor card (`H`/`L`/`J`/`K`). Keys only: a board edit.
-    MoveCard(CardMove),
     /// Open the add-card composer in the cursor's column.
     AddCard,
     /// Focus the grid's filter field.
@@ -529,6 +522,41 @@ pub(crate) fn current_card(state: &BoardUiState, at: KeyView) -> Option<nostrdb_
         KeyView::Queue => state.queue_card(),
         KeyView::Pane => state.review_card(),
         KeyView::Detail => state.selected(),
+    }
+}
+
+/// The current card as a `headway:<board>/<word-id>` ref, for chrome's
+/// keymap to run board edits on (`a` is `headway_archive_card` with
+/// `card = "{current}"`; see [`notedeck::App::current_ref`]). Latched as each
+/// pass ends ([`BoardUiState::latch_current_ref`]) and kept between passes, so
+/// reading it never allocates; the ref is rebuilt only when the card changes.
+#[derive(Default)]
+pub(crate) struct CurrentRef {
+    /// The card, while there is one.
+    card: Option<nostrdb_net::NoteId>,
+    /// Its ref, meaningful only while `card` is set.
+    text: String,
+}
+
+impl CurrentRef {
+    /// Make `card`, on the board with slug `board`, the current card, or
+    /// clear it.
+    pub(crate) fn latch(&mut self, board: &str, card: Option<nostrdb_net::NoteId>) {
+        let Some(card) = card else {
+            self.card = None;
+            return;
+        };
+        let same_board = headway::wordid::parse_ref(&self.text).is_some_and(|(b, _)| b == board);
+        if self.card == Some(card) && same_board {
+            return;
+        }
+        self.card = Some(card);
+        self.text = headway::wordid::card_ref(board, card.bytes());
+    }
+
+    /// The current card's ref, if there is one.
+    pub(crate) fn get(&self) -> Option<&str> {
+        self.card.map(|_| self.text.as_str())
     }
 }
 

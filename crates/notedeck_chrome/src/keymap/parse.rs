@@ -10,6 +10,12 @@
 //! args  = { count = 1 }     # optional; passed to the tool as JSON
 //!
 //! [[bind]]
+//! scope = "headway.card"
+//! keys  = "a"
+//! tool  = "headway_archive_card"     # a data tool, on the current card:
+//! args  = { card = "{current}" }     # "{current}" is the app's current ref
+//!
+//! [[bind]]
 //! scope = "dave.normal"
 //! keys  = "E"
 //! macro = "session-explainer"
@@ -188,9 +194,14 @@ pub fn parse(src: &str) -> Result<Keymap, KeymapError> {
             }
         };
 
+        let uses_current = match &action {
+            BindAction::Tool(invocation) => super::names_current(&invocation.args),
+            BindAction::Macro(_) => false,
+        };
         let binding = Binding {
             keys,
             action,
+            uses_current,
             label: bind.label,
             group: bind.group,
             order: i,

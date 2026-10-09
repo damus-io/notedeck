@@ -19,11 +19,12 @@ use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM};
 
 use crate::BoardSummary;
+use crate::cursor::{self, CursorPos};
 use crate::event::{self, BoardView, CardView};
 use crate::keys;
 use crate::nav::{NavPos, ReviewTarget};
 use crate::store::BoardAction;
-use crate::ui_tools::HeadwayUiTool;
+use crate::ui_tools::{self, CurrentRef, HeadwayUiTool, KeyView};
 
 mod archived;
 mod card_actions;
@@ -79,6 +80,20 @@ pub struct BoardUiState {
     /// re-derived from the folded view each time it's needed (see
     /// [`crate::cursor`]), so reorders and remote edits can't strand it.
     cursor: Option<NoteId>,
+    /// The cursor card and where the grid last drew it, latched as each grid
+    /// pass ends, for [`follow_cursor`](Self::follow_cursor) to step off a
+    /// card that has left and to keep one that moved in view.
+    cursor_slot: Option<(NoteId, CursorPos)>,
+    /// The cursor's card, once it has left the board, until the grid next
+    /// draws and steps off it ([`note_departed`](Self::note_departed)).
+    cursor_left: Option<NoteId>,
+    /// The review queue's card, while it was in In Review last pass, so a
+    /// verdict on it folding in steps the queue on
+    /// ([`follow_queue`](Self::follow_queue)).
+    queue_in_review: Option<NoteId>,
+    /// The current card, as chrome's keymap edits it
+    /// ([`latch_current_ref`](Self::latch_current_ref)).
+    current_ref: CurrentRef,
     /// Set when the cursor moves by keyboard and its card should be scrolled
     /// into view. Consumed into [`scroll_this_frame`](Self::scroll_this_frame)
     /// once per grid render.
@@ -472,6 +487,96 @@ impl BoardUiState {
         self.cursor = None;
     }
 
+    /// Note the cards that left the board since last frame (archived,
+    /// deleted, moved to another board, here or elsewhere; see
+    /// `nav::SeenCards`). A cursor on one of them steps off it the next time
+    /// the grid draws ([`follow_cursor`](Self::follow_cursor)).
+    pub(crate) fn note_departed(&mut self, departed: &[NoteId]) {
+        if let Some(cursor) = self.cursor.filter(|c| departed.contains(c)) {
+            self.cursor_left = Some(cursor);
+        }
+    }
+
+    /// Follow a board edit folding in under the grid's cursor, before the
+    /// grid's tools run. Off a card that has left (`a`, from here or
+    /// anywhere) to the card now in its slot, else the one above it, else
+    /// nowhere, so `a a a` triages a column top to bottom; and back into view
+    /// after one that moved (`H L J K`, a move from anywhere). The keys'
+    /// board edits are chrome's keymap's data tools, which change the board
+    /// and not the view, so the view follows them here as they land.
+    pub(crate) fn follow_cursor(&mut self, view: &BoardView, filter: &ViewFilter) {
+        let slot = self
+            .cursor_slot
+            .filter(|(card, _)| self.cursor == Some(*card));
+        if let Some(gone) = self.cursor_left.take()
+            && self.cursor == Some(gone)
+        {
+            let next = slot.and_then(|(_, at)| cursor::successor(view, filter, at));
+            match next {
+                Some(next) => self.set_cursor(next),
+                None => self.clear_cursor(),
+            }
+            return;
+        }
+        let Some((card, was)) = slot else {
+            return;
+        };
+        let moved = cursor::locate(view, filter, card)
+            .is_some_and(|now| (now.col, now.vis) != (was.col, was.vis));
+        if moved {
+            self.scroll_to_cursor = true;
+        }
+    }
+
+    /// Latch the cursor card's grid slot as a grid pass ends.
+    pub(crate) fn latch_cursor_slot(&mut self, view: &BoardView, filter: &ViewFilter) {
+        self.cursor_slot = self
+            .cursor
+            .and_then(|card| Some((card, cursor::locate(view, filter, card)?)));
+    }
+
+    /// Follow a verdict on the review queue's card folding in: once the card
+    /// it showed in In Review last pass has left the column (`D`, `a`, from
+    /// here or anywhere), step the queue on, as a verdict always has. Runs
+    /// before the queue's tools; `X` steps the queue on itself.
+    pub(crate) fn follow_queue(&mut self, view: &BoardView, now: f64) {
+        let current = self.queue.current();
+        let left = current.is_some_and(|card| !review::in_review(view, card));
+        if left && current == self.queue_in_review {
+            self.advance_queue(view, now);
+        }
+        self.queue_in_review = self
+            .queue
+            .current()
+            .filter(|&card| review::in_review(view, card));
+    }
+
+    /// Latch, as the pass ends, the card chrome's keymap edits next pass:
+    /// the [view in front](ui_tools::key_view)'s current card, the grid's
+    /// cursor only where the grid drew it, and only a card on the board.
+    pub(crate) fn latch_current_ref(&mut self, view: &BoardView) {
+        let card = ui_tools::key_view(self)
+            .and_then(|at| match at {
+                KeyView::Grid => self
+                    .cursor_slot
+                    .map(|(card, _)| card)
+                    .filter(|&card| self.cursor == Some(card)),
+                at => ui_tools::current_card(self, at),
+            })
+            .filter(|&card| find_card(view, card).is_some());
+        self.current_ref.latch(&view.id, card);
+    }
+
+    /// Forget the current card: no board is drawn to edit.
+    pub(crate) fn clear_current_ref(&mut self) {
+        self.current_ref.latch("", None);
+    }
+
+    /// The current card's `headway:<board>/<word-id>`, as last latched.
+    pub(crate) fn current_ref(&self) -> Option<&str> {
+        self.current_ref.get()
+    }
+
     /// Open the "add card" composer at the foot of column `col`, empty and
     /// focused. Shared by the column's "+ Add card" button and the `c` key.
     pub(crate) fn open_add_card(&mut self, col: usize) {
@@ -650,10 +755,6 @@ pub fn board_ui(
     sync: SyncStatus,
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
-    // The board-edit keys chrome's keymap doesn't bind yet, queued with the
-    // tools chrome called; read under last pass's grid-menu latch, as chrome
-    // read the key scopes.
-    keys::edit_keys(ui.ctx(), state);
     // The grid's menus re-latch as they draw this pass.
     state.reset_grid_menu_open();
     // The UI tools chrome's keymap called for the queue, a review pane or the
@@ -663,6 +764,7 @@ pub fn board_ui(
     // rather than a blank one. (The grid's run as it lays out, in
     // `board_pane_ui`.)
     state.refresh_queue(view, ui.ctx().input(|i| i.time));
+    state.follow_queue(view, ui.ctx().input(|i| i.time));
     // A route reseed or last frame's click may have left the `X` composer's
     // view; it closes before its keys could take this frame's Enter.
     state.retire_stale_reason();
@@ -678,6 +780,7 @@ pub fn board_ui(
     }
     let action = board_pane_ui(ui, theme, app_ctx, view, boards, sync, state);
     state.drop_queued_tools();
+    state.latch_current_ref(view);
     // A key swallowed the frame's keys, so the pane's edit could only be a
     // drop landing in the same frame; the key wins, as it does over a drop in
     // the grid.
@@ -774,10 +877,11 @@ fn board_pane_ui(
         hide_subissues: state.hide_subissues,
     };
 
+    // The cursor follows a board edit that folded in since the grid last
+    // drew: chrome's keymap made `a`, `D` and `H L J K` as data tools.
+    state.follow_cursor(view, &view_filter);
     // The grid's UI tools (j/k/h/l, gg/G, c, /, Esc and the card actions,
-    // through chrome's keymap), and the edit keys `edit_keys` queued with
-    // them (H/J/K/L move the cursor card, returned as the action a drop would
-    // raise; a archives, D moves to Done). Only the grid reaches here — the graph, the
+    // through chrome's keymap). Only the grid reaches here — the graph, the
     // review panes and the detail returned above — and they run before any
     // grid widget lays out, so a field that `c` or `/` focuses lays out
     // focused this frame (chrome swallowed the key, so it types nothing).
@@ -919,6 +1023,7 @@ fn board_pane_ui(
 
     // Archived-cards sheet floats above the board.
     archived_sheet_ui(ui, theme, view, state, &mut action);
+    state.latch_cursor_slot(view, &view_filter);
 
     action
 }
@@ -944,8 +1049,9 @@ pub fn unfolded_board_ui(
     state: &mut BoardUiState,
     message: &str,
 ) {
-    // No board, so no view a UI tool could act on.
+    // No board, so no view a UI tool could act on, nor a card to edit.
     state.drop_queued_tools();
+    state.clear_current_ref();
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {

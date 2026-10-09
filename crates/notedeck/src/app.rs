@@ -318,6 +318,18 @@ pub trait App {
         &[]
     }
 
+    /// What the app's view is on, as a self-routing reference, e.g. the
+    /// current card as `headway:<board>/<word-id>`. A key binding names it
+    /// as `{current}` in its args to run a data tool on it (`a` archives
+    /// the current card through `headway_archive_card`); while it's `None`
+    /// such a binding is unavailable and its keys fall through. Read per key
+    /// press, and each frame a which-key strip is shown, so it must not
+    /// allocate: keep the string, rebuilt when what the view is on changes.
+    /// Defaults to none.
+    fn current_ref(&self) -> Option<&str> {
+        None
+    }
+
     /// Host hook, invoked each frame **only on the top-level app** (the shell):
     /// return `Some(update)` to replace the host's
     /// [`ToolRegistry`](crate::ToolRegistry) when the contributed set changes, or

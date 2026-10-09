@@ -6,14 +6,21 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::mpsc;
 
 use egui::{Event, Key, Modifiers};
-use notedeck::{App, AppContext, AppResponse, Notedeck, ToolOutcome, ToolSpec};
+use notedeck::{
+    App, AppContext, AppResponse, AppTool, Notedeck, RegisteredTool, ToolContext, ToolOutcome,
+    ToolSpec,
+};
 use notedeck_chrome::keymap::{self, KeySeq};
 use notedeck_chrome::{Chrome, NotedeckApp};
 
 /// The UI tools [`FakeApp`] advertises.
 pub const TOOLS: [&str; 4] = ["fake_down", "fake_first", "fake_page", "fake_gated"];
+
+/// The data tool [`FakeApp`] contributes: it sends its args to the test.
+pub const DATA_TOOL: &str = "fake_mark";
 
 /// The id of the text field [`FakeApp`] draws when asked to.
 pub fn field_id() -> egui::Id {
@@ -32,14 +39,58 @@ pub struct FakeState {
     pub show_field: bool,
     /// The text field's contents.
     pub text: String,
+    /// What the app's view is on, its [`App::current_ref`].
+    pub current: Option<String>,
+    /// The args each [`DATA_TOOL`] call ran with, in order.
+    pub marked: mpsc::Receiver<serde_json::Value>,
 }
 
-/// An app in the `fake` scope with [`TOOLS`] as UI tools.
+/// [`DATA_TOOL`]: sends its args to the test, which runs it on another
+/// thread's terms (`Send + Sync`), so through a channel rather than the
+/// shared state.
+struct FakeMark {
+    sent: mpsc::Sender<serde_json::Value>,
+}
+
+impl AppTool for FakeMark {
+    type Args = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new(DATA_TOOL, "A fake data tool.", Vec::new())
+    }
+
+    fn call(&self, _cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
+        self.sent.send(args).map_err(|e| e.to_string())?;
+        Ok(serde_json::Value::Null)
+    }
+}
+
+/// An app in the `fake` scope with [`TOOLS`] as UI tools and [`DATA_TOOL`]
+/// as a data tool.
 struct FakeApp {
     state: Rc<RefCell<FakeState>>,
+    /// Where [`DATA_TOOL`] sends.
+    sent: mpsc::Sender<serde_json::Value>,
+    /// [`FakeState::current`], copied each update so it can be lent out.
+    current: Option<String>,
 }
 
 impl App for FakeApp {
+    fn update(&mut self, _ctx: &mut AppContext<'_>) {
+        self.current.clone_from(&self.state.borrow().current);
+    }
+
+    fn tools(&self) -> Vec<RegisteredTool> {
+        vec![RegisteredTool::new(FakeMark {
+            sent: self.sent.clone(),
+        })]
+    }
+
+    fn current_ref(&self) -> Option<&str> {
+        self.current.as_deref()
+    }
+
     fn render(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let mut state = self.state.borrow_mut();
         let pressed: Vec<Key> = ui.input(|i| {
@@ -111,18 +162,23 @@ impl Fixture {
             app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
         }
         notedeck.setup(&egui_ctx);
+        let (sent, marked) = mpsc::channel();
         let state = Rc::new(RefCell::new(FakeState {
             calls: Vec::new(),
             seen: Vec::new(),
             gated_available: true,
             show_field: false,
             text: String::new(),
+            current: None,
+            marked,
         }));
         // The fake app alone, as the nav root: switching to it from another
         // app would slide, and a full chrome frame mid-slide trips egui's
         // debug assert on widget ids changing layer.
         let fake = FakeApp {
             state: Rc::clone(&state),
+            sent,
+            current: None,
         };
         let mut chrome = Chrome::new_headless_with_apps(
             &mut notedeck,
@@ -219,6 +275,11 @@ impl Fixture {
     /// The UI tools that reached the app so far.
     pub fn calls(&self) -> Vec<String> {
         self.state.borrow().calls.clone()
+    }
+
+    /// The args of the [`DATA_TOOL`] calls since the last take.
+    pub fn marked(&self) -> Vec<serde_json::Value> {
+        self.state.borrow().marked.try_iter().collect()
     }
 
     /// The keys whose press reached the app so far.

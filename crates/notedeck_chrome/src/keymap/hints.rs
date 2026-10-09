@@ -293,4 +293,22 @@ label = "keys"
             "{shown:?}"
         );
     }
+
+    /// A binding naming `{current}` is listed only while the app has a
+    /// current ref, as it only runs then.
+    #[test]
+    fn a_current_binding_is_listed_only_with_a_current_ref() {
+        let src = format!(
+            "{KEYMAP}\n[[bind]]\nscope = \"app\"\nkeys = \"a\"\ntool = \"archive\"\n\
+             args = {{ card = \"{{current}}\" }}\nlabel = \"archive\"\n"
+        );
+        let keymap = parse(&src).expect("keymap");
+        let listed = |current| {
+            keymap
+                .hints(Scopes::new(SCOPES).with_current(current), None, |_| true)
+                .any(|hint| hint.label == "archive")
+        };
+        assert!(!listed(None), "no current ref, not listed");
+        assert!(listed(Some("app:card")));
+    }
 }

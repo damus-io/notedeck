@@ -184,6 +184,15 @@ pub(crate) fn move_within(
     Some((pos.col, to_row))
 }
 
+/// The card in the grid slot `at` now, else the one above it: where the
+/// cursor lands when its card has left the board, so it steps to what was the
+/// next card down, else the one above. `None` when that column shows neither.
+pub(crate) fn successor(view: &BoardView, filter: &ViewFilter, at: CursorPos) -> Option<NoteId> {
+    let column = view.columns.get(at.col)?;
+    nth_visible(column, filter, at.vis)
+        .or_else(|| nth_visible(column, filter, at.vis.checked_sub(1)?))
+}
+
 /// The `vis`-th visible card of `column`, if it has that many.
 fn nth_visible(column: &ColumnView, filter: &ViewFilter, vis: usize) -> Option<NoteId> {
     visible(column, filter).nth(vis).map(|(_, card)| card.id)
@@ -280,6 +289,25 @@ pub(crate) mod tests {
             column("b", vec![card_n(4, "four")]),
             column("c", vec![card_n(5, "five"), card_n(6, "six")]),
         ])
+    }
+
+    /// Where the cursor lands off a card that left: the card now in its
+    /// slot (what was below it), else the one above, else nowhere.
+    #[test]
+    fn successor_takes_the_slot_else_the_one_above() {
+        let mut view = grid();
+        with_filter("", |f| {
+            let slot = |col, vis| CursorPos { col, row: vis, vis };
+            // 2 left `a` (1, 3 now): 3 has its slot.
+            view.columns[0].cards.remove(1);
+            assert_eq!(successor(&view, f, slot(0, 1)), Some(id(3)));
+            // 3 left too (1 now): nothing in slot 1, so 1 above it.
+            view.columns[0].cards.remove(1);
+            assert_eq!(successor(&view, f, slot(0, 1)), Some(id(1)));
+            // 4 left `b`, its only card: nowhere.
+            view.columns[1].cards.clear();
+            assert_eq!(successor(&view, f, slot(1, 0)), None);
+        });
     }
 
     #[test]

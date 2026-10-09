@@ -1,8 +1,9 @@
-//! Headway's keys through the real chrome: Headway reads no keys of its own
-//! (bar its board edits), so every one goes chrome's keymap → the shipped
-//! `default_keymap.toml` → Headway's UI tool. A headless chrome runs the real
-//! Headway, on a seeded demo board, behind a wrapper that records each UI tool
-//! call reaching it; keys go in as real chrome frames.
+//! Headway's keys through the real chrome: Headway reads no keys of its own,
+//! so every one goes chrome's keymap → the shipped `default_keymap.toml` →
+//! Headway's UI tool, or, for a board edit, Headway's data tool on its
+//! current card. A headless chrome runs the real Headway, on a seeded demo
+//! board, behind a wrapper that records each UI tool call reaching it; keys
+//! go in as real chrome frames.
 //!
 //! What each key then does to the board is Headway's own tests' business
 //! (`notedeck_headway`'s `keys.rs` tests run the same engine and keymap); these
@@ -79,6 +80,10 @@ impl App for Recording {
 
     fn key_scopes(&self) -> &'static [&'static str] {
         self.headway.key_scopes()
+    }
+
+    fn current_ref(&self) -> Option<&str> {
+        self.headway.current_ref()
     }
 }
 
@@ -234,6 +239,40 @@ impl Fixture {
         self.press(Modifiers::NONE, key, None);
     }
 
+    /// The demo board as Headway's `headway_show_board` data tool reads it.
+    fn board(&mut self) -> Value {
+        match self
+            .notedeck
+            .app_context()
+            .call_tool("headway_show_board", &json!({}))
+        {
+            ToolOutcome::Data(board) => board,
+            _ => panic!("the demo board shows"),
+        }
+    }
+
+    /// Run frames until the card `card` is in column `col` of the board, or
+    /// off it for `None`, or panic.
+    fn wait_for_card_in(&mut self, card: &str, col: Option<usize>) {
+        for _ in 0..SETTLE_FRAMES {
+            let board = self.board();
+            let at = board["columns"]
+                .as_array()
+                .expect("columns")
+                .iter()
+                .position(|column| {
+                    let cards = column["cards"].as_array().expect("cards");
+                    cards.iter().any(|c| c["ref"] == card)
+                });
+            if at == col {
+                return;
+            }
+            self.frame(Vec::new());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("{card} never landed in column {col:?}");
+    }
+
     /// Take the UI tool calls that reached Headway since the last take.
     fn take_calls(&self) -> Vec<Call> {
         std::mem::take(&mut *self.calls.borrow_mut())
@@ -277,12 +316,17 @@ fn default_bindings() -> Vec<(String, String, Value)> {
 }
 
 /// Every Headway binding in the shipped keymap names a UI tool Headway owns
-/// in the host's registry (not a data tool, which the keymap can't call, nor
-/// a name a data tool shadows), and Headway takes its args.
+/// in the host's registry (not a name a data tool shadows), and Headway takes
+/// its args; or one of Headway's data tools, on the current card.
 #[tokio::test]
-async fn every_headway_binding_names_a_headway_ui_tool() {
+async fn every_headway_binding_names_a_headway_tool() {
     let mut f = Fixture::new().await;
     let headway = notedeck::AppId(0);
+    let data_tools: Vec<_> = Headway::new()
+        .tools()
+        .iter()
+        .map(|tool| tool.name())
+        .collect();
     let bindings: Vec<_> = default_bindings()
         .into_iter()
         .filter(|(scope, _, _)| scope.starts_with("headway"))
@@ -290,10 +334,17 @@ async fn every_headway_binding_names_a_headway_ui_tool() {
     assert!(bindings.len() > 30, "Headway's keymap is in: {bindings:?}");
 
     for (scope, tool, args) in bindings {
+        if data_tools.contains(&tool.as_str()) {
+            assert_eq!(
+                args["card"], "{current}",
+                "{scope} binds the data tool {tool} to the current card"
+            );
+            continue;
+        }
         let owner = f.notedeck.app_context().registries.tools.ui_owner(&tool);
         assert!(
             matches!(owner, Some(notedeck::ToolOwner::App(id)) if id == headway),
-            "{scope} binds {tool}, which isn't Headway's UI tool ({owner:?})"
+            "{scope} binds {tool}, which isn't Headway's tool ({owner:?})"
         );
         let invocation = ToolInvocation::new(tool.clone(), args.clone());
         let outcome = f
@@ -348,26 +399,36 @@ async fn grid_keys_reach_headway_through_chrome() {
     );
 }
 
-/// The board-edit keys (`a`, `D`, `H L J K`) aren't the keymap's: Headway
-/// reads them itself, so they call no UI tool. (The views over the grid
-/// slide in through egui_nav, which debug builds can't draw; their keys
-/// through chrome are `headway_nav_tests`', in release.)
+/// The board edits (`a`, `D`, `H L J K`) are Headway's data tools on its
+/// current card, run by chrome on the real board: no UI tool runs, the edit
+/// lands in nostrdb, and the cursor follows the card as each folds in, so
+/// the next key edits the same card.
 #[tokio::test]
-async fn board_edit_keys_stay_headways_own() {
+async fn board_edit_keys_edit_the_current_card() {
     let mut f = Fixture::new().await;
+    // Off the grid: no current card, so `a` is unbound and does nothing.
+    f.key(Key::A);
+    f.wait_to_draw(GRID);
+
     f.key(Key::J);
     assert_eq!(
         f.take_calls(),
         [call("headway_cursor_move", json!({ "to": "down" }))]
     );
-    for key in [Key::H, Key::L, Key::J, Key::K, Key::D] {
-        f.press(Modifiers::SHIFT, key, None);
-    }
+    let card = f.board()["columns"][0]["cards"][0]["ref"]
+        .as_str()
+        .expect("the first card's ref")
+        .to_owned();
+
+    f.press(Modifiers::SHIFT, Key::L, None);
+    f.wait_for_card_in(&card, Some(1));
+    f.press(Modifiers::SHIFT, Key::D, None);
+    let done = f.board()["columns"].as_array().expect("columns").len() - 1;
+    f.wait_for_card_in(&card, Some(done));
     f.key(Key::A);
-    assert!(
-        f.take_calls().is_empty(),
-        "board edits are Headway's own keys"
-    );
+    f.wait_for_card_in(&card, None);
+    f.wait_to_draw("6 cards · 5 columns");
+    assert!(f.take_calls().is_empty(), "board edits call no UI tool");
 }
 
 /// A focused text field keeps its keys: `/` focuses the grid's filter, and

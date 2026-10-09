@@ -12,14 +12,16 @@ use headway::event::{self, BoardView, CardView, Container, Priority, resolve_car
 use headway::store::{self, BoardAction};
 use headway::{traversal, wordid};
 use nostrdb::{Ndb, Transaction};
-use nostrdb_net::Pubkey;
+use nostrdb_net::{NoteId, Pubkey};
 use notedeck::{
     AppTool, ExplicitPublishApi, RegisteredTool, ToolArg, ToolArgType, ToolContext, ToolSpec,
     fan_out_event_frame,
 };
 use serde::{Deserialize, Serialize};
 
+use crate::cursor::{self, Side, Vertical};
 use crate::teams;
+use crate::ui::{CardFilter, ViewFilter};
 
 /// Every agent tool the Headway app contributes, ready to register.
 pub fn tools() -> Vec<RegisteredTool> {
@@ -155,7 +157,8 @@ struct ShowCardArgs {
     /// The card ref: `headway:<board>/<word-id>` (or `<board>/<word-id>`) or a hex
     /// id prefix.
     card: String,
-    /// The board to resolve the card on; the primary board when omitted.
+    /// The board to resolve the card on; when omitted, the board the card ref
+    /// names, else the primary board.
     #[serde(default)]
     board: Option<String>,
 }
@@ -175,17 +178,13 @@ impl AppTool for ShowCard {
                     "The card ref: `headway:<board>/<word-id>` (or `<board>/<word-id>`) or a hex id prefix.",
                 )
                 .required(true),
-                ToolArg::new(
-                    "board",
-                    ToolArgType::String,
-                    "The board to resolve the card on. Defaults to the primary board.",
-                ),
+                card_board_arg(),
             ],
         )
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        let board_id = args.board.as_deref().unwrap_or(store::BOARD_ID);
+        let board_id = card_board(&args.board, &args.card);
         let author = *cx.accounts.selected_account_pubkey();
         let Some(reducer) = fold(cx)? else {
             return Err(format!("no board '{board_id}'"));
@@ -476,6 +475,17 @@ fn board_of(board: &Option<String>) -> &str {
     board.as_deref().unwrap_or(store::BOARD_ID)
 }
 
+/// The board a card tool targets: the `board` argument, else the board the
+/// `card` ref names (`headway:<board>/<word-id>` routes itself), else the
+/// primary board. So a key bound to a card tool on the app's current card
+/// (`card = "{current}"`) edits the board that card is on.
+fn card_board<'a>(board: &'a Option<String>, card: &'a str) -> &'a str {
+    board
+        .as_deref()
+        .or_else(|| wordid::parse_ref(card).map(|(board, _)| board))
+        .unwrap_or(store::BOARD_ID)
+}
+
 /// `headway_add_card`: create a card on a board.
 struct AddCard;
 
@@ -547,17 +557,70 @@ impl AppTool for AddCard {
     }
 }
 
-/// `headway_move_card`: move a card to another column (appended to its end).
+/// `headway_move_card`: move a card to another column (appended to its end),
+/// or one step on the board (Headway's `H L J K`).
 struct MoveCard;
 
-/// Arguments for [`MoveCard`].
+/// Arguments for [`MoveCard`]: exactly one of `column` and `to`.
 #[derive(Deserialize)]
 struct MoveCardArgs {
     card: String,
     /// Target column id or name.
-    column: String,
+    #[serde(default)]
+    column: Option<String>,
+    /// One step from where the card is.
+    #[serde(default)]
+    to: Option<MoveStep>,
     #[serde(default)]
     board: Option<String>,
+}
+
+/// A one-step card move, the board edit behind Headway's `H L J K`.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum MoveStep {
+    /// To the column on the left, at the same height.
+    Left,
+    /// To the column on the right, at the same height.
+    Right,
+    /// Past the card above it in its column.
+    Up,
+    /// Past the card below it in its column.
+    Down,
+}
+
+/// The values of [`MoveStep`], as the spec advertises them.
+const MOVE_STEPS: &[&str] = &["left", "right", "up", "down"];
+
+impl MoveStep {
+    /// Where this step drops `card` on `view`, as `(to_col, to_row)`; an error
+    /// at the edge of the board or of its column.
+    ///
+    /// The steps the grid's `H L J K` always made ([`cursor::move_across`],
+    /// [`cursor::move_within`]), over the whole board: a tool sees no grid
+    /// filter, so with one on, `J` hops the next card even if it's hidden.
+    fn target(self, view: &BoardView, card: NoteId) -> Result<(usize, usize), String> {
+        let everything = CardFilter::default();
+        let filter = ViewFilter {
+            filter: &everything,
+            hide_subissues: false,
+        };
+        let target = match self {
+            Self::Left => cursor::move_across(view, &filter, card, Side::Left),
+            Self::Right => cursor::move_across(view, &filter, card, Side::Right),
+            Self::Up => cursor::move_within(view, &filter, card, Vertical::Up),
+            Self::Down => cursor::move_within(view, &filter, card, Vertical::Down),
+        };
+        target.ok_or_else(|| {
+            let edge = match self {
+                Self::Left => "already in the first column",
+                Self::Right => "already in the last column",
+                Self::Up => "already at the top of its column",
+                Self::Down => "already at the bottom of its column",
+            };
+            format!("the card is {edge}")
+        })
+    }
 }
 
 impl AppTool for MoveCard {
@@ -567,26 +630,46 @@ impl AppTool for MoveCard {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
             "headway_move_card",
-            "Move a headway card to another column (appended to the end of that column).",
+            "Move a headway card: to another column (appended to the end of that column), \
+             or one step with `to` (left/right: the neighbouring column at the same height; \
+             up/down: past the neighbouring card in its column). Give exactly one of \
+             `column` and `to`.",
             vec![
                 card_arg(),
-                ToolArg::new("column", ToolArgType::String, "Target column id or name.")
-                    .required(true),
-                board_arg(),
+                ToolArg::new("column", ToolArgType::String, "Target column id or name."),
+                ToolArg::new(
+                    "to",
+                    ToolArgType::Enum(MOVE_STEPS.to_vec()),
+                    "One step from where the card is, instead of a column.",
+                ),
+                card_board_arg(),
             ],
         )
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, board_of(&args.board), |view| {
-            let card = resolve_card(view, &args.card)?;
-            let to_col = resolve_col(view, &args.column)?;
-            let to_row = view.columns[to_col].cards.len();
-            Ok(BoardAction::MoveCard {
-                card,
-                to_col,
-                to_row,
-            })
+        mutate(cx, card_board(&args.board, &args.card), |view| {
+            Self::edit(view, &args)
+        })
+    }
+}
+
+impl MoveCard {
+    /// The move `args` asks for on `view`.
+    fn edit(view: &BoardView, args: &MoveCardArgs) -> Result<BoardAction, String> {
+        let card = resolve_card(view, &args.card)?;
+        let (to_col, to_row) = match (&args.column, args.to) {
+            (Some(column), None) => {
+                let to_col = resolve_col(view, column)?;
+                (to_col, view.columns[to_col].cards.len())
+            }
+            (None, Some(step)) => step.target(view, card)?,
+            _ => return Err("give exactly one of 'column' and 'to'".to_owned()),
+        };
+        Ok(BoardAction::MoveCard {
+            card,
+            to_col,
+            to_row,
         })
     }
 }
@@ -614,13 +697,13 @@ impl AppTool for SetTitle {
             vec![
                 card_arg(),
                 ToolArg::new("title", ToolArgType::String, "The new title.").required(true),
-                board_arg(),
+                card_board_arg(),
             ],
         )
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, board_of(&args.board), |view| {
+        mutate(cx, card_board(&args.board, &args.card), |view| {
             Ok(BoardAction::EditTitle {
                 card: resolve_card(view, &args.card)?,
                 title: args.title.clone(),
@@ -653,13 +736,13 @@ impl AppTool for SetDescription {
                 card_arg(),
                 ToolArg::new("description", ToolArgType::String, "The new description.")
                     .required(true),
-                board_arg(),
+                card_board_arg(),
             ],
         )
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, board_of(&args.board), |view| {
+        mutate(cx, card_board(&args.board, &args.card), |view| {
             Ok(BoardAction::EditDescription {
                 card: resolve_card(view, &args.card)?,
                 description: args.description.clone(),
@@ -693,13 +776,13 @@ impl AppTool for SetLabels {
                 card_arg(),
                 ToolArg::new("labels", ToolArgType::String, "Comma-separated labels.")
                     .required(true),
-                board_arg(),
+                card_board_arg(),
             ],
         )
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, board_of(&args.board), |view| {
+        mutate(cx, card_board(&args.board, &args.card), |view| {
             Ok(BoardAction::SetLabels {
                 card: resolve_card(view, &args.card)?,
                 labels: split_labels(&args.labels),
@@ -737,13 +820,13 @@ impl AppTool for SetPriority {
                     "The priority level.",
                 )
                 .required(true),
-                board_arg(),
+                card_board_arg(),
             ],
         )
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, board_of(&args.board), |view| {
+        mutate(cx, card_board(&args.board, &args.card), |view| {
             Ok(BoardAction::SetPriority {
                 card: resolve_card(view, &args.card)?,
                 priority: Priority::parse(&args.priority),
@@ -781,13 +864,13 @@ impl AppTool for SetParent {
                     ToolArgType::String,
                     "The parent card ref (`headway:<board>/<word-id>` or `<board>/<word-id>`). Omit to detach the card from its parent.",
                 ),
-                board_arg(),
+                card_board_arg(),
             ],
         )
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, board_of(&args.board), |view| {
+        mutate(cx, card_board(&args.board, &args.card), |view| {
             let card = resolve_card(view, &args.card)?;
             let parent = match args.parent.as_deref() {
                 Some(p) => Some(resolve_card(view, p)?),
@@ -821,13 +904,13 @@ impl AppTool for CommentCard {
             vec![
                 card_arg(),
                 ToolArg::new("body", ToolArgType::String, "The comment text.").required(true),
-                board_arg(),
+                card_board_arg(),
             ],
         )
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, board_of(&args.board), |view| {
+        mutate(cx, card_board(&args.board, &args.card), |view| {
             Ok(BoardAction::AddComment {
                 card: resolve_card(view, &args.card)?,
                 body: args.body.clone(),
@@ -856,16 +939,43 @@ impl AppTool for ArchiveCard {
         ToolSpec::new(
             "headway_archive_card",
             "Archive a headway card: take it off the board but keep it recoverable.",
-            vec![card_arg(), board_arg()],
+            vec![card_arg(), card_board_arg()],
         )
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, board_of(&args.board), |view| {
-            Ok(BoardAction::ArchiveCard {
-                card: resolve_card(view, &args.card)?,
-            })
+        mutate(cx, card_board(&args.board, &args.card), |view| {
+            Self::edit(view, &args)
         })
+    }
+}
+
+impl ArchiveCard {
+    /// The archive `args` asks for on `view`.
+    fn edit(view: &BoardView, args: &CardArgs) -> Result<BoardAction, String> {
+        Ok(BoardAction::ArchiveCard {
+            card: resolve_card(view, &args.card)?,
+        })
+    }
+}
+
+/// The board edit the data tool `name` makes on `view` with `args`, built as
+/// the tool builds it but neither signed nor published: what the keymap
+/// tests check the keys bound to Headway's board edits against (`a`, `D`,
+/// `H L J K`).
+#[cfg(test)]
+pub(crate) fn board_edit(
+    view: &BoardView,
+    name: &str,
+    args: &serde_json::Value,
+) -> Result<BoardAction, String> {
+    fn parse<T: serde::de::DeserializeOwned>(args: &serde_json::Value) -> Result<T, String> {
+        serde_json::from_value(args.clone()).map_err(|e| e.to_string())
+    }
+    match name {
+        "headway_archive_card" => ArchiveCard::edit(view, &parse(args)?),
+        "headway_move_card" => MoveCard::edit(view, &parse(args)?),
+        _ => Err(format!("'{name}' makes no board edit the keys make")),
     }
 }
 
@@ -880,12 +990,12 @@ impl AppTool for RestoreCard {
         ToolSpec::new(
             "headway_restore_card",
             "Restore an archived headway card to the column it was archived from.",
-            vec![card_arg(), board_arg()],
+            vec![card_arg(), card_board_arg()],
         )
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, board_of(&args.board), |view| {
+        mutate(cx, card_board(&args.board, &args.card), |view| {
             Ok(BoardAction::RestoreCard {
                 card: resolve_card(view, &args.card)?,
             })
@@ -904,12 +1014,12 @@ impl AppTool for DeleteCard {
         ToolSpec::new(
             "headway_delete_card",
             "Remove a headway card from the board (tombstone its placement).",
-            vec![card_arg(), board_arg()],
+            vec![card_arg(), card_board_arg()],
         )
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
-        mutate(cx, board_of(&args.board), |view| {
+        mutate(cx, card_board(&args.board, &args.card), |view| {
             Ok(BoardAction::DeleteCard {
                 card: resolve_card(view, &args.card)?,
             })
@@ -962,6 +1072,17 @@ fn card_arg() -> ToolArg {
          word-id alone is not a card ref.",
     )
     .required(true)
+}
+
+/// A card tool's optional `board` argument, defaulting to the board the card
+/// ref names ([`card_board`]).
+fn card_board_arg() -> ToolArg {
+    ToolArg::new(
+        "board",
+        ToolArgType::String,
+        "The board id (slug). Defaults to the board a `headway:<board>/<word-id>` \
+         card ref names, else the primary board.",
+    )
 }
 
 /// The shared optional `board` argument, defaulting to the primary board.
@@ -1394,13 +1515,77 @@ mod tests {
             .call(
                 &mut cx,
                 MoveCardArgs {
+                    to: None,
                     card,
-                    column: "nope".to_string(),
+                    column: Some("nope".to_string()),
                     board: None,
                 },
             )
             .unwrap_err();
         assert!(err.contains("no column matching"), "{err}");
+    }
+
+    /// A card ref routes a card tool to its own board when no `board` is
+    /// given; an explicit `board` wins, and anything else is the primary.
+    #[test]
+    fn a_card_ref_routes_to_its_board() {
+        let routed = |board: Option<&str>, card: &str| {
+            card_board(&board.map(str::to_owned), card).to_owned()
+        };
+        assert_eq!(
+            routed(None, "headway:notedeck/maple-river-canyon"),
+            "notedeck"
+        );
+        assert_eq!(routed(None, "notedeck/maple-river-canyon"), "notedeck");
+        assert_eq!(
+            routed(Some("other"), "headway:notedeck/maple-river-canyon"),
+            "other"
+        );
+        assert_eq!(routed(None, "maple-river-canyon"), store::BOARD_ID);
+        assert_eq!(routed(None, "0123abcd"), store::BOARD_ID);
+    }
+
+    /// `to` steps a card as the grid's `H L J K` did, refusing at an edge,
+    /// and takes the place of `column`, never alongside it.
+    #[test]
+    fn move_card_steps() {
+        use crate::cursor::tests::{grid, id};
+        let view = grid();
+        let card = |n| wordid::card_ref(&view.id, id(n).bytes());
+        let edit = |n, column: Option<&str>, to: Option<MoveStep>| {
+            let args = MoveCardArgs {
+                card: card(n),
+                column: column.map(str::to_owned),
+                to,
+                board: None,
+            };
+            match MoveCard::edit(&view, &args) {
+                Ok(BoardAction::MoveCard {
+                    card,
+                    to_col,
+                    to_row,
+                }) => Ok((card, to_col, to_row)),
+                Ok(_) => panic!("a move"),
+                Err(err) => Err(err),
+            }
+        };
+        // `a` holds 1,2,3; `b` 4; `c` 5,6.
+        assert_eq!(edit(2, None, Some(MoveStep::Right)), Ok((id(2), 1, 1)));
+        assert_eq!(edit(2, None, Some(MoveStep::Down)), Ok((id(2), 0, 3)));
+        assert_eq!(edit(2, None, Some(MoveStep::Up)), Ok((id(2), 0, 0)));
+        assert_eq!(edit(5, None, Some(MoveStep::Left)), Ok((id(5), 1, 0)));
+        assert_eq!(edit(2, Some("c"), None), Ok((id(2), 2, 2)));
+        for (n, step) in [
+            (1, MoveStep::Left),
+            (5, MoveStep::Right),
+            (1, MoveStep::Up),
+            (3, MoveStep::Down),
+        ] {
+            let err = edit(n, None, Some(step)).unwrap_err();
+            assert!(err.starts_with("the card is already"), "{step:?}: {err}");
+        }
+        assert!(edit(2, Some("c"), Some(MoveStep::Up)).is_err(), "both");
+        assert!(edit(2, None, None).is_err(), "neither");
     }
 
     #[test]

@@ -14,30 +14,29 @@
 //! - **Card actions** act on *the current card* — the grid's cursor card, the
 //!   queue's card, a review pane's card, the open detail's card — and mean the
 //!   same thing in every view: open it, its explainer, its agentium session
-//!   (optionally asking for a code review), its review, archive, done, send
-//!   back with a reason, next/previous card. One enum ([`CardAction`]) and
+//!   (optionally asking for a code review), its review, send back with a
+//!   reason, next/previous card. One enum ([`CardAction`]) and
 //!   one dispatcher ([`apply_card_action`]), which every view shares.
 //! - **Navigation** keeps its meaning while its target is whatever the view
 //!   shows: the grid's cursor and its card moves, a pane's or the detail's
 //!   scroll ([`PaneScroll`]), backing out.
 //!
-//! What stays here as keys:
+//! The board edits `a` (archive), `D` (done) and `H`/`L`/`J`/`K` (move the
+//! cursor card) aren't here: chrome's keymap binds them to Headway's data
+//! tools (`crate::tools`) on the [current card](notedeck::App::current_ref),
+//! and the view follows the edit as it folds in
+//! (`BoardUiState::follow_cursor`, `BoardUiState::follow_queue`).
 //!
-//! - the board edits `a` (archive), `D` (done) and `H`/`L`/`J`/`K` (move the
-//!   cursor card) ([`edit_keys`]). They're data tools (`crate::tools`), which
-//!   chrome's keymap can't call yet, so Headway reads them itself and queues
-//!   them through the same `apply_*` path;
-//! - the text fields': the `X` composer's Enter and Esc ([`reason_keys`]),
-//!   which run while its field has the keyboard, where chrome's keymap stands
-//!   down. (The detail's Esc out of a field is an availability rule instead:
-//!   [`BoardUiState::detail_field_focused`].)
+//! What stays here as keys is the text fields': the `X` composer's Enter and
+//! Esc ([`reason_keys`]), which run while its field has the keyboard, where
+//! chrome's keymap stands down. (The detail's Esc out of a field is an
+//! availability rule instead: [`BoardUiState::detail_field_focused`].)
 
 use egui::{Key, Modifiers};
 use nostrdb_net::NoteId;
-use notedeck_ui::chord;
 use notedeck_ui::diff::PatchScroll;
 
-use crate::cursor::{self, CursorMove, Side, Vertical};
+use crate::cursor::{self, CursorMove};
 use crate::event::BoardView;
 use crate::store::BoardAction;
 use crate::ui::{
@@ -71,10 +70,6 @@ pub(crate) enum CardAction {
     /// `r`: open the review pane on the card's newest record (`None`, the
     /// key), or on the record a click in the detail's Review section names.
     Review(Option<NoteId>),
-    /// `a`: archive the card.
-    Archive,
-    /// `D`: move the card to the end of Done.
-    Done,
     /// `X`: ask for a reason, post it as a `review:` comment, send it to the
     /// record's agentium session, and send the card back to In Progress.
     SendBack,
@@ -104,11 +99,8 @@ pub(crate) enum ActionView<'a> {
 /// Most actions do the same thing everywhere. Where the view matters: `Open`
 /// leaves the queue or a plain review pane for the card's detail; `Review`
 /// in the queue only goes back to the newest record, since the queue already
-/// shows the card; `Archive` steps the grid's cursor off the card, steps the
-/// queue on (as `D` does), backs a detail out of it, or leaves a plain pane
-/// where it is until the archive folds in and the app prunes the card's
-/// entries, the pane's and its detail's under it, in one step; `Step` walks
-/// the grid's cursor, the queue, or the card's column.
+/// shows the card; `Step` walks the grid's cursor, the queue, or the card's
+/// column.
 pub(crate) fn apply_card_action(
     ctx: &egui::Context,
     view: &BoardView,
@@ -138,8 +130,6 @@ pub(crate) fn apply_card_action(
                 state.open_review(card, record)
             }
         },
-        CardAction::Archive => return archive_card(view, state, card, at, now),
-        CardAction::Done => return state.accept_card(view, card, now),
         CardAction::SendBack => state.start_reject(view, card, now),
         CardAction::Step(step) => match at {
             ActionView::Grid(filter) => move_cursor(view, filter, state, step_move(step)),
@@ -149,27 +139,6 @@ pub(crate) fn apply_card_action(
         },
     }
     None
-}
-
-/// `a`: a [`BoardAction::ArchiveCard`] for `card`, and what leaving it takes
-/// in view `at` (see [`apply_card_action`]).
-fn archive_card(
-    view: &BoardView,
-    state: &mut BoardUiState,
-    card: NoteId,
-    at: ActionView<'_>,
-    now: f64,
-) -> Option<BoardAction> {
-    match at {
-        ActionView::Grid(filter) => return archive_cursor_card(view, filter, state),
-        ActionView::Queue => state.advance_queue(view, now),
-        // The card's entries leave the history once the archive folds in
-        // (`nav::SeenCards`), so the pane doesn't back out itself: a back
-        // here would land on the detail under it, only for that to go too.
-        ActionView::Pane => {}
-        ActionView::Detail => state.leave_card(),
-    }
-    Some(BoardAction::ArchiveCard { card })
 }
 
 /// The grid cursor move an `n`/`p` makes: `j`'s and `k`'s.
@@ -227,7 +196,6 @@ pub(crate) fn apply_grid_tool(
             }
         }
         HeadwayUiTool::Cursor(mv) => move_cursor(view, filter, state, *mv),
-        HeadwayUiTool::MoveCard(mv) => return move_card(view, filter, state, *mv),
         HeadwayUiTool::AddCard => add_card_at_cursor(view, filter, state),
         HeadwayUiTool::FocusFilter => ctx.memory_mut(|m| m.request_focus(filter_field_id())),
         HeadwayUiTool::ReviewQueue => {
@@ -363,7 +331,6 @@ pub(crate) fn apply_pane_tool(
             (PaneMode::Plain, None) => {}
         },
         HeadwayUiTool::Cursor(_)
-        | HeadwayUiTool::MoveCard(_)
         | HeadwayUiTool::AddCard
         | HeadwayUiTool::FocusFilter
         | HeadwayUiTool::ReviewQueue
@@ -417,7 +384,6 @@ pub(crate) fn apply_detail_tool(
         }
         HeadwayUiTool::Back => state.leave_card(),
         HeadwayUiTool::Cursor(_)
-        | HeadwayUiTool::MoveCard(_)
         | HeadwayUiTool::AddCard
         | HeadwayUiTool::FocusFilter
         | HeadwayUiTool::Clear
@@ -552,118 +518,11 @@ pub(crate) fn reason_keys(
     action
 }
 
-/// The board-edit keys Headway still reads itself: `a` archives the current
-/// card and `D` moves it to the end of Done, in every view that has one;
-/// `H`/`L`/`J`/`K` move the grid's cursor card across columns or within one.
-/// Board edits are data tools, which chrome's keymap only calls once a
-/// binding can name the current card (headway:notedeck/ginger-home-mirror),
-/// so until then they're read here and queued as the tool they stand for, to
-/// run through [`pane_tools`] or [`grid_tools`] like any other this frame.
-///
-/// Under chrome's rules: nothing while a widget has the keyboard, a popup,
-/// menu or drag is up, or no view takes keys ([`crate::ui_tools::key_view`]:
-/// the `X` composer, the graph, an inline editor, a grid menu). Bare presses
-/// only, Shift picking the capital. Runs before anything lays out.
-pub(crate) fn edit_keys(ctx: &egui::Context, state: &mut BoardUiState) {
-    let Some(at) = crate::ui_tools::key_view(state) else {
-        return;
-    };
-    if chord::focus_taken(ctx) {
-        return;
-    }
-    let Some(press) = ctx.input(chord::first_key_press) else {
-        return;
-    };
-    if !press.is_bare() {
-        return;
-    }
-    let grid = at == crate::ui_tools::KeyView::Grid;
-    let card = |action| HeadwayUiTool::Card { action, card: None };
-    let tool = match (press.key, press.modifiers.shift) {
-        (Key::A, false) => card(CardAction::Archive),
-        (Key::D, true) => card(CardAction::Done),
-        (Key::H, true) if grid => HeadwayUiTool::MoveCard(CardMove::Across(Side::Left)),
-        (Key::L, true) if grid => HeadwayUiTool::MoveCard(CardMove::Across(Side::Right)),
-        (Key::J, true) if grid => HeadwayUiTool::MoveCard(CardMove::Within(Vertical::Down)),
-        (Key::K, true) if grid => HeadwayUiTool::MoveCard(CardMove::Within(Vertical::Up)),
-        _ => return,
-    };
-    state.queue_tool(tool);
-    chord::swallow_key_events(ctx);
-}
-
 /// Step the cursor, scrolling its new card into view.
 fn move_cursor(view: &BoardView, filter: &ViewFilter, state: &mut BoardUiState, mv: CursorMove) {
     if let Some(id) = cursor::step(view, filter, state.cursor(), mv) {
         state.set_cursor(id);
     }
-}
-
-/// A keyboard card move: Shift+H/L across columns, Shift+J/K within one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CardMove {
-    /// To the neighbouring column ([`cursor::move_across`]).
-    Across(Side),
-    /// Past the neighbouring visible card ([`cursor::move_within`]).
-    Within(Vertical),
-}
-
-/// A [`BoardAction::MoveCard`] taking the cursor card where `mv` drops it, or
-/// `None` without a visible cursor card or at an edge.
-///
-/// The cursor keeps following the card by id, so once the async ingest folds
-/// the move in, its ring (and the scroll this requests) land on the card's new
-/// slot. The move isn't flagged in `suppress_anim` the way a drop is: nothing
-/// carried the card there, so the slide shows where it went.
-///
-/// A second press before that fold lands recomputes from the stale view and
-/// re-emits the same target. That's harmless — the repeat move ranks the card
-/// into the same neighbourhood — so there's no pending-move tracking.
-fn move_card(
-    view: &BoardView,
-    filter: &ViewFilter,
-    state: &mut BoardUiState,
-    mv: CardMove,
-) -> Option<BoardAction> {
-    let card = state.cursor()?;
-    let (to_col, to_row) = match mv {
-        CardMove::Across(side) => cursor::move_across(view, filter, card, side),
-        CardMove::Within(dir) => cursor::move_within(view, filter, card, dir),
-    }?;
-    // Re-request the scroll, so the card stays in view as it lands.
-    state.set_cursor(card);
-    Some(BoardAction::MoveCard {
-        card,
-        to_col,
-        to_row,
-    })
-}
-
-/// A [`BoardAction::ArchiveCard`] for the cursor card, or `None` without a
-/// visible cursor card. Archiving is recoverable from the archived sheet, so it
-/// takes no confirmation.
-///
-/// The cursor steps off the card first — to the next card down, else the one
-/// above, else nowhere — so repeated `a` presses triage a column top to bottom
-/// instead of landing back on the first card once the archive folds in.
-fn archive_cursor_card(
-    view: &BoardView,
-    filter: &ViewFilter,
-    state: &mut BoardUiState,
-) -> Option<BoardAction> {
-    let card = state
-        .cursor()
-        .filter(|&c| cursor::locate(view, filter, c).is_some())?;
-    // `step` clamps at a column's end by returning the card itself.
-    let neighbour = [CursorMove::Down, CursorMove::Up]
-        .into_iter()
-        .filter_map(|mv| cursor::step(view, filter, Some(card), mv))
-        .find(|&id| id != card);
-    match neighbour {
-        Some(id) => state.set_cursor(id),
-        None => state.clear_cursor(),
-    }
-    Some(BoardAction::ArchiveCard { card })
 }
 
 /// Open the add-card composer in the cursor's column, or the first column when
@@ -732,43 +591,105 @@ mod tests {
         hints_pinned: bool,
     }
 
-    /// Whether the chrome's own tool, or Headway's UI tool, `name` is
-    /// available, as chrome asks its keymap: `?` only while Headway reports
-    /// scopes, Esc's strip-hide only while it's pinned.
+    /// Headway's data tools the shipped keymap binds its board edits to
+    /// (`a`, `D`, `H L J K`), on the current card.
+    const BOARD_EDITS: &[&str] = &["headway_archive_card", "headway_move_card"];
+
+    /// Whether the chrome's own tool, Headway's UI tool, or Headway's data
+    /// tool `name` is available, as chrome asks its keymap: `?` only while
+    /// Headway reports scopes, Esc's strip-hide only while it's pinned, a
+    /// data tool always (the keymap holds it to the current card).
     fn tool_available(state: &BoardUiState, pinned: bool, name: &str) -> bool {
         match name {
             TOGGLE_KEY_HINTS => !key_scopes(state).is_empty(),
             HIDE_KEY_HINTS => pinned,
+            name if BOARD_EDITS.contains(&name) => true,
             name => available(state, name),
         }
     }
 
+    /// The scopes chrome resolves Headway's keys in, with its current card.
+    fn chrome_scopes(state: &BoardUiState) -> Scopes<'_> {
+        Scopes::new(key_scopes(state)).with_current(state.current_ref())
+    }
+
     /// Chrome's part of a frame, ahead of Headway's render: the key engine
-    /// resolving this frame's press against Headway's scopes, and the tool it's bound to called (queued, as
-    /// `Headway::call_ui_tool` does), or the strip toggled.
+    /// resolving this frame's press against Headway's scopes and current
+    /// card, then the tool it's bound to called: a UI tool queued, as
+    /// `Headway::call_ui_tool` does; a board edit's data tool run, its edit
+    /// recorded and folded into the board ([`fold`]); or the strip toggled.
     fn chrome_keys(ctx: &egui::Context, h: &mut KeysHarness) {
-        let KeysHarness {
-            keys,
-            state,
-            hints_pinned,
-            ..
-        } = h;
-        let pinned = *hints_pinned;
-        let dispatch = keys.resolve(ctx, key_scopes(state), |name| {
+        let pinned = h.hints_pinned;
+        let state = &h.state;
+        let dispatch = h.keys.resolve(ctx, chrome_scopes(state), |name| {
             tool_available(state, pinned, name)
         });
         let Some(KeyDispatch::Tool(call)) = dispatch else {
             return;
         };
         match call.name.as_str() {
-            TOGGLE_KEY_HINTS => *hints_pinned = !pinned,
-            HIDE_KEY_HINTS => *hints_pinned = false,
+            TOGGLE_KEY_HINTS => h.hints_pinned = !pinned,
+            HIDE_KEY_HINTS => h.hints_pinned = false,
+            name if BOARD_EDITS.contains(&name) => {
+                // An edit the tool refuses (a move off the board's edge) is
+                // only logged by chrome.
+                if let Ok(edit) = crate::tools::board_edit(&h.view, name, &call.args) {
+                    fold(h, edit);
+                }
+            }
             name => {
                 let tool = HeadwayUiTool::parse(name, &call.args)
                     .unwrap_or_else(|e| panic!("keymap binds {name} {}: {e}", call.args));
-                state.queue_tool(tool);
+                h.state.queue_tool(tool);
             }
         }
+    }
+
+    /// Record a key's board edit and fold it into the harness's board, as
+    /// the app's async ingest does a frame or more later: here before the
+    /// board draws, so the frame of the key press sees it. A card that left
+    /// is reported as `nav::SeenCards` reports it to the app.
+    fn fold(h: &mut KeysHarness, edit: BoardAction) {
+        match edit {
+            BoardAction::ArchiveCard { card } => {
+                h.archived = Some(card);
+                take_card(&mut h.view, card);
+                h.state.note_departed(&[card]);
+            }
+            BoardAction::MoveCard {
+                card,
+                to_col,
+                to_row,
+            } => {
+                h.moved = Some((card, to_col, to_row));
+                let Some((from_col, from_row, moved)) = take_card(&mut h.view, card) else {
+                    return;
+                };
+                // `to_row` counts the moving card where it was.
+                let row = if from_col == to_col && to_row > from_row {
+                    to_row - 1
+                } else {
+                    to_row
+                };
+                let cards = &mut h.view.columns[to_col].cards;
+                cards.insert(row.min(cards.len()), moved);
+            }
+            _ => panic!("not a key's board edit"),
+        }
+    }
+
+    /// Take `card` out of its column: its column, its row and the card.
+    fn take_card(
+        view: &mut BoardView,
+        card: NoteId,
+    ) -> Option<(usize, usize, headway::event::CardView)> {
+        view.columns
+            .iter_mut()
+            .enumerate()
+            .find_map(|(col, column)| {
+                let row = column.cards.iter().position(|c| c.id == card)?;
+                Some((col, row, column.cards.remove(row)))
+            })
     }
 
     /// Chrome's which-key strip, as it draws it below the app: what finishes
@@ -783,7 +704,7 @@ mod tests {
         let hints = h
             .keys
             .keymap()
-            .hints(Scopes::new(key_scopes(state)), pending, move |name| {
+            .hints(chrome_scopes(state), pending, move |name| {
                 tool_available(state, pinned, name)
             });
         let muted = ColorTheme::current(ui.ctx()).text_muted;
@@ -796,10 +717,11 @@ mod tests {
 
     /// A harness that runs Headway's keys over [`grid`] each frame,
     /// unfiltered: chrome's keymap first ([`chrome_keys`]), then as
-    /// [`crate::ui::board_ui`] does, the edit keys ([`edit_keys`]), a queue
-    /// route's re-snapshot,
-    /// [`reason_keys`] and [`pane_tools`], then [`grid_tools`] when no pane
-    /// shows over the grid; chrome's strip last.
+    /// [`crate::ui::board_ui`] does, a queue route's re-snapshot, the queue
+    /// following a verdict that folded in, [`reason_keys`] and
+    /// [`pane_tools`], then, when no pane shows over the grid, the cursor
+    /// following an edit and [`grid_tools`]; the current card latched as the
+    /// pass ends, and chrome's strip last.
     fn keys_harness(field: Option<egui::Id>) -> Harness<'static, KeysHarness> {
         let mut harness = Harness::new_ui_state(
             |ui, h: &mut KeysHarness| {
@@ -812,9 +734,10 @@ mod tests {
                     s.queue_open() || s.review_card().is_some() || s.selected().is_some()
                 };
                 chrome_keys(ui.ctx(), h);
-                edit_keys(ui.ctx(), &mut h.state);
                 h.state.reset_grid_menu_open();
-                h.state.refresh_queue(&h.view, ui.ctx().input(|i| i.time));
+                let now = ui.ctx().input(|i| i.time);
+                h.state.refresh_queue(&h.view, now);
+                h.state.follow_queue(&h.view, now);
                 let showed_pane = pane(&h.state);
                 h.state.retire_stale_reason();
                 let keyed = reason_keys(ui.ctx(), &h.view, &mut h.state);
@@ -823,9 +746,13 @@ mod tests {
                 let action = if showed_pane || keyed.is_some() {
                     keyed
                 } else {
-                    grid_tools(ui.ctx(), &h.view, &filter, &mut h.state)
+                    h.state.follow_cursor(&h.view, &filter);
+                    let action = grid_tools(ui.ctx(), &h.view, &filter, &mut h.state);
+                    h.state.latch_cursor_slot(&h.view, &filter);
+                    action
                 };
                 h.state.drop_queued_tools();
+                h.state.latch_current_ref(&h.view);
                 for effect in h.state.take_effects() {
                     if let BoardEffect::Open(open) = effect {
                         h.session = Some(open);
@@ -1030,21 +957,31 @@ mod tests {
         press_with(&mut harness, Modifiers::SHIFT, Key::L);
         assert_eq!(harness.state().moved, None, "no cursor, no move");
 
-        harness.state_mut().state.set_cursor(id(2));
+        put_cursor(&mut harness, id(2));
         // Row 1 of `a` into `b`, which holds one card: its end.
         press_with(&mut harness, Modifiers::SHIFT, Key::L);
         assert_eq!(harness.state().moved, Some((id(2), 1, 1)));
-        press_with(&mut harness, Modifiers::SHIFT, Key::J);
-        assert_eq!(harness.state().moved, Some((id(2), 0, 3)));
-        press_with(&mut harness, Modifiers::SHIFT, Key::K);
-        assert_eq!(harness.state().moved, Some((id(2), 0, 0)));
-
-        // The grid view isn't refolded here, so the cursor card is still in
-        // `a`, the leftmost column: Shift+H is a no-op.
-        harness.state_mut().moved = None;
-        press_with(&mut harness, Modifiers::SHIFT, Key::H);
-        assert_eq!(harness.state().moved, None);
+        // Folded in, `b` is 4, 2: the cursor followed the card.
         assert_eq!(harness.state().state.cursor(), Some(id(2)), "cursor kept");
+        press_with(&mut harness, Modifiers::SHIFT, Key::K);
+        assert_eq!(harness.state().moved, Some((id(2), 1, 0)));
+        press_with(&mut harness, Modifiers::SHIFT, Key::J);
+        assert_eq!(harness.state().moved, Some((id(2), 1, 2)));
+        press_with(&mut harness, Modifiers::SHIFT, Key::H);
+        assert_eq!(harness.state().moved, Some((id(2), 0, 1)));
+        assert_eq!(harness.state().view.columns[0].cards[1].id, id(2));
+
+        // At an edge the tool refuses: nothing moves.
+        press_with(&mut harness, Modifiers::SHIFT, Key::H);
+        assert_eq!(harness.state().moved, Some((id(2), 0, 1)), "no new move");
+        assert_eq!(harness.state().state.cursor(), Some(id(2)), "cursor kept");
+    }
+
+    /// Put the grid's cursor on `card` and let a frame pass, so the current
+    /// card chrome's keymap edits is latched, as a cursor key would leave it.
+    fn put_cursor(harness: &mut Harness<'static, KeysHarness>, card: NoteId) {
+        harness.state_mut().state.set_cursor(card);
+        harness.run();
     }
 
     /// Everything a board key can visibly do, for [`every_hint_does_what_it_says`]
@@ -1137,11 +1074,9 @@ mod tests {
         let state = &h.state;
         h.keys
             .keymap()
-            .hints(
-                Scopes::new(key_scopes(state)),
-                h.keys.pending(),
-                move |name| tool_available(state, true, name),
-            )
+            .hints(chrome_scopes(state), h.keys.pending(), move |name| {
+                tool_available(state, true, name)
+            })
             .flat_map(|hint| {
                 hint.keycap_iter()
                     .map(move |cap| (cap.to_owned(), hint.label.to_owned()))
@@ -1166,15 +1101,21 @@ mod tests {
     /// a key the keymap sends nowhere.
     #[test]
     fn every_hint_does_what_it_says() {
+        // `D` needs a Done column to move the card to.
+        let board = || {
+            let mut view = square_grid();
+            view.columns[2].name = "Done".to_string();
+            view
+        };
         let mut grid = keys_harness(Some(filter_field_id()));
-        grid.state_mut().view = square_grid();
+        grid.state_mut().view = board();
         grid.state_mut().state.set_cursor(id(5));
         grid.run();
         for (cap, label) in strip_now(&grid) {
             // The filter field is laid out so `/`'s focus request has a
             // widget to land on.
             let mut harness = keys_harness(Some(filter_field_id()));
-            harness.state_mut().view = square_grid();
+            harness.state_mut().view = board();
             harness.state_mut().state.set_cursor(id(5));
             harness.run();
             let before = effects(&harness);
@@ -1261,19 +1202,19 @@ mod tests {
         assert_eq!(harness.state().archived, None, "no cursor, no archive");
 
         // Mid-column: the cursor moves down to the next card.
-        harness.state_mut().state.set_cursor(id(1));
+        put_cursor(&mut harness, id(1));
         press(&mut harness, Key::A);
         assert_eq!(harness.state().archived, Some(id(1)));
         assert_eq!(harness.state().state.cursor(), Some(id(2)));
 
         // Column end: it moves up instead.
-        harness.state_mut().state.set_cursor(id(3));
+        put_cursor(&mut harness, id(3));
         press(&mut harness, Key::A);
         assert_eq!(harness.state().archived, Some(id(3)));
         assert_eq!(harness.state().state.cursor(), Some(id(2)));
 
         // A column's only card: the cursor is dropped.
-        harness.state_mut().state.set_cursor(id(4));
+        put_cursor(&mut harness, id(4));
         press(&mut harness, Key::A);
         assert_eq!(harness.state().archived, Some(id(4)));
         assert_eq!(harness.state().state.cursor(), None);
@@ -1624,11 +1565,13 @@ mod tests {
         harness
     }
 
-    /// **The guard.** Every card action's key (the keymap's and
-    /// [`edit_keys`]'), pressed in each of the four views with card 5 current (the grid's cursor, the queue's
-    /// card, a plain review pane's, the detail's), applies the same
-    /// [`CardAction`] to card 5. The per-view `every_*_hint` tests only show
-    /// that a key does *something*; this shows it means the same thing.
+    /// **The guard.** Every card action's key, pressed in each of the four
+    /// views with card 5 current (the grid's cursor, the queue's card, a
+    /// plain review pane's, the detail's), applies the same [`CardAction`]
+    /// to card 5, and the board edits `a` and `D`, data tools on chrome's
+    /// current card, make the same edit to it. The per-view `every_*_hint`
+    /// tests only show that a key does *something*; this shows it means the
+    /// same thing.
     #[test]
     fn card_actions_mean_the_same_in_every_view() {
         let views = [
@@ -1656,10 +1599,7 @@ mod tests {
             };
             (cap, tool, action)
         });
-        // The board edits, read by `edit_keys` rather than bound to a tool.
-        let edits = [("a", CardAction::Archive), ("D", CardAction::Done)]
-            .map(|(cap, action)| (cap, "edit_keys", action));
-        for (cap, tool, action) in by_tool.chain(edits) {
+        for (cap, tool, action) in by_tool {
             let presses = keycap_presses(cap);
             let [(modifiers, key)] = presses[..] else {
                 panic!("card action {cap:?} is one press");
@@ -1676,6 +1616,20 @@ mod tests {
                     "keycap {cap:?} ({tool}) in the {name}"
                 );
             }
+        }
+
+        // `D` moves the card to the end of Done, the third column.
+        for ActionTestView { name, open } in &views {
+            let mut harness = open();
+            press(&mut harness, Key::A);
+            assert_eq!(harness.state().archived, Some(id(5)), "a in the {name}");
+            let mut harness = open();
+            press_with(&mut harness, Modifiers::SHIFT, Key::D);
+            assert_eq!(
+                harness.state().moved,
+                Some((id(5), 2, 3)),
+                "D in the {name}"
+            );
         }
     }
 
@@ -1813,9 +1767,8 @@ mod tests {
 
     /// Chrome's strip reads as Headway's own did: each view's labels in the
     /// order its strip listed them (the card actions after the grid's own
-    /// keys, before a pane's), then chrome's `?`. Bar the board edits (`a`,
-    /// `D`, `H L J K`), which Headway still reads itself ([`edit_keys`]) and
-    /// so aren't the keymap's to list.
+    /// keys, before a pane's), then chrome's `?`. The board edits (`a`, `D`,
+    /// `H L J K`) are listed with them, as data tools on the current card.
     #[test]
     fn strips_read_as_before() {
         const CARD: &[&str] = &[
@@ -1823,6 +1776,8 @@ mod tests {
             "explainer",
             "session/review",
             "review diff",
+            "archive",
+            "done",
             "send back",
             "next/prev card",
         ];
@@ -1836,6 +1791,8 @@ mod tests {
             "up/down",
             "columns",
             "first/last",
+            "move card",
+            "reorder",
             "new",
             "review queue",
             "filter",
@@ -2103,8 +2060,8 @@ diff --git a/b.txt b/b.txt
         assert_eq!(harness.state().state.review_card(), Some(id(5)), "no step");
     }
 
-    /// `D` moves the card to the end of Done and steps on; on the last card
-    /// it leaves the queue saying it's done.
+    /// `D` moves the card to the end of Done and, as that folds in, the
+    /// queue steps on; on the last card it leaves the queue saying it's done.
     #[test]
     fn d_moves_the_card_to_done_and_advances() {
         let mut harness = queue_harness();
@@ -2112,8 +2069,9 @@ diff --git a/b.txt b/b.txt
         assert_eq!(harness.state().moved, Some((id(5), 2, 3)));
         assert_eq!(harness.state().state.review_card(), Some(id(6)));
 
+        // Done holds 5 by now, so 6 goes after it.
         press_with(&mut harness, Modifiers::SHIFT, Key::D);
-        assert_eq!(harness.state().moved, Some((id(6), 2, 3)));
+        assert_eq!(harness.state().moved, Some((id(6), 2, 4)));
         assert!(!harness.state().state.queue_open());
         assert_eq!(harness.state().state.notice(), Some(QueueNotice::QueueDone));
         assert_eq!(harness.state().state.cursor(), Some(id(6)));
@@ -2152,22 +2110,42 @@ diff --git a/b.txt b/b.txt
         assert_eq!(harness.state().state.selected(), None, "back to the grid");
     }
 
-    /// The queue's cards are a snapshot: once its card has left the board, a
-    /// card action on it raises no edit and doesn't step the queue on, only
-    /// says so; `n` still steps off it.
+    /// The queue's cards are a snapshot: a card that left the board before
+    /// the queue reached it keeps its place, and a card action on it raises
+    /// no edit (`a` is unavailable without a current card) and doesn't step
+    /// the queue on, `X` only says so; `n` still steps off it.
     #[test]
     fn queue_actions_on_a_card_that_left_the_board_only_say_so() {
         let mut harness = queue_harness();
+        press(&mut harness, Key::P);
+        assert_eq!(harness.state().state.review_card(), Some(id(4)));
         harness.state_mut().view.columns[1].cards.remove(1);
+        press(&mut harness, Key::N);
+        assert_eq!(harness.state().state.review_card(), Some(id(5)));
+
         press(&mut harness, Key::A);
         assert_eq!(harness.state().archived, None);
         assert_eq!(harness.state().state.review_card(), Some(id(5)), "no step");
+        press_with(&mut harness, Modifiers::SHIFT, Key::X);
         assert_eq!(harness.state().state.notice(), Some(QueueNotice::CardGone));
         press(&mut harness, Key::Enter);
         assert!(harness.state().state.queue_open(), "no detail to open");
 
         press(&mut harness, Key::N);
         assert_eq!(harness.state().state.review_card(), Some(id(6)));
+    }
+
+    /// The queue follows a verdict on its card from anywhere: once the card
+    /// it shows leaves In Review (moved on another device, archived), it
+    /// steps on as after `D`.
+    #[test]
+    fn a_card_leaving_in_review_steps_the_queue_on() {
+        let mut harness = queue_harness();
+        let card = harness.state_mut().view.columns[1].cards.remove(1);
+        harness.state_mut().view.columns[0].cards.push(card);
+        harness.run();
+        assert_eq!(harness.state().state.review_card(), Some(id(6)));
+        assert!(harness.state().state.queue_open());
     }
 
     /// `X` opens the reason composer, which holds the queue's keys; Enter
@@ -2526,9 +2504,9 @@ diff --git a/b.txt b/b.txt
         assert!(!harness.state().esc_left, "Esc consumed");
     }
 
-    /// The detail takes the card actions — `s` opens its session, `D` moves
-    /// it to Done, `n` steps to the next card in its column — and scrolls with
-    /// `j`; `q` backs out to the grid.
+    /// The detail takes the card actions — `s` opens its session, `n` steps
+    /// to the next card in its column, `D` moves it to Done — and scrolls
+    /// with `j`; `q` backs out to the grid.
     #[test]
     fn the_detail_takes_the_card_actions() {
         let mut harness = detail_harness(None);
@@ -2537,8 +2515,6 @@ diff --git a/b.txt b/b.txt
             harness.state().session,
             Some(notedeck::OpenUri::new(SESSION))
         );
-        press_with(&mut harness, Modifiers::SHIFT, Key::D);
-        assert_eq!(harness.state().moved, Some((id(5), 2, 3)));
         press(&mut harness, Key::J);
         assert_eq!(
             harness.state().state.detail_scroll(),
@@ -2547,6 +2523,9 @@ diff --git a/b.txt b/b.txt
         press(&mut harness, Key::N);
         assert_eq!(harness.state().state.selected(), Some(id(6)));
         assert_eq!(harness.state().state.cursor(), Some(id(6)));
+        press_with(&mut harness, Modifiers::SHIFT, Key::D);
+        assert_eq!(harness.state().moved, Some((id(6), 2, 3)));
+        assert_eq!(harness.state().state.selected(), Some(id(6)), "still open");
         press_with(&mut harness, Modifiers::SHIFT, Key::Questionmark);
         assert!(harness.query_by_label("session/review").is_some());
         press(&mut harness, Key::Q);
@@ -2566,13 +2545,14 @@ diff --git a/b.txt b/b.txt
         assert_eq!(harness.state().state.selected(), Some(id(5)));
     }
 
-    /// `a` on the detail archives its card and backs out to the grid.
+    /// `a` on the detail archives its card. The detail stays until the app
+    /// prunes the card's entries as the archive folds in, as a plain pane
+    /// does (notedeck_chrome's `detail_a_ends_on_the_board`).
     #[test]
-    fn a_on_the_detail_archives_and_leaves() {
+    fn a_on_the_detail_archives_it() {
         let mut harness = detail_harness(None);
         press(&mut harness, Key::A);
         assert_eq!(harness.state().archived, Some(id(5)));
-        assert_eq!(harness.state().state.selected(), None);
     }
 
     /// Typing into the detail's comment composer (or any focused field) keeps
@@ -2593,7 +2573,8 @@ diff --git a/b.txt b/b.txt
         assert_eq!(harness.state().text, "s");
     }
 
-    /// A verdict key on a board without its column does nothing but say so.
+    /// A verdict key on a board without its column does nothing: `D`'s data
+    /// tool refuses (chrome logs it), and `X` says so.
     #[test]
     fn verdicts_need_their_columns() {
         let mut harness = queue_harness();
@@ -2604,10 +2585,7 @@ diff --git a/b.txt b/b.txt
 
         press_with(&mut harness, Modifiers::SHIFT, Key::D);
         assert_eq!(harness.state().moved, None);
-        assert_eq!(
-            harness.state().state.notice(),
-            Some(QueueNotice::NoDoneColumn)
-        );
+        assert_eq!(harness.state().state.review_card(), Some(id(5)));
         press_with(&mut harness, Modifiers::SHIFT, Key::X);
         assert!(!harness.state().state.rejecting());
         assert_eq!(

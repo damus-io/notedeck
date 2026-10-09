@@ -1,4 +1,4 @@
-//! The chrome's keymap: key sequences bound to UI tools, per key scope.
+//! The chrome's keymap: key sequences bound to tools, per key scope.
 //!
 //! Apps advertise UI tools ([`notedeck::App::ui_tools`]) and report which key
 //! scopes are active each frame ([`notedeck::App::key_scopes`], most specific
@@ -13,6 +13,13 @@
 //! [`DEFAULT_KEYMAP`] (`default_keymap.toml`). After the app's scopes comes
 //! [`GLOBAL_SCOPE`], for the chrome's own bindings (`?` for the which-key
 //! strip), which [`Keymap::hints`] draws from the same bindings.
+//!
+//! A binding can call a **data tool** too (an app's [`notedeck::AppTool`],
+//! e.g. `headway_archive_card`), on whatever the app's view is on: a string
+//! in its `args` naming [`CURRENT`] (`args = { card = "{current}" }`) is
+//! replaced, as the key fires, with the active app's
+//! [current ref](notedeck::App::current_ref). A binding naming it is ready
+//! only while the app has one, so without one its keys fall through.
 //!
 //! Text-field keys stay with the apps: the engine does nothing while a widget
 //! has keyboard focus, a popup is open or a drag is under way (see
@@ -35,19 +42,36 @@ pub use parse::{parse, BindProblem, KeymapError};
 /// any app.
 pub const GLOBAL_SCOPE: &str = "global";
 
+/// The placeholder a binding's `args` name the active app's
+/// [current ref](notedeck::App::current_ref) with, replaced as the key fires.
+pub const CURRENT: &str = "{current}";
+
 /// The scopes a key is resolved in, most specific first: the active app's
-/// [key scopes](notedeck::App::key_scopes), then [`GLOBAL_SCOPE`]. `Copy`, and
-/// walking it doesn't allocate.
+/// [key scopes](notedeck::App::key_scopes), then [`GLOBAL_SCOPE`]; and the
+/// app's [current ref](notedeck::App::current_ref), for the bindings whose
+/// args name [`CURRENT`]. `Copy`, and walking it doesn't allocate.
 #[derive(Clone, Copy, Debug)]
 pub struct Scopes<'a> {
     /// The app's scopes, most specific first.
     app: &'a [&'a str],
+    /// What the app's view is on, e.g. `headway:<board>/<word-id>`.
+    current: Option<&'a str>,
 }
 
 impl<'a> Scopes<'a> {
-    /// The app's `scopes`, then [`GLOBAL_SCOPE`].
+    /// The app's `scopes`, then [`GLOBAL_SCOPE`], with no current ref.
     pub fn new(app: &'a [&'a str]) -> Self {
-        Self { app }
+        Self { app, current: None }
+    }
+
+    /// These scopes with the app's `current` ref.
+    pub fn with_current(self, current: Option<&'a str>) -> Self {
+        Self { current, ..self }
+    }
+
+    /// The app's current ref, if it has one.
+    pub fn current(self) -> Option<&'a str> {
+        self.current
     }
 
     /// How many scopes there are, the global one included.
@@ -133,14 +157,19 @@ pub struct Binding {
     /// The which-key keycap of `keys` from each stroke on (`gg`, then `g`),
     /// so the strip can show what's left of a chord without formatting.
     keycaps: Vec<String>,
+    /// Whether its tool's args name [`CURRENT`], read once at load.
+    uses_current: bool,
 }
 
 impl Binding {
-    /// Whether it would run now: its tool is `available`. Whether a macro can
-    /// run is its runner's call, so a macro binding always is.
-    fn ready(&self, available: &impl Fn(&str) -> bool) -> bool {
+    /// Whether it would run now: its tool is `available`, and the app has a
+    /// current ref if its args name one. Whether a macro can run is its
+    /// runner's call, so a macro binding always is.
+    fn ready(&self, scopes: Scopes<'_>, available: &impl Fn(&str) -> bool) -> bool {
         match &self.action {
-            BindAction::Tool(invocation) => available(&invocation.name),
+            BindAction::Tool(invocation) => {
+                available(&invocation.name) && (!self.uses_current || scopes.current.is_some())
+            }
             BindAction::Macro(_) => true,
         }
     }
@@ -234,8 +263,9 @@ impl Keymap {
 /// What a resolved key press asks the chrome to do.
 #[derive(Debug, PartialEq)]
 pub enum KeyDispatch<'a> {
-    /// Call this UI tool.
-    Tool(&'a ToolInvocation),
+    /// Call this tool, a UI tool or a data tool, its args' [`CURRENT`]
+    /// already replaced with the app's current ref.
+    Tool(ToolInvocation),
     /// Run the macro with this name.
     Macro(&'a str),
 }
@@ -298,7 +328,8 @@ impl KeyEngine {
 
     /// Resolve this frame's key press against the app's `scopes` (most
     /// specific first) and then [`GLOBAL_SCOPE`], asking `available` whether a
-    /// bound tool does anything right now.
+    /// bound tool does anything right now. A binding whose args name
+    /// [`CURRENT`] is passed over while `scopes` has no current ref.
     ///
     /// Does nothing while focus is taken (a text field, popup or drag). A press
     /// that completes a binding is swallowed and returned; one that starts or
@@ -310,11 +341,10 @@ impl KeyEngine {
     pub fn resolve(
         &mut self,
         ctx: &egui::Context,
-        scopes: &[&str],
+        scopes: Scopes<'_>,
         available: impl Fn(&str) -> bool,
     ) -> Option<KeyDispatch<'_>> {
         let pending = self.chord.tick(ctx);
-        let scopes = Scopes::new(scopes);
         if chord::focus_taken(ctx) {
             self.chord.clear();
             return None;
@@ -350,7 +380,9 @@ impl KeyEngine {
                 self.chord.clear();
                 chord::swallow_key_events(ctx);
                 Some(match &binding.action {
-                    BindAction::Tool(invocation) => KeyDispatch::Tool(invocation),
+                    BindAction::Tool(invocation) => {
+                        KeyDispatch::Tool(with_current(invocation, binding, scopes.current))
+                    }
                     BindAction::Macro(name) => KeyDispatch::Macro(name),
                 })
             }
@@ -371,7 +403,7 @@ fn find<'a>(
     for scope in scopes.iter() {
         match keymap.lookup(scope, seq) {
             Match::Exact(bindings) => {
-                let ready = bindings.iter().find(|b| b.ready(available));
+                let ready = bindings.iter().find(|b| b.ready(scopes, available));
                 if let Some(binding) = ready {
                     return Found::Fire(binding);
                 }
@@ -381,4 +413,54 @@ fn find<'a>(
         }
     }
     Found::None
+}
+
+/// `invocation`, `binding`'s tool call, as the key fires it: its args with
+/// every [`CURRENT`] replaced by `current`. Only a fired binding is ever
+/// substituted, so this is the one place a key press allocates its call.
+fn with_current(
+    invocation: &ToolInvocation,
+    binding: &Binding,
+    current: Option<&str>,
+) -> ToolInvocation {
+    match current {
+        Some(current) if binding.uses_current => ToolInvocation::new(
+            invocation.name.clone(),
+            replace_current(&invocation.args, current),
+        ),
+        _ => invocation.clone(),
+    }
+}
+
+/// `args` with [`CURRENT`] replaced by `current` in every string, however
+/// deep.
+fn replace_current(args: &serde_json::Value, current: &str) -> serde_json::Value {
+    use serde_json::Value;
+    match args {
+        Value::String(text) => Value::String(text.replace(CURRENT, current)),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| replace_current(item, current))
+                .collect(),
+        ),
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), replace_current(value, current)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Whether any string in `args`, however deep, names [`CURRENT`].
+fn names_current(args: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match args {
+        Value::String(text) => text.contains(CURRENT),
+        Value::Array(items) => items.iter().any(names_current),
+        Value::Object(fields) => fields.values().any(names_current),
+        _ => false,
+    }
 }

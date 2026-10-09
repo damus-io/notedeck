@@ -48,7 +48,11 @@ fn resolve_allocs(
     let mut allocs = 0;
     ctx.run_ui(input, |ui| {
         let ctx = ui.ctx();
-        let (_, counts) = measure(|| engine.resolve(ctx, SCOPES, |_| true).is_some());
+        let (_, counts) = measure(|| {
+            engine
+                .resolve(ctx, keymap::Scopes::new(SCOPES), |_| true)
+                .is_some()
+        });
         allocs = counts.thread.allocs;
     })
     .drop_without_applying_deltas();

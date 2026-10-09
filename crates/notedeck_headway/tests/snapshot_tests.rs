@@ -39,10 +39,15 @@ struct HeadwayTestState {
     keys: ChromeKeys,
 }
 
+/// The data tools the shipped keymap binds Headway's board edits to (`a`,
+/// `D`, `H L J K`), on the current card.
+const BOARD_EDITS: &[&str] = &["headway_archive_card", "headway_move_card"];
+
 /// What the chrome does with Headway's keys, stood in for here: its key
 /// engine, with the shipped keymap, resolves each frame's press against
-/// Headway's key scopes before Headway renders and calls the UI tool it's
-/// bound to; `?` pins the which-key strip the chrome draws below the app.
+/// Headway's key scopes and current card before Headway renders and calls the
+/// tool it's bound to; `?` pins the which-key strip the chrome draws below
+/// the app.
 struct ChromeKeys {
     engine: KeyEngine,
     /// Whether `?` pinned the strip.
@@ -57,30 +62,49 @@ impl ChromeKeys {
         }
     }
 
-    /// Whether chrome's own tool, or Headway's UI tool, `name` is available,
-    /// as chrome asks: `?` only while Headway reports scopes, the strip's
-    /// Esc only while it's pinned.
+    /// Whether chrome's own tool, Headway's UI tool, or one of the data tools
+    /// Headway's board-edit keys are bound to is available, as chrome asks:
+    /// `?` only while Headway reports scopes, the strip's Esc only while it's
+    /// pinned, a data tool always (the keymap holds it to the current card).
     fn available(pinned: bool, headway: &Headway, name: &str) -> bool {
         match name {
             TOGGLE_KEY_HINTS => !headway.key_scopes().is_empty(),
             HIDE_KEY_HINTS => pinned,
+            name if BOARD_EDITS.contains(&name) => true,
             name => headway.ui_tool_available(name),
         }
     }
 
-    /// Resolve this frame's key press and run what it's bound to.
+    /// The scopes chrome resolves Headway's keys in, with its current card.
+    fn scopes(headway: &Headway) -> Scopes<'_> {
+        Scopes::new(headway.key_scopes()).with_current(headway.current_ref())
+    }
+
+    /// Resolve this frame's key press and run what it's bound to: a UI tool
+    /// in Headway, a data tool at once, as chrome does.
     fn dispatch(&mut self, ctx: &egui::Context, app_ctx: &mut AppContext, headway: &mut Headway) {
         let pinned = self.pinned;
-        let scopes = headway.key_scopes();
-        let dispatch = self
-            .engine
-            .resolve(ctx, scopes, |name| Self::available(pinned, headway, name));
+        let dispatch = self.engine.resolve(ctx, Self::scopes(headway), |name| {
+            Self::available(pinned, headway, name)
+        });
         let Some(KeyDispatch::Tool(call)) = dispatch else {
             return;
         };
         match call.name.as_str() {
             TOGGLE_KEY_HINTS => self.pinned = !pinned,
             HIDE_KEY_HINTS => self.pinned = false,
+            name if BOARD_EDITS.contains(&name) => {
+                let tools = headway.tools();
+                let tool = tools
+                    .iter()
+                    .find(|t| t.name() == name)
+                    .expect("a data tool");
+                if let notedeck::ToolOutcome::Error(err) =
+                    tool.call(&mut app_ctx.tool_context(), &call.args)
+                {
+                    tracing::warn!("keymap's {name} {}: {err}", call.args);
+                }
+            }
             name => {
                 if let notedeck::ToolOutcome::Error(err) =
                     headway.call_ui_tool(app_ctx, name, &call.args)
@@ -99,12 +123,12 @@ impl ChromeKeys {
             return;
         }
         let pinned = self.pinned;
-        let hints =
-            self.engine
-                .keymap()
-                .hints(Scopes::new(headway.key_scopes()), pending, move |name| {
-                    Self::available(pinned, headway, name)
-                });
+        let hints = self
+            .engine
+            .keymap()
+            .hints(Self::scopes(headway), pending, move |name| {
+                Self::available(pinned, headway, name)
+            });
         let muted = notedeck::ColorTheme::current(ui.ctx()).text_muted;
         let margin = notedeck::tokens::SPACING_MD as i8;
         egui::Panel::bottom("chrome-key-hints")

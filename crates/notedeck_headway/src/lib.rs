@@ -600,6 +600,13 @@ impl App for Headway {
         ui_tools::key_scopes(&self.state)
     }
 
+    /// The current card as `headway:<board>/<word-id>`, which chrome's keymap
+    /// runs Headway's board edits on: `a` archives it, `D` moves it to Done,
+    /// `H L J K` move it (data tools, see [`tools`]).
+    fn current_ref(&self) -> Option<&str> {
+        self.state.current_ref()
+    }
+
     /// Background sync, run every frame for all *opened* apps (not just the
     /// foreground one) — which is what lets edits ingested by the `headway` CLI
     /// while the user is on another tab still sync out. Polls the account's board
@@ -988,8 +995,9 @@ impl Headway {
             // fold stays empty — and a shared board whose definition never arrives
             // strands it for good (the bug this replaces).
             let Some(secret) = &signer else {
-                // No board, so no view a UI tool could act on.
+                // No board, so no view a UI tool could act on, nor a card to edit.
                 self.state.drop_queued_tools();
+                self.state.clear_current_ref();
                 empty_state(
                     ui,
                     &theme,
@@ -1019,6 +1027,7 @@ impl Headway {
         // Headway renders as the active app, which the chrome tags it with.
         let departed = self.seen_cards.departed(&view);
         if !departed.is_empty() {
+            self.state.note_departed(&departed);
             ctx.navigator
                 .remove_active_routes(move |route: &HeadwayRoute| {
                     route.entry_card().is_some_and(|c| departed.contains(&c))
