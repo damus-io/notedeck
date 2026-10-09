@@ -50,7 +50,7 @@ use archived::archived_sheet_ui;
 use card_actions::{ReasonComposer, reason_bar_ui};
 use detail::card_detail_pane_ui;
 use filter::filter_ref_jump;
-use graph::graph_view_ui;
+use graph::{GraphMode, graph_view_ui};
 use grid::{add_column_ui, column_ui, start_move_anims};
 use header::{board_switcher, filtered_badge, sync_indicator, view_options_menu};
 use review::{NOTICE_SECS, ReviewQueue, ReviewSection, ReviewUi, review_pane_ui, review_queue_ui};
@@ -177,6 +177,11 @@ pub struct BoardUiState {
     /// [`open_graph`](Self::open_graph) and checked before the detail branch in
     /// [`board_ui`], so it wins the pane while it's set.
     graph_epic: Option<NoteId>,
+    /// Which edges the graph view draws: blocking dependencies or work order.
+    /// Picked in the graph's top bar and deliberately *not* reset by
+    /// [`open_graph`](Self::open_graph), so drilling into a sub-epic and back
+    /// out keeps the mode the user chose.
+    graph_mode: GraphMode,
     /// Persisted pan/zoom of the graph's [`egui::Scene`] (the scene-space region
     /// shown in the pane), mirroring notebook's canvas `scene_rect`. `None` until
     /// the graph first draws, when it is seeded to frame the whole laid-out graph;
@@ -256,6 +261,7 @@ impl BoardUiState {
     ///
     /// The card the graph was entered from stays [`selected`](Self::selected), so
     /// closing the graph returns to that card's detail rather than the board.
+    /// The [`GraphMode`] carries over, so a drill-in keeps showing the same edges.
     pub fn open_graph(&mut self, epic: NoteId) {
         self.graph_epic = Some(epic);
         self.graph_scene_rect = None;

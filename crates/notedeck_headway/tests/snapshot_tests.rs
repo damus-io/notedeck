@@ -672,6 +672,28 @@ fn snapshot_headway_graph() {
     harness.snapshot("headway_graph");
 }
 
+/// The same epic's graph switched to **Work order** in the top bar: its direct
+/// sub-issues joined in the order `headway next` walks them, one per rank, top
+/// to bottom, with no ghosts and no blocking arrows. Pins the switch's selected
+/// chip, the "· work order" breadcrumb, and the chain layout beside
+/// [`snapshot_headway_graph`]'s blocking view of the same cards.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_graph_work_order() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+
+    harness
+        .get_by_label("Define nostr event model for boards")
+        .click();
+    harness.run_steps(3);
+    harness.get_by_label("☍ View dependency graph").click();
+    harness.run_steps(3);
+    harness.get_by_label("Work order").click();
+    harness.run_steps(3);
+    harness.get_by_label("· work order");
+    harness.snapshot("headway_graph_work_order");
+}
+
 /// The dependency-graph node variants in one column: a plain in-progress node, a
 /// blocked node (leading ⊘), a done node, an off-board ghost, a *collapsed* node
 /// that stands in for a whole sub-tree — showing the right-aligned done/total

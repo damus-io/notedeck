@@ -1,6 +1,7 @@
 //! The epic dependency-graph view: a pannable/zoomable scene of the epic's
 //! cards as [`graph_node_ui`] nodes joined by blocking edges, with drag-to-connect
-//! and hover-to-delete edge editing.
+//! and hover-to-delete edge editing — or, in [`GraphMode::WorkOrder`], joined in
+//! the order `headway next` walks them, read-only.
 
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
@@ -12,6 +13,44 @@ use super::widgets::{StatusIcon, progress_pill, status_icon_ui};
 use super::{BoardUiState, find_card};
 use crate::event::{BoardView, ColumnPos};
 use crate::store::BoardAction;
+
+/// Which edges the graph view draws. The two kinds are never drawn together:
+/// on a busy epic both at once is unreadable, so the top bar switches between
+/// them ([`graph_mode_switch_ui`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum GraphMode {
+    /// What blocks what ([`headway::graph::collapsed_dependency_graph`]), and
+    /// the edges can be drawn and removed.
+    #[default]
+    Blocking,
+    /// The epic's direct subissues in the order `headway next` walks them
+    /// ([`headway::graph::work_order_graph`]). Read-only: a drag here would
+    /// mean "reorder", not "block", so no edge editing is offered.
+    WorkOrder,
+}
+
+impl GraphMode {
+    /// The switch chip's label.
+    fn label(self) -> &'static str {
+        match self {
+            GraphMode::Blocking => "Blocking",
+            GraphMode::WorkOrder => "Work order",
+        }
+    }
+
+    /// The breadcrumb suffix after the epic's title, naming what is drawn.
+    fn suffix(self) -> &'static str {
+        match self {
+            GraphMode::Blocking => "· dependency graph",
+            GraphMode::WorkOrder => "· work order",
+        }
+    }
+
+    /// The edges in this mode can be edited from the graph.
+    fn editable(self) -> bool {
+        self == GraphMode::Blocking
+    }
+}
 
 /// Render the epic's dependency graph as a full-pane, pannable/zoomable
 /// [`egui::Scene`]: the epic's cards as positioned [`graph_node_ui`] nodes, and a
@@ -50,7 +89,13 @@ pub(super) fn graph_view_ui(
     // Build the model and lay it out. `GRAPH_NODE_SIZE` overrides the layout's
     // default box height so the reserved rect matches the drawn node exactly (the
     // node renderer's landing note): a mismatch would leave gaps or overlaps.
-    let graph = headway::graph::collapsed_dependency_graph(view, epic.bytes());
+    // Work order is a chain, which the layered layout stacks one node per rank,
+    // so it reads top to bottom in the order `next` takes the cards.
+    let mode = state.graph_mode;
+    let graph = match mode {
+        GraphMode::Blocking => headway::graph::collapsed_dependency_graph(view, epic.bytes()),
+        GraphMode::WorkOrder => headway::graph::work_order_graph(view, epic.bytes()),
+    };
     let edges: Vec<(usize, usize)> = graph.edges.iter().map(|e| (e.from, e.to)).collect();
     let cfg = notedeck_ui::graph::layout::LayoutConfig {
         node_size: GRAPH_NODE_SIZE,
@@ -84,10 +129,18 @@ pub(super) fn graph_view_ui(
     let connecting = state.graph_connecting;
     let mut next_connecting: Option<NoteId> = None;
 
+    // A mode picked in the top bar this frame; applied after the scene closes,
+    // since this frame's graph was already built in the old mode.
+    let mut switch: Option<GraphMode> = None;
+
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
-            graph_topbar_ui(ui, theme, view, epic, &mut close, &mut open);
+            graph_topbar_ui(ui, theme, view, epic, mode, &mut close, &mut open);
+            ui.add_space(SPACING_SM);
+            if let Some(picked) = graph_mode_switch_ui(ui, mode) {
+                switch = Some(picked);
+            }
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_MD);
@@ -164,7 +217,8 @@ pub(super) fn graph_view_ui(
                     // cards: a collapsed edge can instead summarise blocks between the
                     // two nodes' subtrees, which an `Unblock` here wouldn't touch —
                     // drill in to edit those.
-                    if !graph.nodes[edge.to].ghost
+                    if mode.editable()
+                        && !graph.nodes[edge.to].ghost
                         && graph_edge_is_direct(
                             view,
                             graph.nodes[edge.from].id,
@@ -211,11 +265,16 @@ pub(super) fn graph_view_ui(
                 // only appear on the node under the pointer and the node a drag is
                 // currently coming from, so they don't clutter the whole graph.
                 // Ghosts (context, possibly off-board) never sprout handles — they
-                // aren't the epic's own work to wire up.
+                // aren't the epic's own work to wire up — and nothing does in work
+                // order, where a drawn edge would mean "reorder", not "block".
                 let connecting_idx = connecting
                     .and_then(|id| graph.nodes.iter().position(|n| n.id == id))
                     .filter(|&i| !graph.nodes[i].ghost);
-                let handle_nodes = [hovered.filter(|&i| !graph.nodes[i].ghost), connecting_idx];
+                let handle_nodes = if mode.editable() {
+                    [hovered.filter(|&i| !graph.nodes[i].ghost), connecting_idx]
+                } else {
+                    [None, None]
+                };
                 // The live drag this frame: (source node index, source side, pointer
                 // pos), and — separately — whether the button is merely held on a
                 // handle pre-threshold, so the source survives into next frame.
@@ -305,6 +364,15 @@ pub(super) fn graph_view_ui(
             state.graph_connecting = next_connecting;
         });
 
+    // A new mode reframes: the work-order chain is laid out tall where the
+    // blocking graph may be wide, so the old pan/zoom would frame the wrong shape.
+    if let Some(picked) = switch.filter(|&m| m != mode) {
+        state.graph_mode = picked;
+        state.graph_scene_rect = None;
+        state.graph_connecting = None;
+        ui.ctx().request_repaint();
+    }
+
     if close {
         state.graph_epic = None;
         state.graph_scene_rect = None;
@@ -336,7 +404,8 @@ pub(super) fn graph_view_ui(
 }
 
 /// The graph view's top bar: a back affordance and the epic's title as a
-/// breadcrumb, matching the detail pane's chrome. `close` is raised on back / ✕,
+/// breadcrumb, matching the detail pane's chrome, its suffix naming what `mode`
+/// draws. `close` is raised on back / ✕,
 /// and `open` by its "open card" link — the epic has no live node in its own
 /// graph (at most an inert ghost, when an edge drags it in), so nothing on the
 /// canvas can reach its detail.
@@ -345,6 +414,7 @@ fn graph_topbar_ui(
     theme: &ColorTheme,
     view: &BoardView,
     epic: NoteId,
+    mode: GraphMode,
     close: &mut bool,
     open: &mut Option<NoteId>,
 ) {
@@ -366,7 +436,7 @@ fn graph_topbar_ui(
                 .color(theme.text_primary),
         );
         ui.label(
-            egui::RichText::new("· dependency graph")
+            egui::RichText::new(mode.suffix())
                 .small()
                 .color(theme.text_muted),
         );
@@ -399,6 +469,21 @@ fn graph_topbar_ui(
             }
         });
     });
+}
+
+/// The Blocking / Work order switch under the top bar: one selectable chip per
+/// [`GraphMode`], `current` selected, as in the review pane's record picker.
+/// Returns the mode clicked this frame, if any.
+fn graph_mode_switch_ui(ui: &mut egui::Ui, current: GraphMode) -> Option<GraphMode> {
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        for mode in [GraphMode::Blocking, GraphMode::WorkOrder] {
+            if ui.selectable_label(current == mode, mode.label()).clicked() {
+                picked = Some(mode);
+            }
+        }
+    });
+    picked
 }
 
 /// Pick which sides a dependency arrow anchors to, from the two laid-out node
@@ -1131,29 +1216,28 @@ mod tests {
         assert!(!graph_can_connect(&view, a_id, unknown));
     }
 
-    /// Dragging from one node's side handle onto another node draws a blocking
-    /// edge: the source is the blocker, the target the blocked card, so the view
-    /// emits `Block { card: target, on: source }` — the same action the detail
-    /// pane's blocker picker drives. Drives a real drag through the `egui::Scene`,
-    /// mapping scene-local anchors to global through the layer transform and
-    /// delivering move → press → move → release (see the node-interaction card
-    /// headway:headway/hybrid-blossom-menu for the transform gotcha).
-    #[test]
-    fn graph_drag_draws_block_edge() {
+    /// Drive a real connect-drag in the graph of `epic`, shown in `mode`, from
+    /// `source`'s side handle nearest `target` onto `target`'s centre, and
+    /// return the edit the view produced. The drag goes through the
+    /// `egui::Scene`, mapping scene-local anchors to global through the layer
+    /// transform and delivering move → press → move → release (see the
+    /// node-interaction card headway:headway/hybrid-blossom-menu for the
+    /// transform gotcha).
+    fn drag_between(
+        view: &BoardView,
+        epic: NoteId,
+        mode: GraphMode,
+        source: NoteId,
+        target: NoteId,
+    ) -> Option<BoardAction> {
         use std::cell::RefCell;
 
-        // Epic E(1) owns A(2), B(3), C(4) with no blockers — a legal A → C draw.
-        let epic = graph_card(1, None, &[2, 3, 4], &[]);
-        let a = graph_card(2, Some(1), &[], &[]);
-        let b = graph_card(3, Some(1), &[], &[]);
-        let c = graph_card(4, Some(1), &[], &[]);
-        let view = graph_board(vec![epic, a, b, c]);
-        let epic_id = NoteId::new([1u8; 32]);
-        let a_id = NoteId::new([2u8; 32]);
-        let c_id = NoteId::new([4u8; 32]);
-
-        // Rebuild the model + layout to find where A's handles and C sit.
-        let graph = headway::graph::dependency_graph(&view, epic_id.bytes());
+        // Rebuild the model + layout the view draws in `mode`, to find where
+        // the source's handles and the target sit.
+        let graph = match mode {
+            GraphMode::Blocking => headway::graph::collapsed_dependency_graph(view, epic.bytes()),
+            GraphMode::WorkOrder => headway::graph::work_order_graph(view, epic.bytes()),
+        };
         let edges: Vec<(usize, usize)> = graph.edges.iter().map(|e| (e.from, e.to)).collect();
         let cfg = notedeck_ui::graph::layout::LayoutConfig {
             node_size: GRAPH_NODE_SIZE,
@@ -1161,22 +1245,25 @@ mod tests {
         };
         let rects = notedeck_ui::graph::layout::layered_layout(graph.nodes.len(), &edges, &cfg);
         let idx = |id: NoteId| graph.nodes.iter().position(|n| n.id == id).unwrap();
-        let (a_idx, c_idx) = (idx(a_id), idx(c_id));
-        let c_center = rects[c_idx].center();
-        // Start the drag from A's handle nearest C, in scene-local space.
-        let a_handle = GRAPH_SIDES
+        let (s_idx, t_idx) = (idx(source), idx(target));
+        let t_center = rects[t_idx].center();
+        // Start the drag from the source handle nearest the target, in scene space.
+        let s_handle = GRAPH_SIDES
             .iter()
-            .map(|&s| notedeck_ui::graph::side_point(s, rects[a_idx]))
-            .min_by(|p, q| p.distance(c_center).total_cmp(&q.distance(c_center)))
+            .map(|&side| notedeck_ui::graph::side_point(side, rects[s_idx]))
+            .min_by(|p, q| p.distance(t_center).total_cmp(&q.distance(t_center)))
             .unwrap();
 
-        let state = RefCell::new(BoardUiState::default());
-        state.borrow_mut().open_graph(epic_id);
+        let state = RefCell::new(BoardUiState {
+            graph_mode: mode,
+            ..Default::default()
+        });
+        state.borrow_mut().open_graph(epic);
         let captured: RefCell<Option<BoardAction>> = RefCell::new(None);
 
         let mut harness = graph_harness(|ui| {
             let theme = ColorTheme::current(ui.ctx());
-            if let Some(action) = graph_view_ui(ui, &theme, &view, &mut state.borrow_mut()) {
+            if let Some(action) = graph_view_ui(ui, &theme, view, &mut state.borrow_mut()) {
                 *captured.borrow_mut() = Some(action);
             }
         });
@@ -1191,10 +1278,10 @@ mod tests {
                     .copied()
             })
             .unwrap_or(egui::emath::TSTransform::IDENTITY);
-        let from = to_global * a_handle;
-        let to = to_global * c_center;
+        let from = to_global * s_handle;
+        let to = to_global * t_center;
 
-        // Hover the source handle so A's handles are laid out, then press it.
+        // Hover the source handle so its handles are laid out, then press it.
         harness
             .input_mut()
             .events
@@ -1207,7 +1294,7 @@ mod tests {
             modifiers: egui::Modifiers::default(),
         });
         harness.run();
-        // Drag across to C (crosses the drag threshold), then release on it.
+        // Drag across to the target (crosses the drag threshold), then release.
         harness
             .input_mut()
             .events
@@ -1220,14 +1307,98 @@ mod tests {
             modifiers: egui::Modifiers::default(),
         });
         harness.run();
+        drop(harness);
+        captured.into_inner()
+    }
 
-        match captured.borrow().as_ref() {
+    /// Dragging from one node's side handle onto another node draws a blocking
+    /// edge: the source is the blocker, the target the blocked card, so the view
+    /// emits `Block { card: target, on: source }` — the same action the detail
+    /// pane's blocker picker drives.
+    #[test]
+    fn graph_drag_draws_block_edge() {
+        // Epic E(1) owns A(2), B(3), C(4) with no blockers — a legal A → C draw.
+        let epic = graph_card(1, None, &[2, 3, 4], &[]);
+        let a = graph_card(2, Some(1), &[], &[]);
+        let b = graph_card(3, Some(1), &[], &[]);
+        let c = graph_card(4, Some(1), &[], &[]);
+        let view = graph_board(vec![epic, a, b, c]);
+        let a_id = NoteId::new([2u8; 32]);
+        let c_id = NoteId::new([4u8; 32]);
+
+        let action = drag_between(
+            &view,
+            NoteId::new([1u8; 32]),
+            GraphMode::Blocking,
+            a_id,
+            c_id,
+        );
+        match action {
             Some(BoardAction::Block { card, on }) => {
-                assert_eq!(*card, c_id, "the blocked card is the drop target C");
-                assert_eq!(*on, a_id, "the blocker is the dragged source A");
+                assert_eq!(card, c_id, "the blocked card is the drop target C");
+                assert_eq!(on, a_id, "the blocker is the dragged source A");
             }
             _ => panic!("dragging A → C should emit a Block edge"),
         }
+    }
+
+    /// In work order the same drag is inert: the edges there mean "comes
+    /// next", so the view offers no connect handles and emits no `Block`.
+    #[test]
+    fn graph_work_order_drag_emits_nothing() {
+        let epic = graph_card(1, None, &[2, 3, 4], &[]);
+        let a = graph_card(2, Some(1), &[], &[]);
+        let b = graph_card(3, Some(1), &[], &[]);
+        let c = graph_card(4, Some(1), &[], &[]);
+        let view = graph_board(vec![epic, a, b, c]);
+
+        let action = drag_between(
+            &view,
+            NoteId::new([1u8; 32]),
+            GraphMode::WorkOrder,
+            NoteId::new([2u8; 32]),
+            NoteId::new([4u8; 32]),
+        );
+        assert!(action.is_none(), "a work-order drag must not block");
+    }
+
+    /// The top bar's "Work order" chip switches the mode and reframes the
+    /// scene, and the mode survives drilling into a sub-epic with
+    /// [`BoardUiState::open_graph`].
+    #[test]
+    fn graph_mode_switch_survives_drill_in() {
+        use egui_kittest::kittest::Queryable;
+        use std::cell::RefCell;
+
+        // E(1) -> P(2){C(4)}, B(3).
+        let epic = graph_card(1, None, &[2, 3], &[]);
+        let p = graph_card(2, Some(1), &[4], &[]);
+        let b = graph_card(3, Some(1), &[], &[]);
+        let c = graph_card(4, Some(2), &[], &[]);
+        let view = graph_board(vec![epic, p, b, c]);
+
+        let state = RefCell::new(BoardUiState::default());
+        state.borrow_mut().open_graph(NoteId::new([1u8; 32]));
+        let mut harness = graph_harness(|ui| {
+            let theme = ColorTheme::current(ui.ctx());
+            graph_view_ui(ui, &theme, &view, &mut state.borrow_mut());
+        });
+        harness.run();
+        harness.get_by_label("· dependency graph");
+        harness.get_by_label("Work order").click_accesskit();
+        harness.run();
+        // The breadcrumb names the new mode once the next frame draws it.
+        harness.get_by_label("· work order");
+        drop(harness);
+
+        let mut state = state.into_inner();
+        assert_eq!(state.graph_mode, GraphMode::WorkOrder);
+        state.open_graph(NoteId::new([2u8; 32]));
+        assert_eq!(
+            state.graph_mode,
+            GraphMode::WorkOrder,
+            "a drill-in keeps the mode"
+        );
     }
 
     /// Clicking an edge's midpoint delete handle removes that edge: the view emits

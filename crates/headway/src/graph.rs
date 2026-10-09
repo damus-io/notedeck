@@ -53,6 +53,12 @@
 //!   projected onto those representatives. Keeps a deep epic at one granularity;
 //!   the view drills into a node by re-running it with that card as the epic.
 //!
+//! ## Work order
+//! [`work_order_graph`] is the third builder, and the one exception to "blocking
+//! only": the collapsed graph's nodes joined in the order `headway next` walks
+//! them, one edge per consecutive pair. The view shows it or the collapsed graph,
+//! never both, since the two edge kinds together make a busy epic unreadable.
+//!
 //! [`EdgeRef`]: crate::event::EdgeRef
 
 use std::collections::{HashMap, HashSet};
@@ -239,12 +245,7 @@ pub fn collapsed_dependency_graph(view: &BoardView, epic_id: &[u8; 32]) -> Depen
         for desc in work_order(view, &Container::Card(*sub.id.bytes())) {
             represent.entry(*desc.id.bytes()).or_insert(idx);
         }
-        nodes.push(GraphNode {
-            id: sub.id,
-            column: column_pos(view, sub.id),
-            ghost: false,
-            progress: subtree_progress(view, sub.id),
-        });
+        nodes.push(subissue_node(view, sub.id));
     }
 
     // Edges, aggregated per representative pair. `edge_at` maps a `(from, to)`
@@ -284,6 +285,63 @@ pub fn collapsed_dependency_graph(view: &BoardView, epic_id: &[u8; 32]) -> Depen
     }
 
     DependencyGraph { nodes, edges }
+}
+
+/// Build the *work-order* graph of `epic_id`: the same nodes as
+/// [`collapsed_dependency_graph`], joined in the order `headway next` walks them
+/// rather than by what blocks what. The graph view's "Work order" mode.
+///
+/// ## Nodes
+/// One per **direct** live subissue, in [`CardView::subissues`] order — which the
+/// reducer already sorts into work-order (sequenced by rank, then unsequenced by
+/// creation), the same order [`work_order`] walks. So a `headway seq` move
+/// reorders the nodes, and the edges with them. Each node carries its subtree
+/// progress exactly as in the collapsed graph, so a sub-epic still drills in.
+/// No ghosts: the order is internal to the epic.
+///
+/// ## Edges
+/// A chain, subissue `i → i + 1`: `n` nodes give `n - 1` edges, and the layered
+/// layout stacks a chain one node per rank, so the order reads top to bottom.
+/// [`GraphEdge::done`] is `true` when the `from` card is done
+/// ([`BoardView::card_is_done`]), the same "the one before it is cleared" sense a
+/// blocking edge's `done` carries.
+///
+/// An unknown/leaf `epic_id` yields an empty graph, never a panic.
+///
+/// [`CardView::subissues`]: crate::event::CardView::subissues
+pub fn work_order_graph(view: &BoardView, epic_id: &[u8; 32]) -> DependencyGraph {
+    let Some(epic) = view.card(NoteId::new(*epic_id)) else {
+        return DependencyGraph::default();
+    };
+    let mut seen: HashSet<[u8; 32]> = HashSet::new();
+    let nodes: Vec<GraphNode> = epic
+        .subissues
+        .iter()
+        .filter(|sub| view.card(sub.id).is_some() && seen.insert(*sub.id.bytes()))
+        .map(|sub| subissue_node(view, sub.id))
+        .collect();
+    let edges = nodes
+        .windows(2)
+        .enumerate()
+        .map(|(from, pair)| GraphEdge {
+            from,
+            to: from + 1,
+            done: view.card_is_done(pair[0].id),
+        })
+        .collect();
+    DependencyGraph { nodes, edges }
+}
+
+/// The node for one of an epic's direct subissues: its live column and subtree
+/// progress, never a ghost. Shared by [`collapsed_dependency_graph`] and
+/// [`work_order_graph`] so the two modes draw the same node for the same card.
+fn subissue_node(view: &BoardView, id: NoteId) -> GraphNode {
+    GraphNode {
+        id,
+        column: column_pos(view, id),
+        ghost: false,
+        progress: subtree_progress(view, id),
+    }
 }
 
 /// Record a collapsed edge `from -> to`, folding a repeat of the same
@@ -743,5 +801,141 @@ mod tests {
         let view = board(vec![]);
         let g = collapsed_dependency_graph(&view, nid(7).bytes());
         assert!(g.nodes.is_empty() && g.edges.is_empty());
+    }
+
+    /// Work order joins an epic's direct subissues in subissue (work) order:
+    /// `n` nodes, `n - 1` edges, each `i -> i + 1`. A sub-epic keeps its progress
+    /// pill, a non-live subissue is left out, and an edge is done when the card
+    /// it leaves is.
+    #[test]
+    fn work_order_chains_subissues_in_order() {
+        // E(1) -> A(2), P(3){C(6)}, B(4), plus Z(9) which is not live here.
+        let epic = card(
+            1,
+            None,
+            vec![subv(2), subv(3), subv(9), subv(4)],
+            vec![],
+            vec![],
+        );
+        let a = card(2, Some(1), vec![], vec![], vec![]);
+        let p = card(3, Some(1), vec![subv(6)], vec![], vec![]);
+        // B is blocked by A: a blocking edge the work-order graph ignores.
+        let b = card(4, Some(1), vec![], vec![eref(2, true)], vec![]);
+        let c = card(6, Some(3), vec![], vec![], vec![]);
+
+        let view = board(vec![
+            (epic, "backlog"),
+            (a, "done"),
+            (p, "backlog"),
+            (b, "backlog"),
+            (c, "backlog"),
+        ]);
+        let g = work_order_graph(&view, nid(1).bytes());
+
+        let ids: Vec<NoteId> = g.nodes.iter().map(|n| n.id).collect();
+        assert_eq!(ids, [nid(2), nid(3), nid(4)], "direct, live, in order");
+        assert!(g.nodes.iter().all(|n| !n.ghost));
+        assert_eq!(
+            g.nodes[1].progress,
+            Some(SubtreeProgress { done: 0, total: 1 }),
+            "a sub-epic still drills in"
+        );
+        let edges: Vec<(usize, usize, bool)> =
+            g.edges.iter().map(|e| (e.from, e.to, e.done)).collect();
+        assert_eq!(edges, [(0, 1, true), (1, 2, false)], "A is done, P is not");
+    }
+
+    /// One subissue has nothing to chain to, and an unknown epic is empty.
+    #[test]
+    fn work_order_single_and_unknown() {
+        let epic = card(1, None, vec![subv(2)], vec![], vec![]);
+        let a = card(2, Some(1), vec![], vec![], vec![]);
+        let view = board(vec![(epic, "backlog"), (a, "backlog")]);
+        let g = work_order_graph(&view, nid(1).bytes());
+        assert_eq!(g.nodes.len(), 1);
+        assert!(g.edges.is_empty());
+
+        let g = work_order_graph(&view, nid(7).bytes());
+        assert!(g.nodes.is_empty() && g.edges.is_empty());
+    }
+
+    /// Through the real reducer: the work-order graph follows `seq`. Ranking
+    /// the last child first moves it to the head of the chain and the edges
+    /// reorder with it.
+    #[test]
+    fn work_order_follows_a_seq_move() {
+        use crate::event::{
+            ColumnDef, board_address, build_board, build_issue, build_placement, build_relation,
+            build_sequence, parse, reduce,
+        };
+        use nostrdb::NoteBuilder;
+        use nostrdb_net::FullKeypair;
+
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let sign = |b: NoteBuilder| {
+            b.sign(&owner.secret_key.secret_bytes())
+                .build()
+                .expect("build note")
+        };
+        let issue = |title: &str, at: u64| sign(build_issue(&addr, title, "").created_at(at));
+        let notes = [
+            issue("Epic", 1_000),
+            issue("One", 1_001),
+            issue("Two", 1_002),
+            issue("Three", 1_003),
+        ];
+        let ids: Vec<NoteId> = notes.iter().map(|n| NoteId::new(*n.id())).collect();
+        let (epic, kids) = (ids[0], &ids[1..]);
+        let container = Container::Card(*epic.bytes());
+
+        let mut events = vec![
+            parse(&sign(build_board(
+                "b1",
+                "Board",
+                "",
+                &[ColumnDef::new("todo", "Todo")],
+            )))
+            .unwrap(),
+        ];
+        events.extend(notes.iter().map(|n| parse(n).unwrap()));
+        for (id, rank) in ids.iter().zip(["g", "h", "i", "j"]) {
+            events.push(parse(&sign(build_placement("b1", &addr, id, "todo", rank))).unwrap());
+        }
+        for kid in kids {
+            events.push(parse(&sign(build_relation(kid, Some(&epic)))).unwrap());
+        }
+        // Rank the children One, Two, Three.
+        for (kid, rank) in kids.iter().zip(["g", "m", "t"]) {
+            events.push(
+                parse(&sign(
+                    build_sequence(&container, kid, rank).created_at(2_000),
+                ))
+                .unwrap(),
+            );
+        }
+
+        let order = |events: &[crate::event::HeadwayEvent]| {
+            let view = &reduce(events)[0];
+            let g = work_order_graph(view, epic.bytes());
+            assert_eq!(g.edges.len(), g.nodes.len() - 1);
+            assert!(
+                g.edges
+                    .iter()
+                    .enumerate()
+                    .all(|(i, e)| (e.from, e.to) == (i, i + 1))
+            );
+            g.nodes.iter().map(|n| n.id).collect::<Vec<_>>()
+        };
+        assert_eq!(order(&events), [kids[0], kids[1], kids[2]]);
+
+        // `headway seq Three --first`: a newer rank ahead of One's.
+        events.push(
+            parse(&sign(
+                build_sequence(&container, &kids[2], "a").created_at(3_000),
+            ))
+            .unwrap(),
+        );
+        assert_eq!(order(&events), [kids[2], kids[0], kids[1]]);
     }
 }

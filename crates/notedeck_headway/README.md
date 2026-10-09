@@ -302,6 +302,15 @@ The view is assembled from three pieces:
   ghost. That makes an expandable card's detail two gestures — drill into it, then
   open the card the top bar now names. Global Back returns from detail to the
   graph, pan/zoom intact.
+- **Work order** — a **Blocking / Work order** switch under the top bar
+  (`GraphMode` in `BoardUiState`) swaps the edges for the order `headway next`
+  walks the epic's direct sub-issues (`headway::graph::work_order_graph`):
+  one arrow per consecutive pair, a chain the layered layout stacks top to
+  bottom, so a `headway seq` move shows up there and a blocker that disagrees
+  with the order is visible beside it. The mode is read-only — no connect
+  handles, no delete ✕, since a drag there would mean "reorder", not "block" —
+  and survives drilling into a sub-epic. `snapshot_headway_graph_work_order`
+  pins it.
 
 The edge/arrow geometry and the layout live in `notedeck_ui::graph` (not headway)
 because both this view and notebook's canvas draw directed edges between boxes;
