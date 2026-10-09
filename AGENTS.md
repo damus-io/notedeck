@@ -239,6 +239,13 @@ done-comment described under Work Tracking above.
 
         cargo test -p notedeck_columns --test frame_alloc -- --ignored --nocapture
 
+19. **A group of parameters or return values is a struct with named fields, never a
+    tuple.** No `-> (A, B)`, `-> Option<(A, B)>`, `-> impl Iterator<Item = (A, B)>`,
+    `fn f(pair: (A, B))`, or `type Foo = (A, B)`. Name the struct for what it holds
+    (`Split { rows, cols }`), not `FooArgs`. `crates/bin_testing/tests/signatures.rs`
+    fails on one in any crate not on its shrinking `NOT_YET` list
+    (`cargo test -p bin_testing --test signatures`).
+
 
 
 Use this guide as a launchpad when extending Notedeck with new agents or protocol features. It highlights where to attach new functionality without duplicating existing infrastructure.

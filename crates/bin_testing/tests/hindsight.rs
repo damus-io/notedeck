@@ -7,7 +7,7 @@
 //! this holds every line to that shape: a wrapped or prose line would inflate
 //! the count, and a card named twice in one file would count itself twice.
 //!
-//! It lives in `bin_testing` because that crate is std-only, so the check
+//! It lives in `bin_testing` because that crate's lib is std-only, so the check
 //! builds and runs in seconds: `cargo test -p bin_testing --test hindsight`.
 
 use std::collections::HashSet;
