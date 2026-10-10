@@ -127,8 +127,9 @@ fn badge_ui(ui: &mut egui::Ui, text: &str, colors: BadgeColors) {
         });
 }
 
-/// A task's last lines of output, in mono on a dark block.
-fn tail_ui(ui: &mut egui::Ui, tail: &str) {
+/// A task's last lines of output, in mono on a dark block. Long lines wrap,
+/// so a log can't widen the card past its column.
+pub(super) fn tail_ui(ui: &mut egui::Ui, tail: &str) {
     egui::Frame::new()
         .fill(ui.visuals().code_bg_color)
         .corner_radius(notedeck::tokens::RADIUS_SM)
@@ -139,7 +140,7 @@ fn tail_ui(ui: &mut egui::Ui, tail: &str) {
                 egui::Label::new(
                     egui::RichText::new(tail).font(egui::FontId::monospace(MONO_SIZE)),
                 )
-                .extend(),
+                .wrap(),
             );
         });
 }

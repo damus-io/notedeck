@@ -256,6 +256,9 @@ pub enum DaveAction {
     /// Show the chat with the block cursor on this subagent's row (by its
     /// task id), from the Details tab's Subagents card
     ShowSubagent(String),
+    /// Open this file or folder with the system's default app, from the
+    /// Details tab's Files card
+    OpenPath(std::path::PathBuf),
 }
 
 impl<'a> DaveUi<'a> {

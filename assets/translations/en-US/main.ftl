@@ -259,6 +259,9 @@ Copy_Text_f81c = Copy Text
 # Dave session inspector subagents: how many subagents failed
 count__failed_ef23 = {$count} failed
 
+# Dave session inspector files: entries past the card's cap, the oldest ones
+count__older_not_shown_f0cb = {$count} older not shown
+
 # Dave session inspector subagents: how many subagents are still running
 count__running_4ead = {$count} running
 
@@ -364,6 +367,9 @@ Edit_Profile_49e6 = Edit Profile
 # Column title for profile editing
 Edit_Profile_8ad4 = Edit Profile
 
+# Dave session inspector files: a temp-dir folder with nothing in it
+empty_dd99 = empty
+
 # Dave session tab: the session inspector (usage, background work, files, …)
 Details_cd6b = Details
 
@@ -415,8 +421,14 @@ Hashtags_f8e0 = Hashtags
 # Dave session inspector section: scratchpad, task output and edited files
 Files_0f4a = Files
 
+# Dave session inspector files: a remote session's temp files are on the host running it
+Files_live_on__host_0268 = Files live on {$host}
+
 # Button to go to the Headway app
 Headway_b5c8 = Headway
+
+# Dave session inspector files: hide an output log's last lines
+Hide_f1d5 = Hide
 
 # Title for Home column
 Home_8c19 = Home
@@ -618,6 +630,9 @@ New_Chat_afb4 = New Chat
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = New to Nostr?
 
+# Dave session inspector files: the CLI hasn't reported its session id, so its temp dir is unknown
+No_Claude_session_yet_ec10 = No Claude session yet
+
 # Shown when user has no contacts to display
 No_contacts_yet_cd10 = No contacts yet
 
@@ -701,6 +716,12 @@ Nothing_yet_59ff = Nothing yet
 
 # Dave session inspector background: a cron job that fires once
 one-shot_f4a4 = one-shot
+
+# Dave session inspector files: this session's backend has no Claude Code temp dir
+Only_Claude_Code_sessions_keep_a_scratchpad_28c3 = Only Claude Code sessions keep a scratchpad
+
+# Dave session inspector files: open a file or folder with the system's default app
+Open_4300 = Open
 
 # Button label to open email client
 Open_Email_25e9 = Open Email
@@ -1022,6 +1043,9 @@ Support_75e2 = Support
 
 # Support email address
 Support_email_44d9 = Support email:
+
+# Dave session inspector files: show the last lines of a background task's output log
+Tail_e0c4 = Tail
 
 # Button text to load blurred media
 Tap_to_Load_4b05 = Tap to Load

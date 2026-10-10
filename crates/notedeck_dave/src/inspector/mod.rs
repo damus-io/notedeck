@@ -11,10 +11,15 @@
 //! published.
 
 mod background;
+mod files;
 mod subagents;
 mod usage;
 
 pub use background::{BackgroundParts, BackgroundRow, BackgroundState, OutputTails};
+pub use files::{
+    claude_temp_root, list_session_temp, project_slug, session_temp_dir, FileRow, FileRows,
+    FilesParts, FilesState, GroupRows, TempFile, TempGroup, TempListing, GROUP_CAP,
+};
 pub use subagents::{subagent, ProgressById, SubagentRow, SubagentRows, SubagentState};
 pub use usage::{Compaction, Sparkline, Tokens, TurnUsage, UsageHistory, HISTORY_CAP};
 
@@ -63,6 +68,9 @@ pub struct SessionInspector {
     /// The Tasks card's "3/5" header, keyed by the task list's counts. The
     /// list itself is the chat's latest `TodoUpdate`, so it needs no state.
     pub tasks_header: LabelMemo<TodoCounts>,
+    /// The session's Claude Code temp dir (scratchpad and task output), as
+    /// last listed.
+    pub files: FilesState,
 }
 
 impl SessionInspector {

@@ -1496,6 +1496,15 @@ pub fn handle_ui_action(
             }
             UiActionResult::Handled
         }
+        DaveAction::OpenPath(path) => {
+            // xdg-open can wait on the app it launches, so off the UI thread.
+            std::thread::spawn(move || {
+                if let Err(err) = opener::open(&path) {
+                    tracing::warn!("failed to open {}: {err}", path.display());
+                }
+            });
+            UiActionResult::Handled
+        }
         // All run actions are intercepted and handled in lib.rs before reaching here
         DaveAction::Run(_) => UiActionResult::Handled,
     }
@@ -1949,7 +1958,7 @@ mod tests {
     }
 
     /// Clicking Details swaps the chat for the rail and the section cards
-    /// (the four without a view yet are stubs); clicking Chat brings the
+    /// (the two without a view yet are stubs); clicking Chat brings the
     /// input box back.
     #[test]
     fn details_tab_shows_every_section_and_chat_brings_the_input_back() {
@@ -1971,8 +1980,9 @@ mod tests {
         harness.get_by_label("Details").click_accesskit();
         harness.run_ok();
 
-        assert_eq!(count_labels(&harness, "Nothing yet"), 3);
+        assert_eq!(count_labels(&harness, "Nothing yet"), 2);
         assert_eq!(count_labels(&harness, "No subagents yet"), 1);
+        assert_eq!(count_labels(&harness, "No Claude session yet"), 1);
         assert_eq!(count_labels(&harness, "No tasks yet"), 1);
         assert_eq!(
             count_labels(&harness, "Nothing running in the background"),
@@ -2717,6 +2727,172 @@ mod tests {
             .open(crate::inspector::InspectorSection::Tasks);
         harness.run_ok();
         harness.snapshot("session_tasks");
+    }
+
+    /// The CLI session id the Files card's seeded temp dir is named for.
+    const FILES_CLI_SESSION: &str = "4b1c9e02-7d3a-4f6e-9a51-c0ffee5e5510";
+
+    /// A Claude Code temp dir for the active session under `root`, as of
+    /// `now`: two scratch files and a folder, and two task output logs.
+    /// Returns the newer log's path.
+    fn seed_files(state: &mut SessionViewState, root: &std::path::Path, now: u64) -> PathBuf {
+        let session = state.session_manager.get_active_mut().unwrap();
+        let cwd = session.details.cwd.clone().unwrap();
+        session.agentic.as_mut().unwrap().resume_session_id = Some(FILES_CLI_SESSION.into());
+        session.inspector.files = crate::inspector::FilesState::with_root(root.to_path_buf());
+
+        let dir = crate::inspector::session_temp_dir(root, &cwd, FILES_CLI_SESSION);
+        let write = |rel: &str, body: &str, ago: u64| {
+            let path = dir.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, body).unwrap();
+            let mtime = std::time::UNIX_EPOCH + std::time::Duration::from_secs(now - ago);
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+            path
+        };
+        write(
+            "scratchpad/plan.md",
+            &"- [x] list the temp dir\n".repeat(180),
+            4 * 60,
+        );
+        write("scratchpad/strings.txt", &"x".repeat(612), 52 * 60);
+        write("scratchpad/diffs/files.patch", "", 0);
+        // The folder's own mtime, which writing into it just moved.
+        std::fs::File::open(dir.join("scratchpad/diffs"))
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(now - 30))
+            .unwrap();
+        let log = write(
+            "tasks/bxhiddwx5.output",
+            "Compiling notedeck_dave v0.7.1\nFinished `dev` profile in 3m 38s\n\
+             running 12 tests\ntest inspector::files::tests::lists_both_groups_newest_first ... ok\n\
+             test result: ok. 12 passed; 0 failed\n",
+            3 * 60 + 20,
+        );
+        write("tasks/b7k2q.output", "still waiting\n", 2 * 3600 + 5 * 60);
+        log
+    }
+
+    /// Step the harness until a label containing `text` appears.
+    fn step_until_label(harness: &mut Harness<'static, SessionViewState>, text: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while count_labels_containing(harness, text) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{text:?} never appeared"
+            );
+            harness.step();
+        }
+    }
+
+    /// The Files card lists the session's scratchpad and task output newest
+    /// first, and Tail shows an output log's last lines.
+    #[test]
+    fn files_card_lists_the_temp_dir_and_tails_an_output_log() {
+        let root = tempfile::tempdir().unwrap();
+        let mut harness = session_view_harness(egui::vec2(1100.0, 1600.0));
+        let now = crate::session::now_unix();
+        seed_files(harness.state_mut(), root.path(), now);
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .show_details();
+        step_until_label(&mut harness, "plan.md");
+        harness.run_ok();
+
+        for label in ["plan.md", "strings.txt", "bxhiddwx5.output", "b7k2q.output"] {
+            assert_eq!(count_labels(&harness, label), 1, "{label}");
+        }
+        assert_eq!(count_labels_containing(&harness, "scratchpad"), 1);
+        assert_eq!(count_labels_containing(&harness, "612 B"), 1);
+        assert_eq!(count_labels_containing(&harness, "4.2 KB"), 1);
+        // Only the two logs get a Tail button.
+        assert_eq!(count_labels(&harness, "Tail"), 2);
+
+        // The scratchpad's files sort newest first: the folder, then plan.md.
+        let y = |label: &str| {
+            use egui_kittest::kittest::Queryable;
+            harness.get_by_label(label).rect().min.y
+        };
+        assert!(y("plan.md") < y("strings.txt"));
+        assert!(y("bxhiddwx5.output") < y("b7k2q.output"));
+
+        {
+            use egui_kittest::kittest::Queryable;
+            harness.get_all_by_label("Tail").next().unwrap().click();
+        }
+        step_until_label(&mut harness, "12 passed");
+        assert_eq!(count_labels(&harness, "Hide"), 1);
+    }
+
+    /// A remote session's temp files are on its host: the card says so
+    /// rather than listing this machine's.
+    #[test]
+    fn files_card_of_a_remote_session_names_its_host() {
+        let root = tempfile::tempdir().unwrap();
+        let mut harness = session_view_harness(egui::vec2(1100.0, 1600.0));
+        seed_files(harness.state_mut(), root.path(), crate::session::now_unix());
+        let session = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap();
+        session.source = crate::session::SessionSource::Remote;
+        session.details.hostname = "monad".into();
+        session.inspector_view.show_details();
+        harness.run_ok();
+
+        assert_eq!(count_labels_containing(&harness, "Files live on"), 1);
+        assert_eq!(count_labels(&harness, "plan.md"), 0);
+    }
+
+    /// The Files card: the scratchpad with a folder and two files, and the
+    /// task logs with the newer one's tail open.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_session_files() {
+        // A fixed root, so the card's path line is the same in every run.
+        let root = std::env::temp_dir().join("dave-inspector-files-snapshot");
+        let _ = std::fs::remove_dir_all(&root);
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1100.0, 760.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        // 2100-01-01 00:00 UTC, so the ages hold still.
+        let now = 4_102_444_800;
+        harness.state_mut().now_unix = Some(now);
+        let log = seed_files(harness.state_mut(), &root, now);
+        let session = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap();
+        session
+            .inspector_view
+            .open(crate::inspector::InspectorSection::Files);
+        // Opened once the listing lands: the first listing of a session
+        // starts with every tail closed.
+        step_until_label(&mut harness, "plan.md");
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector
+            .files
+            .tail_open = Some(log);
+        step_until_label(&mut harness, "12 passed");
+        harness.run_ok();
+        harness.snapshot("session_files");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The Background card with one entry of each kind: a Bash task with
