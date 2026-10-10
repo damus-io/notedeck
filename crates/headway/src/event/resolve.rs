@@ -226,7 +226,7 @@ pub fn resolve_card(view: &BoardView, sel: &str) -> Result<NoteId, String> {
     // bare word-id / hex prefix. The board segment self-routed the fold already,
     // so only the word-id half matters here.
     let words = crate::wordid::parse_ref(&sel)
-        .map(|(_board, words)| words)
+        .map(|r| r.words)
         .unwrap_or(sel.as_str());
 
     // Anything that isn't purely hex digits is a word-id selector, not a hex
@@ -516,10 +516,18 @@ mod tests {
         NoteId::new(b)
     }
 
+    /// Two distinct card ids whose word-ids start with the same word.
+    struct Collision {
+        a: NoteId,
+        b: NoteId,
+        /// The leading word they share.
+        lead: String,
+    }
+
     /// Two distinct ids whose word-ids share a leading word — found by pigeonhole
     /// over the 2048-word first slot, so it always terminates. Used to force the
     /// ambiguous-prefix and near-miss error paths.
-    fn colliding_leading_word() -> (NoteId, NoteId, String) {
+    fn colliding_leading_word() -> Collision {
         let mut seen: std::collections::HashMap<String, NoteId> = std::collections::HashMap::new();
         for seed in 0u32.. {
             let id = seeded_id(seed);
@@ -529,7 +537,11 @@ mod tests {
                 .unwrap()
                 .to_string();
             if let Some(&prev) = seen.get(&lead) {
-                return (prev, id, lead);
+                return Collision {
+                    a: prev,
+                    b: id,
+                    lead,
+                };
             }
             seen.insert(lead, id);
         }
@@ -570,7 +582,7 @@ mod tests {
 
     #[test]
     fn resolve_card_word_id_errors_are_helpful() {
-        let (a, b, lead) = colliding_leading_word();
+        let Collision { a, b, lead } = colliding_leading_word();
         let view = view_with_cards(&[a, b, NoteId::new([0xee; 32])]);
 
         // A hyphenated prefix matching more than one card reports the candidates.

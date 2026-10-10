@@ -174,7 +174,7 @@ async fn run() -> Result<()> {
     // write: an explicit `--author`, else the signing key's own pubkey.
     let author = match (&cli.author, &cli.secret) {
         (Some(pk), _) => *pk,
-        (None, Some((_, pk))) => *pk,
+        (None, Some(key)) => key.pubkey,
         (None, None) => return Err("need --nsec to sign, or --author to read a board".into()),
     };
     // Who *we* are: the signing key's pubkey, falling back to the owner for a
@@ -183,15 +183,15 @@ async fn run() -> Result<()> {
     // roster is built from, and the acting editor are all ours, while the board
     // coordinate stays the owner's. Conflating the two left a member with "no
     // board" either way (headway:headway/vacuum-priority-ordinary).
-    let me = cli.secret.as_ref().map_or(author, |(_, pk)| *pk);
+    let me = cli.secret.as_ref().map_or(author, |key| key.pubkey);
 
     let ndb = nostrdb_net::relay::sync::open_ndb(cli.db.as_deref(), APP)?;
 
     // Register the signing key so nostrdb unwraps gift-wraps addressed to us —
     // notably the kind-1082 key-shares a new shared board arrives as. Without it
     // a board shared with us since the last app run stays unjoinable here.
-    if let Some((secret, _)) = &cli.secret {
-        ndb.add_key(secret);
+    if let Some(key) = &cli.secret {
+        ndb.add_key(&key.secret);
     }
     // Reconcile the local cache against the relay both ways so the cache and the
     // app converge regardless of which side an edit happened on. Best-effort: an
@@ -227,8 +227,8 @@ async fn run() -> Result<()> {
     // reaches this device when a private relay won't serve it the gift-wrap
     // (headway:headway/pepper-rack-usual). Deriving the PNS stream needs the
     // signing key, so a read-only `--author` run skips it.
-    if let (Some(relay), Some((secret, _))) = (relay.as_mut(), cli.secret.as_ref()) {
-        pull_pns_keyshares(relay, &ndb, secret).await;
+    if let (Some(relay), Some(key)) = (relay.as_mut(), cli.secret.as_ref()) {
+        pull_pns_keyshares(relay, &ndb, &key.secret).await;
     }
     // Join every shared board we hold a key for. Registering a root re-peels any
     // envelope that arrived before it, so it is safe for this to run after the sync
@@ -265,8 +265,8 @@ async fn run() -> Result<()> {
     // boards *we* own (`me`), never the `--author` we are reading: a member's
     // roster holds the owner's roots too, and re-wrapping those to the owner
     // under the member's signature is exactly what this must not do.
-    if let (Some(relay), Some((secret, _))) = (relay.as_mut(), cli.secret.as_ref()) {
-        flush_own_selfshares(relay, &ndb, &roster, &me, secret, cli.db.as_deref()).await;
+    if let (Some(relay), Some(key)) = (relay.as_mut(), cli.secret.as_ref()) {
+        flush_own_selfshares(relay, &ndb, &roster, &me, &key.secret, cli.db.as_deref()).await;
     }
 
     // Recover an own board named explicitly on the command line that the roster
@@ -279,11 +279,11 @@ async fn run() -> Result<()> {
     // downstream read and write routes through the recovered channel.
     let mut roster = roster;
     if cli.board_explicit
-        && let Some((secret, pk)) = cli.secret.as_ref()
-        && pk == &author
+        && let Some(key) = cli.secret.as_ref()
+        && key.pubkey == author
         && load_board(&ndb, &roster, &author, &cli.board).is_none()
         && let Some(relay) = relay.as_mut()
-        && recover_derived_board(relay, &ndb, &author, secret, &cli.board).await
+        && recover_derived_board(relay, &ndb, &author, &key.secret, &cli.board).await
     {
         roster = Roster::load(&ndb, &me, &author, &mut root_registry);
     }
@@ -295,8 +295,8 @@ async fn run() -> Result<()> {
     let show_all = cli.all;
     let dry_run = cli.dry_run;
     let new_channel = cli.new_channel;
-    let secret = cli.secret.map(|(s, _)| s);
-    let comment_secret = cli.comment_secret.map(|(s, _)| s);
+    let secret = cli.secret.map(|key| key.secret);
+    let comment_secret = cli.comment_secret.map(|key| key.secret);
 
     match cli.command {
         // `--all` fans the render across every board in the cache, ignoring any

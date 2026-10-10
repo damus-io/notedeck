@@ -17,7 +17,7 @@ use serde_json::json;
 use headway::event::{self, ActivityKind, BoardView, CardView};
 use headway::fmt::rel_time;
 
-use crate::output::plain_ref;
+use crate::output::{PlacedCard, placed_cards, plain_ref};
 
 /// `headway grep <pattern>` — print every line of card text in `boards` that
 /// `pattern` matches, grouped under each card's `headway:<board>/<word-id>` ref,
@@ -53,7 +53,7 @@ pub(crate) fn cmd_grep(
     let mut hits: Vec<CardHit> = Vec::new();
     for view in boards {
         let within = subtree.map(|root| subtree_ids(view, root));
-        for (card, column) in searched_cards(view) {
+        for PlacedCard { card, column } in placed_cards(view) {
             if within
                 .as_ref()
                 .is_some_and(|ids| !ids.contains(card.id.bytes()))
@@ -113,17 +113,6 @@ pub(crate) struct GrepOutput {
 /// The variable naming headway's own pager command, consulted before `$PAGER`
 /// by [`cli_term::emit`] — the counterpart of agentium's `$AGENTIUM_PAGER`.
 const PAGER_VAR: &str = "HEADWAY_PAGER";
-
-/// The cards `grep` reads on `view`, each with where it sits: its column's
-/// name, or `archived` (the word `show <card>` uses) for an archived card.
-fn searched_cards(view: &BoardView) -> impl Iterator<Item = (&CardView, &str)> {
-    let live = view
-        .columns
-        .iter()
-        .flat_map(|col| col.cards.iter().map(move |c| (c, col.name.as_str())));
-    let archived = view.archived.iter().map(|a| (&a.card, "archived"));
-    live.chain(archived)
-}
 
 /// `root` and every card below it on `view`, live or archived — the set
 /// `--in <card>` narrows the search to.
@@ -534,8 +523,8 @@ mod tests {
             Vec::new(),
         );
         let pattern = re("relay");
-        let mut hits: Vec<CardHit> = searched_cards(&view)
-            .map(|(card, column)| CardHit {
+        let mut hits: Vec<CardHit> = placed_cards(&view)
+            .map(|PlacedCard { card, column }| CardHit {
                 view: &view,
                 card,
                 column,
@@ -570,16 +559,10 @@ mod tests {
     #[test]
     fn archived_cards_are_searched_and_marked() {
         let view = board(vec![card(1, "live", "")], vec![card(2, "gone", "")]);
-        let titles: Vec<(String, String)> = searched_cards(&view)
-            .map(|(c, col)| (c.title.clone(), col.to_string()))
+        let placed: Vec<String> = placed_cards(&view)
+            .map(|p| format!("{} in {}", p.card.title, p.column))
             .collect();
-        assert_eq!(
-            titles,
-            vec![
-                ("live".into(), "Todo".into()),
-                ("gone".into(), "archived".into())
-            ]
-        );
+        assert_eq!(placed, ["live in Todo", "gone in archived"]);
     }
 
     #[test]

@@ -546,7 +546,7 @@ impl CurrentRef {
             self.card = None;
             return;
         };
-        let same_board = headway::wordid::parse_ref(&self.text).is_some_and(|(b, _)| b == board);
+        let same_board = headway::wordid::parse_ref(&self.text).is_some_and(|r| r.board == board);
         if self.card == Some(card) && same_board {
             return;
         }

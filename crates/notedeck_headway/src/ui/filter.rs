@@ -45,8 +45,8 @@ impl CardFilter {
                     // (`headway:board/maple-river-canyon`) or as the scheme-less
                     // `board/maple-river-canyon` shorthand: the board segment is
                     // redundant here, so match on the id words alone.
-                    Some((b, words)) if b.eq_ignore_ascii_case(board) => {
-                        filter.text.push(words.to_lowercase());
+                    Some(r) if r.board.eq_ignore_ascii_case(board) => {
+                        filter.text.push(r.words.to_lowercase());
                     }
                     // Anything else — a reference to another board, or plain text
                     // (including a bare word-id, which stays searchable via the
@@ -151,7 +151,10 @@ fn cross_board_ref<'a>(
     boards: &'a [BoardSummary],
 ) -> Option<CrossBoardRef<'a>> {
     query.split_whitespace().find_map(|term| {
-        let (prefix, words) = headway::wordid::parse_ref(term)?;
+        let headway::wordid::CardRef {
+            board: prefix,
+            words,
+        } = headway::wordid::parse_ref(term)?;
         if prefix.eq_ignore_ascii_case(board) {
             return None;
         }

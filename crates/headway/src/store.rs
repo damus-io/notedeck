@@ -1508,7 +1508,10 @@ fn apply_edit(
         }
         BoardAction::ArchiveCard { card } => {
             // Capture the card's current column so a restore can return it there.
-            let (from_col, c) = find_card_col(view, card)?;
+            let CardInCol {
+                col: from_col,
+                card: c,
+            } = find_card_col(view, card)?;
             let rank = non_empty_rank(&c.rank);
             ingest_signed(
                 ndb,
@@ -1750,7 +1753,7 @@ pub fn link_card(
             target: target.id.to_string(),
         });
     }
-    let from_col = find_card_col(source.view, card).map(|(col, _)| col);
+    let from_col = find_card_col(source.view, card).map(|found| found.col);
     place_card(ndb, target, from_col, secret, card, publisher)
 }
 
@@ -1985,13 +1988,21 @@ pub fn would_cycle(view: &BoardView, card: NoteId, parent: NoteId) -> bool {
     true
 }
 
+/// A card found on a board by [`find_card_col`], with where it sits.
+struct CardInCol<'a> {
+    /// The id of the column the card currently sits in.
+    col: &'a str,
+    /// The card.
+    card: &'a CardView,
+}
+
 /// Find a card and the id of the column it currently sits in.
-fn find_card_col(view: &BoardView, card: NoteId) -> Option<(&str, &CardView)> {
+fn find_card_col(view: &BoardView, card: NoteId) -> Option<CardInCol<'_>> {
     view.columns.iter().find_map(|col| {
-        col.cards
-            .iter()
-            .find(|c| c.id == card)
-            .map(|c| (col.id.as_str(), c))
+        col.cards.iter().find(|c| c.id == card).map(|c| CardInCol {
+            col: col.id.as_str(),
+            card: c,
+        })
     })
 }
 

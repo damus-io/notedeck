@@ -973,12 +973,19 @@ fn a_board_whose_selfshare_never_flushed_is_joinable_by_deriving_its_root() {
     );
 }
 
+/// One machine's running notedeck, as [`spawn_machine`] stands it up.
+struct Machine {
+    /// The embedded relay; keep it alive for as long as the machine is used.
+    relay: nostrdb_net::relay::server::RelayHandle,
+    /// The relay's URL.
+    url: String,
+    /// The machine's store, for inspection.
+    store: Ndb,
+}
+
 /// Spawn an embedded relay over a fresh nostrdb, standing in for one machine's
-/// running notedeck. Returns the relay handle (keep it alive), its URL, and its
-/// store for inspection. The temp dir must outlive the store.
-fn spawn_machine(
-    dir: &tempfile::TempDir,
-) -> (nostrdb_net::relay::server::RelayHandle, String, Ndb) {
+/// running notedeck. The temp dir must outlive the store.
+fn spawn_machine(dir: &tempfile::TempDir) -> Machine {
     let ndb = Ndb::new(
         dir.path().to_str().unwrap(),
         &test_config().set_ingester_threads(1),
@@ -988,7 +995,7 @@ fn spawn_machine(
     let relay =
         nostrdb_net::relay::server::spawn(ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
     let url = relay.url();
-    (relay, url, store)
+    Machine { relay, url, store }
 }
 
 /// The notes a private relay that auth-gates gift-wraps carries between two
@@ -1079,8 +1086,16 @@ fn a_board_seeded_on_one_machine_appears_on_another_without_its_gift_wrap() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let _guard = rt.enter();
     let (hydra_dir, monad_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let (_hydra_relay, hydra_url, hydra_store) = spawn_machine(&hydra_dir);
-    let (_monad_relay, monad_url, monad_store) = spawn_machine(&monad_dir);
+    let Machine {
+        relay: _hydra_relay,
+        url: hydra_url,
+        store: hydra_store,
+    } = spawn_machine(&hydra_dir);
+    let Machine {
+        relay: _monad_relay,
+        url: monad_url,
+        store: monad_store,
+    } = spawn_machine(&monad_dir);
     let hydra_sub = hydra_store
         .subscribe(&[private_notes_filter()])
         .expect("subscribe");
@@ -1135,7 +1150,11 @@ fn an_already_flushed_board_sends_its_pns_self_share_once() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let _guard = rt.enter();
     let relay_dir = tempfile::tempdir().unwrap();
-    let (_relay, url, store) = spawn_machine(&relay_dir);
+    let Machine {
+        relay: _relay,
+        url,
+        store,
+    } = spawn_machine(&relay_dir);
     let dead = "ws://127.0.0.1:1";
 
     // Seed offline so no gift-wrap ever reaches the relay, then mark the root as
@@ -1213,14 +1232,24 @@ fn plaintext_member_notes(ndb: &Ndb, author: &nostrdb_net::Pubkey) -> usize {
     ndb.query(&txn, &[filter], 500).map_or(0, |r| r.len())
 }
 
+/// A card on a folded board, as [`find_titled`] finds it.
+struct Titled<'a> {
+    card: &'a Value,
+    /// The name of the column it sits in.
+    column: &'a str,
+}
+
 /// The card titled `title` on a folded board, with the name of its column.
-fn find_titled<'a>(board: &'a Value, title: &str) -> Option<(&'a Value, &'a str)> {
+fn find_titled<'a>(board: &'a Value, title: &str) -> Option<Titled<'a>> {
     board["columns"].as_array()?.iter().find_map(|col| {
         let card = col["cards"]
             .as_array()?
             .iter()
             .find(|c| c["title"] == title)?;
-        Some((card, col["name"].as_str()?))
+        Some(Titled {
+            card,
+            column: col["name"].as_str()?,
+        })
     })
 }
 
@@ -1356,7 +1385,7 @@ fn member_folds_and_edits_a_board_shared_by_its_owner() {
     let board = show_as_until(&member_key, &url, member_db, &owner_hex, slug, |b| {
         find_titled(b, "Owner card").is_some()
     });
-    let owner_card = find_titled(&board, "Owner card").unwrap().0["id"]
+    let owner_card = find_titled(&board, "Owner card").unwrap().card["id"]
         .as_str()
         .expect("owner card id")
         .to_string();
@@ -1388,9 +1417,11 @@ fn member_folds_and_edits_a_board_shared_by_its_owner() {
     for _ in 0..50 {
         let out = headway(&url, owner_db, &["--board", slug, "show", "--json"]);
         if let Ok(b) = serde_json::from_slice::<Value>(&out.stdout)
-            && let Some((card, col)) = find_titled(&b, "Owner card")
-            && col == "In Progress"
-            && card["comments"].as_array().is_some_and(|c| !c.is_empty())
+            && let Some(owner) = find_titled(&b, "Owner card")
+            && owner.column == "In Progress"
+            && owner.card["comments"]
+                .as_array()
+                .is_some_and(|c| !c.is_empty())
             && find_titled(&b, "Member card").is_some()
         {
             settled = Some(b);
@@ -1399,12 +1430,17 @@ fn member_folds_and_edits_a_board_shared_by_its_owner() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let board = settled.expect("the owner never folded all three of the member's edits");
-    let (member_card, _) = find_titled(&board, "Member card").unwrap();
+    let Titled {
+        card: member_card, ..
+    } = find_titled(&board, "Member card").unwrap();
     assert_eq!(
         member_card["author"], member_hex,
         "the member's card must be attributed to the member"
     );
-    let (owner_card_view, _) = find_titled(&board, "Owner card").unwrap();
+    let Titled {
+        card: owner_card_view,
+        ..
+    } = find_titled(&board, "Owner card").unwrap();
     let comment = &owner_card_view["comments"][0];
     assert_eq!(comment["body"], "hello from a member");
     assert_eq!(
@@ -1666,7 +1702,7 @@ fn member_resolves_a_shared_board_by_its_slug() {
         String::from_utf8_lossy(&out.stderr)
     );
     let board: Value = serde_json::from_slice(&out.stdout).expect("show --json");
-    let (card, _) = find_titled(&board, "Owner card")
+    let Titled { card, .. } = find_titled(&board, "Owner card")
         .unwrap_or_else(|| panic!("the owner's card must fold for the member: {board:#}"));
     let card_ref = card["ref"].as_str().expect("card ref").to_string();
 
@@ -1680,7 +1716,7 @@ fn member_resolves_a_shared_board_by_its_slug() {
     );
     show_as_until(&member_key, &url, member_db, &owner.hex(), slug, |b| {
         find_titled(b, "Owner card")
-            .is_some_and(|(c, _)| c["comments"][0]["body"] == "found it by slug")
+            .is_some_and(|t| t.card["comments"][0]["body"] == "found it by slug")
     });
 
     // 3. A second owner shares a board under the same slug: the bare slug is now
@@ -1812,7 +1848,7 @@ fn comment_key_signs_comments_on_a_sealed_board_only() {
         String::from_utf8_lossy(&out.stderr)
     );
     let board = show_board_until(&url, owner_db, slug, 1);
-    let (card, _) = find_titled(&board, "owner card").expect("card folded");
+    let Titled { card, .. } = find_titled(&board, "owner card").expect("card folded");
     assert_eq!(
         card["author"], owner_hex,
         "only comments use the comment key"
@@ -1831,10 +1867,13 @@ fn comment_key_signs_comments_on_a_sealed_board_only() {
     let fresh_dir = tempfile::tempdir().expect("fresh dir");
     let fresh_db = fresh_dir.path().to_str().unwrap();
     let board = show_as_until(&nsec(), &url, fresh_db, &owner_hex, slug, |b| {
-        find_titled(b, "owner card")
-            .is_some_and(|(c, _)| c["comments"].as_array().is_some_and(|cs| !cs.is_empty()))
+        find_titled(b, "owner card").is_some_and(|t| {
+            t.card["comments"]
+                .as_array()
+                .is_some_and(|cs| !cs.is_empty())
+        })
     });
-    let (card, _) = find_titled(&board, "owner card").expect("card folded");
+    let Titled { card, .. } = find_titled(&board, "owner card").expect("card folded");
     let comment = &card["comments"][0];
     assert_eq!(comment["body"], "hello from the agent");
     assert_eq!(
@@ -1881,7 +1920,7 @@ fn comment_key_signs_comments_on_a_sealed_board_only() {
         "add to the plaintext board"
     );
     let board = show_board_until(&url, owner_db, "plain", 1);
-    let (card, _) = find_titled(&board, "plain card").expect("plain card folded");
+    let Titled { card, .. } = find_titled(&board, "plain card").expect("plain card folded");
     let plain_card = card["id"].as_str().expect("card id").to_string();
 
     let out = with_comment_key(&["--board", "plain", "comment", &plain_card, "unseen"]);

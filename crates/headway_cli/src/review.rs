@@ -80,9 +80,9 @@ fn agentium_ref(value: &str) -> Option<String> {
 /// Print what a `review` recorded, one field per line, so the transcript of the
 /// agent that ran it shows exactly what was captured.
 pub(crate) fn print_recorded(review: &ReviewFields) {
-    for (name, value) in review.tags() {
-        let Some(value) = value else { continue };
-        println!("  {name:<11}{value}");
+    for tag in review.tags() {
+        let Some(value) = tag.value else { continue };
+        println!("  {:<11}{value}", tag.name);
     }
 }
 

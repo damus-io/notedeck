@@ -301,7 +301,7 @@ fn review_location(
     record: &ReviewView,
     flags: &ReviewCommentFlags,
 ) -> Result<Option<ReviewLocation>> {
-    let (path, (start, end)) = match (&flags.path, flags.lines) {
+    let (path, lines) = match (&flags.path, flags.lines) {
         (None, None) if flags.old => return Err("--old needs --path and --line".into()),
         (None, None) => return Ok(None),
         (Some(path), Some(lines)) => (path, lines),
@@ -316,8 +316,8 @@ fn review_location(
     Ok(Some(ReviewLocation {
         path: path.clone(),
         commit,
-        start,
-        end,
+        start: lines.start,
+        end: lines.end,
         side: if flags.old {
             LineSide::Old
         } else {

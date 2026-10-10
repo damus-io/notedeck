@@ -129,7 +129,10 @@ pub fn resolve(
     card_ref: &str,
     ctx: &ResolveCtx,
 ) -> Result<Resolved, GitError> {
-    let (repo_dir, target) = pick_target(record, ctx)?;
+    let TargetRepo {
+        dir: repo_dir,
+        target,
+    } = pick_target(record, ctx)?;
     let found = |sha: String, how: Found| {
         // Pin whatever the cache resolved, so a later `gc` there can't drop it.
         if target == Target::Cache {
@@ -258,7 +261,10 @@ pub fn commit_patch(repo_dir: &Path, sha: &str, max_bytes: usize) -> Result<Comm
     // `%B` ends with a newline, and git puts a blank line before the patch.
     let start = rest.iter().position(|b| *b != b'\n').unwrap_or(rest.len());
     let rest = &rest[start..];
-    let (patch, truncated) = cap_at_line(rest, max_bytes);
+    let Capped {
+        bytes: patch,
+        truncated,
+    } = cap_at_line(rest, max_bytes);
     Ok(CommitPatch {
         sha,
         author,
@@ -310,14 +316,36 @@ pub fn blob_bytes(
 }
 
 /// `bytes` cut to at most `max` bytes, backed up to just after the last newline
-/// so the patch never ends mid-line. Returns whether anything was cut.
-fn cap_at_line(bytes: &[u8], max: usize) -> (&[u8], bool) {
+/// so the patch never ends mid-line, with whether anything was cut.
+fn cap_at_line(bytes: &[u8], max: usize) -> Capped<'_> {
     if bytes.len() <= max {
-        return (bytes, false);
+        return Capped {
+            bytes,
+            truncated: false,
+        };
     }
     let head = &bytes[..max];
     let end = head.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-    (&bytes[..end], true)
+    Capped {
+        bytes: &bytes[..end],
+        truncated: true,
+    }
+}
+
+/// Bytes cut down by [`cap_at_line`].
+struct Capped<'a> {
+    /// What is kept: all of the input, or a whole-line prefix of it.
+    bytes: &'a [u8],
+    /// Whether anything was cut.
+    truncated: bool,
+}
+
+/// The repo [`pick_target`] chose for a record's commit.
+struct TargetRepo {
+    /// The repo's directory: a checkout, or the bare cache.
+    dir: PathBuf,
+    /// Which kind of repo it is.
+    target: Target,
 }
 
 /// Step 1: the repo on this host the commit should be found or fetched into,
@@ -338,7 +366,7 @@ fn cap_at_line(bytes: &[u8], max: usize) -> (&[u8], bool) {
 ///
 /// A record with no repo identity can't be matched or cached, so any checkout
 /// is taken as a guess; with none it's an error.
-fn pick_target(record: &ReviewFields, ctx: &ResolveCtx) -> Result<(PathBuf, Target), GitError> {
+fn pick_target(record: &ReviewFields, ctx: &ResolveCtx) -> Result<TargetRepo, GitError> {
     let repo = record.repo.as_deref();
     if let Some(path) = record.path.as_deref().map(PathBuf::from)
         && same_repo(&path, repo)
@@ -352,10 +380,13 @@ fn pick_target(record: &ReviewFields, ctx: &ResolveCtx) -> Result<(PathBuf, Targ
         } else {
             Target::Checkout
         };
-        return Ok((path, target));
+        return Ok(TargetRepo { dir: path, target });
     }
     if let Some(dir) = ctx.known_checkouts.iter().find(|d| same_repo(d, repo)) {
-        return Ok((dir.clone(), Target::Checkout));
+        return Ok(TargetRepo {
+            dir: dir.clone(),
+            target: Target::Checkout,
+        });
     }
     let Some(repo) = repo.filter(|r| is_hex_sha(r)) else {
         return Err(resolve_error(
@@ -370,7 +401,10 @@ fn pick_target(record: &ReviewFields, ctx: &ResolveCtx) -> Result<(PathBuf, Targ
         })?;
         git(&dir, &["init", "--bare", "--quiet"])?;
     }
-    Ok((dir, Target::Cache))
+    Ok(TargetRepo {
+        dir,
+        target: Target::Cache,
+    })
 }
 
 /// Whether `dir` is a checkout of the repo whose identity is `repo`: one of the

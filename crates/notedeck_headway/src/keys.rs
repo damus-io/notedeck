@@ -219,8 +219,8 @@ fn named_card(view: &BoardView, card: Option<&str>) -> Option<Option<NoteId>> {
     let card = card?;
     Some(
         headway::wordid::parse_ref(card)
-            .filter(|(board, _)| *board == view.id)
-            .and_then(|(_, words)| headway::event::resolve_card_by_wordid(view, words)),
+            .filter(|r| r.board == view.id)
+            .and_then(|r| headway::event::resolve_card_by_wordid(view, r.words)),
     )
 }
 

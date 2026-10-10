@@ -205,7 +205,7 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
         matched: &str,
         ctx: &notedeck::ReferenceResolveCtx,
     ) -> Option<notedeck::ResolvedRef> {
-        let (slug, words) = headway::wordid::parse_ref(matched)?;
+        let headway::wordid::CardRef { board: slug, words } = headway::wordid::parse_ref(matched)?;
         // Author gap: no pubkey in the ref, so fold the current account's boards.
         let author = ctx.selected_account?;
         let board_id = slug.to_lowercase();

@@ -329,10 +329,17 @@ mod tests {
         root
     }
 
-    fn ndb() -> (tempfile::TempDir, Ndb) {
+    /// A nostrdb in a fresh temporary directory. `ndb` is declared first so it
+    /// closes before `dir` deletes its files.
+    struct TempNdb {
+        ndb: Ndb,
+        dir: tempfile::TempDir,
+    }
+
+    fn ndb() -> TempNdb {
         let dir = tempfile::TempDir::new().unwrap();
         let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
-        (dir, ndb)
+        TempNdb { ndb, dir }
     }
 
     /// Gift-wrap a kind-1082 key-share to `recipient` via the production
@@ -404,7 +411,7 @@ mod tests {
     /// on another device actually arrives in.
     #[test]
     fn late_board_peels_after_a_roster_grew_one_board_at_a_time() {
-        let (_dir, ndb) = ndb();
+        let TempNdb { dir: _dir, ndb } = ndb();
         let author = FullKeypair::generate();
         let mut registry = RootRegistry::default();
 
@@ -467,7 +474,7 @@ mod tests {
 
     #[test]
     fn reads_gift_wrapped_share_for_recipient_only() {
-        let (_dir, ndb) = ndb();
+        let TempNdb { dir: _dir, ndb } = ndb();
         let author = FullKeypair::generate();
         let other = FullKeypair::generate();
         let sender = FullKeypair::generate();
@@ -494,7 +501,7 @@ mod tests {
 
     #[test]
     fn requires_a_board_and_lists_each_joined_board() {
-        let (_dir, ndb) = ndb();
+        let TempNdb { dir: _dir, ndb } = ndb();
         let author = FullKeypair::generate();
         let sender = FullKeypair::generate();
         ndb.add_key(&author.secret_key.secret_bytes());
@@ -540,7 +547,7 @@ mod tests {
     /// someone else, and rides the account's NIP-59 inbox across devices.
     #[test]
     fn self_share_joins_own_board() {
-        let (_dir, ndb) = ndb();
+        let TempNdb { dir: _dir, ndb } = ndb();
         let me = FullKeypair::generate();
         ndb.add_key(&me.secret_key.secret_bytes());
 
@@ -575,7 +582,7 @@ mod tests {
     /// counts them.
     #[tokio::test]
     async fn pns_self_share_joins_own_board_without_a_gift_wrap() {
-        let (_dir, ndb) = ndb();
+        let TempNdb { dir: _dir, ndb } = ndb();
         let me = FullKeypair::generate();
         let secret = me.secret_key.secret_bytes();
         ndb.add_key(&secret);

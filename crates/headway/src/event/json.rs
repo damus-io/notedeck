@@ -136,8 +136,8 @@ pub fn review_json(review: &ReviewView) -> serde_json::Value {
         "author": Pubkey::new(review.author).hex(),
         "created_at": review.created_at,
     });
-    for (name, value) in review.fields.tags() {
-        v[name] = serde_json::json!(value);
+    for tag in review.fields.tags() {
+        v[tag.name] = serde_json::json!(tag.value);
     }
     v["comments"] = review
         .comments

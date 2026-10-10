@@ -482,7 +482,7 @@ fn board_of(board: &Option<String>) -> &str {
 fn card_board<'a>(board: &'a Option<String>, card: &'a str) -> &'a str {
     board
         .as_deref()
-        .or_else(|| wordid::parse_ref(card).map(|(board, _)| board))
+        .or_else(|| wordid::parse_ref(card).map(|r| r.board))
         .unwrap_or(store::BOARD_ID)
 }
 

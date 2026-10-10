@@ -286,11 +286,11 @@ pub fn build_review<'a>(issue: &NoteId, review: &ReviewFields) -> NoteBuilder<'a
         .tag_str("e")
         .tag_id(issue.bytes());
 
-    for (name, value) in review.tags() {
-        let Some(value) = value.filter(|v| !v.is_empty()) else {
+    for tag in review.tags() {
+        let Some(value) = tag.value.filter(|v| !v.is_empty()) else {
             continue;
         };
-        b = b.start_tag().tag_str(name).tag_str(value);
+        b = b.start_tag().tag_str(tag.name).tag_str(value);
     }
 
     b

@@ -121,16 +121,17 @@ fn row<'a>(rows: &'a [Value], card_ref: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no row for {card_ref}: {rows:?}"))
 }
 
-/// The `(field, text)` pairs of a row's matches.
-fn matches(row: &Value) -> Vec<(String, String)> {
+/// A row's matches, each as `<field>: <text>`.
+fn matches(row: &Value) -> Vec<String> {
     row["matches"]
         .as_array()
         .expect("matches")
         .iter()
         .map(|m| {
-            (
-                m["field"].as_str().unwrap().to_string(),
-                m["text"].as_str().unwrap().to_string(),
+            format!(
+                "{}: {}",
+                m["field"].as_str().unwrap(),
+                m["text"].as_str().unwrap()
             )
         })
         .collect()
@@ -193,14 +194,14 @@ fn grep_searches_card_text_across_the_board() {
     // all-lowercase pattern folds case, so `RELAY` comes along.
     assert_eq!(
         matches(row(&rows, &epic)),
-        vec![
-            ("title".into(), "Relay reconnect epic".into()),
-            ("desc".into(), "the RELAY stalls past the cap".into()),
+        [
+            "title: Relay reconnect epic",
+            "desc: the RELAY stalls past the cap",
         ]
     );
     assert_eq!(
         matches(row(&rows, &child)),
-        vec![("comment".into(), "the relay looks fine now".into())]
+        ["comment: the relay looks fine now"]
     );
     assert_eq!(row(&rows, &child)["column"], "Backlog");
     assert_eq!(row(&rows, &child)["board"], "headway");

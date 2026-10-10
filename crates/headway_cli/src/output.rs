@@ -178,7 +178,7 @@ pub(crate) fn print_all_boards(
 pub(crate) fn print_cards(view: &BoardView, sels: &[String], as_json: bool) -> Result<()> {
     // Resolve every selector first so a bad id fails the whole command rather
     // than printing a partial result.
-    let cards: Vec<(&CardView, String)> = sels
+    let cards: Vec<PlacedCard> = sels
         .iter()
         .map(|sel| {
             let id = resolve_card(view, sel)?;
@@ -189,9 +189,9 @@ pub(crate) fn print_cards(view: &BoardView, sels: &[String], as_json: bool) -> R
     if as_json {
         let out: Vec<_> = cards
             .iter()
-            .map(|(card, col)| {
-                let mut j = event::card_json(&view.id, card);
-                j["column"] = json!(col);
+            .map(|p| {
+                let mut j = event::card_json(&view.id, p.card);
+                j["column"] = json!(p.column);
                 j
             })
             .collect();
@@ -200,11 +200,11 @@ pub(crate) fn print_cards(view: &BoardView, sels: &[String], as_json: bool) -> R
             serde_json::to_string_pretty(&out).unwrap_or_else(|_| "null".into())
         );
     } else {
-        for (i, (card, col)) in cards.iter().enumerate() {
+        for (i, p) in cards.iter().enumerate() {
             if i > 0 {
                 println!();
             }
-            print_card_detail(view, card, col);
+            print_card_detail(view, p.card, p.column);
         }
     }
     Ok(())
@@ -588,18 +588,33 @@ fn review_place(loc: &ReviewLocation, record_commit: Option<&str>) -> String {
     place
 }
 
-/// Find a card by id anywhere on the board, returning it alongside the name of
-/// the column it sits in (or `"archived"`).
-fn find_card<'a>(view: &'a BoardView, id: &NoteId) -> Option<(&'a CardView, String)> {
-    for col in &view.columns {
-        if let Some(card) = col.cards.iter().find(|c| c.id == *id) {
-            return Some((card, col.name.clone()));
-        }
-    }
-    view.archived
-        .iter()
-        .find(|a| a.card.id == *id)
-        .map(|a| (&a.card, "archived".to_string()))
+/// A card on a board with where it sits, as [`placed_cards`] yields it.
+#[derive(Clone, Copy)]
+pub(crate) struct PlacedCard<'a> {
+    pub(crate) card: &'a CardView,
+    /// Its column's name, or `archived` (the word `show <card>` uses) for an
+    /// archived card.
+    pub(crate) column: &'a str,
+}
+
+/// Every card on `view`, live then archived, each with where it sits.
+pub(crate) fn placed_cards(view: &BoardView) -> impl Iterator<Item = PlacedCard<'_>> {
+    let live = view.columns.iter().flat_map(|col| {
+        col.cards.iter().map(move |card| PlacedCard {
+            card,
+            column: col.name.as_str(),
+        })
+    });
+    let archived = view.archived.iter().map(|a| PlacedCard {
+        card: &a.card,
+        column: "archived",
+    });
+    live.chain(archived)
+}
+
+/// Find a card by id anywhere on the board, with where it sits.
+fn find_card<'a>(view: &'a BoardView, id: &NoteId) -> Option<PlacedCard<'a>> {
+    placed_cards(view).find(|p| p.card.id == *id)
 }
 
 fn labels_suffix(labels: &[String]) -> String {

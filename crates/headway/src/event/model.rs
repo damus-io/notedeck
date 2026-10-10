@@ -310,22 +310,39 @@ pub struct ReviewFields {
     pub remote: Option<String>,
 }
 
+/// One review field as it goes on the wire: its tag name and its value, `None`
+/// when the record leaves it unset. Yielded by [`ReviewFields::tags`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReviewTag<'a> {
+    /// The wire tag name, e.g. `"commit"`.
+    pub name: &'static str,
+    /// The field's value, if the record has one.
+    pub value: Option<&'a str>,
+}
+
+impl<'a> ReviewTag<'a> {
+    /// A field named `name` holding `value`.
+    const fn new(name: &'static str, value: Option<&'a str>) -> Self {
+        Self { name, value }
+    }
+}
+
 impl ReviewFields {
     /// Every field paired with its wire tag name, in wire order. The one place
     /// the tag names are spelled: the builder writes from it, the JSON renders
     /// from it and [`ReviewFields::slot_mut`] parses into the same names.
-    pub fn tags(&self) -> [(&'static str, Option<&str>); 10] {
+    pub fn tags(&self) -> [ReviewTag<'_>; 10] {
         [
-            ("commit", self.commit.as_deref()),
-            ("title", self.title.as_deref()),
-            ("branch", self.branch.as_deref()),
-            ("host", self.host.as_deref()),
-            ("path", self.path.as_deref()),
-            ("repo", self.repo.as_deref()),
-            ("agentium", self.agentium.as_deref()),
-            ("explainer", self.explainer.as_deref()),
-            ("deploy", self.deploy.as_deref()),
-            ("remote", self.remote.as_deref()),
+            ReviewTag::new("commit", self.commit.as_deref()),
+            ReviewTag::new("title", self.title.as_deref()),
+            ReviewTag::new("branch", self.branch.as_deref()),
+            ReviewTag::new("host", self.host.as_deref()),
+            ReviewTag::new("path", self.path.as_deref()),
+            ReviewTag::new("repo", self.repo.as_deref()),
+            ReviewTag::new("agentium", self.agentium.as_deref()),
+            ReviewTag::new("explainer", self.explainer.as_deref()),
+            ReviewTag::new("deploy", self.deploy.as_deref()),
+            ReviewTag::new("remote", self.remote.as_deref()),
         ]
     }
 
@@ -388,7 +405,7 @@ impl ReviewLocation {
 
     /// Parse a `line` tag's value (`"42"` or `"42-48"`) into first and last
     /// line, in order. `None` for anything else, a zero line included.
-    pub(super) fn parse_lines(value: &str) -> Option<(u32, u32)> {
+    pub(super) fn parse_lines(value: &str) -> Option<LineRange> {
         let (a, b): (u32, u32) = match value.split_once('-') {
             Some((a, b)) => (a.trim().parse().ok()?, b.trim().parse().ok()?),
             None => {
@@ -396,8 +413,21 @@ impl ReviewLocation {
                 (n, n)
             }
         };
-        (a > 0 && b > 0).then(|| (a.min(b), a.max(b)))
+        (a > 0 && b > 0).then(|| LineRange {
+            start: a.min(b),
+            end: a.max(b),
+        })
     }
+}
+
+/// First and last line of a span, 1-based and inclusive, as a `line` tag or a
+/// `--line` flag spells it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LineRange {
+    /// The first line.
+    pub start: u32,
+    /// The last line, never before [`start`](Self::start).
+    pub end: u32,
 }
 
 /// The addressable coordinate of a board: `30619:<author-hex>:<board-id>`. Thin

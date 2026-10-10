@@ -25,6 +25,15 @@ pub fn card_ref(board: &str, id: &[u8; 32]) -> String {
     format!("{SCHEME}:{board}/{}", encode(id))
 }
 
+/// A card reference split by [`parse_ref`], both halves borrowing the input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CardRef<'a> {
+    /// The board slug, e.g. `"dave"`.
+    pub board: &'a str,
+    /// The card's word-id, e.g. `"maple-river-canyon"`; not validated.
+    pub words: &'a str,
+}
+
 /// Split the board slug and word-id out of a card reference, accepting the full
 /// `headway:<board>/<word-id>` form or the scheme-less `<board>/<word-id>`
 /// shorthand (for interactive resolver input where the app is implied). Returns
@@ -38,9 +47,12 @@ pub fn card_ref(board: &str, id: &[u8; 32]) -> String {
 /// A thin adapter over the shared [`wordid::WordIdRef`] grammar: a headway card is
 /// always board-scoped, so only a [`Scoped`](wordid::WordIdRef::Scoped) body is a
 /// card reference — a bare word-id resolves to `None`.
-pub fn parse_ref(sel: &str) -> Option<(&str, &str)> {
+pub fn parse_ref(sel: &str) -> Option<CardRef<'_>> {
     match wordid::WordIdRef::parse_uri_or_body(sel, SCHEME)? {
-        wordid::WordIdRef::Scoped { scope, words } => Some((scope, words)),
+        wordid::WordIdRef::Scoped { scope, words } => Some(CardRef {
+            board: scope,
+            words,
+        }),
         // A bare word-id carries no board segment, so it's never a card reference.
         wordid::WordIdRef::Bare { .. } => None,
     }
@@ -56,23 +68,38 @@ mod tests {
         let words = encode(&id);
         let r = card_ref("dave", &id);
         assert_eq!(r, format!("headway:dave/{words}"));
-        assert_eq!(parse_ref(&r), Some(("dave", words.as_str())));
+        assert_eq!(
+            parse_ref(&r),
+            Some(CardRef {
+                board: "dave",
+                words: &words
+            })
+        );
     }
 
     #[test]
     fn parse_ref_accepts_scheme_and_scheme_less() {
         assert_eq!(
             parse_ref("headway:commerce/maple-river-canyon"),
-            Some(("commerce", "maple-river-canyon"))
+            Some(CardRef {
+                board: "commerce",
+                words: "maple-river-canyon"
+            })
         );
         assert_eq!(
             parse_ref("commerce/maple-river-canyon"),
-            Some(("commerce", "maple-river-canyon"))
+            Some(CardRef {
+                board: "commerce",
+                words: "maple-river-canyon"
+            })
         );
         // A hyphenated board slug (e.g. a year-prefixed board) is a valid segment.
         assert_eq!(
             parse_ref("2024-goals/maple-river-canyon"),
-            Some(("2024-goals", "maple-river-canyon"))
+            Some(CardRef {
+                board: "2024-goals",
+                words: "maple-river-canyon"
+            })
         );
     }
 

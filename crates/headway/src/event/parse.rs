@@ -473,7 +473,7 @@ fn parse_comment(note: &Note) -> Option<HeadwayEvent> {
                 lines = tag
                     .get_str(1)
                     .and_then(ReviewLocation::parse_lines)
-                    .map(|(start, end)| (start, end, side));
+                    .map(|range| (range, side));
             }
             _ => {}
         }
@@ -491,11 +491,11 @@ fn parse_comment(note: &Note) -> Option<HeadwayEvent> {
         // A location needs all three of its tags; with any missing the comment
         // is about the commit as a whole.
         let location = match (path, commit, lines) {
-            (Some(path), Some(commit), Some((start, end, side))) => Some(ReviewLocation {
+            (Some(path), Some(commit), Some((range, side))) => Some(ReviewLocation {
                 path,
                 commit,
-                start,
-                end,
+                start: range.start,
+                end: range.end,
                 side,
             }),
             _ => None,
@@ -681,7 +681,7 @@ pub(crate) mod tests {
         build_placement, build_related, build_relation, build_review, build_review_comment,
         build_sequence, build_subject_edit,
     };
-    use crate::event::model::board_address;
+    use crate::event::model::{LineRange, board_address};
 
     /// Sign `builder` with `kp` and parse the result back into a [`HeadwayEvent`].
     pub(crate) fn roundtrip(builder: NoteBuilder, kp: &FullKeypair) -> HeadwayEvent {
@@ -869,9 +869,18 @@ pub(crate) mod tests {
 
     #[test]
     fn line_values_parse_single_ranges_and_reject_junk() {
-        assert_eq!(ReviewLocation::parse_lines("42"), Some((42, 42)));
-        assert_eq!(ReviewLocation::parse_lines("42-48"), Some((42, 48)));
-        assert_eq!(ReviewLocation::parse_lines("48-42"), Some((42, 48)));
+        assert_eq!(
+            ReviewLocation::parse_lines("42"),
+            Some(LineRange { start: 42, end: 42 })
+        );
+        assert_eq!(
+            ReviewLocation::parse_lines("42-48"),
+            Some(LineRange { start: 42, end: 48 })
+        );
+        assert_eq!(
+            ReviewLocation::parse_lines("48-42"),
+            Some(LineRange { start: 42, end: 48 })
+        );
         assert_eq!(ReviewLocation::parse_lines("0"), None);
         assert_eq!(ReviewLocation::parse_lines("a-b"), None);
         assert_eq!(ReviewLocation::parse_lines(""), None);

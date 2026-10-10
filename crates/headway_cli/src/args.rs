@@ -9,7 +9,7 @@ use cli_term::{CaseMode, ColorWhen, PagerMode, compile_pattern};
 use nostrdb_net::Pubkey;
 use regex::Regex;
 
-use headway::event::ReviewFields;
+use headway::event::{LineRange, ReviewFields};
 use headway::store;
 
 use nostrdb_net::relay::sync::Result;
@@ -236,7 +236,7 @@ pub(crate) struct ReviewCommentFlags {
     /// `--path`: the file, as the diff names it.
     pub(crate) path: Option<String>,
     /// `--line`: `a` or `a-b`, parsed from the flag.
-    pub(crate) lines: Option<(u32, u32)>,
+    pub(crate) lines: Option<LineRange>,
     /// `--old`: the lines are on the old (deleted) side.
     pub(crate) old: bool,
     /// `--record`: the record whose commit starts with this prefix, rather
@@ -253,7 +253,7 @@ impl ReviewCommentFlags {
 
 /// Parse a `--line` value: `42` for one line or `42-48` for a range, 1-based
 /// and inclusive, so `0` and a backwards range are refused.
-fn parse_lines(value: &str) -> Result<(u32, u32)> {
+fn parse_lines(value: &str) -> Result<LineRange> {
     let bad = || format!("--line wants <a> or <a-b> (1-based), got '{value}'");
     let num = |s: &str| s.trim().parse::<u32>().ok().filter(|&n| n > 0);
     let (start, end) = match value.split_once('-') {
@@ -266,7 +266,7 @@ fn parse_lines(value: &str) -> Result<(u32, u32)> {
     if end < start {
         return Err(bad().into());
     }
-    Ok((start, end))
+    Ok(LineRange { start, end })
 }
 
 /// Where `seq` should place the card, parsed from `--after/--before/--first/--last`
@@ -405,11 +405,19 @@ impl Command {
 /// lowercase). `None` for anything that isn't a reference: plain word ids, hex
 /// ids/prefixes, and segments that aren't slug-shaped (see [`headway::wordid::parse_ref`]).
 fn ref_board(sel: &str) -> Option<String> {
-    headway::wordid::parse_ref(sel).map(|(board, _)| board.to_lowercase())
+    headway::wordid::parse_ref(sel).map(|r| r.board.to_lowercase())
+}
+
+/// A secret key the CLI signs with, beside the pubkey it signs as.
+pub(crate) struct SigningKey {
+    /// The 32-byte secret.
+    pub(crate) secret: [u8; 32],
+    /// Its pubkey.
+    pub(crate) pubkey: Pubkey,
 }
 
 pub(crate) struct Cli {
-    pub(crate) secret: Option<([u8; 32], Pubkey)>,
+    pub(crate) secret: Option<SigningKey>,
     /// A second key that signs `comment` and nothing else (`--comment-nsec`,
     /// `$HEADWAY_COMMENT_NSEC`, or the file `$HEADWAY_COMMENT_NSEC_FILE` names;
     /// see [`comment_key_text`]). Everything else, including which boards can be
@@ -419,7 +427,7 @@ pub(crate) struct Cli {
     /// (headway:headway/lava-number-clap).
     ///
     /// [`secret`]: Self::secret
-    pub(crate) comment_secret: Option<([u8; 32], Pubkey)>,
+    pub(crate) comment_secret: Option<SigningKey>,
     pub(crate) author: Option<Pubkey>,
     pub(crate) relay: String,
     pub(crate) db: Option<String>,
@@ -697,29 +705,19 @@ impl Cli {
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured — that would
         // keep `login` from replacing a stale or malformed stored key.
-        // `parse_nsec` hands back a `nostrdb_net::Pubkey`; the rest of the CLI
-        // (and the `headway` store/event layer) speaks `nostrdb_net::Pubkey`. Both are
-        // `[u8; 32]` newtypes, so bridge at this boundary and keep everything
-        // downstream in enostr terms.
         let secret = match (&command, nsec) {
             (Command::Login { .. } | Command::Logout, _) => None,
-            (_, Some(nsec)) => {
-                let (sk, pk) = parse_secret_key(&nsec)?;
-                Some((sk, Pubkey::new(*pk.bytes())))
-            }
+            (_, Some(nsec)) => Some(parse_secret_key(&nsec)?),
             (_, None) => None,
         };
         let comment_secret = match &command {
             Command::Login { .. } | Command::Logout => None,
             _ => match comment_key_text(comment_nsec, env::var_os(COMMENT_NSEC_FILE_VAR))? {
-                Some(key) => {
-                    let (sk, pk) = parse_secret_key(&key).map_err(|e| {
-                        format!(
-                            "--comment-nsec / $HEADWAY_COMMENT_NSEC / ${COMMENT_NSEC_FILE_VAR}: {e}"
-                        )
-                    })?;
-                    Some((sk, Pubkey::new(*pk.bytes())))
-                }
+                Some(key) => Some(parse_secret_key(&key).map_err(|e| {
+                    format!(
+                        "--comment-nsec / $HEADWAY_COMMENT_NSEC / ${COMMENT_NSEC_FILE_VAR}: {e}"
+                    )
+                })?),
                 None => None,
             },
         };
@@ -996,7 +994,7 @@ fn joined(rest: &[String], idx: usize, cmd: &str) -> Result<String> {
 /// Hex is handled here rather than in `nostrdb_net`'s `parse_nsec` so accepting
 /// it stays a CLI concern and needs no fork rev-bump; anything that isn't 64 hex
 /// characters falls through to the bech32 parser.
-fn parse_secret_key(key: &str) -> Result<([u8; 32], nostrdb_net::Pubkey)> {
+fn parse_secret_key(key: &str) -> Result<SigningKey> {
     let key = key.trim();
     let hex_secret = (key.len() == 64)
         .then(|| hex::decode(key).ok())
@@ -1004,11 +1002,15 @@ fn parse_secret_key(key: &str) -> Result<([u8; 32], nostrdb_net::Pubkey)> {
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
     let Some(secret) = hex_secret else {
         return nostrdb_net::relay::sync::parse_nsec(key)
+            .map(|(secret, pubkey)| SigningKey { secret, pubkey })
             .map_err(|e| format!("{e} (expected an nsec1… or a 64-char hex secret key)").into());
     };
     let sk = nostrdb_net::SecretKey::from_slice(&secret)
         .map_err(|e| format!("invalid hex secret key: {e}"))?;
-    Ok((secret, nostrdb_net::Keypair::from_secret(sk).pubkey))
+    Ok(SigningKey {
+        secret,
+        pubkey: nostrdb_net::Keypair::from_secret(sk).pubkey,
+    })
 }
 
 /// The environment variable naming a file that holds the comment key.
@@ -1104,7 +1106,7 @@ mod tests {
         };
         assert_eq!(body, "rename it");
         assert_eq!(review.path.as_deref(), Some("src/a.rs"));
-        assert_eq!(review.lines, Some((3, 5)));
+        assert_eq!(review.lines, Some(LineRange { start: 3, end: 5 }));
         assert!(review.old && review.any());
         assert_eq!(review.record.as_deref(), Some("abc"));
 
@@ -1113,7 +1115,7 @@ mod tests {
         };
         assert!(!review.any(), "no flags is a card comment");
 
-        assert_eq!(parse_lines("42").unwrap(), (42, 42));
+        assert_eq!(parse_lines("42").unwrap(), LineRange { start: 42, end: 42 });
         for bad in ["0", "5-3", "a", "3-", "-3", ""] {
             assert!(parse_lines(bad).is_err(), "{bad:?}");
         }
@@ -1341,12 +1343,12 @@ mod tests {
             format!("  {}\n", hex.to_uppercase()),
         ] {
             let from_hex = parse_secret_key(&spelling).expect("hex parses");
-            assert_eq!(from_hex.0, from_nsec.0, "{spelling:?}");
-            assert_eq!(from_hex.1.bytes(), from_nsec.1.bytes(), "{spelling:?}");
+            assert_eq!(from_hex.secret, from_nsec.secret, "{spelling:?}");
+            assert_eq!(from_hex.pubkey, from_nsec.pubkey, "{spelling:?}");
         }
-        assert_eq!(from_nsec.0, TEST_SECRET);
+        assert_eq!(from_nsec.secret, TEST_SECRET);
         let nsec_newline = parse_secret_key(&format!("{}\n", test_nsec())).expect("nsec\\n");
-        assert_eq!(nsec_newline.1.bytes(), from_nsec.1.bytes());
+        assert_eq!(nsec_newline.pubkey, from_nsec.pubkey);
     }
 
     /// `--nsec <hex>` reaches the same signer as `--nsec <nsec1…>` through the
@@ -1358,8 +1360,8 @@ mod tests {
         let via_nsec = parse(&["--nsec", &test_nsec(), "show"])
             .secret
             .expect("signer");
-        assert_eq!(via_hex.0, via_nsec.0);
-        assert_eq!(via_hex.1, via_nsec.1);
+        assert_eq!(via_hex.secret, via_nsec.secret);
+        assert_eq!(via_hex.pubkey, via_nsec.pubkey);
     }
 
     /// `--comment-nsec` takes the same spellings as `--nsec`, is kept apart from
@@ -1368,9 +1370,9 @@ mod tests {
     fn comment_key_parses_beside_the_signing_key() {
         let hex = hex::encode(TEST_SECRET);
         let cli = parse(&["--nsec", &test_nsec(), "--comment-nsec", &hex, "show"]);
-        let (signing, _) = cli.secret.expect("signer");
-        let (comment, _) = cli.comment_secret.expect("comment key");
-        assert_eq!(signing, comment, "same key, two spellings");
+        let signing = cli.secret.expect("signer");
+        let comment = cli.comment_secret.expect("comment key");
+        assert_eq!(signing.secret, comment.secret, "same key, two spellings");
         assert!(
             parse(&["--nsec", &test_nsec(), "show"])
                 .comment_secret
@@ -1400,10 +1402,10 @@ mod tests {
         let from_file = comment_key_text(None, Some(path.into_os_string()))
             .expect("readable key file")
             .expect("a key");
-        let (file_sk, file_pk) = parse_secret_key(&from_file).expect("file key parses");
-        let (inline_sk, inline_pk) = parse_secret_key(&test_nsec()).expect("inline key parses");
-        assert_eq!(file_sk, inline_sk);
-        assert_eq!(file_pk.bytes(), inline_pk.bytes());
+        let from_file = parse_secret_key(&from_file).expect("file key parses");
+        let inline = parse_secret_key(&test_nsec()).expect("inline key parses");
+        assert_eq!(from_file.secret, inline.secret);
+        assert_eq!(from_file.pubkey, inline.pubkey);
     }
 
     /// An inline key (`--comment-nsec` or `$HEADWAY_COMMENT_NSEC`) wins over the
@@ -1440,8 +1442,10 @@ mod tests {
             "not a key".to_string(),
         ];
         for input in bad {
+            // `.err()`, not `expect_err`: a key has no `Debug`, so it can't leak.
             let err = parse_secret_key(&input)
-                .expect_err("should reject")
+                .err()
+                .expect("should reject")
                 .to_string();
             assert!(
                 err.contains("nsec1") && err.contains("64-char hex"),
@@ -1533,9 +1537,15 @@ mod tests {
     }
 
     /// The compiled pattern and `--in` container behind a `grep` argv.
-    fn grep_of(args: &[&str]) -> (Regex, Option<String>) {
+    struct GrepArgs {
+        pattern: Regex,
+        container: Option<String>,
+    }
+
+    /// Parse a `grep` argv into its [`GrepArgs`].
+    fn grep_of(args: &[&str]) -> GrepArgs {
         match parse(args).command {
-            Command::Grep { pattern, container } => (pattern, container),
+            Command::Grep { pattern, container } => GrepArgs { pattern, container },
             _ => panic!("expected a Grep command"),
         }
     }
@@ -1544,19 +1554,23 @@ mod tests {
     /// spelling, and `--in <ref>` self-routes like `next --in`.
     #[test]
     fn grep_parses_case_flags_and_routes() {
-        let (re, container) = grep_of(&["grep", "relay"]);
-        assert!(re.is_match("Relay pool") && container.is_none());
-        assert!(!grep_of(&["grep", "Relay"]).0.is_match("relay pool"));
-        assert!(grep_of(&["grep", "-i", "Relay"]).0.is_match("relay pool"));
+        let GrepArgs { pattern, container } = grep_of(&["grep", "relay"]);
+        assert!(pattern.is_match("Relay pool") && container.is_none());
+        assert!(!grep_of(&["grep", "Relay"]).pattern.is_match("relay pool"));
+        assert!(
+            grep_of(&["grep", "-i", "Relay"])
+                .pattern
+                .is_match("relay pool")
+        );
         assert!(
             grep_of(&["grep", "Relay", "--ignore-case"])
-                .0
+                .pattern
                 .is_match("relay")
         );
-        assert!(!grep_of(&["grep", "-s", "relay"]).0.is_match("Relay"));
+        assert!(!grep_of(&["grep", "-s", "relay"]).pattern.is_match("Relay"));
         assert!(
             !grep_of(&["--case-sensitive", "grep", "relay"])
-                .0
+                .pattern
                 .is_match("Relay")
         );
 

@@ -66,8 +66,8 @@ pub use load::{
     load_board_pref, load_shared_board, reduce_delta,
 };
 pub use model::{
-    BoardCoord, COL_ARCHIVED, COL_DELETED, ColumnDef, Date, Field, LineSide, Priority,
-    ReviewFields, ReviewLocation, board_address, column_is_terminal,
+    BoardCoord, COL_ARCHIVED, COL_DELETED, ColumnDef, Date, Field, LineRange, LineSide, Priority,
+    ReviewFields, ReviewLocation, ReviewTag, board_address, column_is_terminal,
 };
 pub use parse::{
     BlockerSet, BoardEvent, CommentEvent, Container, CoverNote, FieldEdit, HeadwayEvent,
