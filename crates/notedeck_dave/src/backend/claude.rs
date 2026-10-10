@@ -9,7 +9,7 @@ use crate::messages::{
     denial_marker_for_model, denial_message_for_model, permission_reply_message,
     turn_exit_message_for_model, CliState, CompactionInfo, DaveApiResponse, PermissionResponse,
     RateLimitInfo, RateLimitStatus, RateLimitWindow, RateLimitWindowKind, RunningTool,
-    SubagentInfo, SubagentStatus,
+    SubagentInfo, SubagentProgress, SubagentStatus, TaskUsage,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -201,6 +201,39 @@ fn handle_task_started(
         background: true,
     };
     let _ = response_tx.send(DaveApiResponse::SubagentSpawned(subagent_info));
+    waker.wake();
+}
+
+/// Forward a task's `usage` and `last_tool_name` from a `task_progress` or
+/// `task_notification` as [`DaveApiResponse::SubagentProgress`], keyed by the
+/// launching `tool_use_id` like the subagent's chat row. Sends nothing for a
+/// message without both; one for a task that isn't a subagent (a Bash command,
+/// a workflow) matches no row and is never shown.
+fn send_subagent_progress(
+    data: &serde_json::Value,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    waker: &Waker,
+) {
+    let Some(tool_use_id) = data.get("tool_use_id").and_then(|v| v.as_str()) else {
+        return;
+    };
+    let Some(usage) = data.get("usage") else {
+        return;
+    };
+    let field = |name| usage.get(name).and_then(serde_json::Value::as_u64);
+    let progress = SubagentProgress {
+        task_id: tool_use_id.to_string(),
+        usage: TaskUsage {
+            total_tokens: field("total_tokens").unwrap_or(0),
+            tool_uses: field("tool_uses").unwrap_or(0),
+            duration_ms: field("duration_ms").unwrap_or(0),
+        },
+        last_tool_name: data
+            .get("last_tool_name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    };
+    let _ = response_tx.send(DaveApiResponse::SubagentProgress(progress));
     waker.wake();
 }
 
@@ -487,7 +520,10 @@ fn handle_stream_message(
                 waker.wake();
             } else if system_msg.subtype == "task_started" {
                 handle_task_started(&system_msg.data, pending_tools, response_tx, waker);
+            } else if system_msg.subtype == "task_progress" {
+                send_subagent_progress(&system_msg.data, response_tx, waker);
             } else if system_msg.subtype == "task_notification" {
+                send_subagent_progress(&system_msg.data, response_tx, waker);
                 handle_task_notification(&system_msg.data, response_tx, waker);
             } else {
                 tracing::debug!("Received system message subtype: {}", system_msg.subtype);
@@ -2406,6 +2442,56 @@ cat > /dev/null
             2,
             "both notifications must repaint, or the entry stays running"
         );
+    }
+
+    /// A `task_progress` forwards its usage and last tool keyed by the
+    /// launching tool_use id, the key of the subagent's chat row; one without
+    /// usage sends nothing.
+    #[test]
+    fn task_progress_forwards_usage_by_tool_use_id() {
+        let (tx, rx) = mpsc::channel();
+        let waker = CountingWaker::new();
+
+        send_subagent_progress(
+            &serde_json::json!({
+                "task_id": "a9f3",
+                "tool_use_id": "toolu_root",
+                "description": "Survey CLI schemas",
+                "subagent_type": "Explore",
+                "usage": { "total_tokens": 12400, "tool_uses": 7, "duration_ms": 61000 },
+                "last_tool_name": "Grep",
+            }),
+            &tx,
+            waker.waker(),
+        );
+        match rx.try_recv().expect("expected progress") {
+            DaveApiResponse::SubagentProgress(progress) => {
+                assert_eq!(
+                    progress,
+                    SubagentProgress {
+                        task_id: "toolu_root".into(),
+                        usage: TaskUsage {
+                            total_tokens: 12_400,
+                            tool_uses: 7,
+                            duration_ms: 61_000,
+                        },
+                        last_tool_name: Some("Grep".into()),
+                    }
+                );
+            }
+            other => panic!(
+                "expected SubagentProgress, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+        assert_eq!(waker.wakes(), 1);
+
+        send_subagent_progress(
+            &serde_json::json!({ "tool_use_id": "toolu_root", "status": "completed" }),
+            &tx,
+            waker.waker(),
+        );
+        assert!(rx.try_recv().is_err(), "no usage, nothing to forward");
     }
 
     #[test]

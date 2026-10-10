@@ -1172,6 +1172,18 @@ pub struct TaskUsage {
     pub duration_ms: u64,
 }
 
+/// A subagent's running totals, from the CLI's `task_progress` and, for one
+/// that reports them, the final totals on its `task_notification`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SubagentProgress {
+    /// The launching `Task`/`Agent` tool_use id: [`SubagentInfo::task_id`].
+    pub task_id: String,
+    /// Tokens, tool calls and wall time so far.
+    pub usage: TaskUsage,
+    /// The tool the subagent called last; `None` keeps the last one known.
+    pub last_tool_name: Option<String>,
+}
+
 /// The account's subscription rate-limit state, from the Claude CLI's
 /// `rate_limit_event`.
 ///
@@ -1363,6 +1375,8 @@ pub enum DaveApiResponse {
         task_id: String,
         error: String,
     },
+    /// A subagent's tokens, tool uses and last tool moved.
+    SubagentProgress(SubagentProgress),
     /// Conversation compaction started
     CompactionStarted,
     /// Conversation compaction completed with token info

@@ -8,6 +8,7 @@
 mod background;
 mod overview;
 mod rate_limits;
+mod subagents;
 mod usage;
 
 pub use background::waiting_pill_ui;
@@ -103,7 +104,9 @@ pub fn inspector_ui(
                 ui.visuals().widgets.noninteractive.bg_stroke,
             );
         }
-        card_grid_ui(inspector, facts, view, i18n, ui);
+        if let Some(card_action) = card_grid_ui(inspector, facts, view, i18n, ui) {
+            action = Some(card_action);
+        }
     });
 
     action
@@ -145,8 +148,9 @@ fn card_grid_ui(
     view: &mut InspectorView,
     i18n: &mut Localization,
     ui: &mut egui::Ui,
-) {
+) -> Option<DaveAction> {
     let scroll_to = view.take_scroll();
+    let mut action = None;
     egui::ScrollArea::vertical()
         .id_salt("dave_inspector_grid")
         .auto_shrink([false; 2])
@@ -168,11 +172,14 @@ fn card_grid_ui(
                         for row in InspectorSection::ALL.chunks(columns) {
                             ui.horizontal_top(|ui| {
                                 for &section in row {
-                                    let resp = section_card_ui(
+                                    let card = section_card_ui(
                                         inspector, facts, view, section, card_width, i18n, ui,
                                     );
                                     if scroll_to == Some(section) {
-                                        resp.scroll_to_me(Some(egui::Align::TOP));
+                                        card.response.scroll_to_me(Some(egui::Align::TOP));
+                                    }
+                                    if card.inner.is_some() {
+                                        action = card.inner;
                                     }
                                 }
                             });
@@ -180,9 +187,11 @@ fn card_grid_ui(
                     });
                 });
         });
+    action
 }
 
-/// One section's card: its title and data source over its body.
+/// One section's card: its title and data source over its body, and what a
+/// click in the body asked for.
 #[allow(clippy::too_many_arguments)]
 fn section_card_ui(
     inspector: &mut SessionInspector,
@@ -192,7 +201,7 @@ fn section_card_ui(
     width: f32,
     i18n: &mut Localization,
     ui: &mut egui::Ui,
-) -> egui::Response {
+) -> egui::InnerResponse<Option<DaveAction>> {
     let margin = notedeck::tokens::SPACING_MD;
     egui::Frame::new()
         .fill(ui.visuals().extreme_bg_color)
@@ -217,14 +226,14 @@ fn section_card_ui(
                         );
                     });
                 });
-                section_body_ui(inspector, facts, view, section, i18n, ui);
-            });
+                section_body_ui(inspector, facts, view, section, i18n, ui)
+            })
+            .inner
         })
-        .response
 }
 
-/// A section's contents. A section without a view yet is a stub until its
-/// card fills it in.
+/// A section's contents, and what a click in them asked for. A section
+/// without a view yet is a stub until its card fills it in.
 fn section_body_ui(
     inspector: &mut SessionInspector,
     facts: &SessionFacts<'_>,
@@ -232,8 +241,11 @@ fn section_body_ui(
     section: InspectorSection,
     i18n: &mut Localization,
     ui: &mut egui::Ui,
-) {
+) -> Option<DaveAction> {
     match section {
+        InspectorSection::Subagents => {
+            return subagents::subagents_ui(&mut inspector.subagents, facts.chat, i18n, ui)
+        }
         InspectorSection::Overview => overview::overview_ui(inspector, facts, view, i18n, ui),
         InspectorSection::Usage => usage::usage_ui(inspector, facts.context_window, i18n, ui),
         InspectorSection::RateLimits => {
@@ -248,6 +260,7 @@ fn section_body_ui(
         ),
         _ => empty_state_ui(i18n, ui),
     }
+    None
 }
 
 /// What a section shows before anything has reached it.

@@ -1438,6 +1438,13 @@ pub fn handle_ui_action(
             }
             UiActionResult::Handled
         }
+        DaveAction::ShowSubagent(task_id) => {
+            if let Some(session) = session_manager.get_active_mut() {
+                session.inspector_view.show_chat();
+                session.block_nav.seek(dave::subagent_block_id(&task_id));
+            }
+            UiActionResult::Handled
+        }
         // All run actions are intercepted and handled in lib.rs before reaching here
         DaveAction::Run(_) => UiActionResult::Handled,
     }
@@ -1891,7 +1898,7 @@ mod tests {
     }
 
     /// Clicking Details swaps the chat for the rail and the section cards
-    /// (the five without a view yet are stubs); clicking Chat brings the
+    /// (the four without a view yet are stubs); clicking Chat brings the
     /// input box back.
     #[test]
     fn details_tab_shows_every_section_and_chat_brings_the_input_back() {
@@ -1913,7 +1920,8 @@ mod tests {
         harness.get_by_label("Details").click_accesskit();
         harness.run_ok();
 
-        assert_eq!(count_labels(&harness, "Nothing yet"), 5);
+        assert_eq!(count_labels(&harness, "Nothing yet"), 4);
+        assert_eq!(count_labels(&harness, "No subagents yet"), 1);
         assert_eq!(
             count_labels(&harness, "Nothing running in the background"),
             1
@@ -2457,6 +2465,137 @@ mod tests {
         assert_eq!(view.section, InspectorSection::Background);
     }
 
+    /// Three subagents in the active session's chat, oldest first: an
+    /// Explore that finished, a general-purpose one that failed, and a Plan
+    /// still running in the background, with progress for the first and
+    /// last.
+    fn seed_subagents(state: &mut SessionViewState) {
+        use crate::messages::{
+            DaveApiResponse, SubagentInfo, SubagentProgress, SubagentStatus, TaskUsage,
+        };
+
+        let subagent = |task_id: &str, kind: &str, description: &str, status, background| {
+            crate::Message::Subagent(SubagentInfo {
+                task_id: task_id.into(),
+                description: description.into(),
+                subagent_type: kind.into(),
+                status,
+                output: String::new(),
+                max_output_size: 4000,
+                tool_results: Vec::new(),
+                background,
+            })
+        };
+        let session = state.session_manager.get_active_mut().unwrap();
+        session.replace_chat(vec![
+            subagent(
+                "toolu_explore",
+                "Explore",
+                "Find where task_progress is parsed",
+                SubagentStatus::Completed,
+                false,
+            ),
+            subagent(
+                "toolu_tests",
+                "general-purpose",
+                "Write the inspector tests",
+                SubagentStatus::Failed,
+                false,
+            ),
+            subagent(
+                "toolu_plan",
+                "Plan",
+                "Survey the CLI's task message schemas",
+                SubagentStatus::Running,
+                true,
+            ),
+        ]);
+        let progress = |task_id: &str, tokens, tools, secs: u64, last: &str| {
+            DaveApiResponse::SubagentProgress(SubagentProgress {
+                task_id: task_id.into(),
+                usage: TaskUsage {
+                    total_tokens: tokens,
+                    tool_uses: tools,
+                    duration_ms: secs * 1000,
+                },
+                last_tool_name: Some(last.into()),
+            })
+        };
+        session
+            .inspector
+            .apply(&progress("toolu_explore", 41_300, 18, 95, "Grep"));
+        session
+            .inspector
+            .apply(&progress("toolu_plan", 12_400, 7, 61, "Read"));
+    }
+
+    /// The Subagents card lists every subagent newest first with its status
+    /// and numbers, and a click on one goes back to the chat with the block
+    /// cursor on its row.
+    #[test]
+    fn subagents_card_lists_each_and_jumps_to_its_chat_row() {
+        use crate::inspector::SessionTab;
+        use egui_kittest::kittest::Queryable;
+
+        let mut harness = session_view_harness(egui::vec2(1100.0, 1400.0));
+        seed_subagents(harness.state_mut());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .show_details();
+        harness.run_ok();
+
+        assert_eq!(count_labels(&harness, "No subagents yet"), 0);
+        for label in ["Explore", "general-purpose", "Plan", "done", "failed"] {
+            assert_eq!(count_labels(&harness, label), 1, "{label}");
+        }
+        assert_eq!(count_labels(&harness, "in background"), 1);
+        // The meta line and the summary; their arguments may sit in bidi
+        // isolation marks, so match around them.
+        assert_eq!(count_labels_containing(&harness, "Grep"), 1);
+        assert_eq!(count_labels_containing(&harness, "41K"), 1);
+        assert_eq!(count_labels_containing(&harness, "subagents"), 1);
+
+        harness.get_by_label("Write the inspector tests").click();
+        harness.run_ok();
+
+        let session = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap();
+        assert_eq!(session.inspector_view.tab, SessionTab::Chat);
+        assert_eq!(
+            session.block_nav.cursor(),
+            Some(1),
+            "the cursor is on the second subagent row in the chat"
+        );
+    }
+
+    /// The Subagents card with a finished, a failed and a background
+    /// subagent.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_session_subagents() {
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1100.0, 760.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        seed_subagents(harness.state_mut());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .open(crate::inspector::InspectorSection::Subagents);
+        harness.run_ok();
+        harness.snapshot("session_subagents");
+    }
+
     /// The Background card with one entry of each kind: a Bash task with
     /// its output tail, a Monitor, a subagent, a wake-up and a cron.
     #[test]
@@ -2552,8 +2691,8 @@ mod tests {
     }
 
     /// An empty session's two tabs: the chat under the tab strip, then
-    /// Details with the rail, an Overview, Usage and Rate limits with nothing
-    /// reported yet and the six stub cards.
+    /// Details with the rail, an Overview, Usage, Rate limits, Background and
+    /// Subagents with nothing reported yet and the four stub cards.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_session_details_tab() {

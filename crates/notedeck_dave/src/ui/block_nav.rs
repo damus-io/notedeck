@@ -57,6 +57,12 @@ pub struct BlockNav {
     /// stored yet, so a global expand also reaches blocks that render later
     /// (streaming in, or revealed by expanding a subagent).
     global_default: Option<bool>,
+    /// A block asked for by id rather than position ([`seek`](BlockNav::seek)):
+    /// the cursor lands on it when it next registers.
+    seek: Option<egui::Id>,
+    /// That seek, latched for one render pass like `scroll_this_frame`, so a
+    /// block that never draws doesn't keep it for a later pass.
+    seek_this_frame: Option<egui::Id>,
 }
 
 impl BlockNav {
@@ -68,6 +74,7 @@ impl BlockNav {
         self.clamp_cursor();
         self.blocks.clear();
         self.scroll_this_frame = std::mem::take(&mut self.scroll_to_cursor);
+        self.seek_this_frame = self.seek.take();
     }
 
     /// Record a collapsible block at its position in the transcript and hand
@@ -80,6 +87,11 @@ impl BlockNav {
     pub fn register(&mut self, id: egui::Id, default_open: bool, ui: &egui::Ui) -> RegisteredBlock {
         let idx = self.blocks.len();
         self.blocks.push(BlockRef { id, default_open });
+        if self.seek_this_frame == Some(id) {
+            self.seek_this_frame = None;
+            self.cursor = Some(idx);
+            self.scroll_this_frame = true;
+        }
         let is_cursor = self.is_cursor(idx);
         RegisteredBlock {
             expanded: self.resolve(ui.data(|d| d.get_temp(id)), default_open),
@@ -93,6 +105,14 @@ impl BlockNav {
     /// to carry an index around.
     fn is_cursor(&self, idx: usize) -> bool {
         self.cursor == Some(idx)
+    }
+
+    /// Put the cursor on the block registered under `id`, and scroll to it,
+    /// on the next render pass. For a caller outside the transcript, which
+    /// knows a block's id but not its position. Dropped if that pass doesn't
+    /// draw the block.
+    pub fn seek(&mut self, id: egui::Id) {
+        self.seek = Some(id);
     }
 
     /// The cursor's position in registration order, if any.
@@ -327,6 +347,39 @@ mod tests {
         // And a frame with no blocks at all drops the cursor entirely.
         nav.begin_frame();
         assert_eq!(nav.cursor(), None);
+    }
+
+    /// A seek lands the cursor on its block when that block registers, and
+    /// scrolls to it; one whose block didn't draw that pass is dropped.
+    #[test]
+    fn a_seek_lands_on_its_block_for_one_pass() {
+        let ctx = egui::Context::default();
+        let target = egui::Id::unique("target");
+        let pass = |nav: &mut BlockNav| {
+            let mut registered = None;
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                nav.begin_frame();
+                nav.register(egui::Id::unique("a"), false, ui);
+                registered = Some(nav.register(target, false, ui));
+            });
+            // The font atlas upload nobody renders.
+            output.textures_delta.clear();
+            registered.unwrap()
+        };
+
+        let mut nav = BlockNav::default();
+        nav.seek(target);
+        let block = pass(&mut nav);
+        assert!(block.is_cursor && block.scroll_into_view);
+        assert_eq!(nav.cursor(), Some(1));
+
+        // A seek for a block that doesn't draw is gone after that pass.
+        let mut nav = BlockNav::default();
+        nav.seek(egui::Id::unique("elsewhere"));
+        nav.begin_frame();
+        nav.begin_frame();
+        assert_eq!(nav.seek_this_frame, None);
+        assert!(!pass(&mut nav).is_cursor);
     }
 
     #[test]

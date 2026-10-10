@@ -253,6 +253,9 @@ pub enum DaveAction {
     OpenInspector(InspectorSection),
     /// Show the chat tab again
     ShowChat,
+    /// Show the chat with the block cursor on this subagent's row (by its
+    /// task id), from the Details tab's Subagents card
+    ShowSubagent(String),
 }
 
 impl<'a> DaveUi<'a> {
@@ -653,6 +656,7 @@ impl<'a> DaveUi<'a> {
                                 context_window,
                                 rate_limit,
                                 now_unix,
+                                chat: self.chat,
                             };
                             // Scoped by session, so each keeps its own grid
                             // scroll.
@@ -1601,11 +1605,11 @@ impl<'a> DaveUi<'a> {
     fn subagent_ui(info: &SubagentInfo, nav: &mut BlockNav, ui: &mut egui::Ui) {
         let tool_count = info.tool_results.len();
         let has_tools = tool_count > 0;
-        // Compute expand ID from outer ui, before horizontal changes the id scope
-        let expand_id = ui.scope_id().with("subagent_expand").with(&info.task_id);
-        // Only a subagent with tools is collapsible, so only that one registers.
-        let block = has_tools.then(|| nav.register(expand_id, false, ui));
-        let mut expanded = block.is_some_and(|block| block.expanded);
+        let expand_id = subagent_block_id(&info.task_id);
+        // Every subagent registers, so the Details tab can put the cursor on
+        // it; one without tools has nothing to expand.
+        let block = nav.register(expand_id, false, ui);
+        let mut expanded = has_tools && block.expanded;
 
         // Reserve a paint slot *behind* the row so the block cursor can be
         // filled in underneath it once the row's rect is known. This row does
@@ -1668,17 +1672,15 @@ impl<'a> DaveUi<'a> {
             }
         });
 
-        if let Some(block) = block {
-            let row_rect = egui::Rect::from_min_size(
-                row.response.rect.min,
-                egui::vec2(full_width, row.response.rect.height()),
-            );
-            if block.is_cursor {
-                paint_row_highlight(bg_idx, row_rect, block_cursor_fill(ui), ui);
-            }
-            if block.scroll_into_view {
-                row.response.scroll_to_me(Some(egui::Align::Center));
-            }
+        let row_rect = egui::Rect::from_min_size(
+            row.response.rect.min,
+            egui::vec2(full_width, row.response.rect.height()),
+        );
+        if block.is_cursor {
+            paint_row_highlight(bg_idx, row_rect, block_cursor_fill(ui), ui);
+        }
+        if block.scroll_into_view {
+            row.response.scroll_to_me(Some(egui::Align::Center));
         }
 
         // Expanded tool results. Their blocks register after this one, so a
@@ -2697,6 +2699,13 @@ impl DaveUi<'_> {
 }
 
 /// Format a token count in a compact human-readable form (e.g. "45K", "1.2M")
+/// The block id a subagent's chat row registers under. Not scoped to the
+/// chat's `Ui`, so the Subagents card can name the row it jumps to; the task
+/// id (a tool_use id) is unique on its own.
+pub(crate) fn subagent_block_id(task_id: &str) -> egui::Id {
+    egui::Id::unique("dave_subagent_block").with(task_id)
+}
+
 pub(crate) fn format_tokens(tokens: u64) -> String {
     if tokens >= 1_000_000 {
         format!("{:.1}M", tokens as f64 / 1_000_000.0)

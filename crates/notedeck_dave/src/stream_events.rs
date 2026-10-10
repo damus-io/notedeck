@@ -323,6 +323,7 @@ pub(crate) fn apply_response(
             | DaveApiResponse::WakeupTurnStarted
             | DaveApiResponse::CliState(_)
             | DaveApiResponse::RateLimit(_)
+            | DaveApiResponse::SubagentProgress(_)
     ) {
         session.dispatch_state.backend_responded();
     }
@@ -401,7 +402,8 @@ pub(crate) fn apply_response(
         // rate limits on `Dave`, by the drain loop).
         DaveApiResponse::CliState(_)
         | DaveApiResponse::RateLimit(_)
-        | DaveApiResponse::BackgroundWork(_) => {}
+        | DaveApiResponse::BackgroundWork(_)
+        | DaveApiResponse::SubagentProgress(_) => {}
     }
 
     outcome
@@ -578,7 +580,8 @@ fn closes_assistant_segment(session: &session::ChatSession, res: &DaveApiRespons
         | DaveApiResponse::BackgroundWork(_)
         | DaveApiResponse::WakeupTurnStarted
         | DaveApiResponse::CliState(_)
-        | DaveApiResponse::RateLimit(_) => false,
+        | DaveApiResponse::RateLimit(_)
+        | DaveApiResponse::SubagentProgress(_) => false,
     }
 }
 

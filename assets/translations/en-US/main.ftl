@@ -256,6 +256,12 @@ Copy_Pubkey_9cc4 = Copy Pubkey
 # Copy the text content of the note to clipboard
 Copy_Text_f81c = Copy Text
 
+# Dave session inspector subagents: how many subagents failed
+count__failed_ef23 = {$count} failed
+
+# Dave session inspector subagents: how many subagents are still running
+count__running_4ead = {$count} running
+
 # Dave session inspector background: tool calls a background task has made
 count__tool_uses_5ec5 = {$count} tool uses
 
@@ -334,6 +340,9 @@ domain___will_be_used_for_identification_b67e = "{$domain}" will be used for ide
 # Button to indicate that the user is done going through the onboarding process.
 Done_50dd = Done
 
+# Dave session inspector subagents: a subagent that finished
+done_af9c = done
+
 # Dave session inspector background: when a wake-up is due
 due__time_a95d = due {$time}
 
@@ -378,6 +387,9 @@ Exported_into_every_agent_session_this_host_starts__e_g__HEADWAY_COMMENT_NSEC_FI
 
 # Setting to derive websocket connection limit from OS fd pressure
 Extreme_1d70 = Extreme
+
+# Dave session inspector subagents: a subagent that failed
+failed_a404 = failed
 
 # Diff placeholder for a file moved with identical content
 File_renamed_without_changes_dd4e = File renamed without changes
@@ -432,6 +444,9 @@ Image_cache_size_3004 = Image cache size:
 
 # Dave session inspector background: time until a wake-up is due
 in__duration_8099 = in {$duration}
+
+# Dave session inspector subagents: a background subagent still running
+in_background_6d05 = in background
 
 # Title for individual user column
 Individual_b776 = Individual
@@ -495,6 +510,9 @@ Language_e264 = Language:
 
 # Dave session inspector background: the tool a background task called last
 last__tool_27ff = last {$tool}
+
+# Dave session inspector subagents: the tool a subagent called last
+last__tool_6ec6 = last {$tool}
 
 # Title for last note per user column
 Last_Note_per_User_17ad = Last Note per User
@@ -853,6 +871,9 @@ Running___held_open_by_work_in_flight_e004 = Running · held open by work in fli
 # Dave session inspector: the agent CLI process is running and the idle reaper stops it at this time
 Running___stops_if_idle_until__time_07c0 = Running · stops if idle until {$time}
 
+# Dave session inspector subagents: a foreground subagent still running
+running_b4b9 = running
+
 # Heading for support section
 Running_into_a_bug_1796 = Running into a bug?
 
@@ -1045,6 +1066,12 @@ Tasks_2037 = Tasks
 # Dave session inspector background: tokens a background task has used
 tokens__tok_87e0 = {$tokens} tok
 
+# Dave session inspector subagents: tokens all the session's subagents used
+tokens__tokens_61fd = {$tokens} tokens
+
+# Dave session inspector subagents: tokens a subagent has used
+tokens__tokens_d3b5 = {$tokens} tokens
+
 # Dave session inspector usage: hover over one turn on the context sparkline
 Turn__number_____context_26c6 = Turn {$number} · {$context}
 
@@ -1229,6 +1256,22 @@ count__skills_c98d =
     }
 
 
+# Dave session inspector subagents: how many subagents the session spawned
+count__subagents_2a30 =
+    { $count ->
+        [one] {$count} subagent
+       *[other] {$count} subagents
+    }
+
+
+# Dave session inspector subagents: tool calls a subagent has made
+count__tool_uses_c007 =
+    { $count ->
+        [one] {$count} tool use
+       *[other] {$count} tool uses
+    }
+
+
 # Dave session inspector: count chip of the agent's tools
 count__tools_f94b =
     { $count ->
@@ -1343,6 +1386,9 @@ Near_a_limit_fe96 = Near a limit
 
 # Dave session inspector rate limits: shown before the CLI reports the account's windows
 No_rate-limit_report_yet_c1f0 = No rate-limit report yet
+
+# Dave session inspector subagents: the session has spawned no subagents
+No_subagents_yet_3ccd = No subagents yet
 
 # Dave session inspector rate limits: paid usage past the subscription limits
 Overage_777a = Overage

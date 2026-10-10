@@ -40,6 +40,8 @@ pub struct SessionFacts<'a> {
     pub rate_limit: Option<crate::messages::RateLimitInfo>,
     /// Now, in Unix seconds, for ages and countdowns.
     pub now_unix: u64,
+    /// The transcript, whose subagent rows the Subagents card lists.
+    pub chat: &'a [crate::Message],
 }
 
 /// The Overview card's body.

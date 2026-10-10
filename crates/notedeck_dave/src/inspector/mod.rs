@@ -11,9 +11,11 @@
 //! published.
 
 mod background;
+mod subagents;
 mod usage;
 
 pub use background::{BackgroundParts, BackgroundRow, BackgroundState, OutputTails};
+pub use subagents::{subagent, ProgressById, SubagentRow, SubagentRows, SubagentState};
 pub use usage::{Compaction, Sparkline, Tokens, TurnUsage, UsageHistory, HISTORY_CAP};
 
 use crate::messages::{
@@ -55,6 +57,8 @@ pub struct SessionInspector {
     /// Background tasks, wake-ups and crons, with their display rows and
     /// output tails.
     pub background: BackgroundState,
+    /// Each subagent's tokens and tool uses, and the Subagents card's rows.
+    pub subagents: SubagentState,
 }
 
 impl SessionInspector {
@@ -69,6 +73,7 @@ impl SessionInspector {
                 self.rate_limit = Some(info.merged_onto(self.rate_limit.as_ref()));
             }
             DaveApiResponse::BackgroundWork(entries) => self.background.set(entries.clone()),
+            DaveApiResponse::SubagentProgress(progress) => self.subagents.apply(progress),
             _ => self.usage.apply(res, crate::session::now_unix()),
         }
     }

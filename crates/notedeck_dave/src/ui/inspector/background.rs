@@ -409,7 +409,7 @@ fn kind_badge(kind: BackgroundTaskKind, i18n: &mut Localization) -> String {
 
 /// A span of seconds, compactly: "45s", "22m", "1h 5m", "2d 3h". With
 /// `seconds`, minutes keep their seconds ("6m 12s"), for a countdown.
-fn short_duration(secs: u64, seconds: bool) -> String {
+pub(super) fn short_duration(secs: u64, seconds: bool) -> String {
     let (d, h, m, s) = (secs / 86_400, secs / 3600 % 24, secs / 60 % 60, secs % 60);
     if d > 0 {
         format!("{d}d {h}h")

@@ -256,6 +256,12 @@ Copy_Pubkey_9cc4 = {"["}Çópy Púbkéy{"]"}
 # Copy the text content of the note to clipboard
 Copy_Text_f81c = {"["}Çópy Téxt{"]"}
 
+# Dave session inspector subagents: how many subagents failed
+count__failed_ef23 = {"["}{$count} fàíléd{"]"}
+
+# Dave session inspector subagents: how many subagents are still running
+count__running_4ead = {"["}{$count} rúññíñg{"]"}
+
 # Dave session inspector background: tool calls a background task has made
 count__tool_uses_5ec5 = {"["}{$count} tóól úsés{"]"}
 
@@ -334,6 +340,9 @@ domain___will_be_used_for_identification_b67e = {"["}"{$domain}" wíll bé úsé
 # Button to indicate that the user is done going through the onboarding process.
 Done_50dd = {"["}Dóñé{"]"}
 
+# Dave session inspector subagents: a subagent that finished
+done_af9c = {"["}dóñé{"]"}
+
 # Dave session inspector background: when a wake-up is due
 due__time_a95d = {"["}dúé {$time}{"]"}
 
@@ -378,6 +387,9 @@ Exported_into_every_agent_session_this_host_starts__e_g__HEADWAY_COMMENT_NSEC_FI
 
 # Setting to derive websocket connection limit from OS fd pressure
 Extreme_1d70 = {"["}Éxtrémé{"]"}
+
+# Dave session inspector subagents: a subagent that failed
+failed_a404 = {"["}fàíléd{"]"}
 
 # Diff placeholder for a file moved with identical content
 File_renamed_without_changes_dd4e = {"["}Fílé réñàméd wíthóút çhàñgés{"]"}
@@ -432,6 +444,9 @@ Image_cache_size_3004 = {"["}Ímàgé çàçhé sízé:{"]"}
 
 # Dave session inspector background: time until a wake-up is due
 in__duration_8099 = {"["}íñ {$duration}{"]"}
+
+# Dave session inspector subagents: a background subagent still running
+in_background_6d05 = {"["}íñ bàçkgróúñd{"]"}
 
 # Title for individual user column
 Individual_b776 = {"["}Íñdívídúàl{"]"}
@@ -495,6 +510,9 @@ Language_e264 = {"["}Làñgúàgé:{"]"}
 
 # Dave session inspector background: the tool a background task called last
 last__tool_27ff = {"["}làst {$tool}{"]"}
+
+# Dave session inspector subagents: the tool a subagent called last
+last__tool_6ec6 = {"["}làst {$tool}{"]"}
 
 # Title for last note per user column
 Last_Note_per_User_17ad = {"["}Làst Ñóté pér Úsér{"]"}
@@ -853,6 +871,9 @@ Running___held_open_by_work_in_flight_e004 = {"["}Rúññíñg · héld ópéñ 
 # Dave session inspector: the agent CLI process is running and the idle reaper stops it at this time
 Running___stops_if_idle_until__time_07c0 = {"["}Rúññíñg · stóps íf ídlé úñtíl {$time}{"]"}
 
+# Dave session inspector subagents: a foreground subagent still running
+running_b4b9 = {"["}rúññíñg{"]"}
+
 # Heading for support section
 Running_into_a_bug_1796 = {"["}Rúññíñg íñtó à búg?{"]"}
 
@@ -1045,6 +1066,12 @@ Tasks_2037 = {"["}Tàsks{"]"}
 # Dave session inspector background: tokens a background task has used
 tokens__tok_87e0 = {"["}{$tokens} tók{"]"}
 
+# Dave session inspector subagents: tokens all the session's subagents used
+tokens__tokens_61fd = {"["}{$tokens} tókéñs{"]"}
+
+# Dave session inspector subagents: tokens a subagent has used
+tokens__tokens_d3b5 = {"["}{$tokens} tókéñs{"]"}
+
 # Dave session inspector usage: hover over one turn on the context sparkline
 Turn__number_____context_26c6 = {"["}Túrñ {$number} · {$context}{"]"}
 
@@ -1229,6 +1256,22 @@ count__skills_c98d =
     }
 
 
+# Dave session inspector subagents: how many subagents the session spawned
+count__subagents_2a30 =
+    { $count ->
+        [one] {"["}{$count} súbàgéñt{"]"}
+       *[other] {"["}{$count} súbàgéñts{"]"}
+    }
+
+
+# Dave session inspector subagents: tool calls a subagent has made
+count__tool_uses_c007 =
+    { $count ->
+        [one] {"["}{$count} tóól úsé{"]"}
+       *[other] {"["}{$count} tóól úsés{"]"}
+    }
+
+
 # Dave session inspector: count chip of the agent's tools
 count__tools_f94b =
     { $count ->
@@ -1343,6 +1386,9 @@ Near_a_limit_fe96 = {"["}Ñéàr à límít{"]"}
 
 # Dave session inspector rate limits: shown before the CLI reports the account's windows
 No_rate-limit_report_yet_c1f0 = {"["}Ñó ràté-límít répórt yét{"]"}
+
+# Dave session inspector subagents: the session has spawned no subagents
+No_subagents_yet_3ccd = {"["}Ñó súbàgéñts yét{"]"}
 
 # Dave session inspector rate limits: paid usage past the subscription limits
 Overage_777a = {"["}Óvéràgé{"]"}
