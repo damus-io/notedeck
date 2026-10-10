@@ -6,14 +6,15 @@
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{
-    RADIUS_LG, RADIUS_MD, RADIUS_PILL, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THIN,
+    RADIUS_LG, RADIUS_MD, RADIUS_PILL, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS, STATUS_DONE,
+    STROKE_THIN,
 };
 
 use super::card_actions::{DetailScroll, detail_scroll_ui};
 use super::review::{QueueScope, epic_review_count, review_section_ui, review_sidebar_ui};
 use super::widgets::{
-    STATUS_DONE, StatusIcon, count_badge, detail_heading, label_color, priority_icon_ui,
-    priority_label, secondary_action_button, section_label, status_icon_ui,
+    StatusIcon, count_badge, detail_heading, label_color, priority_icon_ui, priority_label,
+    secondary_action_button, section_label, status_icon_ui,
 };
 use super::{BoardUiState, EditMode, FoundCard, find_card, notice_ui, seed_edit_mode};
 use crate::event::{

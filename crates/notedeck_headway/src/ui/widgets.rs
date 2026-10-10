@@ -5,27 +5,11 @@
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{
-    BUTTON_SM, PALETTE, RADIUS_MD, RADIUS_PILL, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_MEDIUM,
-    STROKE_THIN,
+    BUTTON_SM, PALETTE, RADIUS_MD, RADIUS_PILL, SPACING_MD, SPACING_SM, SPACING_XS, STATUS_DONE,
+    STATUS_IN_PROGRESS, STATUS_IN_REVIEW, STATUS_URGENT, STROKE_MEDIUM, STROKE_THIN,
 };
 
 use crate::event::{self, Priority};
-
-/// Linear's status-circle yellow, painted for columns in the first half of the
-/// board's middle (e.g. In Progress). Deliberately theme-independent, like the
-/// status colors it mirrors.
-const STATUS_STARTED_EARLY: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xC9, 0x4C);
-
-/// Linear's status-circle green, for columns in the second half of the middle
-/// (e.g. In Review).
-const STATUS_STARTED_LATE: egui::Color32 = egui::Color32::from_rgb(0x4C, 0xB7, 0x82);
-
-/// Linear's status-circle indigo, for the board's final (done) column.
-pub(super) const STATUS_DONE: egui::Color32 = egui::Color32::from_rgb(0x5E, 0x6A, 0xD2);
-
-/// Linear's urgent-priority amber, painted for the [`Priority::Urgent`] box.
-/// Theme-independent, like the status colors it sits beside.
-const PRIORITY_URGENT: egui::Color32 = egui::Color32::from_rgb(0xF2, 0x99, 0x4A);
 
 /// A small rounded `done/total` pill — the shared visual behind the card
 /// footer's `grid::subissue_progress_pill` and a collapsed graph node's subtree
@@ -483,8 +467,8 @@ impl StatusIcon {
     fn color(self, theme: &ColorTheme) -> egui::Color32 {
         match self {
             Self::Backlog | Self::Todo => theme.text_muted,
-            Self::Started(f) if f <= 0.5 => STATUS_STARTED_EARLY,
-            Self::Started(_) => STATUS_STARTED_LATE,
+            Self::Started(f) if f <= 0.5 => STATUS_IN_PROGRESS,
+            Self::Started(_) => STATUS_IN_REVIEW,
             Self::Done => STATUS_DONE,
         }
     }
@@ -595,7 +579,7 @@ pub(super) fn priority_icon_ui(
         painter.rect_filled(
             box_rect,
             egui::CornerRadius::same((size * 0.2) as u8),
-            PRIORITY_URGENT,
+            STATUS_URGENT,
         );
         let cx = box_rect.center().x;
         let stem = egui::Stroke::new(size * 0.11, egui::Color32::WHITE);

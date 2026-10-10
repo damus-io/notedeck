@@ -97,6 +97,27 @@ pub const CHART_ROW_GAP: f32 = 4.0;
 /// Sparkline height
 pub const SPARKLINE_HEIGHT: f32 = 18.0;
 
+// --- Status Colors ---
+//
+// Linear's status-circle colors, shared so one meaning has one color across
+// apps: Headway paints its column status icons with them and Dave paints its
+// session activity with them. Deliberately theme-independent.
+
+/// In progress: Linear's started yellow. Headway's early middle columns
+/// (In Progress); Dave's working sessions.
+pub const STATUS_IN_PROGRESS: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xC9, 0x4C);
+
+/// Ready for review: Linear's late-started green. Headway's late middle columns
+/// (In Review); Dave's done sessions, whose finished turn awaits the user.
+pub const STATUS_IN_REVIEW: egui::Color32 = egui::Color32::from_rgb(0x4C, 0xB7, 0x82);
+
+/// Done: Linear's completed indigo. Headway's final column.
+pub const STATUS_DONE: egui::Color32 = egui::Color32::from_rgb(0x5E, 0x6A, 0xD2);
+
+/// Urgent: Linear's urgent-priority amber. Headway's urgent priority box;
+/// Dave's sessions that need the user's input.
+pub const STATUS_URGENT: egui::Color32 = egui::Color32::from_rgb(0xF2, 0x99, 0x4A);
+
 // --- Color Palette ---
 
 /// Chart color palette — 10 visually distinct, modern muted tones
