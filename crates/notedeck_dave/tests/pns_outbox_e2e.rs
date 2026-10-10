@@ -26,7 +26,7 @@ use notedeck_testing::{
         select_account_on_device,
     },
     init_tracing,
-    ndb::{wait_for_two_local_query_counts, LocalQuery},
+    ndb::{wait_for_two_local_query_counts, LocalQuery, QueryExpectation},
     negentropy_relay::{
         run_memory_negentropy_relay_with_mode, NegentropyOpenFilter, NegentropyRelay,
         NegentropyRelayMode,
@@ -1072,9 +1072,15 @@ async fn dave_pns_two_live_devices_receive_outbound_publish_e2e() {
     let query = session_state_query();
     wait_for_two_local_query_counts(
         &mut publisher,
-        (&query, 1),
+        QueryExpectation {
+            query: &query,
+            count: 1,
+        },
         &mut receiver,
-        (&query, 1),
+        QueryExpectation {
+            query: &query,
+            count: 1,
+        },
         Duration::from_secs(20),
         "two live Dave devices after outbound PNS publish",
     );
@@ -1104,9 +1110,15 @@ async fn dave_pns_two_live_devices_keep_account_state_isolated_e2e() {
     let second_query = author_session_state_query(&second_account);
     wait_for_two_local_query_counts(
         &mut first_device,
-        (&first_query, 1),
+        QueryExpectation {
+            query: &first_query,
+            count: 1,
+        },
         &mut second_device,
-        (&second_query, 1),
+        QueryExpectation {
+            query: &second_query,
+            count: 1,
+        },
         Duration::from_secs(20),
         "two live Dave devices with distinct PNS accounts",
     );

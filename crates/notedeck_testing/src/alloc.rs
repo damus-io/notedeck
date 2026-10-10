@@ -256,8 +256,17 @@ impl fmt::Display for AllocCounts {
     }
 }
 
+/// What [`measure`] hands back: the measured code's own result, and what it
+/// allocated.
+pub struct Measured<T> {
+    /// Whatever `f` returned.
+    pub value: T,
+    /// What `f` allocated, on its own thread and across the process.
+    pub counts: AllocCounts,
+}
+
 /// Run `f` and report what it allocated.
-pub fn measure<T>(f: impl FnOnce() -> T) -> (T, AllocCounts) {
+pub fn measure<T>(f: impl FnOnce() -> T) -> Measured<T> {
     let thread_before = read_thread();
     let process_before = read_process();
     let value = f();
@@ -265,7 +274,7 @@ pub fn measure<T>(f: impl FnOnce() -> T) -> (T, AllocCounts) {
         thread: read_thread().since(thread_before),
         process: read_process().since(process_before),
     };
-    (value, counts)
+    Measured { value, counts }
 }
 
 // -- attribution -----------------------------------------------------------
@@ -337,13 +346,22 @@ pub struct Site {
     pub bytes: u64,
 }
 
+/// What [`attribute`] hands back: the measured code's own result, and the call
+/// sites that allocated while it ran.
+pub struct Attributed<T> {
+    /// Whatever `f` returned.
+    pub value: T,
+    /// The sites `f` allocated from, heaviest first.
+    pub sites: Vec<Site>,
+}
+
 /// Run `f` with call-site recording on, and return the sites it saw, ranked by
 /// allocation count.
 ///
 /// Separate from [`measure`] and far more expensive than it: this is the tool
 /// you reach for once a budget has already failed, or when writing down where a
 /// frame's allocations actually go. It is not on the path of the check itself.
-pub fn attribute<T>(f: impl FnOnce() -> T) -> (T, Vec<Site>) {
+pub fn attribute<T>(f: impl FnOnce() -> T) -> Attributed<T> {
     SITES.with(|sites| *sites.borrow_mut() = Some(Vec::with_capacity(MAX_RECORDED_SITES)));
     RECORDING.with(|recording| recording.set(true));
 
@@ -354,7 +372,10 @@ pub fn attribute<T>(f: impl FnOnce() -> T) -> (T, Vec<Site>) {
         .with(|sites| sites.borrow_mut().take())
         .unwrap_or_default();
 
-    (value, rank_sites(captured))
+    Attributed {
+        value,
+        sites: rank_sites(captured),
+    }
 }
 
 /// Symbolize and group captured stacks, heaviest first.
@@ -588,8 +609,7 @@ impl FrameProfile {
 
         let mut measured = Vec::with_capacity(frames);
         for _ in 0..frames {
-            let (_, counts) = measure(|| device.step());
-            measured.push(counts);
+            measured.push(measure(|| device.step()).counts);
         }
 
         Self {

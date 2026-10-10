@@ -36,7 +36,7 @@ fn frame_allocs(mode: InputMode, show_stop: bool) -> u64 {
     for _ in 0..WARM_UP {
         harness.step();
     }
-    let ((), counts) = measure(|| harness.step());
+    let counts = measure(|| harness.step()).counts;
     println!("{mode:?}: {counts}");
     counts.thread.allocs
 }

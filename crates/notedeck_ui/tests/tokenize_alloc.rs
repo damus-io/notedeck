@@ -4,7 +4,7 @@
 //! the lazy [`CodeTokens`](notedeck_ui::markdown::CodeTokens) iterator and the
 //! case-insensitive language lookup both borrow instead of allocating.
 
-use notedeck_testing::alloc::{measure, CountingAllocator};
+use notedeck_testing::alloc::{measure, CountingAllocator, Measured};
 use notedeck_ui::markdown::{tokenize_code, SandToken};
 
 #[global_allocator]
@@ -13,7 +13,10 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 /// Tokenize and walk every token of `code`, returning how many heap
 /// allocations that made on this thread.
 fn allocs_to_tokenize(code: &str, language: &str) -> u64 {
-    let (count, counts) = measure(|| {
+    let Measured {
+        value: count,
+        counts,
+    } = measure(|| {
         tokenize_code(code, language)
             .map(|t| (t.token != SandToken::Whitespace) as usize + t.text.len())
             .sum::<usize>()

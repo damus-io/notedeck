@@ -107,12 +107,21 @@ impl LocalQuery {
     }
 }
 
+/// A local query and the count it must reach.
+#[derive(Clone, Copy)]
+pub struct QueryExpectation<'a> {
+    /// The query to count.
+    pub query: &'a LocalQuery,
+    /// The fewest results that satisfy it.
+    pub count: usize,
+}
+
 /// Steps two devices until both local NostrDB query counts reach expectations.
 pub fn wait_for_two_local_query_counts(
     first: &mut DeviceHarness,
-    first_expectation: (&LocalQuery, usize),
+    first_expectation: QueryExpectation<'_>,
     second: &mut DeviceHarness,
-    second_expectation: (&LocalQuery, usize),
+    second_expectation: QueryExpectation<'_>,
     timeout: Duration,
     context: &str,
 ) {
@@ -122,19 +131,18 @@ pub fn wait_for_two_local_query_counts(
         first.step();
         second.step();
 
-        let (first_query, first_expected_count) = first_expectation;
-        let (second_query, second_expected_count) = second_expectation;
-        let first_imported = first_query.count(first);
-        let second_imported = second_query.count(second);
-        if first_imported >= first_expected_count && second_imported >= second_expected_count {
+        let first_imported = first_expectation.query.count(first);
+        let second_imported = second_expectation.query.count(second);
+        if first_imported >= first_expectation.count && second_imported >= second_expectation.count
+        {
             return;
         }
 
         assert!(
             Instant::now() < deadline,
             "timed out waiting for {context}; expected ({}, {}), imported ({first_imported}, {second_imported})",
-            first_expected_count,
-            second_expected_count,
+            first_expectation.count,
+            second_expectation.count,
         );
 
         thread::sleep(Duration::from_millis(20));

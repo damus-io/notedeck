@@ -4,7 +4,7 @@
 
 use egui::{Event, Key, Modifiers};
 use notedeck_chrome::keymap::{self, KeyEngine};
-use notedeck_testing::alloc::{measure, CountingAllocator};
+use notedeck_testing::alloc::{measure, CountingAllocator, Measured};
 
 /// Process-wide and one per binary, so it lives in this test rather than in
 /// `notedeck_testing`.
@@ -48,11 +48,12 @@ fn resolve_allocs(
     let mut allocs = 0;
     ctx.run_ui(input, |ui| {
         let ctx = ui.ctx();
-        let (_, counts) = measure(|| {
+        let counts = measure(|| {
             engine
                 .resolve(ctx, keymap::Scopes::new(SCOPES), |_| true)
                 .is_some()
-        });
+        })
+        .counts;
         allocs = counts.thread.allocs;
     })
     .drop_without_applying_deltas();
@@ -104,7 +105,10 @@ fn listing_the_which_key_strip_does_not_allocate() {
     let scopes = keymap::Scopes::new(SCOPES);
     let pending = keymap::KeySeq::parse("g").ok();
 
-    let (shown, counts) = measure(|| {
+    let Measured {
+        value: shown,
+        counts,
+    } = measure(|| {
         let full = keymap.hints(scopes, None, |_| true).count();
         let chord = keymap.hints(scopes, pending, |_| true).count();
         (full, chord)

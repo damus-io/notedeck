@@ -79,10 +79,19 @@ impl NegentropyOpenFilter {
     }
 }
 
+/// One `NEG-OPEN` the proxy saw from a client.
+#[derive(Clone)]
+struct NegOpen {
+    /// The client's subscription id for the negentropy session.
+    subscription_id: String,
+    /// The filter the session reconciles over.
+    filter: Filter,
+}
+
 #[derive(Clone, Default)]
 struct RelayProbe {
     captured_text: Arc<Mutex<Vec<String>>>,
-    captured_neg_opens: Arc<Mutex<Vec<(String, Filter)>>>,
+    captured_neg_opens: Arc<Mutex<Vec<NegOpen>>>,
     did_disconnect_once: Arc<AtomicBool>,
     did_neg_err_once: Arc<AtomicBool>,
 }
@@ -99,10 +108,13 @@ impl RelayProbe {
         self.captured_neg_opens
             .lock()
             .expect("lock negentropy relay capture")
-            .push((subscription_id, filter));
+            .push(NegOpen {
+                subscription_id,
+                filter,
+            });
     }
 
-    fn captured_neg_opens(&self) -> Vec<(String, Filter)> {
+    fn captured_neg_opens(&self) -> Vec<NegOpen> {
         self.captured_neg_opens
             .lock()
             .expect("lock negentropy relay capture")
@@ -181,9 +193,7 @@ impl NegentropyRelay {
         self.probe
             .captured_neg_opens()
             .into_iter()
-            .filter_map(|(subscription_id, filter)| {
-                filter_matches(&filter).then_some(subscription_id)
-            })
+            .filter_map(|open| filter_matches(&open.filter).then_some(open.subscription_id))
             .collect()
     }
 
@@ -537,9 +547,9 @@ async fn handle_client_text(
                 NegentropyRelayMode::NegErrOnOpenOnce(_)
                 | NegentropyRelayMode::DisconnectOnOpenOnce => {}
             }
-            let (session, reply_hex) =
+            let OpenedSession { session, reply_hex } =
                 match open_negentropy_session(relay_db, filter, &initial_message).await {
-                    Ok(session) => session,
+                    Ok(opened) => opened,
                     Err(err) => {
                         let reason = err.to_string();
                         tracing::warn!("proxy NEG-OPEN failed for session {session_key}: {reason}");
@@ -619,15 +629,23 @@ fn neg_open_targets_pns(filter: &Filter) -> bool {
         .is_some_and(|kinds| kinds.contains(&nostr::Kind::Custom(PNS_KIND)))
 }
 
+/// A negentropy session the proxy has just opened, and its first reply.
+struct OpenedSession {
+    /// The server side of the reconciliation, kept for later `NEG-MSG`s.
+    session: OwnedNegentropy,
+    /// Hex-encoded reply to the client's initial message.
+    reply_hex: String,
+}
+
 async fn open_negentropy_session(
     relay_db: &MemoryDatabase,
     filter: Filter,
     initial_message_hex: &str,
-) -> ProxyResult<(OwnedNegentropy, String)> {
+) -> ProxyResult<OpenedSession> {
     let storage = build_negentropy_storage(relay_db, filter).await?;
     let mut session = Negentropy::owned(storage, 0)?;
     let reply_hex = reconcile_server_message(&mut session, initial_message_hex)?;
-    Ok((session, reply_hex))
+    Ok(OpenedSession { session, reply_hex })
 }
 
 fn reconcile_server_message(

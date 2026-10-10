@@ -269,14 +269,15 @@ fn the_counter_sees_an_allocation_added_to_a_frame() {
         clippy::vec_init_then_push,
         reason = "the push is what is being caught"
     )]
-    let (_, counts) = notedeck_testing::alloc::measure(|| {
+    let counts = notedeck_testing::alloc::measure(|| {
         // A `Vec` built inside a per-frame function is the exact shape of the
         // bug this whole file exists to catch.
         let mut labels: Vec<String> = Vec::new();
         labels.push("note".to_owned());
         labels.push("reply".to_owned());
         labels
-    });
+    })
+    .counts;
 
     assert!(
         counts.thread.allocs >= 2,
@@ -304,7 +305,8 @@ fn another_threads_allocations_do_not_reach_this_threads_tally() {
         v.len()
     });
 
-    let (len, counts) = notedeck_testing::alloc::measure(|| handle.join().expect("join"));
+    let notedeck_testing::alloc::Measured { value: len, counts } =
+        notedeck_testing::alloc::measure(|| handle.join().expect("join"));
 
     assert_eq!(len, 4096);
     assert_eq!(
@@ -475,11 +477,12 @@ fn report_where_the_frames_allocations_go() {
         device.step();
     }
 
-    let (_, sites) = attribute(|| {
+    let sites = attribute(|| {
         for _ in 0..ATTRIBUTED_FRAMES {
             device.step();
         }
-    });
+    })
+    .sites;
 
     let total: u64 = sites.iter().map(|s| s.allocs).sum();
     eprintln!("\n{total} allocations sampled over {ATTRIBUTED_FRAMES} frames\n");

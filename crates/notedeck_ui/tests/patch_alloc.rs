@@ -84,7 +84,7 @@ fn frame_allocs(patch: &GitPatch, height: f32, selectable: bool) -> u64 {
         mut state,
         input,
     } = settled(patch, height, selectable);
-    let ((), counts) = measure(|| frame(&ctx, patch, &mut state, input));
+    let counts = measure(|| frame(&ctx, patch, &mut state, input)).counts;
     eprintln!("height {height}, selectable {selectable}: {counts}");
     counts.thread.allocs + counts.thread.reallocs
 }
@@ -184,7 +184,7 @@ fn image_frame_allocs(sides: fn(&Context) -> FileImages, collapsed: bool) -> u64
     for _ in 0..8 {
         frame(&ctx, &patch, &mut state, input.clone());
     }
-    let ((), counts) = measure(|| frame(&ctx, &patch, &mut state, input));
+    let counts = measure(|| frame(&ctx, &patch, &mut state, input)).counts;
     eprintln!("image file collapsed {collapsed}: {counts}");
     counts.thread.allocs + counts.thread.reallocs
 }
@@ -220,7 +220,7 @@ fn attribute_tall_frame() {
         mut state,
         input,
     } = settled(&patch, TALL_HEIGHT, true);
-    let ((), sites) = notedeck_testing::alloc::attribute(|| frame(&ctx, &patch, &mut state, input));
+    let sites = notedeck_testing::alloc::attribute(|| frame(&ctx, &patch, &mut state, input)).sites;
     for s in sites.iter().take(25) {
         eprintln!("{:5} {:8}  {}", s.allocs, s.bytes, s.frame);
     }
