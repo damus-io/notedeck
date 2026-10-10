@@ -7,6 +7,7 @@
 
 mod background;
 mod files;
+mod outputs;
 mod overview;
 mod permissions;
 mod rate_limits;
@@ -21,7 +22,8 @@ pub use rate_limits::rate_limit_pill_ui;
 
 use crate::inspector::{InspectorSection, InspectorView, SessionInspector, SessionTab};
 use crate::ui::DaveAction;
-use notedeck::{tr, Localization};
+use nostrdb::Transaction;
+use notedeck::{tr, Localization, NoteContext};
 
 /// Width of the section rail on wide layouts.
 const RAIL_WIDTH: f32 = 168.0;
@@ -88,11 +90,16 @@ fn tab_ui(ui: &mut egui::Ui, label: &str, keys: &str, selected: bool) -> egui::R
 }
 
 /// The Details tab: the section rail (wide layouts only) and the card grid.
+///
+/// `note` is the context inline reference chips draw with (its `i18n` is the
+/// tab's), and `txn` reads the notes they resolve to; without one, a chip is
+/// drawn as its ref text.
 pub fn inspector_ui(
     inspector: &mut SessionInspector,
     facts: &SessionFacts<'_>,
     view: &mut InspectorView,
-    i18n: &mut Localization,
+    note: &mut NoteContext<'_>,
+    txn: Option<&Transaction>,
     ui: &mut egui::Ui,
 ) -> Option<DaveAction> {
     let mut action = None;
@@ -100,7 +107,7 @@ pub fn inspector_ui(
 
     ui.horizontal_top(|ui| {
         if show_rail {
-            action = rail_ui(view.section, i18n, ui);
+            action = rail_ui(view.section, note.i18n, ui);
             let x = ui.min_rect().right();
             ui.painter().vline(
                 x,
@@ -108,7 +115,7 @@ pub fn inspector_ui(
                 ui.visuals().widgets.noninteractive.bg_stroke,
             );
         }
-        if let Some(card_action) = card_grid_ui(inspector, facts, view, i18n, ui) {
+        if let Some(card_action) = card_grid_ui(inspector, facts, view, note, txn, ui) {
             action = Some(card_action);
         }
     });
@@ -150,7 +157,8 @@ fn card_grid_ui(
     inspector: &mut SessionInspector,
     facts: &SessionFacts<'_>,
     view: &mut InspectorView,
-    i18n: &mut Localization,
+    note: &mut NoteContext<'_>,
+    txn: Option<&Transaction>,
     ui: &mut egui::Ui,
 ) -> Option<DaveAction> {
     let scroll_to = view.take_scroll();
@@ -177,7 +185,7 @@ fn card_grid_ui(
                             ui.horizontal_top(|ui| {
                                 for &section in row {
                                     let card = section_card_ui(
-                                        inspector, facts, view, section, card_width, i18n, ui,
+                                        inspector, facts, view, section, card_width, note, txn, ui,
                                     );
                                     if scroll_to == Some(section) {
                                         card.response.scroll_to_me(Some(egui::Align::TOP));
@@ -203,7 +211,8 @@ fn section_card_ui(
     view: &mut InspectorView,
     section: InspectorSection,
     width: f32,
-    i18n: &mut Localization,
+    note: &mut NoteContext<'_>,
+    txn: Option<&Transaction>,
     ui: &mut egui::Ui,
 ) -> egui::InnerResponse<Option<DaveAction>> {
     let margin = notedeck::tokens::SPACING_MD;
@@ -217,7 +226,7 @@ fn section_card_ui(
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(section_title(section, i18n))
+                        egui::RichText::new(section_title(section, note.i18n))
                             .small()
                             .strong()
                             .color(ui.visuals().weak_text_color()),
@@ -230,22 +239,23 @@ fn section_card_ui(
                         );
                     });
                 });
-                section_body_ui(inspector, facts, view, section, i18n, ui)
+                section_body_ui(inspector, facts, view, section, note, txn, ui)
             })
             .inner
         })
 }
 
-/// A section's contents, and what a click in them asked for. A section
-/// without a view yet is a stub until its card fills it in.
+/// A section's contents, and what a click in them asked for.
 fn section_body_ui(
     inspector: &mut SessionInspector,
     facts: &SessionFacts<'_>,
     view: &mut InspectorView,
     section: InspectorSection,
-    i18n: &mut Localization,
+    note: &mut NoteContext<'_>,
+    txn: Option<&Transaction>,
     ui: &mut egui::Ui,
 ) -> Option<DaveAction> {
+    let i18n = &mut *note.i18n;
     match section {
         InspectorSection::Subagents => {
             return subagents::subagents_ui(&mut inspector.subagents, facts.chat, i18n, ui)
@@ -279,21 +289,16 @@ fn section_body_ui(
                 ui,
             )
         }
-        _ => empty_state_ui(i18n, ui),
+        InspectorSection::Outputs => outputs::outputs_ui(
+            &mut inspector.outputs,
+            inspector.session_ref.as_deref(),
+            facts,
+            note,
+            txn,
+            ui,
+        ),
     }
     None
-}
-
-/// What a section shows before anything has reached it.
-fn empty_state_ui(i18n: &mut Localization, ui: &mut egui::Ui) {
-    ui.label(
-        egui::RichText::new(tr!(
-            i18n,
-            "Nothing yet",
-            "Dave session inspector: empty state of a section with no data"
-        ))
-        .weak(),
-    );
 }
 
 /// A section's name, as the rail and its card title show it.

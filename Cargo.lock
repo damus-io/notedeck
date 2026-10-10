@@ -6007,6 +6007,7 @@ dependencies = [
  "egui_nav",
  "futures",
  "gethostname",
+ "headway",
  "hex",
  "image",
  "libc",

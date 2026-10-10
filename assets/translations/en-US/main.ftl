@@ -163,6 +163,9 @@ Cancel_ed3b = Cancel
 # Label for cancel clear cache, Storage settings section
 Cancel_fd8b = Cancel
 
+# Dave session inspector outputs: heading over the headway cards the transcript mentions
+Cards____count_f31a = Cards · {$count}
+
 # Dave session tab: the chat transcript
 Chat_32a7 = Chat
 
@@ -183,6 +186,12 @@ ClnDash_2988 = ClnDash
 
 # Button to go to the Columns app
 Columns_7215 = Columns
+
+# Dave session inspector outputs: heading over the commits that name this session
+Commits____count_6357 = Commits · {$count}
+
+# Dave session inspector outputs: a remote session's commits are in a repo on the host running it
+Commits_live_in_the_repo_on__host_a959 = Commits live in the repo on {$host}
 
 # Column title for note composition
 Compose_Note_c094 = Compose Note
@@ -273,6 +282,9 @@ count__denied_c592 = {$count} denied
 
 # Dave session inspector subagents: how many subagents failed
 count__failed_ef23 = {$count} failed
+
+# Dave session inspector outputs: how many more cards or pages there are than the card lists
+count__more_4934 = {$count} more
 
 # Dave session inspector files: entries past the card's cap, the oldest ones
 count__older_not_shown_f0cb = {$count} older not shown
@@ -651,8 +663,14 @@ New_Chat_afb4 = New Chat
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = New to Nostr?
 
+# Dave session inspector outputs: the transcript mentions no headway card
+No_cards_mentioned_4631 = No cards mentioned
+
 # Dave session inspector files: the CLI hasn't reported its session id, so its temp dir is unknown
 No_Claude_session_yet_ec10 = No Claude session yet
+
+# Dave session inspector outputs: no commit names this session
+No_commits_carry_this_session_s_Agentium_trailer_yet_3ac0 = No commits carry this session's Agentium trailer yet
 
 # Shown when user has no contacts to display
 No_contacts_yet_cd10 = No contacts yet
@@ -675,6 +693,9 @@ No_init_from_the_agent_yet_0cb8 = No init from the agent yet
 # Chat summary text when the conversation has no messages
 No_messages_yet_3205 = No messages yet
 
+# Dave session inspector outputs: the transcript holds no published page
+No_pages_published_8268 = No pages published
+
 # Shown when profile search returns no results
 No_profiles_found_3130 = No profiles found
 
@@ -692,6 +713,9 @@ nostrich_df29 = nostrich
 
 # Button to go to the Nostrverse app
 Nostrverse_b12a = Nostrverse
+
+# Dave session inspector outputs: the session's directory has no repo to list commits from
+Not_a_git_repository_f743 = Not a git repository
 
 # Status label for disconnected relay
 Not_Connected_6292 = Not Connected
@@ -735,9 +759,6 @@ On_f412 = On
 # Column title for finding users to follow
 Onboarding_4a25 = Onboarding
 
-# Dave session inspector: empty state of a section with no data
-Nothing_yet_59ff = Nothing yet
-
 # Dave session inspector background: a cron job that fires once
 one-shot_f4a4 = one-shot
 
@@ -764,6 +785,9 @@ output__count_0a95 = output {$count}
 
 # Dave session inspector overview: label before the CLI's output style name
 output_style_f766 = output style
+
+# Dave session inspector outputs: heading over the pages the session published
+Pages____count_e8e5 = Pages · {$count}
 
 # Placeholder text for NWC URI input
 Paste_your_NWC_URI_here_b471 = Paste your NWC URI here...
@@ -1463,6 +1487,9 @@ Near_a_limit_fe96 = Near a limit
 
 # Dave session inspector rate limits: shown before the CLI reports the account's windows
 No_rate-limit_report_yet_c1f0 = No rate-limit report yet
+
+# Dave session inspector outputs: the session has no working directory or agentium ref to find commits by
+No_repository_for_this_session_1a37 = No repository for this session
 
 # Dave session inspector permissions: the session has no always-allow rules
 No_rules_yet__Allow_Always_on_a_prompt_adds_one_e188 = No rules yet. Allow Always on a prompt adds one.

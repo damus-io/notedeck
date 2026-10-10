@@ -2033,8 +2033,7 @@ mod tests {
     }
 
     /// Clicking Details swaps the chat for the rail and the section cards
-    /// (the two without a view yet are stubs); clicking Chat brings the
-    /// input box back.
+    /// (each with its empty state); clicking Chat brings the input box back.
     #[test]
     fn details_tab_shows_every_section_and_chat_brings_the_input_back() {
         use crate::inspector::InspectorSection;
@@ -2043,7 +2042,7 @@ mod tests {
         let mut harness = session_view_harness(egui::vec2(1100.0, 900.0));
         harness.run_ok();
         assert!(
-            harness.query_by_label("Nothing yet").is_none(),
+            harness.query_by_label("No cards mentioned").is_none(),
             "the chat tab shows no inspector"
         );
         assert_eq!(
@@ -2055,7 +2054,8 @@ mod tests {
         harness.get_by_label("Details").click_accesskit();
         harness.run_ok();
 
-        assert_eq!(count_labels(&harness, "Nothing yet"), 1);
+        assert_eq!(count_labels(&harness, "No cards mentioned"), 1);
+        assert_eq!(count_labels(&harness, "No pages published"), 1);
         assert_eq!(count_labels(&harness, "No subagents yet"), 1);
         assert_eq!(
             count_labels(&harness, "No rules yet. Allow Always on a prompt adds one."),
@@ -2080,7 +2080,7 @@ mod tests {
 
         harness.get_by_label("Chat").click_accesskit();
         harness.run_ok();
-        assert_eq!(count_labels(&harness, "Nothing yet"), 0);
+        assert_eq!(count_labels(&harness, "No cards mentioned"), 0);
         assert_eq!(count_labels(&harness, "Ask"), 1);
     }
 
@@ -3078,6 +3078,101 @@ mod tests {
         agentic.add_runtime_allow("Edit", &serde_json::json!({ "file_path": "/a" }));
     }
 
+    /// Give the active session what the Outputs card reads: a fixture repo
+    /// as its cwd, holding one commit whose `Agentium:` trailer names the
+    /// session and one naming another, and a transcript mentioning two cards
+    /// and a published page.
+    fn seed_outputs(state: &mut SessionViewState, repo: &std::path::Path) {
+        use crate::inspector::test_git;
+        use crate::messages::{AssistantMessage, ExecutedTool, UserMessage};
+        let session = state.session_manager.get_active_mut().unwrap();
+        let mine = agentium_core::wordid::session_ref(
+            session.agentic.as_ref().unwrap().event_session_id(),
+        );
+        test_git(repo, &["init", "-q", "-b", "main"]);
+        let commit = |message: String| {
+            test_git(repo, &["commit", "-q", "--allow-empty", "-m", &message]);
+        };
+        commit(format!("dave: fill the Outputs card\n\nAgentium: {mine}"));
+        commit("dave: another session's work\n\nAgentium: agentium:maple-river-canyon".into());
+        session.details.cwd = Some(repo.to_path_buf());
+
+        let mut reply = AssistantMessage::new();
+        reply.push_token(
+            "Committed, explainer at https://media.example.com/misc/share/outputs-card.html \
+             and headway:dave/shrimp-guide-poet is in review.",
+        );
+        session.chat.extend([
+            crate::Message::User(UserMessage::new(
+                "Work headway:dave/shrimp-guide-poet",
+                Vec::new(),
+            )),
+            crate::Message::ToolResponse(crate::tools::ToolResponse::executed_tool(ExecutedTool {
+                tool_name: "Bash".into(),
+                summary: "headway show headway:dave/remember-company-setup".into(),
+                output: None,
+                parent_task_id: None,
+                file_update: None,
+                tool_use_id: None,
+            })),
+            crate::Message::Assistant(reply),
+        ]);
+    }
+
+    /// The Outputs card lists the session's own commit and not another's,
+    /// both mentioned cards (as their refs, with no headway app here to
+    /// resolve them) and the page; a card's ref opens it on a click.
+    #[test]
+    fn outputs_card_lists_commits_cards_and_pages() {
+        use egui_kittest::kittest::Queryable;
+
+        let repo = tempfile::tempdir().unwrap();
+        let mut harness = session_view_harness(egui::vec2(1100.0, 1600.0));
+        seed_outputs(harness.state_mut(), repo.path());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .open(crate::inspector::InspectorSection::Outputs);
+        step_until_label(&mut harness, "dave: fill the Outputs card");
+        harness.run_ok();
+
+        assert_eq!(count_labels(&harness, "dave: another session's work"), 0);
+        // Fluent may isolate the numbers, so match the words.
+        assert_eq!(count_labels_containing(&harness, "Commits"), 1);
+        assert_eq!(count_labels(&harness, "headway:dave/shrimp-guide-poet"), 1);
+        assert_eq!(
+            count_labels(&harness, "headway:dave/remember-company-setup"),
+            1
+        );
+        assert_eq!(
+            count_labels(&harness, "media.example.com/misc/share/outputs-card.html"),
+            1
+        );
+
+        harness
+            .get_by_label("headway:dave/remember-company-setup")
+            .click_accesskit();
+        harness.run_ok();
+        let actions = harness
+            .state_mut()
+            .notedeck
+            .app_context()
+            .app_actions
+            .take();
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                notedeck::AppAction::Open(open)
+                    if open.reference == "headway:dave/remember-company-setup"
+            )),
+            "the ref click should open the card ({} actions)",
+            actions.len()
+        );
+    }
+
     /// The Permissions card counts the prompts by how they were answered and
     /// lists the always-allow rules; Revoke drops one from the allowlist, so
     /// its next request prompts again.
@@ -3152,6 +3247,32 @@ mod tests {
             .open(crate::inspector::InspectorSection::Permissions);
         harness.run_ok();
         harness.snapshot("session_permissions");
+    }
+
+    /// The Outputs card: one commit, two cards and a page.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_session_outputs() {
+        // A fixed path, so the header's cwd is the same in every run.
+        let repo = std::env::temp_dir().join("dave-inspector-outputs-snapshot");
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1100.0, 760.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        seed_outputs(harness.state_mut(), &repo);
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .open(crate::inspector::InspectorSection::Outputs);
+        step_until_label(&mut harness, "dave: fill the Outputs card");
+        harness.run_ok();
+        harness.snapshot("session_outputs");
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     /// The Files card: the scratchpad with a folder and two files, and the

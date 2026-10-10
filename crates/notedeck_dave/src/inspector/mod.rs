@@ -13,6 +13,7 @@
 mod background;
 mod edits;
 mod files;
+mod outputs;
 mod permissions;
 mod subagents;
 mod usage;
@@ -22,6 +23,13 @@ pub use edits::{edited_files, EditedFile, EditedMemo, EditedRow, EditedRows, Edi
 pub use files::{
     claude_temp_root, list_session_temp, project_slug, session_temp_dir, FileRow, FileRows,
     FilesParts, FilesState, GroupRows, TempFile, TempGroup, TempListing, GROUP_CAP,
+};
+#[cfg(test)]
+pub(crate) use outputs::test_git;
+pub use outputs::{
+    find_page, list_commits, mentions, Commit, CommitList, CommitsState, Mention, MentionGroup,
+    Mentions, MentionsKey, MentionsMemo, OutputLabels, OutputsKey, OutputsState, COMMITS_CAP,
+    MENTIONS_CAP,
 };
 pub use permissions::{PermissionCounts, PermissionLabels, PermissionMemo};
 pub use subagents::{subagent, ProgressById, SubagentRow, SubagentRows, SubagentState};
@@ -82,6 +90,9 @@ pub struct SessionInspector {
     /// The always-allow rules are the session's own allowlist, so they need
     /// no state here.
     pub permissions: PermissionMemo,
+    /// The Outputs card's commits (read from git) and the cards and pages
+    /// the transcript mentions.
+    pub outputs: OutputsState,
 }
 
 impl SessionInspector {

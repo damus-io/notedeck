@@ -682,6 +682,10 @@ impl<'a> DaveUi<'a> {
                                 chat: self.chat,
                                 permissions: inspected.permissions,
                             };
+                            // The Outputs card draws its cards as the chat's
+                            // inline chips, which resolve through ndb.
+                            let mut note_ctx = app_ctx.note_context();
+                            let txn = Transaction::new(note_ctx.ndb).ok();
                             // Scoped by session, so each keeps its own grid
                             // scroll.
                             let id = ("dave_inspector", session_id);
@@ -691,7 +695,8 @@ impl<'a> DaveUi<'a> {
                                         inspected.inspector,
                                         &facts,
                                         inspected.view,
-                                        app_ctx.i18n,
+                                        &mut note_ctx,
+                                        txn.as_ref(),
                                         ui,
                                     )
                                 })

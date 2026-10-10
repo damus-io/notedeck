@@ -151,54 +151,15 @@ pub struct HeadwayRefParser {
     pub(crate) cache: Rc<RefCell<BoardCache>>,
 }
 
-impl HeadwayRefParser {
-    /// A byte is part of a board slug: lowercase ascii, a digit, or `-` (see
-    /// `store::board_slug`). Uppercase is intentionally excluded — slugs are
-    /// lowercase — but `resolve` lowercases anyway, so a stray capital only costs
-    /// a slug boundary, never a wrong resolution.
-    fn is_slug_byte(b: u8) -> bool {
-        b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'
-    }
-}
-
 impl notedeck::ReferenceParser for HeadwayRefParser {
     fn id(&self) -> &'static str {
         "headway"
     }
 
+    /// The shared grammar: see [`headway::wordid::find_ref`].
     #[profiling::function]
     fn find(&self, text: &str) -> Option<std::ops::Range<usize>> {
-        const SCHEME: &str = "headway:";
-        let bytes = text.as_bytes();
-        let mut search = 0;
-        while let Some(rel) = text[search..].find(SCHEME) {
-            let start = search + rel;
-            // Continue past this scheme on the next iteration regardless of outcome.
-            search = start + SCHEME.len();
-
-            // The scheme must begin at a slug boundary, so `myheadway:` isn't a
-            // match latched onto the tail of a longer word.
-            if start > 0 && Self::is_slug_byte(bytes[start - 1]) {
-                continue;
-            }
-
-            // Board slug: a run of slug bytes after the scheme, then a single `/`.
-            let slug_start = search;
-            let mut i = slug_start;
-            while i < bytes.len() && Self::is_slug_byte(bytes[i]) {
-                i += 1;
-            }
-            if i == slug_start || i >= bytes.len() || bytes[i] != b'/' {
-                continue;
-            }
-
-            // Three dash-joined words right after the `/` (the shared word-id
-            // grammar; see [`headway::wordid::three_words_end`]).
-            if let Some(end) = headway::wordid::three_words_end(bytes, i + 1) {
-                return Some(start..end);
-            }
-        }
-        None
+        headway::wordid::find_ref(text)
     }
 
     #[profiling::function]

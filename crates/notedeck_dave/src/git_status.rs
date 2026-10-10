@@ -216,7 +216,7 @@ fn parse_numstat(output: &str) -> LineCounts {
 }
 
 /// Apply the platform-specific flags we want on every git invocation.
-fn configure_git_command(cmd: &mut std::process::Command) {
+pub(crate) fn configure_git_command(cmd: &mut std::process::Command) {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
