@@ -10,3 +10,4 @@ hand-roll a Notedeck host, and their Dave::new rebinds the real IPC spawn socket
 - headway:headway/left-own-demand — wrote test_host() in restore.rs tests (Notedeck::init --testrunner + select account); pns_outbox_e2e and chip_click tests each hand-roll the same
 - headway:notedeck/use-release-oyster — Dispatch in ui/mod.rs tests owns loose fields rather than a Dave, so the UI-tool tests built a second fixture, and test_dave quietly opens on the DirectoryPicker
 - headway:dave/okay-scale-wrap — hand-rolled SessionViewState in ui/mod.rs tests (Notedeck::init --testrunner, then build_dave_ui and handle_ui_action) just to render one DaveUi and route its clicks
+- headway:dave/amateur-fuel-stomach — the session-list chip test re-rolled Notedeck::init --testrunner + add/select account + a kind-31988 seed copied from chip_click_tests, for want of a shared test host

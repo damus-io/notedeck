@@ -332,7 +332,7 @@ agentium spawn --host mbp --cwd ~/dev/notedeck --wait   # print the new agentium
 agentium spawn --title "Fix the parser" --wait   # give it an explicit, sticky title
 agentium spawn --host mbp --cwd ~/proj --prompt "run the tests" --wait
 agentium spawn --permission-mode plan --prompt "design the migration" --wait  # plan first
-agentium spawn --title "Fix the parser" --issue-url headway:dave/<word-id> --wait  # link its card
+agentium spawn --title headway:dave/<word-id> --issue-url headway:dave/<word-id> --wait  # a card's session
 agentium spawn --host mbp --cwd ~/proj --wait --json    # {spawn_id,host,session,event_id}
 agentium spawn --host mbp --cwd ~/proj --wait --wait-timeout 60   # give a slow host longer
 agentium spawn --title "Fix the parser" --prompt-file - <<'EOF'   # heredoc a long first message
@@ -351,6 +351,10 @@ Flags:
 - `--title <text>` — an explicit, **sticky** session title. Without it the title
   derives from (and churns with) the first message; `--title` lands in the
   session's `custom_title` so it shows immediately and survives later messages.
+  For a session working a headway card, the title is the card's full ref
+  (`--title headway:<board>/<word-id>`): Dave's session list draws a ref title
+  as the card's inline chip, so the row shows the card's live title, not a copy
+  that goes stale when the card is renamed.
 - `--wait` — block (bounded) until the host answers with the new session's state,
   then print its `agentium:` ref. Without it you only get the provisional
   `spawn_id` (the session doesn't exist yet). The bound defaults to 30s (a

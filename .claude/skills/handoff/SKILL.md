@@ -25,10 +25,12 @@ a short TL;DR — not the card's full text.)
 - Otherwise **ask the user what the next session should work on**, then show them
   the exact prompt you're about to send and get their OK — it's the only thing
   the new agent will see.
-- Also pick a **short title** (a few words) for the session, so it's identifiable
-  in `agentium list` — e.g. the headway card's title or a terse summary of the
-  task. Set it with `--title` rather than letting it derive from the first
-  message.
+- Also pick the session's **title**, so it's identifiable in `agentium list`,
+  and set it with `--title` rather than letting it derive from the first
+  message. If the task is a **headway card, the title is the card's full ref**,
+  `--title headway:<board>/<word-id>`: Dave's session list draws a ref title as
+  the card's inline chip, so the row shows the card's live title and a click on
+  it opens the card. Otherwise, a terse summary of the task (a few words).
 - If the task is a **headway card**, link the session to it with
   `--issue-url headway:<board>/<word-id>` (the full ref, never a bare word-id —
   the CLI rejects one). The card is then recorded on the session itself, so
@@ -50,14 +52,15 @@ blocks (bounded) until the host answers with the new session's kind-31988 state;
 `.session` is its durable `agentium:` ref.
 
 ```bash
-ref=$(agentium spawn --title "<short title>" --wait --json --prompt-file - <<'EOF' | jq -r .session
+ref=$(agentium spawn --title "<title>" --wait --json --prompt-file - <<'EOF' | jq -r .session
 <the self-contained task prompt — as many lines as you like, no escaping>
 EOF
 )
 echo "$ref"
 ```
 
-Add `--issue-url headway:<board>/<word-id>` when the task is a headway card, and
+When the task is a headway card, `<title>` is its ref and
+`--issue-url headway:<board>/<word-id>` links it too; add
 `--permission-mode plan` when the task should be investigated and approved before
 any code is written.
 
