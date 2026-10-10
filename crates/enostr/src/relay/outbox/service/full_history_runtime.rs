@@ -8,24 +8,74 @@ use super::{
     OutboxService,
 };
 use crate::relay::coordinator::{FullHistoryNegentropyCapacityGrant, NegentropyCapacityError};
-use crate::relay::frame::RelayFrameSink;
+use crate::relay::frame::{Framed, QueuedRelayFrame, RelayFrameSink};
 use crate::relay::negentropy::{
     ActiveSessionRelayDemand, NegentropyNeed, NegentropyRelay, NegentropyRelayEffect,
-    NegentropyRelayEffects, NegentropyRetry, NegentropyStartResult,
+    NegentropyRelayEffects, NegentropyRetry, NegentropyStartResult, RelayTimeoutDeadline,
 };
 use crate::relay::outbox::full_history::{
     full_history_snapshot_from_task, FullHistoryNeed, FullHistoryNegentropyStartOutcome,
-    FullHistorySnapshot, FullHistoryUpsert,
+    FullHistorySnapshot, FullHistoryUpsert, LocalPresenceStage,
 };
 use crate::relay::outbox::{
-    run_negentropy_relay_with_frames, FullHistoryOutput, OutboxPool, OutboxPoolOutput,
-    OutboxServiceOutput, OutboxTransportEffect, RelayConnectionDropReason, RelayTransportDemand,
+    FullHistoryOutput, OutboxPool, OutboxPoolOutput, OutboxServiceOutput, OutboxTransportEffect,
+    RelayConnectionDropReason, RelayTransportDemand,
 };
 use crate::relay::{
     subscription::FullHistoryTask, FullHistoryLocalPresenceResult,
-    FullHistoryPendingIngestionPresenceResult, FullHistorySubId, Nip11ApplyOutcome,
-    Nip11LimitationsRaw, NormRelayUrl, RelayLimitations, RelayUrlSource, SubPass,
+    FullHistoryPendingIngestionPresenceResult, FullHistorySubId, Nip11Applied, Nip11LimitationsRaw,
+    NormRelayUrl, RelayLimitations, RelayUrlSource, SubPass,
 };
+
+/// What applying full-history tasks produced, and the relays they stopped
+/// using, whose websockets may now be idle.
+pub(in crate::relay::outbox) struct FullHistoryTaskOutput {
+    pub(in crate::relay::outbox) idle_websocket_eviction_candidates: HashSet<NormRelayUrl>,
+    pub(in crate::relay::outbox) output: FullHistoryRuntimeOutput,
+}
+
+impl FullHistoryTaskOutput {
+    fn empty() -> Self {
+        Self {
+            idle_websocket_eviction_candidates: HashSet::new(),
+            output: FullHistoryRuntimeOutput::empty(),
+        }
+    }
+
+    fn extend(&mut self, other: Self) {
+        self.idle_websocket_eviction_candidates
+            .extend(other.idle_websocket_eviction_candidates);
+        self.output.extend(other.output);
+    }
+}
+
+/// What a relay-local negentropy step leaves for the service to finish:
+/// transport work, the missing ids it surfaced, and the full-history retries
+/// it scheduled.
+#[derive(Default)]
+struct NegentropyRelease {
+    pool: OutboxPoolOutput,
+    surfaced_needs: Vec<FullHistoryNeed>,
+    full_history: FullHistoryOutput,
+}
+
+impl NegentropyRelease {
+    /// Starts a release that sends the frames a step queued on `relay`.
+    fn from_frames(relay: &NormRelayUrl, frames: Vec<QueuedRelayFrame>) -> Self {
+        let mut release = Self::default();
+        release
+            .pool
+            .transport_effects
+            .extend(OutboxPool::relay_frame_effects(relay, frames));
+        release
+    }
+
+    fn extend(&mut self, other: Self) {
+        self.pool.extend(other.pool);
+        self.surfaced_needs.extend(other.surfaced_needs);
+        self.full_history.extend(other.full_history);
+    }
+}
 
 pub(in crate::relay::outbox) struct FullHistoryRuntimeOutput {
     pub(in crate::relay::outbox) full_history: FullHistoryOutput,
@@ -71,7 +121,7 @@ pub(super) enum FullHistoryRuntimeDeadlineInput {
 }
 
 impl FullHistoryRuntimeOutput {
-    fn empty() -> Self {
+    pub(in crate::relay::outbox) fn empty() -> Self {
         Self {
             full_history: FullHistoryOutput::default(),
             negentropy_demand_changes: HashMap::new(),
@@ -115,12 +165,14 @@ where
                     deadline,
                     input: FullHistoryRuntimeDeadlineInput::Workflow,
                 });
-        let negentropy = self
-            .next_negentropy_timeout_deadline()
-            .map(|(relay, deadline)| FullHistoryRuntimeDeadline {
-                deadline,
-                input: FullHistoryRuntimeDeadlineInput::NegentropyTimeout { relay },
-            });
+        let negentropy =
+            self.next_negentropy_timeout_deadline()
+                .map(|timeout| FullHistoryRuntimeDeadline {
+                    deadline: timeout.deadline,
+                    input: FullHistoryRuntimeDeadlineInput::NegentropyTimeout {
+                        relay: timeout.relay,
+                    },
+                });
         match (workflow, negentropy) {
             (Some(workflow), Some(negentropy)) if negentropy.deadline < workflow.deadline => {
                 Some(negentropy)
@@ -131,7 +183,7 @@ where
         }
     }
 
-    fn next_negentropy_timeout_deadline(&self) -> Option<(NormRelayUrl, Instant)> {
+    fn next_negentropy_timeout_deadline(&self) -> Option<RelayTimeoutDeadline> {
         self.negentropy
             .next_timeout_deadline_matching(|relay| self.relay.transport.subids_supported(relay))
     }
@@ -141,18 +193,17 @@ where
         relay: &NormRelayUrl,
         effect: NegentropyRelayEffect,
     ) -> ServiceNegentropyOutput {
-        let mut pool_output = OutboxPoolOutput::default();
-        let mut surfaced_needs = Vec::new();
-        let mut full_history = FullHistoryOutput::default();
-
-        match effect {
+        let release = match effect {
             NegentropyRelayEffect::RevocateSessions {
                 generation,
                 revocations,
             } => {
-                let (mut revocation_effects, frames) = {
+                let Framed {
+                    value: mut revocation_effects,
+                    frames,
+                } = {
                     let negentropy = self.negentropy.relay_mut(relay);
-                    run_negentropy_relay_with_frames(generation, negentropy, |relay| {
+                    NegentropyRelay::run_framed(generation, negentropy, |relay| {
                         relay.revocate_sessions(revocations.len())
                     })
                 };
@@ -167,14 +218,13 @@ where
                 {
                     revocation.revocate(pass);
                 }
-                full_history.extend(self.schedule_negentropy_retries_for_relay(
+                let mut release = NegentropyRelease::from_frames(relay, frames);
+                release.full_history = self.schedule_negentropy_retries_for_relay(
                     relay,
                     revocation_effects.take_retries(),
                     Instant::now(),
-                ));
-                pool_output
-                    .transport_effects
-                    .extend(OutboxPool::relay_frame_effects(relay, frames));
+                );
+                release
             }
             NegentropyRelayEffect::RelayDisconnect => {
                 let effects = {
@@ -182,66 +232,41 @@ where
                     NegentropyRelay::new(RelayFrameSink::disconnected(), negentropy)
                         .handle_relay_disconnect()
                 };
-                let (release_output, needs, history_output) =
-                    self.apply_negentropy_effects_after_release(relay, effects, Instant::now());
-                pool_output.extend(release_output);
-                surfaced_needs.extend(needs);
-                full_history.extend(history_output);
+                self.apply_negentropy_effects_after_release(relay, effects, Instant::now())
             }
             NegentropyRelayEffect::Timeout { generation, now } => {
-                let (effects, frames) = {
+                let step = {
                     let negentropy = self.negentropy.relay_mut(relay);
-                    run_negentropy_relay_with_frames(generation, negentropy, |relay| {
+                    NegentropyRelay::run_framed(generation, negentropy, |relay| {
                         relay.handle_timeout(now)
                     })
                 };
-                pool_output
-                    .transport_effects
-                    .extend(OutboxPool::relay_frame_effects(relay, frames));
-                let (release_output, needs, history_output) =
-                    self.apply_negentropy_effects_after_release(relay, effects, now);
-                pool_output.extend(release_output);
-                surfaced_needs.extend(needs);
-                full_history.extend(history_output);
+                self.release_framed_negentropy_step(relay, step, now)
             }
             NegentropyRelayEffect::CancelOwner {
                 generation,
                 owner_history_id,
             } => {
-                let (effects, frames) = {
+                let step = {
                     let negentropy = self.negentropy.relay_mut(relay);
-                    run_negentropy_relay_with_frames(generation, negentropy, |relay| {
+                    NegentropyRelay::run_framed(generation, negentropy, |relay| {
                         relay.cancel_owner(owner_history_id)
                     })
                 };
-                pool_output
-                    .transport_effects
-                    .extend(OutboxPool::relay_frame_effects(relay, frames));
-                let (release_output, needs, history_output) =
-                    self.apply_negentropy_effects_after_release(relay, effects, Instant::now());
-                pool_output.extend(release_output);
-                surfaced_needs.extend(needs);
-                full_history.extend(history_output);
+                self.release_framed_negentropy_step(relay, step, Instant::now())
             }
             NegentropyRelayEffect::CancelOwnerFilters {
                 generation,
                 owner_history_id,
                 filters,
             } => {
-                let (effects, frames) = {
+                let step = {
                     let negentropy = self.negentropy.relay_mut(relay);
-                    run_negentropy_relay_with_frames(generation, negentropy, |relay| {
+                    NegentropyRelay::run_framed(generation, negentropy, |relay| {
                         relay.cancel_owner_filters(owner_history_id, &filters)
                     })
                 };
-                pool_output
-                    .transport_effects
-                    .extend(OutboxPool::relay_frame_effects(relay, frames));
-                let (release_output, needs, history_output) =
-                    self.apply_negentropy_effects_after_release(relay, effects, Instant::now());
-                pool_output.extend(release_output);
-                surfaced_needs.extend(needs);
-                full_history.extend(history_output);
+                self.release_framed_negentropy_step(relay, step, Instant::now())
             }
             NegentropyRelayEffect::DropSessionsWithoutNegClose => {
                 let effects = {
@@ -249,49 +274,62 @@ where
                     NegentropyRelay::new(RelayFrameSink::disconnected(), negentropy)
                         .drop_sessions_without_neg_close()
                 };
-                let (release_output, needs, history_output) =
-                    self.apply_negentropy_effects_after_release(relay, effects, Instant::now());
-                pool_output.extend(release_output);
-                surfaced_needs.extend(needs);
-                full_history.extend(history_output);
+                self.apply_negentropy_effects_after_release(relay, effects, Instant::now())
             }
-        }
+        };
 
+        self.settle_negentropy_release(relay, release)
+    }
+
+    /// Stages the fetches a negentropy release surfaced, records the relay's
+    /// new negentropy demand, and asks for capacity for any ready pending set.
+    fn settle_negentropy_release(
+        &mut self,
+        relay: &NormRelayUrl,
+        release: NegentropyRelease,
+    ) -> ServiceNegentropyOutput {
+        let NegentropyRelease {
+            mut pool,
+            surfaced_needs,
+            mut full_history,
+        } = release;
         let mut negentropy_demand_changes =
             HashMap::from([(relay.clone(), self.negentropy_transport_demand_for(relay))]);
         let followup = self.stage_full_history_fetches(surfaced_needs);
         negentropy_demand_changes.extend(followup.negentropy_demand_changes);
-        pool_output.extend(followup.pool);
+        pool.extend(followup.pool);
         full_history.extend(followup.full_history);
 
-        pool_output.extend(self.request_pending_full_history_negentropy_capacity(relay));
+        pool.extend(self.request_pending_full_history_negentropy_capacity(relay));
         ServiceNegentropyOutput {
             full_history,
-            pool: pool_output,
+            pool,
             negentropy_demand_changes,
         }
     }
 
-    fn finish_service_negentropy_transition(
+    /// Sends a relay-local negentropy step's frames and releases its effects.
+    fn release_framed_negentropy_step(
         &mut self,
         relay: &NormRelayUrl,
-        mut pool_output: OutboxPoolOutput,
-        surfaced_needs: Vec<FullHistoryNeed>,
-        mut full_history: FullHistoryOutput,
-    ) -> OutboxServiceOutput {
-        let mut negentropy_demand_changes =
-            HashMap::from([(relay.clone(), self.negentropy_transport_demand_for(relay))]);
-        let followup = self.stage_full_history_fetches(surfaced_needs);
-        full_history.extend(followup.full_history);
-        negentropy_demand_changes.extend(followup.negentropy_demand_changes);
-        pool_output.extend(followup.pool);
-        pool_output.extend(self.request_pending_full_history_negentropy_capacity(relay));
+        step: Framed<NegentropyRelayEffects>,
+        now: Instant,
+    ) -> NegentropyRelease {
+        let mut release = NegentropyRelease::from_frames(relay, step.frames);
+        release.extend(self.apply_negentropy_effects_after_release(relay, step.value, now));
+        release
+    }
 
-        self.handle_full_history_output(FullHistoryRuntimeOutput {
-            full_history,
-            negentropy_demand_changes,
-            pool: pool_output,
-        })
+    /// Finishes a negentropy step run for one relay message, all the way to
+    /// service output.
+    fn finish_relay_message_negentropy_step(
+        &mut self,
+        relay: &NormRelayUrl,
+        step: Framed<NegentropyRelayEffects>,
+    ) -> OutboxServiceOutput {
+        let release = self.release_framed_negentropy_step(relay, step, Instant::now());
+        let output = self.settle_negentropy_release(relay, release);
+        self.handle_full_history_output(output.into_full_history_runtime_output())
     }
 
     pub(in crate::relay::outbox) fn apply_negentropy_effect(
@@ -360,20 +398,13 @@ where
         notice: &str,
     ) -> OutboxServiceOutput {
         tracing::warn!("Notice from {}: {}", relay, notice);
-        let (effects, frames) = {
+        let step = {
             let negentropy = self.negentropy.relay_mut(relay);
-            run_negentropy_relay_with_frames(Some(generation), negentropy, |relay| {
+            NegentropyRelay::run_framed(Some(generation), negentropy, |relay| {
                 relay.handle_notice(notice)
             })
         };
-        let mut output = OutboxPoolOutput::default();
-        output
-            .transport_effects
-            .extend(OutboxPool::relay_frame_effects(relay, frames));
-        let (release_output, surfaced_needs, full_history) =
-            self.apply_negentropy_effects_after_release(relay, effects, Instant::now());
-        output.extend(release_output);
-        self.finish_service_negentropy_transition(relay, output, surfaced_needs, full_history)
+        self.finish_relay_message_negentropy_step(relay, step)
     }
 
     pub(in crate::relay::outbox) fn apply_relay_neg_msg(
@@ -383,29 +414,13 @@ where
         sub_id: &str,
         payload: &str,
     ) -> OutboxServiceOutput {
-        let ((message, effects), frames) = {
+        let step = {
             let negentropy = self.negentropy.relay_mut(relay);
-            run_negentropy_relay_with_frames(Some(generation), negentropy, |relay| {
+            NegentropyRelay::run_framed(Some(generation), negentropy, |relay| {
                 relay.handle_neg_msg(sub_id, payload)
             })
         };
-        let mut output = OutboxPoolOutput::default();
-        if let Some(message) = message {
-            output
-                .transport_effects
-                .push(OutboxTransportEffect::SendRelayFrame {
-                    relay: relay.clone(),
-                    generation,
-                    message,
-                });
-        }
-        output
-            .transport_effects
-            .extend(OutboxPool::relay_frame_effects(relay, frames));
-        let (release_output, surfaced_needs, full_history) =
-            self.apply_negentropy_effects_after_release(relay, effects, Instant::now());
-        output.extend(release_output);
-        self.finish_service_negentropy_transition(relay, output, surfaced_needs, full_history)
+        self.finish_relay_message_negentropy_step(relay, step)
     }
 
     pub(in crate::relay::outbox) fn apply_relay_neg_err(
@@ -415,72 +430,70 @@ where
         sub_id: &str,
         reason: &str,
     ) -> OutboxServiceOutput {
-        let (effects, frames) = {
+        let step = {
             let negentropy = self.negentropy.relay_mut(relay);
-            run_negentropy_relay_with_frames(Some(generation), negentropy, |relay| {
+            NegentropyRelay::run_framed(Some(generation), negentropy, |relay| {
                 relay.handle_neg_err(sub_id, reason)
             })
         };
-        let mut output = OutboxPoolOutput::default();
-        output
-            .transport_effects
-            .extend(OutboxPool::relay_frame_effects(relay, frames));
-        let (release_output, surfaced_needs, full_history) =
-            self.apply_negentropy_effects_after_release(relay, effects, Instant::now());
-        output.extend(release_output);
-        self.finish_service_negentropy_transition(relay, output, surfaced_needs, full_history)
+        self.finish_relay_message_negentropy_step(relay, step)
     }
 
     pub(in crate::relay::outbox) fn apply_unsupported_subid_length(
         &mut self,
         relay: &NormRelayUrl,
         max_subid_length: usize,
-    ) -> (Nip11ApplyOutcome, OutboxServiceOutput) {
-        let (outcome, pool_output) = self
+    ) -> Nip11Applied<OutboxServiceOutput> {
+        let applied = self
             .pool
             .apply_unsupported_subid_length(relay, max_subid_length);
-        let mut service_output = self.handle_pool_output(pool_output);
+        let mut service_output = self.handle_pool_output(applied.output);
         if self.relay.transport.set_subids_supported(relay, false) {
             service_output = super::merge_service_outputs(
                 service_output,
                 self.evict_idle_websockets_after_unsubscribes(HashSet::from([relay.clone()])),
             );
         }
-        (outcome, service_output)
+        Nip11Applied {
+            outcome: applied.outcome,
+            output: service_output,
+        }
     }
 
     pub(in crate::relay::outbox) fn apply_relay_limit_update(
         &mut self,
         relay: &NormRelayUrl,
         limitations: RelayLimitations,
-    ) -> (Nip11ApplyOutcome, OutboxServiceOutput) {
+    ) -> Nip11Applied<OutboxServiceOutput> {
         let active_negentropy_session_count = self
             .negentropy
             .relay(relay)
             .map(|data| data.active_session_count())
             .unwrap_or_default();
-        let (outcome, pool_output) =
+        let applied =
             self.pool
                 .apply_relay_limit_update(relay, limitations, active_negentropy_session_count);
-        let service_output = self.handle_pool_output(pool_output);
-        (outcome, service_output)
+        Nip11Applied {
+            outcome: applied.outcome,
+            output: self.handle_pool_output(applied.output),
+        }
     }
 
     pub(in crate::relay::outbox) fn apply_full_history_tasks(
         &mut self,
         tasks: HashMap<FullHistorySubId, FullHistoryTask>,
-    ) -> (HashSet<NormRelayUrl>, FullHistoryRuntimeOutput) {
-        let mut idle_websocket_eviction_candidates = HashSet::new();
-        let mut output = FullHistoryRuntimeOutput::empty();
+    ) -> FullHistoryTaskOutput {
+        let mut output = FullHistoryTaskOutput::empty();
 
         for (id, task) in tasks {
             match task {
                 FullHistoryTask::Upsert(task) => {
                     let relay_pkgs = task.relay_pkgs();
-                    let (idle_candidates, task_output) = self
-                        .upsert_full_history_snapshot(full_history_snapshot_from_task(id, &task));
-                    idle_websocket_eviction_candidates.extend(idle_candidates);
-                    output.extend(task_output);
+                    output.extend(
+                        self.upsert_full_history_snapshot(full_history_snapshot_from_task(
+                            id, &task,
+                        )),
+                    );
                     for relay_pkgs in relay_pkgs {
                         for relay in relay_pkgs.urls {
                             if !self.relay.transport.subids_supported(&relay) {
@@ -492,14 +505,12 @@ where
                     }
                 }
                 FullHistoryTask::Remove => {
-                    let (idle_candidates, task_output) = self.remove_full_history_sub(id);
-                    idle_websocket_eviction_candidates.extend(idle_candidates);
-                    output.extend(task_output);
+                    output.extend(self.remove_full_history_sub(id));
                 }
             }
         }
 
-        (idle_websocket_eviction_candidates, output)
+        output
     }
 
     pub(in crate::relay::outbox) fn apply_full_history_negentropy_capacity_grant(
@@ -640,92 +651,89 @@ where
         history_id: FullHistorySubId,
         request_id: u64,
         storage: negentropy::NegentropyStorageVector,
-    ) -> (bool, FullHistoryRuntimeOutput) {
+    ) -> Option<FullHistoryRuntimeOutput> {
         let applied = self
             .full_history
             .apply_full_history_local_set_ready(history_id, request_id, storage);
-        let output = if applied {
-            self.advance_pending_neg_sets_for_history(history_id)
-        } else {
-            FullHistoryRuntimeOutput::empty()
-        };
-        (applied, output)
+        applied.then(|| self.advance_pending_neg_sets_for_history(history_id))
     }
 
     pub(in crate::relay::outbox) fn apply_full_history_local_set_failed(
         &mut self,
         history_id: FullHistorySubId,
         request_id: u64,
-    ) -> (bool, FullHistoryRuntimeOutput) {
+    ) -> Option<FullHistoryRuntimeOutput> {
         let applied = self
             .full_history
             .apply_full_history_local_set_failed(history_id, request_id);
-        let output = if applied {
+        applied.then(|| {
             FullHistoryRuntimeOutput::from_full_history(FullHistoryOutput {
                 relay_demand_changes: self
                     .full_history
                     .refresh_relay_transport_demand_for_sub(history_id),
                 ..Default::default()
             })
-        } else {
-            FullHistoryRuntimeOutput::empty()
-        };
-        (applied, output)
+        })
     }
 
     pub(in crate::relay::outbox) fn apply_full_history_local_presence_ready(
         &mut self,
         result: FullHistoryLocalPresenceResult,
-    ) -> (bool, FullHistoryRuntimeOutput) {
-        let Some((stage_output, verification_ready)) = self
+    ) -> Option<FullHistoryRuntimeOutput> {
+        let stage = self
             .full_history
-            .apply_full_history_local_presence_result(result)
-        else {
-            return (false, FullHistoryRuntimeOutput::empty());
-        };
-        (
-            true,
-            self.finish_full_history_fetch_stage(stage_output, verification_ready),
-        )
+            .apply_full_history_local_presence_result(result)?;
+        Some(self.finish_full_history_fetch_stage(stage))
     }
 
     pub(in crate::relay::outbox) fn apply_pending_ingestion_presence_result(
         &mut self,
         result: FullHistoryPendingIngestionPresenceResult,
-    ) -> (Vec<FullHistorySubId>, FullHistoryRuntimeOutput) {
+    ) -> FullHistoryRuntimeOutput {
         let completed = self
             .full_history
             .apply_full_history_pending_ingestion_presence_result(result);
+        self.restart_full_history_rounds(&completed)
+    }
+
+    /// Restarts the verification round of each sub whose pending ingestion
+    /// completed.
+    pub(in crate::relay::outbox) fn restart_full_history_rounds(
+        &mut self,
+        history_ids: &[FullHistorySubId],
+    ) -> FullHistoryRuntimeOutput {
         let mut output = FullHistoryRuntimeOutput::empty();
-        for history_id in &completed {
+        for history_id in history_ids {
             output.extend(self.restart_full_history_round(*history_id));
         }
-        (completed, output)
+        output
     }
 
     fn upsert_full_history_snapshot(
         &mut self,
         snapshot: FullHistorySnapshot,
-    ) -> (HashSet<NormRelayUrl>, FullHistoryRuntimeOutput) {
+    ) -> FullHistoryTaskOutput {
         let id = snapshot.id;
         match self.full_history.upsert(snapshot) {
             FullHistoryUpsert::Unchanged => {
                 let pool_output = self.refresh_full_history_fetch_policies(id);
                 let negentropy_demand_changes =
                     self.refresh_full_history_active_negentropy_policies(id);
-                (
-                    HashSet::new(),
-                    FullHistoryRuntimeOutput {
+                FullHistoryTaskOutput {
+                    idle_websocket_eviction_candidates: HashSet::new(),
+                    output: FullHistoryRuntimeOutput {
                         full_history: FullHistoryOutput::default(),
                         negentropy_demand_changes,
                         pool: pool_output,
                     },
-                )
+                }
             }
-            FullHistoryUpsert::Inserted => (
-                HashSet::new(),
-                FullHistoryRuntimeOutput::from_full_history(self.full_history.schedule_round(id)),
-            ),
+            FullHistoryUpsert::Inserted => FullHistoryTaskOutput {
+                idle_websocket_eviction_candidates: HashSet::new(),
+                output: FullHistoryRuntimeOutput::from_full_history(
+                    self.full_history.schedule_round(id),
+                ),
+            },
             FullHistoryUpsert::Changed {
                 added,
                 removed,
@@ -758,22 +766,19 @@ where
                 } else {
                     self.full_history.schedule_relay_filters(id, added)
                 });
-                (
+                FullHistoryTaskOutput {
                     idle_websocket_eviction_candidates,
-                    FullHistoryRuntimeOutput {
+                    output: FullHistoryRuntimeOutput {
                         full_history: full_history_output,
                         negentropy_demand_changes,
                         pool: pool_output,
                     },
-                )
+                }
             }
         }
     }
 
-    fn remove_full_history_sub(
-        &mut self,
-        id: FullHistorySubId,
-    ) -> (HashSet<NormRelayUrl>, FullHistoryRuntimeOutput) {
+    fn remove_full_history_sub(&mut self, id: FullHistorySubId) -> FullHistoryTaskOutput {
         let idle_websocket_eviction_candidates = self
             .full_history
             .relay_filters(id)
@@ -785,9 +790,9 @@ where
         pool_output.extend(cancel_output.pool);
         pool_output.extend(self.cancel_full_history_fetches(id));
         let relay_demand_changes = self.full_history.remove(id);
-        (
+        FullHistoryTaskOutput {
             idle_websocket_eviction_candidates,
-            FullHistoryRuntimeOutput {
+            output: FullHistoryRuntimeOutput {
                 full_history: FullHistoryOutput {
                     relay_demand_changes,
                     ..Default::default()
@@ -795,7 +800,7 @@ where
                 negentropy_demand_changes: cancel_output.negentropy_demand_changes,
                 pool: pool_output,
             },
-        )
+        }
     }
 
     fn cancel_full_history_fetches(&mut self, id: FullHistorySubId) -> OutboxPoolOutput {
@@ -894,17 +899,17 @@ where
         needs: Vec<FullHistoryNeed>,
         now: Instant,
     ) -> FullHistoryRuntimeOutput {
-        let (stage_output, verification_ready) = self.full_history.stage_need_fetches(needs, now);
-        self.finish_full_history_fetch_stage(stage_output, verification_ready)
+        FullHistoryRuntimeOutput::from_full_history(
+            self.full_history.stage_need_fetches(needs, now),
+        )
     }
 
     fn finish_full_history_fetch_stage(
         &mut self,
-        stage_output: FullHistoryOutput,
-        verification_ready: Vec<FullHistorySubId>,
+        stage: LocalPresenceStage,
     ) -> FullHistoryRuntimeOutput {
-        let mut output = FullHistoryRuntimeOutput::from_full_history(stage_output);
-        for history_id in verification_ready {
+        let mut output = FullHistoryRuntimeOutput::from_full_history(stage.output);
+        for history_id in stage.verification_ready {
             output.extend(self.restart_full_history_round(history_id));
         }
         output
@@ -949,14 +954,18 @@ where
         relay: &NormRelayUrl,
         mut effects: NegentropyRelayEffects,
         now: Instant,
-    ) -> (OutboxPoolOutput, Vec<FullHistoryNeed>, FullHistoryOutput) {
+    ) -> NegentropyRelease {
         let surfaced_needs = self.full_history_needs_for_relay(relay, effects.take_needs());
-        let retry_output =
+        let full_history =
             self.schedule_negentropy_retries_for_relay(relay, effects.take_retries(), now);
-        let output = self
+        let pool = self
             .pool
             .apply_negentropy_effects_after_release(relay, effects);
-        (output, surfaced_needs, retry_output)
+        NegentropyRelease {
+            pool,
+            surfaced_needs,
+            full_history,
+        }
     }
 
     fn request_pending_full_history_negentropy_capacity(

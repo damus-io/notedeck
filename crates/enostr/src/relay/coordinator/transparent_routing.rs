@@ -62,8 +62,12 @@ impl RouteIndex {
         self.routes.keys().copied().collect()
     }
 
-    pub(super) fn iter(&self) -> impl Iterator<Item = (&OutboxSubId, &RelayType)> {
-        self.routes.iter()
+    /// The subscriptions currently routed to `route`.
+    pub(super) fn ids_routed_to(&self, route: RelayType) -> impl Iterator<Item = &OutboxSubId> {
+        self.routes
+            .iter()
+            .filter(move |(_, routed)| **routed == route)
+            .map(|(id, _)| id)
     }
 }
 
@@ -134,14 +138,25 @@ impl TransparentRoutingState {
     }
 
     #[cfg(test)]
-    fn demotable_queue_lengths(&self) -> (usize, usize) {
-        (self.non_preferred.len(), self.preferred.len())
+    fn demotable_queue_lengths(&self) -> DemotableQueueLengths {
+        DemotableQueueLengths {
+            non_preferred: self.non_preferred.len(),
+            preferred: self.preferred.len(),
+        }
     }
 
     #[cfg(test)]
     fn has_indexed_entry(&self, id: OutboxSubId) -> bool {
         self.indexed_class.contains_key(&id)
     }
+}
+
+/// How many transparent routes wait in each demotable queue.
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+struct DemotableQueueLengths {
+    non_preferred: usize,
+    preferred: usize,
 }
 
 #[cfg(test)]
@@ -169,12 +184,24 @@ mod tests {
         let id = OutboxSubId(7);
 
         state.set_transparent_route(id, RelayRoutingPreference::RequireDedicated);
-        assert_eq!(state.transparent.demotable_queue_lengths(), (0, 0));
+        assert_eq!(
+            state.transparent.demotable_queue_lengths(),
+            DemotableQueueLengths {
+                non_preferred: 0,
+                preferred: 0,
+            }
+        );
         assert!(state.transparent.has_indexed_entry(id));
 
         state.set_transparent_route(id, RelayRoutingPreference::PreferDedicated);
 
-        assert_eq!(state.transparent.demotable_queue_lengths(), (0, 1));
+        assert_eq!(
+            state.transparent.demotable_queue_lengths(),
+            DemotableQueueLengths {
+                non_preferred: 0,
+                preferred: 1,
+            }
+        );
         assert!(state.transparent.has_indexed_entry(id));
         assert_eq!(state.limit_reduction_candidates(), vec![id]);
     }
@@ -189,7 +216,13 @@ mod tests {
         state.set_transparent_route(active, RelayRoutingPreference::PreferDedicated);
         state.clear_route(stale);
 
-        assert_eq!(state.transparent.demotable_queue_lengths(), (0, 1));
+        assert_eq!(
+            state.transparent.demotable_queue_lengths(),
+            DemotableQueueLengths {
+                non_preferred: 0,
+                preferred: 1,
+            }
+        );
         assert!(!state.transparent.has_indexed_entry(stale));
         assert_eq!(state.limit_reduction_candidates(), vec![active]);
     }

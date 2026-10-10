@@ -9,12 +9,16 @@ use super::enostr_api::NormRelayUrl;
 
 pub type CapturedTextFrames = Arc<Mutex<Vec<String>>>;
 pub type CaptureNotify = Arc<Notify>;
-pub type CaptureRelay = (
-    tokio::task::JoinHandle<()>,
-    NormRelayUrl,
-    CapturedTextFrames,
-    CaptureNotify,
-);
+
+/// A local websocket relay that records the text frames it receives. Its
+/// accept loop runs detached for the rest of the test.
+pub struct CaptureRelay {
+    pub url: NormRelayUrl,
+    /// Every captured text frame, in order.
+    pub captured: CapturedTextFrames,
+    /// Signalled whenever a frame is captured.
+    pub notify: CaptureNotify,
+}
 
 /// Text replies and connection action returned by a capture relay handler.
 #[derive(Default)]
@@ -50,7 +54,7 @@ where
     let notify = Arc::new(Notify::new());
     let notify_task = Arc::clone(&notify);
 
-    let handle = tokio::spawn(async move {
+    tokio::spawn(async move {
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 break;
@@ -94,7 +98,11 @@ where
         }
     });
 
-    (handle, url, captured, notify)
+    CaptureRelay {
+        url,
+        captured,
+        notify,
+    }
 }
 
 pub async fn create_filtered_capture_relay(should_capture: fn(&str) -> bool) -> CaptureRelay {

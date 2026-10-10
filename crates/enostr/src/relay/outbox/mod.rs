@@ -13,25 +13,14 @@ use crate::{
     relay::{
         backoff,
         coordinator::{CoordinationData, CoordinationOutput, RecvResponse, RelayEoseDelta},
-        frame::{QueuedRelayFrame, RelayFrameSink},
-        negentropy::{NegentropyData, NegentropyRelay},
         same_canonical_filter_set, FullHistoryRelayFilter, FullHistorySubId,
-        FullRelayPkgsModificationTask, ModifyTask, Nip11ApplyOutcome, NormRelayUrl, OutboxSubId,
-        OutboxSubscriptions, RelayConnectionPriority, RelayDemandPriority, RelayLegReadiness,
-        RelayLimitations, RelayReqId, RelayReqStatus, RelayType, RelayUrlPkgs, RelayUrlSource,
-        SubPass, SubscribeTask,
+        FullRelayPkgsModificationTask, ModifyTask, Nip11Applied, Nip11ApplyOutcome, NormRelayUrl,
+        OutboxSubId, OutboxSubscriptions, RelayConnectionPriority, RelayDemandPriority,
+        RelayLegReadiness, RelayLimitations, RelayReqId, RelayReqStatus, RelayType, RelayUrlPkgs,
+        RelayUrlSource, SubPass, SubscribeTask,
     },
 };
-fn run_negentropy_relay_with_frames<T>(
-    generation: Option<u64>,
-    data: &mut NegentropyData,
-    f: impl FnOnce(&mut NegentropyRelay<'_>) -> T,
-) -> (T, Vec<QueuedRelayFrame>) {
-    let mut relay = NegentropyRelay::new(RelayFrameSink::transport(generation), data);
-    let result = f(&mut relay);
-    let frames = relay.take_frames();
-    (result, frames)
-}
+
 mod admission;
 mod eose;
 mod fd_pressure;
@@ -906,7 +895,10 @@ impl OutboxPool {
         frames
             .into_iter()
             .map(
-                |(generation, message)| OutboxTransportEffect::SendRelayFrame {
+                |crate::relay::frame::QueuedRelayFrame {
+                     generation,
+                     message,
+                 }| OutboxTransportEffect::SendRelayFrame {
                     relay: relay_id.clone(),
                     generation,
                     message,
@@ -1046,14 +1038,18 @@ impl OutboxPool {
     }
 
     /// Mark a relay unsupported for subscription-id-bearing protocols.
-    fn apply_unsupported_subid_length_inner(
+    /// Apply unsupported sub-id length and return exact transition output.
+    pub(super) fn apply_unsupported_subid_length(
         &mut self,
         relay: &NormRelayUrl,
         max_subid_length: usize,
-    ) -> (Nip11ApplyOutcome, OutboxPoolOutput) {
+    ) -> Nip11Applied<OutboxPoolOutput> {
         let (unsupported_output, evict_output) = {
             let Some(coord) = self.relays.get_mut(relay) else {
-                return (Nip11ApplyOutcome::RelayUnknown, OutboxPoolOutput::default());
+                return Nip11Applied {
+                    outcome: Nip11ApplyOutcome::RelayUnknown,
+                    output: OutboxPoolOutput::default(),
+                };
             };
             // NOTE: Relays whose advertised max_subid_length cannot carry our
             // RelayReqId are intentionally unsupported for subscription-id
@@ -1081,21 +1077,25 @@ impl OutboxPool {
         let mut output = OutboxPoolOutput::default();
         output.extend(self.apply_coordination_output(relay, unsupported_output));
         output.extend(self.apply_coordination_output(relay, evict_output));
-        (
-            Nip11ApplyOutcome::UnsupportedSubIdLength { max_subid_length },
+        Nip11Applied {
+            outcome: Nip11ApplyOutcome::UnsupportedSubIdLength { max_subid_length },
             output,
-        )
+        }
     }
 
-    fn apply_relay_limitations_inner(
+    /// Apply effective relay limitations and return exact transition output.
+    pub(super) fn apply_relay_limit_update(
         &mut self,
         relay: &NormRelayUrl,
         limitations: RelayLimitations,
         active_negentropy_session_count: usize,
-    ) -> (Nip11ApplyOutcome, OutboxPoolOutput) {
+    ) -> Nip11Applied<OutboxPoolOutput> {
         let (current, derived, output) = {
             let Some(coord) = self.relays.get_mut(relay) else {
-                return (Nip11ApplyOutcome::RelayUnknown, OutboxPoolOutput::default());
+                return Nip11Applied {
+                    outcome: Nip11ApplyOutcome::RelayUnknown,
+                    output: OutboxPoolOutput::default(),
+                };
             };
 
             let current = coord.current_limits();
@@ -1115,7 +1115,10 @@ impl OutboxPool {
 
         let Some(coordination_output) = output else {
             tracing::debug!("nip11: {relay} limits unchanged");
-            return (Nip11ApplyOutcome::Unchanged, OutboxPoolOutput::default());
+            return Nip11Applied {
+                outcome: Nip11ApplyOutcome::Unchanged,
+                output: OutboxPoolOutput::default(),
+            };
         };
 
         tracing::info!(
@@ -1125,29 +1128,10 @@ impl OutboxPool {
             current.max_json_bytes,
             derived.max_json_bytes,
         );
-        (
-            Nip11ApplyOutcome::Applied,
-            self.apply_coordination_output(relay, coordination_output),
-        )
-    }
-
-    /// Apply unsupported sub-id length and return exact transition output.
-    pub(super) fn apply_unsupported_subid_length(
-        &mut self,
-        relay: &NormRelayUrl,
-        max_subid_length: usize,
-    ) -> (Nip11ApplyOutcome, OutboxPoolOutput) {
-        self.apply_unsupported_subid_length_inner(relay, max_subid_length)
-    }
-
-    /// Apply effective relay limitations and return exact transition output.
-    pub(super) fn apply_relay_limit_update(
-        &mut self,
-        relay: &NormRelayUrl,
-        limitations: RelayLimitations,
-        active_negentropy_session_count: usize,
-    ) -> (Nip11ApplyOutcome, OutboxPoolOutput) {
-        self.apply_relay_limitations_inner(relay, limitations, active_negentropy_session_count)
+        Nip11Applied {
+            outcome: Nip11ApplyOutcome::Applied,
+            output: self.apply_coordination_output(relay, coordination_output),
+        }
     }
 
     fn ensure_relay(&mut self, relay_id: &NormRelayUrl) -> &mut CoordinationData {
@@ -1662,9 +1646,7 @@ mod tests {
         relay: &NormRelayUrl,
         limitations: RelayLimitations,
     ) -> Nip11ApplyOutcome {
-        let (outcome, output) = pool.apply_relay_limit_update(relay, limitations, 0);
-        let _ = output;
-        outcome
+        pool.apply_relay_limit_update(relay, limitations, 0).outcome
     }
 
     fn output_touches_relay(output: &OutboxPoolOutput, relay: &NormRelayUrl) -> bool {
@@ -1689,17 +1671,23 @@ mod tests {
         _wakeup: W,
         f: impl FnOnce(&mut OutboxPool, &mut OutboxPoolOutput) -> T,
     ) -> T {
-        apply_send_session_and_collect_output(pool, _wakeup, f).0
+        apply_send_session_and_collect_output(pool, _wakeup, f).value
+    }
+
+    /// What a send session returned, and the pool output it collected.
+    struct SessionOutput<T> {
+        value: T,
+        output: OutboxPoolOutput,
     }
 
     fn apply_send_session_and_collect_output<W, T>(
         pool: &mut OutboxPool,
         _wakeup: W,
         f: impl FnOnce(&mut OutboxPool, &mut OutboxPoolOutput) -> T,
-    ) -> (T, OutboxPoolOutput) {
+    ) -> SessionOutput<T> {
         let mut output = OutboxPoolOutput::default();
-        let result = f(pool, &mut output);
-        (result, output)
+        let value = f(pool, &mut output);
+        SessionOutput { value, output }
     }
 
     fn relay_pkgs_from_sub(
@@ -1900,10 +1888,10 @@ mod tests {
 
     #[tokio::test]
     async fn deferred_relay_placement_emits_pending_aggregate_eose_fact() {
-        let (_relay_task, relay, _captured, _notify) = create_req_capture_relay().await;
+        let relay = create_req_capture_relay().await.url;
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
-        let (id, output) = {
+        let SessionOutput { value: id, output } = {
             let pkgs = relay_pkgs(
                 HashSet::from([relay.clone()]),
                 RelayDemandPriority::Opportunistic,
@@ -1930,12 +1918,15 @@ mod tests {
 
     #[tokio::test]
     async fn unsubscribe_emits_req_status_and_aggregate_eose_cleanup_facts() {
-        let (_relay_task, relay, _captured, _notify) = create_req_capture_relay().await;
+        let relay = create_req_capture_relay().await.url;
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         insert_connected_test_coordinator(&mut pool, relay.clone());
 
-        let (id, create_output) = {
+        let SessionOutput {
+            value: id,
+            output: create_output,
+        } = {
             let pkgs = relay_pkgs(
                 HashSet::from([relay.clone()]),
                 RelayDemandPriority::Important,
@@ -1958,7 +1949,7 @@ mod tests {
             apply_send_session_and_collect_output(&mut pool, wakeup, |pool, session| {
                 unsubscribe(pool, session, id);
             })
-            .1
+            .output
         };
         let cleanup_events = cleanup_output.facts;
         assert_eq!(req_status_fact(&cleanup_events, id, &relay), Some(None));
@@ -2632,13 +2623,13 @@ mod tests {
         let wakeup = MockWakeup::default();
         insert_connected_test_coordinator(&mut pool, relay.clone());
 
-        let (id, _output) = {
+        let id = {
             let pkgs = relay_pkgs(
                 HashSet::from([relay.clone()]),
                 RelayDemandPriority::Important,
                 RelayRoutingPreference::PreferDedicated,
             );
-            apply_send_session_and_collect_output(&mut pool, wakeup, |pool, session| {
+            apply_send_session_with(&mut pool, wakeup, |pool, session| {
                 subscribe(pool, session, trivial_filter(), pkgs)
             })
         };
@@ -3569,33 +3560,30 @@ mod tests {
         let filter = Filter::new().kinds(vec![1]).limit(10).build();
         let relays = HashSet::from([relay]);
 
-        let (sub_id, _) = {
-            apply_send_session_and_collect_output(
-                &mut pool,
-                MockWakeup::default(),
-                |pool, session| {
-                    subscribe(
-                        pool,
-                        session,
-                        vec![filter.clone()],
-                        relay_pkgs(
-                            relays.clone(),
-                            RelayDemandPriority::Important,
-                            RelayRoutingPreference::PreferDedicated,
-                        ),
-                    )
-                },
-            )
+        let sub_id = {
+            apply_send_session_with(&mut pool, MockWakeup::default(), |pool, session| {
+                subscribe(
+                    pool,
+                    session,
+                    vec![filter.clone()],
+                    relay_pkgs(
+                        relays.clone(),
+                        RelayDemandPriority::Important,
+                        RelayRoutingPreference::PreferDedicated,
+                    ),
+                )
+            })
         };
 
-        let (_, update_output) = apply_send_session_and_collect_output(
+        let update_output = apply_send_session_and_collect_output(
             &mut pool,
             MockWakeup::default(),
             |pool, session| {
                 new_filters(pool, session, sub_id, vec![filter.clone()]);
                 new_relays(pool, session, sub_id, relays.clone());
             },
-        );
+        )
+        .output;
 
         assert!(
             update_output.facts.is_empty(),

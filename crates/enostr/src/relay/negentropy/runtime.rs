@@ -9,6 +9,12 @@ use super::{
     relay::NegentropyStartResult, session::ActiveSessionRelayDemand, state::NegentropyData,
 };
 
+/// When one relay's earliest active NIP-77 session times out.
+pub(crate) struct RelayTimeoutDeadline {
+    pub(crate) relay: NormRelayUrl,
+    pub(crate) deadline: Instant,
+}
+
 /// Service-owned relay-scoped NIP-77 runtime state.
 #[derive(Default)]
 pub(crate) struct NegentropyRuntime {
@@ -33,22 +39,23 @@ impl NegentropyRuntime {
     pub(crate) fn next_timeout_deadline_matching(
         &self,
         mut include_relay: impl FnMut(&NormRelayUrl) -> bool,
-    ) -> Option<(NormRelayUrl, Instant)> {
+    ) -> Option<RelayTimeoutDeadline> {
         self.relays
             .iter()
             .filter_map(|(relay, data)| {
                 let deadline = include_relay(relay)
                     .then(|| data.next_timeout_deadline())
                     .flatten()?;
-                Some((relay.clone(), deadline))
+                Some(RelayTimeoutDeadline {
+                    relay: relay.clone(),
+                    deadline,
+                })
             })
-            .min_by(
-                |(left_relay, left_deadline), (right_relay, right_deadline)| {
-                    left_deadline
-                        .cmp(right_deadline)
-                        .then_with(|| left_relay.cmp(right_relay))
-                },
-            )
+            .min_by(|left, right| {
+                left.deadline
+                    .cmp(&right.deadline)
+                    .then_with(|| left.relay.cmp(&right.relay))
+            })
     }
 
     /// Whether a relay has NIP-77 work retained in the runtime.

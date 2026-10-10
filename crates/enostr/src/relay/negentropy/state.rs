@@ -10,7 +10,7 @@ use crate::{ClientMessage, NoteId};
 use super::{
     protocol::{neg_open_msg, NegSessionId},
     relay::NegentropyStartResult,
-    session::{prepare_negentropy, ActiveSession, ActiveSessionRelayDemand},
+    session::{prepare_negentropy, ActiveSession, ActiveSessionRelayDemand, PreparedNegentropy},
 };
 
 /// Parsed `NEG-ERR` reason per NIP-77.
@@ -59,6 +59,12 @@ impl NegentropyNoticeKind {
 
         Self::Other
     }
+}
+
+/// An active session removed from [`NegentropyData`], with the id it ran under.
+pub(super) struct TakenSession {
+    pub(super) session_id: NegSessionId,
+    pub(super) session: ActiveSession,
 }
 
 /// Relay-local NIP-77 state hosted alongside the regular routing engines.
@@ -164,9 +170,8 @@ impl NegentropyData {
             }
         };
 
-        let (neg, init_hex) = match prepare_negentropy(storage()) {
-            Some(value) => value,
-            None => return NegentropyStartResult::Rejected(pass),
+        let Some(PreparedNegentropy { neg, init_hex }) = prepare_negentropy(storage()) else {
+            return NegentropyStartResult::Rejected(pass);
         };
 
         let session_id = NegSessionId::new(uuid::Uuid::new_v4().to_string());
@@ -201,10 +206,7 @@ impl NegentropyData {
     }
 
     /// Remove active sessions whose current timeout has elapsed.
-    pub(super) fn take_expired_sessions(
-        &mut self,
-        now: Instant,
-    ) -> Vec<(NegSessionId, ActiveSession)> {
+    pub(super) fn take_expired_sessions(&mut self, now: Instant) -> Vec<TakenSession> {
         let session_ids: Vec<NegSessionId> = self
             .active_sessions
             .iter()
@@ -217,7 +219,10 @@ impl NegentropyData {
             .filter_map(|session_id| {
                 self.active_sessions
                     .remove(&session_id)
-                    .map(|session| (session_id, session))
+                    .map(|session| TakenSession {
+                        session_id,
+                        session,
+                    })
             })
             .collect()
     }

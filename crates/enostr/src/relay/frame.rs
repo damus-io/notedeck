@@ -1,6 +1,18 @@
 use crate::ClientMessage;
 
-pub(in crate::relay) type QueuedRelayFrame = (u64, ClientMessage);
+/// A client message queued for one websocket connection generation, so it is
+/// dropped rather than sent if the socket reconnects before it is flushed.
+#[derive(Debug)]
+pub(in crate::relay) struct QueuedRelayFrame {
+    pub(in crate::relay) generation: u64,
+    pub(in crate::relay) message: ClientMessage,
+}
+
+/// A relay-local step's result beside the frames it queued producing it.
+pub(in crate::relay) struct Framed<T> {
+    pub(in crate::relay) value: T,
+    pub(in crate::relay) frames: Vec<QueuedRelayFrame>,
+}
 
 /// Relay-frame target used by relay-local protocol engines.
 pub(in crate::relay) enum RelayFrameSink {
@@ -31,7 +43,10 @@ impl RelayFrameSink {
                 frames,
             } => {
                 let generation = (*current_generation)?;
-                frames.push((generation, msg));
+                frames.push(QueuedRelayFrame {
+                    generation,
+                    message: msg,
+                });
                 Some(generation)
             }
         }

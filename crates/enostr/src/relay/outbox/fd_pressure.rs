@@ -126,6 +126,13 @@ pub(crate) struct RelayAdmissionPolicy {
     max_websocket_connections: Option<usize>,
 }
 
+/// A process fd snapshot, and how many websockets have opened (positive) or
+/// closed (negative) since it was sampled.
+struct ProjectedFdSnapshot {
+    snapshot: ProcessFdSnapshot,
+    fd_projection_delta: isize,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CachedFdSnapshot {
     snapshot: ProcessFdSnapshot,
@@ -200,20 +207,20 @@ impl FdPressureGate {
         now: Instant,
         read_snapshot: impl FnMut() -> Option<ProcessFdSnapshot>,
     ) -> RelayOpenContext {
-        let (source, fd_projection_delta) = self
-            .current_snapshot_at(now, open_websockets, read_snapshot)
-            .map(|(snapshot, fd_projection_delta)| {
-                (
-                    PressureSource::ProcessFdSnapshot(snapshot),
-                    fd_projection_delta,
-                )
-            })
-            .unwrap_or((PressureSource::Fallback { open_websockets }, 0));
+        let Some(projected) = self.current_snapshot_at(now, open_websockets, read_snapshot) else {
+            return self.start_batch_from_source(
+                open_websockets,
+                max_websocket_connections,
+                PressureSource::Fallback { open_websockets },
+                0,
+                now,
+            );
+        };
         self.start_batch_from_source(
             open_websockets,
             max_websocket_connections,
-            source,
-            fd_projection_delta,
+            PressureSource::ProcessFdSnapshot(projected.snapshot),
+            projected.fd_projection_delta,
             now,
         )
     }
@@ -326,13 +333,16 @@ impl FdPressureGate {
         now: Instant,
         open_websockets: usize,
         mut read_snapshot: impl FnMut() -> Option<ProcessFdSnapshot>,
-    ) -> Option<(ProcessFdSnapshot, isize)> {
+    ) -> Option<ProjectedFdSnapshot> {
         if let Some(cached) = self.cached_snapshot {
             if now.saturating_duration_since(cached.sampled_at) < FD_SNAPSHOT_CACHE_TTL {
-                return Some((
-                    cached.snapshot,
-                    websocket_count_delta(open_websockets, cached.sampled_open_websockets),
-                ));
+                return Some(ProjectedFdSnapshot {
+                    snapshot: cached.snapshot,
+                    fd_projection_delta: websocket_count_delta(
+                        open_websockets,
+                        cached.sampled_open_websockets,
+                    ),
+                });
             }
         }
 
@@ -342,7 +352,10 @@ impl FdPressureGate {
             sampled_open_websockets: open_websockets,
             sampled_at: now,
         });
-        Some((snapshot, 0))
+        Some(ProjectedFdSnapshot {
+            snapshot,
+            fd_projection_delta: 0,
+        })
     }
 
     fn hard_failure_active_at(&mut self, now: Instant) -> bool {

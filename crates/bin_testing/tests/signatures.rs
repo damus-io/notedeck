@@ -26,8 +26,6 @@ use syn::visit::Visit;
 const NOT_YET: &[&str] = &[
     "agentium-core",
     "agentium_cli",
-    "enostr",
-    "enostr_test_support",
     "headway",
     "headway_cli",
     "md-stream",

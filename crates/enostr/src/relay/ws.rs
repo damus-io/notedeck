@@ -92,12 +92,18 @@ impl WsReceiver {
     }
 }
 
+/// The poll-friendly halves of one websocket connection leg.
+pub struct WsChannels {
+    pub sender: WsSender,
+    pub receiver: WsReceiver,
+}
+
 /// Open a websocket connection to `url`, returning the poll-friendly channel
 /// halves immediately while the handshake proceeds on a background tokio task.
 ///
 /// `wakeup` is invoked whenever a new [`WsEvent`] is queued so the owning
 /// service can drain this connection. Requires an active Tokio runtime.
-pub fn connect<W>(url: &str, wakeup: W) -> Result<(WsSender, WsReceiver)>
+pub fn connect<W>(url: &str, wakeup: W) -> Result<WsChannels>
 where
     W: Fn() + Send + Sync + 'static,
 {
@@ -114,7 +120,10 @@ where
 
     tokio::spawn(run(request, out_tx, in_rx, wakeup));
 
-    Ok((WsSender { tx: in_tx }, WsReceiver { rx: out_rx }))
+    Ok(WsChannels {
+        sender: WsSender { tx: in_tx },
+        receiver: WsReceiver { rx: out_rx },
+    })
 }
 
 /// Drive one connection leg to completion: perform the handshake, then pump
@@ -138,7 +147,7 @@ async fn run<W>(
         true
     };
 
-    let (stream, local_addr) = match connect_stream(request).await {
+    let OpenedStream { stream, local_addr } = match connect_stream(request).await {
         Ok(opened) => opened,
         Err(err) => {
             emit(WsEvent::Error(err));
@@ -193,16 +202,7 @@ async fn run<W>(
 /// aggressive TCP keepalive, then complete the websocket (and, for `wss://`,
 /// TLS) handshake over it. Owning the socket is what lets the relay stack
 /// observe connection liveness at the socket level.
-#[allow(clippy::type_complexity)]
-async fn connect_stream(
-    request: Request,
-) -> std::result::Result<
-    (
-        WebSocketStream<MaybeTlsStream<TcpStream>>,
-        Option<SocketAddr>,
-    ),
-    WebSocketError,
-> {
+async fn connect_stream(request: Request) -> std::result::Result<OpenedStream, WebSocketError> {
     let uri = request.uri();
     let host = uri
         .host()
@@ -236,7 +236,14 @@ async fn connect_stream(
     let (stream, _resp) = client_async_tls(request, tcp)
         .await
         .map_err(|err| WebSocketError::from(err).with_context("websocket handshake failed"))?;
-    Ok((stream, local_addr))
+    Ok(OpenedStream { stream, local_addr })
+}
+
+/// A websocket whose handshake completed, and the local address its TCP
+/// connection is routed through.
+struct OpenedStream {
+    stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    local_addr: Option<SocketAddr>,
 }
 
 /// Map an inbound tungstenite frame to a transport event.

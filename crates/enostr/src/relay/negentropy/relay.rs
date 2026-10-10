@@ -4,14 +4,20 @@ use negentropy::Id;
 use nostrdb::Filter;
 
 use crate::{
-    relay::{frame::RelayFrameSink, FullHistorySubId, SubPass},
+    relay::{
+        frame::{Framed, RelayFrameSink},
+        FullHistorySubId, SubPass,
+    },
     ClientMessage, NoteId,
 };
 
 use super::{
     protocol::{neg_close_msg, neg_msg, NegSessionId},
     session::ActiveSession,
-    state::{NegErrKind, NegentropyData, NegentropyNeed, NegentropyNoticeKind, NegentropyRetry},
+    state::{
+        NegErrKind, NegentropyData, NegentropyNeed, NegentropyNoticeKind, NegentropyRetry,
+        TakenSession,
+    },
 };
 
 /// Explicit effects returned by relay-local negentropy transitions.
@@ -98,16 +104,28 @@ impl<'a> NegentropyRelay<'a> {
         }
     }
 
-    pub(crate) fn take_frames(&mut self) -> Vec<crate::relay::frame::QueuedRelayFrame> {
-        std::mem::replace(&mut self.frame_sink, RelayFrameSink::disconnected()).into_frames()
+    /// Runs `f` on a relay whose frames queue on `generation`, and returns
+    /// its result with the frames it queued.
+    pub(crate) fn run_framed<T>(
+        generation: Option<u64>,
+        data: &'a mut NegentropyData,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> Framed<T> {
+        let mut relay = Self::new(RelayFrameSink::transport(generation), data);
+        let value = f(&mut relay);
+        Framed {
+            value,
+            frames: relay.frame_sink.into_frames(),
+        }
     }
 
-    /// Handle one `NEG-MSG` round-trip from the relay.
+    /// Handle one `NEG-MSG` round-trip from the relay, queueing the reply
+    /// (`NEG-MSG` to continue, `NEG-CLOSE` once reconciled) on the frame sink.
     pub(crate) fn handle_neg_msg(
         &mut self,
         session_id: &str,
         payload_hex: &str,
-    ) -> (Option<ClientMessage>, NegentropyRelayEffects) {
+    ) -> NegentropyRelayEffects {
         let mut effects = NegentropyRelayEffects::default();
         let now = Instant::now();
         let Some(mut session) = self.data.active_sessions.remove(session_id) else {
@@ -115,7 +133,7 @@ impl<'a> NegentropyRelay<'a> {
                 session_id,
                 "negentropy received NEG-MSG for unknown session"
             );
-            return (None, effects);
+            return effects;
         };
 
         let mut have_ids = Vec::new();
@@ -125,10 +143,7 @@ impl<'a> NegentropyRelay<'a> {
             Err(err) => {
                 tracing::warn!(session_id, "negentropy hex decode: {err}");
                 let session_id = NegSessionId::new(session_id.to_owned());
-                return (
-                    None,
-                    self.fail_session_or_mark_unsupported(&session_id, session),
-                );
+                return self.fail_session_or_mark_unsupported(&session_id, session);
             }
         };
 
@@ -151,7 +166,9 @@ impl<'a> NegentropyRelay<'a> {
                 self.data
                     .active_sessions
                     .insert(session_id.clone(), session);
-                (Some(neg_msg(&session_id, &hex::encode(next_msg))), effects)
+                self.frame_sink
+                    .send(neg_msg(&session_id, &hex::encode(next_msg)));
+                effects
             }
             Ok(None) => {
                 self.data.capability = Some(true);
@@ -160,15 +177,13 @@ impl<'a> NegentropyRelay<'a> {
                 }
                 effects.return_pass(session.protocol.sub_pass);
                 let session_id = NegSessionId::new(session_id.to_owned());
-                (Some(neg_close_msg(&session_id)), effects)
+                self.send_neg_close(&session_id);
+                effects
             }
             Err(err) => {
                 tracing::warn!(session_id, "negentropy reconcile: {err}");
                 let session_id = NegSessionId::new(session_id.to_owned());
-                (
-                    None,
-                    self.fail_session_or_mark_unsupported(&session_id, session),
-                )
+                self.fail_session_or_mark_unsupported(&session_id, session)
             }
         }
     }
@@ -253,8 +268,7 @@ impl<'a> NegentropyRelay<'a> {
     /// Drop all relay-local sessions without sending `NEG-CLOSE` frames.
     pub(crate) fn drop_sessions_without_neg_close(&mut self) -> NegentropyRelayEffects {
         let mut effects = NegentropyRelayEffects::default();
-        let sessions = self.remove_all_sessions_collect();
-        for (_, session) in sessions {
+        for (_, session) in self.data.active_sessions.drain() {
             effects.return_pass(session.protocol.sub_pass);
             effects.retry(session.target.owner_history_id, session.target.filter);
         }
@@ -356,7 +370,7 @@ impl<'a> NegentropyRelay<'a> {
 
     fn remove_all_sessions(&mut self) -> NegentropyRelayEffects {
         let mut effects = NegentropyRelayEffects::default();
-        for (_, session) in self.remove_all_sessions_collect() {
+        for (_, session) in self.data.active_sessions.drain() {
             effects.return_pass(session.protocol.sub_pass);
         }
         effects
@@ -364,7 +378,11 @@ impl<'a> NegentropyRelay<'a> {
 
     fn retry_expired_sessions(&mut self, now: Instant) -> NegentropyRelayEffects {
         let mut effects = NegentropyRelayEffects::default();
-        for (session_id, session) in self.data.take_expired_sessions(now) {
+        for TakenSession {
+            session_id,
+            session,
+        } in self.data.take_expired_sessions(now)
+        {
             self.send_neg_close(&session_id);
             tracing::warn!(
                 session_id = session_id.as_str(),
@@ -420,14 +438,6 @@ impl<'a> NegentropyRelay<'a> {
         );
         self.data.capability = Some(false);
         self.remove_all_sessions()
-    }
-
-    fn remove_all_sessions_collect(&mut self) -> Vec<(NegSessionId, ActiveSession)> {
-        let mut sessions = Vec::new();
-        for (session_id, session) in self.data.active_sessions.drain() {
-            sessions.push((session_id, session));
-        }
-        sessions
     }
 }
 

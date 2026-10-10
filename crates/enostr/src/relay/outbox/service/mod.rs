@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use admission_runtime::RelayOpenAdmissionCounts;
+use admission_runtime::{LowValueHealthRank, RelayOpenAdmissionCounts};
 use hashbrown::{HashMap, HashSet};
 use nostrdb::Filter;
 
@@ -37,10 +37,10 @@ use crate::relay::{
     subscription::{FullHistoryTask, FullHistoryUpsertTask},
     FullHistoryLocalPresenceRequest, FullHistoryLocalPresenceResult, FullHistoryLocalSetRequest,
     FullHistoryPendingIngestionPresenceRequest, FullHistoryPendingIngestionPresenceResult,
-    FullHistorySubId, FullHistoryTarget, Nip11ApplyOutcome, Nip11LimitationsRaw, NormRelayUrl,
-    OutboxSubId, RelayConnectionPriority, RelayDemandPriority, RelayId, RelayImplType,
-    RelayLimitations, RelayReqId, RelayReqStatus, RelayStatus, RelayUrlPkgs, RelayUrlSource,
-    WebsocketConn,
+    FullHistorySubId, FullHistoryTarget, Nip11Applied, Nip11ApplyOutcome, Nip11LimitationsRaw,
+    NormRelayUrl, OutboxSubId, RelayConnectionPriority, RelayDemandPriority, RelayId,
+    RelayImplType, RelayLimitations, RelayReqId, RelayReqStatus, RelayStatus, RelayUrlPkgs,
+    RelayUrlSource, WebsocketConn,
 };
 use crate::EventClientMessage;
 use capability_runtime::CapabilityRuntime;
@@ -114,7 +114,7 @@ struct RelayAdmissionRank {
     priority: RelayConnectionPriority,
     source_rank: u8,
     connection_weight: u32,
-    health_rank: (bool, u32),
+    health_rank: LowValueHealthRank,
 }
 
 /// Public service event emitted after pool output is activated.
@@ -447,7 +447,7 @@ where
         relay: &NormRelayUrl,
         demand: Option<RelayTransportDemand>,
         now: Instant,
-    ) -> (bool, u32) {
+    ) -> LowValueHealthRank {
         self.relay
             .admission
             .low_value_health_rank(relay, demand, now)
@@ -761,22 +761,23 @@ where
         } else {
             FullHistoryTask::Upsert(FullHistoryUpsertTask { targets })
         };
-        let (idle_websocket_eviction_candidates, full_history_output) =
-            self.apply_full_history_tasks(HashMap::from([(id, task)]));
-        let mut output = self.handle_full_history_output(full_history_output);
-        let eviction_output =
-            self.evict_idle_websockets_after_unsubscribes(idle_websocket_eviction_candidates);
+        let task_output = self.apply_full_history_tasks(HashMap::from([(id, task)]));
+        let mut output = self.handle_full_history_output(task_output.output);
+        let eviction_output = self.evict_idle_websockets_after_unsubscribes(
+            task_output.idle_websocket_eviction_candidates,
+        );
         output = merge_service_outputs(output, eviction_output);
         output
     }
 
     /// Remove full-history demand for one retained full-history id.
     pub fn clear_full_history(&mut self, id: FullHistorySubId) -> OutboxServiceOutput {
-        let (idle_websocket_eviction_candidates, full_history_output) =
+        let task_output =
             self.apply_full_history_tasks(HashMap::from([(id, FullHistoryTask::Remove)]));
-        let mut output = self.handle_full_history_output(full_history_output);
-        let eviction_output =
-            self.evict_idle_websockets_after_unsubscribes(idle_websocket_eviction_candidates);
+        let mut output = self.handle_full_history_output(task_output.output);
+        let eviction_output = self.evict_idle_websockets_after_unsubscribes(
+            task_output.idle_websocket_eviction_candidates,
+        );
         output = merge_service_outputs(output, eviction_output);
         output
     }
@@ -1834,7 +1835,7 @@ where
             Nip11ServiceOutput::FetchFailed => OutboxServiceOutput::NoEvents,
             Nip11ServiceOutput::Limits { request, raw } => {
                 let relay = request.relay.clone();
-                let (outcome, output) = self.apply_nip11_raw_limits(&relay, *raw);
+                let Nip11Applied { outcome, output } = self.apply_nip11_raw_limits(&relay, *raw);
                 let ack = match outcome {
                     Nip11ApplyOutcome::RelayUnknown => Nip11ApplyAck::Deferred,
                     Nip11ApplyOutcome::Applied
@@ -1858,27 +1859,31 @@ where
         &mut self,
         result: FullHistoryLocalSetResult,
     ) -> OutboxServiceOutput {
-        let (_, full_history_output) = if let Some(storage) = result.result {
+        let full_history_output = if let Some(storage) = result.result {
             self.apply_full_history_local_set_ready(result.history_id, result.request_id, storage)
         } else {
             self.apply_full_history_local_set_failed(result.history_id, result.request_id)
         };
-        self.handle_full_history_output(full_history_output)
+        self.handle_full_history_output(
+            full_history_output.unwrap_or_else(FullHistoryRuntimeOutput::empty),
+        )
     }
 
     fn apply_full_history_local_presence_result(
         &mut self,
         result: FullHistoryLocalPresenceResult,
     ) -> OutboxServiceOutput {
-        let (_, full_history_output) = self.apply_full_history_local_presence_ready(result);
-        self.handle_full_history_output(full_history_output)
+        let full_history_output = self.apply_full_history_local_presence_ready(result);
+        self.handle_full_history_output(
+            full_history_output.unwrap_or_else(FullHistoryRuntimeOutput::empty),
+        )
     }
 
     fn apply_full_history_pending_ingestion_presence_result(
         &mut self,
         result: FullHistoryPendingIngestionPresenceResult,
     ) -> OutboxServiceOutput {
-        let (_, full_history_output) = self.apply_pending_ingestion_presence_result(result);
+        let full_history_output = self.apply_pending_ingestion_presence_result(result);
         self.handle_full_history_output(full_history_output)
     }
 
@@ -1886,16 +1891,16 @@ where
         &mut self,
         relay: &NormRelayUrl,
         raw: Nip11LimitationsRaw,
-    ) -> (Nip11ApplyOutcome, OutboxServiceOutput) {
+    ) -> Nip11Applied<OutboxServiceOutput> {
         if let Some(max_subid_length) = unsupported_max_subid_length(&raw) {
             return self.apply_unsupported_subid_length(relay, max_subid_length);
         }
 
         let Some(current) = self.pool.relay_limitations(relay) else {
-            return (
-                Nip11ApplyOutcome::RelayUnknown,
-                OutboxServiceOutput::NoEvents,
-            );
+            return Nip11Applied {
+                outcome: Nip11ApplyOutcome::RelayUnknown,
+                output: OutboxServiceOutput::NoEvents,
+            };
         };
         let limitations = derive_relay_limitations_from_raw(&raw, current);
         self.apply_relay_limit_update(relay, limitations)
@@ -1954,17 +1959,16 @@ mod tests {
     };
     use crate::{
         relay::test_utils::{
-            create_filtered_capture_relay_with_handler, CaptureNotify, CaptureRelayResponse,
-            CapturedTextFrames,
+            create_filtered_capture_relay_with_handler, CaptureNotify, CaptureRelay,
+            CaptureRelayResponse, CapturedTextFrames,
         },
         FullKeypair,
     };
     use futures_util::{SinkExt, StreamExt};
     use negentropy::{Negentropy, NegentropyStorageVector};
     use nostrdb::NoteBuilder;
-    use std::{collections::HashMap as StdHashMap, future, sync::Arc, time::UNIX_EPOCH};
+    use std::{collections::HashMap as StdHashMap, future, time::UNIX_EPOCH};
     use tokio::net::TcpListener;
-    use tokio::sync::Notify;
     use tokio_tungstenite::{accept_async, tungstenite::Message};
 
     fn relay(name: &str) -> NormRelayUrl {
@@ -1979,7 +1983,7 @@ mod tests {
                 priority: None,
                 source_rank: 0,
                 connection_weight: 0,
-                health_rank: (false, 0),
+                health_rank: LowValueHealthRank::default(),
             },
             state,
         }
@@ -2087,33 +2091,27 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_millis(20), service.next()).await;
     }
 
-    async fn create_eose_relay() -> (tokio::task::JoinHandle<()>, NormRelayUrl, Arc<Notify>) {
-        let sent = Arc::new(Notify::new());
-        let sent_factory = Arc::clone(&sent);
-        let (handle, url, _captured, _captured_notify) =
-            create_filtered_capture_relay_with_handler(
-                |_| false,
-                move || {
-                    let sent = Arc::clone(&sent_factory);
-                    move |text: &str| {
-                        let parts: serde_json::Value =
-                            serde_json::from_str(text).expect("parse relay client frame");
-                        if parts[0] != "REQ" {
-                            return CaptureRelayResponse::none();
-                        }
-
-                        let sid = parts[1].as_str().expect("REQ sid");
-                        sent.notify_one();
-                        CaptureRelayResponse {
-                            send_text: vec![serde_json::json!(["EOSE", sid]).to_string()],
-                            close: false,
-                        }
+    /// A relay that answers every REQ with EOSE; its `notify` fires per REQ.
+    async fn create_eose_relay() -> CaptureRelay {
+        create_filtered_capture_relay_with_handler(
+            |text| text.starts_with("[\"REQ\","),
+            || {
+                |text: &str| {
+                    let parts: serde_json::Value =
+                        serde_json::from_str(text).expect("parse relay client frame");
+                    if parts[0] != "REQ" {
+                        return CaptureRelayResponse::none();
                     }
-                },
-            )
-            .await;
 
-        (handle, url, sent)
+                    let sid = parts[1].as_str().expect("REQ sid");
+                    CaptureRelayResponse {
+                        send_text: vec![serde_json::json!(["EOSE", sid]).to_string()],
+                        close: false,
+                    }
+                }
+            },
+        )
+        .await
     }
 
     fn service() -> TestOutboxService {
@@ -2207,14 +2205,16 @@ mod tests {
         }
     }
 
-    async fn create_negentropy_eose_relay() -> (tokio::task::JoinHandle<()>, NormRelayUrl) {
+    /// A relay that answers REQ with EOSE and reconciles NEG-OPEN against an
+    /// empty set. Its accept task is detached and outlives the returned url.
+    async fn create_negentropy_eose_relay() -> NormRelayUrl {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind negentropy eose relay");
         let addr = listener.local_addr().expect("negentropy eose relay addr");
         let url = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid relay url");
 
-        let handle = tokio::spawn(async move {
+        tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept eose relay");
             let mut websocket = accept_async(stream).await.expect("upgrade eose relay");
             let mut sessions =
@@ -2279,7 +2279,7 @@ mod tests {
             }
         });
 
-        (handle, url)
+        url
     }
 
     async fn wait_for_service_event<N, F, E>(
@@ -2653,7 +2653,7 @@ mod tests {
                         }),
                         source_rank: 0,
                         connection_weight: index as u32,
-                        health_rank: (false, 0),
+                        health_rank: LowValueHealthRank::default(),
                     },
                     state: Nip11InterestState::Active,
                 }
@@ -3135,7 +3135,11 @@ mod tests {
 
     #[tokio::test]
     async fn service_websocket_req_eose_updates_relay_eose_fact() {
-        let (_relay_task, relay, sent) = create_eose_relay().await;
+        let CaptureRelay {
+            url: relay,
+            notify: sent,
+            ..
+        } = create_eose_relay().await;
         let mut service = service();
         let id = service.id_registry().next_sub_id();
 
@@ -3169,7 +3173,7 @@ mod tests {
 
     #[tokio::test]
     async fn service_live_eose_updates_when_full_history_is_active() {
-        let (_relay_task, relay) = create_negentropy_eose_relay().await;
+        let relay = create_negentropy_eose_relay().await;
         let mut service = OutboxService::with_capabilities(
             TestNip11Capability,
             EmptyFullHistoryCapability,
@@ -3221,8 +3225,12 @@ mod tests {
 
     #[tokio::test]
     async fn full_history_only_sends_neg_open_through_service() {
-        let (_relay_task, relay, captured, notify) =
-            crate::relay::test_utils::create_text_capture_relay().await;
+        let CaptureRelay {
+            url: relay,
+            captured,
+            notify,
+            ..
+        } = crate::relay::test_utils::create_text_capture_relay().await;
         let mut service = OutboxService::with_capabilities(
             TestNip11Capability,
             EmptyFullHistoryCapability,
@@ -3258,8 +3266,11 @@ mod tests {
 
     #[tokio::test]
     async fn full_history_stays_unsettled_while_negentropy_session_is_open() {
-        let (_relay_task, relay, captured, _notify) =
-            crate::relay::test_utils::create_text_capture_relay().await;
+        let CaptureRelay {
+            url: relay,
+            captured,
+            ..
+        } = crate::relay::test_utils::create_text_capture_relay().await;
         let mut service = OutboxService::with_capabilities(
             TestNip11Capability,
             EmptyFullHistoryCapability,
@@ -3326,7 +3337,7 @@ mod tests {
 
     #[tokio::test]
     async fn full_history_catchup_state_follows_service_lifecycle() {
-        let (_relay_task, relay) = create_negentropy_eose_relay().await;
+        let relay = create_negentropy_eose_relay().await;
         let mut service = OutboxService::with_capabilities(
             TestNip11Capability,
             EmptyFullHistoryCapability,
@@ -3428,8 +3439,12 @@ mod tests {
 
     #[tokio::test]
     async fn publish_sends_event_to_websocket_relay() {
-        let (_relay_task, relay, captured, notify) =
-            crate::relay::test_utils::create_text_capture_relay().await;
+        let CaptureRelay {
+            url: relay,
+            captured,
+            notify,
+            ..
+        } = crate::relay::test_utils::create_text_capture_relay().await;
         let mut service = service();
         let signer = FullKeypair::generate();
         let note = NoteBuilder::new()

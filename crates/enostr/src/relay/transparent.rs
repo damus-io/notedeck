@@ -419,9 +419,8 @@ impl TransparentData {
                 let mut frames = Vec::new();
                 let mut returned_passes = Vec::new();
                 if let Some(removed) = self.remove_owner(&req_id) {
-                    let (pass, close_frames) = close_active_leg(current_generation, removed);
-                    returned_passes.push(pass);
-                    frames.extend(close_frames);
+                    frames.extend(close_transparent_leg(current_generation, &removed));
+                    returned_passes.push(removed.sub_pass);
                 }
                 self.attach_owner(&matching_sid, req_id, view.wire_filter_revision);
                 return Self::place_existing(frames, returned_passes, pass);
@@ -491,10 +490,9 @@ impl TransparentData {
             };
         };
 
-        let (pass, frames) = close_active_leg(current_generation, removed);
         TransparentUnsubscribeOutput {
-            frames,
-            returned_passes: vec![pass],
+            frames: close_transparent_leg(current_generation, &removed),
+            returned_passes: vec![removed.sub_pass],
         }
     }
 
@@ -571,18 +569,16 @@ impl TransparentData {
     }
 }
 
+/// Queues `sid`'s REQ on the current websocket generation, if one is open.
 fn send_req(
     current_generation: Option<u64>,
     sid: &RelayReqId,
     filters: Vec<nostrdb::Filter>,
-) -> (Option<u64>, Vec<QueuedRelayFrame>) {
-    let Some(generation) = current_generation else {
-        return (None, Vec::new());
-    };
-    (
-        Some(generation),
-        vec![(generation, ClientMessage::req(sid.to_string(), filters))],
-    )
+) -> Option<QueuedRelayFrame> {
+    Some(QueuedRelayFrame {
+        generation: current_generation?,
+        message: ClientMessage::req(sid.to_string(), filters),
+    })
 }
 
 fn send_request(
@@ -592,9 +588,9 @@ fn send_request(
 ) -> Vec<QueuedRelayFrame> {
     active_leg.status = RelayReqStatus::InitialQuery;
     active_leg.filters = filters.clone();
-    let (generation, frames) = send_req(current_generation, &active_leg.sid, filters);
-    active_leg.last_enqueued_generation = generation;
-    frames
+    let frame = send_req(current_generation, &active_leg.sid, filters);
+    active_leg.last_enqueued_generation = frame.as_ref().map(|frame| frame.generation);
+    frame.into_iter().collect()
 }
 
 fn new_transparent_leg(
@@ -623,15 +619,10 @@ fn close_transparent_leg(
     let Some(generation) = current_generation else {
         return Vec::new();
     };
-    vec![(generation, ClientMessage::close(active_leg.sid.to_string()))]
-}
-
-fn close_active_leg(
-    current_generation: Option<u64>,
-    active_leg: ActiveTransparentLeg,
-) -> (SubPass, Vec<QueuedRelayFrame>) {
-    let frames = close_transparent_leg(current_generation, &active_leg);
-    (active_leg.sub_pass, frames)
+    vec![QueuedRelayFrame {
+        generation,
+        message: ClientMessage::close(active_leg.sid.to_string()),
+    }]
 }
 
 /// Evicts transparent subscriptions whose passes were revoked and returns the
@@ -707,7 +698,7 @@ mod tests {
     fn frame_jsons(frames: &[QueuedRelayFrame]) -> Vec<String> {
         frames
             .iter()
-            .map(|(_, message)| {
+            .map(|QueuedRelayFrame { message, .. }| {
                 message
                     .to_json()
                     .expect("captured message should serialize")

@@ -254,6 +254,12 @@ fn next_fetch_retry_at(next_retries_started: usize, now: Instant) -> Instant {
     now + full_history_retry_delay(next_retries_started.saturating_sub(1))
 }
 
+/// An in-flight fetch that timed out, taken out of the active set.
+struct TimedOutIngestion {
+    id: NoteId,
+    pending: PendingIngestion,
+}
+
 /// One in-flight relay-local oneshot fetch for a negentropy-discovered event.
 #[derive(Clone, Debug)]
 pub(in crate::relay::outbox) struct PendingIngestion {
@@ -424,8 +430,8 @@ impl FullHistoryFetches {
         self.active.get(id)
     }
 
-    fn pending_ingestions(&self) -> impl Iterator<Item = (&NoteId, &PendingIngestion)> {
-        self.active.iter()
+    fn pending_ingestion_ids(&self) -> impl Iterator<Item = &NoteId> {
+        self.active.keys()
     }
 
     fn active_is_empty(&self) -> bool {
@@ -440,7 +446,7 @@ impl FullHistoryFetches {
         true
     }
 
-    fn take_timed_out(&mut self, now: Instant) -> Vec<(NoteId, PendingIngestion)> {
+    fn take_timed_out(&mut self, now: Instant) -> Vec<TimedOutIngestion> {
         let timed_out = self
             .active
             .iter()
@@ -451,7 +457,10 @@ impl FullHistoryFetches {
         let mut pending = Vec::with_capacity(timed_out.len());
         for id in timed_out {
             if let Some(active) = self.active.remove(&id) {
-                pending.push((id, active));
+                pending.push(TimedOutIngestion {
+                    id,
+                    pending: active,
+                });
             }
         }
         pending
@@ -1009,7 +1018,7 @@ impl FullHistoryProgress {
             return false;
         }
 
-        for (id, pending) in timed_out {
+        for TimedOutIngestion { id, pending } in timed_out {
             self.schedule_fetch_retry(id, pending, now);
         }
 
@@ -1069,15 +1078,13 @@ impl FullHistoryProgress {
         self.fetches.pending_ingestion(id)
     }
 
-    pub(in crate::relay::outbox) fn pending_ingestions(
-        &self,
-    ) -> impl Iterator<Item = (&NoteId, &PendingIngestion)> {
-        self.fetches.pending_ingestions()
+    pub(in crate::relay::outbox) fn pending_ingestion_ids(&self) -> impl Iterator<Item = &NoteId> {
+        self.fetches.pending_ingestion_ids()
     }
 
     #[cfg(test)]
     pub(in crate::relay::outbox) fn pending_ingestion_len(&self) -> usize {
-        self.pending_ingestions().count()
+        self.pending_ingestion_ids().count()
     }
 
     pub(in crate::relay::outbox) fn pending_ingestion_is_empty(&self) -> bool {
@@ -1192,8 +1199,8 @@ impl FullHistoryProgress {
         let mut batches = Vec::new();
         let mut index = 0;
         let active_ids = self
-            .pending_ingestions()
-            .map(|(id, _)| *id)
+            .pending_ingestion_ids()
+            .copied()
             .collect::<HashSet<_>>();
 
         while index < self.pending_needs.len() {

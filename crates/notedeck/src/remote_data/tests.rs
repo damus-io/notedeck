@@ -293,13 +293,19 @@ struct CaptureRelay {
     notify: Arc<Notify>,
 }
 
-async fn create_text_capture_relay() -> CaptureRelay {
-    let (_handle, relay, captured, notify) = create_shared_text_capture_relay().await;
-    CaptureRelay {
-        url: relay.to_string(),
-        captured,
-        notify,
+impl CaptureRelay {
+    /// Takes over a shared capture relay, keeping its url as a string.
+    fn from_shared(relay: enostr_test_support::relay::CaptureRelay) -> Self {
+        Self {
+            url: relay.url.to_string(),
+            captured: relay.captured,
+            notify: relay.notify,
+        }
     }
+}
+
+async fn create_text_capture_relay() -> CaptureRelay {
+    CaptureRelay::from_shared(create_shared_text_capture_relay().await)
 }
 
 async fn wait_for_frame(
@@ -336,7 +342,7 @@ fn captured_neg_open(captured: &Arc<Mutex<Vec<String>>>) -> Option<String> {
 }
 
 async fn create_event_relay(event_json: String) -> CaptureRelay {
-    let (_handle, relay, captured, notify) = create_filtered_capture_relay_with_handler(
+    let relay = create_filtered_capture_relay_with_handler(
         |_| true,
         move || {
             let event_json = event_json.clone();
@@ -361,11 +367,7 @@ async fn create_event_relay(event_json: String) -> CaptureRelay {
         },
     )
     .await;
-    CaptureRelay {
-        url: relay.to_string(),
-        captured,
-        notify,
-    }
+    CaptureRelay::from_shared(relay)
 }
 
 async fn wait_for_condition<T>(

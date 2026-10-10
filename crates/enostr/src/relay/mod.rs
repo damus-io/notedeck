@@ -26,6 +26,7 @@ pub(crate) use limits::ReqFilterLimits;
 pub use limits::{RelayCoordinatorLimits, RelayLimitations};
 pub(in crate::relay) use limits::{SubPass, SubPassGuardian, SubPassRevocation};
 pub(crate) use multicast::MulticastTransportRuntime;
+pub(crate) use nip11::Nip11Applied;
 pub use nip11::{Nip11ApplyOutcome, Nip11LimitationsRaw};
 use nostrdb::Filter;
 pub use outbox::{
@@ -153,51 +154,17 @@ impl MetadataFilters {
         limits.filters_for_single_req(&self.filters)
     }
 
-    #[allow(dead_code)]
-    pub fn iter(&self) -> MetadataFiltersIter<'_> {
-        MetadataFiltersIter {
-            filters: self.filters.iter(),
-            meta: self.meta.iter(),
-        }
-    }
-
-    pub fn iter_mut(&mut self) -> MetadataFiltersIterMut<'_> {
-        MetadataFiltersIterMut {
-            filters: self.filters.iter_mut(),
-            meta: self.meta.iter_mut(),
+    /// Records `at` as the newest timestamp seen by every filter, so the
+    /// next projection resumes from it.
+    pub(crate) fn see_all(&mut self, at: u64) {
+        for meta in &mut self.meta {
+            meta.last_seen = Some(at);
         }
     }
 
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.filters.iter().all(|f| f.num_elements() == 0)
-    }
-}
-
-#[allow(dead_code)]
-pub struct MetadataFiltersIter<'a> {
-    filters: std::slice::Iter<'a, Filter>,
-    meta: std::slice::Iter<'a, FilterMetadata>,
-}
-
-impl<'a> Iterator for MetadataFiltersIter<'a> {
-    type Item = (&'a Filter, &'a FilterMetadata);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        Some((self.filters.next()?, self.meta.next()?))
-    }
-}
-
-pub struct MetadataFiltersIterMut<'a> {
-    filters: std::slice::IterMut<'a, Filter>,
-    meta: std::slice::IterMut<'a, FilterMetadata>,
-}
-
-impl<'a> Iterator for MetadataFiltersIterMut<'a> {
-    type Item = (&'a mut Filter, &'a mut FilterMetadata);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        Some((self.filters.next()?, self.meta.next()?))
     }
 }
 

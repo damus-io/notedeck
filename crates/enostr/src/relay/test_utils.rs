@@ -10,7 +10,8 @@ mod enostr_api {
 mod capture_relay;
 pub use capture_relay::{
     create_filtered_capture_relay_with_handler, create_req_capture_relay,
-    create_text_capture_relay, CaptureNotify, CaptureRelayResponse, CapturedTextFrames,
+    create_text_capture_relay, CaptureNotify, CaptureRelay, CaptureRelayResponse,
+    CapturedTextFrames,
 };
 
 pub trait Wakeup: Send + Sync + Clone + 'static {

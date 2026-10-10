@@ -3,7 +3,10 @@ use std::time::Instant;
 use negentropy::{Id, Negentropy, NegentropyStorageVector};
 use nostrdb::Filter;
 
-use crate::relay::{frame::RelayFrameSink, FullHistorySubId, RelayDemandPriority, SubPassGuardian};
+use crate::relay::{
+    frame::{Framed, QueuedRelayFrame, RelayFrameSink},
+    FullHistorySubId, RelayDemandPriority, SubPassGuardian,
+};
 use crate::NoteId;
 
 use super::{
@@ -31,6 +34,17 @@ fn sealed_storage_with_ids(count: usize) -> NegentropyStorageVector {
     }
     storage.seal().expect("seal test storage");
     storage
+}
+
+/// Whether any queued frame continues a reconciliation with a `NEG-MSG`.
+fn sent_neg_msg(frames: &[QueuedRelayFrame]) -> bool {
+    frames.iter().any(|frame| {
+        frame
+            .message
+            .to_json()
+            .expect("serialize frame")
+            .starts_with(r#"["NEG-MSG""#)
+    })
 }
 
 fn test_filter() -> Filter {
@@ -126,7 +140,7 @@ fn prepare_negentropy_produces_hex() {
     storage.seal().unwrap();
     let result = prepare_negentropy(storage);
     assert!(result.is_some());
-    assert!(!result.unwrap().1.is_empty());
+    assert!(!result.unwrap().init_hex.is_empty());
 }
 
 #[test]
@@ -152,7 +166,7 @@ fn handle_neg_msg_returns_missing_ids_in_effects() {
         FullHistorySubId(4),
     );
 
-    let (_message, effects) = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
+    let effects = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
         .handle_neg_msg("sub-1", &hex::encode(relay_msg));
 
     assert_eq!(effects.needs.len(), 3);
@@ -377,12 +391,18 @@ fn handle_neg_msg_continue_refreshes_timeout_clock() {
         FullHistorySubId(0),
     );
 
-    let (result, effects) = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
-        .handle_neg_msg("sub-1", &hex::encode(relay_msg));
+    let Framed {
+        value: effects,
+        frames,
+    } = NegentropyRelay::run_framed(Some(0), &mut data, |relay| {
+        relay.handle_neg_msg("sub-1", &hex::encode(relay_msg))
+    });
     apply_effects(&mut guardian, effects);
 
-    assert!(result
+    assert!(frames
+        .first()
         .expect("expected follow-up NEG-MSG")
+        .message
         .to_json()
         .expect("serialize NEG-MSG")
         .starts_with(r#"["NEG-MSG","sub-1","#));
@@ -409,11 +429,15 @@ fn handle_neg_msg_invalid_hex_marks_relay_unsupported() {
         FullHistorySubId(0),
     );
 
-    let (result, effects) = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
-        .handle_neg_msg("sub-1", "not-hex");
+    let Framed {
+        value: effects,
+        frames,
+    } = NegentropyRelay::run_framed(Some(0), &mut data, |relay| {
+        relay.handle_neg_msg("sub-1", "not-hex")
+    });
     apply_effects(&mut guardian, effects);
 
-    assert!(result.is_none());
+    assert!(!sent_neg_msg(&frames));
     assert!(data.is_unsupported());
     assert_eq!(data.active_session_count(), 0);
     assert_eq!(guardian.available_passes(), 2);
@@ -436,15 +460,19 @@ fn handle_neg_msg_invalid_hex_retries_session_after_capability_is_known() {
         FullHistorySubId(10),
     );
 
-    let (result, effects) = NegentropyRelay::new(RelayFrameSink::disconnected(), &mut data)
-        .handle_neg_msg("sub-1", "not-hex");
+    let Framed {
+        value: effects,
+        frames,
+    } = NegentropyRelay::run_framed(Some(0), &mut data, |relay| {
+        relay.handle_neg_msg("sub-1", "not-hex")
+    });
     let retries = &effects.retries;
     assert_eq!(retries.len(), 1);
     assert_eq!(retries[0].owner_history_id, FullHistorySubId(10));
     assert!(retries[0].filter.same_canonical_attributes(&filter));
     apply_effects(&mut guardian, effects);
 
-    assert!(result.is_none());
+    assert!(!sent_neg_msg(&frames));
     assert!(!data.is_unsupported());
     assert_eq!(data.active_session_count(), 0);
     assert_eq!(guardian.available_passes(), 2);

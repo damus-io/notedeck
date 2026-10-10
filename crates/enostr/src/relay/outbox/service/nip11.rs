@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::relay::{Nip11LimitationsRaw, NormRelayUrl, RelayConnectionPriority};
 
+use super::admission_runtime::LowValueHealthRank;
 use super::next_backoff_duration_from_base;
 
 pub(super) const NIP11_FETCH_CONCURRENCY: usize = 8;
@@ -50,7 +51,7 @@ pub(super) struct Nip11InterestRank {
     pub(super) priority: Option<RelayConnectionPriority>,
     pub(super) source_rank: u8,
     pub(super) connection_weight: u32,
-    pub(super) health_rank: (bool, u32),
+    pub(super) health_rank: LowValueHealthRank,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

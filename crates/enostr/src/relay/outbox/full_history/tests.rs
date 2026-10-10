@@ -23,7 +23,9 @@ use crate::relay::negentropy::NegentropyStartResult;
 use crate::relay::{
     normalize_full_history_targets,
     subscription::{FullHistoryTask, FullHistoryUpsertTask},
-    test_utils::{create_text_capture_relay, filters_json, trivial_filter, MockWakeup, Wakeup},
+    test_utils::{
+        create_text_capture_relay, filters_json, trivial_filter, CaptureRelay, MockWakeup, Wakeup,
+    },
     FullHistoryConfig, FullHistoryRelayFilter, FullHistoryTarget, Nip11ApplyOutcome,
     RelayDemandPriority, RelayLimitations, RelayRoutingPreference, RelayUrlPkgs, RelayUrlSource,
     SubPassGuardian,
@@ -178,10 +180,9 @@ impl OutboxPool {
         relay: &NormRelayUrl,
         max_subid_length: usize,
     ) -> Nip11ApplyOutcome {
-        let (outcome, _output) = self
-            .service
-            .apply_unsupported_subid_length(relay, max_subid_length);
-        outcome
+        self.service
+            .apply_unsupported_subid_length(relay, max_subid_length)
+            .outcome
     }
 
     fn apply_relay_limit_update(
@@ -189,8 +190,9 @@ impl OutboxPool {
         relay: &NormRelayUrl,
         limitations: RelayLimitations,
     ) -> Nip11ApplyOutcome {
-        let (outcome, _output) = self.service.apply_relay_limit_update(relay, limitations);
-        outcome
+        self.service
+            .apply_relay_limit_update(relay, limitations)
+            .outcome
     }
 
     fn has_full_history_work(&self) -> bool {
@@ -239,11 +241,15 @@ impl OutboxPool {
         request_id: u64,
         storage: NegentropyStorageVector,
     ) -> bool {
-        let (applied, output) = self
+        let output = self
             .service
             .apply_full_history_local_set_ready(history_id, request_id, storage);
+        let applied = output.is_some();
         let mut commands = TestOutboxCommands::default();
-        self.record_full_history_runtime_output(output, &mut commands);
+        self.record_full_history_runtime_output(
+            output.unwrap_or_else(FullHistoryRuntimeOutput::empty),
+            &mut commands,
+        );
         applied
     }
 
@@ -252,11 +258,15 @@ impl OutboxPool {
         history_id: FullHistorySubId,
         request_id: u64,
     ) -> bool {
-        let (applied, output) = self
+        let output = self
             .service
             .apply_full_history_local_set_failed(history_id, request_id);
+        let applied = output.is_some();
         let mut commands = TestOutboxCommands::default();
-        self.record_full_history_runtime_output(output, &mut commands);
+        self.record_full_history_runtime_output(
+            output.unwrap_or_else(FullHistoryRuntimeOutput::empty),
+            &mut commands,
+        );
         applied
     }
 
@@ -264,7 +274,11 @@ impl OutboxPool {
         &mut self,
         result: FullHistoryPendingIngestionPresenceResult,
     ) -> Vec<FullHistorySubId> {
-        let (completed, output) = self.service.apply_pending_ingestion_presence_result(result);
+        let completed = self
+            .service
+            .full_history
+            .apply_full_history_pending_ingestion_presence_result(result);
+        let output = self.service.restart_full_history_rounds(&completed);
         let mut commands = TestOutboxCommands::default();
         self.record_full_history_runtime_output(output, &mut commands);
         completed
@@ -425,12 +439,11 @@ fn apply_test_outbox_commands<W: Wakeup>(
 ) {
     let progress = ProgressWakeup::default();
     let pool_output = std::mem::take(&mut tasks.live_output);
-    let (full_history_eviction_candidates, full_history_output) = pool
+    let task_output = pool
         .service
         .apply_full_history_tasks(std::mem::take(&mut tasks.full_history_tasks));
-    let _ = full_history_eviction_candidates;
     let _ = pool_output;
-    pool.record_full_history_runtime_output(full_history_output, &mut tasks);
+    pool.record_full_history_runtime_output(task_output.output, &mut tasks);
 
     if pool.poll_full_history(&mut tasks) {
         progress.wake();
@@ -612,14 +625,14 @@ fn apply_local_presence_requests_into(
                 missing_ids.insert(id);
             }
         }
-        let (applied, output) =
+        let output =
             pool.service
                 .apply_full_history_local_presence_ready(FullHistoryLocalPresenceResult {
                     request_id: request.request_id,
                     missing_ids,
                     already_local_ids,
                 });
-        if applied {
+        if let Some(output) = output {
             pool.record_full_history_runtime_output(output, commands);
         }
     }
@@ -693,12 +706,12 @@ fn apply_ready_local_set_requests_into(
     let requests = take_local_set_requests(pool);
     let count = requests.len();
     for request in requests {
-        let (applied, output) = pool.service.apply_full_history_local_set_ready(
+        let output = pool.service.apply_full_history_local_set_ready(
             request.history_id,
             request.request_id,
             empty_negentropy_storage(),
         );
-        if applied {
+        if let Some(output) = output {
             pool.record_full_history_runtime_output(output, commands);
         }
     }
@@ -899,20 +912,18 @@ fn stage_need_fetches_for_test(
     needs: Vec<FullHistoryNeed>,
     session: &mut TestOutboxCommands,
     present: &HashSet<NoteId>,
-) -> Vec<FullHistorySubId> {
-    let (output, initial) = pool
+) {
+    let output = pool
         .service
         .full_history
         .stage_need_fetches(needs, Instant::now());
     pool.record_full_history_output(output, session);
-    assert!(initial.is_empty());
     apply_local_presence_requests_into(pool, present, session);
-    let (output, ready) = pool
+    let output = pool
         .service
         .full_history
         .stage_need_fetches(Vec::new(), Instant::now());
     pool.record_full_history_output(output, session);
-    ready
 }
 
 fn queue_snapshot_need(
@@ -1072,15 +1083,17 @@ fn subscribe_unbounded(
     subscribe_with_history(pool, wakeup, filters.clone(), filters, relays)
 }
 
-fn counting_retry_fixture(
-    relay_name: &str,
-) -> (
-    Arc<AtomicUsize>,
-    OutboxPool,
-    NormRelayUrl,
-    FullHistorySubId,
-    TestOutboxCommands,
-) {
+/// A ready pool with one full-history sub on one relay, whose local-set
+/// builds are counted in `calls`.
+struct CountingRetryFixture {
+    calls: Arc<AtomicUsize>,
+    pool: OutboxPool,
+    relay: NormRelayUrl,
+    sub_id: FullHistorySubId,
+    staged_session: TestOutboxCommands,
+}
+
+fn counting_retry_fixture(relay_name: &str) -> CountingRetryFixture {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut pool = counting_ready_pool(Arc::clone(&calls));
     let relay = relay_url(relay_name);
@@ -1088,7 +1101,13 @@ fn counting_retry_fixture(
     assert_eq!(apply_ready_local_set_requests_counted(&mut pool, &calls), 1);
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
     clear_pending_neg_sets(&mut pool, sub_id);
-    (calls, pool, relay, sub_id, TestOutboxCommands::default())
+    CountingRetryFixture {
+        calls,
+        pool,
+        relay,
+        sub_id,
+        staged_session: TestOutboxCommands::default(),
+    }
 }
 
 fn modify_relays_for_history(
@@ -1331,14 +1350,14 @@ async fn caller_filter_update_retains_current_relay_filter_progress() {
     );
     let retained_ingestion_ids = tracked
         .progress
-        .pending_ingestions()
-        .filter_map(|(id, pending)| {
-            pending
-                .target
-                .filter
-                .same_canonical_attributes(&filter_a)
-                .then_some(*id)
+        .pending_ingestion_ids()
+        .filter(|id| {
+            tracked
+                .progress
+                .pending_ingestion(id)
+                .is_some_and(|pending| pending.target.filter.same_canonical_attributes(&filter_a))
         })
+        .copied()
         .collect::<HashSet<_>>();
     assert_eq!(
         retained_ingestion_ids,
@@ -1879,7 +1898,11 @@ async fn poll_negentropy_state_machine_retains_unsent_filter_until_relay_availab
 
 #[tokio::test]
 async fn short_max_subid_length_blocks_full_history_negentropy() {
-    let (_relay_task, relay, captured, _notify) = create_text_capture_relay().await;
+    let CaptureRelay {
+        url: relay,
+        captured,
+        ..
+    } = create_text_capture_relay().await;
     let mut pool = ready_pool();
     let wakeup = MockWakeup::default();
 
@@ -2163,7 +2186,7 @@ async fn modifying_full_history_to_blocked_remote_advertised_urls_removes_id() {
 
 #[tokio::test]
 async fn full_history_initial_open_merges_package_demand_with_pending_work() {
-    let (_relay_task, relay, _captured, _notify) = create_text_capture_relay().await;
+    let relay = create_text_capture_relay().await.url;
     let mut pool = ready_pool();
     let wakeup = MockWakeup::default();
 
@@ -2357,7 +2380,7 @@ async fn stage_need_fetches_batches_local_presence_checks() {
         Instant::now() + Duration::from_secs(60),
     );
 
-    let (output, initial) = pool.service.full_history.stage_need_fetches(
+    let output = pool.service.full_history.stage_need_fetches(
         vec![
             full_history_need(sub_id, relay.clone(), note_id(1)),
             full_history_need(sub_id, relay.clone(), note_id(2)),
@@ -2372,7 +2395,6 @@ async fn stage_need_fetches_batches_local_presence_checks() {
         "presence check should run before fetch staging"
     );
     pool.record_full_history_local_output(output);
-    assert!(initial.is_empty());
 
     let requests = take_local_presence_requests(&mut pool);
     assert_eq!(requests.len(), 1);
@@ -2383,15 +2405,15 @@ async fn stage_need_fetches_batches_local_presence_checks() {
     let request = requests.into_iter().next().expect("presence request");
     let mut missing_ids = request.candidate_ids.clone();
     missing_ids.retain(|id| !present.contains(id));
-    let (applied, output) =
-        pool.service
-            .apply_full_history_local_presence_ready(FullHistoryLocalPresenceResult {
-                request_id: request.request_id,
-                missing_ids,
-                already_local_ids: present,
-            });
+    let output = pool
+        .service
+        .apply_full_history_local_presence_ready(FullHistoryLocalPresenceResult {
+            request_id: request.request_id,
+            missing_ids,
+            already_local_ids: present,
+        })
+        .expect("presence result should apply");
     let mut session = TestOutboxCommands::default();
-    assert!(applied);
     pool.record_full_history_runtime_output(output, &mut session);
     assert_eq!(session.full_history_fetches.len(), 1);
 }
@@ -3405,7 +3427,13 @@ async fn relay_retarget_cancels_only_removed_active_fetch_oneshots() {
 
 #[tokio::test]
 async fn transient_retry_does_not_immediately_rebuild_local_set() {
-    let (calls, mut pool, relay, sub_id, mut staged_session) = counting_retry_fixture("retry");
+    let CountingRetryFixture {
+        calls,
+        mut pool,
+        relay,
+        sub_id,
+        mut staged_session,
+    } = counting_retry_fixture("retry");
     seed_relay_retry(&mut pool, &relay, sub_id);
 
     poll_full_history_with_ready_local_sets(&mut pool, &mut staged_session);
@@ -3592,7 +3620,13 @@ async fn next_deadline_reports_ingestion_timeout_without_test_checker() {
 
 #[tokio::test]
 async fn transient_retry_promotes_after_backoff() {
-    let (calls, mut pool, relay, sub_id, mut staged_session) = counting_retry_fixture("retry");
+    let CountingRetryFixture {
+        calls,
+        mut pool,
+        relay,
+        sub_id,
+        mut staged_session,
+    } = counting_retry_fixture("retry");
     seed_relay_retry(&mut pool, &relay, sub_id);
 
     poll_full_history_with_counted_ready_local_sets(&mut pool, &mut staged_session, &calls);
@@ -3608,7 +3642,13 @@ async fn transient_retry_promotes_after_backoff() {
 
 #[tokio::test]
 async fn transient_retry_budget_caps_local_set_rebuilds() {
-    let (calls, mut pool, relay, sub_id, mut staged_session) = counting_retry_fixture("retry");
+    let CountingRetryFixture {
+        calls,
+        mut pool,
+        relay,
+        sub_id,
+        mut staged_session,
+    } = counting_retry_fixture("retry");
 
     for expected_calls in 2..=(MAX_FULL_HISTORY_RETRIES_PER_RELAY_FILTER + 1) {
         seed_relay_retry(&mut pool, &relay, sub_id);

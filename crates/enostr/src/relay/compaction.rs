@@ -392,7 +392,10 @@ impl CompactionTransition {
     }
 
     fn push_coalesced_frame(&mut self, sid: RelayReqId, generation: u64, message: ClientMessage) {
-        let frame = (generation, message);
+        let frame = QueuedRelayFrame {
+            generation,
+            message,
+        };
         if let Some(index) = self.frame_indexes.get(&sid).copied() {
             self.frames[index] = frame;
             return;
@@ -618,7 +621,10 @@ impl<'a> CompactionTransitionState<'a> {
             }
 
             sub_data.status = RelayReqStatus::InitialQuery;
-            frames.push((generation, ClientMessage::req(sid.to_string(), filters)));
+            frames.push(QueuedRelayFrame {
+                generation,
+                message: ClientMessage::req(sid.to_string(), filters),
+            });
             invalidated.extend(sub_data.requests.requests.iter().copied());
         }
 
@@ -651,8 +657,10 @@ impl<'a> CompactionTransitionState<'a> {
     #[profiling::function]
     fn compact(&mut self) -> Option<SubPass> {
         let (removed_relay_id, smallest, request_filters) = {
-            let (removed_relay_id, smallest) =
-                take_smallest_sub_reqs(self.subs, &mut self.data.relay_subs)?;
+            let TakenRelaySub {
+                id: removed_relay_id,
+                data: smallest,
+            } = take_smallest_sub_reqs(self.subs, &mut self.data.relay_subs)?;
             let request_filters = smallest.request_filters(self.subs);
 
             self.mark_relay_sub_removed(
@@ -971,7 +979,11 @@ impl<'a> CompactionTransitionState<'a> {
     }
 
     fn emit_relay_sub_req(&mut self, relay_id: RelayReqId) {
-        let Some((request_ids, filters)) = self.relay_sub_req_frame_data(&relay_id) else {
+        let Some(RelaySubReqFrame {
+            request_ids,
+            filters,
+        }) = self.relay_sub_req_frame_data(&relay_id)
+        else {
             return;
         };
 
@@ -991,10 +1003,7 @@ impl<'a> CompactionTransitionState<'a> {
         );
     }
 
-    fn relay_sub_req_frame_data(
-        &mut self,
-        relay_id: &RelayReqId,
-    ) -> Option<(HashSet<OutboxSubId>, Vec<Filter>)> {
+    fn relay_sub_req_frame_data(&mut self, relay_id: &RelayReqId) -> Option<RelaySubReqFrame> {
         let (request_ids, filters, fits) = {
             let data = self.data.relay_subs.get(relay_id)?;
             (
@@ -1006,7 +1015,10 @@ impl<'a> CompactionTransitionState<'a> {
 
         if are_filters_empty(&filters) || !fits {
             let Some(retired_ids) = self.remove_relay_sub_for_retirement(relay_id) else {
-                return Some((request_ids, Vec::new()));
+                return Some(RelaySubReqFrame {
+                    request_ids,
+                    filters: Vec::new(),
+                });
             };
             for id in retired_ids {
                 self.data.queue.enqueue(id);
@@ -1014,8 +1026,18 @@ impl<'a> CompactionTransitionState<'a> {
             return None;
         }
 
-        Some((request_ids, filters))
+        Some(RelaySubReqFrame {
+            request_ids,
+            filters,
+        })
     }
+}
+
+/// What re-sending one relay REQ needs: the outbox subscriptions it serves
+/// and the filters to send for them.
+struct RelaySubReqFrame {
+    request_ids: HashSet<OutboxSubId>,
+    filters: Vec<Filter>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1120,7 +1142,7 @@ fn plan_compaction_placements(
 fn take_smallest_sub_reqs(
     subs: &OutboxSubscriptions,
     data: &mut HashMap<RelayReqId, RelaySubData>,
-) -> Option<(RelayReqId, RelaySubData)> {
+) -> Option<TakenRelaySub> {
     let mut smallest = usize::MAX;
     let mut res = None;
 
@@ -1134,7 +1156,13 @@ fn take_smallest_sub_reqs(
 
     let id = res?;
 
-    data.remove(&id).map(|r| (id, r))
+    data.remove(&id).map(|data| TakenRelaySub { id, data })
+}
+
+/// A relay REQ taken out of the compaction map, with the id it was keyed by.
+struct TakenRelaySub {
+    id: RelayReqId,
+    data: RelaySubData,
 }
 
 fn are_filters_empty(filters: &[Filter]) -> bool {
@@ -1547,7 +1575,7 @@ mod tests {
     fn frame_jsons(frames: &[QueuedRelayFrame]) -> Vec<String> {
         frames
             .iter()
-            .map(|(_, message)| {
+            .map(|QueuedRelayFrame { message, .. }| {
                 message
                     .to_json()
                     .expect("captured message should serialize")
@@ -1870,8 +1898,8 @@ mod tests {
             },
         );
 
-        let (id, _) = take_smallest_sub_reqs(&subs, &mut data).unwrap();
-        assert_eq!(id.0, "small");
+        let taken = take_smallest_sub_reqs(&subs, &mut data).unwrap();
+        assert_eq!(taken.id.0, "small");
         assert_eq!(data.len(), 1);
     }
 

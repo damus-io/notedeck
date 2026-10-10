@@ -320,9 +320,7 @@ impl OutboxSubscription {
     }
 
     fn see_all(&mut self, at: u64) {
-        for (_, meta) in self.filters.iter_mut() {
-            meta.last_seen = Some(at);
-        }
+        self.filters.see_all(at);
     }
 
     fn ingest_task(&mut self, task: ModifyTask) -> bool {
@@ -899,8 +897,9 @@ mod tests {
             .get(&id)
             .expect("subscription metadata")
             .filters
+            .meta
             .iter()
-            .all(|(_, meta)| meta.last_seen == Some(timestamp)));
+            .all(|meta| meta.last_seen == Some(timestamp)));
     }
 
     #[test]

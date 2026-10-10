@@ -26,3 +26,9 @@ pub enum Nip11ApplyOutcome {
     UnsupportedSubIdLength { max_subid_length: usize },
     RelayUnknown,
 }
+
+/// A NIP-11 application's outcome beside the output its transition produced.
+pub(crate) struct Nip11Applied<O> {
+    pub(crate) outcome: Nip11ApplyOutcome,
+    pub(crate) output: O,
+}

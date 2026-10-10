@@ -2,6 +2,7 @@ mod fetch;
 mod snapshot;
 pub(in crate::relay::outbox) mod state;
 
+pub(super) use fetch::LocalPresenceStage;
 use negentropy::NegentropyStorageVector;
 pub(super) use snapshot::{
     full_history_snapshot_from_task, FullHistorySnapshot, FullHistoryUpsert,
@@ -92,7 +93,7 @@ impl FullHistoryRuntime {
     pub(super) fn apply_full_history_local_presence_result(
         &mut self,
         result: FullHistoryLocalPresenceResult,
-    ) -> Option<(FullHistoryOutput, Vec<FullHistorySubId>)> {
+    ) -> Option<LocalPresenceStage> {
         self.apply_local_presence_result(result, Instant::now())
     }
 
@@ -119,8 +120,8 @@ impl FullHistoryRuntime {
         &mut self,
         needs: Vec<FullHistoryNeed>,
         now: Instant,
-    ) -> (FullHistoryOutput, Vec<FullHistorySubId>) {
+    ) -> FullHistoryOutput {
         self.queue_needs(needs);
-        (self.queue_need_presence_request(now), Vec::new())
+        self.queue_need_presence_request(now)
     }
 }

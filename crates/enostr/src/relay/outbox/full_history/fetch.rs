@@ -22,6 +22,14 @@ struct FullHistoryFetchBatch {
     ids: HashSet<NoteId>,
 }
 
+/// Fetches staged from one local presence check, and the subs it found
+/// already satisfied locally, which need a fresh verification round.
+#[derive(Default)]
+pub(in crate::relay::outbox) struct LocalPresenceStage {
+    pub(in crate::relay::outbox) output: FullHistoryOutput,
+    pub(in crate::relay::outbox) verification_ready: Vec<FullHistorySubId>,
+}
+
 impl FullHistoryRuntime {
     /// Apply one completed local presence request and stage missing-event fetches.
     ///
@@ -32,7 +40,7 @@ impl FullHistoryRuntime {
         &mut self,
         result: FullHistoryLocalPresenceResult,
         now: Instant,
-    ) -> Option<(FullHistoryOutput, Vec<FullHistorySubId>)> {
+    ) -> Option<LocalPresenceStage> {
         let need_batches = self.take_local_presence_plan(result.request_id)?;
         Some(self.stage_local_presence_batches(need_batches, &result.missing_ids, now))
     }
@@ -42,7 +50,7 @@ impl FullHistoryRuntime {
         need_batches: Vec<FullHistoryNeedBatch>,
         missing_ids: &HashSet<NoteId>,
         now: Instant,
-    ) -> (FullHistoryOutput, Vec<FullHistorySubId>) {
+    ) -> LocalPresenceStage {
         let mut planner = NeedFetchPlanner {
             fetching_subs: HashSet::new(),
             locally_satisfied_subs: HashSet::new(),
@@ -55,7 +63,7 @@ impl FullHistoryRuntime {
         };
 
         if need_batches.is_empty() {
-            return (FullHistoryOutput::default(), Vec::new());
+            return LocalPresenceStage::default();
         }
         for batch in need_batches {
             self.plan_need_batch(batch, missing_ids, &mut planner);
@@ -79,7 +87,10 @@ impl FullHistoryRuntime {
             &planner.locally_satisfied_subs,
             &planner.unresolved_subs,
         );
-        (output, verification_ready)
+        LocalPresenceStage {
+            output,
+            verification_ready,
+        }
     }
 
     pub(super) fn queue_need_presence_request(&mut self, now: Instant) -> FullHistoryOutput {

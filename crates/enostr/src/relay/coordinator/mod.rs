@@ -244,6 +244,8 @@ struct RelayOpenReplayEffects {
     invalidated_sub_ids: HashSet<OutboxSubId>,
     blocked_transparent_ids: HashSet<OutboxSubId>,
     released_compaction_ids: HashSet<OutboxSubId>,
+    /// REQ frames replayed onto the reopened websocket.
+    frames: Vec<QueuedRelayFrame>,
 }
 
 impl LimitDowngradePlan {
@@ -378,17 +380,18 @@ impl CoordinationData {
                 );
             }
 
-            for (id, route) in self.routes.iter() {
-                match route {
-                    RelayType::Transparent => debug_assert!(
-                        self.compaction_data.req_status(id).is_none(),
-                        "transparent coordination route must not also be active in compaction"
-                    ),
-                    RelayType::Compaction => debug_assert!(
-                        self.transparent_data.req_status(id).is_none(),
-                        "compaction coordination route must not also be active in another route"
-                    ),
-                }
+            for id in self.routes.ids_routed_to(RelayType::Transparent) {
+                debug_assert!(
+                    self.compaction_data.req_status(id).is_none(),
+                    "transparent coordination route must not also be active in compaction"
+                );
+            }
+
+            for id in self.routes.ids_routed_to(RelayType::Compaction) {
+                debug_assert!(
+                    self.transparent_data.req_status(id).is_none(),
+                    "compaction coordination route must not also be active in another route"
+                );
             }
         }
     }
@@ -2331,7 +2334,7 @@ impl CoordinationData {
         subs: &OutboxSubscriptions,
         replay_subscription_reqs: bool,
     ) -> CoordinationOutput {
-        let (effects, frames) = collect_relay_open_replay_effects(
+        let effects = collect_relay_open_replay_effects(
             self.current_generation,
             &mut self.compaction_data,
             &mut self.transparent_data,
@@ -2344,7 +2347,8 @@ impl CoordinationData {
         }
 
         let invalidated_sub_ids = effects.invalidated_sub_ids;
-        let mut output = CoordinationOutput::from_invalidated_sub_ids(invalidated_sub_ids, frames);
+        let mut output =
+            CoordinationOutput::from_invalidated_sub_ids(invalidated_sub_ids, effects.frames);
         output.extend(self.queue_blocked_transparent_replay_ids(effects.blocked_transparent_ids));
 
         for id in effects.released_compaction_ids {
@@ -2497,9 +2501,9 @@ fn collect_relay_open_replay_effects(
     relay_limits: &mut RelayCoordinatorLimits,
     subs: &OutboxSubscriptions,
     replay_subscription_reqs: bool,
-) -> (RelayOpenReplayEffects, Vec<QueuedRelayFrame>) {
+) -> RelayOpenReplayEffects {
     if !replay_subscription_reqs {
-        return (RelayOpenReplayEffects::default(), Vec::new());
+        return RelayOpenReplayEffects::default();
     }
 
     let mut effects = RelayOpenReplayEffects::default();
@@ -2516,7 +2520,7 @@ fn collect_relay_open_replay_effects(
             }
         }
     }
-    let mut frames = transparent_replay.frames;
+    effects.frames = transparent_replay.frames;
     return_subpasses(
         &mut relay_limits.sub_guardian,
         transparent_replay.returned_passes,
@@ -2525,7 +2529,7 @@ fn collect_relay_open_replay_effects(
     let granted_passes = take_available_subpasses(&mut relay_limits.sub_guardian);
     let compaction_replay =
         compaction_data.handle_relay_open(current_generation, limits, granted_passes, subs);
-    frames.extend(compaction_replay.frames);
+    effects.frames.extend(compaction_replay.frames);
     return_subpasses(
         &mut relay_limits.sub_guardian,
         compaction_replay.returned_passes,
@@ -2536,7 +2540,7 @@ fn collect_relay_open_replay_effects(
     effects
         .released_compaction_ids
         .extend(compaction_replay.released_ids);
-    (effects, frames)
+    effects
 }
 
 /// One websocket-open state transition observed while polling a relay.
@@ -2778,7 +2782,7 @@ mod tests {
         ActiveSessionRelayDemand, NegentropyData, NegentropyRelay, NegentropyStartResult,
     };
     use crate::relay::{
-        frame::{QueuedRelayFrame, RelayFrameSink},
+        frame::{Framed, QueuedRelayFrame, RelayFrameSink},
         FullRelayPkgsModificationTask, ModifyTask, RelayDemandPriority, RelayUrlPkgs,
         SubscribeTask,
     };
@@ -2804,7 +2808,13 @@ mod tests {
         value.as_array().expect("REQ frame array").len() - 2
     }
 
-    fn captured_frame_kind_and_sid(frame: &str) -> (String, String) {
+    /// A captured relay frame's command and subscription id.
+    struct CapturedFrame {
+        kind: String,
+        sid: String,
+    }
+
+    fn captured_frame_kind_and_sid(frame: &str) -> CapturedFrame {
         let value: serde_json::Value =
             serde_json::from_str(frame).expect("parse captured relay frame");
         let array = value.as_array().expect("relay frame array");
@@ -2818,26 +2828,17 @@ mod tests {
             .and_then(serde_json::Value::as_str)
             .expect("relay frame sid")
             .to_owned();
-        (kind, sid)
+        CapturedFrame { kind, sid }
     }
 
     fn send_frame_jsons(output: CoordinationOutput) -> Vec<String> {
         output
             .frames
             .into_iter()
-            .map(|(_, message)| message.to_json().expect("send frame should serialize"))
+            .map(|QueuedRelayFrame { message, .. }| {
+                message.to_json().expect("send frame should serialize")
+            })
             .collect()
-    }
-
-    fn run_negentropy_relay_for_test<T>(
-        generation: Option<u64>,
-        data: &mut NegentropyData,
-        f: impl FnOnce(&mut NegentropyRelay<'_>) -> T,
-    ) -> (T, Vec<QueuedRelayFrame>) {
-        let mut relay = NegentropyRelay::new(RelayFrameSink::transport(generation), data);
-        let result = f(&mut relay);
-        let frames = relay.take_frames();
-        (result, frames)
     }
 
     fn apply_negentropy_effects_for_test(
@@ -2852,10 +2853,12 @@ mod tests {
                     generation,
                     revocations,
                 } => {
-                    let (revocation_effects, _frames) =
-                        run_negentropy_relay_for_test(generation, negentropy_data, |relay| {
-                            relay.revocate_sessions(revocations.len())
-                        });
+                    let Framed {
+                        value: revocation_effects,
+                        frames: _,
+                    } = NegentropyRelay::run_framed(generation, negentropy_data, |relay| {
+                        relay.revocate_sessions(revocations.len())
+                    });
                     assert_eq!(revocation_effects.revoked_passes.len(), revocations.len());
                     for (mut revocation, pass) in revocations
                         .into_iter()
@@ -2872,10 +2875,12 @@ mod tests {
                         .extend(coordinator.apply_negentropy_effects_after_release(subs, effects));
                 }
                 NegentropyRelayEffect::Timeout { generation, now } => {
-                    let (effects, frames) =
-                        run_negentropy_relay_for_test(generation, negentropy_data, |relay| {
-                            relay.handle_timeout(now)
-                        });
+                    let Framed {
+                        value: effects,
+                        frames,
+                    } = NegentropyRelay::run_framed(generation, negentropy_data, |relay| {
+                        relay.handle_timeout(now)
+                    });
                     output.frames.extend(frames);
                     output
                         .extend(coordinator.apply_negentropy_effects_after_release(subs, effects));
@@ -2884,10 +2889,12 @@ mod tests {
                     generation,
                     owner_history_id,
                 } => {
-                    let (effects, frames) =
-                        run_negentropy_relay_for_test(generation, negentropy_data, |relay| {
-                            relay.cancel_owner(owner_history_id)
-                        });
+                    let Framed {
+                        value: effects,
+                        frames,
+                    } = NegentropyRelay::run_framed(generation, negentropy_data, |relay| {
+                        relay.cancel_owner(owner_history_id)
+                    });
                     output.frames.extend(frames);
                     output
                         .extend(coordinator.apply_negentropy_effects_after_release(subs, effects));
@@ -2897,10 +2904,12 @@ mod tests {
                     owner_history_id,
                     filters,
                 } => {
-                    let (effects, frames) =
-                        run_negentropy_relay_for_test(generation, negentropy_data, |relay| {
-                            relay.cancel_owner_filters(owner_history_id, &filters)
-                        });
+                    let Framed {
+                        value: effects,
+                        frames,
+                    } = NegentropyRelay::run_framed(generation, negentropy_data, |relay| {
+                        relay.cancel_owner_filters(owner_history_id, &filters)
+                    });
                     output.frames.extend(frames);
                     output
                         .extend(coordinator.apply_negentropy_effects_after_release(subs, effects));
@@ -3249,7 +3258,10 @@ mod tests {
                     .expect("active negentropy session")
             })
             .expect("active negentropy work");
-        let (effects, _frames) = run_negentropy_relay_for_test(
+        let Framed {
+            value: effects,
+            frames: _,
+        } = NegentropyRelay::run_framed(
             coordinator.current_generation(),
             &mut negentropy_data,
             |relay| relay.handle_neg_err(&session_id, "closed: done"),
@@ -4006,15 +4018,20 @@ mod tests {
         assert_eq!(coordinator.limits.sub_guardian.available_passes(), 0);
     }
 
+    /// A coordinator holding one no-preference and one required transparent
+    /// sub, with the no-preference one first in raw storage order.
+    struct RepackSetup {
+        subs: OutboxSubscriptions,
+        coordinator: CoordinationData,
+        id_no_preference: OutboxSubId,
+        id_required: OutboxSubId,
+        /// A `max_json_bytes` that fits one filter per REQ.
+        single_filter_json_limit: usize,
+    }
+
     /// Finds IDs whose raw transparent storage order exposes the old
     /// active-repack priority bug.
-    fn active_repack_no_preference_first_setup() -> (
-        OutboxSubscriptions,
-        CoordinationData,
-        OutboxSubId,
-        OutboxSubId,
-        usize,
-    ) {
+    fn active_repack_no_preference_first_setup() -> RepackSetup {
         for offset in 0..512 {
             let id_no_preference = OutboxSubId(110 + offset);
             let id_required = OutboxSubId(10_110 + offset);
@@ -4046,13 +4063,13 @@ mod tests {
             coordinator.subscribe(&subs, id_required);
 
             if coordinator.transparent_data.request_ids().first() == Some(&id_no_preference) {
-                return (
+                return RepackSetup {
                     subs,
                     coordinator,
                     id_no_preference,
                     id_required,
                     single_filter_json_limit,
-                );
+                };
             }
         }
 
@@ -4061,8 +4078,13 @@ mod tests {
 
     #[tokio::test]
     async fn transparent_repack_prioritizes_required_and_preserves_unplaced_no_preference() {
-        let (subs, mut coordinator, id_no_preference, id_required, single_filter_json_limit) =
-            active_repack_no_preference_first_setup();
+        let RepackSetup {
+            subs,
+            mut coordinator,
+            id_no_preference,
+            id_required,
+            single_filter_json_limit,
+        } = active_repack_no_preference_first_setup();
         assert_eq!(
             coordinator.transparent_data.request_ids().first(),
             Some(&id_no_preference),
@@ -6012,7 +6034,7 @@ mod tests {
 
         let mut closed_sids = HashSet::new();
         for frame in &frames {
-            let (kind, sid) = captured_frame_kind_and_sid(frame);
+            let CapturedFrame { kind, sid } = captured_frame_kind_and_sid(frame);
             if kind == "REQ" {
                 assert!(
                     !closed_sids.contains(&sid),

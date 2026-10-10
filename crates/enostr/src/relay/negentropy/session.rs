@@ -110,11 +110,19 @@ impl ActiveSession {
     }
 }
 
+/// A local negentropy state machine and the initial payload it opens with.
+pub(super) struct PreparedNegentropy {
+    pub(super) neg: Negentropy<'static, NegentropyStorageVector>,
+    /// Hex-encoded initial message for `NEG-OPEN`.
+    pub(super) init_hex: String,
+}
+
 /// Builds the local negentropy state machine and initial relay payload.
-pub(super) fn prepare_negentropy(
-    storage: NegentropyStorageVector,
-) -> Option<(Negentropy<'static, NegentropyStorageVector>, String)> {
+pub(super) fn prepare_negentropy(storage: NegentropyStorageVector) -> Option<PreparedNegentropy> {
     let mut neg = Negentropy::owned(storage, 0).ok()?;
     let init_msg = neg.initiate().ok()?;
-    Some((neg, hex::encode(&init_msg)))
+    Some(PreparedNegentropy {
+        neg,
+        init_hex: hex::encode(&init_msg),
+    })
 }

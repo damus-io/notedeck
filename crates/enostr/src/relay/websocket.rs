@@ -48,7 +48,7 @@ impl WebsocketConn {
     pub fn new(url: nostr::RelayUrl, wakeup: impl Fn() + Send + Sync + 'static) -> Result<Self> {
         require_tokio_websocket_runtime()?;
 
-        let (sender, receiver) = ws::connect(url.as_str(), wakeup)?;
+        let ws::WsChannels { sender, receiver } = ws::connect(url.as_str(), wakeup)?;
         Ok(Self {
             url,
             status: RelayStatus::Connecting,

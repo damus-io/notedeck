@@ -11,6 +11,14 @@ use crate::relay::outbox::{
 };
 use crate::relay::{backoff, NormRelayUrl};
 
+/// How a relay's low-value transport health ranks it for opening: relays
+/// blocked from a low-value open sort after open ones, then by retry attempts.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd)]
+pub(super) struct LowValueHealthRank {
+    pub(super) blocked: bool,
+    pub(super) retry_attempts: u32,
+}
+
 #[derive(Default)]
 pub(super) struct RelayAdmissionRuntime {
     pub(super) state: RelayAdmissionState,
@@ -126,21 +134,19 @@ impl RelayAdmissionRuntime {
         relay: &NormRelayUrl,
         demand: Option<RelayTransportDemand>,
         now: Instant,
-    ) -> (bool, u32) {
+    ) -> LowValueHealthRank {
         if !demand.is_some_and(RelayTransportDemand::low_value_remote_advertised) {
-            return (false, 0);
+            return LowValueHealthRank::default();
         }
 
         self.state
             .transport_health
             .get(relay)
-            .map(|health| {
-                (
-                    health.blocks_low_value_open(now),
-                    health.low_value_retry_attempts,
-                )
+            .map(|health| LowValueHealthRank {
+                blocked: health.blocks_low_value_open(now),
+                retry_attempts: health.low_value_retry_attempts,
             })
-            .unwrap_or((false, 0))
+            .unwrap_or_default()
     }
 
     fn low_value_health_retry_at(
