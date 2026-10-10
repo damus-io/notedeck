@@ -91,6 +91,32 @@ pub fn execute_interrupt(
     None
 }
 
+/// Ask the backend to stop one of the active session's background tasks.
+///
+/// Nothing changes here: the task leaves the Background card when the
+/// backend reports it ended, so a stop the CLI refuses leaves it showing.
+/// A remote session's tasks run on its host, which this can't reach yet, so
+/// the card offers no Stop there and this does nothing.
+pub fn stop_background_task(
+    session_manager: &SessionManager,
+    backend: &dyn AiBackend,
+    task_id: String,
+    ctx: &egui::Context,
+) {
+    let Some(session) = session_manager.get_active() else {
+        return;
+    };
+    if session.is_remote() {
+        return;
+    }
+    tracing::debug!("Stopping task {} of session {}", task_id, session.id);
+    backend.stop_task(
+        format!("dave-session-{}", session.id),
+        task_id,
+        notedeck::Waker::egui(ctx),
+    );
+}
+
 /// Exit a tool call by denying it and cancelling the current turn.
 pub fn exit_tool_call(
     session_manager: &mut SessionManager,

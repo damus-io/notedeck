@@ -14,3 +14,4 @@ too, so every card strips that out by hand to keep its commit standalone.
 - headway:dave/matrix-message-outdoor — ~3 min: a ninth splice (5 keys, 1 dropped) out of a 274-line rewrite, by yet another scratchpad block-merge script
 - headway:dave/gentle-target-sauce — ~2 min: a tenth splice (11 keys) out of a 310-line rewrite, by copying the last session's splice.py out of its scratchpad and editing its key list
 - headway:dave/shrimp-guide-poet — ~2 min: an eleventh splice (10 keys, 1 dropped) out of a 296-line rewrite, by copying the last session's splice.py again and editing its key list
+- headway:dave/general-tool-lecture — ~3 min: a sixth scratch merge for 5 keys (Stop, Stop?, Yes, No, stopping…); the exporter rewrote ~230 lines of each file around them

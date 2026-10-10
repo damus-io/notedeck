@@ -7,7 +7,7 @@ version.workspace = true
 agentium-core = { workspace = true }
 headway = { workspace = true }
 async-openai = { version = "0.28.0", default-features = false, features = ["rustls-webpki-roots"] }
-claude-agent-sdk-rs = { git = "https://github.com/jb55/claude-agent-sdk-rs", rev = "fef959cf3425" }
+claude-agent-sdk-rs = { git = "https://github.com/jb55/claude-agent-sdk-rs", rev = "a0e4b81f157e" }
 bitflags = { workspace = true }
 egui = { workspace = true }
 egui_nav = { workspace = true }

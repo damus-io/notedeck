@@ -214,6 +214,12 @@ pub trait AiBackend: Send + Sync {
     /// Plan mode makes Claude plan actions without executing them.
     fn set_permission_mode(&self, session_id: String, mode: PermissionMode, waker: Waker);
 
+    /// Stop one of a session's background tasks by its CLI task id. The
+    /// session's background work drops it once the backend reports it
+    /// ended, not when this is called. Default implementation does nothing
+    /// (backends with no background tasks to stop).
+    fn stop_task(&self, _session_id: String, _task_id: String, _waker: Waker) {}
+
     /// Trigger manual context compaction for a session.
     /// Returns a receiver for CompactionStarted/CompactionComplete events.
     /// Default implementation does nothing (backends that don't support it).

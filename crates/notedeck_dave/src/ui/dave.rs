@@ -267,6 +267,9 @@ pub enum DaveAction {
     /// Drop an always-allow rule from the active session's runtime
     /// allowlist, from the Details tab's Permissions card
     RevokeAllow(crate::session::RuntimeAllow),
+    /// Stop one of the active session's background tasks by its CLI task
+    /// id, from the Details tab's Background card once the user confirmed
+    StopTask(String),
 }
 
 impl<'a> DaveUi<'a> {

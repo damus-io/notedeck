@@ -18,7 +18,9 @@ mod permissions;
 mod subagents;
 mod usage;
 
-pub use background::{BackgroundParts, BackgroundRow, BackgroundState, OutputTails};
+pub use background::{
+    BackgroundParts, BackgroundRow, BackgroundState, OutputTails, StopLabels, StopStage, TaskStops,
+};
 pub use edits::{edited_files, EditedFile, EditedMemo, EditedRow, EditedRows, EditsKey};
 pub use files::{
     claude_temp_root, list_session_temp, project_slug, session_temp_dir, FileRow, FileRows,

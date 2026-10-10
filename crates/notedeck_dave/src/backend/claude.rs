@@ -1308,7 +1308,8 @@ fn report_lost_cli(
 ///
 /// Returns the Query or Compact that should start the CLI, or `None` once the
 /// session shuts down. Mode changes are recorded for the next CLI to start
-/// in; an interrupt has nothing to stop.
+/// in; an interrupt or a task stop has nothing to stop, since background
+/// tasks die with their CLI.
 async fn wait_dormant(
     command_rx: &mut tokio_mpsc::Receiver<SessionCommand>,
     state: &mut ActorState,
@@ -1320,7 +1321,9 @@ async fn wait_dormant(
                 state.permission_mode = mode;
                 waker.wake();
             }
-            SessionCommand::Interrupt { waker } => waker.wake(),
+            SessionCommand::Interrupt { waker } | SessionCommand::StopTask { waker, .. } => {
+                waker.wake()
+            }
             SessionCommand::Shutdown => return None,
         }
     }
@@ -1515,6 +1518,20 @@ async fn handle_command(
             }
             mode_waker.wake();
         }
+        SessionCommand::StopTask {
+            task_id,
+            waker: stop_waker,
+        } => {
+            tracing::debug!("Session {} stopping task {}", session_id, task_id);
+            state.idle.touch(Instant::now());
+            // A refusal (the task already ended, or a CLI too old to know
+            // stop_task) leaves the task as it was: the inspector keeps
+            // showing it until the CLI says it ended.
+            if let Err(err) = client.stop_task(&task_id).await {
+                tracing::warn!("Failed to stop task {}: {}", task_id, err);
+            }
+            stop_waker.wake();
+        }
         SessionCommand::Compact {
             waker: compact_waker,
             ..
@@ -1669,6 +1686,21 @@ impl AiBackend for ClaudeBackend {
                 session_id
             );
         }
+    }
+
+    fn stop_task(&self, session_id: String, task_id: String, waker: Waker) {
+        let Some(handle) = self.sessions.get(&session_id) else {
+            return;
+        };
+        let command_tx = handle.command_tx.clone();
+        tokio::spawn(async move {
+            if let Err(err) = command_tx
+                .send(SessionCommand::StopTask { task_id, waker })
+                .await
+            {
+                tracing::warn!("Failed to send stop_task command: {}", err);
+            }
+        });
     }
 
     fn compact_session(
@@ -2055,6 +2087,122 @@ cat > /dev/null
                 "WakeupTurnStarted",
                 "QueryComplete",
             ]
+        );
+
+        command_tx.send(SessionCommand::Shutdown).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(30), session)
+            .await
+            .expect("the session shuts down")
+            .unwrap();
+    }
+
+    /// A stand-in `claude` whose turn launches background task `b1` and
+    /// ends. It then waits for a `stop_task` control request: one naming
+    /// `b1` is acknowledged and the task reported stopped; anything else is
+    /// refused.
+    #[cfg(unix)]
+    const FAKE_CLI_STOP_TASK: &str = r#"#!/bin/sh
+case "$*" in *--version*) echo "2.1.288 (Claude Code)"; exit 0 ;; esac
+read -r init
+id=$(printf '%s' "$init" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$id"
+read -r query
+printf '{"type":"system","subtype":"task_started","task_id":"b1","task_type":"local_bash","tool_use_id":"toolu_bg","description":"watch the build"}\n'
+printf '{"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"fake"}\n'
+read -r req
+id=$(printf '%s' "$req" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+case "$req" in
+  *'"subtype":"stop_task","task_id":"b1"'*)
+    printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$id"
+    printf '{"type":"system","subtype":"task_notification","task_id":"b1","tool_use_id":"toolu_bg","status":"stopped"}\n'
+    ;;
+  *)
+    printf '{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"not stop_task b1"}}\n' "$id"
+    ;;
+esac
+cat > /dev/null
+"#;
+
+    /// Stopping a background task sends the CLI `stop_task` with its id,
+    /// and the task leaves the session's background work, and its Waiting
+    /// count, when the CLI reports it stopped.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_task_stops_a_background_task() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = dir.path().join("claude");
+        std::fs::write(&cli, FAKE_CLI_STOP_TASK).expect("write fake cli");
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake cli");
+
+        let allow_all: claude_agent_sdk_rs::CanUseToolCallback = Arc::new(|_, _, _| {
+            Box::pin(async {
+                PermissionResult::Allow(PermissionResultAllow {
+                    updated_input: None,
+                    updated_permissions: None,
+                })
+            })
+        });
+        let mut options = session_base_options(allow_all);
+        options.cli_path = Some(cli);
+        options.skip_version_check = true;
+
+        let waker = CountingWaker::new();
+        let (command_tx, mut command_rx) = tokio_mpsc::channel(4);
+        let (_perm_tx, mut perm_rx) = tokio_mpsc::channel(4);
+        let (response_tx, response_rx) = mpsc::channel();
+        let mut state = ActorState::new(waker.waker().clone(), PermissionMode::Default, None);
+        let session = tokio::spawn(async move {
+            serve_session(
+                "dave-session",
+                &options,
+                &mut command_rx,
+                &mut perm_rx,
+                &response_tx,
+                &mut state,
+            )
+            .await;
+        });
+
+        command_tx.send(query(waker.waker())).await.unwrap();
+        let launched = responses_until(&response_rx, |r| {
+            matches!(r, DaveApiResponse::QueryComplete(_))
+        })
+        .await;
+        let ids = |r: &DaveApiResponse| match r {
+            DaveApiResponse::BackgroundWork(entries) => {
+                Some(entries.iter().map(|e| e.id.clone()).collect::<Vec<_>>())
+            }
+            _ => None,
+        };
+        assert_eq!(
+            launched.iter().rev().find_map(ids),
+            Some(vec!["b1".to_string()]),
+            "the turn launched b1: {:?}",
+            describe(&launched)
+        );
+
+        command_tx
+            .send(SessionCommand::StopTask {
+                task_id: "b1".to_string(),
+                waker: waker.waker().clone(),
+            })
+            .await
+            .unwrap();
+        // WaitingOn goes out first, then the entries behind it.
+        let stopped = responses_until(
+            &response_rx,
+            |r| matches!(r, DaveApiResponse::BackgroundWork(entries) if entries.is_empty()),
+        )
+        .await;
+        assert!(
+            stopped
+                .iter()
+                .any(|r| matches!(r, DaveApiResponse::WaitingOn(w) if w.background_tasks == 0)),
+            "the Waiting count dropped b1: {:?}",
+            describe(&stopped)
         );
 
         command_tx.send(SessionCommand::Shutdown).await.unwrap();

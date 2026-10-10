@@ -663,6 +663,9 @@ New_Chat_afb4 = {"["}Ñéw Çhàt{"]"}
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = {"["}Ñéw tó Ñóstr?{"]"}
 
+# Dave session inspector background: keeps a background task running
+No_ae74 = {"["}Ñó{"]"}
+
 # Dave session inspector outputs: the transcript mentions no headway card
 No_cards_mentioned_4631 = {"["}Ñó çàrds méñtíóñéd{"]"}
 
@@ -1077,11 +1080,20 @@ Step_1_8656 = {"["}Stép 1{"]"}
 # Step 2 label in support instructions
 Step_2_d08d = {"["}Stép 2{"]"}
 
+# Dave session inspector background: button that stops a background task
+Stop_169e = {"["}Stóp{"]"}
+
 # Button to interrupt/stop the AI operation
 Stop_5b38 = {"["}Stóp{"]"}
 
+# Dave session inspector background: asks to confirm stopping a background task
+Stop_be22 = {"["}Stóp?{"]"}
+
 # Dave session inspector: the agent CLI process is not running
 Stopped___the_next_message_starts_it_e76d = {"["}Stóppéd · thé ñéxt méssàgé stàrts ít{"]"}
+
+# Dave session inspector background: a stop was sent and the task hasn't ended yet
+stopping_6240 = {"["}stóppíñg…{"]"}
 
 # Label for storage settings section
 Storage_ed65 = {"["}Stóràgé{"]"}
@@ -1232,6 +1244,9 @@ Write_a_banger_note_here_bad2 = {"["}Wríté à bàñgér ñóté héré...{"]"}
 
 # Dave session inspector files: a file the session wrote whole, once
 written_7c4e = {"["}wríttéñ{"]"}
+
+# Dave session inspector background: confirms stopping a background task
+Yes_8496 = {"["}Yés{"]"}
 
 # Abbreviated version of yesterday used in conversation summaries
 Yest_0505 = {"["}Yést{"]"}

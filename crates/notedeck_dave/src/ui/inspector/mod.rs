@@ -265,13 +265,15 @@ fn section_body_ui(
         InspectorSection::RateLimits => {
             rate_limits::rate_limits_ui(inspector, facts.rate_limit.as_ref(), i18n, ui)
         }
-        InspectorSection::Background => background::background_ui(
-            &mut inspector.background,
-            facts.is_remote,
-            facts.now_unix,
-            i18n,
-            ui,
-        ),
+        InspectorSection::Background => {
+            return background::background_ui(
+                &mut inspector.background,
+                facts.is_remote,
+                facts.now_unix,
+                i18n,
+                ui,
+            )
+        }
         InspectorSection::Tasks => {
             tasks::tasks_ui(&mut inspector.tasks_header, facts.chat, i18n, ui)
         }

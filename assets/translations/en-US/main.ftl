@@ -663,6 +663,9 @@ New_Chat_afb4 = New Chat
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = New to Nostr?
 
+# Dave session inspector background: keeps a background task running
+No_ae74 = No
+
 # Dave session inspector outputs: the transcript mentions no headway card
 No_cards_mentioned_4631 = No cards mentioned
 
@@ -1077,11 +1080,20 @@ Step_1_8656 = Step 1
 # Step 2 label in support instructions
 Step_2_d08d = Step 2
 
+# Dave session inspector background: button that stops a background task
+Stop_169e = Stop
+
 # Button to interrupt/stop the AI operation
 Stop_5b38 = Stop
 
+# Dave session inspector background: asks to confirm stopping a background task
+Stop_be22 = Stop?
+
 # Dave session inspector: the agent CLI process is not running
 Stopped___the_next_message_starts_it_e76d = Stopped · the next message starts it
+
+# Dave session inspector background: a stop was sent and the task hasn't ended yet
+stopping_6240 = stopping…
 
 # Label for storage settings section
 Storage_ed65 = Storage
@@ -1232,6 +1244,9 @@ Write_a_banger_note_here_bad2 = Write a banger note here...
 
 # Dave session inspector files: a file the session wrote whole, once
 written_7c4e = written
+
+# Dave session inspector background: confirms stopping a background task
+Yes_8496 = Yes
 
 # Abbreviated version of yesterday used in conversation summaries
 Yest_0505 = Yest

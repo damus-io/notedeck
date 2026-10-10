@@ -43,6 +43,14 @@ pub(crate) enum SessionCommand {
         mode: PermissionMode,
         waker: Waker,
     },
+    /// Stop one background task (a background Bash command, a Monitor, a
+    /// background agent) by its CLI task id. The CLI reports the end as a
+    /// `task_notification`, which drops the task from the session's
+    /// background work.
+    StopTask {
+        task_id: String,
+        waker: Waker,
+    },
     /// Trigger manual context compaction
     Compact {
         response_tx: mpsc::Sender<DaveApiResponse>,

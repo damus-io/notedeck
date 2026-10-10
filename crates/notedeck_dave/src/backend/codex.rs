@@ -338,6 +338,8 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                         int_waker.wake();
                                         // Don't restore pending — it's been cancelled
                                     }
+                                    // Codex reports no background tasks, so there is none to stop.
+                                    SessionCommand::StopTask { waker: stop_waker, .. } => stop_waker.wake(),
                                     SessionCommand::Shutdown => {
                                         tracing::debug!("Session {} shutting down during approval", session_id);
                                         return;
@@ -420,6 +422,8 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                             "Cannot compact during active turn".to_string(),
                                         ));
                                     }
+                                    // Codex reports no background tasks, so there is none to stop.
+                                    SessionCommand::StopTask { waker: stop_waker, .. } => stop_waker.wake(),
                                     SessionCommand::Shutdown => {
                                         tracing::debug!("Session {} shutting down during query", session_id);
                                         return;
@@ -491,6 +495,10 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                 drop(response_tx);
                 tracing::debug!("Turn complete for session {}", session_id);
             }
+            // Codex reports no background tasks, so there is none to stop.
+            SessionCommand::StopTask {
+                waker: stop_waker, ..
+            } => stop_waker.wake(),
             SessionCommand::Interrupt { waker } => {
                 waker.wake();
             }

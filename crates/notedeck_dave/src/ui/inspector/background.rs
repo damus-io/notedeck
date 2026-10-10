@@ -7,12 +7,19 @@
 //! Their strings are built into [`BackgroundRow`]s once a second at most (ages
 //! and countdowns move with the clock), and a local task's output tail is
 //! read off the UI thread by [`OutputTails`](crate::inspector::OutputTails).
+//!
+//! A task (not a wake-up or cron, which only the model can cancel) has a
+//! Stop control: Stop, then "Stop? Yes No", then "stopping…" until the
+//! CLI reports it ended. See [`TaskStops`](crate::inspector::TaskStops).
 
-use crate::inspector::{BackgroundParts, BackgroundRow, BackgroundState, LabelMemo};
+use crate::inspector::{
+    BackgroundParts, BackgroundRow, BackgroundState, LabelMemo, StopLabels, StopStage,
+};
 use crate::messages::{
     BackgroundEntry, BackgroundTask, BackgroundTaskKind, BackgroundWork, WaitingOn,
 };
 use crate::ui::dave::format_tokens;
+use crate::ui::DaveAction;
 use notedeck::{tr, Localization};
 use std::time::Instant;
 
@@ -21,20 +28,23 @@ use super::{weak_ui, MONO_SIZE, VALUE_SIZE};
 /// Size of the kind badge's text.
 const BADGE_SIZE: f32 = 9.5;
 
-/// The Background card's body, as of `now_unix`. A remote session shows no
-/// output tails: the files are on its host.
+/// The Background card's body, as of `now_unix`, and the task a confirmed
+/// Stop asked to stop. A remote session shows no output tails, the files
+/// being on its host, and no Stop, its tasks being out of reach.
 pub fn background_ui(
     state: &mut BackgroundState,
     is_remote: bool,
     now_unix: u64,
     i18n: &mut Localization,
     ui: &mut egui::Ui,
-) {
+) -> Option<DaveAction> {
     let BackgroundParts {
         entries,
         generation,
         rows,
         tails,
+        stops,
+        stop_labels,
     } = state.parts_mut();
     if entries.is_empty() {
         weak_ui(
@@ -45,7 +55,7 @@ pub fn background_ui(
                 "Dave session inspector background: no background tasks, wake-ups or crons"
             ),
         );
-        return;
+        return None;
     }
 
     let rows = rows.get((generation, now_unix), i18n, |_, i18n| {
@@ -54,24 +64,64 @@ pub fn background_ui(
             .map(|entry| build_row(entry, now_unix, i18n))
             .collect()
     });
+    let labels = stop_labels.get((), i18n, |_, i18n| build_stop_labels(i18n));
     let now = Instant::now();
+    let mut action = None;
     for (entry, row) in entries.iter().zip(rows) {
         let tail = if is_remote {
             None
         } else {
             entry.output_file().map(|path| tails.tail(path, now))
         };
-        entry_ui(entry, row, tail, ui);
+        let stop = (!is_remote && matches!(entry.work, BackgroundWork::Task(_)))
+            .then(|| stops.stage(&entry.id, now));
+        let stop = stop.map(|stage| StopControl { stage, labels });
+        match entry_ui(entry, row, tail, stop, ui) {
+            Some(StopClick::Ask) => stops.ask(&entry.id),
+            Some(StopClick::No) => stops.cancel(),
+            Some(StopClick::Yes) => {
+                stops.confirm(&entry.id, now);
+                action = Some(DaveAction::StopTask(entry.id.clone()));
+            }
+            None => {}
+        }
     }
 
-    // Ages and countdowns tick each second; the tails refresh every few.
+    // Ages and countdowns tick each second, a refused stop is offered again
+    // within one, and the tails refresh every few.
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_secs(1));
+    action
 }
 
-/// One entry: the kind badge, title and age over the meta line, then the
-/// output tail when there is one.
-fn entry_ui(entry: &BackgroundEntry, row: &BackgroundRow, tail: Option<&str>, ui: &mut egui::Ui) {
+/// A task's Stop control as drawn: where it stands, in which words.
+#[derive(Clone, Copy)]
+struct StopControl<'a> {
+    stage: StopStage,
+    labels: &'a StopLabels,
+}
+
+/// What a click on a task's Stop control asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopClick {
+    /// Stop: ask to confirm.
+    Ask,
+    /// Yes: stop it.
+    Yes,
+    /// No: withdraw the question.
+    No,
+}
+
+/// One entry: the kind badge, title, age and Stop control over the meta
+/// line, then the output tail when there is one. Returns a click on Stop.
+fn entry_ui(
+    entry: &BackgroundEntry,
+    row: &BackgroundRow,
+    tail: Option<&str>,
+    stop: Option<StopControl<'_>>,
+    ui: &mut egui::Ui,
+) -> Option<StopClick> {
+    let mut click = None;
     egui::Frame::new()
         .fill(ui.visuals().panel_fill)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
@@ -82,6 +132,9 @@ fn entry_ui(entry: &BackgroundEntry, row: &BackgroundRow, tail: Option<&str>, ui
             ui.horizontal(|ui| {
                 badge_ui(ui, &row.badge, badge_colors(entry, ui.visuals().dark_mode));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(stop) = stop {
+                        click = stop_ui(stop, ui);
+                    }
                     weak_ui(ui, &row.when);
                     // The title takes what the age leaves, from the left.
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -110,6 +163,70 @@ fn entry_ui(entry: &BackgroundEntry, row: &BackgroundRow, tail: Option<&str>, ui
                 tail_ui(ui, tail);
             }
         });
+    click
+}
+
+/// The Stop control, laid out right to left: Stop, or "Stop? Yes No", or
+/// "stopping…". Returns what was clicked.
+fn stop_ui(stop: StopControl<'_>, ui: &mut egui::Ui) -> Option<StopClick> {
+    let labels = stop.labels;
+    match stop.stage {
+        StopStage::Offered => ui
+            .small_button(labels.stop.as_str())
+            .clicked()
+            .then_some(StopClick::Ask),
+        StopStage::Confirming => {
+            // Right to left: the last-read word goes first.
+            let no = ui.small_button(labels.no.as_str()).clicked();
+            let yes = ui.small_button(labels.yes.as_str()).clicked();
+            ui.label(
+                egui::RichText::new(labels.question.as_str())
+                    .font(egui::FontId::proportional(VALUE_SIZE)),
+            );
+            if yes {
+                Some(StopClick::Yes)
+            } else if no {
+                Some(StopClick::No)
+            } else {
+                None
+            }
+        }
+        StopStage::Stopping => {
+            weak_ui(ui, &labels.stopping);
+            None
+        }
+    }
+}
+
+/// The Stop control's words, in the current locale.
+fn build_stop_labels(i18n: &mut Localization) -> StopLabels {
+    StopLabels {
+        stop: tr!(
+            i18n,
+            "Stop",
+            "Dave session inspector background: button that stops a background task"
+        ),
+        question: tr!(
+            i18n,
+            "Stop?",
+            "Dave session inspector background: asks to confirm stopping a background task"
+        ),
+        yes: tr!(
+            i18n,
+            "Yes",
+            "Dave session inspector background: confirms stopping a background task"
+        ),
+        no: tr!(
+            i18n,
+            "No",
+            "Dave session inspector background: keeps a background task running"
+        ),
+        stopping: tr!(
+            i18n,
+            "stopping…",
+            "Dave session inspector background: a stop was sent and the task hasn't ended yet"
+        ),
+    }
 }
 
 /// The kind badge: small uppercase mono text on a tinted chip.

@@ -1580,6 +1580,10 @@ pub fn handle_ui_action(
             update::revoke_runtime_allow(session_manager, &rule);
             UiActionResult::Handled
         }
+        DaveAction::StopTask(task_id) => {
+            update::stop_background_task(session_manager, backend, task_id, ctx);
+            UiActionResult::Handled
+        }
         // All run actions are intercepted and handled in lib.rs before reaching here
         DaveAction::Run(_) => UiActionResult::Handled,
     }
@@ -1946,6 +1950,8 @@ mod tests {
         rate_limit: Option<crate::messages::RateLimitInfo>,
         /// The clock the Details tab reads, pinned for snapshots.
         now_unix: Option<u64>,
+        /// The tasks the UI asked the backend to stop, in order.
+        stop_requests: Vec<String>,
     }
 
     fn session_view_state() -> SessionViewState {
@@ -1976,6 +1982,7 @@ mod tests {
             set_up: false,
             rate_limit: None,
             now_unix: None,
+            stop_requests: Vec::new(),
         }
     }
 
@@ -2008,6 +2015,10 @@ mod tests {
             }
             let response = dave_ui.ui(&mut app_ctx, ui);
             if let Some(action) = response.action {
+                // The harness's backend drops stops, so note them here.
+                if let super::DaveAction::StopTask(task_id) = &action {
+                    state.stop_requests.push(task_id.clone());
+                }
                 super::handle_ui_action(
                     action,
                     &mut state.session_manager,
@@ -2576,6 +2587,86 @@ mod tests {
         }
         assert_eq!(count_labels(&harness, "bash"), 1);
         assert_eq!(count_labels_containing(&harness, "still waiting"), 0);
+        assert_eq!(
+            count_labels(&harness, "Stop"),
+            0,
+            "its tasks are out of reach"
+        );
+    }
+
+    /// The topmost node labelled `label`.
+    fn topmost<'h>(
+        harness: &'h Harness<'static, SessionViewState>,
+        label: &'h str,
+    ) -> egui_kittest::Node<'h> {
+        use egui_kittest::kittest::Queryable;
+        harness
+            .query_all_by_label(label)
+            .min_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y))
+            .unwrap_or_else(|| panic!("no {label:?}"))
+    }
+
+    /// Each task has a Stop, a wake-up and a cron none. Stop asks first:
+    /// No withdraws the question, Yes asks the backend to stop the task,
+    /// which shows as stopping until the backend's report drops it.
+    #[test]
+    fn stop_asks_then_stops_a_task_when_its_report_drops_it() {
+        use crate::messages::DaveApiResponse;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = session_view_harness(egui::vec2(1100.0, 1400.0));
+        seed_background(harness.state_mut(), crate::session::now_unix(), dir.path());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .open(crate::inspector::InspectorSection::Background);
+        harness.run_ok();
+        // The monitor, the agent and the bash command; not the wake-up or cron.
+        assert_eq!(count_labels(&harness, "Stop"), 3);
+
+        // The monitor is the topmost task.
+        topmost(&harness, "Stop").click();
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "Stop?"), 1);
+        assert_eq!(count_labels(&harness, "Stop"), 2);
+        topmost(&harness, "No").click();
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "Stop?"), 0);
+        assert_eq!(count_labels(&harness, "Stop"), 3);
+        assert!(harness.state().stop_requests.is_empty());
+
+        topmost(&harness, "Stop").click();
+        harness.run_ok();
+        topmost(&harness, "Yes").click();
+        harness.run_ok();
+        assert_eq!(harness.state().stop_requests, ["m41xd"]);
+        assert_eq!(count_labels(&harness, "stopping\u{2026}"), 1);
+        assert_eq!(count_labels(&harness, "monitor"), 1, "not dropped early");
+
+        // The backend reports the monitor gone.
+        let session = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap();
+        let rest: Vec<_> = session
+            .inspector
+            .background
+            .entries()
+            .iter()
+            .filter(|e| e.id != "m41xd")
+            .cloned()
+            .collect();
+        session
+            .inspector
+            .apply(&DaveApiResponse::BackgroundWork(rest));
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "monitor"), 0);
+        assert_eq!(count_labels(&harness, "stopping\u{2026}"), 0);
+        assert_eq!(count_labels(&harness, "Stop"), 2);
     }
 
     /// A Waiting session's status bar shows how many things will resume
@@ -3346,6 +3437,41 @@ mod tests {
         }
         harness.run_ok();
         harness.snapshot("session_background");
+    }
+
+    /// The Background card's Stop control: the monitor asking "Stop?", the
+    /// agent stopping, the bash command offering Stop.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_session_background_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1100.0, 760.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        // 2100-01-01 00:00 UTC, so the wake-up's due time holds still.
+        seed_background(harness.state_mut(), 4_102_444_800, dir.path());
+        let session = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap();
+        session
+            .inspector_view
+            .open(crate::inspector::InspectorSection::Background);
+        let stops = &mut session.inspector.background.stops;
+        stops.confirm("a9f3", std::time::Instant::now());
+        stops.ask("m41xd");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while count_labels_containing(&harness, "still waiting") == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the tail never landed"
+            );
+            harness.step();
+        }
+        harness.run_ok();
+        harness.snapshot("session_background_stop");
     }
 
     /// The Rate limits card near the five-hour cap: the status, a bar per
