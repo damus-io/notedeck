@@ -130,9 +130,30 @@ pub enum RenderContext {
     Full,
 }
 
+/// How much framing an inline widget draws around itself — a render hint the
+/// surface passes alongside the [`RenderContext`].
+///
+/// Advisory, like the context: a renderer that draws no frame anyway ignores it.
+/// Separate from the context because it's orthogonal to *which* shape is drawn —
+/// a chip is still a chip, only without its pill. `#[non_exhaustive]` so other
+/// framings can be added without breaking existing impls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum InlineChrome {
+    /// A filled, outlined pill that sets the reference apart from the prose
+    /// around it. The **default**.
+    #[default]
+    Pill,
+    /// No background, outline or side padding: the icon and text alone, for a
+    /// surface that already frames the reference — a list row whose title *is*
+    /// the reference, where a pill would be a box drawn inside a box.
+    Bare,
+}
+
 /// The inputs for one [`KindRenderer::render`] call: the resolved note, a
-/// transaction to read it (and any events folded off it) within, and the
-/// [`RenderContext`] hinting which shape to draw.
+/// transaction to read it (and any events folded off it) within, the
+/// [`RenderContext`] hinting which shape to draw, and the [`InlineChrome`]
+/// hinting how to frame it.
 ///
 /// Bundled into a struct so the render signature stays stable as inputs grow
 /// (rather than churning every impl each time one is added).
@@ -146,6 +167,8 @@ pub struct KindRenderRequest<'a, 'txn> {
     pub note: &'a Note<'txn>,
     /// The surrounding context, hinting which shape to draw. Advisory.
     pub context: RenderContext,
+    /// Whether an inline shape draws its pill background. Advisory.
+    pub chrome: InlineChrome,
 }
 
 /// Renders a nostr entity of one or more kinds inline.

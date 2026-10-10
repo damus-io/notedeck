@@ -24,19 +24,22 @@ pub fn card_inline_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) ->
 /// card used for block embeds.
 ///
 /// `column` is the card's live [`ColumnPos`] (`None` when archived, drawing a
-/// muted backlog-style icon).
+/// muted backlog-style icon). `chrome` is the surface's
+/// [`InlineChrome`](notedeck::InlineChrome) hint: the pill, or the icon and
+/// title alone.
 pub fn card_chip_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     title: &str,
     column: Option<ColumnPos>,
+    chrome: notedeck::InlineChrome,
 ) -> egui::Response {
     // Archived cards have no live column: fall back to the unstarted icon.
     let icon = match column {
         Some(pos) => StatusIcon::for_column(pos.index, pos.count),
         None => StatusIcon::Backlog,
     };
-    notedeck_ui::inline_chip(ui, theme, title, |ui, size| {
+    notedeck_ui::inline_chip(ui, theme, title, chrome, |ui, size| {
         status_icon_ui(ui, theme, icon, size);
     })
     .interact(egui::Sense::click())

@@ -673,7 +673,9 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
 /// Lay `title` out left to right in a child ui at `pos`, `max_width` wide:
 /// its text runs painted as in [`render_title`], and each reference in it drawn
 /// by the [`KindRenderer`](notedeck::KindRenderer) for the kind it resolves to
-/// (a headway card's chip), the same widget the chat draws for that ref.
+/// (a headway card's chip) with [`InlineChrome::Bare`](notedeck::InlineChrome::Bare):
+/// the chat's widget for that ref without its pill, since the row already
+/// frames the title.
 ///
 /// A click on a widget raises its action (open the card), pushed onto the
 /// app's actions; the widget sits above the row, so that click doesn't also
@@ -690,11 +692,11 @@ fn title_with_refs_ui(
 ) {
     let font_id = egui::FontId::proportional(14.0);
     let row_height = ui.fonts_mut(|f| f.row_height(&font_id));
-    // A chip is a little taller than the text row (its outline sits outside
-    // it). Give the child room for that on both sides of the title's centre
-    // line, so `Align::Center` centres the chip on the line the plain title
+    // Leave room on both sides of the title's centre line, so `Align::Center`
+    // centres a widget taller than the text row on the line the plain title
     // would sit on rather than letting it hang off the bottom of a
-    // text-row-high rect.
+    // text-row-high rect. A bare chip is one row tall, but a renderer that
+    // ignores the hint still draws its outlined pill.
     let center = pos + egui::vec2(max_width / 2.0, row_height / 2.0);
     let rect = egui::Rect::from_center_size(center, egui::vec2(max_width, row_height + 8.0));
     let mut child = ui.new_child(
@@ -702,7 +704,7 @@ fn title_with_refs_ui(
             .max_rect(rect)
             .layout(Layout::left_to_right(Align::Center)),
     );
-    // Clip sideways only, so the chip's outline isn't shaved off.
+    // Clip sideways only, so such an outline isn't shaved off.
     child.set_clip_rect(rect.intersect(ui.clip_rect()));
     child.spacing_mut().item_spacing.x = 0.0;
     // An inline widget sizes itself to the surrounding prose, which it takes
@@ -724,6 +726,9 @@ fn title_with_refs_ui(
             refs.txn,
             matched,
             notedeck::RenderContext::Inline,
+            // The row already frames its title; a pill inside it is a box in
+            // a box.
+            notedeck::InlineChrome::Bare,
         );
         match drawn {
             Some(drawn) => {

@@ -797,11 +797,17 @@ fn drag_chip_ui(ui: &egui::Ui, theme: &ColorTheme, title: &str) {
         .fixed_pos(pos + egui::vec2(12.0, 8.0))
         .interactable(false)
         .show(ui.ctx(), |ui| {
-            notedeck_ui::inline_chip(ui, theme, title, |ui, size| {
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-                document_icon(ui.painter(), rect.center(), size, theme.text_muted);
-            });
+            notedeck_ui::inline_chip(
+                ui,
+                theme,
+                title,
+                notedeck::InlineChrome::Pill,
+                |ui, size| {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+                    document_icon(ui.painter(), rect.center(), size, theme.text_muted);
+                },
+            );
         });
 }
 

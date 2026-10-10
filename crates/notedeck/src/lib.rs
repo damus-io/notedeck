@@ -105,7 +105,7 @@ pub use jobs::{
     MediaJobs,
 };
 pub use kind_renderer::{
-    open_on_click, resolve_ref, KindRenderRequest, KindRenderResponse, KindRenderer,
+    open_on_click, resolve_ref, InlineChrome, KindRenderRequest, KindRenderResponse, KindRenderer,
     KindRendererRegistry, RenderContext,
 };
 pub use media::{

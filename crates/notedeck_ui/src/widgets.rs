@@ -2,7 +2,7 @@ use crate::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
 use crate::icons::search_icon;
 use egui::{emath::GuiRounding, Align, CornerRadius, Label, Pos2, RichText, Stroke, TextEdit};
 use notedeck::tokens::{RADIUS_MD, RADIUS_PILL, RADIUS_SM, SPACING_SM, SPACING_XS, STROKE_THIN};
-use notedeck::{ColorTheme, NotedeckTextStyle};
+use notedeck::{ColorTheme, InlineChrome, NotedeckTextStyle};
 
 pub fn x_button(rect: egui::Rect) -> impl egui::Widget {
     move |ui: &mut egui::Ui| -> egui::Response {
@@ -177,20 +177,31 @@ const INLINE_ICON_RATIO: f32 = 0.65;
 /// `icon` paints the leading glyph into a square of the size it is handed. The
 /// returned response covers the whole chip, so callers add their own
 /// [`Sense`](egui::Sense) and hover feedback.
+///
+/// `chrome` is the surface's [`InlineChrome`] hint (a renderer passes its
+/// request's along): [`Pill`](InlineChrome::Pill) draws the tint and outline,
+/// [`Bare`](InlineChrome::Bare) only the icon and text, flush with the text
+/// either side.
 pub fn inline_chip(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     text: &str,
+    chrome: InlineChrome,
     icon: impl FnOnce(&mut egui::Ui, f32),
 ) -> egui::Response {
-    // Padding on the sides only. The outline is the one thing that costs height —
-    // a stroke sits outside the content — but `surface_elevated` is the page color
-    // in the light theme, so without it the chip would be invisible there.
-    let frame = egui::Frame::new()
-        .fill(theme.surface_elevated)
-        .corner_radius(CornerRadius::same(RADIUS_SM as u8))
-        .stroke(Stroke::new(STROKE_THIN, theme.border_default))
-        .inner_margin(egui::Margin::symmetric(SPACING_XS as i8, 0));
+    let frame = match chrome {
+        // Padding on the sides only. The outline is the one thing that costs
+        // height — a stroke sits outside the content — but `surface_elevated`
+        // is the page color in the light theme, so without it the chip would be
+        // invisible there.
+        InlineChrome::Pill => egui::Frame::new()
+            .fill(theme.surface_elevated)
+            .corner_radius(CornerRadius::same(RADIUS_SM as u8))
+            .stroke(Stroke::new(STROKE_THIN, theme.border_default))
+            .inner_margin(egui::Margin::symmetric(SPACING_XS as i8, 0)),
+        // Nothing to set it apart: the surface already frames it.
+        _ => egui::Frame::new(),
+    };
 
     // `item_spacing` below puts one gap between icon and text, and `total_margin`
     // covers the frame's own margins, so the chip's width is derived from what
@@ -266,5 +277,57 @@ fn break_row_unless_fits(ui: &mut egui::Ui, width: f32) {
     }
     if width > ui.available_rect_before_wrap().width() {
         ui.end_row();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inline_chip;
+    use notedeck::{ColorTheme, InlineChrome};
+
+    /// The chip each chrome draws for the same text and icon, as its rect.
+    fn chip_rect(chrome: InlineChrome) -> egui::Rect {
+        let mut rect = egui::Rect::NOTHING;
+        let mut harness = egui_kittest::Harness::new_ui(|ui| {
+            let theme = ColorTheme::current(ui.ctx());
+            rect = inline_chip(ui, &theme, "Fix the parser", chrome, |ui, size| {
+                ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+            })
+            .rect;
+        });
+        harness.run();
+        drop(harness);
+        rect
+    }
+
+    /// `Bare` drops the pill's padding and outline, so the chip is exactly as
+    /// wide as the pill's contents and one text row tall, where `Pill` adds
+    /// its frame around the same contents.
+    #[test]
+    fn bare_chrome_draws_the_contents_without_the_pill() {
+        let pill = chip_rect(InlineChrome::Pill);
+        let bare = chip_rect(InlineChrome::Bare);
+        let frame = egui::Frame::new()
+            .stroke(egui::Stroke::new(
+                notedeck::tokens::STROKE_THIN,
+                egui::Color32::BLACK,
+            ))
+            .inner_margin(egui::Margin::symmetric(
+                notedeck::tokens::SPACING_XS as i8,
+                0,
+            ))
+            .total_margin()
+            .sum();
+        assert!(
+            (pill.width() - bare.width() - frame.x).abs() < 0.5,
+            "pill {} wide, bare {} wide: the difference should be the frame's {}",
+            pill.width(),
+            bare.width(),
+            frame.x
+        );
+        assert!(
+            pill.height() > bare.height(),
+            "the pill's outline should make it taller than the bare chip"
+        );
     }
 }
