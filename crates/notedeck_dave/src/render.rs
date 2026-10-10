@@ -23,7 +23,7 @@ use notedeck::{
     RenderContext,
 };
 
-use crate::agent_status::{stale_color, AgentStatus};
+use crate::agent_status::{paint_status_bar, stale_color, AgentStatus, STATUS_BAR_WIDTH};
 use crate::session_cache::AgentiumSessionCache;
 use agentium_core::session_events::{now_secs, AI_SESSION_STATE_KIND};
 use agentium_core::session_loader::{SessionState, DELETED_STATUS};
@@ -32,6 +32,10 @@ use agentium_core::session_loader::{SessionState, DELETED_STATUS};
 /// event. A `'static` slice so [`KindRenderer::kinds`] can hand it out by
 /// reference.
 const SESSION_KINDS: &[u32] = &[AI_SESSION_STATE_KIND];
+
+/// How far a chip's status bar stops short of the top and bottom of its text
+/// row.
+const STATUS_BAR_INSET: f32 = 2.0;
 
 /// Title shown for a session whose state carries no `title` tag.
 const UNTITLED_SESSION: &str = "Untitled session";
@@ -46,7 +50,7 @@ struct LiveSession {
     status: String,
     /// The working directory the session runs in (for the block card).
     cwd: String,
-    /// Unix seconds of the session's last activity, used to fade the status dot as
+    /// Unix seconds of the session's last activity, used to fade the status color as
     /// the session goes stale. For a folded session this is
     /// [`SessionView::last_activity`](crate::session_cache::SessionView::last_activity)
     /// — the newest of its state and conversation-message times, memoized in the
@@ -84,8 +88,9 @@ fn session_age(live: &LiveSession) -> u64 {
 /// Reads the SAME `Rc<RefCell<AgentiumSessionCache>>` as the parser and Dave's
 /// session UI (cloned in at registration), so a status update shows on the chip in
 /// realtime. Honors [`req.context`](KindRenderRequest::context): a compact
-/// one-line **chip** (a live status dot + the session's title) inline in prose,
-/// and a fuller **card** (title + status + working directory) as a block embed.
+/// one-line **chip** (the session list's status bar + the session's title) inline
+/// in prose, and a fuller **card** (title + status + working directory) as a
+/// block embed.
 ///
 /// A chip whose session is titled with a reference and nothing else — autowork
 /// titles a session with its card's `headway:<board>/<word-id>` — draws that
@@ -113,7 +118,7 @@ impl AgentiumSessionRenderer {
         }
     }
 
-    /// The inline chip for `live`: a status glyph and the session's title.
+    /// The inline chip for `live`: its status bar and the session's title.
     ///
     /// A title that is wholly one reference draws the referenced entity's chip
     /// through the registry, without its pill (it sits in this one's) and
@@ -220,11 +225,11 @@ impl KindRenderer for AgentiumSessionRenderer {
 /// [`session`](AgentiumSessionCache::session), keyed by the note's author + its
 /// `claude_session_id` d-tag, so a chip reuses this frame's fold.
 ///
-/// `last_activity` (which fades the stale dot) comes straight from the folded
-/// [`SessionView`](crate::session_cache::SessionView): the cache maintains it across
-/// both the session's state events and its conversation messages, so this path does
-/// **no** per-frame ndb query — the fix for the per-chip query storm that dominated
-/// the render of a message with many chips.
+/// `last_activity` (which fades a stale session's status color) comes straight
+/// from the folded [`SessionView`](crate::session_cache::SessionView): the cache
+/// maintains it across both the session's state events and its conversation
+/// messages, so this path does **no** per-frame ndb query — the fix for the
+/// per-chip query storm that dominated the render of a message with many chips.
 #[profiling::function]
 fn live_session(
     cache: &Rc<RefCell<AgentiumSessionCache>>,
@@ -251,8 +256,8 @@ fn session_title(live: &LiveSession) -> &str {
     }
 }
 
-/// The base color of the live status dot: the mapped [`AgentStatus`] color for a known status,
-/// else a muted dot for an unrecognised one.
+/// The base status color: the mapped [`AgentStatus`] color for a known status,
+/// else a muted color for an unrecognised one.
 fn base_status_color(theme: &ColorTheme, status: &str) -> egui::Color32 {
     AgentStatus::from_status_str(status)
         .map(|s| s.color())
@@ -265,9 +270,10 @@ fn status_color(theme: &ColorTheme, session: &LiveSession) -> egui::Color32 {
     stale_color(base_status_color(theme, &session.status), age)
 }
 
-/// A compact, single-line inline reference to a session: a live status dot
-/// followed by the session's title, in a small rounded pill — the in-prose shape
-/// ([`notedeck::RenderContext::Inline`]), versus the fuller [`session_card_ui`].
+/// A compact, single-line inline reference to a session: its status bar
+/// ([`session_glyph`]) followed by the session's title, in a small rounded pill —
+/// the in-prose shape ([`notedeck::RenderContext::Inline`]), versus the fuller
+/// [`session_card_ui`].
 /// `chrome` drops the pill when the surface asks for it.
 #[profiling::function]
 fn session_chip_ui(
@@ -287,17 +293,32 @@ fn session_chip_ui(
 }
 
 /// The chip's leading glyph for `live`, for [`notedeck_ui::inline_chip`]'s icon
-/// slot: its live status dot, or — for a tombstoned session, which reads as
-/// resumable — a small "resume" play triangle.
+/// slot: the session list's status bar ([`paint_status_bar`]), in the same
+/// status color fading the same way as a session row's, so the chip reads as a
+/// session even when its title is another entity's chip. A tombstoned session,
+/// which reads as resumable, adds a small "resume" play triangle after it.
+///
+/// A live session's bar is narrower than the square the slot is measured at,
+/// so the chip draws a little narrower than it planned for and breaks the row
+/// early by that much at worst — never late. A deleted one fills the square.
 fn session_glyph(theme: &ColorTheme, live: &LiveSession) -> impl FnOnce(&mut egui::Ui, f32) {
     let color = status_color(theme, live);
     let deleted = live.status == DELETED_STATUS;
     move |ui, size| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+        // As tall as the slot (one text row) less a little at each end, the
+        // way a row's bar is inset from the row's top and bottom.
+        let height = ui.available_height() - 2.0 * STATUS_BAR_INSET;
+        let width = if deleted { size } else { STATUS_BAR_WIDTH };
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+        let bar = egui::Rect::from_min_size(rect.min, egui::vec2(STATUS_BAR_WIDTH, height));
+        paint_status_bar(ui.painter(), bar, color);
         if deleted {
-            resume_glyph(ui.painter(), rect.center(), size, color);
-        } else {
-            status_dot(ui.painter(), rect.center(), size, color);
+            // The rest of the square, past the bar and a gap the bar's width.
+            let rest = egui::Rect::from_min_max(
+                egui::pos2(bar.max.x + STATUS_BAR_WIDTH, rect.min.y),
+                rect.max,
+            );
+            resume_glyph(ui.painter(), rest.center(), size, color);
         }
     }
 }
@@ -352,16 +373,16 @@ fn status_label(status: &str) -> &str {
         .unwrap_or(status)
 }
 
-/// A filled status dot centred in a square of `size` — the live status indicator,
-/// the agentium analog of headway's column [`StatusIcon`].
+/// A filled status dot centred in a square of `size` — the block card's live
+/// status indicator.
 fn status_dot(painter: &egui::Painter, center: egui::Pos2, size: f32, color: egui::Color32) {
     painter.circle_filled(center, size * 0.32, color);
 }
 
 /// A small right-pointing "resume" play triangle — the tombstoned/resumable
-/// indicator. A filled dot means live status and a hollow circle is headway's
-/// TODO glyph, so a deleted session's chip uses a play triangle to read as
-/// click-to-resume without colliding with either.
+/// indicator, drawn after a deleted session's status bar. A hollow circle is
+/// headway's TODO glyph, so it is a play triangle that reads as click-to-resume
+/// without colliding with it.
 fn resume_glyph(painter: &egui::Painter, center: egui::Pos2, size: f32, color: egui::Color32) {
     let r = size * 0.30;
     // A right-pointing triangle centred on `center`, nudged left so it looks

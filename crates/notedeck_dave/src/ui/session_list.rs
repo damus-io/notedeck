@@ -6,7 +6,7 @@ use nostrdb::Transaction;
 use notedeck::NoteContext;
 use notedeck_ui::app_images;
 
-use crate::agent_status::{stale_color, AgentStatus};
+use crate::agent_status::{paint_status_bar, stale_color, AgentStatus, STATUS_BAR_WIDTH};
 use crate::collapse_state::CollapseState;
 use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
@@ -472,9 +472,9 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         let status_color = stale_color(status.color(), age);
         let status_bar_rect = egui::Rect::from_min_size(
             rect.left_top() + egui::vec2(2.0, 4.0),
-            egui::vec2(3.0, rect.height() - 8.0),
+            egui::vec2(STATUS_BAR_WIDTH, rect.height() - 8.0),
         );
-        ui.painter().rect_filled(status_bar_rect, 1.5, status_color);
+        paint_status_bar(ui.painter(), status_bar_rect, status_color);
         let mut text_start_x = 12.0;
 
         // A pending placeholder (a remote spawn/resume in flight) shows a small

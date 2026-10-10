@@ -118,6 +118,17 @@ pub fn stale_color(color: egui::Color32, age_secs: u64) -> egui::Color32 {
     egui::Color32::from(hsva)
 }
 
+/// Width of a session's status bar: the vertical line down a session-list
+/// row's left edge, and the leading glyph of an `agentium:` chip.
+pub const STATUS_BAR_WIDTH: f32 = 3.0;
+
+/// Paint a session's status bar filling `rect` in `color` (a status color,
+/// usually through [`stale_color`]). The one shape the session list and the
+/// inline session chip both draw, so the two read as the same thing.
+pub fn paint_status_bar(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    painter.rect_filled(rect, STATUS_BAR_WIDTH / 2.0, color);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

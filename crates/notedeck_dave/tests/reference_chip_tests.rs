@@ -1,5 +1,5 @@
 //! The cross-app demo for the agentium inline-reference epic: an
-//! `agentium:<word-id>` reference resolves to a live session chip — a status dot
+//! `agentium:<word-id>` reference resolves to a live session chip — a status bar
 //! plus the session's *current* title, folded from the shared session cache —
 //! rendered inline in both a plain note and a Dave-style chat message.
 //!
@@ -39,11 +39,19 @@ struct RefChipState {
 
 /// Seed a kind-31988 session-state event authored by `author` and ingest it
 /// locally, returning nothing — the caller derives the word-id from the session id.
+///
+/// Stamped with the current time, so the session is fresh when the chip draws
+/// it and its status bar shows the status's own color rather than the faded
+/// one a stale session gets (which a chip measures against the wall clock).
 fn seed_session(ndb: &Ndb, secret: &[u8; 32], session_id: &str, title: &str, status: &str) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after the epoch")
+        .as_secs();
     let note = NoteBuilder::new()
         .kind(AI_SESSION_STATE_KIND)
         .content("")
-        .created_at(1_700_000_000)
+        .created_at(now)
         .start_tag()
         .tag_str("d")
         .tag_str(session_id)
@@ -240,9 +248,8 @@ fn agentium_reference_chip_renders_in_table_cell() {
     }
 }
 
-/// A *tombstoned* session still resolves to a chip — drawn with the hollow
-/// "resumable" ring (vs a live session's filled dot) — so a soft-deleted
-/// `agentium:` ref reads as click-to-resume rather than vanishing. The chip folds
+/// A *tombstoned* session still resolves to a chip — drawn with a "resume"
+/// triangle after its status bar — so a soft-deleted `agentium:` ref reads as click-to-resume rather than vanishing. The chip folds
 /// its title from the note snapshot (the projection drops tombstones), proving the
 /// deleted ref resolved before the snapshot.
 #[test]
