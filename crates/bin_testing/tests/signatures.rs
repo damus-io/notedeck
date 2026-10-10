@@ -31,7 +31,6 @@ const NOT_YET: &[&str] = &[
     "notedeck_dashboard",
     "notedeck_dave",
     "notedeck_headway",
-    "notedeck_horizon",
     "notedeck_messages",
     "notedeck_nostrverse",
     "notedeck_release",

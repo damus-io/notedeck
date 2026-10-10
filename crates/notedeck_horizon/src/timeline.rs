@@ -1,5 +1,6 @@
 //! The center pane: a styled day (and week) timeline.
 
+use crate::Span;
 use crate::block::Block;
 use crate::theme;
 use chrono::{DateTime, Local};
@@ -31,15 +32,11 @@ fn format_duration(d: chrono::Duration) -> String {
     }
 }
 
-/// The "until next" span: from `now` to the start of the next upcoming block,
+/// The "until next" [`Span`]: from `now` to the start of the next upcoming block,
 /// returned only when `now` is free (inside no timed block) and the gap is
 /// longer than five minutes. Mirrors viscal's `draw_ephemeral_event`, which
 /// shows how much unbooked time is left before the next commitment.
-fn next_gap(
-    blocks: &[Block],
-    timed: &[LaidBlock],
-    now: DateTime<Local>,
-) -> Option<(DateTime<Local>, DateTime<Local>)> {
+fn next_gap(blocks: &[Block], timed: &[LaidBlock], now: DateTime<Local>) -> Option<Span> {
     // Occupied right now → there's no free gap to advertise.
     if timed
         .iter()
@@ -52,7 +49,10 @@ fn next_gap(
         .map(|l| blocks[l.index].start)
         .filter(|&s| s > now)
         .min()?;
-    (next_start - now >= chrono::Duration::minutes(5)).then_some((now, next_start))
+    (next_start - now >= chrono::Duration::minutes(5)).then_some(Span {
+        start: now,
+        end: next_start,
+    })
 }
 
 /// The lower "summary" line viscal draws under an event's title: its time span
@@ -207,7 +207,7 @@ pub(crate) fn center_day(
             // to the next event, labelled with how long is left (viscal's
             // `draw_ephemeral_event`). Only on today, and only when free.
             if date == now.date_naive()
-                && let Some((st, et)) = next_gap(blocks, &layout.timed, now)
+                && let Some(Span { start: st, end: et }) = next_gap(blocks, &layout.timed, now)
             {
                 let y0 = rect.top() + crate::day_fraction(st) * height;
                 let y1 = rect.top() + crate::day_fraction(et) * height;
@@ -470,7 +470,11 @@ impl DayLayout {
         let timed = timed_idx
             .iter()
             .zip(crate::block::layout(&refs))
-            .map(|(&index, (col, cols))| LaidBlock { index, col, cols })
+            .map(|(&index, lane)| LaidBlock {
+                index,
+                col: lane.column,
+                cols: lane.columns,
+            })
             .collect();
         Self {
             date,
@@ -726,8 +730,8 @@ mod tests {
         Local.with_ymd_and_hms(2026, 6, 25, h, m, 0).unwrap()
     }
 
-    fn timed(uid: &str, s: (u32, u32), e: (u32, u32)) -> Block {
-        Block::timed([0; 32], uid, "x", at(s.0, s.1), at(e.0, e.1))
+    fn timed(uid: &str, start: DateTime<Local>, end: DateTime<Local>) -> Block {
+        Block::timed([0; 32], uid, "x", start, end)
     }
 
     /// The laid-out timed blocks for the sample day, as the cache would hold
@@ -748,16 +752,28 @@ mod tests {
 
     #[test]
     fn next_gap_spans_now_to_the_next_event() {
-        let blocks = vec![timed("a", (9, 0), (10, 0)), timed("b", (14, 0), (15, 0))];
+        let blocks = vec![
+            timed("a", at(9, 0), at(10, 0)),
+            timed("b", at(14, 0), at(15, 0)),
+        ];
         let timed = timed_layout(&blocks);
         // Free at noon: the gap runs to b's 2pm start.
         let gap = next_gap(&blocks, &timed, at(12, 0));
-        assert_eq!(gap, Some((at(12, 0), at(14, 0))));
+        assert_eq!(
+            gap,
+            Some(Span {
+                start: at(12, 0),
+                end: at(14, 0)
+            })
+        );
     }
 
     #[test]
     fn next_gap_is_none_while_occupied() {
-        let blocks = vec![timed("a", (9, 0), (10, 0)), timed("b", (14, 0), (15, 0))];
+        let blocks = vec![
+            timed("a", at(9, 0), at(10, 0)),
+            timed("b", at(14, 0), at(15, 0)),
+        ];
         let timed = timed_layout(&blocks);
         // Inside event a → no free gap to advertise.
         assert_eq!(next_gap(&blocks, &timed, at(9, 30)), None);
@@ -765,7 +781,10 @@ mod tests {
 
     #[test]
     fn next_gap_ignores_tiny_gaps_and_past_events() {
-        let blocks = vec![timed("a", (9, 0), (10, 0)), timed("b", (14, 0), (15, 0))];
+        let blocks = vec![
+            timed("a", at(9, 0), at(10, 0)),
+            timed("b", at(14, 0), at(15, 0)),
+        ];
         let timed = timed_layout(&blocks);
         // Under five minutes to the next event → suppressed.
         assert_eq!(next_gap(&blocks, &timed, at(13, 57)), None);

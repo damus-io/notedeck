@@ -56,7 +56,7 @@ impl View {
 
 /// A block's `[start, end)` span, used as scratch state while planning a
 /// push-move cascade before any of it is written back (see [`Horizon::spans`]).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Span {
     start: DateTime<Local>,
     end: DateTime<Local>,
@@ -70,6 +70,7 @@ impl Span {
 
 /// One planned cascade move: block `index` relocated to `[start, end)`. A full
 /// plan is a list of these, applied to the scratch [`Span`]s and re-published.
+#[derive(Debug, PartialEq, Eq)]
 struct SpanMove {
     index: usize,
     start: DateTime<Local>,
@@ -1854,13 +1855,13 @@ mod tests {
         Local.with_ymd_and_hms(2026, 6, 25, h, m, 0).unwrap()
     }
 
-    fn timed(uid: &str, s: (u32, u32), e: (u32, u32)) -> Block {
-        Block::timed([0; 32], uid, "x", at(s.0, s.1), at(e.0, e.1))
+    fn timed(uid: &str, start: DateTime<Local>, end: DateTime<Local>) -> Block {
+        Block::timed([0; 32], uid, "x", start, end)
     }
 
-    /// Flatten a plan to `(index, start, end)` tuples for terse assertions.
-    fn as_tuples(plan: &[SpanMove]) -> Vec<(usize, DateTime<Local>, DateTime<Local>)> {
-        plan.iter().map(|m| (m.index, m.start, m.end)).collect()
+    /// Shorthand for an expected [`SpanMove`] in terse plan assertions.
+    fn mv(index: usize, start: DateTime<Local>, end: DateTime<Local>) -> SpanMove {
+        SpanMove { index, start, end }
     }
 
     /// A `Horizon` seeded with `blocks` (sorted by start, as [`reload`] leaves
@@ -1878,14 +1879,14 @@ mod tests {
         // a 9–10, b 10–11, c 11–11:30, back to back. Pushing a's end to 10:30
         // shoves b and c down to stay flush.
         let h = horizon_with(vec![
-            timed("a", (9, 0), (10, 0)),
-            timed("b", (10, 0), (11, 0)),
-            timed("c", (11, 0), (11, 30)),
+            timed("a", at(9, 0), at(10, 0)),
+            timed("b", at(10, 0), at(11, 0)),
+            timed("c", at(11, 0), at(11, 30)),
         ]);
         let plan = h.cascade_after(&h.spans(), 0, at(10, 30)).unwrap();
         assert_eq!(
-            as_tuples(&plan),
-            vec![(1, at(10, 30), at(11, 30)), (2, at(11, 30), at(12, 0)),]
+            plan,
+            vec![mv(1, at(10, 30), at(11, 30)), mv(2, at(11, 30), at(12, 0))]
         );
     }
 
@@ -1893,8 +1894,8 @@ mod tests {
     fn cascade_after_stops_at_a_gap() {
         // A gap after the floor leaves the later event undisturbed.
         let h = horizon_with(vec![
-            timed("a", (9, 0), (10, 0)),
-            timed("b", (11, 0), (12, 0)),
+            timed("a", at(9, 0), at(10, 0)),
+            timed("b", at(11, 0), at(12, 0)),
         ]);
         let plan = h.cascade_after(&h.spans(), 0, at(10, 30)).unwrap();
         assert!(plan.is_empty());
@@ -1903,8 +1904,8 @@ mod tests {
     #[test]
     fn cascade_after_refused_by_a_locked_block() {
         let mut h = horizon_with(vec![
-            timed("a", (9, 0), (10, 0)),
-            timed("b", (10, 0), (11, 0)),
+            timed("a", at(9, 0), at(10, 0)),
+            timed("b", at(10, 0), at(11, 0)),
         ]);
         h.locked.insert("b".to_owned());
         assert!(h.cascade_after(&h.spans(), 0, at(10, 30)).is_none());
@@ -1914,18 +1915,18 @@ mod tests {
     fn cascade_before_stacks_neighbours_flush() {
         // Pushing b up so it starts at 9:30 pulls a up to end at 9:30.
         let h = horizon_with(vec![
-            timed("a", (9, 0), (10, 0)),
-            timed("b", (10, 0), (11, 0)),
+            timed("a", at(9, 0), at(10, 0)),
+            timed("b", at(10, 0), at(11, 0)),
         ]);
         let plan = h.cascade_before(&h.spans(), 1, at(9, 30)).unwrap();
-        assert_eq!(as_tuples(&plan), vec![(0, at(8, 30), at(9, 30))]);
+        assert_eq!(plan, vec![mv(0, at(8, 30), at(9, 30))]);
     }
 
     #[test]
     fn cascade_before_refused_by_a_locked_block() {
         let mut h = horizon_with(vec![
-            timed("a", (9, 0), (10, 0)),
-            timed("b", (10, 0), (11, 0)),
+            timed("a", at(9, 0), at(10, 0)),
+            timed("b", at(10, 0), at(11, 0)),
         ]);
         h.locked.insert("a".to_owned());
         assert!(h.cascade_before(&h.spans(), 1, at(9, 30)).is_none());

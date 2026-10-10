@@ -78,12 +78,17 @@ impl Block {
     }
 }
 
-/// Where a block sits within its overlap cluster: `(column, columns)`.
+/// Where a block sits within its overlap cluster.
 ///
-/// `column` is the 0-based lane index and `columns` is the number of lanes the
-/// cluster was split into, so a renderer can size each block to
-/// `width / columns` and offset it by `column`.
-pub(crate) type Lane = (usize, usize);
+/// A renderer sizes each block to `width / columns` and offsets it by
+/// `column`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Lane {
+    /// The block's 0-based lane index within its cluster.
+    pub column: usize,
+    /// How many lanes the block's cluster was split into.
+    pub columns: usize,
+}
 
 /// Assign lanes to `blocks` so overlapping blocks render side-by-side.
 ///
@@ -147,7 +152,12 @@ pub(crate) fn layout(blocks: &[&Block]) -> Vec<Lane> {
     }
     finalize(&mut cluster, lane_end.len(), &mut columns);
 
-    (0..n).map(|i| (column[i], columns[i])).collect()
+    (0..n)
+        .map(|i| Lane {
+            column: column[i],
+            columns: columns[i],
+        })
+        .collect()
 }
 
 /// nostrdb filters matching every NIP-52 calendar event we render.
@@ -259,6 +269,11 @@ mod tests {
         )
     }
 
+    /// Shorthand for a [`Lane`] in the expected values below.
+    fn lane(column: usize, columns: usize) -> Lane {
+        Lane { column, columns }
+    }
+
     fn lanes(blocks: &[Block]) -> Vec<Lane> {
         let refs: Vec<&Block> = blocks.iter().collect();
         layout(&refs)
@@ -267,13 +282,13 @@ mod tests {
     #[test]
     fn back_to_back_blocks_share_one_lane() {
         let blocks = [blk(9, 0, 10, 0), blk(10, 0, 11, 0)];
-        assert_eq!(lanes(&blocks), vec![(0, 1), (0, 1)]);
+        assert_eq!(lanes(&blocks), vec![lane(0, 1), lane(0, 1)]);
     }
 
     #[test]
     fn overlapping_blocks_split_into_lanes() {
         let blocks = [blk(9, 0, 11, 0), blk(10, 0, 12, 0)];
-        assert_eq!(lanes(&blocks), vec![(0, 2), (1, 2)]);
+        assert_eq!(lanes(&blocks), vec![lane(0, 2), lane(1, 2)]);
     }
 
     #[test]
@@ -281,12 +296,12 @@ mod tests {
         // `a` frees lane 0 at 10:00, which `c` then reuses while `b` keeps
         // the cluster (and its two-lane width) alive.
         let blocks = [blk(9, 0, 10, 0), blk(9, 30, 11, 0), blk(10, 0, 10, 30)];
-        assert_eq!(lanes(&blocks), vec![(0, 2), (1, 2), (0, 2)]);
+        assert_eq!(lanes(&blocks), vec![lane(0, 2), lane(1, 2), lane(0, 2)]);
     }
 
     #[test]
     fn separate_clusters_are_independent() {
         let blocks = [blk(9, 0, 11, 0), blk(10, 0, 12, 0), blk(13, 0, 14, 0)];
-        assert_eq!(lanes(&blocks), vec![(0, 2), (1, 2), (0, 1)]);
+        assert_eq!(lanes(&blocks), vec![lane(0, 2), lane(1, 2), lane(0, 1)]);
     }
 }
