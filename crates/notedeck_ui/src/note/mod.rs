@@ -4,6 +4,7 @@ pub mod media;
 pub mod options;
 pub mod reply_description;
 
+use crate::anim::HoverExpand;
 use crate::{app_images, secondary_label};
 use crate::{widgets::x_button, ProfilePic, ProfilePreview, PulseAlpha, Username};
 
@@ -827,7 +828,11 @@ fn show_actual_pfp(
     let profile_key = profile.as_ref().unwrap().record().note_key();
     let note_key = note_key.as_u64();
 
-    let (rect, size, resp) = crate::anim::hover_expand(
+    let HoverExpand {
+        rect,
+        size,
+        response: resp,
+    } = crate::anim::hover_expand(
         ui,
         egui::Id::unique((profile_key, note_key)),
         pfp_size as f32,
@@ -1329,8 +1334,11 @@ fn reply_button(ui: &mut egui::Ui, i18n: &mut Localization, note_key: NoteKey) -
         app_images::reply_light_image()
     };
 
-    let (rect, size, resp) =
-        crate::anim::hover_expand_small(ui, ui.scope_id().with(("reply_anim", note_key)));
+    let HoverExpand {
+        rect,
+        size,
+        response: resp,
+    } = crate::anim::hover_expand_small(ui, ui.scope_id().with(("reply_anim", note_key)));
 
     // align rect to note contents
     let expand_size = 5.0; // from hover_expand_small
@@ -1361,8 +1369,11 @@ fn like_button(
         img.tint(ui.visuals().text_color())
     };
 
-    let (rect, size, resp) =
-        crate::anim::hover_expand_small(ui, ui.scope_id().with(("like_anim", note_key)));
+    let HoverExpand {
+        rect,
+        size,
+        response: resp,
+    } = crate::anim::hover_expand_small(ui, ui.scope_id().with(("like_anim", note_key)));
 
     // align rect to note contents
     let expand_size = 5.0; // from hover_expand_small
@@ -1395,7 +1406,11 @@ fn quote_repost_button(
     let anim_speed = 0.05;
     let id = ui.scope_id().with(("repost_anim", note_key));
 
-    let (rect, size, resp) = crate::anim::hover_expand(ui, id, size, expand_size, anim_speed);
+    let HoverExpand {
+        rect,
+        size,
+        response: resp,
+    } = crate::anim::hover_expand(ui, id, size, expand_size, anim_speed);
 
     let rect = rect.translate(egui::vec2(-(expand_size / 2.0), -1.0));
 
@@ -1416,7 +1431,11 @@ fn zap_button<'a>(
     noteid: &'a [u8; 32],
 ) -> impl egui::Widget + use<'a> {
     move |ui: &mut egui::Ui| -> egui::Response {
-        let (rect, size, resp) = crate::anim::hover_expand_small(ui, ui.scope_id().with("zap"));
+        let HoverExpand {
+            rect,
+            size,
+            response: resp,
+        } = crate::anim::hover_expand_small(ui, ui.scope_id().with("zap"));
 
         let mut img = app_images::zap_dark_image().max_width(size);
         let id = ui.scope_id().with(("pulse", noteid));

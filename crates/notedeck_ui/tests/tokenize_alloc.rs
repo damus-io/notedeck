@@ -15,7 +15,7 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 fn allocs_to_tokenize(code: &str, language: &str) -> u64 {
     let (count, counts) = measure(|| {
         tokenize_code(code, language)
-            .map(|(token, text)| (token != SandToken::Whitespace) as usize + text.len())
+            .map(|t| (t.token != SandToken::Whitespace) as usize + t.text.len())
             .sum::<usize>()
     });
     assert!(count > 0, "tokenizer yielded nothing for {language:?}");

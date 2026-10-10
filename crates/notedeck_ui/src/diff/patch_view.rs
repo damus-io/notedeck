@@ -390,7 +390,7 @@ struct FileRow {
 
 impl FileRow {
     fn new(file: &FilePatch) -> Self {
-        let (dir, _) = split_path(file.path());
+        let dir = split_path(file.path()).dir;
         let dir = if file.old_path != file.new_path {
             format!("{} → {dir}", file.old_path)
         } else {
@@ -409,8 +409,14 @@ impl FileRow {
 struct Stats {
     additions: String,
     deletions: String,
-    /// Added and deleted line counts.
-    counts: (usize, usize),
+    counts: LineCounts,
+}
+
+/// A file's added and deleted line counts.
+#[derive(Debug, Clone, Copy, Default)]
+struct LineCounts {
+    additions: usize,
+    deletions: usize,
 }
 
 impl Stats {
@@ -418,7 +424,10 @@ impl Stats {
         Self {
             additions: stat_label('+', additions),
             deletions: stat_label('−', deletions),
-            counts: (additions, deletions),
+            counts: LineCounts {
+                additions,
+                deletions,
+            },
         }
     }
 }
@@ -1162,20 +1171,17 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
                 Some(galleys.caption(f, side, text, ui))
             };
             let captions = [caption(0), caption(1)];
-            let gesture = images_ui(
+            let input = images_ui(
                 images,
+                f,
                 captions,
                 part,
                 state.image_geometry,
                 image_indent(ui),
                 ui,
             );
-            if let Some((side, gesture)) = gesture {
-                state.model_input = Some(ModelInput {
-                    file: f,
-                    side,
-                    gesture,
-                });
+            if input.is_some() {
+                state.model_input = input;
             }
         }
         Row::HunkHeader(f, h) => {
@@ -1290,14 +1296,14 @@ fn diff_line_ui(galleys: RowGalleys, ui: &mut Ui) -> egui::Response {
     );
     let id = ui.advance_cursor_after_rect(row);
 
-    if let Some((line_bg, gutter_bg)) = tag.tints() {
+    if let Some(tints) = tag.tints() {
         let tint = row
             .expand2(egui::vec2(0.0, ui.spacing().item_spacing.y / 2.0))
             .with_max_x(row.right().max(ui.clip_rect().right()));
         let split = marker_x - GUTTER_GAP / 2.0;
         let painter = ui.painter();
-        painter.rect_filled(tint.with_max_x(split), 0.0, gutter_bg);
-        painter.rect_filled(tint.with_min_x(split), 0.0, line_bg);
+        painter.rect_filled(tint.with_max_x(split), 0.0, tints.gutter);
+        painter.rect_filled(tint.with_min_x(split), 0.0, tints.line);
     }
 
     let centred = |x: f32, size: egui::Vec2| {
@@ -1522,7 +1528,7 @@ fn file_row_ui(
             visuals.text_color()
         };
         let dir_color = visuals.weak_text_color();
-        let (_, name) = split_path(file.path());
+        let name = split_path(file.path()).name;
         let name = ui.fonts_mut(|f| f.layout_no_wrap(name.to_owned(), body.clone(), name_color));
         let right = row_right(ui);
         let room = right - ui.cursor().left() - name.size().x - COLUMN_GAP - columns.width();
@@ -1652,10 +1658,10 @@ fn stats_ui(stats: &Stats, columns: &StatColumns, ui: &mut Ui) {
 /// GitHub's five-block bar: one block per changed line up to
 /// [`BAR_BLOCKS`], green for additions and red for deletions in proportion,
 /// the rest grey. Painted, not laid out, so it costs no text.
-fn stat_bar_ui((additions, deletions): (usize, usize), ui: &mut Ui) {
+fn stat_bar_ui(counts: LineCounts, ui: &mut Ui) {
     let height = ui.spacing().interact_size.y;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(BAR_WIDTH, height), Sense::hover());
-    let (green, red) = bar_blocks(additions, deletions);
+    let BarBlocks { green, red } = bar_blocks(counts.additions, counts.deletions);
     let grey = ui.visuals().widgets.inactive.bg_fill;
     for i in 0..BAR_BLOCKS {
         let color = if i < green {
@@ -1674,14 +1680,21 @@ fn stat_bar_ui((additions, deletions): (usize, usize), ui: &mut Ui) {
     }
 }
 
+/// How many of the stat bar's blocks are lit green and red; the rest are grey.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BarBlocks {
+    green: usize,
+    red: usize,
+}
+
 /// How many of the bar's blocks are green and how many red: one per changed
 /// line up to [`BAR_BLOCKS`], split in proportion (rounded), with at least
 /// one for each side that changed anything.
-fn bar_blocks(additions: usize, deletions: usize) -> (usize, usize) {
+fn bar_blocks(additions: usize, deletions: usize) -> BarBlocks {
     let total = additions + deletions;
     let lit = total.min(BAR_BLOCKS);
     if lit == 0 {
-        return (0, 0);
+        return BarBlocks { green: 0, red: 0 };
     }
     let mut green = (additions * lit + total / 2) / total;
     if additions > 0 {
@@ -1690,7 +1703,10 @@ fn bar_blocks(additions: usize, deletions: usize) -> (usize, usize) {
     if deletions > 0 {
         green = green.min(lit - 1);
     }
-    (green, lit - green)
+    BarBlocks {
+        green,
+        red: lit - green,
+    }
 }
 
 /// The stats' font: the body font, so they sit on the path's baseline. (A
@@ -1720,11 +1736,19 @@ fn stat_label(sign: char, n: usize) -> String {
 
 /// `path` split after its last `/`: the directory (with the slash, or empty)
 /// and the file name.
-fn split_path(path: &str) -> (&str, &str) {
-    match path.rfind('/') {
+fn split_path(path: &str) -> PathSplit<'_> {
+    let (dir, name) = match path.rfind('/') {
         Some(i) => path.split_at(i + 1),
         None => ("", path),
-    }
+    };
+    PathSplit { dir, name }
+}
+
+/// A path's directory (with its trailing `/`, or empty) and file name.
+#[derive(Debug, PartialEq, Eq)]
+struct PathSplit<'a> {
+    dir: &'a str,
+    name: &'a str,
 }
 
 #[cfg(test)]
@@ -1738,6 +1762,7 @@ mod tests {
         kittest::{NodeT, Queryable},
         Harness,
     };
+    use std::ops::RangeInclusive;
 
     const MULTI: &str = include_str!("testdata/multi.patch");
     const NESTED: &str = include_str!("testdata/nested.patch");
@@ -1754,27 +1779,37 @@ mod tests {
         GitPatch::parse(text)
     }
 
-    fn harness(patch: GitPatch, height: f32) -> Harness<'static, (GitPatch, GitPatchState)> {
+    /// What a test harness draws: a patch and its view state.
+    struct PatchUi {
+        patch: GitPatch,
+        state: GitPatchState,
+    }
+
+    impl PatchUi {
+        /// `patch` with a fresh state.
+        fn new(patch: GitPatch) -> Self {
+            let state = GitPatchState::new(&patch, &mut Localization::default());
+            Self { patch, state }
+        }
+    }
+
+    fn harness(patch: GitPatch, height: f32) -> Harness<'static, PatchUi> {
         sized_harness(patch, egui::vec2(800.0, height))
     }
 
-    fn sized_harness(
-        patch: GitPatch,
-        size: egui::Vec2,
-    ) -> Harness<'static, (GitPatch, GitPatchState)> {
-        let state = GitPatchState::new(&patch, &mut Localization::default());
+    fn sized_harness(patch: GitPatch, size: egui::Vec2) -> Harness<'static, PatchUi> {
         // egui's default fonts lack the rename arrow `→`; it draws as tofu
         // here, as before egui 0.36 made a missing glyph panic under kittest.
         Harness::builder()
             .with_size(size)
             .allow_missing_glyphs()
             .build_ui_state(
-                |ui, (patch, state)| git_patch_ui(patch, state, ui),
-                (patch, state),
+                |ui, PatchUi { patch, state }| git_patch_ui(patch, state, ui),
+                PatchUi::new(patch),
             )
     }
 
-    fn shown(harness: &Harness<'_, (GitPatch, GitPatchState)>, label: &str) -> usize {
+    fn shown(harness: &Harness<'_, PatchUi>, label: &str) -> usize {
         harness.query_all_by_label(label).count()
     }
 
@@ -1903,17 +1938,17 @@ mod tests {
             .with_size(size)
             .allow_missing_glyphs()
             .build_ui_state(
-                |ui, (patch, state): &mut (GitPatch, GitPatchState)| {
+                |ui, PatchUi { patch, state }: &mut PatchUi| {
                     let mut draw = |ui: &mut Ui, _: &PatchNote| {
                         ui.label("one line now");
                     };
                     git_patch_ui_with(patch, state, ui, Some(&mut draw));
                 },
-                (patch, state),
+                PatchUi { patch, state },
             );
         harness.run();
         assert!(harness.query_by_label("one line now").is_some());
-        let (_, state) = harness.state();
+        let state = &harness.state().state;
         assert!(state.note_rows[0] < 4, "shrank to {}", state.note_rows[0]);
     }
 
@@ -1938,7 +1973,7 @@ mod tests {
             .with_size(size)
             .allow_missing_glyphs()
             .build_ui_state(
-                |ui, (patch, state): &mut (GitPatch, GitPatchState)| {
+                |ui, PatchUi { patch, state }: &mut PatchUi| {
                     let mut draw = |ui: &mut Ui, note: &PatchNote| {
                         ui.label(format!("{} by someone", note.text));
                         ui.label("second line");
@@ -1946,12 +1981,12 @@ mod tests {
                     };
                     git_patch_ui_with(patch, state, ui, Some(&mut draw));
                 },
-                (patch, state),
+                PatchUi { patch, state },
             );
         harness.run();
         assert!(harness.query_by_label("drawn by someone").is_some());
         assert!(harness.query_by_label("third line").is_some());
-        let (_, state) = harness.state();
+        let state = &harness.state().state;
         assert!(state.note_rows[0] >= 3, "grew to {}", state.note_rows[0]);
     }
 
@@ -1988,7 +2023,7 @@ mod tests {
             .get_by_role_and_label(Role::Button, "@@ -1,3 +1,4 @@")
             .click_accesskit();
         harness.run();
-        let (patch, state) = harness.state();
+        let PatchUi { patch, state } = harness.state();
         let main = patch.file_named("main.rs").unwrap();
         let picked = state.selection().unwrap();
         assert_eq!(picked.file, main);
@@ -2116,6 +2151,10 @@ mod tests {
 
     #[test]
     fn bar_blocks_split_in_proportion() {
+        let bar_blocks = |additions, deletions| {
+            let BarBlocks { green, red } = bar_blocks(additions, deletions);
+            (green, red)
+        };
         assert_eq!(bar_blocks(0, 0), (0, 0));
         // Fewer changed lines than blocks: one block each.
         assert_eq!(bar_blocks(2, 0), (2, 0));
@@ -2130,8 +2169,9 @@ mod tests {
 
     #[test]
     fn split_path_keeps_the_slash_with_the_directory() {
-        assert_eq!(split_path("a/b/c.rs"), ("a/b/", "c.rs"));
-        assert_eq!(split_path("c.rs"), ("", "c.rs"));
+        let split = |dir, name| PathSplit { dir, name };
+        assert_eq!(split_path("a/b/c.rs"), split("a/b/", "c.rs"));
+        assert_eq!(split_path("c.rs"), split("", "c.rs"));
     }
 
     #[test]
@@ -2140,33 +2180,33 @@ mod tests {
         harness.run();
         assert_eq!(shown(&harness, "big 1"), 1);
         assert_eq!(shown(&harness, "big 600"), 0, "off-screen rows are virtual");
-        assert_eq!(harness.state().1.current_file(), None);
+        assert_eq!(harness.state().state.current_file(), None);
 
-        harness.state_mut().1.scroll(PatchScroll::File(1));
+        harness.state_mut().state.scroll(PatchScroll::File(1));
         harness.run();
         assert_eq!(shown(&harness, "new"), 1);
         assert_eq!(shown(&harness, "big 1"), 0);
-        assert_eq!(harness.state().1.current_file(), Some(1));
+        assert_eq!(harness.state().state.current_file(), Some(1));
 
-        harness.state_mut().1.scroll(PatchScroll::PrevFile);
+        harness.state_mut().state.scroll(PatchScroll::PrevFile);
         harness.run();
-        assert_eq!(harness.state().1.current_file(), Some(0));
+        assert_eq!(harness.state().state.current_file(), Some(0));
         assert_eq!(shown(&harness, "big 1"), 1);
 
-        harness.state_mut().1.scroll(PatchScroll::Rows(100));
+        harness.state_mut().state.scroll(PatchScroll::Rows(100));
         harness.run();
-        assert_eq!(harness.state().1.current_file(), Some(0));
+        assert_eq!(harness.state().state.current_file(), Some(0));
         // Deep in big.txt: its header is pinned over the top row.
         harness.get_by_role_and_label(Role::Button, "big.txt");
         assert_eq!(shown(&harness, "big 100"), 1);
 
-        harness.state_mut().1.scroll(PatchScroll::NextFile);
+        harness.state_mut().state.scroll(PatchScroll::NextFile);
         harness.run();
-        assert_eq!(harness.state().1.current_file(), Some(1));
+        assert_eq!(harness.state().state.current_file(), Some(1));
 
-        harness.state_mut().1.scroll(PatchScroll::Top);
+        harness.state_mut().state.scroll(PatchScroll::Top);
         harness.run();
-        assert_eq!(harness.state().1.current_file(), None);
+        assert_eq!(harness.state().state.current_file(), None);
     }
 
     /// The rows a reader can read in full at `offset`, worked out row by row
@@ -2178,14 +2218,14 @@ mod tests {
         offset: f32,
         rows: RowMetrics,
         content: usize,
-    ) -> Option<(usize, usize)> {
+    ) -> Option<RangeInclusive<usize>> {
         let pinned = state.pinned_rows(row_at(offset, rows.step)) as f32 * rows.height;
         let mut shown = (0..content).filter(|&r| {
             let top = r as f32 * rows.step - offset;
             top >= pinned - ROW_SLACK && top + rows.height <= state.viewport_height + ROW_SLACK
         });
         let first = shown.next()?;
-        Some((first, shown.next_back().unwrap_or(first)))
+        Some(first..=shown.next_back().unwrap_or(first))
     }
 
     /// Paging a page down and back up, from aligned and unaligned offsets,
@@ -2210,13 +2250,14 @@ mod tests {
                     if start > max(&state) {
                         break;
                     }
-                    let Some((_, last)) = readable(&state, start, rows, content) else {
+                    let Some(read) = readable(&state, start, rows, content) else {
                         continue;
                     };
+                    let last = *read.end();
                     let down = state.page_down(start, rows);
                     assert_eq!(down % rows.step, 0.0, "page down lands on a row");
                     if down <= max(&state) {
-                        let (first, _) = readable(&state, down, rows, content).unwrap();
+                        let first = *readable(&state, down, rows, content).unwrap().start();
                         let header = state.file_rows.contains(&first);
                         assert!(
                             first == last + 1 || (first == last && header),
@@ -2224,11 +2265,11 @@ mod tests {
                         );
                     }
 
-                    let (first, _) = readable(&state, start, rows, content).unwrap();
+                    let first = *read.start();
                     let up = state.page_up(start, rows);
                     assert_eq!(up % rows.step, 0.0, "page up lands on a row");
                     if up > 0.0 {
-                        let (_, back_last) = readable(&state, up, rows, content).unwrap();
+                        let back_last = *readable(&state, up, rows, content).unwrap().end();
                         assert_eq!(
                             back_last + 1,
                             first,
@@ -2247,29 +2288,29 @@ mod tests {
     /// the review queue's "next card opens halfway down its diff".
     #[test]
     fn a_salted_patch_keeps_its_own_scroll() {
-        let (patch, state) = salted_tall_patch("first");
+        let PatchUi { patch, state } = salted_tall_patch("first");
         let mut harness = Harness::builder()
             .with_size(egui::vec2(800.0, 400.0))
             .build_ui_state(
-                |ui, (patch, state): &mut (GitPatch, GitPatchState)| git_patch_ui(patch, state, ui),
-                (patch, state),
+                |ui, PatchUi { patch, state }: &mut PatchUi| git_patch_ui(patch, state, ui),
+                PatchUi { patch, state },
             );
         harness.run();
-        harness.state_mut().1.scroll(PatchScroll::Pages(2.0));
+        harness.state_mut().state.scroll(PatchScroll::Pages(2.0));
         harness.run();
-        let scrolled = harness.state().1.offset;
+        let scrolled = harness.state().state.offset;
         assert!(scrolled > 0.0, "the first patch scrolled");
 
         let first = std::mem::replace(harness.state_mut(), salted_tall_patch("second"));
         harness.run();
         assert_eq!(
-            harness.state().1.offset,
+            harness.state().state.offset,
             0.0,
             "a new patch opens at the top"
         );
-        harness.state_mut().1.scroll(PatchScroll::Pages(1.0));
+        harness.state_mut().state.scroll(PatchScroll::Pages(1.0));
         harness.run();
-        let second = harness.state().1.offset;
+        let second = harness.state().state.offset;
         assert!(
             second > 0.0 && second != scrolled,
             "the second scrolled elsewhere"
@@ -2277,7 +2318,11 @@ mod tests {
 
         *harness.state_mut() = first;
         harness.run();
-        assert_eq!(harness.state().1.offset, scrolled, "back where it was left");
+        assert_eq!(
+            harness.state().state.offset,
+            scrolled,
+            "back where it was left"
+        );
     }
 
     /// A state rebuilt for a patch egui already scrolled (a reloaded diff
@@ -2285,37 +2330,37 @@ mod tests {
     /// from where the view really is, not from its own zeroed offset.
     #[test]
     fn a_rebuilt_state_scrolls_from_the_real_offset() {
-        let (patch, state) = salted_tall_patch("reloaded");
+        let PatchUi { patch, state } = salted_tall_patch("reloaded");
         let mut harness = Harness::builder()
             .with_size(egui::vec2(800.0, 400.0))
             .build_ui_state(
-                |ui, (patch, state): &mut (GitPatch, GitPatchState)| git_patch_ui(patch, state, ui),
-                (patch, state),
+                |ui, PatchUi { patch, state }: &mut PatchUi| git_patch_ui(patch, state, ui),
+                PatchUi { patch, state },
             );
         harness.run();
-        harness.state_mut().1.scroll(PatchScroll::Rows(1));
+        harness.state_mut().state.scroll(PatchScroll::Rows(1));
         harness.run();
-        let step = harness.state().1.offset;
-        harness.state_mut().1.scroll(PatchScroll::Pages(2.0));
+        let step = harness.state().state.offset;
+        harness.state_mut().state.scroll(PatchScroll::Pages(2.0));
         harness.run();
-        let scrolled = harness.state().1.offset;
+        let scrolled = harness.state().state.offset;
         assert!(scrolled > 3.0 * step, "paged well past three rows");
 
         *harness.state_mut() = salted_tall_patch("reloaded");
-        harness.state_mut().1.scroll(PatchScroll::Rows(3));
+        harness.state_mut().state.scroll(PatchScroll::Rows(3));
         harness.run();
         assert_eq!(
-            harness.state().1.offset,
+            harness.state().state.offset,
             scrolled + 3.0 * step,
             "three rows on from where the view was"
         );
     }
 
     /// A 600-line patch and a fresh state for it, salted with `salt`.
-    fn salted_tall_patch(salt: &str) -> (GitPatch, GitPatchState) {
+    fn salted_tall_patch(salt: &str) -> PatchUi {
         let patch = tall_patch(600);
         let state = GitPatchState::new(&patch, &mut Localization::default()).with_id_salt(salt);
-        (patch, state)
+        PatchUi { patch, state }
     }
 
     /// In the widget, pages move by whole rows: a page down lands on a row
@@ -2325,35 +2370,35 @@ mod tests {
     fn pages_scroll_the_view_by_whole_rows() {
         let mut harness = harness(tall_patch(600), 400.0);
         harness.run();
-        let offset = |h: &Harness<'_, (GitPatch, GitPatchState)>| h.state().1.offset;
+        let offset = |h: &Harness<'_, PatchUi>| h.state().state.offset;
         // One row's step, as the widget lays it out.
-        harness.state_mut().1.scroll(PatchScroll::Rows(1));
+        harness.state_mut().state.scroll(PatchScroll::Rows(1));
         harness.run();
         let step = offset(&harness);
-        harness.state_mut().1.scroll(PatchScroll::Top);
+        harness.state_mut().state.scroll(PatchScroll::Top);
         harness.run();
         let on_a_row = |y: f32| (y / step - (y / step).round()).abs() < 1e-3;
 
-        harness.state_mut().1.scroll(PatchScroll::Pages(1.0));
+        harness.state_mut().state.scroll(PatchScroll::Pages(1.0));
         harness.run();
         let paged = offset(&harness);
-        let viewport = harness.state().1.viewport_height;
+        let viewport = harness.state().state.viewport_height;
         assert!(on_a_row(paged), "{paged} is on a {step}pt row");
         assert!(
             paged <= viewport && paged > viewport - 2.0 * step,
             "{paged} vs {viewport}"
         );
 
-        harness.state_mut().1.scroll(PatchScroll::Pages(1.0));
+        harness.state_mut().state.scroll(PatchScroll::Pages(1.0));
         harness.run();
         assert!(on_a_row(offset(&harness)));
-        harness.state_mut().1.scroll(PatchScroll::Pages(-1.0));
+        harness.state_mut().state.scroll(PatchScroll::Pages(-1.0));
         harness.run();
-        harness.state_mut().1.scroll(PatchScroll::Pages(-1.0));
+        harness.state_mut().state.scroll(PatchScroll::Pages(-1.0));
         harness.run();
         assert_eq!(offset(&harness), 0.0, "back at the top");
 
-        harness.state_mut().1.scroll(PatchScroll::Pages(0.5));
+        harness.state_mut().state.scroll(PatchScroll::Pages(0.5));
         harness.run();
         let half = offset(&harness);
         assert!(
@@ -2366,8 +2411,8 @@ mod tests {
     fn huge_files_start_collapsed_and_expand_on_click() {
         let mut harness = harness(tall_patch(COLLAPSE_LINES + 1), 400.0);
         harness.run();
-        assert!(harness.state().1.is_collapsed(0));
-        assert!(!harness.state().1.is_collapsed(1));
+        assert!(harness.state().state.is_collapsed(0));
+        assert!(!harness.state().state.is_collapsed(1));
         assert_eq!(shown(&harness, "big 1"), 0);
         assert_eq!(shown(&harness, "new"), 1);
 
@@ -2375,7 +2420,7 @@ mod tests {
             .get_by_role_and_label(Role::Button, "big.txt")
             .click_accesskit();
         harness.run();
-        assert!(!harness.state().1.is_collapsed(0));
+        assert!(!harness.state().state.is_collapsed(0));
         assert_eq!(shown(&harness, "big 1"), 1);
     }
 
@@ -2383,15 +2428,15 @@ mod tests {
     fn pinned_header_names_the_file_under_the_top_edge() {
         let mut harness = harness(GitPatch::parse(MULTI), 500.0);
         // Row 27 is inside long.txt, whose header (row 20) is above the view.
-        harness.state_mut().1.scroll(PatchScroll::Rows(27));
+        harness.state_mut().state.scroll(PatchScroll::Rows(27));
         harness.run();
-        assert_eq!(harness.state().1.current_file(), Some(4));
+        assert_eq!(harness.state().state.current_file(), Some(4));
         harness.get_by_role_and_label(Role::Button, "long.txt");
         assert!(harness
             .query_by_role_and_label(Role::Button, "keep.txt")
             .is_none());
 
-        harness.state_mut().1.scroll(PatchScroll::Bottom);
+        harness.state_mut().state.scroll(PatchScroll::Bottom);
         harness.run();
         assert_eq!(shown(&harness, "no eol now"), 1);
     }
@@ -2402,11 +2447,7 @@ mod tests {
 
     /// A harness with the chrome's zero horizontal item spacing, which the
     /// diff rows must not depend on; `render` attaches the software renderer.
-    fn chrome_harness(
-        patch: GitPatch,
-        render: bool,
-    ) -> Harness<'static, (GitPatch, GitPatchState)> {
-        let state = GitPatchState::new(&patch, &mut Localization::default());
+    fn chrome_harness(patch: GitPatch, render: bool) -> Harness<'static, PatchUi> {
         let mut builder = Harness::builder()
             .with_size(egui::vec2(400.0, 300.0))
             .allow_missing_glyphs();
@@ -2414,22 +2455,33 @@ mod tests {
             builder = builder.renderer(notedeck::software_renderer());
         }
         builder.build_ui_state(
-            |ui, (patch, state)| {
+            |ui, PatchUi { patch, state }| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 git_patch_ui(patch, state, ui)
             },
-            (patch, state),
+            PatchUi::new(patch),
         )
     }
 
+    /// A node's screen x-extent and the height of its middle.
+    struct Span {
+        left: f64,
+        right: f64,
+        mid_y: f64,
+    }
+
     /// Screen x-extent of the one node labelled `label`.
-    fn span(harness: &Harness<'_, (GitPatch, GitPatchState)>, label: &str) -> (f64, f64, f64) {
+    fn span(harness: &Harness<'_, PatchUi>, label: &str) -> Span {
         let b = harness
             .get_by_label(label)
             .accesskit_node()
             .bounding_box()
             .expect("laid out");
-        (b.x0, b.x1, (b.y0 + b.y1) / 2.0)
+        Span {
+            left: b.x0,
+            right: b.x1,
+            mid_y: (b.y0 + b.y1) / 2.0,
+        }
     }
 
     #[test]
@@ -2445,9 +2497,9 @@ mod tests {
                 span(&harness, marker),
                 span(&harness, content),
             );
-            let gap = marker.0 - gutter.1;
+            let gap = marker.left - gutter.right;
             assert!((gap - GUTTER_GAP as f64).abs() <= 1.0, "gutter gap {gap}");
-            let gap = content.0 - marker.1;
+            let gap = content.left - marker.right;
             assert!((gap - MARKER_GAP as f64).abs() <= 1.0, "marker gap {gap}");
         }
     }
@@ -2465,9 +2517,9 @@ mod tests {
         let ppp = harness.ctx.pixels_per_point() as f64;
         // Well past the end of the text, the row is still tinted its hue.
         let at = |y: f64| image.get_pixel((300.0 * ppp) as u32, (y * ppp) as u32).0;
-        let [r, g, _, _] = at(old.2);
+        let [r, g, _, _] = at(old.mid_y);
         assert!(r > g + 8, "deleted row not red at the far edge: {r},{g}");
-        let [r, g, _, _] = at(new.2);
+        let [r, g, _, _] = at(new.mid_y);
         assert!(g > r + 8, "inserted row not green at the far edge: {r},{g}");
     }
 
@@ -2499,11 +2551,11 @@ Binary files a/data.bin and b/data.bin differ
 
     /// The images patch in a harness, with `shot.png` given both sides and
     /// `new.png` its after.
-    fn image_harness() -> Harness<'static, (GitPatch, GitPatchState)> {
+    fn image_harness() -> Harness<'static, PatchUi> {
         let mut harness = harness(GitPatch::parse(IMAGES), 900.0);
         let ctx = harness.ctx.clone();
         let mut i18n = Localization::no_bidi();
-        let (_, state) = harness.state_mut();
+        let state = &mut harness.state_mut().state;
         let shot = FileImages {
             old: Some(image_side(&ctx, 120, 80, 142 * 1024)),
             new: Some(image_side(&ctx, 160, 90, 9_542_000)),
@@ -2547,7 +2599,7 @@ Binary files a/data.bin and b/data.bin differ
     #[test]
     fn image_rows_span_the_tallest_side() {
         let mut harness = image_harness();
-        let (patch, state) = harness.state_mut();
+        let PatchUi { patch, state } = harness.state_mut();
         let total = state.layout(patch);
         let rows: Vec<_> = (0..total).map(|r| state.locate(patch, r)).collect();
         let shot = state.file_rows[0];
@@ -2588,13 +2640,16 @@ Binary files a/data.bin and b/data.bin differ
             new: model(2, 1, 812),
             kind: MediaKind::Model,
         };
-        harness.state_mut().1.set_file_images(0, models, &mut i18n);
+        harness
+            .state_mut()
+            .state
+            .set_file_images(0, models, &mut i18n);
         harness.run();
         let after = "after 3D model · 1 triangle · 812 B";
         assert_eq!(shown(&harness, "before 3D model · 12 triangles · 2 KB"), 2);
         assert_eq!(shown(&harness, after), 2, "image + caption");
         assert_eq!(harness.query_all_by_role(Role::Image).count(), 2);
-        assert_eq!(harness.state_mut().1.take_model_input(), None);
+        assert_eq!(harness.state_mut().state.take_model_input(), None);
 
         let center = harness
             .query_all_by_label(after)
@@ -2613,7 +2668,11 @@ Binary files a/data.bin and b/data.bin differ
         harness.step();
         harness.event(egui::Event::PointerMoved(center + egui::vec2(30.0, 10.0)));
         harness.step();
-        let input = harness.state_mut().1.take_model_input().expect("a drag");
+        let input = harness
+            .state_mut()
+            .state
+            .take_model_input()
+            .expect("a drag");
         assert_eq!((input.file, input.side), (0, DiffSide::New));
         let ModelGesture::Orbit(delta) = input.gesture else {
             panic!("expected an orbit, got {:?}", input.gesture);
@@ -2621,7 +2680,7 @@ Binary files a/data.bin and b/data.bin differ
         assert!(delta.x > 0.0, "{delta:?}");
         harness.event(button(false));
         harness.step();
-        harness.state_mut().1.take_model_input();
+        harness.state_mut().state.take_model_input();
 
         // A frame per press and release, close enough in time to count as
         // a double-click (kittest otherwise steps a quarter second a frame).
@@ -2632,7 +2691,7 @@ Binary files a/data.bin and b/data.bin differ
             harness.event(button(pressed));
             harness.step();
         }
-        let input = harness.state_mut().1.take_model_input();
+        let input = harness.state_mut().state.take_model_input();
         assert_eq!(
             input.map(|i| (i.side, i.gesture)),
             Some((DiffSide::New, ModelGesture::Reset))
@@ -2649,7 +2708,7 @@ Binary files a/data.bin and b/data.bin differ
             new: Some(ImageSide::Omitted),
             ..Default::default()
         };
-        harness.state_mut().1.set_file_images(0, big, &mut i18n);
+        harness.state_mut().state.set_file_images(0, big, &mut i18n);
         harness.run();
         assert_eq!(shown(&harness, "before: too large to show (9.1 MB)"), 1);
         assert_eq!(shown(&harness, "Binary file not shown"), 2);
@@ -2661,7 +2720,10 @@ Binary files a/data.bin and b/data.bin differ
             new: Some(ImageSide::Omitted),
             kind: MediaKind::Model,
         };
-        harness.state_mut().1.set_file_images(1, model, &mut i18n);
+        harness
+            .state_mut()
+            .state
+            .set_file_images(1, model, &mut i18n);
         harness.run();
         assert_eq!(
             shown(&harness, "before: not a 3D model that could be read"),

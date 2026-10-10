@@ -266,6 +266,34 @@ struct Parser {
     hunk: Option<HunkCursor>,
 }
 
+/// A line's 1-based numbers in the old and new file, each `None` on the
+/// side it doesn't appear in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LineNumbers {
+    old: Option<u32>,
+    new: Option<u32>,
+}
+
+/// A hunk header's `start[,len]` for one side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HunkRange {
+    start: u32,
+    len: u32,
+}
+
+/// The two paths a `diff --git` header names, prefixes stripped.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct HeaderPaths {
+    old: String,
+    new: String,
+}
+
+/// A decoded C-quoted string and the text after its closing quote.
+struct Quoted<'a> {
+    path: String,
+    rest: &'a str,
+}
+
 #[derive(Debug)]
 struct HunkCursor {
     old_left: u32,
@@ -278,10 +306,10 @@ impl Parser {
     fn line(&mut self, line: &str, start: usize) {
         if let Some(rest) = line.strip_prefix("diff --git ") {
             self.hunk = None;
-            let (old_path, new_path) = git_header_paths(rest).unwrap_or_default();
+            let paths = git_header_paths(rest).unwrap_or_default();
             self.files.push(FilePatch {
-                old_path,
-                new_path,
+                old_path: paths.old,
+                new_path: paths.new,
                 status: FileStatus::Modified,
                 binary: false,
                 hunks: Vec::new(),
@@ -316,8 +344,8 @@ impl Parser {
                 }
             };
             let prefix = line.len() - content.len();
-            let (old_no, new_no) = cur.advance(kind);
-            push_line(file, kind, old_no, new_no, start + prefix, content);
+            let nums = cur.advance(kind);
+            push_line(file, kind, nums.old, nums.new, start + prefix, content);
             return;
         }
 
@@ -387,10 +415,13 @@ impl Parser {
 
 impl HunkCursor {
     /// Number a line of `kind` and consume it from the hunk's counts.
-    fn advance(&mut self, kind: LineKind) -> (Option<u32>, Option<u32>) {
+    fn advance(&mut self, kind: LineKind) -> LineNumbers {
         let old = matches!(kind, LineKind::Context | LineKind::Delete);
         let new = matches!(kind, LineKind::Context | LineKind::Insert);
-        let nums = (old.then_some(self.old_no), new.then_some(self.new_no));
+        let nums = LineNumbers {
+            old: old.then_some(self.old_no),
+            new: new.then_some(self.new_no),
+        };
         if old {
             self.old_no += 1;
             self.old_left = self.old_left.saturating_sub(1);
@@ -447,23 +478,29 @@ fn parse_hunk_header(line: &str) -> Option<Hunk> {
     let rest = line.strip_prefix("@@ -")?;
     let (ranges, _) = rest.split_once(" @@")?;
     let (old, new) = ranges.split_once(" +")?;
-    let (old_start, old_len) = parse_range(old)?;
-    let (new_start, new_len) = parse_range(new)?;
+    let old = parse_range(old)?;
+    let new = parse_range(new)?;
     Some(Hunk {
-        old_start,
-        old_len,
-        new_start,
-        new_len,
+        old_start: old.start,
+        old_len: old.len,
+        new_start: new.start,
+        new_len: new.len,
         header: Span::default(),
         lines: 0..0,
     })
 }
 
 /// `start[,len]`, where a missing length means 1.
-fn parse_range(s: &str) -> Option<(u32, u32)> {
+fn parse_range(s: &str) -> Option<HunkRange> {
     match s.split_once(',') {
-        Some((start, len)) => Some((start.parse().ok()?, len.parse().ok()?)),
-        None => Some((s.parse().ok()?, 1)),
+        Some((start, len)) => Some(HunkRange {
+            start: start.parse().ok()?,
+            len: len.parse().ok()?,
+        }),
+        None => Some(HunkRange {
+            start: s.parse().ok()?,
+            len: 1,
+        }),
     }
 }
 
@@ -473,23 +510,26 @@ fn parse_range(s: &str) -> Option<(u32, u32)> {
 /// it the same way, by preferring the split where both halves name the same
 /// path. Renames are ambiguous only here: their `rename from/to` lines, parsed
 /// later, overwrite whatever this guessed.
-fn git_header_paths(rest: &str) -> Option<(String, String)> {
+fn git_header_paths(rest: &str) -> Option<HeaderPaths> {
     if rest.starts_with('"') {
-        let (old, tail) = split_quoted(rest)?;
-        let tail = tail.strip_prefix(' ')?;
+        let old = split_quoted(rest)?;
+        let tail = old.rest.strip_prefix(' ')?;
         let new = if tail.starts_with('"') {
-            split_quoted(tail)?.0
+            split_quoted(tail)?.path
         } else {
             tail.to_string()
         };
-        return Some((strip_prefix(old, "a/"), strip_prefix(new, "b/")));
+        return Some(HeaderPaths {
+            old: strip_prefix(old.path, "a/"),
+            new: strip_prefix(new, "b/"),
+        });
     }
     if let Some(i) = rest.rfind(" \"b/") {
-        let new = split_quoted(&rest[i + 1..])?.0;
-        return Some((
-            strip_prefix(rest[..i].to_string(), "a/"),
-            strip_prefix(new, "b/"),
-        ));
+        let new = split_quoted(&rest[i + 1..])?.path;
+        return Some(HeaderPaths {
+            old: strip_prefix(rest[..i].to_string(), "a/"),
+            new: strip_prefix(new, "b/"),
+        });
     }
 
     // Same path on both sides: `a/P b/P`, so the halves are equal length.
@@ -498,11 +538,17 @@ fn git_header_paths(rest: &str) -> Option<(String, String)> {
         let half = (rest.len() - 1) / 2;
         let (a, b) = (&rest[..half], &rest[half + 1..]);
         if rest.as_bytes()[half] == b' ' && a.get(2..) == b.get(2..) && b.starts_with("b/") {
-            return Some((a[2..].to_string(), b[2..].to_string()));
+            return Some(HeaderPaths {
+                old: a[2..].to_string(),
+                new: b[2..].to_string(),
+            });
         }
     }
     let (old, new) = old.split_once(" b/")?;
-    Some((old.to_string(), new.to_string()))
+    Some(HeaderPaths {
+        old: old.to_string(),
+        new: new.to_string(),
+    })
 }
 
 /// The path of a `---`/`+++` line with its `a/`/`b/` prefix stripped, or `None`
@@ -525,7 +571,7 @@ fn strip_prefix(mut path: String, prefix: &str) -> String {
 /// A path as git prints it: C-quoted when it holds unusual bytes, else as-is.
 fn unquote(s: &str) -> String {
     match split_quoted(s) {
-        Some((path, "")) => path,
+        Some(Quoted { path, rest: "" }) => path,
         _ => s.to_string(),
     }
 }
@@ -533,7 +579,7 @@ fn unquote(s: &str) -> String {
 /// Decode a leading C-style quoted string (`"caf\303\251"`), returning it and
 /// the text after the closing quote. Octal escapes are raw bytes, so a UTF-8
 /// name round-trips.
-fn split_quoted(s: &str) -> Option<(String, &str)> {
+fn split_quoted(s: &str) -> Option<Quoted<'_>> {
     let body = s.strip_prefix('"')?;
     let bytes = body.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -542,7 +588,10 @@ fn split_quoted(s: &str) -> Option<(String, &str)> {
         match bytes[i] {
             b'"' => {
                 let path = String::from_utf8_lossy(&out).into_owned();
-                return Some((path, &body[i + 1..]));
+                return Some(Quoted {
+                    path,
+                    rest: &body[i + 1..],
+                });
             }
             b'\\' => {
                 let esc = *bytes.get(i + 1)?;
@@ -589,14 +638,29 @@ mod tests {
             .unwrap_or_else(|| panic!("no file {path}"))
     }
 
-    /// `(kind, old_no, new_no, text)` for every line of `f`.
-    fn lines<'a>(
-        patch: &'a GitPatch,
-        f: &FilePatch,
-    ) -> Vec<(LineKind, Option<u32>, Option<u32>, &'a str)> {
+    /// A [`PatchLine`] with its text read out, to compare against.
+    #[derive(Debug, PartialEq)]
+    struct ShownLine<'a> {
+        kind: LineKind,
+        old_no: Option<u32>,
+        new_no: Option<u32>,
+        text: &'a str,
+    }
+
+    fn line(kind: LineKind, old_no: Option<u32>, new_no: Option<u32>, text: &str) -> ShownLine<'_> {
+        ShownLine {
+            kind,
+            old_no,
+            new_no,
+            text,
+        }
+    }
+
+    /// Every line of `f`, its text read out of `patch`.
+    fn lines<'a>(patch: &'a GitPatch, f: &FilePatch) -> Vec<ShownLine<'a>> {
         f.lines
             .iter()
-            .map(|l| (l.kind, l.old_no, l.new_no, patch.text(l.text)))
+            .map(|l| line(l.kind, l.old_no, l.new_no, patch.text(l.text)))
             .collect()
     }
 
@@ -636,15 +700,15 @@ mod tests {
         assert_eq!(
             lines(&patch, added),
             [
-                (LineKind::Insert, None, Some(1), "fresh"),
-                (LineKind::Insert, None, Some(2), "file"),
+                line(LineKind::Insert, None, Some(1), "fresh"),
+                line(LineKind::Insert, None, Some(2), "file"),
             ]
         );
         let gone = file(&patch, "gone.txt");
         assert_eq!((gone.hunks[0].new_start, gone.hunks[0].new_len), (0, 0));
         assert_eq!(
             lines(&patch, gone),
-            [(LineKind::Delete, Some(1), None, "bye")]
+            [line(LineKind::Delete, Some(1), None, "bye")]
         );
     }
 
@@ -690,11 +754,11 @@ mod tests {
         assert_eq!(
             lines(&patch, main),
             [
-                (LineKind::Context, Some(1), Some(1), "fn main() {"),
-                (LineKind::Delete, Some(2), None, "    old();"),
-                (LineKind::Insert, None, Some(2), "    new();"),
-                (LineKind::Insert, None, Some(3), "    more();"),
-                (LineKind::Context, Some(3), Some(4), "}"),
+                line(LineKind::Context, Some(1), Some(1), "fn main() {"),
+                line(LineKind::Delete, Some(2), None, "    old();"),
+                line(LineKind::Insert, None, Some(2), "    new();"),
+                line(LineKind::Insert, None, Some(3), "    more();"),
+                line(LineKind::Context, Some(3), Some(4), "}"),
             ]
         );
     }
@@ -706,15 +770,15 @@ mod tests {
         assert_eq!(
             lines(&patch, noeol),
             [
-                (LineKind::Delete, Some(1), None, "no eol"),
-                (
+                line(LineKind::Delete, Some(1), None, "no eol"),
+                line(
                     LineKind::NoNewline,
                     None,
                     None,
                     "\\ No newline at end of file"
                 ),
-                (LineKind::Insert, None, Some(1), "no eol now"),
-                (
+                line(LineKind::Insert, None, Some(1), "no eol now"),
+                line(
                     LineKind::NoNewline,
                     None,
                     None,
@@ -759,9 +823,9 @@ mod tests {
         assert_eq!(
             lines(&patch, sql),
             [
-                (LineKind::Delete, Some(1), None, "-- header"),
-                (LineKind::Context, Some(2), Some(1), "select 1;"),
-                (LineKind::Insert, None, Some(2), "++ plus"),
+                line(LineKind::Delete, Some(1), None, "-- header"),
+                line(LineKind::Context, Some(2), Some(1), "select 1;"),
+                line(LineKind::Insert, None, Some(2), "++ plus"),
             ]
         );
     }
@@ -779,11 +843,15 @@ mod tests {
     #[test]
     fn header_paths_split_on_equal_halves() {
         let split = |s| git_header_paths(s).unwrap();
-        assert_eq!(split("a/x b/y b/x b/y"), ("x b/y".into(), "x b/y".into()));
-        assert_eq!(split("a/old b/new"), ("old".into(), "new".into()));
+        let paths = |old: &str, new: &str| HeaderPaths {
+            old: old.into(),
+            new: new.into(),
+        };
+        assert_eq!(split("a/x b/y b/x b/y"), paths("x b/y", "x b/y"));
+        assert_eq!(split("a/old b/new"), paths("old", "new"));
         assert_eq!(
             split(r#""a/tab\there" "b/tab\there""#),
-            ("tab\there".into(), "tab\there".into())
+            paths("tab\there", "tab\there")
         );
     }
 

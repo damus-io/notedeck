@@ -44,10 +44,18 @@ fn rust_patch(lines: usize) -> GitPatch {
     GitPatch::parse(text)
 }
 
+/// A context showing a patch, its view state, and the input that draws its
+/// frames.
+struct Settled {
+    ctx: Context,
+    state: GitPatchState,
+    input: RawInput,
+}
+
 /// A context showing `patch` in a view `height` tall, scrolled well into the
 /// file so every visible row is a diff line, and settled: fonts loaded, the
 /// scroll applied, the view's rows laid out once.
-fn settled(patch: &GitPatch, height: f32, selectable: bool) -> (Context, GitPatchState, RawInput) {
+fn settled(patch: &GitPatch, height: f32, selectable: bool) -> Settled {
     let ctx = Context::default();
     ctx.global_style_mut(|s| s.interaction.selectable_labels = selectable);
     let mut state = GitPatchState::new(patch, &mut Localization::default());
@@ -59,7 +67,7 @@ fn settled(patch: &GitPatch, height: f32, selectable: bool) -> (Context, GitPatc
     for _ in 0..8 {
         frame(&ctx, patch, &mut state, input.clone());
     }
-    (ctx, state, input)
+    Settled { ctx, state, input }
 }
 
 fn frame(ctx: &Context, patch: &GitPatch, state: &mut GitPatchState, input: RawInput) {
@@ -71,7 +79,11 @@ fn frame(ctx: &Context, patch: &GitPatch, state: &mut GitPatchState, input: RawI
 
 /// Allocations (fresh + regrown) one steady-state frame makes on this thread.
 fn frame_allocs(patch: &GitPatch, height: f32, selectable: bool) -> u64 {
-    let (ctx, mut state, input) = settled(patch, height, selectable);
+    let Settled {
+        ctx,
+        mut state,
+        input,
+    } = settled(patch, height, selectable);
     let ((), counts) = measure(|| frame(&ctx, patch, &mut state, input));
     eprintln!("height {height}, selectable {selectable}: {counts}");
     counts.thread.allocs + counts.thread.reallocs
@@ -203,7 +215,11 @@ fn model_rows_do_not_allocate_per_frame() {
 #[ignore]
 fn attribute_tall_frame() {
     let patch = rust_patch(900);
-    let (ctx, mut state, input) = settled(&patch, TALL_HEIGHT, true);
+    let Settled {
+        ctx,
+        mut state,
+        input,
+    } = settled(&patch, TALL_HEIGHT, true);
     let ((), sites) = notedeck_testing::alloc::attribute(|| frame(&ctx, &patch, &mut state, input));
     for s in sites.iter().take(25) {
         eprintln!("{:5} {:8}  {}", s.allocs, s.bytes, s.frame);

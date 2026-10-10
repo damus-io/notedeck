@@ -25,7 +25,7 @@ pub use patch_view::{
     PatchScroll, PatchSelection,
 };
 
-use crate::markdown::{tokenize_code, SandCodeTheme};
+use crate::markdown::{tokenize_code, CodeToken, SandCodeTheme};
 use egui::text::LayoutJob;
 use egui::{Color32, FontId, Galley, RichText, TextFormat, Ui};
 use std::fmt::Write;
@@ -211,7 +211,7 @@ fn append_tokens(
     background: Color32,
 ) {
     let content = text.trim_end_matches('\n');
-    for (token, text) in tokenize_code(content, lang) {
+    for CodeToken { token, text } in tokenize_code(content, lang) {
         let mut fmt = theme.format(token, font_id);
         fmt.background = background;
         job.append(text, 0.0, fmt);
@@ -264,14 +264,28 @@ impl RowGalleys {
     }
 }
 
+/// The background tints of a changed line.
+pub(crate) struct Tints {
+    /// The tint behind the line's content.
+    pub line: Color32,
+    /// The stronger tint behind its gutter.
+    pub gutter: Color32,
+}
+
 impl DiffTag {
     /// The row tint and the stronger gutter tint of a changed line; `None`
     /// for an unchanged one, which isn't tinted.
-    pub(crate) fn tints(self) -> Option<(Color32, Color32)> {
+    pub(crate) fn tints(self) -> Option<Tints> {
         match self {
             DiffTag::Equal => None,
-            DiffTag::Delete => Some((DELETE_BG, DELETE_GUTTER_BG)),
-            DiffTag::Insert => Some((INSERT_BG, INSERT_GUTTER_BG)),
+            DiffTag::Delete => Some(Tints {
+                line: DELETE_BG,
+                gutter: DELETE_GUTTER_BG,
+            }),
+            DiffTag::Insert => Some(Tints {
+                line: INSERT_BG,
+                gutter: INSERT_GUTTER_BG,
+            }),
         }
     }
 }

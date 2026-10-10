@@ -251,9 +251,17 @@ mod tests {
         (&["esc"], "clear"),
     ];
 
+    /// A hint label's box: its left, top and right edges.
+    #[derive(Debug)]
+    struct LabelBox {
+        left: f64,
+        top: f64,
+        right: f64,
+    }
+
     /// Draw [`HINTS`] in a strip `width` wide and return, per label, its box's
     /// left, top and right edges.
-    fn label_boxes(width: f32) -> Vec<(f64, f64, f64)> {
+    fn label_boxes(width: f32) -> Vec<LabelBox> {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(width, 200.0))
             .build_ui(|ui| {
@@ -271,7 +279,11 @@ mod tests {
                     .accesskit_node()
                     .bounding_box()
                     .expect("a hint label has a box");
-                (bb.x0, bb.y0, bb.x1)
+                LabelBox {
+                    left: bb.x0,
+                    top: bb.y0,
+                    right: bb.x1,
+                }
             })
             .collect()
     }
@@ -279,7 +291,7 @@ mod tests {
     #[test]
     fn a_wide_strip_is_one_row() {
         let boxes = label_boxes(1000.0);
-        assert!(boxes.windows(2).all(|w| w[0].1 == w[1].1), "{boxes:?}");
+        assert!(boxes.windows(2).all(|w| w[0].top == w[1].top), "{boxes:?}");
     }
 
     /// Ported from headway's `review_queue_key_hints_wrap_on_a_narrow_pane`:
@@ -290,12 +302,12 @@ mod tests {
         let width = 160.0;
         let boxes = label_boxes(width);
         assert!(
-            boxes.windows(2).any(|w| w[1].1 > w[0].1),
+            boxes.windows(2).any(|w| w[1].top > w[0].top),
             "wrapped: {boxes:?}"
         );
-        for (left, _, right) in &boxes {
-            assert!(*right <= width as f64, "{boxes:?} runs past {width}");
-            assert!(*left >= 0.0);
+        for b in &boxes {
+            assert!(b.right <= width as f64, "{boxes:?} runs past {width}");
+            assert!(b.left >= 0.0);
         }
     }
 }

@@ -387,9 +387,15 @@ fn snapshot_git_patch_narrow() {
 /// amber. The bottom row of either set of `H`s is its baseline (no descenders).
 const PROSE_INK: egui::Color32 = egui::Color32::from_rgb(0, 0, 255);
 
+/// The bottom pixel rows of the prose and the monospace ink.
+struct Baselines {
+    prose: u32,
+    mono: u32,
+}
+
 /// The bottom rows of the prose and the monospace ink in `img`, told apart by
 /// colour: prose is blue with no red, monospace carries red.
-fn prose_and_mono_baselines(img: &image::RgbaImage) -> (u32, u32) {
+fn prose_and_mono_baselines(img: &image::RgbaImage) -> Baselines {
     let (mut prose, mut mono) = (None, None);
     for (_, y, p) in img.enumerate_pixels() {
         let [r, _, b, _] = p.0;
@@ -399,10 +405,10 @@ fn prose_and_mono_baselines(img: &image::RgbaImage) -> (u32, u32) {
             mono = Some(y);
         }
     }
-    (
-        prose.expect("no prose ink rendered"),
-        mono.expect("no monospace ink rendered"),
-    )
+    Baselines {
+        prose: prose.expect("no prose ink rendered"),
+        mono: mono.expect("no monospace ink rendered"),
+    }
 }
 
 /// Render `ui_fn` with notedeck's fonts on a black panel at body `size`, and
@@ -425,7 +431,7 @@ fn mono_baseline_offset(size: f32, ui_fn: impl Fn(&mut egui::Ui) + 'static) -> i
     notedeck::fonts::setup_fonts(&harness.ctx);
     harness.run();
     let img = harness.render().expect("render");
-    let (prose, mono) = prose_and_mono_baselines(&img);
+    let Baselines { prose, mono } = prose_and_mono_baselines(&img);
     mono as i64 - prose as i64
 }
 

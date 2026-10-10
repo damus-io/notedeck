@@ -148,18 +148,18 @@ fn horizontal_header_inner(
     let item_spacing = 6.0 * ui.spacing().item_spacing.x;
     let max_width = ui.available_width() - item_spacing;
 
-    let (left_width, left_aligned) = measure_width(ui, left_aligned);
-    let (center_width, centered) = measure_width(ui, centered);
-    let (right_width, right_aligned) = measure_width(ui, right_aligned);
+    let left = measure_width(ui, left_aligned);
+    let center = measure_width(ui, centered);
+    let right = measure_width(ui, right_aligned);
 
     let half_max = max_width / 2.0;
-    let half_center = center_width / 2.0;
-    let left_spacing = half_max - left_width - half_center;
-    let right_spacing = half_max - right_width - half_center;
+    let half_center = center.width / 2.0;
+    let left_spacing = half_max - left.width - half_center;
+    let right_spacing = half_max - right.width - half_center;
 
     let mut left_center = half_center;
     let left_cell = if left_spacing > 0.0 || left_priority < center_priority {
-        Size::exact(left_width)
+        Size::exact(left.width)
     } else {
         Size::remainder()
     };
@@ -174,7 +174,7 @@ fn horizontal_header_inner(
 
     let mut center_cell = Size::exact((left_center + half_center).max(0.0));
     let mut right_gap = Size::exact(right_spacing.max(0.0));
-    let mut right_cell = Size::exact(right_width);
+    let mut right_cell = Size::exact(right.width);
 
     if right_spacing <= 0.0 {
         right_gap = Size::exact(0.0);
@@ -193,19 +193,22 @@ fn horizontal_header_inner(
     }
 
     builder.cell_layout(layout).horizontal(|mut strip| {
-        strip.cell(left_aligned);
+        strip.cell(left.render);
         strip.empty();
-        strip.cell(centered);
+        strip.cell(center.render);
         strip.empty();
-        strip.cell(right_aligned);
+        strip.cell(right.render);
     });
 }
 
+/// A render closure handed back with the width it drew at.
+struct Measured<R> {
+    width: f32,
+    render: R,
+}
+
 /// Inspired by VirtualList::ui_custom_layout
-fn measure_width(
-    ui: &mut egui::Ui,
-    mut render: impl FnMut(&mut egui::Ui),
-) -> (f32, impl FnMut(&mut egui::Ui)) {
+fn measure_width<R: FnMut(&mut egui::Ui)>(ui: &mut egui::Ui, mut render: R) -> Measured<R> {
     let mut measure_ui = ui.new_child(
         UiBuilder::new()
             .max_rect(ui.max_rect())
@@ -223,8 +226,8 @@ fn measure_width(
     );
     let end_width = measure_ui.next_widget_position();
 
-    (
-        (end_width.x - start_width.x + ui.spacing().item_spacing.x).max(0.0),
-        res.inner,
-    )
+    Measured {
+        width: (end_width.x - start_width.x + ui.spacing().item_spacing.x).max(0.0),
+        render: res.inner,
+    }
 }

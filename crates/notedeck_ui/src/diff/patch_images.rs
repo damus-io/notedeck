@@ -376,16 +376,17 @@ fn fit(size: egui::Vec2, width: f32) -> egui::Vec2 {
 /// child `Ui` or any text building, so a steady frame allocates nothing here.
 /// Advances one row, as every row does; the rest of the rows skip.
 ///
-/// Returns a model side's drag or double-click this frame, as which side and
-/// what gesture.
+/// Returns a model side's drag or double-click this frame, as an input on
+/// `file`, the index of the patch file `images` shows.
 pub(super) fn images_ui(
     images: &ShownImages,
+    file: usize,
     captions: [Option<Arc<egui::Galley>>; 2],
     part: usize,
     geometry: ImageGeometry,
     indent: f32,
     ui: &mut Ui,
-) -> Option<(DiffSide, ModelGesture)> {
+) -> Option<ModelInput> {
     let height = ui.spacing().interact_size.y;
     let min = ui.cursor().min;
     let top = min.y - part as f32 * geometry.step;
@@ -422,7 +423,11 @@ pub(super) fn images_ui(
             response.widget_info(|| WidgetInfo::labeled(Role::Image, true, &side.caption));
             if texture.model {
                 gesture = model_gesture(&response)
-                    .map(|g| (side.which, g))
+                    .map(|gesture| ModelInput {
+                        file,
+                        side: side.which,
+                        gesture,
+                    })
                     .or(gesture);
             }
         }

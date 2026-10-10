@@ -1005,6 +1005,13 @@ impl LangConfig {
     }
 }
 
+/// One highlighted token: its kind and the slice of the input it covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodeToken<'a> {
+    pub token: SandToken,
+    pub text: &'a str,
+}
+
 /// Lazy tokenizer returned by [`tokenize_code`].
 ///
 /// Each [`Iterator::next`] consumes one token's prefix of the remaining input,
@@ -1021,7 +1028,7 @@ pub struct CodeTokens<'a> {
 }
 
 impl<'a> Iterator for CodeTokens<'a> {
-    type Item = (SandToken, &'a str);
+    type Item = CodeToken<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let Some(lang) = self.lang else {
@@ -1029,7 +1036,10 @@ impl<'a> Iterator for CodeTokens<'a> {
                 return None;
             }
             self.done = true;
-            return Some((SandToken::Plain, std::mem::take(&mut self.rest)));
+            return Some(CodeToken {
+                token: SandToken::Plain,
+                text: std::mem::take(&mut self.rest),
+            });
         };
 
         let text = self.rest;
@@ -1073,11 +1083,14 @@ impl<'a> Iterator for CodeTokens<'a> {
         };
 
         self.rest = &text[end..];
-        Some((token, &text[..end]))
+        Some(CodeToken {
+            token,
+            text: &text[..end],
+        })
     }
 }
 
-/// Tokenize source code into (token_type, text_slice) pairs, lazily.
+/// Tokenize source code into [`CodeToken`]s, lazily.
 /// Separated from rendering so it can be unit tested.
 ///
 /// An unknown `language` yields the whole input as one [`SandToken::Plain`]
@@ -1101,7 +1114,7 @@ fn highlight_sand(code: &str, language: &str, ui: &Ui) -> LayoutJob {
         .unwrap_or_else(|| egui::TextStyle::Monospace.resolve(ui.style()));
 
     let mut job = LayoutJob::default();
-    for (token, text) in tokenize_code(code, language) {
+    for CodeToken { token, text } in tokenize_code(code, language) {
         job.append(text, 0.0, theme.format(token, &font_id));
     }
     job
@@ -1449,14 +1462,19 @@ mod tests {
         apply_checkbox_toggles(source, &edits.toggled)
     }
 
-    /// Helper: collect (token, text) pairs
-    fn tokens<'a>(code: &'a str, lang: &str) -> Vec<(SandToken, &'a str)> {
+    /// Helper: collect every token
+    fn tokens<'a>(code: &'a str, lang: &str) -> Vec<CodeToken<'a>> {
         tokenize_code(code, lang).collect()
+    }
+
+    /// Helper: the token a test expects
+    fn tok(token: SandToken, text: &str) -> CodeToken<'_> {
+        CodeToken { token, text }
     }
 
     /// Reassembled tokens must equal the original input (no bytes lost or duplicated)
     fn assert_roundtrip(code: &str, lang: &str) {
-        let result: String = tokenize_code(code, lang).map(|(_, s)| s).collect();
+        let result: String = tokenize_code(code, lang).map(|t| t.text).collect();
         assert_eq!(result, code, "roundtrip failed for lang={lang}");
     }
 
@@ -1465,33 +1483,33 @@ mod tests {
     #[test]
     fn test_rust_keyword() {
         let toks = tokens("fn main", "rust");
-        assert_eq!(toks[0], (SandToken::Keyword, "fn"));
-        assert_eq!(toks[1], (SandToken::Whitespace, " "));
-        assert_eq!(toks[2], (SandToken::Literal, "main"));
+        assert_eq!(toks[0], tok(SandToken::Keyword, "fn"));
+        assert_eq!(toks[1], tok(SandToken::Whitespace, " "));
+        assert_eq!(toks[2], tok(SandToken::Literal, "main"));
     }
 
     #[test]
     fn test_rust_comment() {
         let toks = tokens("// hello", "rust");
-        assert_eq!(toks, vec![(SandToken::Comment, "// hello")]);
+        assert_eq!(toks, vec![tok(SandToken::Comment, "// hello")]);
     }
 
     #[test]
     fn test_rust_string() {
         let toks = tokens("\"hello world\"", "rust");
-        assert_eq!(toks, vec![(SandToken::String, "\"hello world\"")]);
+        assert_eq!(toks, vec![tok(SandToken::String, "\"hello world\"")]);
     }
 
     #[test]
     fn test_python_hash_comment() {
         let toks = tokens("# comment", "python");
-        assert_eq!(toks, vec![(SandToken::Comment, "# comment")]);
+        assert_eq!(toks, vec![tok(SandToken::Comment, "# comment")]);
     }
 
     #[test]
     fn test_python_keyword() {
         let toks = tokens("def foo", "py");
-        assert_eq!(toks[0], (SandToken::Keyword, "def"));
+        assert_eq!(toks[0], tok(SandToken::Keyword, "def"));
     }
 
     #[test]
@@ -1500,9 +1518,9 @@ mod tests {
         assert_eq!(
             toks,
             vec![
-                (SandToken::Punctuation, "("),
-                (SandToken::Punctuation, ")"),
-                (SandToken::Punctuation, ";"),
+                tok(SandToken::Punctuation, "("),
+                tok(SandToken::Punctuation, ")"),
+                tok(SandToken::Punctuation, ";"),
             ]
         );
     }
@@ -1510,7 +1528,7 @@ mod tests {
     #[test]
     fn test_underscore_identifier() {
         let toks = tokens("_foo_bar", "rust");
-        assert_eq!(toks, vec![(SandToken::Literal, "_foo_bar")]);
+        assert_eq!(toks, vec![tok(SandToken::Literal, "_foo_bar")]);
     }
 
     // ---- Unsupported languages ----
@@ -1518,24 +1536,24 @@ mod tests {
     #[test]
     fn test_unknown_lang_plain() {
         let toks = tokens("anything goes here", "brainfuck");
-        assert_eq!(toks, vec![(SandToken::Plain, "anything goes here")]);
+        assert_eq!(toks, vec![tok(SandToken::Plain, "anything goes here")]);
     }
 
     #[test]
     fn test_text_lang_plain() {
         let toks = tokens("plain text", "text");
-        assert_eq!(toks, vec![(SandToken::Plain, "plain text")]);
+        assert_eq!(toks, vec![tok(SandToken::Plain, "plain text")]);
     }
 
     #[test]
     fn test_language_name_ignores_case() {
         assert_eq!(tokens("fn main", "RUST"), tokens("fn main", "rust"));
-        assert_eq!(tokens("def f", "Py")[0], (SandToken::Keyword, "def"));
+        assert_eq!(tokens("def f", "Py")[0], tok(SandToken::Keyword, "def"));
     }
 
     #[test]
     fn test_unknown_lang_empty_input_is_one_plain_token() {
-        assert_eq!(tokens("", "text"), vec![(SandToken::Plain, "")]);
+        assert_eq!(tokens("", "text"), vec![tok(SandToken::Plain, "")]);
     }
 
     // ---- Edge cases for string indexing ----
@@ -1549,48 +1567,48 @@ mod tests {
     fn test_single_char_keyword() {
         // "if" is a keyword, "i" is not
         let toks = tokens("i", "rust");
-        assert_eq!(toks, vec![(SandToken::Literal, "i")]);
+        assert_eq!(toks, vec![tok(SandToken::Literal, "i")]);
     }
 
     #[test]
     fn test_unclosed_string() {
         // String that never closes — should consume to end of line or end of input
         let toks = tokens("\"unclosed", "rust");
-        assert_eq!(toks, vec![(SandToken::String, "\"unclosed")]);
+        assert_eq!(toks, vec![tok(SandToken::String, "\"unclosed")]);
     }
 
     #[test]
     fn test_unclosed_string_with_newline() {
         let toks = tokens("\"unclosed\nnext", "rust");
         // Should stop the string at the newline
-        assert_eq!(toks[0], (SandToken::String, "\"unclosed"));
+        assert_eq!(toks[0], tok(SandToken::String, "\"unclosed"));
     }
 
     #[test]
     fn test_empty_string() {
         let toks = tokens("\"\"", "rust");
-        assert_eq!(toks, vec![(SandToken::String, "\"\"")]);
+        assert_eq!(toks, vec![tok(SandToken::String, "\"\"")]);
     }
 
     #[test]
     fn test_comment_at_end_no_newline() {
         let toks = tokens("// no newline", "rust");
-        assert_eq!(toks, vec![(SandToken::Comment, "// no newline")]);
+        assert_eq!(toks, vec![tok(SandToken::Comment, "// no newline")]);
     }
 
     #[test]
     fn test_comment_with_newline() {
         let toks = tokens("// comment\ncode", "rust");
-        assert_eq!(toks[0], (SandToken::Comment, "// comment"));
-        assert_eq!(toks[1], (SandToken::Whitespace, "\n"));
-        assert_eq!(toks[2], (SandToken::Literal, "code"));
+        assert_eq!(toks[0], tok(SandToken::Comment, "// comment"));
+        assert_eq!(toks[1], tok(SandToken::Whitespace, "\n"));
+        assert_eq!(toks[2], tok(SandToken::Literal, "code"));
     }
 
     #[test]
     fn test_multibyte_unicode_punctuation() {
         // Ensure multi-byte chars don't cause panics from byte indexing
         let toks = tokens("→", "rust");
-        assert_eq!(toks, vec![(SandToken::Punctuation, "→")]);
+        assert_eq!(toks, vec![tok(SandToken::Punctuation, "→")]);
     }
 
     #[test]
@@ -1630,7 +1648,7 @@ mod tests {
     #[test]
     fn test_only_whitespace() {
         let toks = tokens("   \n\t", "rust");
-        assert_eq!(toks, vec![(SandToken::Whitespace, "   \n\t")]);
+        assert_eq!(toks, vec![tok(SandToken::Whitespace, "   \n\t")]);
     }
 
     #[test]
@@ -1638,7 +1656,10 @@ mod tests {
         let toks = tokens("()", "rust");
         assert_eq!(
             toks,
-            vec![(SandToken::Punctuation, "("), (SandToken::Punctuation, ")"),]
+            vec![
+                tok(SandToken::Punctuation, "("),
+                tok(SandToken::Punctuation, ")"),
+            ]
         );
     }
 
@@ -1687,7 +1708,7 @@ mod tests {
         let code = "use std::io;\n\nfn main() {\n    let x = 42;\n    println!(\"{}\", x);\n}";
         assert_roundtrip(code, "rust");
         let toks = tokens(code, "rust");
-        assert_eq!(toks[0], (SandToken::Keyword, "use"));
+        assert_eq!(toks[0], tok(SandToken::Keyword, "use"));
     }
 
     // ---- Language detection ----
@@ -1695,10 +1716,10 @@ mod tests {
     #[test]
     fn test_case_insensitive_language() {
         let toks = tokens("fn test", "Rust");
-        assert_eq!(toks[0], (SandToken::Keyword, "fn"));
+        assert_eq!(toks[0], tok(SandToken::Keyword, "fn"));
 
         let toks = tokens("def test", "PYTHON");
-        assert_eq!(toks[0], (SandToken::Keyword, "def"));
+        assert_eq!(toks[0], tok(SandToken::Keyword, "def"));
     }
 
     // ---- Bash support ----
@@ -1706,15 +1727,15 @@ mod tests {
     #[test]
     fn test_bash_keywords() {
         let toks = tokens("if then fi", "bash");
-        assert_eq!(toks[0], (SandToken::Keyword, "if"));
-        assert_eq!(toks[2], (SandToken::Keyword, "then"));
-        assert_eq!(toks[4], (SandToken::Keyword, "fi"));
+        assert_eq!(toks[0], tok(SandToken::Keyword, "if"));
+        assert_eq!(toks[2], tok(SandToken::Keyword, "then"));
+        assert_eq!(toks[4], tok(SandToken::Keyword, "fi"));
     }
 
     #[test]
     fn test_bash_hash_comment() {
         let toks = tokens("# this is a comment", "sh");
-        assert_eq!(toks, vec![(SandToken::Comment, "# this is a comment")]);
+        assert_eq!(toks, vec![tok(SandToken::Comment, "# this is a comment")]);
     }
 
     // ---- TOML ----
@@ -1722,17 +1743,17 @@ mod tests {
     #[test]
     fn test_toml_hash_comment() {
         let toks = tokens("# config", "toml");
-        assert_eq!(toks, vec![(SandToken::Comment, "# config")]);
+        assert_eq!(toks, vec![tok(SandToken::Comment, "# config")]);
     }
 
     #[test]
     fn test_toml_key_value() {
         let toks = tokens("name = \"notedeck\"", "toml");
-        assert_eq!(toks[0], (SandToken::Literal, "name"));
+        assert_eq!(toks[0], tok(SandToken::Literal, "name"));
         // = is punctuation
         assert!(toks
             .iter()
-            .any(|(t, s)| *t == SandToken::String && *s == "\"notedeck\""));
+            .any(|t| t.token == SandToken::String && t.text == "\"notedeck\""));
     }
 
     #[test]

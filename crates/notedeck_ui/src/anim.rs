@@ -1,12 +1,24 @@
 use egui::{vec2, Pos2, Rect, Response, Sense};
 
+/// A hover-expanding slot: the space it took, the size its content should
+/// draw at this frame, and the response to that space.
+pub struct HoverExpand {
+    /// The full allocated rect, sized for the fully expanded content.
+    pub rect: egui::Rect,
+    /// The content size for this frame, between `size` and `size + expand_size`.
+    pub size: f32,
+    /// The click response for the allocated rect.
+    pub response: egui::Response,
+}
+
+/// Allocate a square slot that grows its content by `expand_size` while hovered.
 pub fn hover_expand(
     ui: &mut egui::Ui,
     id: egui::Id,
     size: f32,
     expand_size: f32,
     anim_speed: f32,
-) -> (egui::Rect, f32, egui::Response) {
+) -> HoverExpand {
     // Allocate space for the profile picture with a fixed size
     let default_size = size + expand_size;
     let (rect, response) =
@@ -17,7 +29,11 @@ pub fn hover_expand(
         .animate_bool_with_time(id, response.hovered(), anim_speed);
 
     let size = size + val * expand_size;
-    (rect, size, response)
+    HoverExpand {
+        rect,
+        size,
+        response,
+    }
 }
 
 #[inline]
@@ -25,7 +41,8 @@ pub fn hover_small_size() -> f32 {
     14.0
 }
 
-pub fn hover_expand_small(ui: &mut egui::Ui, id: egui::Id) -> (egui::Rect, f32, egui::Response) {
+/// [`hover_expand`] at the small action-bar icon size.
+pub fn hover_expand_small(ui: &mut egui::Ui, id: egui::Id) -> HoverExpand {
     let size = hover_small_size();
     let expand_size = 5.0;
     let anim_speed = 0.05;
