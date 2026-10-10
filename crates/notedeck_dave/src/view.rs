@@ -145,11 +145,13 @@ impl Dave {
                 target_host,
                 mut selected_models,
             } => {
-                if let Some((bt, model)) = ui::backend_picker_overlay_ui(
-                    &self.available_backends,
-                    &mut selected_models,
-                    ui,
-                ) {
+                if let Some(ui::BackendChoice { backend: bt, model }) =
+                    ui::backend_picker_overlay_ui(
+                        &self.available_backends,
+                        &mut selected_models,
+                        ui,
+                    )
+                {
                     tracing::info!("backend selected: {:?}, model: {:?}", bt, model);
                     if let Some(host) = target_host {
                         self.queue_spawn_command(&host, &cwd, bt);
@@ -248,7 +250,10 @@ impl Dave {
     /// Scene view with RTS-style agent visualization and chat side panel
     fn scene_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let normal_view = self.normal_view();
-        let (dave_response, view_action) = ui::scene_ui(
+        let ui::SceneUiResponse {
+            response: dave_response,
+            action: view_action,
+        } = ui::scene_ui(
             &mut self.session_manager,
             &mut self.scene,
             &mut self.focus_queue,
@@ -292,7 +297,11 @@ impl Dave {
     /// Desktop layout with sidebar for session list
     fn desktop_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let normal_view = self.normal_view();
-        let (chat_response, session_action, toggle_scene) = ui::desktop_ui(
+        let ui::ListUiResponse {
+            response: chat_response,
+            session_action,
+            toggle_scene,
+        } = ui::desktop_ui(
             &mut self.session_manager,
             &self.focus_queue,
             &self.collapse_state,
@@ -386,7 +395,11 @@ impl Dave {
     /// Narrow/mobile layout - shows either session list or chat
     fn narrow_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let normal_view = self.normal_view();
-        let (dave_response, session_action) = ui::narrow_ui(
+        let ui::ListUiResponse {
+            response: dave_response,
+            session_action,
+            ..
+        } = ui::narrow_ui(
             &mut self.session_manager,
             &self.focus_queue,
             &self.collapse_state,

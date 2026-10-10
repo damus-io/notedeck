@@ -84,7 +84,7 @@ pub use avatar::DaveAvatar;
 pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
 pub use quaternion::Quaternion;
 pub use restore::PendingOpen;
-pub use session::{ChatSession, SessionId, SessionManager};
+pub use session::{ChatSession, SessionId, SessionManager, SessionMessage};
 pub use session_discovery::{discover_sessions, format_relative_time, ResumableSession};
 pub use tools::{
     PartialToolCall, QueryCall, QueryResponse, Tool, ToolCall, ToolCalls, ToolResponse,
@@ -1334,7 +1334,10 @@ impl notedeck::App for Dave {
             std::time::Instant::now(),
         );
 
-        for (sid, _msg) in restored_user_msgs.into_iter().chain(remote_user_msgs) {
+        for SessionMessage {
+            session_id: sid, ..
+        } in restored_user_msgs.into_iter().chain(remote_user_msgs)
+        {
             let should_dispatch = self
                 .session_manager
                 .get(sid)

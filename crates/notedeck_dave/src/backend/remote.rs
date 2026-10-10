@@ -1,4 +1,3 @@
-use crate::messages::DaveApiResponse;
 use crate::tools::Tool;
 use claude_agent_sdk_rs::PermissionMode;
 use notedeck::Waker;
@@ -7,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
 
-use super::AiBackend;
+use super::{AiBackend, ResponseStream};
 
 /// A no-op backend for devices without API keys.
 ///
@@ -28,13 +27,13 @@ impl AiBackend for RemoteOnlyBackend {
         _resume_session_id: Option<String>,
         _permission_mode: PermissionMode,
         _waker: Waker,
-    ) -> (
-        Option<mpsc::Receiver<DaveApiResponse>>,
-        Option<tokio::task::JoinHandle<()>>,
-    ) {
+    ) -> ResponseStream {
         // Return a closed channel — no local AI processing
         let (_tx, rx) = mpsc::channel();
-        (Some(rx), None)
+        ResponseStream {
+            rx: Some(rx),
+            task: None,
+        }
     }
 
     fn cleanup_session(&self, _session_id: String) {}

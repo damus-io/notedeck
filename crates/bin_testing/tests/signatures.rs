@@ -9,21 +9,13 @@
 //! Iterator<Item = (A, B)>`), and a `type` alias holding one, which would hide
 //! it from the other two. Closures are not signatures and are not read.
 //!
-//! The crates in [`NOT_YET`] still hold tuples and are skipped until their
-//! cards under headway:notedeck/foil-genre-inner convert them. Every other
-//! crate, a new one included, is checked. Run it with
-//! `cargo test -p bin_testing --test signatures`.
+//! Every crate, a new one included, is checked, with no allowlist. Run it
+//! with `cargo test -p bin_testing --test signatures`.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use syn::visit::Visit;
-
-/// Crates, by directory under `crates/`, that still hold a tuple in a
-/// signature. Converting one removes it here; a listed crate that is already
-/// clean fails [`not_yet_lists_only_crates_that_hold_a_tuple`], so the list
-/// only shrinks. When it is empty, delete it.
-const NOT_YET: &[&str] = &["notedeck_dave"];
 
 /// The workspace root, so offenders print as `crates/<crate>/src/…`.
 fn root() -> PathBuf {
@@ -66,14 +58,6 @@ fn sources(krate: &Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
-}
-
-/// The crate's directory name, as [`NOT_YET`] spells it.
-fn crate_name(krate: &Path) -> &str {
-    krate
-        .file_name()
-        .and_then(|n| n.to_str())
-        .expect("a crate directory has a UTF-8 name")
 }
 
 /// Every tuple signature in `krate`'s sources, one line each.
@@ -194,18 +178,15 @@ fn quote_pat(pat: &syn::Pat) -> String {
 #[test]
 fn no_signature_holds_a_tuple() {
     let root = root();
-    let gated: Vec<PathBuf> = crates(&root)
-        .into_iter()
-        .filter(|krate| !NOT_YET.contains(&crate_name(krate)))
-        .collect();
-    let files: usize = gated.iter().map(|krate| sources(krate).len()).sum();
+    let krates = crates(&root);
+    let files: usize = krates.iter().map(|krate| sources(krate).len()).sum();
     assert!(
         files > 20,
-        "the scanner found {files} files in the gated crates, not a workspace"
+        "the scanner found {files} files in the workspace's crates, not a workspace"
     );
 
     let mut offenders = String::new();
-    for krate in &gated {
+    for krate in &krates {
         for hit in crate_hits(&root, krate) {
             let _ = writeln!(offenders, "  {hit}");
         }
@@ -219,27 +200,6 @@ fn no_signature_holds_a_tuple() {
          geometry), not `FooArgs`. Reuse it where the same group recurs. If a function still \
          takes more than clippy's seven once grouped, it is doing too much: split it. A tuple \
          here hides the count from `too_many_arguments` and the names from every caller."
-    );
-}
-
-#[test]
-fn not_yet_lists_only_crates_that_hold_a_tuple() {
-    let root = root();
-    let krates = crates(&root);
-    let mut stale = String::new();
-    for name in NOT_YET {
-        let Some(krate) = krates.iter().find(|k| crate_name(k) == *name) else {
-            let _ = writeln!(stale, "  {name}: no such crate under crates/");
-            continue;
-        };
-        if crate_hits(&root, krate).is_empty() {
-            let _ = writeln!(stale, "  {name}: holds no tuple now, so check it");
-        }
-    }
-    assert!(
-        stale.is_empty(),
-        "NOT_YET in this file names crates it should not:\n{stale}\
-         Remove them from the list, so the gate covers them."
     );
 }
 

@@ -472,13 +472,22 @@ fn backend_picker_row(
     result
 }
 
+/// A backend and model picked in the backend picker.
+#[derive(Clone, Debug)]
+pub struct BackendChoice {
+    /// The picked backend.
+    pub backend: BackendType,
+    /// The model picked for it.
+    pub model: Model,
+}
+
 /// Render the backend picker overlay UI.
-/// Returns `Some((BackendType, Model))` when the user has selected a backend.
+/// Returns `Some` when the user has selected a backend.
 pub fn backend_picker_overlay_ui(
     available_backends: &[BackendType],
     selected_models: &mut std::collections::HashMap<BackendType, usize>,
     ui: &mut egui::Ui,
-) -> Option<(BackendType, Model)> {
+) -> Option<BackendChoice> {
     // Handle keyboard shortcuts: 1-9 for quick selection
     for (idx, &bt) in available_backends.iter().enumerate().take(9) {
         let key = match idx {
@@ -491,7 +500,10 @@ pub fn backend_picker_overlay_ui(
         };
         if ui.input(|i| i.key_pressed(key)) {
             let model_idx = selected_models.get(&bt).copied().unwrap_or(0);
-            return Some((bt, resolve_picker_model(bt, model_idx)));
+            return Some(BackendChoice {
+                backend: bt,
+                model: resolve_picker_model(bt, model_idx),
+            });
         }
     }
 
@@ -521,7 +533,7 @@ pub fn backend_picker_overlay_ui(
                         if let Some(model) =
                             backend_picker_row(bt, idx, max_width, selected_models, ui)
                         {
-                            selected = Some((bt, model));
+                            selected = Some(BackendChoice { backend: bt, model });
                         }
                     }
                 },
@@ -542,6 +554,26 @@ pub enum SceneViewAction {
     SelectedSession(SessionId),
 }
 
+/// What [`scene_ui`] drew: the chat panel's response, and what the scene
+/// asks of the app.
+pub struct SceneUiResponse {
+    /// The chat side panel's response.
+    pub response: DaveResponse,
+    /// What the scene asks of the app.
+    pub action: SceneViewAction,
+}
+
+/// What a session-list layout ([`desktop_ui`], [`narrow_ui`]) drew.
+pub struct ListUiResponse {
+    /// The chat's response.
+    pub response: DaveResponse,
+    /// What the session list asks of the app, if anything.
+    pub session_action: Option<SessionListAction>,
+    /// Whether the user asked for the scene view. Only the desktop layout
+    /// offers it.
+    pub toggle_scene: bool,
+}
+
 /// Render the scene view with RTS-style agent visualization and chat side panel.
 #[allow(clippy::too_many_arguments)]
 pub fn scene_ui(
@@ -556,7 +588,7 @@ pub fn scene_ui(
     account_rate_limit: Option<crate::messages::RateLimitInfo>,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
-) -> (DaveResponse, SceneViewAction) {
+) -> SceneUiResponse {
     use egui_extras::{Size, StripBuilder};
 
     let mut dave_response = DaveResponse::default();
@@ -660,7 +692,10 @@ pub fn scene_ui(
         }
     }
 
-    (dave_response, view_action)
+    SceneUiResponse {
+        response: dave_response,
+        action: view_action,
+    }
 }
 
 /// Desktop layout with sidebar for session list.
@@ -677,7 +712,7 @@ pub fn desktop_ui(
     account_rate_limit: Option<crate::messages::RateLimitInfo>,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
-) -> (DaveResponse, Option<SessionListAction>, bool) {
+) -> ListUiResponse {
     use crate::ui::task_list::TaskListPanel;
 
     let available = ui.available_rect_before_wrap();
@@ -782,7 +817,11 @@ pub fn desktop_ui(
         })
         .inner;
 
-    (chat_response, session_action, toggle_scene)
+    ListUiResponse {
+        response: chat_response,
+        session_action,
+        toggle_scene,
+    }
 }
 
 /// Narrow/mobile layout - shows either session list or chat.
@@ -800,7 +839,7 @@ pub fn narrow_ui(
     show_session_list: bool,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
-) -> (DaveResponse, Option<SessionListAction>) {
+) -> ListUiResponse {
     if show_session_list {
         let ctrl_held = ui.input(|i| i.modifiers.ctrl);
         let session_action = egui::Frame::new()
@@ -810,7 +849,11 @@ pub fn narrow_ui(
                 SessionListUi::new(session_manager, focus_queue, collapse_state, ctrl_held).ui(ui)
             })
             .inner;
-        (DaveResponse::default(), session_action)
+        ListUiResponse {
+            response: DaveResponse::default(),
+            session_action,
+            toggle_scene: false,
+        }
     } else if let Some(session) = session_manager.get_active_mut() {
         let dot_color = focus_queue.current().map(|e| e.priority.color());
         let fq_info = focus_queue.ui_info();
@@ -826,9 +869,17 @@ pub fn narrow_ui(
         .status_dot_color(dot_color)
         .focus_queue_info(fq_info)
         .ui(app_ctx, ui);
-        (response, None)
+        ListUiResponse {
+            response,
+            session_action: None,
+            toggle_scene: false,
+        }
     } else {
-        (DaveResponse::default(), None)
+        ListUiResponse {
+            response: DaveResponse::default(),
+            session_action: None,
+            toggle_scene: false,
+        }
     }
 }
 

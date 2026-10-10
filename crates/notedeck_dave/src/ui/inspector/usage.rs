@@ -5,7 +5,9 @@
 //! [`UsageLabels`] memos and the sparkline's points when the history changes,
 //! so a frame only lays them out.
 
-use crate::inspector::{LabelMemo, SessionInspector, Sparkline, Tokens, UsageHistory, UsageLabels};
+use crate::inspector::{
+    ContextFill, LabelMemo, SessionInspector, Sparkline, Tokens, UsageHistory, UsageLabels,
+};
 use crate::ui::dave::format_tokens;
 use notedeck::{tr, tr_plural, Localization};
 
@@ -117,9 +119,11 @@ pub fn usage_ui(
             ui,
             &tr!(i18n, "Context", "Dave session inspector usage row"),
         );
-        let text = labels
-            .context
-            .get((context, context_window), i18n, context_text);
+        let fill = ContextFill {
+            context,
+            window: context_window,
+        };
+        let text = labels.context.get(fill, i18n, context_text);
         value_ui(ui, text);
     });
     context_bar_ui(&current, context_window, ui);
@@ -307,7 +311,7 @@ fn compactions_ui(
 
 /// "123K / 200K · 62%": numbers only, like the status bar's meter, so
 /// nothing to translate.
-fn context_text((context, window): (u64, u64), _i18n: &mut Localization) -> String {
+fn context_text(ContextFill { context, window }: ContextFill, _i18n: &mut Localization) -> String {
     let used = format_tokens(context);
     let window_text = format_tokens(window);
     let percent = context * 100 / window.max(1);

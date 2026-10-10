@@ -189,10 +189,20 @@ fn parse_git_status(output: &str) -> GitStatusData {
     }
 }
 
-/// Parse `git diff --numstat` output into total (added, deleted) line counts.
+/// Lines a diff adds and deletes in total, as `git diff --numstat` counts
+/// them.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct LineCounts {
+    /// Inserted lines.
+    added: usize,
+    /// Deleted lines.
+    deleted: usize,
+}
+
+/// Parse `git diff --numstat` output into total added and deleted line counts.
 /// Each line is `added<TAB>deleted<TAB>path`; binary files report `-` and are
 /// counted as zero.
-fn parse_numstat(output: &str) -> (usize, usize) {
+fn parse_numstat(output: &str) -> LineCounts {
     let mut added = 0;
     let mut deleted = 0;
     for line in output.lines() {
@@ -202,7 +212,7 @@ fn parse_numstat(output: &str) -> (usize, usize) {
         added += a.parse::<usize>().unwrap_or(0);
         deleted += d.parse::<usize>().unwrap_or(0);
     }
-    (added, deleted)
+    LineCounts { added, deleted }
 }
 
 /// Apply the platform-specific flags we want on every git invocation.
@@ -217,8 +227,8 @@ fn configure_git_command(cmd: &mut std::process::Command) {
 }
 
 /// Total inserted/deleted lines in tracked files relative to HEAD. Returns
-/// (0, 0) if the diff can't be computed (e.g. a repo with no commits yet).
-fn run_git_numstat(cwd: &Path) -> (usize, usize) {
+/// zero counts if the diff can't be computed (e.g. a repo with no commits yet).
+fn run_git_numstat(cwd: &Path) -> LineCounts {
     let mut cmd = std::process::Command::new("git");
     cmd.args(["-c", "color.ui=never", "diff", "--numstat", "HEAD"])
         .current_dir(cwd);
@@ -228,7 +238,7 @@ fn run_git_numstat(cwd: &Path) -> (usize, usize) {
         Ok(output) if output.status.success() => {
             parse_numstat(&String::from_utf8_lossy(&output.stdout))
         }
-        _ => (0, 0),
+        _ => LineCounts::default(),
     }
 }
 
@@ -252,9 +262,9 @@ fn run_git_status(cwd: &Path) -> GitStatusResult {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut data = parse_git_status(&stdout);
-    let (added_lines, deleted_lines) = run_git_numstat(cwd);
-    data.added_lines = added_lines;
-    data.deleted_lines = deleted_lines;
+    let LineCounts { added, deleted } = run_git_numstat(cwd);
+    data.added_lines = added;
+    data.deleted_lines = deleted;
     Ok(data)
 }
 
@@ -300,13 +310,13 @@ mod tests {
     #[test]
     fn test_parse_numstat() {
         let output = "12\t3\tsrc/a.rs\n0\t7\tsrc/b.rs\n-\t-\tassets/logo.png\n";
-        let (added, deleted) = parse_numstat(output);
+        let LineCounts { added, deleted } = parse_numstat(output);
         assert_eq!(added, 12);
         assert_eq!(deleted, 10);
     }
 
     #[test]
     fn test_parse_numstat_empty() {
-        assert_eq!(parse_numstat(""), (0, 0));
+        assert_eq!(parse_numstat(""), LineCounts::default());
     }
 }

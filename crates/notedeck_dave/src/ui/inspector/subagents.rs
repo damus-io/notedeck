@@ -68,7 +68,7 @@ fn row_ui(row: &SubagentRow, ui: &mut egui::Ui) -> egui::Response {
                 StatusBadge::new(&row.badge).variant(variant).show(ui);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     weak_ui(ui, &row.status_label);
-                    status_dot_ui(ui, variant.colors(ui).1);
+                    status_dot_ui(ui, variant.colors(ui).fg);
                     // The description takes what the status leaves.
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.add(

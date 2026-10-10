@@ -75,6 +75,18 @@ impl AutoStealState {
     }
 }
 
+/// Where the focus queue's cursor stands, as [`FocusQueue::ui_info`] reports
+/// it for the NEXT badge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FocusQueueInfo {
+    /// The current entry's position in the queue.
+    pub position: usize,
+    /// How many entries the queue holds.
+    pub total: usize,
+    /// The current entry's priority.
+    pub priority: FocusPriority,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueEntry {
     pub session_id: SessionId,
@@ -288,9 +300,14 @@ impl FocusQueue {
         })
     }
 
-    pub fn ui_info(&self) -> Option<(usize, usize, FocusPriority)> {
+    /// Where the queue's cursor is, for the NEXT badge.
+    pub fn ui_info(&self) -> Option<FocusQueueInfo> {
         let entry = self.current()?;
-        Some((self.current_position()?, self.len(), entry.priority))
+        Some(FocusQueueInfo {
+            position: self.current_position()?,
+            total: self.len(),
+            priority: entry.priority,
+        })
     }
 
     /// Update focus queue based on session indicator fields.

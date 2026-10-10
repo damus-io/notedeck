@@ -36,25 +36,30 @@ fn user(text: &str) -> Message {
     Message::User(UserMessage::new(text.to_string(), vec![]))
 }
 
+/// One turn as [`drain_turn`] saw it.
+struct Turn {
+    /// The streamed token text, collected.
+    text: String,
+    /// Whether the turn reached `QueryComplete`; `false` means it never
+    /// completed within the timeout — i.e. the backend never answered.
+    done: bool,
+}
+
 /// Drain the session receiver until this turn's `QueryComplete` (the
 /// persistent-stream turn boundary), collecting streamed token text.
-///
-/// Returns `(collected_text, saw_query_complete)`. `saw_query_complete == false`
-/// means the turn never completed within `timeout` — i.e. the backend never
-/// answered.
-fn drain_turn(rx: &mpsc::Receiver<DaveApiResponse>, timeout: Duration) -> (String, bool) {
+fn drain_turn(rx: &mpsc::Receiver<DaveApiResponse>, timeout: Duration) -> Turn {
     let start = Instant::now();
     let mut text = String::new();
     loop {
         if start.elapsed() > timeout {
-            return (text, false);
+            return Turn { text, done: false };
         }
         match rx.recv_timeout(Duration::from_millis(500)) {
             Ok(DaveApiResponse::Token(t)) => text.push_str(&t),
-            Ok(DaveApiResponse::QueryComplete(_)) => return (text, true),
+            Ok(DaveApiResponse::QueryComplete(_)) => return Turn { text, done: true },
             Ok(DaveApiResponse::Failed(e)) => {
                 eprintln!("[drain] backend Failed: {e}");
-                return (text, false);
+                return Turn { text, done: false };
             }
             Ok(other) => {
                 eprintln!("[drain] other: {:?}", std::mem::discriminant(&other));
@@ -62,7 +67,7 @@ fn drain_turn(rx: &mpsc::Receiver<DaveApiResponse>, timeout: Duration) -> (Strin
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 eprintln!("[drain] channel disconnected");
-                return (text, false);
+                return Turn { text, done: false };
             }
         }
     }
@@ -92,21 +97,26 @@ async fn queued_message_gets_answered_after_turn_ends() {
         "Reply with exactly the single word FIRST and nothing else.",
     )];
 
-    let (rx, _h1) = backend.stream_request(
-        chat.clone(),
-        tools.clone(),
-        Some(MODEL.to_string()),
-        "user".to_string(),
-        session_id.clone(),
-        std::collections::BTreeMap::new(),
-        None,
-        None,
-        PermissionMode::Default,
-        waker.clone(),
-    );
+    let rx = backend
+        .stream_request(
+            chat.clone(),
+            tools.clone(),
+            Some(MODEL.to_string()),
+            "user".to_string(),
+            session_id.clone(),
+            std::collections::BTreeMap::new(),
+            None,
+            None,
+            PermissionMode::Default,
+            waker.clone(),
+        )
+        .rx;
     let rx = rx.expect("first turn on a persistent backend mints the session receiver");
 
-    let (text1, done1) = drain_turn(&rx, Duration::from_secs(90));
+    let Turn {
+        text: text1,
+        done: done1,
+    } = drain_turn(&rx, Duration::from_secs(90));
     eprintln!("turn 1: done={done1} text={text1:?}");
     assert!(done1, "turn 1 must reach QueryComplete");
     assert!(
@@ -123,25 +133,30 @@ async fn queued_message_gets_answered_after_turn_ends() {
     ));
 
     // ---- Turn 2: redispatch on the SAME session (what needs_redispatch does) ----
-    let (rx2, _h2) = backend.stream_request(
-        chat.clone(),
-        tools.clone(),
-        Some(MODEL.to_string()),
-        "user".to_string(),
-        session_id.clone(),
-        std::collections::BTreeMap::new(),
-        None,
-        None,
-        PermissionMode::Default,
-        waker.clone(),
-    );
+    let rx2 = backend
+        .stream_request(
+            chat.clone(),
+            tools.clone(),
+            Some(MODEL.to_string()),
+            "user".to_string(),
+            session_id.clone(),
+            std::collections::BTreeMap::new(),
+            None,
+            None,
+            PermissionMode::Default,
+            waker.clone(),
+        )
+        .rx;
     assert!(
         rx2.is_none(),
         "persistent stream: a subsequent turn must reuse the existing channel"
     );
 
     // Keep draining the ORIGINAL receiver — that's what dave keeps installed.
-    let (text2, done2) = drain_turn(&rx, Duration::from_secs(90));
+    let Turn {
+        text: text2,
+        done: done2,
+    } = drain_turn(&rx, Duration::from_secs(90));
     eprintln!("turn 2: done={done2} text={text2:?}");
 
     backend.cleanup_session(session_id);
@@ -212,18 +227,20 @@ async fn queued_message_survives_a_real_tool_using_turn() {
     ));
     session.mark_dispatched();
 
-    let (rx, _h1) = backend.stream_request(
-        session.chat.clone(),
-        tools.clone(),
-        Some(MODEL.to_string()),
-        "user".to_string(),
-        session_id.clone(),
-        std::collections::BTreeMap::new(),
-        Some(cwd.clone()),
-        None,
-        PermissionMode::Default,
-        waker.clone(),
-    );
+    let rx = backend
+        .stream_request(
+            session.chat.clone(),
+            tools.clone(),
+            Some(MODEL.to_string()),
+            "user".to_string(),
+            session_id.clone(),
+            std::collections::BTreeMap::new(),
+            Some(cwd.clone()),
+            None,
+            PermissionMode::Default,
+            waker.clone(),
+        )
+        .rx;
     let rx = rx.expect("first turn mints the session receiver");
 
     // Drive turn 1, queuing a follow-up the instant the first tool starts.
@@ -272,18 +289,20 @@ async fn queued_message_survives_a_real_tool_using_turn() {
     // Redispatch it (what handle_stream_end does) and confirm the real backend
     // answers the queued message.
     session.mark_dispatched();
-    let (rx2, _h2) = backend.stream_request(
-        session.chat.clone(),
-        tools.clone(),
-        Some(MODEL.to_string()),
-        "user".to_string(),
-        session_id.clone(),
-        std::collections::BTreeMap::new(),
-        Some(cwd.clone()),
-        None,
-        PermissionMode::Default,
-        waker.clone(),
-    );
+    let rx2 = backend
+        .stream_request(
+            session.chat.clone(),
+            tools.clone(),
+            Some(MODEL.to_string()),
+            "user".to_string(),
+            session_id.clone(),
+            std::collections::BTreeMap::new(),
+            Some(cwd.clone()),
+            None,
+            PermissionMode::Default,
+            waker.clone(),
+        )
+        .rx;
     assert!(rx2.is_none(), "persistent stream reuses the channel");
 
     let mut turn2_text = String::new();

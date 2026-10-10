@@ -3,7 +3,9 @@
 //! our own spawn/resume commands for a remote host.
 
 use crate::backend::{BackendType, Model};
-use crate::{session_events, session_loader, update, Dave, DaveOverlay, HostCtx, SessionId};
+use crate::{
+    session_events, session_loader, update, Dave, DaveOverlay, HostCtx, SessionId, SessionMessage,
+};
 use claude_agent_sdk_rs::PermissionMode;
 use nostrdb::Transaction;
 use notedeck::AppContext;
@@ -258,11 +260,7 @@ impl Dave {
     /// Nothing here touches the app context: every read and write is Dave's own
     /// state. `now` (unix seconds) is passed in so the dedupe window can be
     /// exercised without sleeping.
-    fn apply_spawn_command(
-        &mut self,
-        request: SpawnRequest,
-        now: u64,
-    ) -> Option<(SessionId, String)> {
+    fn apply_spawn_command(&mut self, request: SpawnRequest, now: u64) -> Option<SessionMessage> {
         let SpawnRequest {
             cwd,
             backend,
@@ -349,7 +347,10 @@ impl Dave {
             );
         }
 
-        prompt.map(|prompt| (sid, prompt))
+        prompt.map(|text| SessionMessage {
+            session_id: sid,
+            text,
+        })
     }
 
     /// Poll for kind-31989 session command events.
@@ -387,7 +388,7 @@ impl Dave {
         // with the freshly-created session. Appended to chat + dispatched after
         // the read txn closes, since both need `&AppContext`/`&mut self` free of
         // the txn's borrow on `ctx.ndb`.
-        let mut first_prompts: Vec<(SessionId, String)> = Vec::new();
+        let mut first_prompts: Vec<SessionMessage> = Vec::new();
 
         {
             let txn = match Transaction::new(ctx.ndb) {
@@ -470,9 +471,9 @@ impl Dave {
         // `egui::Context`.
         let host = HostCtx::from_app(ctx);
         let mut needs_dispatch = Vec::new();
-        for (sid, prompt) in first_prompts {
-            if self.add_user_message_for_session(sid, &host, prompt, Vec::new()) {
-                needs_dispatch.push(sid);
+        for SessionMessage { session_id, text } in first_prompts {
+            if self.add_user_message_for_session(session_id, &host, text, Vec::new()) {
+                needs_dispatch.push(session_id);
             }
         }
         needs_dispatch
@@ -734,7 +735,10 @@ mod tests {
 
         // First spawn: materializes a session and hands back its first message.
         let first = dave.apply_spawn_command(retryable_spawn_request("spawn-1", Some("k1")), NOW);
-        let (created, prompt) = first.expect("a prompted spawn delivers its first message");
+        let SessionMessage {
+            session_id: created,
+            text: prompt,
+        } = first.expect("a prompted spawn delivers its first message");
         assert_eq!(prompt, "read crates/foo and fix it");
         assert_eq!(dave.session_manager.iter().count(), before + 1);
         // The spawn's issue lands on the session, and from there in every

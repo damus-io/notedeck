@@ -16,7 +16,7 @@ pub use claude::ClaudeBackend;
 pub use codex::CodexBackend;
 pub use openai::OpenAiBackend;
 pub use remote::RemoteOnlyBackend;
-pub use traits::{AiBackend, BackendType, Model};
+pub use traits::{AiBackend, BackendType, Model, ResponseStream};
 
 #[cfg(test)]
 use notedeck::Waker;

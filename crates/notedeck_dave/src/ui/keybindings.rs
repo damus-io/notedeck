@@ -670,6 +670,7 @@ mod tests {
     use notedeck::test_harness::PressKey;
     use notedeck::ToolInvocation;
     use notedeck_chrome::keymap::{KeyStroke, Mods};
+    use notedeck_ui::chord::KeyPress;
 
     /// A frame as these tests run it: what the keybindings see, and what the
     /// active session offers chrome's keymap.
@@ -753,46 +754,51 @@ mod tests {
         }
     }
 
-    /// Press each `(modifiers, key)` in turn in `frame`, one Dave frame each.
-    fn keys_after_in(frame: Frame, presses: &[(Modifiers, Key)]) -> Harness<'static, Keys> {
+    /// Press each of `presses` in turn in `frame`, one Dave frame each.
+    fn keys_after_in(frame: Frame, presses: &[KeyPress]) -> Harness<'static, Keys> {
         let mut harness = Harness::new_ui_state(
             move |ui, keys: &mut Keys| keys.frame(ui.ctx(), frame),
             Keys::new(),
         );
         harness.run();
-        for (modifiers, key) in presses {
+        for KeyPress { modifiers, key } in presses {
             harness.press_key_modifiers(*modifiers, *key);
         }
         harness
     }
 
     /// The last action `presses` produced, in [`FRAME`].
-    fn detect_sequence(presses: &[(Modifiers, Key)]) -> Option<KeyAction> {
+    fn detect_sequence(presses: &[KeyPress]) -> Option<KeyAction> {
         detect_sequence_in(FRAME, presses)
     }
 
     /// [`detect_sequence`] in `frame`.
-    fn detect_sequence_in(frame: Frame, presses: &[(Modifiers, Key)]) -> Option<KeyAction> {
+    fn detect_sequence_in(frame: Frame, presses: &[KeyPress]) -> Option<KeyAction> {
         keys_after_in(frame, presses).state().action.clone()
     }
 
     /// `modifiers`+`key` alone.
     fn detect(modifiers: Modifiers, key: Key) -> Option<KeyAction> {
-        detect_sequence(&[(modifiers, key)])
+        detect_sequence(&[press(modifiers, key)])
     }
 
     /// Whether normal mode is on after `presses`, in [`FRAME`].
-    fn normal_after(presses: &[(Modifiers, Key)]) -> bool {
+    fn normal_after(presses: &[KeyPress]) -> bool {
         normal_after_in(FRAME, presses)
     }
 
     /// [`normal_after`] in `frame`.
-    fn normal_after_in(frame: Frame, presses: &[(Modifiers, Key)]) -> bool {
+    fn normal_after_in(frame: Frame, presses: &[KeyPress]) -> bool {
         keys_after_in(frame, presses).state().mode.is_normal()
     }
 
+    /// A press of `key` with `modifiers` held.
+    const fn press(modifiers: Modifiers, key: Key) -> KeyPress {
+        KeyPress { key, modifiers }
+    }
+
     /// The press that types `stroke`.
-    fn stroke_press(stroke: &KeyStroke) -> (Modifiers, Key) {
+    fn stroke_press(stroke: &KeyStroke) -> KeyPress {
         let mut modifiers = Modifiers::NONE;
         if stroke.mods.contains(Mods::SHIFT) {
             modifiers |= Modifiers::SHIFT;
@@ -800,11 +806,11 @@ mod tests {
         if stroke.mods.contains(Mods::CTRL) {
             modifiers |= Modifiers::CTRL;
         }
-        (modifiers, stroke.key)
+        press(modifiers, stroke.key)
     }
 
-    const ESC: (Modifiers, Key) = (Modifiers::NONE, Key::Escape);
-    const H: (Modifiers, Key) = (Modifiers::NONE, Key::H);
+    const ESC: KeyPress = press(Modifiers::NONE, Key::Escape);
+    const H: KeyPress = press(Modifiers::NONE, Key::H);
     const NONE: Modifiers = Modifiers::NONE;
     const SHIFT: Modifiers = Modifiers::SHIFT;
     const CTRL_SHIFT: Modifiers = Modifiers::CTRL.plus(Modifiers::SHIFT);
@@ -812,7 +818,7 @@ mod tests {
     #[test]
     fn normal_j_moves_the_cursor_down() {
         assert_eq!(
-            detect_sequence(&[ESC, (NONE, Key::J)]),
+            detect_sequence(&[ESC, press(NONE, Key::J)]),
             Some(KeyAction::BlockCursorDown),
         );
     }
@@ -820,7 +826,7 @@ mod tests {
     #[test]
     fn normal_z_shift_r_expands_all() {
         assert_eq!(
-            detect_sequence(&[ESC, (NONE, Key::Z), (SHIFT, Key::R)]),
+            detect_sequence(&[ESC, press(NONE, Key::Z), press(SHIFT, Key::R)]),
             Some(KeyAction::BlockExpandAll),
         );
     }
@@ -828,7 +834,7 @@ mod tests {
     #[test]
     fn normal_g_g_moves_to_the_first_block() {
         assert_eq!(
-            detect_sequence(&[ESC, (NONE, Key::G), (NONE, Key::G)]),
+            detect_sequence(&[ESC, press(NONE, Key::G), press(NONE, Key::G)]),
             Some(KeyAction::BlockCursorFirst),
         );
     }
@@ -837,9 +843,9 @@ mod tests {
     fn normal_g_d_and_g_c_switch_the_sessions_tab_from_either_pane() {
         for prefix in [vec![ESC], vec![ESC, H]] {
             let mut presses = prefix.clone();
-            presses.extend([(NONE, Key::G), (NONE, Key::D)]);
+            presses.extend([press(NONE, Key::G), press(NONE, Key::D)]);
             assert_eq!(detect_sequence(&presses), Some(KeyAction::ShowDetails));
-            presses.extend([(NONE, Key::G), (NONE, Key::C)]);
+            presses.extend([press(NONE, Key::G), press(NONE, Key::C)]);
             assert_eq!(detect_sequence(&presses), Some(KeyAction::ShowChat));
             assert!(normal_after(&presses), "the tabs keep normal mode on");
         }
@@ -848,7 +854,7 @@ mod tests {
     #[test]
     fn motions_repeat_because_normal_mode_stays_on() {
         assert_eq!(
-            detect_sequence(&[ESC, (NONE, Key::J), (NONE, Key::K)]),
+            detect_sequence(&[ESC, press(NONE, Key::J), press(NONE, Key::K)]),
             Some(KeyAction::BlockCursorUp),
         );
     }
@@ -857,23 +863,23 @@ mod tests {
     fn commands_keep_normal_mode_on_until_one_leaves_it() {
         assert!(!normal_after(&[]));
         assert!(normal_after(&[ESC]));
-        let h = keys_after_in(FRAME, &[ESC, (NONE, Key::Z)]);
+        let h = keys_after_in(FRAME, &[ESC, press(NONE, Key::Z)]);
         assert!(h.state().mode.is_normal());
         assert!(
             h.state().chrome.engine().pending().is_some(),
             "z is a prefix, pending in chrome"
         );
         assert!(
-            normal_after(&[ESC, (NONE, Key::Z), (NONE, Key::A)]),
+            normal_after(&[ESC, press(NONE, Key::Z), press(NONE, Key::A)]),
             "a finished command leaves normal mode on"
         );
-        assert!(!normal_after(&[ESC, (NONE, Key::Q)]));
-        assert!(!normal_after(&[ESC, (NONE, Key::I)]));
+        assert!(!normal_after(&[ESC, press(NONE, Key::Q)]));
+        assert!(!normal_after(&[ESC, press(NONE, Key::I)]));
         assert!(
-            normal_after(&[ESC, (NONE, Key::X)]),
+            normal_after(&[ESC, press(NONE, Key::X)]),
             "an unbound key is swallowed and normal mode stays on"
         );
-        let h = keys_after_in(FRAME, &[ESC, (NONE, Key::Z), (NONE, Key::X)]);
+        let h = keys_after_in(FRAME, &[ESC, press(NONE, Key::Z), press(NONE, Key::X)]);
         assert!(h.state().mode.is_normal());
         assert!(
             h.state().chrome.engine().pending().is_none(),
@@ -925,11 +931,11 @@ mod tests {
     #[test]
     fn normal_h_j_switches_sessions_instead_of_moving_the_cursor() {
         assert_eq!(
-            detect_sequence(&[ESC, H, (NONE, Key::J)]),
+            detect_sequence(&[ESC, H, press(NONE, Key::J)]),
             Some(KeyAction::SessionPaneNext),
         );
         assert_eq!(
-            detect_sequence(&[ESC, H, (SHIFT, Key::G)]),
+            detect_sequence(&[ESC, H, press(SHIFT, Key::G)]),
             Some(KeyAction::SessionPaneLast),
         );
     }
@@ -937,7 +943,7 @@ mod tests {
     #[test]
     fn normal_h_l_j_is_back_in_the_chat() {
         assert_eq!(
-            detect_sequence(&[ESC, H, (NONE, Key::L), (NONE, Key::J)]),
+            detect_sequence(&[ESC, H, press(NONE, Key::L), press(NONE, Key::J)]),
             Some(KeyAction::BlockCursorDown),
         );
     }
@@ -945,11 +951,11 @@ mod tests {
     #[test]
     fn every_entry_starts_in_the_chat() {
         assert_eq!(
-            detect_sequence(&[ESC, H, (NONE, Key::I), ESC, (NONE, Key::J)]),
+            detect_sequence(&[ESC, H, press(NONE, Key::I), ESC, press(NONE, Key::J)]),
             Some(KeyAction::BlockCursorDown),
         );
         assert_eq!(
-            detect_sequence(&[ESC, H, ESC, (NONE, Key::J)]),
+            detect_sequence(&[ESC, H, ESC, press(NONE, Key::J)]),
             Some(KeyAction::SessionPaneNext),
             "Esc at the root leaves normal mode on, so the pane stays",
         );
@@ -959,7 +965,7 @@ mod tests {
     /// on takes the keyboard.
     #[test]
     fn enter_from_the_session_list_leaves_normal_mode() {
-        let presses = [ESC, H, (NONE, Key::Enter)];
+        let presses = [ESC, H, press(NONE, Key::Enter)];
         assert_eq!(detect_sequence(&presses), Some(KeyAction::InsertMode));
         assert!(!normal_after(&presses));
     }
@@ -968,7 +974,7 @@ mod tests {
     fn h_without_a_session_list_does_nothing() {
         let no_list = FRAME.keys(|k| k.sessions_shown = false);
         assert_eq!(
-            detect_sequence_in(no_list, &[ESC, H, (NONE, Key::J)]),
+            detect_sequence_in(no_list, &[ESC, H, press(NONE, Key::J)]),
             Some(KeyAction::BlockCursorDown),
             "h does nothing, normal mode stays on and in the chat",
         );
@@ -976,10 +982,10 @@ mod tests {
 
     #[test]
     fn rename_and_new_agent_leave_normal_mode() {
-        assert!(!normal_after(&[ESC, (NONE, Key::R)]));
-        assert!(!normal_after(&[ESC, (NONE, Key::N)]));
+        assert!(!normal_after(&[ESC, press(NONE, Key::R)]));
+        assert!(!normal_after(&[ESC, press(NONE, Key::N)]));
         assert!(
-            normal_after(&[ESC, (NONE, Key::D), (NONE, Key::D)]),
+            normal_after(&[ESC, press(NONE, Key::D), press(NONE, Key::D)]),
             "dd keeps normal mode on, so you can walk on to the next session",
         );
     }
@@ -987,15 +993,15 @@ mod tests {
     #[test]
     fn normal_shift_s_stops_the_running_turn_from_either_pane() {
         assert_eq!(
-            detect_sequence(&[ESC, (SHIFT, Key::S)]),
+            detect_sequence(&[ESC, press(SHIFT, Key::S)]),
             Some(KeyAction::Interrupt),
         );
         assert_eq!(
-            detect_sequence(&[ESC, H, (SHIFT, Key::S)]),
+            detect_sequence(&[ESC, H, press(SHIFT, Key::S)]),
             Some(KeyAction::Interrupt),
         );
         assert!(
-            normal_after(&[ESC, (SHIFT, Key::S)]),
+            normal_after(&[ESC, press(SHIFT, Key::S)]),
             "S keeps normal mode on, like the other session keys",
         );
     }
@@ -1003,8 +1009,8 @@ mod tests {
     #[test]
     fn normal_shift_s_with_nothing_running_is_swallowed() {
         let idle = FRAME.offers(|o| o.interruptible = false);
-        assert_eq!(detect_sequence_in(idle, &[ESC, (SHIFT, Key::S)]), None);
-        assert!(normal_after_in(idle, &[ESC, (SHIFT, Key::S)]));
+        assert_eq!(detect_sequence_in(idle, &[ESC, press(SHIFT, Key::S)]), None);
+        assert!(normal_after_in(idle, &[ESC, press(SHIFT, Key::S)]));
     }
 
     /// `s` jumps to the session's issue from either pane — and never stops the
@@ -1012,15 +1018,15 @@ mod tests {
     #[test]
     fn normal_s_opens_the_sessions_issue_from_either_pane() {
         assert_eq!(
-            detect_sequence(&[ESC, (NONE, Key::S)]),
+            detect_sequence(&[ESC, press(NONE, Key::S)]),
             Some(KeyAction::OpenIssue),
         );
         assert_eq!(
-            detect_sequence(&[ESC, H, (NONE, Key::S)]),
+            detect_sequence(&[ESC, H, press(NONE, Key::S)]),
             Some(KeyAction::OpenIssue),
         );
         assert!(
-            normal_after(&[ESC, (NONE, Key::S)]),
+            normal_after(&[ESC, press(NONE, Key::S)]),
             "s keeps normal mode on, like the other session keys",
         );
     }
@@ -1028,8 +1034,11 @@ mod tests {
     #[test]
     fn normal_s_without_an_issue_is_swallowed() {
         let unlinked = FRAME.offers(|o| o.has_issue = false);
-        assert_eq!(detect_sequence_in(unlinked, &[ESC, (NONE, Key::S)]), None);
-        assert!(normal_after_in(unlinked, &[ESC, (NONE, Key::S)]));
+        assert_eq!(
+            detect_sequence_in(unlinked, &[ESC, press(NONE, Key::S)]),
+            None
+        );
+        assert!(normal_after_in(unlinked, &[ESC, press(NONE, Key::S)]));
     }
 
     #[test]
@@ -1058,15 +1067,19 @@ mod tests {
     fn insert_mode_stops_reading_bare_keys() {
         for insert in [Key::I, Key::A] {
             assert_eq!(
-                detect_sequence(&[ESC, (NONE, insert)]),
+                detect_sequence(&[ESC, press(NONE, insert)]),
                 Some(KeyAction::InsertMode),
             );
             assert_eq!(
-                detect_sequence(&[ESC, (NONE, insert), (NONE, Key::J)]),
+                detect_sequence(&[ESC, press(NONE, insert), press(NONE, Key::J)]),
                 Some(KeyAction::InsertMode),
                 "{insert:?}: j after it is not a motion",
             );
-            assert!(!normal_after(&[ESC, (NONE, insert), (NONE, Key::J)]));
+            assert!(!normal_after(&[
+                ESC,
+                press(NONE, insert),
+                press(NONE, Key::J)
+            ]));
         }
     }
 
@@ -1091,7 +1104,7 @@ mod tests {
     /// a pause, then `o` is `o` (toggle) rather than `zo` (expand).
     #[test]
     fn a_half_typed_prefix_lapses_after_chromes_timeout() {
-        let mut harness = keys_after_in(FRAME, &[ESC, (NONE, Key::Z)]);
+        let mut harness = keys_after_in(FRAME, &[ESC, press(NONE, Key::Z)]);
         for _ in 0..12 {
             harness.step();
         }
@@ -1119,13 +1132,21 @@ mod tests {
         harness.press_key_modifiers(NONE, key);
     }
 
+    /// The keys in front of a text field, as [`input_harness`] drives them.
+    struct Typing {
+        /// The keybindings.
+        keys: Keys,
+        /// What the field holds.
+        text: String,
+    }
+
     /// A frame with the keys in front of a real text field, which starts out
     /// focused like the chat input: egui drops focus from an id no widget
     /// claims. Normal mode's request to focus the input is honoured the way
     /// `settle_normal_mode_focus` does it.
-    fn input_harness(input_id: egui::Id) -> Harness<'static, (Keys, String)> {
+    fn input_harness(input_id: egui::Id) -> Harness<'static, Typing> {
         let mut harness = Harness::new_ui_state(
-            move |ui, (keys, text): &mut (Keys, String)| {
+            move |ui, Typing { keys, text }: &mut Typing| {
                 keys.frame(ui.ctx(), FRAME);
                 if keys.mode.take_input_focus() {
                     ui.memory_mut(|m| m.request_focus(input_id));
@@ -1133,7 +1154,10 @@ mod tests {
                 ui.add(egui::TextEdit::singleline(text).id(input_id))
                     .accessible_name("test field");
             },
-            (Keys::new(), String::new()),
+            Typing {
+                keys: Keys::new(),
+                text: String::new(),
+            },
         );
         harness.ctx.memory_mut(|m| m.request_focus(input_id));
         harness.run();
@@ -1145,7 +1169,7 @@ mod tests {
         let input_id = egui::Id::unique("chat_input");
         let mut harness = input_harness(input_id);
 
-        harness.press_key_modifiers(ESC.0, ESC.1);
+        harness.press_key_modifiers(ESC.modifiers, ESC.key);
         assert_eq!(
             harness.ctx.memory(|m| m.focused()),
             None,
@@ -1154,16 +1178,16 @@ mod tests {
 
         type_key(&mut harness, Key::J, "j");
         assert_eq!(
-            harness.state().1,
+            harness.state().text,
             "",
             "a normal-mode key is a command, not text"
         );
 
         type_key(&mut harness, Key::W, "w");
         assert_eq!(harness.ctx.memory(|m| m.focused()), None);
-        assert_eq!(harness.state().1, "", "an unbound key is swallowed");
+        assert_eq!(harness.state().text, "", "an unbound key is swallowed");
         assert!(
-            harness.state().0.mode.is_normal(),
+            harness.state().keys.mode.is_normal(),
             "and normal mode stays on"
         );
 
@@ -1171,10 +1195,10 @@ mod tests {
         // own text must not follow the focus into the input.
         type_key(&mut harness, Key::I, "i");
         assert_eq!(harness.ctx.memory(|m| m.focused()), Some(input_id));
-        assert_eq!(harness.state().1, "", "the i is a command");
+        assert_eq!(harness.state().text, "", "the i is a command");
 
         type_key(&mut harness, Key::H, "h");
-        assert_eq!(harness.state().1, "h", "typing resumes in insert mode");
+        assert_eq!(harness.state().text, "h", "typing resumes in insert mode");
     }
 
     #[test]
@@ -1183,12 +1207,12 @@ mod tests {
         let mut harness = input_harness(input_id);
 
         type_key(&mut harness, Key::Escape, "");
-        assert!(harness.state().0.mode.is_normal());
+        assert!(harness.state().keys.mode.is_normal());
         assert_eq!(harness.ctx.memory(|m| m.focused()), None);
 
         type_key(&mut harness, Key::J, "j");
         assert_eq!(
-            harness.state().1,
+            harness.state().text,
             "",
             "j moves the cursor instead of typing"
         );
@@ -1196,17 +1220,38 @@ mod tests {
 
     #[test]
     fn escape_cancels_a_prefix_and_stays_in_normal_mode() {
-        assert!(normal_after(&[ESC, (NONE, Key::Z), ESC]));
+        assert!(normal_after(&[ESC, press(NONE, Key::Z), ESC]));
         assert_eq!(
-            detect_sequence(&[ESC, (NONE, Key::Z), ESC, (NONE, Key::J)]),
+            detect_sequence(&[ESC, press(NONE, Key::Z), ESC, press(NONE, Key::J)]),
             Some(KeyAction::BlockCursorDown),
         );
     }
 
+    /// What a key left behind, as [`key_left_over`] and [`hold_escape`]
+    /// report it.
+    #[derive(Debug, PartialEq, Eq)]
+    struct LeftOver {
+        /// Whether the key was left for whoever reads keys after Dave (a
+        /// question's options, chrome's side menu).
+        left: bool,
+        /// Whether normal mode is on afterwards.
+        normal: bool,
+    }
+
+    impl LeftOver {
+        /// What `harness` holds now.
+        fn of(harness: &Harness<'_, (Keys, bool)>) -> Self {
+            Self {
+                left: harness.state().1,
+                normal: harness.state().0.mode.is_normal(),
+            }
+        }
+    }
+
     /// Press `presses` in `frame` and report whether the last frame's `key`
-    /// was left for whoever reads keys after Dave (a question's options,
-    /// chrome's side menu), and whether normal mode is on afterwards.
-    fn key_left_over(frame: Frame, presses: &[(Modifiers, Key)], key: Key) -> (bool, bool) {
+    /// was left for whoever reads keys after Dave, and whether normal mode is
+    /// on afterwards.
+    fn key_left_over(frame: Frame, presses: &[KeyPress], key: Key) -> LeftOver {
         let mut harness = Harness::new_ui_state(
             move |ui, (keys, left): &mut (Keys, bool)| {
                 keys.frame(ui.ctx(), frame);
@@ -1218,16 +1263,16 @@ mod tests {
         let Some((last, earlier)) = presses.split_last() else {
             panic!("no presses");
         };
-        for (modifiers, key) in earlier {
+        for KeyPress { modifiers, key } in earlier {
             harness.press_key_modifiers(*modifiers, *key);
         }
         harness.state_mut().1 = false;
-        harness.press_key_modifiers(last.0, last.1);
-        (harness.state().1, harness.state().0.mode.is_normal())
+        harness.press_key_modifiers(last.modifiers, last.key);
+        LeftOver::of(&harness)
     }
 
     /// [`key_left_over`] for Esc.
-    fn escape_left_over(frame: Frame, presses: &[(Modifiers, Key)]) -> (bool, bool) {
+    fn escape_left_over(frame: Frame, presses: &[KeyPress]) -> LeftOver {
         key_left_over(frame, presses, Key::Escape)
     }
 
@@ -1235,12 +1280,18 @@ mod tests {
     fn escape_at_the_root_is_left_for_chrome() {
         assert_eq!(
             escape_left_over(FRAME, &[ESC, ESC]),
-            (true, true),
+            LeftOver {
+                left: true,
+                normal: true
+            },
             "the second Esc is chrome's (the side menu), and normal mode stays on"
         );
         assert_eq!(
             escape_left_over(FRAME, &[ESC]),
-            (false, true),
+            LeftOver {
+                left: false,
+                normal: true
+            },
             "the first Esc is Dave's: it enters normal mode"
         );
     }
@@ -1248,8 +1299,11 @@ mod tests {
     #[test]
     fn escape_cancelling_a_prefix_is_consumed() {
         assert_eq!(
-            escape_left_over(FRAME, &[ESC, (NONE, Key::Z), ESC]),
-            (false, true),
+            escape_left_over(FRAME, &[ESC, press(NONE, Key::Z), ESC]),
+            LeftOver {
+                left: false,
+                normal: true
+            },
             "the Esc only drops the z, so the side menu never sees it"
         );
     }
@@ -1259,7 +1313,7 @@ mod tests {
     /// normal mode is on. egui marks a press a repeat itself, from whether
     /// the key is already down, so a key-up (`press_key_modifiers` queues
     /// one) would make the next press fresh.
-    fn hold_escape(repeats: usize) -> (bool, bool) {
+    fn hold_escape(repeats: usize) -> LeftOver {
         let mut harness = Harness::new_ui_state(
             |ui, (keys, left): &mut (Keys, bool)| {
                 keys.frame(ui.ctx(), FRAME);
@@ -1278,14 +1332,17 @@ mod tests {
             });
             harness.step();
         }
-        (harness.state().1, harness.state().0.mode.is_normal())
+        LeftOver::of(&harness)
     }
 
     #[test]
     fn holding_escape_does_not_reach_chrome() {
         assert_eq!(
             hold_escape(5),
-            (false, true),
+            LeftOver {
+                left: false,
+                normal: true
+            },
             "the first press enters normal mode and its repeats are swallowed, \
              so the side menu doesn't flicker"
         );
@@ -1295,9 +1352,12 @@ mod tests {
     fn a_tentative_answer_ends_normal_mode() {
         let pending = FRAME.keys(|k| k.has_pending_permission = true);
         for (press, action) in [
-            ((NONE, Key::Exclamationmark), KeyAction::TentativeAccept),
-            ((SHIFT, Key::Num2), KeyAction::TentativeDeny),
-            ((SHIFT, Key::Num3), KeyAction::TentativeAllowAlways),
+            (
+                press(NONE, Key::Exclamationmark),
+                KeyAction::TentativeAccept,
+            ),
+            (press(SHIFT, Key::Num2), KeyAction::TentativeDeny),
+            (press(SHIFT, Key::Num3), KeyAction::TentativeAllowAlways),
         ] {
             assert_eq!(
                 detect_sequence_in(pending, &[ESC, press]),
@@ -1320,7 +1380,7 @@ mod tests {
             (Keys::new(), FRAME, false),
         );
         harness.run();
-        harness.press_key_modifiers(ESC.0, ESC.1);
+        harness.press_key_modifiers(ESC.modifiers, ESC.key);
         assert!(harness.state().0.mode.is_normal());
 
         // The answer went tentative some other way (a click) while normal
@@ -1330,7 +1390,7 @@ mod tests {
             k.in_tentative_state = true;
         });
         harness.state_mut().2 = false;
-        harness.press_key_modifiers(ESC.0, ESC.1);
+        harness.press_key_modifiers(ESC.modifiers, ESC.key);
         assert_eq!(harness.state().0.action, Some(KeyAction::CancelTentative));
         assert!(!harness.state().2, "the Esc is not chrome's");
         assert!(
@@ -1341,7 +1401,7 @@ mod tests {
 
     #[test]
     fn ctrl_g_and_e_end_normal_mode_for_the_external_editor() {
-        for press in [(Modifiers::CTRL, Key::G), (NONE, Key::E)] {
+        for press in [press(Modifiers::CTRL, Key::G), press(NONE, Key::E)] {
             assert_eq!(
                 detect_sequence(&[ESC, press]),
                 Some(KeyAction::OpenExternalEditor),
@@ -1353,13 +1413,16 @@ mod tests {
     #[test]
     fn bare_keys_the_regular_bindings_own_pass_through_normal_mode() {
         assert_eq!(
-            detect_sequence(&[ESC, (NONE, Key::Delete)]),
+            detect_sequence(&[ESC, press(NONE, Key::Delete)]),
             Some(KeyAction::DeleteActiveSession),
         );
-        assert!(normal_after(&[ESC, (NONE, Key::Delete)]));
+        assert!(normal_after(&[ESC, press(NONE, Key::Delete)]));
         assert_eq!(
-            key_left_over(FRAME, &[ESC, (NONE, Key::Enter)], Key::Enter),
-            (true, true),
+            key_left_over(FRAME, &[ESC, press(NONE, Key::Enter)], Key::Enter),
+            LeftOver {
+                left: true,
+                normal: true
+            },
             "Enter in the chat is left for a question's submit"
         );
         let question = FRAME.keys(|k| {
@@ -1367,8 +1430,11 @@ mod tests {
             k.has_pending_question = true;
         });
         assert_eq!(
-            key_left_over(question, &[ESC, (NONE, Key::Num4)], Key::Num4),
-            (true, true),
+            key_left_over(question, &[ESC, press(NONE, Key::Num4)], Key::Num4),
+            LeftOver {
+                left: true,
+                normal: true
+            },
             "a digit is left for the question's options"
         );
     }
@@ -1377,12 +1443,18 @@ mod tests {
     #[test]
     fn an_unbound_key_is_swallowed() {
         assert_eq!(
-            key_left_over(FRAME, &[ESC, (NONE, Key::X)], Key::X),
-            (false, true)
+            key_left_over(FRAME, &[ESC, press(NONE, Key::X)], Key::X),
+            LeftOver {
+                left: false,
+                normal: true
+            }
         );
         assert_eq!(
-            key_left_over(FRAME, &[(NONE, Key::X)], Key::X),
-            (true, false),
+            key_left_over(FRAME, &[press(NONE, Key::X)], Key::X),
+            LeftOver {
+                left: true,
+                normal: false
+            },
             "in insert mode it's typing"
         );
     }
@@ -1390,7 +1462,13 @@ mod tests {
     #[test]
     fn escape_under_an_overlay_is_the_overlays() {
         let overlay = FRAME.keys(|k| k.overlay_open = true);
-        assert_eq!(escape_left_over(overlay, &[ESC]), (true, false));
+        assert_eq!(
+            escape_left_over(overlay, &[ESC]),
+            LeftOver {
+                left: true,
+                normal: false
+            }
+        );
     }
 
     #[test]
@@ -1404,12 +1482,12 @@ mod tests {
             (Keys::new(), false, false),
         );
         harness.run();
-        harness.press_key_modifiers(ESC.0, ESC.1);
+        harness.press_key_modifiers(ESC.modifiers, ESC.key);
         assert!(harness.state().0.mode.is_normal());
 
         harness.state_mut().1 = true;
         harness.state_mut().2 = false;
-        harness.press_key_modifiers(ESC.0, ESC.1);
+        harness.press_key_modifiers(ESC.modifiers, ESC.key);
         assert!(
             !harness.state().0.mode.is_normal(),
             "the overlay ends normal mode"
@@ -1420,16 +1498,22 @@ mod tests {
     #[test]
     fn escape_while_renaming_cancels_the_rename() {
         let renaming = FRAME.keys(|k| k.renaming = true);
-        assert_eq!(escape_left_over(renaming, &[ESC]), (true, false));
+        assert_eq!(
+            escape_left_over(renaming, &[ESC]),
+            LeftOver {
+                left: true,
+                normal: false
+            }
+        );
     }
 
     #[test]
     fn ctrl_keys_work_without_leaving_normal_mode() {
-        let ctrl_j = (Modifiers::CTRL, Key::J);
+        let ctrl_j = press(Modifiers::CTRL, Key::J);
         assert_eq!(detect_sequence(&[ESC, ctrl_j]), Some(KeyAction::NextAgent));
         assert!(normal_after(&[ESC, ctrl_j]));
         assert_eq!(
-            detect_sequence(&[ESC, ctrl_j, (NONE, Key::J)]),
+            detect_sequence(&[ESC, ctrl_j, press(NONE, Key::J)]),
             Some(KeyAction::BlockCursorDown),
         );
     }
@@ -1437,21 +1521,21 @@ mod tests {
     #[test]
     fn ctrl_keys_that_take_typing_leave_normal_mode() {
         assert_eq!(
-            detect_sequence(&[ESC, (Modifiers::CTRL, Key::T)]),
+            detect_sequence(&[ESC, press(Modifiers::CTRL, Key::T)]),
             Some(KeyAction::NewAgent)
         );
-        assert!(!normal_after(&[ESC, (Modifiers::CTRL, Key::T)]));
-        assert!(!normal_after(&[ESC, (CTRL_SHIFT, Key::R)]));
+        assert!(!normal_after(&[ESC, press(Modifiers::CTRL, Key::T)]));
+        assert!(!normal_after(&[ESC, press(CTRL_SHIFT, Key::R)]));
     }
 
     #[test]
     fn permission_keys_reach_the_permission_bindings_in_normal_mode() {
         let pending = FRAME.keys(|k| k.has_pending_permission = true);
         assert_eq!(
-            detect_sequence_in(pending, &[ESC, (NONE, Key::Num1)]),
+            detect_sequence_in(pending, &[ESC, press(NONE, Key::Num1)]),
             Some(KeyAction::AcceptPermission),
         );
-        assert!(normal_after_in(pending, &[ESC, (NONE, Key::Num1)]));
+        assert!(normal_after_in(pending, &[ESC, press(NONE, Key::Num1)]));
     }
 
     #[test]

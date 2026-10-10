@@ -2383,13 +2383,21 @@ mod tests {
         );
     }
 
+    /// What [`editor_test_setup`] sets up.
+    struct EditorTest {
+        /// The sessions, with the editor job pending on the one session.
+        sm: SessionManager,
+        /// The temp file the editor edits.
+        temp_path: PathBuf,
+    }
+
     /// Helper: create a SessionManager with one session and set up an
     /// EditorJob backed by a real temp file and a trivially-exited child.
     fn editor_test_setup(
         test_name: &str,
         temp_content: &str,
         spawn_done_sentinel: bool,
-    ) -> (SessionManager, PathBuf) {
+    ) -> EditorTest {
         use std::sync::atomic::{AtomicU32, Ordering};
         static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -2430,7 +2438,7 @@ mod tests {
             session_id: id,
         });
 
-        (sm, temp_path)
+        EditorTest { sm, temp_path }
     }
 
     /// When the sentinel .done file exists, poll_editor_job should read
@@ -2438,7 +2446,8 @@ mod tests {
     #[test]
     fn poll_editor_job_reads_content_on_sentinel() {
         // Create the wrapper .sh script so poll_editor_job uses sentinel mode
-        let (mut sm, temp_path) = editor_test_setup("sentinel", "hello from editor", true);
+        let EditorTest { mut sm, temp_path } =
+            editor_test_setup("sentinel", "hello from editor", true);
         let script_path = temp_path.with_extension("sh");
         std::fs::write(&script_path, "#!/bin/sh\n").unwrap();
 
@@ -2463,7 +2472,7 @@ mod tests {
     /// terminal case.
     #[test]
     fn poll_editor_job_waits_for_sentinel_on_linux() {
-        let (mut sm, temp_path) = editor_test_setup("waits", "user text", false);
+        let EditorTest { mut sm, temp_path } = editor_test_setup("waits", "user text", false);
 
         // Create the .sh script so sentinel mode is active
         let script_path = temp_path.with_extension("sh");
@@ -2498,7 +2507,8 @@ mod tests {
     /// fall back to child exit for completion detection.
     #[test]
     fn poll_editor_job_falls_back_to_child_exit_without_script() {
-        let (mut sm, temp_path) = editor_test_setup("fallback", "macos content", false);
+        let EditorTest { mut sm, temp_path } =
+            editor_test_setup("fallback", "macos content", false);
         // No .sh script — simulates macOS path
 
         // Verify no .sh script exists (sentinel mode should be off)
@@ -2611,20 +2621,30 @@ mod tests {
         interrupts: std::sync::atomic::AtomicUsize,
     }
 
-    impl PersistentStreamFake {
-        /// Returns the backend plus the actor-side sender, so a test can push a
-        /// response the way a live actor would and prove the channel still works.
-        fn new() -> (Self, std::sync::mpsc::Sender<crate::DaveApiResponse>) {
-            let (tx, rx) = std::sync::mpsc::channel();
-            (
-                Self {
+    /// A [`PersistentStreamFake`] and its actor-side sender.
+    struct FakeActor {
+        /// The backend.
+        backend: PersistentStreamFake,
+        /// The sender a live actor would hold, so a test can push a response
+        /// the way it would and prove the channel still works.
+        actor_tx: std::sync::mpsc::Sender<crate::DaveApiResponse>,
+    }
+
+    impl FakeActor {
+        /// A fresh backend plus the actor-side sender of its one channel.
+        fn new() -> Self {
+            let (actor_tx, rx) = std::sync::mpsc::channel();
+            Self {
+                backend: PersistentStreamFake {
                     rx: std::sync::Mutex::new(Some(rx)),
                     interrupts: std::sync::atomic::AtomicUsize::new(0),
                 },
-                tx,
-            )
+                actor_tx,
+            }
         }
+    }
 
+    impl PersistentStreamFake {
         fn interrupt_count(&self) -> usize {
             self.interrupts.load(std::sync::atomic::Ordering::SeqCst)
         }
@@ -2643,11 +2663,11 @@ mod tests {
             _resume_session_id: Option<String>,
             _permission_mode: PermissionMode,
             _waker: notedeck::Waker,
-        ) -> (
-            Option<std::sync::mpsc::Receiver<crate::DaveApiResponse>>,
-            Option<tokio::task::JoinHandle<()>>,
-        ) {
-            (self.rx.lock().unwrap().take(), None)
+        ) -> crate::backend::ResponseStream {
+            crate::backend::ResponseStream {
+                rx: self.rx.lock().unwrap().take(),
+                task: None,
+            }
         }
 
         fn persistent_stream(&self) -> bool {
@@ -2729,7 +2749,7 @@ mod tests {
     #[test]
     fn interrupt_keeps_the_session_stream_alive() {
         let ctx = egui::Context::default();
-        let (backend, actor_tx) = PersistentStreamFake::new();
+        let FakeActor { backend, actor_tx } = FakeActor::new();
         let mut sm = SessionManager::new();
         let id = session_mid_turn(&mut sm, &backend);
 
@@ -2767,7 +2787,7 @@ mod tests {
     #[test]
     fn interrupt_keeps_a_pending_permission_answerable() {
         let ctx = egui::Context::default();
-        let (backend, _tx) = PersistentStreamFake::new();
+        let FakeActor { backend, .. } = FakeActor::new();
         let mut sm = SessionManager::new();
         let id = session_mid_turn(&mut sm, &backend);
 
@@ -2901,7 +2921,10 @@ mod tests {
             "clicking Stop must raise Interrupt, got {action:?}"
         );
 
-        let (stop_backend, stop_tx) = PersistentStreamFake::new();
+        let FakeActor {
+            backend: stop_backend,
+            actor_tx: stop_tx,
+        } = FakeActor::new();
         let mut stop_sm = SessionManager::new();
         let stop_id = session_mid_turn(&mut stop_sm, &stop_backend);
         let mut overlay = crate::DaveOverlay::None;
@@ -2926,7 +2949,10 @@ mod tests {
             "Esc S must trigger Interrupt, got {key_action:?}"
         );
 
-        let (s_backend, s_tx) = PersistentStreamFake::new();
+        let FakeActor {
+            backend: s_backend,
+            actor_tx: s_tx,
+        } = FakeActor::new();
         let mut s_sm = SessionManager::new();
         let s_id = session_mid_turn(&mut s_sm, &s_backend);
         let mut scene = AgentScene::new();

@@ -107,7 +107,7 @@ pub struct OverviewLabels {
 #[derive(Debug, Default)]
 pub struct UsageLabels {
     /// "123K / 200K · 62%", keyed by context tokens and window.
-    pub context: LabelMemo<(u64, u64)>,
+    pub context: LabelMemo<ContextFill>,
     /// The legend under the bar, one count per kind of token: cache read,
     /// cache write, input, output.
     pub breakdown: [LabelMemo<u64>; 4],
@@ -133,10 +133,39 @@ pub struct RateLimitLabels {
     pub names: [LabelMemo<RateLimitWindowKind>; RATE_LIMIT_WINDOWS],
     /// Each shown window's "82% · resets 3:42 PM", keyed by the window and
     /// whether its reset time has passed.
-    pub windows: [LabelMemo<(RateLimitWindowKind, RateLimitWindow, bool)>; RATE_LIMIT_WINDOWS],
+    pub windows: [LabelMemo<WindowReading>; RATE_LIMIT_WINDOWS],
     /// The status-bar pill, keyed by status and the limiting window's
     /// percentage.
-    pub pill: LabelMemo<(RateLimitStatus, u32)>,
+    pub pill: LabelMemo<PillReading>,
+}
+
+/// How full the context is: the Usage card's context line's key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextFill {
+    /// Tokens in the context.
+    pub context: u64,
+    /// The model's context window, in tokens.
+    pub window: u64,
+}
+
+/// One rate-limit window as its line in the Rate limits card shows it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowReading {
+    /// Which window it is.
+    pub kind: RateLimitWindowKind,
+    /// How much of it is used, and when it resets.
+    pub window: RateLimitWindow,
+    /// Whether its reset time has passed.
+    pub passed: bool,
+}
+
+/// What the status-bar rate-limit pill shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PillReading {
+    /// The account's rate-limit status.
+    pub status: RateLimitStatus,
+    /// How full the limiting window is, in percent.
+    pub percent: u32,
 }
 
 /// A localized display string built from a key the first frame it is drawn

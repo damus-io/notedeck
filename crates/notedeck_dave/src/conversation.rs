@@ -5,7 +5,7 @@
 
 use crate::backend::BackendType;
 use crate::publish::{ingest_live_event, publish_auto_accept_response};
-use crate::session::SessionManager;
+use crate::session::{SessionManager, SessionMessage};
 use crate::stream_events::HostCtx;
 use crate::{
     messages, reconcile, session, session_events, session_loader, Dave, Message,
@@ -188,9 +188,9 @@ impl Dave {
         &mut self,
         host: &HostCtx<'_>,
         fan_out_keys: &mut Vec<NoteKey>,
-    ) -> Vec<(SessionId, String)> {
+    ) -> Vec<SessionMessage> {
         let ndb = host.ndb;
-        let remote_user_messages: Vec<(SessionId, String)> = Vec::new();
+        let remote_user_messages: Vec<SessionMessage> = Vec::new();
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
             return remote_user_messages;
         };
@@ -285,9 +285,9 @@ pub(crate) fn deliver_notes(
     sessions: &mut SessionManager,
     host: &HostCtx<'_>,
     by_session: HashMap<SessionId, Vec<NoteKey>>,
-) -> Vec<(SessionId, String)> {
+) -> Vec<SessionMessage> {
     let (ndb, secret_key, account) = (host.ndb, host.sk(), &host.author);
-    let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
+    let mut remote_user_messages: Vec<SessionMessage> = Vec::new();
     let mut rebuild_ids: Vec<SessionId> = Vec::new();
     // Local sessions that got notes: each may now be at rest with all of
     // its own notes indexed.
@@ -378,7 +378,7 @@ pub(crate) fn subscribe_conversation_events(
 /// Result of processing a batch of conversation notes.
 pub(crate) struct ProcessedNotes {
     /// User messages received from remote clients (for local sessions).
-    pub remote_user_messages: Vec<(SessionId, String)>,
+    pub remote_user_messages: Vec<SessionMessage>,
     /// True if this batch needs the caller to rebuild the remote session's chat
     /// from ndb (see [`rebuild_chat_from_fold`]) — set only on the slow path, when
     /// a new displayable note sorts at or before what's already shown. In-order
@@ -386,8 +386,17 @@ pub(crate) struct ProcessedNotes {
     pub rebuild_chat: bool,
 }
 
-/// The message a remote client's `user` note brings a local session, as its
-/// id and text, or `None` while there is nothing to show yet.
+/// The message a remote client's `user` note brings a local session, as
+/// [`remote_user_message`] gathers it.
+struct RemoteUserMessage<'n> {
+    /// The message's id: the note's own, or a split message's first part's.
+    id: [u8; 32],
+    /// The message's text, whole.
+    text: Cow<'n, str>,
+}
+
+/// The message a remote client's `user` note brings a local session, or
+/// `None` while there is nothing to show yet.
 ///
 /// A note is a message of its own. A part of a message split across notes
 /// (see [`split_message`]) brings the whole message, under its first part's
@@ -397,8 +406,13 @@ fn remote_user_message<'n>(
     note: &'n nostrdb::Note,
     chat: &[Message],
     ndb: &nostrdb::Ndb,
-) -> Option<([u8; 32], Cow<'n, str>)> {
-    let own = || Some((*note.id(), Cow::Borrowed(note.content())));
+) -> Option<RemoteUserMessage<'n>> {
+    let own = || {
+        Some(RemoteUserMessage {
+            id: *note.id(),
+            text: Cow::Borrowed(note.content()),
+        })
+    };
     if !split_message::is_split_part(note) {
         return own();
     }
@@ -416,7 +430,10 @@ fn remote_user_message<'n>(
     if shown {
         return None;
     }
-    Some((split.head, Cow::Owned(split.content)))
+    Some(RemoteUserMessage {
+        id: split.head,
+        text: Cow::Owned(split.content),
+    })
 }
 
 /// Process a batch of kind-1988 notes for a single session.
@@ -458,7 +475,7 @@ pub(crate) fn process_conversation_notes<'a>(
     secret_key: Option<&[u8; 32]>,
     ndb: &nostrdb::Ndb,
 ) -> ProcessedNotes {
-    let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
+    let mut remote_user_messages: Vec<SessionMessage> = Vec::new();
     let mut rebuild_chat = false;
     // Newest `created_at` of a displayable remote note in this batch, applied
     // to `last_activity` after the loop (can't call `session.mark_activity`
@@ -516,7 +533,11 @@ pub(crate) fn process_conversation_notes<'a>(
                 // it is always queued, and its dispatch marker places it where
                 // the host does (see `record_dispatch`), whether it waits for
                 // a running turn or is dispatched straight away.
-                let Some((message_id, text)) = remote_user_message(note, &session.chat, ndb) else {
+                let Some(RemoteUserMessage {
+                    id: message_id,
+                    text,
+                }) = remote_user_message(note, &session.chat, ndb)
+                else {
                     continue;
                 };
                 session.chat.push(Message::User(messages::UserMessage {
@@ -530,7 +551,10 @@ pub(crate) fn process_conversation_notes<'a>(
                     agentic.fold_dirty = true;
                 }
                 session.update_title_from_last_message();
-                remote_user_messages.push((session_id, text.into_owned()));
+                remote_user_messages.push(SessionMessage {
+                    session_id,
+                    text: text.into_owned(),
+                });
             }
             continue;
         }
@@ -1612,7 +1636,16 @@ mod tests {
         );
         assert_eq!(
             user_texts_and_queued(&session.chat),
-            [("first", false), ("second", true)],
+            [
+                UserRow {
+                    text: "first",
+                    queued: false
+                },
+                UserRow {
+                    text: "second",
+                    queued: true
+                },
+            ],
             "the reply sorts before the waiting message: {:?}",
             texts(&session.chat)
         );
@@ -1621,7 +1654,16 @@ mod tests {
         assert!(deliver(&mut session, &marker).await, "a marker rebuilds");
         assert_eq!(
             user_texts_and_queued(&session.chat),
-            [("first", false), ("second", false)],
+            [
+                UserRow {
+                    text: "first",
+                    queued: false
+                },
+                UserRow {
+                    text: "second",
+                    queued: false
+                },
+            ],
         );
 
         assert!(
@@ -1716,11 +1758,23 @@ mod tests {
         assert_eq!(markers, [Some(remote.note_id)], "one marker, for that note");
     }
 
+    /// A user row, as [`user_texts_and_queued`] reads it.
+    #[derive(Debug, PartialEq)]
+    struct UserRow<'a> {
+        /// The row's text.
+        text: &'a str,
+        /// Whether it is still queued.
+        queued: bool,
+    }
+
     /// Each user row's text and whether it is still queued.
-    fn user_texts_and_queued(chat: &[Message]) -> Vec<(&str, bool)> {
+    fn user_texts_and_queued(chat: &[Message]) -> Vec<UserRow<'_>> {
         chat.iter()
             .filter_map(|m| match m {
-                Message::User(user) => Some((user.as_str(), user.queued)),
+                Message::User(user) => Some(UserRow {
+                    text: user.as_str(),
+                    queued: user.queued,
+                }),
                 _ => None,
             })
             .collect()
@@ -1959,13 +2013,18 @@ mod tests {
         result.rebuild_chat
     }
 
+    /// What [`remote_session_behind_an_early_note`] sets up.
+    struct BehindEarlyNote {
+        /// The remote session, showing `A`.
+        session: session::ChatSession,
+        /// `H`, built but not stored.
+        early: session_events::BuiltEvent,
+    }
+
     /// A remote session with the host's assistant note `A` shown, and `H`, a
     /// host note stamped before it, built but not stored: once stored and
     /// delivered, `H` sorts before the tail and forces a rebuild.
-    async fn remote_session_behind_an_early_note(
-        ndb: &Ndb,
-        session_id: &str,
-    ) -> (session::ChatSession, session_events::BuiltEvent) {
+    async fn remote_session_behind_an_early_note(ndb: &Ndb, session_id: &str) -> BehindEarlyNote {
         let sk = test_secret_key();
         let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
             .unwrap()
@@ -2004,7 +2063,7 @@ mod tests {
         let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
         assert!(deliver(ndb, &mut session, &sk, &author, "A"));
         assert_eq!(chat_texts(&session.chat), ["A"]);
-        (session, h)
+        BehindEarlyNote { session, early: h }
     }
 
     /// A set-issue command from another device (the `agentium link` CLI) links
@@ -2081,7 +2140,10 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
         let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
         assert!(ndb.add_key(&sk), "ndb must accept the PNS key");
-        let (mut session, h) = remote_session_behind_an_early_note(&ndb, "own-send-cap").await;
+        let BehindEarlyNote {
+            mut session,
+            early: h,
+        } = remote_session_behind_an_early_note(&ndb, "own-send-cap").await;
 
         // H is stored, then the controller sends M: stored after H.
         store(&ndb, &h).await;
@@ -2120,7 +2182,10 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
         let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
         let session_id = "own-send-unstored";
-        let (mut session, h) = remote_session_behind_an_early_note(&ndb, session_id).await;
+        let BehindEarlyNote {
+            mut session,
+            early: h,
+        } = remote_session_behind_an_early_note(&ndb, session_id).await;
 
         // The send as `ingest_remote_user_message` records it, with the note
         // still on its way into nostrdb.
@@ -2172,7 +2237,8 @@ mod tests {
         let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
         assert!(ndb.add_key(&sk), "ndb must accept the PNS key");
         let session_id = "controller-queued-send";
-        let (mut session, _) = remote_session_behind_an_early_note(&ndb, session_id).await;
+        let BehindEarlyNote { mut session, .. } =
+            remote_session_behind_an_early_note(&ndb, session_id).await;
         session.agentic.as_mut().unwrap().remote_status =
             Some(crate::agent_status::AgentStatus::Working);
         session.update_status();
@@ -2240,7 +2306,8 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
         let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
         assert!(ndb.add_key(&sk), "ndb must accept the PNS key");
-        let (mut session, _) = remote_session_behind_an_early_note(&ndb, "controller-idle").await;
+        let BehindEarlyNote { mut session, .. } =
+            remote_session_behind_an_early_note(&ndb, "controller-idle").await;
         session.agentic.as_mut().unwrap().remote_status =
             Some(crate::agent_status::AgentStatus::Done);
         session.update_status();

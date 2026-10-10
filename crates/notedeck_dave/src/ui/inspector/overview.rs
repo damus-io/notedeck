@@ -142,8 +142,7 @@ fn facts_rows_ui(
         ui,
         &tr!(i18n, "Mode", "Dave session inspector overview row"),
     );
-    let (mode, variant) = permission_mode_badge(facts.permission_mode);
-    StatusBadge::new(mode).variant(variant).show(ui);
+    permission_mode_badge(facts.permission_mode).show(ui);
     ui.end_row();
 
     if let Some(cwd) = facts.details.and_then(|d| d.cwd.as_deref()) {

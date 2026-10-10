@@ -1077,7 +1077,7 @@ pub(crate) fn dispatch_turn(
     // `rx` is `None` for persistent-stream backends on subsequent turns — the
     // session already owns a long-lived channel we must keep, so only replace
     // `incoming_tokens` when a new receiver was minted.
-    let (rx, task_handle) = backend.stream_request(
+    let stream = backend.stream_request(
         messages,
         ctx.tools.clone(),
         model_name,
@@ -1089,10 +1089,10 @@ pub(crate) fn dispatch_turn(
         permission_mode,
         ctx.host.waker.clone(),
     );
-    if let Some(rx) = rx {
+    if let Some(rx) = stream.rx {
         session.incoming_tokens = Some(rx);
     }
-    session.task_handle = task_handle;
+    session.task_handle = stream.task;
 }
 
 #[cfg(test)]

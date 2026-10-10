@@ -25,7 +25,7 @@
 //! fixes it; that card un-ignores it.
 
 use crate::backend::shared::prepare_prompt_and_images;
-use crate::backend::{AiBackend, BackendType};
+use crate::backend::{AiBackend, BackendType, ResponseStream};
 use crate::config::AiMode;
 use crate::conversation::{
     deliver_notes, handle_remote_permission_response, process_conversation_notes,
@@ -68,7 +68,7 @@ use nostrdb::{Filter, IngestMetadata, Ndb, NoteKey, SubscriptionStream, Transact
 use notedeck::Waker;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -245,7 +245,7 @@ impl Host {
             Step::ExpectRedispatch(expected) => {
                 let redispatch = self.needs_send.contains(&sid).then(|| {
                     // The resumed-session form: the trailing user turns.
-                    prepare_prompt_and_images(&session.chat, &Some(String::new())).0
+                    prepare_prompt_and_images(&session.chat, &Some(String::new())).prompt
                 });
                 assert_eq!(
                     redispatch.as_deref(),
@@ -596,11 +596,11 @@ impl AiBackend for ScriptBackend {
         _resume_session_id: Option<String>,
         _permission_mode: PermissionMode,
         _waker: Waker,
-    ) -> (
-        Option<mpsc::Receiver<DaveApiResponse>>,
-        Option<tokio::task::JoinHandle<()>>,
-    ) {
-        (None, None)
+    ) -> ResponseStream {
+        ResponseStream {
+            rx: None,
+            task: None,
+        }
     }
 
     fn cleanup_session(&self, _session_id: String) {}
@@ -1866,7 +1866,7 @@ async fn split_remote_message_dispatches_once_whole() {
     let sent: Vec<&str> = polled
         .remote_user_messages
         .iter()
-        .map(|(_, text)| text.as_str())
+        .map(|msg| msg.text.as_str())
         .collect();
     assert_eq!(sent, [text.as_str()]);
     let Some(Message::User(user)) = host.session().chat.last() else {

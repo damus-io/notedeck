@@ -6,7 +6,9 @@
 //! strings are built by [`RateLimitLabels`] memos when a window moves or its
 //! reset passes, so a frame only lays them out.
 
-use crate::inspector::{RateLimitLabels, SessionInspector, RATE_LIMIT_WINDOWS};
+use crate::inspector::{
+    PillReading, RateLimitLabels, SessionInspector, WindowReading, RATE_LIMIT_WINDOWS,
+};
 use crate::messages::{RateLimitInfo, RateLimitStatus, RateLimitWindow, RateLimitWindowKind};
 use crate::ui::dave::fill_color;
 use notedeck::{tr, Localization};
@@ -76,7 +78,12 @@ fn window_ui(
         let name = labels.names[i].get(kind, i18n, window_name);
         value_ui(ui, name);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let text = labels.windows[i].get((kind, window, passed), i18n, window_text);
+            let reading = WindowReading {
+                kind,
+                window,
+                passed,
+            };
+            let text = labels.windows[i].get(reading, i18n, window_text);
             weak_ui(ui, text);
         });
     });
@@ -186,7 +193,11 @@ fn window_name(kind: RateLimitWindowKind, i18n: &mut Localization) -> String {
 /// "82% · resets 3:42 PM", or "reset at 3:42 PM" once it has. A weekly
 /// window's reset names the day too.
 fn window_text(
-    (kind, window, passed): (RateLimitWindowKind, RateLimitWindow, bool),
+    WindowReading {
+        kind,
+        window,
+        passed,
+    }: WindowReading,
     i18n: &mut Localization,
 ) -> String {
     let at = reset_time(window.resets_at, kind.is_weekly());
@@ -242,7 +253,11 @@ pub fn rate_limit_pill_ui(
         return None;
     }
     let percent = info.utilization.map(percent).unwrap_or(0);
-    let text = labels.pill.get((info.status, percent), i18n, pill_text);
+    let reading = PillReading {
+        status: info.status,
+        percent,
+    };
+    let text = labels.pill.get(reading, i18n, pill_text);
     let variant = if info.status == RateLimitStatus::Rejected {
         BadgeVariant::Destructive
     } else {
@@ -256,7 +271,7 @@ pub fn rate_limit_pill_ui(
     )
 }
 
-fn pill_text((status, percent): (RateLimitStatus, u32), i18n: &mut Localization) -> String {
+fn pill_text(PillReading { status, percent }: PillReading, i18n: &mut Localization) -> String {
     if status == RateLimitStatus::Rejected {
         return tr!(
             i18n,

@@ -1,4 +1,4 @@
-use crate::backend::traits::AiBackend;
+use crate::backend::traits::{AiBackend, ResponseStream};
 use crate::messages::DaveApiResponse;
 use crate::tools::{PartialToolCall, Tool, ToolCall, ToolCalls, ToolResponses};
 use crate::Message;
@@ -36,10 +36,7 @@ impl AiBackend for OpenAiBackend {
         _resume_session_id: Option<String>,
         _permission_mode: PermissionMode,
         waker: Waker,
-    ) -> (
-        Option<mpsc::Receiver<DaveApiResponse>>,
-        Option<tokio::task::JoinHandle<()>>,
-    ) {
+    ) -> ResponseStream {
         let (tx, rx) = mpsc::channel();
 
         let api_messages: Vec<ChatCompletionRequestMessage> = {
@@ -193,7 +190,10 @@ impl AiBackend for OpenAiBackend {
             tracing::debug!("stream closed");
         });
 
-        (Some(rx), Some(handle))
+        ResponseStream {
+            rx: Some(rx),
+            task: Some(handle),
+        }
     }
 
     fn cleanup_session(&self, _session_id: String) {
@@ -325,17 +325,11 @@ mod tests {
     use super::*;
     use crate::messages::AssistantMessage;
     use crate::tools::{dave_tools, ToolCall};
-    use notedeck_testing::fixtures::test_config;
-
-    fn test_ndb() -> (tempfile::TempDir, Ndb) {
-        let dir = tempfile::tempdir().unwrap();
-        let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
-        (dir, ndb)
-    }
+    use notedeck_testing::fixtures::TempNdb;
 
     #[test]
     fn message_to_api_maps_core_roles() {
-        let (_dir, ndb) = test_ndb();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
         let txn = Transaction::new(&ndb).unwrap();
 
         assert!(matches!(
@@ -361,7 +355,7 @@ mod tests {
 
     #[test]
     fn message_to_api_maps_tool_calls() {
-        let (_dir, ndb) = test_ndb();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
         let txn = Transaction::new(&ndb).unwrap();
 
         let call = ToolCall::invalid(

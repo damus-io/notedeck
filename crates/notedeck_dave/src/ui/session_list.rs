@@ -256,7 +256,10 @@ impl<'a> SessionListUi<'a> {
             .and_then(|r| r.as_ref().ok())
             .map(|d| (d.added_lines, d.deleted_lines))
             .filter(|(added, deleted)| *added > 0 || *deleted > 0);
-        let (response, dot_action) = if session.ai_mode == AiMode::Agentic {
+        let RowResponse {
+            response,
+            action: dot_action,
+        } = if session.ai_mode == AiMode::Agentic {
             self.agent_row_ui(
                 ui,
                 session.id,
@@ -427,7 +430,7 @@ impl<'a> SessionListUi<'a> {
         queue_priority: Option<FocusPriority>,
         backend_type: BackendType,
         git_lines: Option<(usize, usize)>,
-    ) -> (egui::Response, Option<SessionListAction>) {
+    ) -> RowResponse {
         let row_height = if cwd_display.is_some() { 48.0 } else { 32.0 };
         let desired_size = egui::vec2(ui.available_width(), row_height);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
@@ -488,7 +491,11 @@ impl<'a> SessionListUi<'a> {
         // Standalone (cwd) rows get the worktree treatment: status dot moves to
         // the top-right and the git +/- line stats sit on the bottom-right next
         // to the cwd path. Grouped rows keep the original centered layout.
-        let (title_right, cwd_right, dot_action) = if cwd_display.is_some() {
+        let AgentRightSide {
+            title_right,
+            cwd_right,
+            action: dot_action,
+        } = if cwd_display.is_some() {
             render_agent_row_right_side(
                 ui,
                 rect,
@@ -502,7 +509,7 @@ impl<'a> SessionListUi<'a> {
                 hints,
             )
         } else {
-            let (used, action) = render_row_right_side(
+            let RightSide { width, action } = render_row_right_side(
                 ui,
                 rect,
                 session_id,
@@ -513,7 +520,11 @@ impl<'a> SessionListUi<'a> {
                 queue_priority,
                 hints,
             );
-            (used, used, action)
+            AgentRightSide {
+                title_right: width,
+                cwd_right: width,
+                action,
+            }
         };
 
         let title_max_width = rect.width() - text_start_x - title_right;
@@ -542,7 +553,10 @@ impl<'a> SessionListUi<'a> {
             cwd_inline_ui(ui, cwd, cwd_pos, cwd_max_width);
         }
 
-        (response, dot_action)
+        RowResponse {
+            response,
+            action: dot_action,
+        }
     }
 
     /// Render a chat session row (no status bar, no cwd).
@@ -556,7 +570,7 @@ impl<'a> SessionListUi<'a> {
         shortcut_hint: Option<usize>,
         cycle_hint: Option<&str>,
         queue_priority: Option<FocusPriority>,
-    ) -> (egui::Response, Option<SessionListAction>) {
+    ) -> RowResponse {
         let desired_size = egui::vec2(ui.available_width(), 32.0);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -565,7 +579,10 @@ impl<'a> SessionListUi<'a> {
 
         let text_start_x = 8.0;
         let hints: &[(&str, &str)] = &[("⇧R", "Rename")];
-        let (right_used, dot_action) = render_row_right_side(
+        let RightSide {
+            width: right_used,
+            action: dot_action,
+        } = render_row_right_side(
             ui,
             rect,
             session_id,
@@ -593,7 +610,10 @@ impl<'a> SessionListUi<'a> {
             max_text_width,
         );
 
-        (response, dot_action)
+        RowResponse {
+            response,
+            action: dot_action,
+        }
     }
 }
 
@@ -697,14 +717,12 @@ pub(crate) fn truncate_start(
 /// 1. Everything fits — return as-is.
 /// 2. Path fits alone — truncate prefix from start to fill remaining space.
 /// 3. Path overflows — drop prefix, truncate path from start.
-///
-/// Returns `(display_text, was_truncated)`.
 pub(crate) fn truncate_host_and_path(
     ui: &egui::Ui,
     prefix: &str,
     path: &str,
     max_width: f32,
-) -> (String, bool) {
+) -> String {
     let font = egui::FontId::monospace(10.0);
     let weak_color = ui.visuals().weak_text_color();
 
@@ -724,14 +742,13 @@ pub(crate) fn truncate_host_and_path(
         .x;
 
     if path_width <= max_width - prefix_width {
-        (format!("{}{}", prefix, path), false)
+        format!("{}{}", prefix, path)
     } else if path_width <= max_width {
         let host_budget = max_width - path_width;
         let truncated_prefix = truncate_start(ui, prefix, &font, host_budget);
-        (format!("{}{}", truncated_prefix, path), true)
+        format!("{}{}", truncated_prefix, path)
     } else {
-        let path_text = truncate_start(ui, path, &font, max_width);
-        (path_text, true)
+        truncate_start(ui, path, &font, max_width)
     }
 }
 
@@ -758,8 +775,35 @@ fn paint_row_background(
     }
 }
 
+/// What a session row drew: its response, and what clicking its focus dot
+/// asks, if it was clicked.
+struct RowResponse {
+    /// The row's click response.
+    response: egui::Response,
+    /// What clicking its focus dot asks, if it was clicked.
+    action: Option<SessionListAction>,
+}
+
+/// What a session row's right side took, as [`render_row_right_side`] draws it.
+struct RightSide {
+    /// The total width it consumed.
+    width: f32,
+    /// What clicking its focus dot asks, if it was clicked.
+    action: Option<SessionListAction>,
+}
+
+/// What a standalone agent row's right side took, as
+/// [`render_agent_row_right_side`] draws it.
+struct AgentRightSide {
+    /// The width to reserve on the title (top) line.
+    title_right: f32,
+    /// The width to reserve on the cwd (bottom) line.
+    cwd_right: f32,
+    /// What clicking its focus dot asks, if it was clicked.
+    action: Option<SessionListAction>,
+}
+
 /// Render the right side of a session row: shortcut number, ctrl+shift hints, and focus dot.
-/// Returns (total right-side width consumed, optional dot action).
 #[allow(clippy::too_many_arguments)]
 fn render_row_right_side(
     ui: &mut egui::Ui,
@@ -771,7 +815,7 @@ fn render_row_right_side(
     cycle_hint: Option<&str>,
     queue_priority: Option<FocusPriority>,
     hints: &[(&str, &str)],
-) -> (f32, Option<SessionListAction>) {
+) -> RightSide {
     let mut right_offset = 8.0;
     let mut dot_action = None;
 
@@ -840,7 +884,10 @@ fn render_row_right_side(
         right_offset += dot_radius * 2.0 + 8.0;
     }
 
-    (right_offset, dot_action)
+    RightSide {
+        width: right_offset,
+        action: dot_action,
+    }
 }
 
 const GIT_ADDED_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 180, 60);
@@ -863,7 +910,7 @@ fn render_agent_row_right_side(
     queue_priority: Option<FocusPriority>,
     git_lines: Option<(usize, usize)>,
     hints: &[(&str, &str)],
-) -> (f32, f32, Option<SessionListAction>) {
+) -> AgentRightSide {
     let mut center_offset = 8.0;
     let mut dot_action = None;
 
@@ -970,7 +1017,11 @@ fn render_agent_row_right_side(
 
     let title_right = center_offset.max(dot_width);
     let cwd_right = center_offset.max(git_width);
-    (title_right, cwd_right, dot_action)
+    AgentRightSide {
+        title_right,
+        cwd_right,
+        action: dot_action,
+    }
 }
 
 /// Render a title string at the given position, clipping if it exceeds max_width.
@@ -1030,7 +1081,7 @@ fn host_section_ui(
     host_state.set_open(!host_collapsed);
     let openness = host_state.openness(ui.ctx());
 
-    let (row_resp, label_resp) = collapsible_header_ui(
+    let header = collapsible_header_ui(
         ui,
         HeaderParams {
             text: host_label,
@@ -1079,7 +1130,7 @@ fn host_section_ui(
 
     // The whole row toggles collapse; the label sits on top and captures clicks
     // over its own rect, so check both.
-    if row_resp.clicked() || label_resp.clicked() {
+    if header.clicked() {
         action = Some(SessionListAction::ToggleHostCollapse(
             host_group.hostname.clone(),
         ));
@@ -1121,7 +1172,7 @@ fn project_section_ui(
     project_state.set_open(!collapsed);
     let openness = project_state.openness(ui.ctx());
 
-    let (row_resp, label_resp) = collapsible_header_ui(
+    let header = collapsible_header_ui(
         ui,
         HeaderParams {
             text: &project.slug,
@@ -1166,7 +1217,7 @@ fn project_section_ui(
 
     // The whole row toggles collapse; the label sits on top and captures clicks
     // over its own rect, so check both.
-    if row_resp.clicked() || label_resp.clicked() {
+    if header.clicked() {
         action = Some(SessionListAction::ToggleProjectCollapse(
             hostname.to_string(),
             project.root.clone(),
@@ -1269,6 +1320,21 @@ struct HeaderParams<'a> {
     truncate_from_start: bool,
 }
 
+/// What [`collapsible_header_ui`] drew.
+struct HeaderResponse {
+    /// The full-width click row.
+    row: egui::Response,
+    /// The label on top of it, which captures clicks over its own rect.
+    label: egui::Response,
+}
+
+impl HeaderResponse {
+    /// Whether the header was clicked, on the row or its label.
+    fn clicked(&self) -> bool {
+        self.row.clicked() || self.label.clicked()
+    }
+}
+
 /// The one collapsible section header, shared by the host, project, and
 /// workspace sections (previously three near-identical hand-built renderers).
 ///
@@ -1280,14 +1346,13 @@ struct HeaderParams<'a> {
 /// why the arrow is drawn by hand on the right and the caller drives open/closed
 /// from the external `CollapseState`.
 ///
-/// Returns `(row_response, label_response)`. Callers toggle collapse when either
-/// is clicked: the label sits on top of the row and captures clicks over its own
-/// rect.
+/// Callers toggle collapse when [`HeaderResponse::clicked`]: the label sits on
+/// top of the row and captures clicks over its own rect.
 fn collapsible_header_ui(
     ui: &mut egui::Ui,
     params: HeaderParams<'_>,
     openness: f32,
-) -> (egui::Response, egui::Response) {
+) -> HeaderResponse {
     let (rect, row_response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), params.height),
         Sense::click(),
@@ -1318,7 +1383,7 @@ fn collapsible_header_ui(
     // Workspace paths keep their tail (truncate from the start); host/project
     // text truncates normally from the end with an ellipsis.
     let label = if params.truncate_from_start {
-        let (text, _) = truncate_host_and_path(ui, "", params.text, max_text_width);
+        let text = truncate_host_and_path(ui, "", params.text, max_text_width);
         egui::Label::new(egui::RichText::new(text).font(params.font).color(color))
             .sense(Sense::click())
     } else {
@@ -1341,7 +1406,10 @@ fn collapsible_header_ui(
         .add(label)
         .on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    (row_response, label_response)
+    HeaderResponse {
+        row: row_response,
+        label: label_response,
+    }
 }
 
 /// Paint a small monitor silhouette inside `rect` (a screen over a stand),
@@ -1493,7 +1561,7 @@ fn cwd_folder_ui(
     cwd_state.set_open(!cwd_collapsed);
     let openness = cwd_state.openness(ui.ctx());
 
-    let (row_resp, label_resp) = collapsible_header_ui(
+    let header = collapsible_header_ui(
         ui,
         HeaderParams {
             text: &cwd_group.display_cwd,
@@ -1523,14 +1591,14 @@ fn cwd_folder_ui(
 
     // The whole row toggles collapse; the label sits on top and captures clicks
     // over its own rect, so check both.
-    if row_resp.clicked() || label_resp.clicked() {
+    if header.clicked() {
         action = Some(SessionListAction::ToggleCwdCollapse(
             hostname.to_string(),
             cwd_group.cwd.clone(),
         ));
     }
 
-    notedeck_ui::context_menu::context_menu(&label_resp, |ui| {
+    notedeck_ui::context_menu::context_menu(&header.label, |ui| {
         if ui.button("New Session").clicked() {
             action = Some(SessionListAction::NewSessionInCwd(
                 hostname.to_string(),
@@ -1570,7 +1638,7 @@ fn paint_worktree_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::C
 /// truncated from the start), for sessions that are alone in their cwd and so
 /// don't get a surrounding folder header.
 fn cwd_inline_ui(ui: &mut egui::Ui, cwd_display: &str, pos: Pos2, max_width: f32) {
-    let (text, _) = truncate_host_and_path(ui, "", cwd_display, max_width);
+    let text = truncate_host_and_path(ui, "", cwd_display, max_width);
     let cwd_font = egui::FontId::monospace(10.0);
     let cwd_color = ui.visuals().weak_text_color();
     ui.painter()

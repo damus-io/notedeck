@@ -107,7 +107,7 @@ pub fn messages_to_prompt(messages: &[Message]) -> String {
 /// so the AI sees everything at once instead of one at a time.
 #[cfg(test)]
 pub fn get_pending_user_messages(messages: &[Message]) -> String {
-    pending_user_prompt_and_images(messages).0
+    pending_user_prompt_and_images(messages).prompt
 }
 
 /// Collect trailing user messages from newest to oldest.
@@ -123,13 +123,23 @@ fn trailing_user_messages(messages: &[Message]) -> Vec<&UserMessage> {
         .collect()
 }
 
+/// What a turn sends the backend: the user's prompt text and the images
+/// attached to the same message(s).
+#[derive(Debug, Default)]
+pub struct UserTurn {
+    /// The user's text, queued messages joined with `\n`.
+    pub prompt: String,
+    /// Their image attachments, in chronological order.
+    pub images: Vec<ImageAttachment>,
+}
+
 /// Build prompt and image list from trailing queued user messages in one pass.
 ///
 /// Returns user text joined with `\n` and images in chronological order.
-fn pending_user_prompt_and_images(messages: &[Message]) -> (String, Vec<ImageAttachment>) {
+fn pending_user_prompt_and_images(messages: &[Message]) -> UserTurn {
     let trailing = trailing_user_messages(messages);
     if trailing.is_empty() {
-        return (String::new(), Vec::new());
+        return UserTurn::default();
     }
 
     // Iterate newest->oldest in reverse so output is chronological.
@@ -143,7 +153,7 @@ fn pending_user_prompt_and_images(messages: &[Message]) -> (String, Vec<ImageAtt
         images.extend(msg.images.iter().cloned());
     }
 
-    (prompt, images)
+    UserTurn { prompt, images }
 }
 
 /// Remove a completed subagent from the stack and notify the UI.
@@ -303,7 +313,7 @@ pub fn forward_permission_to_ui_with_view(
 pub fn prepare_prompt_and_images(
     messages: &[Message],
     resume_session_id: &Option<String>,
-) -> (String, Vec<ImageAttachment>) {
+) -> UserTurn {
     if resume_session_id.is_some() {
         return pending_user_prompt_and_images(messages);
     }
@@ -322,7 +332,10 @@ pub fn prepare_prompt_and_images(
                 _ => None,
             })
             .unwrap_or_default();
-        (messages_to_prompt(messages), images)
+        UserTurn {
+            prompt: messages_to_prompt(messages),
+            images,
+        }
     } else {
         pending_user_prompt_and_images(messages)
     }
@@ -368,8 +381,8 @@ pub fn session_env(
 
 #[cfg(test)]
 mod tests {
-    use super::prepare_prompt_and_images;
     use super::*;
+    use super::{prepare_prompt_and_images, UserTurn};
     use crate::backend::CountingWaker;
     use crate::messages::{
         AssistantMessage, CompactionInfo, ImageAttachment, PermissionView, UserMessage,
@@ -478,7 +491,7 @@ mod tests {
             )),
         ];
 
-        let (prompt, images) = prepare_prompt_and_images(&messages, &None);
+        let UserTurn { prompt, images } = prepare_prompt_and_images(&messages, &None);
         assert_eq!(prompt, "queued one\nqueued two");
         assert_eq!(images.len(), 3);
         assert_eq!(&*images[0].bytes, &*first.bytes);
@@ -494,7 +507,7 @@ mod tests {
             Message::User(UserMessage::new("hello", vec![image.clone()])),
         ];
 
-        let (prompt, images) = prepare_prompt_and_images(&messages, &None);
+        let UserTurn { prompt, images } = prepare_prompt_and_images(&messages, &None);
         assert!(prompt.contains("Human: hello"));
         assert_eq!(images.len(), 1);
         assert_eq!(&*images[0].bytes, &*image.bytes);
@@ -510,7 +523,8 @@ mod tests {
             Message::User(UserMessage::new("last", vec![second.clone()])),
         ];
 
-        let (prompt, images) = prepare_prompt_and_images(&messages, &Some("sid".to_string()));
+        let UserTurn { prompt, images } =
+            prepare_prompt_and_images(&messages, &Some("sid".to_string()));
         assert_eq!(prompt, "next\nlast");
         assert_eq!(images.len(), 2);
         assert_eq!(&*images[0].bytes, &*first.bytes);

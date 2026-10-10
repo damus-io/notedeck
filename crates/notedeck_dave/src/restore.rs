@@ -10,7 +10,7 @@ use crate::stream_events::HostCtx;
 use crate::{
     conversation, focus_queue, get_backend, secret_key_bytes, session, session_converter,
     session_events, session_loader, session_restore_loader, update, AiMode, ChatSession, Dave,
-    DaveOverlay, SessionId,
+    DaveOverlay, SessionId, SessionMessage,
 };
 use nostrdb::{NoteKey, Subscription, Transaction};
 use notedeck::AppContext;
@@ -348,7 +348,7 @@ impl Dave {
     /// every note is history or goes through the poll's processing, once.
     /// Returns the remote user messages that replay produced, for the caller
     /// to dispatch as it does the poll's.
-    pub(crate) fn drain_session_restore(&mut self, host: &HostCtx<'_>) -> Vec<(SessionId, String)> {
+    pub(crate) fn drain_session_restore(&mut self, host: &HostCtx<'_>) -> Vec<SessionMessage> {
         let (ndb, waker) = (host.ndb, host.waker);
         // Messages tagged with a different account are stale (the user switched
         // accounts while an in-flight restore was streaming); drop them.
@@ -1450,6 +1450,14 @@ mod tests {
         assert_eq!(info.status, SubagentStatus::Completed);
     }
 
+    /// What one [`BoundaryHarness::poll`] saw.
+    struct Polled {
+        /// The remote user messages it returned for dispatch.
+        msgs: Vec<SessionMessage>,
+        /// The envelopes it collected for fan-out.
+        fan_out: Vec<NoteKey>,
+    }
+
     /// A [`TestDave`] for driving the restore/poll boundary: the account's
     /// key unwraps PNS envelopes, and the conversation feed is created on
     /// demand, so a test decides which notes predate it.
@@ -1537,11 +1545,11 @@ mod tests {
 
         /// One conversation poll; returns the remote user messages and the
         /// envelopes it collected for fan-out.
-        fn poll(&mut self) -> (Vec<(SessionId, String)>, Vec<NoteKey>) {
+        fn poll(&mut self) -> Polled {
             let mut fan_out = Vec::new();
             let TestParts { dave, host } = self.test.parts();
             let msgs = dave.poll_remote_conversation_events(&host, &mut fan_out);
-            (msgs, fan_out)
+            Polled { msgs, fan_out }
         }
 
         /// Start the background restore the way `ensure_pns_local_state` does,
@@ -1555,7 +1563,7 @@ mod tests {
         }
 
         /// Drain everything the worker sent, as `update` does over frames.
-        fn drain(&mut self, waker: &notedeck::Waker) -> Vec<(SessionId, String)> {
+        fn drain(&mut self, waker: &notedeck::Waker) -> Vec<SessionMessage> {
             self.test.drain_restore(waker)
         }
 
@@ -1598,19 +1606,19 @@ mod tests {
         let waker = h.run_restore_worker().await;
 
         h.store_note(sid, "user", "from the phone").await;
-        let (msgs, fan_out) = h.poll();
+        let Polled { msgs, fan_out } = h.poll();
         assert!(msgs.is_empty(), "no session yet to hand it to");
         assert_eq!(fan_out.len(), 1, "the poll fans the envelope out");
 
         let msgs = h.drain(&waker);
         assert_eq!(msgs.len(), 1, "the dropped message is dispatched once");
-        assert_eq!(msgs[0].1, "from the phone");
+        assert_eq!(msgs[0].text, "from the phone");
         let session = h.session_for(sid);
         assert!(!session.is_remote());
         assert_eq!(texts_of(&session.chat), ["earlier reply", "from the phone"]);
         assert!(session.should_dispatch_remote_message());
 
-        let (msgs, fan_out) = h.poll();
+        let Polled { msgs, fan_out } = h.poll();
         assert!(msgs.is_empty() && fan_out.is_empty(), "and never again");
     }
 
@@ -1690,9 +1698,9 @@ mod tests {
         let session = h.test.dave.session_manager.get(reopened).unwrap();
         assert_eq!(texts_of(&session.chat), ["earlier reply"]);
 
-        let (msgs, _) = h.poll();
+        let Polled { msgs, .. } = h.poll();
         assert_eq!(msgs.len(), 1, "the poll delivers it");
-        assert_eq!(msgs[0].1, "from the phone");
+        assert_eq!(msgs[0].text, "from the phone");
         let session = h.test.dave.session_manager.get(reopened).unwrap();
         assert_eq!(texts_of(&session.chat), ["earlier reply", "from the phone"]);
     }
@@ -2114,13 +2122,13 @@ mod tests {
             _resume_session_id: Option<String>,
             _permission_mode: claude_agent_sdk_rs::PermissionMode,
             _waker: Waker,
-        ) -> (
-            Option<std::sync::mpsc::Receiver<crate::DaveApiResponse>>,
-            Option<tokio::task::JoinHandle<()>>,
-        ) {
+        ) -> crate::backend::ResponseStream {
             self.requests
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            (None, None)
+            crate::backend::ResponseStream {
+                rx: None,
+                task: None,
+            }
         }
 
         fn cleanup_session(&self, _session_id: String) {}

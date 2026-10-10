@@ -21,6 +21,16 @@ use uuid::Uuid;
 
 pub type SessionId = u32;
 
+/// A user message bound for a session's backend: a remote client's message,
+/// or the first prompt a spawn command carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionMessage {
+    /// The session the message is for.
+    pub session_id: SessionId,
+    /// What the user wrote.
+    pub text: String,
+}
+
 /// Current wall-clock time as unix seconds, matching the resolution of nostr
 /// `created_at`. Used to stamp and age `ChatSession::last_activity`.
 pub(crate) fn now_unix() -> u64 {

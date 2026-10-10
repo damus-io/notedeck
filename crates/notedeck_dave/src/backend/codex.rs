@@ -3,7 +3,7 @@
 
 use super::codex_protocol::*;
 use super::shared::{self, SessionCommand, SessionHandle};
-use crate::backend::traits::AiBackend;
+use crate::backend::traits::{AiBackend, ResponseStream};
 use crate::file_update::{FileUpdate, FileUpdateType};
 use crate::messages::{
     ApprovalPromptInput, ApprovalPromptQuestion, CompactionInfo, DaveApiResponse,
@@ -239,7 +239,10 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                 // Write images to temp files. _temp_files holds NamedTempFile
                 // handles that auto-delete on drop — must stay alive until the
                 // turn completes so Codex can read them.
-                let (mut inputs, _temp_files) = match prepare_image_inputs(&images) {
+                let StagedImages {
+                    mut inputs,
+                    temp_files: _temp_files,
+                } = match prepare_image_inputs(&images) {
                     Ok(result) => result,
                     Err(err) => {
                         tracing::error!("Image staging failed: {}", err);
@@ -1214,10 +1217,17 @@ fn build_question_answers(questions: &[UserInputQuestion]) -> Option<Vec<Questio
     questions.iter().map(resolve_question_answer).collect()
 }
 
+/// A Codex question routed through the shared permission UI, as
+/// [`build_approval_prompt`] builds it.
+struct ApprovalPrompt {
+    /// The compact view the permission UI renders.
+    prompt: ApprovalPromptInput,
+    /// The questions and their options as the permission request's tool input.
+    tool_input: serde_json::Value,
+}
+
 /// Build the compact approval prompt view payload used by the shared permission UI.
-fn build_approval_prompt(
-    questions: &[UserInputQuestion],
-) -> (ApprovalPromptInput, serde_json::Value) {
+fn build_approval_prompt(questions: &[UserInputQuestion]) -> ApprovalPrompt {
     let prompt = ApprovalPromptInput {
         questions: questions
             .iter()
@@ -1253,7 +1263,7 @@ fn build_approval_prompt(
             .collect::<Vec<_>>(),
     });
 
-    (prompt, tool_input)
+    ApprovalPrompt { prompt, tool_input }
 }
 
 /// Handle an `item/tool/requestUserInput` message from Codex.
@@ -1314,7 +1324,7 @@ fn handle_request_user_input(
             .and_then(extract_mcp_tool_name)
             .unwrap_or("mcp_tool");
 
-        let (prompt, tool_input) = build_approval_prompt(&input_req.questions);
+        let ApprovalPrompt { prompt, tool_input } = build_approval_prompt(&input_req.questions);
 
         tracing::info!(
             "MCP TOOL APPROVAL via requestUserInput: tool={} question_id={} total_questions={}",
@@ -1365,7 +1375,7 @@ fn handle_request_user_input(
         // the permission UI.
         let first_q = &input_req.questions[0];
         let display_name = first_q.header.as_deref().unwrap_or("Codex prompt");
-        let (prompt, tool_input) = build_approval_prompt(&input_req.questions);
+        let ApprovalPrompt { prompt, tool_input } = build_approval_prompt(&input_req.questions);
 
         tracing::info!(
             "requestUserInput: {} approval-shaped non-MCP question(s), forwarding to UI",
@@ -1750,17 +1760,24 @@ async fn send_thread_resume<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
     Ok(thread_id.to_string())
 }
 
+/// Images staged on disk for a Codex turn, as [`prepare_image_inputs`]
+/// stages them.
+struct StagedImages {
+    /// One `LocalImage` input per image, pointing at its temp file.
+    inputs: Vec<TurnInput>,
+    /// The temp files themselves. They must be kept alive for the duration of
+    /// the turn so Codex can read them; they are deleted automatically when
+    /// dropped.
+    temp_files: Vec<tempfile::NamedTempFile>,
+}
+
 /// Prepare image attachments as named temp files for Codex `localImage` input.
-///
-/// Returns a `(Vec<TurnInput>, Vec<NamedTempFile>)` pair — the temp files
-/// must be kept alive for the duration of the turn so Codex can read them.
-/// They are deleted automatically when the `NamedTempFile` values are dropped.
 ///
 /// Returns an error if any image fails to stage, so the caller can report
 /// the failure rather than silently sending an incomplete message.
 fn prepare_image_inputs(
     images: &[crate::messages::ImageAttachment],
-) -> Result<(Vec<TurnInput>, Vec<tempfile::NamedTempFile>), String> {
+) -> Result<StagedImages, String> {
     let mut inputs = Vec::new();
     let mut temp_files = Vec::new();
 
@@ -1785,7 +1802,7 @@ fn prepare_image_inputs(
         temp_files.push(tmp);
     }
 
-    Ok((inputs, temp_files))
+    Ok(StagedImages { inputs, temp_files })
 }
 
 /// Send `turn/start`, explicitly selecting the reviewer so leaving Auto also
@@ -1964,13 +1981,11 @@ impl AiBackend for CodexBackend {
         resume_session_id: Option<String>,
         permission_mode: PermissionMode,
         waker: Waker,
-    ) -> (
-        Option<mpsc::Receiver<DaveApiResponse>>,
-        Option<tokio::task::JoinHandle<()>>,
-    ) {
+    ) -> ResponseStream {
         let (response_tx, response_rx) = mpsc::channel();
 
-        let (prompt, images) = shared::prepare_prompt_and_images(&messages, &resume_session_id);
+        let shared::UserTurn { prompt, images } =
+            shared::prepare_prompt_and_images(&messages, &resume_session_id);
 
         tracing::debug!(
             "Codex request: session={}, resumed={}, prompt_len={}",
@@ -2034,7 +2049,10 @@ impl AiBackend for CodexBackend {
             }
         });
 
-        (Some(response_rx), Some(handle))
+        ResponseStream {
+            rx: Some(response_rx),
+            task: Some(handle),
+        }
     }
 
     fn cleanup_session(&self, session_id: String) {
@@ -3774,13 +3792,30 @@ mod tests {
         }
     }
 
+    /// A session actor wired to a [`MockCodex`], as the integration-test
+    /// setups spawn it.
+    struct MockSession {
+        /// The mock codex server's end of the actor's stdio.
+        mock: MockCodex,
+        /// Where the test sends the actor its commands.
+        command_tx: tokio_mpsc::Sender<SessionCommand>,
+        /// The actor task.
+        handle: tokio::task::JoinHandle<()>,
+    }
+
+    /// A session actor wired to a real `codex` process, with the first query
+    /// already sent.
+    struct RealSession {
+        /// Where the test sends the actor its commands.
+        command_tx: tokio_mpsc::Sender<SessionCommand>,
+        /// Where the first query's responses arrive.
+        response_rx: mpsc::Receiver<DaveApiResponse>,
+        /// The actor task.
+        handle: tokio::task::JoinHandle<()>,
+    }
+
     /// Create a mock codex server and spawn the session actor loop.
-    /// Returns the mock, a command sender, and the actor task handle.
-    fn setup_integration_test() -> (
-        MockCodex,
-        tokio_mpsc::Sender<SessionCommand>,
-        tokio::task::JoinHandle<()>,
-    ) {
+    fn setup_integration_test() -> MockSession {
         // "stdout" channel: mock writes → actor reads
         let (mock_stdout_write, actor_stdout_read) = tokio::io::duplex(8192);
         // "stdin" channel: actor writes → mock reads
@@ -3809,7 +3844,11 @@ mod tests {
             .await;
         });
 
-        (mock, command_tx, handle)
+        MockSession {
+            mock,
+            command_tx,
+            handle,
+        }
     }
 
     /// Send a Query command and return the response receiver.
@@ -3853,8 +3892,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_auto_reviewer_after_resume() {
         tokio::time::timeout(Duration::from_secs(5), async {
-            let (mut mock, command_tx, handle) =
-                setup_integration_test_with_resume("resumed-thread");
+            let MockSession {
+                mut mock,
+                command_tx,
+                handle,
+            } = setup_integration_test_with_resume("resumed-thread");
             mock.handle_init().await;
             let req = mock.read_message().await;
             assert_eq!(req.method.as_deref(), Some("thread/resume"));
@@ -3889,7 +3931,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_auto_reviewer_mode_changes() {
         tokio::time::timeout(Duration::from_secs(10), async {
-            let (mut mock, command_tx, handle) = setup_integration_test();
+            let MockSession {
+                mut mock,
+                command_tx,
+                handle,
+            } = setup_integration_test();
             mock.handle_init().await;
             mock.handle_thread_start().await;
 
@@ -3972,7 +4018,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_streaming_tokens() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4002,7 +4052,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_command_execution() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4035,7 +4089,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_file_change() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4068,7 +4126,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_approval_accept() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4117,7 +4179,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_approval_deny() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4162,7 +4228,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_approval_cancel() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4207,7 +4277,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_auto_accept() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4248,7 +4322,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_multiple_turns() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4290,7 +4368,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_subagent_lifecycle() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4356,7 +4438,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_shutdown_during_stream() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4383,7 +4469,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_process_eof() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4513,7 +4603,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_turn_error() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4550,7 +4644,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_file_change_approval() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4600,13 +4698,7 @@ mod tests {
 
     /// Create a mock codex server with `resume_session_id` set, so the actor
     /// sends `thread/resume` instead of `thread/start`.
-    fn setup_integration_test_with_resume(
-        resume_id: &str,
-    ) -> (
-        MockCodex,
-        tokio_mpsc::Sender<SessionCommand>,
-        tokio::task::JoinHandle<()>,
-    ) {
+    fn setup_integration_test_with_resume(resume_id: &str) -> MockSession {
         let (mock_stdout_write, actor_stdout_read) = tokio::io::duplex(8192);
         let (actor_stdin_write, mock_stdin_read) = tokio::io::duplex(8192);
 
@@ -4634,12 +4726,20 @@ mod tests {
             .await;
         });
 
-        (mock, command_tx, handle)
+        MockSession {
+            mock,
+            command_tx,
+            handle,
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_interrupt_during_stream() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4694,7 +4794,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_interrupt_during_approval() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4751,7 +4855,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_query_during_active_turn() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4799,8 +4907,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_thread_resume() {
-        let (mut mock, command_tx, handle) =
-            setup_integration_test_with_resume("existing-thread-42");
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test_with_resume("existing-thread-42");
 
         // Init handshake is the same
         mock.handle_init().await;
@@ -4841,7 +4952,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_integration_malformed_jsonl() {
-        let (mut mock, command_tx, handle) = setup_integration_test();
+        let MockSession {
+            mut mock,
+            command_tx,
+            handle,
+        } = setup_integration_test();
 
         mock.handle_init().await;
         mock.handle_thread_start().await;
@@ -4908,11 +5023,7 @@ mod tests {
     /// run goes red — a login-dependent flake. So they are opt-in: set
     /// `CODEX_LIVE_TEST=1` to actually exercise the real path (locally, with
     /// valid auth). Unset, they skip. A missing `codex` binary skips too.
-    fn setup_real_codex_test() -> Option<(
-        tokio_mpsc::Sender<SessionCommand>,
-        mpsc::Receiver<DaveApiResponse>,
-        tokio::task::JoinHandle<()>,
-    )> {
+    fn setup_real_codex_test() -> Option<RealSession> {
         if std::env::var_os("CODEX_LIVE_TEST").is_none() {
             eprintln!(
                 "[test] skipping real codex test: set CODEX_LIVE_TEST=1 to run it \
@@ -4984,13 +5095,22 @@ mod tests {
                 .unwrap();
         });
 
-        Some((command_tx, response_rx, handle))
+        Some(RealSession {
+            command_tx,
+            response_rx,
+            handle,
+        })
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore] // Requires `codex` binary on PATH
     async fn test_real_codex_streaming() {
-        let Some((command_tx, response_rx, handle)) = setup_real_codex_test() else {
+        let Some(RealSession {
+            command_tx,
+            response_rx,
+            handle,
+        }) = setup_real_codex_test()
+        else {
             return;
         };
 
@@ -5041,7 +5161,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore] // Requires `codex` binary on PATH
     async fn test_real_codex_turn_completes() {
-        let Some((command_tx, response_rx, handle)) = setup_real_codex_test() else {
+        let Some(RealSession {
+            command_tx,
+            response_rx,
+            handle,
+        }) = setup_real_codex_test()
+        else {
             return;
         };
 

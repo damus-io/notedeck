@@ -28,8 +28,8 @@ use notedeck_testing::{
     init_tracing,
     ndb::{wait_for_two_local_query_counts, LocalQuery, QueryExpectation},
     negentropy_relay::{
-        run_memory_negentropy_relay_with_mode, NegentropyOpenFilter, NegentropyRelay,
-        NegentropyRelayMode,
+        run_memory_negentropy_relay_with_mode, MemoryNegentropyRelay, NegentropyOpenFilter,
+        NegentropyRelay, NegentropyRelayMode,
     },
     stepping::{step_device_for, wait_for_device_condition},
     AppFactory, DeviceHarness,
@@ -126,7 +126,16 @@ fn dave_agentic_app_factory() -> AppFactory {
         notedeck.set_app(dave);
     })
 }
-fn controllable_dave_app_factory() -> (AppFactory, Sender<ControllableDaveCommand>) {
+/// A Dave app factory and the channel that drives the app it builds, as
+/// [`controllable_dave_app_factory`] makes them.
+struct ControllableApp {
+    /// Builds the controllable Dave app.
+    app_factory: AppFactory,
+    /// Sends the built app its commands.
+    command_tx: Sender<ControllableDaveCommand>,
+}
+
+fn controllable_dave_app_factory() -> ControllableApp {
     let (command_tx, command_rx) = mpsc::channel();
     let app_factory = Box::new(
         move |notedeck: &mut notedeck::Notedeck, _egui_ctx: &egui::Context| {
@@ -142,7 +151,10 @@ fn controllable_dave_app_factory() -> (AppFactory, Sender<ControllableDaveComman
         },
     );
 
-    (app_factory, command_tx)
+    ControllableApp {
+        app_factory,
+        command_tx,
+    }
 }
 async fn seed_pns_session_states(relay_db: &MemoryDatabase, account: &FullKeypair, count: usize) {
     seed_pns_session_states_with_prefix(relay_db, account, "remote-session", count).await;
@@ -244,14 +256,13 @@ async fn seed_pns_session_state_at(
     let event = Event::from_json(pns_note.json().expect("pns json")).expect("pns event json");
     relay_db.save_event(&event).await.expect("save pns event");
 }
-async fn setup_relay() -> (MemoryDatabase, NegentropyRelay) {
+async fn setup_relay() -> MemoryNegentropyRelay {
     setup_relay_with_mode(NegentropyRelayMode::Normal).await
 }
-async fn setup_relay_with_mode(mode: NegentropyRelayMode) -> (MemoryDatabase, NegentropyRelay) {
-    let remote = run_memory_negentropy_relay_with_mode(mode)
+async fn setup_relay_with_mode(mode: NegentropyRelayMode) -> MemoryNegentropyRelay {
+    run_memory_negentropy_relay_with_mode(mode)
         .await
-        .expect("start local relay");
-    (remote.db, remote.relay)
+        .expect("start local relay")
 }
 
 async fn setup_seeded_relay(account: &FullKeypair, count: usize) -> NegentropyRelay {
@@ -263,7 +274,10 @@ async fn setup_seeded_relay_with_mode(
     count: usize,
     mode: NegentropyRelayMode,
 ) -> NegentropyRelay {
-    let (relay_db, relay) = setup_relay_with_mode(mode).await;
+    let MemoryNegentropyRelay {
+        db: relay_db,
+        relay,
+    } = setup_relay_with_mode(mode).await;
     seed_pns_session_states(&relay_db, account, count).await;
     relay
 }
@@ -560,8 +574,14 @@ async fn dave_pns_uses_configured_relay_outside_account_relays_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
-    let (configured_db, configured_relay) = setup_relay().await;
-    let (account_relay_db, account_relay) = setup_relay().await;
+    let MemoryNegentropyRelay {
+        db: configured_db,
+        relay: configured_relay,
+    } = setup_relay().await;
+    let MemoryNegentropyRelay {
+        db: account_relay_db,
+        relay: account_relay,
+    } = setup_relay().await;
     seed_pns_session_states_with_prefix(&configured_db, &account, "configured-session", 1).await;
     seed_pns_session_states_with_prefix(&account_relay_db, &account, "account-session", 1).await;
 
@@ -614,7 +634,10 @@ async fn dave_pns_live_imports_stale_latest_state_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
-    let (relay_db, relay) = setup_relay().await;
+    let MemoryNegentropyRelay {
+        db: relay_db,
+        relay,
+    } = setup_relay().await;
     seed_pns_session_state_at(
         &relay_db,
         &account,
@@ -640,7 +663,10 @@ async fn dave_pns_retargets_when_selected_account_changes_e2e() {
 
     let first_account = FullKeypair::generate();
     let second_account = FullKeypair::generate();
-    let (relay_db, relay) = setup_relay().await;
+    let MemoryNegentropyRelay {
+        db: relay_db,
+        relay,
+    } = setup_relay().await;
     seed_pns_session_state(
         &relay_db,
         &first_account,
@@ -725,7 +751,10 @@ async fn dave_pns_uses_latest_replaceable_session_state_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
-    let (relay_db, relay) = setup_relay().await;
+    let MemoryNegentropyRelay {
+        db: relay_db,
+        relay,
+    } = setup_relay().await;
     let session_id = "replaceable-session";
     seed_pns_session_state(
         &relay_db,
@@ -828,7 +857,10 @@ async fn dave_pns_account_switch_cancels_old_active_session_e2e() {
 
     let first_account = FullKeypair::generate();
     let second_account = FullKeypair::generate();
-    let (relay_db, relay) = setup_relay_with_mode(NegentropyRelayMode::SilentOnOpen).await;
+    let MemoryNegentropyRelay {
+        db: relay_db,
+        relay,
+    } = setup_relay_with_mode(NegentropyRelayMode::SilentOnOpen).await;
     seed_pns_session_states_with_prefix(&relay_db, &first_account, "first-active-session", 1).await;
     seed_pns_session_states_with_prefix(&relay_db, &second_account, "second-active-session", 1)
         .await;
@@ -866,9 +898,15 @@ async fn dave_pns_no_private_relay_does_not_use_account_relays_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
-    let (account_relay_db, account_relay) = setup_relay().await;
+    let MemoryNegentropyRelay {
+        db: account_relay_db,
+        relay: account_relay,
+    } = setup_relay().await;
     seed_pns_session_states_with_prefix(&account_relay_db, &account, "account-session", 1).await;
-    let (private_db, private_relay) = setup_relay().await;
+    let MemoryNegentropyRelay {
+        db: private_db,
+        relay: private_relay,
+    } = setup_relay().await;
     seed_pns_session_states_with_prefix(&private_db, &account, "private-session", 1).await;
 
     // No relay is marked "private", so Dave stays local-only and must not
@@ -913,7 +951,10 @@ async fn dave_pns_deleted_latest_same_d_suppresses_older_state_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
-    let (relay_db, relay) = setup_relay().await;
+    let MemoryNegentropyRelay {
+        db: relay_db,
+        relay,
+    } = setup_relay().await;
     let session_id = "deleted-replaceable-session";
     seed_pns_session_state(
         &relay_db,
@@ -947,8 +988,13 @@ async fn dave_pns_retargets_when_configured_relay_changes_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
-    let (_, first_relay) = setup_relay_with_mode(NegentropyRelayMode::SilentOnOpen).await;
-    let (second_relay_db, second_relay) = setup_relay().await;
+    let MemoryNegentropyRelay {
+        relay: first_relay, ..
+    } = setup_relay_with_mode(NegentropyRelayMode::SilentOnOpen).await;
+    let MemoryNegentropyRelay {
+        db: second_relay_db,
+        relay: second_relay,
+    } = setup_relay().await;
     seed_pns_session_states_with_prefix(&second_relay_db, &account, "retargeted-session", 1).await;
 
     let mut device = build_dave_device(&[first_relay.url()], &account, dave_app_factory());
@@ -985,7 +1031,8 @@ async fn dave_pns_clears_configured_relay_when_private_marker_removed_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
-    let (_, relay) = setup_relay_with_mode(NegentropyRelayMode::SilentOnOpen).await;
+    let MemoryNegentropyRelay { relay, .. } =
+        setup_relay_with_mode(NegentropyRelayMode::SilentOnOpen).await;
 
     let mut device = build_dave_device(&[relay.url()], &account, dave_app_factory());
     set_private_relay(&mut device, relay.url());
@@ -1022,7 +1069,7 @@ async fn dave_pns_cross_device_outbound_import_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
-    let (_, relay) = setup_relay().await;
+    let MemoryNegentropyRelay { relay, .. } = setup_relay().await;
 
     let cwd = std::env::current_dir().expect("current dir");
     let mut publisher = build_agentic_pns_device(&relay, &account);
@@ -1052,7 +1099,7 @@ async fn dave_pns_two_live_devices_receive_outbound_publish_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
-    let (_, relay) = setup_relay().await;
+    let MemoryNegentropyRelay { relay, .. } = setup_relay().await;
 
     let mut receiver = build_pns_device(&relay, &account);
     step_device_for(&mut receiver, Duration::from_millis(100));
@@ -1098,7 +1145,10 @@ async fn dave_pns_two_live_devices_keep_account_state_isolated_e2e() {
 
     let first_account = FullKeypair::generate();
     let second_account = FullKeypair::generate();
-    let (relay_db, relay) = setup_relay().await;
+    let MemoryNegentropyRelay {
+        db: relay_db,
+        relay,
+    } = setup_relay().await;
     seed_pns_session_states_with_prefix(&relay_db, &first_account, "first-device-session", 1).await;
     seed_pns_session_states_with_prefix(&relay_db, &second_account, "second-device-session", 1)
         .await;
@@ -1135,13 +1185,22 @@ async fn dave_pns_no_private_relay_does_not_publish_to_account_relays_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
-    let (_, account_relay) = setup_relay().await;
-    let (_, private_relay) = setup_relay().await;
+    let MemoryNegentropyRelay {
+        relay: account_relay,
+        ..
+    } = setup_relay().await;
+    let MemoryNegentropyRelay {
+        relay: private_relay,
+        ..
+    } = setup_relay().await;
 
     let cwd = std::env::current_dir().expect("current dir");
     // No private relay marked: Dave is local-only and must not publish PNS
     // events out to the account's regular relays.
-    let (app_factory, command_tx) = controllable_dave_app_factory();
+    let ControllableApp {
+        app_factory,
+        command_tx,
+    } = controllable_dave_app_factory();
     let mut device = build_dave_device(&[account_relay.url()], &account, app_factory);
 
     let session_id = send_spawn_agent_request(&mut device, &cwd);
@@ -1205,10 +1264,13 @@ async fn dave_pns_no_private_relay_keeps_backlog_local_until_relay_marked_e2e() 
 
     let account = FullKeypair::generate();
     let second_account = FullKeypair::generate();
-    let (_, relay) = setup_relay().await;
+    let MemoryNegentropyRelay { relay, .. } = setup_relay().await;
 
     let cwd = std::env::current_dir().expect("current dir");
-    let (app_factory, pns_relay_tx) = controllable_dave_app_factory();
+    let ControllableApp {
+        app_factory,
+        command_tx: pns_relay_tx,
+    } = controllable_dave_app_factory();
     let mut device = build_dave_device(&[relay.url()], &account, app_factory);
 
     let session_id = send_spawn_agent_request(&mut device, &cwd);
@@ -1257,8 +1319,14 @@ async fn dave_pns_outbound_publish_uses_configured_relay_only_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
-    let (_, configured_relay) = setup_relay().await;
-    let (_, account_relay) = setup_relay().await;
+    let MemoryNegentropyRelay {
+        relay: configured_relay,
+        ..
+    } = setup_relay().await;
+    let MemoryNegentropyRelay {
+        relay: account_relay,
+        ..
+    } = setup_relay().await;
 
     let cwd = std::env::current_dir().expect("current dir");
     let mut device =

@@ -19,9 +19,17 @@ pub enum BadgeVariant {
     Destructive,
 }
 
+/// A badge's colours, as [`BadgeVariant::colors`] picks them.
+pub struct BadgeColors {
+    /// The pill's fill.
+    pub bg: Color32,
+    /// Its text.
+    pub fg: Color32,
+}
+
 impl BadgeVariant {
     /// Get background and text colors for this variant
-    pub fn colors(&self, ui: &Ui) -> (Color32, Color32) {
+    pub fn colors(&self, ui: &Ui) -> BadgeColors {
         let is_dark = ui.visuals().dark_mode;
 
         match self {
@@ -32,7 +40,7 @@ impl BadgeVariant {
                     Color32::from_rgba_unmultiplied(0, 0, 0, 15)
                 };
                 let fg = ui.visuals().text_color();
-                (bg, fg)
+                BadgeColors { bg, fg }
             }
             BadgeVariant::Info => {
                 // Blue tones
@@ -46,7 +54,7 @@ impl BadgeVariant {
                 } else {
                     Color32::from_rgb(29, 78, 216) // blue-700
                 };
-                (bg, fg)
+                BadgeColors { bg, fg }
             }
             BadgeVariant::Success => {
                 // Green tones
@@ -60,7 +68,7 @@ impl BadgeVariant {
                 } else {
                     Color32::from_rgb(21, 128, 61) // green-700
                 };
-                (bg, fg)
+                BadgeColors { bg, fg }
             }
             BadgeVariant::Warning => {
                 // Amber/yellow tones
@@ -74,7 +82,7 @@ impl BadgeVariant {
                 } else {
                     Color32::from_rgb(180, 83, 9) // amber-700
                 };
-                (bg, fg)
+                BadgeColors { bg, fg }
             }
             BadgeVariant::Purple => {
                 // Violet tones
@@ -88,7 +96,7 @@ impl BadgeVariant {
                 } else {
                     Color32::from_rgb(109, 40, 217) // violet-700
                 };
-                (bg, fg)
+                BadgeColors { bg, fg }
             }
             BadgeVariant::Destructive => {
                 // Red tones
@@ -102,7 +110,7 @@ impl BadgeVariant {
                 } else {
                     Color32::from_rgb(185, 28, 28) // red-700
                 };
-                (bg, fg)
+                BadgeColors { bg, fg }
             }
         }
     }
@@ -166,7 +174,10 @@ impl<'a> StatusBadge<'a> {
 
     /// Show the badge and return the response
     pub fn show(self, ui: &mut Ui) -> Response {
-        let (bg_color, text_color) = self.variant.colors(ui);
+        let BadgeColors {
+            bg: bg_color,
+            fg: text_color,
+        } = self.variant.colors(ui);
 
         // Calculate text size for proper allocation
         let font_id = egui::FontId::proportional(11.0);

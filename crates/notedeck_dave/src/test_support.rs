@@ -11,7 +11,7 @@ use crate::config::{AiMode, AiProvider, DaveSettings};
 use crate::conversation::subscribe_conversation_events;
 use crate::conversation_feed::ConversationFeed;
 use crate::pns_runtime::PnsLocalState;
-use crate::session::SessionId;
+use crate::session::{SessionId, SessionMessage};
 use crate::stream_events::HostCtx;
 use crate::{Dave, DaveOverlay};
 use nostrdb::{Config, Ndb};
@@ -174,7 +174,7 @@ impl TestDave {
     /// subscribe the feed if nothing has, run the background worker to the
     /// end, and drain everything it sent. Returns the remote messages the
     /// drain hands on for dispatch.
-    pub async fn restore(&mut self) -> Vec<(SessionId, String)> {
+    pub async fn restore(&mut self) -> Vec<SessionMessage> {
         if self.dave.conversation_feed.is_none() {
             self.subscribe_feed();
         }
@@ -186,7 +186,7 @@ impl TestDave {
     /// `update` would take. One drain stops at its frame budget, which a
     /// loaded machine can spend on the first message alone, so a test that
     /// drained once saw only part of the restore.
-    pub fn drain_restore(&mut self, waker: &Waker) -> Vec<(SessionId, String)> {
+    pub fn drain_restore(&mut self, waker: &Waker) -> Vec<SessionMessage> {
         let host = HostCtx::signing(&self.ndb, &self.sk, waker);
         let mut replayed = self.dave.drain_session_restore(&host);
         while !self.dave.session_restore_loader.is_drained() {

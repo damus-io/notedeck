@@ -135,6 +135,17 @@ impl BackendType {
     }
 }
 
+/// What [`AiBackend::stream_request`] hands back for a turn: the channel its
+/// responses arrive on, and the task producing them. Either may be absent —
+/// a persistent-stream backend reuses the session's existing channel, and a
+/// backend with no local work has no task.
+pub struct ResponseStream {
+    /// Where the turn's [`DaveApiResponse`]s arrive.
+    pub rx: Option<mpsc::Receiver<DaveApiResponse>>,
+    /// The task streaming them, so the caller can abort the turn.
+    pub task: Option<tokio::task::JoinHandle<()>>,
+}
+
 /// Trait for AI backend implementations
 pub trait AiBackend: Send + Sync {
     /// Stream a request to the AI backend
@@ -178,10 +189,7 @@ pub trait AiBackend: Send + Sync {
         resume_session_id: Option<String>,
         permission_mode: PermissionMode,
         waker: Waker,
-    ) -> (
-        Option<mpsc::Receiver<DaveApiResponse>>,
-        Option<tokio::task::JoinHandle<()>>,
-    );
+    ) -> ResponseStream;
 
     /// Whether a session's UI channel lives for the whole session (across turns)
     /// rather than being minted fresh per query.

@@ -243,7 +243,7 @@ done-comment described under Work Tracking above.
     tuple.** No `-> (A, B)`, `-> Option<(A, B)>`, `-> impl Iterator<Item = (A, B)>`,
     `fn f(pair: (A, B))`, or `type Foo = (A, B)`. Name the struct for what it holds
     (`Split { rows, cols }`), not `FooArgs`. `crates/bin_testing/tests/signatures.rs`
-    fails on one in any crate not on its shrinking `NOT_YET` list
+    fails on one in any crate of the workspace
     (`cargo test -p bin_testing --test signatures`).
 
 

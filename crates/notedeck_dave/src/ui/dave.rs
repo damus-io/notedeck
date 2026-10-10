@@ -15,7 +15,7 @@ use crate::{
     backend::BackendType,
     config::{AiMode, DaveSettings},
     file_update::FileUpdate,
-    focus_queue::FocusPriority,
+    focus_queue::{FocusPriority, FocusQueueInfo},
     git_status::GitStatusCache,
     inspector::{InspectorSection, InspectorView, SessionInspector, SessionTab},
     messages::{
@@ -106,8 +106,8 @@ pub struct DaveUi<'a> {
     permission_mode: PermissionMode,
     /// When the last activity was seen, as wall-clock unix seconds
     last_activity: Option<u64>,
-    /// Focus queue info for mobile NEXT badge: (position, total, priority)
-    focus_queue_info: Option<(usize, usize, FocusPriority)>,
+    /// Focus queue info for mobile NEXT badge
+    focus_queue_info: Option<FocusQueueInfo>,
     /// Named run configs for this session's CWD
     run_configs: &'a [crate::config::RunConfig],
     /// IDs of configs currently running for this session
@@ -443,7 +443,7 @@ impl<'a> DaveUi<'a> {
         self
     }
 
-    pub fn focus_queue_info(mut self, info: Option<(usize, usize, FocusPriority)>) -> Self {
+    pub fn focus_queue_info(mut self, info: Option<FocusQueueInfo>) -> Self {
         self.focus_queue_info = info;
         self
     }
@@ -2801,14 +2801,15 @@ fn usage_bar_ui(
 /// The status-bar badge for a permission mode: its label and colour, matching
 /// Claude Code's own (Manual neutral, Plan blue, Accept Edits purple, Auto
 /// yellow). Bypass is never reachable from the UI but is drawn red.
-pub(crate) fn permission_mode_badge(mode: PermissionMode) -> (&'static str, BadgeVariant) {
-    match mode {
+pub(crate) fn permission_mode_badge(mode: PermissionMode) -> StatusBadge<'static> {
+    let (label, variant) = match mode {
         PermissionMode::Default => ("MANUAL", BadgeVariant::Default),
         PermissionMode::Plan => ("PLAN", BadgeVariant::Info),
         PermissionMode::AcceptEdits => ("ACCEPT EDITS", BadgeVariant::Purple),
         PermissionMode::Auto => ("AUTO", BadgeVariant::Warning),
         PermissionMode::BypassPermissions => ("BYPASS", BadgeVariant::Destructive),
-    }
+    };
+    StatusBadge::new(label).variant(variant)
 }
 
 /// Render clickable permission mode and FOCUS toggle badges. Returns an action if clicked.
@@ -2816,7 +2817,7 @@ fn toggle_badges_ui(
     ui: &mut egui::Ui,
     permission_mode: PermissionMode,
     auto_steal_focus: bool,
-    focus_queue_info: Option<(usize, usize, FocusPriority)>,
+    focus_queue_info: Option<FocusQueueInfo>,
 ) -> Option<DaveAction> {
     let ctrl_held = ui.input(|i| i.modifiers.ctrl);
     let is_narrow = notedeck::ui::is_narrow(ui.ctx());
@@ -2824,7 +2825,7 @@ fn toggle_badges_ui(
 
     // NEXT badge for focus queue navigation (narrow/mobile only, rendered first = rightmost)
     if is_narrow {
-        if let Some((_pos, _total, priority)) = focus_queue_info {
+        if let Some(FocusQueueInfo { priority, .. }) = focus_queue_info {
             let variant = match priority {
                 FocusPriority::NeedsInput => super::badge::BadgeVariant::Warning,
                 FocusPriority::Error => super::badge::BadgeVariant::Destructive,
@@ -2868,8 +2869,7 @@ fn toggle_badges_ui(
 
     // Permission mode badge. Left-click / Ctrl+M cycles Manual → Plan → Accept
     // Edits → Auto; right-click sets any mode directly.
-    let (label, variant) = permission_mode_badge(permission_mode);
-    let mut mode_badge = StatusBadge::new(label).variant(variant);
+    let mut mode_badge = permission_mode_badge(permission_mode);
     if ctrl_held {
         mode_badge = mode_badge.keybind("M");
     }

@@ -2,7 +2,7 @@ use crate::backend::session_info::parse_session_info;
 use crate::backend::shared::{self, SessionCommand, SessionHandle};
 use crate::backend::task_tracker::TaskTracker;
 use crate::backend::tool_summary::{extract_response_content, format_tool_summary};
-use crate::backend::traits::AiBackend;
+use crate::backend::traits::{AiBackend, ResponseStream};
 use crate::backend::wait_tracker::WaitTracker;
 use crate::file_update::FileUpdate;
 use crate::messages::{
@@ -1557,11 +1557,9 @@ impl AiBackend for ClaudeBackend {
         resume_session_id: Option<String>,
         permission_mode: PermissionMode,
         waker: Waker,
-    ) -> (
-        Option<mpsc::Receiver<DaveApiResponse>>,
-        Option<tokio::task::JoinHandle<()>>,
-    ) {
-        let (prompt, images) = shared::prepare_prompt_and_images(&messages, &resume_session_id);
+    ) -> ResponseStream {
+        let shared::UserTurn { prompt, images } =
+            shared::prepare_prompt_and_images(&messages, &resume_session_id);
 
         tracing::debug!(
             "Sending request to Claude Code: session={}, resumed={}, prompt length: {}, preview: {:?}",
@@ -1627,7 +1625,10 @@ impl AiBackend for ClaudeBackend {
             }
         });
 
-        (created_rx, Some(handle))
+        ResponseStream {
+            rx: created_rx,
+            task: Some(handle),
+        }
     }
 
     fn cleanup_session(&self, session_id: String) {

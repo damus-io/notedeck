@@ -2,9 +2,9 @@ use notedeck::test_harness::PressKey;
 use notedeck_dave::backend::traits::{BackendType, Model};
 use notedeck_dave::config::AiMode;
 use notedeck_dave::session::SessionManager;
-use notedeck_dave::ui::backend_picker_overlay_ui;
 use notedeck_dave::ui::directory_picker::DirectoryPicker;
 use notedeck_dave::ui::scene::AgentScene;
+use notedeck_dave::ui::{backend_picker_overlay_ui, BackendChoice};
 use notedeck_dave::update::create_session_with_cwd;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,12 +12,12 @@ use std::path::PathBuf;
 struct PickerState {
     backends: Vec<BackendType>,
     selected_models: HashMap<BackendType, usize>,
-    result: Option<(BackendType, Model)>,
+    result: Option<BackendChoice>,
 }
 
 /// Drive the picker UI with the given backend and model index, press the
 /// hotkey for the first backend, and return the resulting selection.
-fn pick(bt: BackendType, model_index: usize) -> (BackendType, Model) {
+fn pick(bt: BackendType, model_index: usize) -> BackendChoice {
     let mut harness = notedeck::test_harness::lenient_builder().build_ui_state(
         |ui, state: &mut PickerState| {
             state.result =
@@ -45,7 +45,10 @@ fn pick(bt: BackendType, model_index: usize) -> (BackendType, Model) {
 #[test]
 fn test_picker_default_returns_default() {
     let bt = BackendType::Claude;
-    let (picked_backend, picked_model) = pick(bt, 0);
+    let BackendChoice {
+        backend: picked_backend,
+        model: picked_model,
+    } = pick(bt, 0);
 
     assert_eq!(picked_backend, bt);
     assert_eq!(picked_model, Model::Default);
@@ -59,7 +62,10 @@ fn test_picker_default_returns_default() {
 #[test]
 fn test_picker_opus_override() {
     let bt = BackendType::Claude;
-    let (picked_backend, picked_model) = pick(bt, 1);
+    let BackendChoice {
+        backend: picked_backend,
+        model: picked_model,
+    } = pick(bt, 1);
 
     assert_eq!(picked_backend, bt);
     assert_eq!(picked_model, Model::Opus);
@@ -76,7 +82,10 @@ fn test_picker_opus_override() {
 #[test]
 fn test_picker_sonnet_override() {
     let bt = BackendType::Claude;
-    let (picked_backend, picked_model) = pick(bt, 2);
+    let BackendChoice {
+        backend: picked_backend,
+        model: picked_model,
+    } = pick(bt, 2);
 
     assert_eq!(picked_backend, bt);
     assert_eq!(picked_model, Model::Sonnet);
@@ -91,7 +100,10 @@ fn test_picker_selection_flows_to_session() {
     let mut scene = AgentScene::new();
 
     // Opus override: resolve_model should return an opus model ID
-    let (picked_backend, picked_model) = pick(bt, 1);
+    let BackendChoice {
+        backend: picked_backend,
+        model: picked_model,
+    } = pick(bt, 1);
     let id = create_session_with_cwd(
         &mut mgr,
         &mut dir_picker,
@@ -115,7 +127,10 @@ fn test_picker_selection_flows_to_session() {
     );
 
     // Default: resolve_model should return None (CLI default)
-    let (picked_backend, picked_model) = pick(bt, 0);
+    let BackendChoice {
+        backend: picked_backend,
+        model: picked_model,
+    } = pick(bt, 0);
     let id = create_session_with_cwd(
         &mut mgr,
         &mut dir_picker,
