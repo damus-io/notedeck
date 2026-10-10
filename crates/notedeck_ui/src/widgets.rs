@@ -189,55 +189,27 @@ pub fn inline_chip(
     chrome: InlineChrome,
     icon: impl FnOnce(&mut egui::Ui, f32),
 ) -> egui::Response {
-    let frame = match chrome {
-        // Padding on the sides only. The outline is the one thing that costs
-        // height — a stroke sits outside the content — but `surface_elevated`
-        // is the page color in the light theme, so without it the chip would be
-        // invisible there.
-        InlineChrome::Pill => egui::Frame::new()
-            .fill(theme.surface_elevated)
-            .corner_radius(CornerRadius::same(RADIUS_SM as u8))
-            .stroke(Stroke::new(STROKE_THIN, theme.border_default))
-            .inner_margin(egui::Margin::symmetric(SPACING_XS as i8, 0)),
-        // Nothing to set it apart: the surface already frames it.
-        _ => egui::Frame::new(),
-    };
-
-    // `item_spacing` below puts one gap between icon and text, and `total_margin`
-    // covers the frame's own margins, so the chip's width is derived from what
-    // actually draws it.
-    let row_height = ui.text_style_height(&egui::TextStyle::Body);
-    let icon_size = (row_height * INLINE_ICON_RATIO).round();
+    let frame = chip_frame(theme, chrome);
+    let slot = IconSlot::new(ui);
+    // `item_spacing` in `chip_contents_ui` puts one gap between icon and text,
+    // and `total_margin` covers the frame's own margins, so the chip's width is
+    // derived from what actually draws it.
     let width = frame.total_margin().sum().x
-        + icon_size
+        + slot.size
         + SPACING_XS
         + text_width(ui, text, &egui::TextStyle::Body);
     break_row_unless_fits(ui, width);
 
-    let response = frame
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = SPACING_XS;
-                // Center the icon in a slot as tall as the text row. Placed
-                // straight into the row it lands on the cap band instead — level
-                // with the capitals, but visibly high in a chip whose lower half
-                // is the descender space the icon has no use for.
-                ui.allocate_ui_with_layout(
-                    egui::vec2(icon_size, row_height),
-                    egui::Layout::left_to_right(Align::Center),
-                    |ui| icon(ui, icon_size),
-                );
-                // Not selectable: a selectable label senses clicks and drags
-                // of its own, which would take them from under a chip drawn
-                // inert over a surface that means something by a click.
-                ui.add(
-                    Label::new(RichText::new(text).color(theme.text_primary))
-                        .wrap_mode(egui::TextWrapMode::Truncate)
-                        .selectable(false),
-                );
-            })
-        })
-        .response;
+    let response = chip_contents_ui(ui, frame, slot, icon, |ui| {
+        // Not selectable: a selectable label senses clicks and drags of its
+        // own, which would take them from under a chip drawn inert over a
+        // surface that means something by a click.
+        ui.add(
+            Label::new(RichText::new(text).color(theme.text_primary))
+                .wrap_mode(egui::TextWrapMode::Truncate)
+                .selectable(false),
+        );
+    });
 
     // An ellipsized label would show its full text on hover by itself, but the
     // caller's click sense on the whole chip sits above it, so the chip carries
@@ -250,6 +222,134 @@ pub fn inline_chip(
     } else {
         response
     }
+}
+
+/// [`inline_chip`] with its text slot drawn by `body` rather than a label — for
+/// a chip whose title is another widget, such as another entity's own chip
+/// (an agentium session titled with its headway card's ref).
+///
+/// `inline_chip` measures its text before drawing so it can break the row first,
+/// but a widget can't be measured without drawing it. So this one goes by the
+/// width `body` drew **last frame**, kept in egui's memory under `id_salt`
+/// (made unique within `ui`, via [`Ui::make_persistent_id`](egui::Ui::make_persistent_id)), and asks egui to redo the pass when that width
+/// changes — the frame laid out on a stale width is never shown. A body that
+/// filled all the room it had may have been cut short, so it is remembered as a
+/// little wider than it drew; the next pass breaks the row for it, and from the
+/// start of a row it gets the whole width. It settles within a pass or two of
+/// the body changing, and draws as plain [`inline_chip`] does from then on.
+///
+/// There is no hover text for a cut-short body: the chip doesn't know what the
+/// body was saying. A body that truncates itself (a nested chip) shows its own.
+pub fn inline_chip_with(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    id_salt: impl egui::AsIdSalt,
+    chrome: InlineChrome,
+    icon: impl FnOnce(&mut egui::Ui, f32),
+    body: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
+    let frame = chip_frame(theme, chrome);
+    let slot = IconSlot::new(ui);
+    let id = ui.make_persistent_id(id_salt);
+    let remembered = ui.data(|d| d.get_temp::<BodyWidth>(id));
+    // Nothing remembered yet (the chip's first pass): assume the body is
+    // empty, so the chip stays put and this pass measures it.
+    let body_width = remembered.map_or(0.0, |w| w.0);
+    // The extra point keeps a body that fits from being drawn with less than
+    // a point to spare, which would read below as "filled the room, maybe cut
+    // short" and break the row on the next pass for no reason.
+    let width = frame.total_margin().sum().x + slot.size + SPACING_XS + body_width + 1.0;
+    break_row_unless_fits(ui, width);
+
+    let mut drawn = BodyWidth(0.0);
+    let response = chip_contents_ui(ui, frame, slot, icon, |ui| {
+        let room = ui.available_width();
+        let start = ui.cursor().min.x;
+        body(ui);
+        let width = (ui.min_rect().max.x - start).max(0.0);
+        drawn = if width + 0.5 >= room {
+            BodyWidth(width + 1.0)
+        } else {
+            BodyWidth(width)
+        };
+    });
+
+    // Written only on a change, so a settled chip touches no memory.
+    if remembered.is_none_or(|w| (w.0 - drawn.0).abs() > 0.5) {
+        ui.data_mut(|d| d.insert_temp(id, drawn));
+        ui.ctx().request_discard("inline chip body changed width");
+    }
+    response
+}
+
+/// The width an [`inline_chip_with`] body drew on its last pass, as kept in
+/// egui's memory.
+#[derive(Clone, Copy)]
+struct BodyWidth(f32);
+
+/// The frame around an inline chip for `chrome`: the pill, or nothing.
+fn chip_frame(theme: &ColorTheme, chrome: InlineChrome) -> egui::Frame {
+    match chrome {
+        // Padding on the sides only. The outline is the one thing that costs
+        // height — a stroke sits outside the content — but `surface_elevated`
+        // is the page color in the light theme, so without it the chip would be
+        // invisible there.
+        InlineChrome::Pill => egui::Frame::new()
+            .fill(theme.surface_elevated)
+            .corner_radius(CornerRadius::same(RADIUS_SM as u8))
+            .stroke(Stroke::new(STROKE_THIN, theme.border_default))
+            .inner_margin(egui::Margin::symmetric(SPACING_XS as i8, 0)),
+        // Nothing to set it apart: the surface already frames it.
+        _ => egui::Frame::new(),
+    }
+}
+
+/// The square an inline chip's icon is drawn into, inside a slot one text row
+/// tall.
+#[derive(Clone, Copy)]
+struct IconSlot {
+    /// The text row's height: the slot's height, and the chip's.
+    row_height: f32,
+    /// The icon's side.
+    size: f32,
+}
+
+impl IconSlot {
+    fn new(ui: &egui::Ui) -> Self {
+        let row_height = ui.text_style_height(&egui::TextStyle::Body);
+        Self {
+            row_height,
+            size: (row_height * INLINE_ICON_RATIO).round(),
+        }
+    }
+}
+
+/// Draw an inline chip's contents in `frame`: the icon in its slot, then
+/// `body`, one gap apart. Returns the response covering the whole chip.
+fn chip_contents_ui(
+    ui: &mut egui::Ui,
+    frame: egui::Frame,
+    slot: IconSlot,
+    icon: impl FnOnce(&mut egui::Ui, f32),
+    body: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
+    frame
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = SPACING_XS;
+                // Center the icon in a slot as tall as the text row. Placed
+                // straight into the row it lands on the cap band instead — level
+                // with the capitals, but visibly high in a chip whose lower half
+                // is the descender space the icon has no use for.
+                ui.allocate_ui_with_layout(
+                    egui::vec2(slot.size, slot.row_height),
+                    egui::Layout::left_to_right(Align::Center),
+                    |ui| icon(ui, slot.size),
+                );
+                body(ui);
+            })
+        })
+        .response
 }
 
 /// Width `text` occupies on one line in `style`'s font.

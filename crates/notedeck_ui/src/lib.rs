@@ -36,8 +36,8 @@ pub use note::{NoteContents, NoteOptions, NoteView};
 pub use profile::{ProfilePic, ProfilePreview};
 pub use username::Username;
 pub use widgets::{
-    inline_chip, search_input_box, search_input_frame, side_panel_active_bg, side_panel_icon_tint,
-    SEARCH_INPUT_HEIGHT,
+    inline_chip, inline_chip_with, search_input_box, search_input_frame, side_panel_active_bg,
+    side_panel_icon_tint, SEARCH_INPUT_HEIGHT,
 };
 
 use egui::emath::GuiRounding;

@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 use nostrdb::{Ndb, NoteBuilder, Transaction};
 use nostrdb_net::{FullKeypair, Keypair, Pubkey};
@@ -333,4 +333,304 @@ fn seeded_session_resolves_through_the_shared_cache() {
         parser.resolve(&words, &ctx).is_some(),
         "a seeded session must resolve through the shared cache"
     );
+}
+
+/// Stands in for headway's `headway:` reference parser, which Dave's tests
+/// don't load: each ref it knows resolves to its seeded kind-1621 issue note,
+/// drawn by [`StubCardRenderer`].
+struct StubCardParser {
+    cards: Rc<RefCell<Vec<(String, nostrdb_net::NoteId)>>>,
+}
+
+impl notedeck::ReferenceParser for StubCardParser {
+    fn id(&self) -> &'static str {
+        "headway"
+    }
+
+    fn find(&self, text: &str) -> Option<std::ops::Range<usize>> {
+        let start = text.find("headway:")?;
+        let len = text[start..]
+            .find(char::is_whitespace)
+            .unwrap_or(text.len() - start);
+        Some(start..start + len)
+    }
+
+    fn resolve(
+        &self,
+        matched: &str,
+        _ctx: &notedeck::ReferenceResolveCtx,
+    ) -> Option<notedeck::ResolvedRef> {
+        self.cards
+            .borrow()
+            .iter()
+            .find(|(card, _)| card == matched)
+            .map(|(_, note)| notedeck::ResolvedRef::note(*note))
+    }
+}
+
+/// Stands in for headway's card chip: the issue's content as an
+/// [`inline_chip`](notedeck_ui::inline_chip) behind a ring, the way
+/// `card_chip_ui` draws a backlog card.
+struct StubCardRenderer;
+
+impl notedeck::KindRenderer for StubCardRenderer {
+    fn id(&self) -> &'static str {
+        "test.card"
+    }
+
+    fn name(&self) -> &'static str {
+        "Test card"
+    }
+
+    fn kinds(&self) -> &'static [u32] {
+        &[1621]
+    }
+
+    fn render(
+        &self,
+        ui: &mut egui::Ui,
+        _note_context: &mut notedeck::NoteContext,
+        req: &notedeck::KindRenderRequest,
+    ) -> notedeck::KindRenderResponse {
+        let theme = notedeck::ColorTheme::current(ui.ctx());
+        let response =
+            notedeck_ui::inline_chip(ui, &theme, req.note.content(), req.chrome, |ui, size| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+                ui.painter().circle_stroke(
+                    rect.center(),
+                    size * 0.35,
+                    egui::Stroke::new(1.5, theme.text_muted),
+                );
+            });
+        notedeck::open_on_click(ui, response, req)
+    }
+}
+
+/// Seed a kind-1621 card note titled `title`, returning its id.
+fn seed_card(ndb: &Ndb, secret: &[u8; 32], title: &str) -> nostrdb_net::NoteId {
+    let note = NoteBuilder::new()
+        .kind(1621)
+        .content(title)
+        .created_at(1_700_000_000)
+        .sign(secret)
+        .build()
+        .unwrap();
+    let id = nostrdb_net::NoteId::new(*note.id());
+    let frame = nostrdb_net::ClientMessage::event(&note)
+        .unwrap()
+        .to_json()
+        .unwrap();
+    ndb.process_event_with(&frame, nostrdb::IngestMetadata::new().client(true))
+        .unwrap();
+    id
+}
+
+/// A card a session is titled with: its ref, and the title its chip shows.
+struct TitleCard {
+    card_ref: &'static str,
+    title: &'static str,
+}
+
+/// A card titled shorter than its ref.
+const SHORT_CARD: TitleCard = TitleCard {
+    card_ref: "headway:dave/fringe-cup-pigeon",
+    title: "Fix it",
+};
+
+/// A card titled longer than its ref.
+const LONG_CARD: TitleCard = TitleCard {
+    card_ref: "headway:dave/able-badge-brick",
+    title: "Session list title chip steals the row click from the session",
+};
+
+/// A harness with the agentium parser and renderer plus the stub card ones
+/// registered, and the cards the stub parser resolves, for a test to seed.
+struct RefTitleHarness {
+    harness: Harness<'static, RefChipState>,
+    cards: Rc<RefCell<Vec<(String, nostrdb_net::NoteId)>>>,
+}
+
+/// Build a [`RefTitleHarness`]. `render` builds it with lavapipe, for a
+/// snapshot; without it the harness lays out and builds its accesskit tree,
+/// which is all a layout check reads.
+fn ref_title_harness(render: bool) -> RefTitleHarness {
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let ctx = egui::Context::default();
+    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+    let mut notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+    let cache = Rc::new(RefCell::new(AgentiumSessionCache::default()));
+    let cards = Rc::new(RefCell::new(Vec::new()));
+    notedeck.register_reference_parser(Box::new(AgentiumRefParser::new(cache.clone())));
+    notedeck.register_reference_parser(Box::new(StubCardParser {
+        cards: cards.clone(),
+    }));
+    notedeck.register_kind_renderer(Box::new(AgentiumSessionRenderer::new(cache)));
+    notedeck.register_kind_renderer(Box::new(StubCardRenderer));
+
+    let state = RefChipState {
+        notedeck,
+        account: FullKeypair::generate(),
+        body: String::new(),
+        _tmpdir: tmpdir,
+        setup_done: false,
+    };
+    let builder = Harness::builder().with_size(egui::Vec2::new(640.0, 380.0));
+    let builder = if render {
+        builder.renderer(notedeck::software_renderer())
+    } else {
+        builder
+    };
+    let mut harness = builder.build_ui_state(render_ref_chip, state);
+    harness.run_steps(2);
+    RefTitleHarness { harness, cards }
+}
+
+/// The harness for a session titled with a card's ref: two sessions titled
+/// [`SHORT_CARD`] and [`LONG_CARD`], and a body that puts each session's chip
+/// near the end of a line — the short one with room to spare, the long one
+/// without.
+fn build_title_card_harness(render: bool) -> Harness<'static, RefChipState> {
+    let RefTitleHarness { mut harness, cards } = ref_title_harness(render);
+    let secret = harness.state().account.secret_key.secret_bytes();
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context();
+        for (session, card) in [
+            ("claude-session-short", SHORT_CARD),
+            ("claude-session-long", LONG_CARD),
+        ] {
+            let note = seed_card(app_ctx.ndb, &secret, card.title);
+            cards.borrow_mut().push((card.card_ref.to_string(), note));
+            seed_session(app_ctx.ndb, &secret, session, card.card_ref, "working");
+        }
+    }
+    let short = agentium_core::wordid::session_ref("claude-session-short");
+    let long = agentium_core::wordid::session_ref("claude-session-long");
+    harness.state_mut().body = format!(
+        "This filler runs most of the way across the line, then {short}\n\n\
+         Kicked off a couple of runs; next {long}"
+    );
+
+    // Both chips show their card's title on both surfaces once the sessions
+    // fold and their refs resolve.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        let resolved = harness.query_all_by_label(SHORT_CARD.title).count()
+            + harness.query_all_by_label(LONG_CARD.title).count();
+        if resolved >= 4 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the sessions' card-ref titles never resolved to card chips"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    // Let the chips settle on their remembered widths.
+    harness.run_steps(3);
+    harness
+}
+
+/// The bounds of the first accesskit node labelled `label`.
+fn bounds(harness: &Harness<'_, RefChipState>, label: &str) -> egui::Rect {
+    let b = harness
+        .get_all_by_label(label)
+        .next()
+        .expect("a labelled node")
+        .accesskit_node()
+        .raw_bounds()
+        .expect("bounds");
+    egui::Rect::from_min_max(
+        egui::pos2(b.x0 as f32, b.y0 as f32),
+        egui::pos2(b.x1 as f32, b.y1 as f32),
+    )
+}
+
+/// The bounds of the first accesskit node whose label contains `text`.
+fn bounds_containing(harness: &Harness<'_, RefChipState>, text: &str) -> egui::Rect {
+    let b = harness
+        .get_all_by_label_contains(text)
+        .next()
+        .expect("a node containing the text")
+        .accesskit_node()
+        .raw_bounds()
+        .expect("bounds");
+    egui::Rect::from_min_max(
+        egui::pos2(b.x0 as f32, b.y0 as f32),
+        egui::pos2(b.x1 as f32, b.y1 as f32),
+    )
+}
+
+/// A session titled with a card's ref draws the card's chip in its own, and
+/// the chip breaks the row on the width of what it drew, not of the raw ref:
+/// the short card's chip stays on the line it fits on, and the long card's
+/// moves to a row of its own instead of being cut short at the line's end.
+///
+/// Headless (no lavapipe): it reads the layout off the accesskit tree.
+#[test]
+fn a_card_ref_session_title_draws_the_cards_chip_and_breaks_on_its_width() {
+    let harness = build_title_card_harness(false);
+
+    assert!(
+        harness.query_by_label(SHORT_CARD.card_ref).is_none()
+            && harness.query_by_label(LONG_CARD.card_ref).is_none(),
+        "a resolved card-ref title shows the card's chip, not the raw ref"
+    );
+
+    let filler = bounds_containing(&harness, "This filler runs");
+    let short = bounds(&harness, SHORT_CARD.title);
+    assert!(
+        (short.center().y - filler.center().y).abs() < 4.0,
+        "the short card's chip fits after the filler, so it stays on its line: \
+         filler {filler:?}, chip {short:?}"
+    );
+
+    let lead = bounds_containing(&harness, "Kicked off");
+    let long = bounds(&harness, LONG_CARD.title);
+    assert!(
+        long.min.y > lead.max.y - 1.0,
+        "the long card's chip doesn't fit after the lead-in, so it breaks to \
+         the next row: lead-in {lead:?}, chip {long:?}"
+    );
+}
+
+/// Snapshot of [`a_card_ref_session_title_draws_the_cards_chip_and_breaks_on_its_width`]'s
+/// layout: each session chip draws its card's chip, pill-less, inside its own.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_agentium_chip_with_a_card_ref_title() {
+    let mut harness = build_title_card_harness(true);
+    harness.snapshot("agentium_chip_card_ref_title");
+}
+
+/// A session titled with its own `agentium:` ref draws its chip inside its
+/// chip once, then the inner one's title as text, rather than nesting until
+/// the stack runs out. (Two sessions titled with each other's refs take the
+/// same path.)
+#[test]
+fn a_session_titled_with_its_own_ref_nests_once() {
+    let RefTitleHarness { mut harness, .. } = ref_title_harness(false);
+    let secret = harness.state().account.secret_key.secret_bytes();
+    let session = "claude-session-ouroboros";
+    let session_ref = agentium_core::wordid::session_ref(session);
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context();
+        seed_session(app_ctx.ndb, &secret, session, &session_ref, "working");
+    }
+    harness.state_mut().body = format!("Watching {session_ref} chase itself.");
+
+    // The inner chip's title, drawn as text, is the raw ref: once per surface.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run_ok();
+        if harness.query_all_by_label(&session_ref).count() >= 2 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the self-titled session never drew its nested chip"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }

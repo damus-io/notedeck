@@ -13,7 +13,7 @@
 //! opened). A click opens the session in Dave (via the shared
 //! [`notedeck::open_on_click`]).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use nostrdb::{Ndb, Note, Transaction};
@@ -86,18 +86,83 @@ fn session_age(live: &LiveSession) -> u64 {
 /// realtime. Honors [`req.context`](KindRenderRequest::context): a compact
 /// one-line **chip** (a live status dot + the session's title) inline in prose,
 /// and a fuller **card** (title + status + working directory) as a block embed.
+///
+/// A chip whose session is titled with a reference and nothing else — autowork
+/// titles a session with its card's `headway:<board>/<word-id>` — draws that
+/// entity's own chip as its title (see [`chip_ui`](Self::chip_ui)), not the raw
+/// ref.
 pub struct AgentiumSessionRenderer {
     /// Shared with the app's foreground UI and its reference parser (see
     /// [`Dave::session_cache`](crate::Dave)), so a session drawn inline folds the
     /// same cached state the open surface does — once per account, not once per
     /// surface.
     cache: Rc<RefCell<AgentiumSessionCache>>,
+    /// Set while a chip draws a referenced entity's chip as its title. A
+    /// session's chip drawn inside another's — a title that refers to a session
+    /// — sees it set and shows its own title as text, so two sessions titled
+    /// with each other's refs can't nest without end.
+    nesting: Cell<bool>,
 }
 
 impl AgentiumSessionRenderer {
     /// Build the renderer over the app's shared session cache.
     pub fn new(cache: Rc<RefCell<AgentiumSessionCache>>) -> Self {
-        Self { cache }
+        Self {
+            cache,
+            nesting: Cell::new(false),
+        }
+    }
+
+    /// The inline chip for `live`: a status glyph and the session's title.
+    ///
+    /// A title that is wholly one reference draws the referenced entity's chip
+    /// through the registry, without its pill (it sits in this one's) and
+    /// [`Inert`](notedeck::Interaction::Inert) (a click on it is a click on
+    /// this chip, which opens the session). A reference that doesn't resolve
+    /// falls back to its text, as does any title drawn while already nesting.
+    fn chip_ui(
+        &self,
+        ui: &mut egui::Ui,
+        note_context: &mut NoteContext,
+        req: &KindRenderRequest,
+        theme: &ColorTheme,
+        live: &LiveSession,
+        session_id: &str,
+    ) -> egui::Response {
+        let title = session_title(live);
+        let whole_ref = note_context
+            .registries
+            .reference_parsers
+            .find_next(title)
+            .is_some_and(|m| m.range == (0..title.len()));
+        if self.nesting.get() || !whole_ref {
+            return session_chip_ui(ui, theme, live, req.chrome);
+        }
+
+        self.nesting.set(true);
+        let response = notedeck_ui::inline_chip_with(
+            ui,
+            theme,
+            ("agentium-chip", session_id),
+            req.chrome,
+            session_glyph(theme, live),
+            |ui| {
+                let drawn = notedeck_ui::markdown::reference_ui(
+                    ui,
+                    note_context,
+                    req.txn,
+                    title,
+                    RenderContext::Inline,
+                    InlineChrome::Bare,
+                    notedeck::Interaction::Inert,
+                );
+                if drawn.is_none() {
+                    title_label_ui(ui, theme, title);
+                }
+            },
+        );
+        self.nesting.set(false);
+        with_resume_hint(response, live)
     }
 }
 
@@ -134,7 +199,14 @@ impl KindRenderer for AgentiumSessionRenderer {
         let live = live_session(&self.cache, note_context.ndb, req.txn, note, &snapshot);
 
         let response = match req.context {
-            RenderContext::Inline => session_chip_ui(ui, &theme, &live, req.chrome),
+            RenderContext::Inline => self.chip_ui(
+                ui,
+                note_context,
+                req,
+                &theme,
+                &live,
+                &snapshot.claude_session_id,
+            ),
             _ => session_card_ui(ui, &theme, &live),
         };
         // Clicking the chip/card opens the session in Dave (shared helper).
@@ -204,26 +276,52 @@ fn session_chip_ui(
     live: &LiveSession,
     chrome: InlineChrome,
 ) -> egui::Response {
+    let response = notedeck_ui::inline_chip(
+        ui,
+        theme,
+        session_title(live),
+        chrome,
+        session_glyph(theme, live),
+    );
+    with_resume_hint(response, live)
+}
+
+/// The chip's leading glyph for `live`, for [`notedeck_ui::inline_chip`]'s icon
+/// slot: its live status dot, or — for a tombstoned session, which reads as
+/// resumable — a small "resume" play triangle.
+fn session_glyph(theme: &ColorTheme, live: &LiveSession) -> impl FnOnce(&mut egui::Ui, f32) {
     let color = status_color(theme, live);
-    // A tombstoned session reads as resumable: a small "resume" play triangle
-    // instead of a filled status dot, plus a hover hint. Clicking it reopens
-    // (revives + resumes) the session via Dave's pending-open path — the inline
-    // resume affordance.
     let deleted = live.status == DELETED_STATUS;
-    let response =
-        notedeck_ui::inline_chip(ui, theme, session_title(live), chrome, move |ui, size| {
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-            if deleted {
-                resume_glyph(ui.painter(), rect.center(), size, color);
-            } else {
-                status_dot(ui.painter(), rect.center(), size, color);
-            }
-        });
-    if deleted {
+    move |ui, size| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+        if deleted {
+            resume_glyph(ui.painter(), rect.center(), size, color);
+        } else {
+            status_dot(ui.painter(), rect.center(), size, color);
+        }
+    }
+}
+
+/// A tombstoned session's chip carries a hover hint: clicking it reopens
+/// (revives + resumes) the session via Dave's pending-open path — the inline
+/// resume affordance.
+fn with_resume_hint(response: egui::Response, live: &LiveSession) -> egui::Response {
+    if live.status == DELETED_STATUS {
         response.on_hover_text("Deleted — click to resume")
     } else {
         response
     }
+}
+
+/// A session title as the chip's one-line text, ellipsized when it runs out of
+/// room — what [`notedeck_ui::inline_chip`] draws, for a chip whose title slot
+/// is drawn by hand.
+fn title_label_ui(ui: &mut egui::Ui, theme: &ColorTheme, title: &str) {
+    ui.add(
+        egui::Label::new(egui::RichText::new(title).color(theme.text_primary))
+            .wrap_mode(egui::TextWrapMode::Truncate)
+            .selectable(false),
+    );
 }
 
 /// The block embed of a session ([`notedeck::RenderContext::Embed`]): its title, a
