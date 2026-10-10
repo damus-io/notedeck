@@ -111,12 +111,12 @@ pub fn exit_tool_call(
 
 /// Add the tool of the active session's permission request `request_id` to the
 /// session's runtime allowlist — the request the "Allow Always" answers, so the
-/// grant covers what the user was looking at. Returns the key that was added
+/// grant covers what the user was looking at. Returns the rule that was added
 /// (for logging), or None if there is no such request.
 pub fn allow_always(
     session_manager: &mut SessionManager,
     request_id: uuid::Uuid,
-) -> Option<String> {
+) -> Option<crate::session::RuntimeAllow> {
     let session = session_manager.get_active_mut()?;
     let agentic = session.agentic.as_mut()?;
 
@@ -132,6 +132,25 @@ pub fn allow_always(
         tracing::info!("allow_always: added runtime allow for '{}'", k);
     }
     key
+}
+
+/// Drop `rule` from the active session's runtime allowlist, so the next
+/// request it covered prompts again. Returns whether it was there.
+pub fn revoke_runtime_allow(
+    session_manager: &mut SessionManager,
+    rule: &crate::session::RuntimeAllow,
+) -> bool {
+    let Some(agentic) = session_manager
+        .get_active_mut()
+        .and_then(|session| session.agentic.as_mut())
+    else {
+        return false;
+    };
+    let removed = agentic.remove_runtime_allow(rule);
+    if removed {
+        tracing::info!("revoked runtime allow '{}'", rule);
+    }
+    removed
 }
 
 /// Cycle permission mode for the active session: Default → Plan → AcceptEdits → Default.
@@ -1699,6 +1718,13 @@ mod tests {
         assert_eq!(first_pending_permission(&sm), Some(next_id));
         assert_eq!(pending_permission(&sm).map(|req| req.id), Some(next_id));
         assert!(has_pending_question(&sm));
+
+        // Revoking the grant (the Permissions card's Revoke) puts the request
+        // it was covering back in front of the user.
+        let rule = crate::session::RuntimeAllow::Command("echo".into());
+        assert!(revoke_runtime_allow(&mut sm, &rule));
+        assert_eq!(first_pending_permission(&sm), Some(allowed_id));
+        assert!(!revoke_runtime_allow(&mut sm, &rule));
     }
 
     /// clone_session must preserve the source session's model override

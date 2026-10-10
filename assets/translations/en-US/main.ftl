@@ -103,6 +103,9 @@ All_8729 = All
 # Session environment row repeating an earlier variable name
 Already_set_above__This_row_won_t_be_saved_4f69 = Already set above. This row won't be saved.
 
+# Dave session inspector permissions: heading over the session's always-allow rules
+Always_allowed_this_session_b9fb = Always allowed this session
+
 # Label for zap amount input field
 Amount_70f0 = Amount
 
@@ -117,6 +120,12 @@ Ask_b7f4 = Ask
 
 # Placeholder text for Dave AI input field
 Ask_dave_anything_33d1 = Ask dave anything...
+
+# Dave session inspector permissions row: prompts a user was asked to answer
+Asked_4b58 = Asked
+
+# Dave session inspector permissions row: prompts accepted without asking
+Auto-accepted_b9fd = Auto-accepted
 
 # Dave session inspector section: background tasks, monitors, wake-ups and crons
 Background_f543 = Background
@@ -256,6 +265,12 @@ Copy_Pubkey_9cc4 = Copy Pubkey
 # Copy the text content of the note to clipboard
 Copy_Text_f81c = Copy Text
 
+# Dave session inspector permissions: prompts a user allowed
+count__allowed_04e0 = {$count} allowed
+
+# Dave session inspector permissions: prompts a user denied or exited
+count__denied_c592 = {$count} denied
+
 # Dave session inspector subagents: how many subagents failed
 count__failed_ef23 = {$count} failed
 
@@ -267,6 +282,9 @@ count__running_4ead = {$count} running
 
 # Dave session inspector background: tool calls a background task has made
 count__tool_uses_5ec5 = {$count} tool uses
+
+# Dave session inspector permissions: prompts nobody has answered
+count__unanswered_e41c = {$count} unanswered
 
 # Button to create a new account
 Create_Account_6994 = Create Account
@@ -569,6 +587,9 @@ Messages_are_end-to-end_encrypted__Add_your_nsec_in_Accounts_to_read_and_send_ch
 
 # Button to go to the messaging app
 Messaging_700d = Messaging
+
+# Dave session inspector permissions row: the session's permission mode
+Mode_1d7e = Mode
 
 # Dave session inspector overview row
 Mode_7dd2 = Mode
@@ -890,6 +911,12 @@ Restart_to_apply_f761 = Restart to apply.
 
 # Heading shown above search results
 Results_41bf = Results
+
+# Dave session inspector permissions: remove an always-allow rule
+Revoke_174f = Revoke
+
+# Dave session inspector permissions: a remote session's rules are this viewer's, not the host's
+Rules_granted_on_this_device__The_host_keeps_its_own_b292 = Rules granted on this device. The host keeps its own.
 
 # Dave session inspector: the agent CLI process is running and busy, so the idle reaper won't stop it
 Running___held_open_by_work_in_flight_e004 = Running · held open by work in flight
@@ -1283,6 +1310,13 @@ count__plugins_6b9e =
     }
 
 
+# Dave session inspector permissions: how many prompts a user was asked
+count__prompts_81e6 =
+    { $count ->
+        [one] {$count} prompt
+       *[other] {$count} prompts
+    }
+
 # Dave session inspector usage: model requests across the session's turns
 count__requests_cfa1 =
     { $count ->
@@ -1429,6 +1463,9 @@ Near_a_limit_fe96 = Near a limit
 
 # Dave session inspector rate limits: shown before the CLI reports the account's windows
 No_rate-limit_report_yet_c1f0 = No rate-limit report yet
+
+# Dave session inspector permissions: the session has no always-allow rules
+No_rules_yet__Allow_Always_on_a_prompt_adds_one_e188 = No rules yet. Allow Always on a prompt adds one.
 
 # Dave session inspector subagents: the session has spawned no subagents
 No_subagents_yet_3ccd = No subagents yet

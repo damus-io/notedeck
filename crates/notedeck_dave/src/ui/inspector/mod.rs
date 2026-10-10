@@ -8,6 +8,7 @@
 mod background;
 mod files;
 mod overview;
+mod permissions;
 mod rate_limits;
 mod subagents;
 mod tasks;
@@ -15,6 +16,7 @@ mod usage;
 
 pub use background::waiting_pill_ui;
 pub use overview::SessionFacts;
+pub use permissions::PermissionFacts;
 pub use rate_limits::rate_limit_pill_ui;
 
 use crate::inspector::{InspectorSection, InspectorView, SessionInspector, SessionTab};
@@ -265,6 +267,17 @@ fn section_body_ui(
         }
         InspectorSection::Files => {
             return files::files_ui(&mut inspector.files, &mut inspector.edited, facts, i18n, ui)
+        }
+        InspectorSection::Permissions => {
+            return permissions::permissions_ui(
+                &mut inspector.permissions,
+                facts.permission_mode,
+                facts.permissions,
+                facts.chat,
+                facts.is_remote,
+                i18n,
+                ui,
+            )
         }
         _ => empty_state_ui(i18n, ui),
     }

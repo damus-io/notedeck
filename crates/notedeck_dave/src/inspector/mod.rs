@@ -13,6 +13,7 @@
 mod background;
 mod edits;
 mod files;
+mod permissions;
 mod subagents;
 mod usage;
 
@@ -22,6 +23,7 @@ pub use files::{
     claude_temp_root, list_session_temp, project_slug, session_temp_dir, FileRow, FileRows,
     FilesParts, FilesState, GroupRows, TempFile, TempGroup, TempListing, GROUP_CAP,
 };
+pub use permissions::{PermissionCounts, PermissionLabels, PermissionMemo};
 pub use subagents::{subagent, ProgressById, SubagentRow, SubagentRows, SubagentState};
 pub use usage::{Compaction, Sparkline, Tokens, TurnUsage, UsageHistory, HISTORY_CAP};
 
@@ -76,6 +78,10 @@ pub struct SessionInspector {
     /// The Files card's edited-files rows, folded from the chat's file
     /// updates when their count moves.
     pub edited: EditedMemo,
+    /// The Permissions card's answered-prompt counts, built when they move.
+    /// The always-allow rules are the session's own allowlist, so they need
+    /// no state here.
+    pub permissions: PermissionMemo,
 }
 
 impl SessionInspector {

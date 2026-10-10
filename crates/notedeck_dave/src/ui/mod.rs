@@ -159,6 +159,7 @@ fn build_dave_ui<'a>(
         status,
         waiting_on: session.waiting_on,
         cli_session_id: None,
+        permissions: None,
     });
 
     if let Some(agentic) = &mut session.agentic {
@@ -181,7 +182,11 @@ fn build_dave_ui<'a>(
                     .as_ref()
                     .and_then(|info| info.claude_session_id.as_deref())
                     .or(agentic.resume_session_id.as_deref()),
-            );
+            )
+            .permission_facts(Some(crate::ui::inspector::PermissionFacts {
+                rules: &agentic.runtime_allows,
+                responded: &agentic.permissions.responded,
+            }));
 
         // Only show git status for local sessions
         if !is_remote {
@@ -1571,6 +1576,10 @@ pub fn handle_ui_action(
             });
             UiActionResult::Handled
         }
+        DaveAction::RevokeAllow(rule) => {
+            update::revoke_runtime_allow(session_manager, &rule);
+            UiActionResult::Handled
+        }
         // All run actions are intercepted and handled in lib.rs before reaching here
         DaveAction::Run(_) => UiActionResult::Handled,
     }
@@ -2046,8 +2055,12 @@ mod tests {
         harness.get_by_label("Details").click_accesskit();
         harness.run_ok();
 
-        assert_eq!(count_labels(&harness, "Nothing yet"), 2);
+        assert_eq!(count_labels(&harness, "Nothing yet"), 1);
         assert_eq!(count_labels(&harness, "No subagents yet"), 1);
+        assert_eq!(
+            count_labels(&harness, "No rules yet. Allow Always on a prompt adds one."),
+            1
+        );
         assert_eq!(count_labels(&harness, "No Claude session yet"), 1);
         assert_eq!(count_labels(&harness, "No files edited yet"), 1);
         assert_eq!(count_labels(&harness, "No tasks yet"), 1);
@@ -3021,6 +3034,124 @@ mod tests {
             Some(2),
             "the cursor is on lib.rs's second edit, the third block"
         );
+    }
+
+    /// Fill the active session's permission prompts: two allowed by a click,
+    /// one denied, one waiting, three auto-accepted; and two always-allow
+    /// rules, a Bash binary and a tool.
+    fn seed_permissions(state: &mut SessionViewState) {
+        use crate::messages::{PermissionRequest, PermissionResponseType};
+        let bash = |cmd: &str| serde_json::json!({ "command": cmd });
+        let request = |tool: &str, input: serde_json::Value, response| {
+            crate::Message::PermissionRequest(PermissionRequest::new(
+                uuid::Uuid::new_v4(),
+                tool.into(),
+                input,
+                None,
+                response,
+                None,
+            ))
+        };
+        let auto = |cmd: &str| {
+            crate::Message::PermissionRequest(
+                PermissionRequest::pending(uuid::Uuid::new_v4(), "Bash".into(), bash(cmd))
+                    .auto_accept(),
+            )
+        };
+        let allowed = Some(PermissionResponseType::Allowed);
+        let session = state.session_manager.get_active_mut().unwrap();
+        session.replace_chat(vec![
+            request("Bash", bash("cargo test"), allowed),
+            request("Edit", serde_json::json!({ "file_path": "/a" }), allowed),
+            request(
+                "Bash",
+                bash("rm -rf target"),
+                Some(PermissionResponseType::Denied),
+            ),
+            auto("cargo check"),
+            auto("cargo check -p dave"),
+            auto("cargo fmt"),
+            request("Bash", bash("git push"), None),
+        ]);
+        let agentic = session.agentic.as_mut().unwrap();
+        agentic.add_runtime_allow("Bash", &bash("cargo test"));
+        agentic.add_runtime_allow("Edit", &serde_json::json!({ "file_path": "/a" }));
+    }
+
+    /// The Permissions card counts the prompts by how they were answered and
+    /// lists the always-allow rules; Revoke drops one from the allowlist, so
+    /// its next request prompts again.
+    #[test]
+    fn permissions_card_counts_prompts_and_revokes_a_rule() {
+        use crate::session::RuntimeAllow;
+        use egui_kittest::kittest::Queryable;
+
+        let mut harness = session_view_harness(egui::vec2(1100.0, 1600.0));
+        seed_permissions(harness.state_mut());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .open(crate::inspector::InspectorSection::Permissions);
+        harness.run_ok();
+
+        // Fluent may isolate the numbers, so match the words.
+        assert_eq!(count_labels_containing(&harness, "prompts"), 1);
+        // One line holds the breakdown: allowed, denied, unanswered.
+        assert_eq!(count_labels_containing(&harness, "denied"), 1);
+        assert_eq!(count_labels_containing(&harness, "unanswered"), 1);
+        assert_eq!(count_labels(&harness, "cargo"), 1, "the Bash rule");
+        assert_eq!(count_labels(&harness, "Edit"), 1, "the tool rule");
+        assert_eq!(count_labels(&harness, "Revoke"), 2);
+
+        // Rules list in order: the Bash binary first.
+        harness
+            .query_all_by_label("Revoke")
+            .min_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y))
+            .unwrap()
+            .click();
+        harness.run_ok();
+
+        let agentic = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .agentic
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            agentic.runtime_allows.iter().collect::<Vec<_>>(),
+            [&RuntimeAllow::Tool("Edit".into())]
+        );
+        assert!(!agentic.should_runtime_allow(
+            "Bash",
+            &serde_json::json!({ "command": "cargo test --workspace" })
+        ));
+        assert_eq!(count_labels(&harness, "Revoke"), 1);
+    }
+
+    /// The Permissions card: the mode, the answered-prompt counts, and two
+    /// always-allow rules.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_session_permissions() {
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1100.0, 760.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        seed_permissions(harness.state_mut());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .open(crate::inspector::InspectorSection::Permissions);
+        harness.run_ok();
+        harness.snapshot("session_permissions");
     }
 
     /// The Files card: the scratchpad with a folder and two files, and the

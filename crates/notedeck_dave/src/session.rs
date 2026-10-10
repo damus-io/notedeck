@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -279,14 +279,63 @@ pub struct AgenticSessionData {
     pub fold_dirty: bool,
     /// Accumulated usage metrics across queries in this session.
     pub usage: crate::messages::UsageInfo,
-    /// Runtime allowlist for auto-accepting permissions this session.
-    /// For Bash: stores binary names (first word of command).
-    /// For other tools: stores the tool name.
-    pub runtime_allows: HashSet<String>,
+    /// Runtime allowlist for auto-accepting permissions this session: the
+    /// "Allow Always" grants, in the order the inspector lists them. Held in
+    /// memory only — never persisted or published — so each host (and each
+    /// remote viewer) has its own.
+    pub runtime_allows: BTreeSet<RuntimeAllow>,
     /// Stable Nostr event identity for this session (d-tag for kind-31988
     /// and kind-1988 events).  Generated at creation, never changes.
     /// Separate from the Claude CLI session ID used for `--resume`.
     pub event_id: String,
+}
+
+/// One "Allow Always" grant on a session's runtime allowlist.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RuntimeAllow {
+    /// Any Bash command whose first word is this binary.
+    Command(String),
+    /// Any call to this (non-Bash) tool.
+    Tool(String),
+}
+
+impl RuntimeAllow {
+    /// The rule an "Allow Always" on this request grants: a Bash command's
+    /// binary (its first word), or the tool itself. `None` for a Bash request
+    /// with no command.
+    pub fn of(tool_name: &str, tool_input: &serde_json::Value) -> Option<Self> {
+        if tool_name != "Bash" {
+            return Some(Self::Tool(tool_name.to_string()));
+        }
+        bash_binary(tool_input).map(|bin| Self::Command(bin.to_string()))
+    }
+
+    /// Whether this rule covers the request. Checked without allocating,
+    /// since a remote session asks every frame.
+    pub fn matches(&self, tool_name: &str, tool_input: &serde_json::Value) -> bool {
+        match self {
+            Self::Command(bin) => tool_name == "Bash" && bash_binary(tool_input) == Some(bin),
+            Self::Tool(tool) => tool_name != "Bash" && tool_name == tool,
+        }
+    }
+}
+
+/// A Bash request's binary: the first word of its command.
+fn bash_binary(tool_input: &serde_json::Value) -> Option<&str> {
+    tool_input
+        .get("command")
+        .and_then(|v| v.as_str())
+        .and_then(|cmd| cmd.split_whitespace().next())
+}
+
+/// `Bash(git:*)` or `Edit`: Claude Code's own permission-rule spelling.
+impl std::fmt::Display for RuntimeAllow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Command(bin) => write!(f, "Bash({bin}:*)"),
+            Self::Tool(tool) => f.write_str(tool),
+        }
+    }
 }
 
 impl AgenticSessionData {
@@ -321,23 +370,8 @@ impl AgenticSessionData {
             unindexed_self_notes: Default::default(),
             fold_dirty: false,
             usage: Default::default(),
-            runtime_allows: HashSet::new(),
+            runtime_allows: BTreeSet::new(),
             event_id: uuid::Uuid::new_v4().to_string(),
-        }
-    }
-
-    /// Extract the runtime allow key from a permission request.
-    /// For Bash: first word of the command (binary name).
-    /// For other tools: the tool name itself.
-    fn runtime_allow_key(tool_name: &str, tool_input: &serde_json::Value) -> Option<String> {
-        if tool_name == "Bash" {
-            tool_input
-                .get("command")
-                .and_then(|v| v.as_str())
-                .and_then(|cmd| cmd.split_whitespace().next())
-                .map(|s| s.to_string())
-        } else {
-            Some(tool_name.to_string())
         }
     }
 
@@ -354,23 +388,28 @@ impl AgenticSessionData {
         if crate::messages::PermissionView::is_decision_tool(tool_name) {
             return false;
         }
-        if let Some(key) = Self::runtime_allow_key(tool_name, tool_input) {
-            self.runtime_allows.contains(&key)
-        } else {
-            false
-        }
+        self.runtime_allows
+            .iter()
+            .any(|rule| rule.matches(tool_name, tool_input))
     }
 
     /// Add a runtime allow rule from a permission request.
-    /// Returns the key that was added (for logging).
+    /// Returns the rule that was added (for logging).
     pub fn add_runtime_allow(
         &mut self,
         tool_name: &str,
         tool_input: &serde_json::Value,
-    ) -> Option<String> {
-        let key = Self::runtime_allow_key(tool_name, tool_input)?;
-        self.runtime_allows.insert(key.clone());
-        Some(key)
+    ) -> Option<RuntimeAllow> {
+        let rule = RuntimeAllow::of(tool_name, tool_input)?;
+        self.runtime_allows.insert(rule.clone());
+        Some(rule)
+    }
+
+    /// Revoke an "Allow Always" grant, so the next request it covered prompts
+    /// again. Returns whether the rule was on the allowlist. A request already
+    /// auto-accepted under it stays answered.
+    pub fn remove_runtime_allow(&mut self, rule: &RuntimeAllow) -> bool {
+        self.runtime_allows.remove(rule)
     }
 
     /// Record a kind-1988 note this host just published for the session.
@@ -2064,6 +2103,35 @@ mod tests {
         assert!(
             !agentic.should_runtime_allow("Bash", &serde_json::json!({ "command": "rm -rf /" }))
         );
+    }
+
+    /// Revoking a grant makes the next matching request prompt again, and
+    /// leaves the other grants alone.
+    #[test]
+    fn revoked_runtime_allow_prompts_again() {
+        let mut agentic = AgenticSessionData::new(1, PathBuf::from("/tmp"));
+        let git = serde_json::json!({ "command": "git status" });
+        let edit = serde_json::json!({ "file_path": "/tmp/a" });
+
+        let rule = agentic.add_runtime_allow("Bash", &git).unwrap();
+        agentic.add_runtime_allow("Edit", &edit);
+        assert_eq!(rule, RuntimeAllow::Command("git".into()));
+        assert_eq!(rule.to_string(), "Bash(git:*)");
+
+        assert!(agentic.remove_runtime_allow(&rule));
+        assert!(!agentic.should_runtime_allow("Bash", &git));
+        assert!(agentic.should_runtime_allow("Edit", &edit));
+        // Gone already.
+        assert!(!agentic.remove_runtime_allow(&rule));
+    }
+
+    /// A tool grant and a Bash binary of the same name are different rules.
+    #[test]
+    fn tool_grant_does_not_cover_a_bash_binary_of_its_name() {
+        let mut agentic = AgenticSessionData::new(1, PathBuf::from("/tmp"));
+        agentic.add_runtime_allow("Read", &serde_json::json!({ "file_path": "/a" }));
+        assert!(!agentic.should_runtime_allow("Bash", &serde_json::json!({ "command": "Read x" })));
+        assert!(agentic.should_runtime_allow("Read", &serde_json::json!({ "file_path": "/b" })));
     }
 
     #[test]

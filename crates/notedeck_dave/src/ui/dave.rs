@@ -131,6 +131,8 @@ pub struct Inspected<'a> {
     pub waiting_on: crate::messages::WaitingOn,
     /// The Claude CLI session id, for `--resume`.
     pub cli_session_id: Option<&'a str>,
+    /// The session's allowlist and recorded permission decisions.
+    pub permissions: Option<crate::ui::inspector::PermissionFacts<'a>>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -262,6 +264,9 @@ pub enum DaveAction {
     /// Show the chat with the block cursor on this chat row's block (by its
     /// index in the chat), from the Details tab's edited files
     ShowChatRow(usize),
+    /// Drop an always-allow rule from the active session's runtime
+    /// allowlist, from the Details tab's Permissions card
+    RevokeAllow(crate::session::RuntimeAllow),
 }
 
 impl<'a> DaveUi<'a> {
@@ -323,6 +328,18 @@ impl<'a> DaveUi<'a> {
     pub fn cli_session_id(mut self, id: Option<&'a str>) -> Self {
         if let Some(inspected) = &mut self.inspector {
             inspected.cli_session_id = id;
+        }
+        self
+    }
+
+    /// The permission state the Details tab's Permissions card reads. Set
+    /// after [`Self::inspector`]; ignored without one.
+    pub fn permission_facts(
+        mut self,
+        facts: Option<crate::ui::inspector::PermissionFacts<'a>>,
+    ) -> Self {
+        if let Some(inspected) = &mut self.inspector {
+            inspected.permissions = facts;
         }
         self
     }
@@ -663,6 +680,7 @@ impl<'a> DaveUi<'a> {
                                 rate_limit,
                                 now_unix,
                                 chat: self.chat,
+                                permissions: inspected.permissions,
                             };
                             // Scoped by session, so each keeps its own grid
                             // scroll.

@@ -42,6 +42,8 @@ pub struct SessionFacts<'a> {
     pub now_unix: u64,
     /// The transcript, whose subagent rows the Subagents card lists.
     pub chat: &'a [crate::Message],
+    /// The allowlist and recorded decisions the Permissions card reads.
+    pub permissions: Option<super::PermissionFacts<'a>>,
 }
 
 /// The Overview card's body.
