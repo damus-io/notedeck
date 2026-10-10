@@ -11,3 +11,4 @@ too, so every card strips that out by hand to keep its commit standalone.
 - headway:notedeck/bleak-tornado-rose — ~2 min: the exporter rewrote both files with 200 lines of drift for one new key; reverted and spliced the one entry in by hand
 - headway:dave/tape-swim-army — ~4 min: yet another hand merge (one key), after the exporter silently skipped "{done}/{total} done" for its "/"; the header became a bare format! fraction instead
 - headway:dave/raise-cube-used — ~3 min: an eighth hand splice (8 keys) out of a 234-line rewrite of both files, by the same block-merge script rewritten again in a fresh scratchpad
+- headway:dave/matrix-message-outdoor — ~3 min: a ninth splice (5 keys, 1 dropped) out of a 274-line rewrite, by yet another scratchpad block-merge script

@@ -259,6 +259,9 @@ pub enum DaveAction {
     /// Open this file or folder with the system's default app, from the
     /// Details tab's Files card
     OpenPath(std::path::PathBuf),
+    /// Show the chat with the block cursor on this chat row's block (by its
+    /// index in the chat), from the Details tab's edited files
+    ShowChatRow(usize),
 }
 
 impl<'a> DaveUi<'a> {
@@ -741,6 +744,7 @@ impl<'a> DaveUi<'a> {
         );
 
         for (i, message) in self.chat.iter().enumerate() {
+            self.nav.enter_row(i);
             match message {
                 Message::Error(err) => {
                     self.error_chat(ctx.i18n, err, ui);

@@ -367,6 +367,9 @@ Edit_Profile_49e6 = Edit Profile
 # Column title for profile editing
 Edit_Profile_8ad4 = Edit Profile
 
+# Dave session inspector files: heading over the files the session edited or wrote
+edited_ee63 = edited
+
 # Dave session inspector files: a temp-dir folder with nothing in it
 empty_dd99 = empty
 
@@ -420,9 +423,6 @@ Hashtags_f8e0 = Hashtags
 
 # Dave session inspector section: scratchpad, task output and edited files
 Files_0f4a = Files
-
-# Dave session inspector files: a remote session's temp files are on the host running it
-Files_live_on__host_0268 = Files live on {$host}
 
 # Button to go to the Headway app
 Headway_b5c8 = Headway
@@ -644,6 +644,9 @@ No_conversations_yet_52c0 = No conversations yet
 
 # label describing that there are no conversations yet
 No_conversations_yet_df0d = No conversations yet
+
+# Dave session inspector files: the session hasn't edited or written any file
+No_files_edited_yet_339c = No files edited yet
 
 # Dave session inspector overview: shown before the CLI's system/init message arrives
 No_init_from_the_agent_yet_0cb8 = No init from the agent yet
@@ -912,6 +915,9 @@ Save_6f7c = Save
 # Button label to save profile changes
 Save_changes_00db = Save changes
 
+# Dave session inspector files: a remote session's temp files are on the host running it
+Scratchpad_and_task_output_live_on__host_0268 = Scratchpad and task output live on {$host}
+
 # Column title for search page
 Search_c573 = Search
 
@@ -1173,6 +1179,9 @@ workflow_dd36 = workflow
 # Placeholder for note input field
 Write_a_banger_note_here_bad2 = Write a banger note here...
 
+# Dave session inspector files: a file the session wrote whole, once
+written_7c4e = written
+
 # Abbreviated version of yesterday used in conversation summaries
 Yest_0505 = Yest
 
@@ -1239,6 +1248,14 @@ count__crons_a409 =
     { $count ->
         [one] {$count} cron
        *[other] {$count} crons
+    }
+
+
+# Dave session inspector files: how many times the session edited a file
+count__edits_4585 =
+    { $count ->
+        [one] {$count} edit
+       *[other] {$count} edits
     }
 
 

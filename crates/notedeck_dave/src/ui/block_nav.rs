@@ -63,6 +63,15 @@ pub struct BlockNav {
     /// That seek, latched for one render pass like `scroll_this_frame`, so a
     /// block that never draws doesn't keep it for a later pass.
     seek_this_frame: Option<egui::Id>,
+    /// A block asked for by the chat row it sits in ([`seek_row`](BlockNav::seek_row)):
+    /// the cursor lands on the first block that row registers.
+    seek_row: Option<usize>,
+    /// That seek, latched for one render pass like `seek_this_frame`.
+    seek_row_this_frame: Option<usize>,
+    /// The row being drawn is the one `seek_row_this_frame` names, so the
+    /// next block to register takes the cursor. Set by
+    /// [`enter_row`](BlockNav::enter_row).
+    row_armed: bool,
 }
 
 impl BlockNav {
@@ -75,6 +84,16 @@ impl BlockNav {
         self.blocks.clear();
         self.scroll_this_frame = std::mem::take(&mut self.scroll_to_cursor);
         self.seek_this_frame = self.seek.take();
+        self.seek_row_this_frame = self.seek_row.take();
+        self.row_armed = false;
+    }
+
+    /// Tell the registry the transcript is about to draw chat row `row`, so
+    /// a [`seek_row`](Self::seek_row) for it lands on the first block it
+    /// registers. A row that registers none leaves the seek to lapse with
+    /// the pass.
+    pub fn enter_row(&mut self, row: usize) {
+        self.row_armed = self.seek_row_this_frame == Some(row);
     }
 
     /// Record a collapsible block at its position in the transcript and hand
@@ -87,8 +106,10 @@ impl BlockNav {
     pub fn register(&mut self, id: egui::Id, default_open: bool, ui: &egui::Ui) -> RegisteredBlock {
         let idx = self.blocks.len();
         self.blocks.push(BlockRef { id, default_open });
-        if self.seek_this_frame == Some(id) {
+        if self.seek_this_frame == Some(id) || self.row_armed {
             self.seek_this_frame = None;
+            self.seek_row_this_frame = None;
+            self.row_armed = false;
             self.cursor = Some(idx);
             self.scroll_this_frame = true;
         }
@@ -113,6 +134,14 @@ impl BlockNav {
     /// draw the block.
     pub fn seek(&mut self, id: egui::Id) {
         self.seek = Some(id);
+    }
+
+    /// Put the cursor on the first block chat row `row` registers, and
+    /// scroll to it, on the next render pass: for a caller that knows where
+    /// in the chat a block is but not its id, which is scoped to the
+    /// transcript's `Ui`. Dropped if that pass doesn't draw such a block.
+    pub fn seek_row(&mut self, row: usize) {
+        self.seek_row = Some(row);
     }
 
     /// The cursor's position in registration order, if any.
@@ -380,6 +409,36 @@ mod tests {
         nav.begin_frame();
         assert_eq!(nav.seek_this_frame, None);
         assert!(!pass(&mut nav).is_cursor);
+    }
+
+    /// A row seek lands on the first block its row registers, not on a
+    /// block of a row before it or a second block of the same row.
+    #[test]
+    fn a_row_seek_lands_on_its_rows_first_block() {
+        let ctx = egui::Context::default();
+        let mut nav = BlockNav::default();
+        nav.seek_row(2);
+        let mut cursor_rows = Vec::new();
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            nav.begin_frame();
+            // Row 0 has a block, row 1 none, row 2 two.
+            let blocks: [&[&str]; 3] = [&["r0"], &[], &["r2a", "r2b"]];
+            for (row, ids) in blocks.iter().enumerate() {
+                nav.enter_row(row);
+                for id in *ids {
+                    if nav.register(egui::Id::unique(id), false, ui).is_cursor {
+                        cursor_rows.push(*id);
+                    }
+                }
+            }
+        });
+        output.textures_delta.clear();
+        assert_eq!(cursor_rows, ["r2a"]);
+        assert_eq!(nav.cursor(), Some(1));
+
+        // Consumed: the next pass leaves the cursor where it landed.
+        nav.begin_frame();
+        assert_eq!(nav.seek_row_this_frame, None);
     }
 
     #[test]

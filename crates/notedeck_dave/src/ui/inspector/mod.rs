@@ -263,7 +263,9 @@ fn section_body_ui(
         InspectorSection::Tasks => {
             tasks::tasks_ui(&mut inspector.tasks_header, facts.chat, i18n, ui)
         }
-        InspectorSection::Files => return files::files_ui(&mut inspector.files, facts, i18n, ui),
+        InspectorSection::Files => {
+            return files::files_ui(&mut inspector.files, &mut inspector.edited, facts, i18n, ui)
+        }
         _ => empty_state_ui(i18n, ui),
     }
     None

@@ -1,8 +1,12 @@
-//! The Files card, part one: the session's Claude Code temp dir — the
-//! agent's `scratchpad/` and the `tasks/*.output` logs its background tasks
-//! write — newest first, each with Open, and Tail for an output log.
+//! The Files card: every file the session edited, with its +/- line counts,
+//! then the session's Claude Code temp dir — the agent's `scratchpad/` and
+//! the `tasks/*.output` logs its background tasks write — newest first, each
+//! with Open, and Tail for an output log.
 //!
-//! The listing is read off the UI thread by
+//! The edited files are folded from the chat's file updates (see
+//! [`crate::inspector::edited_files`]), so a remote or non-Claude session
+//! lists them too; a click on one goes back to the chat with the block cursor
+//! on its last edit. The temp-dir listing is read off the UI thread by
 //! [`FilesState`](crate::inspector::FilesState) every few seconds while the
 //! card is drawn; its strings are built into [`FileRows`] once a second at
 //! most, since ages move with the clock. Only a local Claude Code session has
@@ -10,18 +14,194 @@
 
 use crate::backend::BackendType;
 use crate::inspector::{
-    FileRow, FileRows, FilesParts, FilesState, GroupRows, TempGroup, TempListing,
+    edited_files, EditedFile, EditedMemo, EditedRow, EditedRows, EditsKey, FileRow, FileRows,
+    FilesParts, FilesState, GroupRows, TempGroup, TempListing,
 };
 use crate::ui::DaveAction;
-use notedeck::{tr, Localization};
+use crate::Message;
+use notedeck::{tr, tr_plural, Localization};
+use std::path::Path;
 use std::time::Instant;
 
 use super::background::short_duration;
 use super::{heading_ui, weak_ui, SessionFacts, MONO_SIZE, VALUE_SIZE};
 
-/// The Files card's body. The session's cwd and CLI session id locate the
-/// temp dir; without either there is none yet.
+/// The Files card's body: the edited files, then the temp dir.
 pub fn files_ui(
+    state: &mut FilesState,
+    edited: &mut EditedMemo,
+    facts: &SessionFacts<'_>,
+    i18n: &mut Localization,
+    ui: &mut egui::Ui,
+) -> Option<DaveAction> {
+    let edit_action = edited_ui(edited, facts, i18n, ui);
+    ui.add_space(notedeck::tokens::SPACING_SM);
+    let temp_action = temp_dir_ui(state, facts, i18n, ui);
+    edit_action.or(temp_action)
+}
+
+/// The files the chat edited, most recent first. A click on a row asks to
+/// show its last edit in the chat.
+fn edited_ui(
+    memo: &mut EditedMemo,
+    facts: &SessionFacts<'_>,
+    i18n: &mut Localization,
+    ui: &mut egui::Ui,
+) -> Option<DaveAction> {
+    let cwd = facts.details.and_then(|d| d.cwd.as_deref());
+    // The cwd isn't in the key: a session's cwd is fixed once it has edits.
+    let rows = memo.get(EditsKey::of(facts.chat), i18n, |_, i18n| {
+        build_edited_rows(facts.chat, cwd, i18n)
+    });
+
+    heading_ui(ui, &rows.heading);
+    if rows.rows.is_empty() {
+        weak_ui(ui, &rows.empty);
+        return None;
+    }
+    let mut action = None;
+    for row in &rows.rows {
+        if edited_row_ui(row, ui).clicked() {
+            action = Some(DaveAction::ShowChatRow(row.last_row));
+        }
+    }
+    action
+}
+
+/// One edited file: its path in mono, then its +/- counts and edit count,
+/// right-aligned. The whole row is the click target.
+fn edited_row_ui(row: &EditedRow, ui: &mut egui::Ui) -> egui::Response {
+    let inner = ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            weak_ui(ui, &row.detail);
+            let count = |text: &str, color| {
+                egui::Label::new(
+                    egui::RichText::new(text)
+                        .font(egui::FontId::monospace(MONO_SIZE + 1.0))
+                        .color(color),
+                )
+            };
+            ui.add(count(&row.removed, notedeck_ui::diff::DELETE_COLOR));
+            ui.add(count(&row.added, notedeck_ui::diff::INSERT_COLOR));
+            // The path takes what the counts leave, from the left.
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&row.name)
+                            .font(egui::FontId::monospace(MONO_SIZE + 1.0)),
+                    )
+                    .truncate(),
+                );
+            });
+        });
+    });
+    // Its own id, so the click sense registers above the labels: the
+    // horizontal's id was registered before them, and `interact` on it would
+    // keep that place under them.
+    let resp = ui
+        .interact(
+            inner.response.rect,
+            ui.make_persistent_id(("dave_edited_file", &row.name)),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if resp.hovered() {
+        ui.painter().rect_stroke(
+            resp.rect.expand(2.0),
+            notedeck::tokens::RADIUS_SM,
+            ui.visuals().widgets.hovered.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    resp
+}
+
+/// The edited-files group's strings for `chat`, paths relative to `cwd`.
+fn build_edited_rows(chat: &[Message], cwd: Option<&Path>, i18n: &mut Localization) -> EditedRows {
+    let files = edited_files(chat);
+    let added: usize = files.iter().map(|f| f.added).sum();
+    let removed: usize = files.iter().map(|f| f.removed).sum();
+    let edited = tr!(
+        i18n,
+        "edited",
+        "Dave session inspector files: heading over the files the session edited or wrote"
+    );
+    let heading = if files.is_empty() {
+        edited
+    } else {
+        format!(
+            "{edited} · {} · {} {}",
+            files.len(),
+            added_label(added),
+            removed_label(removed)
+        )
+    };
+    EditedRows {
+        heading,
+        rows: files.iter().map(|f| edited_row(f, cwd, i18n)).collect(),
+        empty: tr!(
+            i18n,
+            "No files edited yet",
+            "Dave session inspector files: the session hasn't edited or written any file"
+        ),
+    }
+}
+
+/// One edited file's strings.
+fn edited_row(file: &EditedFile, cwd: Option<&Path>, i18n: &mut Localization) -> EditedRow {
+    let path = Path::new(&file.path);
+    let name = cwd
+        .and_then(|cwd| path.strip_prefix(cwd).ok())
+        .filter(|rel| !rel.as_os_str().is_empty())
+        .unwrap_or(path)
+        .display()
+        .to_string();
+    let detail = if file.written && file.edits == 1 {
+        tr!(
+            i18n,
+            "written",
+            "Dave session inspector files: a file the session wrote whole, once"
+        )
+    } else {
+        tr_plural!(
+            i18n,
+            "{count} edit",
+            "{count} edits",
+            "Dave session inspector files: how many times the session edited a file",
+            file.edits as i64,
+        )
+    };
+    // A row leaves out a zero count; the heading's totals keep theirs.
+    EditedRow {
+        name,
+        added: if file.added > 0 {
+            added_label(file.added)
+        } else {
+            String::new()
+        },
+        removed: if file.removed > 0 {
+            removed_label(file.removed)
+        } else {
+            String::new()
+        },
+        detail,
+        last_row: file.last_row,
+    }
+}
+
+/// "+12": lines added.
+fn added_label(lines: usize) -> String {
+    format!("+{lines}")
+}
+
+/// "−3", with a minus sign rather than a hyphen: lines removed.
+fn removed_label(lines: usize) -> String {
+    format!("\u{2212}{lines}")
+}
+
+/// The session's Claude Code temp dir. The session's cwd and CLI session id
+/// locate it; without either there is none yet.
+fn temp_dir_ui(
     state: &mut FilesState,
     facts: &SessionFacts<'_>,
     i18n: &mut Localization,
@@ -34,7 +214,7 @@ pub fn files_ui(
             ui,
             &tr!(
                 i18n,
-                "Files live on {host}",
+                "Scratchpad and task output live on {host}",
                 "Dave session inspector files: a remote session's temp files are on the host running it",
                 host = host
             ),

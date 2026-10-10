@@ -11,11 +11,13 @@
 //! published.
 
 mod background;
+mod edits;
 mod files;
 mod subagents;
 mod usage;
 
 pub use background::{BackgroundParts, BackgroundRow, BackgroundState, OutputTails};
+pub use edits::{edited_files, EditedFile, EditedMemo, EditedRow, EditedRows, EditsKey};
 pub use files::{
     claude_temp_root, list_session_temp, project_slug, session_temp_dir, FileRow, FileRows,
     FilesParts, FilesState, GroupRows, TempFile, TempGroup, TempListing, GROUP_CAP,
@@ -71,6 +73,9 @@ pub struct SessionInspector {
     /// The session's Claude Code temp dir (scratchpad and task output), as
     /// last listed.
     pub files: FilesState,
+    /// The Files card's edited-files rows, folded from the chat's file
+    /// updates when their count moves.
+    pub edited: EditedMemo,
 }
 
 impl SessionInspector {

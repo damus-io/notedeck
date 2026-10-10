@@ -1555,6 +1555,13 @@ pub fn handle_ui_action(
             }
             UiActionResult::Handled
         }
+        DaveAction::ShowChatRow(row) => {
+            if let Some(session) = session_manager.get_active_mut() {
+                session.inspector_view.show_chat();
+                session.block_nav.seek_row(row);
+            }
+            UiActionResult::Handled
+        }
         DaveAction::OpenPath(path) => {
             // xdg-open can wait on the app it launches, so off the UI thread.
             std::thread::spawn(move || {
@@ -2042,6 +2049,7 @@ mod tests {
         assert_eq!(count_labels(&harness, "Nothing yet"), 2);
         assert_eq!(count_labels(&harness, "No subagents yet"), 1);
         assert_eq!(count_labels(&harness, "No Claude session yet"), 1);
+        assert_eq!(count_labels(&harness, "No files edited yet"), 1);
         assert_eq!(count_labels(&harness, "No tasks yet"), 1);
         assert_eq!(
             count_labels(&harness, "Nothing running in the background"),
@@ -2909,8 +2917,110 @@ mod tests {
         session.inspector_view.show_details();
         harness.run_ok();
 
-        assert_eq!(count_labels_containing(&harness, "Files live on"), 1);
+        assert_eq!(
+            count_labels_containing(&harness, "Scratchpad and task output live on"),
+            1
+        );
         assert_eq!(count_labels(&harness, "plan.md"), 0);
+    }
+
+    /// A chat of file edits under the session's cwd (`/tmp/inspector`): two
+    /// edits to `src/lib.rs`, a write of `notes.md`, a subagent's edit of
+    /// `src/main.rs`, and an edit outside the cwd. Each row draws one block.
+    fn seed_edits(state: &mut SessionViewState) {
+        use crate::file_update::{FileUpdate, FileUpdateType};
+        use crate::messages::{ExecutedTool, SubagentInfo, SubagentStatus};
+
+        let result = |update: FileUpdate| ExecutedTool {
+            tool_name: "Edit".into(),
+            summary: update.file_path.clone(),
+            output: None,
+            parent_task_id: None,
+            file_update: Some(update),
+            tool_use_id: None,
+        };
+        let edit = |path: &str, old: &str, new: &str| {
+            result(FileUpdate::new(
+                path.into(),
+                FileUpdateType::Edit {
+                    old_string: old.into(),
+                    new_string: new.into(),
+                },
+            ))
+        };
+        let row = |tool: ExecutedTool| {
+            crate::Message::ToolResponse(crate::tools::ToolResponse::executed_tool(tool))
+        };
+        let write = result(FileUpdate::new(
+            "/tmp/inspector/notes.md".into(),
+            FileUpdateType::Write {
+                content: "one\ntwo\nthree\n".into(),
+            },
+        ));
+        let session = state.session_manager.get_active_mut().unwrap();
+        session.replace_chat(vec![
+            row(edit("/tmp/inspector/src/lib.rs", "a\n", "b\nc\n")),
+            row(write),
+            row(edit("/tmp/inspector/src/lib.rs", "b\nc\n", "b\n")),
+            crate::Message::Subagent(SubagentInfo {
+                task_id: "toolu_refactor".into(),
+                description: "Split main".into(),
+                subagent_type: "general-purpose".into(),
+                status: SubagentStatus::Completed,
+                output: String::new(),
+                max_output_size: 4000,
+                tool_results: vec![edit("/tmp/inspector/src/main.rs", "x\n", "y\n")],
+                background: false,
+            }),
+            row(edit("/etc/outside.conf", "on\n", "off\n")),
+        ]);
+    }
+
+    /// The Files card lists every edited file most recent first, its path
+    /// relative to the cwd, with summed +/- counts; a subagent's edit counts.
+    /// A click on one goes back to the chat with the cursor on its last edit.
+    #[test]
+    fn files_card_lists_edited_files_and_jumps_to_the_last_edit() {
+        use crate::inspector::SessionTab;
+        use egui_kittest::kittest::Queryable;
+
+        let mut harness = session_view_harness(egui::vec2(1100.0, 1600.0));
+        seed_edits(harness.state_mut());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .open(crate::inspector::InspectorSection::Files);
+        harness.run_ok();
+
+        let y = |label: &str| harness.get_by_label(label).rect().min.y;
+        let order = ["/etc/outside.conf", "src/main.rs", "src/lib.rs", "notes.md"];
+        for pair in order.windows(2) {
+            assert!(y(pair[0]) < y(pair[1]), "{} above {}", pair[0], pair[1]);
+        }
+        assert_eq!(count_labels_containing(&harness, "+7"), 1, "the heading");
+        // Fluent may isolate the count, so match the plural word alone: only
+        // lib.rs has more than one edit.
+        assert_eq!(count_labels_containing(&harness, "edits"), 1);
+        assert_eq!(count_labels(&harness, "written"), 1);
+        assert_eq!(count_labels(&harness, "+3"), 1);
+
+        harness.get_by_label("src/lib.rs").click();
+        harness.run_ok();
+
+        let session = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap();
+        assert_eq!(session.inspector_view.tab, SessionTab::Chat);
+        assert_eq!(
+            session.block_nav.cursor(),
+            Some(2),
+            "the cursor is on lib.rs's second edit, the third block"
+        );
     }
 
     /// The Files card: the scratchpad with a folder and two files, and the
@@ -2929,6 +3039,7 @@ mod tests {
         let now = 4_102_444_800;
         harness.state_mut().now_unix = Some(now);
         let log = seed_files(harness.state_mut(), &root, now);
+        seed_edits(harness.state_mut());
         let session = harness
             .state_mut()
             .session_manager
