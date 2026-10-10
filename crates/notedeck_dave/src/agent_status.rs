@@ -21,14 +21,19 @@ pub enum AgentStatus {
 }
 
 impl AgentStatus {
-    /// Get the color associated with this status
+    /// Get the color associated with this status. Statuses that share a
+    /// meaning with a Headway column use that column's color from
+    /// [`notedeck::tokens`], so one meaning reads as one color in both apps:
+    /// working is in-progress yellow, done (a finished turn awaiting the user)
+    /// is in-review green, and needs-input is urgent amber.
     pub fn color(&self) -> egui::Color32 {
+        use notedeck::tokens::{STATUS_IN_PROGRESS, STATUS_IN_REVIEW, STATUS_URGENT};
         match self {
             AgentStatus::Idle => egui::Color32::from_rgb(128, 128, 128), // Gray
-            AgentStatus::Working => egui::Color32::from_rgb(50, 205, 50), // Green
-            AgentStatus::NeedsInput => egui::Color32::from_rgb(255, 200, 0), // Yellow/amber
-            AgentStatus::Error => egui::Color32::from_rgb(220, 60, 60),  // Red
-            AgentStatus::Done => egui::Color32::from_rgb(70, 130, 220),  // Blue
+            AgentStatus::Working => STATUS_IN_PROGRESS,
+            AgentStatus::NeedsInput => STATUS_URGENT,
+            AgentStatus::Error => egui::Color32::from_rgb(220, 60, 60), // Red
+            AgentStatus::Done => STATUS_IN_REVIEW,
             AgentStatus::Pending => egui::Color32::from_rgb(100, 160, 180), // Muted cyan
             AgentStatus::Waiting => egui::Color32::from_rgb(150, 120, 210), // Violet
         }
@@ -156,24 +161,45 @@ mod tests {
         }
     }
 
+    /// Every status paints its own color. Working took Headway's in-progress
+    /// yellow, so needs-input must not sit on a look-alike yellow beside it.
+    #[test]
+    fn every_status_has_a_distinct_color() {
+        for (i, a) in ALL.iter().enumerate() {
+            for b in &ALL[i + 1..] {
+                assert_ne!(a.color(), b.color(), "{a:?} and {b:?} share a color");
+            }
+        }
+    }
+
+    /// Statuses that mean the same thing as a Headway column paint that
+    /// column's color.
+    #[test]
+    fn shared_meanings_use_headway_status_colors() {
+        use notedeck::tokens::{STATUS_IN_PROGRESS, STATUS_IN_REVIEW, STATUS_URGENT};
+        assert_eq!(AgentStatus::Working.color(), STATUS_IN_PROGRESS);
+        assert_eq!(AgentStatus::Done.color(), STATUS_IN_REVIEW);
+        assert_eq!(AgentStatus::NeedsInput.color(), STATUS_URGENT);
+    }
+
     /// A fresh session's color is returned byte-identical (no fade, no round-trip
     /// loss), both below the fresh window and exactly at its edge.
     #[test]
     fn fresh_color_is_unchanged() {
-        let green = AgentStatus::Working.color();
-        assert_eq!(stale_color(green, 0), green);
-        assert_eq!(stale_color(green, FRESH_SECS), green);
+        let yellow = AgentStatus::Working.color();
+        assert_eq!(stale_color(yellow, 0), yellow);
+        assert_eq!(stale_color(yellow, FRESH_SECS), yellow);
     }
 
     /// A fully stale color keeps its hue but drops to [`STALE_SATURATION`] of its
     /// original saturation.
     #[test]
     fn fully_stale_desaturates_but_keeps_hue() {
-        let green = AgentStatus::Working.color();
-        let faded = stale_color(green, STALE_SECS);
-        assert_ne!(faded, green);
+        let yellow = AgentStatus::Working.color();
+        let faded = stale_color(yellow, STALE_SECS);
+        assert_ne!(faded, yellow);
 
-        let before = egui::ecolor::Hsva::from(green);
+        let before = egui::ecolor::Hsva::from(yellow);
         let after = egui::ecolor::Hsva::from(faded);
         // Hue preserved (allow small 8-bit round-trip error).
         assert!((after.h - before.h).abs() < 0.02, "hue drifted");
@@ -190,11 +216,11 @@ mod tests {
     /// stale.
     #[test]
     fn mid_range_is_between() {
-        let green = AgentStatus::Working.color();
+        let yellow = AgentStatus::Working.color();
         let mid_age = (FRESH_SECS + STALE_SECS) / 2;
-        let mid = egui::ecolor::Hsva::from(stale_color(green, mid_age)).s;
-        let fresh = egui::ecolor::Hsva::from(green).s;
-        let stale = egui::ecolor::Hsva::from(stale_color(green, STALE_SECS)).s;
+        let mid = egui::ecolor::Hsva::from(stale_color(yellow, mid_age)).s;
+        let fresh = egui::ecolor::Hsva::from(yellow).s;
+        let stale = egui::ecolor::Hsva::from(stale_color(yellow, STALE_SECS)).s;
         assert!(stale < mid && mid < fresh, "{stale} < {mid} < {fresh}");
     }
 }

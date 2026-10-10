@@ -24,12 +24,15 @@ impl FocusPriority {
         }
     }
 
+    /// The indicator color: the color of the [`AgentStatus`] this priority
+    /// stands for, so the focus queue dot matches the session's status bar.
     pub fn color(&self) -> egui::Color32 {
-        match self {
-            Self::NeedsInput => egui::Color32::from_rgb(255, 200, 0),
-            Self::Error => egui::Color32::from_rgb(220, 60, 60),
-            Self::Done => egui::Color32::from_rgb(70, 130, 220),
-        }
+        let status = match self {
+            Self::NeedsInput => AgentStatus::NeedsInput,
+            Self::Error => AgentStatus::Error,
+            Self::Done => AgentStatus::Done,
+        };
+        status.color()
     }
 
     pub fn as_str(&self) -> &'static str {
