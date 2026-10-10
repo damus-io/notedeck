@@ -267,18 +267,27 @@ pub fn seed_canvas(
 /// takes a caller-chosen id — used to re-seed a specific canvas), every call here
 /// mints a distinct id, so there is no single well-known canvas. The title lives
 /// in the `title` tag and is renamable via [`CanvasAction::Rename`]. Returns the
-/// canvas document's note id, or `None` if signing/ingest failed.
+/// new `d` and the canvas document's note id, or `None` if signing/ingest failed.
 pub fn create_canvas(
     ndb: &Ndb,
     author: &Pubkey,
     secret: &[u8; 32],
     title: &str,
     publisher: &mut dyn Publisher,
-) -> Option<(String, NoteId)> {
+) -> Option<CreatedCanvas> {
     let _ = author;
     let d = mint_d();
     let id = ingest(ndb, build_canvas(&d, title, &[], false), secret, publisher)?;
-    Some((d, id))
+    Some(CreatedCanvas { d, id })
+}
+
+/// A canvas [`create_canvas`] just minted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreatedCanvas {
+    /// The canvas's freshly-minted opaque `d` — its canvas id.
+    pub d: String,
+    /// The note id of the canvas document that was ingested.
+    pub id: NoteId,
 }
 
 /// Delete a canvas by superseding it with a tombstone revision: an empty
@@ -456,7 +465,11 @@ pub fn apply(
             );
         }
         CanvasAction::SetGeometry { node, geo } => {
-            let (z, color, after) = transform_basis(view, node);
+            let TransformBasis {
+                z,
+                color,
+                placed_at: after,
+            } = transform_basis(view, node);
             ingest(
                 ndb,
                 build_transform(canvas_id, &addr, &node, &geo, &z, color.as_deref())
@@ -475,7 +488,11 @@ pub fn apply(
             );
         }
         CanvasAction::Recolor { node, color } => {
-            let (z, _old, after) = transform_basis(view, node);
+            let TransformBasis {
+                z,
+                placed_at: after,
+                ..
+            } = transform_basis(view, node);
             let geo = find_node(view, node).map(|n| n.geo).unwrap_or_default();
             ingest(
                 ndb,
@@ -486,7 +503,11 @@ pub fn apply(
             );
         }
         CanvasAction::Restack { node, to_index } => {
-            let (_z, color, after) = transform_basis(view, node);
+            let TransformBasis {
+                color,
+                placed_at: after,
+                ..
+            } = transform_basis(view, node);
             let geo = find_node(view, node).map(|n| n.geo).unwrap_or_default();
             let z = rank_for_restack(&view.nodes, node, to_index);
             ingest(
@@ -498,7 +519,11 @@ pub fn apply(
             );
         }
         CanvasAction::DeleteNode { node } => {
-            let (z, _color, after) = transform_basis(view, node);
+            let TransformBasis {
+                z,
+                placed_at: after,
+                ..
+            } = transform_basis(view, node);
             ingest(
                 ndb,
                 build_node_tombstone(canvas_id, &addr, &node, &z).created_at(next_after(after)),
@@ -567,11 +592,30 @@ pub fn apply(
 /// The basis for a re-published transform of `node`: its current z-rank (a
 /// non-empty fallback so the node stays explicitly stacked), current color, and
 /// the timestamp to supersede. Defaults are used if the node isn't in the view.
-fn transform_basis(view: &CanvasView, node: NoteId) -> (String, Option<String>, u64) {
+fn transform_basis(view: &CanvasView, node: NoteId) -> TransformBasis {
     match find_node(view, node) {
-        Some(n) => (non_empty_rank(&n.z), n.color.clone(), n.placed_at),
-        None => (non_empty_rank(""), None, 0),
+        Some(n) => TransformBasis {
+            z: non_empty_rank(&n.z),
+            color: n.color.clone(),
+            placed_at: n.placed_at,
+        },
+        None => TransformBasis {
+            z: non_empty_rank(""),
+            color: None,
+            placed_at: 0,
+        },
     }
+}
+
+/// What a re-published transform carries over from the one it supersedes; see
+/// [`transform_basis`].
+struct TransformBasis {
+    /// The node's current z-rank, never empty.
+    z: String,
+    /// The node's current color, if it has one.
+    color: Option<String>,
+    /// The timestamp the new transform must be stamped past.
+    placed_at: u64,
 }
 
 /// Republish the canvas document with new title/members/mode, preserving the
@@ -1052,9 +1096,9 @@ mod tests {
     fn create_mints_distinct_ids_and_delete_removes_canvas() {
         let mut t = TestNdb::new();
         // No well-known default id: each create mints its own opaque d.
-        let (a, _) =
+        let CreatedCanvas { d: a, .. } =
             create_canvas(&t.ndb, &t.kp.pubkey, &t.secret(), "Alpha", &mut NoPublish).unwrap();
-        let (b, _) =
+        let CreatedCanvas { d: b, .. } =
             create_canvas(&t.ndb, &t.kp.pubkey, &t.secret(), "Beta", &mut NoPublish).unwrap();
         assert_ne!(a, b, "each canvas gets a distinct minted d");
 
@@ -1332,8 +1376,9 @@ mod tests {
         register_workspace(&ndb, &kp.secret_key.secret_bytes());
         let secret = kp.secret_key.secret_bytes();
 
-        let (canvas_d, _) = create_canvas(&ndb, &kp.pubkey, &secret, "Board", &mut NoPublish)
-            .expect("create canvas");
+        let CreatedCanvas { d: canvas_d, .. } =
+            create_canvas(&ndb, &kp.pubkey, &secret, "Board", &mut NoPublish)
+                .expect("create canvas");
         let note = create_longform(
             &ndb,
             &kp.pubkey,
@@ -1425,7 +1470,7 @@ mod tests {
         let (_dir_a, ndb_a) = make();
         register_workspace(&ndb_a, &secret);
         let mut sink = Collect::default();
-        let (canvas_d, _) =
+        let CreatedCanvas { d: canvas_d, .. } =
             create_canvas(&ndb_a, &kp.pubkey, &secret, "Shared", &mut sink).expect("canvas");
         let note = create_longform(
             &ndb_a,

@@ -178,17 +178,24 @@ pub fn canvas_ref(author: &Pubkey, canvas_id: &str) -> String {
     )
 }
 
-/// Decode a canvas's `(author, canvas_id)` from a `nostr:naddr…` reference, a bare
+/// Who wrote an addressable note and its `d`: the two halves of a
+/// `<kind>:<author-hex>:<d>` coordinate once its kind has been checked. What
+/// [`parse_canvas_naddr`] and [`parse_longform_naddr`] decode a reference into.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteAddress {
+    /// The note's author.
+    pub author: Pubkey,
+    /// The note's `d` identifier (a canvas id for a canvas, a longform `d`).
+    pub d: String,
+}
+
+/// Decode a canvas's author and canvas id from a `nostr:naddr…` reference, a bare
 /// `naddr…`, the raw `31606:<author-hex>:<canvas-id>` coordinate, or a NIP-21 uri —
 /// returning the author and canvas id when it names a kind-31606 canvas. `None` for
 /// any other kind or an unparseable coordinate. The inverse of [`canvas_naddr`],
 /// mirroring [`parse_longform_naddr`].
-pub fn parse_canvas_naddr(s: &str) -> Option<(Pubkey, String)> {
-    let coord = nostr::nips::nip01::Coordinate::parse(s).ok()?;
-    if coord.kind != nostr::Kind::from(KIND_CANVAS as u16) {
-        return None;
-    }
-    Some((Pubkey::new(coord.public_key.to_bytes()), coord.identifier))
+pub fn parse_canvas_naddr(s: &str) -> Option<NoteAddress> {
+    parse_naddr_of_kind(s, KIND_CANVAS)
 }
 
 /// The addressable coordinate of a longform note: `30023:<author-hex>:<d>` — the
@@ -230,12 +237,21 @@ pub fn longform_ref(author: &Pubkey, d: &str) -> String {
 /// returning the author and `d` when it names a kind-30023 note. `None` for any
 /// other kind or an unparseable coordinate. The inverse of [`longform_naddr`],
 /// used by the CLI to accept a note-embed's own reference back as a selector.
-pub fn parse_longform_naddr(s: &str) -> Option<(Pubkey, String)> {
+pub fn parse_longform_naddr(s: &str) -> Option<NoteAddress> {
+    parse_naddr_of_kind(s, KIND_LONGFORM)
+}
+
+/// Decode any of the reference shapes [`parse_canvas_naddr`] accepts into its
+/// author and `d`, when the coordinate names a note of `kind`.
+fn parse_naddr_of_kind(s: &str, kind: u32) -> Option<NoteAddress> {
     let coord = nostr::nips::nip01::Coordinate::parse(s).ok()?;
-    if coord.kind != nostr::Kind::from(KIND_LONGFORM as u16) {
+    if coord.kind != nostr::Kind::from(kind as u16) {
         return None;
     }
-    Some((Pubkey::new(coord.public_key.to_bytes()), coord.identifier))
+    Some(NoteAddress {
+        author: Pubkey::new(coord.public_key.to_bytes()),
+        d: coord.identifier,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -766,13 +782,13 @@ fn parse_node(note: &Note) -> Option<NodeEvent> {
             _ => {}
         }
     }
-    let (canvas_author, canvas_id) = canvas?;
+    let canvas = canvas?;
 
     Some(NodeEvent {
         id: *note.id(),
         author: *note.pubkey(),
-        canvas_author,
-        canvas_id,
+        canvas_author: *canvas.author.bytes(),
+        canvas_id: canvas.d,
         kind: kind?,
         geo: read_geometry(note),
         content: read_content(note, note.content().to_owned()),
@@ -863,14 +879,17 @@ fn parse_edge(note: &Note) -> Option<EdgeEvent> {
     })
 }
 
-/// Parse a `31606:<author-hex>:<canvas-id>` address into `(author, canvas_id)`.
-fn parse_canvas_address(addr: &str) -> Option<([u8; 32], String)> {
+/// Parse a `31606:<author-hex>:<canvas-id>` address into its author and canvas id.
+fn parse_canvas_address(addr: &str) -> Option<NoteAddress> {
     let mut parts = addr.splitn(3, ':');
     if parts.next()? != KIND_CANVAS.to_string() {
         return None;
     }
     let author = Pubkey::from_hex(parts.next()?).ok()?;
-    Some((*author.bytes(), parts.next()?.to_owned()))
+    Some(NoteAddress {
+        author,
+        d: parts.next()?.to_owned(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1740,11 +1759,23 @@ mod tests {
 
         // The naddr the note-embed carries decodes back to the same address.
         let naddr = longform_naddr(&author, d).expect("naddr encodes");
-        assert_eq!(parse_longform_naddr(&naddr), Some((author, d.to_string())));
+        assert_eq!(
+            parse_longform_naddr(&naddr),
+            Some(NoteAddress {
+                author,
+                d: d.to_string()
+            })
+        );
 
         // So does the bare `30023:<author>:<d>` coordinate form.
         let coord = longform_address(&author, d);
-        assert_eq!(parse_longform_naddr(&coord), Some((author, d.to_string())));
+        assert_eq!(
+            parse_longform_naddr(&coord),
+            Some(NoteAddress {
+                author,
+                d: d.to_string()
+            })
+        );
 
         // A non-longform coordinate (kind 1) is rejected — not a vault note.
         assert_eq!(
@@ -1773,11 +1804,23 @@ mod tests {
 
         // The naddr a canvas embed carries decodes back to the same coordinate.
         let naddr = canvas_naddr(&author, d).expect("naddr encodes");
-        assert_eq!(parse_canvas_naddr(&naddr), Some((author, d.to_string())));
+        assert_eq!(
+            parse_canvas_naddr(&naddr),
+            Some(NoteAddress {
+                author,
+                d: d.to_string()
+            })
+        );
 
         // So does the bare `31606:<author>:<d>` coordinate form.
         let coord = canvas_address(&author, d);
-        assert_eq!(parse_canvas_naddr(&coord), Some((author, d.to_string())));
+        assert_eq!(
+            parse_canvas_naddr(&coord),
+            Some(NoteAddress {
+                author,
+                d: d.to_string()
+            })
+        );
 
         // A longform coordinate (kind 30023) is rejected — not a canvas.
         assert_eq!(parse_canvas_naddr(&longform_address(&author, d)), None);

@@ -1491,8 +1491,8 @@ fn create_and_edit_longform_via_editor() {
         let deadline = Instant::now() + SETTLE_TIMEOUT;
         loop {
             harness.run_ok();
-            if let Some((d, ca)) = harness.state().notebook.editor_saved() {
-                break (d.to_string(), ca);
+            if let Some(saved) = harness.state().notebook.editor_saved() {
+                break (saved.d.clone(), saved.created_at);
             }
             assert!(Instant::now() < deadline, "the note was never saved");
             std::thread::sleep(Duration::from_millis(25));
@@ -1522,9 +1522,9 @@ fn create_and_edit_longform_via_editor() {
         let deadline = Instant::now() + SETTLE_TIMEOUT;
         loop {
             harness.run_ok();
-            if let Some((d2, ca2)) = harness.state().notebook.editor_saved()
-                && d2 == d
-                && ca2 > created_at
+            if let Some(saved) = harness.state().notebook.editor_saved()
+                && saved.d == d
+                && saved.created_at > created_at
             {
                 break;
             }
@@ -1552,7 +1552,7 @@ fn create_and_edit_longform_via_editor() {
                 .state()
                 .notebook
                 .editor_saved()
-                .map(|(d2, _)| d2 == d.as_str())
+                .map(|saved| saved.d == d)
                 == Some(true)
         {
             break;

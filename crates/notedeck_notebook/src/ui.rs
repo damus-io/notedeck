@@ -593,14 +593,14 @@ pub fn notebook_ui(
         // touch falls back to the committed value (see `Notebook::resize_size`), so
         // e.g. a width-only drag can't clobber a height floor.
         Some(Gesture::ResizeStopped(id)) => {
-            if let (Some((width, height)), Some(pos)) =
+            if let (Some(size), Some(pos)) =
                 (notebook.resize_size(&id), notebook.node_position(&id))
             {
                 intent = Some(UiIntent::Resize {
                     node: id,
                     pos,
-                    width,
-                    height,
+                    width: size.x,
+                    height: size.y,
                 });
             }
         }

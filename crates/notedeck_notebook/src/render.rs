@@ -100,8 +100,14 @@ fn longform_block_ui(
         );
         // Prefer the note's own summary; fall back to the head of the body. Both
         // are borrowed from the note, so no per-frame allocation.
-        let (preview, truncated) = match tag_value(req.note, "summary") {
-            Some(summary) => (summary, false),
+        let Preview {
+            text: preview,
+            truncated,
+        } = match tag_value(req.note, "summary") {
+            Some(summary) => Preview {
+                text: summary,
+                truncated: false,
+            },
             None => head(req.note.content(), CONTENT_PREVIEW_BYTES),
         };
         notedeck_ui::markdown::render_markdown_with_refs(ui, note_context, req.txn, preview);
@@ -303,7 +309,10 @@ fn node_embed_ui(
 ) -> egui::Response {
     ui.vertical(|ui| {
         ui.label(egui::RichText::new(node_title(text)).heading().strong());
-        let (preview, truncated) = head(text, CONTENT_PREVIEW_BYTES);
+        let Preview {
+            text: preview,
+            truncated,
+        } = head(text, CONTENT_PREVIEW_BYTES);
         ui.weak(preview);
         if truncated {
             ui.weak("…");
@@ -343,15 +352,31 @@ fn node_glyph(painter: &egui::Painter, center: egui::Pos2, size: f32, color: egu
 /// `s` cut to at most `max` bytes on a char boundary, paired with whether it was
 /// actually cut. Borrows `s` (no owned truncation), keeping the render path
 /// allocation-free.
-fn head(s: &str, max: usize) -> (&str, bool) {
+fn head(s: &str, max: usize) -> Preview<'_> {
     if s.len() <= max {
-        return (s, false);
+        return Preview {
+            text: s,
+            truncated: false,
+        };
     }
     let mut end = max;
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
-    (&s[..end], true)
+    Preview {
+        text: &s[..end],
+        truncated: true,
+    }
+}
+
+/// The text a card shows of a longer body, and whether any of the body was cut
+/// (so the card trails it with an ellipsis).
+#[derive(Debug, PartialEq, Eq)]
+struct Preview<'a> {
+    /// The shown text, borrowed from the body.
+    text: &'a str,
+    /// Whether `text` stops short of the whole body.
+    truncated: bool,
 }
 
 #[cfg(test)]
@@ -361,13 +386,22 @@ mod tests {
 
     #[test]
     fn head_returns_whole_short_string_untruncated() {
-        assert_eq!(head("short", 280), ("short", false));
+        assert_eq!(
+            head("short", 280),
+            Preview {
+                text: "short",
+                truncated: false
+            }
+        );
     }
 
     #[test]
     fn head_cuts_long_ascii_at_the_limit() {
         let s = "a".repeat(300);
-        let (preview, truncated) = head(&s, 280);
+        let Preview {
+            text: preview,
+            truncated,
+        } = head(&s, 280);
         assert_eq!(preview.len(), 280);
         assert!(truncated);
     }
@@ -376,7 +410,10 @@ mod tests {
     fn head_backs_off_to_a_char_boundary() {
         // "é" is two bytes; a cut landing mid-char must back off, never panic.
         let s = "é".repeat(200); // 400 bytes
-        let (preview, truncated) = head(&s, 281);
+        let Preview {
+            text: preview,
+            truncated,
+        } = head(&s, 281);
         assert!(truncated);
         assert!(s.is_char_boundary(preview.len()));
         assert!(preview.len() <= 281);

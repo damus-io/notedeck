@@ -10,10 +10,12 @@ mod ui;
 // `crate::event` / `crate::store` / `crate::wordid` unchanged.
 pub use notebook::{event, store, wordid};
 
+pub use crate::editor::SavedLongform;
+
 use crate::convert::view_to_canvas;
 use crate::editor::{
-    EditorAction, LongformEditor, SavedLongform, VaultAction, VaultRow, VaultState, editor_ui,
-    vault_rows, vault_ui,
+    EditorAction, LongformEditor, VaultAction, VaultRow, VaultState, editor_ui, vault_rows,
+    vault_ui,
 };
 use crate::event::{CanvasReducer, CanvasView, VaultDocKind};
 use crate::store::CanvasAction;
@@ -320,11 +322,20 @@ const MOVE_ANIM_SECS: f32 = 0.28;
 /// The egui animation-manager ids holding a node's animated x and y. egui keeps
 /// the previous value per id and eases toward a new target on its own, so feeding
 /// the committed position each frame is all the slide needs.
-fn move_anim_ids(id: &NodeId) -> (egui::Id, egui::Id) {
-    (
-        egui::Id::unique(("notebook-move-x", id)),
-        egui::Id::unique(("notebook-move-y", id)),
-    )
+fn move_anim_ids(id: &NodeId) -> AxisAnimIds {
+    AxisAnimIds {
+        x: egui::Id::unique(("notebook-move-x", id)),
+        y: egui::Id::unique(("notebook-move-y", id)),
+    }
+}
+
+/// The pair of egui animation-manager ids that ease one point, one per axis; see
+/// [`move_anim_ids`] and [`pan_anim_ids`].
+struct AxisAnimIds {
+    /// The id holding the animated x.
+    x: egui::Id,
+    /// The id holding the animated y.
+    y: egui::Id,
 }
 
 /// How long the reveal-node camera pan runs, in seconds. A touch longer than a
@@ -338,11 +349,11 @@ const REVEAL_TOP_MARGIN: f32 = 24.0;
 /// The egui animation-manager ids holding the panned viewport centre's x and y.
 /// A single reused pair (unlike per-node [`move_anim_ids`]) — only one reveal
 /// pan runs at a time.
-fn pan_anim_ids() -> (egui::Id, egui::Id) {
-    (
-        egui::Id::unique("notebook-pan-x"),
-        egui::Id::unique("notebook-pan-y"),
-    )
+fn pan_anim_ids() -> AxisAnimIds {
+    AxisAnimIds {
+        x: egui::Id::unique("notebook-pan-x"),
+        y: egui::Id::unique("notebook-pan-y"),
+    }
 }
 
 impl Notebook {
@@ -380,10 +391,10 @@ impl Notebook {
     /// The width/height a resize should commit: the live override for whichever
     /// axis the user dragged, else the committed value — so an unchanged axis is a
     /// no-op write that can't clobber, e.g., a height floor on a width-only drag.
-    fn resize_size(&self, id: &NodeId) -> Option<(f32, f32)> {
+    fn resize_size(&self, id: &NodeId) -> Option<egui::Vec2> {
         let node = self.canvas.get_nodes().get(id)?.node();
         let live = self.live.get(id).copied().unwrap_or_default();
-        Some((
+        Some(egui::vec2(
             live.width.unwrap_or(node.width as f32),
             live.height.unwrap_or(node.height as f32),
         ))
@@ -488,7 +499,7 @@ impl Notebook {
         };
         let target = Pos2::new(node_rect.center().x, target_y);
         let start = self.scene_rect.center();
-        let (x_id, y_id) = pan_anim_ids();
+        let AxisAnimIds { x: x_id, y: y_id } = pan_anim_ids();
         ctx.animate_value_with_time(x_id, start.x, 0.0);
         ctx.animate_value_with_time(y_id, start.y, 0.0);
         self.pan_target = Some(target);
@@ -507,7 +518,7 @@ impl Notebook {
         let Some(target) = self.pan_target else {
             return;
         };
-        let (x_id, y_id) = pan_anim_ids();
+        let AxisAnimIds { x: x_id, y: y_id } = pan_anim_ids();
         let x = ctx.animate_value_with_time(x_id, target.x, PAN_ANIM_SECS);
         let y = ctx.animate_value_with_time(y_id, target.y, PAN_ANIM_SECS);
         let center = Pos2::new(x, y);
@@ -560,15 +571,11 @@ impl Notebook {
         self.editor.is_some()
     }
 
-    /// The `(d, created_at)` of the note the open editor has persisted, or `None`
-    /// if the editor is closed or its note is unsaved. Exposed for
+    /// The `d` and `created_at` of the note the open editor has persisted, or
+    /// `None` if the editor is closed or its note is unsaved. Exposed for
     /// tests/introspection.
-    pub fn editor_saved(&self) -> Option<(&str, u64)> {
-        self.editor
-            .as_ref()?
-            .saved
-            .as_ref()
-            .map(|s| (s.d.as_str(), s.created_at))
+    pub fn editor_saved(&self) -> Option<&SavedLongform> {
+        self.editor.as_ref()?.saved.as_ref()
     }
 
     /// Translate a UI intent (keyed by the rendered `jsoncanvas` id) into a nostr
@@ -698,7 +705,7 @@ impl Notebook {
             .collect();
 
         for (id, target) in committed {
-            let (x_id, y_id) = move_anim_ids(&id);
+            let AxisAnimIds { x: x_id, y: y_id } = move_anim_ids(&id);
             if let Some(dragged) = self.live.get(&id).and_then(|l| l.pos) {
                 ctx.animate_value_with_time(x_id, dragged.x, 0.0);
                 ctx.animate_value_with_time(y_id, dragged.y, 0.0);
@@ -885,7 +892,7 @@ impl Notebook {
     /// signing key (a watch-only account can't create canvases).
     fn create_canvas(&mut self, ctx: &mut AppContext, author: &Pubkey, signer: &Option<[u8; 32]>) {
         let Some(secret) = signer else { return };
-        let Some((d, _)) = store::create_canvas(
+        let Some(store::CreatedCanvas { d, .. }) = store::create_canvas(
             ctx.ndb,
             author,
             secret,
@@ -1237,7 +1244,7 @@ impl notedeck::App for Notebook {
             && let Some(secret) = &signer
             && !self.seeded
         {
-            if let Some((d, _)) =
+            if let Some(store::CreatedCanvas { d, .. }) =
                 store::create_canvas(ctx.ndb, &author, secret, "Notebook", &mut store::NoPublish)
             {
                 self.active_canvas = Some(d);

@@ -42,7 +42,8 @@ pub(crate) enum EditorView {
 /// replaceable-event `d` and the `created_at` of the last version we wrote. The
 /// `created_at` is the supersede baseline handed to
 /// [`crate::store::edit_longform`] on the next save.
-pub(crate) struct SavedLongform {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedLongform {
     /// Stable `d`, minted on the first save and reused by every later edit.
     pub d: String,
     /// `created_at` of the last version we persisted.

@@ -476,7 +476,7 @@ fn resolve_target(
 ) -> Result<NotebookTarget> {
     // 1. An explicit `nostr:naddr` / bare coordinate — each kind-discriminated, so
     //    it names exactly one document type.
-    if let Some((author, d)) = event::parse_canvas_naddr(sel) {
+    if let Some(event::NoteAddress { author, d }) = event::parse_canvas_naddr(sel) {
         return canvases
             .iter()
             .find(|c| c.id == d && c.author == *author.bytes())
@@ -486,7 +486,7 @@ fn resolve_target(
             })
             .ok_or_else(|| format!("no canvas matching '{sel}'").into());
     }
-    if let Some((author, d)) = event::parse_longform_naddr(sel) {
+    if let Some(event::NoteAddress { author, d }) = event::parse_longform_naddr(sel) {
         return notes
             .iter()
             .find(|n| n.d == d && n.author == *author.bytes())
@@ -578,7 +578,7 @@ fn resolve_canvas_id(selector: Option<&str>, canvases: &[CanvasView]) -> Result<
     };
 
     // A `nostr:naddr` / bare coordinate naming a canvas.
-    if let Some((a, d)) = event::parse_canvas_naddr(sel) {
+    if let Some(event::NoteAddress { author: a, d }) = event::parse_canvas_naddr(sel) {
         return canvases
             .iter()
             .find(|c| c.id == d && c.author == *a.bytes())
@@ -818,7 +818,7 @@ fn find_longform<'a>(
     sel: &str,
 ) -> Result<&'a event::LongformNote> {
     // A nostr:naddr / bare coordinate → match by (author, d).
-    if let Some((author, d)) = event::parse_longform_naddr(sel) {
+    if let Some(event::NoteAddress { author, d }) = event::parse_longform_naddr(sel) {
         return notes
             .iter()
             .find(|n| n.author == *author.bytes() && n.d == d)
