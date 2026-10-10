@@ -10,7 +10,7 @@ mod partial;
 
 pub use element::{CodeBlock, InlineElement, InlineStyle, ListItem, MdElement, Span, TaskMarker};
 pub use inline::{parse_inline, InlineState};
-pub use parser::StreamParser;
+pub use parser::{ParsedMarkdown, StreamParser};
 pub use partial::{LinkState, Partial, PartialKind};
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 
 use crate::element::{ListItem, Span};
 use crate::partial::PartialKind;
-use crate::{InlineElement, InlineStyle, MdElement, StreamParser};
+use crate::{InlineElement, InlineStyle, MdElement, ParsedMarkdown, StreamParser};
 
 /// Helper to resolve a Span against a parser's buffer.
 fn r<'a>(span: &Span, buf: &'a str) -> &'a str {
@@ -1043,15 +1043,6 @@ fn test_consecutive_code_blocks_preserve_language() {
 
 // ---- Lists & GFM task-list checkboxes ----
 
-/// Parse a complete document (push all, then finalize) and return the elements
-/// alongside the buffer for span resolution.
-fn parse_doc(input: &str) -> (Vec<MdElement>, String) {
-    let mut parser = StreamParser::new();
-    parser.push(input);
-    parser.finalize();
-    parser.into_parts()
-}
-
 /// Concatenate the plain text of an item's inline content (Text/Code/Styled).
 fn item_text(item: &ListItem, buf: &str) -> String {
     let mut out = String::new();
@@ -1078,16 +1069,28 @@ fn unordered(el: &MdElement) -> &[ListItem] {
     }
 }
 
-fn ordered(el: &MdElement) -> (u32, &[ListItem]) {
+/// An ordered list's start number and items, borrowed out of its element.
+struct OrderedItems<'a> {
+    start: u32,
+    items: &'a [ListItem],
+}
+
+fn ordered(el: &MdElement) -> OrderedItems<'_> {
     match el {
-        MdElement::OrderedList { start, items } => (*start, items),
+        MdElement::OrderedList { start, items } => OrderedItems {
+            start: *start,
+            items,
+        },
         other => panic!("expected OrderedList, got {:?}", other),
     }
 }
 
 #[test]
 fn test_unordered_list_dash() {
-    let (els, buf) = parse_doc("- one\n- two\n- three\n");
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = ParsedMarkdown::parse("- one\n- two\n- three\n");
     assert_eq!(els.len(), 1);
     let items = unordered(&els[0]);
     assert_eq!(items.len(), 3);
@@ -1101,7 +1104,10 @@ fn test_unordered_list_dash() {
 fn test_unordered_list_star_and_plus() {
     for marker in ["*", "+"] {
         let input = format!("{marker} a\n{marker} b\n");
-        let (els, buf) = parse_doc(&input);
+        let ParsedMarkdown {
+            elements: els,
+            source: buf,
+        } = ParsedMarkdown::parse(&input);
         assert_eq!(els.len(), 1, "marker {marker:?}");
         let items = unordered(&els[0]);
         assert_eq!(items.len(), 2);
@@ -1112,9 +1118,12 @@ fn test_unordered_list_star_and_plus() {
 
 #[test]
 fn test_ordered_list() {
-    let (els, buf) = parse_doc("1. first\n2. second\n3. third\n");
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = ParsedMarkdown::parse("1. first\n2. second\n3. third\n");
     assert_eq!(els.len(), 1);
-    let (start, items) = ordered(&els[0]);
+    let OrderedItems { start, items } = ordered(&els[0]);
     assert_eq!(start, 1);
     assert_eq!(items.len(), 3);
     assert_eq!(item_text(&items[2], &buf), "third");
@@ -1122,8 +1131,11 @@ fn test_ordered_list() {
 
 #[test]
 fn test_ordered_list_custom_start_and_paren() {
-    let (els, buf) = parse_doc("5) five\n6) six\n");
-    let (start, items) = ordered(&els[0]);
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = ParsedMarkdown::parse("5) five\n6) six\n");
+    let OrderedItems { start, items } = ordered(&els[0]);
     assert_eq!(start, 5);
     assert_eq!(items.len(), 2);
     assert_eq!(item_text(&items[0], &buf), "five");
@@ -1131,7 +1143,10 @@ fn test_ordered_list_custom_start_and_paren() {
 
 #[test]
 fn test_task_list_checkboxes() {
-    let (els, buf) = parse_doc("- [ ] todo\n- [x] done\n- [X] also done\n- plain\n");
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = ParsedMarkdown::parse("- [ ] todo\n- [x] done\n- [X] also done\n- plain\n");
     let items = unordered(&els[0]);
     assert_eq!(items.len(), 4);
     assert_eq!(checkbox_state(&items[0]), Some(false));
@@ -1147,7 +1162,10 @@ fn test_task_list_checkboxes() {
 #[test]
 fn test_checkbox_body_offset_is_correct() {
     // The body span must point past the "[ ] " prefix, not at it.
-    let (els, buf) = parse_doc("- [x] ship it\n");
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = ParsedMarkdown::parse("- [x] ship it\n");
     let items = unordered(&els[0]);
     assert_eq!(item_text(&items[0], &buf), "ship it");
     // And it really is checked.
@@ -1157,7 +1175,10 @@ fn test_checkbox_body_offset_is_correct() {
 #[test]
 fn test_bracket_text_is_not_a_checkbox() {
     // "[y]" is not a task marker; the brackets stay as content.
-    let (els, buf) = parse_doc("- [y] nope\n");
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = ParsedMarkdown::parse("- [y] nope\n");
     let items = unordered(&els[0]);
     assert_eq!(checkbox_state(&items[0]), None);
     assert_eq!(item_text(&items[0], &buf), "[y] nope");
@@ -1165,7 +1186,10 @@ fn test_bracket_text_is_not_a_checkbox() {
 
 #[test]
 fn test_dash_without_space_is_not_a_list() {
-    let (els, buf) = parse_doc("-not a list\n");
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = ParsedMarkdown::parse("-not a list\n");
     assert_eq!(els.len(), 1);
     match &els[0] {
         MdElement::Paragraph(inlines) => {
@@ -1184,14 +1208,17 @@ fn test_dash_without_space_is_not_a_list() {
 
 #[test]
 fn test_thematic_break_still_wins_over_list() {
-    let (els, _buf) = parse_doc("---\n");
+    let ParsedMarkdown { elements: els, .. } = ParsedMarkdown::parse("---\n");
     assert_eq!(els.len(), 1);
     assert!(matches!(els[0], MdElement::ThematicBreak));
 }
 
 #[test]
 fn test_list_terminated_by_paragraph() {
-    let (els, buf) = parse_doc("- a\n- b\nafter the list\n");
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = ParsedMarkdown::parse("- a\n- b\nafter the list\n");
     assert_eq!(els.len(), 2);
     let items = unordered(&els[0]);
     assert_eq!(items.len(), 2);
@@ -1214,7 +1241,10 @@ fn test_list_terminated_by_paragraph() {
 
 #[test]
 fn test_list_terminated_by_blank_line() {
-    let (els, buf) = parse_doc("- a\n- b\n\nparagraph\n");
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = ParsedMarkdown::parse("- a\n- b\n\nparagraph\n");
     assert_eq!(els.len(), 2);
     assert_eq!(unordered(&els[0]).len(), 2);
     assert_eq!(item_text(&unordered(&els[0])[1], &buf), "b");
@@ -1223,7 +1253,10 @@ fn test_list_terminated_by_blank_line() {
 
 #[test]
 fn test_paragraph_then_list() {
-    let (els, buf) = parse_doc("intro text\n- one\n- two\n");
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = ParsedMarkdown::parse("intro text\n- one\n- two\n");
     assert_eq!(els.len(), 2);
     assert!(matches!(els[0], MdElement::Paragraph(_)));
     let items = unordered(&els[1]);
@@ -1233,9 +1266,12 @@ fn test_paragraph_then_list() {
 
 #[test]
 fn test_ordered_then_unordered_are_separate_lists() {
-    let (els, _buf) = parse_doc("1. a\n2. b\n- c\n- d\n");
+    let ParsedMarkdown { elements: els, .. } = ParsedMarkdown::parse("1. a\n2. b\n- c\n- d\n");
     assert_eq!(els.len(), 2);
-    let (start, oitems) = ordered(&els[0]);
+    let OrderedItems {
+        start,
+        items: oitems,
+    } = ordered(&els[0]);
     assert_eq!(start, 1);
     assert_eq!(oitems.len(), 2);
     assert_eq!(unordered(&els[1]).len(), 2);
@@ -1243,7 +1279,10 @@ fn test_ordered_then_unordered_are_separate_lists() {
 
 #[test]
 fn test_inline_formatting_inside_items() {
-    let (els, buf) = parse_doc("- some **bold** and `code`\n");
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = ParsedMarkdown::parse("- some **bold** and `code`\n");
     let items = unordered(&els[0]);
     let item = &items[0];
     assert!(
@@ -1272,7 +1311,10 @@ fn test_inline_formatting_inside_items() {
 #[test]
 fn test_list_finalize_without_trailing_newline() {
     // Last item has no terminating newline; finalize must still flush it.
-    let (els, buf) = parse_doc("- a\n- b");
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = ParsedMarkdown::parse("- a\n- b");
     assert_eq!(els.len(), 1);
     let items = unordered(&els[0]);
     assert_eq!(items.len(), 2);
@@ -1281,7 +1323,10 @@ fn test_list_finalize_without_trailing_newline() {
 
 #[test]
 fn test_single_item_no_newline() {
-    let (els, buf) = parse_doc("- [ ] only");
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = ParsedMarkdown::parse("- [ ] only");
     let items = unordered(&els[0]);
     assert_eq!(items.len(), 1);
     assert_eq!(checkbox_state(&items[0]), Some(false));
@@ -1297,7 +1342,10 @@ fn test_list_streaming_split_across_chunks() {
         parser.push(&ch.to_string());
     }
     parser.finalize();
-    let (els, buf) = parser.into_parts();
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = parser.into_parts();
     assert_eq!(els.len(), 1, "got {:?}", els);
     let items = unordered(&els[0]);
     assert_eq!(items.len(), 3);
@@ -1317,7 +1365,10 @@ fn test_list_streaming_chunk_boundary_mid_marker() {
     parser.push(" item one\n");
     parser.push("- item two\n");
     parser.finalize();
-    let (els, buf) = parser.into_parts();
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = parser.into_parts();
     let items = unordered(&els[0]);
     assert_eq!(items.len(), 2);
     assert_eq!(item_text(&items[0], &buf), "item one");
@@ -1326,7 +1377,10 @@ fn test_list_streaming_chunk_boundary_mid_marker() {
 
 #[test]
 fn test_list_then_heading() {
-    let (els, buf) = parse_doc("- a\n- b\n# Heading\n");
+    let ParsedMarkdown {
+        elements: els,
+        source: buf,
+    } = ParsedMarkdown::parse("- a\n- b\n# Heading\n");
     assert_eq!(els.len(), 2);
     assert_eq!(unordered(&els[0]).len(), 2);
     match &els[1] {
@@ -1409,7 +1463,7 @@ fn test_blockquote_terminates_into_paragraph() {
 /// list without consuming anything and lets `process_list` consume the line, so
 /// a line the two disagree about loops forever inside `push` — which is a hang,
 /// not a wrong answer, and a plain call could not report it.
-fn parse_doc_bounded(input: &str) -> (Vec<MdElement>, String) {
+fn parse_doc_bounded(input: &str) -> ParsedMarkdown {
     let input = input.to_string();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -1428,7 +1482,10 @@ fn test_bare_bullet_line_is_an_empty_item() {
     // "1." alone already is. Once the newline is there the marker is no longer
     // ambiguous, so both the block detector and the line parser must accept it.
     for marker in ["-", "*", "+"] {
-        let (els, buf) = parse_doc_bounded(&format!("{marker}\n{marker} a\n"));
+        let ParsedMarkdown {
+            elements: els,
+            source: buf,
+        } = parse_doc_bounded(&format!("{marker}\n{marker} a\n"));
         assert_eq!(els.len(), 1, "marker {marker:?}: {els:?}");
         let items = unordered(&els[0]);
         assert_eq!(items.len(), 2, "marker {marker:?}");
@@ -1441,11 +1498,12 @@ fn test_bare_bullet_line_is_an_empty_item() {
 fn test_bare_bullet_line_inside_prose_terminates() {
     // The shape that hung the chat renderer: a pasted diff, whose blank added
     // and removed lines are a lone "+" or "-" followed by more content.
-    let (els, _) = parse_doc_bounded("+\n+            Text(\"hi\")\n+\n");
+    let ParsedMarkdown { elements: els, .. } =
+        parse_doc_bounded("+\n+            Text(\"hi\")\n+\n");
     assert!(!els.is_empty());
 
     // And a bullet line mid-paragraph, where no list is open yet.
-    let (els, _) = parse_doc_bounded("before\n-\nafter\n");
+    let ParsedMarkdown { elements: els, .. } = parse_doc_bounded("before\n-\nafter\n");
     assert!(!els.is_empty());
 }
 
@@ -1472,7 +1530,7 @@ fn test_block_handoffs_stay_under_the_stall_guard() {
     // in process_new_content has to leave room for. Butt every such block
     // against the next with no blank line between them: in a debug build a
     // guard set too tight fires here rather than in front of a user.
-    let (els, _) = parse_doc_bounded(
+    let ParsedMarkdown { elements: els, .. } = parse_doc_bounded(
         "| a | b |\n|---|---|\n| 1 | 2 |\n- item\n> quoted\n1. first\n# heading\npara\n",
     );
     let kinds: Vec<&str> = els

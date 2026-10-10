@@ -6,8 +6,8 @@
 use egui::text::LayoutJob;
 use egui::{Color32, FontFamily, FontId, RichText, TextFormat, Ui};
 use md_stream::{
-    parse_inline, CodeBlock, InlineElement, InlineStyle, ListItem, MdElement, Partial, PartialKind,
-    Span, StreamParser,
+    parse_inline, CodeBlock, InlineElement, InlineStyle, ListItem, MdElement, ParsedMarkdown,
+    Partial, PartialKind, Span, StreamParser,
 };
 use nostrdb::Transaction;
 use notedeck::NoteContext;
@@ -58,7 +58,7 @@ impl MdTheme {
 /// notebook text node) rather than a streaming buffer.
 #[profiling::function]
 pub fn render_markdown(text: &str, ui: &mut Ui) {
-    let (elements, source) = {
+    let ParsedMarkdown { elements, source } = {
         profiling::scope!("StreamParser parse");
         let mut parser = StreamParser::new();
         parser.push(text);
@@ -89,7 +89,10 @@ fn collect_checkbox_toggles(text: &str, ui: &mut Ui) -> Vec<usize> {
     let mut parser = StreamParser::new();
     parser.push(text);
     parser.finalize();
-    let (elements, buffer) = parser.into_parts();
+    let ParsedMarkdown {
+        elements,
+        source: buffer,
+    } = parser.into_parts();
 
     let mut edits = CheckboxEdits::default();
     render_md_elements(&elements, None, &buffer, Some(&mut edits), None, ui);
@@ -143,7 +146,7 @@ pub fn render_markdown_with_refs(
     txn: &Transaction,
     text: &str,
 ) {
-    let (elements, source) = {
+    let ParsedMarkdown { elements, source } = {
         profiling::scope!("StreamParser parse");
         let mut parser = StreamParser::new();
         parser.push(text);
@@ -170,7 +173,10 @@ pub fn render_markdown_with_refs_editable(
     let mut parser = StreamParser::new();
     parser.push(source);
     parser.finalize();
-    let (elements, buffer) = parser.into_parts();
+    let ParsedMarkdown {
+        elements,
+        source: buffer,
+    } = parser.into_parts();
 
     let mut edits = CheckboxEdits::default();
     let mut refs = bundle_refs(Some(note), Some(txn));
@@ -1455,7 +1461,10 @@ mod tests {
         let mut parser = StreamParser::new();
         parser.push(source);
         parser.finalize();
-        let (elements, buffer) = parser.into_parts();
+        let ParsedMarkdown {
+            elements,
+            source: buffer,
+        } = parser.into_parts();
 
         let mut edits = CheckboxEdits::default();
         render_md_elements(&elements, None, &buffer, Some(&mut edits), None, ui);

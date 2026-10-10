@@ -90,23 +90,9 @@ impl From<&str> for UserMessage {
     }
 }
 
-/// Pre-parsed markdown with source text for span resolution.
-#[derive(Debug, Clone)]
-pub struct ParsedMarkdown {
-    pub source: String,
-    pub elements: Vec<MdElement>,
-}
-
-impl ParsedMarkdown {
-    /// Parse a markdown string into elements.
-    pub fn parse(text: &str) -> Self {
-        let mut parser = StreamParser::new();
-        parser.push(text);
-        parser.finalize();
-        let (elements, source) = parser.into_parts();
-        Self { source, elements }
-    }
-}
+/// Pre-parsed markdown with source text for span resolution; lives in
+/// `md-stream`, which returns it from [`md_stream::StreamParser::into_parts`].
+pub use md_stream::ParsedMarkdown;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::oneshot;

@@ -28,7 +28,6 @@ const NOT_YET: &[&str] = &[
     "agentium_cli",
     "headway",
     "headway_cli",
-    "md-stream",
     "notebook",
     "notedeck_dashboard",
     "notedeck_dave",

@@ -102,8 +102,10 @@ pub fn parse_inline(text: &str, base_offset: usize) -> Vec<InlineElement> {
                 let content_start = marker_start + count;
 
                 // Look for closing marker
-                if let Some((content_end_local, close_len)) =
-                    find_closing_emphasis(&text[content_start..], marker, effective_count)
+                if let Some(ClosingEmphasis {
+                    end: content_end_local,
+                    close_len,
+                }) = find_closing_emphasis(&text[content_start..], marker, effective_count)
                 {
                     // Flush pending plain text
                     if marker_start > plain_start {
@@ -182,15 +184,13 @@ pub fn parse_inline(text: &str, base_offset: usize) -> Vec<InlineElement> {
                     )));
                 }
 
-                if let Some((text_span, url_span, total_len)) =
-                    parse_link(&text[i..], base_offset + i)
-                {
+                if let Some(link) = parse_link(&text[i..], base_offset + i) {
                     result.push(InlineElement::Link {
-                        text: text_span,
-                        url: url_span,
+                        text: link.text,
+                        url: link.url,
                     });
 
-                    let skip_to = i + total_len;
+                    let skip_to = i + link.len;
                     while chars.peek().map(|(idx, _)| *idx < skip_to).unwrap_or(false) {
                         chars.next();
                     }
@@ -213,15 +213,13 @@ pub fn parse_inline(text: &str, base_offset: usize) -> Vec<InlineElement> {
 
                 chars.next(); // consume [
 
-                if let Some((alt_span, url_span, link_len)) =
-                    parse_link(&text[i + 1..], base_offset + i + 1)
-                {
+                if let Some(link) = parse_link(&text[i + 1..], base_offset + i + 1) {
                     result.push(InlineElement::Image {
-                        alt: alt_span,
-                        url: url_span,
+                        alt: link.text,
+                        url: link.url,
                     });
 
-                    let skip_to = i + 1 + link_len;
+                    let skip_to = i + 1 + link.len;
                     while chars.peek().map(|(idx, _)| *idx < skip_to).unwrap_or(false) {
                         chars.next();
                     }
@@ -297,9 +295,16 @@ fn find_closing_backticks(text: &str, count: usize) -> Option<usize> {
     None
 }
 
+/// A closing emphasis run found by [`find_closing_emphasis`].
+struct ClosingEmphasis {
+    /// Byte offset of the closing run within the searched text.
+    end: usize,
+    /// How many markers of the run actually close (1 italic, 2 bold, 3 both).
+    close_len: usize,
+}
+
 /// Find closing emphasis marker.
-/// Returns (end_position, actual_close_len) if found.
-fn find_closing_emphasis(text: &str, marker: char, open_count: usize) -> Option<(usize, usize)> {
+fn find_closing_emphasis(text: &str, marker: char, open_count: usize) -> Option<ClosingEmphasis> {
     let mut chars = text.char_indices().peekable();
 
     while let Some((pos, c)) = chars.next() {
@@ -322,16 +327,28 @@ fn find_closing_emphasis(text: &str, marker: char, open_count: usize) -> Option<
 
             if can_close && count >= open_count.min(3) {
                 let close_len = count.min(open_count).min(3);
-                return Some((pos, close_len));
+                return Some(ClosingEmphasis {
+                    end: pos,
+                    close_len,
+                });
             }
         }
     }
     None
 }
 
+/// A `[text](url)` link found by [`parse_link`]; an image's alt text is `text`.
+struct ParsedLink {
+    /// Content between `[` and `]`.
+    text: Span,
+    /// Content between `(` and `)`.
+    url: Span,
+    /// Total bytes consumed, from `[` through `)`.
+    len: usize,
+}
+
 /// Parse a link starting with [
-/// Returns (text_span, url_span, total_bytes_consumed)
-fn parse_link(text: &str, base_offset: usize) -> Option<(Span, Span, usize)> {
+fn parse_link(text: &str, base_offset: usize) -> Option<ParsedLink> {
     if !text.starts_with('[') {
         return None;
     }
@@ -392,7 +409,11 @@ fn parse_link(text: &str, base_offset: usize) -> Option<(Span, Span, usize)> {
     // Total consumed: [ + text + ] + ( + url + )
     let total = bracket_end + 1 + paren_end + 1;
 
-    Some((text_span, url_span, total))
+    Some(ParsedLink {
+        text: text_span,
+        url: url_span,
+        len: total,
+    })
 }
 
 /// Collapse adjacent Text elements into one.

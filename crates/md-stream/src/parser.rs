@@ -4,6 +4,25 @@ use crate::element::{CodeBlock, ListItem, MdElement, Span, TaskMarker};
 use crate::inline::parse_inline;
 use crate::partial::{Partial, PartialKind};
 
+/// A finished parse: the completed elements and the buffer their spans index.
+#[derive(Debug, Clone)]
+pub struct ParsedMarkdown {
+    /// The parser's buffer; every [`Span`] in `elements` resolves against it.
+    pub source: String,
+    /// The completed block elements, in document order.
+    pub elements: Vec<MdElement>,
+}
+
+impl ParsedMarkdown {
+    /// Parse a complete markdown string in one push.
+    pub fn parse(text: &str) -> Self {
+        let mut parser = StreamParser::new();
+        parser.push(text);
+        parser.finalize();
+        parser.into_parts()
+    }
+}
+
 /// Incremental markdown parser for streaming input.
 ///
 /// Maintains a single contiguous buffer of incoming text and tracks
@@ -82,8 +101,11 @@ impl StreamParser {
     }
 
     /// Consume the parser and return the completed elements and buffer.
-    pub fn into_parts(self) -> (Vec<MdElement>, String) {
-        (self.parsed, self.buffer)
+    pub fn into_parts(self) -> ParsedMarkdown {
+        ParsedMarkdown {
+            source: self.buffer,
+            elements: self.parsed,
+        }
     }
 
     /// Consume the parser and return the completed elements.
@@ -705,7 +727,7 @@ impl StreamParser {
             let is_blank = line.trim().is_empty();
             let parsed = self.parse_list_item_line(line, line_abs);
 
-            if let Some((ordered, item)) = parsed {
+            if let Some(ListLine { ordered, item }) = parsed {
                 if self.list_accepts(ordered) {
                     if let Some(PartialKind::List { items, .. }) =
                         self.partial.as_mut().map(|p| &mut p.kind)
@@ -860,9 +882,9 @@ impl StreamParser {
     }
 
     /// Parse a single line as a list item, returning its `ordered`-ness and the
-    /// item. `line` has no trailing newline; `line_abs` is its buffer offset.
+    /// item as a [`ListLine`]. `line` has no trailing newline; `line_abs` is its buffer offset.
     /// Content stays span-based (zero-copy) via [`parse_inline`].
-    fn parse_list_item_line(&self, line: &str, line_abs: usize) -> Option<(bool, ListItem)> {
+    fn parse_list_item_line(&self, line: &str, line_abs: usize) -> Option<ListLine> {
         let indent = line.len() - line.trim_start().len();
         let marker = detect_list_marker(&line[indent..], LineEnd::Complete)?;
 
@@ -872,16 +894,16 @@ impl StreamParser {
         let content = after_marker.trim_start();
         let content_abs = line_abs + indent + marker.marker_len + space;
 
-        let (checkbox, body, body_abs) = strip_checkbox(content, content_abs);
-        let inlines = parse_inline(body, body_abs);
-        Some((
-            marker.ordered,
-            ListItem {
+        let body = strip_checkbox(content, content_abs);
+        let inlines = parse_inline(body.text, body.abs);
+        Some(ListLine {
+            ordered: marker.ordered,
+            item: ListItem {
                 content: inlines,
                 nested: None,
-                checkbox,
+                checkbox: body.checkbox,
             },
-        ))
+        })
     }
 
     /// Process inline content.
@@ -1083,9 +1105,9 @@ impl StreamParser {
                         let line = self.buffer[self.process_pos..].trim_end_matches('\n');
                         self.parse_list_item_line(line, line_abs)
                     };
-                    if let Some((o, item)) = trailing {
-                        if o == ordered {
-                            items.push(item);
+                    if let Some(line) = trailing {
+                        if line.ordered == ordered {
+                            items.push(line.item);
                         }
                     }
                     if !items.is_empty() {
@@ -1267,20 +1289,44 @@ fn could_be_list_marker(s: &str) -> bool {
     false
 }
 
+/// One list line parsed by [`StreamParser::parse_list_item_line`].
+struct ListLine {
+    /// Whether the line's marker is ordered (`1.`) rather than a bullet.
+    ordered: bool,
+    /// The parsed item.
+    item: ListItem,
+}
+
+/// A list item's body after [`strip_checkbox`].
+struct ItemBody<'a> {
+    /// The task-list checkbox that led the body, if any.
+    checkbox: Option<TaskMarker>,
+    /// The body text after the checkbox and its spaces.
+    text: &'a str,
+    /// Buffer offset of `text`.
+    abs: usize,
+}
+
 /// Strip a leading GFM task-list checkbox (`[ ]`, `[x]`, `[X]`) from `content`,
 /// returning a [`TaskMarker`] (with its source span) plus the remaining body and
-/// its buffer offset. Returns `(None, content, abs)` unchanged when there's no
-/// checkbox. `abs` is the buffer offset of `content`, so the `[` sits at `abs`.
-fn strip_checkbox(content: &str, abs: usize) -> (Option<TaskMarker>, &str, usize) {
+/// its buffer offset. Returns `content` and `abs` unchanged, with no checkbox,
+/// when there's none. `abs` is the buffer offset of `content`, so the `[` sits
+/// at `abs`.
+fn strip_checkbox(content: &str, abs: usize) -> ItemBody<'_> {
+    let unchanged = ItemBody {
+        checkbox: None,
+        text: content,
+        abs,
+    };
     let checked = match content.as_bytes() {
         [b'[', b' ', b']', ..] => false,
         [b'[', b'x' | b'X', b']', ..] => true,
-        _ => return (None, content, abs),
+        _ => return unchanged,
     };
     let rest = &content[3..];
     // Require the checkbox to be its own token: end-of-line or a space.
     if !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
-        return (None, content, abs);
+        return unchanged;
     }
     let body = rest.trim_start();
     let skipped = content.len() - body.len();
@@ -1288,7 +1334,11 @@ fn strip_checkbox(content: &str, abs: usize) -> (Option<TaskMarker>, &str, usize
         checked,
         marker: Span::new(abs, abs + 3),
     };
-    (Some(marker), body, abs + skipped)
+    ItemBody {
+        checkbox: Some(marker),
+        text: body,
+        abs: abs + skipped,
+    }
 }
 
 /// Check if a line is a table separator row (e.g. `|---|---|`).
