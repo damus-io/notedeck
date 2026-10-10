@@ -192,11 +192,18 @@ pub fn local_dm_relay_list_relays(
         .collect()
 }
 
+/// One stored version of an account's DM relay-list note.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DmRelayListVersion {
+    pub created_at: u64,
+    pub relays: Vec<String>,
+}
+
 /// Returns locally stored DM relay-list note versions for one account, newest first.
 pub fn local_dm_relay_list_versions(
     device: &mut DeviceHarness,
     account: &FullKeypair,
-) -> Vec<(u64, Vec<String>)> {
+) -> Vec<DmRelayListVersion> {
     let app_ctx = &mut device.state_mut().notedeck.app_context();
     let filter = FilterBuilder::new()
         .kinds([10050])
@@ -210,14 +217,12 @@ pub fn local_dm_relay_list_versions(
 
     results
         .into_iter()
-        .map(|result| {
-            (
-                result.note.created_at(),
-                parse_dm_relay_list_relays(&result.note)
-                    .into_iter()
-                    .map(|relay| relay.to_string())
-                    .collect(),
-            )
+        .map(|result| DmRelayListVersion {
+            created_at: result.note.created_at(),
+            relays: parse_dm_relay_list_relays(&result.note)
+                .into_iter()
+                .map(|relay| relay.to_string())
+                .collect(),
         })
         .collect()
 }

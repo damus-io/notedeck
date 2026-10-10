@@ -180,9 +180,9 @@ impl App for MessagesApp {
             .for_account(ctx.accounts.selected_account_pubkey());
         let unread = cache
             .iter()
-            .filter(|(id, convo)| {
+            .filter(|convo| {
                 let last_read = states
-                    .and_then(|s| s.cache.get(id))
+                    .and_then(|s| s.cache.get(&convo.id))
                     .and_then(|s| s.last_read);
                 crate::ui::ConversationSummary::new(convo, last_read).unread
             })

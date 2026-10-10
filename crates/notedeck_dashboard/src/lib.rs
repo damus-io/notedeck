@@ -624,7 +624,15 @@ fn next_month_boundary_utc(now_ts: i64) -> i64 {
         .timestamp()
 }
 
-fn top_kinds_over(cache: &RollingCache, limit: usize) -> Vec<(u64, u64)> {
+/// One key in a ranked top-N list and how many events it accounts for over the
+/// cache's window: a kind, a client name or an author.
+pub(crate) struct Tally<K> {
+    pub key: K,
+    pub count: u64,
+}
+
+/// The `limit` most frequent kinds over the cache's window, ties broken by kind.
+fn top_kinds_over(cache: &RollingCache, limit: usize) -> Vec<Tally<u64>> {
     let mut agg: FxHashMap<u64, u64> = Default::default();
 
     for b in &cache.buckets {
@@ -633,37 +641,49 @@ fn top_kinds_over(cache: &RollingCache, limit: usize) -> Vec<(u64, u64)> {
         }
     }
 
-    let mut v: Vec<_> = agg.into_iter().collect();
-    v.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut v: Vec<_> = agg
+        .into_iter()
+        .map(|(key, count)| Tally { key, count })
+        .collect();
+    v.sort_unstable_by(|a, b| b.count.cmp(&a.count).then_with(|| a.key.cmp(&b.key)));
     v.truncate(limit);
     v
 }
 
+/// The `limit` clients that published the most new contact lists over the
+/// cache's window, ties broken by client name.
 pub(crate) fn top_new_contact_list_clients_over(
     cache: &RollingCache,
     limit: usize,
-) -> Vec<(String, u64)> {
+) -> Vec<Tally<String>> {
     let mut agg: FxHashMap<String, u64> = FxHashMap::default();
     for b in &cache.buckets {
         for (client, count) in &b.new_contact_list_clients {
             *agg.entry(client.clone()).or_default() += *count as u64;
         }
     }
-    let mut v: Vec<_> = agg.into_iter().collect();
-    v.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut v: Vec<_> = agg
+        .into_iter()
+        .map(|(key, count)| Tally { key, count })
+        .collect();
+    v.sort_unstable_by(|a, b| b.count.cmp(&a.count).then_with(|| a.key.cmp(&b.key)));
     v.truncate(limit);
     v
 }
 
-pub(crate) fn top_kind1_authors_over(cache: &RollingCache, limit: usize) -> Vec<(Pubkey, u64)> {
+/// The `limit` authors with the most kind 1 posts over the cache's window.
+pub(crate) fn top_kind1_authors_over(cache: &RollingCache, limit: usize) -> Vec<Tally<Pubkey>> {
     let mut agg: FxHashMap<Pubkey, u64> = Default::default();
     for b in &cache.buckets {
         for (pubkey, count) in &b.kind1_authors {
             *agg.entry(*pubkey).or_default() += *count as u64;
         }
     }
-    let mut v: Vec<_> = agg.into_iter().collect();
-    v.sort_unstable_by_key(|author| std::cmp::Reverse(author.1));
+    let mut v: Vec<_> = agg
+        .into_iter()
+        .map(|(key, count)| Tally { key, count })
+        .collect();
+    v.sort_unstable_by_key(|author| std::cmp::Reverse(author.count));
     v.truncate(limit);
     v
 }

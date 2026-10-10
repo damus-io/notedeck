@@ -147,8 +147,27 @@ fn cache_dir() -> PathBuf {
     .join("notedeck-release")
 }
 
-/// Look up a cached artifact by URL. Returns (data, sha256) if cached.
-fn cache_lookup(url: &str) -> Option<(Vec<u8>, String)> {
+/// An artifact's bytes and their sha256, as hex.
+struct ArtifactData {
+    data: Vec<u8>,
+    sha256: String,
+}
+
+/// A GitHub release's version, without the leading `v`, and its artifacts.
+struct Release {
+    version: String,
+    artifacts: Vec<ArtifactInfo>,
+}
+
+/// A signed NIP-82 asset event, as JSON, and its id.
+struct AssetEvent {
+    json: String,
+    id: [u8; 32],
+}
+
+/// Look up a cached artifact by URL, if it is cached and its bytes still hash
+/// to the stored sha256.
+fn cache_lookup(url: &str) -> Option<ArtifactData> {
     let dir = cache_dir();
     let url_hash = sha256_hex(url.as_bytes());
     let link_path = dir.join(format!("url_{url_hash}"));
@@ -159,7 +178,10 @@ fn cache_lookup(url: &str) -> Option<(Vec<u8>, String)> {
     if sha256_hex(&data) != content_hash {
         return None;
     }
-    Some((data, content_hash))
+    Some(ArtifactData {
+        data,
+        sha256: content_hash,
+    })
 }
 
 /// Store an artifact in the content-addressed cache.
@@ -190,8 +212,7 @@ fn http_get(url: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Fetch artifacts from a GitHub release. If `version` is None, uses the latest release.
-/// Returns (version, artifacts).
-fn fetch_github_artifacts(version: Option<&str>) -> Result<(String, Vec<ArtifactInfo>), String> {
+fn fetch_github_artifacts(version: Option<&str>) -> Result<Release, String> {
     let (api_url, is_list) = match version {
         Some(v) => (
             format!("https://api.github.com/repos/{GITHUB_REPO}/releases/tags/v{v}"),
@@ -250,15 +271,15 @@ fn fetch_github_artifacts(version: Option<&str>) -> Result<(String, Vec<Artifact
             .as_str()
             .ok_or_else(|| format!("no download URL for {name}"))?;
 
-        let (data, sha256) = if let Some((data, hash)) = cache_lookup(browser_url) {
+        let ArtifactData { data, sha256 } = if let Some(cached) = cache_lookup(browser_url) {
             eprintln!("  {name} (cached)");
-            (data, hash)
+            cached
         } else {
             eprintln!("  downloading {name}...");
             let data = http_get(browser_url)?;
-            let hash = sha256_hex(&data);
-            cache_store(browser_url, &data, &hash);
-            (data, hash)
+            let sha256 = sha256_hex(&data);
+            cache_store(browser_url, &data, &sha256);
+            ArtifactData { data, sha256 }
         };
         let size = data.len();
         let url = github_download_url(&version, &name);
@@ -277,7 +298,7 @@ fn fetch_github_artifacts(version: Option<&str>) -> Result<(String, Vec<Artifact
             "no matching release artifacts found for v{version}"
         ));
     }
-    Ok((version, artifacts))
+    Ok(Release { version, artifacts })
 }
 
 fn load_local_artifacts(version: &str, paths: &[PathBuf]) -> Result<Vec<ArtifactInfo>, String> {
@@ -302,13 +323,13 @@ fn load_local_artifacts(version: &str, paths: &[PathBuf]) -> Result<Vec<Artifact
     Ok(artifacts)
 }
 
-/// Build a NIP-82 kind 3063 (Software Asset) event.
-/// Returns the event JSON and the event id (needed for the release event's "e" tags).
+/// Build a NIP-82 kind 3063 (Software Asset) event. Its id is needed for the
+/// release event's "e" tags.
 fn build_asset_event(
     seckey: &[u8; 32],
     version: &str,
     artifact: &ArtifactInfo,
-) -> Result<(String, [u8; 32]), String> {
+) -> Result<AssetEvent, String> {
     let mime = mime_for_artifact(&artifact.name);
     let size = artifact.size.to_string();
     let platform = platform_tag_from_name(&artifact.name).unwrap_or_else(|| "unknown".to_string());
@@ -346,7 +367,7 @@ fn build_asset_event(
 
     let id = *note.id();
     let json = note.json().map_err(|e| format!("json: {e}"))?;
-    Ok((json, id))
+    Ok(AssetEvent { json, id })
 }
 
 /// Build a NIP-82 kind 30063 (Software Release) event referencing the given asset event ids.
@@ -520,18 +541,17 @@ fn main() {
         }
     }
 
-    let (version, artifacts) = if local_files.is_empty() {
+    let Release { version, artifacts } = if local_files.is_empty() {
         let v = version.as_deref();
         if let Some(v) = v {
             eprintln!("fetching artifacts from GitHub Release v{v}...");
         } else {
             eprintln!("fetching latest GitHub Release...");
         }
-        let (version, artifacts) = fetch_github_artifacts(v).unwrap_or_else(|e| {
+        fetch_github_artifacts(v).unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
-        });
-        (version, artifacts)
+        })
     } else {
         let version = version.unwrap(); // guaranteed by check above
         for f in &local_files {
@@ -544,7 +564,7 @@ fn main() {
             eprintln!("error: {e}");
             std::process::exit(1);
         });
-        (version, artifacts)
+        Release { version, artifacts }
     };
 
     // Step 1: Build and publish asset events (kind 3063), collecting their ids
@@ -557,10 +577,11 @@ fn main() {
             platform_tag_from_name(&artifact.name).unwrap_or_else(|| "unknown".to_string());
         eprintln!("  {} (platform: {})", artifact.name, platform);
 
-        let (json, id) = build_asset_event(&seckey, &version, artifact).unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
+        let AssetEvent { json, id } = build_asset_event(&seckey, &version, artifact)
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
 
         if dry_run {
             println!("{json}");

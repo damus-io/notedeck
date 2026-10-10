@@ -186,10 +186,18 @@ pub fn horizontal_bar_chart(
     outer_resp
 }
 
+/// One coloured slice of a stacked bar.
+pub struct Segment {
+    pub color: Color32,
+    pub value: f32,
+}
+
+/// Draws one stacked bar per bucket, left to right, each scaled against the
+/// tallest bucket's total.
 pub fn stacked_bars(
     ui: &mut Ui,
     size: Vec2,
-    buckets: &[Vec<(Color32, f32)>], // each bucket: vec of (color, value)
+    buckets: &[Vec<Segment>], // each bucket: its segments, bottom first
 ) -> Response {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter_at(rect);
@@ -207,7 +215,7 @@ pub fn stacked_bars(
     // find max total per bucket for scaling
     let mut max_total = 0.0_f32;
     for b in buckets {
-        let t: f32 = b.iter().map(|(_, v)| v.max(0.0)).sum();
+        let t: f32 = b.iter().map(|seg| seg.value.max(0.0)).sum();
         max_total = max_total.max(t);
     }
     if max_total <= 0.0 {
@@ -221,15 +229,15 @@ pub fn stacked_bars(
         let x0 = rect.left() + i as f32 * bw;
         let x1 = x0 + bw;
 
-        let total: f32 = b.iter().map(|(_, v)| v.max(0.0)).sum();
+        let total: f32 = b.iter().map(|seg| seg.value.max(0.0)).sum();
         let h_total = rect.height() * (total / max_total);
 
         // Optional: center bars if you want; simplest is fill from bottom with total scaling:
         let mut y0 = rect.bottom();
         let y_min = rect.bottom() - h_total;
 
-        for (color, v) in b {
-            let v = v.max(0.0);
+        for seg in b {
+            let v = seg.value.max(0.0);
             if v <= 0.0 {
                 continue;
             }
@@ -238,7 +246,7 @@ pub fn stacked_bars(
                 Pos2::new(x0 + 1.0, (y0 - seg_h).max(y_min)),
                 Pos2::new(x1 - 1.0, y0),
             );
-            painter.rect_filled(seg_rect, 0.0, *color);
+            painter.rect_filled(seg_rect, 0.0, seg.color);
             y0 -= seg_h;
         }
 

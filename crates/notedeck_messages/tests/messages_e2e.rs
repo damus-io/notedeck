@@ -15,6 +15,7 @@ use harness::fixtures::{
     seed_cluster_dm_relay_list, seed_cluster_known_profiles, seed_local_dm_relay_list,
     seed_local_dm_relay_list_ndb_only_with_relays, seed_local_dm_relay_list_with_relays,
     seed_local_giftwraps_in_data_dir, seed_local_notes_in_data_dir, seed_local_profile_metadata,
+    DmRelayListVersion,
 };
 use harness::ui::{
     build_direct_message_batch, open_conversation_via_ui, press_message_composer_enter,
@@ -2733,23 +2734,22 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
         &sender,
         &offline_path,
     );
-    let expected_new_version = (
-        initial_route_a_ts.saturating_add(1),
-        vec![relay_b_url.trim_end_matches('/').to_owned()],
-    );
+    let expected_new_version = DmRelayListVersion {
+        created_at: initial_route_a_ts.saturating_add(1),
+        relays: vec![relay_b_url.trim_end_matches('/').to_owned()],
+    };
     let local_version_deadline = Instant::now() + TEST_TIMEOUT;
     loop {
         restarted_sender.step();
         let actual_versions = local_dm_relay_list_versions(&mut restarted_sender, &recipient)
             .into_iter()
-            .map(|(created_at, relays)| {
-                (
-                    created_at,
-                    relays
-                        .into_iter()
-                        .map(|url| url.trim_end_matches('/').to_owned())
-                        .collect::<Vec<_>>(),
-                )
+            .map(|version| DmRelayListVersion {
+                created_at: version.created_at,
+                relays: version
+                    .relays
+                    .into_iter()
+                    .map(|url| url.trim_end_matches('/').to_owned())
+                    .collect(),
             })
             .collect::<Vec<_>>();
         if actual_versions
@@ -3064,23 +3064,22 @@ async fn restart_should_prefetch_newer_known_participant_relay_list_e2e() {
         &sender,
         &offline_path,
     );
-    let expected_new_version = (
-        initial_route_a_ts.saturating_add(1),
-        vec![relay_b_url.trim_end_matches('/').to_owned()],
-    );
+    let expected_new_version = DmRelayListVersion {
+        created_at: initial_route_a_ts.saturating_add(1),
+        relays: vec![relay_b_url.trim_end_matches('/').to_owned()],
+    };
     let local_version_deadline = Instant::now() + TEST_TIMEOUT;
     loop {
         restarted_sender.step();
         let actual_versions = local_dm_relay_list_versions(&mut restarted_sender, &recipient)
             .into_iter()
-            .map(|(created_at, relays)| {
-                (
-                    created_at,
-                    relays
-                        .into_iter()
-                        .map(|url| url.trim_end_matches('/').to_owned())
-                        .collect::<Vec<_>>(),
-                )
+            .map(|version| DmRelayListVersion {
+                created_at: version.created_at,
+                relays: version
+                    .relays
+                    .into_iter()
+                    .map(|url| url.trim_end_matches('/').to_owned())
+                    .collect(),
             })
             .collect::<Vec<_>>();
         if actual_versions

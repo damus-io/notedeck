@@ -28,11 +28,8 @@ const NOT_YET: &[&str] = &[
     "agentium_cli",
     "headway",
     "headway_cli",
-    "notedeck_dashboard",
     "notedeck_dave",
     "notedeck_headway",
-    "notedeck_messages",
-    "notedeck_release",
 ];
 
 /// The workspace root, so offenders print as `crates/<crate>/src/…`.

@@ -16,8 +16,10 @@ use crate::Dashboard;
 use crate::FxHashMap;
 use crate::Period;
 use crate::RollingCache;
+use crate::Tally;
 use crate::chart::Bar;
 use crate::chart::BarChartStyle;
+use crate::chart::Segment;
 use crate::chart::horizontal_bar_chart;
 use crate::chart::palette;
 use crate::top_kind1_authors_over;
@@ -280,13 +282,13 @@ pub fn posts_per_period_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
     }
 }
 
-fn kinds_to_bars(top_kinds: &[(u64, u64)]) -> Vec<Bar> {
+fn kinds_to_bars(top_kinds: &[Tally<u64>]) -> Vec<Bar> {
     top_kinds
         .iter()
         .enumerate()
-        .map(|(i, (k, c))| Bar {
-            label: format!("{k}"),
-            value: *c as f32,
+        .map(|(i, kind)| Bar {
+            label: format!("{}", kind.key),
+            value: kind.count as f32,
             color: palette(i),
         })
         .collect()
@@ -513,10 +515,9 @@ pub fn clients_trends_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
     }
 }
 
-fn stacked_clients_over_time(
-    cache: &RollingCache,
-    top: &[ClientStats],
-) -> Vec<Vec<(egui::Color32, f32)>> {
+/// One stack per bucket, oldest first, each holding a segment per client in
+/// `top` coloured by its rank.
+fn stacked_clients_over_time(cache: &RollingCache, top: &[ClientStats]) -> Vec<Vec<Segment>> {
     let n = cache.buckets.len();
     let mut out = Vec::with_capacity(n);
 
@@ -524,7 +525,10 @@ fn stacked_clients_over_time(
         let mut segs = Vec::with_capacity(top.len());
         for (idx, cs) in top.iter().enumerate() {
             let v = *cache.buckets[i].clients.get(&cs.name).unwrap_or(&0) as f32;
-            segs.push((palette(idx), v));
+            segs.push(Segment {
+                color: palette(idx),
+                value: v,
+            });
         }
         out.push(segs);
     }
@@ -654,7 +658,9 @@ pub fn new_contact_lists_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
 
     let spark_w = (ui.available_width() - 140.0).max(80.0);
 
-    for (row_i, (client, total)) in top.iter().enumerate() {
+    for (row_i, tally) in top.iter().enumerate() {
+        let client = &tally.key;
+        let total = tally.count;
         ui.horizontal(|ui| {
             ui.label(RichText::new(client).small());
             ui.add_space(tokens::SPACING_SM);
@@ -720,7 +726,7 @@ pub fn top_posters_ui(
     let pfp_size = ProfilePic::small_size() as f32;
     let mut clicked_profile: Option<Pubkey> = None;
 
-    for (pubkey, count) in &top {
+    for Tally { key: pubkey, count } in &top {
         let profile = ctx.ndb.get_profile_by_pubkey(&txn, pubkey.bytes()).ok();
         let name = get_display_name(profile.as_ref());
         let pfp_url = get_profile_url(profile.as_ref());

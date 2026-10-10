@@ -47,9 +47,10 @@ impl ConversationCache {
         self.conversations.get(&id)
     }
 
-    /// Iterate over conversations by id.
-    pub fn iter(&self) -> impl Iterator<Item = (&ConversationId, &Conversation)> {
-        self.conversations.iter()
+    /// Iterate over conversations, in no particular order; each carries its
+    /// own [`Conversation::id`].
+    pub fn iter(&self) -> impl Iterator<Item = &Conversation> {
+        self.conversations.values()
     }
 
     pub fn get_id_by_index(&self, i: usize) -> Option<&ConversationId> {

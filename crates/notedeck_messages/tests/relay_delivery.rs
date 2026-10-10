@@ -105,13 +105,26 @@ async fn run_giftwrap_relay(context: &str) -> MemoryNegentropyRelay {
     run_memory_negentropy_relay().await.expect(context)
 }
 
-async fn run_giftwrap_relay_pair() -> (MemoryNegentropyRelay, MemoryNegentropyRelay, String, String)
-{
+/// Two running giftwrap relays and their urls. The relays stop when dropped,
+/// so a test binds them for its whole body.
+struct GiftwrapRelayPair {
+    relay_a: MemoryNegentropyRelay,
+    relay_b: MemoryNegentropyRelay,
+    relay_a_url: String,
+    relay_b_url: String,
+}
+
+async fn run_giftwrap_relay_pair() -> GiftwrapRelayPair {
     let relay_a = run_giftwrap_relay("start relay a").await;
     let relay_b = run_giftwrap_relay("start relay b").await;
     let relay_a_url = relay_a.relay.url().to_owned();
     let relay_b_url = relay_b.relay.url().to_owned();
-    (relay_a, relay_b, relay_a_url, relay_b_url)
+    GiftwrapRelayPair {
+        relay_a,
+        relay_b,
+        relay_a_url,
+        relay_b_url,
+    }
 }
 
 // ==================== Thread Leak Helpers ====================
@@ -648,7 +661,12 @@ async fn device_ui_send_burst_multiple_receivers() {
 async fn multi_relay_same_account_cross_delivery() {
     init_tracing();
 
-    let (_relay_a, _relay_b, relay_a_url, relay_b_url) = run_giftwrap_relay_pair().await;
+    let GiftwrapRelayPair {
+        relay_a: _relay_a,
+        relay_b: _relay_b,
+        relay_a_url,
+        relay_b_url,
+    } = run_giftwrap_relay_pair().await;
 
     let sender = FullKeypair::generate();
     let recipient_a = FullKeypair::generate();
@@ -761,7 +779,12 @@ async fn multi_relay_same_account_cross_delivery() {
 async fn multi_relay_explicit_publish_no_ui() {
     init_tracing();
 
-    let (_relay_a, _relay_b, relay_a_url, relay_b_url) = run_giftwrap_relay_pair().await;
+    let GiftwrapRelayPair {
+        relay_a: _relay_a,
+        relay_b: _relay_b,
+        relay_a_url,
+        relay_b_url,
+    } = run_giftwrap_relay_pair().await;
 
     let sender = FullKeypair::generate();
     let recipient = FullKeypair::generate();
@@ -837,7 +860,12 @@ async fn multi_relay_explicit_publish_no_ui() {
 async fn multi_relay_no_ui_cross_delivery() {
     init_tracing();
 
-    let (_relay_a, _relay_b, relay_a_url, relay_b_url) = run_giftwrap_relay_pair().await;
+    let GiftwrapRelayPair {
+        relay_a: _relay_a,
+        relay_b: _relay_b,
+        relay_a_url,
+        relay_b_url,
+    } = run_giftwrap_relay_pair().await;
 
     let sender = FullKeypair::generate();
     let recipient = FullKeypair::generate();
@@ -913,7 +941,12 @@ async fn multi_relay_no_ui_cross_delivery() {
 async fn multi_relay_single_sender_ui() {
     init_tracing();
 
-    let (_relay_a, _relay_b, relay_a_url, relay_b_url) = run_giftwrap_relay_pair().await;
+    let GiftwrapRelayPair {
+        relay_a: _relay_a,
+        relay_b: _relay_b,
+        relay_a_url,
+        relay_b_url,
+    } = run_giftwrap_relay_pair().await;
 
     let sender = FullKeypair::generate();
     let recipient = FullKeypair::generate();
