@@ -64,9 +64,11 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
             .and_then(|boards| event::locate_card_in_boards(boards, &author, &issue.id));
         let response = match req.context {
             notedeck::RenderContext::Inline => match located {
-                Some(located) => card_chip_ui(ui, &theme, &located.card.title, located.column),
+                Some(located) => {
+                    card_chip_ui(ui, &theme, &located.card.title, located.column, req.chrome)
+                }
                 // Card on no folded board: chip from the creation-time snapshot.
-                None => card_chip_ui(ui, &theme, &issue.subject, None),
+                None => card_chip_ui(ui, &theme, &issue.subject, None, req.chrome),
             },
             _ => match located {
                 Some(located) => card_inline_ui(ui, &theme, located.card),

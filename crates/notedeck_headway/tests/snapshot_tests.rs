@@ -6,7 +6,7 @@ use egui_kittest::Node;
 use egui_kittest::kittest::{NodeT, Queryable};
 use nostrdb::{Filter, IngestMetadata, Ndb, NoteBuilder, Subscription, Transaction};
 use nostrdb_net::{FullKeypair, Keypair, NoteId, Pubkey};
-use notedeck::{App, AppContext, Notedeck};
+use notedeck::{App, AppContext, InlineChrome, Notedeck};
 use notedeck_chrome::keymap::{KeyDispatch, KeyEngine, Scopes};
 use notedeck_chrome::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
 use notedeck_headway::{Headway, event, store};
@@ -1216,7 +1216,7 @@ fn snapshot_inline_chip_row_wrapping() {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     ui.label(lead);
-                    card_chip_ui(ui, &theme, title, column);
+                    card_chip_ui(ui, &theme, title, column, InlineChrome::Pill);
                     ui.label("last.");
                 });
                 ui.add_space(12.0);
@@ -1279,6 +1279,7 @@ fn snapshot_inline_chip() {
                     &theme,
                     "Render inline references as chips",
                     Some(ColumnPos { index: 2, count: 5 }),
+                    InlineChrome::Pill,
                 );
                 ui.label("which unblocks");
                 // index 0 → the backlog icon.
@@ -1287,10 +1288,11 @@ fn snapshot_inline_chip() {
                     &theme,
                     "Thread AppContext through Dave",
                     Some(ColumnPos { index: 0, count: 5 }),
+                    InlineChrome::Pill,
                 );
                 ui.label("and closes out the epic — superseding");
                 // Archived (no live column) → muted fallback icon.
-                card_chip_ui(ui, &theme, "The earlier sketch", None);
+                card_chip_ui(ui, &theme, "The earlier sketch", None, InlineChrome::Pill);
                 ui.label("entirely.");
             });
         });

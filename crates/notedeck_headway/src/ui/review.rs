@@ -1600,6 +1600,7 @@ fn agentium_chip_ui(
                 &txn,
                 session,
                 notedeck::RenderContext::Inline,
+                notedeck::InlineChrome::Pill,
             )
         });
     if let Some(drawn) = drawn {

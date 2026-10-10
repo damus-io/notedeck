@@ -62,7 +62,7 @@ impl KindRenderer for LongformKindRenderer {
     ) -> KindRenderResponse {
         let theme = ColorTheme::current(ui.ctx());
         let response = match req.context {
-            notedeck::RenderContext::Inline => longform_chip_ui(ui, &theme, req.note),
+            notedeck::RenderContext::Inline => longform_chip_ui(ui, &theme, req.note, req.chrome),
             // A surface dedicated to this one note (a canvas note-embed node) wants
             // the whole document, not the block's summary/head preview.
             notedeck::RenderContext::Full => longform_full_ui(ui, note_context, req),
@@ -75,9 +75,14 @@ impl KindRenderer for LongformKindRenderer {
 /// A compact, single-line inline reference to a longform note: a document glyph
 /// followed by the note's title, in a small rounded pill — the in-prose shape
 /// ([`notedeck::RenderContext::Inline`]), versus the full [`longform_block_ui`].
-fn longform_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, note: &Note) -> egui::Response {
+fn longform_chip_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    note: &Note,
+    chrome: notedeck::InlineChrome,
+) -> egui::Response {
     let title = tag_value(note, "title").unwrap_or(UNTITLED);
-    notedeck_ui::inline_chip(ui, theme, title, |ui, size| {
+    notedeck_ui::inline_chip(ui, theme, title, chrome, |ui, size| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
         document_icon(ui.painter(), rect.center(), size, theme.text_muted);
     })
@@ -240,7 +245,7 @@ impl KindRenderer for NotebookNodeRenderer {
             .unwrap_or(&node.content.text);
 
         let response = match req.context {
-            RenderContext::Inline => node_chip_ui(ui, &theme, node_title(text)),
+            RenderContext::Inline => node_chip_ui(ui, &theme, node_title(text), req.chrome),
             _ => node_embed_ui(ui, &theme, text, live.as_ref()),
         };
         // Clicking the chip/card opens the node in Notebook (shared helper).
@@ -291,8 +296,13 @@ fn node_title(text: &str) -> &str {
 /// A compact, single-line inline reference to a node: a canvas-node glyph followed
 /// by the node's title, in a small rounded pill — the in-prose shape
 /// ([`notedeck::RenderContext::Inline`]), versus the fuller [`node_embed_ui`].
-fn node_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, title: &str) -> egui::Response {
-    notedeck_ui::inline_chip(ui, theme, title, |ui, size| {
+fn node_chip_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    title: &str,
+    chrome: notedeck::InlineChrome,
+) -> egui::Response {
+    notedeck_ui::inline_chip(ui, theme, title, chrome, |ui, size| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
         node_glyph(ui.painter(), rect.center(), size, theme.text_muted);
     })

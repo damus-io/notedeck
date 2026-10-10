@@ -19,7 +19,8 @@ use std::rc::Rc;
 use nostrdb::{Ndb, Note, Transaction};
 use nostrdb_net::Pubkey;
 use notedeck::{
-    ColorTheme, KindRenderRequest, KindRenderResponse, KindRenderer, NoteContext, RenderContext,
+    ColorTheme, InlineChrome, KindRenderRequest, KindRenderResponse, KindRenderer, NoteContext,
+    RenderContext,
 };
 
 use crate::agent_status::{stale_color, AgentStatus};
@@ -133,7 +134,7 @@ impl KindRenderer for AgentiumSessionRenderer {
         let live = live_session(&self.cache, note_context.ndb, req.txn, note, &snapshot);
 
         let response = match req.context {
-            RenderContext::Inline => session_chip_ui(ui, &theme, &live),
+            RenderContext::Inline => session_chip_ui(ui, &theme, &live, req.chrome),
             _ => session_card_ui(ui, &theme, &live),
         };
         // Clicking the chip/card opens the session in Dave (shared helper).
@@ -195,22 +196,29 @@ fn status_color(theme: &ColorTheme, session: &LiveSession) -> egui::Color32 {
 /// A compact, single-line inline reference to a session: a live status dot
 /// followed by the session's title, in a small rounded pill — the in-prose shape
 /// ([`notedeck::RenderContext::Inline`]), versus the fuller [`session_card_ui`].
+/// `chrome` drops the pill when the surface asks for it.
 #[profiling::function]
-fn session_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, live: &LiveSession) -> egui::Response {
+fn session_chip_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    live: &LiveSession,
+    chrome: InlineChrome,
+) -> egui::Response {
     let color = status_color(theme, live);
     // A tombstoned session reads as resumable: a small "resume" play triangle
     // instead of a filled status dot, plus a hover hint. Clicking it reopens
     // (revives + resumes) the session via Dave's pending-open path — the inline
     // resume affordance.
     let deleted = live.status == DELETED_STATUS;
-    let response = notedeck_ui::inline_chip(ui, theme, session_title(live), move |ui, size| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-        if deleted {
-            resume_glyph(ui.painter(), rect.center(), size, color);
-        } else {
-            status_dot(ui.painter(), rect.center(), size, color);
-        }
-    });
+    let response =
+        notedeck_ui::inline_chip(ui, theme, session_title(live), chrome, move |ui, size| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+            if deleted {
+                resume_glyph(ui.painter(), rect.center(), size, color);
+            } else {
+                status_dot(ui.painter(), rect.center(), size, color);
+            }
+        });
     if deleted {
         response.on_hover_text("Deleted — click to resume")
     } else {
