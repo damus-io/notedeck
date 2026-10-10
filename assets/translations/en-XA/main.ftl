@@ -501,6 +501,8 @@ Key_source_512a = {"["}Kéy sóúrçé{"]"}
 
 # desc
 key_1dee = {"["}kéy{"]"}
+# Button to edit the user's key bindings
+Keymap_2dd7 = {"["}Kéymàp{"]"}
 
 # label for keys setting section
 Keys_435f = {"["}Kéys{"]"}

@@ -42,6 +42,7 @@ mod headway_nav_tests;
 mod key_dispatch;
 mod key_hints;
 mod keyboard;
+mod keymap_editor;
 mod nav;
 mod roster;
 mod sidebar;
@@ -55,6 +56,7 @@ use actions::PendingOpen;
 use focus::AppFocus;
 pub use key_hints::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
 use keyboard::AnimState;
+pub use keymap_editor::{EDIT_KEYMAP, KEYMAP_TEMPLATE};
 use nav::{seed_global_nav, PendingPrune};
 #[cfg(feature = "auto-update")]
 use update::poll_updater;
@@ -463,6 +465,7 @@ impl notedeck::App for Chrome {
         // The chrome's own UI tools go first, so no app can take their names.
         let chrome_tools = key_hints::chrome_ui_tools()
             .into_iter()
+            .chain(keymap_editor::keymap_editor_tools())
             .map(notedeck::UiToolEntry::shell);
         Some(notedeck::ToolUpdate {
             tools: running_apps().flat_map(|(_, app)| app.tools()).collect(),

@@ -501,6 +501,8 @@ Key_source_512a = Key source
 
 # desc
 key_1dee = key
+# Button to edit the user's key bindings
+Keymap_2dd7 = Keymap
 
 # label for keys setting section
 Keys_435f = Keys

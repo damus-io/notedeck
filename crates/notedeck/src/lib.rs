@@ -167,7 +167,7 @@ pub use timecache::TimeCached;
 pub use tool::{
     AppTool, QueryCall, RegisteredTool, ToolArg, ToolArgType, ToolCall, ToolContext,
     ToolInvocation, ToolKind, ToolOutcome, ToolOwner, ToolRegistry, ToolSpec, ToolUpdate,
-    UiToolEntry,
+    UiToolEntry, SAVE_KEYMAP_TOOL,
 };
 pub use unknowns::{
     get_unknown_note_ids, unknown_id_send, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds,

@@ -224,8 +224,11 @@ pub(super) fn topdown_sidebar(
 
     let theme = ui.ctx().theme();
 
+    // The keymap editor lives in Notebook; without it there's nothing to open.
+    let keymap_item = chrome.keymap_editor_tool_available(super::EDIT_KEYMAP) == Some(true);
+
     StripBuilder::new(ui)
-        .sizes(Size::exact(40.0), 6)
+        .sizes(Size::exact(40.0), 6 + usize::from(keymap_item))
         .clip(true)
         .vertical(|mut strip| {
             strip.strip(|b| {
@@ -308,6 +311,20 @@ pub(super) fn topdown_sidebar(
                 }
             });
 
+            if keymap_item {
+                strip.strip(|b| {
+                    if drawer_item(
+                        b,
+                        |ui| glyph_icon(ui, "⌨"),
+                        tr!(loc, "Keymap", "Button to edit the user's key bindings"),
+                    )
+                    .clicked()
+                    {
+                        action = Some(ChromePanelAction::EditKeymap);
+                    }
+                });
+            }
+
             strip.strip(|b| {
                 if drawer_item(
                     b,
@@ -316,19 +333,7 @@ pub(super) fn topdown_sidebar(
                             egui::Theme::Dark => "🔆",
                             egui::Theme::Light => "🌒",
                         };
-
-                        let painter = ui.painter();
-                        let galley = painter.layout_no_wrap(
-                            c.to_owned(),
-                            NotedeckTextStyle::Heading3.get_font_id(ui.ctx()),
-                            ui.visuals().text_color(),
-                        );
-
-                        painter.galley(
-                            galley_centered_pos(&galley, ui.available_rect_before_wrap().center()),
-                            galley,
-                            ui.visuals().text_color(),
-                        );
+                        glyph_icon(ui, c);
                     },
                     tr!(loc, "Theme", "Button to change the theme (light or dark)"),
                 )
@@ -513,6 +518,22 @@ pub(super) fn topdown_sidebar(
     ui.spacing_mut().item_spacing = previous_spacing;
 
     action
+}
+
+/// Paint `glyph` centered in a drawer item's icon cell, for an item whose
+/// icon is a character rather than an image.
+fn glyph_icon(ui: &mut Ui, glyph: &str) {
+    let painter = ui.painter();
+    let galley = painter.layout_no_wrap(
+        glyph.to_owned(),
+        NotedeckTextStyle::Heading3.get_font_id(ui.ctx()),
+        ui.visuals().text_color(),
+    );
+    painter.galley(
+        galley_centered_pos(&galley, ui.available_rect_before_wrap().center()),
+        galley,
+        ui.visuals().text_color(),
+    );
 }
 
 fn drawer_item(builder: StripBuilder, icon: impl FnOnce(&mut Ui), text: String) -> egui::Response {

@@ -235,6 +235,13 @@ impl RegisteredTool {
     }
 }
 
+/// The shell's UI tool that saves the account's keymap overrides, called with
+/// `{ "toml": "<the user keymap>" }`. Named here rather than in the chrome so an
+/// app with a keymap editor (Notebook's) can raise it as an
+/// [`AppAction::CallTool`](crate::AppAction::CallTool) without depending on the
+/// chrome.
+pub const SAVE_KEYMAP_TOOL: &str = "chrome_save_keymap";
+
 /// A call to a [`ToolKind::Ui`] tool, on its way from whoever raised it (a key
 /// binding, a macro step, an agent) to the app that owns the tool. Carried by
 /// [`AppAction::CallTool`]; the shell looks the owner up with

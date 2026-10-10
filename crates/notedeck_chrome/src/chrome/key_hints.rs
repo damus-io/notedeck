@@ -8,7 +8,7 @@
 
 use super::{Chrome, MAX_APPS};
 use crate::keymap::{Hint, Scopes};
-use notedeck::{App, AppContext, ToolOutcome, ToolRegistry, ToolSpec};
+use notedeck::{App, AppContext, ToolInvocation, ToolOutcome, ToolRegistry, ToolSpec};
 use oot_bitset::{bitset_clear, bitset_get, bitset_set};
 
 /// Pins or unpins the active app's which-key strip. Bound to `?`.
@@ -18,7 +18,8 @@ pub const TOGGLE_KEY_HINTS: &str = "chrome_toggle_key_hints";
 /// so its key (Esc) falls through otherwise.
 pub const HIDE_KEY_HINTS: &str = "chrome_hide_key_hints";
 
-/// The chrome's own UI tools, for the host's tool registry.
+/// The which-key strip's UI tools, for the host's tool registry; the rest of
+/// the chrome's own are the keymap editor's.
 pub(super) fn chrome_ui_tools() -> [ToolSpec; 2] {
     [
         ToolSpec::new(
@@ -35,10 +36,19 @@ pub(super) fn chrome_ui_tools() -> [ToolSpec; 2] {
 }
 
 impl Chrome {
-    /// Run the chrome's own UI tool `name`, or `None` when `name` isn't one.
-    pub(super) fn call_chrome_tool(&mut self, name: &str) -> Option<ToolOutcome> {
+    /// Run the chrome's own UI tool `invocation`, or `None` when it isn't
+    /// one: the which-key strip's here, the keymap editor's in
+    /// [`call_keymap_editor_tool`](Self::call_keymap_editor_tool).
+    pub(super) fn call_chrome_tool(
+        &mut self,
+        ctx: &mut AppContext,
+        invocation: &ToolInvocation,
+    ) -> Option<ToolOutcome> {
+        if let Some(outcome) = self.call_keymap_editor_tool(ctx, invocation) {
+            return Some(outcome);
+        }
         let pinned = self.key_hints_pinned();
-        let pin = match name {
+        let pin = match invocation.name.as_str() {
             TOGGLE_KEY_HINTS => !pinned,
             HIDE_KEY_HINTS => false,
             _ => return None,
@@ -59,6 +69,9 @@ impl Chrome {
     /// bindings, so `?` is only taken in an app that reports key scopes; any
     /// other app keeps the key.
     pub(super) fn chrome_tool_available(&self, name: &str) -> Option<bool> {
+        if let Some(available) = self.keymap_editor_tool_available(name) {
+            return Some(available);
+        }
         match name {
             TOGGLE_KEY_HINTS => Some(
                 self.apps

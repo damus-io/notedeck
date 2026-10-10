@@ -14,6 +14,8 @@ pub enum ChromePanelAction {
     Settings,
     Account,
     Wallet,
+    /// Open the keymap editor (see [`Chrome::edit_keymap`]).
+    EditKeymap,
     SaveTheme(ThemePreference),
     Profile(nostrdb_net::Pubkey),
     #[cfg(feature = "auto-update")]
@@ -70,6 +72,12 @@ impl ChromePanelAction {
             }
             Self::Profile(pk) => {
                 columns_route_to_profile(pk, chrome, ctx, ui);
+            }
+
+            Self::EditKeymap => {
+                if let Err(err) = chrome.edit_keymap(ctx) {
+                    tracing::warn!("keymap editor: {err}");
+                }
             }
 
             #[cfg(feature = "auto-update")]
@@ -345,7 +353,7 @@ impl Chrome {
         invocation: &ToolInvocation,
     ) -> ToolOutcome {
         let name = invocation.name.as_str();
-        if let Some(outcome) = self.call_chrome_tool(name) {
+        if let Some(outcome) = self.call_chrome_tool(ctx, invocation) {
             return outcome;
         }
         let Some(ToolOwner::App(owner)) = ctx.registries.tools.ui_owner(name) else {

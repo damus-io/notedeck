@@ -134,3 +134,82 @@ cargo test
 2. Add a new variant to the `NotedeckApp` enum if needed
 3. Update the `Chrome::topdown_sidebar` method to add a button for your app
 4. Add your app to the `Chrome` instance in `notedeck.rs`
+
+## Keymap & macros
+
+Bare keys (no modifier, nothing focused) belong to the chrome, not the apps.
+Each frame, before the active app renders, `Chrome::dispatch_keys`
+(`src/chrome/key_dispatch.rs`) matches the key press against the keymap for
+the app's **key scopes** and runs the bound **UI tool** or macro. The keymap
+is `src/keymap/default_keymap.toml`, with the account's overrides merged over
+it. Keys typed into a text field never reach it: the app keeps those.
+
+### The TOML format
+
+```toml
+[[bind]]
+scope = "headway.grid"     # a key scope an app reports, or "global"
+keys  = "g g"              # space-separated; Shift = uppercase;
+                           # <Enter> <Esc> <Space> <C-f> <S-Space>
+tool  = "headway_cursor_first"
+label = "first card"       # the which-key strip's label (`?` shows it)
+group = "move"             # adjacent bindings of a group and label share a hint
+args  = { card = "{current}" }   # optional, passed to the tool as JSON;
+                                 # "{current}" is the app's App::current_ref
+
+[[bind]]
+scope = "dave.normal"
+keys  = "E"
+macro = "session-explainer"      # in place of `tool`
+
+[macro.session-explainer]        # tools run in turn, each once the last
+label = "card explainer"         # has settled: navigation landed and the
+                                 # next tool's app in front with it available
+steps = [ { tool = "dave_open_issue" }, { tool = "headway_open_explainer" } ]
+```
+
+App scopes are searched most specific first, then `global`, so an app's
+binding of the same keys wins. A binding fires only while its tool is
+available, so Esc with nothing to clear falls through to the next binding.
+`src/keymap/parse.rs` has the full rules.
+
+A user keymap is a delta, in the same format plus `unbind = true`: a user
+`[[bind]]` of a scope and keys replaces every built-in binding of them,
+`unbind = true` drops them, and a `[macro.<name>]` adds or replaces a macro by
+name. A user binding or macro step naming a tool no app has fails the whole
+merge, so a broken keymap never half-applies.
+
+### Adding UI tools and key scopes to an app
+
+1. Advertise the tools with `App::ui_tools` (static `ToolSpec`s marked
+   `.ui()`) and run them in `App::call_ui_tool`, against the app's own
+   `&mut self`.
+2. Say which ones would do something right now in `App::ui_tool_available`.
+   A key bound to an unavailable tool falls through.
+3. Report the view's scopes from `App::key_scopes` as a
+   `&'static [&'static str]`, so a frame with no key press allocates nothing.
+   Report the thing the view is on from `App::current_ref` if bindings should
+   act on it.
+4. Bind them in `default_keymap.toml`.
+
+Headway is the worked example: `crates/notedeck_headway/src/ui_tools.rs`
+(K1 and K4 of headway:notedeck/daring-account-sphere). The registry lists UI
+tools as `ToolKind::Ui`, so agent backends skip them unless they opt in.
+
+### Where a user's keymap lives
+
+The account's overrides are a NIP-78 app-data note, kind 30078 with
+`d = "notedeck/keymap"`, written PNS-encrypted through
+`notedeck::write_private_note` (`src/keymap/user.rs`). It syncs to the
+account's other devices, and the chrome picks a new revision up live
+(`src/chrome/user_keymap.rs`). A revision that doesn't merge leaves the
+defaults in use, and `Chrome::keymap_error` says why.
+
+It is edited inside notedeck: the side menu's **Keymap** item, or the
+`chrome_edit_keymap` tool, opens Notebook's keymap editor on the stored
+overrides (or `KEYMAP_TEMPLATE`, a commented example, if there are none).
+Its Save, or Ctrl+S, raises `chrome_save_keymap { toml }`. The chrome merges
+and saves it through `Chrome::save_user_keymap` and answers with
+`Notebook::keymap_saved`, so a refusal shows its reason in the editor and
+nothing is written (`src/chrome/keymap_editor.rs`).
+`chrome_edit_keymap` has no default key; bind one in your own keymap.

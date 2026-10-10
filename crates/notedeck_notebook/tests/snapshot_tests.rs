@@ -752,6 +752,43 @@ fn snapshot_notebook_editor() {
     harness.snapshot("notebook_editor_write");
 }
 
+/// The keymap editor the chrome opens on the account's keymap overrides,
+/// showing why the last save was refused (`notebook_keymap_editor`).
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_notebook_keymap_editor() {
+    let mut harness = build_harness(egui::Vec2::new(1000.0, 700.0), false, true);
+    wait_for_canvas_layout(&mut harness);
+    let toml = concat!(
+        "# Open a card's explainer from a Dave session, in one key.\n",
+        "[[bind]]\n",
+        "scope = \"dave.normal\"\n",
+        "keys  = \"E\"\n",
+        "macro = \"session-explainer\"\n",
+        "\n",
+        "[[bind]]\n",
+        "scope = \"headway.grid\"\n",
+        "keys  = \"x\"\n",
+        "unbind = true\n",
+        "\n",
+        "[[bind]]\n",
+        "scope = \"global\"\n",
+        "keys  = \"g K\"\n",
+        "tool  = \"chrome_edit_keymaps\"\n",
+    );
+    harness
+        .state_mut()
+        .notebook
+        .edit_keymap(toml.to_owned(), None);
+    harness.run_steps(2);
+    harness.state_mut().notebook.keymap_saved(
+        toml,
+        Err("user [[bind]] 3 (global \"g K\"): no app has a tool 'chrome_edit_keymaps'"),
+    );
+    harness.run_steps(3);
+    harness.snapshot("notebook_keymap_editor");
+}
+
 /// Seed one longform note with a title, summary and body under a deterministic
 /// `d`, for a note-embed to reference. A real NIP-23 note keeps its title in the
 /// tag (not repeated as a body heading), so the seed sets one; the `summary` is

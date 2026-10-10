@@ -164,8 +164,30 @@ impl Fixture {
         Self::with_args(keymap_src, &["--nsec", nsec])
     }
 
+    /// [`signed_in`](Self::signed_in), with `front` in front of the fake
+    /// app: slot 0 on, the first of them the nav root. A test can then drive
+    /// a real app with global-scope keys without switching apps, which
+    /// slides egui_nav and trips egui's debug layer assert.
+    pub fn signed_in_behind(
+        keymap_src: &str,
+        nsec: &str,
+        front: impl IntoIterator<Item = NotedeckApp>,
+    ) -> Self {
+        Self::with_apps(keymap_src, &["--nsec", nsec], front)
+    }
+
     /// A fixture whose notedeck also got `extra` on its command line.
     fn with_args(keymap_src: &str, extra: &[&str]) -> Self {
+        Self::with_apps(keymap_src, extra, [])
+    }
+
+    /// [`with_args`](Self::with_args), with `front` apps ahead of the fake
+    /// one.
+    fn with_apps(
+        keymap_src: &str,
+        extra: &[&str],
+        front: impl IntoIterator<Item = NotedeckApp>,
+    ) -> Self {
         let dir = tempfile::TempDir::new().expect("tmp dir");
         let args: Vec<String> = ["notedeck-test", "--testrunner"]
             .iter()
@@ -191,9 +213,9 @@ impl Fixture {
             marked,
             area: None,
         }));
-        // The fake app alone, as the nav root: switching to it from another
-        // app would slide, and a full chrome frame mid-slide trips egui's
-        // debug assert on widget ids changing layer.
+        // The fake app as the nav root unless `front` has apps: switching to
+        // it from another app would slide, and a full chrome frame mid-slide
+        // trips egui's debug assert on widget ids changing layer.
         let fake = FakeApp {
             state: Rc::clone(&state),
             sent,
@@ -201,7 +223,9 @@ impl Fixture {
         };
         let mut chrome = Chrome::new_headless_with_apps(
             &mut notedeck,
-            [NotedeckApp::Other("fake".to_owned(), Box::new(fake))],
+            front
+                .into_iter()
+                .chain([NotedeckApp::Other("fake".to_owned(), Box::new(fake))]),
         );
         let update = App::take_tool_update(&mut chrome).expect("the running set changed");
         notedeck.apply_tool_update(update);

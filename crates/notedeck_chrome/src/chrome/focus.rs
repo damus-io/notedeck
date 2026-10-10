@@ -54,6 +54,17 @@ impl AppFocus {
         self.landing_unfocused = true;
     }
 
+    /// Have the next switch to `app` let its autofocus widget claim focus,
+    /// as on its first visit, instead of restoring what it last had.
+    ///
+    /// For an open of a view made to type in (the keymap editor): the user
+    /// came to edit, so the caret belongs in its field, not wherever they
+    /// left the app.
+    #[cfg_attr(not(feature = "notebook"), allow(dead_code))]
+    pub(super) fn land_autofocused(&mut self, app: usize) {
+        self.remembered.remove(&app);
+    }
+
     /// Note what `app` has focused as a frame it rendered ends, including
     /// nothing: a field the user left (Esc, Enter, a click elsewhere) stays
     /// left when they come back.

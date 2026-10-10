@@ -1,5 +1,6 @@
 pub mod convert;
 mod editor;
+mod keymap_editor;
 mod reference;
 pub mod render;
 mod ui;
@@ -18,6 +19,7 @@ use crate::editor::{
     vault_ui,
 };
 use crate::event::{CanvasReducer, CanvasView, VaultDocKind};
+use crate::keymap_editor::{KeymapEditor, KeymapEditorResponse, keymap_editor_ui};
 use crate::store::CanvasAction;
 use crate::ui::{node_rect, notebook_ui, side_str};
 use egui::{Pos2, Rect};
@@ -190,6 +192,10 @@ pub struct Notebook {
     /// canvas; `Some` replaces it with [`editor_ui`]. Opened from the toolbar's
     /// "＋ Note" button and dismissed by the editor's Close.
     editor: Option<LongformEditor>,
+    /// The keymap editor, when the chrome has opened it (see
+    /// [`edit_keymap`](Self::edit_keymap)). Shown over everything else,
+    /// longform editor included, until it is closed.
+    keymap: Option<KeymapEditor>,
     /// The vault sidebar's transient interaction state (an inline rename in
     /// progress, or a delete awaiting confirmation). Driven by [`vault_ui`], which
     /// surfaces each completed interaction as a [`VaultAction`].
@@ -563,6 +569,38 @@ impl Notebook {
     /// fold in before snapshotting.
     pub fn notes(&self) -> &[event::LongformNote] {
         self.vault_sync.notes()
+    }
+
+    /// Open the keymap editor on `toml`, the account's keymap overrides (or a
+    /// template when there are none), with `error` saying why the stored ones
+    /// didn't load, if they didn't. Called by the chrome, which owns the
+    /// keymap, after switching here; a save goes back to it as a call to
+    /// [`SAVE_KEYMAP_TOOL`](notedeck::SAVE_KEYMAP_TOOL), answered through
+    /// [`keymap_saved`](Self::keymap_saved). An editor already open with
+    /// unsaved changes keeps them.
+    pub fn edit_keymap(&mut self, toml: String, error: Option<String>) {
+        if self.keymap.as_ref().is_some_and(KeymapEditor::dirty) {
+            return;
+        }
+        self.keymap = Some(KeymapEditor::new(toml, error));
+        self.wake();
+    }
+
+    /// The chrome's answer to a keymap save of `toml`: `Ok` with the merged
+    /// keymap's warnings, or `Err` with why it was refused, which the editor
+    /// shows. Does nothing with no keymap editor open.
+    pub fn keymap_saved(&mut self, toml: &str, result: Result<&[String], &str>) {
+        let Some(editor) = self.keymap.as_mut() else {
+            return;
+        };
+        if editor.saved(toml, result) {
+            self.keymap = None;
+        }
+    }
+
+    /// Whether the keymap editor is open.
+    pub fn keymap_editor_is_open(&self) -> bool {
+        self.keymap.is_some()
     }
 
     /// Whether the full-screen longform editor is open (the canvas is hidden
@@ -1092,6 +1130,7 @@ impl Default for Notebook {
             seeded: false,
             repaint_frames: 0,
             editor: None,
+            keymap: None,
             vault: VaultState::default(),
             vault_rows: Vec::new(),
         }
@@ -1268,6 +1307,20 @@ impl notedeck::App for Notebook {
         // Focus a node a click elsewhere asked us to open (see `open`). Runs after
         // `update`, so `self.canvas` already reflects this frame's fold.
         self.process_pending_open(ctx.ndb, ui.ctx());
+
+        // The keymap editor takes over the whole area, over the longform
+        // editor too: the chrome opened it on purpose, from anywhere.
+        if let Some(keymap) = self.keymap.as_mut() {
+            return match keymap_editor_ui(keymap, ui) {
+                KeymapEditorResponse::None => AppResponse::none(),
+                KeymapEditorResponse::Action(action) => AppResponse::action(Some(action)),
+                KeymapEditorResponse::Close => {
+                    self.keymap = None;
+                    ui.ctx().request_repaint();
+                    AppResponse::none()
+                }
+            };
+        }
 
         // Full-screen editor mode takes over the whole area; the canvas is hidden.
         // Background sync still runs in `update`, which also pumps the post-save
