@@ -213,15 +213,35 @@ async fn wait_until(verifier: &agentium_core::Engine, landed: impl Fn(&Ndb) -> b
     .unwrap_or(false)
 }
 
-/// The configs the desktop on host `mac` would load for `/p`, as
-/// `(id, name, command)`.
-fn mac_configs(ndb: &Ndb) -> Vec<(String, String, String)> {
+/// What a test compares of a loaded run config.
+#[derive(Debug, PartialEq, Eq)]
+struct ConfigLine {
+    id: String,
+    name: String,
+    command: String,
+}
+
+/// A [`ConfigLine`] from its parts.
+fn config_line(id: &str, name: &str, command: &str) -> ConfigLine {
+    ConfigLine {
+        id: id.to_string(),
+        name: name.to_string(),
+        command: command.to_string(),
+    }
+}
+
+/// The configs the desktop on host `mac` would load for `/p`.
+fn mac_configs(ndb: &Ndb) -> Vec<ConfigLine> {
     let txn = Transaction::new(ndb).expect("txn");
     load_run_configs_from_ndb(ndb, &txn, &author(), "mac")
         .remove(std::path::Path::new("/p"))
         .unwrap_or_default()
         .into_iter()
-        .map(|c| (c.id, c.name, c.command))
+        .map(|c| ConfigLine {
+            id: c.id,
+            name: c.name,
+            command: c.command,
+        })
         .collect()
 }
 
@@ -269,7 +289,7 @@ async fn add_edit_rm_land_on_the_verifier() {
     assert_eq!(added["action"], "added");
     let id = added["config"]["id"].as_str().expect("id").to_string();
     let landed = wait_until(&verifier, |ndb| {
-        mac_configs(ndb) == [(id.clone(), "build".into(), "cargo build".into())]
+        mac_configs(ndb) == [config_line(&id, "build", "cargo build")]
     })
     .await;
     assert!(landed, "the added config should reach the verifier");
@@ -286,7 +306,7 @@ async fn add_edit_rm_land_on_the_verifier() {
         "{out}"
     );
     let landed = wait_until(&verifier, |ndb| {
-        mac_configs(ndb) == [(id.clone(), "build".into(), "cargo build -r".into())]
+        mac_configs(ndb) == [config_line(&id, "build", "cargo build -r")]
     })
     .await;
     assert!(

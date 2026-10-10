@@ -52,8 +52,8 @@ pub fn rate_limits_ui(
     });
 
     let now = crate::session::now_unix();
-    for (i, (kind, window)) in info.windows().take(RATE_LIMIT_WINDOWS).enumerate() {
-        window_ui(labels, i, kind, window, now, i18n, ui);
+    for (i, shown) in info.windows().take(RATE_LIMIT_WINDOWS).enumerate() {
+        window_ui(labels, i, shown.kind, shown.window, now, i18n, ui);
     }
     account_note_ui(i18n, ui);
 }

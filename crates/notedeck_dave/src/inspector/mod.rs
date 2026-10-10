@@ -290,6 +290,7 @@ impl InspectorView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messages::KindedWindow;
 
     /// The Overview's data arrives as responses: init replaces the last
     /// init, CLI state is a level.
@@ -341,7 +342,10 @@ mod tests {
         // limiting window isn't repeated.
         assert_eq!(
             info.windows().collect::<Vec<_>>(),
-            [(RateLimitWindowKind::FiveHour, five_hour)]
+            [KindedWindow {
+                kind: RateLimitWindowKind::FiveHour,
+                window: five_hour
+            }]
         );
 
         // A report with windows of its own replaces them.
@@ -370,13 +374,13 @@ mod tests {
         };
         assert_eq!(
             info.windows().collect::<Vec<_>>(),
-            [(
-                RateLimitWindowKind::SevenDayOpus,
-                RateLimitWindow {
+            [KindedWindow {
+                kind: RateLimitWindowKind::SevenDayOpus,
+                window: RateLimitWindow {
                     utilization: 0.9,
                     resets_at: 7
                 }
-            )]
+            }]
         );
         assert!(info.needs_attention());
         assert!(!RateLimitInfo::default().needs_attention());

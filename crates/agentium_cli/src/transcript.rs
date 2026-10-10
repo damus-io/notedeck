@@ -141,10 +141,18 @@ fn is_tool_message(m: &Message) -> bool {
     )
 }
 
+/// How a message role is drawn in the terminal: see [`role_style`].
+pub(crate) struct RoleStyle {
+    /// The role in words.
+    pub(crate) label: &'static str,
+    /// The SGR color code it is painted in.
+    pub(crate) sgr: &'static str,
+}
+
 /// Terminal presentation for a message role: a human label and an SGR color.
 /// Mirrors [`message_role`]'s vocabulary; used to head each rendered entry.
-pub(crate) fn role_style(m: &Message) -> (&'static str, &'static str) {
-    match m {
+pub(crate) fn role_style(m: &Message) -> RoleStyle {
+    let (label, sgr) = match m {
         Message::User(_) => ("user", "36"),
         Message::Assistant(_) => ("assistant", "32"),
         Message::ToolCalls(_) => ("tool", "35"),
@@ -156,7 +164,8 @@ pub(crate) fn role_style(m: &Message) -> (&'static str, &'static str) {
         Message::System(_) => ("system", "90"),
         Message::Error(_) => ("error", "31"),
         Message::TodoUpdate(_) => ("todo", "90"),
-    }
+    };
+    RoleStyle { label, sgr }
 }
 
 /// Render a filtered message stream as plain text, one entry per message
@@ -178,7 +187,7 @@ pub(crate) fn render_messages(messages: &[&Message], color: bool) -> String {
 /// two spaces. Every [`Message`] variant is handled so the transcript never
 /// silently drops an entry.
 pub(crate) fn render_message(m: &Message, color: bool) -> String {
-    let (label, sgr) = role_style(m);
+    let RoleStyle { label, sgr } = role_style(m);
     let body = message_body(m);
 
     let mut out = paint(color, sgr, label);

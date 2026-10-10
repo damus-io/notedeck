@@ -228,7 +228,7 @@ fn counts_line(rows: &[&SessionView], color: bool) -> String {
             .iter()
             .take_while(|v| &v.state.status == status)
             .count();
-        let (_, label, _) = status_style(status);
+        let label = status_style(status).label;
         let part = format!("{n} {}", label.to_lowercase());
         let part = if status == "needs_input" {
             paint(color, SGR_NEEDS_INPUT, &part)

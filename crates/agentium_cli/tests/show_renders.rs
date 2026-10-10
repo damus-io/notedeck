@@ -134,13 +134,18 @@ fn seed_message(ndb: &Ndb, role: &str, content: &str, seq: u32, ms: u64) {
     ingest_json(ndb, &note.json().expect("note json"));
 }
 
+/// A seeded cache: where it is, and the perm-id of its pending request.
+struct SeededCache {
+    db_path: String,
+    perm_id: uuid::Uuid,
+}
+
 /// Open a fresh cache in `dir` holding [`SESSION`] (two chat messages, one
 /// pending `Bash` permission request, two subagents — one spawned-then-completed,
 /// one still running in the background — and one run config on its host+cwd) and a bare
-/// [`OTHER`] session, and wait until all of it is queryable. Returns the db path
-/// and the pending request's perm-id; the db handle is dropped so the subprocess
-/// opens the cache cleanly.
-async fn seed_cache(dir: &TempDir) -> (String, uuid::Uuid) {
+/// [`OTHER`] session, and wait until all of it is queryable. The db handle is
+/// dropped so the subprocess opens the cache cleanly.
+async fn seed_cache(dir: &TempDir) -> SeededCache {
     let db_path = dir.path().to_str().expect("path").to_string();
     let ndb = Ndb::new(&db_path, &test_config()).expect("ndb");
     let filter = nostrdb::Filter::new()
@@ -216,7 +221,7 @@ async fn seed_cache(dir: &TempDir) -> (String, uuid::Uuid) {
     ndb.wait_for_all_notes(sub, 9)
         .await
         .expect("ingest seeded notes");
-    (db_path, perm_id)
+    SeededCache { db_path, perm_id }
 }
 
 /// Run the real `agentium` binary against `db_path` with `dir` redirecting
@@ -263,7 +268,7 @@ fn success_stdout(out: &Output) -> String {
 #[tokio::test]
 async fn show_renders_every_section() {
     let dir = TempDir::new().expect("tmp dir");
-    let (db_path, perm_id) = seed_cache(&dir).await;
+    let SeededCache { db_path, perm_id } = seed_cache(&dir).await;
 
     let stdout = success_stdout(&run_agentium(&dir, &db_path, None, &["show", SESSION]));
 
@@ -312,7 +317,7 @@ async fn show_renders_every_section() {
 #[tokio::test]
 async fn show_json_shape() {
     let dir = TempDir::new().expect("tmp dir");
-    let (db_path, perm_id) = seed_cache(&dir).await;
+    let SeededCache { db_path, perm_id } = seed_cache(&dir).await;
 
     let stdout = success_stdout(&run_agentium(
         &dir,
@@ -388,7 +393,7 @@ async fn show_json_shape() {
 #[tokio::test]
 async fn show_defaults_to_agentium_session_env() {
     let dir = TempDir::new().expect("tmp dir");
-    let (db_path, _) = seed_cache(&dir).await;
+    let db_path = seed_cache(&dir).await.db_path;
     let uri = agentium_core::wordid::session_ref(SESSION);
 
     let bare = success_stdout(&run_agentium(&dir, &db_path, Some(&uri), &["show"]));
@@ -409,7 +414,7 @@ async fn show_defaults_to_agentium_session_env() {
 #[tokio::test]
 async fn show_without_selector_or_env_errors() {
     let dir = TempDir::new().expect("tmp dir");
-    let (db_path, _) = seed_cache(&dir).await;
+    let db_path = seed_cache(&dir).await.db_path;
 
     for env in [None, Some("")] {
         let out = run_agentium(&dir, &db_path, env, &["show"]);

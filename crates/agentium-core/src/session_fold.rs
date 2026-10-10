@@ -500,7 +500,8 @@ mod tests {
     /// advances it from subscription keys.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn seeds_from_ndb_then_reduces_deltas() {
-        let (_dir, ndb) = temp_ndb();
+        let db = temp_ndb();
+        let ndb = db.ndb.clone();
         let author = nostrdb_net::FullKeypair::from_secret_bytes(&TEST_SECKEY)
             .expect("keypair")
             .pubkey;
@@ -553,7 +554,8 @@ mod tests {
     /// state, stale revisions, and a tombstone.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn seed_resolves_every_revision_and_newest_message() {
-        let (_dir, ndb) = temp_ndb();
+        let db = temp_ndb();
+        let ndb = db.ndb.clone();
         let author = nostrdb_net::FullKeypair::from_secret_bytes(&TEST_SECKEY)
             .expect("keypair")
             .pubkey;

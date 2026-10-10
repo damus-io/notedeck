@@ -70,10 +70,17 @@ fn seed_session(ndb: &Ndb, d: &str, status: &str, cli: Option<&str>) {
     ndb.process_client_event(&frame).expect("ingest");
 }
 
+/// How one `agentium` run ended: whether it succeeded, and what it printed.
+struct Run {
+    ok: bool,
+    stdout: String,
+    stderr: String,
+}
+
 /// Run the real `agentium` binary against the seeded cache `db_path`, redirecting
-/// XDG/HOME so the run can't touch real config. Returns `(success, stdout,
-/// stderr)`. The relay port is closed so connect fails fast.
-fn run_agentium(db_path: &str, dir: &TempDir, args: &[&str]) -> (bool, String, String) {
+/// XDG/HOME so the run can't touch real config. The relay port is closed so
+/// connect fails fast.
+fn run_agentium(db_path: &str, dir: &TempDir, args: &[&str]) -> Run {
     let mut full = vec![
         "--nsec",
         NSEC,
@@ -89,11 +96,11 @@ fn run_agentium(db_path: &str, dir: &TempDir, args: &[&str]) -> (bool, String, S
         .env("HOME", dir.path())
         .output()
         .expect("run agentium");
-    (
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    Run {
+        ok: out.status.success(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    }
 }
 
 #[tokio::test]
@@ -114,7 +121,7 @@ async fn resume_reports_command_for_deleted_session() {
     }
 
     // Resolve the tombstoned session by its d-tag and report the resume command.
-    let (ok, stdout, stderr) = run_agentium(&db_path, &dir, &["resume", "dead-1"]);
+    let Run { ok, stdout, stderr } = run_agentium(&db_path, &dir, &["resume", "dead-1"]);
     assert!(
         ok,
         "resume should succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
@@ -134,7 +141,11 @@ async fn resume_errors_on_unknown_selector() {
         seed_session(&ndb, "dead-1", "deleted", Some("cli-abc"));
     }
 
-    let (ok, _stdout, stderr) = run_agentium(&db_path, &dir, &["resume", "no-such-session"]);
+    let Run {
+        ok,
+        stdout: _,
+        stderr,
+    } = run_agentium(&db_path, &dir, &["resume", "no-such-session"]);
     assert!(!ok, "resume of an unknown selector must fail");
     assert!(
         stderr.contains("no session"),
@@ -162,7 +173,7 @@ async fn resume_reopens_session_whose_backend_never_started() {
         let _ = ndb.wait_for_notes(sub, 1).await.expect("indexed");
     }
 
-    let (ok, stdout, stderr) = run_agentium(&db_path, &dir, &["resume", "never-ran"]);
+    let Run { ok, stdout, stderr } = run_agentium(&db_path, &dir, &["resume", "never-ran"]);
     assert!(
         ok,
         "resume of a never-started session should still send the command\nstdout:\n{stdout}\nstderr:\n{stderr}"

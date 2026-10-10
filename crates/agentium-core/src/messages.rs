@@ -1239,27 +1239,26 @@ impl RateLimitInfo {
 
     /// The windows to show, in display order. Without per-window usage, the
     /// limiting window alone, when the report names it.
-    pub fn windows(&self) -> impl Iterator<Item = (RateLimitWindowKind, RateLimitWindow)> {
+    pub fn windows(&self) -> impl Iterator<Item = KindedWindow> {
         let limiting = if self.has_windows() {
             None
         } else {
             self.limiting.zip(self.utilization).zip(self.resets_at).map(
-                |((kind, utilization), resets_at)| {
-                    (
-                        kind,
-                        RateLimitWindow {
-                            utilization,
-                            resets_at,
-                        },
-                    )
+                |((kind, utilization), resets_at)| KindedWindow {
+                    kind,
+                    window: RateLimitWindow {
+                        utilization,
+                        resets_at,
+                    },
                 },
             )
         };
+        let window = |kind| move |window| KindedWindow { kind, window };
         [
-            self.five_hour.map(|w| (RateLimitWindowKind::FiveHour, w)),
-            self.seven_day.map(|w| (RateLimitWindowKind::SevenDay, w)),
+            self.five_hour.map(window(RateLimitWindowKind::FiveHour)),
+            self.seven_day.map(window(RateLimitWindowKind::SevenDay)),
             self.seven_day_overage_included
-                .map(|w| (RateLimitWindowKind::SevenDayOverageIncluded, w)),
+                .map(window(RateLimitWindowKind::SevenDayOverageIncluded)),
             limiting,
         ]
         .into_iter()
@@ -1333,6 +1332,16 @@ pub struct RateLimitWindow {
     pub utilization: f64,
     /// When the window resets, in Unix seconds.
     pub resets_at: u64,
+}
+
+/// A rate-limit window and which one it is, as [`RateLimitInfo::windows`]
+/// lists them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KindedWindow {
+    /// Which window this is.
+    pub kind: RateLimitWindowKind,
+    /// How much of it is used, and when it resets.
+    pub window: RateLimitWindow,
 }
 
 /// Get context window size for a model name.

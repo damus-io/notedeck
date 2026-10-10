@@ -781,10 +781,23 @@ pub fn split_head<'a>(note: &'a nostrdb::Note<'a>) -> Option<&'a [u8; 32]> {
     })
 }
 
+/// Where a part sits in a message split across notes: part `index` of
+/// `total`, from its `["split", "i/n"]` tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SplitIndex {
+    /// This part's position, from 0 for the first part.
+    pub index: usize,
+    /// How many parts the message was cut into.
+    pub total: usize,
+}
+
 /// A note's `["split", "i/n"]` tag: it is part `i` of `n`.
-pub fn split_index(note: &nostrdb::Note) -> Option<(usize, usize)> {
+pub fn split_index(note: &nostrdb::Note) -> Option<SplitIndex> {
     let (index, total) = get_tag_value(note, "split")?.split_once('/')?;
-    Some((index.parse().ok()?, total.parse().ok()?))
+    Some(SplitIndex {
+        index: index.parse().ok()?,
+        total: total.parse().ok()?,
+    })
 }
 
 /// How much bigger than the empty probe [`build_live_events`] measures a part
@@ -1868,11 +1881,21 @@ pub fn build_run_config_delete_event_at(
     finalize_built_event(builder, secret_key, AI_RUN_CONFIG_KIND)
 }
 
+/// A run config and the working directory it belongs to, as one kind-31991
+/// note carries them.
+#[derive(Debug, Clone)]
+pub struct CwdRunConfig {
+    /// The directory the config runs in.
+    pub cwd: PathBuf,
+    /// The config itself.
+    pub config: RunConfig,
+}
+
 /// Parse a kind-31991 run-config note into a single `RunConfig`.
 ///
 /// Returns `None` if this is a tombstone (has `deleted` tag) or if
 /// required tags (`d`, `cwd`, `name`, `command`) are missing.
-pub fn parse_run_config_event(note: &nostrdb::Note) -> Option<(PathBuf, RunConfig)> {
+pub fn parse_run_config_event(note: &nostrdb::Note) -> Option<CwdRunConfig> {
     // Tombstone — treat as deleted
     if get_tag_value(note, "deleted").is_some() {
         return None;
@@ -1889,15 +1912,15 @@ pub fn parse_run_config_event(note: &nostrdb::Note) -> Option<(PathBuf, RunConfi
         .filter(|s| !s.is_empty())?
         .to_string();
 
-    Some((
-        PathBuf::from(cwd),
-        RunConfig {
+    Some(CwdRunConfig {
+        cwd: PathBuf::from(cwd),
+        config: RunConfig {
             id,
             name,
             command,
             updated_at: note.created_at(),
         },
-    ))
+    })
 }
 
 /// Extract the d-tag from a kind-31991 note. Used to identify tombstones

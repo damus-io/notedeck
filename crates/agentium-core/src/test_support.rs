@@ -32,12 +32,20 @@ pub(crate) fn test_config() -> Config {
 /// engine device key in tests, so signed events author-match the engine.
 pub(crate) const TEST_SECKEY: [u8; 32] = [7u8; 32];
 
-/// Open a fresh nostrdb under a throwaway directory. The returned [`TempDir`]
-/// must be kept alive for as long as the db is used.
-pub(crate) fn temp_ndb() -> (TempDir, Ndb) {
+/// A nostrdb open in a throwaway directory that lives as long as it does.
+/// Mirrors `notedeck::test_util::TempNdb`, which this crate can't reach.
+pub(crate) struct TempNdb {
+    /// The db. Declared before `dir` so it closes before the directory goes.
+    pub(crate) ndb: Ndb,
+    /// The directory holding the db, removed on drop.
+    pub(crate) _dir: TempDir,
+}
+
+/// Open a fresh nostrdb under a throwaway directory.
+pub(crate) fn temp_ndb() -> TempNdb {
     let dir = TempDir::new().expect("tmp dir");
     let ndb = Ndb::new(dir.path().to_str().expect("path"), &test_config()).expect("ndb");
-    (dir, ndb)
+    TempNdb { ndb, _dir: dir }
 }
 
 /// Spawn an in-process hermetic relay backed by `ndb` on an ephemeral port. Pass

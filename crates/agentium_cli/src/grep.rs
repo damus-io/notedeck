@@ -14,7 +14,7 @@ use regex::Regex;
 
 use crate::list::{ListFilters, ListScope, SessionJson, load_sessions};
 use crate::log::PAGER_VAR;
-use crate::term::{SGR_BOLD, abbreviate_home, col, paint, status_style};
+use crate::term::{SGR_BOLD, StatusStyle, abbreviate_home, col, paint, status_style};
 use crate::transcript::{MessageView, message_body, message_role, role_style};
 
 /// `agentium grep <pattern>` — search message text across every session the
@@ -87,7 +87,7 @@ pub(crate) fn cmd_grep(
                     .filter(|line| pattern.is_match(line))
                     .map(|line| GrepMatch {
                         role: message_role(m),
-                        sgr: role_style(m).1,
+                        sgr: role_style(m).sgr,
                         text: line.trim_end().to_string(),
                     }),
             );
@@ -152,7 +152,7 @@ struct GrepMatch {
 /// its home-abbreviated working directory.
 fn grep_header(state: &SessionState, color: bool) -> String {
     let sref = state.agentium_uri();
-    let (glyph, label, sgr) = status_style(&state.status);
+    let StatusStyle { glyph, label, sgr } = status_style(&state.status);
     let cwd = abbreviate_home(&state.cwd, &state.home_dir);
     format!(
         "{}  {}  {}  {}\n",

@@ -10,7 +10,8 @@ use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
 
 use crate::term::{
-    SGR_BOLD, SGR_NEEDS_INPUT, abbreviate_home, col, now_secs, paint, relative_time, status_style,
+    SGR_BOLD, SGR_NEEDS_INPUT, StatusStyle, abbreviate_home, col, now_secs, paint, relative_time,
+    status_style,
 };
 
 /// The `--json` view of a session: every [`SessionState`] field, plus the
@@ -172,9 +173,9 @@ pub(crate) fn cmd_list(
         flag_needs_input: false,
     };
 
-    for (host, group) in group_by_host(sessions) {
-        println!("{}", paint(color, SGR_BOLD, &host));
-        for s in group {
+    for group in group_by_host(sessions) {
+        println!("{}", paint(color, SGR_BOLD, &group.host));
+        for s in group.sessions {
             println!("{}", session_row(&s, s.created_at, now, color, &layout));
         }
     }
@@ -224,7 +225,7 @@ pub(crate) fn session_row(
     color: bool,
     layout: &RowLayout,
 ) -> String {
-    let (glyph, label, sgr) = status_style(&s.status);
+    let StatusStyle { glyph, label, sgr } = status_style(&s.status);
     let gutter = if layout.flag_needs_input && s.status == "needs_input" {
         paint(color, SGR_NEEDS_INPUT, "» ")
     } else {
@@ -258,6 +259,14 @@ pub(crate) fn host_label(hostname: &str) -> &str {
     }
 }
 
+/// One host's sessions, as `list` prints them under a host header.
+struct HostGroup {
+    /// The host's label (see [`host_label`]).
+    host: String,
+    /// Its sessions, newest first.
+    sessions: Vec<SessionState>,
+}
+
 /// Group sessions by host, ordering hosts by their most recent activity and
 /// sessions within a host newest-first — mirroring how the desktop groups the
 /// scene by host then cwd.
@@ -267,20 +276,23 @@ pub(crate) fn host_label(hostname: &str) -> &str {
 /// order. That is deterministic only because the input arrives in
 /// [`agentium_core::session_loader::session_order`], whose session-id tiebreak
 /// this function inherits rather than repeats.
-fn group_by_host(sessions: Vec<SessionState>) -> Vec<(String, Vec<SessionState>)> {
-    let mut groups: Vec<(String, Vec<SessionState>)> = Vec::new();
+fn group_by_host(sessions: Vec<SessionState>) -> Vec<HostGroup> {
+    let mut groups: Vec<HostGroup> = Vec::new();
     for s in sessions {
-        let host = host_label(&s.hostname).to_string();
-        match groups.iter_mut().find(|(h, _)| *h == host) {
-            Some((_, v)) => v.push(s),
-            None => groups.push((host, vec![s])),
+        let host = host_label(&s.hostname);
+        match groups.iter_mut().find(|g| g.host == host) {
+            Some(g) => g.sessions.push(s),
+            None => groups.push(HostGroup {
+                host: host.to_string(),
+                sessions: vec![s],
+            }),
         }
     }
     // Newest-first within each host, then hosts by their newest session.
-    for (_, v) in &mut groups {
-        v.sort_by_key(|s| std::cmp::Reverse(s.created_at));
+    for g in &mut groups {
+        g.sessions.sort_by_key(|s| std::cmp::Reverse(s.created_at));
     }
-    groups.sort_by_key(|g| std::cmp::Reverse(g.1.first().map_or(0, |s| s.created_at)));
+    groups.sort_by_key(|g| std::cmp::Reverse(g.sessions.first().map_or(0, |s| s.created_at)));
     groups
 }
 
@@ -377,10 +389,14 @@ pub(crate) mod tests {
         ];
         let groups = group_by_host(sessions);
         // linux first: it holds the single newest session (300).
-        assert_eq!(groups[0].0, "linux");
-        assert_eq!(groups[1].0, "mac");
+        assert_eq!(groups[0].host, "linux");
+        assert_eq!(groups[1].host, "mac");
         // within mac, newest-first.
-        let mac: Vec<_> = groups[1].1.iter().map(|s| s.title.as_str()).collect();
+        let mac: Vec<_> = groups[1]
+            .sessions
+            .iter()
+            .map(|s| s.title.as_str())
+            .collect();
         assert_eq!(mac, vec!["new", "old"]);
     }
 
@@ -402,7 +418,11 @@ pub(crate) mod tests {
         sort_sessions(&mut sessions);
         let groups = group_by_host(sessions);
 
-        let titles: Vec<_> = groups[0].1.iter().map(|s| s.title.as_str()).collect();
+        let titles: Vec<_> = groups[0]
+            .sessions
+            .iter()
+            .map(|s| s.title.as_str())
+            .collect();
         assert_eq!(
             titles,
             vec!["a", "b", "c"],
@@ -413,7 +433,7 @@ pub(crate) mod tests {
     #[test]
     fn group_by_host_buckets_empty_hostname() {
         let groups = group_by_host(vec![session("", "x", "idle", 1)]);
-        assert_eq!(groups[0].0, "(unknown host)");
+        assert_eq!(groups[0].host, "(unknown host)");
     }
 
     #[test]

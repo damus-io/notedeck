@@ -125,7 +125,9 @@ impl Dave {
                     }
                     self.run_configs.retain(|_, v| !v.is_empty());
                 }
-            } else if let Some((cwd, config)) = session_events::parse_run_config_event(&note) {
+            } else if let Some(session_events::CwdRunConfig { cwd, config }) =
+                session_events::parse_run_config_event(&note)
+            {
                 // Upsert: update existing or insert new, only if newer
                 let configs = self.run_configs.entry(cwd).or_default();
                 if let Some(existing) = configs.iter_mut().find(|c| c.id == config.id) {

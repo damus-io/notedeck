@@ -36,7 +36,7 @@ impl<'n, 'a> SplitParts<'n, 'a> {
             }
         }
         for parts in by_head.values_mut() {
-            parts.sort_by_key(|part| split_index(part).map(|(index, _)| index));
+            parts.sort_by_key(|part| split_index(part).map(|split| split.index));
         }
         Self { by_head }
     }
@@ -79,7 +79,7 @@ pub fn gather_split(ndb: &Ndb, txn: &Transaction, note: &Note) -> Option<Gathere
     }
     let head_id = split_head(note).copied().unwrap_or(*note.id());
     let head = ndb.get_note_by_id(txn, &head_id).ok()?;
-    let (_, total) = split_index(&head)?;
+    let total = split_index(&head)?.total;
 
     // The `#e` index is keyed on the id, so this finds every note that names
     // the head, its later parts among them.
@@ -96,12 +96,12 @@ pub fn gather_split(ndb: &Ndb, txn: &Transaction, note: &Note) -> Option<Gathere
             parts
         })
         .ok()?;
-    parts.sort_by_key(|part| split_index(part).map(|(index, _)| index));
-    parts.dedup_by_key(|part| split_index(part).map(|(index, _)| index));
+    parts.sort_by_key(|part| split_index(part).map(|split| split.index));
+    parts.dedup_by_key(|part| split_index(part).map(|split| split.index));
 
     let complete = parts
         .iter()
-        .map(|part| split_index(part).map(|(index, _)| index))
+        .map(|part| split_index(part).map(|split| split.index))
         .eq((1..total).map(Some));
     Some(GatheredSplit {
         head: head_id,
@@ -155,7 +155,8 @@ mod tests {
     /// of its content.
     #[tokio::test]
     async fn split_message_loads_as_one_row() {
-        let (_dir, ndb) = temp_ndb();
+        let db = temp_ndb();
+        let ndb = db.ndb.clone();
         let mut threading = ThreadingState::new();
         let text = oversized();
         let before = build("before", "user", &mut threading);
@@ -194,7 +195,8 @@ mod tests {
     /// part's id.
     #[tokio::test]
     async fn gather_split_waits_for_every_part() {
-        let (_dir, ndb) = temp_ndb();
+        let db = temp_ndb();
+        let ndb = db.ndb.clone();
         let text = oversized();
         let parts = build(&text, "user", &mut ThreadingState::new());
         let last = parts.len() - 1;
@@ -228,7 +230,8 @@ mod tests {
     /// A note that fits is no part of anything.
     #[tokio::test]
     async fn a_whole_note_is_no_split() {
-        let (_dir, ndb) = temp_ndb();
+        let db = temp_ndb();
+        let ndb = db.ndb.clone();
         let events = build("hello", "user", &mut ThreadingState::new());
         ingest(&ndb, &events).await;
 

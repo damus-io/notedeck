@@ -12,7 +12,8 @@ use nostrdb_net::relay::sync::Result;
 use crate::list::SessionJson;
 use crate::permission::short_id;
 use crate::term::{
-    SGR_BOLD, SGR_NEEDS_INPUT, abbreviate_home, col, now_secs, paint, relative_time, status_style,
+    SGR_BOLD, SGR_NEEDS_INPUT, StatusStyle, abbreviate_home, col, now_secs, paint, relative_time,
+    status_style,
 };
 
 /// `agentium show <session>` — git-show-style detail for one resolved session.
@@ -342,7 +343,7 @@ fn render_detail(
     now: u64,
     color: bool,
 ) -> String {
-    let (glyph, label, sgr) = status_style(&s.status);
+    let StatusStyle { glyph, label, sgr } = status_style(&s.status);
     let mut out = String::new();
 
     // Header: the sayable ref + status, then the human title.

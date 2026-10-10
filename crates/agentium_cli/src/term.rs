@@ -7,23 +7,38 @@ pub(crate) const SGR_NEEDS_INPUT: &str = "33";
 /// Bold, for the per-host group headers.
 pub(crate) const SGR_BOLD: &str = "1";
 
+/// How a session status is drawn in the terminal: see [`status_style`].
+pub(crate) struct StatusStyle {
+    /// The one-character status mark.
+    pub(crate) glyph: &'static str,
+    /// The status in words.
+    pub(crate) label: String,
+    /// The SGR color code it is painted in.
+    pub(crate) sgr: &'static str,
+}
+
 /// Terminal presentation for a status string: a glyph, a human label, and an SGR
 /// color. Mirrors [`AgentStatus`] — which lives in the egui-side notedeck_dave
 /// crate (its `color()` returns an `egui::Color32`), so it can't be reused from a
 /// terminal CLI. An unknown status shows its raw token, uncolored.
 ///
 /// [`AgentStatus`]: https://docs.rs/notedeck_dave
-pub(crate) fn status_style(status: &str) -> (&'static str, String, &'static str) {
-    match status {
-        "idle" => ("○", "Idle".into(), "90"),
-        "working" => ("●", "Working".into(), "32"),
-        "needs_input" => ("◆", "Needs Input".into(), SGR_NEEDS_INPUT),
-        "error" => ("✖", "Error".into(), "31"),
-        "done" => ("✓", "Done".into(), "34"),
-        "pending" => ("◌", "Pending".into(), "36"),
-        "waiting" => ("◷", "Waiting".into(), "35"),
-        "deleted" => ("⊘", "Deleted".into(), "90"),
-        other => ("?", other.to_string(), "0"),
+pub(crate) fn status_style(status: &str) -> StatusStyle {
+    let (glyph, label, sgr) = match status {
+        "idle" => ("○", "Idle", "90"),
+        "working" => ("●", "Working", "32"),
+        "needs_input" => ("◆", "Needs Input", SGR_NEEDS_INPUT),
+        "error" => ("✖", "Error", "31"),
+        "done" => ("✓", "Done", "34"),
+        "pending" => ("◌", "Pending", "36"),
+        "waiting" => ("◷", "Waiting", "35"),
+        "deleted" => ("⊘", "Deleted", "90"),
+        other => ("?", other, "0"),
+    };
+    StatusStyle {
+        glyph,
+        label: label.to_string(),
+        sgr,
     }
 }
 
@@ -215,13 +230,18 @@ mod tests {
 
     #[test]
     fn status_style_known_and_unknown() {
-        let (g, l, c) = status_style("needs_input");
-        assert_eq!((g, l.as_str(), c), ("◆", "Needs Input", SGR_NEEDS_INPUT));
+        let s = status_style("needs_input");
+        assert_eq!(s.glyph, "◆");
+        assert_eq!(s.label, "Needs Input");
+        assert_eq!(s.sgr, SGR_NEEDS_INPUT);
         // A tombstoned session gets its own muted glyph rather than the "?" fallback.
-        let (g, l, _) = status_style("deleted");
-        assert_eq!((g, l.as_str()), ("⊘", "Deleted"));
-        let (g, l, c) = status_style("weird");
-        assert_eq!((g, l.as_str(), c), ("?", "weird", "0"));
+        let s = status_style("deleted");
+        assert_eq!(s.glyph, "⊘");
+        assert_eq!(s.label, "Deleted");
+        let s = status_style("weird");
+        assert_eq!(s.glyph, "?");
+        assert_eq!(s.label, "weird");
+        assert_eq!(s.sgr, "0");
     }
 
     #[test]

@@ -1313,7 +1313,7 @@ pub fn load_all_run_configs_from_ndb(
     author: &nostrdb_net::Pubkey,
 ) -> Vec<HostedRunConfig> {
     use crate::config::AI_RUN_CONFIG_KIND;
-    use crate::session_events::{get_tag_value, parse_run_config_event};
+    use crate::session_events::{get_tag_value, parse_run_config_event, CwdRunConfig};
 
     let filter = Filter::new()
         .kinds([AI_RUN_CONFIG_KIND as u64])
@@ -1327,7 +1327,7 @@ pub fn load_all_run_configs_from_ndb(
             continue;
         };
         // parse_run_config_event returns None for tombstones
-        let Some((cwd, config)) = parse_run_config_event(&note) else {
+        let Some(CwdRunConfig { cwd, config }) = parse_run_config_event(&note) else {
             continue;
         };
         configs.push(HostedRunConfig {
@@ -1911,20 +1911,34 @@ mod tests {
         );
     }
 
-    /// Render a loaded transcript to comparable `(role, content)` strings so two
-    /// loads can be asserted equal regardless of how the events were ingested.
-    fn transcript(messages: &[Message]) -> Vec<(String, String)> {
+    /// One loaded message as comparable strings: what kind of row it is and
+    /// its text.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Row {
+        kind: String,
+        text: String,
+    }
+
+    /// A [`Row`] of `kind` holding `text`.
+    fn row(kind: impl Into<String>, text: impl Into<String>) -> Row {
+        Row {
+            kind: kind.into(),
+            text: text.into(),
+        }
+    }
+
+    /// Render a loaded transcript to comparable rows so two loads can be
+    /// asserted equal regardless of how the events were ingested.
+    fn transcript(messages: &[Message]) -> Vec<Row> {
         messages
             .iter()
             .map(|m| match m {
-                Message::User(c) => ("user".to_string(), c.as_str().to_string()),
-                Message::Assistant(a) => ("assistant".to_string(), a.text().to_string()),
-                Message::ToolResponse(_) => ("tool".to_string(), String::new()),
-                Message::PermissionRequest(p) => ("permission".to_string(), p.tool_name.clone()),
-                Message::CompactionComplete(info) => {
-                    ("compaction".to_string(), info.pre_tokens.to_string())
-                }
-                other => (format!("{other:?}"), String::new()),
+                Message::User(c) => row("user", c.as_str()),
+                Message::Assistant(a) => row("assistant", a.text()),
+                Message::ToolResponse(_) => row("tool", ""),
+                Message::PermissionRequest(p) => row("permission", p.tool_name.as_str()),
+                Message::CompactionComplete(info) => row("compaction", info.pre_tokens.to_string()),
+                other => row(format!("{other:?}"), ""),
             })
             .collect()
     }
@@ -2616,19 +2630,27 @@ mod tests {
         forward
     }
 
-    /// The tool id and summary of a finished tool row.
-    fn executed(msg: &Message) -> (&str, Option<&str>, &str) {
+    /// What a finished tool row shows: the tool, its id and its summary.
+    #[derive(Debug, PartialEq, Eq)]
+    struct ExecutedRow<'a> {
+        tool_name: &'a str,
+        tool_use_id: Option<&'a str>,
+        summary: &'a str,
+    }
+
+    /// The tool, tool id and summary of a finished tool row.
+    fn executed(msg: &Message) -> ExecutedRow<'_> {
         let Message::ToolResponse(resp) = msg else {
             panic!("expected a tool row, got {msg:?}");
         };
         let crate::tools::ToolResponses::ExecutedTool(tool) = resp.responses() else {
             panic!("expected an executed tool, got {resp:?}");
         };
-        (
-            tool.tool_name.as_str(),
-            tool.tool_use_id.as_deref(),
-            tool.summary.as_str(),
-        )
+        ExecutedRow {
+            tool_name: tool.tool_name.as_str(),
+            tool_use_id: tool.tool_use_id.as_deref(),
+            summary: tool.summary.as_str(),
+        }
     }
 
     /// A Dave `tool_call` and the `tool_result` sharing its tool id are one
@@ -2683,7 +2705,14 @@ mod tests {
             "call and result are one row: {messages:?}"
         );
         assert!(matches!(messages[0], Message::User(_)));
-        assert_eq!(executed(&messages[1]), ("Bash", Some("t1"), "exit 0"));
+        assert_eq!(
+            executed(&messages[1]),
+            ExecutedRow {
+                tool_name: "Bash",
+                tool_use_id: Some("t1"),
+                summary: "exit 0",
+            }
+        );
         assert!(matches!(messages[2], Message::Assistant(_)));
 
         // Without its result the call is a running row.
@@ -2695,14 +2724,14 @@ mod tests {
         );
     }
 
-    /// The rows of a fold as (kind, text), for asserting where user messages
-    /// landed among the assistant's.
-    fn rows(messages: &[Message]) -> Vec<(&'static str, String)> {
+    /// The rows of a fold, for asserting where user messages landed among
+    /// the assistant's.
+    fn rows(messages: &[Message]) -> Vec<Row> {
         messages
             .iter()
             .map(|m| match m {
-                Message::User(u) => ("user", u.as_str().to_string()),
-                Message::Assistant(a) => ("assistant", a.text().to_string()),
+                Message::User(u) => row("user", u.as_str()),
+                Message::Assistant(a) => row("assistant", a.text()),
                 other => panic!("unexpected row {other:?}"),
             })
             .collect()
@@ -2768,10 +2797,10 @@ mod tests {
         assert_eq!(
             rows(&messages),
             [
-                ("user", "first".to_string()),
-                ("assistant", "reply to first".to_string()),
-                ("user", "second".to_string()),
-                ("assistant", "reply to second".to_string()),
+                row("user", "first"),
+                row("assistant", "reply to first"),
+                row("user", "second"),
+                row("assistant", "reply to second"),
             ],
         );
         let Message::User(second) = &messages[2] else {
@@ -2832,11 +2861,11 @@ mod tests {
         assert_eq!(
             rows(&messages),
             [
-                ("user", "first".to_string()),
-                ("assistant", "reply to first".to_string()),
-                ("user", "second".to_string()),
-                ("assistant", "reply to second".to_string()),
-                ("assistant", "and again".to_string()),
+                row("user", "first"),
+                row("assistant", "reply to first"),
+                row("user", "second"),
+                row("assistant", "reply to second"),
+                row("assistant", "and again"),
             ],
         );
     }
@@ -2851,9 +2880,9 @@ mod tests {
         assert_eq!(
             rows(&messages),
             [
-                ("user", "first".to_string()),
-                ("assistant", "reply to first".to_string()),
-                ("user", "second".to_string()),
+                row("user", "first"),
+                row("assistant", "reply to first"),
+                row("user", "second"),
             ],
         );
         assert!(matches!(&messages[2], Message::User(u) if u.queued));
@@ -2904,9 +2933,9 @@ mod tests {
         assert_eq!(
             rows(&loaded.messages),
             [
-                ("user", "first".to_string()),
-                ("assistant", "reply to first".to_string()),
-                ("user", "second".to_string()),
+                row("user", "first"),
+                row("assistant", "reply to first"),
+                row("user", "second"),
             ],
         );
         assert!(matches!(&loaded.messages[2], Message::User(u) if u.queued));
@@ -2960,9 +2989,9 @@ mod tests {
         assert_eq!(
             rows(&loaded.messages),
             [
-                ("user", "first".to_string()),
-                ("assistant", "reply to first".to_string()),
-                ("user", "second".to_string()),
+                row("user", "first"),
+                row("assistant", "reply to first"),
+                row("user", "second"),
             ],
         );
         assert!(
@@ -2989,9 +3018,9 @@ mod tests {
         assert_eq!(
             rows(&messages),
             [
-                ("user", "first".to_string()),
-                ("user", "second".to_string()),
-                ("assistant", "reply".to_string()),
+                row("user", "first"),
+                row("user", "second"),
+                row("assistant", "reply"),
             ],
         );
     }
@@ -3129,7 +3158,14 @@ mod tests {
             .map(|t| (t.tool_name.as_str(), t.tool_use_id.as_deref()))
             .collect();
         assert_eq!(nested, [("Grep", Some("g1"))]);
-        assert_eq!(executed(&messages[1]), ("Read", Some("r1"), "src/lib.rs"));
+        assert_eq!(
+            executed(&messages[1]),
+            ExecutedRow {
+                tool_name: "Read",
+                tool_use_id: Some("r1"),
+                summary: "src/lib.rs",
+            }
+        );
     }
 
     #[test]

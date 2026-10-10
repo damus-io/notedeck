@@ -9,7 +9,7 @@ use nostrdb::Transaction;
 use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
 
-use crate::term::{paint, status_style};
+use crate::term::{StatusStyle, paint, status_style};
 use crate::transcript::{MessageView, first_after, render_message, render_messages};
 
 /// `agentium log <session>` — print one session's kind-1988 conversation,
@@ -271,7 +271,7 @@ fn emit_follow_status(status: &str, color: bool, as_json: bool) {
             let _ = writeln!(out, "{line}");
         }
     } else {
-        let (glyph, label, sgr) = status_style(status);
+        let StatusStyle { glyph, label, sgr } = status_style(status);
         let line = paint(color, sgr, &format!("── {glyph} {label} ──"));
         let _ = writeln!(out, "\n{line}");
     }

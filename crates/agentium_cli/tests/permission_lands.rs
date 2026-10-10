@@ -69,14 +69,18 @@ fn seed_state(ndb: &Ndb) {
     ingest_json(ndb, &note.json().expect("note json"));
 }
 
+/// A seeded sender cache: where it is, and the perm-ids of its pending
+/// requests, in the order they were given.
+struct SeededCache {
+    db_path: String,
+    perm_ids: Vec<uuid::Uuid>,
+}
+
 /// Open a fresh sender cache in `dir` holding the session state plus one
 /// pending `permission_request` per `(tool_name, tool_input)` in `requests`, and
-/// wait until all of it is queryable. Returns the db path and the perm-ids, in
-/// order; the db handle is dropped so the subprocess opens the cache cleanly.
-async fn seed_sender_cache(
-    dir: &TempDir,
-    requests: &[(&str, serde_json::Value)],
-) -> (String, Vec<uuid::Uuid>) {
+/// wait until all of it is queryable. The db handle is dropped so the
+/// subprocess opens the cache cleanly.
+async fn seed_sender_cache(dir: &TempDir, requests: &[(&str, serde_json::Value)]) -> SeededCache {
     let db_path = dir.path().to_str().expect("path").to_string();
     let ndb = Ndb::new(&db_path, &test_config()).expect("ndb");
     let filter = nostrdb::Filter::new()
@@ -101,7 +105,7 @@ async fn seed_sender_cache(
     ndb.wait_for_all_notes(sub, 1 + requests.len() as u32)
         .await
         .expect("ingest seeded notes");
-    (db_path, perm_ids)
+    SeededCache { db_path, perm_ids }
 }
 
 /// Run the real `agentium` binary against `db_path`/`relay`, with `dir`
@@ -116,9 +120,14 @@ fn run_agentium(dir: &TempDir, db_path: &str, relay: &str, args: &[&str]) -> Out
         .expect("run agentium")
 }
 
-/// The content of every kind-1988 note on [`SESSION`] in `ndb` whose `role` tag
-/// is `role`, paired with its `perm-id` tag (if any).
-fn notes_with_role(ndb: &Ndb, role: &str) -> Vec<(Option<String>, String)> {
+/// A kind-1988 note's `perm-id` tag (if any) and its content.
+struct RoleNote {
+    perm_id: Option<String>,
+    content: String,
+}
+
+/// Every kind-1988 note on [`SESSION`] in `ndb` whose `role` tag is `role`.
+fn notes_with_role(ndb: &Ndb, role: &str) -> Vec<RoleNote> {
     let txn = Transaction::new(ndb).expect("txn");
     let filter = nostrdb::Filter::new()
         .kinds([KIND_CONVERSATION as u64])
@@ -130,11 +139,9 @@ fn notes_with_role(ndb: &Ndb, role: &str) -> Vec<(Option<String>, String)> {
     results
         .iter()
         .filter(|qr| get_tag_value(&qr.note, "role") == Some(role))
-        .map(|qr| {
-            (
-                get_tag_value(&qr.note, "perm-id").map(str::to_string),
-                qr.note.content().to_string(),
-            )
+        .map(|qr| RoleNote {
+            perm_id: get_tag_value(&qr.note, "perm-id").map(str::to_string),
+            content: qr.note.content().to_string(),
         })
         .collect()
 }
@@ -180,7 +187,7 @@ async fn approve_answers_the_newest_pending_request() {
     let url = relay.url();
 
     let sender_dir = TempDir::new().expect("sender tmp");
-    let (db_path, perm_ids) = seed_sender_cache(
+    let SeededCache { db_path, perm_ids } = seed_sender_cache(
         &sender_dir,
         &[
             ("Read", serde_json::json!({ "file_path": "/etc/hosts" })),
@@ -214,9 +221,9 @@ async fn approve_answers_the_newest_pending_request() {
     let landed = wait_until(&verifier, |ndb| {
         notes_with_role(ndb, "permission_response")
             .iter()
-            .any(|(perm, content)| {
-                let decoded = decode_permission_response(content);
-                perm.as_deref() == Some(newest.as_str())
+            .any(|note| {
+                let decoded = decode_permission_response(&note.content);
+                note.perm_id.as_deref() == Some(newest.as_str())
                     && decoded.response_type
                         == agentium_core::messages::PermissionResponseType::Allowed
                     && decoded.message.as_deref() == Some("go ahead")
@@ -232,7 +239,7 @@ async fn approve_answers_the_newest_pending_request() {
     assert!(
         !notes_with_role(verifier.ndb(), "permission_response")
             .iter()
-            .any(|(perm, _)| perm.as_deref() == Some(older.as_str())),
+            .any(|note| note.perm_id.as_deref() == Some(older.as_str())),
         "only the newest request is answered"
     );
 
@@ -251,7 +258,7 @@ async fn mode_publishes_the_canonical_mode() {
     let url = relay.url();
 
     let sender_dir = TempDir::new().expect("sender tmp");
-    let (db_path, _) = seed_sender_cache(&sender_dir, &[]).await;
+    let db_path = seed_sender_cache(&sender_dir, &[]).await.db_path;
 
     let verifier_dir = TempDir::new().expect("verifier tmp");
     let verifier = verifier(&verifier_dir, &url).await;
@@ -274,8 +281,8 @@ async fn mode_publishes_the_canonical_mode() {
     let landed = wait_until(&verifier, |ndb| {
         notes_with_role(ndb, "set_permission_mode")
             .iter()
-            .any(|(_, content)| {
-                serde_json::from_str::<serde_json::Value>(content)
+            .any(|note| {
+                serde_json::from_str::<serde_json::Value>(&note.content)
                     .is_ok_and(|v| v == serde_json::json!({ "mode": "accept_edits" }))
             })
     })
@@ -290,7 +297,7 @@ async fn mode_publishes_the_canonical_mode() {
 #[tokio::test]
 async fn approve_with_nothing_pending_errors() {
     let dir = TempDir::new().expect("tmp dir");
-    let (db_path, _) = seed_sender_cache(&dir, &[]).await;
+    let db_path = seed_sender_cache(&dir, &[]).await.db_path;
 
     let out = run_agentium(&dir, &db_path, "ws://127.0.0.1:1", &["approve", SESSION]);
     assert!(!out.status.success(), "nothing pending must exit nonzero");
@@ -314,7 +321,9 @@ async fn approve_refuses_a_question() {
             "multiSelect": false,
         }]
     });
-    let (db_path, _) = seed_sender_cache(&dir, &[("AskUserQuestion", question)]).await;
+    let db_path = seed_sender_cache(&dir, &[("AskUserQuestion", question)])
+        .await
+        .db_path;
 
     let out = run_agentium(&dir, &db_path, "ws://127.0.0.1:1", &["approve", SESSION]);
     assert!(
