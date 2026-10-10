@@ -117,7 +117,7 @@ impl World {
 
     // ── Arena internals ──────────────────────────────────────────
 
-    fn alloc_slot(&mut self) -> (u32, u32) {
+    fn alloc_slot(&mut self) -> NodeId {
         if let Some(index) = self.free_list.pop() {
             let node = &mut self.nodes[index as usize];
             node.generation += 1;
@@ -128,7 +128,10 @@ impl World {
             node.next_sibling = None;
             node.model = None;
             node.world_matrix = Mat4::IDENTITY;
-            (index, node.generation)
+            NodeId {
+                index,
+                generation: node.generation,
+            }
         } else {
             let index = self.nodes.len() as u32;
             self.nodes.push(Node {
@@ -142,7 +145,10 @@ impl World {
                 model: None,
                 alive: true,
             });
-            (index, 0)
+            NodeId {
+                index,
+                generation: 0,
+            }
         }
     }
 
@@ -210,15 +216,13 @@ impl World {
 
     /// Create a grouping node (no model) with an optional parent.
     pub fn create_node(&mut self, local: Transform, parent: Option<NodeId>) -> NodeId {
-        let (index, generation) = self.alloc_slot();
-        self.nodes[index as usize].local = local;
-
-        let id = NodeId { index, generation };
+        let id = self.alloc_slot();
+        self.nodes[id.index as usize].local = local;
 
         if let Some(p) = parent
             && self.is_valid(p)
         {
-            self.nodes[index as usize].parent = Some(p);
+            self.nodes[id.index as usize].parent = Some(p);
             self.attach_child(p, id);
         }
 

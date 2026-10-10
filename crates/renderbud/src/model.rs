@@ -76,9 +76,17 @@ pub struct Model {
     pub id: u64,
 }
 
+/// A glTF texture as uploaded: the same texture is uploaded once as sRGB
+/// (colour) and once as linear (data) when materials use it both ways.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+struct TexKey {
+    index: usize,
+    srgb: bool,
+}
+
 struct GltfWgpuCache {
     samplers: Vec<Option<wgpu::Sampler>>,
-    tex_views: HashMap<(usize, bool), wgpu::TextureView>,
+    tex_views: HashMap<TexKey, wgpu::TextureView>,
 }
 
 impl GltfWgpuCache {
@@ -96,15 +104,15 @@ impl GltfWgpuCache {
     ) -> Option<usize> {
         let idx = sam.index()?;
         if self.samplers[idx].is_none() {
-            let (min_f, mip_f) = map_min_filter(sam.min_filter());
+            let min = map_min_filter(sam.min_filter());
             let samp = device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("gltf_sampler"),
                 address_mode_u: map_wrap_mode(sam.wrap_s()),
                 address_mode_v: map_wrap_mode(sam.wrap_t()),
                 address_mode_w: wgpu::AddressMode::Repeat,
                 mag_filter: map_mag_filter(sam.mag_filter()),
-                min_filter: min_f,
-                mipmap_filter: mip_f,
+                min_filter: min.min,
+                mipmap_filter: min.mipmap,
                 ..Default::default()
             });
             self.samplers[idx] = Some(samp);
@@ -126,8 +134,11 @@ impl GltfWgpuCache {
         queue: &wgpu::Queue,
         tex: gltf::Texture<'_>,
         srgb: bool,
-    ) -> Option<(usize, bool)> {
-        let key = (tex.index(), srgb);
+    ) -> Option<TexKey> {
+        let key = TexKey {
+            index: tex.index(),
+            srgb,
+        };
         if self.tex_views.contains_key(&key) {
             return Some(key);
         }
@@ -151,7 +162,7 @@ impl GltfWgpuCache {
         Some(key)
     }
 
-    fn view_ref(&self, key: (usize, bool)) -> &wgpu::TextureView {
+    fn view_ref(&self, key: TexKey) -> &wgpu::TextureView {
         self.tex_views.get(&key).unwrap()
     }
 }
@@ -268,8 +279,19 @@ pub fn load_gltf_slice(
     bytes: &[u8],
     resolve: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
 ) -> Result<ModelData, LoadError> {
-    let (doc, buffers, images) = import_slice(bytes, resolve)?;
-    upload_gltf(device, queue, material_bgl, &doc, &buffers, &images)
+    let GltfImport {
+        document,
+        buffers,
+        images,
+    } = import_slice(bytes, resolve)?;
+    upload_gltf(device, queue, material_bgl, &document, &buffers, &images)
+}
+
+/// A parsed glTF with its buffers loaded and its images decoded to RGBA8.
+struct GltfImport {
+    document: gltf::Document,
+    buffers: Vec<gltf::buffer::Data>,
+    images: Vec<gltf::image::Data>,
 }
 
 /// [`gltf::import_slice`], with files outside the model read through
@@ -278,14 +300,7 @@ pub fn load_gltf_slice(
 fn import_slice(
     bytes: &[u8],
     resolve: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
-) -> Result<
-    (
-        gltf::Document,
-        Vec<gltf::buffer::Data>,
-        Vec<gltf::image::Data>,
-    ),
-    LoadError,
-> {
+) -> Result<GltfImport, LoadError> {
     let gltf::Gltf { document, mut blob } = gltf::Gltf::from_slice(bytes)?;
 
     let mut buffers = Vec::new();
@@ -332,7 +347,11 @@ fn import_slice(
         })
         .collect();
 
-    Ok((document, buffers, images))
+    Ok(GltfImport {
+        document,
+        buffers,
+        images,
+    })
 }
 
 /// The bytes a glTF URI names: decoded from a base64 `data:` URI, or asked
@@ -626,32 +645,32 @@ fn map_wrap_mode(wrap_mode: gltf::texture::WrappingMode) -> wgpu::AddressMode {
     }
 }
 
-fn map_min_filter(
-    f: Option<gltf::texture::MinFilter>,
-) -> (wgpu::FilterMode, wgpu::MipmapFilterMode) {
-    // (min, mipmap)
+/// The two wgpu filters one glTF minification filter splits into.
+struct MinFilterModes {
+    min: wgpu::FilterMode,
+    mipmap: wgpu::MipmapFilterMode,
+}
+
+fn map_min_filter(f: Option<gltf::texture::MinFilter>) -> MinFilterModes {
+    use gltf::texture::MinFilter;
+    use wgpu::{FilterMode, MipmapFilterMode};
+    let modes = |min, mipmap| MinFilterModes { min, mipmap };
     match f {
-        Some(gltf::texture::MinFilter::Nearest) => {
-            (wgpu::FilterMode::Nearest, wgpu::MipmapFilterMode::Nearest)
-        }
-        Some(gltf::texture::MinFilter::Linear) => {
-            (wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Nearest)
-        }
+        Some(MinFilter::Nearest) => modes(FilterMode::Nearest, MipmapFilterMode::Nearest),
+        Some(MinFilter::Linear) => modes(FilterMode::Linear, MipmapFilterMode::Nearest),
 
-        Some(gltf::texture::MinFilter::NearestMipmapNearest) => {
-            (wgpu::FilterMode::Nearest, wgpu::MipmapFilterMode::Nearest)
+        Some(MinFilter::NearestMipmapNearest) => {
+            modes(FilterMode::Nearest, MipmapFilterMode::Nearest)
         }
-        Some(gltf::texture::MinFilter::LinearMipmapNearest) => {
-            (wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Nearest)
+        Some(MinFilter::LinearMipmapNearest) => {
+            modes(FilterMode::Linear, MipmapFilterMode::Nearest)
         }
-        Some(gltf::texture::MinFilter::NearestMipmapLinear) => {
-            (wgpu::FilterMode::Nearest, wgpu::MipmapFilterMode::Linear)
+        Some(MinFilter::NearestMipmapLinear) => {
+            modes(FilterMode::Nearest, MipmapFilterMode::Linear)
         }
-        Some(gltf::texture::MinFilter::LinearMipmapLinear) => {
-            (wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Linear)
-        }
+        Some(MinFilter::LinearMipmapLinear) => modes(FilterMode::Linear, MipmapFilterMode::Linear),
 
-        None => (wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Nearest),
+        None => modes(FilterMode::Linear, MipmapFilterMode::Nearest),
     }
 }
 
@@ -859,7 +878,9 @@ mod tests {
         let glb = crate::test_util::textured_cube_glb([1.0; 4], "Textures/color%20map.png");
         let png = crate::test_util::checker_png(4, [255, 0, 0], [0, 0, 255]);
         let mut asked = Vec::new();
-        let (_, buffers, images) = import_slice(&glb, &mut |uri| {
+        let GltfImport {
+            buffers, images, ..
+        } = import_slice(&glb, &mut |uri| {
             asked.push(uri.to_string());
             Some(png.clone())
         })
@@ -869,7 +890,7 @@ mod tests {
         assert_eq!((images[0].width, images[0].height), (4, 4));
         assert_eq!(&images[0].pixels[..4], &[255, 0, 0, 255]);
 
-        let (_, _, images) = import_slice(&glb, &mut |_| None).unwrap();
+        let GltfImport { images, .. } = import_slice(&glb, &mut |_| None).unwrap();
         assert_eq!(images[0].width, 0);
     }
 

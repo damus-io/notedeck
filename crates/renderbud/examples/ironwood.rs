@@ -1,3 +1,4 @@
+use renderbud::PixelSize;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
@@ -63,8 +64,12 @@ impl Renderbud {
 
         surface.configure(&device, &config);
 
-        let renderer =
-            renderbud::Renderer::new(&device, &queue, format, (config.width, config.height));
+        let renderer = renderbud::Renderer::new(
+            &device,
+            &queue,
+            format,
+            PixelSize::new(config.width, config.height),
+        );
 
         Self {
             config,
@@ -83,19 +88,19 @@ impl Renderbud {
         self.renderer.prepare(&self.queue);
     }
 
-    fn resize(&mut self, new_size: (u32, u32)) {
-        let width = new_size.0.max(1);
-        let height = new_size.1.max(1);
+    fn resize(&mut self, new_size: PixelSize) {
+        let width = new_size.width.max(1);
+        let height = new_size.height.max(1);
 
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
 
-        self.renderer.set_target_size((width, height));
+        self.renderer.set_target_size(PixelSize::new(width, height));
         self.renderer.resize(&self.device)
     }
 
-    fn size(&self) -> (u32, u32) {
+    fn size(&self) -> PixelSize {
         self.renderer.size()
     }
 
@@ -183,7 +188,7 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => el.exit(),
 
-            WindowEvent::Resized(sz) => renderbud.resize((sz.width, sz.height)),
+            WindowEvent::Resized(sz) => renderbud.resize(PixelSize::new(sz.width, sz.height)),
 
             WindowEvent::KeyboardInput { event, .. } => {
                 if let KeyEvent {

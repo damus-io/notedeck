@@ -19,7 +19,7 @@ use eframe::egui_wgpu::{self, wgpu};
 /// Size the scene renderer is created at. It draws nothing at this size —
 /// apps render models through their own offscreen views — so it only needs
 /// to be valid.
-const SCENE_SIZE: (u32, u32) = (256, 256);
+const SCENE_SIZE: renderbud::PixelSize = renderbud::PixelSize::new(256, 256);
 
 /// The window's wgpu device plus a lazily built renderbud renderer on it.
 ///

@@ -1,5 +1,5 @@
-use crate::GpuData;
 use crate::texture::{make_1x1_rgba8, texture_layout_entry};
+use crate::{GpuData, WithLayout};
 use glam::Vec4;
 
 #[repr(C)]
@@ -21,7 +21,7 @@ pub struct MaterialGpu {
 pub fn make_material_gpudata(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-) -> (GpuData<MaterialUniform>, wgpu::BindGroupLayout) {
+) -> WithLayout<GpuData<MaterialUniform>> {
     let material_uniform = MaterialUniform {
         base_color_factor: Vec4::new(1.0, 0.1, 0.1, 1.0),
         metallic_factor: 1.0,
@@ -130,12 +130,12 @@ pub fn make_material_gpudata(
         ],
     });
 
-    (
-        GpuData::<MaterialUniform> {
+    WithLayout {
+        data: GpuData::<MaterialUniform> {
             data: material_uniform,
             buffer: material_buf,
             bindgroup: material_bg,
         },
-        material_bgl,
-    )
+        layout: material_bgl,
+    }
 }

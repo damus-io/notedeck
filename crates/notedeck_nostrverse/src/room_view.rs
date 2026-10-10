@@ -294,7 +294,10 @@ pub fn show_room_view(
     // Update renderer target size and handle input
     {
         let mut r = renderer.renderer.lock().unwrap();
-        r.set_target_size((rect.width() as u32, rect.height() as u32));
+        r.set_target_size(renderbud::PixelSize::new(
+            rect.width() as u32,
+            rect.height() as u32,
+        ));
 
         if state.edit_mode {
             // --- Edit mode: click-to-select, drag-to-move objects ---

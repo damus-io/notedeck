@@ -13,7 +13,9 @@ use glam::{Mat4, Vec3};
 
 use crate::camera::{ArcballController, Camera};
 use crate::model::{Aabb, Model};
-use crate::{Globals, GpuData, ObjectUniform, Renderer, create_depth, write_gpu_data};
+use crate::{
+    DepthTarget, Globals, GpuData, ObjectUniform, PixelSize, Renderer, create_depth, write_gpu_data,
+};
 
 /// Largest side a view's targets are created at, in pixels.
 const MAX_VIEW_SIDE: u32 = 4096;
@@ -30,7 +32,7 @@ const FIT_PADDING: f32 = 1.2;
 /// format, ready to register with a UI (or read back in a test).
 pub struct ModelView {
     model: Model,
-    size: (u32, u32),
+    size: PixelSize,
     color: wgpu::Texture,
     color_view: wgpu::TextureView,
     _depth: wgpu::Texture,
@@ -60,7 +62,7 @@ impl ModelView {
     }
 
     /// The texture's size in pixels.
-    pub fn size(&self) -> (u32, u32) {
+    pub fn size(&self) -> PixelSize {
         self.size
     }
 
@@ -139,13 +141,14 @@ impl Renderer {
         &self,
         device: &wgpu::Device,
         model: Model,
-        size: (u32, u32),
+        size: PixelSize,
     ) -> Option<ModelView> {
         let bounds = self.models.get(&model)?.bounds;
-        let (width, height) = (
-            size.0.clamp(1, MAX_VIEW_SIDE),
-            size.1.clamp(1, MAX_VIEW_SIDE),
+        let size = PixelSize::new(
+            size.width.clamp(1, MAX_VIEW_SIDE),
+            size.height.clamp(1, MAX_VIEW_SIDE),
         );
+        let PixelSize { width, height } = size;
 
         let color = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("model_view_color"),
@@ -164,7 +167,10 @@ impl Renderer {
             view_formats: &[],
         });
         let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
-        let (depth, depth_view) = create_depth(device, width, height);
+        let DepthTarget {
+            tex: depth,
+            view: depth_view,
+        } = create_depth(device, size);
 
         let globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("model_view_globals"),
@@ -232,7 +238,7 @@ impl Renderer {
 
         Some(ModelView {
             model,
-            size: (width, height),
+            size,
             color,
             color_view,
             _depth: depth,
@@ -269,7 +275,10 @@ impl Renderer {
         };
         view.dirty = false;
 
-        let (w, h) = view.size;
+        let PixelSize {
+            width: w,
+            height: h,
+        } = view.size;
         let camera = view.camera();
         view.globals.data.time = self.start.elapsed().as_secs_f32();
         view.globals.data.resolution = glam::Vec2::new(w as f32, h as f32);
@@ -355,17 +364,28 @@ impl Renderer {
 mod tests {
     use super::*;
 
-    fn headless_device() -> (wgpu::Device, wgpu::Queue) {
+    /// A device and the queue that submits to it.
+    struct Gpu {
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    }
+
+    fn headless_device() -> Gpu {
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
             .expect("no GPU adapter: run via scripts/snapshot-test (lavapipe)");
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .expect("device")
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                .expect("device");
+        Gpu { device, queue }
     }
 
     /// Read a view's texture back as tightly packed RGBA8 rows.
     fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, view: &ModelView) -> Vec<u8> {
-        let (w, h) = view.size();
+        let PixelSize {
+            width: w,
+            height: h,
+        } = view.size();
         let row = w * 4;
         let padded = row.div_ceil(256) * 256;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -409,9 +429,9 @@ mod tests {
     #[test]
     #[ignore] // needs a GPU adapter (lavapipe): run via scripts/snapshot-test
     fn model_view_renders_and_orbits() {
-        let (device, queue) = headless_device();
+        let Gpu { device, queue } = headless_device();
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let mut renderer = Renderer::new(&device, &queue, format, (64, 64));
+        let mut renderer = Renderer::new(&device, &queue, format, PixelSize::new(64, 64));
         let data = renderer
             .model_uploader(&device, &queue)
             .upload_gltf_slice(&crate::test_util::cube_glb([0.9, 0.2, 0.1, 1.0]))
@@ -419,7 +439,7 @@ mod tests {
         assert_eq!(data.triangles(), 12);
         let model = renderer.insert_model(data);
         let mut view = renderer
-            .create_model_view(&device, model, (64, 64))
+            .create_model_view(&device, model, PixelSize::new(64, 64))
             .expect("model is loaded");
 
         assert!(renderer.render_model_view(&device, &queue, &mut view));

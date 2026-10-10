@@ -29,7 +29,7 @@ use notedeck_ui::diff::{
     DiffSide, FileImages, GitPatch, GitPatchState, ImageSide, MediaKind, ModelGesture, ModelInput,
     PatchModel,
 };
-use renderbud::{ModelData, ModelUploader, ModelView};
+use renderbud::{ModelData, ModelUploader, ModelView, PixelSize};
 
 use crate::review_images::{has_extension, sides_of};
 
@@ -238,7 +238,7 @@ impl ReviewModels {
             renderer: renderer.clone(),
             shown: Vec::new(),
         };
-        let size = (
+        let size = PixelSize::new(
             (MODEL_SIZE.x * pixels_per_point).round() as u32,
             (MODEL_SIZE.y * pixels_per_point).round() as u32,
         );
@@ -260,7 +260,7 @@ impl ReviewModels {
         file: usize,
         side: DiffSide,
         fetched: FetchedModel,
-        size: (u32, u32),
+        size: PixelSize,
     ) -> ImageSide {
         let (data, bytes) = match fetched {
             FetchedModel::Uploaded { data, bytes } => (data, bytes),

@@ -42,7 +42,6 @@ const NOT_YET: &[&str] = &[
     "notedeck_release",
     "notedeck_testing",
     "protoverse",
-    "renderbud",
 ];
 
 /// The workspace root, so offenders print as `crates/<crate>/src/…`.

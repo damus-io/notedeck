@@ -106,7 +106,12 @@ fn snapshot_demo_scene() {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
 
     let (device, queue) = create_headless_device();
-    let mut renderer = renderbud::Renderer::new(&device, &queue, format, (width, height));
+    let mut renderer = renderbud::Renderer::new(
+        &device,
+        &queue,
+        format,
+        renderbud::PixelSize::new(width, height),
+    );
 
     // Parse the production demo space definition
     let space =

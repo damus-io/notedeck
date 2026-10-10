@@ -103,6 +103,45 @@ impl ObjectUniform {
 
 const MAX_SCENE_OBJECTS: usize = 256;
 
+/// A render target's size in pixels.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct PixelSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl PixelSize {
+    pub const fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+}
+
+/// Some GPU data and the layout its bind group was made against.
+struct WithLayout<T> {
+    data: T,
+    layout: wgpu::BindGroupLayout,
+}
+
+/// A world-space ray: where it starts and its unit direction.
+struct Ray {
+    origin: Vec3,
+    dir: Vec3,
+}
+
+/// A depth attachment and the view the passes write through.
+struct DepthTarget {
+    tex: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+/// The shadow pass's depth texture, its view and the comparison sampler
+/// the main pass reads it with.
+struct ShadowMap {
+    _tex: wgpu::Texture,
+    view: wgpu::TextureView,
+    sampler: wgpu::Sampler,
+}
+
 struct DynamicObjectBuffer {
     buffer: wgpu::Buffer,
     bindgroup: wgpu::BindGroup,
@@ -164,11 +203,11 @@ struct GpuData<R> {
 const SHADOW_MAP_SIZE: u32 = 2048;
 
 pub struct Renderer {
-    size: (u32, u32),
+    size: PixelSize,
 
     /// To propery resize we need a device. Provide a target size so
     /// we can dynamically resize next time get one.
-    target_size: (u32, u32),
+    target_size: PixelSize,
 
     /// The texture format used for the color target.
     color_format: wgpu::TextureFormat,
@@ -325,9 +364,7 @@ fn make_global_gpudata(
     }
 }
 
-fn make_dynamic_object_buffer(
-    device: &wgpu::Device,
-) -> (DynamicObjectBuffer, wgpu::BindGroupLayout) {
+fn make_dynamic_object_buffer(device: &wgpu::Device) -> WithLayout<DynamicObjectBuffer> {
     // Alignment for dynamic uniform buffer offsets (typically 256)
     let align = device.limits().min_uniform_buffer_offset_alignment as u64;
     let obj_size = std::mem::size_of::<ObjectUniform>() as u64;
@@ -368,14 +405,14 @@ fn make_dynamic_object_buffer(
         }],
     });
 
-    (
-        DynamicObjectBuffer {
+    WithLayout {
+        data: DynamicObjectBuffer {
             buffer,
             bindgroup,
             stride,
         },
-        object_bgl,
-    )
+        layout: object_bgl,
+    }
 }
 
 /// Ray-AABB intersection using the slab method.
@@ -403,9 +440,9 @@ impl Renderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
-        size: (u32, u32),
+        size: PixelSize,
     ) -> Self {
-        let (width, height) = size;
+        let PixelSize { width, height } = size;
 
         let eye = Vec3::new(0.0, 16.0, 24.0);
         let target = Vec3::new(0.0, 0.0, 0.0);
@@ -416,7 +453,11 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        let (_shadow_tex, shadow_view, shadow_sampler) = create_shadow_map(device);
+        let ShadowMap {
+            view: shadow_view,
+            sampler: shadow_sampler,
+            ..
+        } = create_shadow_map(device);
         let globals_bgl = make_globals_bgl(device);
         let globals = make_global_gpudata(
             device,
@@ -427,8 +468,14 @@ impl Renderer {
             &shadow_view,
             &shadow_sampler,
         );
-        let (object_buf, object_bgl) = make_dynamic_object_buffer(device);
-        let (material, material_bgl) = make_material_gpudata(device, queue);
+        let WithLayout {
+            data: object_buf,
+            layout: object_bgl,
+        } = make_dynamic_object_buffer(device);
+        let WithLayout {
+            data: material,
+            layout: material_bgl,
+        } = make_material_gpudata(device, queue);
 
         let ibl_bgl = ibl::create_ibl_bind_group_layout(device);
         let ibl = ibl::load_hdr_ibl_from_bytes(
@@ -718,7 +765,7 @@ impl Renderer {
             multiview_mask: None,
         });
 
-        let (depth_tex, depth_view) = create_depth(device, width, height);
+        let depth = create_depth(device, size);
 
         let model_ids = 0;
 
@@ -750,13 +797,13 @@ impl Renderer {
             material_bgl,
             ibl,
             models: HashMap::new(),
-            depth_tex,
-            depth_view,
+            depth_tex: depth.tex,
+            depth_view: depth.view,
             start: std::time::Instant::now(),
         }
     }
 
-    pub fn size(&self) -> (u32, u32) {
+    pub fn size(&self) -> PixelSize {
         self.size
     }
 
@@ -880,7 +927,7 @@ impl Renderer {
     }
 
     /// Perform a resize if the target size is not the same as size
-    pub fn set_target_size(&mut self, size: (u32, u32)) {
+    pub fn set_target_size(&mut self, size: PixelSize) {
         self.target_size = size;
     }
 
@@ -889,18 +936,17 @@ impl Renderer {
             return;
         }
 
-        let (width, height) = self.target_size;
-        let w = width as f32;
-        let h = height as f32;
+        let w = self.target_size.width as f32;
+        let h = self.target_size.height as f32;
 
         self.size = self.target_size;
 
         self.globals.data.resolution = Vec2::new(w, h);
         self.globals.data.set_camera(w, h, &self.world.camera);
 
-        let (depth_tex, depth_view) = create_depth(device, width, height);
-        self.depth_tex = depth_tex;
-        self.depth_view = depth_view;
+        let depth = create_depth(device, self.size);
+        self.depth_tex = depth.tex;
+        self.depth_view = depth.view;
     }
 
     pub fn focus_model(&mut self, model: Model) {
@@ -908,9 +954,8 @@ impl Renderer {
             return;
         };
 
-        let (w, h) = self.size;
-        let w = w as f32;
-        let h = h as f32;
+        let w = self.size.width as f32;
+        let h = self.size.height as f32;
 
         let aspect = w / h.max(1.0);
 
@@ -949,9 +994,11 @@ impl Renderer {
     }
 
     /// Convert screen coordinates (relative to viewport) to a world-space ray.
-    /// Returns (origin, direction).
-    fn screen_to_ray(&self, screen_x: f32, screen_y: f32) -> (Vec3, Vec3) {
-        let (w, h) = self.target_size;
+    fn screen_to_ray(&self, screen_x: f32, screen_y: f32) -> Ray {
+        let PixelSize {
+            width: w,
+            height: h,
+        } = self.target_size;
         let ndc_x = (screen_x / w as f32) * 2.0 - 1.0;
         let ndc_y = 1.0 - (screen_y / h as f32) * 2.0;
         let vp = self.world.camera.view_proj(w as f32, h as f32);
@@ -960,13 +1007,16 @@ impl Renderer {
         let far4 = inv_vp * Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
         let near = near4.truncate() / near4.w;
         let far = far4.truncate() / far4.w;
-        (near, (far - near).normalize())
+        Ray {
+            origin: near,
+            dir: (far - near).normalize(),
+        }
     }
 
     /// Pick the closest scene object at the given screen coordinates.
     /// Coordinates are relative to the viewport (0,0 = top-left).
     pub fn pick(&self, screen_x: f32, screen_y: f32) -> Option<ObjectId> {
-        let (origin, dir) = self.screen_to_ray(screen_x, screen_y);
+        let Ray { origin, dir } = self.screen_to_ray(screen_x, screen_y);
         let mut closest: Option<(ObjectId, f32)> = None;
         for &id in self.world.renderables() {
             let model = match self.world.node_model(id) {
@@ -993,7 +1043,7 @@ impl Renderer {
     /// Unproject screen coordinates to a point on a horizontal plane at the given Y height.
     /// Useful for constraining object drag to the ground plane.
     pub fn unproject_to_plane(&self, screen_x: f32, screen_y: f32, plane_y: f32) -> Option<Vec3> {
-        let (origin, dir) = self.screen_to_ray(screen_x, screen_y);
+        let Ray { origin, dir } = self.screen_to_ray(screen_x, screen_y);
         if dir.y.abs() < 1e-6 {
             return None;
         }
@@ -1064,7 +1114,10 @@ impl Renderer {
             CameraMode::Fly(fly) => fly.update_camera(&mut self.world.camera),
             CameraMode::ThirdPerson(tp) => tp.update_camera(&mut self.world.camera),
         }
-        let (w, h) = self.size;
+        let PixelSize {
+            width: w,
+            height: h,
+        } = self.size;
         self.globals
             .data
             .set_camera(w as f32, h as f32, &self.world.camera);
@@ -1179,7 +1232,7 @@ impl Renderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> image::RgbaImage {
-        let (width, height) = self.size;
+        let PixelSize { width, height } = self.size;
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("snapshot_target"),
@@ -1342,16 +1395,12 @@ fn write_gpu_data<R: bytemuck::NoUninit>(queue: &wgpu::Queue, state: &GpuData<R>
     queue.write_buffer(&state.buffer, 0, bytemuck::bytes_of(&state.data));
 }
 
-fn create_depth(
-    device: &wgpu::Device,
-    width: u32,
-    height: u32,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    assert!(width < 8192);
-    assert!(height < 8192);
+fn create_depth(device: &wgpu::Device, size: PixelSize) -> DepthTarget {
+    assert!(size.width < 8192);
+    assert!(size.height < 8192);
     let size = wgpu::Extent3d {
-        width,
-        height,
+        width: size.width,
+        height: size.height,
         depth_or_array_layers: 1,
     };
     let tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -1365,10 +1414,10 @@ fn create_depth(
         view_formats: &[],
     });
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-    (tex, view)
+    DepthTarget { tex, view }
 }
 
-fn create_shadow_map(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView, wgpu::Sampler) {
+fn create_shadow_map(device: &wgpu::Device) -> ShadowMap {
     let size = wgpu::Extent3d {
         width: SHADOW_MAP_SIZE,
         height: SHADOW_MAP_SIZE,
@@ -1394,5 +1443,9 @@ fn create_shadow_map(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView
         compare: Some(wgpu::CompareFunction::Less),
         ..Default::default()
     });
-    (tex, view, sampler)
+    ShadowMap {
+        _tex: tex,
+        view,
+        sampler,
+    }
 }

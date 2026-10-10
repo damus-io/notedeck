@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use crate::Renderer;
+use crate::{PixelSize, Renderer};
 
 #[derive(Clone)]
 pub struct EguiRenderer {
@@ -14,7 +14,7 @@ pub struct SceneRender;
 
 #[cfg(feature = "egui")]
 impl EguiRenderer {
-    pub fn new(rs: &egui_wgpu::RenderState, size: (u32, u32)) -> Self {
+    pub fn new(rs: &egui_wgpu::RenderState, size: PixelSize) -> Self {
         let renderer = Renderer::new(&rs.device, &rs.queue, rs.target_format, size);
         let egui_renderer = Self {
             renderer: Arc::new(Mutex::new(renderer)),

@@ -338,7 +338,8 @@ impl NostrverseApp {
 
     /// Create a new nostrverse app with a space reference
     pub fn new(space_ref: SpaceRef, render_state: Option<&egui_wgpu::RenderState>) -> Self {
-        let renderer = render_state.map(|rs| renderbud::egui::EguiRenderer::new(rs, (800, 600)));
+        let renderer = render_state
+            .map(|rs| renderbud::egui::EguiRenderer::new(rs, renderbud::PixelSize::new(800, 600)));
 
         let device = render_state.map(|rs| rs.device.clone());
         let queue = render_state.map(|rs| rs.queue.clone());

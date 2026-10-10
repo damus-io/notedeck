@@ -605,7 +605,7 @@ fn generate_brdf_lut(device: &wgpu::Device, queue: &wgpu::Queue, size: u32) -> w
     let sample_count = 1024u32;
 
     // Compute all BRDF values in parallel
-    let brdf_values: Vec<(f32, f32)> = (0..size * size)
+    let brdf_values: Vec<SplitSum> = (0..size * size)
         .into_par_iter()
         .map(|idx| {
             let x = idx % size;
@@ -618,7 +618,7 @@ fn generate_brdf_lut(device: &wgpu::Device, queue: &wgpu::Queue, size: u32) -> w
 
     // Write results to buffer
     let mut data = vec![0u8; padded_row * size as usize];
-    for (idx, (scale, bias)) in brdf_values.iter().enumerate() {
+    for (idx, SplitSum { scale, bias }) in brdf_values.iter().enumerate() {
         let x = idx as u32 % size;
         let y = idx as u32 / size;
         let offset = (y as usize * padded_row) + (x as usize * bytes_per_pixel);
@@ -653,9 +653,15 @@ fn generate_brdf_lut(device: &wgpu::Device, queue: &wgpu::Queue, size: u32) -> w
     texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
+/// The split-sum terms one BRDF LUT texel holds: the specular response is
+/// `F0 * scale + bias`.
+struct SplitSum {
+    scale: f32,
+    bias: f32,
+}
+
 /// Integrate the BRDF over the hemisphere using importance sampling.
-/// Returns (scale, bias) for the split-sum: F0 * scale + bias
-fn integrate_brdf(ndot_v: f32, roughness: f32, sample_count: u32) -> (f32, f32) {
+fn integrate_brdf(ndot_v: f32, roughness: f32, sample_count: u32) -> SplitSum {
     // View direction in tangent space (N = [0,0,1])
     let v = [
         (1.0 - ndot_v * ndot_v).sqrt(), // sin(theta)
@@ -670,10 +676,10 @@ fn integrate_brdf(ndot_v: f32, roughness: f32, sample_count: u32) -> (f32, f32) 
 
     for i in 0..sample_count {
         // Hammersley sequence for quasi-random sampling
-        let (xi_x, xi_y) = hammersley(i, sample_count);
+        let xi = hammersley(i, sample_count);
 
         // Importance sample GGX
-        let h = importance_sample_ggx(xi_x, xi_y, alpha);
+        let h = importance_sample_ggx(xi.x, xi.y, alpha);
 
         // Compute light direction by reflecting view around half vector
         let v_dot_h = dot(v, h).max(0.0);
@@ -697,12 +703,15 @@ fn integrate_brdf(ndot_v: f32, roughness: f32, sample_count: u32) -> (f32, f32) 
     }
 
     let inv_samples = 1.0 / sample_count as f32;
-    (a * inv_samples, b * inv_samples)
+    SplitSum {
+        scale: a * inv_samples,
+        bias: b * inv_samples,
+    }
 }
 
-/// Hammersley quasi-random sequence
-fn hammersley(i: u32, n: u32) -> (f32, f32) {
-    (i as f32 / n as f32, radical_inverse_vdc(i))
+/// Hammersley quasi-random sequence: the `i`th of `n` points in the unit square.
+fn hammersley(i: u32, n: u32) -> glam::Vec2 {
+    glam::Vec2::new(i as f32 / n as f32, radical_inverse_vdc(i))
 }
 
 /// Van der Corput radical inverse
@@ -866,8 +875,8 @@ fn prefilter_env_map(
     let alpha = roughness * roughness;
 
     for i in 0..sample_count {
-        let (xi_x, xi_y) = hammersley(i, sample_count);
-        let h = importance_sample_ggx_world(xi_x, xi_y, n, alpha);
+        let xi = hammersley(i, sample_count);
+        let h = importance_sample_ggx_world(xi.x, xi.y, n, alpha);
 
         // Reflect V around H to get L
         let v_dot_h = dot(v, h).max(0.0);
