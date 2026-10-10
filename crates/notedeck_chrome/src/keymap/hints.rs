@@ -222,19 +222,36 @@ label = "keys"
 
     const SCOPES: &[&str] = &["app.pane", "app"];
 
-    /// The strip as `(keycaps joined by spaces, label)`.
-    fn strip(keymap: &Keymap, pending: Option<&str>, off: &[&str]) -> Vec<(String, String)> {
+    /// One hint on the strip, as the tests compare it.
+    #[derive(Debug, PartialEq)]
+    struct StripHint {
+        /// Its keycaps, joined by spaces.
+        keys: String,
+        label: String,
+    }
+
+    /// The strip hint showing `keys` for `label`.
+    fn strip_hint(keys: &str, label: &str) -> StripHint {
+        StripHint {
+            keys: keys.to_owned(),
+            label: label.to_owned(),
+        }
+    }
+
+    /// The strip's hints, in order.
+    fn strip(keymap: &Keymap, pending: Option<&str>, off: &[&str]) -> Vec<StripHint> {
         let pending = pending.map(|keys| KeySeq::parse(keys).expect("pending"));
         keymap
             .hints(Scopes::new(SCOPES), pending, |tool| !off.contains(&tool))
-            .map(|hint| (hint.keycaps().join(" "), hint.label.to_owned()))
+            .map(|hint| strip_hint(&hint.keycaps().join(" "), hint.label))
             .collect()
     }
 
-    fn pairs(expected: &[(&str, &str)]) -> Vec<(String, String)> {
+    /// The strip hints for `expected` `(keys, label)` pairs, in order.
+    fn pairs(expected: &[(&str, &str)]) -> Vec<StripHint> {
         expected
             .iter()
-            .map(|(keys, label)| (keys.to_string(), label.to_string()))
+            .map(|(keys, label)| strip_hint(keys, label))
             .collect()
     }
 
@@ -287,11 +304,8 @@ label = "keys"
         );
         let keymap = parse(&src).expect("keymap");
         let shown = strip(&keymap, None, &[]);
-        assert!(shown.contains(&("g".into(), "go".into())), "{shown:?}");
-        assert!(
-            !shown.iter().any(|(_, label)| label == "first"),
-            "{shown:?}"
-        );
+        assert!(shown.contains(&strip_hint("g", "go")), "{shown:?}");
+        assert!(!shown.iter().any(|hint| hint.label == "first"), "{shown:?}");
     }
 
     /// A binding naming `{current}` is listed only while the app has a

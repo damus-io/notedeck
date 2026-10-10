@@ -345,15 +345,28 @@ mod global_nav_tests {
             .reconcile(NavAction::Navigated);
     }
 
-    /// The app slot and `u32` token of every entry on the history, oldest first.
-    fn history(chrome: &Chrome) -> Vec<(usize, Option<u32>)> {
+    /// One entry on the global history, as the tests compare it: its app slot
+    /// and its `u32` token, if it has one.
+    #[derive(Debug, PartialEq)]
+    struct HistoryEntry {
+        slot: usize,
+        token: Option<u32>,
+    }
+
+    /// The history entry for app `slot` with `token`.
+    fn entry(slot: usize, token: Option<u32>) -> HistoryEntry {
+        HistoryEntry { slot, token }
+    }
+
+    /// Every entry on the history, oldest first.
+    fn history(chrome: &Chrome) -> Vec<HistoryEntry> {
         chrome
             .global_nav
             .as_ref()
             .unwrap()
             .routes()
             .iter()
-            .map(|e| (e.app.slot(), e.token.downcast_ref::<u32>().copied()))
+            .map(|e| entry(e.app.slot(), e.token.downcast_ref::<u32>().copied()))
             .collect()
     }
 
@@ -580,7 +593,7 @@ mod global_nav_tests {
         let removed = chrome.apply_nav_requests(vec![prune(7)]);
 
         // Only app1's entry went: the prune was tagged with the active slot.
-        assert_eq!(history(&chrome), vec![(0, None), (2, Some(7))]);
+        assert_eq!(history(&chrome), vec![entry(0, None), entry(2, Some(7))]);
         assert_eq!(removed.len(), 1, "the removed entry comes back for cleanup");
         assert_eq!(removed[0].app, AppId(1));
         assert_eq!(removed[0].token.downcast_ref::<u32>(), Some(&7));
@@ -604,7 +617,10 @@ mod global_nav_tests {
             prune(7),
         ]);
         assert!(removed.is_empty());
-        assert_eq!(history(&chrome), vec![(0, None), (1, None), (1, Some(7))]);
+        assert_eq!(
+            history(&chrome),
+            vec![entry(0, None), entry(1, None), entry(1, Some(7))]
+        );
         assert_eq!(chrome.pending_prunes.len(), 1);
 
         // A frame with no requests while still sliding changes nothing.
@@ -615,7 +631,7 @@ mod global_nav_tests {
         land_slide(&mut chrome);
         let removed = chrome.apply_nav_requests(Vec::new());
         assert_eq!(removed.len(), 1);
-        assert_eq!(history(&chrome), vec![(0, None), (1, None)]);
+        assert_eq!(history(&chrome), vec![entry(0, None), entry(1, None)]);
         assert!(chrome.pending_prunes.is_empty());
         assert_eq!(chrome.active, 1);
     }
@@ -637,7 +653,12 @@ mod global_nav_tests {
         navigate(&mut chrome, vec![NavRequest::Back, prune(7)]);
         assert_eq!(
             history(&chrome),
-            vec![(0, None), (1, None), (1, Some(7)), (1, Some(8))],
+            vec![
+                entry(0, None),
+                entry(1, None),
+                entry(1, Some(7)),
+                entry(1, Some(8))
+            ],
             "nothing moves under egui-nav while the back slides"
         );
 
@@ -650,7 +671,7 @@ mod global_nav_tests {
 
         // 8 was popped by the back, then 7 pruned: one step lands on app1's root.
         assert_eq!(removed.len(), 1);
-        assert_eq!(history(&chrome), vec![(0, None), (1, None)]);
+        assert_eq!(history(&chrome), vec![entry(0, None), entry(1, None)]);
         assert_eq!(chrome.active, 1);
     }
 
@@ -677,7 +698,10 @@ mod global_nav_tests {
             ActiveNavEntry::new(Rc::new(7u32)),
         )]);
         assert_eq!(removed.len(), 1, "only the old 7 went");
-        assert_eq!(history(&chrome), vec![(0, None), (1, None), (1, Some(7))]);
+        assert_eq!(
+            history(&chrome),
+            vec![entry(0, None), entry(1, None), entry(1, Some(7))]
+        );
         assert!(chrome.pending_prunes.is_empty());
     }
 
@@ -788,7 +812,7 @@ mod global_nav_tests {
             pointer(&mut harness, egui::Event::PointerMoved(pos));
             assert_eq!(
                 history(&harness.state().chrome),
-                vec![(0, None), (1, Some(7)), (1, Some(8))],
+                vec![entry(0, None), entry(1, Some(7)), entry(1, Some(8))],
                 "nothing moves under egui-nav mid-drag"
             );
             assert_eq!(harness.state().chrome.pending_prunes.len(), 1);
@@ -805,7 +829,10 @@ mod global_nav_tests {
             // found it only on the forward stack, where it drops it uncleaned
             // (the pop is what cleans it).
             let state = harness.state();
-            assert_eq!(history(&state.chrome), vec![(0, None), (1, Some(7))]);
+            assert_eq!(
+                history(&state.chrome),
+                vec![entry(0, None), entry(1, Some(7))]
+            );
             assert_eq!(state.popped.len(), 1);
             assert_eq!(state.popped[0].token.downcast_ref::<u32>(), Some(&8));
             assert!(state.removed.is_empty());

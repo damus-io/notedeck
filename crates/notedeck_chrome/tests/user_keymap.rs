@@ -45,7 +45,14 @@ fn save(f: &mut Fixture, toml: &str) -> Result<(), String> {
 
 /// A signed-in fixture, its account's keypair, and a stream over the
 /// account's keymap notes, subscribed before anything is written.
-fn signed_in() -> (Fixture, FullKeypair, SubscriptionStream) {
+struct SignedIn {
+    fixture: Fixture,
+    kp: FullKeypair,
+    stream: SubscriptionStream,
+}
+
+/// A fresh [`SignedIn`] account.
+fn signed_in() -> SignedIn {
     let kp = FullKeypair::generate();
     let mut f = Fixture::signed_in(KEYMAP, &kp.secret_key.to_secret_hex());
     let ndb = ndb(&mut f);
@@ -53,7 +60,11 @@ fn signed_in() -> (Fixture, FullKeypair, SubscriptionStream) {
         .subscribe(&[user::user_keymap_filter(&kp.pubkey)])
         .expect("subscribe");
     let stream = SubscriptionStream::new(ndb, sub).notes_per_await(64);
-    (f, kp, stream)
+    SignedIn {
+        fixture: f,
+        kp,
+        stream,
+    }
 }
 
 /// Write `toml` as `kp`'s keymap the way another device's would arrive:
@@ -75,7 +86,11 @@ async fn write_elsewhere(
 
 #[tokio::test]
 async fn a_keymap_saved_elsewhere_takes_effect_without_a_restart() {
-    let (mut f, kp, mut stream) = signed_in();
+    let SignedIn {
+        fixture: mut f,
+        kp,
+        mut stream,
+    } = signed_in();
     f.key(Key::J);
     assert_eq!(f.calls(), ["fake_down"], "the starting keymap");
 
@@ -94,7 +109,11 @@ async fn a_keymap_saved_elsewhere_takes_effect_without_a_restart() {
 
 #[tokio::test]
 async fn saving_a_keymap_uses_it_at_once_and_a_resave_supersedes_it() {
-    let (mut f, kp, mut stream) = signed_in();
+    let SignedIn {
+        fixture: mut f,
+        kp,
+        mut stream,
+    } = signed_in();
     save(&mut f, Z_FIRST).expect("a good keymap saves");
     f.key(Key::Z);
     assert_eq!(f.calls(), ["fake_first"]);
@@ -120,7 +139,11 @@ async fn saving_a_keymap_uses_it_at_once_and_a_resave_supersedes_it() {
 
 #[tokio::test]
 async fn a_keymap_that_does_not_merge_is_refused_and_nothing_is_written() {
-    let (mut f, kp, _stream) = signed_in();
+    let SignedIn {
+        fixture: mut f,
+        kp,
+        stream: _stream,
+    } = signed_in();
     let unknown_tool = Z_FIRST.replace("fake_first", "fake_frist");
     let err = save(&mut f, &unknown_tool).expect_err("an unknown tool is refused");
     assert!(err.contains("no app has a tool 'fake_frist'"), "{err}");
@@ -135,7 +158,11 @@ async fn a_keymap_that_does_not_merge_is_refused_and_nothing_is_written() {
 
 #[tokio::test]
 async fn a_broken_stored_keymap_keeps_the_defaults_and_says_why() {
-    let (mut f, kp, mut stream) = signed_in();
+    let SignedIn {
+        fixture: mut f,
+        kp,
+        mut stream,
+    } = signed_in();
     write_elsewhere(&mut f, &kp, &mut stream, Z_FIRST).await;
     f.frame(Vec::new());
     f.key(Key::Z);

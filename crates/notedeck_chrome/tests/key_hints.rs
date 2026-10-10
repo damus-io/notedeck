@@ -6,7 +6,7 @@
 mod common;
 
 use common::Fixture;
-use egui::{Key, Modifiers};
+use egui::{Key, KeyboardShortcut, Modifiers};
 use notedeck_chrome::keymap::DEFAULT_KEYMAP;
 use notedeck_chrome::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
 
@@ -61,15 +61,32 @@ fn question_mark(f: &mut Fixture) {
     f.press(Modifiers::SHIFT, Key::Questionmark, Some("?"));
 }
 
-/// The strip's hints as `(keycap, label)`, one per keycap, or `None` if hidden.
-fn shown(f: &mut Fixture) -> Option<Vec<(String, String)>> {
+/// One keycap on the strip and the label it stands beside.
+#[derive(Debug, PartialEq)]
+struct ShownHint {
+    keycap: String,
+    label: String,
+}
+
+impl ShownHint {
+    /// The keycap `keycap` beside `label`.
+    fn new(keycap: &str, label: &str) -> Self {
+        Self {
+            keycap: keycap.to_owned(),
+            label: label.to_owned(),
+        }
+    }
+}
+
+/// The strip's hints, one per keycap, or `None` if hidden.
+fn shown(f: &mut Fixture) -> Option<Vec<ShownHint>> {
     let ctx = f.notedeck.app_context();
     let hints = f.chrome.key_hints(&ctx.registries.tools)?;
     Some(
         hints
             .flat_map(|hint| {
                 hint.keycap_iter()
-                    .map(move |cap| (cap.to_owned(), hint.label.to_owned()))
+                    .map(move |cap| ShownHint::new(cap, hint.label))
             })
             .collect(),
     )
@@ -113,10 +130,7 @@ async fn esc_hides_the_strip_and_only_then_is_taken() {
 async fn a_pending_chord_shows_only_its_continuations() {
     let mut f = fixture();
     f.key(Key::G);
-    assert_eq!(
-        shown(&mut f),
-        Some(vec![("g".to_owned(), "first".to_owned())])
-    );
+    assert_eq!(shown(&mut f), Some(vec![ShownHint::new("g", "first")]));
     assert!(f.drew("first") && f.drew("g"));
     assert!(!f.drew("down"));
 
@@ -169,16 +183,19 @@ async fn an_unavailable_tool_is_left_out() {
 
 /// The presses a keycap stands for: `gg` is two, a capital or a shifted symbol
 /// is Shift plus the key, `^f` is Ctrl+F, and the named keycaps are their keys.
-fn keycap_presses(cap: &str) -> Vec<(Modifiers, Key)> {
+fn keycap_presses(cap: &str) -> Vec<KeyboardShortcut> {
     match cap {
-        "\u{21B5}" => return vec![(Modifiers::NONE, Key::Enter)],
-        "esc" => return vec![(Modifiers::NONE, Key::Escape)],
-        "space" => return vec![(Modifiers::NONE, Key::Space)],
+        "\u{21B5}" => return vec![KeyboardShortcut::new(Modifiers::NONE, Key::Enter)],
+        "esc" => return vec![KeyboardShortcut::new(Modifiers::NONE, Key::Escape)],
+        "space" => return vec![KeyboardShortcut::new(Modifiers::NONE, Key::Space)],
         _ => {}
     }
     if let Some(letter) = cap.strip_prefix('^') {
         let key = Key::from_name(letter).unwrap_or_else(|| panic!("keycap {cap:?}"));
-        return vec![(Modifiers::CTRL | Modifiers::COMMAND, key)];
+        return vec![KeyboardShortcut::new(
+            Modifiers::CTRL | Modifiers::COMMAND,
+            key,
+        )];
     }
     cap.chars()
         .map(|c| {
@@ -190,7 +207,7 @@ fn keycap_presses(cap: &str) -> Vec<(Modifiers, Key)> {
             } else {
                 Modifiers::NONE
             };
-            (modifiers, key)
+            KeyboardShortcut::new(modifiers, key)
         })
         .collect()
 }
@@ -206,7 +223,7 @@ async fn every_hint_does_what_it_says() {
     let hints = shown(&mut f).expect("pinned");
     assert_eq!(hints.len(), LABEL_TOOLS.len(), "{hints:?}");
 
-    for (cap, label) in hints {
+    for ShownHint { keycap: cap, label } in hints {
         let (_, tool) = LABEL_TOOLS
             .iter()
             .find(|(l, _)| *l == label)
@@ -214,8 +231,8 @@ async fn every_hint_does_what_it_says() {
 
         let mut f = fixture();
         question_mark(&mut f);
-        for (modifiers, key) in keycap_presses(&cap) {
-            f.press(modifiers, key, None);
+        for press in keycap_presses(&cap) {
+            f.press(press.modifiers, press.logical_key, None);
         }
 
         match *tool {

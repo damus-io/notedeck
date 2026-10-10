@@ -81,11 +81,19 @@ fn setup_logging(path: &DataPath) -> Option<WorkerGuard> {
     maybe_guard
 }
 
-fn resolve_native_title(args_raw: &[String]) -> (String, bool) {
+/// The native window's title, and whether its titlebar is shown.
+struct NativeTitle {
+    title: String,
+    show_title: bool,
+}
+
+/// The native window title the command line asks for, read before eframe
+/// creates the window.
+fn resolve_native_title(args_raw: &[String]) -> NativeTitle {
     let args = Args::parse(args_raw).args;
     let show_title = args.options.contains(NotedeckOptions::ShowTitle);
     let title = args.title.unwrap_or_else(|| "Damus Notedeck".to_string());
-    (title, show_title)
+    NativeTitle { title, show_title }
 }
 
 // Desktop
@@ -118,7 +126,7 @@ async fn async_main() {
         return;
     }
 
-    let (title, show_title) = resolve_native_title(&args_raw);
+    let NativeTitle { title, show_title } = resolve_native_title(&args_raw);
 
     let _res = eframe::run_native(
         &title,
@@ -259,7 +267,7 @@ pub fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_native_title, Notedeck};
+    use super::{resolve_native_title, NativeTitle, Notedeck};
     use notedeck::{Args, DataPath, NotedeckOptions, ParsedArgs};
     use notedeck_columns::Damus;
     use std::path::{Path, PathBuf};
@@ -276,17 +284,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(path);
     }
 
-    fn apply_window_builder_for_args(args: &[String]) -> (String, bool, egui::ViewportBuilder) {
-        let (title, show_title) = resolve_native_title(args);
+    /// The native window `args` start: its title, and the viewport the
+    /// window builder makes for it.
+    struct NativeWindow {
+        title: NativeTitle,
+        builder: egui::ViewportBuilder,
+    }
+
+    fn apply_window_builder_for_args(args: &[String]) -> NativeWindow {
+        let title = resolve_native_title(args);
         let tempdir = TempDir::new().expect("tmp path");
         let options = notedeck_chrome::setup::generate_native_options(
             DataPath::new(tempdir.path()),
-            show_title,
+            title.show_title,
         );
         let builder = (options.window_builder.expect("window builder should exist"))(
             egui::ViewportBuilder::default(),
         );
-        (title, show_title, builder)
+        NativeWindow { title, builder }
     }
 
     /// Ensure dbpath actually sets the dbpath correctly.
@@ -420,7 +435,10 @@ mod tests {
         } = Args::parse(&args[1..]);
         assert!(unrecognized.is_empty());
 
-        let (title, show_title, builder) = apply_window_builder_for_args(&args);
+        let NativeWindow {
+            title: NativeTitle { title, show_title },
+            builder,
+        } = apply_window_builder_for_args(&args);
 
         assert_eq!(title, parsed.title.unwrap());
         assert_eq!(
@@ -446,7 +464,10 @@ mod tests {
             } = Args::parse(&args[1..]);
             assert!(unrecognized.is_empty());
 
-            let (title, show_title, builder) = apply_window_builder_for_args(&args);
+            let NativeWindow {
+                title: NativeTitle { title, show_title },
+                builder,
+            } = apply_window_builder_for_args(&args);
 
             assert_eq!(
                 title,

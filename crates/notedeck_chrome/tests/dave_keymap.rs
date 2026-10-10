@@ -20,8 +20,15 @@ use notedeck_dave::Dave;
 /// The scopes Dave reports in normal mode, by pane (`ui_tools::key_scopes`).
 const DAVE_SCOPES: [&str; 3] = ["dave.chat", "dave.sessions", "dave.normal"];
 
-/// The shipped keymap's Dave bindings as written: each one's scope and tool.
-fn dave_bindings() -> Vec<(String, String)> {
+/// One Dave `[[bind]]` of the shipped keymap, as written.
+#[derive(Debug)]
+struct Binding {
+    scope: String,
+    tool: String,
+}
+
+/// The shipped keymap's Dave bindings as written.
+fn dave_bindings() -> Vec<Binding> {
     let table: toml::Table = DEFAULT_KEYMAP.parse().expect("the default keymap is TOML");
     let binds = table["bind"].as_array().expect("[[bind]] entries");
     binds
@@ -32,7 +39,10 @@ fn dave_bindings() -> Vec<(String, String)> {
                 return None;
             }
             let tool = bind.get("tool")?.as_str()?;
-            Some((scope.to_owned(), tool.to_owned()))
+            Some(Binding {
+                scope: scope.to_owned(),
+                tool: tool.to_owned(),
+            })
         })
         .collect()
 }
@@ -67,7 +77,7 @@ fn every_dave_binding_names_a_dave_tool() {
     assert!(bindings.len() > 30, "Dave's keymap is in: {bindings:?}");
     let ctx = notedeck.app_context();
     let mut bound = BTreeSet::new();
-    for (scope, tool) in bindings {
+    for Binding { scope, tool } in bindings {
         assert!(
             DAVE_SCOPES.contains(&scope.as_str()),
             "{scope} isn't a scope Dave reports"

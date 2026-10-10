@@ -32,13 +32,10 @@ const GRID: &str = "7 cards · 5 columns";
 /// How many frames a wait for the board gives up after.
 const SETTLE_FRAMES: usize = 600;
 
-/// One UI tool call that reached Headway.
-type Call = (String, Value);
-
 /// Headway, recording every UI tool call chrome hands it before passing it on.
 struct Recording {
     headway: Headway,
-    calls: Rc<RefCell<Vec<Call>>>,
+    calls: Rc<RefCell<Vec<ToolInvocation>>>,
 }
 
 impl App for Recording {
@@ -70,7 +67,7 @@ impl App for Recording {
     fn call_ui_tool(&mut self, ctx: &mut AppContext<'_>, name: &str, args: &Value) -> ToolOutcome {
         self.calls
             .borrow_mut()
-            .push((name.to_owned(), args.clone()));
+            .push(ToolInvocation::new(name, args.clone()));
         self.headway.call_ui_tool(ctx, name, args)
     }
 
@@ -93,7 +90,7 @@ struct Fixture {
     egui_ctx: egui::Context,
     notedeck: Notedeck,
     chrome: Chrome,
-    calls: Rc<RefCell<Vec<Call>>>,
+    calls: Rc<RefCell<Vec<ToolInvocation>>>,
     /// The input time of the next frame.
     time: f64,
     /// Every piece of text the last frame painted.
@@ -274,7 +271,7 @@ impl Fixture {
     }
 
     /// Take the UI tool calls that reached Headway since the last take.
-    fn take_calls(&self) -> Vec<Call> {
+    fn take_calls(&self) -> Vec<ToolInvocation> {
         std::mem::take(&mut *self.calls.borrow_mut())
     }
 }
@@ -293,12 +290,21 @@ fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
 }
 
 /// A call of `name` with `args`.
-fn call(name: &str, args: Value) -> Call {
-    (name.to_owned(), args)
+fn call(name: &str, args: Value) -> ToolInvocation {
+    ToolInvocation::new(name, args)
 }
 
-/// The shipped keymap as written: every `[[bind]]`'s scope, tool and args.
-fn default_bindings() -> Vec<(String, String, Value)> {
+/// One `[[bind]]` of the shipped keymap, as written.
+#[derive(Debug)]
+struct Binding {
+    scope: String,
+    tool: String,
+    /// Its args as JSON, `Value::Null` when it has none.
+    args: Value,
+}
+
+/// The shipped keymap as written: every `[[bind]]` that names a tool.
+fn default_bindings() -> Vec<Binding> {
     let table: toml::Table = DEFAULT_KEYMAP.parse().expect("the default keymap is TOML");
     let binds = table["bind"].as_array().expect("[[bind]] entries");
     binds
@@ -310,7 +316,7 @@ fn default_bindings() -> Vec<(String, String, Value)> {
                 .get("args")
                 .map(|args| serde_json::to_value(args).expect("args as JSON"))
                 .unwrap_or(Value::Null);
-            Some((scope, tool, args))
+            Some(Binding { scope, tool, args })
         })
         .collect()
 }
@@ -329,11 +335,11 @@ async fn every_headway_binding_names_a_headway_tool() {
         .collect();
     let bindings: Vec<_> = default_bindings()
         .into_iter()
-        .filter(|(scope, _, _)| scope.starts_with("headway"))
+        .filter(|binding| binding.scope.starts_with("headway"))
         .collect();
     assert!(bindings.len() > 30, "Headway's keymap is in: {bindings:?}");
 
-    for (scope, tool, args) in bindings {
+    for Binding { scope, tool, args } in bindings {
         if data_tools.contains(&tool.as_str()) {
             assert_eq!(
                 args["card"], "{current}",

@@ -191,16 +191,16 @@ fn chrome_nav_controls(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui:
         .unwrap_or((false, false));
 
     // History dropdown (clock). Its list is built lazily, only while open.
-    let (clock_resp, clock_rect) = nav_button_slot(ui, true);
+    let clock = nav_button_slot(ui, true);
     paint_clock(
         ui.painter(),
-        clock_rect.center(),
+        clock.rect.center(),
         7.0,
         ui.visuals().text_color(),
     );
     // A click on the clock toggles the list; picking an entry closes it.
     let mut jump_to: Option<usize> = None;
-    egui::Popup::from_toggle_button_response(&clock_resp)
+    egui::Popup::from_toggle_button_response(&clock.response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
         .show(|ui| {
             ui.set_min_width(220.0);
@@ -232,25 +232,25 @@ fn chrome_nav_controls(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui:
     ui.add_space(4.0);
 
     // Back / forward chevrons, greyed when the stack can't move that way.
-    let (back_resp, back_rect) = nav_button_slot(ui, can_back);
+    let back = nav_button_slot(ui, can_back);
     paint_nav_chevron(
         ui.painter(),
-        back_rect,
+        back.rect,
         ChevronDir::Left,
         chevron_color(ui, can_back),
     );
-    if back_resp.clicked() {
+    if back.response.clicked() {
         chrome.global_go_back();
     }
 
-    let (fwd_resp, fwd_rect) = nav_button_slot(ui, can_forward);
+    let fwd = nav_button_slot(ui, can_forward);
     paint_nav_chevron(
         ui.painter(),
-        fwd_rect,
+        fwd.rect,
         ChevronDir::Right,
         chevron_color(ui, can_forward),
     );
-    if fwd_resp.clicked() {
+    if fwd.response.clicked() {
         chrome.global_go_forward();
     }
 
@@ -258,11 +258,17 @@ fn chrome_nav_controls(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui:
     ui.add_space(8.0);
 }
 
+/// A header nav button's allocated slot: its response, and the rect the caller
+/// paints its glyph into.
+struct NavButtonSlot {
+    response: egui::Response,
+    rect: Rect,
+}
+
 /// Allocate a fixed [`NAV_BTN_SIZE`] slot for a header nav button, painting a
-/// subtle rounded hover background when `enabled` and hovered. Returns the
-/// response and the slot rect for the caller to paint its glyph into. A disabled
-/// slot only senses hover, so its clicks are inert (a greyed-out control).
-fn nav_button_slot(ui: &mut egui::Ui, enabled: bool) -> (egui::Response, Rect) {
+/// subtle rounded hover background when `enabled` and hovered. A disabled slot
+/// only senses hover, so its clicks are inert (a greyed-out control).
+fn nav_button_slot(ui: &mut egui::Ui, enabled: bool) -> NavButtonSlot {
     let sense = if enabled {
         Sense::click()
     } else {
@@ -270,7 +276,7 @@ fn nav_button_slot(ui: &mut egui::Ui, enabled: bool) -> (egui::Response, Rect) {
     };
     let (rect, response) = ui.allocate_exact_size(NAV_BTN_SIZE, sense);
     if !enabled {
-        return (response, rect);
+        return NavButtonSlot { response, rect };
     }
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if response.hovered() {
@@ -280,7 +286,7 @@ fn nav_button_slot(ui: &mut egui::Ui, enabled: bool) -> (egui::Response, Rect) {
             ui.visuals().widgets.hovered.weak_bg_fill,
         );
     }
-    (response, rect)
+    NavButtonSlot { response, rect }
 }
 
 /// Colour for a header chevron: normal when the control is enabled, greyed (per
