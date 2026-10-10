@@ -87,24 +87,34 @@ pub(crate) fn fetch(repo_dir: &Path, sha: &str, patch: &GitPatch) -> Vec<Fetched
                     read_side(repo_dir, rev, path)
                 }
             };
-            let (has_old, has_new) = sides_of(patch_file);
+            let sides = sides_of(patch_file);
             FetchedImages {
                 file,
-                old: has_old
+                old: sides
+                    .old
                     .then(|| side(&parent, &patch_file.old_path))
                     .flatten(),
-                new: has_new.then(|| side(sha, &patch_file.new_path)).flatten(),
+                new: sides.new.then(|| side(sha, &patch_file.new_path)).flatten(),
             }
         })
         .collect()
 }
 
+/// Which sides of a diffed file exist, as [`sides_of`] reads them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Sides {
+    /// The file before the commit; an added file has none.
+    pub old: bool,
+    /// The file after it; a deleted file has none.
+    pub new: bool,
+}
+
 /// Which sides `file` has: an added file no before, a deleted one no after.
-pub(crate) fn sides_of(file: &FilePatch) -> (bool, bool) {
-    (
-        file.status != FileStatus::Added,
-        file.status != FileStatus::Deleted,
-    )
+pub(crate) fn sides_of(file: &FilePatch) -> Sides {
+    Sides {
+        old: file.status != FileStatus::Added,
+        new: file.status != FileStatus::Deleted,
+    }
 }
 
 /// `path` at `rev`, decoded; `None` when the rev turns out not to have it

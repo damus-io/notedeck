@@ -23,7 +23,7 @@ use syn::visit::Visit;
 /// signature. Converting one removes it here; a listed crate that is already
 /// clean fails [`not_yet_lists_only_crates_that_hold_a_tuple`], so the list
 /// only shrinks. When it is empty, delete it.
-const NOT_YET: &[&str] = &["notedeck_dave", "notedeck_headway"];
+const NOT_YET: &[&str] = &["notedeck_dave"];
 
 /// The workspace root, so offenders print as `crates/<crate>/src/…`.
 fn root() -> PathBuf {

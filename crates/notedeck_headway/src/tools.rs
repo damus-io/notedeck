@@ -19,7 +19,7 @@ use notedeck::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::cursor::{self, Side, Vertical};
+use crate::cursor::{self, MoveTarget, Side, Vertical};
 use crate::teams;
 use crate::ui::{CardFilter, ViewFilter};
 
@@ -593,13 +593,12 @@ enum MoveStep {
 const MOVE_STEPS: &[&str] = &["left", "right", "up", "down"];
 
 impl MoveStep {
-    /// Where this step drops `card` on `view`, as `(to_col, to_row)`; an error
-    /// at the edge of the board or of its column.
+    /// Where this step drops `card` on `view`; an error at the edge of the board or of its column.
     ///
     /// The steps the grid's `H L J K` always made ([`cursor::move_across`],
     /// [`cursor::move_within`]), over the whole board: a tool sees no grid
     /// filter, so with one on, `J` hops the next card even if it's hidden.
-    fn target(self, view: &BoardView, card: NoteId) -> Result<(usize, usize), String> {
+    fn target(self, view: &BoardView, card: NoteId) -> Result<MoveTarget, String> {
         let everything = CardFilter::default();
         let filter = ViewFilter {
             filter: &everything,
@@ -658,10 +657,13 @@ impl MoveCard {
     /// The move `args` asks for on `view`.
     fn edit(view: &BoardView, args: &MoveCardArgs) -> Result<BoardAction, String> {
         let card = resolve_card(view, &args.card)?;
-        let (to_col, to_row) = match (&args.column, args.to) {
+        let MoveTarget { to_col, to_row } = match (&args.column, args.to) {
             (Some(column), None) => {
                 let to_col = resolve_col(view, column)?;
-                (to_col, view.columns[to_col].cards.len())
+                MoveTarget {
+                    to_col,
+                    to_row: view.columns[to_col].cards.len(),
+                }
             }
             (None, Some(step)) => step.target(view, card)?,
             _ => return Err("give exactly one of 'column' and 'to'".to_owned()),
@@ -1110,7 +1112,7 @@ mod tests {
     /// so the tools fold the right board. The demo board lands 3 / 2 / 1 / 0 / 1
     /// cards across its five columns (7 total). Owned pieces are returned so they
     /// outlive the borrows a `ToolContext` takes.
-    fn seeded_env() -> (TempDir, Ndb, Accounts, NoteCache) {
+    fn seeded_env() -> SeededEnv {
         let dir = TempDir::new().expect("tmp dir");
         let mut ndb = Ndb::new(dir.path().to_str().expect("path"), &test_config()).expect("ndb");
         let kp = FullKeypair::generate();
@@ -1156,7 +1158,21 @@ mod tests {
             &mut unknown_ids,
         );
         drop(txn);
-        (dir, ndb, accounts, NoteCache::default())
+        SeededEnv {
+            dir,
+            ndb,
+            accounts,
+            note_cache: NoteCache::default(),
+        }
+    }
+
+    /// What [`seeded_env`] hands back. Bind `dir` for the whole test: the
+    /// database lives in it.
+    struct SeededEnv {
+        dir: TempDir,
+        ndb: Ndb,
+        accounts: Accounts,
+        note_cache: NoteCache,
     }
 
     fn tool_context<'a>(
@@ -1263,7 +1279,12 @@ mod tests {
     /// not a plaintext edit.
     #[test]
     fn resolve_target_unknown_board_errors() {
-        let (_dir, ndb, accounts, _nc) = seeded_env();
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            ..
+        } = seeded_env();
         let author = *accounts.selected_account_pubkey();
         // `SnsChannel` isn't `Debug`, so match the error rather than `unwrap_err`.
         let Err(err) = resolve_target(&ndb, &author, "nope", &[]) else {
@@ -1274,7 +1295,12 @@ mod tests {
 
     #[test]
     fn list_boards_reports_the_seeded_board() {
-        let (_dir, ndb, accounts, mut note_cache) = seeded_env();
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            mut note_cache,
+        } = seeded_env();
         let mut cx = tool_context(&ndb, &mut note_cache, &accounts);
 
         let out = ListBoards.call(&mut cx, ListBoardsArgs {}).unwrap();
@@ -1285,7 +1311,12 @@ mod tests {
 
     #[test]
     fn show_board_returns_five_columns() {
-        let (_dir, ndb, accounts, mut note_cache) = seeded_env();
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            mut note_cache,
+        } = seeded_env();
         let mut cx = tool_context(&ndb, &mut note_cache, &accounts);
 
         let out = ShowBoard
@@ -1297,7 +1328,12 @@ mod tests {
 
     #[test]
     fn show_board_errors_on_unknown_board() {
-        let (_dir, ndb, accounts, mut note_cache) = seeded_env();
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            mut note_cache,
+        } = seeded_env();
         let mut cx = tool_context(&ndb, &mut note_cache, &accounts);
 
         let err = ShowBoard
@@ -1313,7 +1349,12 @@ mod tests {
 
     #[test]
     fn show_card_resolves_by_word_id() {
-        let (_dir, ndb, accounts, mut note_cache) = seeded_env();
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            mut note_cache,
+        } = seeded_env();
 
         // Pull a real card's word-id out of the folded board.
         let words = {
@@ -1348,7 +1389,12 @@ mod tests {
 
     #[test]
     fn show_card_errors_on_unknown_card() {
-        let (_dir, ndb, accounts, mut note_cache) = seeded_env();
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            mut note_cache,
+        } = seeded_env();
         let mut cx = tool_context(&ndb, &mut note_cache, &accounts);
 
         let err = ShowCard
@@ -1384,7 +1430,12 @@ mod tests {
         // blocked by the still-open "Nostr event model", and "Card detail /
         // comments view" is blocked by sync. Both must be held out of the ready
         // frontier so an agent fanning out over it respects the prerequisites.
-        let (_dir, ndb, accounts, mut nc) = seeded_env();
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            note_cache: mut nc,
+        } = seeded_env();
         let mut cx = tool_context(&ndb, &mut nc, &accounts);
 
         let out = ReadyItems
@@ -1418,7 +1469,12 @@ mod tests {
 
     #[test]
     fn ready_items_limit_caps_the_frontier() {
-        let (_dir, ndb, accounts, mut nc) = seeded_env();
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            note_cache: mut nc,
+        } = seeded_env();
         let mut cx = tool_context(&ndb, &mut nc, &accounts);
 
         let full = ReadyItems
@@ -1450,7 +1506,12 @@ mod tests {
 
     #[test]
     fn ready_items_errors_on_unknown_board() {
-        let (_dir, ndb, accounts, mut nc) = seeded_env();
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            note_cache: mut nc,
+        } = seeded_env();
         let mut cx = tool_context(&ndb, &mut nc, &accounts);
 
         let err = ReadyItems
@@ -1468,7 +1529,12 @@ mod tests {
 
     #[test]
     fn ready_items_errors_on_unknown_container() {
-        let (_dir, ndb, accounts, mut nc) = seeded_env();
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            note_cache: mut nc,
+        } = seeded_env();
         let mut cx = tool_context(&ndb, &mut nc, &accounts);
 
         let err = ReadyItems
@@ -1486,7 +1552,12 @@ mod tests {
 
     #[test]
     fn resolve_col_by_id_and_name() {
-        let (_dir, ndb, accounts, _nc) = seeded_env();
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            ..
+        } = seeded_env();
         let txn = Transaction::new(&ndb).expect("txn");
         let author = *accounts.selected_account_pubkey();
         let view = event::load_board(&ndb, &txn, &author, store::BOARD_ID).expect("board");
@@ -1507,7 +1578,12 @@ mod tests {
     #[test]
     fn move_card_unknown_column_errors() {
         // The card resolves, so the error is specifically the column miss.
-        let (_dir, ndb, accounts, mut nc) = seeded_env();
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            note_cache: mut nc,
+        } = seeded_env();
         let card = first_card_ref(&ndb, &accounts);
         let mut cx = tool_context(&ndb, &mut nc, &accounts);
 
@@ -1590,7 +1666,12 @@ mod tests {
 
     #[test]
     fn set_priority_unknown_card_errors() {
-        let (_dir, ndb, accounts, mut nc) = seeded_env();
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            note_cache: mut nc,
+        } = seeded_env();
         let mut cx = tool_context(&ndb, &mut nc, &accounts);
 
         let err = SetPriority
@@ -1610,7 +1691,12 @@ mod tests {
     fn write_tool_rejects_watch_only_account() {
         // The seeded account is pubkey-only. A valid mutation folds and resolves
         // but must refuse to sign rather than silently drop the change.
-        let (_dir, ndb, accounts, mut nc) = seeded_env();
+        let SeededEnv {
+            dir: _dir,
+            ndb,
+            accounts,
+            note_cache: mut nc,
+        } = seeded_env();
         let card = first_card_ref(&ndb, &accounts);
         let mut cx = tool_context(&ndb, &mut nc, &accounts);
 

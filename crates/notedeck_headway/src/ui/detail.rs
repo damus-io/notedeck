@@ -15,7 +15,7 @@ use super::widgets::{
     STATUS_DONE, StatusIcon, count_badge, detail_heading, label_color, priority_icon_ui,
     priority_label, secondary_action_button, section_label, status_icon_ui,
 };
-use super::{BoardUiState, EditMode, find_card, notice_ui, seed_edit_mode};
+use super::{BoardUiState, EditMode, FoundCard, find_card, notice_ui, seed_edit_mode};
 use crate::event::{
     self, ActivityKind, ActivityView, BoardView, ColumnPos, ColumnView, CommentView, Priority,
     ReviewView,
@@ -74,7 +74,11 @@ pub(super) fn card_detail_pane_ui(
     let Some(card_id) = state.selected else {
         return;
     };
-    let Some((current_col, card)) = find_card(view, card_id) else {
+    let Some(FoundCard {
+        col: current_col,
+        card,
+    }) = find_card(view, card_id)
+    else {
         state.selected = None;
         state.detail_for = None;
         return;
@@ -135,7 +139,7 @@ pub(super) fn card_detail_pane_ui(
         activity: &card.activity,
         parent: card.parent.map(|pid| DetailParent {
             id: pid,
-            title: find_card(view, pid).map(|(_, p)| p.title.clone()),
+            title: find_card(view, pid).map(|found| found.card.title.clone()),
         }),
         subissues: card
             .subissues
@@ -1964,7 +1968,7 @@ fn resolve_subissue_reorder(
     before: Option<NoteId>,
     action: &mut Option<BoardAction>,
 ) {
-    let Some((_, card)) = find_card(view, parent) else {
+    let Some(FoundCard { card, .. }) = find_card(view, parent) else {
         return;
     };
     if card.subissues.iter().all(|s| s.seq.is_some()) {
@@ -2049,7 +2053,13 @@ fn seq_position_for_gap(
 /// siblings can anchor an `After`/`Before` insert.
 fn subissue_is_sequenced(view: &BoardView, parent: NoteId, child: NoteId) -> bool {
     find_card(view, parent)
-        .map(|(_, c)| c.subissues.iter().any(|s| s.id == child && s.seq.is_some()))
+        .map(|found| {
+            found
+                .card
+                .subissues
+                .iter()
+                .any(|s| s.id == child && s.seq.is_some())
+        })
         .unwrap_or(false)
 }
 

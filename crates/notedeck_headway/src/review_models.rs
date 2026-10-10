@@ -104,13 +104,14 @@ pub(crate) fn fetch(
                     read_side(&uploader, repo_dir, rev, path)
                 }
             };
-            let (has_old, has_new) = sides_of(patch_file);
+            let sides = sides_of(patch_file);
             FetchedModels {
                 file,
-                old: has_old
+                old: sides
+                    .old
                     .then(|| side(&parent, &patch_file.old_path))
                     .flatten(),
-                new: has_new.then(|| side(sha, &patch_file.new_path)).flatten(),
+                new: sides.new.then(|| side(sha, &patch_file.new_path)).flatten(),
             }
         })
         .collect()

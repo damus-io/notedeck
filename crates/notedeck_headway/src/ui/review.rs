@@ -26,7 +26,7 @@ use super::widgets::{
     count_badge, detail_heading, pill_height, round_icon_button, secondary_action_button,
     section_label, status_icon_ui, text_pill, tinted_control, tinted_pill,
 };
-use super::{BoardUiState, find_card};
+use super::{BoardUiState, FoundCard, find_card};
 use crate::keys::{ActionView, CardAction, apply_card_action};
 use crate::nav::{NavPos, ReviewTarget};
 use crate::review::{
@@ -185,7 +185,7 @@ pub(crate) fn in_review(view: &BoardView, card: NoteId) -> bool {
     let Some(col) = IN_REVIEW.index(view) else {
         return false;
     };
-    find_card(view, card).is_some_and(|(at, _)| at == col)
+    find_card(view, card).is_some_and(|found| found.col == col)
 }
 
 impl QueueColumn {
@@ -557,7 +557,7 @@ impl ReviewQueue {
         self.scope = scope;
         self.scope_label = scope.epic().map(|epic| ScopeLabel {
             text: format!("in {}", headway::wordid::encode(epic.bytes())),
-            title: find_card(view, epic).map_or_else(String::new, |(_, c)| c.title.clone()),
+            title: find_card(view, epic).map_or_else(String::new, |found| found.card.title.clone()),
         });
         self.cards = cards;
         self.open = true;
@@ -687,11 +687,13 @@ pub(super) fn review_queue_ui(
     // as well covers a chrome-less embedding and the frame a step lands on.
     state.review.seed(state.queue.target());
 
-    if let Some((_, next)) = state.queue.next_card().and_then(|c| find_card(view, c)) {
+    if let Some(FoundCard { card: next, .. }) =
+        state.queue.next_card().and_then(|c| find_card(view, c))
+    {
         prefetch(app_ctx, view, next, &mut state.review.loader);
     }
 
-    let Some((col, card)) = find_card(view, current) else {
+    let Some(FoundCard { col, card }) = find_card(view, current) else {
         // A card that left the board since the snapshot (archived, moved to
         // another board) keeps its place in the queue, so the position still
         // adds up; there's just nothing to review.
@@ -776,7 +778,7 @@ pub(super) fn review_pane_ui(
     };
     let title_of = |c: Option<NoteId>| {
         c.and_then(|c| find_card(view, c))
-            .map(|(_, c)| c.title.as_str())
+            .map(|found| found.card.title.as_str())
     };
     let queue = (state.queue.current() == Some(card.id)).then(|| QueueHeader {
         position: state.queue.position(),

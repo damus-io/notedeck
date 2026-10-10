@@ -553,6 +553,7 @@ mod tests {
     use notedeck::test_harness::PressKey;
     use notedeck_chrome::keymap::{KeyDispatch, KeyEngine, Scopes};
     use notedeck_chrome::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
+    use notedeck_ui::chord::KeyPress;
 
     use crate::ui_tools::{available, key_scopes};
 
@@ -662,33 +663,44 @@ mod tests {
                 to_row,
             } => {
                 h.moved = Some((card, to_col, to_row));
-                let Some((from_col, from_row, moved)) = take_card(&mut h.view, card) else {
+                let Some(taken) = take_card(&mut h.view, card) else {
                     return;
                 };
                 // `to_row` counts the moving card where it was.
-                let row = if from_col == to_col && to_row > from_row {
+                let row = if taken.col == to_col && to_row > taken.row {
                     to_row - 1
                 } else {
                     to_row
                 };
                 let cards = &mut h.view.columns[to_col].cards;
-                cards.insert(row.min(cards.len()), moved);
+                cards.insert(row.min(cards.len()), taken.card);
             }
             _ => panic!("not a key's board edit"),
         }
     }
 
-    /// Take `card` out of its column: its column, its row and the card.
-    fn take_card(
-        view: &mut BoardView,
-        card: NoteId,
-    ) -> Option<(usize, usize, headway::event::CardView)> {
+    /// A card [`take_card`] took out of the board, with where it was.
+    struct TakenCard {
+        /// The column it sat in.
+        col: usize,
+        /// Its row in that column.
+        row: usize,
+        /// The card.
+        card: headway::event::CardView,
+    }
+
+    /// Take `card` out of its column.
+    fn take_card(view: &mut BoardView, card: NoteId) -> Option<TakenCard> {
         view.columns
             .iter_mut()
             .enumerate()
             .find_map(|(col, column)| {
                 let row = column.cards.iter().position(|c| c.id == card)?;
-                Some((col, row, column.cards.remove(row)))
+                Some(TakenCard {
+                    col,
+                    row,
+                    card: column.cards.remove(row),
+                })
             })
     }
 
@@ -1030,23 +1042,33 @@ mod tests {
     /// The presses a which-key keycap stands for: `gg` is two, a capital is
     /// Shift plus the letter, `^d` is Ctrl+D, `S-space` Shift+Space, and the
     /// named keycaps are their keys.
-    fn keycap_presses(cap: &str) -> Vec<(Modifiers, Key)> {
+    fn keycap_presses(cap: &str) -> Vec<KeyPress> {
+        let bare = |key| KeyPress {
+            key,
+            modifiers: Modifiers::NONE,
+        };
         if let Some(rest) = cap.strip_prefix("S-") {
             let presses = keycap_presses(rest);
             return presses
                 .into_iter()
-                .map(|(modifiers, key)| (modifiers | Modifiers::SHIFT, key))
+                .map(|press| KeyPress {
+                    modifiers: press.modifiers | Modifiers::SHIFT,
+                    ..press
+                })
                 .collect();
         }
         match cap {
-            "\u{21B5}" => return vec![(Modifiers::NONE, Key::Enter)],
-            "esc" => return vec![(Modifiers::NONE, Key::Escape)],
-            "space" => return vec![(Modifiers::NONE, Key::Space)],
+            "\u{21B5}" => return vec![bare(Key::Enter)],
+            "esc" => return vec![bare(Key::Escape)],
+            "space" => return vec![bare(Key::Space)],
             _ => {}
         }
         if let Some(letter) = cap.strip_prefix('^') {
             let key = Key::from_name(letter).unwrap_or_else(|| panic!("keycap {cap:?}"));
-            return vec![(Modifiers::CTRL, key)];
+            return vec![KeyPress {
+                key,
+                modifiers: Modifiers::CTRL,
+            }];
         }
         cap.chars()
             .map(|c| {
@@ -1058,7 +1080,7 @@ mod tests {
                 } else {
                     Modifiers::NONE
                 };
-                (modifiers, key)
+                KeyPress { key, modifiers }
             })
             .collect()
     }
@@ -1068,9 +1090,16 @@ mod tests {
         harness.state().keys.pending().map(|seq| seq.to_string())
     }
 
-    /// Chrome's strip as it stands, `(keycap, label)` per keycap: what finishes
+    /// One keycap of chrome's strip and the label it shows under.
+    #[derive(Debug, PartialEq, Eq)]
+    struct StripKey {
+        cap: String,
+        label: String,
+    }
+
+    /// Chrome's strip as it stands, one [`StripKey`] per keycap: what finishes
     /// a pending chord, else everything, as if `?` pinned it.
-    fn strip_now(harness: &Harness<'static, KeysHarness>) -> Vec<(String, String)> {
+    fn strip_now(harness: &Harness<'static, KeysHarness>) -> Vec<StripKey> {
         let h = harness.state();
         let state = &h.state;
         h.keys
@@ -1079,8 +1108,10 @@ mod tests {
                 tool_available(state, true, name)
             })
             .flat_map(|hint| {
-                hint.keycap_iter()
-                    .map(move |cap| (cap.to_owned(), hint.label.to_owned()))
+                hint.keycap_iter().map(move |cap| StripKey {
+                    cap: cap.to_owned(),
+                    label: hint.label.to_owned(),
+                })
             })
             .collect()
     }
@@ -1089,7 +1120,7 @@ mod tests {
     /// one per hint.
     fn strip_labels(harness: &Harness<'static, KeysHarness>) -> Vec<String> {
         let mut labels: Vec<String> = Vec::new();
-        for (_, label) in strip_now(harness) {
+        for StripKey { label, .. } in strip_now(harness) {
             if labels.last() != Some(&label) {
                 labels.push(label);
             }
@@ -1112,7 +1143,7 @@ mod tests {
         grid.state_mut().view = board();
         grid.state_mut().state.set_cursor(id(5));
         grid.run();
-        for (cap, label) in strip_now(&grid) {
+        for StripKey { cap, label } in strip_now(&grid) {
             // The filter field is laid out so `/`'s focus request has a
             // widget to land on.
             let mut harness = keys_harness(Some(filter_field_id()));
@@ -1121,7 +1152,7 @@ mod tests {
             harness.run();
             let before = effects(&harness);
 
-            for (modifiers, key) in keycap_presses(&cap) {
+            for KeyPress { modifiers, key } in keycap_presses(&cap) {
                 press_with(&mut harness, modifiers, key);
             }
             assert_ne!(
@@ -1177,7 +1208,10 @@ mod tests {
         press(&mut harness, Key::G);
         assert_eq!(
             strip_now(&harness),
-            [("g".to_owned(), "first/last".to_owned())]
+            [StripKey {
+                cap: "g".to_owned(),
+                label: "first/last".to_owned(),
+            }]
         );
         assert!(harness.query_by_label("first/last").is_some());
         assert!(harness.query_by_label("up/down").is_none());
@@ -1593,16 +1627,18 @@ mod tests {
                 open: || detail_harness(None),
             },
         ];
-        let by_tool = card_action_tools().into_iter().map(|(cap, tool, args)| {
-            let HeadwayUiTool::Card { action, .. } = HeadwayUiTool::parse(tool, &args).unwrap()
-            else {
-                panic!("{tool} is no card tool");
-            };
-            (cap, tool, action)
-        });
+        let by_tool = card_action_tools()
+            .into_iter()
+            .map(|KeyTool { cap, tool, args }| {
+                let HeadwayUiTool::Card { action, .. } = HeadwayUiTool::parse(tool, &args).unwrap()
+                else {
+                    panic!("{tool} is no card tool");
+                };
+                (cap, tool, action)
+            });
         for (cap, tool, action) in by_tool {
             let presses = keycap_presses(cap);
-            let [(modifiers, key)] = presses[..] else {
+            let [KeyPress { modifiers, key }] = presses[..] else {
                 panic!("card action {cap:?} is one press");
             };
             for ActionTestView { name, open } in &views {
@@ -1684,7 +1720,7 @@ mod tests {
     /// advertise a key the keymap sends nowhere.
     #[test]
     fn every_queue_hint_does_what_it_says() {
-        for (cap, label) in strip_now(&queue_harness()) {
+        for StripKey { cap, label } in strip_now(&queue_harness()) {
             let mut harness = queue_harness();
             if cap == "r" {
                 // `r` only goes back to the newest record, so start from
@@ -1695,7 +1731,7 @@ mod tests {
                 }));
             }
             let before = pane_effects(&harness);
-            for (modifiers, key) in keycap_presses(&cap) {
+            for KeyPress { modifiers, key } in keycap_presses(&cap) {
                 press_with(&mut harness, modifiers, key);
             }
             assert_ne!(
@@ -1710,7 +1746,7 @@ mod tests {
     /// [`every_queue_hint_does_what_it_says`] does in the queue.
     #[test]
     fn every_review_pane_hint_does_what_it_says() {
-        for (cap, label) in strip_now(&pane_harness()) {
+        for StripKey { cap, label } in strip_now(&pane_harness()) {
             let mut harness = pane_harness();
             if cap == "r" {
                 // `r` goes back to the newest record, so start from another
@@ -1721,7 +1757,7 @@ mod tests {
                 }));
             }
             let before = pane_effects(&harness);
-            for (modifiers, key) in keycap_presses(&cap) {
+            for KeyPress { modifiers, key } in keycap_presses(&cap) {
                 press_with(&mut harness, modifiers, key);
             }
             assert_ne!(
@@ -1737,10 +1773,10 @@ mod tests {
     /// nothing in review under card 5, and says so.
     #[test]
     fn every_detail_hint_does_what_it_says() {
-        for (cap, label) in strip_now(&detail_harness(None)) {
+        for StripKey { cap, label } in strip_now(&detail_harness(None)) {
             let mut harness = detail_harness(None);
             let before = pane_effects(&harness);
-            for (modifiers, key) in keycap_presses(&cap) {
+            for KeyPress { modifiers, key } in keycap_presses(&cap) {
                 press_with(&mut harness, modifiers, key);
             }
             assert_ne!(
@@ -1756,8 +1792,8 @@ mod tests {
     #[test]
     fn the_detail_strip_drops_only_open() {
         let detail = strip_now(&detail_harness(None));
-        for (cap, tool, _) in card_action_tools() {
-            let shown = detail.iter().any(|(shown, _)| shown == cap);
+        for KeyTool { cap, tool, .. } in card_action_tools() {
+            let shown = detail.iter().any(|shown| shown.cap == cap);
             assert_eq!(
                 shown,
                 tool != crate::ui_tools::OPEN_CARD,
@@ -2630,40 +2666,53 @@ diff --git a/b.txt b/b.txt
         harness.step();
     }
 
+    /// A keycap and the UI tool call that stands for it.
+    #[derive(Clone)]
+    struct KeyTool {
+        cap: &'static str,
+        tool: &'static str,
+        args: serde_json::Value,
+    }
+
+    /// [`KeyTool`] by position, to keep the tables below one row per key.
+    fn key_tool(cap: &'static str, tool: &'static str, args: serde_json::Value) -> KeyTool {
+        KeyTool { cap, tool, args }
+    }
+
     /// Each card action's keycap and the UI tool call that stands for it.
     /// `a` and `D` are board edits, which are data tools, not UI tools.
-    fn card_action_tools() -> Vec<(&'static str, &'static str, serde_json::Value)> {
+    fn card_action_tools() -> Vec<KeyTool> {
         use crate::ui_tools::*;
         use serde_json::json;
         vec![
-            ("\u{21B5}", OPEN_CARD, json!({})),
-            ("o", OPEN_CARD, json!({})),
-            ("e", OPEN_EXPLAINER, json!({})),
-            ("s", OPEN_SESSION, json!({})),
-            ("S", OPEN_SESSION, json!({ "code_review": true })),
-            ("r", OPEN_REVIEW, json!({})),
-            ("X", SEND_BACK, json!({})),
-            ("n", STEP_CARD, json!({ "dir": "next" })),
-            ("p", STEP_CARD, json!({ "dir": "prev" })),
+            key_tool("\u{21B5}", OPEN_CARD, json!({})),
+            key_tool("o", OPEN_CARD, json!({})),
+            key_tool("e", OPEN_EXPLAINER, json!({})),
+            key_tool("s", OPEN_SESSION, json!({})),
+            key_tool("S", OPEN_SESSION, json!({ "code_review": true })),
+            key_tool("r", OPEN_REVIEW, json!({})),
+            key_tool("X", SEND_BACK, json!({})),
+            key_tool("n", STEP_CARD, json!({ "dir": "next" })),
+            key_tool("p", STEP_CARD, json!({ "dir": "prev" })),
         ]
     }
 
     /// Scrolling a pane: its keycaps and their tool calls.
-    fn scroll_tools() -> Vec<(&'static str, &'static str, serde_json::Value)> {
+    fn scroll_tools() -> Vec<KeyTool> {
         use crate::ui_tools::*;
         use serde_json::json;
         vec![
-            ("j", SCROLL, json!({ "to": "down" })),
-            ("k", SCROLL, json!({ "to": "up" })),
-            ("space", SCROLL, json!({ "to": "page_down" })),
-            ("^f", SCROLL, json!({ "to": "page_down" })),
-            ("^b", SCROLL, json!({ "to": "page_up" })),
-            ("^d", SCROLL, json!({ "to": "half_down" })),
-            ("^u", SCROLL, json!({ "to": "half_up" })),
-            ("gg", SCROLL, json!({ "to": "top" })),
-            ("G", SCROLL, json!({ "to": "bottom" })),
-            ("q", BACK, json!({})),
-            ("esc", BACK, json!({})),
+            key_tool("j", SCROLL, json!({ "to": "down" })),
+            key_tool("k", SCROLL, json!({ "to": "up" })),
+            key_tool("space", SCROLL, json!({ "to": "page_down" })),
+            key_tool("^f", SCROLL, json!({ "to": "page_down" })),
+            key_tool("^b", SCROLL, json!({ "to": "page_up" })),
+            key_tool("^d", SCROLL, json!({ "to": "half_down" })),
+            key_tool("^u", SCROLL, json!({ "to": "half_up" })),
+            key_tool("gg", SCROLL, json!({ "to": "top" })),
+            key_tool("G", SCROLL, json!({ "to": "bottom" })),
+            key_tool("q", BACK, json!({})),
+            key_tool("esc", BACK, json!({})),
         ]
     }
 
@@ -2672,7 +2721,7 @@ diff --git a/b.txt b/b.txt
     struct ToolTestView {
         name: &'static str,
         open: fn() -> Harness<'static, KeysHarness>,
-        keys: Vec<(&'static str, &'static str, serde_json::Value)>,
+        keys: Vec<KeyTool>,
     }
 
     /// [`grid_harness`] with the filter field laid out, so `/` has a field to
@@ -2689,25 +2738,25 @@ diff --git a/b.txt b/b.txt
         use crate::ui_tools::*;
         use serde_json::json;
         let grid = [
-            ("j", CURSOR_MOVE, json!({ "to": "down" })),
-            ("k", CURSOR_MOVE, json!({ "to": "up" })),
-            ("h", CURSOR_MOVE, json!({ "to": "left" })),
-            ("l", CURSOR_MOVE, json!({ "to": "right" })),
-            ("gg", CURSOR_MOVE, json!({ "to": "first" })),
-            ("G", CURSOR_MOVE, json!({ "to": "last" })),
-            ("c", COMPOSE_CARD, json!({})),
-            ("/", FOCUS_FILTER, json!({})),
-            ("R", OPEN_REVIEW_QUEUE, json!({})),
-            ("esc", CLEAR, json!({})),
+            key_tool("j", CURSOR_MOVE, json!({ "to": "down" })),
+            key_tool("k", CURSOR_MOVE, json!({ "to": "up" })),
+            key_tool("h", CURSOR_MOVE, json!({ "to": "left" })),
+            key_tool("l", CURSOR_MOVE, json!({ "to": "right" })),
+            key_tool("gg", CURSOR_MOVE, json!({ "to": "first" })),
+            key_tool("G", CURSOR_MOVE, json!({ "to": "last" })),
+            key_tool("c", COMPOSE_CARD, json!({})),
+            key_tool("/", FOCUS_FILTER, json!({})),
+            key_tool("R", OPEN_REVIEW_QUEUE, json!({})),
+            key_tool("esc", CLEAR, json!({})),
         ];
         let review = [
-            ("]", STEP_FILE, json!({ "dir": "next" })),
-            ("[", STEP_FILE, json!({ "dir": "prev" })),
-            ("c", COMMENT, json!({})),
-            ("C", SEND_COMMENTS, json!({})),
+            key_tool("]", STEP_FILE, json!({ "dir": "next" })),
+            key_tool("[", STEP_FILE, json!({ "dir": "prev" })),
+            key_tool("c", COMMENT, json!({})),
+            key_tool("C", SEND_COMMENTS, json!({})),
         ];
-        let detail = [("R", OPEN_REVIEW_QUEUE, json!({}))];
-        let with = |extra: &[(&'static str, &'static str, serde_json::Value)], scroll: bool| {
+        let detail = [key_tool("R", OPEN_REVIEW_QUEUE, json!({}))];
+        let with = |extra: &[KeyTool], scroll: bool| {
             let mut keys = card_action_tools();
             if scroll {
                 keys.extend(scroll_tools());
@@ -2746,9 +2795,9 @@ diff --git a/b.txt b/b.txt
     #[test]
     fn every_tool_does_what_its_key_does() {
         for ToolTestView { name, open, keys } in tool_test_views() {
-            for (cap, tool, args) in keys {
+            for KeyTool { cap, tool, args } in keys {
                 let mut by_key = open();
-                for (modifiers, key) in keycap_presses(cap) {
+                for KeyPress { modifiers, key } in keycap_presses(cap) {
                     press_with(&mut by_key, modifiers, key);
                 }
                 by_key.step();

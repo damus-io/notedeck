@@ -828,7 +828,7 @@ fn board_pane_ui(
     // drawn over) that card's detail. A card that has left the board drops back
     // to its detail branch below, which drops it in turn.
     if let Some(card) = state.review.card() {
-        if let Some((col, card)) = find_card(view, card) {
+        if let Some(FoundCard { col, card }) = find_card(view, card) {
             reason_bar_ui(ui, theme, state);
             return review_pane_ui(ui, theme, app_ctx, view, col, card, state);
         }
@@ -1106,12 +1106,21 @@ fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<Notice>,
         .request_repaint_after(std::time::Duration::from_secs_f64(left));
 }
 
-/// Find a card anywhere on the board, returning its column index and view.
-pub(crate) fn find_card(view: &BoardView, card: NoteId) -> Option<(usize, &CardView)> {
-    view.columns
-        .iter()
-        .enumerate()
-        .find_map(|(i, col)| col.cards.iter().find(|c| c.id == card).map(|c| (i, c)))
+/// A card [`find_card`] found on the board, with the column it sits in.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FoundCard<'a> {
+    /// Index of the card's column in `view.columns`.
+    pub col: usize,
+    /// The card.
+    pub card: &'a CardView,
+}
+
+/// Find a card anywhere on the board.
+pub(crate) fn find_card(view: &BoardView, card: NoteId) -> Option<FoundCard<'_>> {
+    view.columns.iter().enumerate().find_map(|(col, column)| {
+        let card = column.cards.iter().find(|c| c.id == card)?;
+        Some(FoundCard { col, card })
+    })
 }
 
 /// The title of a card on this board, snapshotted for a global-history entry's
@@ -1119,7 +1128,7 @@ pub(crate) fn find_card(view: &BoardView, card: NoteId) -> Option<(usize, &CardV
 /// (see [`crate::Headway`]). `None` when the card isn't on the folded view — the
 /// dropdown then falls back to the app label.
 pub(crate) fn card_title(view: &BoardView, card: NoteId) -> Option<String> {
-    find_card(view, card).map(|(_, c)| c.title.clone())
+    find_card(view, card).map(|found| found.card.title.clone())
 }
 
 #[cfg(test)]

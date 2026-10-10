@@ -26,7 +26,7 @@ use notedeck_ui::diff::{
 use super::detail::comment_view_ui;
 use super::review::{QueueNotice, review_comments_open};
 use super::widgets::secondary_action_button;
-use super::{BoardEffect, BoardUiState, find_card};
+use super::{BoardEffect, BoardUiState, FoundCard, find_card};
 use crate::review::LoadedReview;
 use crate::store::{BoardAction, NewReviewComment};
 
@@ -538,7 +538,7 @@ impl BoardUiState {
     /// as a whole. A pane with no record has nothing to root a comment on,
     /// and says so.
     pub(crate) fn focus_review_composer(&mut self, view: &BoardView, card: NoteId, now: f64) {
-        let Some((_, found)) = find_card(view, card) else {
+        let Some(FoundCard { card: found, .. }) = find_card(view, card) else {
             return;
         };
         if self.review.has_picked_lines(found) {
@@ -574,7 +574,7 @@ impl BoardUiState {
         card: NoteId,
         now: f64,
     ) -> Option<BoardAction> {
-        let (_, found) = find_card(view, card)?;
+        let found = find_card(view, card)?.card;
         let record = self.acted_record(found)?;
         let drafts = self.review.drafts.take(record.id);
         if drafts.is_empty() {

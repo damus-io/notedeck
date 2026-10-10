@@ -186,7 +186,7 @@ pub(super) fn graph_view_ui(
                 // recede, so the hovered card's dependencies read at a glance.
                 for edge in &graph.edges {
                     let (from_rect, to_rect) = (rects[edge.from], rects[edge.to]);
-                    let (from_side, to_side) = edge_sides(from_rect, to_rect);
+                    let sides = edge_sides(from_rect, to_rect);
                     let incident = hovered == Some(edge.from) || hovered == Some(edge.to);
                     let base = if edge.done { done_edge } else { active_edge };
                     let color = match hovered {
@@ -202,9 +202,9 @@ pub(super) fn graph_view_ui(
                     let drawn = notedeck_ui::graph::draw_edge(
                         ui.painter(),
                         from_rect,
-                        from_side,
+                        sides.from,
                         to_rect,
-                        to_side,
+                        sides.to,
                         color,
                         egui::Stroke::new(width, color),
                     );
@@ -224,7 +224,7 @@ pub(super) fn graph_view_ui(
                             graph.nodes[edge.from].id,
                             graph.nodes[edge.to].id,
                         )
-                        && graph_edge_delete_ui(ui, theme, (edge.from, edge.to), &drawn)
+                        && graph_edge_delete_ui(ui, theme, edge, &drawn)
                     {
                         edit = Some(BoardAction::Unblock {
                             card: graph.nodes[edge.to].id,
@@ -238,7 +238,7 @@ pub(super) fn graph_view_ui(
                 // A ghost off this board has no card here — an empty title and an
                 // unstarted icon, which the node renderer already handles.
                 for (i, node) in graph.nodes.iter().enumerate() {
-                    let card = find_card(view, node.id).map(|(_, c)| c);
+                    let card = find_card(view, node.id).map(|found| found.card);
                     let node_view = GraphNodeView {
                         title: card.map(|c| c.title.as_str()).unwrap_or(""),
                         column: node.column,
@@ -428,7 +428,7 @@ fn graph_topbar_ui(
         ui.label(egui::RichText::new("›").color(theme.text_muted));
         // Borrowed, not cloned: this runs every frame.
         let title = find_card(view, epic)
-            .map(|(_, c)| c.title.as_str())
+            .map(|found| found.card.title.as_str())
             .filter(|t| !t.is_empty());
         ui.label(
             egui::RichText::new(title.unwrap_or("Dependency graph"))
@@ -486,20 +486,32 @@ fn graph_mode_switch_ui(ui: &mut egui::Ui, current: GraphMode) -> Option<GraphMo
     picked
 }
 
+/// The sides of its two node boxes a dependency arrow leaves and enters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EdgeSides {
+    /// The blocker's side, where the arrow leaves.
+    from: notedeck_ui::graph::Side,
+    /// The blocked card's side, where the arrowhead lands.
+    to: notedeck_ui::graph::Side,
+}
+
 /// Pick which sides a dependency arrow anchors to, from the two laid-out node
 /// rects. Ranks stack downward, so a blocker normally sits above the card it
 /// blocks: the arrow leaves the blocker's bottom and enters the blocked card's
 /// top. A rare back-edge (blocked above blocker) flips so the arrow still runs
 /// the short way between the boxes.
-fn edge_sides(
-    from: egui::Rect,
-    to: egui::Rect,
-) -> (notedeck_ui::graph::Side, notedeck_ui::graph::Side) {
+fn edge_sides(from: egui::Rect, to: egui::Rect) -> EdgeSides {
     use notedeck_ui::graph::Side;
     if to.center().y >= from.center().y {
-        (Side::Bottom, Side::Top)
+        EdgeSides {
+            from: Side::Bottom,
+            to: Side::Top,
+        }
     } else {
-        (Side::Top, Side::Bottom)
+        EdgeSides {
+            from: Side::Top,
+            to: Side::Bottom,
+        }
     }
 }
 
@@ -551,7 +563,8 @@ fn graph_node_at(
 /// ([`store::would_block_cycle`](crate::store::would_block_cycle), which also rejects a self-edge). Mirrors the
 /// detail pane's blocker picker (`grid::card_blocker_menu`).
 fn graph_can_connect(view: &BoardView, blocker: NoteId, blocked: NoteId) -> bool {
-    find_card(view, blocked).is_some_and(|(_, c)| !c.blocked_by.iter().any(|e| e.id == blocker))
+    find_card(view, blocked)
+        .is_some_and(|found| !found.card.blocked_by.iter().any(|e| e.id == blocker))
         && !crate::store::would_block_cycle(view, blocked, blocker)
 }
 
@@ -560,7 +573,8 @@ fn graph_can_connect(view: &BoardView, blocker: NoteId, blocked: NoteId) -> bool
 /// that only summarises blocks between their subtrees; such an aggregated edge is
 /// not a direct card-level block and so can't be removed with a single `Unblock`.
 fn graph_edge_is_direct(view: &BoardView, blocker: NoteId, blocked: NoteId) -> bool {
-    find_card(view, blocked).is_some_and(|(_, c)| c.blocked_by.iter().any(|e| e.id == blocker))
+    find_card(view, blocked)
+        .is_some_and(|found| found.card.blocked_by.iter().any(|e| e.id == blocker))
 }
 
 /// Draw a node's connection handle: a small dot on a side that starts a blocking
@@ -602,13 +616,14 @@ fn graph_connection_preview_ui(
 /// frame it's clicked. Like notebook's `edge_ui`, the handle only shows while the
 /// pointer is near the edge's *curve* (not just its bounding box) or over the
 /// handle itself, and reads as a subtle dot that turns into a red ✕ under the
-/// pointer. `key` (the edge's node-index pair) gives the interactions a stable id.
+/// pointer. `edge`'s node-index pair gives the interactions a stable id.
 fn graph_edge_delete_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    key: (usize, usize),
+    edge: &headway::graph::GraphEdge,
     drawn: &notedeck_ui::graph::DrawnEdge,
 ) -> bool {
+    let key = (edge.from, edge.to);
     // Hover the curve itself, not its (often large) bounding box: interact over the
     // bounds for a pointer position, then measure distance to the flattened curve.
     let bounds =
@@ -1488,8 +1503,16 @@ mod tests {
         use notedeck_ui::graph::Side;
         let upper = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), GRAPH_NODE_SIZE);
         let lower = egui::Rect::from_min_size(egui::pos2(0.0, 300.0), GRAPH_NODE_SIZE);
-        assert_eq!(edge_sides(upper, lower), (Side::Bottom, Side::Top));
-        assert_eq!(edge_sides(lower, upper), (Side::Top, Side::Bottom));
+        let down = EdgeSides {
+            from: Side::Bottom,
+            to: Side::Top,
+        };
+        let up = EdgeSides {
+            from: Side::Top,
+            to: Side::Bottom,
+        };
+        assert_eq!(edge_sides(upper, lower), down);
+        assert_eq!(edge_sides(lower, upper), up);
     }
 
     /// The framed scene bounds enclose every node with margin to spare, and an

@@ -234,11 +234,17 @@ fn render_ref_note(ui: &mut egui::Ui, app_ctx: &mut AppContext, note_id: NoteId)
     });
 }
 
-/// Sign and ingest a kind-1 note, returning its id and a subscription that fires
-/// once the async writer has committed it (subscribe *before* ingesting, then
-/// `wait_for_notes` — never a sleep). Pins `created_at` to the frozen clock so the
-/// note's id is stable across runs.
-fn ingest_kind1(ndb: &Ndb, content: &str, secret: &[u8; 32]) -> (NoteId, Subscription) {
+/// A note [`ingest_kind1`] sent to the db, and the subscription that fires once
+/// the async writer has committed it.
+struct Ingested {
+    id: NoteId,
+    sub: Subscription,
+}
+
+/// Sign and ingest a kind-1 note (subscribe *before* ingesting, then
+/// `wait_for_notes` on the returned subscription — never a sleep). Pins
+/// `created_at` to the frozen clock so the note's id is stable across runs.
+fn ingest_kind1(ndb: &Ndb, content: &str, secret: &[u8; 32]) -> Ingested {
     let note = NoteBuilder::new()
         .content(content)
         .kind(1)
@@ -256,7 +262,7 @@ fn ingest_kind1(ndb: &Ndb, content: &str, secret: &[u8; 32]) -> (NoteId, Subscri
         .expect("json");
     ndb.process_event_with(&json, IngestMetadata::new().client(true))
         .expect("ingest");
-    (id, sub)
+    Ingested { id, sub }
 }
 
 /// The instant the demo board is seeded at, and what the frozen clock reads.
@@ -1007,9 +1013,9 @@ async fn snapshot_note_inline_ref() {
 
         let target = card_ref(demo_card_id(app_ctx.ndb, &author, card_title));
         let content = format!("picking up {target} next week");
-        let (note_id, sub) = ingest_kind1(app_ctx.ndb, &content, &secret);
-        state.ref_note = Some(note_id);
-        (app_ctx.ndb.clone(), sub)
+        let ingested = ingest_kind1(app_ctx.ndb, &content, &secret);
+        state.ref_note = Some(ingested.id);
+        (app_ctx.ndb.clone(), ingested.sub)
     };
 
     // Await the async ndb write, then let the UI settle. `wait_for_label` on the
@@ -2177,10 +2183,20 @@ fn move_to_in_review(harness: &mut Harness<'static, HeadwayTestState>, card: Not
 /// The demo board's In Review column, by index.
 const IN_REVIEW_COL: usize = 3;
 
+/// What the app asked the global nav for since boot, as
+/// [`queue_pushes_and_last_back`] counts it.
+#[derive(Debug, PartialEq, Eq)]
+struct QueueNav {
+    /// Every [`HeadwayRoute::ReviewQueue`] push.
+    pushes: usize,
+    /// Whether the last request of all was a back.
+    last_back: bool,
+}
+
 /// Every [`HeadwayRoute::ReviewQueue`] push the app has enqueued since boot
 /// (nothing drains the Navigator in these harnesses), and whether the last
 /// request of all was a back.
-fn queue_pushes_and_last_back(harness: &mut Harness<'static, HeadwayTestState>) -> (usize, bool) {
+fn queue_pushes_and_last_back(harness: &mut Harness<'static, HeadwayTestState>) -> QueueNav {
     use notedeck::NavRequest;
     use notedeck_headway::HeadwayRoute;
 
@@ -2194,7 +2210,7 @@ fn queue_pushes_and_last_back(harness: &mut Harness<'static, HeadwayTestState>) 
         .filter(|route| route.is_review_queue())
         .count();
     let last_back = matches!(requests.last(), Some(NavRequest::Back));
-    (pushes, last_back)
+    QueueNav { pushes, last_back }
 }
 
 /// Move the demo cards titled `titles` into In Review, in order, each with a
@@ -2292,7 +2308,7 @@ fn review_queue_walks_the_in_review_column() {
     assert!(harness.query_by_label("← Back").is_none());
     assert_eq!(harness.state().headway.cursor(), Some(ids[1]));
 
-    let (pushes, last_back) = queue_pushes_and_last_back(&mut harness);
+    let QueueNav { pushes, last_back } = queue_pushes_and_last_back(&mut harness);
     assert_eq!(pushes, 1, "stepping the queue pushes nothing more");
     assert!(last_back, "leaving the queue is one back");
 }
@@ -2463,7 +2479,7 @@ fn review_queue_with_nothing_in_review_does_not_open() {
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
     wait_for_label(&mut harness, "Nothing in review");
     assert!(harness.query_by_label("← Back").is_none());
-    assert_eq!(queue_pushes_and_last_back(&mut harness).0, 0);
+    assert_eq!(queue_pushes_and_last_back(&mut harness).pushes, 0);
 }
 
 /// Where the review-queue snapshot's fixture repo lives. A fixed path, not a
@@ -2539,13 +2555,21 @@ fn fixture_glbs() -> [Vec<u8>; 2] {
     ]
 }
 
+/// A model kit's files, as [`fixture_kit`] makes them.
+struct Kit {
+    /// `assets/kit/tower.glb`, whose texture isn't in it but beside it.
+    tower: Vec<u8>,
+    /// That texture, at `Textures/colormap.png`.
+    colormap: Vec<u8>,
+}
+
 /// A model kit's layout: `assets/kit/tower.glb`, whose texture isn't in it
 /// but beside it at `Textures/colormap.png`, and that texture.
-fn fixture_kit() -> (Vec<u8>, Vec<u8>) {
-    (
-        renderbud::test_util::textured_cube_glb([1.0; 4], "Textures/colormap.png"),
-        renderbud::test_util::checker_png(16, [230, 200, 60], [60, 140, 90]),
-    )
+fn fixture_kit() -> Kit {
+    Kit {
+        tower: renderbud::test_util::textured_cube_glb([1.0; 4], "Textures/colormap.png"),
+        colormap: renderbud::test_util::checker_png(16, [230, 200, 60], [60, 140, 90]),
+    }
 }
 
 /// The subject of [`ReviewFixture::models`].
@@ -2699,7 +2723,7 @@ fn build_review_fixture(dir: &std::path::Path) -> ReviewFixture {
     write_bytes("assets/cube.glb", &cube_before);
     dated_commit(dir, "headway: queue cube model", SEED_AT - 900);
     write_bytes("assets/cube.glb", &cube_after);
-    let (tower, colormap) = fixture_kit();
+    let Kit { tower, colormap } = fixture_kit();
     write_bytes("assets/kit/tower.glb", &tower);
     write_bytes("assets/kit/Textures/colormap.png", &colormap);
     let models = dated_commit(dir, MODEL_SUBJECT, SEED_AT - 600);
@@ -2959,7 +2983,7 @@ fn open_model_review(harness: &mut Harness<'static, HeadwayTestState>, fixture: 
 /// it, each sized from the fixture's own bytes.
 fn model_captions() -> [String; 4] {
     let [before, after] = fixture_glbs();
-    let (tower, colormap) = fixture_kit();
+    let Kit { tower, colormap } = fixture_kit();
     let size = |bytes: &[u8]| match bytes.len() {
         n if n < 1024 => format!("{n} B"),
         n => format!("{:.0} KB", n as f64 / 1024.0),
@@ -4310,8 +4334,8 @@ fn a_detail_session_chip_click_opens_its_records_session() {
         let state = harness.state_mut();
         let secret = state.account.secret_key.secret_bytes();
         let ndb = state.notedeck.app_context().ndb.clone();
-        let (older, _) = ingest_kind1(&ndb, OLDER_CHIP, &secret);
-        let (newest, _) = ingest_kind1(&ndb, NEWEST_CHIP, &secret);
+        let older = ingest_kind1(&ndb, OLDER_CHIP, &secret).id;
+        let newest = ingest_kind1(&ndb, NEWEST_CHIP, &secret).id;
         state
             .notedeck
             .register_kind_renderer(Box::new(StubSessionRenderer));
@@ -4699,9 +4723,16 @@ fn type_key(harness: &mut Harness<'static, HeadwayTestState>, key: egui::Key, te
     harness.run_ok();
 }
 
+/// A board [`open_card_by_keys`] opened a card on.
+struct OpenedByKeys {
+    harness: Harness<'static, HeadwayTestState>,
+    /// The one card the app pushed a global-nav entry for.
+    opened: NoteId,
+}
+
 /// Drive `keys` then Enter from a freshly booted board, wait for the detail to
 /// open, and return the one card the app pushed a global-nav entry for.
-fn open_card_by_keys(keys: &[egui::Key]) -> (Harness<'static, HeadwayTestState>, NoteId) {
+fn open_card_by_keys(keys: &[egui::Key]) -> OpenedByKeys {
     use notedeck::NavRequest;
     use notedeck_headway::HeadwayRoute;
 
@@ -4726,7 +4757,10 @@ fn open_card_by_keys(keys: &[egui::Key]) -> (Harness<'static, HeadwayTestState>,
         1,
         "opening a card by key pushes exactly one global-nav entry"
     );
-    (harness, pushed[0])
+    OpenedByKeys {
+        harness,
+        opened: pushed[0],
+    }
 }
 
 /// The id of the demo card titled `title`, from the harness's own store.
@@ -4741,7 +4775,10 @@ fn harness_card_id(harness: &mut Harness<'static, HeadwayTestState>, title: &str
 /// makes.
 #[test]
 fn j_then_enter_opens_the_first_card() {
-    let (mut harness, opened) = open_card_by_keys(&[egui::Key::J]);
+    let OpenedByKeys {
+        mut harness,
+        opened,
+    } = open_card_by_keys(&[egui::Key::J]);
     let first = harness_card_id(&mut harness, "Define nostr event model for boards");
     assert_eq!(opened, first);
 }
@@ -4752,11 +4789,17 @@ fn j_then_enter_opens_the_first_card() {
 fn j_and_k_walk_the_first_column() {
     use egui::Key::{J, K};
 
-    let (mut harness, opened) = open_card_by_keys(&[J, J]);
+    let OpenedByKeys {
+        mut harness,
+        opened,
+    } = open_card_by_keys(&[J, J]);
     let second = harness_card_id(&mut harness, "Sync cards across relays");
     assert_eq!(opened, second, "j j lands on the second card");
 
-    let (mut harness, opened) = open_card_by_keys(&[J, J, K]);
+    let OpenedByKeys {
+        mut harness,
+        opened,
+    } = open_card_by_keys(&[J, J, K]);
     let first = harness_card_id(&mut harness, "Define nostr event model for boards");
     assert_eq!(opened, first, "j j k lands back on the first");
 }
@@ -5563,7 +5606,10 @@ fn chrome_nav_loop_epic_review_queue() {
     harness.run_ok();
     assert_eq!(
         queue_pushes_and_last_back(&mut harness),
-        (0, true),
+        QueueNav {
+            pushes: 0,
+            last_back: true
+        },
         "q is one back, no new entry"
     );
     assert!(
@@ -5753,7 +5799,7 @@ fn epic_review_queue_with_nothing_under_the_card_does_not_open() {
     assert!(harness.query_by_label("Review 1").is_none());
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
     wait_for_label(&mut harness, "Nothing in review under this card");
-    assert_eq!(queue_pushes_and_last_back(&mut harness).0, 0);
+    assert_eq!(queue_pushes_and_last_back(&mut harness).pushes, 0);
 }
 
 /// `S` in the review queue leaves for the record's agentium session: the app

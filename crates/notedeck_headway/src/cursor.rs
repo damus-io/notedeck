@@ -55,6 +55,25 @@ pub(crate) enum Side {
     Right,
 }
 
+/// Where a keyboard card move drops a card: the `to_col`/`to_row` of
+/// `BoardAction::MoveCard`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MoveTarget {
+    /// Index of the destination column in `view.columns`.
+    pub to_col: usize,
+    /// True row in the destination column, as `rank_for_insert` reads it.
+    pub to_row: usize,
+}
+
+/// A visible card of a column, as [`visible`] yields it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct VisibleCard<'a> {
+    /// True index in `column.cards`.
+    pub row: usize,
+    /// The card.
+    pub card: &'a CardView,
+}
+
 /// Which way a keyboard reorder (Shift+J/K) shifts a card within its column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Vertical {
@@ -64,17 +83,18 @@ pub(crate) enum Vertical {
     Up,
 }
 
-/// The visible cards of a column, lazily, paired with their true row in
+/// The visible cards of a column, lazily, each with its true row in
 /// `column.cards`.
 pub(crate) fn visible<'a>(
     column: &'a ColumnView,
     filter: &'a ViewFilter,
-) -> impl Iterator<Item = (usize, &'a CardView)> + 'a {
+) -> impl Iterator<Item = VisibleCard<'a>> + 'a {
     column
         .cards
         .iter()
         .enumerate()
         .filter(move |(_, card)| filter.shows(card))
+        .map(|(row, card)| VisibleCard { row, card })
 }
 
 /// Locate `cursor` on the grid; `None` if it's absent from the board or
@@ -83,8 +103,12 @@ pub(crate) fn locate(view: &BoardView, filter: &ViewFilter, cursor: NoteId) -> O
     view.columns.iter().enumerate().find_map(|(col, column)| {
         visible(column, filter)
             .enumerate()
-            .find(|(_, (_, card))| card.id == cursor)
-            .map(|(vis, (row, _))| CursorPos { col, row, vis })
+            .find(|(_, seen)| seen.card.id == cursor)
+            .map(|(vis, seen)| CursorPos {
+                col,
+                row: seen.row,
+                vis,
+            })
     })
 }
 
@@ -120,7 +144,7 @@ pub(crate) fn step(
             .checked_sub(1)
             .and_then(|vis| nth_visible(column, filter, vis)),
         CursorMove::First => nth_visible(column, filter, 0),
-        CursorMove::Last => visible(column, filter).last().map(|(_, card)| card.id),
+        CursorMove::Last => visible(column, filter).last().map(|seen| seen.card.id),
         CursorMove::Left => view.columns[..pos.col]
             .iter()
             .rev()
@@ -133,8 +157,7 @@ pub(crate) fn step(
     Some(landed.unwrap_or(id))
 }
 
-/// Where Shift+H/L would drop `card`: `(to_col, to_row)` for
-/// `BoardAction::MoveCard`, or `None` when the card isn't visible or its column
+/// Where Shift+H/L would drop `card`, for `BoardAction::MoveCard`, or `None` when the card isn't visible or its column
 /// is already the outermost on that side.
 ///
 /// Unlike the cursor's `h`/`l`, this never skips empty columns: moving a card
@@ -147,7 +170,7 @@ pub(crate) fn move_across(
     filter: &ViewFilter,
     card: NoteId,
     dir: Side,
-) -> Option<(usize, usize)> {
+) -> Option<MoveTarget> {
     let pos = locate(view, filter, card)?;
     let to_col = match dir {
         Side::Left => pos.col.checked_sub(1)?,
@@ -156,12 +179,12 @@ pub(crate) fn move_across(
     let target = view.columns.get(to_col)?;
     let to_row = visible(target, filter)
         .nth(pos.vis)
-        .map_or(target.cards.len(), |(row, _)| row);
-    Some((to_col, to_row))
+        .map_or(target.cards.len(), |seen| seen.row);
+    Some(MoveTarget { to_col, to_row })
 }
 
-/// Where Shift+J/K would drop `card` within its own column: `(to_col, to_row)`
-/// for `BoardAction::MoveCard`, or `None` when the card isn't visible or is
+/// Where Shift+J/K would drop `card` within its own column, for
+/// `BoardAction::MoveCard`, or `None` when the card isn't visible or is
 /// already at that end of the column.
 ///
 /// The card hops its adjacent *visible* neighbour, not merely the next true
@@ -174,14 +197,17 @@ pub(crate) fn move_within(
     filter: &ViewFilter,
     card: NoteId,
     dir: Vertical,
-) -> Option<(usize, usize)> {
+) -> Option<MoveTarget> {
     let pos = locate(view, filter, card)?;
     let column = &view.columns[pos.col];
     let to_row = match dir {
-        Vertical::Down => visible(column, filter).nth(pos.vis + 1)?.0 + 1,
-        Vertical::Up => visible(column, filter).nth(pos.vis.checked_sub(1)?)?.0,
+        Vertical::Down => visible(column, filter).nth(pos.vis + 1)?.row + 1,
+        Vertical::Up => visible(column, filter).nth(pos.vis.checked_sub(1)?)?.row,
     };
-    Some((pos.col, to_row))
+    Some(MoveTarget {
+        to_col: pos.col,
+        to_row,
+    })
 }
 
 /// The card in the grid slot `at` now, else the one above it: where the
@@ -195,7 +221,7 @@ pub(crate) fn successor(view: &BoardView, filter: &ViewFilter, at: CursorPos) ->
 
 /// The `vis`-th visible card of `column`, if it has that many.
 fn nth_visible(column: &ColumnView, filter: &ViewFilter, vis: usize) -> Option<NoteId> {
-    visible(column, filter).nth(vis).map(|(_, card)| card.id)
+    visible(column, filter).nth(vis).map(|seen| seen.card.id)
 }
 
 /// The `vis`-th visible card of `column`, or its last visible card when it is
@@ -204,7 +230,7 @@ fn clamped_visible(column: &ColumnView, filter: &ViewFilter, vis: usize) -> Opti
     visible(column, filter)
         .take(vis + 1)
         .last()
-        .map(|(_, card)| card.id)
+        .map(|seen| seen.card.id)
 }
 
 #[cfg(test)]
@@ -226,6 +252,11 @@ pub(crate) mod tests {
     /// [`crate::keys`]'s tests.
     pub(crate) fn id(n: u8) -> NoteId {
         NoteId::new([n; 32])
+    }
+
+    /// A move landing at column `to_col`, row `to_row`.
+    fn at(to_col: usize, to_row: usize) -> Option<MoveTarget> {
+        Some(MoveTarget { to_col, to_row })
     }
 
     fn column(name: &str, cards: Vec<CardView>) -> ColumnView {
@@ -414,7 +445,7 @@ pub(crate) mod tests {
             column("b", vec![]),
         ]);
         with_filter("", |f| {
-            assert_eq!(move_across(&view, f, id(2), Side::Right), Some((1, 0)));
+            assert_eq!(move_across(&view, f, id(2), Side::Right), at(1, 0));
         });
     }
 
@@ -434,9 +465,9 @@ pub(crate) mod tests {
         ]);
         with_filter("", |f| {
             // Row 3 of `a`, but `b` only has two cards: land at its end.
-            assert_eq!(move_across(&view, f, id(4), Side::Right), Some((1, 2)));
+            assert_eq!(move_across(&view, f, id(4), Side::Right), at(1, 2));
             // Row 1 keeps its height: just before `b`'s second card.
-            assert_eq!(move_across(&view, f, id(2), Side::Right), Some((1, 1)));
+            assert_eq!(move_across(&view, f, id(2), Side::Right), at(1, 1));
         });
     }
 
@@ -457,12 +488,12 @@ pub(crate) mod tests {
         with_filter("keep", |f| {
             // Visible row 0 lands before `b`'s first visible card, 4, whose
             // true row is 1.
-            assert_eq!(move_across(&view, f, id(1), Side::Right), Some((1, 1)));
+            assert_eq!(move_across(&view, f, id(1), Side::Right), at(1, 1));
             // Visible row 1 lands before 6, true row 3.
-            assert_eq!(move_across(&view, f, id(2), Side::Right), Some((1, 3)));
+            assert_eq!(move_across(&view, f, id(2), Side::Right), at(1, 3));
             // Back left from 6 (visible row 1): `a` shows two cards, so before
             // its second.
-            assert_eq!(move_across(&view, f, id(6), Side::Left), Some((0, 1)));
+            assert_eq!(move_across(&view, f, id(6), Side::Left), at(0, 1));
         });
     }
 
@@ -485,9 +516,9 @@ pub(crate) mod tests {
         )]);
         with_filter("keep", |f| {
             // Past 3 (true row 2), not merely past the hidden 2.
-            assert_eq!(move_within(&view, f, id(1), Vertical::Down), Some((0, 3)));
+            assert_eq!(move_within(&view, f, id(1), Vertical::Down), at(0, 3));
             // And back up lands on 1's row, just before it.
-            assert_eq!(move_within(&view, f, id(3), Vertical::Up), Some((0, 0)));
+            assert_eq!(move_within(&view, f, id(3), Vertical::Up), at(0, 0));
             // 3 is the last visible card.
             assert_eq!(move_within(&view, f, id(3), Vertical::Down), None);
         });
@@ -498,7 +529,7 @@ pub(crate) mod tests {
         let view = grid();
         with_filter("", |f| {
             assert_eq!(move_within(&view, f, id(1), Vertical::Up), None);
-            assert_eq!(move_within(&view, f, id(2), Vertical::Up), Some((0, 0)));
+            assert_eq!(move_within(&view, f, id(2), Vertical::Up), at(0, 0));
         });
     }
 }

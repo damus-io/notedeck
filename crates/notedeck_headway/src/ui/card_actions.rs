@@ -11,7 +11,7 @@ use notedeck::ColorTheme;
 use notedeck::tokens::SPACING_LG;
 
 use super::review::{IN_PROGRESS, Notice, QueueNotice, SessionOpen, send_back_open, session_open};
-use super::{BoardEffect, BoardUiState, find_card};
+use super::{BoardEffect, BoardUiState, FoundCard, find_card};
 use crate::nav::NavPos;
 use crate::store::BoardAction;
 
@@ -153,7 +153,7 @@ impl BoardUiState {
         record: Option<NoteId>,
     ) {
         let url = find_card(view, card)
-            .and_then(|(_, card)| self.card_record(card, record))
+            .and_then(|found| self.card_record(found.card, record))
             .and_then(|r| r.fields.explainer.as_deref());
         match url {
             Some(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
@@ -175,7 +175,7 @@ impl BoardUiState {
         record: Option<NoteId>,
     ) {
         let url = find_card(view, card)
-            .and_then(|(_, card)| self.card_record(card, record))
+            .and_then(|found| self.card_record(found.card, record))
             .and_then(|r| r.fields.deploy.as_deref());
         if let Some(url) = url {
             ctx.open_url(egui::OpenUrl::new_tab(url));
@@ -197,7 +197,7 @@ impl BoardUiState {
         record: Option<NoteId>,
         now: f64,
     ) {
-        let Some((_, card)) = find_card(view, card) else {
+        let Some(FoundCard { card, .. }) = find_card(view, card) else {
             return;
         };
         let card_ref = headway::wordid::card_ref(&view.id, card.id.bytes());
@@ -313,7 +313,7 @@ impl BoardUiState {
     /// `X`: open the reason composer for `card`. Nothing opens on a board it
     /// couldn't be sent back on.
     pub(crate) fn start_reject(&mut self, view: &BoardView, card: NoteId, now: f64) {
-        let Some((_, found)) = find_card(view, card) else {
+        let Some(FoundCard { card: found, .. }) = find_card(view, card) else {
             return;
         };
         if IN_PROGRESS.index(view).is_none() {
@@ -367,7 +367,7 @@ impl BoardUiState {
             return None;
         }
         let card = composer.card;
-        let Some((_, found)) = find_card(view, card) else {
+        let Some(FoundCard { card: found, .. }) = find_card(view, card) else {
             self.reason = None;
             return None;
         };
@@ -439,7 +439,7 @@ impl BoardUiState {
 /// column's end or for a card not on the board. Unfiltered: the detail and
 /// the review pane don't draw through the grid's filter.
 fn column_neighbour(view: &BoardView, card: NoteId, step: CardStep) -> Option<NoteId> {
-    let (col, _) = find_card(view, card)?;
+    let col = find_card(view, card)?.col;
     let cards = &view.columns[col].cards;
     let at = cards.iter().position(|c| c.id == card)?;
     let next = match step {
