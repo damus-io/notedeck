@@ -7,7 +7,6 @@ use notedeck::NoteContext;
 use notedeck_ui::app_images;
 
 use crate::agent_status::{stale_color, AgentStatus};
-use crate::backend::BackendType;
 use crate::collapse_state::CollapseState;
 use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
@@ -300,7 +299,6 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                 session.status(),
                 session.last_activity,
                 queue_priority,
-                session.backend_type,
                 git_lines,
             )
         } else {
@@ -439,7 +437,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         action
     }
 
-    /// Render an agentic session row (status bar, backend icon, focus dot).
+    /// Render an agentic session row (status bar, title, focus dot).
     ///
     /// When `cwd_display` is `Some`, the row is taller (48px) and shows the cwd
     /// path in a second line below the title (used for sessions that are alone
@@ -457,7 +455,6 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         status: AgentStatus,
         last_activity: Option<u64>,
         queue_priority: Option<FocusPriority>,
-        backend_type: BackendType,
         git_lines: Option<(usize, usize)>,
     ) -> RowResponse {
         let row_height = if cwd_display.is_some() { 48.0 } else { 32.0 };
@@ -479,18 +476,6 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         );
         ui.painter().rect_filled(status_bar_rect, 1.5, status_color);
         let mut text_start_x = 12.0;
-
-        // Backend icon (only for agentic backends)
-        if backend_type.is_agentic() {
-            let icon_size = 14.0;
-            let icon_rect = egui::Rect::from_center_size(
-                rect.left_center() + egui::vec2(text_start_x + icon_size / 2.0, 0.0),
-                egui::vec2(icon_size, icon_size),
-            );
-            let icon = crate::ui::backend_icon(backend_type);
-            icon.paint_at(ui, icon_rect);
-            text_start_x += icon_size + 4.0;
-        }
 
         // A pending placeholder (a remote spawn/resume in flight) shows a small
         // loading spinner before its "Connecting…" title so the row reads as
@@ -2071,7 +2056,6 @@ mod tests {
                     AgentStatus::NeedsInput,
                     None,
                     priority,
-                    BackendType::Claude,
                     git_lines,
                 );
             })
@@ -2120,18 +2104,7 @@ mod tests {
                 let list =
                     SessionListUi::new(&mut session_manager, &focus_queue, &collapse_state, false);
                 list.agent_row_ui(
-                    ui,
-                    id,
-                    title,
-                    None,
-                    false,
-                    None,
-                    None,
-                    status,
-                    None,
-                    None,
-                    BackendType::Claude,
-                    None,
+                    ui, id, title, None, false, None, None, status, None, None, None,
                 );
             })
     }
