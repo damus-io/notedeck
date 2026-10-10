@@ -196,13 +196,20 @@ fn is_tile_url(name: &str) -> bool {
     name.starts_with("http://") || name.starts_with("https://")
 }
 
+/// RGBA8 pixels of the tile atlas, with its size in pixels.
+struct Atlas {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
 /// Build the atlas RGBA texture data.
 /// Atlas is a 1-tile-wide vertical strip (TILE_PX x (TILE_PX * N)).
 /// For URL-based tileset entries, pre-loaded image data from `tile_images` is used.
 fn build_atlas(
     tileset: &[String],
     tile_images: &std::collections::HashMap<String, Vec<u8>>,
-) -> (u32, u32, Vec<u8>) {
+) -> Atlas {
     let n = tileset.len().max(1) as u32;
     let atlas_w = TILE_PX;
     let atlas_h = TILE_PX * n;
@@ -222,7 +229,11 @@ fn build_atlas(
         }
     }
 
-    (atlas_w, atlas_h, rgba)
+    Atlas {
+        width: atlas_w,
+        height: atlas_h,
+        rgba,
+    }
 }
 
 /// Blit pre-loaded RGBA image data into the atlas at the given row.
@@ -269,13 +280,13 @@ pub fn build_tilemap_model(
     let n_tileset = tm.tileset.len().max(1) as f32;
 
     // Build atlas texture
-    let (atlas_w, atlas_h, atlas_rgba) = build_atlas(&tm.tileset, &tm.tile_images);
+    let atlas = build_atlas(&tm.tileset, &tm.tile_images);
     let atlas_view = renderbud::upload_rgba8_texture_2d(
         device,
         queue,
-        atlas_w,
-        atlas_h,
-        &atlas_rgba,
+        atlas.width,
+        atlas.height,
+        &atlas.rgba,
         wgpu::TextureFormat::Rgba8UnormSrgb,
         "tilemap_atlas",
     );

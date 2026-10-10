@@ -629,7 +629,7 @@ impl NostrverseApp {
         }
 
         let mut any_loaded = false;
-        for (url, path) in ready {
+        for model_cache::ReadyModel { url, path } in ready {
             let path_str = path.to_string_lossy();
             let model = self.load_model(&path_str);
 

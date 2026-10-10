@@ -52,6 +52,23 @@ pub enum ObjectType {
     Custom(String),
 }
 
+/// A point in space, as written in a `(position x y z)` attribute.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point3 {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+/// Euler rotation in degrees about each axis, as written in a
+/// `(rotation x y z)` attribute.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EulerDegrees {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Attribute {
     Id(String),
@@ -207,17 +224,25 @@ impl Space {
         })
     }
 
-    pub fn position(&self, id: CellId) -> Option<(f64, f64, f64)> {
+    pub fn position(&self, id: CellId) -> Option<Point3> {
         self.attrs(id).iter().find_map(|a| match a {
-            Attribute::Position(x, y, z) => Some((*x, *y, *z)),
+            Attribute::Position(x, y, z) => Some(Point3 {
+                x: *x,
+                y: *y,
+                z: *z,
+            }),
             _ => None,
         })
     }
 
     /// Euler rotation in degrees (X, Y, Z).
-    pub fn rotation(&self, id: CellId) -> Option<(f64, f64, f64)> {
+    pub fn rotation(&self, id: CellId) -> Option<EulerDegrees> {
         self.attrs(id).iter().find_map(|a| match a {
-            Attribute::Rotation(x, y, z) => Some((*x, *y, *z)),
+            Attribute::Rotation(x, y, z) => Some(EulerDegrees {
+                x: *x,
+                y: *y,
+                z: *z,
+            }),
             _ => None,
         })
     }

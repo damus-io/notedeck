@@ -26,6 +26,14 @@ pub struct ModelCache {
     fetches: HashMap<String, ModelFetchStatus>,
 }
 
+/// A model whose download finished and whose file is ready to load.
+pub struct ReadyModel {
+    /// The URL the model was fetched from.
+    pub url: String,
+    /// Where the downloaded file sits in the cache.
+    pub path: PathBuf,
+}
+
 impl ModelCache {
     pub fn new(cache_dir: PathBuf) -> Self {
         let _ = std::fs::create_dir_all(&cache_dir);
@@ -122,8 +130,8 @@ impl ModelCache {
         None
     }
 
-    /// Poll in-flight downloads. Returns URLs whose files are now ready to load.
-    pub fn poll(&mut self) -> Vec<(String, PathBuf)> {
+    /// Poll in-flight downloads. Returns the models whose files are now ready to load.
+    pub fn poll(&mut self) -> Vec<ReadyModel> {
         let mut ready = Vec::new();
         let keys: Vec<String> = self.fetches.keys().cloned().collect();
 
@@ -142,7 +150,10 @@ impl ModelCache {
             {
                 match promise.block_and_take() {
                     Ok(path) => {
-                        ready.push((url.clone(), path.clone()));
+                        ready.push(ReadyModel {
+                            url: url.clone(),
+                            path: path.clone(),
+                        });
                         self.fetches
                             .insert(url, ModelFetchStatus::ReadyToLoad(path));
                     }

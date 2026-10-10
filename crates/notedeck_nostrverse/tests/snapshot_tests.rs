@@ -15,8 +15,14 @@ fn download_model(url: &str, dir: &std::path::Path) -> PathBuf {
     path
 }
 
+/// A headless wgpu device and its queue.
+struct HeadlessGpu {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
 /// Create a headless wgpu device (prefers software/CPU adapter for determinism).
-fn create_headless_device() -> (wgpu::Device, wgpu::Queue) {
+fn create_headless_device() -> HeadlessGpu {
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::None,
@@ -29,14 +35,15 @@ fn create_headless_device() -> (wgpu::Device, wgpu::Queue) {
     let info = adapter.get_info();
     eprintln!("Using adapter: {} ({:?})", info.name, info.device_type);
 
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("snapshot_test"),
         memory_hints: wgpu::MemoryHints::MemoryUsage,
         required_features: wgpu::Features::empty(),
         required_limits: wgpu::Limits::default(),
         ..Default::default()
     }))
-    .expect("Failed to create device")
+    .expect("Failed to create device");
+    HeadlessGpu { device, queue }
 }
 
 fn snapshots_dir() -> PathBuf {
@@ -105,7 +112,7 @@ fn snapshot_demo_scene() {
     let height = 600;
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-    let (device, queue) = create_headless_device();
+    let HeadlessGpu { device, queue } = create_headless_device();
     let mut renderer = renderbud::Renderer::new(
         &device,
         &queue,
@@ -143,16 +150,16 @@ fn snapshot_demo_scene() {
 
         let pos = space
             .position(cell_id)
-            .map(|(x, y, z)| glam::Vec3::new(x as f32, y as f32, z as f32))
+            .map(|p| glam::Vec3::new(p.x as f32, p.y as f32, p.z as f32))
             .unwrap_or(glam::Vec3::ZERO);
         let rot = space
             .rotation(cell_id)
-            .map(|(x, y, z)| {
+            .map(|r| {
                 glam::Quat::from_euler(
                     glam::EulerRot::YXZ,
-                    (y as f32).to_radians(),
-                    (x as f32).to_radians(),
-                    (z as f32).to_radians(),
+                    (r.y as f32).to_radians(),
+                    (r.x as f32).to_radians(),
+                    (r.z as f32).to_radians(),
                 )
             })
             .unwrap_or(glam::Quat::IDENTITY);

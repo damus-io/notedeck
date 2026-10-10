@@ -100,19 +100,19 @@ fn collect_objects(
 
         let position = space
             .position(id)
-            .map(|(x, y, z)| Vec3::new(x as f32, y as f32, z as f32))
+            .map(|p| Vec3::new(p.x as f32, p.y as f32, p.z as f32))
             .unwrap_or(Vec3::ZERO);
 
         let model_url = space.model_url(id).map(|s| s.to_string());
         let location = space.location(id).map(location_from_protoverse);
         let rotation = space
             .rotation(id)
-            .map(|(x, y, z)| {
+            .map(|r| {
                 Quat::from_euler(
                     glam::EulerRot::YXZ,
-                    (y as f32).to_radians(),
-                    (x as f32).to_radians(),
-                    (z as f32).to_radians(),
+                    (r.y as f32).to_radians(),
+                    (r.x as f32).to_radians(),
+                    (r.z as f32).to_radians(),
                 )
             })
             .unwrap_or(Quat::IDENTITY);

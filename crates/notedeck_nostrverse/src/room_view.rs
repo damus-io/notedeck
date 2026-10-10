@@ -113,32 +113,23 @@ fn handle_drag_start(
     state.selected_object = Some(obj.id.clone());
 
     // In rotate mode, mark this as a rotation drag (don't start a position drag)
-    let drag_info = if state.rotate_mode {
+    if state.rotate_mode {
         state.rotate_drag = true;
-        None
-    } else {
-        compute_initial_drag(obj, state, vp_x, vp_y, r)
-    };
-
-    if let Some((mode, grab_offset, plane_y)) = drag_info {
-        state.drag_state = Some(DragState {
-            object_id: obj.id.clone(),
-            grab_offset,
-            plane_y,
-            mode,
-        });
+    } else if let Some(drag) = compute_initial_drag(obj, state, vp_x, vp_y, r) {
+        state.drag_state = Some(drag);
     }
     None
 }
 
-/// Compute the initial drag mode and grab offset for an object.
+/// Compute the initial drag state (mode, grab offset and constraint plane)
+/// for an object, or `None` if its location isn't draggable.
 fn compute_initial_drag(
     obj: &RoomObject,
     state: &NostrverseState,
     vp_x: f32,
     vp_y: f32,
     r: &renderbud::Renderer,
-) -> Option<(DragMode, Vec3, f32)> {
+) -> Option<DragState> {
     match &obj.location {
         Some(ObjectLocation::TopOf(parent_id)) | Some(ObjectLocation::Near(parent_id)) => {
             let parent = state.objects.iter().find(|o| o.id == *parent_id)?;
@@ -163,16 +154,17 @@ fn compute_initial_drag(
                 .unwrap_or(obj_world);
             let local_hit = parent_world.inverse().transform_point3(hit);
             let grab_offset = obj.position - local_hit;
-            Some((
-                DragMode::Parented {
+            Some(DragState {
+                object_id: obj.id.clone(),
+                grab_offset,
+                plane_y,
+                mode: DragMode::Parented {
                     parent_id: parent_id.clone(),
                     parent_scene_id,
                     parent_aabb,
                     local_y,
                 },
-                grab_offset,
-                plane_y,
-            ))
+            })
         }
         None | Some(ObjectLocation::Floor) => {
             let plane_y = obj.position.y;
@@ -180,7 +172,12 @@ fn compute_initial_drag(
                 .unproject_to_plane(vp_x, vp_y, plane_y)
                 .unwrap_or(obj.position);
             let grab_offset = obj.position - hit;
-            Some((DragMode::Free, grab_offset, plane_y))
+            Some(DragState {
+                object_id: obj.id.clone(),
+                grab_offset,
+                plane_y,
+                mode: DragMode::Free,
+            })
         }
         _ => None, // Center/Ceiling/Custom: not draggable
     }
@@ -479,15 +476,22 @@ fn render_object_list(ui: &mut Ui, state: &NostrverseState) -> Option<Nostrverse
     action
 }
 
+/// What the object inspector produced this frame.
+struct InspectorResponse {
+    /// Action requested by the inspector's buttons, if any.
+    action: Option<NostrverseAction>,
+    /// Whether any of the object's properties were edited.
+    changed: bool,
+}
+
 /// Render the object inspector panel for the selected object.
-/// Returns an action and whether any property changed.
 fn render_object_inspector(
     ui: &mut Ui,
     selected_id: &str,
     obj: &mut RoomObject,
     grid_snap_enabled: bool,
     rotation_snap: f32,
-) -> (Option<NostrverseAction>, bool) {
+) -> InspectorResponse {
     let mut action = None;
 
     ui.strong("Inspector");
@@ -605,7 +609,7 @@ fn render_object_inspector(
         }
     });
 
-    (action, changed)
+    InspectorResponse { action, changed }
 }
 
 /// Render grid snap and rotation snap controls.
@@ -698,17 +702,17 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
     if let Some(selected_id) = state.selected_object.clone()
         && let Some(obj) = state.objects.iter_mut().find(|o| o.id == selected_id)
     {
-        let (inspector_action, changed) = render_object_inspector(
+        let inspector = render_object_inspector(
             ui,
             &selected_id,
             obj,
             state.grid_snap_enabled,
             state.rotation_snap,
         );
-        if let Some(a) = inspector_action {
+        if let Some(a) = inspector.action {
             action = Some(a);
         }
-        if changed {
+        if inspector.changed {
             state.dirty = true;
         }
     }
@@ -751,8 +755,14 @@ enum SexpToken {
     Whitespace,
 }
 
+/// One highlighted run of S-expression source text.
+struct SexpSpan<'a> {
+    kind: SexpToken,
+    text: &'a str,
+}
+
 /// Tokenize S-expression text for highlighting, preserving all characters.
-fn tokenize_sexp(input: &str) -> Vec<(SexpToken, &str)> {
+fn tokenize_sexp(input: &str) -> Vec<SexpSpan<'_>> {
     let bytes = input.as_bytes();
     let mut tokens = Vec::new();
     let mut i = 0;
@@ -761,7 +771,10 @@ fn tokenize_sexp(input: &str) -> Vec<(SexpToken, &str)> {
         let start = i;
         match bytes[i] {
             b'(' | b')' => {
-                tokens.push((SexpToken::Paren, &input[i..i + 1]));
+                tokens.push(SexpSpan {
+                    kind: SexpToken::Paren,
+                    text: &input[i..i + 1],
+                });
                 i += 1;
             }
             b'"' => {
@@ -775,13 +788,19 @@ fn tokenize_sexp(input: &str) -> Vec<(SexpToken, &str)> {
                 if i < bytes.len() {
                     i += 1; // closing quote
                 }
-                tokens.push((SexpToken::String, &input[start..i]));
+                tokens.push(SexpSpan {
+                    kind: SexpToken::String,
+                    text: &input[start..i],
+                });
             }
             c if c.is_ascii_whitespace() => {
                 while i < bytes.len() && bytes[i].is_ascii_whitespace() {
                     i += 1;
                 }
-                tokens.push((SexpToken::Whitespace, &input[start..i]));
+                tokens.push(SexpSpan {
+                    kind: SexpToken::Whitespace,
+                    text: &input[start..i],
+                });
             }
             c if c.is_ascii_digit()
                 || (c == b'-' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit()) =>
@@ -791,7 +810,10 @@ fn tokenize_sexp(input: &str) -> Vec<(SexpToken, &str)> {
                 {
                     i += 1;
                 }
-                tokens.push((SexpToken::Number, &input[start..i]));
+                tokens.push(SexpSpan {
+                    kind: SexpToken::Number,
+                    text: &input[start..i],
+                });
             }
             c if c.is_ascii_alphabetic() || c == b'-' || c == b'_' => {
                 while i < bytes.len()
@@ -805,10 +827,13 @@ fn tokenize_sexp(input: &str) -> Vec<(SexpToken, &str)> {
                 } else {
                     SexpToken::Symbol
                 };
-                tokens.push((kind, word));
+                tokens.push(SexpSpan { kind, text: word });
             }
             _ => {
-                tokens.push((SexpToken::Symbol, &input[i..i + 1]));
+                tokens.push(SexpSpan {
+                    kind: SexpToken::Symbol,
+                    text: &input[i..i + 1],
+                });
                 i += 1;
             }
         }
@@ -884,8 +909,8 @@ fn highlight_sexp(code: &str, ui: &Ui) -> egui::text::LayoutJob {
     };
 
     let mut job = egui::text::LayoutJob::default();
-    for (token, text) in tokenize_sexp(code) {
-        let color = match token {
+    for SexpSpan { kind, text } in tokenize_sexp(code) {
+        let color = match kind {
             SexpToken::Paren => paren_color,
             SexpToken::Keyword => keyword_color,
             SexpToken::Symbol => symbol_color,

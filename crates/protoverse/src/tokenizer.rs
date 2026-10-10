@@ -88,7 +88,15 @@ fn scan_number(input: &[u8], start: usize) -> Result<usize, TokenError> {
     Ok(end)
 }
 
-fn scan_string(input: &[u8], start: usize) -> Result<(usize, usize), TokenError> {
+/// Byte range of a string literal's contents, between its quotes.
+struct StringSpan {
+    /// Index just past the opening quote.
+    content_start: usize,
+    /// Index of the closing quote.
+    content_end: usize,
+}
+
+fn scan_string(input: &[u8], start: usize) -> Result<StringSpan, TokenError> {
     // start should point at the opening quote
     if start >= input.len() || input[start] != b'"' {
         return Err(TokenError {
@@ -104,7 +112,10 @@ fn scan_string(input: &[u8], start: usize) -> Result<(usize, usize), TokenError>
             continue;
         }
         if input[i] == b'"' {
-            return Ok((content_start, i)); // i points at closing quote
+            return Ok(StringSpan {
+                content_start,
+                content_end: i,
+            });
         }
         i += 1;
     }
@@ -139,7 +150,10 @@ pub fn tokenize(input: &str) -> Result<Vec<Token<'_>>, TokenError> {
                 i += 1;
             }
             b'"' => {
-                let (content_start, content_end) = scan_string(bytes, i)?;
+                let StringSpan {
+                    content_start,
+                    content_end,
+                } = scan_string(bytes, i)?;
                 tokens.push(Token::Str(&input[content_start..content_end]));
                 i = content_end + 1; // skip closing quote
             }
