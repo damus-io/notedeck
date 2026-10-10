@@ -15,6 +15,14 @@ pub enum ColumnsFlag {
     NoMedia,
 }
 
+/// What [`ColumnsArgs::parse`] makes of a command line.
+pub struct ParsedColumnsArgs {
+    /// The arguments Columns recognized.
+    pub args: ColumnsArgs,
+    /// The arguments it did not.
+    pub unrecognized: BTreeSet<String>,
+}
+
 pub struct ColumnsArgs {
     pub columns: Vec<ArgColumn>,
     flags: [u16; 2],
@@ -33,7 +41,7 @@ impl ColumnsArgs {
         bitset_clear(&mut self.flags, flag as u16)
     }
 
-    pub fn parse(args: &[String], deck_author: Option<&Pubkey>) -> (Self, BTreeSet<String>) {
+    pub fn parse(args: &[String], deck_author: Option<&Pubkey>) -> ParsedColumnsArgs {
         let mut unrecognized_args = BTreeSet::new();
         let mut res = Self {
             columns: vec![],
@@ -195,7 +203,10 @@ impl ColumnsArgs {
             i += 1;
         }
 
-        (res, unrecognized_args)
+        ParsedColumnsArgs {
+            args: res,
+            unrecognized: unrecognized_args,
+        }
     }
 }
 

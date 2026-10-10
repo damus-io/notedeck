@@ -44,6 +44,16 @@ impl RelayViewState {
     }
 }
 
+/// Active relays split by the list each belongs to, each sorted by URL.
+struct RelaySections<'a> {
+    /// In the selected account's advertised (NIP-65) relay list.
+    advertised: Vec<RelayRow<'a>>,
+    /// In the private-sync relay list.
+    private: Vec<RelayRow<'a>>,
+    /// In neither list, e.g. outbox relays.
+    other: Vec<RelayRow<'a>>,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct RelayRow<'a> {
     relay_url: &'a NormRelayUrl,
@@ -138,8 +148,11 @@ impl<'a> RelayView<'a> {
     /// Show active relay websockets, grouped by whether the relay is advertised by the selected account.
     fn show_relays(&mut self, ui: &mut Ui) -> Option<RelayAction> {
         let relay_infos = self.relay_inspect.relay_infos();
-        let (advertised, private, outbox_other) =
-            relay_rows(relay_infos, self.advertised_relays, self.private_relays);
+        let RelaySections {
+            advertised,
+            private,
+            other: outbox_other,
+        } = relay_rows(relay_infos, self.advertised_relays, self.private_relays);
 
         let mut action = None;
         let advertised_label = tr!(
@@ -465,7 +478,7 @@ fn relay_rows<'a>(
     relay_infos: impl IntoIterator<Item = RelayInspectEntry<'a>>,
     advertised_relays: &'a std::collections::BTreeSet<RelaySpec>,
     private_relays: &'a std::collections::BTreeSet<NormRelayUrl>,
-) -> (Vec<RelayRow<'a>>, Vec<RelayRow<'a>>, Vec<RelayRow<'a>>) {
+) -> RelaySections<'a> {
     let advertised_urls = advertised_relays
         .iter()
         .map(|relay| &relay.url)
@@ -506,7 +519,11 @@ fn relay_rows<'a>(
     private.sort_by(|left, right| left.relay_url.cmp(right.relay_url));
     outbox_other.sort_by(|left, right| left.relay_url.cmp(right.relay_url));
 
-    (advertised, private, outbox_other)
+    RelaySections {
+        advertised,
+        private,
+        other: outbox_other,
+    }
 }
 
 fn add_relay_button(label: String) -> Button<'static> {
@@ -602,8 +619,11 @@ mod tests {
             },
         ];
 
-        let (advertised, private, other) =
-            relay_rows(relay_infos, &advertised_relays, &private_relays);
+        let RelaySections {
+            advertised,
+            private,
+            other,
+        } = relay_rows(relay_infos, &advertised_relays, &private_relays);
 
         assert_eq!(
             advertised,
@@ -645,7 +665,8 @@ mod tests {
 
         let advertised_relays = BTreeSet::new();
         let private_relays = BTreeSet::new();
-        let (_, _, other) = relay_rows(relay_infos, &advertised_relays, &private_relays);
+        let RelaySections { other, .. } =
+            relay_rows(relay_infos, &advertised_relays, &private_relays);
 
         assert_eq!(
             other,
@@ -672,8 +693,11 @@ mod tests {
             status: RelayStatus::Connected,
         }];
 
-        let (advertised, private, other) =
-            relay_rows(relay_infos, &advertised_relays, &private_relays);
+        let RelaySections {
+            advertised,
+            private,
+            other,
+        } = relay_rows(relay_infos, &advertised_relays, &private_relays);
 
         assert_eq!(
             advertised,

@@ -377,7 +377,7 @@ impl Decks {
     /// Remove the top route from the deck column with `column_id`.
     pub(crate) fn remove_top_route_for_column(&mut self, column_id: ColumnId) -> Option<Route> {
         for deck in &mut self.decks {
-            if let Some((_index, column)) = deck.columns_mut().column_mut_by_id(column_id) {
+            if let Some(column) = deck.columns_mut().column_mut_by_id(column_id) {
                 return column.router_mut().remove_top_route_for_disposal();
             }
         }

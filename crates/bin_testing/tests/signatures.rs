@@ -31,7 +31,6 @@ const NOT_YET: &[&str] = &[
     "md-stream",
     "notebook",
     "notedeck_chrome",
-    "notedeck_columns",
     "notedeck_dashboard",
     "notedeck_dave",
     "notedeck_headway",

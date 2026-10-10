@@ -378,7 +378,11 @@ struct GiftwrapFixture {
     relay: NegentropyRelay,
 }
 async fn setup_home_timeline_fixture() -> HomeTimelineFixture {
-    let (relay_db, relay_url, relay) = setup_relay().await;
+    let TestRelay {
+        db: relay_db,
+        url: relay_url,
+        relay,
+    } = setup_relay().await;
     let alice = FullKeypair::generate();
     let bob = FullKeypair::generate();
     let carol = FullKeypair::generate();
@@ -421,12 +425,22 @@ async fn setup_home_timeline_fixture() -> HomeTimelineFixture {
         _relay: relay,
     }
 }
-async fn setup_relay() -> (MemoryDatabase, String, NegentropyRelay) {
+/// A running in-memory negentropy relay, its database and its URL.
+struct TestRelay {
+    db: MemoryDatabase,
+    url: String,
+    relay: NegentropyRelay,
+}
+
+async fn setup_relay() -> TestRelay {
     let remote = run_memory_negentropy_relay()
         .await
         .expect("start local relay");
-    let relay_url = remote.relay.url().to_owned();
-    (remote.db, relay_url, remote.relay)
+    TestRelay {
+        url: remote.relay.url().to_owned(),
+        db: remote.db,
+        relay: remote.relay,
+    }
 }
 fn construct_contact_list_note<'a>(pks: Vec<nostrdb_net::Pubkey>) -> NoteBuilder<'a> {
     let mut builder = NoteBuilder::new()
@@ -445,7 +459,11 @@ async fn save_note(relay_db: &MemoryDatabase, note: &nostrdb::Note<'_>) {
     relay_db.save_event(&event).await.expect("save event");
 }
 async fn setup_thread_fixture(reply_count: usize) -> ThreadFixture {
-    let (relay_db, relay_url, relay) = setup_relay().await;
+    let TestRelay {
+        db: relay_db,
+        url: relay_url,
+        relay,
+    } = setup_relay().await;
     let alice = FullKeypair::generate();
     let carol = FullKeypair::generate();
     let root = build_text_note(&carol, "thread root", 1_700_100_000);
@@ -476,7 +494,11 @@ async fn setup_timeline_and_thread_fixture(
     bob_note_count: usize,
     carol_reply_count: usize,
 ) -> TimelineAndThreadFixture {
-    let (relay_db, relay_url, relay) = setup_relay().await;
+    let TestRelay {
+        db: relay_db,
+        url: relay_url,
+        relay,
+    } = setup_relay().await;
     let alice = FullKeypair::generate();
     let bob = FullKeypair::generate();
     let carol = FullKeypair::generate();
@@ -521,7 +543,11 @@ async fn setup_live_only_fixture(
     note_count: usize,
     seed: LiveOnlySeed<'_>,
 ) -> LiveOnlyTimelineFixture {
-    let (relay_db, relay_url, relay) = setup_relay().await;
+    let TestRelay {
+        db: relay_db,
+        url: relay_url,
+        relay,
+    } = setup_relay().await;
     let alice = FullKeypair::generate();
     let bob = FullKeypair::generate();
 
@@ -654,7 +680,11 @@ async fn run_live_only_timeline_case(
 }
 
 async fn setup_giftwrap_fixture(note_count: usize) -> GiftwrapFixture {
-    let (relay_db, relay_url, relay) = setup_relay().await;
+    let TestRelay {
+        db: relay_db,
+        url: relay_url,
+        relay,
+    } = setup_relay().await;
     let alice = FullKeypair::generate();
     let sender = FullKeypair::generate();
 

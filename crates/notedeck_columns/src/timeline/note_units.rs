@@ -482,7 +482,7 @@ mod tests {
             id
         }
 
-        fn insert_reac_frag_pair(&mut self, reacted_to: NoteRef) -> (String, String) {
+        fn insert_reac_frag_pair(&mut self, reacted_to: NoteRef) -> [String; 2] {
             let frag1 = self.build_reac_frag(reacted_to);
             let frag2 = self.build_reac_frag(reacted_to);
 
@@ -494,7 +494,7 @@ mod tests {
             let id2 = Uuid::new_v4().to_string();
             self.frags.insert(id2.clone(), frag2);
 
-            (id1, id2)
+            [id1, id2]
         }
 
         fn new_noteref(&mut self) -> NoteRef {
@@ -760,7 +760,7 @@ mod tests {
         builder.aeq(0, Expect::Reaction(vec![&reac0]));
         builder.aeq(1, Expect::Single(&single1));
 
-        let (reac1, reac2) = builder.insert_reac_frag_pair(reaction_note1);
+        let [reac1, reac2] = builder.insert_reac_frag_pair(reaction_note1);
         builder.aeq(0, Expect::Reaction(vec![&reac0, &reac1, &reac2]));
         builder.aeq(1, Expect::Single(&single1));
 

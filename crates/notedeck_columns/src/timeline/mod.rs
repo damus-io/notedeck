@@ -41,7 +41,7 @@ pub mod thread;
 mod timeline_units;
 mod unit;
 
-pub use cache::TimelineCache;
+pub use cache::{TimelineCache, TimelineEntry};
 pub use kind::{ColumnTitle, PubkeySource, ThreadSelection, TimelineKind};
 pub use note_units::{CompositeType, InsertionResponse, NoteUnits};
 pub use sub::RemoteSubscriptionPolicy;
@@ -54,7 +54,8 @@ pub use unit::{CompositeUnit, NoteUnit, ReactionUnit, RepostUnit, ZapUnit};
 
 #[cfg(test)]
 use crate::timeline::sub::{
-    timeline_remote_sub_declaration, timeline_remote_sub_key, TimelineScopedSub,
+    timeline_remote_sub_declaration, timeline_remote_sub_key, RemoteSubDeclaration,
+    TimelineScopedSub,
 };
 #[cfg(test)]
 use enostr::RelayRoutingPreference;
@@ -674,38 +675,6 @@ pub enum MergeKind {
     Spliced,
 }
 
-pub fn merge_sorted_vecs<T: Ord + Copy>(vec1: &[T], vec2: &[T]) -> (Vec<T>, MergeKind) {
-    let mut merged = Vec::with_capacity(vec1.len() + vec2.len());
-    let mut i = 0;
-    let mut j = 0;
-    let mut result: Option<MergeKind> = None;
-
-    while i < vec1.len() && j < vec2.len() {
-        if vec1[i] <= vec2[j] {
-            if result.is_none() && j < vec2.len() {
-                // if we're pushing from our large list and still have
-                // some left in vec2, then this is a splice
-                result = Some(MergeKind::Spliced);
-            }
-            merged.push(vec1[i]);
-            i += 1;
-        } else {
-            merged.push(vec2[j]);
-            j += 1;
-        }
-    }
-
-    // Append any remaining elements from either vector
-    if i < vec1.len() {
-        merged.extend_from_slice(&vec1[i..]);
-    }
-    if j < vec2.len() {
-        merged.extend_from_slice(&vec2[j..]);
-    }
-
-    (merged, result.unwrap_or(MergeKind::FrontInsert))
-}
-
 /// When adding a new timeline, we may have a situation where the
 /// FilterState is NeedsRemote. This can happen if we don't yet have the
 /// contact list, etc. For these situations, we query all of the relays
@@ -884,7 +853,7 @@ pub fn setup_initial_nostrdb_subs(
     timeline_cache: &mut TimelineCache,
     account_pk: Pubkey,
 ) -> Result<()> {
-    for (_kind, timeline) in timeline_cache {
+    for TimelineEntry { timeline, .. } in timeline_cache.iter_mut() {
         if timeline.subscription.dependers(&account_pk) == 0 {
             continue;
         }
@@ -1027,7 +996,7 @@ mod tests {
     use enostr::{FullKeypair, NormRelayUrl};
     use nostrdb::{NoteBuilder, Transaction};
     use notedeck::{Accounts, Notedeck, ScopedSubApi};
-    use notedeck_testing::fixtures::test_config;
+    use notedeck_testing::fixtures::TempNdb;
     use serde_json::Value;
     use tempfile::TempDir;
 
@@ -1105,12 +1074,6 @@ mod tests {
         RemoteSubscriptionPolicy::from_outbox_relays(use_outbox_relays)
     }
 
-    fn new_test_ndb() -> (TempDir, Ndb) {
-        let tmp = TempDir::new().expect("tmp dir");
-        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
-        (tmp, ndb)
-    }
-
     fn wait_for_note_ref(ndb: &Ndb, filter: &Filter) -> NoteRef {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
@@ -1128,7 +1091,7 @@ mod tests {
 
     #[test]
     fn insert_new_does_not_queue_unknown_author_profiles() {
-        let (_tmp, ndb) = new_test_ndb();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
         let author = FullKeypair::generate();
         let filter = Filter::new()
             .authors([author.pubkey.bytes()])
@@ -1162,7 +1125,7 @@ mod tests {
 
     #[test]
     fn poll_notes_into_view_retries_key_missed_by_old_transaction() {
-        let (_tmp, ndb) = new_test_ndb();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
         let account_pk = Pubkey::new([0x42; 32]);
         let author = FullKeypair::generate();
         let filter = Filter::new()
@@ -1239,7 +1202,7 @@ mod tests {
             .kinds([1])
             .limit(20)
             .build()];
-        let (key, config) = timeline_remote_sub_declaration(
+        let RemoteSubDeclaration { key, config } = timeline_remote_sub_declaration(
             &kind,
             live_filters.clone(),
             RelayRoutingPreference::PreferDedicated,
@@ -1269,7 +1232,7 @@ mod tests {
             .kinds([1])
             .limit(1)
             .build()];
-        let (key, config) = timeline_remote_sub_declaration(
+        let RemoteSubDeclaration { key, config } = timeline_remote_sub_declaration(
             &kind,
             live_filters.clone(),
             RelayRoutingPreference::PreferDedicated,
@@ -1320,7 +1283,7 @@ mod tests {
         ];
 
         for (kind, remote_filters) in cases {
-            let (_key, config) = timeline_remote_sub_declaration(
+            let RemoteSubDeclaration { config, .. } = timeline_remote_sub_declaration(
                 &kind,
                 remote_filters.clone(),
                 RelayRoutingPreference::PreferDedicated,
@@ -1381,7 +1344,7 @@ mod tests {
     fn remote_filters_without_authors_use_accounts_read_only() {
         let pk = Pubkey::new([0x55; 32]);
         let kind = TimelineKind::contact_list(pk);
-        let (_key, config) = timeline_remote_sub_declaration(
+        let RemoteSubDeclaration { config, .. } = timeline_remote_sub_declaration(
             &kind,
             vec![Filter::new().kinds([1]).limit(20).build()],
             RelayRoutingPreference::PreferDedicated,
@@ -1479,7 +1442,7 @@ mod tests {
         ];
 
         for kind in kinds {
-            let (key, config) = timeline_remote_sub_declaration(
+            let RemoteSubDeclaration { key, config } = timeline_remote_sub_declaration(
                 &kind,
                 vec![Filter::new()
                     .authors([pk.bytes()])
@@ -1527,7 +1490,7 @@ mod tests {
     fn notifications_keep_accounts_read_selection() {
         let pk = Pubkey::new([0x22; 32]);
         let kind = TimelineKind::notifications(pk);
-        let (key, config) = timeline_remote_sub_declaration(
+        let RemoteSubDeclaration { key, config } = timeline_remote_sub_declaration(
             &kind,
             vec![kind::notifications_filter(&pk)],
             RelayRoutingPreference::RequireDedicated,

@@ -1,4 +1,5 @@
 use nostrdb::{Filter, Ndb, Subscription};
+use notedeck::{SubConfig, SubKey};
 
 mod thread_sub;
 mod timeline_remote;
@@ -15,6 +16,13 @@ pub(super) use timeline_remote::{
     timeline_remote_sub_declaration, timeline_remote_sub_key, TimelineScopedSub,
 };
 pub use timeline_sub::TimelineSub;
+
+/// A scoped remote subscription, as declared to the scoped-sub runtime: the
+/// key it is filed under and what it asks the relays for.
+pub(in crate::timeline) struct RemoteSubDeclaration {
+    pub key: SubKey,
+    pub config: SubConfig,
+}
 
 pub fn ndb_sub(ndb: &Ndb, filter: &[Filter], id: impl std::fmt::Debug) -> Option<Subscription> {
     match ndb.subscribe(filter) {

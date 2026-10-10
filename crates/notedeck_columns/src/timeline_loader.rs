@@ -84,13 +84,13 @@ fn handle_cmd(
     ndb: &Ndb,
     msg_tx: &chan::Sender<TimelineLoaderMsg>,
 ) {
-    let result = match cmd {
-        TimelineLoaderCmd::LoadTimeline { kind } => load_timeline(waker, ndb, msg_tx, kind),
-    };
-
-    if let Err((kind, err)) = result {
-        let _ = msg_tx.send(TimelineLoaderMsg::Failed { kind, error: err });
-        waker.wake();
+    match cmd {
+        TimelineLoaderCmd::LoadTimeline { kind } => {
+            if let Err(error) = load_timeline(waker, ndb, msg_tx, &kind) {
+                let _ = msg_tx.send(TimelineLoaderMsg::Failed { kind, error });
+                waker.wake();
+            }
+        }
     }
 }
 
@@ -133,13 +133,13 @@ fn load_timeline(
     waker: &Waker,
     ndb: &Ndb,
     msg_tx: &chan::Sender<TimelineLoaderMsg>,
-    kind: TimelineKind,
-) -> Result<(), (TimelineKind, String)> {
-    let txn = Transaction::new(ndb).map_err(|e| (kind.clone(), e.to_string()))?;
+    kind: &TimelineKind,
+) -> Result<(), String> {
+    let txn = Transaction::new(ndb).map_err(|e| e.to_string())?;
     let filter_state = kind.filters(&txn, ndb);
     let FilterState::Ready(filters) = filter_state else {
         warn!(?kind, "timeline loader filter not ready");
-        return Err((kind, "timeline filter not ready".to_string()));
+        return Err("timeline filter not ready".to_string());
     };
 
     let mut acc = FoldAcc {
@@ -164,7 +164,7 @@ fn load_timeline(
 
             let cur_notes: Vec<NoteRef> = ndb
                 .query(&txn, package.filters, lim)
-                .map_err(|e| (kind.clone(), e.to_string()))?
+                .map_err(|e| e.to_string())?
                 .into_iter()
                 .map(NoteRef::from_query_result)
                 .collect();
@@ -189,11 +189,11 @@ fn load_timeline(
             acc
         });
 
-        acc = fold_result.map_err(|e| (kind.clone(), e.to_string()))?;
+        acc = fold_result.map_err(|e| e.to_string())?;
     }
 
-    acc.flush().map_err(|e| (kind.clone(), e))?;
-    let _ = msg_tx.send(TimelineLoaderMsg::TimelineFinished { kind });
+    acc.flush()?;
+    let _ = msg_tx.send(TimelineLoaderMsg::TimelineFinished { kind: kind.clone() });
     waker.wake();
     Ok(())
 }

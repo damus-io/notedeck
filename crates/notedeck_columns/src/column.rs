@@ -299,10 +299,9 @@ impl Columns {
         &mut self.columns[ind]
     }
 
-    /// Return the column with a stable id plus its current display index.
-    pub(crate) fn column_mut_by_id(&mut self, id: ColumnId) -> Option<(usize, &mut Column)> {
-        let index = self.columns.iter().position(|column| column.id() == id)?;
-        self.columns.get_mut(index).map(|column| (index, column))
+    /// Return the column with a stable id.
+    pub(crate) fn column_mut_by_id(&mut self, id: ColumnId) -> Option<&mut Column> {
+        self.columns.iter_mut().find(|column| column.id() == id)
     }
 
     pub fn select_down(&mut self) {

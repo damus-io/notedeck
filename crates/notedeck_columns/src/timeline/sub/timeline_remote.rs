@@ -4,7 +4,7 @@ use notedeck::{ScopedSubApi, SubConfig, SubKey};
 
 use crate::{
     scoped_sub_owner_keys::timeline_remote_owner_key,
-    timeline::{Timeline, TimelineKind},
+    timeline::{sub::RemoteSubDeclaration, Timeline, TimelineKind},
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -80,11 +80,11 @@ pub(in crate::timeline) fn timeline_remote_sub_declaration(
     live_filters: Vec<Filter>,
     routing_preference: RelayRoutingPreference,
     remote_policy: RemoteSubscriptionPolicy,
-) -> (SubKey, SubConfig) {
-    (
-        timeline_remote_sub_key(kind, TimelineScopedSub::RemoteBaselineByKind),
-        timeline_remote_sub_config(kind, live_filters, routing_preference, remote_policy),
-    )
+) -> RemoteSubDeclaration {
+    RemoteSubDeclaration {
+        key: timeline_remote_sub_key(kind, TimelineScopedSub::RemoteBaselineByKind),
+        config: timeline_remote_sub_config(kind, live_filters, routing_preference, remote_policy),
+    }
 }
 
 pub(crate) fn ensure_remote_timeline_subscription(
@@ -101,7 +101,7 @@ pub(crate) fn ensure_remote_timeline_subscription(
 
     let owner = timeline_remote_owner_key(account_pk, &timeline.kind);
     timeline.remote_subscription_filters = Some(remote_filters.clone());
-    let (key, config) = timeline_remote_sub_declaration(
+    let RemoteSubDeclaration { key, config } = timeline_remote_sub_declaration(
         &timeline.kind,
         remote_filters,
         if matches!(&timeline.kind, TimelineKind::Notifications(_)) {
@@ -144,7 +144,7 @@ pub(crate) fn update_remote_timeline_subscription_for_account(
 
     let owner = timeline_remote_owner_key(account_pk, &timeline.kind);
     timeline.remote_subscription_filters = Some(remote_filters.clone());
-    let (key, config) = timeline_remote_sub_declaration(
+    let RemoteSubDeclaration { key, config } = timeline_remote_sub_declaration(
         &timeline.kind,
         remote_filters,
         if matches!(&timeline.kind, TimelineKind::Notifications(_)) {

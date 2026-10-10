@@ -1,5 +1,5 @@
 use crate::{
-    args::{ColumnsArgs, ColumnsFlag},
+    args::{ColumnsArgs, ColumnsFlag, ParsedColumnsArgs},
     column::Columns,
     decks::{Decks, DecksCache},
     deeplink::DeepLinkId,
@@ -12,7 +12,7 @@ use crate::{
     support::Support,
     timeline::{
         self, kind::ListKind, thread::Threads, RemoteSubscriptionPolicy, TimelineCache,
-        TimelineKind,
+        TimelineEntry, TimelineKind,
     },
     timeline_loader::{TimelineLoader, TimelineLoaderMsg},
     ui::{self, DesktopSidePanel, SidePanelAction},
@@ -218,7 +218,7 @@ fn try_process_event(damus: &mut Damus, app_ctx: &mut AppContext<'_>) -> Result<
     // Copied out so the loop below can wake the host while holding disjoint
     // `&mut` reborrows of `app_ctx`.
     let waker = app_ctx.waker;
-    for (kind, timeline) in &mut damus.timeline_cache {
+    for TimelineEntry { kind, timeline } in damus.timeline_cache.iter_mut() {
         if timeline.subscription.dependers(&selected_account_pk) == 0 {
             continue;
         }
@@ -536,8 +536,10 @@ impl Damus {
     pub fn new(app_context: &mut AppContext<'_>, args: &[String]) -> Self {
         // arg parsing
 
-        let (parsed_args, unrecognized_args) =
-            ColumnsArgs::parse(args, Some(app_context.accounts.selected_account_pubkey()));
+        let ParsedColumnsArgs {
+            args: parsed_args,
+            unrecognized: unrecognized_args,
+        } = ColumnsArgs::parse(args, Some(app_context.accounts.selected_account_pubkey()));
 
         let account = app_context.accounts.selected_account_pubkey_bytes();
 

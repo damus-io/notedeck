@@ -8,7 +8,7 @@ use notedeck::{Accounts, FullHistoryConfig, ScopedSubApi, SubConfig, SubKey};
 use crate::column::ColumnId;
 use crate::scoped_sub_owner_keys::{thread_owner_scope_key, ThreadOwnerId};
 use crate::timeline::{
-    sub::{ndb_sub, ndb_unsub},
+    sub::{ndb_sub, ndb_unsub, RemoteSubDeclaration},
     RemoteSubscriptionPolicy, ThreadSelection,
 };
 
@@ -573,7 +573,7 @@ fn set_scope_remote(
 
     let filters = scope_remote_thread_filters(root_id);
     let history_filters = scope_remote_thread_history_filters(root_id);
-    let (key, config) = thread_remote_sub_declaration(
+    let RemoteSubDeclaration { key, config } = thread_remote_sub_declaration(
         root_id,
         observed_relays,
         filters,
@@ -658,7 +658,7 @@ fn thread_remote_sub_declaration(
     filters: Vec<Filter>,
     history_filters: Vec<Filter>,
     remote_policy: RemoteSubscriptionPolicy,
-) -> (SubKey, SubConfig) {
+) -> RemoteSubDeclaration {
     let key = thread_remote_sub_key(root_id, ThreadScopedSub::RepliesByRootBaseline);
 
     let full_history = FullHistoryConfig::new(history_filters);
@@ -671,7 +671,7 @@ fn thread_remote_sub_declaration(
         builder.build()
     };
 
-    (key, config)
+    RemoteSubDeclaration { key, config }
 }
 
 fn observed_thread_relays_for_note_ids(
@@ -1490,7 +1490,7 @@ mod tests {
         let observed_extra = NormRelayUrl::new("wss://thread.example.com").expect("relay");
         let live_filters = vec![Filter::new().kinds([1]).limit(10).build()];
         let history_filters = vec![Filter::new().kinds([1]).build()];
-        let (key, config) = thread_remote_sub_declaration(
+        let RemoteSubDeclaration { key, config } = thread_remote_sub_declaration(
             &root_id,
             HashSet::from_iter([overlap_relay.clone(), observed_extra.clone()]),
             live_filters.clone(),
@@ -1518,7 +1518,7 @@ mod tests {
         let root_id = NoteId::new([0x66; 32]);
         let live_filters = vec![Filter::new().kinds([1]).limit(10).build()];
         let history_filters = vec![Filter::new().kinds([1]).build()];
-        let (_key, config) = thread_remote_sub_declaration(
+        let RemoteSubDeclaration { config, .. } = thread_remote_sub_declaration(
             &root_id,
             HashSet::new(),
             live_filters.clone(),
@@ -1537,7 +1537,7 @@ mod tests {
         let root_id = NoteId::new([0x11; 32]);
         let live_filters = scope_remote_thread_filters(&root_id);
         let history_filters = scope_remote_thread_history_filters(&root_id);
-        let (_key, config) = thread_remote_sub_declaration(
+        let RemoteSubDeclaration { config, .. } = thread_remote_sub_declaration(
             &root_id,
             HashSet::new(),
             live_filters.clone(),
@@ -1585,7 +1585,7 @@ mod tests {
         let observed_relay = NormRelayUrl::new("wss://thread.example.com").expect("relay");
         let live_filters = vec![Filter::new().kinds([1]).limit(10).build()];
         let history_filters = vec![Filter::new().kinds([1]).build()];
-        let (key, config) = thread_remote_sub_declaration(
+        let RemoteSubDeclaration { key, config } = thread_remote_sub_declaration(
             &root_id,
             HashSet::from_iter([observed_relay]),
             live_filters.clone(),

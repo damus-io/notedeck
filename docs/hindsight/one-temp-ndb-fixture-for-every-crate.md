@@ -1,7 +1,8 @@
 # One temporary-nostrdb test fixture every crate can use
 
-Each crate's tests open a throwaway nostrdb through their own `test_ndb` helper;
-notedeck had nine, and agentium-core, headway, columns and dave keep more.
+`TempNdb` lives twice: notedeck's cfg(test) test_util and notedeck_testing.
+headway and agentium-core sit below both and still write their own helper.
 
 - headway:notedeck/problem-again-strike — folded notedeck's nine `(TempDir, Ndb)` helpers into a cfg(test) `test_util::TempNdb`; the other crates cannot reach it, so their cards will each write their own
 - headway:notedeck/tourist-wire-joy — chrome's keymap/user.rs tests wrote their own ndb_for (TempDir + Ndb + add_key); TempNdb is cfg(test) in notedeck, out of reach
+- headway:notedeck/wealth-jacket-crystal — columns had two `-> (TempDir, Ndb)` helpers and one inline copy; copied TempNdb into notedeck_testing::fixtures rather than make notedeck export test code, so the struct now lives twice

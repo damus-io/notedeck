@@ -33,6 +33,20 @@ pub struct NavTitle<'a> {
     jobs: &'a MediaJobSender,
 }
 
+/// A column's row in the move tooltip and how far the pointer is above
+/// (negative) or below (positive) its center.
+struct ColumnDistance {
+    resp: egui::Response,
+    distance: f32,
+}
+
+/// The move-tooltip row nearest the pointer, where a dragged column would land.
+struct ClosestColumn<'a> {
+    index: usize,
+    resp: &'a egui::Response,
+    distance: f32,
+}
+
 struct HeaderAnim {
     padding: f32,
     height: f32,
@@ -327,11 +341,13 @@ impl<'a> NavTitle<'a> {
             let (_, _) = ui.dnd_drop_zone::<usize, ()>(
                 egui::Frame::new().inner_margin(Margin::same(8)),
                 |ui| {
-                    let distances: Vec<(egui::Response, f32)> =
-                        self.collect_column_distances(ui, id);
+                    let distances = self.collect_column_distances(ui, id);
 
-                    if let Some((closest_index, closest_resp, distance)) =
-                        self.find_closest_column(&distances)
+                    if let Some(ClosestColumn {
+                        index: closest_index,
+                        resp: closest_resp,
+                        distance,
+                    }) = self.find_closest_column(&distances)
                     {
                         if is_dragging && closest_index != self.col_id {
                             if self.should_draw_hint(closest_index, distance) {
@@ -362,11 +378,7 @@ impl<'a> NavTitle<'a> {
         inner_resp
     }
 
-    fn collect_column_distances(
-        &mut self,
-        ui: &mut egui::Ui,
-        id: egui::Id,
-    ) -> Vec<(egui::Response, f32)> {
+    fn collect_column_distances(&mut self, ui: &mut egui::Ui, id: egui::Id) -> Vec<ColumnDistance> {
         let y_margin: i8 = 4;
         let item_frame = egui::Frame::new()
             .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_MD as u8))
@@ -400,27 +412,29 @@ impl<'a> NavTitle<'a> {
 
                 ui.input(|i| i.pointer.interact_pos()).map(|pointer| {
                     let distance = pointer.y - col_resp.rect.center().y;
-                    (col_resp, distance)
+                    ColumnDistance {
+                        resp: col_resp,
+                        distance,
+                    }
                 })
             })
             .collect()
     }
 
-    fn find_closest_column(
-        &'a self,
-        distances: &'a [(egui::Response, f32)],
-    ) -> Option<(usize, &'a egui::Response, f32)> {
+    fn find_closest_column(&'a self, distances: &'a [ColumnDistance]) -> Option<ClosestColumn<'a>> {
         distances
             .iter()
             .enumerate()
-            .min_by(|(_, (_, dist1)), (_, (_, dist2))| {
-                dist1.abs().partial_cmp(&dist2.abs()).unwrap()
+            .min_by(|(_, a), (_, b)| a.distance.abs().partial_cmp(&b.distance.abs()).unwrap())
+            .filter(|(index, col)| {
+                (index + 1 != self.col_id && col.distance > 0.0)
+                    || (index.saturating_sub(1) != self.col_id && col.distance < 0.0)
             })
-            .filter(|(index, (_, distance))| {
-                (index + 1 != self.col_id && *distance > 0.0)
-                    || (index.saturating_sub(1) != self.col_id && *distance < 0.0)
+            .map(|(index, col)| ClosestColumn {
+                index,
+                resp: &col.resp,
+                distance: col.distance,
             })
-            .map(|(index, (resp, dist))| (index, resp, *dist))
     }
 
     fn should_draw_hint(&self, closest_index: usize, distance: f32) -> bool {
@@ -440,7 +454,7 @@ impl<'a> NavTitle<'a> {
 
     fn calculate_hint_y(
         &self,
-        distances: &[(egui::Response, f32)],
+        distances: &[ColumnDistance],
         closest_resp: &egui::Response,
         closest_index: usize,
         distance: f32,
@@ -450,12 +464,12 @@ impl<'a> NavTitle<'a> {
         let offset = if distance < 0.0 {
             distances
                 .get(closest_index.wrapping_sub(1))
-                .map(|(above_resp, _)| (closest_resp.rect.top() - above_resp.rect.bottom()) / 2.0)
+                .map(|above| (closest_resp.rect.top() - above.resp.rect.bottom()) / 2.0)
                 .unwrap_or(y_margin)
         } else {
             distances
                 .get(closest_index + 1)
-                .map(|(below_resp, _)| (below_resp.rect.top() - closest_resp.rect.bottom()) / 2.0)
+                .map(|below| (below.resp.rect.top() - closest_resp.rect.bottom()) / 2.0)
                 .unwrap_or(y_margin)
         };
 

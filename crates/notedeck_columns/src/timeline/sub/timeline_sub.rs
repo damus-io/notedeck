@@ -215,21 +215,14 @@ impl TimelineSub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notedeck_testing::fixtures::test_config;
-    use tempfile::TempDir;
-
-    fn new_ndb() -> (TempDir, Ndb) {
-        let tmp = TempDir::new().expect("tmp dir");
-        let ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
-        (tmp, ndb)
-    }
+    use notedeck_testing::fixtures::TempNdb;
 
     #[test]
     fn accounts_with_dependers_omits_unsubscribed_account() {
         let account_a = Pubkey::new([0xA1; 32]);
         let account_b = Pubkey::new([0xB2; 32]);
         let mut sub = TimelineSub::default();
-        let (_tmp, mut ndb) = new_ndb();
+        let TempNdb { dir: _dir, mut ndb } = TempNdb::new();
 
         sub.increment(account_a);
         sub.increment(account_b);
