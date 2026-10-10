@@ -18,6 +18,7 @@ use super::LabelMemo;
 use crate::messages::ExecutedTool;
 use crate::tools::ToolResponses;
 use crate::Message;
+pub use agentium_core::inspector_snapshot::{Commit, CommitList};
 use poll_promise::Promise;
 use std::collections::HashMap;
 use std::ops::Range;
@@ -35,28 +36,6 @@ pub const COMMITS_CAP: usize = 50;
 
 /// The most cards, and the most pages, the card lists; the rest are counted.
 pub const MENTIONS_CAP: usize = 30;
-
-/// One commit carrying the session's trailer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Commit {
-    /// The full hash, which a click copies.
-    pub hash: String,
-    /// Git's abbreviated hash, as the card shows it.
-    pub short: String,
-    /// The subject line.
-    pub subject: String,
-}
-
-/// What `git log` answered: the session's commits newest first, or why there
-/// are none to show.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CommitList {
-    Commits(Vec<Commit>),
-    /// The cwd isn't in a git repository, or doesn't exist.
-    NotARepo,
-    /// git failed some other way; its stderr.
-    Failed(String),
-}
 
 /// The `git log` that lists `session_ref`'s commits in the repo at `cwd`, on
 /// every ref, newest first, a rebased copy collapsed into the newest commit
@@ -173,9 +152,13 @@ impl CommitsState {
         }
 
         if let Some(list) = self.reading.as_mut().and_then(|p| p.ready_mut()) {
-            self.list = Some(std::mem::replace(list, CommitList::Commits(Vec::new())));
+            // Only an answer that differs counts as new, so an unchanged
+            // log doesn't mark the session's snapshot stale.
+            if self.list.as_ref() != Some(list) {
+                self.list = Some(std::mem::replace(list, CommitList::Commits(Vec::new())));
+                self.generation += 1;
+            }
             self.reading = None;
-            self.generation += 1;
         }
         if self.reading.is_none() && self.wants_read(chat_rows, now) {
             self.read_rows = Some(chat_rows);
@@ -196,6 +179,16 @@ impl CommitsState {
                 list_commits(&cwd, &session_ref)
             }));
         }
+    }
+
+    /// Show a host's answer, for a remote session: its repo can't be read
+    /// from here, so [`Self::poll`] is never called for one.
+    pub fn set_remote(&mut self, list: Option<CommitList>) {
+        if self.list == list {
+            return;
+        }
+        self.list = list;
+        self.generation += 1;
     }
 
     /// The latest `git log` answer; `None` until the first read lands.

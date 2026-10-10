@@ -15,6 +15,7 @@ mod edits;
 mod files;
 mod outputs;
 mod permissions;
+mod snapshot;
 mod subagents;
 mod usage;
 
@@ -34,6 +35,7 @@ pub use outputs::{
     MENTIONS_CAP,
 };
 pub use permissions::{PermissionCounts, PermissionLabels, PermissionMemo};
+pub use snapshot::{PublishDue, RemoteSnapshot, SnapshotKey, SnapshotPublisher, SNAPSHOT_INTERVAL};
 pub use subagents::{subagent, ProgressById, SubagentRow, SubagentRows, SubagentState};
 pub use usage::{Compaction, Sparkline, Tokens, TurnUsage, UsageHistory, HISTORY_CAP};
 
@@ -57,6 +59,9 @@ pub struct SessionInspector {
     /// Whether the Claude CLI process is running and when it will be reaped.
     /// `None` until the backend first reports it (only the Claude backend does).
     pub cli: Option<CliState>,
+    /// Bumped by each init or CLI-state report, so the host knows its
+    /// snapshot is stale.
+    pub overview_generation: u64,
     /// This session's `agentium:<word-id>` ref, derived once from its
     /// kind-31988 d-tag (see [`Self::set_session_id`]).
     pub session_ref: Option<String>,
@@ -95,6 +100,11 @@ pub struct SessionInspector {
     /// The Outputs card's commits (read from git) and the cards and pages
     /// the transcript mentions.
     pub outputs: OutputsState,
+    /// A local session's published snapshot: when the last went out, and
+    /// what it was built from.
+    pub publisher: SnapshotPublisher,
+    /// A remote session's folded snapshot: which revision it is.
+    pub remote: RemoteSnapshot,
 }
 
 impl SessionInspector {
@@ -103,8 +113,14 @@ impl SessionInspector {
     /// every response the session sees reaches here.
     pub fn apply(&mut self, res: &DaveApiResponse) {
         match res {
-            DaveApiResponse::SessionInfo(info) => self.session_info = Some(info.clone()),
-            DaveApiResponse::CliState(cli) => self.cli = Some(*cli),
+            DaveApiResponse::SessionInfo(info) => {
+                self.session_info = Some(info.clone());
+                self.overview_generation += 1;
+            }
+            DaveApiResponse::CliState(cli) => {
+                self.cli = Some(*cli);
+                self.overview_generation += 1;
+            }
             DaveApiResponse::RateLimit(info) => {
                 self.rate_limit = Some(info.merged_onto(self.rate_limit.as_ref()));
             }

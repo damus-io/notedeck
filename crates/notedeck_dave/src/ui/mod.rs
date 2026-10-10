@@ -2203,22 +2203,40 @@ mod tests {
     }
 
     /// A remote session's CLI runs on its own host, so the Overview has no
-    /// process line to show for it.
+    /// process line for it until the host's snapshot reports one.
     #[test]
-    fn overview_hides_the_cli_process_of_a_remote_session() {
+    fn overview_shows_a_remote_cli_process_only_from_its_snapshot() {
         let mut harness = session_view_harness(egui::vec2(1100.0, 900.0));
         seed_overview(harness.state_mut());
         harness.run_ok();
         assert_eq!(count_labels(&harness, "Process"), 1);
 
-        harness
+        let session = harness
             .state_mut()
             .session_manager
             .get_active_mut()
-            .unwrap()
-            .source = crate::session::SessionSource::Remote;
+            .unwrap();
+        session.source = crate::session::SessionSource::Remote;
+        session.inspector.cli = None;
         harness.run_ok();
         assert_eq!(count_labels(&harness, "Process"), 0);
+
+        let session = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap();
+        session
+            .inspector
+            .restore(agentium_core::inspector_snapshot::InspectorSnapshot {
+                cli: Some(crate::messages::CliState {
+                    connected: true,
+                    reap_at: None,
+                }),
+                ..Default::default()
+            });
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "Process"), 1);
     }
 
     /// Give the active session four turns of usage: the context climbs, is
@@ -3406,6 +3424,67 @@ mod tests {
         harness.run_ok();
         harness.snapshot("session_files");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A remote session's Files card, from its host's snapshot: the host's
+    /// listing with no Open or Tail, since the files are on the host.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_session_remote_files() {
+        use agentium_core::inspector_snapshot::{
+            InspectorSnapshot, TempFile, TempGroup, TempListing,
+        };
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1100.0, 760.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        // 2100-01-01 00:00 UTC, so the ages hold still.
+        let now = 4_102_444_800;
+        harness.state_mut().now_unix = Some(now);
+        let session = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap();
+        session.source = crate::session::SessionSource::Remote;
+        session.details.hostname = "monad".into();
+        let dir = std::path::PathBuf::from("/tmp/claude-1000/-tmp-inspector/0a6e-remote");
+        let file = |group: &str, name: &str, size: u64, ago: u64| TempFile {
+            name: name.into(),
+            path: dir.join(group).join(name),
+            size,
+            modified: now - ago,
+            is_dir: false,
+        };
+        session.inspector.restore(InspectorSnapshot {
+            files: Some(TempListing {
+                dir: dir.clone(),
+                scratchpad: TempGroup {
+                    files: vec![file("scratchpad", "plan.md", 4300, 4 * 60)],
+                    total: 1,
+                },
+                tasks: TempGroup {
+                    files: vec![file("tasks", "b7k2q9.output", 18_200, 45)],
+                    total: 1,
+                },
+            }),
+            ..Default::default()
+        });
+        session
+            .inspector_view
+            .open(crate::inspector::InspectorSection::Files);
+        harness.run_ok();
+        harness.snapshot("session_remote_files");
+        assert_eq!(
+            count_labels_containing(&harness, "Scratchpad and task output live on"),
+            1
+        );
+        assert_eq!(
+            count_labels(&harness, "Open"),
+            0,
+            "a remote file can't be opened"
+        );
+        assert_eq!(count_labels(&harness, "Tail"), 0, "nor its log tailed");
     }
 
     /// The Background card with one entry of each kind: a Bash task with

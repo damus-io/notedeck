@@ -43,7 +43,12 @@ pub fn outputs_ui(
         ui.ctx()
             .request_repaint_after(crate::inspector::MentionsMemo::rescan_after());
     }
-    let commits = source.map(|_| state.commits.list());
+    // A remote session's commits are the host's answer, from its snapshot.
+    let commits = if facts.is_remote {
+        state.commits.list().map(Some)
+    } else {
+        source.map(|_| state.commits.list())
+    };
     let mentions = state.mentions.mentions();
 
     let commit_count = match commits {
@@ -123,8 +128,8 @@ fn commits_source<'a>(
     })
 }
 
-/// Why there are no commits to list: the repo is on another host, or the
-/// session has no directory or ref yet.
+/// Why there are no commits to list: the repo is on another host that hasn't
+/// sent them, or the session has no directory or ref yet.
 fn commits_unavailable_ui(facts: &SessionFacts<'_>, i18n: &mut Localization, ui: &mut egui::Ui) {
     if facts.is_remote {
         let host = facts.details.map_or("", |d| d.hostname.as_str());

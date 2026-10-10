@@ -210,7 +210,10 @@ fn facts_rows_ui(
     }
     ui.end_row();
 
-    if facts.backend_type == BackendType::Claude && !facts.is_remote {
+    // A remote session's process is the host's, known once its snapshot
+    // says.
+    let process_known = !facts.is_remote || inspector.cli.is_some();
+    if facts.backend_type == BackendType::Claude && process_known {
         key_ui(
             ui,
             &tr!(i18n, "Process", "Dave session inspector overview row"),

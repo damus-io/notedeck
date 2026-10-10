@@ -11,6 +11,7 @@ mod conversation_feed;
 mod focus_queue;
 pub(crate) mod git_status;
 pub mod inspector;
+mod inspector_sync;
 pub mod ipc;
 pub(crate) mod mesh;
 mod notifications;
@@ -333,6 +334,11 @@ pub struct Dave {
     run_configs: HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     /// ndb subscription for incoming kind-31991 run-config events (live updates).
     run_config_sub: Option<nostrdb::Subscription>,
+    /// ndb subscription for remote sessions' kind-31990 inspector snapshots.
+    inspector_snapshot_sub: Option<nostrdb::Subscription>,
+    /// When the wake scheduled for a snapshot held back by its interval
+    /// fires, so one burst schedules one wake.
+    snapshot_wake_at: Option<std::time::Instant>,
     /// Killed child processes waiting to be reaped via non-blocking try_wait() each frame.
     pending_reap: Vec<std::process::Child>,
     /// Background worker that reads + renders an account's persisted sessions off
@@ -586,6 +592,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             run_configs: HashMap::new(),
             pending_reap: Vec::new(),
             run_config_sub: None,
+            inspector_snapshot_sub: None,
+            snapshot_wake_at: None,
             session_restore_loader: session_restore_loader::SessionRestoreLoader::new(),
             restored_accounts: HashSet::new(),
         }
@@ -1295,6 +1303,9 @@ impl notedeck::App for Dave {
         // Poll for live run-config updates from PNS relay
         self.poll_run_config_events(ctx.ndb);
 
+        // Fold remote sessions' inspector snapshots into their Details tab
+        self.poll_inspector_snapshots(&host);
+
         // Poll for live conversation events on all sessions.
         // Returns user messages from remote clients that need backend dispatch.
         // Only dispatch if the session isn't already streaming a response —
@@ -1465,6 +1476,9 @@ impl notedeck::App for Dave {
 
         // Publish kind-31988 state events for sessions whose status changed
         self.publish_dirty_session_states(ctx);
+
+        // Publish kind-31990 inspector snapshots for sessions whose Details moved
+        self.publish_inspector_snapshots(&host);
 
         // Reap finished run processes and compute the set of still-running
         // session IDs in a single pass. The cached set is read by the UI layer

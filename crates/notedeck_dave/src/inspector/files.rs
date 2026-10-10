@@ -18,6 +18,7 @@
 
 use super::background::OutputTails;
 use super::LabelMemo;
+pub use agentium_core::inspector_snapshot::{TempFile, TempGroup, TempListing};
 use poll_promise::Promise;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -109,39 +110,6 @@ fn base36(mut n: u64) -> String {
     }
     out.reverse();
     String::from_utf8(out).expect("base-36 digits are ASCII")
-}
-
-/// One entry of a temp-dir group.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TempFile {
-    /// The file name, lossily decoded.
-    pub name: String,
-    pub path: PathBuf,
-    /// Bytes; zero for a directory.
-    pub size: u64,
-    /// Last modified, in Unix seconds; zero if unknown.
-    pub modified: u64,
-    /// A directory rather than a file (the scratchpad may hold some).
-    pub is_dir: bool,
-}
-
-/// One subdirectory's entries, newest first, at most [`GROUP_CAP`] of them.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TempGroup {
-    pub files: Vec<TempFile>,
-    /// How many entries the directory holds, listed or not.
-    pub total: usize,
-}
-
-/// What the session's temp dir held when it was last read.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TempListing {
-    /// The session's temp dir.
-    pub dir: PathBuf,
-    /// `scratchpad/`.
-    pub scratchpad: TempGroup,
-    /// `tasks/`: background-task output logs.
-    pub tasks: TempGroup,
 }
 
 /// List a session's temp dir. A missing dir or subdir lists as empty: a
@@ -261,9 +229,13 @@ impl FilesState {
         }
 
         if let Some(listing) = self.reading.as_mut().and_then(|p| p.ready_mut()) {
-            self.listing = Some(std::mem::take(listing));
+            // Only a listing that differs counts as new, so an unchanged
+            // directory doesn't mark the session's snapshot stale.
+            if self.listing.as_ref() != Some(listing) {
+                self.listing = Some(std::mem::take(listing));
+                self.generation += 1;
+            }
             self.reading = None;
-            self.generation += 1;
         }
         let stale = self
             .read_at
@@ -277,6 +249,27 @@ impl FilesState {
             self.read_at = Some(now);
         }
         self.listing.as_ref()
+    }
+
+    /// The latest listing; `None` before the first read lands.
+    pub fn listing(&self) -> Option<&TempListing> {
+        self.listing.as_ref()
+    }
+
+    /// Bumped each time a listing lands.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Show a host's listing, for a remote session: its directory can't be
+    /// read from here, so [`Self::poll`] is never called for one.
+    pub fn set_remote(&mut self, listing: Option<TempListing>) {
+        if self.listing == listing {
+            return;
+        }
+        self.listing = listing;
+        self.tail_open = None;
+        self.generation += 1;
     }
 
     /// The listing beside the row memo, tails and open tail, so the card can
@@ -329,6 +322,9 @@ pub struct FileRows {
     pub tasks: GroupRows,
     /// What an empty group shows.
     pub empty: String,
+    /// A remote session's "Scratchpad and task output live on {host}": its
+    /// files can be listed but not opened from here. `None` for a local one.
+    pub remote_note: Option<String>,
     /// The Open, Tail and Hide buttons.
     pub open: String,
     pub tail: String,

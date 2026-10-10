@@ -61,6 +61,28 @@ impl SubagentState {
             .get(key, i18n, |_, i18n| build(chat, progress, i18n))
     }
 
+    /// Bumped on each progress report.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Every subagent's latest progress, by task id, for a snapshot.
+    pub fn all_progress(&self) -> Vec<SubagentProgress> {
+        let mut all: Vec<SubagentProgress> = self.progress.values().cloned().collect();
+        all.sort_by(|a, b| a.task_id.cmp(&b.task_id));
+        all
+    }
+
+    /// Replace every subagent's progress with a host's snapshot of it, for a
+    /// remote session.
+    pub fn replace(&mut self, progress: Vec<SubagentProgress>) {
+        self.progress = progress
+            .into_iter()
+            .map(|p| (p.task_id.clone(), p))
+            .collect();
+        self.generation += 1;
+    }
+
     /// The latest progress `task_id` reported, if any.
     pub fn progress(&self, task_id: &str) -> Option<&SubagentProgress> {
         self.progress.get(task_id)

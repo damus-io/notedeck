@@ -14,6 +14,7 @@
 pub mod config;
 pub mod engine;
 pub mod file_update;
+pub mod inspector_snapshot;
 pub mod messages;
 pub mod permission_mode;
 pub mod session;

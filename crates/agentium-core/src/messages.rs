@@ -694,7 +694,8 @@ impl RunningTool {
 }
 
 /// Session initialization info from Claude Code CLI
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SessionInfo {
     /// Available tools in this session
     pub tools: Vec<String>,
@@ -729,7 +730,7 @@ pub struct SessionInfo {
 }
 
 /// One MCP server from the CLI's `system/init` message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerInfo {
     pub name: String,
     pub status: McpServerStatus,
@@ -739,7 +740,8 @@ pub struct McpServerInfo {
 }
 
 /// Whether an MCP server connected, as the CLI's `system/init` reports it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum McpServerStatus {
     Connected,
     Failed,
@@ -766,7 +768,7 @@ impl McpServerStatus {
 }
 
 /// One plugin from the CLI's `system/init` message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginInfo {
     pub name: String,
     pub path: Option<String>,
@@ -774,7 +776,7 @@ pub struct PluginInfo {
 }
 
 /// A plugin that failed to load, from `system/init`'s `plugin_errors`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginError {
     pub plugin: String,
     /// The error's `type` on the wire.
@@ -784,7 +786,8 @@ pub struct PluginError {
 
 /// Whether a session's Claude CLI process is running, and when the idle
 /// reaper will stop it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CliState {
     /// A CLI process is running for the session. When false the session is
     /// dormant and the next message starts (and resumes) a fresh one.
@@ -1063,7 +1066,7 @@ impl WaitingOn {
 ///
 /// Sent as a level ([`DaveApiResponse::BackgroundWork`]), newest first,
 /// whenever any entry changes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BackgroundEntry {
     /// The CLI's task id, the cron job id, or `"wakeup"` for the one armed
     /// `ScheduleWakeup`.
@@ -1084,7 +1087,8 @@ impl BackgroundEntry {
 }
 
 /// What a [`BackgroundEntry`] is.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum BackgroundWork {
     /// A task the CLI runs: a background Bash command, a Monitor, a
     /// background subagent, …
@@ -1113,7 +1117,8 @@ pub enum BackgroundWork {
 /// A background task's detail, from the CLI's `task_started`,
 /// `task_progress` and `background_tasks_changed` and the tool call that
 /// launched it.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BackgroundTask {
     pub kind: BackgroundTaskKind,
     /// The CLI's description of the task.
@@ -1132,7 +1137,8 @@ pub struct BackgroundTask {
 
 /// What runs a background task, from the CLI's `task_type` and, for a
 /// Monitor, the tool that launched it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BackgroundTaskKind {
     /// A `run_in_background` (or backgrounded) Bash command: `local_bash`.
     Bash,
@@ -1165,7 +1171,8 @@ impl BackgroundTaskKind {
 }
 
 /// A background task's running totals, from `task_progress`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TaskUsage {
     pub total_tokens: u64,
     pub tool_uses: u64,
@@ -1174,7 +1181,8 @@ pub struct TaskUsage {
 
 /// A subagent's running totals, from the CLI's `task_progress` and, for one
 /// that reports them, the final totals on its `task_notification`.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SubagentProgress {
     /// The launching `Task`/`Agent` tool_use id: [`SubagentInfo::task_id`].
     pub task_id: String,
@@ -1191,7 +1199,8 @@ pub struct SubagentProgress {
 /// on the account sees the same windows. Sent as a level
 /// ([`DaveApiResponse::RateLimit`]) whenever a window's status, utilization
 /// or reset time moves; fold it with [`Self::merged_onto`].
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RateLimitInfo {
     /// Whether the limiting window still lets requests through.
     pub status: RateLimitStatus,
@@ -1276,7 +1285,8 @@ impl RateLimitInfo {
 }
 
 /// Whether the limiting rate-limit window still lets requests through.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RateLimitStatus {
     /// Under the limit.
     #[default]
@@ -1288,7 +1298,8 @@ pub enum RateLimitStatus {
 }
 
 /// One of the account's rate-limit windows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RateLimitWindowKind {
     /// The 5-hour session window.
     FiveHour,
@@ -1326,7 +1337,7 @@ impl RateLimitWindowKind {
 }
 
 /// How much of one rate-limit window is used, and when it resets.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct RateLimitWindow {
     /// Fraction of the window used (usually 0-1, can exceed 1).
     pub utilization: f64,

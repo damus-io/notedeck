@@ -200,7 +200,8 @@ fn removed_label(lines: usize) -> String {
 }
 
 /// The session's Claude Code temp dir. The session's cwd and CLI session id
-/// locate it; without either there is none yet.
+/// locate it; without either there is none yet. A remote session's is the
+/// listing its host last published, if any.
 fn temp_dir_ui(
     state: &mut FilesState,
     facts: &SessionFacts<'_>,
@@ -210,16 +211,14 @@ fn temp_dir_ui(
     let details = facts.details;
     if facts.is_remote {
         let host = details.map_or("", |d| d.hostname.as_str());
-        weak_ui(
-            ui,
-            &tr!(
-                i18n,
-                "Scratchpad and task output live on {host}",
-                "Dave session inspector files: a remote session's temp files are on the host running it",
-                host = host
-            ),
-        );
-        return None;
+        if state.listing().is_none() {
+            weak_ui(ui, &remote_note(host, i18n));
+            return None;
+        }
+        // Ages tick each second.
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs(1));
+        return listing_ui(state, facts.now_unix, Some(host), i18n, ui);
     }
     if facts.backend_type != BackendType::Claude {
         weak_ui(
@@ -244,7 +243,6 @@ fn temp_dir_ui(
         );
         return None;
     };
-    let now_unix = facts.now_unix;
 
     let listing_landed = state.poll(cwd, cli_session_id, Instant::now()).is_some();
     // Ages tick each second; the listing and tails refresh every few.
@@ -254,7 +252,30 @@ fn temp_dir_ui(
         weak_ui(ui, "…");
         return None;
     }
+    listing_ui(state, facts.now_unix, None, i18n, ui)
+}
 
+/// "Scratchpad and task output live on {host}".
+fn remote_note(host: &str, i18n: &mut Localization) -> String {
+    tr!(
+        i18n,
+        "Scratchpad and task output live on {host}",
+        "Dave session inspector files: a remote session's temp files are on the host running it",
+        host = host
+    )
+}
+
+/// The temp-dir listing: its path, then `scratchpad/` and `tasks/`. `host`
+/// names the host a remote session's listing came from; its files can't be
+/// opened or tailed from here, so their rows have no buttons.
+fn listing_ui(
+    state: &mut FilesState,
+    now_unix: u64,
+    host: Option<&str>,
+    i18n: &mut Localization,
+    ui: &mut egui::Ui,
+) -> Option<DaveAction> {
+    let local = host.is_none();
     let FilesParts {
         listing,
         generation,
@@ -264,12 +285,12 @@ fn temp_dir_ui(
     } = state.parts_mut();
     let listing = listing?;
     let rows = rows.get((generation, now_unix), i18n, |_, i18n| {
-        build_rows(listing, now_unix, i18n)
+        build_rows(listing, now_unix, host, i18n)
     });
 
     let mut action = None;
     ui.horizontal(|ui| {
-        if open_button_ui(ui, &rows.open).clicked() {
+        if local && open_button_ui(ui, &rows.open).clicked() {
             action = Some(DaveAction::OpenPath(listing.dir.clone()));
         }
         ui.add(
@@ -306,7 +327,11 @@ fn temp_dir_ui(
         for (file, row) in view.group.files.iter().zip(&view.rows.rows) {
             let is_output = !file.is_dir && file.name.ends_with(".output");
             let showing_tail = is_output && tail_open.as_deref() == Some(file.path.as_path());
-            match file_row_ui(row, is_output, showing_tail, rows, ui) {
+            let buttons = RowButtons {
+                open: local,
+                tail: local && is_output,
+            };
+            match file_row_ui(row, buttons, showing_tail, rows, ui) {
                 Some(RowClick::Open) => action = Some(DaveAction::OpenPath(file.path.clone())),
                 Some(RowClick::Tail) => FilesState::toggle_tail(tail_open, &file.path),
                 None => {}
@@ -321,7 +346,19 @@ fn temp_dir_ui(
             weak_ui(ui, more);
         }
     }
+    if let Some(note) = &rows.remote_note {
+        weak_ui(ui, note);
+    }
     action
+}
+
+/// Which buttons a file row has.
+#[derive(Clone, Copy)]
+struct RowButtons {
+    /// Open, for a file on this host.
+    open: bool,
+    /// Tail, for a task output log on this host.
+    tail: bool,
 }
 
 /// One group as the card draws it: its entries beside their strings.
@@ -337,10 +374,10 @@ enum RowClick {
 }
 
 /// One entry: its name in mono, then its size and age, Tail for an output
-/// log, and Open, right-aligned.
+/// log, and Open, right-aligned, when `buttons` has them.
 fn file_row_ui(
     row: &FileRow,
-    is_output: bool,
+    buttons: RowButtons,
     showing_tail: bool,
     labels: &FileRows,
     ui: &mut egui::Ui,
@@ -348,10 +385,10 @@ fn file_row_ui(
     let mut clicked = None;
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if open_button_ui(ui, &labels.open).clicked() {
+            if buttons.open && open_button_ui(ui, &labels.open).clicked() {
                 clicked = Some(RowClick::Open);
             }
-            if is_output {
+            if buttons.tail {
                 let label = if showing_tail {
                     &labels.hide
                 } else {
@@ -392,9 +429,16 @@ fn open_button_ui(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ))
 }
 
-/// The card's strings for `listing`, as of `now` (Unix seconds).
-fn build_rows(listing: &TempListing, now: u64, i18n: &mut Localization) -> FileRows {
+/// The card's strings for `listing`, as of `now` (Unix seconds). `host` is
+/// the host a remote session's listing came from.
+fn build_rows(
+    listing: &TempListing,
+    now: u64,
+    host: Option<&str>,
+    i18n: &mut Localization,
+) -> FileRows {
     FileRows {
+        remote_note: host.map(|host| remote_note(host, i18n)),
         dir: format!("{}{}", listing.dir.display(), std::path::MAIN_SEPARATOR),
         scratchpad: group_rows("scratchpad", &listing.scratchpad, now, i18n),
         tasks: group_rows("tasks", &listing.tasks, now, i18n),

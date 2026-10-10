@@ -57,6 +57,7 @@ pub(crate) struct PnsLocalRuntime {
     running_session_ids: HashMap<SessionId, HashSet<String>>,
     run_configs: HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
     run_config_sub: Option<nostrdb::Subscription>,
+    inspector_snapshot_sub: Option<nostrdb::Subscription>,
     pending_reap: Vec<std::process::Child>,
 }
 
@@ -93,6 +94,7 @@ impl PnsLocalRuntime {
             running_session_ids: HashMap::new(),
             run_configs: HashMap::new(),
             run_config_sub: None,
+            inspector_snapshot_sub: None,
             pending_reap: Vec::new(),
         }
     }
@@ -173,6 +175,9 @@ impl Dave {
         if self.run_config_sub.is_none() {
             self.subscribe_pns_run_configs(ctx.ndb, account);
         }
+        if self.inspector_snapshot_sub.is_none() {
+            self.subscribe_inspector_snapshots(ctx.ndb, account);
+        }
         // Restore this account's sessions off the render thread (see
         // `session_restore_loader`). Dispatch once per account — a re-selected
         // account's sessions are preserved in `pns_local_runtimes`, so restoring
@@ -228,6 +233,7 @@ impl Dave {
             running_session_ids: std::mem::take(&mut self.running_session_ids),
             run_configs: std::mem::take(&mut self.run_configs),
             run_config_sub: self.run_config_sub.take(),
+            inspector_snapshot_sub: self.inspector_snapshot_sub.take(),
             pending_reap: std::mem::take(&mut self.pending_reap),
         }
     }
@@ -273,6 +279,7 @@ impl Dave {
         self.running_session_ids = runtime.running_session_ids;
         self.run_configs = runtime.run_configs;
         self.run_config_sub = runtime.run_config_sub;
+        self.inspector_snapshot_sub = runtime.inspector_snapshot_sub;
         self.pending_reap = runtime.pending_reap;
     }
 

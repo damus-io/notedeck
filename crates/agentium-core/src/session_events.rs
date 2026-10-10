@@ -300,7 +300,11 @@ fn stamp_ms_tag(builder: NoteBuilder<'_>, timestamp_ms: Option<u64>) -> NoteBuil
 }
 
 /// Initialize a NoteBuilder with kind, content, and optional timestamp.
-fn init_note_builder(kind: u32, content: &str, timestamp: Option<u64>) -> NoteBuilder<'_> {
+pub(crate) fn init_note_builder(
+    kind: u32,
+    content: &str,
+    timestamp: Option<u64>,
+) -> NoteBuilder<'_> {
     let mut builder = NoteBuilder::new()
         .kind(kind)
         .content(content)
@@ -314,7 +318,7 @@ fn init_note_builder(kind: u32, content: &str, timestamp: Option<u64>) -> NoteBu
 }
 
 /// Sign, build, and serialize a NoteBuilder into a BuiltEvent.
-fn finalize_built_event(
+pub(crate) fn finalize_built_event(
     builder: NoteBuilder,
     secret_key: &[u8; 32],
     kind: u32,

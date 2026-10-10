@@ -17,67 +17,11 @@
 use std::collections::VecDeque;
 
 use crate::messages::{CompactionInfo, DaveApiResponse, UsageInfo};
+use agentium_core::inspector_snapshot::UsageSnapshot;
+pub use agentium_core::inspector_snapshot::{Compaction, Tokens, TurnUsage};
 
 /// Most turns the history keeps. Older turns drop off the front.
 pub const HISTORY_CAP: usize = 500;
-
-/// One request's token counts: what occupied the context and what the model
-/// wrote back.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Tokens {
-    /// Uncached input tokens.
-    pub input: u64,
-    /// Input tokens written to the prompt cache.
-    pub cache_creation: u64,
-    /// Input tokens read from the prompt cache.
-    pub cache_read: u64,
-    pub output: u64,
-}
-
-impl Tokens {
-    fn from_usage(usage: &UsageInfo) -> Self {
-        Self {
-            input: usage.input_tokens,
-            cache_creation: usage.cache_creation_input_tokens,
-            cache_read: usage.cache_read_input_tokens,
-            output: usage.output_tokens,
-        }
-    }
-
-    /// Tokens occupying the context window: all three kinds of input.
-    pub fn context(&self) -> u64 {
-        self.input + self.cache_creation + self.cache_read
-    }
-}
-
-/// Where one turn left the session: its last request's tokens, and what the
-/// turn cost.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct TurnUsage {
-    /// When the turn ended, in Unix seconds.
-    pub at: u64,
-    /// The turn's last request, whose input is the context at turn end.
-    pub tokens: Tokens,
-    /// What this turn added to the session's cost, if the backend reports
-    /// cost.
-    pub cost_usd: Option<f64>,
-}
-
-/// The CLI compacted the conversation between two turns.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Compaction {
-    /// When it finished, in Unix seconds.
-    pub at: u64,
-    /// How many turns the session had recorded when it happened, so it sits
-    /// just before turn number `turn` (counted from the session's first,
-    /// including turns the cap has since dropped).
-    pub turn: u64,
-    /// The context it started from.
-    pub pre_tokens: u64,
-    /// The context afterwards, from the first request after it. `None` until
-    /// that request arrives.
-    pub post_tokens: Option<u64>,
-}
 
 /// The context-per-turn sparkline, rebuilt whenever the history changes so
 /// the card only maps it to screen space.
@@ -219,6 +163,32 @@ impl UsageHistory {
     /// The session-wide number of the oldest retained turn.
     fn first_retained_turn(&self) -> u64 {
         self.turns_recorded - self.turns.len() as u64
+    }
+
+    /// Replace the history with a host's snapshot of it, for a remote
+    /// session. Its cost reports are the host's, so none is carried over to
+    /// take a share from.
+    pub fn restore(&mut self, snapshot: UsageSnapshot) {
+        let UsageSnapshot {
+            current,
+            turns,
+            compactions,
+            turns_recorded,
+            requests,
+            total_cost,
+        } = snapshot;
+        self.turns = turns.into();
+        self.compactions = compactions.into();
+        // A snapshot from a host that cut its turns still counts them all,
+        // but never fewer than it carries.
+        self.turns_recorded = turns_recorded.max(self.turns.len() as u64);
+        self.requests = requests;
+        self.current = current;
+        self.live = false;
+        self.reported_cost = None;
+        self.total_cost = total_cost;
+        self.generation += 1;
+        self.rebuild_sparkline();
     }
 
     /// Retained turns, oldest first.
