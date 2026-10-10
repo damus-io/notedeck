@@ -11,12 +11,12 @@
 
 use agentium_core::session_loader::TurnSpan;
 use egui_kittest::Harness;
-use notedeck::Notedeck;
 use notedeck_dave::ui::HeaderWalltimeSource;
 use notedeck_dave::{
     AiMode, AssistantMessage, ChatSession, DaveUi, Message, SessionId, UserMessage,
 };
 use notedeck_testing::alloc::{measure, CountingAllocator};
+use notedeck_testing::TestHost;
 
 /// Process-wide and one per binary, so it lives in this test rather than in
 /// `notedeck_testing`.
@@ -124,20 +124,16 @@ struct Draw {
 }
 
 struct ChatState {
-    notedeck: Notedeck,
+    host: TestHost,
     session: ChatSession,
     draw: Draw,
-    set_up: bool,
-    _tmpdir: tempfile::TempDir,
 }
 
 fn render(ui: &mut egui::Ui, state: &mut ChatState) {
     notedeck::test_harness::full_window(ui, |ui| {
-        if !state.set_up {
-            state.notedeck.setup(ui.ctx());
-            state.set_up = true;
-        }
-        let mut app_ctx = state.notedeck.app_context();
+        // The warm-up frames cover the one that installs the fonts.
+        state.host.setup_once(ui.ctx());
+        let mut app_ctx = state.host.app_context();
         let session = &mut state.session;
         let walltime = session.walltime();
         let mut dave_ui = DaveUi::new(
@@ -174,9 +170,6 @@ fn render(ui: &mut egui::Ui, state: &mut ChatState) {
 /// Allocations on the UI thread for one steady-state frame of [`chat`],
 /// drawing what `draw` says, with a fourth turn running since 9:58.
 fn frame_allocs(draw: Draw) -> u64 {
-    let tmpdir = tempfile::TempDir::new().unwrap();
-    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-    let notedeck = Notedeck::init(&egui::Context::default(), tmpdir.path(), &args);
     let mut session = ChatSession::new(
         1 as SessionId,
         "/tmp/chat-times".into(),
@@ -192,11 +185,9 @@ fn frame_allocs(draw: Draw) -> u64 {
         session.chat_range.extend_to(5, None);
     }
     let state = ChatState {
-        notedeck,
+        host: TestHost::new(),
         session,
         draw,
-        set_up: false,
-        _tmpdir: tmpdir,
     };
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(760.0, 900.0))

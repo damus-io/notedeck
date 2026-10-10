@@ -17,9 +17,8 @@ use std::time::{Duration, Instant};
 
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
-use nostrdb::{Ndb, NoteBuilder, Transaction};
-use nostrdb_net::{FullKeypair, Keypair};
-use notedeck::Notedeck;
+use nostrdb::{Ndb, NoteBuilder};
+use nostrdb_net::FullKeypair;
 use notedeck_dave::reference::AgentiumRefParser;
 use notedeck_dave::render::AgentiumSessionRenderer;
 use notedeck_dave::session_cache::AgentiumSessionCache;
@@ -27,6 +26,7 @@ use notedeck_dave::ui::{assistant_message_ui, user_message_ui};
 use notedeck_dave::{AssistantMessage, UserMessage};
 
 use agentium_core::session_events::AI_SESSION_STATE_KIND;
+use notedeck_testing::TestHost;
 
 /// The two kinds of chat message a person sees text in.
 #[derive(Clone, Copy, PartialEq)]
@@ -42,14 +42,12 @@ enum Surface {
 const SENT_AT: u64 = 1_700_000_000;
 
 struct State {
-    notedeck: Notedeck,
+    host: TestHost,
     account: FullKeypair,
     body: String,
     surface: Surface,
     /// App actions drained this frame (a chip click ⇒ ≥1).
     actions_seen: usize,
-    _tmpdir: tempfile::TempDir,
-    setup_done: bool,
 }
 
 /// Seed and ingest a kind-31988 session-state event authored with `secret`.
@@ -83,24 +81,11 @@ fn seed_session(ndb: &Ndb, secret: &[u8; 32], session_id: &str, title: &str, sta
 
 fn render(ui: &mut egui::Ui, state: &mut State) {
     notedeck::test_harness::full_window(ui, |ui| {
-        let ctx = &ui.ctx().clone();
-        if !state.setup_done {
-            state.notedeck.setup(ctx);
-            ctx.global_style_mut(|s| s.animation_time = 0.0);
-            let secret = state.account.secret_key.clone();
-            let pubkey = state.account.pubkey;
-            let app_ctx = &mut state.notedeck.app_context();
-            if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
-                let txn = Transaction::new(app_ctx.ndb).expect("txn");
-                resp.unk_id_action
-                    .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
-            }
-            app_ctx.select_account(&pubkey);
-            state.setup_done = true;
+        if state.host.setup_once(ui.ctx()) {
             return;
         }
 
-        let mut app_ctx = state.notedeck.app_context();
+        let mut app_ctx = state.host.app_context();
         let body = state.body.as_str();
         let surface = state.surface;
         egui::CentralPanel::default().show(ui, |ui| {
@@ -157,13 +142,12 @@ fn click_label(harness: &mut Harness<'static, State>, label: &str, button: egui:
 }
 
 /// A harness drawing a `surface` message, its body still empty, past the
-/// first frame that installs fonts and the account. `renderer` builds it with
+/// first frame that installs fonts. `renderer` builds it with
 /// lavapipe, for a snapshot; without it the harness only lays out.
 fn build_harness(surface: Surface, renderer: bool) -> Harness<'static, State> {
-    let tmpdir = tempfile::TempDir::new().unwrap();
-    let ctx = egui::Context::default();
-    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-    let mut notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+    let account = FullKeypair::generate();
+    let mut host = TestHost::with_account(&account);
+    let notedeck = host.notedeck();
 
     // Register the parser + renderer over one shared cache, as Dave does at startup.
     let cache = Rc::new(RefCell::new(AgentiumSessionCache::default()));
@@ -171,13 +155,11 @@ fn build_harness(surface: Surface, renderer: bool) -> Harness<'static, State> {
     notedeck.register_kind_renderer(Box::new(AgentiumSessionRenderer::new(cache.clone())));
 
     let state = State {
-        notedeck,
-        account: FullKeypair::generate(),
+        host,
+        account,
         body: String::new(),
         surface,
         actions_seen: 0,
-        _tmpdir: tmpdir,
-        setup_done: false,
     };
 
     let builder = Harness::builder().with_size(egui::Vec2::new(640.0, 380.0));
@@ -199,7 +181,7 @@ fn actions_after_chip_click(surface: Surface) -> usize {
     let session_id = "claude-session-q3-planning";
     let title = "Refactor the session parser";
     {
-        let app_ctx = harness.state_mut().notedeck.app_context();
+        let app_ctx = harness.state_mut().host.app_context();
         seed_session(app_ctx.ndb, &secret, session_id, title, "working");
     }
     let session_ref = agentium_core::wordid::session_ref(session_id);

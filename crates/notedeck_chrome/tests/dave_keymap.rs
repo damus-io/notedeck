@@ -12,10 +12,11 @@
 
 use std::collections::BTreeSet;
 
-use notedeck::{App, AppId, Notedeck, ToolOwner};
+use notedeck::{App, AppId, ToolOwner};
 use notedeck_chrome::keymap::DEFAULT_KEYMAP;
 use notedeck_chrome::{Chrome, NotedeckApp};
 use notedeck_dave::Dave;
+use notedeck_testing::TestHost;
 
 /// Dave's UI tools that read rather than act, for a macro step to hand on;
 /// no key is bound to them.
@@ -56,14 +57,12 @@ fn dave_bindings() -> Vec<Binding> {
 /// advertises.
 #[test]
 fn every_dave_binding_names_a_dave_tool() {
-    let dir = tempfile::TempDir::new().expect("tmp dir");
-    let args = ["notedeck-test".to_owned(), "--testrunner".to_owned()];
-    let egui_ctx = egui::Context::default();
-    let mut notedeck = Notedeck::init(&egui_ctx, dir.path(), &args);
+    let mut host = TestHost::new();
     let dave = {
-        let ctx = notedeck.app_context();
+        let ctx = host.app_context();
         Dave::new(None, ctx.ndb.clone(), ctx.waker.clone(), ctx.path)
     };
+    let notedeck = host.notedeck();
     let advertised: BTreeSet<String> = dave
         .ui_tools()
         .iter()
@@ -71,7 +70,7 @@ fn every_dave_binding_names_a_dave_tool() {
         .filter(|name| !READ_ONLY_TOOLS.contains(&name.as_str()))
         .collect();
     let mut chrome = Chrome::new_headless_with_apps(
-        &mut notedeck,
+        notedeck,
         [NotedeckApp::Other("dave".to_owned(), Box::new(dave))],
     );
     // As the host does: the registry follows the running apps.

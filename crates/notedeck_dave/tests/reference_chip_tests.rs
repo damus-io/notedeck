@@ -18,8 +18,7 @@ use std::time::{Duration, Instant};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 use nostrdb::{Ndb, NoteBuilder, Transaction};
-use nostrdb_net::{FullKeypair, Keypair, Pubkey};
-use notedeck::Notedeck;
+use nostrdb_net::{FullKeypair, Pubkey};
 use notedeck_dave::reference::AgentiumRefParser;
 use notedeck_dave::render::AgentiumSessionRenderer;
 use notedeck_dave::session_cache::AgentiumSessionCache;
@@ -27,14 +26,13 @@ use notedeck_ui::markdown::render_markdown_with_refs;
 
 use agentium_core::session_events::AI_SESSION_STATE_KIND;
 use notedeck_testing::fixtures::test_config;
+use notedeck_testing::TestHost;
 
 struct RefChipState {
-    notedeck: Notedeck,
+    host: TestHost,
     account: FullKeypair,
     /// The inline body (holding an `agentium:<word-id>`) rendered on both surfaces.
     body: String,
-    _tmpdir: tempfile::TempDir,
-    setup_done: bool,
 }
 
 /// Seed a kind-31988 session-state event authored by `author` and ingest it
@@ -78,24 +76,11 @@ fn seed_session(ndb: &Ndb, secret: &[u8; 32], session_id: &str, title: &str, sta
 fn render_ref_chip(ui: &mut egui::Ui, state: &mut RefChipState) {
     notedeck::test_harness::full_window(ui, |ui| {
         let ctx = &ui.ctx().clone();
-        if !state.setup_done {
-            state.notedeck.setup(ctx);
-            ctx.global_style_mut(|s| s.animation_time = 0.0);
-
-            let secret = state.account.secret_key.clone();
-            let pubkey = state.account.pubkey;
-            let app_ctx = &mut state.notedeck.app_context();
-            if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
-                let txn = Transaction::new(app_ctx.ndb).expect("txn");
-                resp.unk_id_action
-                    .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
-            }
-            app_ctx.select_account(&pubkey);
-            state.setup_done = true;
+        if state.host.setup_once(ctx) {
             return;
         }
 
-        let mut app_ctx = state.notedeck.app_context();
+        let mut app_ctx = state.host.app_context();
         let body = state.body.clone();
         egui::CentralPanel::default().show(ui, |ui| {
             ui.add_space(16.0);
@@ -130,10 +115,9 @@ fn render_ref_chip(ui: &mut egui::Ui, state: &mut RefChipState) {
 }
 
 fn build_harness() -> Harness<'static, RefChipState> {
-    let tmpdir = tempfile::TempDir::new().unwrap();
-    let ctx = egui::Context::default();
-    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-    let mut notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+    let account = FullKeypair::generate();
+    let mut host = TestHost::with_account(&account);
+    let notedeck = host.notedeck();
 
     // Register the agentium parser + session renderer over one shared cache —
     // exactly what `Dave::reference_parsers` / `Dave::kind_renderers` do at startup
@@ -144,18 +128,16 @@ fn build_harness() -> Harness<'static, RefChipState> {
     notedeck.register_kind_renderer(Box::new(AgentiumSessionRenderer::new(cache.clone())));
 
     let state = RefChipState {
-        notedeck,
-        account: FullKeypair::generate(),
+        host,
+        account,
         body: String::new(),
-        _tmpdir: tmpdir,
-        setup_done: false,
     };
 
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(640.0, 380.0))
         .renderer(notedeck::software_renderer())
         .build_ui_state(render_ref_chip, state);
-    // First frame installs fonts + injects the account.
+    // The first frame installs notedeck's fonts.
     harness.run_steps(2);
     harness
 }
@@ -176,7 +158,7 @@ fn snapshot_agentium_reference_chip() {
     let session_id = "claude-session-q3-planning";
     let title = "Refactor the session parser";
     {
-        let app_ctx = harness.state_mut().notedeck.app_context();
+        let app_ctx = harness.state_mut().host.app_context();
         seed_session(app_ctx.ndb, &secret, session_id, title, "working");
     }
     let session_ref = agentium_core::wordid::session_ref(session_id);
@@ -224,7 +206,7 @@ fn agentium_reference_chip_renders_in_table_cell() {
     let session_id = "claude-session-table-cell";
     let title = "Thread RefCtx into tables";
     {
-        let app_ctx = harness.state_mut().notedeck.app_context();
+        let app_ctx = harness.state_mut().host.app_context();
         seed_session(app_ctx.ndb, &secret, session_id, title, "working");
     }
     let session_ref = agentium_core::wordid::session_ref(session_id);
@@ -261,7 +243,7 @@ fn snapshot_agentium_deleted_chip() {
     let session_id = "claude-session-deleted-demo";
     let title = "Resume the parser refactor";
     {
-        let app_ctx = harness.state_mut().notedeck.app_context();
+        let app_ctx = harness.state_mut().host.app_context();
         seed_session(app_ctx.ndb, &secret, session_id, title, "deleted");
     }
     let session_ref = agentium_core::wordid::session_ref(session_id);
@@ -462,10 +444,9 @@ struct RefTitleHarness {
 /// snapshot; without it the harness lays out and builds its accesskit tree,
 /// which is all a layout check reads.
 fn ref_title_harness(render: bool) -> RefTitleHarness {
-    let tmpdir = tempfile::TempDir::new().unwrap();
-    let ctx = egui::Context::default();
-    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-    let mut notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+    let account = FullKeypair::generate();
+    let mut host = TestHost::with_account(&account);
+    let notedeck = host.notedeck();
     let cache = Rc::new(RefCell::new(AgentiumSessionCache::default()));
     let cards = Rc::new(RefCell::new(Vec::new()));
     notedeck.register_reference_parser(Box::new(AgentiumRefParser::new(cache.clone())));
@@ -476,11 +457,9 @@ fn ref_title_harness(render: bool) -> RefTitleHarness {
     notedeck.register_kind_renderer(Box::new(StubCardRenderer));
 
     let state = RefChipState {
-        notedeck,
-        account: FullKeypair::generate(),
+        host,
+        account,
         body: String::new(),
-        _tmpdir: tmpdir,
-        setup_done: false,
     };
     let builder = Harness::builder().with_size(egui::Vec2::new(640.0, 380.0));
     let builder = if render {
@@ -501,7 +480,7 @@ fn build_title_card_harness(render: bool) -> Harness<'static, RefChipState> {
     let RefTitleHarness { mut harness, cards } = ref_title_harness(render);
     let secret = harness.state().account.secret_key.secret_bytes();
     {
-        let app_ctx = harness.state_mut().notedeck.app_context();
+        let app_ctx = harness.state_mut().host.app_context();
         for (session, card) in [
             ("claude-session-short", SHORT_CARD),
             ("claude-session-long", LONG_CARD),
@@ -622,7 +601,7 @@ fn a_session_titled_with_its_own_ref_nests_once() {
     let session = "claude-session-ouroboros";
     let session_ref = agentium_core::wordid::session_ref(session);
     {
-        let app_ctx = harness.state_mut().notedeck.app_context();
+        let app_ctx = harness.state_mut().host.app_context();
         seed_session(app_ctx.ndb, &secret, session, &session_ref, "working");
     }
     harness.state_mut().body = format!("Watching {session_ref} chase itself.");

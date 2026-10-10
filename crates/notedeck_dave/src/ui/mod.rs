@@ -1783,16 +1783,13 @@ mod tests {
     use super::{
         dispatch_open_terminal, handle_key_action, settle_normal_mode_focus, KeyActionResult,
     };
-    use crate::backend::RemoteOnlyBackend;
-    use crate::collapse_state::CollapseState;
+    use crate::backend::{BackendType, RemoteOnlyBackend};
     use crate::config::AiMode;
     use crate::focus_queue::FocusQueue;
     use crate::session::PermissionMessageState;
     use crate::session::{SessionId, SessionManager};
-    use crate::ui::keybindings::{
-        check_keybindings, ActiveOffers, KeyAction, KeyContext, NormalMode,
-    };
-    use crate::ui::AgentScene;
+    use crate::tests::TestDave;
+    use crate::ui::keybindings::{check_keybindings, ActiveOffers, KeyAction, KeyContext};
     use crate::ui_tools::chrome_keys::ChromeKeys;
     use crate::update;
     use claude_agent_sdk_rs::PermissionMode;
@@ -1802,52 +1799,48 @@ mod tests {
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
 
-    /// Everything a key action dispatches against, with two agentic sessions
-    /// in separate directories and the first one active.
+    /// A test Dave with two agentic sessions in separate directories, the
+    /// first one active, and the chrome keymap that runs ahead of its own.
     struct Dispatch {
-        session_manager: SessionManager,
-        scene: AgentScene,
-        focus_queue: FocusQueue,
-        collapse_state: CollapseState,
-        normal_mode: NormalMode,
+        test: TestDave,
         /// Chrome's keymap, ahead of Dave's keybindings.
         chrome: ChromeKeys,
         sessions: [SessionId; 2],
     }
 
+    /// The fixture's Dave, so a test reads it as it read the loose fields.
+    impl std::ops::Deref for Dispatch {
+        type Target = crate::Dave;
+        fn deref(&self) -> &crate::Dave {
+            &self.test.dave
+        }
+    }
+
+    impl std::ops::DerefMut for Dispatch {
+        fn deref_mut(&mut self) -> &mut crate::Dave {
+            &mut self.test.dave
+        }
+    }
+
     impl Dispatch {
         fn new() -> Self {
-            let mut session_manager = SessionManager::new();
-            let sessions = ["/tmp/chord-a", "/tmp/chord-b"].map(|cwd| {
-                session_manager.new_session(
-                    PathBuf::from(cwd),
-                    AiMode::Agentic,
-                    crate::backend::BackendType::Claude,
-                )
-            });
-            let [first, _] = sessions;
-            session_manager.switch_to(first);
-            for id in sessions {
-                session_manager.get_mut(id).unwrap().focus_requested = false;
-            }
+            let mut test = TestDave::new();
+            let sessions = test.add_sessions(["/tmp/chord-a", "/tmp/chord-b"], BackendType::Claude);
             Dispatch {
-                session_manager,
-                scene: AgentScene::new(),
-                focus_queue: FocusQueue::new(),
-                collapse_state: CollapseState::new(),
-                normal_mode: NormalMode::default(),
+                test,
                 chrome: ChromeKeys::new(),
                 sessions,
             }
         }
 
         fn dispatch(&mut self, action: KeyAction, ctx: &egui::Context) -> KeyActionResult {
+            let dave = &mut self.test.dave;
             handle_key_action(
                 action,
-                &mut self.session_manager,
-                &mut self.scene,
-                &mut self.focus_queue,
-                &self.collapse_state,
+                &mut dave.session_manager,
+                &mut dave.scene,
+                &mut dave.focus_queue,
+                &dave.collapse_state,
                 &RemoteOnlyBackend,
                 false,
                 false,
@@ -1910,7 +1903,8 @@ mod tests {
             interruptible: false,
             has_issue: false,
         };
-        if let Some(action) = d.chrome.frame(ui.ctx(), &mut d.normal_mode, offers, false) {
+        let Dispatch { test, chrome, .. } = d;
+        if let Some(action) = chrome.frame(ui.ctx(), &mut test.dave.normal_mode, offers, false) {
             d.dispatch(action, ui.ctx());
         }
         let in_tentative_state = d
@@ -1935,7 +1929,8 @@ mod tests {
         if let Some(action) = check_keybindings(ui.ctx(), &mut d.normal_mode, keys) {
             d.dispatch(action, ui.ctx());
         }
-        settle_normal_mode_focus(&mut d.normal_mode, &mut d.session_manager);
+        let dave = &mut d.test.dave;
+        settle_normal_mode_focus(&mut dave.normal_mode, &mut dave.session_manager);
 
         let Some(session) = d.session_manager.get_active_mut() else {
             return;
@@ -1965,7 +1960,10 @@ mod tests {
             interruptible: false,
             has_issue: false,
         };
-        if let Some(action) = d.chrome.frame(ui.ctx(), &mut d.normal_mode, offers, false) {
+        if let Some(action) = d
+            .chrome
+            .frame(ui.ctx(), &mut d.test.dave.normal_mode, offers, false)
+        {
             d.dispatch(action, ui.ctx());
         }
         let keys = KeyContext {
@@ -1985,7 +1983,8 @@ mod tests {
         if let Some(action) = check_keybindings(ui.ctx(), &mut d.normal_mode, keys) {
             d.dispatch(action, ui.ctx());
         }
-        settle_normal_mode_focus(&mut d.normal_mode, &mut d.session_manager);
+        let dave = &mut d.test.dave;
+        settle_normal_mode_focus(&mut dave.normal_mode, &mut dave.session_manager);
         if let Some(id) = super::session_list::renaming(ui.ctx()) {
             if let Some(title) = super::session_list::rename_ui(ui, id, super::scene_rename_field) {
                 s.renamed = Some((id, title));
@@ -2305,11 +2304,9 @@ mod tests {
     /// A Dave session view rendered with a real `AppContext`, with the UI's
     /// actions fed back through [`super::handle_ui_action`] as the app does.
     struct SessionViewState {
-        notedeck: notedeck::Notedeck,
-        _tmpdir: tempfile::TempDir,
+        host: notedeck_testing::TestHost,
         session_manager: SessionManager,
         model_config: crate::config::ModelConfig,
-        set_up: bool,
         /// The account's rate limits, as `Dave` would hand them in.
         rate_limit: Option<crate::messages::RateLimitInfo>,
         /// The clock the Details tab reads, pinned for snapshots.
@@ -2321,17 +2318,12 @@ mod tests {
         /// Messages sent from a subagent's session, as `Dave` hands them to
         /// the parent.
         subagent_sends: Vec<crate::session::SubagentMessage>,
-        /// A theme to draw in instead of notedeck's default dark one, taken
-        /// once the first frame has set the context up.
+        /// A theme to draw in instead of notedeck's default dark one, set
+        /// on every frame after the one that sets the context up.
         visuals: Option<egui::Visuals>,
     }
 
     fn session_view_state() -> SessionViewState {
-        let tmpdir = tempfile::TempDir::new().unwrap();
-        let ctx = egui::Context::default();
-        // `--testrunner` gives the account no relays, so nothing connects.
-        let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-        let notedeck = notedeck::Notedeck::init(&ctx, tmpdir.path(), &args);
         let mut session_manager = SessionManager::new();
         let id = session_manager.new_session(
             PathBuf::from("/tmp/inspector"),
@@ -2347,11 +2339,9 @@ mod tests {
             .unwrap()
             .event_id = "inspector-test-session".into();
         SessionViewState {
-            notedeck,
-            _tmpdir: tmpdir,
+            host: notedeck_testing::TestHost::new(),
             session_manager,
             model_config: crate::config::ModelConfig::default(),
-            set_up: false,
             rate_limit: None,
             now_unix: None,
             time_zone: None,
@@ -2362,21 +2352,16 @@ mod tests {
     }
 
     fn render_session_view(ui: &mut egui::Ui, state: &mut SessionViewState) {
-        notedeck::test_harness::full_window(ui, |ui| {
-            if !state.set_up {
-                state.notedeck.setup(ui.ctx());
-                state.set_up = true;
-            }
-            if let Some(visuals) = state.visuals.take() {
-                ui.ctx().set_visuals(visuals.clone());
-                ui.style_mut().visuals = visuals;
-            }
-            // The app's root panel paints this; a bare harness doesn't.
-            ui.painter()
-                .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
+        // Ahead of the frame, so its panel fill is painted in this theme.
+        // The setup frame overrides it; every frame after draws in it.
+        if let Some(visuals) = &state.visuals {
+            ui.ctx().set_visuals(visuals.clone());
+            ui.style_mut().visuals = visuals.clone();
+        }
+        super::test_frame(ui, |ui| {
             let no_configs = std::collections::HashMap::new();
             let none_running = std::collections::HashMap::new();
-            let mut app_ctx = state.notedeck.app_context();
+            let mut app_ctx = state.host.app_context();
             let Some(session) = state.session_manager.get_active_mut() else {
                 return;
             };
@@ -2495,17 +2480,11 @@ mod tests {
     }
 
     fn render_scene_view(ui: &mut egui::Ui, state: &mut SceneViewState) {
-        notedeck::test_harness::full_window(ui, |ui| {
+        super::test_frame(ui, |ui| {
             let view = &mut state.view;
-            if !view.set_up {
-                view.notedeck.setup(ui.ctx());
-                view.set_up = true;
-            }
-            ui.painter()
-                .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
             let no_configs = std::collections::HashMap::new();
             let none_running = std::collections::HashMap::new();
-            let mut app_ctx = view.notedeck.app_context();
+            let mut app_ctx = view.host.app_context();
             let response = super::scene_ui(
                 &mut view.session_manager,
                 &mut state.scene,
@@ -4036,12 +4015,7 @@ mod tests {
             .get_by_label("headway:dave/remember-company-setup")
             .click_accesskit();
         harness.run_ok();
-        let actions = harness
-            .state_mut()
-            .notedeck
-            .app_context()
-            .app_actions
-            .take();
+        let actions = harness.state_mut().host.app_context().app_actions.take();
         assert!(
             actions.iter().any(|action| matches!(
                 action,

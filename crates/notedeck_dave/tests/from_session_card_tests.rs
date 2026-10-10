@@ -14,9 +14,8 @@ use std::time::{Duration, Instant};
 
 use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
-use nostrdb::{Ndb, NoteBuilder, Transaction};
-use nostrdb_net::{FullKeypair, Keypair};
-use notedeck::Notedeck;
+use nostrdb::{Ndb, NoteBuilder};
+use nostrdb_net::FullKeypair;
 use notedeck_dave::reference::AgentiumRefParser;
 use notedeck_dave::render::AgentiumSessionRenderer;
 use notedeck_dave::session_cache::AgentiumSessionCache;
@@ -24,6 +23,7 @@ use notedeck_dave::ui::from_session_message_ui;
 use notedeck_dave::UserMessage;
 
 use agentium_core::session_events::AI_SESSION_STATE_KIND;
+use notedeck_testing::TestHost;
 
 /// The sending session's id, which its `agentium:` ref derives from.
 const SENDER_ID: &str = "claude-session-from-card-sender";
@@ -33,12 +33,10 @@ const SENDER_TITLE: &str = "Report the child's result back";
 const BODY: &str = "UT7b landed as `8be21d`. The vendor window reads GIVERS rows now.";
 
 struct FromCardState {
-    notedeck: Notedeck,
+    host: TestHost,
     account: FullKeypair,
     /// The message drawn, its `from_session` the sender's ref.
     message: UserMessage,
-    _tmpdir: tempfile::TempDir,
-    setup_done: bool,
 }
 
 /// Seed the sender's kind-31988 session state, stamped now so its chip draws
@@ -77,25 +75,11 @@ fn seed_sender(ndb: &Ndb, secret: &[u8; 32]) {
 
 fn render_from_card(ui: &mut egui::Ui, state: &mut FromCardState) {
     notedeck::test_harness::full_window(ui, |ui| {
-        let ctx = &ui.ctx().clone();
-        if !state.setup_done {
-            state.notedeck.setup(ctx);
-            ctx.global_style_mut(|s| s.animation_time = 0.0);
-
-            let secret = state.account.secret_key.clone();
-            let pubkey = state.account.pubkey;
-            let app_ctx = &mut state.notedeck.app_context();
-            if let Some(resp) = app_ctx.accounts.add_account(Keypair::from_secret(secret)) {
-                let txn = Transaction::new(app_ctx.ndb).expect("txn");
-                resp.unk_id_action
-                    .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
-            }
-            app_ctx.select_account(&pubkey);
-            state.setup_done = true;
+        if state.host.setup_once(ui.ctx()) {
             return;
         }
 
-        let mut app_ctx = state.notedeck.app_context();
+        let mut app_ctx = state.host.app_context();
         let message = &state.message;
         let from = message.from_session.as_deref().expect("a sent message");
         egui::CentralPanel::default().show(ui, |ui| {
@@ -109,23 +93,20 @@ fn render_from_card(ui: &mut egui::Ui, state: &mut FromCardState) {
 /// seeded. `render` builds it with lavapipe, for a snapshot; without it the
 /// harness only lays out and builds its accesskit tree.
 fn build_harness(render: bool) -> Harness<'static, FromCardState> {
-    let tmpdir = tempfile::TempDir::new().unwrap();
-    let ctx = egui::Context::default();
-    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-    let mut notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+    let account = FullKeypair::generate();
+    let mut host = TestHost::with_account(&account);
+    let notedeck = host.notedeck();
     let cache = Rc::new(RefCell::new(AgentiumSessionCache::default()));
     notedeck.register_reference_parser(Box::new(AgentiumRefParser::new(cache.clone())));
     notedeck.register_kind_renderer(Box::new(AgentiumSessionRenderer::new(cache)));
 
     let state = FromCardState {
-        notedeck,
-        account: FullKeypair::generate(),
+        host,
+        account,
         message: UserMessage {
             from_session: Some(agentium_core::wordid::session_ref(SENDER_ID)),
             ..UserMessage::from(BODY)
         },
-        _tmpdir: tmpdir,
-        setup_done: false,
     };
     let builder = Harness::builder().with_size(egui::Vec2::new(560.0, 140.0));
     let builder = if render {
@@ -134,10 +115,10 @@ fn build_harness(render: bool) -> Harness<'static, FromCardState> {
         builder
     };
     let mut harness = builder.build_ui_state(render_from_card, state);
-    // The first frame installs fonts and injects the account.
+    // The first frame installs fonts.
     harness.run_steps(2);
     let secret = harness.state().account.secret_key.secret_bytes();
-    seed_sender(harness.state_mut().notedeck.app_context().ndb, &secret);
+    seed_sender(harness.state_mut().host.app_context().ndb, &secret);
     harness
 }
 

@@ -8,6 +8,7 @@ pub mod alloc;
 pub mod cluster;
 pub mod device;
 pub mod fixtures;
+pub mod host;
 pub mod ndb;
 pub mod negentropy_relay;
 pub mod relay;
@@ -17,6 +18,7 @@ pub mod ui;
 
 pub use cluster::AccountCluster;
 pub use device::{shutdown_device, AppFactory, DeviceDataDir, DeviceHarness, DeviceState};
+pub use host::TestHost;
 pub use relay::LocalRelayExt;
 pub use subscription::{await_batch, await_notes, await_notes_async};
 

@@ -901,58 +901,53 @@ mod dispatch_tests {
     use super::*;
     use crate::backend::BackendType;
     use crate::config::AiMode;
-    use crate::tests::test_dave;
-    use crate::{Dave, DaveOverlay, SessionId};
-    use notedeck::{App, AppAction, DataPath, Notedeck, ToolOutcome};
+    use crate::tests::TestDave;
+    use crate::{DaveOverlay, SessionId};
+    use notedeck::{App, AppAction, ToolOutcome};
+    use notedeck_testing::TestHost;
     use std::path::PathBuf;
-    use tempfile::TempDir;
 
     /// A test [`Dave`] with two agentic sessions, the first active, in normal
     /// mode in the chat, beside a host to hand its tools an `AppContext`.
     struct Fixture {
-        _dirs: [TempDir; 2],
         egui: egui::Context,
-        notedeck: Notedeck,
-        dave: Dave,
+        host: TestHost,
+        test: TestDave,
         sessions: [SessionId; 2],
+    }
+
+    /// The fixture's [`TestDave`], so a test reaches its Dave as `f.dave`.
+    impl std::ops::Deref for Fixture {
+        type Target = TestDave;
+        fn deref(&self) -> &TestDave {
+            &self.test
+        }
+    }
+
+    impl std::ops::DerefMut for Fixture {
+        fn deref_mut(&mut self) -> &mut TestDave {
+            &mut self.test
+        }
     }
 
     impl Fixture {
         fn new() -> Self {
-            let host_dir = TempDir::new().unwrap();
-            let dave_dir = TempDir::new().unwrap();
             let egui = egui::Context::default();
-            let args = ["notedeck-test".to_owned(), "--testrunner".to_owned()];
-            let notedeck = Notedeck::init(&egui, host_dir.path(), &args);
-            let mut dave = test_dave(&DataPath::new(dave_dir.path()));
-            let sessions = ["/tmp/tool-a", "/tmp/tool-b"].map(|cwd| {
-                dave.session_manager.new_session(
-                    PathBuf::from(cwd),
-                    AiMode::Agentic,
-                    BackendType::Remote,
-                )
-            });
-            dave.session_manager.switch_to(sessions[0]);
-            for id in sessions {
-                dave.session_manager.get_mut(id).unwrap().focus_requested = false;
-            }
-            // An empty agentic Dave opens on the directory picker; the
-            // sessions above are what it would have picked.
-            dave.active_overlay = DaveOverlay::None;
-            dave.normal_mode.open(&egui);
+            let mut test = TestDave::new();
+            let sessions = test.add_sessions(["/tmp/tool-a", "/tmp/tool-b"], BackendType::Remote);
+            test.dave.normal_mode.open(&egui);
             Fixture {
-                _dirs: [host_dir, dave_dir],
                 egui,
-                notedeck,
-                dave,
+                host: TestHost::new(),
+                test,
                 sessions,
             }
         }
 
         /// Call the tool `name` as chrome does.
         fn call(&mut self, name: &str, args: Value) -> ToolOutcome {
-            let mut ctx = self.notedeck.app_context();
-            self.dave.call_ui_tool(&mut ctx, name, &args)
+            let mut ctx = self.host.app_context();
+            self.test.dave.call_ui_tool(&mut ctx, name, &args)
         }
 
         fn focus_requested(&self, id: SessionId) -> bool {
@@ -1098,7 +1093,7 @@ mod dispatch_tests {
         assert!(!f.dave.normal_mode.is_normal(), "q ends normal mode");
         assert!(f.focus_requested(second));
 
-        f.dave.normal_mode.open(&f.egui);
+        f.test.dave.normal_mode.open(&f.egui);
         f.dave
             .session_manager
             .get_mut(second)
@@ -1152,10 +1147,10 @@ mod dispatch_tests {
             .hostname
             .clone();
         f.dave.collapse_state.toggle_host(&host);
+        let dave = &mut f.test.dave;
         assert!(
-            f.dave
-                .session_manager
-                .visual_order(&f.dave.collapse_state)
+            dave.session_manager
+                .visual_order(&dave.collapse_state)
                 .is_empty(),
             "folded away"
         );

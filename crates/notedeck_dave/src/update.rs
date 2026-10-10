@@ -2738,19 +2738,13 @@ mod tests {
 
     /// Dispatch a turn the way `Dave::send_user_message_for` does, through
     /// the real [`stream_events::dispatch_turn`](crate::stream_events::dispatch_turn)
-    /// on a throwaway host: it installs a receiver only when the backend minted
-    /// one, because a persistent backend's `None` means "you already hold the
-    /// session's channel".
+    /// on a throwaway [`TestDave`](crate::tests::TestDave)'s host: it installs
+    /// a receiver only when the backend minted one, because a persistent
+    /// backend's `None` means "you already hold the session's channel".
     fn dispatch_turn(session: &mut ChatSession, backend: &dyn crate::backend::AiBackend) {
-        use crate::stream_events::{DispatchCtx, HostCtx};
-
-        let dir = tempfile::TempDir::new().unwrap();
-        let ndb =
-            nostrdb::Ndb::new(dir.path().to_str().unwrap(), &crate::tests::test_config()).unwrap();
-        let waker = notedeck::Waker::noop();
-        let host = HostCtx::signing(&ndb, &crate::tests::test_secret_key(), &waker);
-        let ctx = DispatchCtx {
-            host: &host,
+        let mut test = crate::tests::TestDave::new();
+        let ctx = crate::stream_events::DispatchCtx {
+            host: &test.parts().host,
             tools: Default::default(),
             session_env: &Default::default(),
         };

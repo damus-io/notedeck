@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use nostr::key::PublicKey;
 use nostrdb::{Config, FilterBuilder, Ndb, NoteBuilder, Transaction};
 use nostrdb_net::{FullKeypair, ProfileState, Pubkey};
-use notedeck::{DataPath, DataPathType, RelayAction};
+use notedeck::{AppContext, DataPath, DataPathType, RelayAction};
 
 use crate::cluster::AccountCluster;
 use crate::device::DeviceHarness;
@@ -169,7 +169,12 @@ pub fn nostr_pubkey(pk: &Pubkey) -> PublicKey {
 
 /// Adds another full account to the device and processes the resulting unknown-id action.
 pub fn add_account_to_device(device: &mut DeviceHarness, account: &FullKeypair) {
-    let app_ctx = &mut device.state_mut().notedeck.app_context();
+    add_account(&mut device.state_mut().notedeck.app_context(), account);
+}
+
+/// Adds a full account to the host behind `app_ctx`, as the account screen
+/// does, and processes the resulting unknown-id action. Does not select it.
+pub fn add_account(app_ctx: &mut AppContext<'_>, account: &FullKeypair) {
     let Some(response) = app_ctx
         .accounts
         .add_account(nostrdb_net::Keypair::from_secret(

@@ -3041,7 +3041,7 @@ mod tests {
     /// State for [`a_ref_title_draws_its_chip_and_a_chip_click_switches_to_the_row`]: a
     /// real `Notedeck` so the registries and ndb a chip resolves through exist.
     struct RefTitleState {
-        notedeck: notedeck::Notedeck,
+        host: notedeck_testing::TestHost,
         account: nostrdb_net::FullKeypair,
         session_manager: SessionManager,
         focus_queue: FocusQueue,
@@ -3049,27 +3049,15 @@ mod tests {
         action: Option<SessionListAction>,
         /// App actions drained so far (an inert chip raises none).
         app_actions: usize,
-        setup_done: bool,
         /// Draw the chat header of the first session instead of the list.
         header: bool,
-        _tmpdir: tempfile::TempDir,
     }
 
     fn ref_title_ui(ui: &mut egui::Ui, state: &mut RefTitleState) {
-        if !state.setup_done {
-            state.notedeck.setup(ui.ctx());
-            let keypair = nostrdb_net::Keypair::from_secret(state.account.secret_key.clone());
-            let app_ctx = &mut state.notedeck.app_context();
-            if let Some(resp) = app_ctx.accounts.add_account(keypair) {
-                let txn = nostrdb::Transaction::new(app_ctx.ndb).expect("txn");
-                resp.unk_id_action
-                    .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
-            }
-            app_ctx.select_account(&state.account.pubkey);
-            state.setup_done = true;
+        if state.host.setup_once(ui.ctx()) {
             return;
         }
-        let mut app_ctx = state.notedeck.app_context();
+        let mut app_ctx = state.host.app_context();
         let mut note_ctx = app_ctx.note_context();
         let txn = nostrdb::Transaction::new(note_ctx.ndb).expect("txn");
         if state.header {
@@ -3139,10 +3127,9 @@ mod tests {
         use std::rc::Rc;
         use std::time::{Duration, Instant};
 
-        let tmpdir = tempfile::TempDir::new().expect("tmpdir");
-        let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-        let mut notedeck =
-            notedeck::Notedeck::init(&egui::Context::default(), tmpdir.path(), &args);
+        let account = nostrdb_net::FullKeypair::generate();
+        let mut host = notedeck_testing::TestHost::with_account(&account);
+        let notedeck = host.notedeck();
         let cache = Rc::new(RefCell::new(
             crate::session_cache::AgentiumSessionCache::default(),
         ));
@@ -3166,16 +3153,14 @@ mod tests {
         session_manager.rebuild_groups();
 
         let state = RefTitleState {
-            notedeck,
-            account: nostrdb_net::FullKeypair::generate(),
+            host,
+            account,
             session_manager,
             focus_queue: FocusQueue::new(),
             collapse_state: CollapseState::new(),
             action: None,
             app_actions: 0,
-            setup_done: false,
             header,
-            _tmpdir: tmpdir,
         };
         let mut harness = Harness::builder()
             .with_size(egui::vec2(320.0, 300.0))
@@ -3185,7 +3170,7 @@ mod tests {
         let secret = harness.state().account.secret_key.secret_bytes();
         let chip_title = "Refactor the session parser";
         seed_session_state(
-            harness.state_mut().notedeck.app_context().ndb,
+            harness.state_mut().host.app_context().ndb,
             &secret,
             referenced,
             chip_title,
@@ -3307,10 +3292,9 @@ mod tests {
         let card_ref = "headway:dave/able-badge-brick";
         let title = "Session list title chip steals the row click from the session";
 
-        let tmpdir = tempfile::TempDir::new().expect("tmpdir");
-        let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-        let mut notedeck =
-            notedeck::Notedeck::init(&egui::Context::default(), tmpdir.path(), &args);
+        let account = nostrdb_net::FullKeypair::generate();
+        let mut host = notedeck_testing::TestHost::with_account(&account);
+        let notedeck = host.notedeck();
         let card = Rc::new(RefCell::new(None));
         notedeck.register_reference_parser(Box::new(StubCardParser { card: card.clone() }));
         notedeck.register_kind_renderer(Box::new(StubCardRenderer));
@@ -3327,16 +3311,14 @@ mod tests {
         session_manager.rebuild_groups();
 
         let state = RefTitleState {
-            notedeck,
-            account: nostrdb_net::FullKeypair::generate(),
+            host,
+            account,
             session_manager,
             focus_queue: FocusQueue::new(),
             collapse_state: CollapseState::new(),
             action: None,
             app_actions: 0,
-            setup_done: false,
             header: false,
-            _tmpdir: tmpdir,
         };
         let mut harness = Harness::builder()
             .with_size(egui::vec2(300.0, 200.0))
@@ -3347,7 +3329,7 @@ mod tests {
         {
             // Committed before the next frame looks it up, so that lookup
             // finds it rather than keeping a miss for a refresh window.
-            let ctx = harness.state_mut().notedeck.app_context();
+            let ctx = harness.state_mut().host.app_context();
             let sub = ctx
                 .ndb
                 .subscribe(&[nostrdb::Filter::new().kinds([1621]).build()])
