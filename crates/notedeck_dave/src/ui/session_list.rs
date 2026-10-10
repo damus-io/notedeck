@@ -690,16 +690,29 @@ fn title_with_refs_ui(
 ) {
     let font_id = egui::FontId::proportional(14.0);
     let row_height = ui.fonts_mut(|f| f.row_height(&font_id));
-    let rect = egui::Rect::from_min_size(pos, egui::vec2(max_width, row_height));
+    // A chip is a little taller than the text row (its outline sits outside
+    // it). Give the child room for that on both sides of the title's centre
+    // line, so `Align::Center` centres the chip on the line the plain title
+    // would sit on rather than letting it hang off the bottom of a
+    // text-row-high rect.
+    let center = pos + egui::vec2(max_width / 2.0, row_height / 2.0);
+    let rect = egui::Rect::from_center_size(center, egui::vec2(max_width, row_height + 8.0));
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
             .layout(Layout::left_to_right(Align::Center)),
     );
-    // Clip sideways only: a chip is a little taller than the text row, and its
-    // outline would be shaved off top and bottom.
-    child.set_clip_rect(rect.expand2(egui::vec2(0.0, 4.0)).intersect(ui.clip_rect()));
+    // Clip sideways only, so the chip's outline isn't shaved off.
+    child.set_clip_rect(rect.intersect(ui.clip_rect()));
     child.spacing_mut().item_spacing.x = 0.0;
+    // An inline widget sizes itself to the surrounding prose, which it takes
+    // to be `TextStyle::Body`. Here the prose is the row's 14px title, so the
+    // chip matches the plain titles above and below it instead of standing a
+    // size larger.
+    child
+        .style_mut()
+        .text_styles
+        .insert(egui::TextStyle::Body, font_id.clone());
 
     let mut rest = title;
     while let Some(m) = refs.note.registries.reference_parsers.find_next(rest) {
