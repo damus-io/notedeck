@@ -614,6 +614,46 @@ pub fn scene_ui(
     (dave_response, view_action)
 }
 
+/// What [`session_list_ui`] builds a [`SessionListUi`] from.
+///
+/// Handed over in parts, not as a built list, so the list is built inside with
+/// the borrows of the transaction it reads titles in: its borrows share one
+/// lifetime, which a list built outside would pin to the caller's.
+struct SessionListParts<'a> {
+    session_manager: &'a mut SessionManager,
+    focus_queue: &'a FocusQueue,
+    collapse_state: &'a crate::collapse_state::CollapseState,
+    ctrl_held: bool,
+    /// Normal mode is walking the sessions pane (see [`SessionListUi::chord_cursor`]).
+    chord_cursor: bool,
+}
+
+/// Draw the session list with the references in its titles (a
+/// `headway:<board>/<word-id>`) resolved to their inline widgets.
+///
+/// Opens the transaction the rows read their resolved notes in, and drops it
+/// before returning — nostrdb allows one per thread, and the chat opens its own
+/// next. Without one the titles still draw, as plain text.
+fn session_list_ui(
+    parts: SessionListParts<'_>,
+    app_ctx: &mut notedeck::AppContext,
+    ui: &mut egui::Ui,
+) -> Option<SessionListAction> {
+    let mut note_ctx = app_ctx.note_context();
+    let txn = nostrdb::Transaction::new(note_ctx.ndb).ok();
+    let list = SessionListUi::new(
+        parts.session_manager,
+        parts.focus_queue,
+        parts.collapse_state,
+        parts.ctrl_held,
+    )
+    .chord_cursor(parts.chord_cursor);
+    match &txn {
+        Some(txn) => list.title_refs(&mut note_ctx, txn).ui(ui),
+        None => { list }.ui(ui),
+    }
+}
+
 /// Desktop layout with sidebar for session list.
 #[allow(clippy::too_many_arguments)]
 pub fn desktop_ui(
@@ -690,9 +730,18 @@ pub fn desktop_ui(
                         });
                         ui.separator();
                     }
-                    SessionListUi::new(session_manager, focus_queue, collapse_state, ctrl_held)
-                        .chord_cursor(normal_mode.is_some_and(|view| view.pane == Pane::Sessions))
-                        .ui(ui)
+                    let chord_cursor = normal_mode.is_some_and(|view| view.pane == Pane::Sessions);
+                    session_list_ui(
+                        SessionListParts {
+                            session_manager,
+                            focus_queue,
+                            collapse_state,
+                            ctrl_held,
+                            chord_cursor,
+                        },
+                        app_ctx,
+                        ui,
+                    )
                 })
                 .inner
         })
@@ -755,7 +804,17 @@ pub fn narrow_ui(
             .fill(ui.visuals().faint_bg_color)
             .inner_margin(egui::Margin::symmetric(8, 12))
             .show(ui, |ui| {
-                SessionListUi::new(session_manager, focus_queue, collapse_state, ctrl_held).ui(ui)
+                session_list_ui(
+                    SessionListParts {
+                        session_manager,
+                        focus_queue,
+                        collapse_state,
+                        ctrl_held,
+                        chord_cursor: false,
+                    },
+                    app_ctx,
+                    ui,
+                )
             })
             .inner;
         (DaveResponse::default(), session_action)

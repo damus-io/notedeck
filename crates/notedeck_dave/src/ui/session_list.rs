@@ -1,6 +1,9 @@
+use std::cell::RefCell;
 use std::path::PathBuf;
 
 use egui::{Align, Color32, Layout, Pos2, Sense};
+use nostrdb::Transaction;
+use notedeck::NoteContext;
 use notedeck_ui::app_images;
 
 use crate::agent_status::{stale_color, AgentStatus};
@@ -72,8 +75,23 @@ impl CycleHints {
     }
 }
 
+/// What a session row needs to draw the inline references in its title — a
+/// session titled `headway:<board>/<word-id>` shows the card's chip, the same
+/// one the chat draws for that ref: the note context the registered
+/// [`ReferenceParser`](notedeck::ReferenceParser)s and
+/// [`KindRenderer`](notedeck::KindRenderer)s work against, and the transaction
+/// every row reads its resolved note in.
+///
+/// Behind a `RefCell` in [`SessionListUi`] because the row renderers borrow the
+/// list immutably (each row's session is borrowed out of its `SessionManager`)
+/// while a kind renderer draws with `&mut NoteContext`.
+pub struct TitleRefs<'a, 'n> {
+    pub note: &'a mut NoteContext<'n>,
+    pub txn: &'a Transaction,
+}
+
 /// UI component for displaying the session list sidebar
-pub struct SessionListUi<'a> {
+pub struct SessionListUi<'a, 'n> {
     session_manager: &'a mut SessionManager,
     focus_queue: &'a FocusQueue,
     collapse_state: &'a CollapseState,
@@ -84,9 +102,12 @@ pub struct SessionListUi<'a> {
     /// The active session changed since the list last drew: scroll its row
     /// into view this frame. Set by `sessions_list_ui`.
     scroll_to_active: bool,
+    /// Draws the references in a title as their inline widgets. `None` (the
+    /// ctx-less test harnesses) paints every title as plain text.
+    title_refs: Option<RefCell<TitleRefs<'a, 'n>>>,
 }
 
-impl<'a> SessionListUi<'a> {
+impl<'a, 'n> SessionListUi<'a, 'n> {
     pub fn new(
         session_manager: &'a mut SessionManager,
         focus_queue: &'a FocusQueue,
@@ -100,7 +121,15 @@ impl<'a> SessionListUi<'a> {
             ctrl_held,
             chord_cursor: false,
             scroll_to_active: false,
+            title_refs: None,
         }
+    }
+
+    /// Draw references in session titles (e.g. `headway:<board>/<word-id>`)
+    /// as their registered inline widgets instead of plain text.
+    pub fn title_refs(mut self, note: &'a mut NoteContext<'n>, txn: &'a Transaction) -> Self {
+        self.title_refs = Some(RefCell::new(TitleRefs { note, txn }));
+        self
     }
 
     /// Mark the active row as normal mode's cursor in the sessions pane.
@@ -529,11 +558,10 @@ impl<'a> SessionListUi<'a> {
         } else {
             rect.center().y - title_height / 2.0
         };
-        render_title(
+        self.title_ui(
             ui,
             title,
-            rect.left() + text_start_x,
-            title_top,
+            egui::pos2(rect.left() + text_start_x, title_top),
             title_max_width,
         );
 
@@ -585,16 +613,112 @@ impl<'a> SessionListUi<'a> {
             .size()
             .y;
         let title_top = rect.center().y - title_height / 2.0;
-        render_title(
+        self.title_ui(
             ui,
             title,
-            rect.left() + text_start_x,
-            title_top,
+            egui::pos2(rect.left() + text_start_x, title_top),
             max_text_width,
         );
 
         (response, dot_action)
     }
+
+    /// Draw a row's `title` with its top-left at `pos`, clipped to `max_width`.
+    ///
+    /// A title holding a reference the registered parsers recognize — a
+    /// session titled with its card's `headway:<board>/<word-id>` — is laid out
+    /// as text runs and the references' inline widgets (see
+    /// [`title_with_refs_ui`]). One with none, or a list drawn without
+    /// [`title_refs`](Self::title_refs), is painted as plain text.
+    fn title_ui(&self, ui: &mut egui::Ui, title: &str, pos: Pos2, max_width: f32) {
+        let Some(refs) = &self.title_refs else {
+            render_title(ui, title, pos, max_width);
+            return;
+        };
+        let mut refs = refs.borrow_mut();
+        if refs
+            .note
+            .registries
+            .reference_parsers
+            .find_next(title)
+            .is_none()
+        {
+            render_title(ui, title, pos, max_width);
+            return;
+        }
+        title_with_refs_ui(ui, &mut refs, title, pos, max_width);
+    }
+}
+
+/// Lay `title` out left to right in a child ui at `pos`, `max_width` wide:
+/// its text runs painted as in [`render_title`], and each reference in it drawn
+/// by the [`KindRenderer`](notedeck::KindRenderer) for the kind it resolves to
+/// (a headway card's chip), the same widget the chat draws for that ref.
+///
+/// A click on a widget raises its action (open the card), pushed onto the
+/// app's actions; the widget sits above the row, so that click doesn't also
+/// switch to the session. A reference that doesn't resolve — its card isn't in
+/// the local db yet — stays text, so a loose parser match never shows as a
+/// broken chip. Whatever overflows `max_width` is clipped, like a long plain
+/// title.
+fn title_with_refs_ui(
+    ui: &mut egui::Ui,
+    refs: &mut TitleRefs<'_, '_>,
+    title: &str,
+    pos: Pos2,
+    max_width: f32,
+) {
+    let font_id = egui::FontId::proportional(14.0);
+    let row_height = ui.fonts_mut(|f| f.row_height(&font_id));
+    let rect = egui::Rect::from_min_size(pos, egui::vec2(max_width, row_height));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    // Clip sideways only: a chip is a little taller than the text row, and its
+    // outline would be shaved off top and bottom.
+    child.set_clip_rect(rect.expand2(egui::vec2(0.0, 4.0)).intersect(ui.clip_rect()));
+    child.spacing_mut().item_spacing.x = 0.0;
+
+    let mut rest = title;
+    while let Some(m) = refs.note.registries.reference_parsers.find_next(rest) {
+        title_run_ui(&mut child, &rest[..m.range.start], &font_id);
+        let matched = &rest[m.range.clone()];
+        let drawn = notedeck_ui::markdown::reference_ui(
+            &mut child,
+            refs.note,
+            refs.txn,
+            matched,
+            notedeck::RenderContext::Inline,
+        );
+        match drawn {
+            Some(drawn) => {
+                if let Some(action) = drawn.action {
+                    refs.note.app_actions.push(action);
+                }
+            }
+            None => title_run_ui(&mut child, matched, &font_id),
+        }
+        rest = &rest[m.range.end..];
+    }
+    title_run_ui(&mut child, rest, &font_id);
+}
+
+/// Paint one plain-text run of a title at `ui`'s cursor and advance past it.
+///
+/// Painted rather than added as a `Label`: a label is a widget, and one lying
+/// over the row would take the row's hover (and, if selectable, its click).
+fn title_run_ui(ui: &mut egui::Ui, text: &str, font_id: &egui::FontId) {
+    if text.is_empty() {
+        return;
+    }
+    let color = ui.visuals().text_color();
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font_id.clone(), color);
+    let (_, rect) = ui.allocate_space(galley.size());
+    ui.painter().galley(rect.min, galley, color);
 }
 
 #[derive(Clone, Copy)]
@@ -974,14 +1098,13 @@ fn render_agent_row_right_side(
 }
 
 /// Render a title string at the given position, clipping if it exceeds max_width.
-fn render_title(ui: &mut egui::Ui, title: &str, x: f32, y: f32, max_width: f32) {
+fn render_title(ui: &mut egui::Ui, title: &str, title_pos: Pos2, max_width: f32) {
     let font_id = egui::FontId::proportional(14.0);
     let text_color = ui.visuals().text_color();
     let galley = ui
         .painter()
         .layout_no_wrap(title.to_string(), font_id.clone(), text_color);
     let title_height = galley.size().y;
-    let title_pos = egui::pos2(x, y);
 
     if galley.size().x > max_width {
         let clip_rect = egui::Rect::from_min_size(title_pos, egui::vec2(max_width, title_height));
@@ -1009,7 +1132,7 @@ fn render_title(ui: &mut egui::Ui, title: &str, x: f32, y: f32, max_width: f32) 
 /// body reveal and the arrow's `openness`.
 fn host_section_ui(
     ui: &mut egui::Ui,
-    list_ui: &SessionListUi<'_>,
+    list_ui: &SessionListUi<'_, '_>,
     host_group: &crate::session::HostGroup,
     visual_index: &mut usize,
     active_id: Option<SessionId>,
@@ -1100,7 +1223,7 @@ fn host_section_ui(
 /// body reveal and the arrow's `openness`.
 fn project_section_ui(
     ui: &mut egui::Ui,
-    list_ui: &SessionListUi<'_>,
+    list_ui: &SessionListUi<'_, '_>,
     hostname: &str,
     project: &crate::session::ProjectGroup,
     visual_index: &mut usize,
@@ -1410,7 +1533,7 @@ fn paint_disclosure_arrow(painter: &egui::Painter, center: Pos2, openness: f32, 
 /// cwd has multiple sessions, a collapsible folder wraps them.
 fn cwd_section_ui(
     ui: &mut egui::Ui,
-    list_ui: &SessionListUi<'_>,
+    list_ui: &SessionListUi<'_, '_>,
     hostname: &str,
     cwd_group: &crate::session::CwdGroup,
     visual_index: &mut usize,
@@ -1476,7 +1599,7 @@ fn cwd_section_ui(
 /// and the arrow's `openness`.
 fn cwd_folder_ui(
     ui: &mut egui::Ui,
-    list_ui: &SessionListUi<'_>,
+    list_ui: &SessionListUi<'_, '_>,
     hostname: &str,
     cwd_group: &crate::session::CwdGroup,
     visual_index: &mut usize,
@@ -1999,5 +2122,178 @@ mod tests {
         let mut harness = project_grouping_harness();
         harness.run();
         harness.snapshot("session_list_project_grouping");
+    }
+
+    /// State for [`a_ref_title_draws_its_chip_and_a_chip_click_opens_it`]: a
+    /// real `Notedeck` so the registries and ndb a chip resolves through exist.
+    struct RefTitleState {
+        notedeck: notedeck::Notedeck,
+        account: nostrdb_net::FullKeypair,
+        session_manager: SessionManager,
+        focus_queue: FocusQueue,
+        collapse_state: CollapseState,
+        action: Option<SessionListAction>,
+        /// App actions drained so far (a chip click raises one).
+        app_actions: usize,
+        setup_done: bool,
+        _tmpdir: tempfile::TempDir,
+    }
+
+    fn ref_title_ui(ui: &mut egui::Ui, state: &mut RefTitleState) {
+        if !state.setup_done {
+            state.notedeck.setup(ui.ctx());
+            let keypair = nostrdb_net::Keypair::from_secret(state.account.secret_key.clone());
+            let app_ctx = &mut state.notedeck.app_context();
+            if let Some(resp) = app_ctx.accounts.add_account(keypair) {
+                let txn = nostrdb::Transaction::new(app_ctx.ndb).expect("txn");
+                resp.unk_id_action
+                    .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
+            }
+            app_ctx.select_account(&state.account.pubkey);
+            state.setup_done = true;
+            return;
+        }
+        let mut app_ctx = state.notedeck.app_context();
+        let mut note_ctx = app_ctx.note_context();
+        let txn = nostrdb::Transaction::new(note_ctx.ndb).expect("txn");
+        let action = SessionListUi::new(
+            &mut state.session_manager,
+            &state.focus_queue,
+            &state.collapse_state,
+            false,
+        )
+        .title_refs(&mut note_ctx, &txn)
+        .ui(ui);
+        if action.is_some() {
+            state.action = action;
+        }
+        state.app_actions += app_ctx.app_actions.take().len();
+    }
+
+    /// Seed the kind-31988 state of session `session_id`, titled `title`.
+    fn seed_session_state(ndb: &nostrdb::Ndb, secret: &[u8; 32], session_id: &str, title: &str) {
+        let note = nostrdb::NoteBuilder::new()
+            .kind(agentium_core::session_events::AI_SESSION_STATE_KIND)
+            .content("")
+            .created_at(1_700_000_000)
+            .start_tag()
+            .tag_str("d")
+            .tag_str(session_id)
+            .start_tag()
+            .tag_str("title")
+            .tag_str(title)
+            .start_tag()
+            .tag_str("status")
+            .tag_str("working")
+            .sign(secret)
+            .build()
+            .expect("note");
+        let frame = nostrdb_net::ClientMessage::event(&note)
+            .expect("event")
+            .to_json()
+            .expect("json");
+        ndb.process_event_with(&frame, nostrdb::IngestMetadata::new().client(true))
+            .expect("ingest");
+    }
+
+    /// A session titled with a reference — here another session's
+    /// `agentium:` ref, the way autowork titles a session with its card's
+    /// `headway:` ref — draws the referenced entity's chip in its row rather
+    /// than the raw ref, and a click on the chip opens that entity instead of
+    /// switching to the row's session.
+    #[test]
+    fn a_ref_title_draws_its_chip_and_a_chip_click_opens_it() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use std::time::{Duration, Instant};
+
+        let tmpdir = tempfile::TempDir::new().expect("tmpdir");
+        let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+        let mut notedeck =
+            notedeck::Notedeck::init(&egui::Context::default(), tmpdir.path(), &args);
+        let cache = Rc::new(RefCell::new(
+            crate::session_cache::AgentiumSessionCache::default(),
+        ));
+        notedeck.register_reference_parser(Box::new(crate::reference::AgentiumRefParser::new(
+            cache.clone(),
+        )));
+        notedeck
+            .register_kind_renderer(Box::new(crate::render::AgentiumSessionRenderer::new(cache)));
+
+        let referenced = "claude-session-referenced";
+        let mut session_manager = SessionManager::new();
+        let id = session_manager.new_session(
+            PathBuf::from("/tmp/ref-title"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        let session = session_manager.get_mut(id).expect("session");
+        session.details.hostname = "host-a".to_string();
+        session.details.title = agentium_core::wordid::session_ref(referenced);
+        session.details.custom_title = None;
+        session_manager.rebuild_groups();
+
+        let state = RefTitleState {
+            notedeck,
+            account: nostrdb_net::FullKeypair::generate(),
+            session_manager,
+            focus_queue: FocusQueue::new(),
+            collapse_state: CollapseState::new(),
+            action: None,
+            app_actions: 0,
+            setup_done: false,
+            _tmpdir: tmpdir,
+        };
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(320.0, 300.0))
+            .build_ui_state(ref_title_ui, state);
+        harness.run_steps(2);
+
+        let secret = harness.state().account.secret_key.secret_bytes();
+        let chip_title = "Refactor the session parser";
+        seed_session_state(
+            harness.state_mut().notedeck.app_context().ndb,
+            &secret,
+            referenced,
+            chip_title,
+        );
+
+        // The chip shows the referenced session's title once its state folds.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while harness.query_by_label(chip_title).is_none() {
+            assert!(Instant::now() < deadline, "the title's chip never resolved");
+            std::thread::sleep(Duration::from_millis(25));
+            harness.run_ok();
+        }
+
+        let bounds = harness
+            .get_by_label(chip_title)
+            .accesskit_node()
+            .raw_bounds()
+            .expect("chip bounds");
+        let center = egui::pos2(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        harness.input_mut().events.push(Event::PointerMoved(center));
+        for pressed in [true, false] {
+            harness.input_mut().events.push(Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        harness.run_steps(2);
+
+        assert!(
+            harness.state().app_actions >= 1,
+            "clicking the chip should raise its open action"
+        );
+        assert!(
+            harness.state().action.is_none(),
+            "the chip, not the row under it, takes the click: got {:?}",
+            harness.state().action
+        );
     }
 }
