@@ -9,6 +9,7 @@ mod background;
 mod overview;
 mod rate_limits;
 mod subagents;
+mod tasks;
 mod usage;
 
 pub use background::waiting_pill_ui;
@@ -258,6 +259,9 @@ fn section_body_ui(
             i18n,
             ui,
         ),
+        InspectorSection::Tasks => {
+            tasks::tasks_ui(&mut inspector.tasks_header, facts.chat, i18n, ui)
+        }
         _ => empty_state_ui(i18n, ui),
     }
     None

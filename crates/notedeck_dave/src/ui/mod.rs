@@ -1971,8 +1971,9 @@ mod tests {
         harness.get_by_label("Details").click_accesskit();
         harness.run_ok();
 
-        assert_eq!(count_labels(&harness, "Nothing yet"), 4);
+        assert_eq!(count_labels(&harness, "Nothing yet"), 3);
         assert_eq!(count_labels(&harness, "No subagents yet"), 1);
+        assert_eq!(count_labels(&harness, "No tasks yet"), 1);
         assert_eq!(
             count_labels(&harness, "Nothing running in the background"),
             1
@@ -2647,6 +2648,77 @@ mod tests {
         harness.snapshot("session_subagents");
     }
 
+    /// A task list in the active session's chat: an older list the agent
+    /// has since replaced, then the latest with two finished items, one
+    /// under way and two to go.
+    fn seed_tasks(state: &mut SessionViewState) {
+        use serde_json::json;
+
+        let session = state.session_manager.get_active_mut().unwrap();
+        session.replace_chat(vec![
+            crate::Message::TodoUpdate(json!({"todos": [
+                {"content": "Superseded plan", "activeForm": "Planning", "status": "in_progress"},
+            ]})),
+            crate::Message::TodoUpdate(json!({"todos": [
+                {"content": "Read the task tracker", "activeForm": "Reading the task tracker", "status": "completed"},
+                {"content": "Share the todo row", "activeForm": "Sharing the todo row", "status": "completed"},
+                {"content": "Draw the Tasks card", "activeForm": "Drawing the Tasks card", "status": "in_progress"},
+                {"content": "Snapshot the card", "activeForm": "Snapshotting the card", "status": "pending"},
+                {"content": "Write the explainer", "activeForm": "Writing the explainer", "status": "pending"},
+            ]})),
+        ]);
+    }
+
+    /// The Tasks card shows the latest list only, finished items included,
+    /// under its done/total header and the item under way.
+    #[test]
+    fn tasks_card_shows_the_latest_list_with_progress() {
+        let mut harness = session_view_harness(egui::vec2(1100.0, 1400.0));
+        seed_tasks(harness.state_mut());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .show_details();
+        harness.run_ok();
+
+        assert_eq!(count_labels(&harness, "No tasks yet"), 0);
+        assert_eq!(count_labels(&harness, "Superseded plan"), 0);
+        for label in [
+            "Read the task tracker",
+            "Share the todo row",
+            "Snapshot the card",
+            "Write the explainer",
+        ] {
+            assert_eq!(count_labels(&harness, label), 1, "{label}");
+        }
+        // The row and the header both name the item under way.
+        assert_eq!(count_labels(&harness, "Drawing the Tasks card"), 2);
+        assert_eq!(count_labels(&harness, "2/5"), 1);
+    }
+
+    /// The Tasks card two items in, one under way and two to go.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_session_tasks() {
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1100.0, 760.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        seed_tasks(harness.state_mut());
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .open(crate::inspector::InspectorSection::Tasks);
+        harness.run_ok();
+        harness.snapshot("session_tasks");
+    }
+
     /// The Background card with one entry of each kind: a Bash task with
     /// its output tail, a Monitor, a subagent, a wake-up and a cron.
     #[test]
@@ -2742,8 +2814,8 @@ mod tests {
     }
 
     /// An empty session's two tabs: the chat under the tab strip, then
-    /// Details with the rail, an Overview, Usage, Rate limits, Background and
-    /// Subagents with nothing reported yet and the four stub cards.
+    /// Details with the rail, an Overview, Usage, Rate limits, Background,
+    /// Subagents and Tasks with nothing reported yet and the three stub cards.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_session_details_tab() {

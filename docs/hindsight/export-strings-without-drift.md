@@ -9,3 +9,4 @@ too, so every card strips that out by hand to keep its commit standalone.
 - headway:dave/adapt-toss-tattoo — ~4 min: a fourth scratch merge for 22 keys, whose first cut rejoined the blocks wrong and dropped ~700 lines of both files until the diffstat gave it away
 - headway:dave/illness-morning-auto — ~3 min: a fifth scratch merge (now a reusable block-merge script in the scratchpad) for 13 keys, then hand-dropping 8 relative-time/no-entry drift keys it carried in
 - headway:notedeck/bleak-tornado-rose — ~2 min: the exporter rewrote both files with 200 lines of drift for one new key; reverted and spliced the one entry in by hand
+- headway:dave/tape-swim-army — ~4 min: yet another hand merge (one key), after the exporter silently skipped "{done}/{total} done" for its "/"; the header became a bare format! fraction instead

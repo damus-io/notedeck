@@ -15,7 +15,7 @@ use notedeck::{tr, Localization};
 
 use super::{key_ui, value_ui, weak_ui};
 
-/// Height of a window's usage bar.
+/// Height of a window's usage bar, and of the Tasks card's progress bar.
 const BAR_HEIGHT: f32 = 8.0;
 
 /// The Rate limits card's body. `info` is the account's latest report, or
@@ -88,17 +88,24 @@ fn window_ui(
         });
     });
 
+    let fraction = window.utilization.clamp(0.0, 1.0) as f32;
+    let mut color = fill_color(fraction);
+    if passed {
+        color = color.gamma_multiply(notedeck::tokens::OPACITY_DISABLED);
+    }
+    fraction_bar_ui(ui, fraction, color);
+}
+
+/// A full-width bar filled `fraction` of the way in `color`, over a faint
+/// track. The Tasks card draws its progress with it too.
+pub(super) fn fraction_bar_ui(ui: &mut egui::Ui, fraction: f32, color: egui::Color32) {
     let size = egui::vec2(ui.available_width(), BAR_HEIGHT);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter_at(rect);
     let radius = notedeck::tokens::RADIUS_SM;
     painter.rect_filled(rect, radius, ui.visuals().faint_bg_color);
-    let fraction = window.utilization.clamp(0.0, 1.0) as f32;
+    let fraction = fraction.clamp(0.0, 1.0);
     if fraction > 0.0 {
-        let mut color = fill_color(fraction);
-        if passed {
-            color = color.gamma_multiply(notedeck::tokens::OPACITY_DISABLED);
-        }
         let fill =
             egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * fraction, BAR_HEIGHT));
         painter.rect_filled(fill, radius, color);

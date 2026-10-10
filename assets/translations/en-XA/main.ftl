@@ -1409,3 +1409,6 @@ Status_c3bb = {"["}Stàtús{"]"}
 
 # Dave session inspector rate limits status: under every limit
 Within_limits_9850 = {"["}Wíthíñ límíts{"]"}
+
+# Dave session inspector tasks: the agent has made no task list
+No_tasks_yet_6cb8 = {"["}Ñó tàsks yét{"]"}

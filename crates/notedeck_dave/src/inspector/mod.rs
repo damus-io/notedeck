@@ -22,6 +22,7 @@ use crate::messages::{
     CliState, DaveApiResponse, RateLimitInfo, RateLimitStatus, RateLimitWindow,
     RateLimitWindowKind, SessionInfo, WaitingOn,
 };
+use crate::ui::task_list::TodoCounts;
 use notedeck::Localization;
 
 /// What a session's Details tab knows about it, folded from the responses its
@@ -59,6 +60,9 @@ pub struct SessionInspector {
     pub background: BackgroundState,
     /// Each subagent's tokens and tool uses, and the Subagents card's rows.
     pub subagents: SubagentState,
+    /// The Tasks card's "3/5" header, keyed by the task list's counts. The
+    /// list itself is the chat's latest `TodoUpdate`, so it needs no state.
+    pub tasks_header: LabelMemo<TodoCounts>,
 }
 
 impl SessionInspector {

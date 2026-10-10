@@ -1409,3 +1409,6 @@ Status_c3bb = Status
 
 # Dave session inspector rate limits status: under every limit
 Within_limits_9850 = Within limits
+
+# Dave session inspector tasks: the agent has made no task list
+No_tasks_yet_6cb8 = No tasks yet
