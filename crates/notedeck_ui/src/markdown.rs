@@ -300,18 +300,20 @@ fn draw_reference(
         RefShape {
             context: notedeck::RenderContext::Inline,
             chrome: notedeck::InlineChrome::Pill,
+            interaction: notedeck::Interaction::Open,
         },
         |ui| flush_job(job, ui),
     )
 }
 
-/// The two render hints a reference is drawn with, passed through to its
-/// [`KindRenderRequest`](notedeck::KindRenderRequest): which shape, and how it
-/// is framed.
+/// The render hints a reference is drawn with, passed through to its
+/// [`KindRenderRequest`](notedeck::KindRenderRequest): which shape, how it is
+/// framed, and whether it takes clicks.
 #[derive(Clone, Copy)]
 struct RefShape {
     context: notedeck::RenderContext,
     chrome: notedeck::InlineChrome,
+    interaction: notedeck::Interaction,
 }
 
 /// Resolve `matched` via the parser registered under `parser_id`, then draw the
@@ -384,6 +386,7 @@ fn resolve_and_draw(
         note: &note,
         context: shape.context,
         chrome: shape.chrome,
+        interaction: shape.interaction,
     };
     Some(renderer.render(ui, ctx, &req))
 }
@@ -424,6 +427,7 @@ pub fn render_reference(
         RefShape {
             context: render_context,
             chrome: notedeck::InlineChrome::Pill,
+            interaction: notedeck::Interaction::Open,
         },
         |_| {},
     )
@@ -440,7 +444,10 @@ pub fn render_reference(
 /// the registered renderer's look. `chrome` passes the surface's
 /// [`InlineChrome`](notedeck::InlineChrome) hint through to the renderer — a
 /// list row whose title is the reference asks for
-/// [`Bare`](notedeck::InlineChrome::Bare).
+/// [`Bare`](notedeck::InlineChrome::Bare). `interaction` does the same for the
+/// [`Interaction`](notedeck::Interaction) hint: that row, whose click switches
+/// to it, asks for [`Inert`](notedeck::Interaction::Inert) so the widget
+/// doesn't take the click from under it.
 pub fn reference_ui(
     ui: &mut Ui,
     note: &mut NoteContext,
@@ -448,6 +455,7 @@ pub fn reference_ui(
     reference: &str,
     render_context: notedeck::RenderContext,
     chrome: notedeck::InlineChrome,
+    interaction: notedeck::Interaction,
 ) -> Option<notedeck::KindRenderResponse> {
     let reference = reference.trim();
     let m = note.registries.reference_parsers.find_next(reference)?;
@@ -460,6 +468,7 @@ pub fn reference_ui(
         RefShape {
             context: render_context,
             chrome,
+            interaction,
         },
         |_| {},
     )

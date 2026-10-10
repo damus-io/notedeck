@@ -27,6 +27,10 @@ pub fn card_inline_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) ->
 /// muted backlog-style icon). `chrome` is the surface's
 /// [`InlineChrome`](notedeck::InlineChrome) hint: the pill, or the icon and
 /// title alone.
+///
+/// Senses only hover: the renderer wraps it in [`notedeck::open_on_click`],
+/// which adds the click and pointer cursor unless the surface asked for an
+/// [`Inert`](notedeck::Interaction::Inert) chip.
 pub fn card_chip_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -42,8 +46,6 @@ pub fn card_chip_ui(
     notedeck_ui::inline_chip(ui, theme, title, chrome, |ui, size| {
         status_icon_ui(ui, theme, icon, size);
     })
-    .interact(egui::Sense::click())
-    .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Render a single headway issue (kind 1621) from its *creation-time* snapshot:

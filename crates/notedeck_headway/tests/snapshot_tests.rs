@@ -4317,7 +4317,7 @@ impl notedeck::KindRenderer for StubSessionRenderer {
         req: &notedeck::KindRenderRequest,
     ) -> notedeck::KindRenderResponse {
         let response = ui.label(req.note.content());
-        notedeck::open_on_click(ui, response, req.note)
+        notedeck::open_on_click(ui, response, req)
     }
 }
 

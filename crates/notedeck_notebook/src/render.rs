@@ -249,7 +249,7 @@ impl KindRenderer for NotebookNodeRenderer {
             _ => node_embed_ui(ui, &theme, text, live.as_ref()),
         };
         // Clicking the chip/card opens the node in Notebook (shared helper).
-        notedeck::open_on_click(ui, response, note)
+        notedeck::open_on_click(ui, response, req)
     }
 }
 

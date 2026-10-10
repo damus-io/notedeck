@@ -138,7 +138,7 @@ impl KindRenderer for AgentiumSessionRenderer {
             _ => session_card_ui(ui, &theme, &live),
         };
         // Clicking the chip/card opens the session in Dave (shared helper).
-        notedeck::open_on_click(ui, response, note)
+        notedeck::open_on_click(ui, response, req)
     }
 }
 

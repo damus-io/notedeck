@@ -90,17 +90,28 @@ impl KindRenderResponse {
 /// [`KindRenderer`] wants, so no impl re-derives it.
 ///
 /// Senses clicks over the drawn area, shows a pointer cursor on hover, and on a
-/// click emits [`AppAction::Note`](crate::AppAction::Note) carrying `note`'s id. The
-/// shell routes that action to the owning app (it sniffs the note's kind to pick
-/// the destination), just as it does for a clicked note anywhere else.
-pub fn open_on_click(ui: &egui::Ui, response: egui::Response, note: &Note) -> KindRenderResponse {
+/// click emits [`AppAction::Note`](crate::AppAction::Note) carrying the request's
+/// note id. The shell routes that action to the owning app (it sniffs the note's
+/// kind to pick the destination), just as it does for a clicked note anywhere else.
+///
+/// Honors [`req.interaction`](KindRenderRequest::interaction): under
+/// [`Interaction::Inert`] it senses nothing and raises nothing, so a click on the
+/// widget reaches whatever the surface laid out beneath it.
+pub fn open_on_click(
+    ui: &egui::Ui,
+    response: egui::Response,
+    req: &KindRenderRequest,
+) -> KindRenderResponse {
+    if req.interaction == Interaction::Inert {
+        return KindRenderResponse::new(response);
+    }
     let response = response.interact(egui::Sense::click());
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     let action = response
         .clicked()
-        .then(|| crate::AppAction::Note(crate::NoteAction::note(NoteId::new(*note.id()))));
+        .then(|| crate::AppAction::Note(crate::NoteAction::note(NoteId::new(*req.note.id()))));
     KindRenderResponse::with_action(response, action)
 }
 
@@ -150,10 +161,32 @@ pub enum InlineChrome {
     Bare,
 }
 
+/// Whether an inline widget takes clicks — a render hint the surface passes
+/// alongside the [`RenderContext`] and [`InlineChrome`].
+///
+/// Separate from the chrome because framing and clicks are separate questions:
+/// a bare chip in prose still opens its entity, while a list row whose title is
+/// the reference means its own thing by a click (switch to that row) and needs
+/// the widget to stay out of the way. [`open_on_click`] reads it, so a renderer
+/// that wraps its response with that helper honors it for free.
+/// `#[non_exhaustive]` so other behaviours can be added without breaking
+/// existing impls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Interaction {
+    /// Clicking the widget opens the entity in the app that owns it. The
+    /// **default**.
+    #[default]
+    Open,
+    /// The widget only draws: it senses no clicks and raises no action, so the
+    /// click falls through to the surface beneath it.
+    Inert,
+}
+
 /// The inputs for one [`KindRenderer::render`] call: the resolved note, a
 /// transaction to read it (and any events folded off it) within, the
-/// [`RenderContext`] hinting which shape to draw, and the [`InlineChrome`]
-/// hinting how to frame it.
+/// [`RenderContext`] hinting which shape to draw, the [`InlineChrome`] hinting
+/// how to frame it, and the [`Interaction`] hinting whether it takes clicks.
 ///
 /// Bundled into a struct so the render signature stays stable as inputs grow
 /// (rather than churning every impl each time one is added).
@@ -169,6 +202,8 @@ pub struct KindRenderRequest<'a, 'txn> {
     pub context: RenderContext,
     /// Whether an inline shape draws its pill background. Advisory.
     pub chrome: InlineChrome,
+    /// Whether the widget takes clicks. Honored by [`open_on_click`].
+    pub interaction: Interaction,
 }
 
 /// Renders a nostr entity of one or more kinds inline.

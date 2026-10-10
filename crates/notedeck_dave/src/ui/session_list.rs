@@ -662,9 +662,9 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
 /// the chat's widget for that ref without its pill, since the row already
 /// frames the title.
 ///
-/// A click on a widget raises its action (open the card), pushed onto the
-/// app's actions; the widget sits above the row, so that click doesn't also
-/// switch to the session. A reference that doesn't resolve — its card isn't in
+/// The widget is drawn [`Inert`](notedeck::Interaction::Inert): a click on
+/// the title is a click on the row, switching to the session, not one that
+/// opens the referenced card. A reference that doesn't resolve — its card isn't in
 /// the local db yet — stays text, so a loose parser match never shows as a
 /// broken chip. Whatever overflows `max_width` is clipped, like a long plain
 /// title.
@@ -714,14 +714,12 @@ fn title_with_refs_ui(
             // The row already frames its title; a pill inside it is a box in
             // a box.
             notedeck::InlineChrome::Bare,
+            // The row's click switches to its session; the chip mustn't take
+            // it.
+            notedeck::Interaction::Inert,
         );
-        match drawn {
-            Some(drawn) => {
-                if let Some(action) = drawn.action {
-                    refs.note.app_actions.push(action);
-                }
-            }
-            None => title_run_ui(&mut child, matched, &font_id),
+        if drawn.is_none() {
+            title_run_ui(&mut child, matched, &font_id);
         }
         rest = &rest[m.range.end..];
     }
@@ -2183,7 +2181,7 @@ mod tests {
         harness.snapshot("session_list_project_grouping");
     }
 
-    /// State for [`a_ref_title_draws_its_chip_and_a_chip_click_opens_it`]: a
+    /// State for [`a_ref_title_draws_its_chip_and_a_chip_click_switches_to_the_row`]: a
     /// real `Notedeck` so the registries and ndb a chip resolves through exist.
     struct RefTitleState {
         notedeck: notedeck::Notedeck,
@@ -2192,7 +2190,7 @@ mod tests {
         focus_queue: FocusQueue,
         collapse_state: CollapseState,
         action: Option<SessionListAction>,
-        /// App actions drained so far (a chip click raises one).
+        /// App actions drained so far (an inert chip raises none).
         app_actions: usize,
         setup_done: bool,
         _tmpdir: tempfile::TempDir,
@@ -2258,10 +2256,10 @@ mod tests {
     /// A session titled with a reference — here another session's
     /// `agentium:` ref, the way autowork titles a session with its card's
     /// `headway:` ref — draws the referenced entity's chip in its row rather
-    /// than the raw ref, and a click on the chip opens that entity instead of
-    /// switching to the row's session.
+    /// than the raw ref, and a click on the chip is a click on the row: it
+    /// switches to the row's session rather than opening the referenced one.
     #[test]
-    fn a_ref_title_draws_its_chip_and_a_chip_click_opens_it() {
+    fn a_ref_title_draws_its_chip_and_a_chip_click_switches_to_the_row() {
         use std::cell::RefCell;
         use std::rc::Rc;
         use std::time::{Duration, Instant};
@@ -2345,13 +2343,14 @@ mod tests {
         }
         harness.run_steps(2);
 
-        assert!(
-            harness.state().app_actions >= 1,
-            "clicking the chip should raise its open action"
+        assert_eq!(
+            harness.state().app_actions,
+            0,
+            "the chip is inert in the row, so it shouldn't raise its open action"
         );
         assert!(
-            harness.state().action.is_none(),
-            "the chip, not the row under it, takes the click: got {:?}",
+            matches!(harness.state().action, Some(SessionListAction::SwitchTo(s)) if s == id),
+            "the row under the chip takes the click: got {:?}",
             harness.state().action
         );
     }

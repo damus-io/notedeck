@@ -76,7 +76,7 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
                 None => issue_inline_ui(ui, &theme, &issue),
             },
         };
-        notedeck::open_on_click(ui, response, note)
+        notedeck::open_on_click(ui, response, req)
     }
 }
 
@@ -118,7 +118,7 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
             Some(view) => board_inline_ui(ui, &theme, &view),
             None => ui.weak("headway board not found"),
         };
-        notedeck::open_on_click(ui, response, note)
+        notedeck::open_on_click(ui, response, req)
     }
 }
 

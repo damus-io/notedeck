@@ -175,8 +175,8 @@ const INLINE_ICON_RATIO: f32 = 0.65;
 /// ellipsizes and the full text shows on hover.
 ///
 /// `icon` paints the leading glyph into a square of the size it is handed. The
-/// returned response covers the whole chip, so callers add their own
-/// [`Sense`](egui::Sense) and hover feedback.
+/// returned response covers the whole chip and senses nothing beyond hover, so
+/// callers add their own [`Sense`](egui::Sense) and hover feedback.
 ///
 /// `chrome` is the surface's [`InlineChrome`] hint (a renderer passes its
 /// request's along): [`Pill`](InlineChrome::Pill) draws the tint and outline,
@@ -227,9 +227,13 @@ pub fn inline_chip(
                     egui::Layout::left_to_right(Align::Center),
                     |ui| icon(ui, icon_size),
                 );
+                // Not selectable: a selectable label senses clicks and drags
+                // of its own, which would take them from under a chip drawn
+                // inert over a surface that means something by a click.
                 ui.add(
                     Label::new(RichText::new(text).color(theme.text_primary))
-                        .wrap_mode(egui::TextWrapMode::Truncate),
+                        .wrap_mode(egui::TextWrapMode::Truncate)
+                        .selectable(false),
                 );
             })
         })
