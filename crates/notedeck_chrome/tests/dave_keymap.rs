@@ -17,6 +17,10 @@ use notedeck_chrome::keymap::DEFAULT_KEYMAP;
 use notedeck_chrome::{Chrome, NotedeckApp};
 use notedeck_dave::Dave;
 
+/// Dave's UI tools that read rather than act, for a macro step to hand on;
+/// no key is bound to them.
+const READ_ONLY_TOOLS: [&str; 1] = ["dave_session_issue"];
+
 /// The scopes Dave reports in normal mode, by pane (`ui_tools::key_scopes`).
 const DAVE_SCOPES: [&str; 3] = ["dave.chat", "dave.sessions", "dave.normal"];
 
@@ -64,6 +68,7 @@ fn every_dave_binding_names_a_dave_tool() {
         .ui_tools()
         .iter()
         .map(|spec| spec.name().to_owned())
+        .filter(|name| !READ_ONLY_TOOLS.contains(&name.as_str()))
         .collect();
     let mut chrome = Chrome::new_headless_with_apps(
         &mut notedeck,
@@ -89,5 +94,5 @@ fn every_dave_binding_names_a_dave_tool() {
         );
         bound.insert(tool);
     }
-    assert_eq!(bound, advertised, "every Dave UI tool has a key");
+    assert_eq!(bound, advertised, "every Dave UI tool that acts has a key");
 }

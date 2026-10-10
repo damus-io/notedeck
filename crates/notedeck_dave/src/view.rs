@@ -505,6 +505,13 @@ impl Dave {
         update::has_pending_question(&self.session_manager)
     }
 
+    /// The issue the active session works (its `issue_url`), if it has one.
+    pub(crate) fn active_issue(&self) -> Option<&str> {
+        self.session_manager
+            .get_active()
+            .and_then(|s| s.details.issue_url.as_deref())
+    }
+
     /// What the active session offers the keys this frame, read live; the
     /// keybindings and the UI tools' availability share it. With no session,
     /// Dave's own mode.

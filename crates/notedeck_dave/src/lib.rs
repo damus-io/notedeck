@@ -1586,7 +1586,9 @@ impl notedeck::App for Dave {
 
     /// The normal-mode chord's actions, by name (see [`ui_tools`]).
     fn ui_tools(&self) -> Vec<notedeck::ToolSpec> {
-        ui_tools::DaveUiTool::specs()
+        let mut specs = ui_tools::DaveUiTool::specs();
+        specs.push(ui_tools::session_issue_spec());
+        specs
     }
 
     /// Run a UI tool now, the way its chord key would. Dave's dispatch needs
@@ -1598,13 +1600,25 @@ impl notedeck::App for Dave {
         name: &str,
         args: &serde_json::Value,
     ) -> notedeck::ToolOutcome {
+        // Reading the session's issue needs no window, and acts on nothing.
+        if name == ui_tools::SESSION_ISSUE {
+            return match self.active_issue() {
+                Some(issue) => notedeck::ToolOutcome::Data(serde_json::json!({ "issue": issue })),
+                None => notedeck::ToolOutcome::Error("the active session has no issue".to_owned()),
+            };
+        }
         let Some(egui_ctx) = ctx.egui else {
             return notedeck::ToolOutcome::Error(format!("'{name}' needs a window"));
         };
         self.run_ui_tool(name, args, egui_ctx)
     }
 
+    /// `dave_session_issue` whenever the active session has an issue, in any
+    /// mode; the others as [`ui_tools::available`] says.
     fn ui_tool_available(&self, name: &str) -> bool {
+        if name == ui_tools::SESSION_ISSUE {
+            return self.active_issue().is_some();
+        }
         ui_tools::DaveUiTool::from_name(name)
             .is_some_and(|tool| ui_tools::available(tool, self.normal_view()))
     }

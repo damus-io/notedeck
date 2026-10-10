@@ -54,6 +54,22 @@ pub(crate) const FOCUS_QUEUE: &str = "dave_focus_queue";
 /// `gd` / `gc`: show the active session's Details or Chat tab.
 pub(crate) const SESSION_TAB: &str = "dave_session_tab";
 
+/// The active session's issue, as data, for a macro step to hand on (its
+/// `as`, or `{prev}`): `{"issue": "headway:<board>/<word-id>"}`. No key does
+/// this, so it isn't a [`DaveUiTool`]: it reads, and doesn't act.
+pub(crate) const SESSION_ISSUE: &str = "dave_session_issue";
+
+/// The spec of [`SESSION_ISSUE`].
+pub(crate) fn session_issue_spec() -> ToolSpec {
+    ToolSpec::new(
+        SESSION_ISSUE,
+        "The issue the active session works, e.g. its headway card, as \
+         {\"issue\": \"<ref>\"}. Changes nothing.",
+        vec![],
+    )
+    .ui()
+}
+
 /// One of Dave's UI tools, by name. Its arguments pick the [`KeyAction`]
 /// ([`parse`](Self::parse)); availability takes none ([`available`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -764,6 +780,45 @@ mod dispatch_tests {
             _ => panic!("expected an open intent"),
         }
         assert!(f.dave.normal_mode.is_normal(), "s keeps normal mode on");
+    }
+
+    /// `dave_session_issue` answers with the active session's issue, for a
+    /// macro step to hand on, and changes nothing; without an issue it isn't
+    /// offered. It needs no window and no normal mode.
+    #[test]
+    fn session_issue_answers_with_the_issue_and_changes_nothing() {
+        let mut f = Fixture::new();
+        assert!(!f.dave.ui_tool_available(SESSION_ISSUE));
+        assert!(matches!(
+            f.call(SESSION_ISSUE, Value::Null),
+            ToolOutcome::Error(_)
+        ));
+
+        let [first, _] = f.sessions;
+        f.dave
+            .session_manager
+            .get_mut(first)
+            .unwrap()
+            .details
+            .issue_url = Some("headway:notedeck/use-release-oyster".to_owned());
+        f.dave.normal_mode = NormalMode::default();
+        assert!(!f.dave.normal_mode.is_normal());
+        assert!(f.dave.ui_tool_available(SESSION_ISSUE), "in any mode");
+        match f.call(SESSION_ISSUE, Value::Null) {
+            ToolOutcome::Data(data) => {
+                assert_eq!(
+                    data,
+                    json!({"issue": "headway:notedeck/use-release-oyster"})
+                )
+            }
+            _ => panic!("expected the issue as data"),
+        }
+        assert_eq!(f.dave.session_manager.active_id(), Some(first));
+        assert!(f
+            .dave
+            .ui_tools()
+            .iter()
+            .any(|spec| spec.name() == SESSION_ISSUE));
     }
 
     /// `dd`, `v`, `n`, `q` and `l`, as tools, do what their keys do.

@@ -36,6 +36,7 @@ mod hints;
 pub mod keys;
 pub mod macros;
 mod parse;
+pub mod template;
 pub mod user;
 
 use std::collections::BTreeMap;
@@ -45,7 +46,7 @@ use notedeck_ui::chord::{self, ChordState};
 
 pub use hints::{Hint, MAX_HINT_KEYS};
 pub use keys::{KeyParseError, KeySeq, KeyStroke, Mods, MAX_SEQ};
-pub use parse::{parse, parse_over, BindProblem, KeymapError};
+pub use parse::{parse, parse_over, BindProblem, KeymapError, StepProblem};
 
 /// The scope searched after every app's own: the chrome's bindings, live in
 /// any app.
@@ -54,6 +55,10 @@ pub const GLOBAL_SCOPE: &str = "global";
 /// The placeholder a binding's `args` name the active app's
 /// [current ref](notedeck::App::current_ref) with, replaced as the key fires.
 pub const CURRENT: &str = "{current}";
+
+/// The name inside [`CURRENT`], as a macro step's
+/// [placeholders](template) name it.
+pub const CURRENT_NAME: &str = "current";
 
 /// The scopes a key is resolved in, most specific first: the active app's
 /// [key scopes](notedeck::App::key_scopes), then [`GLOBAL_SCOPE`]; and the
@@ -236,22 +241,40 @@ pub struct Macro {
 }
 
 /// One call in a [`Macro`].
+///
+/// Its args can name `{current}` (the current ref of the app in front),
+/// `{prev}` (the previous step's result) and `{name}` for an earlier step's
+/// `as`, each with an optional `.field` path; they are filled in as the step
+/// runs (see [`template`]).
 #[derive(Debug)]
 pub struct MacroStep {
-    /// The tool and its args, [`CURRENT`] still in them.
+    /// The tool and its args, placeholders still in them.
     pub invocation: ToolInvocation,
+    /// The name its result is bound to (its `as`), for later steps'
+    /// `{name}`.
+    pub bind: Option<String>,
     /// Whether its args name [`CURRENT`], read once at load: the step then
     /// waits for the app in front to have a current ref, and runs on it.
     uses_current: bool,
+    /// Whether its args have any placeholder, so a step without one runs its
+    /// call as written.
+    templated: bool,
 }
 
 impl MacroStep {
-    /// A step calling `invocation`.
-    fn new(invocation: ToolInvocation) -> Self {
-        let uses_current = names_current(&invocation.args);
+    /// A step calling `invocation`, its result bound as `bind`.
+    fn new(invocation: ToolInvocation, bind: Option<String>) -> Self {
+        let mut uses_current = false;
+        let mut templated = false;
+        template::each_placeholder(&invocation.args, &mut |found| {
+            templated = true;
+            uses_current |= found.name == CURRENT_NAME;
+        });
         Self {
             invocation,
+            bind,
             uses_current,
+            templated,
         }
     }
 
@@ -266,16 +289,14 @@ impl MacroStep {
         !self.uses_current || current.is_some()
     }
 
-    /// The call to make, its [`CURRENT`] replaced with `current`, the app in
-    /// front's current ref, as the step runs.
-    pub fn call(&self, current: Option<&str>) -> ToolInvocation {
-        match current {
-            Some(current) if self.uses_current => ToolInvocation::new(
-                self.invocation.name.clone(),
-                replace_current(&self.invocation.args, current),
-            ),
-            _ => self.invocation.clone(),
+    /// The call to make, its placeholders filled from `vars` as the step
+    /// runs. Fails, naming the placeholder, when one has no value.
+    pub fn call(&self, vars: template::Vars<'_>) -> Result<ToolInvocation, String> {
+        if !self.templated {
+            return Ok(self.invocation.clone());
         }
+        let args = template::fill(&self.invocation.args, vars)?;
+        Ok(ToolInvocation::new(self.invocation.name.clone(), args))
     }
 }
 

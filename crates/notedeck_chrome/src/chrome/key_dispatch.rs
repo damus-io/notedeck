@@ -9,6 +9,15 @@ use crate::keymap::macros::{Advance, MacroRun, Settle, MACRO_POLL_INTERVAL, MACR
 use crate::keymap::{KeyDispatch, KeySeq, Keymap, MacroStep, Scopes};
 use notedeck::{App, AppAction, AppContext, ToolInvocation, ToolOutcome, ToolOwner};
 
+/// A macro step ready to call: its placeholders filled, and the name its
+/// result is bound to.
+struct PreparedStep {
+    /// The call, as it runs.
+    invocation: ToolInvocation,
+    /// Its `as`, if any.
+    bind: Option<String>,
+}
+
 /// What a key press fired, owned, so the engine can be put back before it
 /// runs.
 enum Fired {
@@ -85,16 +94,10 @@ impl Chrome {
             return;
         }
         let steps = m.steps.len();
-        let first = m.steps[0].call(self.current_ref());
 
         let now = ui.input(|i| i.time);
         let mut run = MacroRun::new(name, now);
-        if let Err(err) = self.run_macro_step(ctx, &first, ui) {
-            tracing::warn!(
-                "keymap: macro '{}' aborted at step 1 ('{}'): {err}",
-                run.name(),
-                first.name
-            );
+        if !self.run_macro_step(ctx, &mut run, ui) {
             return;
         }
         if run.dispatched(now, steps) {
@@ -139,15 +142,8 @@ impl Chrome {
                     step.invocation.name
                 );
             }
-            Advance::Run(at) => {
-                let invocation = step.call(self.current_ref());
-                if let Err(err) = self.run_macro_step(ctx, &invocation, ui) {
-                    tracing::warn!(
-                        "keymap: macro '{}' aborted at step {} ('{}'): {err}",
-                        run.name(),
-                        at + 1,
-                        invocation.name
-                    );
+            Advance::Run(_) => {
+                if !self.run_macro_step(ctx, &mut run, ui) {
                     return;
                 }
                 if run.dispatched(now, steps) {
@@ -158,23 +154,91 @@ impl Chrome {
         }
     }
 
-    /// Run one macro step: a data tool here, a UI tool in its app, and an
-    /// intent either raises routed like any other action. A step that fails,
-    /// or answers by calling another tool (a chain is the macro's job, so
-    /// that is one hop too many), is an error.
+    /// Run `run`'s next step: fill its placeholders from the current ref of
+    /// the app in front and the results so far, call it, and keep its result
+    /// for the steps after it. Returns false, having logged why, when the
+    /// step aborts the run: a placeholder with no value, a call that fails,
+    /// or an `as` step that answers with nothing to bind.
     fn run_macro_step(
+        &mut self,
+        ctx: &mut AppContext,
+        run: &mut MacroRun,
+        ui: &mut egui::Ui,
+    ) -> bool {
+        let at = run.next_step();
+        let step = match self.prepare_step(run, at) {
+            Ok(step) => step,
+            Err(err) => {
+                tracing::warn!(
+                    "keymap: macro '{}' aborted at step {}: {err}",
+                    run.name(),
+                    at + 1
+                );
+                return false;
+            }
+        };
+        let result = self
+            .call_macro_step(ctx, &step.invocation, ui)
+            .and_then(|result| match (&step.bind, &result) {
+                (Some(bind), serde_json::Value::Null) => {
+                    Err(format!("it answered with nothing to bind as '{bind}'"))
+                }
+                _ => Ok(result),
+            });
+        match result {
+            Ok(result) => {
+                run.record(step.bind.as_deref(), result);
+                true
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "keymap: macro '{}' aborted at step {} ('{}'): {err}",
+                    run.name(),
+                    at + 1,
+                    step.invocation.name
+                );
+                false
+            }
+        }
+    }
+
+    /// The call `run`'s step `at` makes, its placeholders filled, and the
+    /// name its result is bound to; owned, so the keymap can be let go of
+    /// before the call.
+    fn prepare_step(&self, run: &MacroRun, at: usize) -> Result<PreparedStep, String> {
+        let step = self
+            .keys
+            .keymap()
+            .macro_named(run.name())
+            .and_then(|m| m.steps.get(at))
+            .ok_or_else(|| "the macro left the keymap".to_owned())?;
+        let current = self
+            .current_ref()
+            .map(|current| serde_json::Value::String(current.to_owned()));
+        Ok(PreparedStep {
+            invocation: step.call(run.vars(current.as_ref()))?,
+            bind: step.bind.clone(),
+        })
+    }
+
+    /// Call one macro step: a data tool here, a UI tool in its app, and an
+    /// intent either raises routed like any other action. Returns the tool's
+    /// answer, `null` for an intent. A step that fails, or answers by
+    /// calling another tool (a chain is the macro's job, so that is one hop
+    /// too many), is an error.
+    fn call_macro_step(
         &mut self,
         ctx: &mut AppContext,
         invocation: &ToolInvocation,
         ui: &mut egui::Ui,
-    ) -> Result<(), String> {
+    ) -> Result<serde_json::Value, String> {
         let outcome = if is_data_tool(ctx, &invocation.name) {
             ctx.call_tool(&invocation.name, &invocation.args)
         } else {
             self.call_ui_tool(ctx, invocation)
         };
         match outcome {
-            ToolOutcome::Data(_) => Ok(()),
+            ToolOutcome::Data(result) => Ok(result),
             ToolOutcome::Error(err) => Err(err),
             ToolOutcome::Intent(AppAction::CallTool(next)) => Err(format!(
                 "it asked to call '{}'; a step is one call",
@@ -182,7 +246,7 @@ impl Chrome {
             )),
             ToolOutcome::Intent(action) => {
                 chrome_handle_app_action(self, ctx, action, ui);
-                Ok(())
+                Ok(serde_json::Value::Null)
             }
         }
     }

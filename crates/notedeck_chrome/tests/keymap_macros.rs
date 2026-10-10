@@ -247,6 +247,63 @@ async fn a_first_step_naming_current_needs_one_to_fire() {
     assert_eq!(f.marked(), [json!({ "card": "fake:one" })]);
 }
 
+/// A step's result reaches later steps: by its `as` name, and as `{prev}`
+/// to the step right after it. A whole-string placeholder keeps the value's
+/// type; one inside text is written in.
+#[test]
+fn a_step_hands_its_result_to_later_steps() {
+    let mut f = Fixture::new(
+        r#"
+        [[bind]]
+        scope = "fake"
+        keys = "b"
+        macro = "bound"
+
+        [macro.bound]
+        steps = [
+          { tool = "fake_answer", as = "a" },
+          { tool = "fake_mark", args = { from_prev = "x-{prev.ref}", n = "{a.n}", whole = "{prev}" } },
+          { tool = "fake_mark", args = { still = "{a.ref}" } },
+        ]
+        "#,
+    );
+    f.key(Key::B);
+    f.idle(0.2);
+    assert_eq!(f.chrome.running_macro(), None, "done");
+    assert_eq!(
+        f.marked(),
+        [
+            serde_json::json!({ "from_prev": "x-fake:1", "n": 2, "whole": common::answer() }),
+            serde_json::json!({ "still": "fake:1" }),
+        ]
+    );
+}
+
+/// A step bound with `as` that answers with nothing aborts the run before
+/// the step that needed it.
+#[test]
+fn an_as_step_with_nothing_to_bind_aborts() {
+    let mut f = Fixture::new(
+        r#"
+        [[bind]]
+        scope = "fake"
+        keys = "b"
+        macro = "empty"
+
+        [macro.empty]
+        steps = [
+          { tool = "fake_down", as = "a" },
+          { tool = "fake_mark", args = { x = "{a}" } },
+        ]
+        "#,
+    );
+    f.key(Key::B);
+    f.idle(0.2);
+    assert_eq!(f.calls(), ["fake_down"]);
+    assert_eq!(f.chrome.running_macro(), None, "aborted");
+    assert!(f.marked().is_empty(), "the step after never ran");
+}
+
 /// The shipped `E` in Dave's normal mode, through the real Headway.
 ///
 /// Release only, like the chrome's `headway_nav_tests` (its own step in CI):
@@ -324,30 +381,43 @@ mod session_explainer {
         }
 
         fn ui_tools(&self) -> Vec<ToolSpec> {
-            vec![ToolSpec::new(
-                "dave_open_issue",
-                "Open the active session's issue.",
-                Vec::new(),
-            )]
+            vec![
+                ToolSpec::new(
+                    "dave_open_issue",
+                    "Open the active session's issue.",
+                    Vec::new(),
+                ),
+                ToolSpec::new(
+                    "dave_session_issue",
+                    "The active session's issue, as data.",
+                    Vec::new(),
+                ),
+            ]
         }
 
+        /// `dave_session_issue` answers with the issue as real Dave does
+        /// (`notedeck_dave`'s `session_issue_answers_with_the_issue_and_changes_nothing`);
+        /// `dave_open_issue` asks chrome to open it.
         fn call_ui_tool(
             &mut self,
             _ctx: &mut AppContext<'_>,
-            _name: &str,
+            name: &str,
             _args: &Value,
         ) -> ToolOutcome {
-            match &self.issue {
-                Some(issue) => ToolOutcome::Intent(AppAction::Open(OpenUri {
-                    reference: issue.clone(),
-                    msg: None,
-                })),
-                None => ToolOutcome::Error("the session has no issue".to_owned()),
+            let Some(issue) = &self.issue else {
+                return ToolOutcome::Error("the session has no issue".to_owned());
+            };
+            if name == "dave_session_issue" {
+                return ToolOutcome::Data(serde_json::json!({ "issue": issue }));
             }
+            ToolOutcome::Intent(AppAction::Open(OpenUri {
+                reference: issue.clone(),
+                msg: None,
+            }))
         }
 
         fn ui_tool_available(&self, name: &str) -> bool {
-            name == "dave_open_issue" && self.issue.is_some()
+            matches!(name, "dave_open_issue" | "dave_session_issue") && self.issue.is_some()
         }
 
         fn key_scopes(&self) -> &'static [&'static str] {
@@ -546,6 +616,27 @@ mod session_explainer {
             self.drawn.iter().any(|drawn| drawn == text)
         }
 
+        /// The id of the column the card `card` (a ref) is in, as Headway's
+        /// `headway_show_board` data tool reads the board.
+        fn column_of(&mut self, card: &str) -> Option<String> {
+            let ToolOutcome::Data(board) = self
+                .notedeck
+                .app_context()
+                .call_tool("headway_show_board", &serde_json::json!({}))
+            else {
+                panic!("the demo board shows");
+            };
+            board["columns"]
+                .as_array()?
+                .iter()
+                .find(|column| {
+                    column["cards"]
+                        .as_array()
+                        .is_some_and(|cards| cards.iter().any(|c| c["ref"] == card))
+                })
+                .and_then(|column| column["id"].as_str().map(str::to_owned))
+        }
+
         /// Press Shift+E.
         fn press_e(&mut self) {
             let event = |pressed| Event::Key {
@@ -591,6 +682,65 @@ mod session_explainer {
         s.frame(Vec::new());
         assert!(s.opened.is_empty(), "nothing to open: {:?}", s.opened);
         assert!(s.drew(BARE_CARD), "on the card");
+    }
+
+    /// jb55's "card done" macro: the session's issue, bound with `as`, is
+    /// the card `headway_move_card` moves to Done. Nothing navigates; Dave
+    /// stays in front.
+    #[tokio::test]
+    async fn a_bound_issue_moves_the_sessions_card_to_done() {
+        let mut s = Session::new(Some(CARD)).await;
+        let user = r#"
+            [[bind]]
+            scope = "dave.normal"
+            keys = "D"
+            macro = "session-done"
+
+            [macro.session-done]
+            label = "card done"
+            steps = [
+              { tool = "dave_session_issue", as = "card" },
+              { tool = "headway_move_card", args = { card = "{card.issue}", column = "done" } },
+            ]
+        "#;
+        let keymap = notedeck_chrome::keymap::parse(&format!(
+            "{}\n{user}",
+            notedeck_chrome::keymap::DEFAULT_KEYMAP
+        ))
+        .expect("the keymap parses");
+        s.chrome.set_keymap(keymap);
+        let card = {
+            let ctx = s.notedeck.app_context();
+            headway::wordid::card_ref(store::BOARD_ID, card_id(ctx.ndb, CARD).bytes())
+        };
+        assert_ne!(s.column_of(&card).as_deref(), Some("done"));
+
+        let event = |pressed| Event::Key {
+            key: Key::D,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::SHIFT,
+        };
+        s.frame(vec![event(true), Event::Text("D".to_owned()), event(false)]);
+        s.wait_for("the macro to finish", |s| {
+            s.chrome.running_macro().is_none()
+        });
+        // The move is a note Headway folds in.
+        for _ in 0..SETTLE_FRAMES {
+            if s.column_of(&card).as_deref() == Some("done") {
+                break;
+            }
+            s.frame(Vec::new());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            s.column_of(&card).as_deref(),
+            Some("done"),
+            "the card is in Done"
+        );
+        assert!(s.dave.borrow().rendered, "Dave stays in front");
+        assert!(!s.dave.borrow().seen.contains(&Key::D), "D was the macro's");
     }
 
     /// A session with no issue has no `dave_open_issue`, so `E` isn't the

@@ -179,6 +179,28 @@ steps = [ { tool = "dave_open_issue" },
           { tool = "headway_move_card", args = { card = "{current}", column = "done" } } ]
 ```
 
+A step can also hand its **result** on, with no navigation in between. Give
+it `as = "<name>"` and later steps read it as `{<name>}`; the step right
+after reads it as `{prev}` too. Add `.field` (or `.0` for an array index) to
+reach inside it. A string that is exactly one placeholder takes the value
+itself, so numbers and objects keep their type; a placeholder inside longer
+text is written into it.
+
+```toml
+[macro.session-done]             # mark the session's card done, staying in Dave
+steps = [
+  { tool = "dave_session_issue", as = "card" },        # {"issue": "headway:…"}
+  { tool = "headway_move_card", args = { card = "{card.issue}", column = "done" } },
+]
+```
+
+A step whose result is read must answer in the call: a data tool, or a UI
+tool that returns data at once, such as `dave_session_issue`. Headway's UI
+tools queue their work for its next frame and answer `null`, and an `as` step
+that answers `null` aborts the run. A placeholder naming nothing defined
+before it, `{prev}` in the first step, or an `as` of `current` or `prev`
+fails the parse, so the keymap editor refuses the save.
+
 App scopes are searched most specific first, then `global`, so an app's
 binding of the same keys wins. A binding fires only while its tool is
 available, so Esc with nothing to clear falls through to the next binding.

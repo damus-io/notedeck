@@ -19,6 +19,15 @@ use notedeck_chrome::{Chrome, NotedeckApp};
 /// The UI tools [`FakeApp`] advertises.
 pub const TOOLS: [&str; 4] = ["fake_down", "fake_first", "fake_page", "fake_gated"];
 
+/// A UI tool of [`FakeApp`]'s that answers with [`ANSWER`], for a macro step
+/// to hand on.
+pub const ANSWER_TOOL: &str = "fake_answer";
+
+/// What [`ANSWER_TOOL`] answers with.
+pub fn answer() -> serde_json::Value {
+    serde_json::json!({ "ref": "fake:1", "n": 2 })
+}
+
 /// The data tool [`FakeApp`] contributes: it sends its args to the test.
 pub const DATA_TOOL: &str = "fake_mark";
 
@@ -117,6 +126,7 @@ impl App for FakeApp {
     fn ui_tools(&self) -> Vec<ToolSpec> {
         TOOLS
             .iter()
+            .chain([&ANSWER_TOOL])
             .map(|name| ToolSpec::new(name, "A fake UI tool.", Vec::new()))
             .collect()
     }
@@ -128,6 +138,9 @@ impl App for FakeApp {
         _args: &serde_json::Value,
     ) -> ToolOutcome {
         self.state.borrow_mut().calls.push(name.to_owned());
+        if name == ANSWER_TOOL {
+            return ToolOutcome::Data(answer());
+        }
         ToolOutcome::Data(serde_json::Value::Null)
     }
 

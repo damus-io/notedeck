@@ -13,7 +13,12 @@
 //! This is the bookkeeping only; the chrome reads the world into a
 //! [`Settle`] and dispatches the steps (see `Chrome::advance_macro`).
 
+use std::collections::BTreeMap;
 use std::fmt;
+
+use serde_json::Value;
+
+use super::template::Vars;
 
 /// How long a step may wait to settle before the run is aborted, in seconds
 /// of egui input time.
@@ -37,6 +42,11 @@ pub struct MacroRun {
     /// step runs only once a frame has rendered with it settled, so the app a
     /// step navigated to has drawn (and seeded) the route it landed on.
     settled_frames: u32,
+    /// The last step's result, for the next step's `{prev}`.
+    prev: Option<Value>,
+    /// The results of the steps with an `as`, by that name, for later
+    /// steps' `{name}`.
+    bound: BTreeMap<String, Value>,
 }
 
 /// What a waiting step's world looks like at the end of a frame.
@@ -130,6 +140,27 @@ impl MacroRun {
             next: 0,
             last_dispatch: now,
             settled_frames: 0,
+            prev: None,
+            bound: BTreeMap::new(),
+        }
+    }
+
+    /// Keep the result of the step that just ran: as the next step's
+    /// `{prev}`, and as `{bind}` for every later step when it has an `as`.
+    pub fn record(&mut self, bind: Option<&str>, result: Value) {
+        if let Some(bind) = bind {
+            self.bound.insert(bind.to_owned(), result.clone());
+        }
+        self.prev = Some(result);
+    }
+
+    /// What the next step's placeholders fill from, with `current` the
+    /// current ref of the app in front.
+    pub fn vars<'a>(&'a self, current: Option<&'a Value>) -> Vars<'a> {
+        Vars {
+            current,
+            prev: self.prev.as_ref(),
+            bound: &self.bound,
         }
     }
 

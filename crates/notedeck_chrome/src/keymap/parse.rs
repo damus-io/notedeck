@@ -23,7 +23,19 @@
 //! [macro.session-explainer]
 //! label = "card explainer"
 //! steps = [ { tool = "dave_open_issue" }, { tool = "headway_open_explainer" } ]
+//!
+//! [macro.session-done]      # a step's result, by `as` or as {prev}, feeds
+//! steps = [                 # a later step's args
+//!   { tool = "dave_session_issue", as = "card" },
+//!   { tool = "headway_move_card", args = { card = "{card.issue}", column = "done" } },
+//! ]
 //! ```
+//!
+//! A step's args can name `{current}`, `{prev}` (the step before's result)
+//! and `{name}` for an earlier step's `as`, each with a `.field` path (see
+//! [`template`](super::template)). A placeholder naming nothing defined
+//! before it, `{prev}` in the first step, or an `as` of `current` or `prev`
+//! fails the parse.
 //!
 //! Anything malformed — bad TOML, an unknown field, a binding with both or
 //! neither of `tool`/`macro`, a key sequence that doesn't parse, a binding to
@@ -117,6 +129,9 @@ struct RawMacro {
 struct RawStep {
     tool: String,
     args: Option<toml::Table>,
+    /// The name later steps' `{name}` reads its result by.
+    #[serde(rename = "as")]
+    bind: Option<String>,
 }
 
 /// Why a keymap didn't parse.
@@ -137,6 +152,15 @@ pub enum KeymapError {
     },
     /// A `[macro.<name>]` with no steps.
     EmptyMacro(String),
+    /// A macro step that is wrong on its own.
+    Step {
+        /// The macro's name.
+        name: String,
+        /// The step's 1-based position.
+        step: usize,
+        /// What is wrong with it.
+        problem: StepProblem,
+    },
     /// In a user keymap, a macro step names a tool no app has.
     UnknownStepTool {
         /// The macro's name.
@@ -146,6 +170,18 @@ pub enum KeymapError {
         /// The tool it names.
         tool: String,
     },
+}
+
+/// What is wrong with one macro step.
+#[derive(Debug)]
+pub enum StepProblem {
+    /// A `{name}` that is not `current`, `prev` or an earlier step's `as`.
+    UnknownName(String),
+    /// `{prev}` in the first step, which has no step before it.
+    PrevInFirstStep,
+    /// An `as` that is reserved (`current`, `prev`) or not a placeholder
+    /// name.
+    BadAs(String),
 }
 
 /// What is wrong with one `[[bind]]`.
@@ -203,6 +239,28 @@ impl fmt::Display for KeymapError {
                 }
             }
             Self::EmptyMacro(name) => write!(f, "macro '{name}' has no steps"),
+            Self::Step {
+                name,
+                step,
+                problem,
+            } => {
+                write!(f, "macro '{name}' step {step}: ")?;
+                match problem {
+                    StepProblem::UnknownName(found) => write!(
+                        f,
+                        "{{{found}}} names nothing: use {{current}}, {{prev}} or an \
+                         earlier step's 'as'"
+                    ),
+                    StepProblem::PrevInFirstStep => {
+                        write!(f, "{{prev}} has no step before it")
+                    }
+                    StepProblem::BadAs(bind) => write!(
+                        f,
+                        "'as = \"{bind}\"' must be a name like 'card', and not \
+                         'current' or 'prev'"
+                    ),
+                }
+            }
             Self::UnknownStepTool { name, step, tool } => {
                 write!(f, "macro '{name}' step {step}: no app has a tool '{tool}'")
             }
@@ -340,11 +398,15 @@ fn build(raw: RawKeymap, mut warnings: Vec<String>) -> Result<Keymap, KeymapErro
         if raw_macro.steps.is_empty() {
             return Err(KeymapError::EmptyMacro(name));
         }
-        let steps = raw_macro
-            .steps
-            .into_iter()
-            .map(|step| MacroStep::new(ToolInvocation::new(step.tool, args_json(step.args))))
-            .collect();
+        let mut steps = Vec::with_capacity(raw_macro.steps.len());
+        for (i, raw_step) in raw_macro.steps.into_iter().enumerate() {
+            let step = MacroStep::new(
+                ToolInvocation::new(raw_step.tool, args_json(raw_step.args)),
+                raw_step.bind,
+            );
+            check_step(&name, i, &step, &steps)?;
+            steps.push(step);
+        }
         let label = raw_macro.label;
         macros.insert(name, Macro { label, steps });
     }
@@ -411,6 +473,52 @@ fn build(raw: RawKeymap, mut warnings: Vec<String>) -> Result<Keymap, KeymapErro
         macros,
         warnings,
     })
+}
+
+/// Check the macro `name`'s step at `index` against the steps `before` it:
+/// every placeholder names `current`, `prev` (not in the first step) or an
+/// earlier `as`, and its own `as`, if any, is a free name.
+fn check_step(
+    name: &str,
+    index: usize,
+    step: &MacroStep,
+    before: &[MacroStep],
+) -> Result<(), KeymapError> {
+    use super::template::{self, PREV, RESERVED};
+    let fail = |problem| KeymapError::Step {
+        name: name.to_owned(),
+        step: index + 1,
+        problem,
+    };
+    let mut problem = None;
+    template::each_placeholder(&step.invocation.args, &mut |found| {
+        if problem.is_some() || found.name == super::CURRENT_NAME {
+            return;
+        }
+        if found.name == PREV {
+            if index == 0 {
+                problem = Some(StepProblem::PrevInFirstStep);
+            }
+            return;
+        }
+        let bound = before.iter().any(|b| b.bind.as_deref() == Some(found.name));
+        if !bound {
+            problem = Some(StepProblem::UnknownName(found.name.to_owned()));
+        }
+    });
+    if let Some(problem) = problem {
+        return Err(fail(problem));
+    }
+    if let Some(bind) = &step.bind {
+        let wrapped = format!("{{{bind}}}");
+        let is_name = template::placeholders(&wrapped)
+            .next()
+            .is_some_and(|p| p.name == bind && p.path.is_empty());
+        if !is_name || RESERVED.contains(&bind.as_str()) {
+            return Err(fail(StepProblem::BadAs(bind.clone())));
+        }
+    }
+    Ok(())
 }
 
 /// Drop every binding in `scope` that a shorter binding is a prefix of
@@ -991,5 +1099,64 @@ mod tests {
             msg.contains("'unbind' only applies to a user keymap"),
             "{msg}"
         );
+    }
+
+    /// A step's `as` binds its result, and later steps can name it and
+    /// `{prev}` as well as `{current}`.
+    #[test]
+    fn a_step_can_bind_its_result_for_later_steps() {
+        let keymap = parse(
+            r#"
+            [macro.done]
+            steps = [
+              { tool = "dave_session_issue", as = "card" },
+              { tool = "note", args = { text = "{prev.issue}" } },
+              { tool = "headway_move_card", args = { card = "{card.issue}", column = "done", at = "{current}" } },
+            ]
+            "#,
+        )
+        .expect("parse");
+        let steps = &keymap.macro_named("done").expect("macro").steps;
+        assert_eq!(steps[0].bind.as_deref(), Some("card"));
+        assert_eq!(steps[1].bind, None);
+        assert!(!steps[1].uses_current());
+        assert!(steps[2].uses_current());
+    }
+
+    /// A placeholder naming nothing defined before it, `{prev}` in the first
+    /// step, or a reserved or malformed `as` fails the parse, naming the
+    /// macro and the step.
+    #[test]
+    fn a_step_naming_nothing_fails_the_parse() {
+        let msg = error(
+            "[macro.m]\nsteps = [{ tool = \"a\" }, { tool = \"b\", args = { x = \"{card}\" } }]\n",
+        );
+        assert_eq!(
+            msg,
+            "macro 'm' step 2: {card} names nothing: use {current}, {prev} or an earlier step's 'as'"
+        );
+
+        // A name bound later doesn't count.
+        let msg = error(
+            "[macro.m]\nsteps = [{ tool = \"a\", args = { x = \"{card}\" } }, { tool = \"b\", as = \"card\" }]\n",
+        );
+        assert!(
+            msg.starts_with("macro 'm' step 1: {card} names nothing"),
+            "{msg}"
+        );
+
+        let msg = error("[macro.m]\nsteps = [{ tool = \"a\", args = { x = \"{prev}\" } }]\n");
+        assert_eq!(msg, "macro 'm' step 1: {prev} has no step before it");
+
+        for bad in ["prev", "current", "two words", "1st"] {
+            let msg = error(&format!(
+                "[macro.m]\nsteps = [{{ tool = \"a\", as = \"{bad}\" }}]\n"
+            ));
+            assert!(msg.starts_with("macro 'm' step 1: 'as = "), "{bad}: {msg}");
+        }
+
+        // Braces that aren't a placeholder's shape are only text.
+        parse("[macro.m]\nsteps = [{ tool = \"a\", args = { x = \"{a b} {}\" } }]\n")
+            .expect("plain braces parse");
     }
 }
