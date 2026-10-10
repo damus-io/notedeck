@@ -168,6 +168,17 @@ label = "card explainer"         # has settled: navigation landed and the
 steps = [ { tool = "dave_open_issue" }, { tool = "headway_open_explainer" } ]
 ```
 
+A macro step's `args` can name `"{current}"` too. It is replaced with the
+current ref of the app in front **when the step runs**, so a step after a
+navigation acts on where it landed. The step waits, like any other, until
+that app has one:
+
+```toml
+[macro.session-done]             # open the session's card, then mark it done
+steps = [ { tool = "dave_open_issue" },
+          { tool = "headway_move_card", args = { card = "{current}", column = "done" } } ]
+```
+
 App scopes are searched most specific first, then `global`, so an app's
 binding of the same keys wins. A binding fires only while its tool is
 available, so Esc with nothing to clear falls through to the next binding.

@@ -6,7 +6,7 @@
 use super::actions::chrome_handle_app_action;
 use super::Chrome;
 use crate::keymap::macros::{Advance, MacroRun, Settle, MACRO_POLL_INTERVAL, MACRO_TIMEOUT_SECS};
-use crate::keymap::{KeyDispatch, KeySeq, Keymap, Scopes};
+use crate::keymap::{KeyDispatch, KeySeq, Keymap, MacroStep, Scopes};
 use notedeck::{App, AppAction, AppContext, ToolInvocation, ToolOutcome, ToolOwner};
 
 /// What a key press fired, owned, so the engine can be put back before it
@@ -85,7 +85,7 @@ impl Chrome {
             return;
         }
         let steps = m.steps.len();
-        let first = m.steps[0].invocation.clone();
+        let first = m.steps[0].call(self.current_ref());
 
         let now = ui.input(|i| i.time);
         let mut run = MacroRun::new(name, now);
@@ -125,7 +125,7 @@ impl Chrome {
             return;
         };
         let now = ui.input(|i| i.time);
-        let settle = self.macro_settle(ctx, &step.invocation.name);
+        let settle = self.macro_settle(ctx, step);
         match run.poll(now, settle) {
             Advance::Wait => {
                 self.macro_run = Some(run);
@@ -140,7 +140,7 @@ impl Chrome {
                 );
             }
             Advance::Run(at) => {
-                let invocation = step.invocation.clone();
+                let invocation = step.call(self.current_ref());
                 if let Err(err) = self.run_macro_step(ctx, &invocation, ui) {
                     tracing::warn!(
                         "keymap: macro '{}' aborted at step {} ('{}'): {err}",
@@ -187,9 +187,10 @@ impl Chrome {
         }
     }
 
-    /// Whether the world has settled enough for a macro step calling `tool`
-    /// to run (see [`Settle`]). Doesn't allocate.
-    fn macro_settle(&self, ctx: &AppContext, tool: &str) -> Settle {
+    /// Whether the world has settled enough for the macro step `step` to run
+    /// (see [`Settle`]). Doesn't allocate.
+    fn macro_settle(&self, ctx: &AppContext, step: &MacroStep) -> Settle {
+        let tool = step.invocation.name.as_str();
         let tools = &ctx.registries.tools;
         let owner_active = match tools.ui_owner(tool) {
             Some(ToolOwner::App(owner)) => self.active_slot() == Some(owner.slot()),
@@ -203,7 +204,16 @@ impl Chrome {
             nav_queued: !ctx.navigator.is_empty(),
             owner_active,
             available: self.key_tool_available(tools, tool),
+            has_current: step.has_current(self.current_ref()),
         }
+    }
+
+    /// The [current ref](App::current_ref) of the app in front, which a
+    /// macro step's [`CURRENT`](crate::keymap::CURRENT) stands for.
+    fn current_ref(&self) -> Option<&str> {
+        self.apps
+            .get(self.active as usize)
+            .and_then(|app| app.current_ref())
     }
 
     /// Whether some app has a tool called `name`, running or not, or it is

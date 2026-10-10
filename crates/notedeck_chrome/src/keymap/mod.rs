@@ -24,7 +24,9 @@
 //! A binding can run a **macro** instead: a named list of tool calls the
 //! chrome runs one after another, each once the one before has settled (see
 //! [`macros`]), so one key can open something in one app and act on it in
-//! another.
+//! another. A step's args can name [`CURRENT`] too: it is replaced with the
+//! current ref of the app in front when the step runs, which is what lets
+//! "open the session's card, then mark it done" act on the card it opened.
 //!
 //! Text-field keys stay with the apps: the engine does nothing while a widget
 //! has keyboard focus, a popup is open or a drag is under way (see
@@ -187,8 +189,8 @@ pub struct Binding {
 impl Binding {
     /// Whether it would run now: its tool is `available`, and the app has a
     /// current ref if its args name one. A macro binding is ready when its
-    /// first step's tool is, since that step runs as the key fires; whether
-    /// the later ones can is for the macro runner to find out.
+    /// first step would, by the same test, since that step runs as the key
+    /// fires; whether the later ones can is for the macro runner to find out.
     fn ready(
         &self,
         keymap: &Keymap,
@@ -202,7 +204,9 @@ impl Binding {
             BindAction::Macro(name) => keymap
                 .macro_named(name)
                 .and_then(|m| m.steps.first())
-                .is_some_and(|step| available(&step.invocation.name)),
+                .is_some_and(|step| {
+                    available(&step.invocation.name) && step.has_current(scopes.current)
+                }),
         }
     }
 
@@ -234,8 +238,45 @@ pub struct Macro {
 /// One call in a [`Macro`].
 #[derive(Debug)]
 pub struct MacroStep {
-    /// The tool and its args.
+    /// The tool and its args, [`CURRENT`] still in them.
     pub invocation: ToolInvocation,
+    /// Whether its args name [`CURRENT`], read once at load: the step then
+    /// waits for the app in front to have a current ref, and runs on it.
+    uses_current: bool,
+}
+
+impl MacroStep {
+    /// A step calling `invocation`.
+    fn new(invocation: ToolInvocation) -> Self {
+        let uses_current = names_current(&invocation.args);
+        Self {
+            invocation,
+            uses_current,
+        }
+    }
+
+    /// Whether its args name [`CURRENT`].
+    pub fn uses_current(&self) -> bool {
+        self.uses_current
+    }
+
+    /// Whether it can run with `current` as the app in front's current ref:
+    /// a step naming [`CURRENT`] needs one.
+    pub fn has_current(&self, current: Option<&str>) -> bool {
+        !self.uses_current || current.is_some()
+    }
+
+    /// The call to make, its [`CURRENT`] replaced with `current`, the app in
+    /// front's current ref, as the step runs.
+    pub fn call(&self, current: Option<&str>) -> ToolInvocation {
+        match current {
+            Some(current) if self.uses_current => ToolInvocation::new(
+                self.invocation.name.clone(),
+                replace_current(&self.invocation.args, current),
+            ),
+            _ => self.invocation.clone(),
+        }
+    }
 }
 
 /// What a key sequence is in one scope.

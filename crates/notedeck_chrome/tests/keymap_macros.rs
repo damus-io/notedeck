@@ -14,6 +14,8 @@ mod common;
 
 use common::Fixture;
 use egui::{Key, Modifiers};
+use notedeck_chrome::keymap::macros::MACRO_TIMEOUT_SECS;
+use serde_json::json;
 
 /// The fake app's scope, with `m` bound to the macro `two` and `n` to `gated`.
 const KEYMAP: &str = r#"
@@ -38,6 +40,16 @@ keys = "u"
 macro = "unknown"
 
 [[bind]]
+scope = "fake"
+keys = "c"
+macro = "mark-current"
+
+[[bind]]
+scope = "fake"
+keys = "x"
+macro = "current-first"
+
+[[bind]]
 scope = "global"
 keys = "?"
 tool = "chrome_toggle_key_hints"
@@ -54,6 +66,12 @@ steps = [ { tool = "fake_gated" }, { tool = "fake_down" } ]
 
 [macro.unknown]
 steps = [ { tool = "fake_down" }, { tool = "no_such_tool" } ]
+
+[macro.mark-current]
+steps = [ { tool = "fake_down" }, { tool = "fake_mark", args = { card = "{current}", column = "done" } } ]
+
+[macro.current-first]
+steps = [ { tool = "fake_mark", args = { card = "{current}" } }, { tool = "fake_down" } ]
 "#;
 
 /// The first step runs as the key fires; the second waits for a frame to
@@ -165,6 +183,68 @@ fn a_waiting_macro_asks_for_frames() {
         f.egui_ctx.has_requested_repaint(),
         "a waiting macro schedules the next check"
     );
+}
+
+/// A step naming `{current}` runs on the current ref of the app in front as
+/// the step runs, not as the key fired: the step before it is what moved
+/// the app onto it (Dave's `dave_open_issue`, then Headway's card).
+#[tokio::test]
+async fn a_step_runs_on_the_current_ref_when_it_runs() {
+    let mut f = Fixture::new(KEYMAP);
+    f.state.borrow_mut().current = Some("fake:before".to_owned());
+    f.frame(Vec::new());
+    f.key(Key::C);
+    assert_eq!(f.calls(), ["fake_down"]);
+
+    // What the first step navigated to becomes current before the second runs.
+    f.state.borrow_mut().current = Some("fake:after".to_owned());
+    f.idle(0.1);
+    assert_eq!(
+        f.marked(),
+        [json!({ "card": "fake:after", "column": "done" })]
+    );
+    assert_eq!(f.chrome.running_macro(), None, "done");
+}
+
+/// A step naming `{current}` waits for the app in front to have one, and
+/// aborts if it never does; it never runs on the literal `{current}`.
+#[tokio::test]
+async fn a_step_naming_current_waits_for_one() {
+    let mut f = Fixture::new(KEYMAP);
+    f.key(Key::C);
+    f.idle(1.0);
+    assert_eq!(f.marked(), Vec::<serde_json::Value>::new(), "still waiting");
+    assert_eq!(f.chrome.running_macro(), Some("mark-current"));
+
+    f.state.borrow_mut().current = Some("fake:late".to_owned());
+    f.idle(0.1);
+    assert_eq!(
+        f.marked(),
+        [json!({ "card": "fake:late", "column": "done" })]
+    );
+
+    // With none in time, the macro aborts with the step unrun.
+    f.state.borrow_mut().current = None;
+    f.idle(0.1);
+    f.key(Key::C);
+    f.idle(MACRO_TIMEOUT_SECS + 0.2);
+    assert_eq!(f.chrome.running_macro(), None, "aborted");
+    assert_eq!(f.marked(), Vec::<serde_json::Value>::new());
+}
+
+/// A macro whose first step names `{current}` doesn't fire without one:
+/// its key falls through, like a binding's.
+#[tokio::test]
+async fn a_first_step_naming_current_needs_one_to_fire() {
+    let mut f = Fixture::new(KEYMAP);
+    f.key(Key::X);
+    assert_eq!(f.chrome.running_macro(), None);
+    assert!(f.seen().contains(&Key::X), "the app gets the key");
+
+    f.state.borrow_mut().current = Some("fake:one".to_owned());
+    f.frame(Vec::new());
+    f.key(Key::X);
+    assert_eq!(f.marked(), [json!({ "card": "fake:one" })]);
 }
 
 /// The shipped `E` in Dave's normal mode, through the real Headway.

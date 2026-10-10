@@ -343,9 +343,7 @@ fn build(raw: RawKeymap, mut warnings: Vec<String>) -> Result<Keymap, KeymapErro
         let steps = raw_macro
             .steps
             .into_iter()
-            .map(|step| MacroStep {
-                invocation: ToolInvocation::new(step.tool, args_json(step.args)),
-            })
+            .map(|step| MacroStep::new(ToolInvocation::new(step.tool, args_json(step.args))))
             .collect();
         let label = raw_macro.label;
         macros.insert(name, Macro { label, steps });

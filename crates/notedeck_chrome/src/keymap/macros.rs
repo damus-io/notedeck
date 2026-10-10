@@ -5,8 +5,9 @@
 //! and the next acts on where it landed (Headway's `headway_open_explainer`).
 //! So a step runs only once the one before it has **settled** ([`Settle`]):
 //! the open it raised has resolved, the navigation it queued has been
-//! applied, the step's app is in front with the tool available, and that
-//! app has had a full frame to draw what it landed on. A step that doesn't
+//! applied, the step's app is in front with the tool available, the app in
+//! front has a current ref if the step's args name one, and that app has had
+//! a full frame to draw what it landed on. A step that doesn't
 //! settle within [`MACRO_TIMEOUT_SECS`] aborts the run.
 //!
 //! This is the bookkeeping only; the chrome reads the world into a
@@ -51,6 +52,9 @@ pub struct Settle {
     pub owner_active: bool,
     /// The next step's tool would do something now.
     pub available: bool,
+    /// The app in front has a current ref, or the next step doesn't name one
+    /// (see [`MacroStep::has_current`](super::MacroStep::has_current)).
+    pub has_current: bool,
 }
 
 /// The first condition of [`Settle`] that doesn't hold, or that the frame
@@ -65,6 +69,8 @@ pub enum Unsettled {
     OwnerInactive,
     /// The tool isn't available.
     Unavailable,
+    /// The step names the current ref and the app in front has none.
+    NoCurrent,
     /// Settled, but no frame has rendered with it yet.
     NotRendered,
 }
@@ -76,6 +82,7 @@ impl fmt::Display for Unsettled {
             Self::NavQueued => "navigation stayed queued",
             Self::OwnerInactive => "its app never came to the front",
             Self::Unavailable => "its tool never became available",
+            Self::NoCurrent => "the app in front never had a current ref for its {current}",
             Self::NotRendered => "its app never rendered",
         })
     }
@@ -84,7 +91,7 @@ impl fmt::Display for Unsettled {
 impl Settle {
     /// The first condition that doesn't hold, in the order the world settles:
     /// the open resolves, its navigation applies, the app comes to the front,
-    /// the tool becomes available.
+    /// the tool becomes available, the app has something current.
     pub fn unmet(&self) -> Option<Unsettled> {
         if self.open_pending {
             Some(Unsettled::OpenPending)
@@ -94,6 +101,8 @@ impl Settle {
             Some(Unsettled::OwnerInactive)
         } else if !self.available {
             Some(Unsettled::Unavailable)
+        } else if !self.has_current {
+            Some(Unsettled::NoCurrent)
         } else {
             None
         }
@@ -177,6 +186,7 @@ mod tests {
         nav_queued: false,
         owner_active: true,
         available: true,
+        has_current: true,
     };
 
     /// A run whose first step ran at 0.0, now waiting on its second.
@@ -219,6 +229,13 @@ mod tests {
                 },
                 Unsettled::Unavailable,
             ),
+            (
+                Settle {
+                    has_current: false,
+                    ..SETTLED
+                },
+                Unsettled::NoCurrent,
+            ),
         ];
         for (settle, reason) in cases {
             assert_eq!(settle.unmet(), Some(reason));
@@ -236,6 +253,7 @@ mod tests {
             nav_queued: true,
             owner_active: false,
             available: false,
+            has_current: false,
         };
         assert_eq!(all.unmet(), Some(Unsettled::OpenPending), "earliest first");
         assert_eq!(SETTLED.unmet(), None);
