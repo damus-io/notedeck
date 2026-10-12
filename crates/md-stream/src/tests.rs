@@ -625,14 +625,52 @@ fn test_table_basic_batch() {
 
     if let MdElement::Table { headers, rows } = &tables[0] {
         let buf = parser.buffer();
-        let h: Vec<&str> = headers.iter().map(|s| r(s, buf)).collect();
+        let h: Vec<&str> = headers.iter().map(|c| r(&c.span, buf)).collect();
         assert_eq!(h, &["Name", "Age"]);
         assert_eq!(rows.len(), 2);
-        let r0: Vec<&str> = rows[0].iter().map(|s| r(s, buf)).collect();
-        let r1: Vec<&str> = rows[1].iter().map(|s| r(s, buf)).collect();
+        let r0: Vec<&str> = rows[0].iter().map(|c| r(&c.span, buf)).collect();
+        let r1: Vec<&str> = rows[1].iter().map(|c| r(&c.span, buf)).collect();
         assert_eq!(r0, &["Alice", "30"]);
         assert_eq!(r1, &["Bob", "25"]);
     }
+}
+
+#[test]
+fn test_table_cells_parse_inline_links() {
+    let mut parser = StreamParser::new();
+    parser.push("| Repo | Note |\n|---|---|\n| [damus](https://damus.io) | **hot** `x` |\n\n");
+
+    let Some(MdElement::Table { headers, rows }) = parser.parsed().first() else {
+        panic!("Expected a table, got: {:#?}", parser.parsed());
+    };
+    let buf = parser.buffer();
+
+    assert!(matches!(&headers[0].content[..], [InlineElement::Text(t)] if r(t, buf) == "Repo"));
+
+    match &rows[0][0].content[..] {
+        [InlineElement::Link { text, url }] => {
+            assert_eq!(r(text, buf), "damus");
+            assert_eq!(r(url, buf), "https://damus.io");
+        }
+        other => panic!("Expected a single link, got: {:?}", other),
+    }
+
+    assert!(
+        rows[0][1].content.iter().any(|i| matches!(
+            i,
+            InlineElement::Styled { style: InlineStyle::Bold, content } if r(content, buf) == "hot"
+        )),
+        "Expected bold in cell, got: {:?}",
+        rows[0][1].content
+    );
+    assert!(
+        rows[0][1]
+            .content
+            .iter()
+            .any(|i| matches!(i, InlineElement::Code(c) if r(c, buf) == "x")),
+        "Expected code in cell, got: {:?}",
+        rows[0][1].content
+    );
 }
 
 #[test]
@@ -658,11 +696,11 @@ fn test_table_streaming_char_by_char() {
 
     if let MdElement::Table { headers, rows } = &tables[0] {
         let buf = parser.buffer();
-        let h: Vec<&str> = headers.iter().map(|s| r(s, buf)).collect();
+        let h: Vec<&str> = headers.iter().map(|c| r(&c.span, buf)).collect();
         assert_eq!(h, &["Name", "Age"]);
         assert_eq!(rows.len(), 2);
-        let r0: Vec<&str> = rows[0].iter().map(|s| r(s, buf)).collect();
-        let r1: Vec<&str> = rows[1].iter().map(|s| r(s, buf)).collect();
+        let r0: Vec<&str> = rows[0].iter().map(|c| r(&c.span, buf)).collect();
+        let r1: Vec<&str> = rows[1].iter().map(|c| r(&c.span, buf)).collect();
         assert_eq!(r0, &["Alice", "30"]);
         assert_eq!(r1, &["Bob", "25"]);
     }
@@ -794,10 +832,10 @@ fn test_table_with_alignment() {
 
     if let MdElement::Table { headers, rows } = &tables[0] {
         let buf = parser.buffer();
-        let h: Vec<&str> = headers.iter().map(|s| r(s, buf)).collect();
+        let h: Vec<&str> = headers.iter().map(|c| r(&c.span, buf)).collect();
         assert_eq!(h, &["Left", "Center", "Right"]);
         assert_eq!(rows.len(), 1);
-        let r0: Vec<&str> = rows[0].iter().map(|s| r(s, buf)).collect();
+        let r0: Vec<&str> = rows[0].iter().map(|c| r(&c.span, buf)).collect();
         assert_eq!(r0, &["a", "b", "c"]);
     }
 }
@@ -837,7 +875,7 @@ fn test_table_single_column() {
 
     if let MdElement::Table { headers, rows } = &tables[0] {
         let buf = parser.buffer();
-        let h: Vec<&str> = headers.iter().map(|s| r(s, buf)).collect();
+        let h: Vec<&str> = headers.iter().map(|c| r(&c.span, buf)).collect();
         assert_eq!(h, &["Item"]);
         assert_eq!(rows.len(), 2);
     }
@@ -857,10 +895,10 @@ fn test_table_empty_cells() {
 
     if let MdElement::Table { headers, rows } = &tables[0] {
         let buf = parser.buffer();
-        let h: Vec<&str> = headers.iter().map(|s| r(s, buf)).collect();
+        let h: Vec<&str> = headers.iter().map(|c| r(&c.span, buf)).collect();
         assert_eq!(h, &["A", "B"]);
-        let r0: Vec<&str> = rows[0].iter().map(|s| r(s, buf)).collect();
-        let r1: Vec<&str> = rows[1].iter().map(|s| r(s, buf)).collect();
+        let r0: Vec<&str> = rows[0].iter().map(|c| r(&c.span, buf)).collect();
+        let r1: Vec<&str> = rows[1].iter().map(|c| r(&c.span, buf)).collect();
         assert_eq!(r0, &["", "val"]);
         assert_eq!(r1, &["val", ""]);
     }

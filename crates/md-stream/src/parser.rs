@@ -1,6 +1,6 @@
 //! Core streaming parser implementation.
 
-use crate::element::{CodeBlock, ListItem, MdElement, Span, TaskMarker};
+use crate::element::{CodeBlock, ListItem, MdElement, Span, TableCell, TaskMarker};
 use crate::inline::parse_inline;
 use crate::partial::{Partial, PartialKind};
 
@@ -629,7 +629,7 @@ impl StreamParser {
                                 "| {} |",
                                 headers
                                     .iter()
-                                    .map(|s| s.resolve(&self.buffer))
+                                    .map(|c| c.span.resolve(&self.buffer))
                                     .collect::<Vec<_>>()
                                     .join(" | ")
                             );
@@ -667,7 +667,7 @@ impl StreamParser {
                         "| {} |",
                         headers
                             .iter()
-                            .map(|s| s.resolve(&self.buffer))
+                            .map(|c| c.span.resolve(&self.buffer))
                             .collect::<Vec<_>>()
                             .join(" | ")
                     );
@@ -703,7 +703,7 @@ impl StreamParser {
                     "| {} |",
                     headers
                         .iter()
-                        .map(|s| s.resolve(&self.buffer))
+                        .map(|c| c.span.resolve(&self.buffer))
                         .collect::<Vec<_>>()
                         .join(" | ")
                 );
@@ -1086,7 +1086,7 @@ impl StreamParser {
                             "| {} |",
                             headers
                                 .iter()
-                                .map(|s| s.resolve(&self.buffer))
+                                .map(|c| c.span.resolve(&self.buffer))
                                 .collect::<Vec<_>>()
                                 .join(" | ")
                         );
@@ -1166,9 +1166,10 @@ impl Default for StreamParser {
     }
 }
 
-/// Parse a table row into cell spans by splitting on `|`.
+/// Parse a table row into cells by splitting on `|`, parsing each cell's
+/// inline markup (links, emphasis, code) against its absolute buffer offset.
 /// `line_offset` is the absolute buffer position of `line`.
-fn parse_table_row(line: &str, line_offset: usize) -> Vec<Span> {
+fn parse_table_row(line: &str, line_offset: usize) -> Vec<TableCell> {
     let trimmed = line.trim();
     let trim_start = line.len() - line.trim_start().len();
     let base = line_offset + trim_start;
@@ -1190,12 +1191,18 @@ fn parse_table_row(line: &str, line_offset: usize) -> Vec<Span> {
         let cell_trimmed = cell.trim();
         if cell_trimmed.is_empty() {
             // Empty cell — use a zero-length span at the position
-            result.push(Span::new(cell_start, cell_start));
+            result.push(TableCell {
+                span: Span::new(cell_start, cell_start),
+                content: Vec::new(),
+            });
         } else {
             let ltrim = cell.len() - cell.trim_start().len();
             let span_start = cell_start + ltrim;
             let span_end = span_start + cell_trimmed.len();
-            result.push(Span::new(span_start, span_end));
+            result.push(TableCell {
+                span: Span::new(span_start, span_end),
+                content: parse_inline(cell_trimmed, span_start),
+            });
         }
         pos += cell.len() + 1; // +1 for the | delimiter
     }

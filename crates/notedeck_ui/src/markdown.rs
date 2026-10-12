@@ -7,7 +7,7 @@ use egui::text::LayoutJob;
 use egui::{Color32, FontFamily, FontId, RichText, TextFormat, Ui};
 use md_stream::{
     parse_inline, CodeBlock, InlineElement, InlineStyle, ListItem, MdElement, ParsedMarkdown,
-    Partial, PartialKind, Span, StreamParser,
+    Partial, PartialKind, StreamParser, TableCell,
 };
 use nostrdb::Transaction;
 use notedeck::NoteContext;
@@ -1259,58 +1259,49 @@ fn render_list_item(
     });
 }
 
-/// Draw a single table header/cell span, splicing inline reference widgets
-/// wherever a registered parser resolves one — the same seam paragraphs use
-/// ([`append_text_with_refs`]) — so an `agentium:`/`headway:`/`nostr:` reference
-/// in a cell renders as its chip instead of raw text.
+/// Draw a single table header/cell, rendering its parsed inline markup —
+/// links, emphasis, code and inline `agentium:`/`headway:`/`nostr:` reference
+/// chips — through the same [`render_inlines`] a paragraph uses.
 ///
-/// The reference-free span (the common case) keeps the plain `ui.strong`/`ui.label`
-/// fast path with no per-frame allocation; only a span that actually contains a
-/// reference (probed cheaply via [`contains_reference`]) is flushed through a
-/// per-cell `horizontal_wrapped` so a chip splices mid-text and wraps within the
-/// cell. A ref-bearing header drops the bold weight around its text, mirroring how
-/// emphasis is dropped around a chip in [`render_inlines`].
-fn render_table_span(
-    span: &Span,
+/// A cell that is one plain text run with no reference in it (the common case)
+/// keeps the `ui.strong`/`ui.label` fast path, skipping the `LayoutJob` and
+/// `horizontal_wrapped` the inline path needs; the reference probe
+/// ([`contains_reference`]) is allocation-free. A header renders its inline
+/// path in the strong text color, matching the fast path's `ui.strong`.
+fn render_table_cell(
+    cell: &TableCell,
+    theme: &MdTheme,
     buffer: &str,
     strong: bool,
     ctx: Option<&mut RefCtx>,
     ui: &mut Ui,
 ) {
-    let text = span.resolve(buffer);
+    let text = cell.span.resolve(buffer);
+    let plain = matches!(cell.content[..], [] | [InlineElement::Text(_)]);
+    let has_ref = ctx
+        .as_deref()
+        .is_some_and(|ctx| contains_reference(text, &ctx.note.registries.reference_parsers));
 
-    let ctx = match ctx {
-        Some(ctx) if contains_reference(text, &ctx.note.registries.reference_parsers) => ctx,
-        _ => {
-            if strong {
-                ui.strong(text);
-            } else {
-                ui.label(text);
-            }
-            return;
+    if plain && !has_ref {
+        if strong {
+            ui.strong(text);
+        } else {
+            ui.label(text);
         }
-    };
-
-    let font_size = ui.style().text_styles[&egui::TextStyle::Body].size;
-    let fmt = TextFormat {
-        font_id: FontId::new(font_size, FontFamily::Proportional),
-        color: ui.visuals().text_color(),
-        ..Default::default()
-    };
+        return;
+    }
 
     ui.horizontal_wrapped(|ui| {
-        // Inline runs carry their own spaces; zero the gap so a spliced chip
-        // doesn't gain stray spaces (see the same note in `render_inlines`).
-        ui.spacing_mut().item_spacing.x = 0.0;
-        let mut job = LayoutJob::default();
-        append_text_with_refs(&mut job, text, &fmt, ctx.note, ctx.txn, ui);
-        flush_job(&mut job, ui);
+        if strong {
+            ui.visuals_mut().override_text_color = Some(ui.visuals().strong_text_color());
+        }
+        render_inlines(&cell.content, theme, buffer, ctx, ui);
     });
 }
 
 fn render_table(
-    headers: &[Span],
-    rows: &[Vec<Span>],
+    headers: &[TableCell],
+    rows: &[Vec<TableCell>],
     theme: &MdTheme,
     buffer: &str,
     mut ctx: Option<&mut RefCtx>,
@@ -1324,7 +1315,7 @@ fn render_table(
     let cell_padding = egui::Margin::symmetric(8, 4);
 
     // Use first header's byte offset as id_salt so multiple tables don't clash
-    let salt = headers.first().map_or(0, |h| h.start);
+    let salt = headers.first().map_or(0, |h| h.span.start);
 
     // Cap column width to prevent overflow, but let Grid auto-size narrower.
     let table_width = ui.available_width();
@@ -1357,7 +1348,7 @@ fn render_table(
                     // Header row
                     for h in headers {
                         egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
-                            render_table_span(h, buffer, true, ctx.as_deref_mut(), ui);
+                            render_table_cell(h, theme, buffer, true, ctx.as_deref_mut(), ui);
                         });
                     }
                     ui.end_row();
@@ -1367,7 +1358,14 @@ fn render_table(
                         for i in 0..num_cols {
                             egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
                                 if let Some(cell) = row.get(i) {
-                                    render_table_span(cell, buffer, false, ctx.as_deref_mut(), ui);
+                                    render_table_cell(
+                                        cell,
+                                        theme,
+                                        buffer,
+                                        false,
+                                        ctx.as_deref_mut(),
+                                        ui,
+                                    );
                                 }
                             });
                         }
@@ -1803,6 +1801,23 @@ mod tests {
         let _ = harness.get_by_label("todo item");
         let _ = harness.get_by_label("done item");
         let _ = harness.get_by_label("plain item");
+    }
+
+    #[test]
+    fn test_render_table_cell_link_is_a_hyperlink() {
+        // A `[text](url)` in a table cell renders as a hyperlink showing its
+        // text, not as the literal markdown source.
+        let md = "| Repo | Kind |\n|---|---|\n| [damus](https://damus.io) | **client** |\n";
+        let mut harness = Harness::new_ui(move |ui| {
+            render_markdown(md, ui);
+        });
+        harness.run();
+
+        let _ = harness.get_by_role_and_label(egui::accesskit::Role::Link, "damus");
+        let _ = harness.get_by_label("client");
+        assert!(harness
+            .query_by_label("[damus](https://damus.io)")
+            .is_none());
     }
 
     #[test]

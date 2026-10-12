@@ -8,7 +8,9 @@ mod inline;
 mod parser;
 mod partial;
 
-pub use element::{CodeBlock, InlineElement, InlineStyle, ListItem, MdElement, Span, TaskMarker};
+pub use element::{
+    CodeBlock, InlineElement, InlineStyle, ListItem, MdElement, Span, TableCell, TaskMarker,
+};
 pub use inline::{parse_inline, InlineState};
 pub use parser::{ParsedMarkdown, StreamParser};
 pub use partial::{LinkState, Partial, PartialKind};

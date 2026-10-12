@@ -49,8 +49,8 @@ pub enum MdElement {
 
     /// Markdown table with headers and data rows
     Table {
-        headers: Vec<Span>,
-        rows: Vec<Vec<Span>>,
+        headers: Vec<TableCell>,
+        rows: Vec<Vec<TableCell>>,
     },
 
     /// Thematic break (---, ***, ___)
@@ -65,6 +65,18 @@ pub enum MdElement {
 pub struct CodeBlock {
     pub language: Option<Span>,
     pub content: Span,
+}
+
+/// One header or data cell of a [`MdElement::Table`].
+///
+/// `span` is the cell's trimmed source text (zero-length for an empty cell);
+/// `content` is that text parsed into inline elements once, at parse time, so a
+/// cell's links, emphasis and code render like a paragraph's without the
+/// renderer re-parsing it every frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableCell {
+    pub span: Span,
+    pub content: Vec<InlineElement>,
 }
 
 /// A list item (may contain nested elements).

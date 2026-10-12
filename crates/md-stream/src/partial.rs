@@ -86,7 +86,7 @@ pub enum PartialKind {
     /// List being accumulated item-by-item until a blank or non-list line.
     /// `start` is the first ordered item's number (1 for unordered lists).
     /// Items hold span-based inline content, so this stays zero-copy — it
-    /// mirrors how `Table` accumulates its `Span` rows.
+    /// mirrors how `Table` accumulates its span-based rows.
     List {
         ordered: bool,
         start: u32,
@@ -102,8 +102,8 @@ pub enum PartialKind {
 
     /// Table being accumulated row by row
     Table {
-        headers: Vec<Span>,
-        rows: Vec<Vec<Span>>,
+        headers: Vec<crate::element::TableCell>,
+        rows: Vec<Vec<crate::element::TableCell>>,
         seen_separator: bool,
     },
 
