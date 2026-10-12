@@ -6,6 +6,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use nostrdb::{Ndb, Note, Transaction};
 use nostrdb_net::Pubkey;
 use notedeck::ColorTheme;
 
@@ -77,6 +78,24 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
             },
         };
         notedeck::open_on_click(ui, response, req)
+    }
+
+    /// The card's current title, folded off its board the same way
+    /// [`render`](Self::render) finds it, falling back to the creation-time
+    /// subject when the card is on no folded board.
+    fn title(&self, ndb: &Ndb, txn: &Transaction, note: &Note) -> Option<String> {
+        let Some(event::HeadwayEvent::Issue(issue)) = event::parse(note) else {
+            return None;
+        };
+        let author = Pubkey::new(issue.board_author);
+        let boards = self.cache.borrow_mut().all_boards(ndb, txn, &author);
+        let title = boards
+            .as_deref()
+            .and_then(|boards| event::locate_card_in_boards(boards, &author, &issue.id))
+            .map_or(issue.subject.as_str(), |located| {
+                located.card.title.as_str()
+            });
+        Some(title.to_owned())
     }
 }
 
@@ -304,5 +323,69 @@ mod tests {
             selected_account: None,
         };
         assert!(p.resolve(&matched, &ctx_no_acct).is_none());
+    }
+
+    /// [`KindRendererRegistry::title`](notedeck::KindRendererRegistry::title)
+    /// reaches [`HeadwayIssueRenderer::title`] for a card's kind-1621 note and
+    /// returns the card's *current* title, folded off its board, not the
+    /// creation-time subject the note itself carries.
+    #[tokio::test]
+    async fn registry_title_is_the_folded_card_title() {
+        let mut t = TestSync::new();
+        t.poll();
+        t.seed_and_settle().await;
+
+        let cache = Rc::new(RefCell::new(BoardCache::default()));
+        let mut registry = notedeck::KindRendererRegistry::default();
+        registry.register(Box::new(HeadwayIssueRenderer {
+            cache: cache.clone(),
+        }));
+
+        // Rename a real card, so its folded title differs from its note's subject.
+        let card_id = {
+            let view = t.view().expect("board loaded");
+            let card_id = view.columns[0].cards[0].id;
+            store::apply(
+                &t.ndb,
+                store::BOARD_ID,
+                &view,
+                &t.kp.pubkey,
+                &store::Signer::new(&t.kp.secret_key.secret_bytes(), None),
+                store::BoardAction::EditTitle {
+                    card: card_id,
+                    title: "UT7c: renamed — after creation".to_string(),
+                },
+                &mut store::NoPublish,
+            );
+            card_id
+        };
+        t.wait(|v| {
+            v.columns[0]
+                .cards
+                .iter()
+                .any(|c| c.title == "UT7c: renamed — after creation")
+        })
+        .await;
+
+        // Seed the registry's own cache: the first advance subscribes, the next
+        // folds (see `RealtimeCache::advance`).
+        for _ in 0..2 {
+            let txn = Transaction::new(&t.ndb).unwrap();
+            cache.borrow_mut().poll(&t.ndb, &txn, &t.kp.pubkey);
+        }
+
+        let txn = Transaction::new(&t.ndb).unwrap();
+        let note = t.ndb.get_note_by_id(&txn, card_id.bytes()).unwrap();
+        assert_ne!(
+            event::parse(&note).and_then(|e| match e {
+                event::HeadwayEvent::Issue(issue) => Some(issue.subject),
+                _ => None,
+            }),
+            Some("UT7c: renamed — after creation".to_string())
+        );
+        assert_eq!(
+            registry.title(&t.ndb, &txn, &note, None).as_deref(),
+            Some("UT7c: renamed — after creation")
+        );
     }
 }

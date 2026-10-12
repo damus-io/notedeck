@@ -367,7 +367,7 @@ pub(crate) mod tests {
         }
 
         /// Fold and pick the default board out of the cache, if present.
-        fn view(&mut self) -> Option<BoardRef> {
+        pub(crate) fn view(&mut self) -> Option<BoardRef> {
             self.board(store::BOARD_ID)
         }
 

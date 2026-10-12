@@ -15,6 +15,8 @@
 //! - [`git`] — thin `git` shell-outs (commit, toplevel, repo identity) for
 //!   review records, and the resolver that finds (or fetches) a record's
 //!   commit on this host and reads it back as a patch.
+//! - [`title`] — splits a card title into `CODE: headline — detail` for
+//!   surfaces that show it in little room.
 //! - [`teams`] — the joined-shared-board roster: which SNS channels this account
 //!   holds keys for, so both front ends fold and seal the same shared boards.
 
@@ -49,5 +51,6 @@ pub(crate) fn test_config() -> nostrdb::Config {
 }
 
 pub mod teams;
+pub mod title;
 pub mod traversal;
 pub mod wordid;

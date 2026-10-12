@@ -233,6 +233,20 @@ pub trait KindRenderer {
         note_context: &mut NoteContext,
         req: &KindRenderRequest,
     ) -> KindRenderResponse;
+
+    /// The plain-text title of the entity `note` stands for, current as of
+    /// `txn` — for a surface that lays the title out itself (splits it, wraps
+    /// it, puts it in a hover card) instead of drawing this renderer's widget.
+    /// `None` when the kind has no title or it can't be resolved; the default
+    /// for renderers that don't offer one.
+    ///
+    /// Resolving can fold events and the result is owned, so a caller that
+    /// shows it every frame looks it up when what it shows changes and keeps
+    /// the text, rather than calling this per frame.
+    fn title(&self, ndb: &Ndb, txn: &Transaction, note: &Note) -> Option<String> {
+        let _ = (ndb, txn, note);
+        None
+    }
 }
 
 /// A set of [`KindRenderer`]s indexed by the kinds they handle.
@@ -281,6 +295,21 @@ impl KindRendererRegistry {
             }
         }
         self.renderers_for(kind).next()
+    }
+
+    /// The title of the entity `note` stands for, from the renderer
+    /// [`default_for`](Self::default_for) its kind picks (see
+    /// [`KindRenderer::title`]). `None` if nothing handles the kind or the
+    /// renderer offers no title.
+    pub fn title(
+        &self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        note: &Note,
+        chosen_id: Option<&str>,
+    ) -> Option<String> {
+        self.default_for(note.kind(), chosen_id)?
+            .title(ndb, txn, note)
     }
 }
 
