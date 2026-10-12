@@ -295,6 +295,11 @@ pub struct AgenticSessionData {
     /// and kind-1988 events).  Generated at creation, never changes.
     /// Separate from the Claude CLI session ID used for `--resume`.
     pub event_id: String,
+    /// How many assistant rows the chat held when this session, as a
+    /// `--child`, last reported a turn's result to its parent (see
+    /// [`crate::child_report`]). A turn reports only when the chat has gained
+    /// one since, so it never re-sends an earlier turn's text.
+    pub reported_assistant_rows: usize,
 }
 
 /// One "Allow Always" grant on a session's runtime allowlist.
@@ -379,6 +384,7 @@ impl AgenticSessionData {
             usage: Default::default(),
             runtime_allows: BTreeSet::new(),
             event_id: uuid::Uuid::new_v4().to_string(),
+            reported_assistant_rows: 0,
         }
     }
 

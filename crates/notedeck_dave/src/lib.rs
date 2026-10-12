@@ -2,6 +2,7 @@ mod agent_status;
 mod auto_accept;
 mod avatar;
 pub mod backend;
+mod child_report;
 pub(crate) mod collapse_state;
 pub mod config;
 #[cfg(test)]

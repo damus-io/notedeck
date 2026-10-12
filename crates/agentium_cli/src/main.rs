@@ -1110,7 +1110,9 @@ OPTIONS:
                       Recorded on the session's state (`show` prints it) so
                       pressing s on the session in Dave opens the card.
     --child           The new session works for this one and reports its result
-                      back. Recorded as `relation child` beside `parent-session`,
+                      back: each turn it finishes at rest sends its final text
+                      here as a message from it, which wakes this session.
+                      Recorded as `relation child` beside `parent-session`,
                       this session's ref ($AGENTIUM_SESSION), on the new session's
                       state; `show` prints both.
     --successor       The new session carries this one's work on (a handoff).

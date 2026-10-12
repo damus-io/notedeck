@@ -400,7 +400,9 @@ Flags:
 - `--child` / `--successor` — how the new session **relates to the one spawning
   it**. Run from inside a session, every spawn records that session's ref as the
   new one's `parent-session`; these add a `relation` beside it: `child` (it works
-  for you and messages its result back), `successor` (it carries your work on, as
+  for you and messages its result back: each turn it finishes at rest, with
+  nothing queued, arrives as a `from-session` message carrying that turn's final
+  text, cut at 4000 chars, and wakes you; nothing blocks while you wait), `successor` (it carries your work on, as
   a handoff does; nobody waits for its result). Neither leaves the relation
   `none`: started by you, nothing more. The two are exclusive. Both ride the spawn
   command onto the new session's kind-31988 state (tags `parent-session`,

@@ -223,6 +223,13 @@ impl Dave {
             &needs_compact,
             host,
         );
+        crate::child_report::report_child_turns(
+            &mut self.session_manager,
+            &ended,
+            &needs_send,
+            &needs_compact,
+            host,
+        );
 
         ProcessEventsResult {
             needs_send,
