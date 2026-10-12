@@ -1,3 +1,4 @@
+use agentium_core::session_events::SessionRelation;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
@@ -82,6 +83,12 @@ pub struct SessionDetails {
     /// `agentium spawn --issue-url`, and synced through kind-31988 state.
     /// `s` in normal mode opens it.
     pub issue_url: Option<String>,
+    /// The `agentium:` ref of the session that spawned this one (its
+    /// `parent-session`), set from the spawn command and synced through
+    /// kind-31988 state. `None` when a person spawned it, or it predates lineage.
+    pub parent_session: Option<String>,
+    /// How this session relates to [`parent_session`](Self::parent_session).
+    pub relation: SessionRelation,
     pub hostname: String,
     pub cwd: Option<PathBuf>,
     /// Home directory of the machine where this session originated.
@@ -703,6 +710,8 @@ impl ChatSession {
                 title: "New Chat".to_string(),
                 custom_title: None,
                 issue_url: None,
+                parent_session: None,
+                relation: SessionRelation::None,
                 hostname: String::new(),
                 cwd: details_cwd,
                 home_dir: dirs::home_dir()
@@ -780,6 +789,8 @@ impl ChatSession {
                 title: "Connecting...".to_string(),
                 custom_title: None,
                 issue_url: None,
+                parent_session: None,
+                relation: SessionRelation::None,
                 hostname,
                 cwd: Some(cwd),
                 home_dir: String::new(),

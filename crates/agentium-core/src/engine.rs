@@ -1125,22 +1125,18 @@ mod tests {
 
         let session_id = "read-test-session";
         let state = build_session_state_event(
-            session_id,
-            "My Session",
-            None,
-            "/tmp",
-            "idle",
-            None,
-            "host",
-            "/home",
-            "claude",
-            "default",
-            None,
-            None,
-            None,
-            None,
-            None,
-            1_770_000_000,
+            &SessionState {
+                claude_session_id: session_id.to_string(),
+                title: "My Session".into(),
+                cwd: "/tmp".into(),
+                status: "idle".into(),
+                hostname: "host".into(),
+                home_dir: "/home".into(),
+                backend: Some("claude".into()),
+                permission_mode: Some("default".into()),
+                created_at: 1_770_000_000,
+                ..Default::default()
+            },
             &TEST_SECKEY,
         )
         .expect("state event");
@@ -1252,22 +1248,18 @@ mod tests {
 
         let session_id = "activity-session";
         let state = build_session_state_event(
-            session_id,
-            "Streaming",
-            None,
-            "/tmp",
-            "working",
-            None,
-            "host",
-            "/home",
-            "claude",
-            "default",
-            None,
-            None,
-            None,
-            None,
-            None,
-            1_770_000_000,
+            &SessionState {
+                claude_session_id: session_id.to_string(),
+                title: "Streaming".into(),
+                cwd: "/tmp".into(),
+                status: "working".into(),
+                hostname: "host".into(),
+                home_dir: "/home".into(),
+                backend: Some("claude".into()),
+                permission_mode: Some("default".into()),
+                created_at: 1_770_000_000,
+                ..Default::default()
+            },
             &TEST_SECKEY,
         )
         .expect("state event");
@@ -1309,22 +1301,18 @@ mod tests {
 
         let mut watch = engine.watch_sessions().expect("watch");
         let state = build_session_state_event(
-            "new-session",
-            "A Session",
-            None,
-            "/tmp",
-            "idle",
-            None,
-            "host",
-            "/home",
-            "claude",
-            "default",
-            None,
-            None,
-            None,
-            None,
-            None,
-            1_770_000_000,
+            &SessionState {
+                claude_session_id: "new-session".into(),
+                title: "A Session".into(),
+                cwd: "/tmp".into(),
+                status: "idle".into(),
+                hostname: "host".into(),
+                home_dir: "/home".into(),
+                backend: Some("claude".into()),
+                permission_mode: Some("default".into()),
+                created_at: 1_770_000_000,
+                ..Default::default()
+            },
             &TEST_SECKEY,
         )
         .expect("state event");
@@ -1843,22 +1831,18 @@ mod tests {
         // The state the CLI resolves its selector against, as the host publishes it.
         let seed_status = |session_id: &str, status: &str| {
             let state = build_session_state_event(
-                session_id,
-                "Title",
-                None,
-                "/tmp",
-                status,
-                None,
-                "host",
-                "/home",
-                "claude",
-                "default",
-                None,
-                None,
-                None,
-                None,
-                None,
-                1_770_000_000,
+                &SessionState {
+                    claude_session_id: session_id.to_string(),
+                    title: "Title".into(),
+                    cwd: "/tmp".into(),
+                    status: status.to_string(),
+                    hostname: "host".into(),
+                    home_dir: "/home".into(),
+                    backend: Some("claude".into()),
+                    permission_mode: Some("default".into()),
+                    created_at: 1_770_000_000,
+                    ..Default::default()
+                },
                 &TEST_SECKEY,
             )
             .expect("state event");

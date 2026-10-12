@@ -6,6 +6,7 @@ use crate::backend::{BackendType, Model};
 use crate::{
     session_events, session_loader, update, Dave, DaveOverlay, HostCtx, SessionId, SessionMessage,
 };
+use agentium_core::session_events::SessionRelation;
 use claude_agent_sdk_rs::PermissionMode;
 use nostrdb::Transaction;
 use notedeck::AppContext;
@@ -63,6 +64,12 @@ struct SpawnRequest {
     /// (e.g. `headway:<board>/<word-id>`). Stamped into the new session's
     /// details so it rides every kind-31988 state the session publishes.
     issue_url: Option<String>,
+    /// The spawner's `agentium:` ref, from the command's `parent-session` tag.
+    /// Stamped into the new session's details, like `issue_url`.
+    parent_session: Option<String>,
+    /// How the new session relates to its spawner, from the command's
+    /// `relation` tag (absent or unknown reads as `none`).
+    relation: SessionRelation,
     /// The new session's first `user` message, from the command's `prompt`
     /// tag. Delivered locally the moment the session is materialized, so a
     /// spawner's first message lands even when this host answered too slowly
@@ -189,6 +196,10 @@ fn decode_session_command(
             let issue_url = session_events::get_tag_value(note, "issue_url")
                 .filter(|t| !t.is_empty())
                 .map(|s| s.to_string());
+            let parent_session = session_events::get_tag_value(note, "parent-session")
+                .filter(|t| !t.is_empty())
+                .map(|s| s.to_string());
+            let relation = SessionRelation::parse(session_events::get_tag_value(note, "relation"));
             let prompt = session_events::get_tag_value(note, "prompt")
                 .filter(|t| !t.is_empty())
                 .map(|s| s.to_string());
@@ -221,6 +232,8 @@ fn decode_session_command(
                     spawn_id,
                     custom_title,
                     issue_url,
+                    parent_session,
+                    relation,
                     prompt,
                     permission_mode,
                     idempotency_key,
@@ -267,6 +280,8 @@ impl Dave {
             spawn_id,
             custom_title,
             issue_url,
+            parent_session,
+            relation,
             prompt,
             permission_mode,
             idempotency_key,
@@ -325,6 +340,8 @@ impl Dave {
                 session.details.custom_title = Some(title);
             }
             session.details.issue_url = issue_url;
+            session.details.parent_session = parent_session;
+            session.details.relation = relation;
             // Set the mode *here*, before the first message is queued below:
             // `dispatch` reads it to build the backend's options, and that
             // dispatch happens later in this same frame. Applying it afterwards —
@@ -612,6 +629,8 @@ mod tests {
                 permission_mode: Some("plan"),
                 idempotency_key: Some("key-abc"),
                 issue_url: Some("headway:dave/wire-the-widget"),
+                parent_session: Some("agentium:the-spawner-ref"),
+                relation: SessionRelation::Child,
                 ..Default::default()
             },
             "spawn-2",
@@ -675,6 +694,11 @@ mod tests {
             Some("headway:dave/wire-the-widget")
         );
         assert_eq!(
+            request.parent_session.as_deref(),
+            Some("agentium:the-spawner-ref")
+        );
+        assert_eq!(request.relation, SessionRelation::Child);
+        assert_eq!(
             request.idempotency_key.as_deref(),
             Some("key-abc"),
             "the request identity must survive decode, or nothing can dedupe on it",
@@ -693,12 +717,92 @@ mod tests {
         assert_eq!(request.permission_mode, None);
         assert_eq!(request.idempotency_key, None);
         assert_eq!(request.issue_url, None);
+        assert_eq!(request.parent_session, None);
+        assert_eq!(request.relation, SessionRelation::None);
 
         // The target-host gate drops commands meant for another host.
         assert!(
             decode_session_command(&resume_note, "other-host", BackendType::Claude).is_none(),
             "a command for another host must not be processed here",
         );
+    }
+
+    /// A spawn's lineage survives the whole trip a real spawn takes: the CLI's
+    /// [`SpawnOptions`](session_events::SpawnOptions) onto a kind-31989 command,
+    /// decoded into a [`SpawnRequest`], applied onto the new session's details,
+    /// published as kind-31988 state and read back by
+    /// [`SessionState::from_note`](agentium_core::session_loader::SessionState::from_note),
+    /// which is what every other reader (the list, the scene, `agentium show`)
+    /// sees. Once per relation, plus a spawn from a shell that records no parent.
+    #[tokio::test]
+    async fn spawn_lineage_round_trips_into_session_state() {
+        use agentium_core::session_loader::SessionState;
+
+        let sk = test_secret_key();
+        let cases = [
+            (Some("agentium:the-parent-ref"), SessionRelation::Child),
+            (Some("agentium:the-parent-ref"), SessionRelation::Successor),
+            (Some("agentium:the-parent-ref"), SessionRelation::None),
+            (None, SessionRelation::None),
+        ];
+        for (n, (parent, relation)) in cases.into_iter().enumerate() {
+            let tmp = TempDir::new().unwrap();
+            let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+            let cmd = session_events::build_spawn_command_event(
+                "host-a",
+                "/work/dir",
+                "claude",
+                &session_events::SpawnOptions {
+                    parent_session: parent,
+                    relation,
+                    ..Default::default()
+                },
+                &format!("spawn-{n}"),
+                None,
+                &sk,
+            )
+            .unwrap();
+            let sub = ndb.subscribe(&[nostrdb::Filter::new().build()]).unwrap();
+            ndb.process_event_with(&cmd.to_event_json(), IngestMetadata::new().client(true))
+                .unwrap();
+            ndb.wait_for_all_notes(sub, 1).await.unwrap();
+
+            let request = {
+                let txn = Transaction::new(&ndb).unwrap();
+                let note = ndb.get_note_by_id(&txn, &cmd.note_id).unwrap();
+                let Some(SessionCommand::Spawn { request, .. }) =
+                    decode_session_command(&note, "host-a", BackendType::Claude)
+                else {
+                    panic!("expected a Spawn command for this host");
+                };
+                request
+            };
+
+            let mut test = TestDave::new();
+            let before: Vec<_> = test.dave.session_manager.iter().map(|s| s.id).collect();
+            test.dave.apply_spawn_command(request, 1_800_000_000);
+            let spawned = test
+                .dave
+                .session_manager
+                .iter()
+                .find(|s| !before.contains(&s.id))
+                .expect("the spawn materialized a session");
+            let state =
+                crate::publish::session_state_snapshot(spawned, "idle".into(), "host-a".into(), 1)
+                    .expect("agentic session");
+            let event = state.build_event(&sk).unwrap();
+
+            let sub = ndb.subscribe(&[nostrdb::Filter::new().build()]).unwrap();
+            ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
+                .unwrap();
+            ndb.wait_for_all_notes(sub, 1).await.unwrap();
+            let txn = Transaction::new(&ndb).unwrap();
+            let note = ndb.get_note_by_id(&txn, &event.note_id).unwrap();
+            let read = SessionState::from_note(&note, None).expect("parses");
+
+            assert_eq!(read.parent_session.as_deref(), parent, "case {n}");
+            assert_eq!(read.relation, relation, "case {n}");
+        }
     }
 
     /// A spawn request as the CLI would send it: the same `--title`/`--prompt` in
@@ -711,6 +815,8 @@ mod tests {
             spawn_id: Some(spawn_id.to_string()),
             custom_title: Some("Fix the parser".to_string()),
             issue_url: Some("headway:dave/fix-the-parser".to_string()),
+            parent_session: None,
+            relation: SessionRelation::None,
             prompt: Some("read crates/foo and fix it".to_string()),
             permission_mode: None,
             idempotency_key: key.map(str::to_string),

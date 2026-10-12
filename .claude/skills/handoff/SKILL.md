@@ -56,7 +56,7 @@ blocks (bounded) until the host answers with the new session's kind-31988 state;
 `.session` is its durable `agentium:` ref.
 
 ```bash
-ref=$(agentium spawn --title "<title>" --wait --json --prompt-file - <<'EOF' | jq -r .session
+ref=$(agentium spawn --successor --title "<title>" --wait --json --prompt-file - <<'EOF' | jq -r .session
 <the self-contained task prompt — as many lines as you like, no escaping>
 EOF
 )
@@ -67,6 +67,10 @@ When the task is a headway card, `<title>` is its ref and
 `--issue-url headway:<board>/<word-id>` links it too; add
 `--permission-mode plan` when the task should be investigated and approved before
 any code is written.
+
+`--successor` records the new session as carrying this one's work on: its state
+names this session as `parent-session` with `relation successor`, which is how
+Dave's list and scene draw the handoff.
 
 That's the whole handoff. Notes:
 

@@ -162,6 +162,8 @@ pub(crate) fn session_state_snapshot(
         cli_session_id: agentic.cli_resume_id().map(|s| s.to_string()),
         spawn_id: session.spawn_id.clone(),
         issue_url: session.details.issue_url.clone(),
+        parent_session: session.details.parent_session.clone(),
+        relation: session.details.relation,
         project: session.details.project_slug.clone(),
         project_root: session
             .details
@@ -808,22 +810,19 @@ mod tests {
         // exercised.
         let persisted_created_at = session_events::now_secs() + 100;
         let seed = session_events::build_session_state_event(
-            sid,
-            "Auto Title",
-            None,
-            "/home/dev/proj",
-            "working",
-            None,
-            "build-server",
-            "/home/dev",
-            "claude",
-            "default",
-            Some(sid),
-            None,
-            None,
-            None,
-            None,
-            persisted_created_at,
+            &agentium_core::session_loader::SessionState {
+                claude_session_id: sid.to_string(),
+                title: "Auto Title".into(),
+                cwd: "/home/dev/proj".into(),
+                status: "working".into(),
+                hostname: "build-server".into(),
+                home_dir: "/home/dev".into(),
+                backend: Some("claude".into()),
+                permission_mode: Some("default".into()),
+                cli_session_id: Some(sid.into()),
+                created_at: persisted_created_at,
+                ..Default::default()
+            },
             &sk,
         )
         .unwrap();

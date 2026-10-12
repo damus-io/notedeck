@@ -337,6 +337,8 @@ agentium spawn --title "Fix the parser" --wait   # give it an explicit, sticky t
 agentium spawn --host mbp --cwd ~/proj --prompt "run the tests" --wait
 agentium spawn --permission-mode plan --prompt "design the migration" --wait  # plan first
 agentium spawn --title headway:dave/<word-id> --issue-url headway:dave/<word-id> --wait  # a card's session
+agentium spawn --successor --prompt-file - <<'EOF'   # hand your work on to a fresh session
+agentium spawn --child --prompt "check the build on mbp" --wait   # a helper that reports back to you
 agentium spawn --host mbp --cwd ~/proj --wait --json    # {spawn_id,host,session,event_id}
 agentium spawn --host mbp --cwd ~/proj --wait --wait-timeout 60   # give a slow host longer
 agentium spawn --title "Fix the parser" --prompt-file - <<'EOF'   # heredoc a long first message
@@ -395,6 +397,16 @@ Flags:
   **Pass it whenever the session works a headway card** (`/handoff` and
   `/autowork` do). A resumed session keeps the issue its state already carries;
   to link (or unlink) a session after it was spawned, use `link` below.
+- `--child` / `--successor` — how the new session **relates to the one spawning
+  it**. Run from inside a session, every spawn records that session's ref as the
+  new one's `parent-session`; these add a `relation` beside it: `child` (it works
+  for you and messages its result back), `successor` (it carries your work on, as
+  a handoff does; nobody waits for its result). Neither leaves the relation
+  `none`: started by you, nothing more. The two are exclusive. Both ride the spawn
+  command onto the new session's kind-31988 state (tags `parent-session`,
+  `relation`), so `show` prints `parent`/`relation` lines and `list --json`/`show
+  --json` carry `parent_session`/`relation`. From a plain shell no parent is
+  recorded. `/handoff` and `/autowork` pass `--successor`.
 - `--prompt-file <path>` — the escaping-free alternative to `--prompt`: read the
   first message from a file, or from stdin when `<path>` is `-`, so a long
   multi-line prompt can heredoc in with no shell-escaping (the `/handoff` flow

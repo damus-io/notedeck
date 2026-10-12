@@ -191,22 +191,19 @@ async fn seed_pns_session_state(
     let secret_key = account.secret_key.secret_bytes();
     let pns_keys = nostrdb_net::pns::derive_pns_keys(&secret_key);
     let state_event = session_events::build_session_state_event(
-        session_id,
-        title,
-        None,
-        "/tmp/dave-e2e",
-        status,
-        None,
-        "remote-host",
-        "/tmp",
-        "remote",
-        "default",
-        cli_session_id,
-        None,
-        None,
-        None,
-        None,
-        session_events::now_secs(),
+        &agentium_core::session_loader::SessionState {
+            claude_session_id: session_id.to_string(),
+            title: title.to_string(),
+            cwd: "/tmp/dave-e2e".into(),
+            status: status.to_string(),
+            hostname: "remote-host".into(),
+            home_dir: "/tmp".into(),
+            backend: Some("remote".into()),
+            permission_mode: Some("default".into()),
+            cli_session_id: cli_session_id.map(Into::into),
+            created_at: session_events::now_secs(),
+            ..Default::default()
+        },
         &secret_key,
     )
     .expect("session state event");
@@ -225,22 +222,19 @@ async fn seed_pns_session_state_at(
     let secret_key = account.secret_key.secret_bytes();
     let pns_keys = nostrdb_net::pns::derive_pns_keys(&secret_key);
     let state_event = session_events::build_session_state_event(
-        session_id,
-        title,
-        None,
-        "/tmp/dave-e2e",
-        "idle",
-        None,
-        "remote-host",
-        "/tmp",
-        "remote",
-        "default",
-        Some(session_id),
-        None,
-        None,
-        None,
-        None,
-        created_at,
+        &agentium_core::session_loader::SessionState {
+            claude_session_id: session_id.to_string(),
+            title: title.to_string(),
+            cwd: "/tmp/dave-e2e".into(),
+            status: "idle".into(),
+            hostname: "remote-host".into(),
+            home_dir: "/tmp".into(),
+            backend: Some("remote".into()),
+            permission_mode: Some("default".into()),
+            cli_session_id: Some(session_id.into()),
+            created_at: created_at,
+            ..Default::default()
+        },
         &secret_key,
     )
     .expect("session state event");

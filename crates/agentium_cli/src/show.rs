@@ -366,6 +366,14 @@ fn render_detail(
     if let Some(issue) = s.issue_url.as_deref().filter(|i| !i.is_empty()) {
         out.push_str(&field("issue", issue));
     }
+    // Lineage, only when recorded: who spawned this session, and how it relates
+    // to them (a session spawned from a shell has neither).
+    if let Some(parent) = s.parent_session.as_deref().filter(|p| !p.is_empty()) {
+        out.push_str(&field("parent", parent));
+    }
+    if !s.relation.is_none() {
+        out.push_str(&field("relation", s.relation.as_str()));
+    }
     out.push_str(&field(
         "host",
         if s.hostname.is_empty() {
@@ -555,6 +563,31 @@ mod tests {
         s.issue_url = Some("headway:dave/receive-east-neutral".into());
         let out = render_detail(&s, &[], None, &summary, 0, false);
         assert!(out.contains("headway:dave/receive-east-neutral"), "{out}");
+    }
+
+    /// The parent and relation lines show only when the spawn recorded them,
+    /// like the issue line.
+    #[test]
+    fn render_detail_shows_lineage_only_when_set() {
+        let summary = ConversationSummary {
+            message_count: 0,
+            pending: vec![],
+            subagents: vec![],
+        };
+        let mut s = session("mac", "t", "idle", 0);
+        let out = render_detail(&s, &[], None, &summary, 0, false);
+        assert!(!out.contains("parent"), "{out}");
+        assert!(!out.contains("relation"), "{out}");
+
+        s.parent_session = Some("agentium:the-parent-ref".into());
+        s.relation = agentium_core::session_events::SessionRelation::Child;
+        let out = render_detail(&s, &[], None, &summary, 0, false);
+        assert!(out.contains("agentium:the-parent-ref"), "{out}");
+        assert!(
+            out.lines()
+                .any(|l| l.contains("relation") && l.contains("child")),
+            "{out}"
+        );
     }
 
     #[test]

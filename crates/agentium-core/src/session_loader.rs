@@ -921,7 +921,10 @@ pub fn status_in_turn(status: &str) -> bool {
 }
 
 /// A persisted session state from a kind-31988 event.
-#[derive(Debug, Clone, serde::Serialize)]
+///
+/// `Default` is an empty state, for building one by naming only the fields that
+/// matter (`SessionState { claude_session_id, status, ..Default::default() }`).
+#[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct SessionState {
     pub claude_session_id: String,
     pub title: String,
@@ -950,6 +953,13 @@ pub struct SessionState {
     /// Git repo root shared by all the project's worktrees (the grouping key).
     /// Absent on old events / non-git cwds — grouping then falls back to the cwd.
     pub project_root: Option<String>,
+    /// The `agentium:` ref of the session that spawned this one, from its spawn
+    /// command's `parent-session` tag. Absent when a person spawned it from a
+    /// shell, or on states written before lineage was recorded.
+    pub parent_session: Option<String>,
+    /// How this session relates to [`parent_session`](Self::parent_session):
+    /// the `relation` tag, absent (and so [`SessionRelation::None`]) by default.
+    pub relation: crate::session_events::SessionRelation,
 }
 
 /// Total ordering for a session list: newest state revision first, ties broken
@@ -1016,6 +1026,10 @@ impl SessionState {
             issue_url: get_tag_value(note, "issue_url").map(|s| s.to_string()),
             project: get_tag_value(note, "project").map(|s| s.to_string()),
             project_root: get_tag_value(note, "project-root").map(|s| s.to_string()),
+            parent_session: get_tag_value(note, "parent-session").map(|s| s.to_string()),
+            relation: crate::session_events::SessionRelation::parse(get_tag_value(
+                note, "relation",
+            )),
         })
     }
 
@@ -1032,25 +1046,7 @@ impl SessionState {
         &self,
         secret_key: &[u8; 32],
     ) -> Result<crate::session_events::BuiltEvent, crate::session_events::EventBuildError> {
-        build_session_state_event(
-            &self.claude_session_id,
-            &self.title,
-            self.custom_title.as_deref(),
-            &self.cwd,
-            &self.status,
-            self.indicator.as_deref(),
-            &self.hostname,
-            &self.home_dir,
-            self.backend.as_deref().unwrap_or_default(),
-            self.permission_mode.as_deref().unwrap_or("default"),
-            self.cli_session_id.as_deref(),
-            self.spawn_id.as_deref(),
-            self.issue_url.as_deref(),
-            self.project.as_deref(),
-            self.project_root.as_deref(),
-            self.created_at,
-            secret_key,
-        )
+        build_session_state_event(self, secret_key)
     }
 
     /// The title to show: the user's custom title when set and non-empty, else
@@ -2137,6 +2133,8 @@ mod tests {
             issue_url: None,
             project: None,
             project_root: None,
+            parent_session: None,
+            relation: Default::default(),
         }
     }
 
@@ -3420,8 +3418,19 @@ mod tests {
         created_at: u64,
     ) -> String {
         crate::session_events::build_session_state_event(
-            session_id, "t", None, cwd, "idle", None, hostname, "/home/u", "claude", "default",
-            None, None, None, None, None, created_at, sk,
+            &SessionState {
+                claude_session_id: session_id.to_string(),
+                title: "t".into(),
+                cwd: cwd.to_string(),
+                status: "idle".into(),
+                hostname: hostname.to_string(),
+                home_dir: "/home/u".into(),
+                backend: Some("claude".into()),
+                permission_mode: Some("default".into()),
+                created_at: created_at,
+                ..Default::default()
+            },
+            sk,
         )
         .unwrap()
         .to_event_json()
@@ -3499,6 +3508,8 @@ mod tests {
             issue_url: None,
             project: None,
             project_root: None,
+            parent_session: None,
+            relation: Default::default(),
         };
 
         // Two individually-ordered lists, as the live and deleted loads arrive.
@@ -3589,6 +3600,8 @@ mod tests {
             issue_url: Some("headway:dave/some-card".to_string()),
             project: Some("proj".to_string()),
             project_root: Some("/home/u/proj".to_string()),
+            parent_session: Some("agentium:parent-ref-here".to_string()),
+            relation: crate::session_events::SessionRelation::Successor,
         };
         let event = state.build_event(&sk).unwrap().to_event_json();
         let filter = Filter::new()

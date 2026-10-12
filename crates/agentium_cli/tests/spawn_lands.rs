@@ -69,6 +69,9 @@ const HOST: &str = "test-host";
 const CWD: &str = "/home/u/proj";
 /// The d-tag the helper host mints for the new session.
 const SPAWNED_SID: &str = "spawned-session-1";
+/// The `$AGENTIUM_SESSION` the spawning CLI runs under. Not in the CLI's cache,
+/// so it is recorded verbatim as the new session's `parent-session`.
+const PARENT_REF: &str = "agentium:the-parent-ref";
 
 /// What the helper host reads off the CLI's kind-31989 spawn command: the
 /// `spawn_id` it must echo back on the session state, the `prompt` tag the
@@ -86,6 +89,10 @@ struct SpawnCommand {
     /// The `issue_url` tag naming the issue the session works, which a real
     /// host copies onto the session's kind-31988 state.
     issue_url: Option<String>,
+    /// The `parent-session` and `relation` tags recording the spawn's lineage,
+    /// which a real host also copies onto the session's state.
+    parent_session: Option<String>,
+    relation: Option<String>,
 }
 
 /// Wait (bounded) for the helper host to see a kind-31989 spawn command in its
@@ -112,6 +119,9 @@ async fn await_spawn_command(host: &Engine) -> Option<SpawnCommand> {
         idempotency_key: session_events::get_tag_value(note, "idempotency_key")
             .map(|s| s.to_string()),
         issue_url: session_events::get_tag_value(note, "issue_url").map(|s| s.to_string()),
+        parent_session: session_events::get_tag_value(note, "parent-session")
+            .map(|s| s.to_string()),
+        relation: session_events::get_tag_value(note, "relation").map(|s| s.to_string()),
     })
 }
 
@@ -169,8 +179,12 @@ async fn spawn_wait_resolves_and_prompt_lands() {
                 "acceptEdits",
                 "--issue-url",
                 "headway:dave/receive-east-neutral",
+                "--successor",
                 "--wait",
             ])
+            // Spawned from inside a session, so the command names it as the
+            // parent. Set explicitly: the runner's own session must not leak in.
+            .env("AGENTIUM_SESSION", PARENT_REF)
             .env("XDG_DATA_HOME", &home)
             .env("HOME", &home)
             .output()
@@ -183,23 +197,25 @@ async fn spawn_wait_resolves_and_prompt_lands() {
         .await
         .expect("host should see the spawn command");
     let state = build_session_state_event(
-        SPAWNED_SID,
-        "Connecting...",
-        None,
-        CWD,
-        "working",
-        None,
-        HOST,
-        "/home/u",
-        "claude",
-        "default",
-        Some(""),
-        Some(&command.spawn_id),
-        // A real host copies the command's issue onto the session's state.
-        command.issue_url.as_deref(),
-        None,
-        None,
-        1_770_000_000,
+        &agentium_core::session_loader::SessionState {
+            claude_session_id: SPAWNED_SID.to_string(),
+            title: "Connecting...".into(),
+            cwd: CWD.to_string(),
+            status: "working".into(),
+            hostname: HOST.to_string(),
+            home_dir: "/home/u".into(),
+            backend: Some("claude".into()),
+            permission_mode: Some("default".into()),
+            cli_session_id: Some("".into()),
+            spawn_id: Some(command.spawn_id.clone()),
+            // A real host copies the command's issue and lineage onto the
+            // session's state.
+            issue_url: command.issue_url.clone(),
+            parent_session: command.parent_session.clone(),
+            relation: session_events::SessionRelation::parse(command.relation.as_deref()),
+            created_at: 1_770_000_000,
+            ..Default::default()
+        },
         &SECKEY,
     )
     .expect("build state");
@@ -251,6 +267,10 @@ async fn spawn_wait_resolves_and_prompt_lands() {
         "the spawn command should carry --issue-url as its `issue_url` tag"
     );
 
+    // And the lineage: the spawning session's ref and `--successor`.
+    assert_eq!(command.parent_session.as_deref(), Some(PARENT_REF));
+    assert_eq!(command.relation.as_deref(), Some("successor"));
+
     // `show` reads the issue back off the state the host answered with.
     let shown = Command::new(agentium_bin())
         .args([
@@ -272,6 +292,13 @@ async fn spawn_wait_resolves_and_prompt_lands() {
         shown.status.success() && shown_out.contains("headway:dave/receive-east-neutral"),
         "show should print the session's issue:\n{shown_out}\nstderr:\n{}",
         String::from_utf8_lossy(&shown.stderr)
+    );
+    assert!(
+        shown_out.contains(PARENT_REF)
+            && shown_out
+                .lines()
+                .any(|l| l.contains("relation") && l.contains("successor")),
+        "show should print the session's lineage:\n{shown_out}"
     );
 
     relay.shutdown();
@@ -476,22 +503,21 @@ async fn a_repeated_spawn_publishes_one_command() {
         "an ordinary spawn must carry an idempotency key",
     );
     let state = build_session_state_event(
-        SPAWNED_SID,
-        "Connecting...",
-        Some(TITLE),
-        CWD,
-        "working",
-        None,
-        HOST,
-        "/home/u",
-        "claude",
-        "default",
-        Some(""),
-        Some(&command.spawn_id),
-        None,
-        None,
-        None,
-        session_events::now_secs(),
+        &agentium_core::session_loader::SessionState {
+            claude_session_id: SPAWNED_SID.to_string(),
+            title: "Connecting...".into(),
+            custom_title: Some(TITLE.into()),
+            cwd: CWD.to_string(),
+            status: "working".into(),
+            hostname: HOST.to_string(),
+            home_dir: "/home/u".into(),
+            backend: Some("claude".into()),
+            permission_mode: Some("default".into()),
+            cli_session_id: Some("".into()),
+            spawn_id: Some(command.spawn_id.clone()),
+            created_at: session_events::now_secs(),
+            ..Default::default()
+        },
         &SECKEY,
     )
     .expect("build state");

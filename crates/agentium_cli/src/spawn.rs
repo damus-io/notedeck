@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use agentium_core::Engine;
 use agentium_core::session_events::{
-    SPAWN_DEDUPE_WINDOW_SECS, SpawnOptions, spawn_idempotency_key,
+    SPAWN_DEDUPE_WINDOW_SECS, SessionRelation, SpawnOptions, spawn_idempotency_key,
 };
 use agentium_core::session_loader::SessionState;
 use nostrdb::Transaction;
@@ -75,6 +75,10 @@ pub(crate) struct SpawnOpts {
     /// the command and the host copies it onto the session's state. `None`
     /// links no issue.
     pub(crate) issue_url: Option<String>,
+    /// `--child` / `--successor`: how the new session relates to the session
+    /// running this spawn, recorded beside its `parent-session` on the command
+    /// and the new session's state. The default records no relation.
+    pub(crate) relation: SessionRelation,
     /// `--idempotency-key`: the caller's own name for this *request*, overriding
     /// the one derived from the request's fields. Useful when the caller has a
     /// better notion of identity than the fields give — retrying "the spawn for
@@ -114,6 +118,9 @@ struct SpawnTarget {
     host: String,
     cwd: String,
     backend: String,
+    /// The spawning session's `agentium:` ref, recorded as the new session's
+    /// `parent-session`. `None` when this CLI isn't running inside a session.
+    parent_session: Option<String>,
 }
 
 /// Where the *current* session (`$AGENTIUM_SESSION`) runs, for commands whose
@@ -124,6 +131,9 @@ pub(crate) struct CurrentSession {
     pub(crate) host: Option<String>,
     pub(crate) cwd: Option<String>,
     pub(crate) backend: Option<String>,
+    /// The current session's `agentium:` ref: its resolved state's ref, or
+    /// `$AGENTIUM_SESSION` verbatim when the state isn't cached.
+    pub(crate) session: Option<String>,
 }
 
 impl CurrentSession {
@@ -134,8 +144,9 @@ impl CurrentSession {
     /// `gethostname()` and runs agents as local subprocesses. The cwd is the
     /// agent's current directory, which is the session's unless the agent has
     /// `cd`'d away from it. The backend is unknown and is left to fall back.
-    fn here() -> Self {
+    fn here(session: String) -> Self {
         CurrentSession {
+            session: Some(session),
             host: Some(gethostname::gethostname().to_string_lossy().into_owned()),
             cwd: std::env::current_dir()
                 .ok()
@@ -174,10 +185,11 @@ pub(crate) fn current_session(engine: &Engine, author: &Pubkey) -> Result<Curren
                 host: Some(state.hostname.clone()),
                 cwd: Some(state.cwd.clone()),
                 backend: state.backend.clone(),
+                session: Some(state.agentium_uri()),
             },
             // Not cached yet, or a stale ref. Either way we are still running
             // inside that session, so its host and cwd are this machine's.
-            Err(_) => CurrentSession::here(),
+            Err(_) => CurrentSession::here(selector),
         },
     )
 }
@@ -190,12 +202,16 @@ pub(crate) fn current_session(engine: &Engine, author: &Pubkey) -> Result<Curren
 /// is nothing to target.
 fn resolve_spawn_target(engine: &Engine, author: &Pubkey, opts: &SpawnOpts) -> Result<SpawnTarget> {
     let current = current_session(engine, author)?;
-    merge_spawn_target(
+    let target = merge_spawn_target(
         opts,
         current.host.as_deref(),
         current.cwd.as_deref(),
         current.backend.as_deref(),
-    )
+    )?;
+    Ok(SpawnTarget {
+        parent_session: current.session,
+        ..target
+    })
 }
 
 /// Merge the raw `--host`/`--cwd`/`--backend` flags with the current session's
@@ -223,7 +239,12 @@ fn merge_spawn_target(
         .ok_or("no cwd — pass --cwd (or run inside a session so $AGENTIUM_SESSION supplies it)")?;
     let backend = pick(&opts.backend, cur_backend).unwrap_or_else(|| "claude".to_string());
 
-    Ok(SpawnTarget { host, cwd, backend })
+    Ok(SpawnTarget {
+        host,
+        cwd,
+        backend,
+        parent_session: None,
+    })
 }
 
 /// A live session an about-to-be-published spawn looks like a retry of.
@@ -333,6 +354,8 @@ pub(crate) async fn cmd_spawn(
         permission_mode: opts.permission_mode.as_deref(),
         issue_url: opts.issue_url.as_deref(),
         idempotency_key: None,
+        parent_session: target.parent_session.as_deref(),
+        relation: opts.relation,
     };
     let idempotency_key = (!opts.allow_duplicate).then(|| {
         opts.idempotency_key.clone().unwrap_or_else(|| {
@@ -508,6 +531,7 @@ mod tests {
             prompt: None,
             permission_mode: None,
             issue_url: None,
+            relation: SessionRelation::None,
             idempotency_key: None,
             allow_duplicate: false,
             wait: false,
@@ -524,6 +548,7 @@ mod tests {
             host: "mbp".to_string(),
             cwd: "/home/u/proj".to_string(),
             backend: "claude".to_string(),
+            parent_session: None,
         };
         // `session()` puts every row in /home/u/proj, which is the target's cwd.
         let live = vec![session("mbp", "Fix the parser", "working", NOW - 30)];
@@ -555,12 +580,14 @@ mod tests {
             host: "studio".to_string(),
             cwd: target.cwd.clone(),
             backend: target.backend.clone(),
+            parent_session: None,
         };
         assert!(find_duplicate_spawn(&live, &other_host, Some("Fix the parser"), NOW).is_none());
         let other_cwd = SpawnTarget {
             host: target.host.clone(),
             cwd: "/home/u/other".to_string(),
             backend: target.backend.clone(),
+            parent_session: None,
         };
         assert!(find_duplicate_spawn(&live, &other_cwd, Some("Fix the parser"), NOW).is_none());
 
@@ -593,6 +620,7 @@ mod tests {
             host: "mbp".to_string(),
             cwd: "/home/u/proj".to_string(),
             backend: "claude".to_string(),
+            parent_session: None,
         };
         let mut renamed = session("mbp", "read crates/foo and fix…", "working", NOW - 30);
         renamed.custom_title = Some("Fix the parser".to_string());
@@ -667,7 +695,7 @@ mod tests {
     /// spawn on a cold cache doesn't fail with "no host".
     #[test]
     fn here_targets_this_host_and_cwd() {
-        let here = CurrentSession::here();
+        let here = CurrentSession::here("agentium:some-parent-ref".into());
         let host = gethostname::gethostname().to_string_lossy().into_owned();
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(here.host.as_deref(), Some(host.as_str()));

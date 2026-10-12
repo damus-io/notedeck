@@ -96,22 +96,20 @@ impl World {
     /// Publish the session's state as its host would, linked to `issue_url`.
     async fn publish_state(&self, issue_url: Option<&str>, created_at: u64) {
         let state = build_session_state_event(
-            SID,
-            "Link target",
-            None,
-            "/home/u/proj",
-            "idle",
-            None,
-            "test-host",
-            "/home/u",
-            "claude",
-            "default",
-            Some(""),
-            None,
-            issue_url,
-            None,
-            None,
-            created_at,
+            &agentium_core::session_loader::SessionState {
+                claude_session_id: SID.to_string(),
+                title: "Link target".into(),
+                cwd: "/home/u/proj".into(),
+                status: "idle".into(),
+                hostname: "test-host".into(),
+                home_dir: "/home/u".into(),
+                backend: Some("claude".into()),
+                permission_mode: Some("default".into()),
+                cli_session_id: Some("".into()),
+                issue_url: issue_url.map(Into::into),
+                created_at: created_at,
+                ..Default::default()
+            },
             &SECKEY,
         )
         .expect("build state");

@@ -470,22 +470,19 @@ impl Host {
     /// published it, so a restart restores it as a local session.
     async fn store_local_state(&self, hostname: &str) {
         let state = build_session_state_event(
-            SESSION,
-            "Convergence",
-            None,
-            "/tmp",
-            "idle",
-            None,
-            hostname,
-            "/home/dev",
-            "claude",
-            "default",
-            Some("cli-convergence"),
-            None,
-            None,
-            None,
-            None,
-            1_000,
+            &agentium_core::session_loader::SessionState {
+                claude_session_id: SESSION.to_string(),
+                title: "Convergence".into(),
+                cwd: "/tmp".into(),
+                status: "idle".into(),
+                hostname: hostname.to_string(),
+                home_dir: "/home/dev".into(),
+                backend: Some("claude".into()),
+                permission_mode: Some("default".into()),
+                cli_session_id: Some("cli-convergence".into()),
+                created_at: 1_000,
+                ..Default::default()
+            },
             &self.secret_key.unwrap(),
         )
         .unwrap();

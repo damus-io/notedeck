@@ -680,6 +680,11 @@ impl Dave {
                 let new_issue_url =
                     session_events::get_tag_value(&note, "issue_url").map(|s| s.to_string());
                 let new_hostname = session_events::get_tag_value(&note, "hostname").unwrap_or("");
+                let new_parent_session =
+                    session_events::get_tag_value(&note, "parent-session").map(|s| s.to_string());
+                let new_relation = session_events::SessionRelation::parse(
+                    session_events::get_tag_value(&note, "relation"),
+                );
                 for session in self.session_manager.iter_mut() {
                     let is_remote = session.is_remote();
                     if let Some(agentic) = &mut session.agentic {
@@ -704,6 +709,12 @@ impl Dave {
                             // would let this device's next rename republish it.
                             if is_remote || new_issue_url.is_some() {
                                 session.details.issue_url = new_issue_url.clone();
+                            }
+                            // Lineage is the host's record of how the session
+                            // was spawned; a remote copy mirrors it.
+                            if is_remote {
+                                session.details.parent_session = new_parent_session.clone();
+                                session.details.relation = new_relation;
                             }
                             if let Some(backend) = backend_tag {
                                 session.backend_type = backend;
@@ -1143,6 +1154,8 @@ fn hydrate_session_from_state(
 
     session.details.custom_title = state.custom_title.clone();
     session.details.issue_url = state.issue_url.clone();
+    session.details.parent_session = state.parent_session.clone();
+    session.details.relation = state.relation;
     session.spawn_id = state.spawn_id.clone();
 
     // Restore focus indicator from the state event.
@@ -1279,6 +1292,8 @@ mod tests {
             issue_url: Some("headway:dave/some-card".to_string()),
             project: None,
             project_root: None,
+            parent_session: Some("agentium:the-parent-ref".to_string()),
+            relation: session_events::SessionRelation::Successor,
         }
     }
 
@@ -1329,6 +1344,13 @@ mod tests {
             manager.get(sid).unwrap().details.issue_url.as_deref(),
             Some("headway:dave/some-card")
         );
+        // And its lineage, so the list and scene still place it under its parent.
+        let details = &manager.get(sid).unwrap().details;
+        assert_eq!(
+            details.parent_session.as_deref(),
+            Some("agentium:the-parent-ref")
+        );
+        assert_eq!(details.relation, session_events::SessionRelation::Successor);
     }
 
     /// An empty `cli_session` means the backend never started: there is nothing
@@ -1483,22 +1505,19 @@ mod tests {
         /// Store a session's kind-31988 state, hosted on `hostname`.
         async fn store_state(&self, sid: &str, hostname: &str) {
             let state = session_events::build_session_state_event(
-                sid,
-                "Boundary",
-                None,
-                "/tmp",
-                "idle",
-                None,
-                hostname,
-                "/home/dev",
-                "claude",
-                "default",
-                Some("cli-boundary"),
-                None,
-                None,
-                None,
-                None,
-                1_000,
+                &agentium_core::session_loader::SessionState {
+                    claude_session_id: sid.to_string(),
+                    title: "Boundary".into(),
+                    cwd: "/tmp".into(),
+                    status: "idle".into(),
+                    hostname: hostname.to_string(),
+                    home_dir: "/home/dev".into(),
+                    backend: Some("claude".into()),
+                    permission_mode: Some("default".into()),
+                    cli_session_id: Some("cli-boundary".into()),
+                    created_at: 1_000,
+                    ..Default::default()
+                },
                 &self.test.sk,
             )
             .unwrap();
@@ -1746,22 +1765,19 @@ mod tests {
         // A tombstone (status=deleted) as the latest state revision, carrying the
         // real CLI session id for `claude --resume`.
         let tomb = session_events::build_session_state_event(
-            sid,
-            "Dead Session",
-            None,
-            "/tmp/proj",
-            "deleted",
-            None,
-            &host,
-            "/home/dev",
-            "claude",
-            "default",
-            Some("cli-abc"),
-            None,
-            None,
-            None,
-            None,
-            1_000,
+            &agentium_core::session_loader::SessionState {
+                claude_session_id: sid.to_string(),
+                title: "Dead Session".into(),
+                cwd: "/tmp/proj".into(),
+                status: "deleted".into(),
+                hostname: host.to_string(),
+                home_dir: "/home/dev".into(),
+                backend: Some("claude".into()),
+                permission_mode: Some("default".into()),
+                cli_session_id: Some("cli-abc".into()),
+                created_at: 1_000,
+                ..Default::default()
+            },
             &sk,
         )
         .unwrap();
@@ -1824,22 +1840,19 @@ mod tests {
         let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
         for i in 0..SEEDED {
             let state = session_events::build_session_state_event(
-                &format!("restore-{i}"),
-                &format!("Restored {i}"),
-                None,
-                "/tmp/proj",
-                "idle",
-                None,
-                &host,
-                "/home/dev",
-                "claude",
-                "default",
-                Some(&format!("cli-{i}")),
-                None,
-                None,
-                None,
-                None,
-                1_000 + i as u64,
+                &agentium_core::session_loader::SessionState {
+                    claude_session_id: format!("restore-{i}"),
+                    title: format!("Restored {i}"),
+                    cwd: "/tmp/proj".into(),
+                    status: "idle".into(),
+                    hostname: host.to_string(),
+                    home_dir: "/home/dev".into(),
+                    backend: Some("claude".into()),
+                    permission_mode: Some("default".into()),
+                    cli_session_id: Some(format!("cli-{i}")),
+                    created_at: 1_000 + i as u64,
+                    ..Default::default()
+                },
                 &sk,
             )
             .unwrap();
@@ -1918,22 +1931,19 @@ mod tests {
         // CLI session id for `claude --resume`.
         let tombstone = |sid: &str, host: &str| {
             session_events::build_session_state_event(
-                sid,
-                "Dead Session",
-                None,
-                "/tmp/proj",
-                "deleted",
-                None,
-                host,
-                "/home/dev",
-                "claude",
-                "default",
-                Some("cli-abc"),
-                None,
-                None,
-                None,
-                None,
-                1_000,
+                &agentium_core::session_loader::SessionState {
+                    claude_session_id: sid.to_string(),
+                    title: "Dead Session".into(),
+                    cwd: "/tmp/proj".into(),
+                    status: "deleted".into(),
+                    hostname: host.to_string(),
+                    home_dir: "/home/dev".into(),
+                    backend: Some("claude".into()),
+                    permission_mode: Some("default".into()),
+                    cli_session_id: Some("cli-abc".into()),
+                    created_at: 1_000,
+                    ..Default::default()
+                },
                 &sk,
             )
             .unwrap()
@@ -2175,22 +2185,19 @@ mod tests {
         sk: &[u8; 32],
     ) -> session_events::BuiltEvent {
         session_events::build_session_state_event(
-            sid,
-            "Open Me",
-            None,
-            "/tmp/proj",
-            status,
-            None,
-            host,
-            "/home/dev",
-            "claude",
-            "default",
-            Some("cli-abc"),
-            None,
-            None,
-            None,
-            None,
-            1_000,
+            &agentium_core::session_loader::SessionState {
+                claude_session_id: sid.to_string(),
+                title: "Open Me".into(),
+                cwd: "/tmp/proj".into(),
+                status: status.to_string(),
+                hostname: host.to_string(),
+                home_dir: "/home/dev".into(),
+                backend: Some("claude".into()),
+                permission_mode: Some("default".into()),
+                cli_session_id: Some("cli-abc".into()),
+                created_at: 1_000,
+                ..Default::default()
+            },
             sk,
         )
         .unwrap()

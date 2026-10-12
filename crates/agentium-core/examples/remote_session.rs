@@ -175,22 +175,18 @@ fn print_messages(messages: &[Message]) {
 /// Publish a kind-31988 session state so the phone can list it.
 fn desktop_open_session(seeder: &Session, relay: &str) {
     let state = build_session_state_event(
-        SESSION_ID,
-        "Refactor the engine",
-        None,
-        "/home/dev/project",
-        "working",
-        None,
-        "build-server",
-        "/home/dev",
-        "claude",
-        "default",
-        None,
-        None,
-        None,
-        None,
-        None,
-        now_secs(),
+        &agentium_core::session_loader::SessionState {
+            claude_session_id: SESSION_ID.to_string(),
+            title: "Refactor the engine".into(),
+            cwd: "/home/dev/project".into(),
+            status: "working".into(),
+            hostname: "build-server".into(),
+            home_dir: "/home/dev".into(),
+            backend: Some("claude".into()),
+            permission_mode: Some("default".into()),
+            created_at: now_secs(),
+            ..Default::default()
+        },
         &DEVICE_KEY,
     )
     .unwrap();

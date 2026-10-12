@@ -349,6 +349,8 @@ pub(crate) mod tests {
             issue_url: None,
             project: None,
             project_root: None,
+            parent_session: None,
+            relation: Default::default(),
         }
     }
 

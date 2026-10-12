@@ -1491,34 +1491,44 @@ pub fn decode_permission_response(content: &str) -> DecodedPermissionResponse {
 /// can discover active sessions. nostrdb auto-replaces older versions
 /// with same (kind, pubkey, d-tag).
 ///
-/// `created_at` is supplied by the caller (rather than stamped internally) so
-/// it can be kept **strictly monotonic per session** — see
+/// Every tag reads from a field of `state`, which is what makes
+/// [`SessionState::from_note`] its exact inverse: a field added to
+/// [`SessionState`] is a field this function can't forget, unlike the run of
+/// positional arguments it used to take, which stranded fields more than once.
+/// [`SessionState::build_event`] is the usual way in.
+///
+/// `state.created_at` is supplied by the caller (rather than stamped internally)
+/// so it can be kept **strictly monotonic per session** — see
 /// [`next_state_created_at`]. Both nostrdb's replaceable resolution and the
 /// receive-side `remote_status_ts` guard key on this second-resolution
 /// timestamp; if two status transitions shared a second the tie was broken by
 /// event id (~random), so a stale status could win and the session would stick
 /// (e.g. `NeedsInput` floating to the top of the sidebar). Monotonic
 /// `created_at` makes the latest revision always compare newest.
-#[allow(clippy::too_many_arguments)]
+///
+/// [`SessionState`]: crate::session_loader::SessionState
+/// [`SessionState::from_note`]: crate::session_loader::SessionState::from_note
+/// [`SessionState::build_event`]: crate::session_loader::SessionState::build_event
 pub fn build_session_state_event(
-    event_session_id: &str,
-    title: &str,
-    custom_title: Option<&str>,
-    cwd: &str,
-    status: &str,
-    indicator: Option<&str>,
-    hostname: &str,
-    home_dir: &str,
-    backend: &str,
-    permission_mode: &str,
-    cli_session_id: Option<&str>,
-    spawn_id: Option<&str>,
-    issue_url: Option<&str>,
-    project: Option<&str>,
-    project_root: Option<&str>,
-    created_at: u64,
+    state: &crate::session_loader::SessionState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
+    let event_session_id = state.claude_session_id.as_str();
+    let custom_title = state.custom_title.as_deref();
+    let indicator = state.indicator.as_deref();
+    let backend = state.backend.as_deref().unwrap_or_default();
+    let permission_mode = state.permission_mode.as_deref().unwrap_or("default");
+    let cli_session_id = state.cli_session_id.as_deref();
+    let spawn_id = state.spawn_id.as_deref();
+    let issue_url = state.issue_url.as_deref();
+    let project = state.project.as_deref();
+    let project_root = state.project_root.as_deref();
+    let title = state.title.as_str();
+    let cwd = state.cwd.as_str();
+    let status = state.status.as_str();
+    let hostname = state.hostname.as_str();
+    let home_dir = state.home_dir.as_str();
+    let created_at = state.created_at;
     let mut builder = init_note_builder(AI_SESSION_STATE_KIND, "", Some(created_at));
 
     // Session identity (makes this a parameterized replaceable event)
@@ -1561,6 +1571,21 @@ pub fn build_session_state_event(
         builder = builder.start_tag().tag_str("issue_url").tag_str(url);
     }
 
+    // Who spawned the session and how it relates to them, copied from its spawn
+    // command. Both absent for a session nobody spawned, or spawned unrelated.
+    if let Some(parent) = state.parent_session.as_deref().filter(|p| !p.is_empty()) {
+        builder = builder
+            .start_tag()
+            .tag_str("parent-session")
+            .tag_str(parent);
+    }
+    if !state.relation.is_none() {
+        builder = builder
+            .start_tag()
+            .tag_str("relation")
+            .tag_str(state.relation.as_str());
+    }
+
     // Project the session's cwd belongs to. `project-root` is the git repo root
     // shared by all its worktrees (the grouping key); `project` is its display
     // slug. Absent on old events — loaders then fall back to deriving a project
@@ -1599,6 +1624,52 @@ pub struct ResumeSpawn<'a> {
     /// The real CLI session id (the `cli_session` tag value) that the backend
     /// feeds to `claude --resume` to reconstruct the conversation.
     pub cli_session_id: &'a str,
+}
+
+/// How a spawned session relates to the session that spawned it, recorded on
+/// its kind-31989 spawn command and kind-31988 state as a `relation` tag.
+///
+/// The relation says who the new session's result is for, which is what every
+/// view needs to place it: a `Child` reports back to its parent, a `Successor`
+/// carries the parent's work on and reports to nobody, and `None` is merely
+/// started by it. A parent is never blocked by any of these.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionRelation {
+    /// Started by the parent and nothing more (the default).
+    #[default]
+    None,
+    /// Works for the parent and messages its result back to it.
+    Child,
+    /// Takes the parent's work on, as the next link of a chain.
+    Successor,
+}
+
+impl SessionRelation {
+    /// The tag value naming this relation.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionRelation::None => "none",
+            SessionRelation::Child => "child",
+            SessionRelation::Successor => "successor",
+        }
+    }
+
+    /// Read a `relation` tag value. Absent or unknown values read as
+    /// [`SessionRelation::None`], so a note from a newer writer naming a relation
+    /// this build doesn't know still loads, just unrelated.
+    pub fn parse(value: Option<&str>) -> Self {
+        match value {
+            Some("child") => SessionRelation::Child,
+            Some("successor") => SessionRelation::Successor,
+            _ => SessionRelation::None,
+        }
+    }
+
+    /// Whether this is the default, which writers leave off the wire.
+    pub fn is_none(self) -> bool {
+        self == SessionRelation::None
+    }
 }
 
 /// The optional, per-spawn fields of a kind-31989 command.
@@ -1655,6 +1726,13 @@ pub struct SpawnOptions<'a> {
     /// issue. Stored verbatim; `None`/empty links no issue. Ignored on a resume,
     /// which keeps the value its rehydrated state already carries.
     pub issue_url: Option<&'a str>,
+    /// The spawner's `agentium:` ref (`parent-session` tag), taken from its
+    /// `$AGENTIUM_SESSION`. `None`/empty when a person spawned from a plain
+    /// shell. The host copies it onto the new session's kind-31988 state.
+    pub parent_session: Option<&'a str>,
+    /// How the new session relates to its parent (`relation` tag). The default,
+    /// [`SessionRelation::None`], omits the tag.
+    pub relation: SessionRelation,
 }
 
 /// How long a host and client treat a spawn's [`idempotency_key`] as still
@@ -1681,7 +1759,10 @@ pub const SPAWN_DEDUPE_WINDOW_SECS: u64 = 600;
 ///
 /// [`SpawnOptions::idempotency_key`] itself is excluded — it names the request,
 /// so it cannot be an input to its own name. That also makes the function safe to
-/// call on the same `opts` you are about to stamp the result onto.
+/// call on the same `opts` you are about to stamp the result onto. The lineage
+/// fields ([`SpawnOptions::parent_session`], [`SpawnOptions::relation`]) are
+/// excluded too: they say who asked and why, not what session you get, and a
+/// retry always repeats them anyway.
 ///
 /// Fields are length-prefixed before hashing so no two distinct field lists can
 /// concatenate to the same bytes (`title = "ab"` with no prompt must not collide
@@ -1741,7 +1822,9 @@ pub fn spawn_idempotency_key(
 /// second (see [`SpawnOptions::idempotency_key`] and
 /// [`spawn_idempotency_key`]); a non-empty `issue_url` stamps an `issue_url`
 /// tag naming the issue the session works, which the host copies onto its
-/// kind-31988 state. Each empty/absent field simply omits its tag, leaving the
+/// kind-31988 state; a non-empty `parent_session` and a non-default `relation`
+/// stamp `parent-session` and `relation` tags recording the spawn's lineage,
+/// which the host also copies onto its state. Each empty/absent field simply omits its tag, leaving the
 /// host's own default in place.
 pub fn build_spawn_command_event(
     target_host: &str,
@@ -1803,6 +1886,21 @@ pub fn build_spawn_command_event(
         // kind-31988 state. A resumed session already carries its own.
         if let Some(url) = opts.issue_url.filter(|u| !u.is_empty()) {
             builder = builder.start_tag().tag_str("issue_url").tag_str(url);
+        }
+        // Who spawned the session and how it relates to them. Hyphenated like
+        // the kind-31988 tags they are copied to. A resumed session keeps the
+        // lineage its state already records.
+        if let Some(parent) = opts.parent_session.filter(|p| !p.is_empty()) {
+            builder = builder
+                .start_tag()
+                .tag_str("parent-session")
+                .tag_str(parent);
+        }
+        if !opts.relation.is_none() {
+            builder = builder
+                .start_tag()
+                .tag_str("relation")
+                .tag_str(opts.relation.as_str());
         }
     }
 
@@ -3092,22 +3190,21 @@ mod tests {
         let sk = test_secret_key();
 
         let event = build_session_state_event(
-            "sess-state-test",
-            "Fix the login bug",
-            Some("My Custom Title"),
-            "/tmp/project",
-            "working",
-            Some("needs_input"),
-            "my-laptop",
-            "/home/testuser",
-            "claude",
-            "plan",
-            None,
-            None,
-            Some("headway:dave/some-card-ref"),
-            None,
-            None,
-            1_770_000_000,
+            &crate::session_loader::SessionState {
+                claude_session_id: "sess-state-test".into(),
+                title: "Fix the login bug".into(),
+                custom_title: Some("My Custom Title".into()),
+                cwd: "/tmp/project".into(),
+                status: "working".into(),
+                indicator: Some("needs_input".into()),
+                hostname: "my-laptop".into(),
+                home_dir: "/home/testuser".into(),
+                backend: Some("claude".into()),
+                permission_mode: Some("plan".into()),
+                issue_url: Some("headway:dave/some-card-ref".into()),
+                created_at: 1_770_000_000,
+                ..Default::default()
+            },
             &sk,
         )
         .unwrap();

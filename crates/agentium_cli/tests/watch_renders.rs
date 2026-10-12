@@ -277,22 +277,18 @@ async fn watch_redraws_on_a_live_status_change() {
         Engine::open(host_dir.path().to_str().expect("path"), SECKEY).expect("host engine");
     host.connect(&url).expect("host connect");
     let state = build_session_state_event(
-        "sess-live",
-        "Live session",
-        None,
-        "/home/u/proj",
-        "needs_input",
-        None,
-        "macbook",
-        "/home/u",
-        "claude",
-        "default",
-        None,
-        None,
-        None,
-        None,
-        None,
-        now,
+        &agentium_core::session_loader::SessionState {
+            claude_session_id: "sess-live".into(),
+            title: "Live session".into(),
+            cwd: "/home/u/proj".into(),
+            status: "needs_input".into(),
+            hostname: "macbook".into(),
+            home_dir: "/home/u".into(),
+            backend: Some("claude".into()),
+            permission_mode: Some("default".into()),
+            created_at: now,
+            ..Default::default()
+        },
         &SECKEY,
     )
     .expect("build state");

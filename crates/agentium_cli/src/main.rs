@@ -31,6 +31,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use agentium_core::Engine;
+use agentium_core::session_events::SessionRelation;
 use nostrdb_net::Pubkey;
 use regex::Regex;
 
@@ -197,6 +198,8 @@ enum Command {
         permission_mode: Option<String>,
         /// Already checked to be a URI by [`parse_issue_url`].
         issue_url: Option<String>,
+        /// `--child` / `--successor`, already checked not to be both.
+        relation: SessionRelation,
         idempotency_key: Option<String>,
         allow_duplicate: bool,
         wait: bool,
@@ -400,6 +403,7 @@ async fn run() -> Result<()> {
             prompt,
             permission_mode,
             issue_url,
+            relation,
             idempotency_key,
             allow_duplicate,
             wait,
@@ -413,6 +417,7 @@ async fn run() -> Result<()> {
                 prompt,
                 permission_mode,
                 issue_url,
+                relation,
                 idempotency_key,
                 allow_duplicate,
                 wait,
@@ -563,6 +568,8 @@ impl Cli {
         let mut prompt_file = None;
         let mut permission_mode = None;
         let mut issue_url = None;
+        let mut child = false;
+        let mut successor = false;
         let mut idempotency_key = None;
         let mut allow_duplicate = false;
         let mut wait = false;
@@ -634,6 +641,8 @@ impl Cli {
                 "--issue-url" => {
                     issue_url = Some(parse_issue_url(&value("--issue-url")?, "--issue-url")?)
                 }
+                "--child" => child = true,
+                "--successor" => successor = true,
                 "--idempotency-key" => idempotency_key = Some(value("--idempotency-key")?),
                 "--allow-duplicate" => allow_duplicate = true,
                 "--wait" => wait = true,
@@ -718,6 +727,16 @@ impl Cli {
                 action: ConfigAction::parse(rest, config_name, config_command)?,
             }
         } else if name == "spawn" {
+            let relation = match (child, successor) {
+                (true, true) => {
+                    return Err("--child and --successor are exclusive: a spawned session \
+                                either reports back to you or carries your work on"
+                        .into());
+                }
+                (true, false) => SessionRelation::Child,
+                (false, true) => SessionRelation::Successor,
+                (false, false) => SessionRelation::None,
+            };
             Command::Spawn {
                 host: host.clone(),
                 cwd: cwd.clone(),
@@ -726,6 +745,7 @@ impl Cli {
                 prompt,
                 permission_mode,
                 issue_url,
+                relation,
                 idempotency_key,
                 allow_duplicate,
                 wait,
@@ -950,7 +970,9 @@ COMMANDS:
                       the session's first message (delivery no longer depends on
                       --wait, so a slow host still gets the prompt);
                       --permission-mode picks the mode its agent starts in;
-                      --issue-url links it to the card it works. --json emits
+                      --issue-url links it to the card it works; --child or
+                      --successor says how it relates to the spawning session
+                      (recorded with that session's ref). --json emits
                       {{ spawn_id, host, session }} on one line. A spawn that looks
                       like a retry of a recent one (same host+cwd+title) is refused,
                       naming the session it would have duplicated; the host also
@@ -1087,6 +1109,14 @@ OPTIONS:
     --issue-url <uri> The issue the session works, e.g. headway:<board>/<word-id>.
                       Recorded on the session's state (`show` prints it) so
                       pressing s on the session in Dave opens the card.
+    --child           The new session works for this one and reports its result
+                      back. Recorded as `relation child` beside `parent-session`,
+                      this session's ref ($AGENTIUM_SESSION), on the new session's
+                      state; `show` prints both.
+    --successor       The new session carries this one's work on (a handoff).
+                      Recorded as `relation successor`. Exclusive with --child.
+                      With neither, a spawn from inside a session still records
+                      its `parent-session`, with no relation.
     --idempotency-key <k>
                       Name this *request*, so a retry of it is recognized as the
                       same spawn. Defaults to a digest of the request itself
@@ -1776,6 +1806,30 @@ mod tests {
             }
             _ => panic!("expected Spawn"),
         }
+    }
+
+    /// `--child` and `--successor` each pick their relation, neither leaves it
+    /// `none`, and both together are refused: a session can't both report back
+    /// to its spawner and carry its work on.
+    #[test]
+    fn spawn_relation_flags_are_exclusive() {
+        let relation_of = |flags: &[&str]| {
+            let mut args = vec!["--nsec", TEST_NSEC, "spawn"];
+            args.extend_from_slice(flags);
+            match parse_cli(&args).map(|c| c.unwrap().command) {
+                Ok(Command::Spawn { relation, .. }) => Ok(relation),
+                Ok(_) => panic!("expected Spawn"),
+                Err(e) => Err(e.to_string()),
+            }
+        };
+        assert_eq!(relation_of(&[]), Ok(SessionRelation::None));
+        assert_eq!(relation_of(&["--child"]), Ok(SessionRelation::Child));
+        assert_eq!(
+            relation_of(&["--successor"]),
+            Ok(SessionRelation::Successor)
+        );
+        let err = relation_of(&["--child", "--successor"]).unwrap_err();
+        assert!(err.contains("exclusive"), "{err}");
     }
 
     /// `--issue-url` keeps a URI verbatim (trimmed) and refuses anything without
