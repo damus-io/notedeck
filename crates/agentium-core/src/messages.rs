@@ -52,6 +52,12 @@ pub struct UserMessage {
     /// dispatches it, then clears this; the loader sets it for a `queued` note
     /// that has no marker yet, which the fold shows at the tail.
     pub queued: bool,
+    /// The `agentium:` ref of the session that sent it, when another session
+    /// sent it (its note's
+    /// [`FROM_SESSION_TAG`](crate::session_events::FROM_SESSION_TAG)) rather
+    /// than a person typing it. A chat shows such a message as from that
+    /// session.
+    pub from_session: Option<String>,
 }
 
 impl UserMessage {

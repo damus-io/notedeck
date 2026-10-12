@@ -125,6 +125,18 @@ pub struct Engine {
     session: Option<Session>,
 }
 
+/// The extras of one [`Engine::send_message`], beside its session and text.
+///
+/// `SendOptions::default()` is a message a person typed.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SendOptions<'a> {
+    /// The `agentium:` ref of the session sending it, stamped on the note as
+    /// its [`FROM_SESSION_TAG`](crate::session_events::FROM_SESSION_TAG) so
+    /// the receiving chat shows who it came from. `None` when a person sent
+    /// it.
+    pub from_session: Option<&'a str>,
+}
+
 impl Engine {
     /// Open a standalone engine over its own nostrdb at `path` (created if
     /// absent). Use this on a host that has no existing database of its own.
@@ -403,13 +415,21 @@ impl Engine {
     /// the first when there are several, so a caller (e.g. `agentium send`) can
     /// report the message's event id; callers that don't need it just discard
     /// the value.
+    ///
+    /// `opts` carries the send's extras (see [`SendOptions`]): the sending
+    /// session, when another session rather than a person sent it.
     pub fn send_message(
         &self,
         session_id: &str,
         text: &str,
+        opts: SendOptions<'_>,
     ) -> Result<crate::session_events::BuiltEvent, EngineError> {
-        let queued = self.session_in_turn(session_id);
-        let mut built = self.make_user_message(session_id, text, queued)?;
+        let tags = crate::session_events::LiveEventTags {
+            queued: self.session_in_turn(session_id),
+            from_session: opts.from_session,
+            ..Default::default()
+        };
+        let mut built = self.make_user_message(session_id, text, tags)?;
         for event in &built {
             self.publish_session_event(event)?;
         }
@@ -434,7 +454,11 @@ impl Engine {
         text: &str,
         queued: bool,
     ) -> Result<Vec<crate::session_events::BuiltEvent>, EngineError> {
-        let built = self.make_user_message(session_id, text, queued)?;
+        let tags = crate::session_events::LiveEventTags {
+            queued,
+            ..Default::default()
+        };
+        let built = self.make_user_message(session_id, text, tags)?;
         for event in &built {
             self.wrap_and_ingest(event)?;
         }
@@ -444,12 +468,13 @@ impl Engine {
     /// Build the inner kind-1988 `user` events threaded onto the session's
     /// existing conversation (no ingest, no publish): one, or several parts
     /// for a message too big for one note. A brand-new session simply starts a
-    /// fresh thread. `queued` tags them as sent mid-turn.
+    /// fresh thread. `tags` carries what the caller knows about the send: that
+    /// it went out mid-turn (`queued`), and which session sent it.
     fn make_user_message(
         &self,
         session_id: &str,
         text: &str,
-        queued: bool,
+        tags: crate::session_events::LiveEventTags<'_>,
     ) -> Result<Vec<crate::session_events::BuiltEvent>, EngineError> {
         let mut threading = self.session_threading(session_id);
         let cwd = self.session_cwd(session_id);
@@ -458,10 +483,7 @@ impl Engine {
             "user",
             session_id,
             cwd.as_deref(),
-            crate::session_events::LiveEventTags {
-                queued,
-                ..Default::default()
-            },
+            tags,
             &mut threading,
             &self.seckey(),
         )
@@ -1318,7 +1340,8 @@ mod tests {
     /// The flagship remote flow: a message sent by one engine reaches a second
     /// engine that shares the identity and relay. Exercises the whole write path
     /// (build → PNS-wrap → publish) against the read path (discovery sub →
-    /// decrypt → session_messages).
+    /// decrypt → session_messages), with the sending session's `from-session`
+    /// tag surviving the trip.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn send_message_round_trips_between_engines() {
         let relay_db = temp_ndb();
@@ -1331,7 +1354,12 @@ mod tests {
         let mut a =
             Engine::open(a_dir.path().to_str().expect("path"), TEST_SECKEY).expect("engine a");
         a.connect(&url).expect("a connect");
-        a.send_message(session_id, "hi from A").expect("send");
+        // Sent from inside another session, so it names that session.
+        let sender = "agentium:loud-review-oyster";
+        let opts = SendOptions {
+            from_session: Some(sender),
+        };
+        a.send_message(session_id, "hi from A", opts).expect("send");
 
         let b_dir = TempDir::new().expect("tmp dir");
         let mut b =
@@ -1356,7 +1384,14 @@ mod tests {
 
         assert!(received, "engine B should receive A's message");
         let messages = b.session_messages(session_id);
-        assert!(matches!(&messages[0], Message::User(_)));
+        let Message::User(user) = &messages[0] else {
+            panic!("expected A's user message, got {:?}", messages[0]);
+        };
+        assert_eq!(
+            user.from_session.as_deref(),
+            Some(sender),
+            "B sees which session sent it"
+        );
         relay.shutdown();
     }
 
@@ -1845,7 +1880,9 @@ mod tests {
                     .await,
                     "the state should be ingested"
                 );
-                let built = engine.send_message(session_id, "hi").expect("send");
+                let built = engine
+                    .send_message(session_id, "hi", SendOptions::default())
+                    .expect("send");
                 assert!(
                     await_note(
                         engine.ndb(),

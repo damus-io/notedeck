@@ -61,8 +61,13 @@ pub(crate) async fn cmd_send(
     };
 
     // Build + ingest + publish the kind-1988 `user` message; the returned event
-    // carries the durable note id we report.
-    let built = engine.send_message(&session_id, text)?;
+    // carries the durable note id we report. Sent from inside a session, it
+    // names that session as its sender.
+    let sender = sender_session();
+    let opts = agentium_core::SendOptions {
+        from_session: sender.as_deref(),
+    };
+    let built = engine.send_message(&session_id, text, opts)?;
     let event_id = hex::encode(built.note_id);
 
     // Flush: the publish rides the loop's FIFO, so a settle barrier enqueued
@@ -81,4 +86,14 @@ pub(crate) async fn cmd_send(
     let short = &event_id[..event_id.len().min(8)];
     println!("sent to {uri} (event {short}…)");
     Ok(())
+}
+
+/// The `agentium:` ref of the session this command runs inside, from
+/// `$AGENTIUM_SESSION`, which a Dave host sets for every agent it runs. `None`
+/// when a person runs `agentium send` from their own shell, so their message
+/// carries no sender.
+fn sender_session() -> Option<String> {
+    std::env::var("AGENTIUM_SESSION")
+        .ok()
+        .filter(|s| !s.is_empty())
 }

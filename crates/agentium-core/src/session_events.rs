@@ -676,6 +676,11 @@ fn build_single_event(
         builder = builder.start_tag().tag_str("parent-task").tag_str(task);
     }
 
+    // -- Sender tag (a user note another session sent) --
+    if let Some(from) = tags.from_session {
+        builder = builder.start_tag().tag_str(FROM_SESSION_TAG).tag_str(from);
+    }
+
     // -- Queued tag (a user note sent while a turn was in flight) --
     if tags.queued {
         builder = builder.start_tag().tag_str("queued").tag_str("1");
@@ -716,6 +721,10 @@ pub struct LiveEventTags<'a> {
     /// waits for the turn to end, so a fold shows it at the tail until a
     /// [`DISPATCHED_ROLE`] marker places it (see [`is_queued_note`]).
     pub queued: bool,
+    /// The `agentium:` ref of the session that sent a `user` note
+    /// ([`FROM_SESSION_TAG`]), when another session sent it rather than a
+    /// person typing it (see [`from_session`]).
+    pub from_session: Option<&'a str>,
     /// The note this one is about (an unmarked `["e", <id>]`, beside the NIP-10
     /// `root`/`reply` threading tags): a [`DISPATCHED_ROLE`] marker's user note.
     pub refs: Option<&'a [u8; 32]>,
@@ -731,6 +740,17 @@ pub const DISPATCHED_ROLE: &str = "dispatched";
 /// was in flight, so it waits at the tail until its [`DISPATCHED_ROLE`] marker.
 pub fn is_queued_note(note: &nostrdb::Note) -> bool {
     get_tag_value(note, "queued") == Some("1")
+}
+
+/// The tag naming the session that sent a `user` note: its `agentium:` ref,
+/// as `["from-session", "agentium:<word-id>"]`. A note without it was typed by
+/// a person.
+pub const FROM_SESSION_TAG: &str = "from-session";
+
+/// The `agentium:` ref of the session that sent a `user` note
+/// ([`FROM_SESSION_TAG`]), or `None` for a note a person typed.
+pub fn from_session<'a>(note: &'a nostrdb::Note<'a>) -> Option<&'a str> {
+    get_tag_value(note, FROM_SESSION_TAG)
 }
 
 /// The note an unmarked `["e", <id>]` tag refers to ([`LiveEventTags::refs`]).

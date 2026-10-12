@@ -393,6 +393,10 @@ struct RemoteUserMessage<'n> {
     id: [u8; 32],
     /// The message's text, whole.
     text: Cow<'n, str>,
+    /// The `agentium:` ref of the session that sent it, when one did (see
+    /// [`session_events::from_session`]). Every part of a split message
+    /// carries it.
+    from_session: Option<&'n str>,
 }
 
 /// The message a remote client's `user` note brings a local session, or
@@ -411,6 +415,7 @@ fn remote_user_message<'n>(
         Some(RemoteUserMessage {
             id: *note.id(),
             text: Cow::Borrowed(note.content()),
+            from_session: session_events::from_session(note),
         })
     };
     if !split_message::is_split_part(note) {
@@ -433,6 +438,7 @@ fn remote_user_message<'n>(
     Some(RemoteUserMessage {
         id: split.head,
         text: Cow::Owned(split.content),
+        from_session: session_events::from_session(note),
     })
 }
 
@@ -536,6 +542,7 @@ pub(crate) fn process_conversation_notes<'a>(
                 let Some(RemoteUserMessage {
                     id: message_id,
                     text,
+                    from_session,
                 }) = remote_user_message(note, &session.chat, ndb)
                 else {
                     continue;
@@ -543,6 +550,7 @@ pub(crate) fn process_conversation_notes<'a>(
                 session.chat.push(Message::User(messages::UserMessage {
                     note_id: Some(message_id),
                     queued: true,
+                    from_session: from_session.map(str::to_string),
                     ..messages::UserMessage::from(text.as_ref())
                 }));
                 // Appended where it arrived; the reconcile at rest moves it to
@@ -1756,6 +1764,56 @@ mod tests {
             .map(|note| session_events::referenced_note_id(&note).copied())
             .collect::<Vec<_>>();
         assert_eq!(markers, [Some(remote.note_id)], "one marker, for that note");
+    }
+
+    /// A message another session sent (`agentium send` from inside it)
+    /// reaches a local session naming its sender, so the chat can show who it
+    /// came from; the remote fold's half is the shared renderer's, tested in
+    /// agentium-core.
+    #[tokio::test]
+    async fn remote_user_message_from_a_session_names_its_sender() {
+        let sk = test_secret_key();
+        let session_id_str = "host-from-session";
+        let sender = "agentium:loud-review-oyster";
+        let remote = build_live_event(
+            "your result is in",
+            "user",
+            session_id_str,
+            None,
+            LiveEventTags {
+                from_session: Some(sender),
+                ..Default::default()
+            },
+            &mut ThreadingState::new(),
+            &sk,
+        )
+        .unwrap();
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.agentic.as_mut().unwrap().event_id = session_id_str.to_string();
+
+        let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+        ndb.process_event_with(&remote.to_event_json(), IngestMetadata::new().client(true))
+            .expect("ingest failed");
+        let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+        let txn = Transaction::new(&ndb).unwrap();
+        let batch = vec![ndb.get_note_by_id(&txn, &remote.note_id).unwrap()];
+        process_conversation_notes(batch, &mut session, 1, false, Some(&sk), &ndb);
+
+        let Some(Message::User(user)) = session.chat.last() else {
+            panic!("the remote message is appended: {:?}", session.chat);
+        };
+        assert_eq!(user.from_session.as_deref(), Some(sender));
     }
 
     /// A user row, as [`user_texts_and_queued`] reads it.

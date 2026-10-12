@@ -100,7 +100,11 @@ async fn main() {
         .unwrap();
     println!("phone.respond_permission(allow) — approved {perm_id}");
     phone
-        .send_message(SESSION_ID, "also add a test while you're in there")
+        .send_message(
+            SESSION_ID,
+            "also add a test while you're in there",
+            agentium_core::SendOptions::default(),
+        )
         .unwrap();
     println!("phone.send_message(\"also add a test…\")\n");
 

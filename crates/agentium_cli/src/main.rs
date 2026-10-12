@@ -937,7 +937,9 @@ COMMANDS:
                       $AGENTIUM_SESSION default — it would be ambiguous against
                       the text); the message is the remaining words joined with
                       spaces (quote to preserve exact spacing). Reopen a deleted
-                      session with `resume` first. --json emits the event id.
+                      session with `resume` first. Sent from inside a session
+                      ($AGENTIUM_SESSION set), it names that session as its
+                      sender. --json emits the event id.
     spawn             Tell a (local or remote) Dave host to create a fresh
                       session, then print its new agentium: ref. --host/--cwd/
                       --backend pick the target; omitted, they default to the

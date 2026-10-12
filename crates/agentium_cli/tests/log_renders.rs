@@ -489,7 +489,11 @@ async fn follow_streams_a_live_message() {
         Engine::open(pub_dir.path().to_str().expect("path"), SECKEY).expect("publisher engine");
     publisher.connect(&url).expect("pub connect");
     publisher
-        .send_message("sess-follow", "live streamed msg")
+        .send_message(
+            "sess-follow",
+            "live streamed msg",
+            agentium_core::SendOptions::default(),
+        )
         .expect("send live message");
     // Flush the publish through the loop's FIFO so it actually reaches the relay.
     let _ = tokio::time::timeout(Duration::from_secs(5), publisher.wait_for_sync()).await;

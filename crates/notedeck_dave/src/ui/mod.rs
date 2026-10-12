@@ -27,8 +27,8 @@ pub mod worktree_creator;
 pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
 pub use block_nav::BlockNav;
 pub use dave::{
-    DaveAction, DaveResponse, DaveUi, InputMode, InputboxLayout, InputboxResult, Inspected,
-    RunAction,
+    from_session_message_ui, DaveAction, DaveResponse, DaveUi, InputMode, InputboxLayout,
+    InputboxResult, Inspected, RunAction,
 };
 pub use directory_picker::{DirectoryPicker, DirectoryPickerAction};
 pub use host_picker::HostPickerAction;

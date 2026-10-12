@@ -32,5 +32,5 @@ pub mod tools;
 mod util;
 pub mod wordid;
 
-pub use engine::{Engine, EngineError, SessionWatch};
+pub use engine::{Engine, EngineError, SendOptions, SessionWatch};
 pub use tool::{ToolArg, ToolArgType, ToolSpec};

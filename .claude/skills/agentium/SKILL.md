@@ -313,6 +313,10 @@ Notes:
 - Only **live** sessions can be sent to. A soft-deleted session has no backend
   reading its conversation, so `send` refuses and points you at `resume` — reopen
   it first, then send.
+- Sent from inside a session (`$AGENTIUM_SESSION` set), the message carries
+  that session's ref as a `from-session` tag, and Dave shows it as a violet
+  "from <sender>" card rather than a message a person typed. From your own
+  shell it carries none.
 - `--json` emits `{ "session": "agentium:…", "event_id": "<64-hex>" }`; the plain
   output is `sent to <agentium:ref> (event <hex8>…)`.
 

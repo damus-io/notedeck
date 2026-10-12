@@ -1932,6 +1932,10 @@ impl<'a> DaveUi<'a> {
         ctx: &mut AppContext,
         ui: &mut egui::Ui,
     ) {
+        if let Some(from) = msg.from_session.as_deref() {
+            from_session_message_ui(msg, from, is_queued, ctx, ui);
+            return;
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             // The bubble's content response, captured from an inner `scope` so the
             // context menu attaches to *it* rather than the surrounding `Frame`.
@@ -1940,37 +1944,8 @@ impl<'a> DaveUi<'a> {
                 .corner_radius(10.0)
                 .fill(ui.visuals().widgets.inactive.weak_bg_fill)
                 .show(ui, |ui| {
-                    ui.scope(|ui| {
-                        for img in &msg.images {
-                            ui.add(
-                                egui::Image::from_bytes(img.egui_uri(), img.bytes.clone())
-                                    .max_size(egui::vec2(200.0, 200.0))
-                                    .corner_radius(4.0),
-                            );
-                        }
-                        if !msg.text.is_empty() {
-                            // Ref-aware markdown so a headway ref the user types
-                            // (bare or backtick-wrapped) renders as its inline chip,
-                            // matching the assistant surface. Chat rendering holds no
-                            // transaction, so open one here and pass it in.
-                            let mut note_ctx = ctx.note_context();
-                            let txn = Transaction::new(note_ctx.ndb).expect("markdown txn");
-                            markdown_ui::render_markdown_with_refs(
-                                ui,
-                                &mut note_ctx,
-                                &txn,
-                                &msg.text,
-                            );
-                        }
-                        if is_queued {
-                            ui.label(
-                                egui::RichText::new("queued")
-                                    .small()
-                                    .color(ui.visuals().weak_text_color()),
-                            );
-                        }
-                    })
-                    .response
+                    ui.scope(|ui| user_message_body(msg, is_queued, ctx, ui))
+                        .response
                 })
                 .inner;
             // Attach the context menu to the inner content, NOT the bubble `Frame`.
@@ -1980,12 +1955,7 @@ impl<'a> DaveUi<'a> {
             // of the chip, silently swallowing it (a chip in an assistant message,
             // whose bubble is a bare `scope`, stays clickable). The tighter `scope`
             // response doesn't enclose the chip the same way, so the chip wins.
-            notedeck_ui::context_menu::context_menu(&content, |ui| {
-                if ui.button("Copy").clicked() {
-                    ui.ctx().copy_text(msg.text.clone());
-                    ui.close();
-                }
-            });
+            copy_menu(&content, msg);
         });
     }
 
@@ -2016,6 +1986,108 @@ impl<'a> DaveUi<'a> {
             }
         });
     }
+}
+
+/// A `user` message another session sent (`agentium send` from inside a
+/// session): a full-width card with a thin violet outline, headed by a
+/// small violet "from" and the sender's `agentium:` chip, so it can't be
+/// mistaken for a message a person typed. The chip is live: it shows the
+/// sender's current title and a click switches to that session. A sender
+/// whose state isn't in the local db yet shows as its bare ref.
+///
+/// `from` is the sender's ref, the message's
+/// [`from_session`](crate::messages::UserMessage::from_session).
+#[profiling::function]
+pub fn from_session_message_ui(
+    msg: &crate::messages::UserMessage,
+    from: &str,
+    is_queued: bool,
+    ctx: &mut AppContext,
+    ui: &mut egui::Ui,
+) {
+    let content = egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(13, 10))
+        .corner_radius(8.0)
+        .stroke(egui::Stroke::new(
+            1.0,
+            FROM_SESSION_VIOLET.gamma_multiply(0.4),
+        ))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("from")
+                        .small()
+                        .color(FROM_SESSION_VIOLET),
+                );
+                let mut note_ctx = ctx.note_context();
+                let txn = Transaction::new(note_ctx.ndb).expect("from-session txn");
+                let drawn = notedeck_ui::markdown::render_reference(
+                    ui,
+                    &mut note_ctx,
+                    &txn,
+                    from,
+                    notedeck::RenderContext::Inline,
+                );
+                if !drawn {
+                    ui.label(egui::RichText::new(from).small().color(FROM_SESSION_VIOLET));
+                }
+            });
+            // The body's own scope, so the context menu below attaches to
+            // it and not to the header's chip (see `DaveUi::user_chat`).
+            ui.scope(|ui| user_message_body(msg, is_queued, ctx, ui))
+                .response
+        })
+        .inner;
+    copy_menu(&content, msg);
+}
+
+/// The accent of a message another session sent: its card's outline and its
+/// "from" header (see [`from_session_message_ui`]).
+const FROM_SESSION_VIOLET: egui::Color32 = egui::Color32::from_rgb(0xA9, 0x8B, 0xF0);
+
+/// A `user` message's content, shared by the bubble a person's message sits in
+/// and the card another session's does: its images, its text as ref-aware
+/// markdown, and a "queued" note while it waits for the turn to end.
+fn user_message_body(
+    msg: &crate::messages::UserMessage,
+    is_queued: bool,
+    ctx: &mut AppContext,
+    ui: &mut egui::Ui,
+) {
+    for img in &msg.images {
+        ui.add(
+            egui::Image::from_bytes(img.egui_uri(), img.bytes.clone())
+                .max_size(egui::vec2(200.0, 200.0))
+                .corner_radius(4.0),
+        );
+    }
+    if !msg.text.is_empty() {
+        // Ref-aware markdown so a headway ref the user types (bare or
+        // backtick-wrapped) renders as its inline chip, matching the assistant
+        // surface. Chat rendering holds no transaction, so open one here and
+        // pass it in.
+        let mut note_ctx = ctx.note_context();
+        let txn = Transaction::new(note_ctx.ndb).expect("markdown txn");
+        markdown_ui::render_markdown_with_refs(ui, &mut note_ctx, &txn, &msg.text);
+    }
+    if is_queued {
+        ui.label(
+            egui::RichText::new("queued")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    }
+}
+
+/// The right-click menu on a `user` message's content: copy its text.
+fn copy_menu(content: &egui::Response, msg: &crate::messages::UserMessage) {
+    notedeck_ui::context_menu::context_menu(content, |ui| {
+        if ui.button("Copy").clicked() {
+            ui.ctx().copy_text(msg.text.clone());
+            ui.close();
+        }
+    });
 }
 
 /// Paste text into the current input buffer using Dave's append behavior.

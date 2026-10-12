@@ -590,6 +590,7 @@ pub fn render_conversation_note_with_content(
     match get_tag_value(note, "role") {
         Some("user") => Some(Message::User(UserMessage {
             note_id: Some(*note.id()),
+            from_session: crate::session_events::from_session(note).map(str::to_string),
             // As far as this note alone says; the loader clears it when a
             // dispatch marker exists.
             queued: is_queued_note(note),
@@ -2808,6 +2809,50 @@ mod tests {
         };
         assert!(!second.queued, "a dispatched note is off the queue");
         assert!(second.note_id.is_some(), "the loader records the note id");
+    }
+
+    /// A `user` note another session sent carries that session's ref as its
+    /// `from-session` tag, and the fold hands it to the row; a note a person
+    /// typed has none.
+    #[tokio::test]
+    async fn from_session_tag_round_trips_through_the_fold() {
+        use crate::session_events::{build_live_event, LiveEventTags, ThreadingState};
+
+        let session_id = "from-session-fold";
+        let sender = "agentium:width-useless-choose";
+        let mut threading = ThreadingState::new();
+        let mut note = |content: &str, tags: LiveEventTags<'_>| {
+            build_live_event(
+                content,
+                "user",
+                session_id,
+                None,
+                tags,
+                &mut threading,
+                &test_secret_key(),
+            )
+            .unwrap()
+            .to_event_json()
+        };
+        let events = [
+            note("typed", LiveEventTags::default()),
+            note(
+                "sent",
+                LiveEventTags {
+                    from_session: Some(sender),
+                    ..Default::default()
+                },
+            ),
+        ];
+        let messages = load_both_orders(session_id, &events).await;
+        let senders: Vec<_> = messages
+            .iter()
+            .map(|m| match m {
+                Message::User(u) => (u.as_str(), u.from_session.as_deref()),
+                other => panic!("unexpected row {other:?}"),
+            })
+            .collect();
+        assert_eq!(senders, [("typed", None), ("sent", Some(sender))]);
     }
 
     /// A note with two dispatch markers (a host redispatching it before its
