@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Hand off to a fresh Dave session — ask the user what to work on next, spawn a new session in the current worktree, and send it the task as its first message. Use when the user wants to delegate the next unit of work to a brand-new agentic session rather than continue in this one — e.g. "/handoff", "hand this off", "spawn a session to do X next", "start a fresh session on the next task".
+description: Hand off to a fresh Dave session — ask the user what to work on next, spawn a new session in the current worktree, and send it the task as its first message. Use when the user wants to delegate the next unit of work to a brand-new agentic session rather than continue in this one — e.g. "/handoff", "hand this off", "spawn a session to do X next", "start a fresh session on the next task". `/handoff autowork <task>` also branches the new session off the `autowork` branch and has it land its commit there.
 ---
 
 # Handoff to a fresh Dave session
@@ -35,6 +35,10 @@ a short TL;DR — not the card's full text.)
   `--issue-url headway:<board>/<word-id>` (the full ref, never a bare word-id —
   the CLI rejects one). The card is then recorded on the session itself, so
   `agentium show` names it and `s` on the session in Dave opens it.
+- If the invocation includes **`autowork`** (`/handoff autowork <task>`, or
+  `--autowork`), the new session works on the `autowork` branch. Follow
+  [*`autowork`: land on the `autowork` branch*](#autowork-land-on-the-autowork-branch)
+  below. Don't put the word in the task prompt.
 - If the new session should **investigate and get approval before writing code**,
   pass `--permission-mode plan`. Writing "start in plan mode" in the prompt does
   **not** work: the session's backend has already launched in the host's default
@@ -80,6 +84,42 @@ That's the whole handoff. Notes:
   ever hit an older `agentium` that pretty-prints, they turn a *successful* spawn
   into an empty `$ref`, which looks like a failure and tempts a re-run.
 
+## `autowork`: land on the `autowork` branch
+
+`/handoff autowork` gives the new session the same branch discipline as an `autowork`
+chain lane: it starts from `autowork` and, when its commit is done, fast-forwards
+`autowork` onto it. The mechanics live in the `autowork` skill's *Parallel chains*
+section (`~/.claude/skills/autowork/SKILL.md`): `autowork` is never checked out, the
+main worktree's branch belongs to the user, and the *Land* block moves `autowork` with a
+compare-and-swap `update-ref`. Point at that block; don't copy it here or into the prompt.
+
+**Before spawning**, in this session:
+
+1. **Commit your own work first, and land it** with that *Land* block. The new session's
+   first step is a rebase of this worktree. A dirty tree makes that rebase fail. A commit
+   you make after the rebase reaches `autowork` only when the next session lands.
+2. **Check that `autowork` is free**:
+   `git worktree list | grep -q '\[autowork\]'` must find nothing. If the branch doesn't
+   exist yet, the *Land* block creates it from the main worktree's branch.
+3. **Check that the tree is clean**: `git status --porcelain` prints nothing. If it
+   prints anything that isn't yours, someone else has work in this worktree. Hand off
+   into another worktree with `--cwd`, or ask the user. Never stash it.
+
+**Then append this paragraph to the task prompt**, after the task itself:
+
+```
+Branch: this handoff works on `autowork`. Before you change anything, rebase this
+worktree's branch onto it (`git rebase autowork`); if that fails, stop and report. When
+your commit passes the repo's checks, land it on `autowork` with the *Land* block in the
+*Parallel chains* section of ~/.claude/skills/autowork/SKILL.md. Read that block from
+the file; do not invoke the `autowork` skill, since this is not a chain. Quote the landed
+hash in the card's done comment and pass it to `headway review --commit`.
+```
+
+The spawned session doesn't load any skill, so this paragraph is the only way it learns
+about the branch. It names the block instead of restating it, so the rules stay in one
+place.
+
 ## A `--wait` timeout does NOT mean nothing was created
 
 `spawn` publishes the command **before** it starts waiting. So a timeout means
@@ -114,6 +154,10 @@ Then finish wrapping up *this* session per CLAUDE.md: commit, build and publish
 the explainer (`visual-explainer` skill), `headway review <card> --explainer
 <url>`, then the done comment with the hash, title and explainer URL, and move
 the card. The handoff doesn't excuse leaving the current work half-done.
+
+After an `autowork` handoff, your commit is already landed (step 1 above), and the new
+session may already have moved this worktree's `HEAD`. So pass your landed hash to
+`headway review <card> --commit <hash>` instead of relying on its `HEAD` default.
 
 ## Notes
 
