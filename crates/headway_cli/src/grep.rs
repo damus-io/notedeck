@@ -434,6 +434,7 @@ mod tests {
                 .into_iter()
                 .map(|card| ArchivedCard { card, from: None })
                 .collect(),
+            deleted: false,
         }
     }
 

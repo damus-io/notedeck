@@ -595,6 +595,105 @@ fn multiple_boards_are_independent() {
     );
 }
 
+/// Poll `--board <board> show --json` until the board's `deleted` flag reads
+/// `deleted` (the tombstone is an async ingest like any edit). Panics on timeout.
+fn show_board_until_deleted(url: &str, db: &str, board: &str, deleted: bool) -> Value {
+    for _ in 0..50 {
+        let out = headway(url, db, &["--board", board, "show", "--json"]);
+        if out.status.success()
+            && let Ok(v) = serde_json::from_slice::<Value>(&out.stdout)
+            && v["deleted"].as_bool() == Some(deleted)
+        {
+            return v;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("board '{board}' never reached deleted={deleted}");
+}
+
+/// `delete-board` takes a board out of the listing and refuses edits to it while
+/// keeping its cards, and `restore-board` brings it back as it was.
+#[test]
+fn delete_board_hides_it_until_restored() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &test_config().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let _guard = rt.enter();
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    for board in ["headway", "scratch"] {
+        assert!(
+            headway(&url, db, &["--board", board, "seed"])
+                .status
+                .success(),
+            "seed {board}"
+        );
+    }
+    let add = headway(
+        &url,
+        db,
+        &["--board", "scratch", "add", "Keep me", "--col", "Todo"],
+    );
+    assert!(
+        add.status.success(),
+        "add: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    show_board_until(&url, db, "scratch", 1);
+
+    let delete = headway(&url, db, &["delete-board", "scratch"]);
+    assert!(
+        delete.status.success(),
+        "delete-board: {}",
+        String::from_utf8_lossy(&delete.stderr)
+    );
+    let deleted = show_board_until_deleted(&url, db, "scratch", true);
+    assert_eq!(total_cards(&deleted), 1, "a deleted board keeps its cards");
+
+    // Listed apart, under "deleted", rather than among the live boards.
+    let list = String::from_utf8_lossy(&headway(&url, db, &["board"]).stdout).into_owned();
+    let (live, gone) = list.split_once("deleted").expect("a deleted section");
+    assert!(
+        !live.contains("scratch"),
+        "deleted board listed as live: {list}"
+    );
+    assert!(gone.contains("scratch"), "deleted board not listed: {list}");
+
+    let refused = headway(
+        &url,
+        db,
+        &["--board", "scratch", "add", "Nope", "--col", "Todo"],
+    );
+    assert!(
+        !refused.status.success(),
+        "an edit to a deleted board must fail"
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("restore-board"),
+        "the refusal says how to undo: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+
+    let restore = headway(&url, db, &["restore-board", "scratch"]);
+    assert!(
+        restore.status.success(),
+        "restore-board: {}",
+        String::from_utf8_lossy(&restore.stderr)
+    );
+    let restored = show_board_until_deleted(&url, db, "scratch", false);
+    assert_eq!(total_cards(&restored), 1);
+}
+
 /// Seed the CLI's default board online. `seed` now creates a *born* team-of-one
 /// SNS board — sealed from note #1 — so no separate `migrate` step is needed: the
 /// board's edits travel as kind-1081 envelopes and its team key-share (kind-1059)

@@ -1310,6 +1310,7 @@ fn placeholder_board(active: &event::BoardCoord, boards: &[BoardSummary]) -> Boa
         created_at: 0,
         columns: Vec::new(),
         archived: Vec::new(),
+        deleted: false,
     }
 }
 

@@ -505,6 +505,7 @@ mod tests {
                 cards: ids.iter().copied().map(view_card).collect(),
             }],
             archived: vec![],
+            deleted: false,
         }
     }
 
