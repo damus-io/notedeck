@@ -365,6 +365,19 @@ pub(crate) fn apply_response(
         DaveApiResponse::SubagentOutput { task_id, output } => {
             session.update_subagent_output(&task_id, &output);
         }
+        // Neither publishes: the next lifecycle note (the completion) carries
+        // the agent id and transcript, so relays see one note per transition,
+        // not one per block.
+        DaveApiResponse::SubagentText {
+            task_id,
+            kind,
+            text,
+        } => {
+            session.push_subagent_text(&task_id, kind, &text);
+        }
+        DaveApiResponse::SubagentIdentified { task_id, agent_id } => {
+            session.set_subagent_agent_id(&task_id, agent_id);
+        }
         DaveApiResponse::SubagentCompleted { task_id, result } => {
             session.complete_subagent(&task_id, &result);
             publish_subagent(session, &task_id, &ctx.host.secret_key, ctx.host.ndb);
@@ -579,6 +592,8 @@ fn closes_assistant_segment(session: &session::ChatSession, res: &DaveApiRespons
         | DaveApiResponse::SessionInfo(_)
         | DaveApiResponse::UsageUpdate(_)
         | DaveApiResponse::SubagentOutput { .. }
+        | DaveApiResponse::SubagentText { .. }
+        | DaveApiResponse::SubagentIdentified { .. }
         | DaveApiResponse::SubagentCompleted { .. }
         | DaveApiResponse::SubagentFailed { .. }
         | DaveApiResponse::CompactionStarted
@@ -1270,6 +1285,8 @@ mod tests {
             max_output_size: 4000,
             tool_results: Vec::new(),
             background: true,
+            agent_id: None,
+            transcript: Default::default(),
         }));
         f.apply(DaveApiResponse::ToolRunning(crate::messages::RunningTool {
             tool_use_id: "t1".to_string(),
@@ -1284,6 +1301,56 @@ mod tests {
         f.stream_end();
 
         assert_eq!(f.assistant_texts(), ["while that runs, one block"]);
+    }
+
+    /// Forwarded subagent text fills its row's transcript and adds no chat
+    /// row, and the agent id lands on the row; neither publishes until the
+    /// completion does.
+    #[test]
+    fn subagent_text_and_agent_id_land_on_its_row() {
+        use crate::messages::TranscriptKind;
+        let mut f = Fixture::new();
+        f.session.mark_dispatched();
+        f.apply(DaveApiResponse::SubagentSpawned(SubagentInfo {
+            task_id: "s1".to_string(),
+            description: "Map the loader".to_string(),
+            subagent_type: "Explore".to_string(),
+            status: SubagentStatus::Running,
+            output: String::new(),
+            max_output_size: 4000,
+            tool_results: Vec::new(),
+            background: false,
+            agent_id: None,
+            transcript: Default::default(),
+        }));
+        let after_spawn = f.published();
+        f.apply(DaveApiResponse::SubagentText {
+            task_id: "s1".to_string(),
+            kind: TranscriptKind::Text,
+            text: "the loader lives in session_loader.rs".to_string(),
+        });
+        f.apply(DaveApiResponse::SubagentIdentified {
+            task_id: "s1".to_string(),
+            agent_id: "a1".to_string(),
+        });
+        assert_eq!(
+            f.published(),
+            after_spawn,
+            "text and id wait for completion"
+        );
+        f.apply(DaveApiResponse::SubagentCompleted {
+            task_id: "s1".to_string(),
+            result: "done".to_string(),
+        });
+        assert_eq!(f.published(), after_spawn + 1);
+
+        assert!(f.assistant_texts().is_empty(), "no subagent prose in chat");
+        let Some(Message::Subagent(row)) = f.session.chat.last() else {
+            panic!("the subagent row is the last row");
+        };
+        assert_eq!(row.agent_id.as_deref(), Some("a1"));
+        let texts: Vec<_> = row.transcript.runs().map(|r| r.text.as_str()).collect();
+        assert_eq!(texts, ["the loader lives in session_loader.rs"]);
     }
 
     /// An empty response shows the error on any turn, not only before the
@@ -1367,6 +1434,8 @@ mod tests {
                 max_output_size: 4000,
                 tool_results: Vec::new(),
                 background: true,
+                agent_id: None,
+                transcript: Default::default(),
             },
         );
         let spawned =

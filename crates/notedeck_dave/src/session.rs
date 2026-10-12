@@ -989,6 +989,30 @@ impl ChatSession {
         }
     }
 
+    /// Record the CLI's `agentId` for a subagent (see
+    /// [`SubagentInfo::agent_id`]).
+    pub fn set_subagent_agent_id(&mut self, task_id: &str, agent_id: String) {
+        let Some(subagent) = self.subagent_mut(task_id) else {
+            return;
+        };
+        subagent.agent_id = Some(agent_id);
+    }
+
+    /// Append one forwarded text or thinking block to a subagent's
+    /// transcript. A block for a subagent with no row (one spawned before a
+    /// restart) is dropped.
+    pub fn push_subagent_text(
+        &mut self,
+        task_id: &str,
+        kind: crate::messages::TranscriptKind,
+        text: &str,
+    ) {
+        let Some(subagent) = self.subagent_mut(task_id) else {
+            return;
+        };
+        subagent.transcript.push(kind, text);
+    }
+
     /// Update a subagent's output (appending new content, keeping only the tail)
     pub fn update_subagent_output(&mut self, task_id: &str, new_output: &str) {
         let Some(subagent) = self.subagent_mut(task_id) else {
@@ -3410,6 +3434,8 @@ mod tests {
             max_output_size: 1000,
             tool_results: vec![],
             background: false,
+            agent_id: None,
+            transcript: Default::default(),
         }
     }
 

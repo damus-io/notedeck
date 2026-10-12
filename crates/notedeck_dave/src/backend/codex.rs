@@ -754,6 +754,8 @@ fn handle_codex_message(
                                 max_output_size: 4000,
                                 tool_results: Vec::new(),
                                 background: false,
+                                agent_id: None,
+                                transcript: Default::default(),
                             };
                             let _ = response_tx.send(DaveApiResponse::SubagentSpawned(info));
                             waker.wake();

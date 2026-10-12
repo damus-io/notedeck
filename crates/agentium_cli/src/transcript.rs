@@ -480,6 +480,8 @@ pub(crate) mod tests {
             max_output_size: 0,
             tool_results: vec![],
             background: false,
+            agent_id: None,
+            transcript: Default::default(),
         };
         let msgs = vec![
             Message::System("session started".into()),

@@ -551,6 +551,8 @@ mod tests {
                 max_output_size: 1000,
                 tool_results: vec![tool("headway show headway:dave/four-five-six", None)],
                 background: false,
+                agent_id: None,
+                transcript: Default::default(),
             }),
             assistant(
                 "Done: headway:dave/shrimp-guide-poet, see \

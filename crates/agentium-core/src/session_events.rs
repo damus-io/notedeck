@@ -1295,6 +1295,15 @@ pub struct SubagentContent {
     /// while `running` (streamed output is not published).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    /// The newest part of the subagent's forwarded text and thinking that fits
+    /// the note, oldest first. It is published with each lifecycle note, not
+    /// per block, so a chatty subagent costs relays nothing extra; a note
+    /// written before transcripts existed has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transcript: Vec<crate::messages::TranscriptRun>,
+    /// Whether runs older than `transcript`'s first were left out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub transcript_dropped: bool,
 }
 
 /// Build a kind-1988 `role=subagent` event for one subagent lifecycle
@@ -1319,20 +1328,24 @@ pub fn build_subagent_event(
         SubagentStatus::Running => false,
         SubagentStatus::Completed | SubagentStatus::Failed => true,
     };
-    let max_cap = if has_output {
-        info.output.len().min(MAX_WIRE_EVENT_BYTES)
-    } else {
-        0
-    };
+    // One cap bounds both the output and the transcript's tail, so the
+    // budget search shrinks them together.
+    let output_len = if has_output { info.output.len() } else { 0 };
+    let max_cap = output_len
+        .max(info.transcript.bytes())
+        .min(MAX_WIRE_EVENT_BYTES);
     let now_ms = now_millis();
     let event = build_within_wire_budget(max_cap, |cap| {
         let output = has_output.then(|| {
             let end = crate::util::floor_char_boundary(&info.output, cap);
             info.output[..end].to_string()
         });
+        let tail = info.transcript.tail(cap);
         let content = serde_json::to_string(&SubagentContent {
             description: info.description.clone(),
             output,
+            transcript: tail.runs.cloned().collect(),
+            transcript_dropped: tail.dropped,
         })
         .map_err(|e| EventBuildError::Serialize(e.to_string()))?;
         subagent_event_at(info, &content, session_id, threading, secret_key, now_ms)
@@ -1380,6 +1393,9 @@ fn subagent_event_at(
         .start_tag()
         .tag_str("background")
         .tag_str(if info.background { "true" } else { "false" });
+    if let Some(agent_id) = &info.agent_id {
+        builder = builder.start_tag().tag_str("agent-id").tag_str(agent_id);
+    }
     builder = builder
         .start_tag()
         .tag_str("source")
@@ -1396,15 +1412,19 @@ fn subagent_event_at(
 ///
 /// An unknown `status` reads as `Running`, and content that isn't
 /// [`SubagentContent`] JSON is kept whole as the description. Subagent-internal
-/// tool results are not on the wire, so `tool_results` is empty.
+/// tool results are not on the wire, so `tool_results` is empty. A note
+/// without an `agent-id` tag or a transcript (one written before either
+/// existed) decodes with neither.
 pub fn decode_subagent_note(note: &nostrdb::Note) -> Option<crate::messages::SubagentInfo> {
-    use crate::messages::{SubagentInfo, SubagentStatus};
+    use crate::messages::{SubagentInfo, SubagentStatus, SubagentTranscript};
 
     let task_id = get_tag_value(note, "task-id")?.to_string();
     let content = serde_json::from_str::<SubagentContent>(note.content()).unwrap_or_else(|_| {
         SubagentContent {
             description: note.content().to_string(),
             output: None,
+            transcript: Vec::new(),
+            transcript_dropped: false,
         }
     });
     Some(SubagentInfo {
@@ -1420,6 +1440,8 @@ pub fn decode_subagent_note(note: &nostrdb::Note) -> Option<crate::messages::Sub
         max_output_size: 4000,
         tool_results: Vec::new(),
         background: get_tag_value(note, "background") == Some("true"),
+        agent_id: get_tag_value(note, "agent-id").map(str::to_string),
+        transcript: SubagentTranscript::from_runs(content.transcript, content.transcript_dropped),
     })
 }
 
@@ -2760,6 +2782,8 @@ mod tests {
             max_output_size: 4000,
             tool_results: Vec::new(),
             background: false,
+            agent_id: None,
+            transcript: Default::default(),
         };
         let event = build_subagent_event(&info, "s", &mut ThreadingState::new(), &sk).unwrap();
         assert!(event.note_json.len() <= MAX_WIRE_EVENT_BYTES);
@@ -2767,6 +2791,38 @@ mod tests {
         let output = content.output.expect("a finished subagent has output");
         assert!(!output.is_empty());
         assert!(info.output.starts_with(&output));
+    }
+
+    /// A transcript bigger than a note keeps its newest whole runs, says the
+    /// rest were dropped, and the note still fits.
+    #[test]
+    fn subagent_transcript_fits_the_wire() {
+        use crate::messages::{SubagentTranscript, TranscriptKind};
+        let sk = test_secret_key();
+        let mut transcript = SubagentTranscript::default();
+        for i in 0..8 {
+            transcript.push(TranscriptKind::Text, &format!("{i}{}", escape_heavy(4096)));
+        }
+        let info = crate::messages::SubagentInfo {
+            task_id: "t".to_string(),
+            description: "d".to_string(),
+            subagent_type: "Explore".to_string(),
+            status: crate::messages::SubagentStatus::Completed,
+            output: "done".to_string(),
+            max_output_size: 4000,
+            tool_results: Vec::new(),
+            background: false,
+            agent_id: Some("a1".to_string()),
+            transcript,
+        };
+        let event = build_subagent_event(&info, "s", &mut ThreadingState::new(), &sk).unwrap();
+        assert!(event.note_json.len() <= MAX_WIRE_EVENT_BYTES);
+        let content: SubagentContent = serde_json::from_str(&note_content(&event)).unwrap();
+        assert!(content.transcript_dropped);
+        let last = content.transcript.last().expect("the newest run is kept");
+        assert!(last.text.starts_with('7'));
+        assert!(content.transcript.len() < 8);
+        assert!(event.note_json.contains(r#"["agent-id","a1"]"#));
     }
 
     /// A message that fits is one note, with no split tag.
@@ -3049,6 +3105,8 @@ mod tests {
                 max_output_size: 4000,
                 tool_results: Vec::new(),
                 background: false,
+                agent_id: None,
+                transcript: Default::default(),
             },
             session_id,
             &mut threading,

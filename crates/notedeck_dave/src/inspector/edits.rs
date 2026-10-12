@@ -211,6 +211,8 @@ mod tests {
             max_output_size: 0,
             tool_results: updates.into_iter().map(|u| result(Some(u))).collect(),
             background: false,
+            agent_id: None,
+            transcript: Default::default(),
         })
     }
 

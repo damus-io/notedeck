@@ -860,6 +860,146 @@ pub struct SubagentInfo {
     /// wake-up turn, not on its launch tool result. The UI renders it as
     /// "running in background" until the wake-up lands.
     pub background: bool,
+    /// The CLI's id for this subagent, from the `agentId: <id>` trailer of its
+    /// Task/Agent tool result: what `SendMessage` addresses to continue it.
+    /// `None` until that result lands, and for a CLI that doesn't send one.
+    pub agent_id: Option<String>,
+    /// The subagent's own text and thinking, forwarded by the CLI
+    /// (`--forward-subagent-text`) instead of being merged into the parent's
+    /// stream. Bounded; see [`SubagentTranscript`].
+    pub transcript: SubagentTranscript,
+}
+
+/// Whether a [`TranscriptRun`] is prose or extended thinking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptKind {
+    Text,
+    Thinking,
+}
+
+/// One text or thinking block a subagent wrote.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TranscriptRun {
+    pub kind: TranscriptKind,
+    pub text: String,
+}
+
+/// A subagent's forwarded text and thinking, oldest first, capped at
+/// [`MAX_BYTES`](Self::MAX_BYTES) of text.
+///
+/// Past the cap the oldest runs are dropped and [`dropped`](Self::dropped) is
+/// set, so a view can show [`DROPPED_MARKER`](Self::DROPPED_MARKER) where they
+/// were. A subagent can write far more than a chat row should hold, and the
+/// newest output is the part worth keeping.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubagentTranscript {
+    runs: std::collections::VecDeque<TranscriptRun>,
+    /// Sum of the runs' text lengths, kept so a push doesn't re-count.
+    bytes: usize,
+    dropped: bool,
+}
+
+impl SubagentTranscript {
+    /// How much text a transcript keeps in memory.
+    pub const MAX_BYTES: usize = 64 * 1024;
+
+    /// What a view shows in place of runs dropped past the cap.
+    pub const DROPPED_MARKER: &'static str = "…earlier output dropped";
+
+    /// A transcript of `runs`, oldest first, trimmed to
+    /// [`MAX_BYTES`](Self::MAX_BYTES). `dropped` says runs before these were
+    /// already lost (as a note read off the wire says).
+    pub fn from_runs(runs: impl IntoIterator<Item = TranscriptRun>, dropped: bool) -> Self {
+        let mut transcript = Self {
+            dropped,
+            ..Self::default()
+        };
+        for run in runs {
+            transcript.push(run.kind, &run.text);
+        }
+        transcript
+    }
+
+    /// Append one block as a new run, dropping the oldest runs past the cap.
+    /// A single block bigger than the cap keeps only its tail. Empty text is
+    /// ignored.
+    pub fn push(&mut self, kind: TranscriptKind, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let text = if text.len() > Self::MAX_BYTES {
+            self.dropped = true;
+            let mut start = text.len() - Self::MAX_BYTES;
+            while !text.is_char_boundary(start) {
+                start += 1;
+            }
+            &text[start..]
+        } else {
+            text
+        };
+        self.bytes += text.len();
+        self.runs.push_back(TranscriptRun {
+            kind,
+            text: text.to_string(),
+        });
+        while self.bytes > Self::MAX_BYTES {
+            let Some(oldest) = self.runs.pop_front() else {
+                break;
+            };
+            self.bytes -= oldest.text.len();
+            self.dropped = true;
+        }
+    }
+
+    /// The runs, oldest first.
+    pub fn runs(&self) -> impl ExactSizeIterator<Item = &TranscriptRun> + DoubleEndedIterator {
+        self.runs.iter()
+    }
+
+    /// Whether runs older than the first were dropped past the cap.
+    pub fn dropped(&self) -> bool {
+        self.dropped
+    }
+
+    /// Whether there is nothing to show (no runs and nothing dropped).
+    pub fn is_empty(&self) -> bool {
+        self.runs.is_empty() && !self.dropped
+    }
+
+    /// Total text bytes held.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// The newest whole runs whose text fits in `cap` bytes, oldest first,
+    /// and whether anything older was left out (or already dropped). This is
+    /// what a size-limited note carries.
+    pub fn tail(&self, cap: usize) -> TranscriptTail<'_> {
+        let mut used = 0;
+        let mut kept = 0;
+        for run in self.runs.iter().rev() {
+            if used + run.text.len() > cap {
+                break;
+            }
+            used += run.text.len();
+            kept += 1;
+        }
+        let skip = self.runs.len() - kept;
+        TranscriptTail {
+            runs: self.runs.range(skip..),
+            dropped: self.dropped || skip > 0,
+        }
+    }
+}
+
+/// The newest part of a [`SubagentTranscript`] that fits a byte cap, from
+/// [`SubagentTranscript::tail`].
+pub struct TranscriptTail<'a> {
+    /// The kept runs, oldest first.
+    pub runs: std::collections::vec_deque::Iter<'a, TranscriptRun>,
+    /// Whether older runs were left out.
+    pub dropped: bool,
 }
 
 /// An assistant message with incremental markdown parsing support.
@@ -1403,6 +1543,21 @@ pub enum DaveApiResponse {
     },
     /// A subagent's tokens, tool uses and last tool moved.
     SubagentProgress(SubagentProgress),
+    /// One text or thinking block the subagent `task_id` wrote, routed here
+    /// by its `parent_tool_use_id` instead of into the parent's stream. A
+    /// background subagent's blocks all arrive when it finishes (the CLI
+    /// holds them until then).
+    SubagentText {
+        task_id: String,
+        kind: TranscriptKind,
+        text: String,
+    },
+    /// The CLI named the subagent `task_id`: the `agentId` from its tool
+    /// result's trailer (see [`SubagentInfo::agent_id`]).
+    SubagentIdentified {
+        task_id: String,
+        agent_id: String,
+    },
     /// Conversation compaction started
     CompactionStarted,
     /// Conversation compaction completed with token info
@@ -1535,8 +1690,9 @@ mod tests {
     use super::{
         denial_marker_for_model, denial_message_for_model, permission_reply_message,
         turn_exit_message_for_model, PermissionRequest, PermissionResponseType, PermissionView,
-        QuestionSetInput, UserQuestion, DEFAULT_DENY_REASON, DEFAULT_EXIT_REASON,
-        DEFAULT_REMOTE_DENY_REASON, DEFAULT_REMOTE_EXIT_REASON,
+        QuestionSetInput, SubagentTranscript, TranscriptKind, TranscriptRun, UserQuestion,
+        DEFAULT_DENY_REASON, DEFAULT_EXIT_REASON, DEFAULT_REMOTE_DENY_REASON,
+        DEFAULT_REMOTE_EXIT_REASON,
     };
     use serde_json::json;
     use uuid::Uuid;
@@ -1819,5 +1975,62 @@ mod tests {
         assert_eq!(v["decision"], "denied");
         // The permission UI view isn't serialized.
         assert!(v.get("view").is_none());
+    }
+
+    fn texts(transcript: &SubagentTranscript) -> Vec<&str> {
+        transcript.runs().map(|r| r.text.as_str()).collect()
+    }
+
+    /// Runs keep their order and kind; past the cap the oldest go first and
+    /// the transcript says so.
+    #[test]
+    fn transcript_drops_oldest_runs_past_the_cap() {
+        let mut t = SubagentTranscript::default();
+        t.push(TranscriptKind::Thinking, "plan");
+        t.push(TranscriptKind::Text, "");
+        t.push(TranscriptKind::Text, "answer");
+        assert_eq!(texts(&t), ["plan", "answer"], "empty text adds no run");
+        assert_eq!(t.runs().next().unwrap().kind, TranscriptKind::Thinking);
+        assert!(!t.dropped());
+
+        let half = "x".repeat(SubagentTranscript::MAX_BYTES / 2);
+        t.push(TranscriptKind::Text, &half);
+        t.push(TranscriptKind::Text, &half);
+        assert_eq!(t.runs().len(), 2, "plan and answer were pushed out");
+        assert_eq!(t.bytes(), SubagentTranscript::MAX_BYTES);
+        assert!(t.dropped());
+    }
+
+    /// One block bigger than the cap keeps its tail, cut on a char boundary.
+    #[test]
+    fn transcript_keeps_the_tail_of_an_oversized_block() {
+        let mut t = SubagentTranscript::default();
+        let big = format!("{}end", "é".repeat(SubagentTranscript::MAX_BYTES));
+        t.push(TranscriptKind::Text, &big);
+        let kept = &t.runs().next().unwrap().text;
+        assert!(kept.len() <= SubagentTranscript::MAX_BYTES);
+        assert!(kept.ends_with("end"));
+        assert!(t.dropped());
+    }
+
+    /// The wire tail keeps whole newest runs that fit and flags the rest.
+    #[test]
+    fn transcript_tail_keeps_newest_whole_runs() {
+        let t = SubagentTranscript::from_runs(
+            ["one", "two", "three"].map(|text| TranscriptRun {
+                kind: TranscriptKind::Text,
+                text: text.to_string(),
+            }),
+            false,
+        );
+        let tail = t.tail(9);
+        assert!(tail.dropped, "\"one\" was left out");
+        assert_eq!(
+            tail.runs.map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["two", "three"]
+        );
+        let whole = t.tail(usize::MAX);
+        assert!(!whole.dropped);
+        assert_eq!(whole.runs.len(), 3);
     }
 }

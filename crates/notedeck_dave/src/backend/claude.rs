@@ -9,7 +9,7 @@ use crate::messages::{
     denial_marker_for_model, denial_message_for_model, permission_reply_message,
     turn_exit_message_for_model, CliState, CompactionInfo, DaveApiResponse, PermissionResponse,
     RateLimitInfo, RateLimitStatus, RateLimitWindow, RateLimitWindowKind, RunningTool,
-    SubagentInfo, SubagentProgress, SubagentStatus, TaskUsage,
+    SubagentInfo, SubagentProgress, SubagentStatus, TaskUsage, TranscriptKind,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -97,6 +97,67 @@ fn is_background_task(input: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
+/// A Task/Agent tool result split at its `agentId:` trailer line.
+#[derive(Debug, PartialEq, Eq)]
+struct AgentIdTrailer<'a> {
+    /// The subagent's id, what `SendMessage` addresses.
+    agent_id: &'a str,
+    /// The result with the trailer line taken out, for display.
+    body: String,
+}
+
+/// Find the `agentId: <id> (…)` line the CLI appends to a Task/Agent tool
+/// result (both a foreground hand-back and a background launch), and split it
+/// off. `None` when there is no such line or its id is empty or not
+/// alphanumeric; the caller then shows the text as it is.
+fn split_agent_id(text: &str) -> Option<AgentIdTrailer<'_>> {
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        let Some(rest) = line.strip_prefix("agentId: ") else {
+            continue;
+        };
+        let agent_id = rest.split_whitespace().next().unwrap_or("");
+        if agent_id.is_empty() || !agent_id.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return None;
+        }
+        let body = format!("{}{}", &text[..start], &text[offset..]);
+        return Some(AgentIdTrailer {
+            agent_id,
+            body: body.trim_end().to_string(),
+        });
+    }
+    None
+}
+
+/// Send each text and thinking block of a subagent's forwarded assistant
+/// message to its transcript, keyed by the message's `parent_tool_use_id`
+/// (the launching Task/Agent tool_use id, which keys the subagent's row).
+fn send_subagent_blocks(
+    task_id: &str,
+    content: &[ContentBlock],
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    waker: &Waker,
+) {
+    for block in content {
+        let (kind, text) = match block {
+            ContentBlock::Text(t) => (TranscriptKind::Text, &t.text),
+            ContentBlock::Thinking(t) => (TranscriptKind::Thinking, &t.thinking),
+            _ => continue,
+        };
+        if text.is_empty() {
+            continue;
+        }
+        let _ = response_tx.send(DaveApiResponse::SubagentText {
+            task_id: task_id.to_string(),
+            kind,
+            text: text.clone(),
+        });
+        waker.wake();
+    }
+}
+
 /// Process a single tool result: complete any in-flight subagent, fold the
 /// harness task list into the sidebar, and forward the result to the UI.
 ///
@@ -118,16 +179,11 @@ fn handle_tool_result(
     };
     let result_value = tool_result_content_to_value(&tool_result.content);
 
-    // A foreground Task/Agent completion ends the current subagent. A background
-    // subagent's launch produces an immediate tool result ("Async agent
-    // launched successfully") that is NOT completion — it completes later via
-    // `task_notification`, so skip it here.
-    if is_subagent_tool(&tool_name) && !is_background_task(&tool_input) {
-        let result_text =
-            extract_response_content(&result_value).unwrap_or_else(|| "completed".to_string());
-        shared::complete_subagent(
+    if is_subagent_tool(&tool_name) {
+        handle_subagent_result(
             tool_use_id,
-            &result_text,
+            &tool_input,
+            &result_value,
             subagent_stack,
             response_tx,
             waker,
@@ -150,6 +206,50 @@ fn handle_tool_result(
         parent_override,
         subagent_stack,
         Some(tool_use_id),
+        response_tx,
+        waker,
+    );
+}
+
+/// A Task/Agent tool result: name the subagent from its `agentId` trailer,
+/// and complete it unless the result only confirms a background launch.
+fn handle_subagent_result(
+    tool_use_id: &str,
+    tool_input: &serde_json::Value,
+    result_value: &serde_json::Value,
+    subagent_stack: &mut Vec<String>,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    waker: &Waker,
+) {
+    let text = extract_response_content(result_value);
+    // Both a hand-back and a background launch carry the trailer; take the id
+    // before `complete_subagent` truncates the text, and keep the trailer out
+    // of what is shown.
+    let trailer = text.as_deref().and_then(split_agent_id);
+    if let Some(trailer) = &trailer {
+        let _ = response_tx.send(DaveApiResponse::SubagentIdentified {
+            task_id: tool_use_id.to_string(),
+            agent_id: trailer.agent_id.to_string(),
+        });
+        waker.wake();
+    }
+
+    // A foreground Task/Agent completion ends the current subagent. A background
+    // subagent's launch produces an immediate tool result ("Async agent
+    // launched successfully") that is NOT completion — it completes later via
+    // `task_notification`, so skip it here.
+    if is_background_task(tool_input) {
+        return;
+    }
+    let result_text = match (trailer, text.as_deref()) {
+        (Some(trailer), _) => trailer.body,
+        (None, Some(text)) => text.to_string(),
+        (None, None) => "completed".to_string(),
+    };
+    shared::complete_subagent(
+        tool_use_id,
+        &result_text,
+        subagent_stack,
         response_tx,
         waker,
     );
@@ -199,6 +299,8 @@ fn handle_task_started(
         max_output_size: 4000,
         tool_results: Vec::new(),
         background: true,
+        agent_id: None,
+        transcript: Default::default(),
     };
     let _ = response_tx.send(DaveApiResponse::SubagentSpawned(subagent_info));
     waker.wake();
@@ -336,11 +438,24 @@ fn handle_stream_message(
 ) {
     match message {
         ClaudeMessage::Assistant(assistant_msg) => {
+            // A subagent's own message (forwarded with its parent's tool_use
+            // id): its prose and thinking belong to its transcript, and its
+            // usage is the subagent's context window, not this session's.
+            let subagent_parent = assistant_msg.parent_tool_use_id.as_deref();
+            if let Some(task_id) = subagent_parent {
+                send_subagent_blocks(task_id, &assistant_msg.message.content, response_tx, waker);
+            }
+
             // Emit a per-turn UsageUpdate so the context bar
             // reflects the current context window state.
             // input_tokens alone is wrong when caching is active —
             // actual context = input + cache_creation + cache_read.
-            if let Some(usage) = &assistant_msg.message.usage {
+            if let Some(usage) = assistant_msg
+                .message
+                .usage
+                .as_ref()
+                .filter(|_| subagent_parent.is_none())
+            {
                 let extract = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
                 let usage_info = crate::messages::UsageInfo {
                     input_tokens: extract("input_tokens"),
@@ -385,6 +500,8 @@ fn handle_stream_message(
                             max_output_size: 4000,
                             tool_results: Vec::new(),
                             background: false,
+                            agent_id: None,
+                            transcript: Default::default(),
                         };
                         let _ = response_tx.send(DaveApiResponse::SubagentSpawned(subagent_info));
                         waker.wake();
@@ -419,6 +536,10 @@ fn handle_stream_message(
                 }
             }
         }
+        // A subagent's partial deltas are not the parent's text. Its whole
+        // blocks arrive as forwarded assistant messages (above), so the
+        // deltas are dropped rather than routed twice.
+        ClaudeMessage::StreamEvent(event) if event.parent_tool_use_id.is_some() => {}
         ClaudeMessage::StreamEvent(event) => {
             if let Some(event_type) = event.event.get("type").and_then(|v| v.as_str()) {
                 if event_type == "content_block_delta" {
@@ -1077,13 +1198,23 @@ fn session_base_options(
         tracing::trace!("Claude CLI stderr: {}", msg);
     });
 
-    ClaudeAgentOptions::builder()
+    let mut options = ClaudeAgentOptions::builder()
         .stderr_callback(stderr_callback)
         .can_use_tool(can_use_tool)
         .include_partial_messages(true)
         .max_buffer_size(MAX_CLI_LINE_BYTES)
-        .build()
+        .build();
+    // A subagent's own text and thinking arrive as whole assistant messages
+    // tagged with its `parent_tool_use_id`, so they can fill its transcript
+    // (see `send_subagent_blocks`) rather than vanish.
+    options
+        .extra_args
+        .insert(FORWARD_SUBAGENT_TEXT_FLAG.to_string(), None);
+    options
 }
+
+/// The CLI flag that forwards subagent text and thinking blocks.
+const FORWARD_SUBAGENT_TEXT_FLAG: &str = "forward-subagent-text";
 
 /// Session actor task that owns the session's Claude CLI.
 ///
@@ -2775,6 +2906,152 @@ cat > /dev/null
                 })
                 .collect()
         }
+    }
+
+    /// A foreground hand-back as the CLI writes it (captured from a real run).
+    const HAND_BACK: &str = "[Subagent hand-back] The report follows:\n  hello from the subagent\nagentId: af234d4591821f8d0 (use SendMessage with to: 'af234d4591821f8d0', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 31383\ntool_uses: 0\nduration_ms: 979</usage>";
+
+    #[test]
+    fn agent_id_trailer_is_split_off() {
+        let trailer = split_agent_id(HAND_BACK).expect("the hand-back names its agent");
+        assert_eq!(trailer.agent_id, "af234d4591821f8d0");
+        assert!(!trailer.body.contains("agentId"));
+        assert!(trailer.body.contains("hello from the subagent"));
+        assert!(trailer.body.ends_with("</usage>"), "lines after it stay");
+
+        // A background launch puts it mid-text, with a different note after it.
+        let launch = "Async agent launched successfully.\nagentId: af090205c8d6020aa (internal ID - do not mention to user.)\nThe agent is working in the background.";
+        let trailer = split_agent_id(launch).unwrap();
+        assert_eq!(trailer.agent_id, "af090205c8d6020aa");
+        assert_eq!(
+            trailer.body,
+            "Async agent launched successfully.\nThe agent is working in the background."
+        );
+    }
+
+    #[test]
+    fn agent_id_trailer_absent_or_malformed_is_none() {
+        assert_eq!(split_agent_id("just a report"), None);
+        assert_eq!(split_agent_id("report\nagentId: \nmore"), None);
+        assert_eq!(split_agent_id("report\nagentId: <id>"), None);
+        assert_eq!(
+            split_agent_id("the agentId: abc is quoted mid-line"),
+            None,
+            "only a line that starts with it is the trailer"
+        );
+    }
+
+    /// A subagent's hand-back names it and completes it without the trailer.
+    #[test]
+    fn subagent_result_identifies_and_strips_the_trailer() {
+        let mut harness = StreamHarness::new();
+        harness.feed(serde_json::json!({
+            "type": "assistant",
+            "message": { "content": [
+                tool_use("toolu_agent", "Agent", serde_json::json!({ "description": "hello", "prompt": "hi" })),
+            ]},
+        }));
+        harness.feed(user_with(vec![tool_result("toolu_agent", HAND_BACK)]));
+
+        let mut agent_id = None;
+        let mut completed = None;
+        for response in harness.rx.try_iter() {
+            match response {
+                DaveApiResponse::SubagentIdentified {
+                    task_id,
+                    agent_id: id,
+                } => {
+                    assert_eq!(task_id, "toolu_agent");
+                    assert!(completed.is_none(), "named before it completes");
+                    agent_id = Some(id);
+                }
+                DaveApiResponse::SubagentCompleted { task_id, result } => {
+                    assert_eq!(task_id, "toolu_agent");
+                    completed = Some(result);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(agent_id.as_deref(), Some("af234d4591821f8d0"));
+        let completed = completed.expect("a foreground hand-back completes");
+        assert!(completed.contains("hello from the subagent"));
+        assert!(!completed.contains("agentId"));
+    }
+
+    /// Forwarded subagent prose and thinking go to the subagent, never the
+    /// parent's chat: whole blocks become `SubagentText`, its partial deltas
+    /// are dropped, and its usage doesn't move the parent's context bar.
+    #[test]
+    fn subagent_text_routes_to_the_subagent_not_the_parent() {
+        let mut harness = StreamHarness::new();
+        harness.feed(serde_json::json!({
+            "type": "stream_event",
+            "uuid": "u1",
+            "session_id": "s",
+            "parent_tool_use_id": "toolu_agent",
+            "event": { "type": "content_block_delta", "delta": { "type": "text_delta", "text": "hel" } },
+        }));
+        harness.feed(serde_json::json!({
+            "type": "assistant",
+            "parent_tool_use_id": "toolu_agent",
+            "message": {
+                "content": [
+                    { "type": "thinking", "thinking": "they want a greeting", "signature": "" },
+                    { "type": "text", "text": "hello from the subagent" },
+                ],
+                "usage": { "input_tokens": 2, "output_tokens": 1 },
+            },
+        }));
+        // The parent's own delta still streams.
+        harness.feed(serde_json::json!({
+            "type": "stream_event",
+            "uuid": "u2",
+            "session_id": "s",
+            "event": { "type": "content_block_delta", "delta": { "type": "text_delta", "text": "parent" } },
+        }));
+
+        let mut tokens = Vec::new();
+        let mut blocks = Vec::new();
+        for response in harness.rx.try_iter() {
+            match response {
+                DaveApiResponse::Token(t) => tokens.push(t),
+                DaveApiResponse::SubagentText {
+                    task_id,
+                    kind,
+                    text,
+                } => {
+                    assert_eq!(task_id, "toolu_agent");
+                    blocks.push((kind, text));
+                }
+                DaveApiResponse::UsageUpdate(_) => panic!("subagent usage reached the parent"),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            tokens,
+            ["parent"],
+            "no subagent prose in the parent's stream"
+        );
+        assert_eq!(
+            blocks,
+            [
+                (TranscriptKind::Thinking, "they want a greeting".to_string()),
+                (TranscriptKind::Text, "hello from the subagent".to_string()),
+            ]
+        );
+    }
+
+    /// Every session's CLI is launched forwarding subagent text.
+    #[test]
+    fn session_cli_forwards_subagent_text() {
+        let can_use_tool: claude_agent_sdk_rs::CanUseToolCallback =
+            Arc::new(|_, _, _| Box::pin(async { unreachable!() }));
+        let options = session_base_options(can_use_tool);
+        assert_eq!(
+            options.extra_args.get(FORWARD_SUBAGENT_TEXT_FLAG),
+            Some(&None),
+            "passed as a bare --forward-subagent-text"
+        );
     }
 
     fn tool_use(id: &str, name: &str, input: serde_json::Value) -> serde_json::Value {

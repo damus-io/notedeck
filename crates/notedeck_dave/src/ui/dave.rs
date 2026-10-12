@@ -4007,6 +4007,8 @@ mod tests {
                 tool_use_id: None,
             }],
             background: false,
+            agent_id: None,
+            transcript: Default::default(),
         };
         let request = PermissionRequest::new(
             Uuid::new_v4(),
@@ -4144,6 +4146,8 @@ mod tests {
             max_output_size: 4096,
             tool_results: Vec::new(),
             background: true,
+            agent_id: None,
+            transcript: Default::default(),
         };
         let mut nav = BlockNav::default();
         DaveUi::executed_tool_ui(&skill, &mut nav, ui);

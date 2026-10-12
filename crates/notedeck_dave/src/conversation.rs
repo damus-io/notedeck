@@ -1959,6 +1959,8 @@ mod tests {
             max_output_size: 4000,
             tool_results: Vec::new(),
             background: false,
+            agent_id: None,
+            transcript: Default::default(),
         };
         let spawned =
             session_events::build_subagent_event(&info, session_id_str, &mut threading, &sk)

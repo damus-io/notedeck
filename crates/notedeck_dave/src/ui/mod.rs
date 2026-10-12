@@ -2735,6 +2735,8 @@ mod tests {
                 max_output_size: 4000,
                 tool_results: Vec::new(),
                 background,
+                agent_id: None,
+                transcript: Default::default(),
             })
         };
         let session = state.session_manager.get_active_mut().unwrap();
@@ -3093,6 +3095,8 @@ mod tests {
                 max_output_size: 4000,
                 tool_results: vec![edit("/tmp/inspector/src/main.rs", "x\n", "y\n")],
                 background: false,
+                agent_id: None,
+                transcript: Default::default(),
             }),
             row(edit("/etc/outside.conf", "on\n", "off\n")),
         ]);

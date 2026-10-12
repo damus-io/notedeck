@@ -69,6 +69,8 @@ fn seed_subagent(
         max_output_size: 4000,
         tool_results: Vec::new(),
         background,
+        agent_id: None,
+        transcript: Default::default(),
     };
     let ev = build_subagent_event(&info, SESSION, threading, &SECKEY).expect("subagent event");
     ingest_json(ndb, &ev.note_json);

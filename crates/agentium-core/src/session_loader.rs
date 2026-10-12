@@ -852,6 +852,15 @@ pub fn fold_subagent(messages: &mut [Message], msg: Message) -> Option<Message> 
     existing.description = update.description;
     existing.subagent_type = update.subagent_type;
     existing.background = update.background;
+    // Each note carries the whole id and transcript tail it had; a note
+    // without them (an older one, or a spawn) doesn't erase what an earlier
+    // note brought.
+    if update.agent_id.is_some() {
+        existing.agent_id = update.agent_id;
+    }
+    if !update.transcript.is_empty() {
+        existing.transcript = update.transcript;
+    }
     None
 }
 
@@ -2511,6 +2520,8 @@ mod tests {
             max_output_size: 4000,
             tool_results: Vec::new(),
             background: true,
+            agent_id: None,
+            transcript: Default::default(),
         }
     }
 
@@ -2589,6 +2600,56 @@ mod tests {
             ],
             "rows keep spawn order and take the latest status and output"
         );
+    }
+
+    /// A completed subagent's `agent-id` tag and transcript survive the
+    /// note round trip and fold onto the row its spawn note made, while the
+    /// spawn note, written without either like a note from before they
+    /// existed, decodes with none (headway:dave/dance-venture-sure).
+    #[tokio::test]
+    async fn subagent_agent_id_and_transcript_round_trip() {
+        use crate::messages::{SubagentStatus, SubagentTranscript, TranscriptKind};
+        use crate::session_events::build_subagent_event;
+
+        let sk = test_secret_key();
+        let session_id = "subagent-transcript";
+        let mut threading = crate::session_events::ThreadingState::new();
+        let spawned = subagent_info("t", SubagentStatus::Running, "");
+        let mut done = subagent_info("t", SubagentStatus::Completed, "hello");
+        done.agent_id = Some("af234d4591821f8d0".to_string());
+        done.transcript
+            .push(TranscriptKind::Thinking, "they want a greeting");
+        done.transcript
+            .push(TranscriptKind::Text, "hello from the subagent");
+
+        let load = |events: Vec<String>| async move {
+            let tmp_dir = TempDir::new().unwrap();
+            let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+            let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+            ingest_all(&ndb, &filter, &events).await;
+            let txn = Transaction::new(&ndb).unwrap();
+            let mut loaded = load_session_messages(&ndb, &txn, session_id);
+            assert_eq!(loaded.messages.len(), 1, "one subagent row");
+            match loaded.messages.remove(0) {
+                Message::Subagent(s) => s,
+                other => panic!("expected a subagent row, got {other:?}"),
+            }
+        };
+        let spawn_note = build_subagent_event(&spawned, session_id, &mut threading, &sk)
+            .unwrap()
+            .to_event_json();
+        let done_note = build_subagent_event(&done, session_id, &mut threading, &sk)
+            .unwrap()
+            .to_event_json();
+
+        let row = load(vec![spawn_note.clone()]).await;
+        assert_eq!(row.agent_id, None);
+        assert_eq!(row.transcript, SubagentTranscript::default());
+
+        let row = load(vec![spawn_note, done_note]).await;
+        assert_eq!(row.agent_id.as_deref(), Some("af234d4591821f8d0"));
+        assert_eq!(row.transcript, done.transcript);
+        assert_eq!(row.output, "hello");
     }
 
     /// A still-running subagent publishes no output (streamed output never goes

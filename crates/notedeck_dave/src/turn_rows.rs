@@ -174,6 +174,8 @@ mod tests {
             max_output_size: 1000,
             tool_results: vec![],
             background: false,
+            agent_id: None,
+            transcript: Default::default(),
         })
     }
 
