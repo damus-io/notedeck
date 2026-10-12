@@ -667,6 +667,8 @@ enum InlineEdit {
     AddColumn,
     /// Naming a new board in the switcher.
     NewBoard,
+    /// Confirming the active board's deletion in the switcher.
+    DeleteBoard,
 }
 
 /// Something the board UI asks of the app, which only the app can do: it
@@ -688,14 +690,19 @@ pub enum BoardEffect {
 }
 
 /// A request from the board switcher, raised as a [`BoardEffect::Nav`] for the
-/// app to act on. Switching and creating are mutually exclusive, so one enum
-/// models the request rather than a clutch of `Option`s.
+/// app to act on. Switching, creating and deleting are mutually exclusive, so
+/// one enum models the request rather than a clutch of `Option`s.
 pub enum BoardNav {
     /// Switch the active board to this coordinate (owner + slug), so a joined
     /// board owned by a co-member selects distinctly from one of yours.
     Switch(event::BoardCoord),
     /// Create (seed) a new board with this display title, then switch to it.
     Create(String),
+    /// Delete the board at this coordinate — the active one, which the switcher
+    /// offers to delete only when the account owns it and has another board to
+    /// land on — then switch to another board. A reversible tombstone; see
+    /// [`BoardAction::DeleteBoard`].
+    Delete(event::BoardCoord),
 }
 
 /// Whether a cross-board card request relocates the card or shares it.
@@ -908,8 +915,15 @@ fn board_pane_ui(
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
             // Board switcher: the active board's title as a dropdown listing the
-            // account's other boards, plus a "+ New board" composer.
-            board_switcher(ui, theme, view, boards, state);
+            // account's other boards, plus a "+ New board" composer and — on a
+            // board this account owns, when it has another to land on — a
+            // "Delete board…" entry.
+            let deletable = app_ctx.accounts.selected_filled().is_some()
+                && &view.author == app_ctx.accounts.selected_account_pubkey().bytes()
+                && boards
+                    .iter()
+                    .any(|b| b.id != view.id || b.owner != view.author);
+            board_switcher(ui, theme, view, boards, deletable, state);
             ui.add_space(SPACING_SM);
 
             // Board header: how many cards it holds, or — when narrowed — how many
@@ -1055,7 +1069,7 @@ pub fn unfolded_board_ui(
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
-            board_switcher(ui, theme, view, boards, state);
+            board_switcher(ui, theme, view, boards, false, state);
             ui.add_space(SPACING_SM);
             ui.label(egui::RichText::new(message).color(theme.text_muted));
         });
