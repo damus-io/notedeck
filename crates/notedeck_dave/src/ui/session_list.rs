@@ -1,7 +1,10 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
+use std::sync::Arc;
+
 use egui::{Align, Color32, Layout, Pos2, Sense};
+use headway::title::TitleParts;
 use nostrdb::Transaction;
 use notedeck::NoteContext;
 use notedeck_ui::app_images;
@@ -10,7 +13,7 @@ use crate::agent_status::{paint_status_bar, stale_color, AgentStatus, STATUS_BAR
 use crate::collapse_state::CollapseState;
 use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
-use crate::session::{now_unix, SessionId, SessionManager};
+use crate::session::{now_unix, ChatSession, SessionId, SessionManager};
 use crate::ui::keybind_hint::{keybind_hint, paint_keybind_hint, KeybindHint};
 use crate::ui::SquareLoadingSpinner;
 
@@ -188,6 +191,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
 
     fn sessions_list_ui(&mut self, ui: &mut egui::Ui) -> Option<SessionListAction> {
         let mut action = None;
+        self.refresh_card_titles(ui.input(|i| i.time));
         let active_id = self.session_manager.active_id();
         // Follow the active session when something other than a click moves
         // it (normal mode's gg / G / j / k, dd, Ctrl+J / K, the focus queue),
@@ -230,9 +234,14 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             ui.add_space(4.0);
             for id in chat_ids {
                 if let Some(session) = self.session_manager.get(id) {
-                    if let Some(a) =
-                        self.render_session_item(ui, session, visual_index, active_id, None, cycle)
-                    {
+                    if let Some(a) = self.render_session_item(
+                        ui,
+                        session,
+                        visual_index,
+                        active_id,
+                        RowKind::Full { cwd: None },
+                        cycle,
+                    ) {
                         action = Some(a);
                     }
                     visual_index += 1;
@@ -249,7 +258,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         session: &crate::session::ChatSession,
         index: usize,
         active_id: Option<SessionId>,
-        cwd_display: Option<&str>,
+        kind: RowKind<'_>,
         cycle: CycleHints,
     ) -> Option<SessionListAction> {
         let is_active = Some(session.id) == active_id;
@@ -274,43 +283,61 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         } else {
             session.details.display_title()
         };
-        // Total +/- lines vs HEAD, shown bottom-right on standalone (cwd) rows
-        // so a dirty worktree is obvious at a glance. None unless the repo has
-        // tracked changes.
-        let git_lines = session
-            .agentic
-            .as_ref()
-            .and_then(|a| a.git_status.current())
-            .and_then(|r| r.as_ref().ok())
-            .map(|d| (d.added_lines, d.deleted_lines))
-            .filter(|(added, deleted)| *added > 0 || *deleted > 0);
         let RowResponse {
             response,
             action: dot_action,
-        } = if session.ai_mode == AiMode::Agentic {
-            self.agent_row_ui(
+        } = match (session.ai_mode, kind) {
+            (AiMode::Agentic, RowKind::Full { cwd }) => {
+                // A session titled with its card's ref is listed under the
+                // card's current title, once one has been looked up.
+                let card = (!is_renaming)
+                    .then(|| session.details.title_ref())
+                    .flatten()
+                    .and_then(|card_ref| {
+                        let title = self.session_manager.card_titles.get(card_ref)?;
+                        Some(CardTitle { card_ref, title })
+                    });
+                self.agent_row_ui(
+                    ui,
+                    AgentRow {
+                        session_id: session.id,
+                        title: display_title,
+                        card,
+                        cwd_display: cwd,
+                        is_active,
+                        shortcut_hint,
+                        cycle_hint,
+                        status: session.status(),
+                        last_activity: session.last_activity,
+                        queue_priority,
+                        git_lines: git_lines(session),
+                        subagents: session.subagent_count(),
+                    },
+                )
+            }
+            (AiMode::Agentic, RowKind::Nested { ordinal }) => self.nested_row_ui(
+                ui,
+                NestedRow {
+                    session_id: session.id,
+                    title: display_title,
+                    ordinal,
+                    is_active,
+                    shortcut_hint,
+                    cycle_hint,
+                    status: session.status(),
+                    last_activity: session.last_activity,
+                    queue_priority,
+                },
+            ),
+            _ => self.chat_row_ui(
                 ui,
                 session.id,
                 display_title,
-                cwd_display,
-                is_active,
-                shortcut_hint,
-                cycle_hint,
-                session.status(),
-                session.last_activity,
-                queue_priority,
-                git_lines,
-            )
-        } else {
-            self.chat_row_ui(
-                ui,
-                session.id,
-                display_title,
                 is_active,
                 shortcut_hint,
                 cycle_hint,
                 queue_priority,
-            )
+            ),
         };
 
         let mut action = dot_action;
@@ -437,60 +464,87 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         action
     }
 
-    /// Render an agentic session row (status bar, title, focus dot).
+    /// Render an agentic session row: the status bar, the title, a dim meta
+    /// line under it (see [`meta_line`]) and the focus dot.
     ///
-    /// When `cwd_display` is `Some`, the row is taller (48px) and shows the cwd
-    /// path in a second line below the title (used for sessions that are alone
-    /// in their cwd, where the surrounding folder header is suppressed).
-    #[allow(clippy::too_many_arguments)]
-    fn agent_row_ui(
-        &self,
-        ui: &mut egui::Ui,
-        session_id: SessionId,
-        title: &str,
-        cwd_display: Option<&str>,
-        is_active: bool,
-        shortcut_hint: Option<usize>,
-        cycle_hint: Option<&str>,
-        status: AgentStatus,
-        last_activity: Option<u64>,
-        queue_priority: Option<FocusPriority>,
-        git_lines: Option<(usize, usize)>,
-    ) -> RowResponse {
-        let row_height = if cwd_display.is_some() { 48.0 } else { 32.0 };
-        let desired_size = egui::vec2(ui.available_width(), row_height);
-        let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
+    /// A row whose session is titled with its card's ref, with the card's
+    /// title looked up ([`AgentRow::card`]), shows that title as option C: the
+    /// card's code in a narrow column on the left and its headline wrapped to
+    /// at most two lines, the full title on hover. Any other title is one
+    /// line, clipped. When `cwd_display` is `Some` (a session alone in its
+    /// cwd), the cwd path goes on a last line.
+    fn agent_row_ui(&self, ui: &mut egui::Ui, row: AgentRow<'_>) -> RowResponse {
+        let width = ui.available_width();
+        let mut text_start_x = TEXT_LEFT;
+        if row.status == AgentStatus::Pending {
+            text_start_x += PENDING_SPINNER_SLOT + 2.0;
+        }
+        let text_x = text_start_x + if row.card.is_some() { CODE_COLUMN } else { 0.0 };
+        // Laid out before the row is allocated, since its height follows the
+        // headline's wrap. The focus dot always takes its slot, so the wrap
+        // stays put while ctrl's transient hints come and go.
+        let reserve = right_reserve(row.queue_priority);
+        let headline = row.card.map(|card| {
+            let parts = TitleParts::split(card.title);
+            let galley = headline_galley(ui, parts.headline, width - text_x - reserve);
+            CardLayout {
+                card,
+                code: parts.code,
+                headline: galley,
+            }
+        });
+        let title_height = match &headline {
+            Some(l) => l.headline.size().y,
+            None => row_height(ui, &title_font()),
+        };
+        let meta = meta_line(
+            ui,
+            MetaLine {
+                prefix: None,
+                status: Some(row.status),
+                age: row.last_activity.map(|t| now_unix().saturating_sub(t)),
+                git_lines: row.git_lines,
+                subagents: row.subagents,
+                sessions: 0,
+            },
+        );
+        let cwd_height = row
+            .cwd_display
+            .map_or(0.0, |_| LINE_GAP + row_height(ui, &cwd_font()));
+        let height = ROW_PAD + title_height + LINE_GAP + meta.size().y + cwd_height + ROW_PAD;
+
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
-        paint_row_background(ui, rect, is_active, self.chord_cursor, &response);
+        paint_row_background(ui, rect, row.is_active, self.chord_cursor, &response);
 
         // Status color indicator (left edge vertical bar), faded toward a
         // desaturated version of itself as the session goes stale (no activity).
-        let age = last_activity
+        let age = row
+            .last_activity
             .map(|t| now_unix().saturating_sub(t))
             .unwrap_or(0);
-        let status_color = stale_color(status.color(), age);
+        let status_color = stale_color(row.status.color(), age);
         let status_bar_rect = egui::Rect::from_min_size(
             rect.left_top() + egui::vec2(2.0, 4.0),
             egui::vec2(STATUS_BAR_WIDTH, rect.height() - 8.0),
         );
         paint_status_bar(ui.painter(), status_bar_rect, status_color);
-        let mut text_start_x = 12.0;
 
+        let top = rect.top() + ROW_PAD;
         // A pending placeholder (a remote spawn/resume in flight) shows a small
         // loading spinner before its "Connecting…" title so the row reads as
         // in-progress. Reuses SquareLoadingSpinner (interval-based repaint) over
         // egui::Spinner (which repaints every frame). Drawn in a detached child ui
         // so it paints at an absolute rect without advancing the row's layout.
-        if status == AgentStatus::Pending {
+        if row.status == AgentStatus::Pending {
             let spin_size = 12.0;
-            let slot_w = 22.0;
             let spin_rect = egui::Rect::from_min_size(
                 egui::pos2(
-                    rect.left() + text_start_x,
-                    rect.center().y - spin_size / 2.0,
+                    rect.left() + TEXT_LEFT,
+                    top + (title_height - spin_size).max(0.0) / 2.0,
                 ),
-                egui::vec2(slot_w, spin_size),
+                egui::vec2(PENDING_SPINNER_SLOT, spin_size),
             );
             let mut spinner_ui = ui.new_child(egui::UiBuilder::new().max_rect(spin_rect));
             spinner_ui.add(
@@ -498,78 +552,175 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                     .size(spin_size)
                     .color(status_color),
             );
-            text_start_x += slot_w + 2.0;
         }
 
         let hints: &[(&str, &str)] = &[("⇧T", "Duplicate"), ("⇧K", "Clear"), ("⇧R", "Rename")];
-        // Standalone (cwd) rows get the worktree treatment: status dot moves to
-        // the top-right and the git +/- line stats sit on the bottom-right next
-        // to the cwd path. Grouped rows keep the original centered layout.
-        let AgentRightSide {
-            title_right,
-            cwd_right,
+        let RightSide {
+            width: right_used,
             action: dot_action,
-        } = if cwd_display.is_some() {
-            render_agent_row_right_side(
-                ui,
-                rect,
-                session_id,
-                is_active,
-                self.ctrl_held,
-                shortcut_hint,
-                cycle_hint,
-                queue_priority,
-                git_lines,
-                hints,
-            )
-        } else {
-            let RightSide { width, action } = render_row_right_side(
-                ui,
-                rect,
-                session_id,
-                is_active,
-                self.ctrl_held,
-                shortcut_hint,
-                cycle_hint,
-                queue_priority,
-                hints,
-            );
-            AgentRightSide {
-                title_right: width,
-                cwd_right: width,
-                action,
-            }
-        };
-
-        let title_max_width = rect.width() - text_start_x - title_right;
-        let cwd_max_width = rect.width() - text_start_x - cwd_right;
-        let font_id = egui::FontId::proportional(14.0);
-        let title_height = ui
-            .painter()
-            .layout_no_wrap(title.to_string(), font_id, ui.visuals().text_color())
-            .size()
-            .y;
-        let title_top = if cwd_display.is_some() {
-            rect.top() + 6.0
-        } else {
-            rect.center().y - title_height / 2.0
-        };
-        self.title_ui(
+        } = render_row_right_side(
             ui,
-            title,
-            egui::pos2(rect.left() + text_start_x, title_top),
-            title_max_width,
+            rect,
+            row.session_id,
+            row.is_active,
+            self.ctrl_held,
+            row.shortcut_hint,
+            row.cycle_hint,
+            row.queue_priority,
+            hints,
         );
+        let text_right = rect.right() - right_used;
 
-        if let Some(cwd) = cwd_display {
-            let cwd_pos = egui::pos2(rect.left() + text_start_x, title_top + title_height + 1.0);
-            cwd_inline_ui(ui, cwd, cwd_pos, cwd_max_width);
+        match &headline {
+            Some(layout) => {
+                let code_pos = egui::pos2(rect.left() + text_start_x, top);
+                self.card_title_ui(ui, layout, code_pos, text_right);
+            }
+            None => {
+                self.title_ui(
+                    ui,
+                    row.title,
+                    egui::pos2(rect.left() + text_start_x, top),
+                    text_right - rect.left() - text_start_x,
+                );
+            }
         }
+
+        let meta_pos = egui::pos2(rect.left() + text_x, top + title_height + LINE_GAP);
+        paint_clipped(ui, meta_pos, meta.clone(), text_right);
+        if let Some(cwd) = row.cwd_display {
+            let cwd_pos = meta_pos + egui::vec2(0.0, meta.size().y + LINE_GAP);
+            cwd_inline_ui(ui, cwd, cwd_pos, text_right - cwd_pos.x);
+        }
+
+        // The detail after the dash, and the rest the wrap cut, is on hover.
+        let response = match headline {
+            Some(layout) => response.on_hover_ui(|ui| {
+                ui.label(layout.card.title);
+            }),
+            None => response,
+        };
 
         RowResponse {
             response,
             action: dot_action,
         }
+    }
+
+    /// Draw a card's code column and headline, the code's top-left at
+    /// `pos`, nothing past `right`.
+    ///
+    /// The column leads with the card's status glyph — its column on the
+    /// board, as its chip in the chat shows it — drawn by clipping the
+    /// card's own inline chip to the glyph, so it tracks the board without
+    /// the list knowing how a card draws. A list drawn without
+    /// [`title_refs`](Self::title_refs) leaves the slot empty.
+    fn card_title_ui(&self, ui: &mut egui::Ui, layout: &CardLayout<'_>, pos: Pos2, right: f32) {
+        let line = row_height(ui, &title_font());
+        self.card_glyph_ui(
+            ui,
+            layout.card.card_ref,
+            egui::Rect::from_min_size(pos, egui::vec2(GLYPH_SLOT - 4.0, line)),
+        );
+        let code_font = egui::FontId::monospace(11.0);
+        let weak = ui.visuals().weak_text_color();
+        let code = layout.code.unwrap_or("·");
+        let code_galley = ui
+            .painter()
+            .layout_no_wrap(code.to_owned(), code_font, weak);
+        let code_pos = pos + egui::vec2(GLYPH_SLOT, (line - code_galley.size().y) / 2.0);
+        let code_right = (pos.x + CODE_COLUMN - 6.0).min(right);
+        paint_clipped(ui, code_pos, code_galley, code_right);
+        let headline_pos = pos + egui::vec2(CODE_COLUMN, 0.0);
+        paint_clipped(ui, headline_pos, layout.headline.clone(), right);
+    }
+
+    /// Draw `card_ref`'s inline chip into `rect`, clipped to it: the chip's
+    /// status glyph, without the title beside it.
+    fn card_glyph_ui(&self, ui: &mut egui::Ui, card_ref: &str, rect: egui::Rect) {
+        let Some(refs) = &self.title_refs else {
+            return;
+        };
+        let mut refs = refs.borrow_mut();
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect.with_max_x(rect.right() + 200.0))
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        child.set_clip_rect(rect.intersect(ui.clip_rect()));
+        child
+            .style_mut()
+            .text_styles
+            .insert(egui::TextStyle::Body, title_font());
+        let refs = &mut *refs;
+        notedeck_ui::markdown::reference_ui(
+            &mut child,
+            refs.note,
+            refs.txn,
+            card_ref,
+            notedeck::RenderContext::Inline,
+            notedeck::InlineChrome::Bare,
+            // The row's click switches to its session.
+            notedeck::Interaction::Inert,
+        );
+    }
+
+    /// Render one session among several on a card, under the card's row (see
+    /// [`card_group_ui`]): a status-coloured dot and `session <ordinal> ·
+    /// <status> · <age>`, its own title on hover.
+    fn nested_row_ui(&self, ui: &mut egui::Ui, row: NestedRow<'_>) -> RowResponse {
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), Sense::click());
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        paint_row_background(ui, rect, row.is_active, self.chord_cursor, &response);
+
+        let age = row.last_activity.map(|t| now_unix().saturating_sub(t));
+        let dot_x = rect.left() + TEXT_LEFT + CODE_COLUMN + 3.0;
+        ui.painter().circle_filled(
+            egui::pos2(dot_x, rect.center().y),
+            2.5,
+            stale_color(row.status.color(), age.unwrap_or(0)),
+        );
+
+        let hints: &[(&str, &str)] = &[("⇧T", "Duplicate"), ("⇧K", "Clear"), ("⇧R", "Rename")];
+        let RightSide {
+            width: right_used,
+            action,
+        } = render_row_right_side(
+            ui,
+            rect,
+            row.session_id,
+            row.is_active,
+            self.ctrl_held,
+            row.shortcut_hint,
+            row.cycle_hint,
+            row.queue_priority,
+            hints,
+        );
+
+        let meta = meta_line(
+            ui,
+            MetaLine {
+                prefix: Some(row.ordinal),
+                status: Some(row.status),
+                age,
+                git_lines: None,
+                subagents: 0,
+                sessions: 0,
+            },
+        );
+        let pos = egui::pos2(dot_x + 9.0, rect.center().y - meta.size().y / 2.0);
+        paint_clipped(ui, pos, meta, rect.right() - right_used);
+        let title = row.title;
+        let response = if title.is_empty() {
+            response
+        } else {
+            response.on_hover_ui(|ui| {
+                ui.label(title);
+            })
+        };
+
+        RowResponse { response, action }
     }
 
     /// Render a chat session row (no status bar, no cwd).
@@ -628,6 +779,35 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         }
     }
 
+    /// Look up the current title of each card a session is on, unless it was
+    /// looked up within [`REFRESH_SECS`](crate::card_titles::REFRESH_SECS) of
+    /// `now`, so the rows draw from text kept on the
+    /// [`SessionManager`] instead of folding a board per row per frame.
+    /// Without [`title_refs`](Self::title_refs) there is nothing to look up
+    /// through, and the rows draw what was kept.
+    fn refresh_card_titles(&mut self, now: f64) {
+        let Some(refs) = &self.title_refs else {
+            return;
+        };
+        let refs = refs.borrow();
+        let mut titles = std::mem::take(&mut self.session_manager.card_titles);
+        for session in self.session_manager.iter() {
+            let Some(card_ref) = session.details.card_ref() else {
+                continue;
+            };
+            if !titles.is_fresh(card_ref, now) {
+                titles.store(card_ref, lookup_card_title(&refs, card_ref), now);
+            }
+        }
+        self.session_manager.card_titles = titles;
+    }
+
+    /// The card session `id` is on (see
+    /// [`SessionDetails::card_ref`](crate::session::SessionDetails::card_ref)).
+    fn card_ref_of(&self, id: SessionId) -> Option<&str> {
+        self.session_manager.get(id)?.details.card_ref()
+    }
+
     /// Draw a row's `title` with its top-left at `pos`, clipped to `max_width`.
     ///
     /// A title holding a reference the registered parsers recognize — a
@@ -653,6 +833,416 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         }
         title_with_refs_ui(ui, &mut refs, title, pos, max_width);
     }
+}
+
+/// The current title of the card `card_ref` names, through the registered
+/// reference parsers and the kind renderer of the note it resolves to (see
+/// [`KindRendererRegistry::title`](notedeck::KindRendererRegistry::title)).
+/// `None` when it doesn't resolve or its renderer offers no title.
+fn lookup_card_title(refs: &TitleRefs<'_, '_>, card_ref: &str) -> Option<String> {
+    let note = &*refs.note;
+    let ctx = notedeck::ReferenceResolveCtx {
+        ndb: note.ndb,
+        txn: refs.txn,
+        selected_account: Some(*note.accounts.selected_account_pubkey()),
+    };
+    let resolved = note
+        .registries
+        .reference_parsers
+        .resolve_exact(card_ref, &ctx)?;
+    let card = note
+        .ndb
+        .get_note_by_id(refs.txn, resolved.note_id.bytes())
+        .ok()?;
+    note.registries
+        .kind_renderers
+        .title(note.ndb, refs.txn, &card, None)
+}
+
+/// Which shape a session's row takes in the list.
+#[derive(Clone, Copy)]
+enum RowKind<'a> {
+    /// Its own row. `cwd` is the path shown in it when the session is alone
+    /// in its cwd, with no folder header above it.
+    Full { cwd: Option<&'a str> },
+    /// One of several sessions on one card, drawn small under the card's row
+    /// (see [`card_group_ui`]); `ordinal` is its 1-based place among them.
+    Nested { ordinal: usize },
+}
+
+/// A card a row is titled by: its ref, and its current title.
+#[derive(Clone, Copy)]
+struct CardTitle<'s> {
+    /// The card's `headway:<board>/<word-id>` ref.
+    card_ref: &'s str,
+    /// Its title as last looked up (see [`CardTitles`](crate::card_titles::CardTitles)).
+    title: &'s str,
+}
+
+/// A [`CardTitle`] laid out for a row.
+struct CardLayout<'s> {
+    card: CardTitle<'s>,
+    /// The code before the title's colon, if it has one (see [`TitleParts`]).
+    code: Option<&'s str>,
+    /// The headline, wrapped to at most two lines.
+    headline: Arc<egui::Galley>,
+}
+
+/// Lines a session's worktree has added and deleted against HEAD.
+#[derive(Clone, Copy)]
+struct GitLines {
+    added: usize,
+    deleted: usize,
+}
+
+/// `session`'s +/- lines against HEAD, if its repo has tracked changes.
+fn git_lines(session: &ChatSession) -> Option<GitLines> {
+    let diff = session
+        .agentic
+        .as_ref()?
+        .git_status
+        .current()?
+        .as_ref()
+        .ok()?;
+    let lines = GitLines {
+        added: diff.added_lines,
+        deleted: diff.deleted_lines,
+    };
+    (lines.added > 0 || lines.deleted > 0).then_some(lines)
+}
+
+/// What [`SessionListUi::agent_row_ui`] draws.
+struct AgentRow<'s> {
+    session_id: SessionId,
+    /// The session's title, drawn when `card` is `None`.
+    title: &'s str,
+    /// The card the session is titled by, once its title has been looked up.
+    card: Option<CardTitle<'s>>,
+    /// The cwd path, for a session alone in its cwd.
+    cwd_display: Option<&'s str>,
+    is_active: bool,
+    /// The Ctrl+<n> number to show, while ctrl is held.
+    shortcut_hint: Option<usize>,
+    /// "J" / "K" on the rows Ctrl+J / K would move to.
+    cycle_hint: Option<&'static str>,
+    status: AgentStatus,
+    /// Unix time of the session's last activity.
+    last_activity: Option<u64>,
+    queue_priority: Option<FocusPriority>,
+    git_lines: Option<GitLines>,
+    /// Subagents the session has started.
+    subagents: usize,
+}
+
+/// What [`SessionListUi::nested_row_ui`] draws.
+struct NestedRow<'s> {
+    session_id: SessionId,
+    /// The session's own title, on hover.
+    title: &'s str,
+    /// Its 1-based place among the card's sessions.
+    ordinal: usize,
+    is_active: bool,
+    shortcut_hint: Option<usize>,
+    cycle_hint: Option<&'static str>,
+    status: AgentStatus,
+    last_activity: Option<u64>,
+    queue_priority: Option<FocusPriority>,
+}
+
+/// Left padding of a row's text, past the status bar.
+const TEXT_LEFT: f32 = 12.0;
+/// Width of a card row's code column: the status glyph, then the code.
+const CODE_COLUMN: f32 = 64.0;
+/// Width of the glyph slot at the head of the code column.
+const GLYPH_SLOT: f32 = 18.0;
+/// Width of the "Connecting…" spinner before a pending row's title.
+const PENDING_SPINNER_SLOT: f32 = 22.0;
+/// Space above and below a row's text.
+const ROW_PAD: f32 = 6.0;
+/// Space between a row's lines.
+const LINE_GAP: f32 = 2.0;
+
+/// A row title's font.
+fn title_font() -> egui::FontId {
+    egui::FontId::proportional(14.0)
+}
+
+/// The font of a row's meta and cwd lines.
+fn cwd_font() -> egui::FontId {
+    egui::FontId::monospace(10.0)
+}
+
+/// Height of one line of `font`.
+fn row_height(ui: &egui::Ui, font: &egui::FontId) -> f32 {
+    ui.fonts_mut(|f| f.row_height(font))
+}
+
+/// Width a row keeps clear on its right for the focus dot, which a headline
+/// wraps short of. Ctrl's hints come and go and only clip it.
+fn right_reserve(queue_priority: Option<FocusPriority>) -> f32 {
+    match queue_priority {
+        Some(_) => 26.0,
+        None => 8.0,
+    }
+}
+
+/// Lay a card's headline out `width` wide, wrapped to at most two lines and
+/// cut with an ellipsis.
+fn headline_galley(ui: &egui::Ui, headline: &str, width: f32) -> Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(
+        headline.to_owned(),
+        egui::TextFormat::simple(title_font(), ui.visuals().text_color()),
+    );
+    job.wrap = egui::text::TextWrapping {
+        max_width: width.max(0.0),
+        max_rows: 2,
+        break_anywhere: false,
+        overflow_character: Some('…'),
+    };
+    ui.painter().layout_job(job)
+}
+
+/// Paint `galley` at `pos`, clipped at `right`.
+fn paint_clipped(ui: &egui::Ui, pos: Pos2, galley: Arc<egui::Galley>, right: f32) {
+    let clip = egui::Rect::from_min_max(pos, egui::pos2(right, pos.y + galley.size().y));
+    let color = ui.visuals().text_color();
+    ui.painter()
+        .with_clip_rect(clip.intersect(ui.clip_rect()))
+        .galley(pos, galley, color);
+}
+
+/// What a row's meta line says, each part present only when it has
+/// something to say.
+struct MetaLine {
+    /// `session <n>`, for a session nested under its card.
+    prefix: Option<usize>,
+    status: Option<AgentStatus>,
+    /// Seconds since the session's last activity.
+    age: Option<u64>,
+    git_lines: Option<GitLines>,
+    /// Subagents started, shown as `<n> sub`.
+    subagents: usize,
+    /// Sessions on a card, shown as `<n> sessions` when more than one.
+    sessions: usize,
+}
+
+/// Lay out a row's dim meta line, e.g. `working · 12m · +88 -4 · 2 sub`:
+/// the status, coloured when it wants attention (working, needs input,
+/// error), then the time since the last activity, the worktree's +/- lines
+/// against HEAD and how many subagents it started.
+fn meta_line(ui: &egui::Ui, meta: MetaLine) -> Arc<egui::Galley> {
+    use std::fmt::Write;
+    let font = cwd_font();
+    let weak = ui.visuals().weak_text_color();
+    let mut job = egui::text::LayoutJob::default();
+    let part = |job: &mut egui::text::LayoutJob, text: &str, color: Color32| {
+        if !job.text.is_empty() {
+            job.append(" · ", 0.0, egui::TextFormat::simple(font.clone(), weak));
+        }
+        job.append(text, 0.0, egui::TextFormat::simple(font.clone(), color));
+    };
+    let mut buf = String::new();
+    if let Some(n) = meta.prefix {
+        let _ = write!(buf, "session {n}");
+        part(&mut job, &buf, weak);
+    }
+    if let Some(status) = meta.status {
+        let color = match status {
+            AgentStatus::Working | AgentStatus::NeedsInput | AgentStatus::Error => status.color(),
+            _ => weak,
+        };
+        part(&mut job, status_word(status), color);
+    }
+    if let Some(age) = meta.age {
+        buf.clear();
+        age_text(age, &mut buf);
+        part(&mut job, &buf, weak);
+    }
+    if let Some(lines) = meta.git_lines {
+        if lines.added > 0 {
+            buf.clear();
+            let _ = write!(buf, "+{}", lines.added);
+            part(&mut job, &buf, GIT_ADDED_COLOR);
+        }
+        if lines.deleted > 0 {
+            buf.clear();
+            let _ = write!(buf, "-{}", lines.deleted);
+            // `+88 -4` reads as one part, so no dot between the two.
+            let sep = if lines.added > 0 { " " } else { "" };
+            if sep.is_empty() {
+                part(&mut job, &buf, GIT_DELETED_COLOR);
+            } else {
+                job.append(sep, 0.0, egui::TextFormat::simple(font.clone(), weak));
+                job.append(
+                    &buf,
+                    0.0,
+                    egui::TextFormat::simple(font.clone(), GIT_DELETED_COLOR),
+                );
+            }
+        }
+    }
+    if meta.subagents > 0 {
+        buf.clear();
+        let _ = write!(buf, "{} sub", meta.subagents);
+        part(&mut job, &buf, weak);
+    }
+    if meta.sessions > 1 {
+        buf.clear();
+        let _ = write!(buf, "{} sessions", meta.sessions);
+        part(&mut job, &buf, weak);
+    }
+    ui.painter().layout_job(job)
+}
+
+/// A status as the meta line says it.
+fn status_word(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Idle => "idle",
+        AgentStatus::Working => "working",
+        AgentStatus::NeedsInput => "needs input",
+        AgentStatus::Error => "error",
+        AgentStatus::Done => "done",
+        AgentStatus::Pending => "connecting",
+        AgentStatus::Waiting => "waiting",
+    }
+}
+
+/// Write `secs` as the meta line's age: `now`, `12m`, `3h`, `2d`.
+fn age_text(secs: u64, out: &mut String) {
+    use std::fmt::Write;
+    let _ = match secs {
+        0..60 => write!(out, "now"),
+        60..3600 => write!(out, "{}m", secs / 60),
+        3600..86400 => write!(out, "{}h", secs / 3600),
+        _ => write!(out, "{}d", secs / 86400),
+    };
+}
+
+/// The status a card's row shows for its sessions: the one most wanting
+/// attention.
+fn card_status(statuses: impl Iterator<Item = AgentStatus>) -> AgentStatus {
+    let rank = |s: AgentStatus| match s {
+        AgentStatus::NeedsInput => 6,
+        AgentStatus::Error => 5,
+        AgentStatus::Working => 4,
+        AgentStatus::Pending => 3,
+        AgentStatus::Waiting => 2,
+        AgentStatus::Done => 1,
+        AgentStatus::Idle => 0,
+    };
+    statuses.max_by_key(|&s| rank(s)).unwrap_or_default()
+}
+
+/// Draw several sessions on one card: the card's row — its status bar, code
+/// column and headline as in [`SessionListUi::agent_row_ui`], and
+/// `<n> sessions` — with each session's [`RowKind::Nested`] row under it, in
+/// `ids` order. A click on the card's row switches to its active session, or
+/// to its first.
+fn card_group_ui(
+    ui: &mut egui::Ui,
+    list_ui: &SessionListUi<'_, '_>,
+    card_ref: &str,
+    ids: &[SessionId],
+    visual_index: &mut usize,
+    active_id: Option<SessionId>,
+    cycle: CycleHints,
+) -> Option<SessionListAction> {
+    let sessions = || ids.iter().filter_map(|&id| list_ui.session_manager.get(id));
+    let status = card_status(sessions().map(|s| s.status()));
+    let youngest = sessions()
+        .filter_map(|s| s.last_activity)
+        .max()
+        .map(|t| now_unix().saturating_sub(t));
+    let title = list_ui
+        .session_manager
+        .card_titles
+        .get(card_ref)
+        .unwrap_or(card_ref);
+    let parts = TitleParts::split(title);
+
+    let width = ui.available_width();
+    let text_x = TEXT_LEFT + CODE_COLUMN;
+    let layout = CardLayout {
+        card: CardTitle { card_ref, title },
+        code: parts.code,
+        headline: headline_galley(ui, parts.headline, width - text_x - right_reserve(None)),
+    };
+    let meta = meta_line(
+        ui,
+        MetaLine {
+            prefix: None,
+            status: None,
+            age: None,
+            git_lines: None,
+            subagents: 0,
+            sessions: ids.len(),
+        },
+    );
+    let title_height = layout.headline.size().y;
+    let height = ROW_PAD + title_height + LINE_GAP + meta.size().y + 2.0;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    paint_row_background(ui, rect, false, false, &response);
+
+    let top = rect.top() + ROW_PAD;
+    let text_right = rect.right() - right_reserve(None);
+    list_ui.card_title_ui(
+        ui,
+        &layout,
+        egui::pos2(rect.left() + TEXT_LEFT, top),
+        text_right,
+    );
+    let meta_pos = egui::pos2(rect.left() + text_x, top + title_height + LINE_GAP);
+    paint_clipped(ui, meta_pos, meta, text_right);
+
+    let mut action = None;
+    if response.clicked() {
+        let target = ids
+            .iter()
+            .copied()
+            .find(|&id| Some(id) == active_id)
+            .unwrap_or(ids[0]);
+        action = Some(SessionListAction::SwitchTo(target));
+    }
+    response.on_hover_ui(|ui| {
+        ui.label(title);
+    });
+
+    let body_top = rect.top();
+    for (n, &id) in ids.iter().enumerate() {
+        let Some(session) = list_ui.session_manager.get(id) else {
+            continue;
+        };
+        if let Some(a) = list_ui.render_session_item(
+            ui,
+            session,
+            *visual_index,
+            active_id,
+            RowKind::Nested { ordinal: n + 1 },
+            cycle,
+        ) {
+            action = Some(a);
+        }
+        *visual_index += 1;
+    }
+    ui.add_space(2.0);
+
+    // One status bar down the card's row and its sessions', so the group
+    // reads as one card.
+    let bar = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 2.0, body_top + 4.0),
+        egui::pos2(
+            rect.left() + 2.0 + STATUS_BAR_WIDTH,
+            ui.min_rect().bottom() - 4.0,
+        ),
+    );
+    paint_status_bar(
+        ui.painter(),
+        bar,
+        stale_color(status.color(), youngest.unwrap_or(0)),
+    );
+
+    action
 }
 
 /// Lay `title` out left to right in a child ui at `pos`, `max_width` wide:
@@ -917,17 +1507,6 @@ struct RightSide {
     action: Option<SessionListAction>,
 }
 
-/// What a standalone agent row's right side took, as
-/// [`render_agent_row_right_side`] draws it.
-struct AgentRightSide {
-    /// The width to reserve on the title (top) line.
-    title_right: f32,
-    /// The width to reserve on the cwd (bottom) line.
-    cwd_right: f32,
-    /// What clicking its focus dot asks, if it was clicked.
-    action: Option<SessionListAction>,
-}
-
 /// Render the right side of a session row: shortcut number, ctrl+shift hints, and focus dot.
 #[allow(clippy::too_many_arguments)]
 fn render_row_right_side(
@@ -1017,137 +1596,6 @@ fn render_row_right_side(
 
 const GIT_ADDED_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 180, 60);
 const GIT_DELETED_COLOR: egui::Color32 = egui::Color32::from_rgb(200, 60, 60);
-
-/// Right side of a standalone (cwd) agent row: keybind hints stay vertically
-/// centered, the focus/status dot moves to the top-right, and the git +/- line
-/// stats render on the bottom-right. Returns the horizontal space to reserve on
-/// the title (top) line and the cwd (bottom) line respectively, plus any dot
-/// action.
-#[allow(clippy::too_many_arguments)]
-fn render_agent_row_right_side(
-    ui: &mut egui::Ui,
-    rect: egui::Rect,
-    session_id: SessionId,
-    is_active: bool,
-    ctrl_held: bool,
-    shortcut_hint: Option<usize>,
-    cycle_hint: Option<&str>,
-    queue_priority: Option<FocusPriority>,
-    git_lines: Option<(usize, usize)>,
-    hints: &[(&str, &str)],
-) -> AgentRightSide {
-    let mut center_offset = 8.0;
-    let mut dot_action = None;
-
-    if let Some(num) = shortcut_hint {
-        let hint_size = 18.0;
-        let hint_text = format!("{}", num);
-        let hint_center = rect.right_center() - egui::vec2(8.0 + hint_size / 2.0, 0.0);
-        paint_keybind_hint(ui, hint_center, &hint_text, hint_size);
-        center_offset = 8.0 + hint_size + 6.0;
-    }
-
-    // Ctrl+J / Ctrl+K hint on the rows adjacent to the active session.
-    if let Some(cycle) = cycle_hint {
-        let hint_size = 18.0;
-        let hint_center = rect.right_center() - egui::vec2(center_offset + hint_size / 2.0, 0.0);
-        paint_keybind_hint(ui, hint_center, cycle, hint_size);
-        center_offset += hint_size + 6.0;
-    }
-
-    if is_active && ctrl_held {
-        let hint_size = 16.0;
-        let hint_width = 26.0;
-        let gap = 3.0;
-
-        for (hint_text, tooltip) in hints {
-            let center = rect.right_center() - egui::vec2(center_offset + hint_width / 2.0, 0.0);
-            KeybindHint::new(hint_text)
-                .size(hint_size)
-                .width(hint_width)
-                .paint_at(ui, center);
-            let hint_rect = egui::Rect::from_center_size(center, egui::vec2(hint_width, hint_size));
-            ui.interact(
-                hint_rect,
-                ui.scope_id().with(("keybind_tip", *hint_text)),
-                Sense::hover(),
-            )
-            .on_hover_text(*tooltip);
-            center_offset += hint_width + gap;
-        }
-    }
-
-    // Status dot, top-right corner.
-    let mut dot_width = 0.0;
-    if let Some(priority) = queue_priority {
-        let dot_radius = 5.0;
-        let dot_center = egui::pos2(rect.right() - 4.0 - dot_radius, rect.top() + 9.0);
-        ui.painter()
-            .circle_filled(dot_center, dot_radius, priority.color());
-
-        if priority == FocusPriority::Done {
-            let dot_rect = egui::Rect::from_center_size(
-                dot_center,
-                egui::vec2(dot_radius * 4.0, dot_radius * 4.0),
-            );
-            let dot_response = ui.interact(
-                dot_rect,
-                ui.scope_id().with(("dismiss_dot", session_id)),
-                egui::Sense::click(),
-            );
-            if dot_response.clicked() {
-                dot_action = Some(SessionListAction::DismissDone(session_id));
-            }
-            if dot_response.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-        }
-
-        dot_width = dot_radius * 2.0 + 8.0;
-    }
-
-    // Git +/- line stats, bottom-right corner.
-    let mut git_width = 0.0;
-    if let Some((added, deleted)) = git_lines {
-        let font = egui::FontId::monospace(10.0);
-        let gap = 5.0;
-        let mut galleys = Vec::new();
-        if added > 0 {
-            galleys.push(ui.painter().layout_no_wrap(
-                format!("+{added}"),
-                font.clone(),
-                GIT_ADDED_COLOR,
-            ));
-        }
-        if deleted > 0 {
-            galleys.push(ui.painter().layout_no_wrap(
-                format!("-{deleted}"),
-                font.clone(),
-                GIT_DELETED_COLOR,
-            ));
-        }
-
-        let total_w: f32 = galleys.iter().map(|g| g.size().x).sum::<f32>()
-            + gap * galleys.len().saturating_sub(1) as f32;
-        let y_center = rect.bottom() - 9.0;
-        let mut x = rect.right() - 6.0 - total_w;
-        for galley in &galleys {
-            let pos = egui::pos2(x, y_center - galley.size().y / 2.0);
-            x += galley.size().x + gap;
-            ui.painter()
-                .galley(pos, galley.clone(), egui::Color32::WHITE);
-        }
-        git_width = total_w + 10.0;
-    }
-
-    let title_right = center_offset.max(dot_width);
-    let cwd_right = center_offset.max(git_width);
-    AgentRightSide {
-        title_right,
-        cwd_right,
-        action: dot_action,
-    }
-}
 
 /// Render a title string at the given position, clipping if it exceeds max_width.
 fn render_title(ui: &mut egui::Ui, title: &str, title_pos: Pos2, max_width: f32) {
@@ -1620,7 +2068,9 @@ fn cwd_section_ui(
                 session,
                 *visual_index,
                 active_id,
-                Some(cwd_group.display_cwd.as_str()),
+                RowKind::Full {
+                    cwd: Some(cwd_group.display_cwd.as_str()),
+                },
                 cycle,
             ) {
                 action = Some(a);
@@ -1700,15 +2150,47 @@ fn cwd_folder_ui(
 
     cwd_state.show_body_unindented(ui, |ui| {
         ui.add_space(2.0);
-        for &id in &cwd_group.session_ids {
-            if let Some(session) = list_ui.session_manager.get(id) {
-                if let Some(a) =
-                    list_ui.render_session_item(ui, session, *visual_index, active_id, None, cycle)
-                {
-                    action = Some(a);
-                }
-                *visual_index += 1;
+        // Sessions on one card sort together (see `rebuild_groups`); a run of
+        // two or more is drawn as the card's row with them nested under it,
+        // still in this order, so Ctrl+J / K and `visual_order` walk them as
+        // drawn.
+        let ids = cwd_group.session_ids.as_slice();
+        let mut start = 0;
+        while start < ids.len() {
+            let card_ref = list_ui.card_ref_of(ids[start]);
+            let run = card_ref.map_or(1, |card_ref| {
+                ids[start..]
+                    .iter()
+                    .take_while(|&&id| list_ui.card_ref_of(id) == Some(card_ref))
+                    .count()
+            });
+            let a = match card_ref {
+                Some(card_ref) if run > 1 => card_group_ui(
+                    ui,
+                    list_ui,
+                    card_ref,
+                    &ids[start..start + run],
+                    visual_index,
+                    active_id,
+                    cycle,
+                ),
+                _ => list_ui.session_manager.get(ids[start]).and_then(|session| {
+                    let a = list_ui.render_session_item(
+                        ui,
+                        session,
+                        *visual_index,
+                        active_id,
+                        RowKind::Full { cwd: None },
+                        cycle,
+                    );
+                    *visual_index += 1;
+                    a
+                }),
+            };
+            if a.is_some() {
+                action = a;
             }
+            start += run;
         }
     });
     cwd_state.store(ui.ctx());
@@ -1805,12 +2287,13 @@ fn delete_worktree_menu_item(
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionListAction, SessionListUi};
+    use super::{AgentRow, GitLines, SessionListAction, SessionListUi};
     use crate::agent_status::AgentStatus;
     use crate::backend::BackendType;
     use crate::collapse_state::CollapseState;
     use crate::config::AiMode;
     use crate::focus_queue::{FocusPriority, FocusQueue};
+    use crate::session::SessionId;
     use crate::session::SessionManager;
     use egui::Event;
     use egui_kittest::{
@@ -2027,10 +2510,10 @@ mod tests {
     /// verified visually via snapshot.
     fn agent_row_harness(
         priority: Option<FocusPriority>,
-        git_lines: Option<(usize, usize)>,
+        git_lines: Option<GitLines>,
     ) -> Harness<'static> {
         Harness::builder()
-            .with_size(egui::Vec2::new(260.0, 56.0))
+            .with_size(egui::Vec2::new(260.0, 64.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
                 let mut session_manager = SessionManager::new();
@@ -2045,24 +2528,44 @@ mod tests {
                     SessionListUi::new(&mut session_manager, &focus_queue, &collapse_state, false);
                 list.agent_row_ui(
                     ui,
-                    id,
-                    "refactor auth module",
-                    Some("~/src/notedeck-wt"),
-                    false,
-                    None,
-                    None,
-                    AgentStatus::NeedsInput,
-                    None,
-                    priority,
-                    git_lines,
+                    AgentRow {
+                        cwd_display: Some("~/src/notedeck-wt"),
+                        queue_priority: priority,
+                        git_lines,
+                        ..test_row(id, "refactor auth module", AgentStatus::NeedsInput)
+                    },
                 );
             })
+    }
+
+    /// An [`AgentRow`] for `id` titled `title`, with nothing else to show.
+    fn test_row(id: SessionId, title: &str, status: AgentStatus) -> AgentRow<'_> {
+        AgentRow {
+            session_id: id,
+            title,
+            card: None,
+            cwd_display: None,
+            is_active: false,
+            shortcut_hint: None,
+            cycle_hint: None,
+            status,
+            last_activity: None,
+            queue_priority: None,
+            git_lines: None,
+            subagents: 0,
+        }
     }
 
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_agent_row_git_status_and_dot() {
-        let mut harness = agent_row_harness(Some(FocusPriority::NeedsInput), Some((142, 37)));
+        let mut harness = agent_row_harness(
+            Some(FocusPriority::NeedsInput),
+            Some(GitLines {
+                added: 142,
+                deleted: 37,
+            }),
+        );
         harness.run();
         harness.snapshot("agent_row_git_status_and_dot");
     }
@@ -2070,7 +2573,13 @@ mod tests {
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_agent_row_git_status_additions_only() {
-        let mut harness = agent_row_harness(None, Some((88, 0)));
+        let mut harness = agent_row_harness(
+            None,
+            Some(GitLines {
+                added: 88,
+                deleted: 0,
+            }),
+        );
         harness.run();
         harness.snapshot("agent_row_git_status_additions_only");
     }
@@ -2088,7 +2597,7 @@ mod tests {
     /// compared against the live row it upgrades into via snapshot.
     fn status_row_harness(status: AgentStatus, title: &'static str) -> Harness<'static> {
         Harness::builder()
-            .with_size(egui::Vec2::new(260.0, 40.0))
+            .with_size(egui::Vec2::new(260.0, 48.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
                 let mut session_manager = SessionManager::new();
@@ -2101,9 +2610,7 @@ mod tests {
                 let collapse_state = CollapseState::new();
                 let list =
                     SessionListUi::new(&mut session_manager, &focus_queue, &collapse_state, false);
-                list.agent_row_ui(
-                    ui, id, title, None, false, None, None, status, None, None, None,
-                );
+                list.agent_row_ui(ui, test_row(id, title, status));
             })
     }
 
@@ -2131,7 +2638,7 @@ mod tests {
     /// — can be verified visually.
     fn project_grouping_harness() -> Harness<'static> {
         Harness::builder()
-            .with_size(egui::Vec2::new(300.0, 360.0))
+            .with_size(egui::Vec2::new(300.0, 420.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
                 let mut sm = SessionManager::new();
@@ -2179,6 +2686,166 @@ mod tests {
         let mut harness = project_grouping_harness();
         harness.run();
         harness.snapshot("session_list_project_grouping");
+    }
+
+    /// Card refs and their titles for the option C list: long gamedev titles
+    /// in the `CODE: headline — detail` shape, one without a code.
+    const CARDS: [(&str, &str); 5] = [
+        (
+            "headway:game/able-bench-coil",
+            "UT7c: the key list, bindings, Escape menu, settings and console drawn from the atlas — crews-keys-2, bindings-1",
+        ),
+        (
+            "headway:game/crane-drift-oak",
+            "UT7e: the talent window drawn from the atlas — crews-talents-2",
+        ),
+        (
+            "headway:game/dune-ember-fig",
+            "QA2: the Crownfolk's town and givers stood — stamps on homeland roles, quest givers placed",
+        ),
+        (
+            "headway:game/gale-hush-iris",
+            "ZL2: a level band on every zone — a row of ZONES carries its levels",
+        ),
+        (
+            "headway:game/jade-knot-lark",
+            "a morphing prop's foot worked out once: the capital films ~10x cheaper",
+        ),
+    ];
+
+    /// A [`SessionManager`] with a session per [`CARDS`] card in one cwd,
+    /// titled with its ref, the QA2 card with a second session, and its card
+    /// titles looked up already.
+    fn card_sessions() -> SessionManager {
+        let now = crate::session::now_unix();
+        let mut sm = SessionManager::new();
+        let mut add = |card_ref: &str, status: AgentStatus, mins: u64| {
+            let id = sm.new_session(
+                PathBuf::from("/home/dev/crownfolk"),
+                AiMode::Agentic,
+                BackendType::Claude,
+            );
+            let s = sm.get_mut(id).expect("session");
+            s.details.title = card_ref.to_string();
+            s.details.home_dir = "/home/dev".to_string();
+            s.last_activity = Some(now - mins * 60);
+            // Observed remotely, so the status is the one its state reports.
+            s.source = crate::session::SessionSource::Remote;
+            s.agentic.as_mut().expect("agentic").remote_status = Some(status);
+            s.update_status();
+            id
+        };
+        add(CARDS[0].0, AgentStatus::NeedsInput, 3);
+        add(CARDS[1].0, AgentStatus::Working, 12);
+        add(CARDS[2].0, AgentStatus::Working, 8);
+        add(CARDS[2].0, AgentStatus::Idle, 65);
+        add(CARDS[3].0, AgentStatus::Idle, 120);
+        add(CARDS[4].0, AgentStatus::Idle, 180);
+        for (card_ref, title) in CARDS {
+            sm.card_titles.store(card_ref, Some(title.to_string()), 0.0);
+        }
+        sm.rebuild_groups();
+        sm
+    }
+
+    /// The whole list as option C: codes in their own column, headlines
+    /// wrapped to two lines, a meta line under each, and the two QA2
+    /// sessions nested under one QA2 row.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_card_titles() {
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(300.0, 520.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(
+                |ui, sm: &mut SessionManager| {
+                    let focus_queue = FocusQueue::new();
+                    let collapse_state = CollapseState::new();
+                    SessionListUi::new(sm, &focus_queue, &collapse_state, false).ui(ui);
+                },
+                card_sessions(),
+            );
+        harness.run();
+        harness.snapshot("session_list_card_titles");
+    }
+
+    /// Two sessions on one card sort next to each other, so they nest under
+    /// one card row without leaving the order Ctrl+J / K walks; a click on
+    /// the card's row switches to the first of them.
+    #[test]
+    fn sessions_on_one_card_nest_in_visual_order_and_the_card_row_switches_to_the_first() {
+        let mut sm = card_sessions();
+        let collapse_state = CollapseState::new();
+        let order = sm.visual_order(&collapse_state);
+        let cards: Vec<Option<&str>> = order
+            .iter()
+            .map(|&id| sm.get(id).unwrap().details.card_ref())
+            .collect();
+        assert_eq!(
+            cards,
+            [0, 1, 2, 2, 3, 4].map(|n| Some(CARDS[n].0)),
+            "sessions sort by card, the QA2 pair together"
+        );
+        let qa2_first = order[2];
+
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(300.0, 520.0))
+            .build_ui_state(
+                |ui, state: &mut SessionListHarnessState| {
+                    let mut list = SessionListUi::new(
+                        &mut state.ui.session_manager,
+                        &state.ui.focus_queue,
+                        &state.ui.collapse_state,
+                        false,
+                    );
+                    if let Some(action) = list.ui(ui) {
+                        state.action = Some(action);
+                    }
+                },
+                SessionListHarnessState {
+                    ui: SessionListUiOwnedState {
+                        session_manager: sm,
+                        focus_queue: FocusQueue::new(),
+                        collapse_state,
+                        ctrl_held: false,
+                        cwd_label: String::new(),
+                        cwd_path: PathBuf::new(),
+                    },
+                    action: None,
+                },
+            );
+        harness.run();
+
+        // The QA2 card's row is the one whose hover is its full title; find
+        // it by hovering down the list until that title shows.
+        let qa2_title = CARDS[2].1;
+        let mut y = 40.0;
+        let row = loop {
+            assert!(y < 520.0, "no row showed the QA2 card's title on hover");
+            harness
+                .input_mut()
+                .events
+                .push(Event::PointerMoved(egui::pos2(150.0, y)));
+            harness.run();
+            if harness.query_by_label(qa2_title).is_some() {
+                break egui::pos2(150.0, y);
+            }
+            y += 4.0;
+        };
+        for pressed in [true, false] {
+            harness.input_mut().events.push(Event::PointerButton {
+                pos: row,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        harness.run();
+        assert!(
+            matches!(harness.state().action, Some(SessionListAction::SwitchTo(id)) if id == qa2_first),
+            "the card's row switches to its first session: got {:?}",
+            harness.state().action
+        );
     }
 
     /// State for [`a_ref_title_draws_its_chip_and_a_chip_click_switches_to_the_row`]: a

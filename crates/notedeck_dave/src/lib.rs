@@ -2,6 +2,7 @@ mod agent_status;
 mod auto_accept;
 mod avatar;
 pub mod backend;
+pub mod card_titles;
 mod child_report;
 pub(crate) mod collapse_state;
 pub mod config;

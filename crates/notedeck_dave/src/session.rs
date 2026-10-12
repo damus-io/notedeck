@@ -76,6 +76,11 @@ pub enum SessionSource {
     Remote,
 }
 
+/// Whether the whole of `s` is one headway card ref.
+fn is_card_ref(s: &str) -> bool {
+    headway::wordid::find_ref(s) == Some(0..s.len())
+}
+
 /// Session metadata for display in chat headers
 pub struct SessionDetails {
     pub title: String,
@@ -120,6 +125,24 @@ impl SessionDetails {
     /// Returns custom_title if set, otherwise the auto-generated title.
     pub fn display_title(&self) -> &str {
         self.custom_title.as_deref().unwrap_or(&self.title)
+    }
+
+    /// The session's title when the whole of it is a headway card ref
+    /// (`headway:<board>/<word-id>`, as autowork titles a session), trimmed.
+    pub fn title_ref(&self) -> Option<&str> {
+        let title = self.display_title().trim();
+        is_card_ref(title).then_some(title)
+    }
+
+    /// The headway card this session works, as its ref: its
+    /// [`title_ref`](Self::title_ref), else its [`issue_url`](Self::issue_url)
+    /// when that is a card ref. The session list nests the sessions sharing
+    /// one under a single card row.
+    pub fn card_ref(&self) -> Option<&str> {
+        self.title_ref().or_else(|| {
+            let url = self.issue_url.as_deref()?.trim();
+            is_card_ref(url).then_some(url)
+        })
     }
 
     /// Returns a human-friendly model name for display.
@@ -1187,6 +1210,11 @@ impl ChatSession {
         self.cached_status
     }
 
+    /// How many subagents this session has started, running or finished.
+    pub fn subagent_count(&self) -> usize {
+        self.turn_rows.subagent_rows().count()
+    }
+
     /// Update the cached status based on current session state.
     /// Sets `state_dirty` when the status actually changes.
     /// Also sets the focus indicator when transitioning to a notable state.
@@ -1327,6 +1355,9 @@ pub struct SessionManager {
     chat_ids: Vec<SessionId>,
     /// Whether chat ID cache must be rebuilt before reads.
     chat_ids_dirty: bool,
+    /// The current titles of the cards session titles refer to, kept for the
+    /// session list (see [`CardTitles`](crate::card_titles::CardTitles)).
+    pub card_titles: crate::card_titles::CardTitles,
 }
 
 /// A group of sessions under a single hostname.
@@ -1442,6 +1473,7 @@ impl SessionManager {
             host_groups_dirty: false,
             chat_ids: Vec::new(),
             chat_ids_dirty: false,
+            card_titles: Default::default(),
         }
     }
 
@@ -1835,19 +1867,19 @@ impl SessionManager {
                     .sort_by(|a, b| a.display_cwd.cmp(&b.display_cwd));
 
                 for cwd_group in &mut project.cwd_groups {
-                    cwd_group.session_ids.sort_by(|a, b| {
-                        let title_a = self
-                            .sessions
-                            .get(a)
-                            .map(|s| s.details.display_title())
-                            .unwrap_or("");
-                        let title_b = self
-                            .sessions
-                            .get(b)
-                            .map(|s| s.details.display_title())
-                            .unwrap_or("");
-                        title_a.cmp(title_b).then(a.cmp(b))
-                    });
+                    // By card, then title: sessions on one card sort by its
+                    // ref, so they sit together and the list can nest them
+                    // under one card row without leaving this order (which
+                    // `visual_order` and Ctrl+J / K walk).
+                    let key = |id: &SessionId| {
+                        self.sessions
+                            .get(id)
+                            .map(|s| s.details.card_ref().unwrap_or(s.details.display_title()))
+                            .unwrap_or("")
+                    };
+                    cwd_group
+                        .session_ids
+                        .sort_by(|a, b| key(a).cmp(key(b)).then(a.cmp(b)));
                     nest_subagent_sessions(&self.sessions, cwd_group);
                 }
             }
@@ -2311,6 +2343,36 @@ mod tests {
         session.details.custom_title = None;
         session.details.home_dir = "/home/tester".to_string();
         id
+    }
+
+    /// A session is on the card its title names, else the one its issue url
+    /// names; a session spawned on a card with a title of its own still sorts
+    /// next to the card's other sessions, between titles it would otherwise
+    /// sort among.
+    #[test]
+    fn sessions_on_one_card_sort_together_by_title_ref_or_issue_url() {
+        let card = "headway:dave/tone-grief-hour";
+        let mut mgr = SessionManager::new();
+        let by_title = create_grouped_session(&mut mgr, "", "/w", card, AiMode::Agentic);
+        let other = create_grouped_session(&mut mgr, "", "/w", "investigate", AiMode::Agentic);
+        let by_issue = create_grouped_session(&mut mgr, "", "/w", "zz retry", AiMode::Agentic);
+        mgr.get_mut(by_issue).unwrap().details.issue_url = Some(card.to_string());
+        let loose = create_grouped_session(&mut mgr, "", "/w", "aa notes", AiMode::Agentic);
+        mgr.get_mut(loose).unwrap().details.issue_url = Some("https://x/1".to_string());
+        mgr.rebuild_groups();
+
+        let details = |id| &mgr.get(id).unwrap().details;
+        assert_eq!(details(by_title).card_ref(), Some(card));
+        assert_eq!(details(by_issue).card_ref(), Some(card));
+        assert_eq!(details(by_issue).title_ref(), None);
+        assert_eq!(
+            details(loose).card_ref(),
+            None,
+            "an issue url that isn't a card"
+        );
+
+        let ids = &mgr.host_groups()[0].project_groups[0].cwd_groups[0].session_ids;
+        assert_eq!(ids, &[loose, by_title, by_issue, other]);
     }
 
     #[test]

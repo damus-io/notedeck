@@ -4,3 +4,4 @@ RealtimeCache refolds without a counter, so text derived off its views (a card
 title for a list row) has no key to cache on and is re-resolved every frame.
 
 - headway:dave/feature-marine-curious — the card asked callers to cache the new `KindRenderer::title` keyed on "the board cache's revision", and there is none; left to the list-row card to work out
+- headway:dave/tone-grief-hour — the session list re-looks each card title up every 2s (`card_titles::REFRESH_SECS`) instead of on change, so a renamed card lags up to 2s and an unchanged one is refolded for nothing
