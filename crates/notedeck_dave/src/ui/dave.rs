@@ -55,6 +55,9 @@ bitflags! {
         /// A not-yet-materialized placeholder session (a remote spawn or resume in
         /// flight) — drives the "connecting…" status line + spinner.
         const IsConnecting     = 1 << 8;
+        /// A Claude subagent's virtual session: no composer of its own, and
+        /// the header says what it inherits.
+        const IsSubagent       = 1 << 9;
     }
 }
 
@@ -270,6 +273,9 @@ pub enum DaveAction {
     /// Stop one of the active session's background tasks by its CLI task
     /// id, from the Details tab's Background card once the user confirmed
     StopTask(String),
+    /// Switch to the virtual session of the active session's subagent (by
+    /// its task id), from its row in the chat
+    OpenSubagent(String),
 }
 
 impl<'a> DaveUi<'a> {
@@ -457,6 +463,13 @@ impl<'a> DaveUi<'a> {
         self
     }
 
+    /// Mark this as a Claude subagent's virtual session (see
+    /// [`crate::session::SubagentOf`]).
+    pub fn is_subagent(mut self, val: bool) -> Self {
+        self.flags.set(DaveUiFlags::IsSubagent, val);
+        self
+    }
+
     /// Mark this as a pending placeholder (a remote spawn/resume in flight), which
     /// renders the "connecting…" status line + spinner instead of a bare chat.
     pub fn is_connecting(mut self, val: bool) -> Self {
@@ -561,7 +574,12 @@ impl<'a> DaveUi<'a> {
                     let truncation = ui
                         .scope_builder(egui::UiBuilder::new().max_rect(details_rect), |ui| {
                             ui.set_clip_rect(details_rect);
-                            session_header_ui(ui, details, self.backend_type)
+                            session_header_ui(
+                                ui,
+                                details,
+                                self.backend_type,
+                                self.flags.contains(DaveUiFlags::IsSubagent),
+                            )
                         })
                         .inner;
 
@@ -819,8 +837,9 @@ impl<'a> DaveUi<'a> {
                 }
                 Message::Subagent(info) => {
                     // Subagents only in Agentic mode
-                    if is_agentic {
-                        Self::subagent_ui(info, self.nav, ui);
+                    if is_agentic && Self::subagent_ui(info, self.nav, ui) {
+                        response =
+                            DaveResponse::new(DaveAction::OpenSubagent(info.task_id.clone()));
                     }
                 }
                 Message::TodoUpdate(_) => {
@@ -1634,8 +1653,10 @@ impl<'a> DaveUi<'a> {
         });
     }
 
-    /// Render a single subagent's status with expandable tool results
-    fn subagent_ui(info: &SubagentInfo, nav: &mut BlockNav, ui: &mut egui::Ui) {
+    /// Render a single subagent's status with expandable tool results.
+    /// Returns whether its "open" link was clicked, which switches to the
+    /// subagent's own session.
+    fn subagent_ui(info: &SubagentInfo, nav: &mut BlockNav, ui: &mut egui::Ui) -> bool {
         let tool_count = info.tool_results.len();
         let has_tools = tool_count > 0;
         let expand_id = subagent_block_id(&info.task_id);
@@ -1703,7 +1724,19 @@ impl<'a> DaveUi<'a> {
                     ui.data_mut(|d| d.insert_temp(expand_id, expanded));
                 }
             }
+
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("open \u{203A}")
+                        .size(10.0)
+                        .color(ui.visuals().hyperlink_color),
+                )
+                .sense(egui::Sense::click()),
+            )
+            .on_hover_text("Open this subagent's session")
+            .clicked()
         });
+        let open_clicked = row.inner;
 
         let row_rect = egui::Rect::from_min_size(
             row.response.rect.min,
@@ -1725,6 +1758,7 @@ impl<'a> DaveUi<'a> {
                 }
             });
         }
+        open_clicked
     }
 
     fn search_call_ui(
@@ -1849,6 +1883,9 @@ impl<'a> DaveUi<'a> {
     }
 
     fn inputbox(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        if self.flags.contains(DaveUiFlags::IsSubagent) {
+            return self.subagent_composer_ui(ui);
+        }
         let i18n = &mut *app_ctx.i18n;
         // Remote sessions can be interrupted too: the Stop button / normal `s`
         // publishes an interrupt command the host applies to its backend.
@@ -1922,6 +1959,42 @@ impl<'a> DaveUi<'a> {
         }
 
         result.action()
+    }
+
+    /// A subagent's composer: shown, but it can't send yet (see
+    /// [`crate::session::COMPOSER_DISABLED`]). Stop still works while the
+    /// subagent runs.
+    fn subagent_composer_ui(&mut self, ui: &mut egui::Ui) -> DaveResponse {
+        let button_size = egui::vec2(60.0, notedeck::tokens::BUTTON_LG);
+        let show_stop = self.flags.contains(DaveUiFlags::IsWorking);
+        // The height a one-line input box takes (see `InputboxLayout::show`).
+        let height = notedeck::tokens::BUTTON_LG + 20.0;
+        let stop_clicked = ui
+            .allocate_ui(egui::vec2(ui.available_width(), height), |ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let stop_clicked = show_stop
+                        && ui
+                            .add(egui::Button::new("Stop").min_size(button_size))
+                            .clicked();
+                    ui.add_enabled(
+                        false,
+                        egui::TextEdit::singleline(self.input)
+                            .desired_width(f32::INFINITY)
+                            .hint_text(
+                                egui::RichText::new("subagents can't be messaged yet").weak(),
+                            ),
+                    )
+                    .on_disabled_hover_text(crate::session::COMPOSER_DISABLED);
+                    stop_clicked
+                })
+                .inner
+            })
+            .inner;
+        if stop_clicked {
+            DaveResponse::new(DaveAction::Interrupt)
+        } else {
+            DaveResponse::none()
+        }
     }
 
     #[profiling::function]
@@ -3030,10 +3103,15 @@ struct HeaderCwd {
     full: Option<String>,
 }
 
+/// What a subagent's header adds to its subtitle: the model, cwd and mode
+/// shown are its parent's.
+const SUBAGENT_INHERITS: &str = "inherited from its parent";
+
 fn session_header_ui(
     ui: &mut egui::Ui,
     details: &SessionDetails,
     backend_type: BackendType,
+    is_subagent: bool,
 ) -> HeaderCwd {
     let mut header_cwd = HeaderCwd { full: None };
 
@@ -3073,6 +3151,11 @@ fn session_header_ui(
                 (Some(model), None) => Some(model.to_string()),
                 (None, Some(cwd)) => Some(cwd.clone()),
                 (None, None) => None,
+            };
+            let subtitle = match subtitle {
+                Some(text) if is_subagent => Some(format!("{text} \u{00B7} {SUBAGENT_INHERITS}")),
+                None if is_subagent => Some(SUBAGENT_INHERITS.to_string()),
+                other => other,
             };
 
             if let Some(text) = subtitle {

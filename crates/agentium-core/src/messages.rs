@@ -348,6 +348,11 @@ pub struct PermissionRequest {
     /// to review it up front, so its responded row starts expanded for
     /// after-the-fact inspection. Defaults to `false` (manual approval).
     pub auto_accepted: bool,
+    /// The subagent (its launching Task/Agent tool_use id,
+    /// [`SubagentInfo::task_id`]) whose tool call this is, when a subagent
+    /// asked rather than the session itself. Local only: a note doesn't carry
+    /// it, so a remote viewer shows the request in the parent session.
+    pub parent_task_id: Option<String>,
 }
 
 impl PermissionRequest {
@@ -371,6 +376,7 @@ impl PermissionRequest {
             response,
             answer_summary,
             auto_accepted: false,
+            parent_task_id: None,
         }
     }
 
@@ -883,6 +889,16 @@ pub enum TranscriptKind {
 pub struct TranscriptRun {
     pub kind: TranscriptKind,
     pub text: String,
+    /// How many of the subagent's tool results
+    /// ([`SubagentInfo::tool_results`]) came before this block, so a view can
+    /// interleave the two the way they happened. A note written before this
+    /// existed decodes as 0: its text shows ahead of its tools.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub after_tools: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// A subagent's forwarded text and thinking, oldest first, capped at
@@ -916,7 +932,7 @@ impl SubagentTranscript {
             ..Self::default()
         };
         for run in runs {
-            transcript.push(run.kind, &run.text);
+            transcript.push_after_tools(run.kind, &run.text, run.after_tools);
         }
         transcript
     }
@@ -925,6 +941,12 @@ impl SubagentTranscript {
     /// A single block bigger than the cap keeps only its tail. Empty text is
     /// ignored.
     pub fn push(&mut self, kind: TranscriptKind, text: &str) {
+        self.push_after_tools(kind, text, 0);
+    }
+
+    /// [`push`](Self::push) a block that came after the subagent's first
+    /// `after_tools` tool results (see [`TranscriptRun::after_tools`]).
+    pub fn push_after_tools(&mut self, kind: TranscriptKind, text: &str, after_tools: usize) {
         if text.is_empty() {
             return;
         }
@@ -942,6 +964,7 @@ impl SubagentTranscript {
         self.runs.push_back(TranscriptRun {
             kind,
             text: text.to_string(),
+            after_tools,
         });
         while self.bytes > Self::MAX_BYTES {
             let Some(oldest) = self.runs.pop_front() else {
@@ -1279,6 +1302,10 @@ pub struct BackgroundTask {
     pub last_tool_name: Option<String>,
     /// The CLI's latest one-line summary of the task's progress.
     pub summary: Option<String>,
+    /// The tool call that launched the task. For a subagent it is the
+    /// subagent's [`SubagentInfo::task_id`], which is how Dave finds the CLI
+    /// task id to stop one subagent with.
+    pub tool_use_id: Option<String>,
 }
 
 /// What runs a background task, from the CLI's `task_type` and, for a
@@ -2020,6 +2047,7 @@ mod tests {
             ["one", "two", "three"].map(|text| TranscriptRun {
                 kind: TranscriptKind::Text,
                 text: text.to_string(),
+                after_tools: 0,
             }),
             false,
         );
@@ -2032,5 +2060,28 @@ mod tests {
         let whole = t.tail(usize::MAX);
         assert!(!whole.dropped);
         assert_eq!(whole.runs.len(), 3);
+    }
+
+    /// A run's place among the tool results survives the wire, and a run
+    /// from a note written before places existed reads as before any tool.
+    #[test]
+    fn transcript_run_keeps_its_place_among_tools() {
+        let run = TranscriptRun {
+            kind: TranscriptKind::Text,
+            text: "after two".to_string(),
+            after_tools: 2,
+        };
+        let json = serde_json::to_string(&run).unwrap();
+        let back: TranscriptRun = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.after_tools, 2);
+
+        let old: TranscriptRun = serde_json::from_str(r#"{"kind":"text","text":"old"}"#).unwrap();
+        assert_eq!(old.after_tools, 0);
+        let first = serde_json::to_string(&TranscriptRun {
+            after_tools: 0,
+            ..run
+        })
+        .unwrap();
+        assert!(!first.contains("after_tools"), "0 stays off the wire");
     }
 }

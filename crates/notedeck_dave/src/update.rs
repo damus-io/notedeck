@@ -52,6 +52,20 @@ fn remote_interrupt_publish(session: &ChatSession) -> Option<InterruptPublish> {
     Some(InterruptPublish { session_id })
 }
 
+/// The session whose backend serves the active one: the parent of a
+/// subagent's virtual session, else the active session itself. Answering a
+/// prompt and changing what a backend allows go there.
+fn active_backing(session_manager: &SessionManager) -> Option<&ChatSession> {
+    let id = session_manager.backing_id(session_manager.active_id()?);
+    session_manager.get(id)
+}
+
+/// [`active_backing`], mutably.
+fn active_backing_mut(session_manager: &mut SessionManager) -> Option<&mut ChatSession> {
+    let id = session_manager.backing_id(session_manager.active_id()?);
+    session_manager.get_mut(id)
+}
+
 /// Execute the actual interrupt on the active session.
 ///
 /// The single place both interrupt gestures land — the Stop button and `s` in
@@ -81,6 +95,10 @@ pub fn execute_interrupt(
     ctx: &egui::Context,
 ) -> Option<InterruptPublish> {
     let session = session_manager.get_active()?;
+    if let Some(link) = &session.subagent_of {
+        stop_subagent(session_manager, link, ctx, backend);
+        return None;
+    }
     if let Some(publish) = remote_interrupt_publish(session) {
         tracing::debug!("Interrupting remote session {}", session.id);
         return Some(publish);
@@ -89,6 +107,40 @@ pub fn execute_interrupt(
     backend.interrupt_session(session_id, notedeck::Waker::egui(ctx));
     tracing::debug!("Interrupted session {}", session.id);
     None
+}
+
+/// Stop the subagent whose virtual session is active, and only it: the
+/// parent's backend is sent `stop_task` with the CLI task the subagent runs
+/// as (the background entry its launching tool call started). A subagent
+/// with no such entry yet, or one on a remote host, can't be stopped alone,
+/// so nothing is sent.
+fn stop_subagent(
+    session_manager: &SessionManager,
+    link: &crate::session::SubagentOf,
+    ctx: &egui::Context,
+    backend: &dyn AiBackend,
+) {
+    let Some(parent) = session_manager.get(link.parent) else {
+        return;
+    };
+    if parent.is_remote() {
+        tracing::debug!("can't stop subagent {} of a remote session", link.task_id);
+        return;
+    }
+    let task = parent.inspector.background.entries().iter().find(|entry| {
+        matches!(&entry.work, crate::messages::BackgroundWork::Task(task)
+            if task.tool_use_id.as_deref() == Some(link.task_id.as_str()))
+    });
+    let Some(task) = task else {
+        tracing::debug!("subagent {} has no task to stop yet", link.task_id);
+        return;
+    };
+    tracing::debug!("Stopping subagent {} (task {})", link.task_id, task.id);
+    backend.stop_task(
+        format!("dave-session-{}", parent.id),
+        task.id.clone(),
+        notedeck::Waker::egui(ctx),
+    );
 }
 
 /// Ask the backend to stop one of the active session's background tasks.
@@ -103,7 +155,7 @@ pub fn stop_background_task(
     task_id: String,
     ctx: &egui::Context,
 ) {
-    let Some(session) = session_manager.get_active() else {
+    let Some(session) = active_backing(session_manager) else {
         return;
     };
     if session.is_remote() {
@@ -143,7 +195,7 @@ pub fn allow_always(
     session_manager: &mut SessionManager,
     request_id: uuid::Uuid,
 ) -> Option<crate::session::RuntimeAllow> {
-    let session = session_manager.get_active_mut()?;
+    let session = active_backing_mut(session_manager)?;
     let agentic = session.agentic.as_mut()?;
 
     let (tool_name, tool_input) = session.chat.iter().find_map(|msg| match msg {
@@ -315,6 +367,9 @@ fn first_remote_pending_permission(
 /// Get the first pending permission request ID for the active session.
 pub fn first_pending_permission(session_manager: &SessionManager) -> Option<uuid::Uuid> {
     let session = session_manager.get_active()?;
+    if let Some(link) = &session.subagent_of {
+        return subagent_pending_permission(session_manager, link).map(|req| req.id);
+    }
     if session.is_remote() {
         first_remote_pending_permission(session).map(|req| req.id)
     } else {
@@ -326,9 +381,33 @@ pub fn first_pending_permission(session_manager: &SessionManager) -> Option<uuid
     }
 }
 
+/// The first prompt a subagent raised that still waits on the user, from its
+/// parent, which holds the prompt and answers it.
+fn subagent_pending_permission<'a>(
+    session_manager: &'a SessionManager,
+    link: &crate::session::SubagentOf,
+) -> Option<&'a PermissionRequest> {
+    let parent = session_manager.get(link.parent)?;
+    let agentic = parent.agentic.as_ref()?;
+    parent.chat.iter().find_map(|msg| match msg {
+        Message::PermissionRequest(req)
+            if req.parent_task_id.as_deref() == Some(link.task_id.as_str())
+                && req.response.is_none()
+                && !agentic.permissions.responded.contains_key(&req.id)
+                && (parent.is_remote() || agentic.permissions.pending.contains_key(&req.id)) =>
+        {
+            Some(req)
+        }
+        _ => None,
+    })
+}
+
 /// Get the first pending permission request for the active session.
 pub fn pending_permission(session_manager: &SessionManager) -> Option<&PermissionRequest> {
     let session = session_manager.get_active()?;
+    if let Some(link) = &session.subagent_of {
+        return subagent_pending_permission(session_manager, link);
+    }
 
     if session.is_remote() {
         return first_remote_pending_permission(session);
@@ -389,7 +468,7 @@ pub fn handle_permission_response(
     request_id: uuid::Uuid,
     response: PermissionResponse,
 ) -> Option<PermissionPublish> {
-    let session = session_manager.get_active_mut()?;
+    let session = active_backing_mut(session_manager)?;
 
     let is_remote = session.is_remote();
     let cancels_turn = response.cancels_turn();
@@ -468,7 +547,7 @@ pub fn handle_question_response(
     request_id: uuid::Uuid,
     answers: Vec<QuestionAnswer>,
 ) -> Option<PermissionPublish> {
-    let session = session_manager.get_active_mut()?;
+    let session = active_backing_mut(session_manager)?;
 
     let is_remote = session.is_remote();
     let publish_metadata = session.agentic.as_ref().and_then(|agentic| {
@@ -1481,6 +1560,14 @@ pub fn delete_session(
     directory_picker: &mut DirectoryPicker,
     id: SessionId,
 ) -> bool {
+    // A subagent's session goes with its parent, never on its own: the next
+    // sync would only bring it back.
+    if session_manager
+        .get(id)
+        .is_some_and(|s| s.subagent_of.is_some())
+    {
+        return false;
+    }
     focus_queue.remove_session(id);
     if session_manager.delete_session(id) {
         let session_id = format!("dave-session-{}", id);

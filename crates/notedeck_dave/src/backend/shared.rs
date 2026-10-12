@@ -283,18 +283,39 @@ pub fn forward_permission_to_ui_with_view(
     response_tx: &mpsc::Sender<DaveApiResponse>,
     waker: &Waker,
 ) -> Option<oneshot::Receiver<crate::messages::PermissionResponse>> {
-    let request_id = Uuid::new_v4();
-    let (ui_resp_tx, ui_resp_rx) = oneshot::channel();
-
     let request = PermissionRequest::new(
-        request_id,
+        Uuid::new_v4(),
         tool_name.to_string(),
         tool_input,
         view,
         None,
         None,
     );
+    send_permission_to_ui(request, response_tx, waker)
+}
 
+/// Variant of [`forward_permission_to_ui`] for a tool call a subagent made:
+/// the request names the subagent (`parent_task_id`, its launching tool_use
+/// id), so Dave shows it in that subagent's session.
+pub fn forward_subagent_permission_to_ui(
+    tool_name: &str,
+    tool_input: serde_json::Value,
+    parent_task_id: Option<String>,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    waker: &Waker,
+) -> Option<oneshot::Receiver<crate::messages::PermissionResponse>> {
+    let mut request = PermissionRequest::pending(Uuid::new_v4(), tool_name.to_string(), tool_input);
+    request.parent_task_id = parent_task_id;
+    send_permission_to_ui(request, response_tx, waker)
+}
+
+/// Send a built request to the UI with a fresh oneshot for its answer.
+fn send_permission_to_ui(
+    request: PermissionRequest,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    waker: &Waker,
+) -> Option<oneshot::Receiver<crate::messages::PermissionResponse>> {
+    let (ui_resp_tx, ui_resp_rx) = oneshot::channel();
     let pending = PendingPermission {
         request,
         response_tx: ui_resp_tx,

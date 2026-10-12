@@ -547,6 +547,7 @@ impl WaitTracker {
                 usage: record.usage,
                 last_tool_name: record.last_tool_name.clone(),
                 summary: record.summary.clone(),
+                tool_use_id: record.tool_use_id.clone(),
             }),
         }
     }

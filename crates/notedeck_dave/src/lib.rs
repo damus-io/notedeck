@@ -1467,6 +1467,9 @@ impl notedeck::App for Dave {
             }
         }
 
+        // Rebuild the virtual sessions of subagents whose rows moved.
+        self.session_manager.sync_subagent_sessions();
+
         // Update all session statuses after processing events, publishing the
         // responses of any permissions the runtime allowlist just resolved
         publish::update_statuses_and_publish_auto_resolved(

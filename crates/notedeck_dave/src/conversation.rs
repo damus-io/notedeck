@@ -720,6 +720,8 @@ pub(crate) fn process_conversation_notes<'a>(
             }
             let last = *new_display_idxs.last().expect("non-empty");
             agentic.tail_order = Some(session_loader::EventOrder::from_note(&notes[last]));
+            // A subagent note may have added or folded into a row.
+            session.mark_subagents_changed();
         } else {
             rebuild_chat = true;
         }

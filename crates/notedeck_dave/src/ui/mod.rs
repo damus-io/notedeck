@@ -104,7 +104,10 @@ fn build_dave_ui<'a>(
     // A placeholder (remote spawn/resume in flight) reports Pending — render it as
     // "connecting…" rather than an empty chat.
     let is_connecting = session.status() == AgentStatus::Pending;
-    let has_pending_permission = session.has_pending_permissions();
+    let is_subagent = session.subagent_of.is_some();
+    // A subagent's prompts are held by its parent; its status says one waits.
+    let has_pending_permission =
+        session.has_pending_permissions() || (is_subagent && status == AgentStatus::NeedsInput);
     let permission_mode = session.permission_mode();
     let is_remote = session.is_remote();
     let turn_has_content = session.turn_has_content();
@@ -139,6 +142,7 @@ fn build_dave_ui<'a>(
     )
     .is_working(is_working)
     .is_connecting(is_connecting)
+    .is_subagent(is_subagent)
     .has_pending_permission(has_pending_permission)
     .permission_mode(permission_mode)
     .auto_steal_focus(auto_steal_focus)
@@ -199,10 +203,18 @@ fn build_dave_ui<'a>(
 
 /// Set tentative permission state on the active session's agentic data.
 fn set_tentative_state(session_manager: &mut SessionManager, state: PermissionMessageState) {
-    if let Some(session) = session_manager.get_active_mut() {
-        if let Some(agentic) = &mut session.agentic {
-            agentic.permission_message_state = state;
-        }
+    let Some(active) = session_manager.active_id() else {
+        return;
+    };
+    // A subagent's prompt is answered through its parent.
+    let backing = session_manager.backing_id(active);
+    if let Some(agentic) = session_manager
+        .get_mut(backing)
+        .and_then(|session| session.agentic.as_mut())
+    {
+        agentic.permission_message_state = state;
+    }
+    if let Some(session) = session_manager.get_mut(active) {
         session.focus_requested = true;
     }
 }
@@ -1314,6 +1326,13 @@ pub fn handle_send_action(
     backend: &dyn crate::backend::AiBackend,
     ctx: &egui::Context,
 ) -> SendActionResult {
+    // A subagent's session can't send yet: it has no backend of its own.
+    if session_manager
+        .get_active()
+        .is_some_and(|s| s.subagent_of.is_some())
+    {
+        return SendActionResult::Handled;
+    }
     let tentative_state = session_manager
         .get_active()
         .and_then(|s| s.agentic.as_ref())
@@ -1550,6 +1569,17 @@ pub fn handle_ui_action(
             if let Some(session) = session_manager.get_active_mut() {
                 session.inspector_view.show_chat();
                 session.focus_requested = true;
+            }
+            UiActionResult::Handled
+        }
+        DaveAction::OpenSubagent(task_id) => {
+            let Some(parent) = session_manager.active_id() else {
+                return UiActionResult::Handled;
+            };
+            // A row that appeared this frame may not have its session yet.
+            session_manager.sync_subagent_sessions();
+            if let Some(id) = session_manager.subagent_session(parent, &task_id) {
+                session_manager.switch_to(id);
             }
             UiActionResult::Handled
         }
@@ -2847,6 +2877,105 @@ mod tests {
             .open(crate::inspector::InspectorSection::Subagents);
         harness.run_ok();
         harness.snapshot("session_subagents");
+    }
+
+    /// One running Explore subagent in the active session's chat that has
+    /// thought, read two files and written a line in between.
+    fn seed_subagent_session(state: &mut SessionViewState) {
+        use crate::messages::{ExecutedTool, SubagentInfo, SubagentStatus, TranscriptKind};
+
+        let read = |path: &str| ExecutedTool {
+            tool_name: "Read".into(),
+            summary: path.into(),
+            output: None,
+            parent_task_id: Some("toolu_explore".into()),
+            file_update: None,
+            tool_use_id: None,
+        };
+        let mut info = SubagentInfo {
+            task_id: "toolu_explore".into(),
+            description: "Find where task_progress is parsed".into(),
+            subagent_type: "Explore".into(),
+            status: SubagentStatus::Running,
+            output: String::new(),
+            max_output_size: 4000,
+            tool_results: vec![read("backend/claude.rs")],
+            background: true,
+            agent_id: Some("af234d4591821f8d0".into()),
+            transcript: Default::default(),
+        };
+        info.transcript.push_after_tools(
+            TranscriptKind::Thinking,
+            "Start at the stream handler.",
+            0,
+        );
+        info.transcript.push_after_tools(
+            TranscriptKind::Text,
+            "It is parsed in send_subagent_progress; checking the tracker next.",
+            1,
+        );
+        info.tool_results.push(read("backend/wait_tracker.rs"));
+        let session = state.session_manager.get_active_mut().unwrap();
+        session.replace_chat(vec![
+            crate::Message::User("where is task_progress parsed?".into()),
+            crate::Message::Subagent(info),
+        ]);
+        // The parent is mid-turn, so its running subagent is too.
+        session.wakeup_turn = true;
+        session.update_status();
+    }
+
+    /// Clicking "open" on a subagent's row switches to its own session,
+    /// drawn by the normal session view: its text among its tool rows, the
+    /// header saying what it inherits, and a composer that can't send.
+    #[test]
+    fn opening_a_subagent_row_switches_to_its_session() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+
+        let mut harness = session_view_harness(egui::vec2(1000.0, 800.0));
+        seed_subagent_session(harness.state_mut());
+        harness.run_ok();
+        let parent = harness.state().session_manager.active_id().unwrap();
+        assert_eq!(count_labels_containing(&harness, "checking the tracker"), 0);
+
+        harness.get_by_label("open \u{203A}").click();
+        harness.run_ok();
+
+        let sm = &harness.state().session_manager;
+        let active = sm.get_active().unwrap();
+        let link = active.subagent_of.as_ref().expect("a subagent's session");
+        assert_eq!(link.parent, parent);
+        assert_eq!(link.task_id, "toolu_explore");
+        assert_eq!(
+            active.details.display_title(),
+            "Explore: Find where task_progress is parsed"
+        );
+        assert_eq!(active.status(), crate::agent_status::AgentStatus::Working);
+
+        assert_eq!(count_labels_containing(&harness, "checking the tracker"), 1);
+        assert_eq!(
+            count_labels_containing(&harness, "inherited from its parent"),
+            1
+        );
+        let composer = harness.get_by_role(egui::accesskit::Role::TextInput);
+        assert!(composer.accesskit_node().is_disabled(), "it can't send yet");
+    }
+
+    /// A running subagent's session, opened from its parent's row.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_subagent_session() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1000.0, 640.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        seed_subagent_session(harness.state_mut());
+        harness.run_ok();
+        harness.get_by_label("open \u{203A}").click();
+        harness.run_ok();
+        harness.snapshot("subagent_session");
     }
 
     /// A task list in the active session's chat: an older list the agent

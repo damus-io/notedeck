@@ -22,6 +22,9 @@ use uuid::Uuid;
 
 pub type SessionId = u32;
 
+mod subagent;
+pub use subagent::{SubagentOf, COMPOSER_DISABLED};
+
 /// A user message bound for a session's backend: a remote client's message,
 /// or the first prompt a spawn command carries.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -665,6 +668,15 @@ pub struct ChatSession {
     /// [`Dave::pending_placeholder_for`](crate::Dave). `None` for a spawn
     /// placeholder (no session exists yet) and for real sessions.
     pub pending_resume_target: Option<String>,
+    /// Set when this is a Claude subagent's virtual session (see
+    /// [`subagent`]): no backend of its own, its chat built from the parent's
+    /// subagent row.
+    pub subagent_of: Option<SubagentOf>,
+    /// Bumped when a subagent row changes, so its virtual session rebuilds
+    /// (see [`mark_subagents_changed`](Self::mark_subagents_changed)).
+    subagent_rev: u64,
+    /// What this session's virtual sessions were last built from.
+    subagent_synced: Option<subagent::SubagentStamp>,
 }
 
 impl Drop for ChatSession {
@@ -734,6 +746,9 @@ impl ChatSession {
             pending_created_at: None,
             spawn_id: None,
             pending_resume_target: None,
+            subagent_of: None,
+            subagent_rev: 0,
+            subagent_synced: None,
         }
     }
 
@@ -814,6 +829,9 @@ impl ChatSession {
             pending_created_at: Some(Instant::now()),
             spawn_id: Some(spawn_id),
             pending_resume_target: resume_target,
+            subagent_of: None,
+            subagent_rev: 0,
+            subagent_synced: None,
         }
     }
 
@@ -977,12 +995,14 @@ impl ChatSession {
     pub fn replace_chat(&mut self, chat: Vec<Message>) {
         self.chat = chat;
         self.turn_rows.reindex(&self.chat);
+        self.mark_subagents_changed();
     }
 
     /// The subagent row for `task_id`, if it is still at its recorded
     /// position.
     fn subagent_mut(&mut self, task_id: &str) -> Option<&mut SubagentInfo> {
         let idx = self.turn_rows.subagent(task_id)?;
+        self.mark_subagents_changed();
         match self.chat.get_mut(idx) {
             Some(Message::Subagent(subagent)) => Some(subagent),
             _ => None,
@@ -1010,7 +1030,10 @@ impl ChatSession {
         let Some(subagent) = self.subagent_mut(task_id) else {
             return;
         };
-        subagent.transcript.push(kind, text);
+        let after_tools = subagent.tool_results.len();
+        subagent
+            .transcript
+            .push_after_tools(kind, text, after_tools);
     }
 
     /// Update a subagent's output (appending new content, keeping only the tail)
@@ -1171,7 +1194,10 @@ impl ChatSession {
         let new_status = self.derive_status();
         if new_status != self.cached_status {
             self.cached_status = new_status;
-            if let Some(priority) = FocusPriority::from_status(new_status) {
+            // A subagent asks for attention only when its prompt waits: its
+            // finishing is the parent's business, not a queue entry each.
+            let notable = self.subagent_of.is_none() || new_status == AgentStatus::NeedsInput;
+            if let Some(priority) = FocusPriority::from_status(new_status).filter(|_| notable) {
                 // Set indicator when entering a notable state
                 self.indicator = Some(priority);
             } else if self.indicator.is_some() {
@@ -1184,6 +1210,12 @@ impl ChatSession {
 
     /// Derive status from the current session state
     fn derive_status(&self) -> AgentStatus {
+        // A subagent's session shows what its last sync derived from the
+        // parent's row.
+        if let Some(link) = &self.subagent_of {
+            return link.status;
+        }
+
         // Pending placeholder sessions always show Pending
         if self.pending_created_at.is_some() {
             return AgentStatus::Pending;
@@ -1369,6 +1401,29 @@ fn push_visible_cwd(
     ids.extend_from_slice(&cwd_group.session_ids);
 }
 
+/// Put each session's subagent sessions right after it, oldest first.
+fn nest_subagent_sessions(sessions: &HashMap<SessionId, ChatSession>, cwd_group: &mut CwdGroup) {
+    let has_children = |id: SessionId| {
+        sessions
+            .values()
+            .any(|s| s.subagent_of.as_ref().is_some_and(|link| link.parent == id))
+    };
+    if !cwd_group.session_ids.iter().any(|&id| has_children(id)) {
+        return;
+    }
+    let parents = std::mem::take(&mut cwd_group.session_ids);
+    for id in parents {
+        cwd_group.session_ids.push(id);
+        let mut children: Vec<SessionId> = sessions
+            .values()
+            .filter(|s| s.subagent_of.as_ref().is_some_and(|l| l.parent == id))
+            .map(|s| s.id)
+            .collect();
+        children.sort_unstable();
+        cwd_group.session_ids.extend(children);
+    }
+}
+
 impl Default for SessionManager {
     fn default() -> Self {
         Self::new()
@@ -1493,10 +1548,14 @@ impl SessionManager {
     /// should open the directory picker to create a new session.
     pub fn delete_session(&mut self, id: SessionId) -> bool {
         if self.sessions.remove(&id).is_some() {
-            self.order.retain(|&x| x != id);
+            // A subagent's session lives only as long as its parent's.
+            self.sessions
+                .retain(|_, s| s.subagent_of.as_ref().is_none_or(|link| link.parent != id));
+            let sessions = &self.sessions;
+            self.order.retain(|x| sessions.contains_key(x));
 
             // If we deleted the active session, switch to another
-            if self.active == Some(id) {
+            if self.active.is_some_and(|a| !self.sessions.contains_key(&a)) {
                 self.active = self.order.first().copied();
             }
             self.rebuild_groups();
@@ -1671,6 +1730,11 @@ impl SessionManager {
 
         for &id in &self.order {
             if let Some(session) = self.sessions.get(&id) {
+                // A subagent's session is listed right under its parent
+                // (below), not grouped on its own.
+                if session.subagent_of.is_some() {
+                    continue;
+                }
                 if session.ai_mode != AiMode::Agentic {
                     if session.ai_mode == AiMode::Chat {
                         self.chat_ids.push(id);
@@ -1784,6 +1848,7 @@ impl SessionManager {
                             .unwrap_or("");
                         title_a.cmp(title_b).then(a.cmp(b))
                     });
+                    nest_subagent_sessions(&self.sessions, cwd_group);
                 }
             }
         }
@@ -2031,6 +2096,9 @@ impl ChatSession {
     /// recorded in [`TurnRows`], which also moves any recorded row the insert
     /// shifts.
     pub fn insert_turn_content(&mut self, message: Message) -> usize {
+        if matches!(message, Message::Subagent(_)) {
+            self.mark_subagents_changed();
+        }
         let pos = self.turn_content_pos();
         self.turn_rows.insert(&mut self.chat, pos, message);
         self.turn_has_content = true;

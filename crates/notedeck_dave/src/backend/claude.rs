@@ -158,6 +158,33 @@ fn send_subagent_blocks(
     }
 }
 
+/// A tool call the CLI has made and not yet returned a result for.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingTool {
+    pub(crate) name: String,
+    pub(crate) input: serde_json::Value,
+    /// The subagent (its launching tool_use id) that made the call, or `None`
+    /// for the session's own call.
+    pub(crate) parent: Option<String>,
+}
+
+/// The subagent whose pending call a `can_use_tool` request is for.
+///
+/// The CLI's request names the tool and its input but not the tool_use, so it
+/// is matched against the calls still waiting on a result. A session's own
+/// identical call in flight at once would make that ambiguous; the first
+/// subagent match wins, which at worst shows the prompt in that subagent.
+fn permission_subagent(
+    pending_tools: &HashMap<String, PendingTool>,
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+) -> Option<String> {
+    pending_tools
+        .values()
+        .find(|tool| tool.parent.is_some() && tool.name == tool_name && tool.input == *tool_input)
+        .and_then(|tool| tool.parent.clone())
+}
+
 /// Process a single tool result: complete any in-flight subagent, fold the
 /// harness task list into the sidebar, and forward the result to the UI.
 ///
@@ -167,14 +194,19 @@ fn send_subagent_blocks(
 fn handle_tool_result(
     tool_result: &ToolResultBlock,
     parent_override: Option<&str>,
-    pending_tools: &mut HashMap<String, (String, serde_json::Value)>,
+    pending_tools: &mut HashMap<String, PendingTool>,
     subagent_stack: &mut Vec<String>,
     task_tracker: &mut TaskTracker,
     response_tx: &mpsc::Sender<DaveApiResponse>,
     waker: &Waker,
 ) {
     let tool_use_id = &tool_result.tool_use_id;
-    let Some((tool_name, tool_input)) = pending_tools.remove(tool_use_id) else {
+    let Some(PendingTool {
+        name: tool_name,
+        input: tool_input,
+        ..
+    }) = pending_tools.remove(tool_use_id)
+    else {
         return;
     };
     let result_value = tool_result_content_to_value(&tool_result.content);
@@ -264,7 +296,7 @@ fn handle_subagent_result(
 /// `tool_use_id` on its eventual `task_notification`.
 fn handle_task_started(
     data: &serde_json::Value,
-    pending_tools: &HashMap<String, (String, serde_json::Value)>,
+    pending_tools: &HashMap<String, PendingTool>,
     response_tx: &mpsc::Sender<DaveApiResponse>,
     waker: &Waker,
 ) {
@@ -278,7 +310,7 @@ fn handle_task_started(
     // `task_started` carries a description but not the subagent type; recover
     // the type from the originating Task tool_use input still in `pending_tools`
     // (it's removed only when its launch tool result lands).
-    let spawn_input = pending_tools.get(tool_use_id).map(|(_, input)| input);
+    let spawn_input = pending_tools.get(tool_use_id).map(|tool| &tool.input);
     let description = data
         .get("description")
         .and_then(|v| v.as_str())
@@ -431,7 +463,7 @@ fn handle_stream_message(
     message: ClaudeMessage,
     response_tx: &mpsc::Sender<DaveApiResponse>,
     waker: &Waker,
-    pending_tools: &mut HashMap<String, (String, serde_json::Value)>,
+    pending_tools: &mut HashMap<String, PendingTool>,
     subagent_stack: &mut Vec<String>,
     task_tracker: &mut TaskTracker,
     stopped_by_user: bool,
@@ -470,7 +502,20 @@ fn handle_stream_message(
 
             for block in &assistant_msg.message.content {
                 if let ContentBlock::ToolUse(ToolUseBlock { id, name, input }) = block {
-                    pending_tools.insert(id.clone(), (name.clone(), input.clone()));
+                    pending_tools.insert(
+                        id.clone(),
+                        PendingTool {
+                            name: name.clone(),
+                            input: input.clone(),
+                            // The same attribution `send_tool_result` gives
+                            // the result: the forwarded parent, else the
+                            // foreground subagent running.
+                            parent: assistant_msg
+                                .parent_tool_use_id
+                                .clone()
+                                .or_else(|| subagent_stack.last().cloned()),
+                        },
+                    );
 
                     // Emit SubagentSpawned for foreground Task/Agent tool calls. A
                     // background subagent (`run_in_background`) is spawned from
@@ -795,6 +840,7 @@ fn user_turn_exit(reason: &str) -> PermissionResultDeny {
 /// interrupted so the in-flight turn stops cleanly.
 async fn handle_permission_request(
     perm_req: PermissionRequestInternal,
+    subagent: Option<String>,
     client: &ClaudeClient,
     session_id: &str,
     response_tx: &mpsc::Sender<DaveApiResponse>,
@@ -808,9 +854,10 @@ async fn handle_permission_request(
         return;
     }
 
-    let ui_resp_rx = match shared::forward_permission_to_ui(
+    let ui_resp_rx = match shared::forward_subagent_permission_to_ui(
         &perm_req.tool_name,
         perm_req.tool_input.clone(),
+        subagent,
         response_tx,
         waker,
     ) {
@@ -1036,7 +1083,7 @@ struct ActorState {
     /// `run_in_background` task's tool_use lands in one turn while its
     /// tool_result / completion lands in a later wake-up turn, so attribution
     /// needs them to survive across turns.
-    pending_tools: HashMap<String, (String, serde_json::Value)>,
+    pending_tools: HashMap<String, PendingTool>,
     subagent_stack: Vec<String>,
     /// Tracks the harness task list across turns. `TaskCreate`/`TaskUpdate`
     /// are incremental, so this must outlive the per-query loop.
@@ -1509,8 +1556,14 @@ async fn run_connected(
 
             // Permission requests (they block the SDK until answered).
             Some(perm_req) = perm_rx.recv() => {
+                let subagent = permission_subagent(
+                    &state.pending_tools,
+                    &perm_req.tool_name,
+                    &perm_req.tool_input,
+                );
                 handle_permission_request(
                     perm_req,
+                    subagent,
                     client,
                     session_id,
                     response_tx,
@@ -2614,13 +2667,14 @@ cat > /dev/null
 
         // The originating Task tool_use is still pending (its launch result
         // hasn't landed), so the subagent type is recoverable from its input.
-        let mut pending: HashMap<String, (String, serde_json::Value)> = HashMap::new();
+        let mut pending: HashMap<String, PendingTool> = HashMap::new();
         pending.insert(
             "toolu_root".to_string(),
-            (
-                "Task".to_string(),
-                serde_json::json!({ "subagent_type": "general-purpose", "run_in_background": true }),
-            ),
+            PendingTool {
+                name: "Task".to_string(),
+                input: serde_json::json!({ "subagent_type": "general-purpose", "run_in_background": true }),
+                parent: None,
+            },
         );
 
         let data = serde_json::json!({
@@ -2656,7 +2710,7 @@ cat > /dev/null
     fn task_started_local_bash_is_not_a_subagent() {
         let (tx, rx) = mpsc::channel();
         let waker = Waker::noop();
-        let pending: HashMap<String, (String, serde_json::Value)> = HashMap::new();
+        let pending: HashMap<String, PendingTool> = HashMap::new();
 
         let data = serde_json::json!({
             "task_id": "b4dg5o2ra",
@@ -2774,11 +2828,52 @@ cat > /dev/null
         assert!(rx.try_recv().is_err(), "no usage, nothing to forward");
     }
 
+    /// A `can_use_tool` request for a call a subagent made names that
+    /// subagent; the session's own call with other input names none.
+    #[test]
+    fn a_subagents_permission_request_names_the_subagent() {
+        let (tx, _rx) = mpsc::channel();
+        let waker = Waker::noop();
+        let mut pending: HashMap<String, PendingTool> = HashMap::new();
+        let mut subagent_stack: Vec<String> = Vec::new();
+        let mut task_tracker = TaskTracker::new();
+        let assistant = serde_json::from_value::<ClaudeMessage>(serde_json::json!({
+            "type": "assistant",
+            "parent_tool_use_id": "toolu_root",
+            "message": {
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_bash",
+                    "name": "Bash",
+                    "input": { "command": "rm -rf build" }
+                }]
+            }
+        }))
+        .expect("assistant should deserialize");
+        handle_stream_message(
+            assistant,
+            &tx,
+            &waker,
+            &mut pending,
+            &mut subagent_stack,
+            &mut task_tracker,
+            false,
+        );
+
+        let input = serde_json::json!({ "command": "rm -rf build" });
+        assert_eq!(
+            permission_subagent(&pending, "Bash", &input).as_deref(),
+            Some("toolu_root")
+        );
+        let other = serde_json::json!({ "command": "ls" });
+        assert_eq!(permission_subagent(&pending, "Bash", &other), None);
+    }
+
     #[test]
     fn subagent_internal_tool_result_routes_by_parent_tool_use_id() {
         let (tx, rx) = mpsc::channel();
         let waker = Waker::noop();
-        let mut pending: HashMap<String, (String, serde_json::Value)> = HashMap::new();
+        let mut pending: HashMap<String, PendingTool> = HashMap::new();
         let mut subagent_stack: Vec<String> = Vec::new();
         let mut task_tracker = TaskTracker::new();
 
@@ -2849,7 +2944,7 @@ cat > /dev/null
         tx: mpsc::Sender<DaveApiResponse>,
         rx: mpsc::Receiver<DaveApiResponse>,
         waker: Waker,
-        pending_tools: HashMap<String, (String, serde_json::Value)>,
+        pending_tools: HashMap<String, PendingTool>,
         subagent_stack: Vec<String>,
         task_tracker: TaskTracker,
         /// What `run_stream` would pass after the user stopped the turn.

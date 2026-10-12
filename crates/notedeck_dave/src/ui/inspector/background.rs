@@ -604,6 +604,7 @@ mod tests {
                 }),
                 last_tool_name: Some("Grep".into()),
                 summary: None,
+                tool_use_id: None,
             }),
         };
         let row = build_row(&entry, 1000 + 22 * 60, &mut i18n);
