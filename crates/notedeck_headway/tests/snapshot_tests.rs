@@ -4279,7 +4279,10 @@ fn review_comments_draft_then_send_to_the_session() {
     let msg = opens[0].msg.as_deref().expect("a message");
     assert!(msg.starts_with("Review comments on commit "), "{msg}");
     assert!(msg.contains("src/keys.rs:1-16\n```diff\n+/// What a key does in the review queue."));
-    assert!(msg.ends_with("```\nkeys want a test"), "{msg}");
+    assert!(
+        msg.contains("```\nkeys want a test\n\nReply with `headway comment "),
+        "{msg}"
+    );
 
     // Posted: it folds back onto the record and draws as a posted comment,
     // by the note renderer, so it says who wrote it (this account has no
@@ -4327,7 +4330,10 @@ fn review_comment_on_the_whole_commit() {
     assert_eq!(opens[0].reference, QUEUE_SESSION);
     let msg = opens[0].msg.as_deref().expect("a message");
     assert!(msg.starts_with("Review comments on commit "), "{msg}");
-    assert!(msg.ends_with(&format!("):\n\n{BODY}")), "{msg}");
+    assert!(
+        msg.contains(&format!("):\n\n{BODY}\n\nReply with `headway comment ")),
+        "{msg}"
+    );
 
     // Posted: it folds back onto the record and draws over the diff by the
     // note renderer, which carries its author and puts the text in a label's

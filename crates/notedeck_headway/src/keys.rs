@@ -2242,7 +2242,9 @@ diff --git a/b.txt b/b.txt
                     reference: SESSION.to_string(),
                     msg: Some(format!(
                         "Review comments on commit 136ceb9d3bfa (card {card_ref}):\n\n\
-                         looks good, ship it"
+                         looks good, ship it\n\n\
+                         Reply with `headway comment {card_ref} --reply-to <word-id> <text>`; \
+                         `headway show {card_ref}` lists each comment's word-id."
                     )),
                 }),
                 "{name}"
