@@ -107,8 +107,6 @@ pub struct DaveUi<'a> {
     /// Why the composer can't send now, if it can't (see
     /// [`DaveUi::composer_block`]).
     composer_block: Option<&'static str>,
-    /// Usage metrics for the current session (tokens, cost)
-    usage: Option<&'a crate::messages::UsageInfo>,
     /// Context window size for the current model
     context_window: u64,
     /// The Claude account's rate-limit windows: the account-wide value for a
@@ -330,7 +328,6 @@ impl<'a> DaveUi<'a> {
             details: None,
             status_dot_color: None,
             composer_block: None,
-            usage: None,
             context_window: crate::messages::context_window_for_model(None),
             rate_limit: None,
             now_unix: None,
@@ -533,8 +530,9 @@ impl<'a> DaveUi<'a> {
         self
     }
 
-    pub fn usage(mut self, usage: &'a crate::messages::UsageInfo, model: Option<&str>) -> Self {
-        self.usage = Some(usage);
+    /// The context window of `model` (the default window for `None`), which
+    /// the status bar's meter and the Usage card fill against.
+    pub fn model(mut self, model: Option<&str>) -> Self {
         self.context_window = crate::messages::context_window_for_model(model);
         self
     }
@@ -3112,7 +3110,10 @@ impl DaveUi<'_> {
                                             .color(ui.visuals().weak_text_color()),
                                     );
                                 }
-                                if usage_meter_ui(self.usage, self.context_window, ui).clicked() {
+                                // The inspector's usage history, which both a
+                                // local stream and a host's snapshot fill.
+                                let usage = self.inspector.as_ref().map(|i| &i.inspector.usage);
+                                if usage_meter_ui(usage, self.context_window, ui).clicked() {
                                     return Some(DaveAction::OpenInspector(
                                         InspectorSection::Usage,
                                     ));
@@ -3194,7 +3195,7 @@ pub(crate) fn format_tokens(tokens: u64) -> String {
 /// The status bar's usage meter (cost, tokens and fill bar) as one clickable
 /// group: a click opens the Details tab at its Usage card.
 fn usage_meter_ui(
-    usage: Option<&crate::messages::UsageInfo>,
+    usage: Option<&crate::inspector::UsageHistory>,
     context_window: u64,
     ui: &mut egui::Ui,
 ) -> egui::Response {
@@ -3219,17 +3220,21 @@ pub(crate) fn fill_color(fraction: f32) -> egui::Color32 {
     }
 }
 
-/// Renders the usage fill bar showing context window consumption.
+/// Renders the usage fill bar showing context window consumption: the
+/// latest request's context and the session's cost, from `usage`. Draws
+/// nothing until a request has been counted.
 fn usage_bar_ui(
-    usage: Option<&crate::messages::UsageInfo>,
+    usage: Option<&crate::inspector::UsageHistory>,
     context_window: u64,
     ui: &mut egui::Ui,
 ) {
-    let total = usage.map(|u| u.context_tokens()).unwrap_or(0);
+    let Some(usage) = usage else {
+        return;
+    };
+    let total = usage.current().map(|t| t.context()).unwrap_or(0);
     if total == 0 {
         return;
     }
-    let usage = usage.unwrap();
     let fraction = (total as f64 / context_window as f64).min(1.0) as f32;
 
     let bar_color = fill_color(fraction);
@@ -3237,7 +3242,7 @@ fn usage_bar_ui(
     let weak = ui.visuals().weak_text_color();
 
     // Cost label
-    if let Some(cost) = usage.cost_usd {
+    if let Some(cost) = usage.total_cost() {
         if cost > 0.0 {
             ui.add(egui::Label::new(
                 egui::RichText::new(format!("${:.2}", cost))

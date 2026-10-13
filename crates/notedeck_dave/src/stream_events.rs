@@ -410,12 +410,11 @@ pub(crate) fn apply_response(
         DaveApiResponse::CompactionComplete(info) => {
             handle_compaction_complete(session, session_id, info);
         }
-        DaveApiResponse::UsageUpdate(info) => {
-            handle_usage_update(session, info);
-        }
-        DaveApiResponse::QueryComplete(info) => {
+        // The inspector's usage history (folded above) is the one record
+        // of a session's tokens and cost; nothing else keeps a copy.
+        DaveApiResponse::UsageUpdate(_) => {}
+        DaveApiResponse::QueryComplete(_) => {
             session.wakeup_turn = false;
-            handle_query_complete(session, info);
             // For a persistent-stream backend this is the turn
             // boundary — the channel stays open, so run stream-end
             // handling after the drain instead of on disconnect.
@@ -853,29 +852,6 @@ fn handle_compaction_complete(
         }
     }
     session.insert_turn_content(Message::CompactionComplete(info));
-}
-
-/// Handle a per-turn usage update from an AssistantMessage.
-/// This gives the accurate current context window snapshot since it reflects
-/// a single API call's token counts (not the cumulative session total).
-fn handle_usage_update(session: &mut session::ChatSession, info: messages::UsageInfo) {
-    if let Some(agentic) = &mut session.agentic {
-        agentic.usage.input_tokens = info.input_tokens;
-        agentic.usage.cache_creation_input_tokens = info.cache_creation_input_tokens;
-        agentic.usage.cache_read_input_tokens = info.cache_read_input_tokens;
-        agentic.usage.output_tokens = info.output_tokens;
-    }
-}
-
-/// Handle query completion (usage metrics) from the AI backend.
-/// Updates cost and turn count from the final Result message.
-fn handle_query_complete(session: &mut session::ChatSession, info: messages::UsageInfo) {
-    if let Some(agentic) = &mut session.agentic {
-        agentic.usage.num_turns = info.num_turns;
-        if let Some(cost) = info.cost_usd {
-            agentic.usage.cost_usd = Some(cost);
-        }
-    }
 }
 
 /// Handle a SessionInfo response from the AI backend.
@@ -1485,6 +1461,32 @@ mod tests {
             publish_subagent(&mut session, "unknown-task", &sk, &ndb).is_none(),
             "a task id with no row publishes nothing"
         );
+    }
+
+    /// A local stream's usage lands in the inspector's history, the one
+    /// record the status bar's meter and the Usage card both read.
+    #[test]
+    fn stream_usage_lands_in_the_inspector() {
+        use crate::messages::UsageInfo;
+
+        let mut f = Fixture::new();
+        f.apply(DaveApiResponse::UsageUpdate(UsageInfo {
+            input_tokens: 1_500,
+            cache_creation_input_tokens: 9_000,
+            cache_read_input_tokens: 24_000,
+            output_tokens: 1_100,
+            ..Default::default()
+        }));
+        f.apply(DaveApiResponse::QueryComplete(UsageInfo {
+            cost_usd: Some(1.34),
+            num_turns: 2,
+            ..Default::default()
+        }));
+
+        let usage = &f.session.inspector.usage;
+        assert_eq!(usage.current().map(|t| t.context()), Some(34_500));
+        assert_eq!(usage.total_cost(), Some(1.34));
+        assert_eq!(usage.turns_recorded(), 1);
     }
 
     /// A session whose turn launched a background task and ended is parked,

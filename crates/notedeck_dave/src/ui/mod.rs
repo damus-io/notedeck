@@ -186,6 +186,19 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
     .pending_images(&mut session.pending_images)
     .slash(&mut session.slash)
     .rate_limit(rate_limit)
+    // The inspector's session info is the one a host's snapshot restores, so
+    // a remote session's meter fills against its model's window too.
+    .model(
+        session
+            .inspector
+            .session_info
+            .as_ref()
+            .or(session
+                .agentic
+                .as_ref()
+                .and_then(|a| a.session_info.as_ref()))
+            .and_then(|si| si.model.as_deref()),
+    )
     .inspector(Inspected {
         inspector: &mut session.inspector,
         view: &mut session.inspector_view,
@@ -196,17 +209,12 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
     });
 
     if let Some(agentic) = &mut session.agentic {
-        let model = agentic
-            .session_info
-            .as_ref()
-            .and_then(|si| si.model.as_deref());
         let is_compacting = agentic.is_compacting();
         ui_builder = ui_builder
             .permission_message_state(agentic.permission_message_state)
             .question_answers(&mut agentic.question_answers)
             .question_index(&mut agentic.question_index)
             .is_compacting(is_compacting)
-            .usage(&agentic.usage, model)
             // `cli_resume_id()`, spelled out by field so it can borrow beside
             // the `&mut` fields above.
             .cli_session_id(
@@ -2651,15 +2659,6 @@ mod tests {
         for (at, res) in responses.iter().enumerate() {
             usage.apply(res, at as u64);
         }
-        let agentic = session.agentic.as_mut().unwrap();
-        agentic.usage = UsageInfo {
-            input_tokens: 1_500,
-            cache_creation_input_tokens: 9_000,
-            cache_read_input_tokens: 24_000,
-            output_tokens: 1_100,
-            cost_usd: Some(1.34),
-            num_turns: 2,
-        };
     }
 
     /// The Usage card reads the live context, the session's cost and turns,
@@ -2698,6 +2697,47 @@ mod tests {
             count_labels_containing(&harness, "\u{2068}145K\u{2069} → \u{2068}24K\u{2069}"),
             1
         );
+    }
+
+    /// A remote session's usage arrives only in its host's inspector
+    /// snapshot. The status bar's meter reads that same history, so it shows
+    /// the restored context and cost with no stream behind it.
+    #[test]
+    fn the_usage_meter_reads_a_restored_snapshot() {
+        use agentium_core::inspector_snapshot::{InspectorSnapshot, Tokens, UsageSnapshot};
+
+        let mut harness = session_view_harness(egui::vec2(1100.0, 900.0));
+        harness.run_ok();
+        assert_eq!(
+            count_labels_containing(&harness, "/ 200K"),
+            0,
+            "no usage yet, no meter"
+        );
+
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector
+            .restore(InspectorSnapshot {
+                usage: UsageSnapshot {
+                    current: Some(Tokens {
+                        input: 1_500,
+                        cache_creation: 9_000,
+                        cache_read: 24_000,
+                        output: 1_100,
+                    }),
+                    turns_recorded: 2,
+                    total_cost: Some(1.34),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        harness.run_ok();
+
+        assert_eq!(count_labels(&harness, "34K / 200K"), 1);
+        assert_eq!(count_labels(&harness, "$1.34"), 1);
     }
 
     /// Clicking the status bar's usage meter opens Details at Usage.

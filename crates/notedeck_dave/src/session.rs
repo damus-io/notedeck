@@ -308,8 +308,6 @@ pub struct AgenticSessionData {
     /// the host published ([`record_self_note`](Self::record_self_note)) and
     /// by a remote user message appended to a local session.
     pub fold_dirty: bool,
-    /// Accumulated usage metrics across queries in this session.
-    pub usage: crate::messages::UsageInfo,
     /// Runtime allowlist for auto-accepting permissions this session: the
     /// "Allow Always" grants, in the order the inspector lists them. Held in
     /// memory only — never persisted or published — so each host (and each
@@ -398,7 +396,6 @@ impl AgenticSessionData {
             tail_order: None,
             unindexed_self_notes: Default::default(),
             fold_dirty: false,
-            usage: Default::default(),
             runtime_allows: BTreeSet::new(),
             event_id: uuid::Uuid::new_v4().to_string(),
             reported_assistant_rows: 0,
