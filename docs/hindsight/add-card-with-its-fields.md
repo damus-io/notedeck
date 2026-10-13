@@ -1,5 +1,6 @@
 # `BoardAction::AddCard` carries every field a new card can start with
 
+Card: headway:headway/neck-sponsor-slide
 `AddCard` has no priority, estimate or due date, so a card born with one needs
 a second edit, made once the first has handed back the new card's id.
 

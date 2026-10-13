@@ -1,5 +1,6 @@
 # `query::list` over boards that aren't one slice
 
+Card: headway:headway/cigar-polar-render
 `query::list` takes `&[BoardView]`, but the GUI holds each board as its own fold
 handle, so it walks the boards itself with `IssueFilter::matches` instead.
 

@@ -1,5 +1,6 @@
 # headway_cli's argument tests read no environment
 
+Card: headway:headway/syrup-clog-aim
 `args::tests` parse through `Cli::parse`, which reads `$HEADWAY_COMMENT_NSEC`
 from the process, so the suite fails inside any agent session that sets it.
 

@@ -1,5 +1,6 @@
 # One helper for an account's private latest-wins note, read and written
 
+Card: headway:headway/exit-demise-velvet
 Each app hand-rolls the same PNS replaceable-note pair: read the newest
 revision of a kind + d, ties broken by id, and write one stamped past it.
 
