@@ -1202,7 +1202,7 @@ fn issue_list_spans_boards_filters_and_opens_cards() {
         .take()
         .iter()
         .filter_map(|req| match req {
-            NavRequest::PushToActive(entry) => entry.token.downcast_ref::<HeadwayRoute>(),
+            NavRequest::Push(token) => token.downcast_ref::<HeadwayRoute>(),
             _ => None,
         })
         .map(HeadwayRoute::is_list)
@@ -2751,7 +2751,7 @@ fn opening_a_card_pushes_a_global_nav_entry() {
     let pushed: Vec<&HeadwayRoute> = requests
         .iter()
         .filter_map(|req| match req {
-            NavRequest::PushToActive(entry) => entry.token.downcast_ref::<HeadwayRoute>(),
+            NavRequest::Push(token) => token.downcast_ref::<HeadwayRoute>(),
             _ => None,
         })
         .collect();
@@ -2924,7 +2924,7 @@ fn review_diff_opens_the_review_pane_with_the_commit() {
     let reviews: Vec<&HeadwayRoute> = requests
         .iter()
         .filter_map(|req| match req {
-            NavRequest::PushToActive(entry) => entry.token.downcast_ref::<HeadwayRoute>(),
+            NavRequest::Push(token) => token.downcast_ref::<HeadwayRoute>(),
             _ => None,
         })
         .filter(|route| route.review_card().is_some())
@@ -3159,7 +3159,7 @@ fn queue_pushes_and_last_back(harness: &mut Harness<'static, HeadwayTestState>) 
     let pushes = requests
         .iter()
         .filter_map(|req| match req {
-            NavRequest::PushToActive(entry) => entry.token.downcast_ref::<HeadwayRoute>(),
+            NavRequest::Push(token) => token.downcast_ref::<HeadwayRoute>(),
             _ => None,
         })
         .filter(|route| route.is_review_queue())
@@ -5160,7 +5160,7 @@ fn a_detail_review_row_click_acts_on_its_own_record() {
     let reviews: Vec<&HeadwayRoute> = requests
         .iter()
         .filter_map(|req| match req {
-            NavRequest::PushToActive(entry) => entry.token.downcast_ref::<HeadwayRoute>(),
+            NavRequest::Push(token) => token.downcast_ref::<HeadwayRoute>(),
             _ => None,
         })
         .filter(|route| route.review_card().is_some())
@@ -5710,7 +5710,7 @@ fn open_card_by_keys(keys: &[egui::Key]) -> OpenedByKeys {
     let pushed: Vec<NoteId> = requests
         .iter()
         .filter_map(|req| match req {
-            NavRequest::PushToActive(entry) => entry.token.downcast_ref::<HeadwayRoute>(),
+            NavRequest::Push(token) => token.downcast_ref::<HeadwayRoute>(),
             _ => None,
         })
         .filter_map(HeadwayRoute::selected_card)
@@ -6107,7 +6107,7 @@ fn a_card_that_has_not_folded_in_keeps_its_route_entry() {
     assert!(
         !requests
             .iter()
-            .any(|req| matches!(req, NavRequest::RemoveActive(_))),
+            .any(|req| matches!(req, NavRequest::Remove(_))),
         "a card that hasn't folded in yet isn't pruned from the history"
     );
 }
@@ -6161,31 +6161,35 @@ fn deleting_the_open_card_still_backs_out_to_the_board() {
     );
 }
 
-/// One chrome frame of the global nav loop: draw the stack top through
+/// Headway's chrome-owned nav stack, as the tests drive it by hand.
+type ChromeStack = notedeck::NavStack<std::rc::Rc<dyn std::any::Any>>;
+
+/// A [`ChromeStack`] at Headway's root, the `()` token Headway draws as its
+/// board grid.
+fn root_stack() -> ChromeStack {
+    notedeck::NavStack::new(vec![std::rc::Rc::new(()) as std::rc::Rc<dyn std::any::Any>])
+}
+
+/// One chrome frame of Headway's nav loop: draw the stack top through
 /// `render_nav` (its token), pump the harness, then drain the app's queued nav
 /// requests into the stack the way `Chrome::apply_nav_requests` does —
-/// `PushToActive`, `RemoveActive` (a card that left the board) and `Back` are
-/// the only kinds Headway raises. A self-push and a prune inherit the active
-/// (top) app's slot. A back lands at once, as the chrome's does
-/// when its slide ends (the frames in between redraw the outgoing entry).
-/// Shared by the `chrome_nav_loop_*` tests.
-fn chrome_frame(
-    harness: &mut Harness<'static, HeadwayTestState>,
-    stack: &mut notedeck::NavStack<notedeck::ChromeNavEntry>,
-) {
+/// `Push`, `Remove` (a card that left the board) and `Back` are the only
+/// kinds Headway raises. A back lands at once, as the chrome's does when its
+/// slide ends (the frames in between redraw the outgoing entry). Shared by
+/// the `chrome_nav_loop_*` tests.
+fn chrome_frame(harness: &mut Harness<'static, HeadwayTestState>, stack: &mut ChromeStack) {
     use notedeck::NavRequest;
 
-    harness.state_mut().nav_token = Some(stack.top().token.clone());
+    harness.state_mut().nav_token = Some(stack.top().clone());
     harness.run_ok();
 
     let state = harness.state_mut();
     let app_ctx = state.notedeck.app_context();
-    let active = stack.top().app;
     for request in app_ctx.navigator.take() {
         match request {
-            NavRequest::PushToActive(entry) => stack.route_to(entry.tag(active)),
-            NavRequest::RemoveActive(is_dead) => {
-                stack.retain_routes(|e| e.app != active || !is_dead(e.token.as_ref()));
+            NavRequest::Push(token) => stack.route_to(token),
+            NavRequest::Remove(is_dead) => {
+                stack.retain_routes(|token| !is_dead(token.as_ref()));
             }
             // `go_back` only flags the slide; `pop` is what its end does.
             NavRequest::Back => {
@@ -6230,23 +6234,20 @@ fn wait_for_demo(
 
 /// Full chrome round-trip (behavioural, no lavapipe): replicate the chrome's global
 /// nav loop — render the stack's top entry via `render_nav`, then drain the app's
-/// `Navigator` requests into a real `NavStack<ChromeNavEntry>` exactly like
+/// `Navigator` requests into a real `NavStack` exactly like
 /// `Chrome::apply_nav_requests` — and prove a real card click grows the stack and a
 /// back step returns to the board. This closes the gap the two tests above leave
 /// (they drive `render_nav`/the push in isolation); here the push actually lands in
 /// the chrome stack and back actually pops it.
 #[test]
 fn chrome_nav_loop_card_open_then_back_returns_to_board() {
-    use notedeck::{AppId, ChromeNavEntry, NavStack};
     use notedeck_headway::HeadwayRoute;
-    use std::rc::Rc;
 
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
 
     // The chrome seeds one entry per app-switch with a `()` token; Headway's home
-    // (board root) entry is that. AppId is arbitrary here (single app under test).
-    let mut stack: NavStack<ChromeNavEntry> =
-        NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))]);
+    // (board root) entry is that.
+    let mut stack = root_stack();
 
     // The board root shows the grid; no card entry yet.
     chrome_frame(&mut harness, &mut stack);
@@ -6274,7 +6275,6 @@ fn chrome_nav_loop_card_open_then_back_returns_to_board() {
     assert_eq!(
         stack
             .top()
-            .token
             .downcast_ref::<HeadwayRoute>()
             .and_then(|r| r.selected_card()),
         Some(card),
@@ -6313,7 +6313,6 @@ fn chrome_nav_loop_card_open_then_back_returns_to_board() {
     assert_eq!(
         stack
             .top()
-            .token
             .downcast_ref::<HeadwayRoute>()
             .and_then(|r| r.selected_card()),
         Some(subissue),
@@ -6329,7 +6328,6 @@ fn chrome_nav_loop_card_open_then_back_returns_to_board() {
     assert_eq!(
         stack
             .top()
-            .token
             .downcast_ref::<HeadwayRoute>()
             .and_then(|r| r.selected_card()),
         Some(card),
@@ -6355,14 +6353,11 @@ fn chrome_nav_loop_card_open_then_back_returns_to_board() {
 /// graph joins the chrome global-nav stack as its own entry.
 #[test]
 fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
-    use notedeck::{AppId, ChromeNavEntry, NavStack};
     use notedeck_headway::HeadwayRoute;
-    use std::rc::Rc;
 
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
 
-    let mut stack: NavStack<ChromeNavEntry> =
-        NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))]);
+    let mut stack = root_stack();
 
     // Open the epic's card — it carries sub-issues, so its detail offers the graph.
     const EPIC: &str = "Define nostr event model for boards";
@@ -6393,7 +6388,6 @@ fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
     assert_eq!(
         stack
             .top()
-            .token
             .downcast_ref::<HeadwayRoute>()
             .and_then(|r| r.graph_epic()),
         Some(epic),
@@ -6412,7 +6406,6 @@ fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
     assert_eq!(
         stack
             .top()
-            .token
             .downcast_ref::<HeadwayRoute>()
             .and_then(|r| r.selected_card()),
         Some(epic),
@@ -6438,9 +6431,7 @@ fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
 /// a forward onto the queue's entry reopens it on the card it was left at.
 #[test]
 fn chrome_nav_loop_review_queue_is_one_entry() {
-    use notedeck::{AppId, ChromeNavEntry, NavStack};
     use notedeck_headway::HeadwayRoute;
-    use std::rc::Rc;
 
     const CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
     let repo = tempfile::tempdir().expect("repo dir");
@@ -6452,8 +6443,7 @@ fn chrome_nav_loop_review_queue_is_one_entry() {
         &["src/queue_one.rs", "src/queue_two.rs"],
     );
 
-    let mut stack: NavStack<ChromeNavEntry> =
-        NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))]);
+    let mut stack = root_stack();
     chrome_frame(&mut harness, &mut stack);
 
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
@@ -6462,7 +6452,6 @@ fn chrome_nav_loop_review_queue_is_one_entry() {
     assert!(
         stack
             .top()
-            .token
             .downcast_ref::<HeadwayRoute>()
             .is_some_and(HeadwayRoute::is_review_queue)
     );
@@ -6493,9 +6482,9 @@ fn chrome_nav_loop_review_queue_is_one_entry() {
 /// such as an archive folding in.
 fn chrome_frames_until(
     harness: &mut Harness<'static, HeadwayTestState>,
-    stack: &mut notedeck::NavStack<notedeck::ChromeNavEntry>,
+    stack: &mut ChromeStack,
     what: &str,
-    done: impl Fn(&notedeck::NavStack<notedeck::ChromeNavEntry>) -> bool,
+    done: impl Fn(&ChromeStack) -> bool,
 ) {
     let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
@@ -6509,32 +6498,23 @@ fn chrome_frames_until(
 }
 
 /// The Headway route on top of the stack, if it is one.
-fn top_route(
-    stack: &notedeck::NavStack<notedeck::ChromeNavEntry>,
-) -> Option<&notedeck_headway::HeadwayRoute> {
-    stack
-        .top()
-        .token
-        .downcast_ref::<notedeck_headway::HeadwayRoute>()
+fn top_route(stack: &ChromeStack) -> Option<&notedeck_headway::HeadwayRoute> {
+    stack.top().downcast_ref::<notedeck_headway::HeadwayRoute>()
 }
 
 /// A chrome global-nav stack at the board root, with the harness drawn
 /// through it once.
-fn chrome_stack_at_board(
-    harness: &mut Harness<'static, HeadwayTestState>,
-) -> notedeck::NavStack<notedeck::ChromeNavEntry> {
-    use notedeck::{AppId, ChromeNavEntry, NavStack};
-    let mut stack = NavStack::new(vec![ChromeNavEntry::new(AppId(0), std::rc::Rc::new(()))]);
+fn chrome_stack_at_board(harness: &mut Harness<'static, HeadwayTestState>) -> ChromeStack {
+    let mut stack = root_stack();
     chrome_frame(harness, &mut stack);
     stack
 }
 
 /// Whether the entry under the stack's top is `card`'s detail.
-fn top_is_detail_below(stack: &notedeck::NavStack<notedeck::ChromeNavEntry>, card: NoteId) -> bool {
+fn top_is_detail_below(stack: &ChromeStack, card: NoteId) -> bool {
     let routes = stack.routes();
     routes.len() >= 2
         && routes[routes.len() - 2]
-            .token
             .downcast_ref::<notedeck_headway::HeadwayRoute>()
             .is_some_and(|r| r.selected_card() == Some(card) && r.review_card().is_none())
 }
@@ -6580,9 +6560,7 @@ fn parent_under_demo_epic(
 /// leaves it for the epic's detail as one back.
 #[test]
 fn chrome_nav_loop_epic_review_queue() {
-    use notedeck::{AppId, ChromeNavEntry, NavStack};
     use notedeck_headway::HeadwayRoute;
-    use std::rc::Rc;
 
     const CARDS: [&str; 3] = [
         "Inline card creation",
@@ -6600,8 +6578,7 @@ fn chrome_nav_loop_epic_review_queue() {
     let epic = parent_under_demo_epic(&mut harness, &[CARDS[2]]);
     let scope_label = format!("in {}", headway::wordid::encode(epic.bytes()));
 
-    let mut stack: NavStack<ChromeNavEntry> =
-        NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))]);
+    let mut stack = root_stack();
     chrome_frame(&mut harness, &mut stack);
     harness.get_by_label(DEMO_EPIC).click();
     chrome_frame(&mut harness, &mut stack);
@@ -6612,7 +6589,7 @@ fn chrome_nav_loop_epic_review_queue() {
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
     chrome_frame(&mut harness, &mut stack);
     assert_eq!(stack.len(), 3, "opening the epic's queue pushes one entry");
-    let route = stack.top().token.downcast_ref::<HeadwayRoute>();
+    let route = stack.top().downcast_ref::<HeadwayRoute>();
     assert!(route.is_some_and(HeadwayRoute::is_review_queue));
     assert_eq!(route.and_then(|r| r.selected_card()), Some(epic));
     assert_eq!(
@@ -6689,7 +6666,6 @@ fn archive_demo_cards(harness: &mut Harness<'static, HeadwayTestState>, cards: &
 /// frame, so the entry backed off with no message.
 #[test]
 fn chrome_nav_loop_queue_back_off_keeps_its_notice() {
-    use notedeck::{AppId, ChromeNavEntry};
     use notedeck_headway::HeadwayRoute;
     use std::rc::Rc;
 
@@ -6721,7 +6697,7 @@ fn chrome_nav_loop_queue_back_off_keeps_its_notice() {
         HeadwayRoute::card(epic, None),
         HeadwayRoute::review_queue(Some(epic), None),
     ] {
-        stack.route_to(ChromeNavEntry::new(AppId(0), Rc::new(route)));
+        stack.route_to(Rc::new(route));
     }
     chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "1 / 2");
@@ -6809,7 +6785,6 @@ fn chrome_nav_loop_epic_queue_whose_epic_was_archived_lands_on_its_detail() {
 /// as a card not folded in yet and never back on to the board.
 #[test]
 fn chrome_nav_loop_archived_epics_queue_backs_onto_its_undrawn_detail() {
-    use notedeck::{AppId, ChromeNavEntry};
     use notedeck_headway::HeadwayRoute;
     use std::rc::Rc;
 
@@ -6824,7 +6799,7 @@ fn chrome_nav_loop_archived_epics_queue_backs_onto_its_undrawn_detail() {
         HeadwayRoute::card(epic, None),
         HeadwayRoute::review_queue(Some(epic), None),
     ] {
-        stack.route_to(ChromeNavEntry::new(AppId(0), Rc::new(route)));
+        stack.route_to(Rc::new(route));
     }
     chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "1 / 1");
@@ -6876,15 +6851,13 @@ fn epic_review_queue_with_nothing_under_the_card_does_not_open() {
 /// "Review in session" icon raises the same open.
 #[test]
 fn shift_s_in_the_queue_opens_the_session_asking_for_a_review() {
-    use notedeck::{AppAction, AppId, ChromeNavEntry, NavStack};
-    use std::rc::Rc;
+    use notedeck::AppAction;
 
     let fixture = review_fixture();
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
     seed_review_queue(&mut harness, &fixture);
 
-    let mut stack: NavStack<ChromeNavEntry> =
-        NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))]);
+    let mut stack = root_stack();
     chrome_frame(&mut harness, &mut stack);
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
     chrome_frame(&mut harness, &mut stack);
@@ -7083,13 +7056,13 @@ fn own_board_note_id(ndb: &Ndb, author: &Pubkey, slug: &str) -> NoteId {
 }
 
 /// The headline cross-app deep-link invariant (behavioural, no lavapipe): opening a
-/// Headway card from *another* app lands exactly **one** global-history entry, so a
-/// single back returns to the app the click came from.
+/// Headway card from *another* app lands exactly **one** entry on Headway's stack,
+/// which the chrome's opener return pops to land back in the app the click came
+/// from (`a_cross_app_open_takes_one_back_to_return_to_the_opener` in the chrome).
 ///
-/// Stands in for the chrome's `AppAction::Note` path: the stack starts on a foreign
-/// app's entry (`AppId(1)`, playing Dave), `open_note_route` mints the route, and the
-/// token is pushed tagged with Headway's own slot (`AppId(0)`) — the one push the
-/// chrome makes. The card lives on a board that is *not* active, so its detail can
+/// Stands in for the chrome's `AppAction::Note` path: `open_note_route` mints the
+/// route, and the token is pushed onto Headway's stack — the one push the chrome
+/// makes. The card lives on a board that is *not* active, so its detail can
 /// only render once the open has switched boards, and its title can only come off
 /// the issue event: the route is minted before that board's view has folded.
 ///
@@ -7098,18 +7071,12 @@ fn own_board_note_id(ndb: &Ndb, author: &Pubkey, slug: &str) -> NoteId {
 /// first back landed on the Headway board rather than the source app.
 #[test]
 fn chrome_nav_loop_cross_app_open_pushes_one_entry() {
-    use notedeck::{AppId, ChromeNavEntry, NavStack};
     use notedeck_headway::HeadwayRoute;
-    use std::rc::Rc;
 
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
     let card = seed_roadmap_board(&mut harness);
 
-    // The foreign root: the app the inline reference was clicked in.
-    const SOURCE: AppId = AppId(1);
-    const HEADWAY: AppId = AppId(0);
-    let mut stack: NavStack<ChromeNavEntry> =
-        NavStack::new(vec![ChromeNavEntry::new(SOURCE, Rc::new(()))]);
+    let mut stack = root_stack();
 
     let token = {
         let state = harness.state_mut();
@@ -7119,14 +7086,12 @@ fn chrome_nav_loop_cross_app_open_pushes_one_entry() {
             .open_note_route(&mut app_ctx, card)
             .expect("a card note mints a route")
     };
-    stack.route_to(ChromeNavEntry::new(HEADWAY, token));
+    stack.route_to(token);
 
     chrome_frame(&mut harness, &mut stack);
     assert_eq!(stack.len(), 2, "a cross-app open is one history entry");
-    let top = stack.top();
-    assert_eq!(top.app, HEADWAY, "the entry is filed under Headway's slot");
-    let route = top
-        .token
+    let route = stack
+        .top()
         .downcast_ref::<HeadwayRoute>()
         .expect("the entry carries a Headway route");
     assert_eq!(route.selected_card(), Some(card), "the route is the card");
@@ -7153,14 +7118,9 @@ fn chrome_nav_loop_cross_app_open_pushes_one_entry() {
     );
     assert!(harness.query_by_label("← Back").is_some());
 
-    // One back returns to the source app.
-    stack.go_to_route(0);
+    // The opener return pops the one entry, and Headway is back on its root.
+    assert!(stack.remove_top_route_for_disposal().is_some());
     assert_eq!(stack.len(), 1);
-    assert_eq!(
-        stack.top().app,
-        SOURCE,
-        "one back returns to the app the click came from"
-    );
 }
 
 /// An open *by reference string* — `AppAction::Open` with a
@@ -7175,17 +7135,13 @@ fn chrome_nav_loop_cross_app_open_pushes_one_entry() {
 /// `msg` is carried but not consumed, so it must not change where the open lands.
 #[test]
 fn open_uri_for_a_card_ref_lands_one_history_entry() {
-    use notedeck::{AppId, ChromeNavEntry, NavStack, OpenUri, ReferenceResolveCtx};
+    use notedeck::{OpenUri, ReferenceResolveCtx};
     use notedeck_headway::HeadwayRoute;
-    use std::rc::Rc;
 
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
     let card = seed_roadmap_board(&mut harness);
 
-    const SOURCE: AppId = AppId(1);
-    const HEADWAY: AppId = AppId(0);
-    let mut stack: NavStack<ChromeNavEntry> =
-        NavStack::new(vec![ChromeNavEntry::new(SOURCE, Rc::new(()))]);
+    let mut stack = root_stack();
 
     let uri = format!(
         "{}?msg=%22review%20this%22",
@@ -7219,7 +7175,7 @@ fn open_uri_for_a_card_ref_lands_one_history_entry() {
             .open_note_route(&mut app_ctx, resolved.note_id)
             .expect("a card note mints a route")
     };
-    stack.route_to(ChromeNavEntry::new(HEADWAY, token));
+    stack.route_to(token);
 
     chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "← Back");
@@ -7229,7 +7185,6 @@ fn open_uri_for_a_card_ref_lands_one_history_entry() {
     assert_eq!(stack.len(), 2, "an open by URI is one history entry");
     let route = stack
         .top()
-        .token
         .downcast_ref::<HeadwayRoute>()
         .expect("the entry carries a Headway route");
     assert_eq!(route.selected_card(), Some(card), "the route is the card");

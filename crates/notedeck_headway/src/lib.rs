@@ -1115,7 +1115,7 @@ impl Headway {
             self.state.note_departed(&departed);
             let departed = DepartedCards::new(departed, &view);
             ctx.navigator
-                .remove_active_routes(move |route: &HeadwayRoute| departed.prunes(route));
+                .remove_routes(move |route: &HeadwayRoute| departed.prunes(route));
         }
 
         // The issue list reads every board, so gather them, but only while
@@ -1156,13 +1156,13 @@ impl Headway {
             // on to the board.
             Some(NavReconcile::PushCard(card)) => ctx
                 .navigator
-                .push_active_route(HeadwayRoute::card(card, card_title(&view, card))),
+                .push_route(HeadwayRoute::card(card, card_title(&view, card))),
             // Opening an epic's dependency graph from its detail pushes a graph
             // entry on top of the card — a sibling one level deeper — so a single
             // global-back returns to the epic's detail.
             Some(NavReconcile::PushGraph(epic)) => ctx
                 .navigator
-                .push_active_route(HeadwayRoute::graph(epic, card_title(&view, epic))),
+                .push_route(HeadwayRoute::graph(epic, card_title(&view, epic))),
             // Opening a card's review pane pushes a review entry one level
             // deeper than the card, a sibling of the graph's, so a global-back
             // returns to the card. Opened off the card's detail (the grid's
@@ -1174,9 +1174,9 @@ impl Headway {
                 let title = card_title(&view, card);
                 if detail_first {
                     ctx.navigator
-                        .push_active_route(HeadwayRoute::card(card, title.clone()));
+                        .push_route(HeadwayRoute::card(card, title.clone()));
                 }
-                ctx.navigator.push_active_route(HeadwayRoute::review(
+                ctx.navigator.push_route(HeadwayRoute::review(
                     card,
                     self.state.review_record(),
                     title,
@@ -1190,11 +1190,11 @@ impl Headway {
                 let epic = scope.epic();
                 let title = epic.and_then(|e| view.card(e)).map(|c| c.title.as_str());
                 ctx.navigator
-                    .push_active_route(HeadwayRoute::review_queue(epic, title))
+                    .push_route(HeadwayRoute::review_queue(epic, title))
             }
             // Opening the issue list from the grid pushes its one entry; moving
             // through it and editing its query are view state under it.
-            Some(NavReconcile::PushList) => ctx.navigator.push_active_route(HeadwayRoute::List),
+            Some(NavReconcile::PushList) => ctx.navigator.push_route(HeadwayRoute::List),
             // An entry whose card has left the board is the prune's to remove,
             // not a back's. The frame that draws it drops the gone card, which
             // reads as a back, and so would every other frame drawing it before

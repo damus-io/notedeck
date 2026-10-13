@@ -1,18 +1,12 @@
-//! Headway's route tokens for the chrome-owned global navigation history.
+//! Headway's route tokens for its chrome-owned navigation stack.
 //!
-//! The chrome owns one browser-style [`NavStack`](notedeck::NavStack) spanning
-//! every app; each entry carries an opaque `Rc<dyn Any>` route token the chrome
-//! never inspects (see [`notedeck::ChromeNavEntry`]). [`HeadwayRoute`] is the
-//! concrete token Headway pushes so that drilling from the board into a card's
-//! detail joins the global back/forward stack instead of being invisible
-//! view-state.
-//!
-//! Unlike Columns' deep-links — which a *different* app mints and tags with the
-//! Columns [`AppId`](notedeck::AppId) — Headway originates its own board→card
-//! pushes and doesn't know its own slot: `render_nav` hands it only an opaque
-//! token. So it enqueues untagged via
-//! [`Navigator::push_active_route`](notedeck::Navigator::push_active_route) and
-//! the chrome stamps the active slot on drain (see the `push_active` primitive).
+//! The chrome owns one browser-style [`NavStack`](notedeck::NavStack) per app;
+//! each entry carries an opaque `Rc<dyn Any>` route token the chrome never
+//! inspects (see [`notedeck::Navigator`]). [`HeadwayRoute`] is the concrete
+//! token Headway pushes so that drilling from the board into a card's detail
+//! joins Headway's back/forward stack instead of being invisible view-state.
+//! It enqueues with [`Navigator::push_route`](notedeck::Navigator::push_route),
+//! which the chrome applies to the active app's stack.
 //!
 //! The view depths — board (root), a card's detail, and the two panes drilled
 //! into from a detail (an epic's dependency [`Graph`](HeadwayRoute::Graph), a
@@ -375,7 +369,7 @@ impl NavPos {
 /// The cards on the board Headway drew last, so it can tell which have left
 /// since: archived, deleted or moved to another board, from this device or
 /// another. Each one that left takes its history entries with it, in one
-/// [`Navigator::remove_active_routes`](notedeck::Navigator::remove_active_routes)
+/// [`Navigator::remove_routes`](notedeck::Navigator::remove_routes)
 /// prune, rather than leaving entries that would draw a card that isn't
 /// there — all but an archived card's detail entries ([`DepartedCards`]).
 ///

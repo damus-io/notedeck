@@ -1,10 +1,11 @@
-//! The chrome's per-frame layout: the side drawer over the global-nav frame
-//! that renders the active app, with the desktop tab strip above it and the
+//! The chrome's per-frame layout: the side drawer over the nav frame that
+//! renders the active app's stack, with the desktop tab strip above it and the
 //! mobile toolbar and soft-keyboard inset below.
 
 use super::actions::{chrome_handle_app_action, retry_pending_open};
 use super::header::chrome_app_tabs;
 use super::keyboard::{keyboard_visibility, virtual_keyboard_ui};
+use super::nav::TakenEntry;
 use super::sidebar::{milestone_name, topdown_sidebar, SidebarOptions};
 use super::toolbar::{chrome_toolbar, toolbar_visibility_height, ChromeToolbarAction};
 use super::{Chrome, ChromePanelAction, ChromeRoute};
@@ -13,7 +14,7 @@ use egui::{CornerRadius, Layout, Margin};
 use egui_extras::{Size, StripBuilder};
 use egui_nav::{NavAction, NavDrawer, NavUiType, RouteResponse};
 use notedeck::ui::is_compiled_as_mobile;
-use notedeck::{nav_frame, App, AppContext, NavStackEvent};
+use notedeck::{nav_frame, App, AppContext, AppId, NavStackEvent};
 
 impl Chrome {
     /// The chrome side panel
@@ -75,27 +76,23 @@ impl Chrome {
                 // the app has drawn in all of it.
                 let app_rect = ui.available_rect_before_wrap();
 
-                // `nav_frame` needs `&mut global_nav` while the render callback
+                // `nav_frame` needs `&mut app_navs` while the render callback
                 // needs `&mut apps` — split-borrow the two fields so both can be
                 // lent at once. The app's action is bubbled out via the frame
                 // response and routed *after* `nav_frame` returns, since the
                 // callback can't reborrow the whole `self` that
                 // `chrome_handle_app_action` wants.
+                let slot = self.active as usize;
                 let (app_action, can_take_drag_from, popped) = {
-                    let Chrome {
-                        global_nav,
-                        apps,
-                        global_nav_in_flight,
-                        ..
-                    } = &mut *self;
-                    let nav = global_nav
-                        .as_mut()
-                        .expect("global nav is seeded at construction");
+                    let Chrome { app_navs, apps, .. } = &mut *self;
+                    let nav = &mut app_navs[slot];
 
+                    // Each app's stack keeps its own egui-nav state, so a
+                    // slide inside one app survives a switch to another.
                     let frame = nav_frame(
                         ui,
-                        egui::Id::unique("chrome_global_nav"),
-                        nav,
+                        egui::Id::unique(("chrome_app_nav", slot)),
+                        &mut nav.stack,
                         animate,
                         |ui, ui_type, frame_nav| match ui_type {
                             NavUiType::Body => {
@@ -108,7 +105,7 @@ impl Chrome {
                                 // show through an app whose `render` doesn't fill
                                 // its whole rect (e.g. Dave). This fill occludes
                                 // whatever sits beneath the incoming route so every
-                                // app switch clips cleanly. It lives here rather
+                                // slide clips cleanly. It lives here rather
                                 // than in the shared, business-logic-free
                                 // `nav_frame` (columns paints its own column
                                 // backgrounds and has its own nav path).
@@ -117,10 +114,9 @@ impl Chrome {
                                     CornerRadius::ZERO,
                                     ui.visuals().panel_fill,
                                 );
-                                let entry =
+                                let token =
                                     frame_nav.routes().last().expect("stack always has a top");
-                                let resp =
-                                    apps[entry.app.slot()].render_nav(app_ctx, ui, &entry.token);
+                                let resp = apps[slot].render_nav(app_ctx, ui, token);
                                 RouteResponse {
                                     response: resp.action,
                                     can_take_drag_from: resp.can_take_drag_from,
@@ -138,19 +134,24 @@ impl Chrome {
 
                     // Whether egui-nav is still moving the routes (a drag
                     // included), which holds prunes over until it lands.
-                    *global_nav_in_flight = frame.in_flight;
+                    nav.in_flight = frame.in_flight;
 
-                    // A completed global-back popped the top entry inside
+                    // A completed back popped the top entry inside
                     // `nav_frame`. Surface the popped entry so we can hand it
-                    // to its app's `cleanup_nav` once the split borrows above
+                    // to the app's `cleanup_nav` once the split borrows above
                     // are released — the chrome itself never inspects the
-                    // token.
+                    // token. A pop below the opener's depth (a drag-back
+                    // included) forgets it.
                     let popped = match frame.event {
                         Some(NavStackEvent::Popped {
-                            route: Some(entry), ..
-                        }) => Some(entry),
+                            route: Some(token), ..
+                        }) => Some(TakenEntry {
+                            app: AppId(slot),
+                            token,
+                        }),
                         _ => None,
                     };
+                    nav.forget_stale_opener();
 
                     (frame.response, frame.can_take_drag_from, popped)
                 };
@@ -177,10 +178,6 @@ impl Chrome {
                 for action in app_ctx.app_actions.take() {
                     chrome_handle_app_action(self, app_ctx, action, ui);
                 }
-
-                // A completed back may have popped the top inside `nav_frame`;
-                // re-derive the active app so it tracks the new top.
-                self.sync_active_from_nav();
 
                 RouteResponse {
                     response: None,
@@ -270,7 +267,7 @@ impl Chrome {
             }
         }
 
-        // Global history back/forward via keyboard (Alt+←/→, mirroring the
+        // Back/forward via keyboard (Alt+←/→, mirroring the
         // Ctrl+Tab consume above) and the mouse's dedicated back/forward buttons
         // (PointerButton::Extra1/Extra2). Handled unconditionally so it works on
         // narrow layouts too, where the header chevrons aren't drawn. Consuming
@@ -284,10 +281,10 @@ impl Chrome {
                 forward |= i.pointer.button_clicked(egui::PointerButton::Extra2);
             });
             if back {
-                self.global_go_back();
+                self.go_back(ctx);
             }
             if forward {
-                self.global_go_forward();
+                self.go_forward();
             }
         }
 

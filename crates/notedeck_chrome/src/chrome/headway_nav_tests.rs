@@ -12,7 +12,9 @@
 //! against ("Widget .. changed layer_id during the frame"). In release that
 //! check is compiled out, as in the shipped app.
 
+use std::any::Any;
 use std::path::Path;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use egui_kittest::kittest::Queryable;
@@ -20,7 +22,7 @@ use egui_kittest::Harness;
 use nostrdb::{Filter, Ndb, Transaction};
 use nostrdb_net::{FullKeypair, NoteId, Pubkey};
 use notedeck::test_harness::PressKey;
-use notedeck::{App, ChromeNavEntry, NavStack, Notedeck};
+use notedeck::{App, NavStack, Notedeck};
 use notedeck_headway::{event, store};
 
 use super::Chrome;
@@ -95,14 +97,14 @@ fn chrome_frame(ui: &mut egui::Ui, state: &mut ChromeState) {
     });
 }
 
-/// The chrome's global history.
-fn history<'h>(harness: &'h Harness<'_, ChromeState>) -> &'h NavStack<ChromeNavEntry> {
-    harness
+/// The active app's history: Headway's, in every test here.
+fn history<'h>(harness: &'h Harness<'_, ChromeState>) -> &'h NavStack<Rc<dyn Any>> {
+    &harness
         .state()
         .chrome
-        .global_nav
-        .as_ref()
-        .expect("global nav is seeded at construction")
+        .active_nav()
+        .expect("every app has a stack")
+        .stack
 }
 
 /// Whether the chrome's history is still, with no slide running, and `len`

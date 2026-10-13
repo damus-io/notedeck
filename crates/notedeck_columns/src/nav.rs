@@ -1709,8 +1709,8 @@ pub fn render_nav(
 /// process whatever the pane produced.
 ///
 /// Unlike a deck column this pane owns **no** private nav stack: a drill-in
-/// (tapping a reply, or an author) pushes a *new* global deep-link and `Back`
-/// steps the global history — both via the chrome-owned
+/// (tapping a reply, or an author) pushes a *new* deep-link onto Columns'
+/// chrome-owned stack and `Back` steps back along it — both via the
 /// [`Navigator`](notedeck::Navigator). Only actions that don't map to a
 /// deep-link route (posting, zaps, reactions) bubble up as an [`AppAction`] for
 /// the chrome's existing note handler.
@@ -1757,15 +1757,14 @@ pub(crate) fn render_deeplink(
         }
     };
     let action = resp.output?;
-    process_deeplink_action(app, ctx, deeplink, action)
+    process_deeplink_action(app, ctx, action)
 }
 
-/// Route a deep-link pane's [`RenderNavAction`] to the global history (drill-in
+/// Route a deep-link pane's [`RenderNavAction`] to Columns' stack (drill-in
 /// pushes, back pops) or bubble it to the chrome. See [`render_deeplink`].
 fn process_deeplink_action(
     app: &mut Damus,
     ctx: &mut AppContext<'_>,
-    deeplink: &DeepLink,
     action: RenderNavAction,
 ) -> Option<AppAction> {
     match action {
@@ -1780,9 +1779,7 @@ fn process_deeplink_action(
         // Opening a note's thread or an author's profile drills in as a *new*
         // global deep-link; any other note action (zap, react, media, context)
         // has no deep-link route, so it bubbles to the chrome's note handler.
-        RenderNavAction::NoteAction(note_action) => {
-            deeplink_drill_in(app, ctx, deeplink, note_action)
-        }
+        RenderNavAction::NoteAction(note_action) => deeplink_drill_in(app, ctx, note_action),
 
         // The rest can't originate from a thread/profile deep-link's surface
         // (they belong to deck columns, sheets, or the composer). Log rather
@@ -1796,12 +1793,11 @@ fn process_deeplink_action(
 }
 
 /// Handle a note action raised inside a deep-link pane: a navigable action opens
-/// its subscription and pushes a fresh global deep-link (carrying the same app
-/// slot); anything else bubbles to the chrome's note handler.
+/// its subscription and pushes a fresh deep-link onto Columns' own stack;
+/// anything else bubbles to the chrome's note handler.
 fn deeplink_drill_in(
     app: &mut Damus,
     ctx: &mut AppContext<'_>,
-    deeplink: &DeepLink,
     note_action: NoteAction,
 ) -> Option<AppAction> {
     if !matches!(
@@ -1817,14 +1813,8 @@ fn deeplink_drill_in(
         return Some(AppAction::Note(note_action));
     };
 
-    ctx.navigator.push(
-        deeplink.app,
-        Rc::new(ColumnsNavToken::DeepLink(DeepLink {
-            app: deeplink.app,
-            route,
-            id,
-        })),
-    );
+    ctx.navigator
+        .push(Rc::new(ColumnsNavToken::DeepLink(DeepLink { route, id })));
     None
 }
 

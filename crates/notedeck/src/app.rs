@@ -131,18 +131,17 @@ pub trait App {
     /// UI rendering — called only for the active/visible app.
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse;
 
-    /// Render one entry of the chrome-owned global navigation history.
+    /// Render one entry of this app's chrome-owned navigation stack.
     ///
-    /// The chrome owns a single browser-style
-    /// [`NavStack<ChromeNavEntry>`](crate::NavStack) spanning every app (see
-    /// [`crate::navigator`]). When it draws an entry it belongs to *this* app, it
-    /// calls `render_nav` with that entry's [`ChromeNavEntry::token`](crate::ChromeNavEntry)
-    /// so the app can draw the specific view the token names, rather than its
-    /// whole self.
+    /// The chrome owns one browser-style [`NavStack`](crate::NavStack) per app
+    /// (see [`crate::navigator`]). When it draws this app, it calls
+    /// `render_nav` with the route token on the entry it draws, so the app can
+    /// draw the specific view the token names, rather than its whole self. The
+    /// stack's root token is a `()`.
     ///
     /// ## Token contract
     ///
-    /// `token` is exactly the `Rc<dyn Any>` this app pushed onto the history (via
+    /// `token` is exactly the `Rc<dyn Any>` this app pushed onto its stack (via
     /// [`Navigator::push_route`](crate::Navigator::push_route) or friends). Two
     /// properties matter to the app:
     ///
@@ -170,8 +169,8 @@ pub trait App {
         self.render(ctx, ui)
     }
 
-    /// A short human-readable title for one entry of the chrome-owned global
-    /// navigation history, shown in the chrome's history dropdown.
+    /// A short human-readable title for one entry of this app's navigation
+    /// stack, shown in the chrome's history dropdown.
     ///
     /// `token` is the same opaque route token handed to [`render_nav`](Self::render_nav):
     /// the app downcasts it and returns the title of *that specific view* (e.g. a
@@ -187,44 +186,43 @@ pub trait App {
         None
     }
 
-    /// Free the resources a popped global-history entry owned.
+    /// Free the resources a popped entry of this app's stack owned.
     ///
-    /// The chrome owns the single browser-style
-    /// [`NavStack<ChromeNavEntry>`](crate::NavStack); when a back navigation
-    /// completes it pops the top entry and, off that
+    /// When a back navigation completes the chrome pops the top entry of the
+    /// app's [`NavStack`](crate::NavStack) and, off that
     /// [`NavStackEvent::Popped`](crate::NavStackEvent::Popped), calls
-    /// `cleanup_nav` on the app the popped entry belonged to, handing back the
-    /// same [`ChromeNavEntry::token`](crate::ChromeNavEntry) that
-    /// [`render_nav`](Self::render_nav) drew. This is the app's chance to tear
+    /// `cleanup_nav` on the app, handing back the same token that
+    /// [`render_nav`](Self::render_nav) drew. A prune, a history jump, the
+    /// chrome's back to an opener app and closing the app (Ctrl-W) hand their
+    /// removed entries here the same way. This is the app's chance to tear
     /// down whatever that route opened — a thread/timeline subscription, view
     /// state — mirroring how a per-pane nav frees a popped route (see columns'
     /// `cleanup_popped_route`). The chrome stays business-logic-free: it never
     /// inspects the token, it only routes the pop back to the owning app.
     ///
     /// Same [`token`](Self::render_nav) contract: downcast to the app's own route
-    /// type and, for a token it doesn't recognize (a plain app-switch entry
-    /// carries a `()` token, or a different app's type), do nothing. The default
+    /// type and, for a token it doesn't recognize (the stack's root carries a
+    /// `()` token), do nothing. The default
     /// is a no-op, so an app whose routes own no external resources — or that
     /// never pushes routes — needs no cleanup at all.
     fn cleanup_nav(&mut self, ctx: &mut AppContext<'_>, token: &Rc<dyn Any>) {
         let _ = (ctx, token);
     }
 
-    /// Mint the global-history route for a note *this* app owns that was clicked
-    /// from *another* app (an inline reference widget in a timeline, a notebook
+    /// Mint the route for a note *this* app owns that was clicked from
+    /// *another* app (an inline reference widget in a timeline, a notebook
     /// node, a Dave message). The chrome resolves the note's kind to its owning
-    /// app, switches to it, and calls this; the returned token is the route the
-    /// app wants that open to land on.
+    /// app and calls this; the returned token is the route the app wants that
+    /// open to land on.
     ///
-    /// Returning `Some(token)` makes the chrome push exactly **one**
-    /// [`ChromeNavEntry`](crate::ChromeNavEntry), tagged with this app's
-    /// [`AppId`](crate::AppId) — which the app itself never learns, and doesn't
-    /// need to. That is the whole reason this is a hook rather than a
-    /// [`Navigator::push_active_route`](crate::Navigator::push_active_route)
-    /// call from inside the app's own open path: `push_active_route` tags with
-    /// `AppId(self.active)` captured when the chrome drains the request
-    /// (`chrome.rs`, `apply_nav_requests`), and during a cross-app open that is
-    /// still the *source* app. The entry would land in the wrong slot and
+    /// Returning `Some(token)` makes the chrome push exactly **one** entry onto
+    /// this app's stack, remember the app it was opened from (so the chrome's
+    /// back returns there), and switch to this app. That is the whole reason
+    /// this is a hook rather than a
+    /// [`Navigator::push_route`](crate::Navigator::push_route) call from inside
+    /// the app's own open path: the chrome applies a queued request to the app
+    /// active when it drains the queue, and during a cross-app open that is
+    /// still the *source* app. The entry would land on the wrong stack and
     /// [`render_nav`](Self::render_nav) would hand the wrong app a token to
     /// downcast.
     ///
@@ -238,7 +236,7 @@ pub trait App {
     /// active) before returning the token.
     ///
     /// The default returns `None`, which means "no route": the chrome falls back
-    /// to a plain app switch, exactly as before this hook existed.
+    /// to a plain app switch, still remembering the opener.
     fn open_note_route(
         &mut self,
         ctx: &mut AppContext<'_>,
@@ -338,14 +336,14 @@ pub trait App {
     /// Where the app's view is, for the chrome's jump list (vim's Ctrl-O /
     /// Ctrl-I): the chrome asks before a key binding marked `jump = true`
     /// fires, and before it moves along the list, and keeps what this
-    /// returns. The token is opaque to the chrome, like
-    /// [`ChromeNavEntry::token`](crate::ChromeNavEntry); it only compares two
+    /// returns. The token is opaque to the chrome, like a
+    /// [`render_nav`](Self::render_nav) token; it only compares two
     /// with [`JumpTarget::same`](crate::JumpTarget::same). Read per jump key
     /// press, never per frame. `None`, the default, keeps the app off the
     /// list: its jump keys still run, Ctrl-O just has nowhere to go.
     ///
-    /// A jump list moves within one app's view. Route history across apps
-    /// is the chrome's global nav (Alt-←/→), not this.
+    /// A jump list moves within one app's view. Route history is the
+    /// chrome's per-app nav stack (Alt-←/→), not this.
     fn jump_location(&self) -> Option<crate::JumpLocation> {
         None
     }

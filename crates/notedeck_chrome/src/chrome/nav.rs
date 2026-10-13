@@ -1,101 +1,266 @@
-//! The chrome's global navigation history: seeding it, recording app
-//! switches and cross-app opens as entries, applying the requests apps queue
-//! through the [`Navigator`](notedeck::Navigator), global back / forward /
-//! jump, handing every entry they take off the history to its app's
-//! `cleanup_nav`, and re-deriving the active app from the stack top.
+//! The chrome's per-app navigation: one [`AppNav`] stack per app slot, app
+//! switches that land where an app was left, the opener hop a cross-app open
+//! leaves behind, applying the requests apps queue through the
+//! [`Navigator`](notedeck::Navigator), back / forward / jump, and handing
+//! every entry they take off a stack to its app's `cleanup_nav`.
+//!
+//! The model, settled by headway:dave/fresh-champion-crucial:
+//!
+//! - Each app owns a stack. An app switch (sidebar, tab strip, Ctrl-Tab) is
+//!   not an entry: it lands on that app's stack top, where it was left.
+//! - A cross-app open (a chip, Dave's `s`) may push onto the target's stack,
+//!   and remembers the app it came from as the target's [`Opener`]. The
+//!   chrome's back (Alt-←, the header chevron, the mouse's back button)
+//!   returns there while the target's stack is still at the depth the open
+//!   left it. Switching away forgets it.
+//! - An app's own back ([`NavRequest::Back`]) is always in-app, and so is
+//!   every other request.
+//! - Closing an app (Ctrl-W) drops its stack.
 
 use super::Chrome;
 use notedeck::{App, AppContext};
-use notedeck::{AppId, ChromeNavEntry, NavRequest, NavStack, RoutePredicate};
+use notedeck::{AppId, NavRequest, NavStack, RoutePredicate};
+use std::any::Any;
 use std::rc::Rc;
 
-/// A [`NavRequest::RemoveActive`] prune, tagged with the app that raised it.
-///
-/// Held on [`Chrome`] while a slide is in flight, because egui-nav indexes the
-/// history's routes during the animation; applied once the slide has landed.
-pub(super) struct PendingPrune {
-    /// The app whose entries this prune may remove: the active app when the
-    /// request was drained.
-    app: AppId,
-    /// True for a token whose entry is dead.
-    is_dead: RoutePredicate,
+/// One app's navigation: its own back / forward stack, and the app that
+/// opened it, while a cross-app open's return still applies.
+pub(super) struct AppNav {
+    /// The app's history. Its root token is a `()`, which an app draws as its
+    /// root view.
+    pub(super) stack: NavStack<Rc<dyn Any>>,
+
+    /// The app a cross-app open came from, for the chrome's back to return
+    /// to (see [`AppNav::hop`]). Only set on the active app: a switch away
+    /// clears it.
+    pub(super) opener: Option<Opener>,
+
+    /// Prunes ([`NavRequest::Remove`]) raised while a slide was in flight,
+    /// applied in order once it lands (see [`Chrome::apply_nav_requests`]).
+    /// egui-nav indexes the stack's routes during the animation.
+    pending_prunes: Vec<RoutePredicate>,
+
+    /// True when this stack's egui-nav transition was still moving at the end
+    /// of the last frame that drew it: a slide, a drag, or a released drag
+    /// springing back (see
+    /// [`NavFrameResponse::in_flight`](notedeck::NavFrameResponse)). A
+    /// drag-back sets neither of the stack's own transition flags, so this is
+    /// what holds a prune over one.
+    pub(super) in_flight: bool,
 }
 
-impl PendingPrune {
-    /// Remove this prune's dead entries from `nav`, returning the removed
-    /// back-stack entries (oldest first) for their app's `cleanup_nav`.
-    fn apply(&self, nav: &mut NavStack<ChromeNavEntry>) -> Vec<ChromeNavEntry> {
-        // `as_ref` hands the predicate the token itself: `&entry.token` would
-        // coerce the `Rc` to a `dyn Any`, which no route type downcasts from.
-        nav.retain_routes(|entry| entry.app != self.app || !(self.is_dead)(entry.token.as_ref()))
+/// The app a cross-app open came from, held on the target's [`AppNav`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Opener {
+    /// The app the open came from, where the chrome's back returns.
+    pub(super) app: AppId,
+    /// The target's stack depth right after the open. The return applies only
+    /// at this depth: deeper, the chrome's back steps back in-app first.
+    depth: usize,
+    /// Whether the open pushed an entry onto the target's stack, which the
+    /// return then pops. An open that pushes nothing (Dave opening a session,
+    /// a note shown in a Columns column) only switches back.
+    pushed: bool,
+}
+
+/// An entry taken off an app's stack, for that app's `cleanup_nav`.
+pub(super) struct TakenEntry {
+    /// The app whose stack held the entry.
+    pub(super) app: AppId,
+    /// The entry's route token.
+    pub(super) token: Rc<dyn Any>,
+}
+
+impl AppNav {
+    /// A stack at the app's root, with no opener.
+    pub(super) fn new() -> Self {
+        AppNav {
+            stack: NavStack::new(vec![Rc::new(()) as Rc<dyn Any>]),
+            opener: None,
+            pending_prunes: Vec::new(),
+            in_flight: false,
+        }
+    }
+
+    /// True while the stack is animating a slide or a drag, when its routes
+    /// must not move.
+    ///
+    /// The stack's own flags cover a slide the chrome started; `in_flight` is
+    /// what egui-nav reported at the end of the last [`nav_frame`](notedeck::nav_frame).
+    /// That second half is the one a drag-back needs: a drag sets neither
+    /// flag, so a prune applied under it would remove the dragged top at once,
+    /// and the drag's `Returned` would then pop the entry beneath it too.
+    pub(super) fn sliding(&self) -> bool {
+        self.stack.navigating() || self.stack.returning() || self.in_flight
+    }
+
+    /// The app the chrome's back returns to from here: the opener, while the
+    /// stack is at the depth its open left it.
+    pub(super) fn hop(&self) -> Option<AppId> {
+        self.opener
+            .filter(|opener| opener.depth == self.stack.len())
+            .map(|opener| opener.app)
+    }
+
+    /// Forget an opener the stack has backed out below. Called after anything
+    /// that removes entries: a later push back up to its depth must not bring
+    /// the return back.
+    pub(super) fn forget_stale_opener(&mut self) {
+        if self
+            .opener
+            .is_some_and(|opener| self.stack.len() < opener.depth)
+        {
+            self.opener = None;
+        }
+    }
+
+    /// Step back in-app. The pop lands when the slide does, so an opener the
+    /// back leaves behind is forgotten now, not then: a chrome back pressed
+    /// during the slide must not take the return.
+    fn back(&mut self) {
+        if !self.stack.can_go_back() {
+            return;
+        }
+        self.stack.go_back();
+        if self
+            .opener
+            .is_some_and(|opener| self.stack.len() - 1 < opener.depth)
+        {
+            self.opener = None;
+        }
+    }
+
+    /// Apply this frame's `requests`, after any prune held over a slide that
+    /// has since landed. Returns the tokens the prunes took off the back
+    /// stack, oldest first.
+    fn apply(&mut self, requests: Vec<NavRequest>) -> Vec<Rc<dyn Any>> {
+        let mut removed = Vec::new();
+
+        // Prunes held over a slide that has since landed go first: they were
+        // raised before anything in this frame's batch.
+        if !self.sliding() {
+            for is_dead in self.pending_prunes.drain(..) {
+                removed.extend(prune(&mut self.stack, &is_dead));
+            }
+        }
+
+        for request in requests {
+            match request {
+                NavRequest::Push(token) => self.stack.route_to(token),
+                NavRequest::Replace(token) => self.stack.route_to_replaced(token),
+                NavRequest::Remove(is_dead) => {
+                    if self.sliding() {
+                        self.pending_prunes.push(is_dead);
+                    } else {
+                        removed.extend(prune(&mut self.stack, &is_dead));
+                    }
+                }
+                NavRequest::Back => self.back(),
+                NavRequest::Forward => {
+                    self.stack.go_forward();
+                }
+            }
+        }
+
+        self.forget_stale_opener();
+        removed
     }
 }
 
-/// True while `nav` is animating a slide or a drag, when its routes must not
-/// move.
-///
-/// The stack's own flags cover a slide the chrome started; `in_flight` is
-/// what egui-nav reported at the end of this frame's
-/// [`nav_frame`](notedeck::nav_frame) (see [`Chrome::global_nav_in_flight`]).
-/// That second half is the one a drag-back needs: a drag sets neither flag,
-/// so a prune applied under it would remove the dragged top at once, and the
-/// drag's `Returned` would then pop the entry beneath it too.
-fn sliding(nav: &NavStack<ChromeNavEntry>, in_flight: bool) -> bool {
-    nav.navigating() || nav.returning() || in_flight
-}
-
-/// Seed the chrome-global navigation history with the initial app's route
-/// (slot 0). [`NavStack::new`] panics on an empty stack, so the chrome is born
-/// with exactly this one entry. The route token is a placeholder `Rc::new(())`:
-/// no app reads its own token yet (that lands with Columns' `render_nav`
-/// override in a later subissue) and the chrome never inspects it.
-pub(super) fn seed_global_nav() -> NavStack<ChromeNavEntry> {
-    NavStack::new(vec![ChromeNavEntry::new(AppId(0), Rc::new(()))])
+/// Remove `stack`'s dead entries, returning the removed back-stack tokens
+/// (oldest first) for their app's `cleanup_nav`.
+fn prune(stack: &mut NavStack<Rc<dyn Any>>, is_dead: &RoutePredicate) -> Vec<Rc<dyn Any>> {
+    // `as_ref` hands the predicate the token itself: `&token` would coerce
+    // the `Rc` to a `dyn Any`, which no route type downcasts from.
+    stack.retain_routes(|token| !is_dead(token.as_ref()))
 }
 
 impl Chrome {
+    /// The navigation of the app in `slot`, if there is one.
+    pub(super) fn app_nav(&self, slot: usize) -> Option<&AppNav> {
+        self.app_navs.get(slot)
+    }
+
+    /// The active app's navigation.
+    pub(super) fn active_nav(&self) -> Option<&AppNav> {
+        self.app_nav(self.active as usize)
+    }
+
+    /// The active app's navigation, mutably.
+    fn active_nav_mut(&mut self) -> Option<&mut AppNav> {
+        self.app_navs.get_mut(self.active as usize)
+    }
+
     /// Switch the active app to `app`.
     ///
-    /// Every app-switch path funnels through here, so this is where the switch
-    /// is recorded in the global history: unless `app` already owns the top
-    /// entry (guarding a redundant duplicate), a new [`ChromeNavEntry`] is
-    /// pushed via [`NavStack::route_to`], which sets the `navigating` flag so
-    /// [`nav_frame`](notedeck::nav_frame) animates the transition. `active` and
-    /// the `opened` bitset are updated to match — they stay authoritative for
-    /// `update()`-gating, the tab strip, and focus-restore, and always agree
-    /// with the stack top (see [`Chrome::sync_active_from_nav`]).
+    /// Every app-switch path funnels through here. A switch is not a history
+    /// entry: `app` shows its stack top, where it was left. The app being
+    /// left forgets its opener, so the chrome's back never leaves an app
+    /// reached by a switch. `opened` is updated to match, for
+    /// `update()`-gating, the tab strip, and focus-restore.
     pub fn set_active(&mut self, app: i32) {
-        if let Some(nav) = self.global_nav.as_mut() {
-            if nav.top().app != AppId(app as usize) {
-                nav.route_to(ChromeNavEntry::new(AppId(app as usize), Rc::new(())));
+        if app != self.active {
+            if let Some(nav) = self.active_nav_mut() {
+                nav.opener = None;
             }
         }
         self.active = app;
         self.set_opened(app as usize);
     }
 
-    /// Land a cross-app open as ONE global-history entry: push `token` tagged
-    /// with the target app's `slot`, then re-derive `active` from the new top.
+    /// Land a cross-app open: push `token` onto the stack of the app in
+    /// `slot`, switch to it, and remember the app it came from as its
+    /// [`Opener`], so one chrome back pops the entry and returns there.
     ///
-    /// This deliberately bypasses [`set_active`](Chrome::set_active). That
-    /// records the switch as its own untyped `()` app-switch entry, which the
-    /// target renders as its root; the app then routes to the opened note on
-    /// top of it, so a cross-app open would land TWO entries and take two back
-    /// presses to return. Here the routed entry IS the switch.
+    /// An open from the app itself is a plain in-app push, with no opener.
     ///
     /// Split out from [`open_note_in_app`](Chrome::open_note_in_app) so the
-    /// one-entry invariant is testable without an [`AppContext`].
+    /// open is testable without an [`AppContext`].
     #[cfg(any(feature = "headway", test))]
-    pub(super) fn push_app_route(&mut self, slot: usize, token: Rc<dyn std::any::Any>) {
-        if let Some(nav) = self.global_nav.as_mut() {
-            nav.route_to(ChromeNavEntry::new(AppId(slot), token));
+    pub(super) fn push_app_route(&mut self, slot: usize, token: Rc<dyn Any>) {
+        let from = self.active;
+        let Some(nav) = self.app_navs.get_mut(slot) else {
+            return;
+        };
+        nav.stack.route_to(token);
+        let depth = nav.stack.len();
+        self.set_active(slot as i32);
+        if from as usize == slot {
+            return;
         }
-        self.active = slot as i32;
-        self.set_opened(slot);
+        self.app_navs[slot].opener = Some(Opener {
+            app: AppId(from as usize),
+            depth,
+            pushed: true,
+        });
+    }
+
+    /// Remember `from` as the active app's [`Opener`] after a cross-app open
+    /// that pushed nothing onto its stack (Dave opening a session, Notebook a
+    /// node, Columns a note in a column), so the chrome's back still returns
+    /// there. Does nothing when the open stayed in `from`, or when this open
+    /// already pushed and recorded its opener (see
+    /// [`push_app_route`](Chrome::push_app_route)): only the active app holds
+    /// an opener, so one set here is this open's.
+    pub(super) fn remember_opener(&mut self, from: i32) {
+        if from == self.active {
+            return;
+        }
+        let Some(nav) = self.active_nav_mut() else {
+            return;
+        };
+        if nav.opener.is_some() {
+            return;
+        }
+        nav.opener = Some(Opener {
+            app: AppId(from as usize),
+            depth: nav.stack.len(),
+            pushed: false,
+        });
     }
 
     /// Ask the app in `slot` for the route that opening `note_id` should land
-    /// on (see [`notedeck::App::open_note_route`]) and push it as one entry via
+    /// on (see [`notedeck::App::open_note_route`]) and push it via
     /// [`push_app_route`](Chrome::push_app_route).
     ///
     /// Returns `false` — pushing nothing — when the slot is empty or the app
@@ -119,108 +284,42 @@ impl Chrome {
         true
     }
 
-    /// Re-derive `active` (and its `opened` bit) from the global history's top
-    /// entry. Called after every stack mutation the chrome doesn't drive through
-    /// [`set_active`](Chrome::set_active) — the per-frame [`nav_frame`](notedeck::nav_frame) reconcile
-    /// (which may pop on a completed back) and the [`Navigator`](notedeck::Navigator)
-    /// drain — so the active app tracks whichever app owns the current route,
-    /// including after a global back/forward crossed an app boundary.
-    pub(super) fn sync_active_from_nav(&mut self) {
-        let Some(nav) = self.global_nav.as_ref() else {
-            return;
-        };
-        let slot = nav.top().app.slot();
-        self.active = slot as i32;
-        self.set_opened(slot);
-    }
-
-    /// Apply the navigation `requests` an app enqueued this frame (drained from
-    /// [`AppContext::navigator`](notedeck::AppContext)) to the global history,
-    /// then re-derive the active app from the new top.
+    /// Apply the navigation `requests` the active app enqueued this frame
+    /// (drained from [`AppContext::navigator`](notedeck::AppContext)) to its
+    /// stack.
     ///
     /// This is the chrome's half of the [`Navigator`](notedeck::Navigator)
-    /// contract: apps never touch the authoritative stack, they queue intent and
-    /// the chrome applies it here.
+    /// contract: apps never touch a stack, they queue intent and the chrome
+    /// applies it here, to whichever app is active.
     ///
-    /// Returns the entries a prune ([`NavRequest::RemoveActive`]) took off the
-    /// back stack, oldest first. The caller hands each to its app's
-    /// `cleanup_nav`, as a popped entry is: [`drain_nav_requests`](Chrome::drain_nav_requests)
+    /// Returns the entries a prune ([`NavRequest::Remove`]) took off the back
+    /// stack, oldest first. The caller hands each to its app's `cleanup_nav`,
+    /// as a popped entry is: [`drain_nav_requests`](Chrome::drain_nav_requests)
     /// does both halves, and is what the frame calls. A prune that meets a
-    /// slide or drag in flight is held in `pending_prunes` and applied by the
-    /// first call after it lands, so this runs every frame even with no new
-    /// requests.
+    /// slide or drag in flight is held and applied by the first call after it
+    /// lands, so this runs every frame even with no new requests.
     #[must_use = "a removed entry that skips its app's cleanup_nav leaks what its route opened"]
-    pub(super) fn apply_nav_requests(&mut self, requests: Vec<NavRequest>) -> Vec<ChromeNavEntry> {
-        if requests.is_empty() && self.pending_prunes.is_empty() {
+    pub(super) fn apply_nav_requests(&mut self, requests: Vec<NavRequest>) -> Vec<TakenEntry> {
+        let app = AppId(self.active as usize);
+        let Some(nav) = self.active_nav_mut() else {
+            return Vec::new();
+        };
+        if requests.is_empty() && nav.pending_prunes.is_empty() {
             return Vec::new();
         }
-
-        // The active-owned requests (`PushToActive`/`ReplaceActive`/
-        // `RemoveActive`) don't name their app — the enqueuing app doesn't know
-        // its own slot — so the chrome completes them here by tagging them with
-        // the active slot. This runs during the same frame's render as the
-        // enqueue and before `sync_active_from_nav`, so `active` still names the
-        // app that raised the request (a plain app-switch funnels through
-        // `set_active`, not here).
-        let active = AppId(self.active as usize);
-
-        let mut removed = Vec::new();
-        let Chrome {
-            global_nav,
-            pending_prunes,
-            global_nav_in_flight,
-            ..
-        } = self;
-        let in_flight = *global_nav_in_flight;
-        if let Some(nav) = global_nav.as_mut() {
-            // Prunes held over a slide that has since landed go first: they
-            // were raised before anything in this frame's batch.
-            if !sliding(nav, in_flight) {
-                for prune in pending_prunes.drain(..) {
-                    removed.extend(prune.apply(nav));
-                }
-            }
-
-            for request in requests {
-                match request {
-                    NavRequest::Push(entry) => nav.route_to(entry),
-                    NavRequest::Replace(entry) => nav.route_to_replaced(entry),
-                    NavRequest::PushToActive(entry) => nav.route_to(entry.tag(active)),
-                    NavRequest::ReplaceActive(entry) => nav.route_to_replaced(entry.tag(active)),
-                    NavRequest::RemoveActive(is_dead) => {
-                        let prune = PendingPrune {
-                            app: active,
-                            is_dead,
-                        };
-                        if sliding(nav, in_flight) {
-                            pending_prunes.push(prune);
-                        } else {
-                            removed.extend(prune.apply(nav));
-                        }
-                    }
-                    NavRequest::Back => {
-                        nav.go_back();
-                    }
-                    NavRequest::Forward => {
-                        nav.go_forward();
-                    }
-                }
-            }
-        }
-
-        self.sync_active_from_nav();
-        removed
+        nav.apply(requests)
+            .into_iter()
+            .map(|token| TakenEntry { app, token })
+            .collect()
     }
 
-    /// True while the global history is still sliding (or being dragged)
+    /// True while the active app's stack is still sliding (or being dragged)
     /// between entries: until the slide lands, egui-nav renders both the
     /// outgoing and the incoming route, so an app seeding its view from each
     /// route's token sees both. A macro step waits this out (see
     /// [`Settle::nav_sliding`](crate::keymap::macros::Settle::nav_sliding)).
-    pub(super) fn global_nav_sliding(&self) -> bool {
-        self.global_nav
-            .as_ref()
-            .is_some_and(|nav| sliding(nav, self.global_nav_in_flight))
+    pub(super) fn nav_sliding(&self) -> bool {
+        self.active_nav().is_some_and(AppNav::sliding)
     }
 
     /// Drain the navigation requests apps queued this frame on
@@ -233,20 +332,20 @@ impl Chrome {
         self.cleanup_entries(ctx, removed);
     }
 
-    /// Hand each of `entries`, taken off the global history, to the
-    /// `cleanup_nav` of the app that owns it, so the app can free what the
-    /// entry's route opened (e.g. Columns closes a deep-linked thread's
-    /// subscription).
+    /// Hand each of `entries`, taken off an app's stack, to the `cleanup_nav`
+    /// of the app that owns it, so the app can free what the entry's route
+    /// opened (e.g. Columns closes a deep-linked thread's subscription).
     ///
     /// Every path that removes entries funnels here — a completed back's pop
-    /// in the frame, a prune, a history-dropdown jump — so each removed
-    /// entry is cleaned exactly once. A redo ([`go_forward`](NavStack::go_forward))
-    /// can replay an entry that was cleaned when it was popped; the app
-    /// renders it again from its token, as after any back then forward.
+    /// in the frame, a prune, a history-dropdown jump, the opener return,
+    /// closing an app — so each removed entry is cleaned exactly once. A redo
+    /// ([`go_forward`](NavStack::go_forward)) can replay an entry that was
+    /// cleaned when it was popped; the app renders it again from its token, as
+    /// after any back then forward.
     pub(super) fn cleanup_entries(
         &mut self,
         ctx: &mut AppContext,
-        entries: impl IntoIterator<Item = ChromeNavEntry>,
+        entries: impl IntoIterator<Item = TakenEntry>,
     ) {
         for entry in entries {
             if let Some(app) = self.apps.get_mut(entry.app.slot()) {
@@ -255,59 +354,112 @@ impl Chrome {
         }
     }
 
-    /// Step one entry back in the global history, then re-derive the active app.
+    /// The chrome's back, without the cleanup: returns what it took off a
+    /// stack for [`cleanup_entries`](Chrome::cleanup_entries).
+    /// [`go_back`](Chrome::go_back) does both halves.
     ///
-    /// The back is deferred/animated: [`NavStack::go_back`] only flags the
-    /// transition, and [`nav_frame`](notedeck::nav_frame) reconciles the pop once
-    /// the slide completes — so `active` doesn't change until the following frame
-    /// (the outgoing app stays rendered during the slide). No-op at the root.
-    /// Shared by the header chevron, `Alt+←`, and the back mouse button.
-    pub(super) fn global_go_back(&mut self) {
-        if let Some(nav) = self.global_nav.as_mut() {
-            nav.go_back();
-        }
-        self.sync_active_from_nav();
+    /// Where the active app's opener return applies (see [`AppNav::hop`]), it
+    /// pops the entry the open pushed, if it pushed one, and switches to the
+    /// opener app. Otherwise it is an in-app back, which is deferred and
+    /// animated: [`NavStack::go_back`] only flags the transition, and
+    /// [`nav_frame`](notedeck::nav_frame) reconciles the pop once the slide
+    /// completes. At the app's root with no opener, nothing.
+    #[must_use = "an entry the opener return pops must reach its app's cleanup_nav"]
+    pub(super) fn step_back(&mut self) -> Vec<TakenEntry> {
+        let app = AppId(self.active as usize);
+        let Some(nav) = self.active_nav_mut() else {
+            return Vec::new();
+        };
+        let Some(opener) = nav.opener.filter(|o| o.depth == nav.stack.len()) else {
+            nav.back();
+            return Vec::new();
+        };
+        nav.opener = None;
+        let popped = if opener.pushed {
+            nav.stack.remove_top_route_for_disposal()
+        } else {
+            None
+        };
+        self.set_active(opener.app.slot() as i32);
+        popped
+            .map(|token| TakenEntry { app, token })
+            .into_iter()
+            .collect()
     }
 
-    /// Step one entry forward in the global history, replaying the most recently
-    /// popped route, then re-derive the active app. Unlike a back step the push
-    /// lands immediately, so `active` updates this frame. No-op with an empty
-    /// forward stack. Shared by the header chevron, `Alt+→`, and the forward
-    /// mouse button.
-    pub(super) fn global_go_forward(&mut self) {
-        if let Some(nav) = self.global_nav.as_mut() {
-            nav.go_forward();
-        }
-        self.sync_active_from_nav();
+    /// The chrome's back (see [`step_back`](Chrome::step_back)), handing what
+    /// it pops to its app's `cleanup_nav`. Shared by the header chevron,
+    /// `Alt+←`, the back mouse button, and the history dropdown's return row.
+    pub(super) fn go_back(&mut self, ctx: &mut AppContext) {
+        let popped = self.step_back();
+        self.cleanup_entries(ctx, popped);
     }
 
-    /// Jump straight to back-stack `index` in the global history (used by the
-    /// header history dropdown), then re-derive the active app. Instant, with the
-    /// skipped-over routes preserved on the forward stack for redo.
+    /// Step one entry forward in the active app's stack, replaying the most
+    /// recently popped route. Unlike a back step the push lands immediately.
+    /// No-op with an empty forward stack. Shared by the header chevron,
+    /// `Alt+→`, and the forward mouse button.
+    pub(super) fn go_forward(&mut self) {
+        if let Some(nav) = self.active_nav_mut() {
+            nav.stack.go_forward();
+        }
+    }
+
+    /// Jump straight to back-stack `index` in the active app's stack (used by
+    /// the header history dropdown). Instant, with the skipped-over routes
+    /// preserved on the forward stack for redo.
     ///
-    /// Every skipped-over entry was popped, so it goes to its app's
+    /// Every skipped-over entry was popped, so it goes to the app's
     /// `cleanup_nav` just as a completed back's pop does. That is also what
     /// lets a later prune drop forward-stack entries without cleaning them
     /// ([`NavStack::retain_routes`]): they were cleaned on the way there.
-    pub(super) fn global_go_to(&mut self, ctx: &mut AppContext, index: usize) {
-        let popped = self
-            .global_nav
-            .as_mut()
-            .map(|nav| nav.go_to_route(index))
-            .unwrap_or_default();
-        self.sync_active_from_nav();
+    pub(super) fn go_to(&mut self, ctx: &mut AppContext, index: usize) {
+        let app = AppId(self.active as usize);
+        let Some(nav) = self.active_nav_mut() else {
+            return;
+        };
+        let popped = nav.stack.go_to_route(index);
+        nav.forget_stale_opener();
+        let popped = popped.into_iter().map(|token| TakenEntry { app, token });
         self.cleanup_entries(ctx, popped);
+    }
+
+    /// Drop the stack of the app in `slot`, as closing it does: reset it to
+    /// its root and forget its opener and every opener that names it.
+    /// Returns its back-stack entries for [`cleanup_entries`](Chrome::cleanup_entries);
+    /// its forward entries were cleaned when they were popped.
+    #[must_use = "a dropped entry that skips its app's cleanup_nav leaks what its route opened"]
+    pub(super) fn drop_app_nav(&mut self, slot: usize) -> Vec<TakenEntry> {
+        let app = AppId(slot);
+        for nav in &mut self.app_navs {
+            if nav.opener.is_some_and(|opener| opener.app == app) {
+                nav.opener = None;
+            }
+        }
+        let Some(nav) = self.app_navs.get_mut(slot) else {
+            return Vec::new();
+        };
+        let dropped = std::mem::replace(nav, AppNav::new());
+        dropped
+            .stack
+            .routes()
+            .iter()
+            .map(|token| TakenEntry {
+                app,
+                token: token.clone(),
+            })
+            .collect()
     }
 }
 
-/// A bare chrome over `apps` with a seeded global history and nothing else:
-/// no egui or ndb context, so tests can drive the history machinery
-/// (`set_active`, the `Navigator` drain, back / forward) directly. Mirrors
-/// the real constructors' seeding via [`seed_global_nav`].
+/// A bare chrome over `apps`, each at its root, and nothing else: no egui or
+/// ndb context, so tests can drive the nav machinery (`set_active`, the
+/// `Navigator` drain, back / forward) directly.
 #[cfg(all(test, not(feature = "auto-update")))]
 impl Chrome {
     pub(super) fn without_context(apps: Vec<crate::app::NotedeckApp>) -> Self {
         use super::MAX_APPS;
+        let app_navs = apps.iter().map(|_| AppNav::new()).collect();
         Chrome {
             active: 0,
             options: crate::ChromeOptions::default(),
@@ -319,10 +471,8 @@ impl Chrome {
             soft_kb_anim_state: Default::default(),
             repaint_causes: Default::default(),
             nav: Default::default(),
-            global_nav: Some(seed_global_nav()),
+            app_navs,
             pending_open: None,
-            pending_prunes: Vec::new(),
-            global_nav_in_flight: false,
             keys: Default::default(),
             key_hints: [0u16; MAX_APPS / 16],
             jumps: Default::default(),
@@ -332,58 +482,63 @@ impl Chrome {
     }
 }
 
-// The global-nav wiring exercised here is independent of the auto-update
-// `updater` field, which needs a live egui/ndb context to build. Gating on
-// `not(auto-update)` lets these tests construct a bare `Chrome` with no context
-// (the field is compiled out) while still running under the default feature set
-// CI uses for `notedeck_chrome`. Most drive the stack's reconcile by hand;
-// `slide_tests` draws it through the real egui-nav, which a drag needs.
+/// An app that draws nothing, for tests that only read the stacks.
 #[cfg(all(test, not(feature = "auto-update")))]
-mod global_nav_tests {
+pub(super) struct Blank;
+
+#[cfg(all(test, not(feature = "auto-update")))]
+impl App for Blank {
+    fn render(&mut self, _ctx: &mut AppContext<'_>, _ui: &mut egui::Ui) -> notedeck::AppResponse {
+        notedeck::AppResponse::none()
+    }
+}
+
+// The nav wiring exercised here is independent of the auto-update `updater`
+// field, which needs a live egui/ndb context to build. Gating on
+// `not(auto-update)` lets these tests construct a bare `Chrome` with no
+// context (the field is compiled out) while still running under the default
+// feature set CI uses for `notedeck_chrome`. Most drive the stack's reconcile
+// by hand; `slide_tests` draws it through the real egui-nav, which a drag
+// needs.
+#[cfg(all(test, not(feature = "auto-update")))]
+mod app_nav_tests {
     use super::*;
+    use crate::app::NotedeckApp;
     use egui_nav::{NavAction, ReturnType};
-    use notedeck::ActiveNavEntry;
 
-    /// Build a bare chrome with a seeded global history and no apps — enough to
-    /// drive the stack machinery (`set_active`, the `Navigator` drain, and the
-    /// active-app derive) without an egui/ndb context. Mirrors the real
-    /// constructors' seeding via [`seed_global_nav`].
+    /// A bare chrome over four blank apps, on slot 0.
     fn nav_test_chrome() -> Chrome {
-        Chrome::without_context(Vec::new())
+        let apps = (0..4)
+            .map(|i| NotedeckApp::Other(format!("app{i}"), Box::new(Blank)))
+            .collect();
+        Chrome::without_context(apps)
     }
 
-    /// Land the global history's in-flight forward slide, as `nav_frame`
-    /// does once egui-nav reports it placed.
+    fn stack(chrome: &Chrome, slot: usize) -> &NavStack<Rc<dyn Any>> {
+        &chrome.app_nav(slot).unwrap().stack
+    }
+
+    fn active_stack_mut(chrome: &mut Chrome) -> &mut NavStack<Rc<dyn Any>> {
+        &mut chrome.active_nav_mut().unwrap().stack
+    }
+
+    /// Land the active app's in-flight forward slide, as `nav_frame` does
+    /// once egui-nav reports it placed.
     fn land_slide(chrome: &mut Chrome) {
-        chrome
-            .global_nav
-            .as_mut()
-            .unwrap()
-            .reconcile(NavAction::Navigated);
+        active_stack_mut(chrome).reconcile(NavAction::Navigated);
     }
 
-    /// One entry on the global history, as the tests compare it: its app slot
-    /// and its `u32` token, if it has one.
-    #[derive(Debug, PartialEq)]
-    struct HistoryEntry {
-        slot: usize,
-        token: Option<u32>,
+    /// Land the active app's in-flight back slide.
+    fn land_back(chrome: &mut Chrome) {
+        active_stack_mut(chrome).reconcile(NavAction::Returned(ReturnType::Click));
     }
 
-    /// The history entry for app `slot` with `token`.
-    fn entry(slot: usize, token: Option<u32>) -> HistoryEntry {
-        HistoryEntry { slot, token }
-    }
-
-    /// Every entry on the history, oldest first.
-    fn history(chrome: &Chrome) -> Vec<HistoryEntry> {
-        chrome
-            .global_nav
-            .as_ref()
-            .unwrap()
+    /// The `u32` tokens on `slot`'s stack, oldest first (`None` for the root).
+    fn history(chrome: &Chrome, slot: usize) -> Vec<Option<u32>> {
+        stack(chrome, slot)
             .routes()
             .iter()
-            .map(|e| entry(e.app.slot(), e.token.downcast_ref::<u32>().copied()))
+            .map(|token| token.downcast_ref::<u32>().copied())
             .collect()
     }
 
@@ -394,332 +549,292 @@ mod global_nav_tests {
         assert!(removed.is_empty(), "nothing here removes an entry");
     }
 
+    fn push(token: u32) -> NavRequest {
+        NavRequest::Push(Rc::new(token))
+    }
+
     /// A prune request for the active app's `u32` tokens equal to `dead`.
     fn prune(dead: u32) -> NavRequest {
         let mut navigator = notedeck::Navigator::default();
-        navigator.remove_active_routes(move |t: &u32| *t == dead);
+        navigator.remove_routes(move |t: &u32| *t == dead);
         navigator.take().pop().unwrap()
     }
 
     #[test]
-    fn seed_starts_at_app_zero() {
+    fn every_app_starts_at_its_root() {
         let chrome = nav_test_chrome();
-        let nav = chrome.global_nav.as_ref().unwrap();
-        assert_eq!(nav.len(), 1);
-        assert_eq!(nav.top().app, AppId(0));
+        for slot in 0..4 {
+            assert_eq!(history(&chrome, slot), vec![None]);
+        }
         assert_eq!(chrome.active, 0);
     }
 
     #[test]
-    fn set_active_pushes_a_route_and_derives_active() {
+    fn set_active_pushes_nothing_and_keeps_each_apps_stack() {
         let mut chrome = nav_test_chrome();
+        chrome.set_active(1);
+        navigate(&mut chrome, vec![push(7)]);
+        land_slide(&mut chrome);
+
+        chrome.set_active(2);
+        assert_eq!(chrome.active, 2);
+        assert!(chrome.is_opened(2), "the switched-to app is marked opened");
+        assert_eq!(history(&chrome, 2), vec![None], "a switch is no entry");
+        assert!(!stack(&chrome, 2).navigating(), "and no slide");
 
         chrome.set_active(1);
-        let nav = chrome.global_nav.as_ref().unwrap();
-        assert_eq!(nav.len(), 2, "switching apps pushes a global-history entry");
-        assert_eq!(nav.top().app, AppId(1));
-        assert_eq!(chrome.active, 1);
-        assert!(
-            nav.navigating(),
-            "route_to arms the forward-transition flag"
+        assert_eq!(
+            history(&chrome, 1),
+            vec![None, Some(7)],
+            "where it was left"
         );
-        assert!(chrome.is_opened(1), "the switched-to app is marked opened");
     }
 
     #[test]
-    fn set_active_guards_the_no_op_switch() {
+    fn drained_push_request_advances_only_the_active_apps_stack() {
         let mut chrome = nav_test_chrome();
-        chrome.set_active(1);
-        assert_eq!(chrome.global_nav.as_ref().unwrap().len(), 2);
+        chrome.set_active(2);
 
-        // switching to the already-active app must not push a duplicate entry
-        chrome.set_active(1);
-        assert_eq!(chrome.global_nav.as_ref().unwrap().len(), 2);
-        assert_eq!(chrome.active, 1);
+        navigate(&mut chrome, vec![push(7)]);
+
+        assert_eq!(history(&chrome, 2), vec![None, Some(7)]);
+        assert_eq!(history(&chrome, 0), vec![None]);
+        assert_eq!(chrome.active, 2);
     }
 
     #[test]
-    fn drained_push_request_advances_the_stack() {
+    fn drained_replace_request_collapses_only_the_active_apps_stack() {
         let mut chrome = nav_test_chrome();
+        navigate(&mut chrome, vec![push(5)]);
+        land_slide(&mut chrome);
+        chrome.set_active(2);
+        navigate(&mut chrome, vec![push(7)]);
+        land_slide(&mut chrome);
 
-        navigate(
-            &mut chrome,
-            vec![NavRequest::Push(ChromeNavEntry::new(AppId(2), Rc::new(())))],
-        );
-
-        let nav = chrome.global_nav.as_ref().unwrap();
-        assert_eq!(nav.len(), 2);
-        assert_eq!(nav.top().app, AppId(2));
-        assert_eq!(chrome.active, 2, "active derives from the new stack top");
-    }
-
-    #[test]
-    fn drained_replace_request_drops_the_previous_route() {
-        let mut chrome = nav_test_chrome();
-        chrome.set_active(1); // [app0, app1]
-
-        navigate(
-            &mut chrome,
-            vec![NavRequest::Replace(ChromeNavEntry::new(
-                AppId(2),
-                Rc::new(()),
-            ))],
-        );
+        navigate(&mut chrome, vec![NavRequest::Replace(Rc::new(9u32))]);
         // route_to_replaced defers the drop until the transition completes
-        chrome
-            .global_nav
-            .as_mut()
-            .unwrap()
-            .reconcile(NavAction::Navigated);
+        land_slide(&mut chrome);
 
-        let nav = chrome.global_nav.as_ref().unwrap();
-        assert_eq!(nav.len(), 1, "replace collapses the history to the new top");
-        assert_eq!(nav.top().app, AppId(2));
-        assert_eq!(chrome.active, 2);
+        assert_eq!(history(&chrome, 2), vec![Some(9)]);
+        assert_eq!(history(&chrome, 0), vec![None, Some(5)]);
     }
 
     #[test]
-    fn drained_active_push_is_tagged_with_the_active_app() {
+    fn a_cross_app_open_is_one_entry_and_one_back_returns_to_the_opener() {
         let mut chrome = nav_test_chrome();
-        chrome.set_active(3); // active app is now slot 3
+        chrome.set_active(1); // the source app, e.g. Dave
 
-        // An app self-pushing carries only its token; the chrome fills in the
-        // active slot on drain.
-        navigate(
-            &mut chrome,
-            vec![NavRequest::PushToActive(ActiveNavEntry::new(Rc::new(7u32)))],
-        );
-
-        let nav = chrome.global_nav.as_ref().unwrap();
-        assert_eq!(nav.len(), 3, "[app0, app3, app3-route]");
-        assert_eq!(
-            nav.top().app,
-            AppId(3),
-            "the self-push inherited the active slot"
-        );
-        assert_eq!(nav.top().token.downcast_ref::<u32>(), Some(&7));
-        assert_eq!(chrome.active, 3);
-    }
-
-    #[test]
-    fn drained_active_replace_is_tagged_with_the_active_app() {
-        let mut chrome = nav_test_chrome();
-        chrome.set_active(2); // [app0, app2], active app2
-
-        navigate(
-            &mut chrome,
-            vec![NavRequest::ReplaceActive(ActiveNavEntry::new(Rc::new(
-                9u32,
-            )))],
-        );
-        // route_to_replaced defers the drop until the transition completes.
-        chrome
-            .global_nav
-            .as_mut()
-            .unwrap()
-            .reconcile(NavAction::Navigated);
-
-        let nav = chrome.global_nav.as_ref().unwrap();
-        assert_eq!(nav.len(), 1, "replace collapses the history to the new top");
-        assert_eq!(
-            nav.top().app,
-            AppId(2),
-            "the replacement kept the active slot"
-        );
-        assert_eq!(nav.top().token.downcast_ref::<u32>(), Some(&9));
-        assert_eq!(chrome.active, 2);
-    }
-
-    #[test]
-    fn note_route_push_adds_exactly_one_entry() {
-        let mut chrome = nav_test_chrome();
-        chrome.set_active(1); // the source app, e.g. Dave: [app0, app1]
-
-        // A cross-app open lands the target's routed entry directly — the matched
-        // pair to `drained_active_push_is_tagged_with_the_active_app`, which is the
-        // switch-then-self-push shape that took two back presses.
         chrome.push_app_route(2, Rc::new(7u32));
 
-        let nav = chrome.global_nav.as_ref().unwrap();
-        assert_eq!(nav.len(), 3, "[app0, app1, app2-route]: one entry, not two");
-        assert_eq!(
-            nav.top().app,
-            AppId(2),
-            "tagged with the target, not the source"
-        );
-        assert_eq!(nav.top().token.downcast_ref::<u32>(), Some(&7));
+        assert_eq!(history(&chrome, 2), vec![None, Some(7)], "one entry");
+        assert_eq!(history(&chrome, 1), vec![None], "none on the source");
         assert_eq!(chrome.active, 2);
         assert!(chrome.is_opened(2), "the opened app is marked opened");
+        assert_eq!(chrome.active_nav().unwrap().hop(), Some(AppId(1)));
 
-        // ONE back returns to the source app.
-        chrome.global_go_back();
-        chrome
-            .global_nav
-            .as_mut()
-            .unwrap()
-            .reconcile(NavAction::Returned(ReturnType::Click));
-        chrome.sync_active_from_nav();
-
-        assert_eq!(chrome.global_nav.as_ref().unwrap().top().app, AppId(1));
-        assert_eq!(
-            chrome.active, 1,
-            "one back press crossed back to the source"
-        );
+        // ONE chrome back pops the entry and returns to the source.
+        let popped = chrome.step_back();
+        assert_eq!(chrome.active, 1);
+        assert_eq!(history(&chrome, 2), vec![None], "the open's entry went");
+        assert_eq!(popped.len(), 1, "and comes back for cleanup");
+        assert_eq!(popped[0].app, AppId(2));
+        assert_eq!(popped[0].token.downcast_ref::<u32>(), Some(&7));
+        assert_eq!(chrome.app_nav(2).unwrap().opener, None);
     }
 
     #[test]
-    fn global_back_and_forward_cross_app_boundaries() {
+    fn an_open_that_pushes_nothing_still_returns_to_the_opener() {
         let mut chrome = nav_test_chrome();
-        chrome.set_active(1); // [app0, app1], active app1
+        chrome.set_active(2);
+        navigate(&mut chrome, vec![push(7)]); // a card, say
+        land_slide(&mut chrome);
 
-        // A back navigation only pops once the transition completes; the chrome
+        // Dave's `s` on the card: Dave opens a session, pushing nothing.
+        chrome.set_active(1);
+        chrome.remember_opener(2);
+        assert_eq!(chrome.active_nav().unwrap().hop(), Some(AppId(2)));
+
+        assert!(chrome.step_back().is_empty(), "nothing to pop");
+        assert_eq!(chrome.active, 2);
+        assert_eq!(history(&chrome, 2), vec![None, Some(7)], "on the card");
+        assert_eq!(history(&chrome, 1), vec![None]);
+    }
+
+    #[test]
+    fn the_chrome_back_steps_in_app_until_the_opener_depth() {
+        let mut chrome = nav_test_chrome();
+        chrome.set_active(1);
+        chrome.push_app_route(2, Rc::new(7u32));
+        land_slide(&mut chrome);
+        navigate(&mut chrome, vec![push(8)]);
+        land_slide(&mut chrome);
+        assert_eq!(
+            chrome.active_nav().unwrap().hop(),
+            None,
+            "deeper than the open"
+        );
+
+        assert!(chrome.step_back().is_empty());
+        land_back(&mut chrome);
+        assert_eq!(chrome.active, 2, "an in-app back");
+        assert_eq!(history(&chrome, 2), vec![None, Some(7)]);
+
+        let popped = chrome.step_back();
+        assert_eq!(popped.len(), 1);
+        assert_eq!(chrome.active, 1, "then the return");
+    }
+
+    #[test]
+    fn an_apps_own_back_below_the_open_forgets_the_opener() {
+        let mut chrome = nav_test_chrome();
+        chrome.set_active(1);
+        chrome.push_app_route(2, Rc::new(7u32));
+        land_slide(&mut chrome);
+
+        navigate(&mut chrome, vec![NavRequest::Back]);
+        assert_eq!(chrome.app_nav(2).unwrap().opener, None, "forgotten at once");
+        land_back(&mut chrome);
+
+        // Pushing back up to the open's depth doesn't bring the return back.
+        navigate(&mut chrome, vec![push(8)]);
+        land_slide(&mut chrome);
+        assert_eq!(chrome.active_nav().unwrap().hop(), None);
+        assert!(chrome.step_back().is_empty());
+        land_back(&mut chrome);
+        assert_eq!(chrome.active, 2);
+    }
+
+    #[test]
+    fn back_and_forward_stay_in_the_app() {
+        let mut chrome = nav_test_chrome();
+        chrome.set_active(1);
+        navigate(&mut chrome, vec![push(7)]);
+        land_slide(&mut chrome);
+
+        // A back only pops once the transition completes; the chrome
         // reconciles that in `nav_frame`, so drive the same reconcile here.
         navigate(&mut chrome, vec![NavRequest::Back]);
-        chrome
-            .global_nav
-            .as_mut()
-            .unwrap()
-            .reconcile(NavAction::Returned(ReturnType::Click));
-        chrome.sync_active_from_nav();
+        land_back(&mut chrome);
+        assert_eq!(history(&chrome, 1), vec![None]);
+        assert_eq!(chrome.active, 1);
 
-        let nav = chrome.global_nav.as_ref().unwrap();
-        assert_eq!(nav.top().app, AppId(0));
-        assert_eq!(chrome.active, 0, "back crossed the boundary to app0");
+        // At the root, a back goes nowhere: never into the app before.
+        navigate(&mut chrome, vec![NavRequest::Back]);
+        assert!(!stack(&chrome, 1).returning());
+        assert_eq!(chrome.active, 1);
 
-        // Forward replays app1 and re-derives it as active immediately.
+        // Forward replays 7, in the same app.
         navigate(&mut chrome, vec![NavRequest::Forward]);
-        let nav = chrome.global_nav.as_ref().unwrap();
-        assert_eq!(nav.top().app, AppId(1));
-        assert_eq!(chrome.active, 1, "forward crossed back to app1");
+        assert_eq!(history(&chrome, 1), vec![None, Some(7)]);
+        assert_eq!(chrome.active, 1);
     }
 
     #[test]
-    fn drained_prune_is_tagged_with_the_active_app_and_rederives_active() {
+    fn a_drained_prune_touches_only_the_active_apps_stack() {
         let mut chrome = nav_test_chrome();
-        // [app0, app2:7, app1:7] — the same token value under two apps.
-        navigate(
-            &mut chrome,
-            vec![
-                NavRequest::Push(ChromeNavEntry::new(AppId(2), Rc::new(7u32))),
-                NavRequest::Push(ChromeNavEntry::new(AppId(1), Rc::new(7u32))),
-            ],
-        );
+        // The same token value under two apps.
+        chrome.set_active(2);
+        navigate(&mut chrome, vec![push(7)]);
         land_slide(&mut chrome);
-        assert_eq!(chrome.active, 1);
+        chrome.set_active(1);
+        navigate(&mut chrome, vec![push(7)]);
+        land_slide(&mut chrome);
 
         let removed = chrome.apply_nav_requests(vec![prune(7)]);
 
-        // Only app1's entry went: the prune was tagged with the active slot.
-        assert_eq!(history(&chrome), vec![entry(0, None), entry(2, Some(7))]);
+        assert_eq!(history(&chrome, 1), vec![None]);
+        assert_eq!(history(&chrome, 2), vec![None, Some(7)]);
         assert_eq!(removed.len(), 1, "the removed entry comes back for cleanup");
         assert_eq!(removed[0].app, AppId(1));
         assert_eq!(removed[0].token.downcast_ref::<u32>(), Some(&7));
 
-        // The top was removed, so the landing is instant and on app2's entry.
-        let nav = chrome.global_nav.as_ref().unwrap();
+        // The top was removed, so the landing is instant.
+        let nav = stack(&chrome, 1);
         assert!(!nav.navigating() && !nav.returning());
-        assert_eq!(chrome.active, 2, "active follows the new top across apps");
-        assert!(chrome.pending_prunes.is_empty());
+        assert_eq!(chrome.active, 1);
     }
 
     #[test]
     fn prune_during_a_forward_slide_waits_for_it_to_land() {
         let mut chrome = nav_test_chrome();
         chrome.set_active(1);
-        land_slide(&mut chrome);
 
         // A push starts a slide, and the prune in the same batch must wait.
-        let removed = chrome.apply_nav_requests(vec![
-            NavRequest::PushToActive(ActiveNavEntry::new(Rc::new(7u32))),
-            prune(7),
-        ]);
+        let removed = chrome.apply_nav_requests(vec![push(7), prune(7)]);
         assert!(removed.is_empty());
-        assert_eq!(
-            history(&chrome),
-            vec![entry(0, None), entry(1, None), entry(1, Some(7))]
-        );
-        assert_eq!(chrome.pending_prunes.len(), 1);
+        assert_eq!(history(&chrome, 1), vec![None, Some(7)]);
+        assert_eq!(chrome.active_nav().unwrap().pending_prunes.len(), 1);
 
         // A frame with no requests while still sliding changes nothing.
         assert!(chrome.apply_nav_requests(Vec::new()).is_empty());
-        assert_eq!(chrome.pending_prunes.len(), 1);
+        assert_eq!(chrome.active_nav().unwrap().pending_prunes.len(), 1);
 
         // Once the slide lands, the next drain applies the held prune.
         land_slide(&mut chrome);
         let removed = chrome.apply_nav_requests(Vec::new());
         assert_eq!(removed.len(), 1);
-        assert_eq!(history(&chrome), vec![entry(0, None), entry(1, None)]);
-        assert!(chrome.pending_prunes.is_empty());
-        assert_eq!(chrome.active, 1);
+        assert_eq!(history(&chrome, 1), vec![None]);
+        assert!(chrome.active_nav().unwrap().pending_prunes.is_empty());
     }
 
     #[test]
     fn prune_during_a_back_slide_waits_for_the_pop() {
         let mut chrome = nav_test_chrome();
         chrome.set_active(1);
-        navigate(
-            &mut chrome,
-            vec![
-                NavRequest::PushToActive(ActiveNavEntry::new(Rc::new(7u32))),
-                NavRequest::PushToActive(ActiveNavEntry::new(Rc::new(8u32))),
-            ],
-        );
+        navigate(&mut chrome, vec![push(7), push(8)]);
         land_slide(&mut chrome);
 
         // Back off 8 and prune 7 in one batch: the prune waits for the pop.
         navigate(&mut chrome, vec![NavRequest::Back, prune(7)]);
         assert_eq!(
-            history(&chrome),
-            vec![
-                entry(0, None),
-                entry(1, None),
-                entry(1, Some(7)),
-                entry(1, Some(8))
-            ],
+            history(&chrome, 1),
+            vec![None, Some(7), Some(8)],
             "nothing moves under egui-nav while the back slides"
         );
 
-        chrome
-            .global_nav
-            .as_mut()
-            .unwrap()
-            .reconcile(NavAction::Returned(ReturnType::Click));
+        land_back(&mut chrome);
         let removed = chrome.apply_nav_requests(Vec::new());
 
-        // 8 was popped by the back, then 7 pruned: one step lands on app1's root.
+        // 8 was popped by the back, then 7 pruned: one step lands on the root.
         assert_eq!(removed.len(), 1);
-        assert_eq!(history(&chrome), vec![entry(0, None), entry(1, None)]);
-        assert_eq!(chrome.active, 1);
+        assert_eq!(history(&chrome, 1), vec![None]);
     }
 
     #[test]
     fn a_held_prune_applies_before_the_batch_it_meets() {
         let mut chrome = nav_test_chrome();
         chrome.set_active(1);
-        land_slide(&mut chrome);
 
         // Push 7 and prune it in one batch: the prune waits for the slide.
-        navigate(
-            &mut chrome,
-            vec![
-                NavRequest::PushToActive(ActiveNavEntry::new(Rc::new(7u32))),
-                prune(7),
-            ],
-        );
+        navigate(&mut chrome, vec![push(7), prune(7)]);
         land_slide(&mut chrome);
 
         // The next batch pushes a fresh 7. The held prune was raised before
         // it, so it takes only the old 7; applied after the batch, it would
         // take the new one too.
-        let removed = chrome.apply_nav_requests(vec![NavRequest::PushToActive(
-            ActiveNavEntry::new(Rc::new(7u32)),
-        )]);
+        let removed = chrome.apply_nav_requests(vec![push(7)]);
         assert_eq!(removed.len(), 1, "only the old 7 went");
-        assert_eq!(
-            history(&chrome),
-            vec![entry(0, None), entry(1, None), entry(1, Some(7))]
-        );
-        assert!(chrome.pending_prunes.is_empty());
+        assert_eq!(history(&chrome, 1), vec![None, Some(7)]);
+        assert!(chrome.active_nav().unwrap().pending_prunes.is_empty());
+    }
+
+    #[test]
+    fn dropping_an_apps_nav_resets_it_and_forgets_openers_naming_it() {
+        let mut chrome = nav_test_chrome();
+        chrome.set_active(1);
+        navigate(&mut chrome, vec![push(7)]);
+        land_slide(&mut chrome);
+        chrome.push_app_route(2, Rc::new(8u32));
+
+        let dropped = chrome.drop_app_nav(1);
+
+        assert_eq!(history(&chrome, 1), vec![None]);
+        let tokens: Vec<_> = dropped
+            .iter()
+            .map(|e| (e.app, e.token.downcast_ref::<u32>().copied()))
+            .collect();
+        assert_eq!(tokens, vec![(AppId(1), None), (AppId(1), Some(7))]);
+        assert_eq!(chrome.app_nav(2).unwrap().opener, None, "names app 1");
     }
 
     // Driven through the real egui-nav, a drag included. Release only, as
@@ -730,35 +845,39 @@ mod global_nav_tests {
     mod slide_tests {
         use super::*;
 
-        /// A bare chrome's global history drawn through the real egui-nav, one
-        /// harness step per frame, as the chrome's frame draws it: `nav_frame`,
-        /// then record what it reported, then drain this frame's requests.
+        /// A bare chrome's slot-1 stack drawn through the real egui-nav, one
+        /// harness step per frame, as the chrome's frame draws it:
+        /// `nav_frame`, then record what it reported, then drain this frame's
+        /// requests.
         struct DragRig {
             chrome: Chrome,
             /// Requests to drain at the end of the next frame, as an app would
             /// have queued them while rendering.
             requests: Vec<NavRequest>,
-            /// Entries a completed back popped inside `nav_frame`.
-            popped: Vec<ChromeNavEntry>,
+            /// Tokens a completed back popped inside `nav_frame`.
+            popped: Vec<Rc<dyn Any>>,
             /// Entries a drained prune removed.
-            removed: Vec<ChromeNavEntry>,
+            removed: Vec<TakenEntry>,
         }
 
         fn drag_rig_frame(ui: &mut egui::Ui, rig: &mut DragRig) {
-            let nav = rig.chrome.global_nav.as_mut().unwrap();
-            let frame =
-                notedeck::nav_frame(ui, egui::Id::unique("drag_rig"), nav, true, |_, _, _| {
-                    egui_nav::RouteResponse {
-                        response: (),
-                        can_take_drag_from: Vec::new(),
-                    }
-                });
-            rig.chrome.global_nav_in_flight = frame.in_flight;
+            let nav = rig.chrome.active_nav_mut().unwrap();
+            let frame = notedeck::nav_frame(
+                ui,
+                egui::Id::unique("drag_rig"),
+                &mut nav.stack,
+                true,
+                |_, _, _| egui_nav::RouteResponse {
+                    response: (),
+                    can_take_drag_from: Vec::new(),
+                },
+            );
+            nav.in_flight = frame.in_flight;
             if let Some(notedeck::NavStackEvent::Popped {
-                route: Some(entry), ..
+                route: Some(token), ..
             }) = frame.event
             {
-                rig.popped.push(entry);
+                rig.popped.push(token);
             }
             let requests = std::mem::take(&mut rig.requests);
             let removed = rig.chrome.apply_nav_requests(requests);
@@ -782,14 +901,9 @@ mod global_nav_tests {
         #[test]
         fn a_prune_during_a_drag_back_waits_and_the_drag_lands_one_step_back() {
             let mut chrome = nav_test_chrome();
-            // [app0, app1:7, app1:8]: the user drags 8 back towards 7.
-            navigate(
-                &mut chrome,
-                vec![
-                    NavRequest::Push(ChromeNavEntry::new(AppId(1), Rc::new(7u32))),
-                    NavRequest::Push(ChromeNavEntry::new(AppId(1), Rc::new(8u32))),
-                ],
-            );
+            chrome.set_active(1);
+            // [root, 7, 8]: the user drags 8 back towards 7.
+            navigate(&mut chrome, vec![push(7), push(8)]);
             let rig = DragRig {
                 chrome,
                 requests: Vec::new(),
@@ -803,8 +917,8 @@ mod global_nav_tests {
 
             // Let the push's slide land.
             harness.run_steps(120);
-            let nav = harness.state().chrome.global_nav.as_ref().unwrap();
-            assert!(!nav.navigating() && !harness.state().chrome.global_nav_in_flight);
+            let nav = harness.state().chrome.active_nav().unwrap();
+            assert!(!nav.stack.navigating() && !nav.in_flight);
 
             // Press and drag rightwards: a drag-back, which sets neither of the
             // stack's own transition flags.
@@ -815,12 +929,9 @@ mod global_nav_tests {
                 pos.x += 20.0;
                 pointer(&mut harness, egui::Event::PointerMoved(pos));
             }
-            let nav = harness.state().chrome.global_nav.as_ref().unwrap();
-            assert!(!nav.navigating() && !nav.returning());
-            assert!(
-                harness.state().chrome.global_nav_in_flight,
-                "egui-nav reports the drag"
-            );
+            let nav = harness.state().chrome.active_nav().unwrap();
+            assert!(!nav.stack.navigating() && !nav.stack.returning());
+            assert!(nav.in_flight, "egui-nav reports the drag");
 
             // The app prunes the dragged entry this frame. It must wait: the
             // drag is still drawing it.
@@ -828,11 +939,12 @@ mod global_nav_tests {
             pos.x += 20.0;
             pointer(&mut harness, egui::Event::PointerMoved(pos));
             assert_eq!(
-                history(&harness.state().chrome),
-                vec![entry(0, None), entry(1, Some(7)), entry(1, Some(8))],
+                history(&harness.state().chrome, 1),
+                vec![None, Some(7), Some(8)],
                 "nothing moves under egui-nav mid-drag"
             );
-            assert_eq!(harness.state().chrome.pending_prunes.len(), 1);
+            let nav = harness.state().chrome.active_nav().unwrap();
+            assert_eq!(nav.pending_prunes.len(), 1);
 
             // Drag past the return threshold, release, and let it land.
             for _ in 0..10 {
@@ -846,16 +958,13 @@ mod global_nav_tests {
             // found it only on the forward stack, where it drops it uncleaned
             // (the pop is what cleans it).
             let state = harness.state();
-            assert_eq!(
-                history(&state.chrome),
-                vec![entry(0, None), entry(1, Some(7))]
-            );
+            assert_eq!(history(&state.chrome, 1), vec![None, Some(7)]);
             assert_eq!(state.popped.len(), 1);
-            assert_eq!(state.popped[0].token.downcast_ref::<u32>(), Some(&8));
+            assert_eq!(state.popped[0].downcast_ref::<u32>(), Some(&8));
             assert!(state.removed.is_empty());
-            assert!(state.chrome.pending_prunes.is_empty());
-            let nav = state.chrome.global_nav.as_ref().unwrap();
-            assert!(!nav.can_go_forward(), "the pruned 8 can't be redone");
+            let nav = state.chrome.active_nav().unwrap();
+            assert!(nav.pending_prunes.is_empty());
+            assert!(!nav.stack.can_go_forward(), "the pruned 8 can't be redone");
         }
     }
 }
@@ -881,7 +990,7 @@ mod cleanup_tests {
             AppResponse::none()
         }
 
-        fn cleanup_nav(&mut self, _ctx: &mut AppContext<'_>, token: &Rc<dyn std::any::Any>) {
+        fn cleanup_nav(&mut self, _ctx: &mut AppContext<'_>, token: &Rc<dyn Any>) {
             if let Some(token) = token.downcast_ref::<u32>() {
                 self.cleaned.borrow_mut().push(*token);
             }
@@ -889,7 +998,7 @@ mod cleanup_tests {
     }
 
     /// A notedeck to lend an `AppContext`, and a bare chrome whose slot 0 is
-    /// a [`CleanupRecorder`] sharing `cleaned`.
+    /// a [`CleanupRecorder`] sharing `cleaned`, and slot 1 a blank app.
     struct CleanupFixture {
         _dir: tempfile::TempDir,
         notedeck: Notedeck,
@@ -909,10 +1018,10 @@ mod cleanup_tests {
             let recorder = CleanupRecorder {
                 cleaned: cleaned.clone(),
             };
-            let chrome = Chrome::without_context(vec![NotedeckApp::Other(
-                "recorder".into(),
-                Box::new(recorder),
-            )]);
+            let chrome = Chrome::without_context(vec![
+                NotedeckApp::Other("recorder".into(), Box::new(recorder)),
+                NotedeckApp::Other("blank".into(), Box::new(Blank)),
+            ]);
             Self {
                 _dir: dir,
                 notedeck,
@@ -922,18 +1031,18 @@ mod cleanup_tests {
         }
 
         /// Push the recorder's `tokens` in order and land the slide:
-        /// `[app0, 0:t0, 0:t1, ..]`.
+        /// `[root, t0, t1, ..]`.
         fn push(&mut self, tokens: &[u32]) {
             let requests = tokens
                 .iter()
-                .map(|t| NavRequest::Push(ChromeNavEntry::new(AppId(0), Rc::new(*t))))
+                .map(|t| NavRequest::Push(Rc::new(*t)))
                 .collect();
             let removed = self.chrome.apply_nav_requests(requests);
             assert!(removed.is_empty());
             self.chrome
-                .global_nav
-                .as_mut()
+                .active_nav_mut()
                 .unwrap()
+                .stack
                 .reconcile(NavAction::Navigated);
         }
 
@@ -941,19 +1050,18 @@ mod cleanup_tests {
         /// the chrome's `render` does.
         fn drain_prune(&mut self, dead: u32) {
             let mut ctx = self.notedeck.app_context();
-            ctx.navigator
-                .remove_active_routes(move |t: &u32| *t == dead);
+            ctx.navigator.remove_routes(move |t: &u32| *t == dead);
             self.chrome.drain_nav_requests(&mut ctx);
         }
 
         fn tokens(&self) -> Vec<Option<u32>> {
             self.chrome
-                .global_nav
-                .as_ref()
+                .app_nav(0)
                 .unwrap()
+                .stack
                 .routes()
                 .iter()
-                .map(|e| e.token.downcast_ref::<u32>().copied())
+                .map(|token| token.downcast_ref::<u32>().copied())
                 .collect()
         }
 
@@ -984,7 +1092,7 @@ mod cleanup_tests {
 
         // The dropdown jumps from 9 straight back to 7.
         let mut ctx = fx.notedeck.app_context();
-        fx.chrome.global_go_to(&mut ctx, 1);
+        fx.chrome.go_to(&mut ctx, 1);
         drop(ctx);
 
         assert_eq!(fx.tokens(), vec![None, Some(7)]);
@@ -999,5 +1107,20 @@ mod cleanup_tests {
         fx.drain_prune(8);
         assert_eq!(fx.cleaned(), vec![9, 8], "no double clean");
         assert_eq!(fx.tokens(), vec![None, Some(7)]);
+    }
+
+    #[test]
+    fn the_opener_return_cleans_the_entry_the_open_pushed() {
+        let mut fx = CleanupFixture::new();
+        fx.chrome.set_active(1);
+        fx.chrome.push_app_route(0, Rc::new(7u32));
+
+        let mut ctx = fx.notedeck.app_context();
+        fx.chrome.go_back(&mut ctx);
+        drop(ctx);
+
+        assert_eq!(fx.chrome.active, 1);
+        assert_eq!(fx.tokens(), vec![None]);
+        assert_eq!(fx.cleaned(), vec![7]);
     }
 }

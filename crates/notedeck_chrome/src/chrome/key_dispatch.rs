@@ -271,7 +271,7 @@ impl Chrome {
         Settle {
             open_pending: self.pending_open.is_some(),
             nav_queued: !ctx.navigator.is_empty(),
-            nav_sliding: self.global_nav_sliding(),
+            nav_sliding: self.nav_sliding(),
             owner_active,
             available: self.key_tool_available(tools, tool),
             has_current: step.has_current(self.current_ref()),

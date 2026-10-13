@@ -127,6 +127,9 @@ Asked_4b58 = {"["}Àskéd{"]"}
 # Dave session inspector permissions row: prompts accepted without asking
 Auto-accepted_b9fd = {"["}Àútó-àççéptéd{"]"}
 
+# Tooltip on the back button when it returns to the app that opened this one
+Back_to__app_768f = {"["}Bàçk tó {$app}{"]"}
+
 # Dave session inspector section: background tasks, monitors, wake-ups and crons
 Background_f543 = {"["}Bàçkgróúñd{"]"}
 

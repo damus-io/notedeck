@@ -1,6 +1,7 @@
 //! The chrome's app roster: adding apps, the opened-app bitset, finding and
 //! switching to a specific app, and closing / cycling the opened app tabs.
 
+use super::nav::{AppNav, TakenEntry};
 use super::{Chrome, MAX_APPS};
 use crate::app::NotedeckApp;
 use crate::ChromeOptions;
@@ -14,6 +15,7 @@ impl Chrome {
     /// Append `app` to the roster, returning its slot.
     pub fn add_app(&mut self, app: NotedeckApp) -> notedeck::AppId {
         self.apps.push(app);
+        self.app_navs.push(AppNav::new());
         // `opened` is a fixed bitset — the new app's bit is already clear.
         notedeck::AppId(self.apps.len() - 1)
     }
@@ -123,28 +125,35 @@ impl Chrome {
         }
     }
 
-    /// Close the active app's tab and switch to the nearest opened app.
-    /// No-op if it's the only opened app — at least one app must stay open.
-    /// Used by Ctrl+W.
-    pub(super) fn close_active_app(&mut self) {
+    /// Close the active app's tab, drop its nav stack (see
+    /// [`drop_app_nav`](Chrome::drop_app_nav)), and switch to the nearest
+    /// opened app. No-op if it's the only opened app — at least one app must
+    /// stay open. Used by Ctrl+W.
+    ///
+    /// Returns the dropped entries for
+    /// [`cleanup_entries`](Chrome::cleanup_entries).
+    #[must_use = "a dropped entry that skips its app's cleanup_nav leaks what its route opened"]
+    pub(super) fn close_active_app(&mut self) -> Vec<TakenEntry> {
         let n = self.apps.len();
         if n == 0 {
-            return;
+            return Vec::new();
         }
         // at least one app must remain open
         if self.opened_count() <= 1 {
-            return;
+            return Vec::new();
         }
         let active = self.active.clamp(0, n as i32 - 1) as usize;
         self.clear_opened(active);
+        let dropped = self.drop_app_nav(active);
         // switch to the nearest opened app after `active`, wrapping
         for offset in 1..=n {
             let idx = (active + offset) % n;
             if self.is_opened(idx) {
                 self.set_active(idx as i32);
-                return;
+                break;
             }
         }
+        dropped
     }
 
     /// Cycle the active app to the next (`forward`) or previous opened app,

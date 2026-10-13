@@ -108,8 +108,8 @@ fn is_headway_note(ctx: &mut AppContext, note_id: nostrdb_net::NoteId) -> bool {
         .unwrap_or(false)
 }
 
-/// Open an inline headway board/issue click in the Headway app as ONE global
-/// history entry, so a single back press returns to the source app.
+/// Open an inline headway board/issue click in the Headway app as ONE entry on
+/// its stack, so a single chrome back returns to the source app.
 ///
 /// Headway mints the route itself (switching its active board eagerly); if it
 /// can't — e.g. the note hasn't resolved to a board yet — fall back to a plain
@@ -191,6 +191,7 @@ fn open_note_in_owning_app(
     let opened = switch_to_owning_app(chrome, ctx, note_id, msg);
     if opened && chrome.active != from {
         chrome.app_focus.land_unfocused();
+        chrome.remember_opener(from);
     }
     opened
 }
@@ -454,7 +455,9 @@ pub(super) fn chrome_handle_app_action(
             #[cfg(feature = "dave")]
             if let notedeck::NoteAction::Context(ref context) = note_action {
                 if let notedeck::NoteContextSelection::SummarizeThread(note_id) = context.action {
+                    let from = chrome.active;
                     chrome.switch_to_dave();
+                    chrome.remember_opener(from);
                     if let Some(dave) = chrome.get_dave_app() {
                         dave.summarize_thread(note_id);
                     }
@@ -470,7 +473,11 @@ pub(super) fn chrome_handle_app_action(
                 }
             }
 
+            // The note opens in a column, pushing nothing onto Columns' own
+            // stack; the chrome's back still returns to the app it came from.
+            let from = chrome.active;
             chrome.switch_to_columns();
+            chrome.remember_opener(from);
             let Some(columns) = chrome.get_columns_app() else {
                 return;
             };
@@ -574,10 +581,9 @@ fn columns_route_to_profile(
 #[cfg(all(test, feature = "dave", feature = "headway"))]
 mod open_tests {
     use super::*;
-    use egui_nav::{NavAction, ReturnType};
     use nostrdb::{Filter, IngestMetadata, NoteBuilder};
     use nostrdb_net::FullKeypair;
-    use notedeck::{AppId, NavRequest, Notedeck, OpenUri};
+    use notedeck::{AppId, Notedeck, OpenUri};
     use notedeck_dave::session_events::AI_SESSION_STATE_KIND;
 
     /// The session the open names: its kind-31988 d-tag.
@@ -672,10 +678,11 @@ mod open_tests {
     /// session nothing has resolved yet — no chip for it drawn, so Dave's
     /// session cache has only just subscribed and the open's own resolve
     /// misses (see `RealtimeCache::advance`). The chrome holds it rather than
-    /// dropping it, and the next frame's retry lands it in Dave as ONE
-    /// global-history entry, Dave holds the session and the message for its
-    /// next update, and one back returns to Headway. The Headway side (exactly
-    /// one open, no history entry of its own) is
+    /// dropping it, and the next frame's retry lands it in Dave with Headway
+    /// as its opener and no entry on either stack, Dave holds the session and
+    /// the message for its next update, and one chrome back returns to
+    /// Headway. The Headway side (exactly one open, no history entry of its
+    /// own) is
     /// `shift_s_in_the_queue_opens_the_session_asking_for_a_review`.
     #[tokio::test]
     async fn a_cold_open_is_held_until_it_resolves_then_lands_in_dave() {
@@ -692,7 +699,8 @@ mod open_tests {
 
         let headway = chrome.headway_slot().expect("headway in the roster");
         chrome.set_active(headway as i32);
-        let before = chrome.global_nav.as_ref().expect("nav").len();
+        let depth = |chrome: &Chrome, slot: usize| chrome.app_nav(slot).expect("nav").stack.len();
+        let before = depth(&chrome, headway);
 
         let open = OpenUri {
             reference: agentium_core::wordid::session_ref(SESSION_ID),
@@ -704,7 +712,7 @@ mod open_tests {
 
         // The cold resolve missed: held, nothing routed yet.
         assert!(chrome.pending_open.is_some(), "the unresolved open is held");
-        assert_eq!(chrome.global_nav.as_ref().expect("nav").len(), before);
+        assert_eq!(depth(&chrome, headway), before);
         assert_eq!(chrome.active, headway as i32);
 
         // The next frame's retry finds the seeded session and routes it.
@@ -718,10 +726,11 @@ mod open_tests {
             .iter()
             .position(|app| matches!(app, crate::app::NotedeckApp::Dave(_)))
             .expect("dave in the roster");
-        let nav = chrome.global_nav.as_ref().expect("nav");
-        assert_eq!(nav.len(), before + 1, "the open is one history entry");
-        assert_eq!(nav.top().app, AppId(dave));
         assert_eq!(chrome.active, dave as i32);
+        assert_eq!(depth(&chrome, dave), 1, "Dave's open pushes nothing");
+        assert_eq!(depth(&chrome, headway), before);
+        let nav = chrome.active_nav().expect("nav");
+        assert_eq!(nav.hop(), Some(AppId(headway)), "Headway is the opener");
 
         let pending = chrome
             .get_dave_app()
@@ -730,25 +739,17 @@ mod open_tests {
         assert_eq!(pending.note, state_note);
         assert_eq!(pending.msg.as_deref(), Some(MSG));
 
-        // Later retries have nothing to do: still exactly one entry.
+        // Later retries have nothing to do: still no entry anywhere.
         frame_at(&egui_ctx, 2.0 / 60.0, |ui| {
             retry_pending_open(&mut chrome, &mut ctx, ui);
         });
-        assert_eq!(chrome.global_nav.as_ref().expect("nav").len(), before + 1);
+        assert_eq!(depth(&chrome, dave), 1);
+        assert_eq!(depth(&chrome, headway), before);
 
-        // One back returns to Headway. The pop lands once the slide does,
-        // which `nav_frame` reconciles; drive the same reconcile here.
-        let removed = chrome.apply_nav_requests(vec![NavRequest::Back]);
-        assert!(removed.is_empty(), "a back pops later, in nav_frame");
-        chrome
-            .global_nav
-            .as_mut()
-            .expect("nav")
-            .reconcile(NavAction::Returned(ReturnType::Click));
-        chrome.sync_active_from_nav();
-        let nav = chrome.global_nav.as_ref().expect("nav");
-        assert_eq!(nav.top().app, AppId(headway));
+        // One chrome back returns to Headway, with nothing to pop.
+        assert!(chrome.step_back().is_empty());
         assert_eq!(chrome.active, headway as i32);
+        assert_eq!(depth(&chrome, headway), before);
     }
 
     /// An open whose reference never resolves is retried through its window
@@ -768,7 +769,8 @@ mod open_tests {
 
         let headway = chrome.headway_slot().expect("headway in the roster");
         chrome.set_active(headway as i32);
-        let before = chrome.global_nav.as_ref().expect("nav").len();
+        let depth = |chrome: &Chrome| chrome.app_nav(headway).expect("nav").stack.len();
+        let before = depth(&chrome);
 
         let open = OpenUri {
             reference: agentium_core::wordid::session_ref("no-such-session-anywhere"),
@@ -811,7 +813,7 @@ mod open_tests {
         }
         retry_at(&mut chrome, &mut ctx, late);
         assert!(chrome.pending_open.is_none(), "given up");
-        assert_eq!(chrome.global_nav.as_ref().expect("nav").len(), before);
+        assert_eq!(depth(&chrome), before);
         assert_eq!(chrome.active, headway as i32);
     }
 }

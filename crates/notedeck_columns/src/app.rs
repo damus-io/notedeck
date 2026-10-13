@@ -691,30 +691,23 @@ impl Damus {
     }
 
     /// Open a deep-link for a cross-app navigation and return the token to push
-    /// onto the chrome's global history, or `None` if `action` names no navigable
+    /// onto Columns' chrome-owned stack, or `None` if `action` names no navigable
     /// route (only a note-open or a profile-open deep-links).
     ///
     /// This opens the route's subscription before pushing the entry. The
     /// freshly allocated identity is stored in the token to isolate its UI
     /// state and, for a thread route, its subscription
     /// owner. When the entry is popped, [`cleanup_nav`](notedeck::App::cleanup_nav)
-    /// releases that entry's route demand. `app` is the Columns chrome slot,
-    /// carried so a drill-in can push further deep-links onto the same app's
-    /// history.
+    /// releases that entry's route demand.
     pub fn open_deeplink(
         &mut self,
         ctx: &mut AppContext<'_>,
-        app: notedeck::AppId,
         action: &notedeck::NoteAction,
     ) -> Option<std::rc::Rc<dyn std::any::Any>> {
         let id = self.alloc_deeplink_id();
         let route = nav::open_deeplink_route(self, ctx, id, action)?;
         Some(std::rc::Rc::new(
-            crate::deeplink::ColumnsNavToken::DeepLink(crate::deeplink::DeepLink {
-                app,
-                route,
-                id,
-            }),
+            crate::deeplink::ColumnsNavToken::DeepLink(crate::deeplink::DeepLink { route, id }),
         ))
     }
 

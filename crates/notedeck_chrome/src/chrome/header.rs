@@ -1,5 +1,5 @@
 //! The desktop header strip across the top of the chrome frame: the
-//! browser-style global-history controls (history dropdown, back / forward
+//! browser-style history controls for the active app (history dropdown, back / forward
 //! chevrons) followed by one tab per opened app.
 
 use super::sidebar::app_label;
@@ -8,7 +8,7 @@ use super::sidebar::dave_button;
 use super::Chrome;
 use crate::app::NotedeckApp;
 use egui::{vec2, Color32, Label, Layout, Rect, RichText, Sense};
-use notedeck::{App, AppContext, Localization, NotedeckOptions, TabNotifications};
+use notedeck::{tr, App, AppContext, Localization, NotedeckOptions, TabNotifications};
 use notedeck_ui::app_images;
 use notedeck_ui::header::{paint_chevron, ChevronDir};
 use oot_bitset::bitset_get;
@@ -175,20 +175,27 @@ fn macos_traffic_light_inset(ctx: &AppContext, ui: &egui::Ui) -> f32 {
 /// Fixed slot size for a header nav button (history clock, back/forward chevron).
 const NAV_BTN_SIZE: egui::Vec2 = vec2(28.0, 30.0);
 
-/// Browser-style global-history controls drawn at the left of the chrome tab
-/// strip (matching the reference screenshot): a history dropdown (clock) listing
-/// the recent global-stack entries by title, then back / forward chevrons. The
-/// chevrons grey out when the stack can't move that way
-/// ([`NavStack::can_go_back`](notedeck::NavStack::can_go_back) /
-/// [`can_go_forward`](notedeck::NavStack::can_go_forward)). Clicks drive the
-/// global stack through [`Chrome::global_go_back`]/`global_go_forward`/`global_go_to`,
-/// exactly like the `Alt+←/→` keyboard and mouse-button shortcuts.
+/// Browser-style history controls drawn at the left of the chrome tab strip
+/// (matching the reference screenshot): a history dropdown (clock) listing the
+/// active app's stack by title, then back / forward chevrons. The chevrons
+/// grey out when the active app can't move that way: back is live while its
+/// stack can go back or an opener return applies (see `AppNav::hop`), forward
+/// while it can go forward. Clicks go through [`Chrome::go_back`] /
+/// [`Chrome::go_forward`] / [`Chrome::go_to`], exactly like the `Alt+←/→`
+/// keyboard and mouse-button shortcuts.
 fn chrome_nav_controls(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui::Ui) {
-    let (can_back, can_forward) = chrome
-        .global_nav
-        .as_ref()
-        .map(|nav| (nav.can_go_back(), nav.can_go_forward()))
-        .unwrap_or((false, false));
+    let active = chrome.active as usize;
+    let (can_back, can_forward, hop) = chrome
+        .active_nav()
+        .map(|nav| {
+            (
+                nav.stack.can_go_back(),
+                nav.stack.can_go_forward(),
+                nav.hop(),
+            )
+        })
+        .unwrap_or((false, false, None));
+    let can_back = can_back || hop.is_some();
 
     // History dropdown (clock). Its list is built lazily, only while open.
     let clock = nav_button_slot(ui, true);
@@ -199,34 +206,40 @@ fn chrome_nav_controls(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui:
         ui.visuals().text_color(),
     );
     // A click on the clock toggles the list; picking an entry closes it.
-    let mut jump_to: Option<usize> = None;
+    let mut picked: Option<HistoryPick> = None;
     egui::Popup::from_toggle_button_response(&clock.response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
         .show(|ui| {
             ui.set_min_width(220.0);
-            let Some(nav) = chrome.global_nav.as_ref() else {
+            let (Some(nav), Some(app)) = (chrome.active_nav(), chrome.apps.get(active)) else {
                 return;
             };
-            let routes = nav.routes();
+            let routes = nav.stack.routes();
             let current = routes.len() - 1;
             // Newest (current) entry first, like a browser history menu. Each
-            // entry's title comes from the app that owns it (falling back to the
-            // app label until apps push per-view tokens); clicking an older one
-            // jumps straight to it.
-            for (i, entry) in routes.iter().enumerate().rev() {
-                let Some(app) = chrome.apps.get(entry.app.slot()) else {
-                    continue;
-                };
+            // entry's title comes from the app (falling back to its label);
+            // clicking an older one jumps straight to it.
+            for (i, token) in routes.iter().enumerate().rev() {
                 let title = app
-                    .nav_title(&entry.token)
+                    .nav_title(token)
                     .unwrap_or_else(|| app_label(ctx.i18n, app));
                 if ui.selectable_label(i == current, title).clicked() && i != current {
-                    jump_to = Some(i);
+                    picked = Some(HistoryPick::Entry(i));
                 }
             }
+            // The app a cross-app open came from, last: where back goes.
+            let Some(opener) = hop.and_then(|hop| chrome.apps.get(hop.slot())) else {
+                return;
+            };
+            let label = app_label(ctx.i18n, opener);
+            if ui.selectable_label(false, format!("↩ {label}")).clicked() {
+                picked = Some(HistoryPick::Opener);
+            }
         });
-    if let Some(index) = jump_to {
-        chrome.global_go_to(ctx, index);
+    match picked {
+        Some(HistoryPick::Entry(index)) => chrome.go_to(ctx, index),
+        Some(HistoryPick::Opener) => chrome.go_back(ctx),
+        None => {}
     }
 
     ui.add_space(4.0);
@@ -239,8 +252,21 @@ fn chrome_nav_controls(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui:
         ChevronDir::Left,
         chevron_color(ui, can_back),
     );
-    if back.response.clicked() {
-        chrome.global_go_back();
+    let back_response = match hop.and_then(|hop| chrome.apps.get(hop.slot())) {
+        // Built only while hovered: the label allocates.
+        Some(opener) => back.response.on_hover_ui(|ui| {
+            let label = app_label(ctx.i18n, opener);
+            ui.label(tr!(
+                ctx.i18n,
+                "Back to {app}",
+                "Tooltip on the back button when it returns to the app that opened this one",
+                app = label.as_str()
+            ));
+        }),
+        None => back.response,
+    };
+    if back_response.clicked() {
+        chrome.go_back(ctx);
     }
 
     let fwd = nav_button_slot(ui, can_forward);
@@ -251,11 +277,19 @@ fn chrome_nav_controls(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui:
         chevron_color(ui, can_forward),
     );
     if fwd.response.clicked() {
-        chrome.global_go_forward();
+        chrome.go_forward();
     }
 
     // A little breathing room before the tabs.
     ui.add_space(8.0);
+}
+
+/// What a click in the history dropdown picked.
+enum HistoryPick {
+    /// The active app's back-stack entry at this index.
+    Entry(usize),
+    /// The opener row: return to the app a cross-app open came from.
+    Opener,
 }
 
 /// A header nav button's allocated slot: its response, and the rect the caller

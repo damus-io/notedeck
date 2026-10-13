@@ -9,7 +9,7 @@ use eframe::CreationContext;
 use notedeck::AppResponse;
 use notedeck::DrawerRouter;
 use notedeck::Error;
-use notedeck::{App, ChromeNavEntry, NavStack, Notedeck, NotedeckOptions};
+use notedeck::{App, Notedeck, NotedeckOptions};
 use notedeck_columns::Damus;
 use oot_bitset::{bitset_get, bitset_set};
 
@@ -61,7 +61,7 @@ pub use jumps::{JumpList, JUMP_BACK, JUMP_FORWARD, JUMP_LIST_CAP};
 pub use key_hints::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
 use keyboard::AnimState;
 pub use keymap_editor::{EDIT_KEYMAP, KEYMAP_TEMPLATE};
-use nav::{seed_global_nav, PendingPrune};
+use nav::AppNav;
 #[cfg(feature = "auto-update")]
 use update::poll_updater;
 use user_keymap::UserKeymap;
@@ -97,37 +97,21 @@ pub struct Chrome {
     pub repaint_causes: HashMap<egui::RepaintCause, u64>,
     nav: DrawerRouter,
 
-    /// The single, browser-style global navigation history spanning every app,
-    /// where back/forward can cross app boundaries. The chrome is its sole
-    /// mutator: apps request navigation via
-    /// [`AppContext::navigator`](notedeck::AppContext) and the chrome drains and
-    /// applies those requests each frame (see [`Chrome::apply_nav_requests`]).
-    ///
-    /// The stack top names the *active* app, so `active` is derived from it (see
-    /// [`Chrome::sync_active_from_nav`]) and rendered through
-    /// [`nav_frame`](notedeck::nav_frame) so app→app switches animate. Seeded
-    /// with the initial app's route at construction, so it is never `None` in
-    /// practice — the `Option` only lets the field be built before the first
-    /// route is known.
-    global_nav: Option<NavStack<ChromeNavEntry>>,
+    /// Each app's navigation, by slot: its own browser-style back / forward
+    /// stack, and the app a cross-app open came from (see [`AppNav`]). The
+    /// chrome is the sole mutator: apps request navigation via
+    /// [`AppContext::navigator`](notedeck::AppContext) and the chrome drains
+    /// and applies those requests to the active app's stack each frame (see
+    /// [`Chrome::apply_nav_requests`]). The active app's stack is drawn
+    /// through [`nav_frame`](notedeck::nav_frame), so slides inside an app
+    /// animate; an app switch is instant. One per entry of `apps`, pushed by
+    /// [`Chrome::add_app`].
+    app_navs: Vec<AppNav>,
 
     /// An [`AppAction::Open`](notedeck::AppAction::Open) whose reference didn't
     /// resolve on the frame it was raised, retried on the frames after it (see
     /// [`PendingOpen`]). At most one: a newer unresolved open replaces it.
     pending_open: Option<PendingOpen>,
-
-    /// Prunes ([`NavRequest::RemoveActive`](notedeck::NavRequest)) raised
-    /// while a `global_nav` slide was in flight, applied in order once it
-    /// lands (see [`Chrome::apply_nav_requests`]).
-    pending_prunes: Vec<PendingPrune>,
-
-    /// True when `global_nav`'s egui-nav transition was still moving at the
-    /// end of this frame's [`nav_frame`](notedeck::nav_frame): a slide, a
-    /// drag, or a released drag springing back (see
-    /// [`NavFrameResponse::in_flight`](notedeck::NavFrameResponse)). A
-    /// drag-back sets neither of the stack's own transition flags, so this is
-    /// what holds a prune over one.
-    global_nav_in_flight: bool,
 
     /// Resolves bare key presses against the active app's key scopes and the
     /// keymap, before the app renders (see [`Chrome::dispatch_keys`]).
@@ -337,7 +321,7 @@ impl Chrome {
         Ok(chrome)
     }
 
-    /// A chrome with no apps yet, its global nav seeded on slot 0 and the
+    /// A chrome with no apps yet, on slot 0, with the
     /// built-in keymap loaded. Every constructor starts here. `ctx` only
     /// feeds the updater.
     #[cfg_attr(not(feature = "auto-update"), allow(unused_variables))]
@@ -353,10 +337,8 @@ impl Chrome {
             soft_kb_anim_state: AnimState::default(),
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
-            global_nav: Some(seed_global_nav()),
+            app_navs: Vec::new(),
             pending_open: None,
-            pending_prunes: Vec::new(),
-            global_nav_in_flight: false,
             keys: KeyEngine::with_default_keymap(),
             key_hints: [0u16; MAX_APPS / 16],
             jumps: Default::default(),
@@ -375,8 +357,7 @@ impl Chrome {
         }
     }
 
-    /// A headless chrome running exactly `apps`, the first of them in front
-    /// as the global nav's root, so it shows without an app-switch slide.
+    /// A headless chrome running exactly `apps`, the first of them in front.
     /// For tests that drive one app through real chrome frames.
     pub fn new_headless_with_apps(
         notedeck: &mut Notedeck,
@@ -424,14 +405,19 @@ impl Chrome {
 
     /// Chrome-level keybindings — consumed before apps render,
     /// so apps can never intercept them.
-    fn handle_chrome_keybindings(&mut self, ctx: &egui::Context) {
+    fn handle_chrome_keybindings(
+        &mut self,
+        app_ctx: &mut notedeck::AppContext,
+        ctx: &egui::Context,
+    ) {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F11)) {
             self.toggle();
         }
 
         // Ctrl+W (Cmd+W on macOS) closes the active app's tab.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
-            self.close_active_app();
+            let dropped = self.close_active_app();
+            self.cleanup_entries(app_ctx, dropped);
         }
     }
 
@@ -516,15 +502,15 @@ impl notedeck::App for Chrome {
 
         // Chrome-level keybindings — consumed before apps render,
         // so apps can never intercept them.
-        self.handle_chrome_keybindings(ui.ctx());
+        self.handle_chrome_keybindings(ctx, ui.ctx());
 
         if let Some(action) = self.show(ctx, ui) {
             action.process(ctx, self, ui);
             self.nav.close();
         }
 
-        // Apply any navigation requests apps enqueued while rendering to the
-        // global history, then re-derive the active app.
+        // Apply any navigation requests the active app enqueued while
+        // rendering to its stack.
         self.drain_nav_requests(ctx);
 
         // With this frame's navigation applied, a macro waiting on it may
