@@ -81,6 +81,18 @@ pub struct AgentiumSessionCache {
 }
 
 impl AgentiumSessionCache {
+    /// The cache Dave's app runs: it seeds each account's fold on a worker
+    /// thread (see [`RealtimeCache::with_background_seed`](notedeck::RealtimeCache::with_background_seed)),
+    /// so the walk over every session-state revision doesn't stall the first
+    /// frames. Reads return `None` until it lands, and `waker` fires when it does.
+    /// [`Default`] seeds inline, which a test that pumps a fixed number of times
+    /// relies on.
+    pub fn with_background_seed(waker: notedeck::Waker) -> Self {
+        Self {
+            authors: notedeck::RealtimeCache::with_background_seed(waker),
+        }
+    }
+
     /// Advance `author`'s session fold and report the change — the per-frame pump
     /// called from Dave's `update`. Read-only: unlike the notebook/headway caches
     /// this does *not* fan [`fresh`](notedeck::PollResponse::fresh) out (Dave's PNS

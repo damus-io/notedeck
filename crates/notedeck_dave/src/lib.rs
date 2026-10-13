@@ -526,6 +526,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let directory_picker = DirectoryPicker::new();
 
+        // The session fold seeds on a worker and wakes us when it lands.
+        let session_cache =
+            session_cache::AgentiumSessionCache::with_background_seed(waker.clone());
+
         // Create IPC listener for external spawn-agent commands
         let ipc_listener = if ipc {
             ipc::create_listener(waker)
@@ -561,9 +565,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             available_backends,
             avatar,
             session_manager,
-            session_cache: std::rc::Rc::new(std::cell::RefCell::new(
-                session_cache::AgentiumSessionCache::default(),
-            )),
+            session_cache: std::rc::Rc::new(std::cell::RefCell::new(session_cache)),
             rate_limit: None,
             tools: Arc::new(tools),
             model_config,

@@ -30,9 +30,12 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
 use nostrdb_net::Pubkey;
+
+use crate::Waker;
 
 /// An app-owned reduction of one author's nostr events into renderable views.
 ///
@@ -123,6 +126,11 @@ struct CachedAuthor<R: Reducer> {
     /// subscription. Seeds don't enqueue (their keys are historical, not new
     /// ingests — see [`PollResponse::fresh`]).
     unsynced: Vec<NoteKey>,
+    /// The seed folding on a worker thread, for a cache built with
+    /// [`with_background_seed`](RealtimeCache::with_background_seed): the receiving
+    /// end of the one message the worker sends when its [`Reducer::fold`] returns.
+    /// `None` before the seed starts and after it lands.
+    seeding: Option<Receiver<Option<R>>>,
 }
 
 // Derived `Default` would require `R: Default`, which no reducer needs; a manual
@@ -135,6 +143,7 @@ impl<R: Reducer> Default for CachedAuthor<R> {
             finalized: None,
             pending: Vec::new(),
             unsynced: Vec::new(),
+            seeding: None,
         }
     }
 }
@@ -191,6 +200,51 @@ pub struct RealtimeCacheStats {
 pub struct RealtimeCache<R: Reducer> {
     authors: HashMap<Pubkey, CachedAuthor<R>>,
     stats: RealtimeCacheStats,
+    /// How to seed on a worker thread, set by
+    /// [`with_background_seed`](Self::with_background_seed); `None` seeds inline on
+    /// the calling thread.
+    background: Option<BackgroundSeed<R>>,
+}
+
+/// What a [`RealtimeCache`] built by
+/// [`with_background_seed`](RealtimeCache::with_background_seed) needs to seed
+/// off the calling thread.
+struct BackgroundSeed<R> {
+    /// [`spawn_seed`] for this `R`. A plain `fn`, so the `R: Send` bound the
+    /// worker needs stays on that constructor rather than on every cache.
+    spawn: fn(&Ndb, Pubkey, Waker) -> Receiver<Option<R>>,
+    /// Woken when a seed lands, so the pump advances again to install it.
+    waker: Waker,
+}
+
+/// Fold `author`'s history into a fresh `R` on its own thread, under a
+/// transaction that thread opens itself (nostrdb allows one per thread), send the
+/// result back and wake the host. The txn opens after the caller subscribed, so
+/// the seed's snapshot covers everything the subscription doesn't report.
+fn spawn_seed<R: Reducer + Send + 'static>(
+    ndb: &Ndb,
+    author: Pubkey,
+    waker: Waker,
+) -> Receiver<Option<R>> {
+    let (tx, rx) = mpsc::channel();
+    let ndb = ndb.clone();
+    let spawned = std::thread::Builder::new()
+        .name("realtime-seed".to_owned())
+        .spawn(move || {
+            profiling::scope!("realtime_cache seed");
+            let seed = Transaction::new(&ndb)
+                .ok()
+                .and_then(|txn| R::fold(&ndb, &txn, &author));
+            // The cache may be gone by now; nobody left to tell.
+            let _ = tx.send(seed);
+            waker.wake();
+        });
+    if let Err(err) = spawned {
+        // `tx` dropped with the closure, so the receiver reports disconnected
+        // and the next advance starts another attempt.
+        tracing::error!("realtime cache: couldn't start a seed thread: {err}");
+    }
+    rx
 }
 
 // Manual `Default` (see [`CachedAuthor`]): an empty cache needs no `R: Default`.
@@ -199,6 +253,30 @@ impl<R: Reducer> Default for RealtimeCache<R> {
         Self {
             authors: HashMap::new(),
             stats: RealtimeCacheStats::default(),
+            background: None,
+        }
+    }
+}
+
+impl<R: Reducer + Send + 'static> RealtimeCache<R> {
+    /// A cache that seeds each author on a worker thread instead of inside the
+    /// advance that needs it.
+    ///
+    /// The seed walks the author's whole history, which on a large db takes long
+    /// enough to stall the frame that pumps it. With this, the first advance
+    /// subscribes and starts the fold elsewhere, and every advance until it lands
+    /// returns at once: reads return `None` (as before any seed), and notes the
+    /// subscription delivers meanwhile wait in [`pending`](CachedAuthor::pending)
+    /// to fold in as deltas when it does. Advances report no change while the
+    /// seed runs; the worker wakes `waker` when it lands, and the advance that
+    /// installs it reports the change.
+    pub fn with_background_seed(waker: Waker) -> Self {
+        Self {
+            background: Some(BackgroundSeed {
+                spawn: spawn_seed::<R>,
+                waker,
+            }),
+            ..Self::default()
         }
     }
 }
@@ -215,10 +293,11 @@ impl<R: Reducer> RealtimeCache<R> {
     /// outbox (only [`poll`](Self::poll) drains it).
     #[profiling::function]
     fn advance(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> bool {
+        let background = self.background.as_ref();
         let entry = self.authors.entry(*author).or_default();
         if entry.sub.is_none() {
             entry.sub = ndb.subscribe(&[R::filter(author)]).ok();
-            if entry.sub.is_some() {
+            if entry.sub.is_some() && background.is_none() {
                 // Subscribe now, seed on a *later* advance — never from this
                 // call's `txn`, which the caller opened before the subscription
                 // existed. A note that commits in that window is in neither half
@@ -239,6 +318,9 @@ impl<R: Reducer> RealtimeCache<R> {
                 // [`subscribe`](Self::subscribe), before its txn, so this branch
                 // never runs for it.
                 //
+                // A background seed has no such wait: its worker opens its own
+                // txn, after this subscribe, so it starts below right away.
+                //
                 // Reported as a change so the caller's pump schedules that next
                 // frame. Nothing folded yet, but a caller that only wakes on
                 // `changed` would otherwise have no reason to advance again, and
@@ -246,69 +328,104 @@ impl<R: Reducer> RealtimeCache<R> {
                 return true;
             }
         }
-        let (changed, fresh) = match entry.sub {
+        let Some(sub) = entry.sub else {
             // No subscription: fold the whole history each frame so edits still show.
-            None => {
-                entry.reducer = R::fold(ndb, txn, author);
-                (true, Vec::new())
-            }
-            Some(sub) => {
-                let polled = ndb.poll_for_notes(sub, 64);
-                if entry.reducer.is_none() {
-                    // The seed, on the first advance after the one that
-                    // subscribed (see above): a fresh subscription only reports
-                    // *future* ingests, so fold the existing history once here and
-                    // take deltas from the subscription thereafter.
-                    //
-                    // `polled` spans the subscribe-to-seed window, so unlike a
-                    // steady-state drain it can hold keys this snapshot already
-                    // folded. Carry forward only the ones it can't see: the rest
-                    // are in the seed, and re-folding them would walk the whole
-                    // history a second time on the very next advance (harmless —
-                    // the `Reducer` contract is idempotent — but it doubles the
-                    // startup fold for no gain).
-                    entry.reducer = R::fold(ndb, txn, author);
-                    entry.pending = polled
-                        .into_iter()
-                        .filter(|key| ndb.get_note_by_key(txn, *key).is_err())
-                        .collect();
-                    (true, Vec::new())
-                } else if polled.is_empty() && entry.pending.is_empty() {
-                    (false, Vec::new())
-                } else if let Some(reducer) = entry.reducer.as_mut() {
-                    // Incremental: fold the new notes (plus any that a staler
-                    // snapshot couldn't yet see) into the live reducer, and carry
-                    // forward the ones still not visible under this txn.
-                    let mut batch = std::mem::take(&mut entry.pending);
-                    batch.extend_from_slice(&polled);
-                    let deferred = reducer.reduce_delta(ndb, txn, &batch);
-                    let fresh: Vec<NoteKey> = batch
-                        .into_iter()
-                        .filter(|k| !deferred.contains(k))
-                        .collect();
-                    entry.pending = deferred;
-                    // Everything deferred (nothing folded) reads as a no-op: keep
-                    // waiting, and crucially don't count it as a full re-seed.
-                    (!fresh.is_empty(), fresh)
-                } else {
-                    (false, Vec::new())
-                }
-            }
-        };
-        // A fold happened (seed or delta), so the memoized finalize is stale; drop
-        // it and let the next read rebuild it once (see `with_views`).
-        if changed {
+            entry.reducer = R::fold(ndb, txn, author);
             entry.finalized = None;
-        }
-        // A full seed fold has no `fresh` keys (as opposed to an incremental delta,
-        // non-empty `fresh`, or a no-op, `!changed`); a seed's keys are historical,
-        // not new ingests, so they never enqueue for fan-out.
-        let full_seed = changed && fresh.is_empty();
-        entry.unsynced.extend(fresh);
-        if full_seed {
             self.stats.full_reloads += 1;
+            return true;
+        };
+        let polled = ndb.poll_for_notes(sub, 64);
+        if entry.reducer.is_none() {
+            let Some(background) = background else {
+                // The seed, on the first advance after the one that
+                // subscribed (see above): a fresh subscription only reports
+                // *future* ingests, so fold the existing history once here and
+                // take deltas from the subscription thereafter.
+                //
+                // `polled` spans the subscribe-to-seed window, so unlike a
+                // steady-state drain it can hold keys this snapshot already
+                // folded. Carry forward only the ones it can't see: the rest
+                // are in the seed, and re-folding them would walk the whole
+                // history a second time on the very next advance (harmless —
+                // the `Reducer` contract is idempotent — but it doubles the
+                // startup fold for no gain).
+                entry.reducer = R::fold(ndb, txn, author);
+                entry.pending = polled
+                    .into_iter()
+                    .filter(|key| ndb.get_note_by_key(txn, *key).is_err())
+                    .collect();
+                entry.finalized = None;
+                self.stats.full_reloads += 1;
+                return true;
+            };
+            // Background seed. Whatever the subscription delivers before it
+            // lands may postdate the worker's snapshot, so it all waits in
+            // `pending` and folds in as deltas once the reducer exists.
+            entry.pending.extend(polled);
+            let Some(seeding) = entry.seeding.as_ref() else {
+                entry.seeding = Some((background.spawn)(ndb, *author, background.waker.clone()));
+                return false;
+            };
+            let landed = match seeding.try_recv() {
+                Err(TryRecvError::Empty) => return false,
+                Ok(landed) => landed,
+                // The worker died without sending: start over.
+                Err(TryRecvError::Disconnected) => None,
+            };
+            entry.seeding = None;
+            entry.finalized = None;
+            let Some(reducer) = landed else {
+                // Nothing folded (a query error); the next advance retries.
+                return true;
+            };
+            entry.reducer = Some(reducer);
+            self.stats.full_reloads += 1;
+            // Fold in what arrived while the seed ran.
+            self.fold_deltas(ndb, txn, author, Vec::new());
+            return true;
         }
-        changed
+        self.fold_deltas(ndb, txn, author, polled)
+    }
+
+    /// Fold `polled` plus any keys an older snapshot couldn't yet see into
+    /// `author`'s live reducer, carry forward the ones still not visible under
+    /// `txn`, and enqueue the folded keys for fan-out. Returns whether anything
+    /// folded.
+    fn fold_deltas(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        author: &Pubkey,
+        polled: Vec<NoteKey>,
+    ) -> bool {
+        let Some(entry) = self.authors.get_mut(author) else {
+            return false;
+        };
+        if polled.is_empty() && entry.pending.is_empty() {
+            return false;
+        }
+        let Some(reducer) = entry.reducer.as_mut() else {
+            return false;
+        };
+        let mut batch = std::mem::take(&mut entry.pending);
+        batch.extend_from_slice(&polled);
+        let deferred = reducer.reduce_delta(ndb, txn, &batch);
+        let fresh: Vec<NoteKey> = batch
+            .into_iter()
+            .filter(|k| !deferred.contains(k))
+            .collect();
+        entry.pending = deferred;
+        // Everything deferred (nothing folded) reads as a no-op: keep waiting,
+        // and crucially don't count it as a full re-seed.
+        if fresh.is_empty() {
+            return false;
+        }
+        // A fold happened, so the memoized finalize is stale; drop it and let
+        // the next read rebuild it once (see `with_views`).
+        entry.finalized = None;
+        entry.unsynced.extend(fresh);
+        true
     }
 
     /// Open `author`'s live subscription now, if it isn't open yet — for a pump
@@ -469,7 +586,8 @@ mod tests {
     use super::*;
     use crate::test_util::TempNdb;
     use nostrdb::Ndb;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     /// Counts every `fold`/`reduce_delta`/`finalize` a toy reducer performs, so a
@@ -493,6 +611,9 @@ mod tests {
     struct ToyReducer {
         counters: &'static Counters,
         seen: Vec<NoteKey>,
+        /// The thread `fold` ran on, so a test can tell an inline seed from a
+        /// background one.
+        folded_on: std::thread::ThreadId,
     }
 
     impl ToyReducer {
@@ -520,6 +641,7 @@ mod tests {
             let mut reducer = ToyReducer {
                 counters: &COUNTERS,
                 seen: Vec::new(),
+                folded_on: std::thread::current().id(),
             };
             for note in ndb
                 .query(txn, &[Self::filter(author)], 1000)
@@ -879,5 +1001,171 @@ mod tests {
             "the outbox reports each key only once"
         );
         assert!(!resp.changed);
+    }
+
+    /// Set by [`GatedReducer::fold`] once its worker holds a read txn.
+    static GATED_SEED_STARTED: AtomicBool = AtomicBool::new(false);
+    /// Holds [`GatedReducer::fold`] until the test opens it.
+    static GATED_SEED_OPEN: AtomicBool = AtomicBool::new(false);
+
+    /// A [`ToyReducer`] whose seed waits for the test to let it finish, so a test
+    /// can pump the cache while a background seed is still running. Only one test
+    /// uses it, so its two flags are its own.
+    struct GatedReducer(ToyReducer);
+
+    impl Reducer for GatedReducer {
+        type View = NoteKey;
+
+        fn filter(author: &Pubkey) -> Filter {
+            ToyReducer::filter(author)
+        }
+
+        fn fold(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<Self> {
+            GATED_SEED_STARTED.store(true, Ordering::SeqCst);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !GATED_SEED_OPEN.load(Ordering::SeqCst) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            ToyReducer::fold(ndb, txn, author).map(GatedReducer)
+        }
+
+        fn reduce_delta(&mut self, ndb: &Ndb, txn: &Transaction, keys: &[NoteKey]) -> Vec<NoteKey> {
+            self.0.reduce_delta(ndb, txn, keys)
+        }
+
+        fn finalize(&self) -> Vec<NoteKey> {
+            self.0.finalize()
+        }
+    }
+
+    /// A [`Waker`] that counts its wakes into `wakes`.
+    fn counting_waker(wakes: &Arc<AtomicU32>) -> Waker {
+        let wakes = Arc::clone(wakes);
+        Waker::new(move || {
+            wakes.fetch_add(1, Ordering::SeqCst);
+        })
+    }
+
+    /// Pump `cache` under fresh txns until its views reach `n`, returning them.
+    fn poll_until_views<R: Reducer<View = NoteKey>>(
+        ndb: &Ndb,
+        cache: &mut RealtimeCache<R>,
+        author: &Pubkey,
+        n: usize,
+    ) -> Vec<NoteKey> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let txn = Transaction::new(ndb).unwrap();
+            cache.poll(ndb, &txn, author);
+            let views = cache.with_views(ndb, &txn, author, |views| views.to_vec());
+            if let Some(views) = views.filter(|v| v.len() == n) {
+                return views;
+            }
+            assert!(Instant::now() < deadline, "never reached {n} views");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// A cache built with `with_background_seed` folds the history on another
+    /// thread, not inside the advance that asked for it.
+    #[test]
+    fn a_background_seed_folds_off_the_calling_thread() {
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        let kp = nostrdb_net::FullKeypair::generate();
+        let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();
+        write_note(&ndb, &kp, "history");
+        wait_commit(&ndb, det);
+
+        let wakes = Arc::new(AtomicU32::new(0));
+        let mut cache: RealtimeCache<ToyReducer> =
+            RealtimeCache::with_background_seed(counting_waker(&wakes));
+        poll_until_views(&ndb, &mut cache, &kp.pubkey, 1);
+        // The worker wakes after it sends, so the wake can trail the install.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while wakes.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the landed seed never woke the host"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let reducer = cache.reducer(&kp.pubkey).unwrap();
+        assert_ne!(
+            reducer.folded_on,
+            std::thread::current().id(),
+            "the seed ran on the thread that pumped the cache"
+        );
+        assert_eq!(cache.stats().full_reloads, 1, "seeded exactly once");
+    }
+
+    /// While a background seed runs, a pump returns at once, reads see no
+    /// reducer yet, and a note ingested meanwhile, after the worker's snapshot,
+    /// still folds in once the seed lands.
+    #[test]
+    fn a_pump_before_the_background_seed_lands_neither_blocks_nor_loses_notes() {
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        let kp = nostrdb_net::FullKeypair::generate();
+        let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();
+        write_note(&ndb, &kp, "history");
+        wait_commit(&ndb, det);
+
+        let wakes = Arc::new(AtomicU32::new(0));
+        let mut cache: RealtimeCache<GatedReducer> =
+            RealtimeCache::with_background_seed(counting_waker(&wakes));
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            assert!(
+                !cache.poll(&ndb, &txn, &kp.pubkey).changed,
+                "starting a seed folds nothing"
+            );
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !GATED_SEED_STARTED.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the seed never started");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // The worker holds its snapshot; this note commits after it.
+        write_note(&ndb, &kp, "meanwhile");
+        wait_commit(&ndb, det);
+
+        for _ in 0..3 {
+            let txn = Transaction::new(&ndb).unwrap();
+            let started = Instant::now();
+            let resp = cache.poll(&ndb, &txn, &kp.pubkey);
+            let views = cache.with_views(&ndb, &txn, &kp.pubkey, |v| v.len());
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "a pump waited on the seed"
+            );
+            assert!(!resp.changed, "nothing folds while the seed runs");
+            assert!(views.is_none(), "no views before the seed lands");
+        }
+
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            0,
+            "woken before the seed landed"
+        );
+
+        GATED_SEED_OPEN.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while wakes.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the landed seed never woke the host"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let txn = Transaction::new(&ndb).unwrap();
+        assert!(
+            cache.poll(&ndb, &txn, &kp.pubkey).changed,
+            "the advance that installs the seed reports the change"
+        );
+        drop(txn);
+        poll_until_views(&ndb, &mut cache, &kp.pubkey, 2);
+        assert_eq!(cache.stats().full_reloads, 1, "seeded exactly once");
+        assert_eq!(cache.pending_len(&kp.pubkey), 0);
     }
 }
