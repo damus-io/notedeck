@@ -293,15 +293,17 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             AiMode::Agentic => {
                 // A session titled with its card's ref is listed under the
                 // card's current title, once one has been looked up.
-                let card_title = (!is_renaming)
+                let card_ref = (!is_renaming)
                     .then(|| session.details.title_ref())
-                    .flatten()
-                    .and_then(|card_ref| self.session_manager.card_titles.get(card_ref));
+                    .flatten();
+                let card_title =
+                    card_ref.and_then(|card_ref| self.session_manager.card_titles.get(card_ref));
                 self.agent_row_ui(
                     ui,
                     AgentRow {
                         session_id: session.id,
                         title: display_title,
+                        card_ref,
                         card_title,
                         cwd_display: place.cwd,
                         is_active,
@@ -454,17 +456,25 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
     /// focus dot.
     ///
     /// A row whose session is titled with its card's ref, with the card's
-    /// title looked up ([`AgentRow::card_title`]), shows that title wrapped to at
-    /// most two lines and cut with an ellipsis, the whole of it on hover. Any
-    /// other title is one line, clipped. When `cwd_display` is `Some` (a session alone in its
-    /// cwd), the cwd path goes on a last line.
+    /// title looked up ([`AgentRow::card_title`]), shows the card's status
+    /// glyph and then that title wrapped to at most two lines and cut with an
+    /// ellipsis, the whole of it on hover. Any other title is one line,
+    /// clipped. When `cwd_display` is `Some` (a session alone in its cwd), the
+    /// cwd path goes on a last line.
     fn agent_row_ui(&self, ui: &mut egui::Ui, row: AgentRow<'_>) -> RowResponse {
         let width = ui.available_width();
         let mut text_start_x = TEXT_LEFT;
         if row.status == AgentStatus::Pending {
             text_start_x += PENDING_SPINNER_SLOT + 2.0;
         }
-        let text_x = text_start_x;
+        // A card title follows its status glyph, when the list has the refs
+        // to draw one; the meta and cwd lines line up under the title.
+        let glyph = if row.card_title.is_some() && self.title_refs.is_some() {
+            GLYPH_SLOT
+        } else {
+            0.0
+        };
+        let text_x = text_start_x + glyph;
         // Laid out before the row is allocated, since its height follows the
         // title's wrap. The focus dot always takes its slot, so the wrap
         // stays put while ctrl's transient hints come and go.
@@ -540,12 +550,18 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         );
         let text_right = rect.right() - right_used;
 
-        match &wrapped {
-            Some(galley) => {
+        match (&wrapped, row.card_ref) {
+            (Some(galley), Some(card_ref)) => {
+                let line = row_height(ui, &title_font());
+                let glyph_rect = egui::Rect::from_min_size(
+                    egui::pos2(rect.left() + text_start_x, top),
+                    egui::vec2(GLYPH_SLOT - 4.0, line),
+                );
+                self.card_glyph_ui(ui, card_ref, glyph_rect);
                 let pos = egui::pos2(rect.left() + text_x, top);
                 paint_clipped(ui, pos, galley.clone(), text_right);
             }
-            None => {
+            _ => {
                 self.title_ui(
                     ui,
                     row.title,
@@ -577,6 +593,38 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             response,
             action: dot_action,
         }
+    }
+
+    /// Draw `card_ref`'s inline chip into `rect`, clipped to it: the chip's
+    /// status glyph — the card's column on the board, as its chip in the chat
+    /// shows it — without the title beside it, which the row wraps itself. A
+    /// list drawn without [`title_refs`](Self::title_refs) draws nothing.
+    fn card_glyph_ui(&self, ui: &mut egui::Ui, card_ref: &str, rect: egui::Rect) {
+        let Some(refs) = &self.title_refs else {
+            return;
+        };
+        let mut refs = refs.borrow_mut();
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect.with_max_x(rect.right() + 200.0))
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        child.set_clip_rect(rect.intersect(ui.clip_rect()));
+        child
+            .style_mut()
+            .text_styles
+            .insert(egui::TextStyle::Body, title_font());
+        let refs = &mut *refs;
+        notedeck_ui::markdown::reference_ui(
+            &mut child,
+            refs.note,
+            refs.txn,
+            card_ref,
+            notedeck::RenderContext::Inline,
+            notedeck::InlineChrome::Bare,
+            // The row's click switches to its session.
+            notedeck::Interaction::Inert,
+        );
     }
 
     /// Render a chat session row (no status bar, no cwd).
@@ -772,6 +820,9 @@ struct AgentRow<'s> {
     session_id: SessionId,
     /// The session's title, drawn when `card` is `None`.
     title: &'s str,
+    /// The ref of the card the session is titled by, whose chip's status
+    /// glyph leads `card_title`.
+    card_ref: Option<&'s str>,
     /// The current title of the card the session is titled by, once it has
     /// been looked up.
     card_title: Option<&'s str>,
@@ -791,6 +842,8 @@ struct AgentRow<'s> {
 
 /// Left padding of a row's text, past the status bar.
 const TEXT_LEFT: f32 = 12.0;
+/// Width of the slot a card title's status glyph takes before it.
+const GLYPH_SLOT: f32 = 18.0;
 /// Width of the "Connecting…" spinner before a pending row's title.
 const PENDING_SPINNER_SLOT: f32 = 22.0;
 /// Space above and below a row's text.
@@ -2349,6 +2402,7 @@ mod tests {
         AgentRow {
             session_id: id,
             title,
+            card_ref: None,
             card_title: None,
             cwd_display: None,
             is_active: false,
@@ -3042,6 +3096,173 @@ mod tests {
             matches!(harness.state().action, Some(SessionListAction::SwitchTo(s)) if s == id),
             "the row under the chip takes the click: got {:?}",
             harness.state().action
+        );
+    }
+
+    /// Stands in for headway's `headway:` parser, which Dave doesn't load:
+    /// the one card ref it knows resolves to its seeded kind-1621 note.
+    struct StubCardParser {
+        card: std::rc::Rc<std::cell::RefCell<Option<CardNote>>>,
+    }
+
+    /// The card [`StubCardParser`] resolves: its ref and its note.
+    struct CardNote {
+        card_ref: String,
+        note: nostrdb_net::NoteId,
+    }
+
+    impl notedeck::ReferenceParser for StubCardParser {
+        fn id(&self) -> &'static str {
+            "headway"
+        }
+
+        fn find(&self, text: &str) -> Option<std::ops::Range<usize>> {
+            headway::wordid::find_ref(text)
+        }
+
+        fn resolve(
+            &self,
+            matched: &str,
+            _ctx: &notedeck::ReferenceResolveCtx,
+        ) -> Option<notedeck::ResolvedRef> {
+            let card = self.card.borrow();
+            let card = card.as_ref().filter(|c| c.card_ref == matched)?;
+            Some(notedeck::ResolvedRef::note(card.note))
+        }
+    }
+
+    /// Stands in for headway's card renderer: the note's content is the
+    /// card's title, which its chip shows beside a status glyph.
+    struct StubCardRenderer;
+
+    impl notedeck::KindRenderer for StubCardRenderer {
+        fn id(&self) -> &'static str {
+            "test.card"
+        }
+
+        fn name(&self) -> &'static str {
+            "Test card"
+        }
+
+        fn kinds(&self) -> &'static [u32] {
+            &[1621]
+        }
+
+        fn render(
+            &self,
+            ui: &mut egui::Ui,
+            _note_context: &mut notedeck::NoteContext,
+            req: &notedeck::KindRenderRequest,
+        ) -> notedeck::KindRenderResponse {
+            let theme = notedeck::ColorTheme::current(ui.ctx());
+            let response =
+                notedeck_ui::inline_chip(ui, &theme, req.note.content(), req.chrome, |ui, size| {
+                    ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+                });
+            notedeck::open_on_click(ui, response, req)
+        }
+
+        fn title(
+            &self,
+            _ndb: &nostrdb::Ndb,
+            _txn: &nostrdb::Transaction,
+            note: &nostrdb::Note,
+        ) -> Option<String> {
+            Some(note.content().to_owned())
+        }
+    }
+
+    /// A session titled with its card's ref, once the card's title is looked
+    /// up, still leads its row with the card's chip — clipped to its status
+    /// glyph, the card's live column — and wraps the title after it. The
+    /// regression: the row painted the title as bare text and drew no chip.
+    #[test]
+    fn a_card_titled_row_leads_with_the_cards_chip() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use std::time::{Duration, Instant};
+
+        let card_ref = "headway:dave/able-badge-brick";
+        let title = "Session list title chip steals the row click from the session";
+
+        let tmpdir = tempfile::TempDir::new().expect("tmpdir");
+        let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+        let mut notedeck =
+            notedeck::Notedeck::init(&egui::Context::default(), tmpdir.path(), &args);
+        let card = Rc::new(RefCell::new(None));
+        notedeck.register_reference_parser(Box::new(StubCardParser { card: card.clone() }));
+        notedeck.register_kind_renderer(Box::new(StubCardRenderer));
+
+        let mut session_manager = SessionManager::new();
+        let id = session_manager.new_session(
+            PathBuf::from("/tmp/card-title"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        let session = session_manager.get_mut(id).expect("session");
+        session.details.title = card_ref.to_string();
+        session.details.custom_title = None;
+        session_manager.rebuild_groups();
+
+        let state = RefTitleState {
+            notedeck,
+            account: nostrdb_net::FullKeypair::generate(),
+            session_manager,
+            focus_queue: FocusQueue::new(),
+            collapse_state: CollapseState::new(),
+            action: None,
+            app_actions: 0,
+            setup_done: false,
+            _tmpdir: tmpdir,
+        };
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(300.0, 200.0))
+            .build_ui_state(ref_title_ui, state);
+        harness.run_steps(2);
+
+        let secret = harness.state().account.secret_key.secret_bytes();
+        let note = nostrdb::NoteBuilder::new()
+            .kind(1621)
+            .content(title)
+            .created_at(1_700_000_000)
+            .sign(&secret)
+            .build()
+            .expect("note");
+        *card.borrow_mut() = Some(CardNote {
+            card_ref: card_ref.to_string(),
+            note: nostrdb_net::NoteId::new(*note.id()),
+        });
+        let frame = nostrdb_net::ClientMessage::event(&note)
+            .expect("event")
+            .to_json()
+            .expect("json");
+        harness
+            .state_mut()
+            .notedeck
+            .app_context()
+            .ndb
+            .process_event_with(&frame, nostrdb::IngestMetadata::new().client(true))
+            .expect("ingest");
+
+        // The row takes the card's title once the lookup finds it, and the
+        // chip draws it (clipped to its glyph) at the head of the row.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            harness.run_ok();
+            let looked_up =
+                harness.state().session_manager.card_titles.get(card_ref) == Some(title);
+            if looked_up && harness.query_by_label(title).is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the card-titled row never drew its card's chip (looked up: {looked_up})"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            harness.query_by_label(card_ref).is_none(),
+            "the row shows the card, not its raw ref"
         );
     }
 }
