@@ -696,6 +696,8 @@ pub fn render_conversation_note_with_content(
                     file_update: decoded.file_update.map(FileUpdate::from),
                     tool_use_id: get_tag_value(note, "tool-id").map(str::to_string),
                     description: tool_desc(note),
+                    is_error: get_tag_value(note, crate::session_events::TOOL_ERROR_TAG)
+                        == Some("true"),
                 },
             )))
         }
@@ -817,6 +819,8 @@ pub enum RowSig {
         tool_use_id: Option<String>,
         /// The call's description, cut like the summary.
         description: Option<String>,
+        /// Whether the call failed.
+        is_error: bool,
     },
     /// A chat-mode tool response (query, present-notes, error), by call id.
     ChatToolResponse(String),
@@ -873,6 +877,7 @@ fn row_signature(message: &Message) -> RowSig {
                 summary: cut_tool_text(strip_tool_name_prefix(&tool.summary, &tool.tool_name)),
                 tool_use_id: tool.tool_use_id.clone(),
                 description: tool.description.as_deref().map(cut_tool_text),
+                is_error: tool.is_error,
             },
             _ => RowSig::ChatToolResponse(resp.id().to_string()),
         },
@@ -2122,6 +2127,7 @@ mod tests {
             file_update: None,
             tool_use_id: tool_use_id.map(str::to_string),
             description: None,
+            is_error: false,
         }))
     }
 

@@ -195,6 +195,7 @@ mod tests {
             file_update: update,
             tool_use_id: None,
             description: None,
+            is_error: false,
         }
     }
 

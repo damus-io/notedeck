@@ -677,6 +677,11 @@ fn build_single_event(
         builder = builder.start_tag().tag_str(TOOL_DESC_TAG).tag_str(desc);
     }
 
+    // -- Tool error tag (a failed tool_result) --
+    if tags.tool_error {
+        builder = builder.start_tag().tag_str(TOOL_ERROR_TAG).tag_str("true");
+    }
+
     // -- Parent task tag (a subagent-internal tool result) --
     if let Some(task) = tags.parent_task {
         builder = builder.start_tag().tag_str("parent-task").tag_str(task);
@@ -731,6 +736,8 @@ pub struct LiveEventTags<'a> {
     /// The model's one-line account of a tool call ([`TOOL_DESC_TAG`]), on a
     /// `tool_call` and its `tool_result`, from the tool input's `description`.
     pub tool_desc: Option<&'a str>,
+    /// Whether a `tool_result` reports a failed call ([`TOOL_ERROR_TAG`]).
+    pub tool_error: bool,
     /// The subagent task id (`parent-task`) a subagent-internal `tool_result`
     /// ran under, so a fold nests it in that subagent's row.
     pub parent_task: Option<&'a str>,
@@ -756,6 +763,11 @@ pub struct LiveEventTags<'a> {
 /// Notes published before it existed have none; a reader falls back to the
 /// summary.
 pub const TOOL_DESC_TAG: &str = "tool-desc";
+
+/// The tag marking a `tool_result` note whose call failed:
+/// `["tool-error", "true"]`. Absent on a call that succeeded and on notes
+/// published before failures were recorded, which a reader takes as success.
+pub const TOOL_ERROR_TAG: &str = "tool-error";
 
 /// The role of the marker a host publishes when it hands a queued user note to
 /// the backend. Its content is empty and its [`LiveEventTags::refs`] names the

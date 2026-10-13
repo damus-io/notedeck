@@ -188,7 +188,8 @@ pub fn complete_subagent(
 }
 
 /// Build an [`ExecutedTool`] from a completed tool call and send it
-/// to the UI along with a repaint request.
+/// to the UI along with a repaint request. `is_error` is whether the backend
+/// reported the call as failed (see [`ExecutedTool::is_error`]).
 #[allow(clippy::too_many_arguments)]
 pub fn send_tool_result(
     tool_name: &str,
@@ -198,6 +199,7 @@ pub fn send_tool_result(
     parent_override: Option<&str>,
     subagent_stack: &[String],
     tool_use_id: Option<&str>,
+    is_error: bool,
     response_tx: &mpsc::Sender<DaveApiResponse>,
     waker: &Waker,
 ) {
@@ -227,6 +229,7 @@ pub fn send_tool_result(
         file_update,
         tool_use_id: tool_use_id.map(str::to_string),
         description: tool_description(tool_name, tool_input),
+        is_error,
     };
     let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
     waker.wake();
@@ -758,6 +761,7 @@ mod tests {
             None,
             &stack,
             None,
+            false,
             &tx,
             waker.waker(),
         );
@@ -792,6 +796,7 @@ mod tests {
             None,
             &[],
             None,
+            false,
             &tx,
             &waker,
         );
@@ -825,6 +830,7 @@ mod tests {
             None,
             &[],
             None,
+            false,
             &tx,
             &waker,
         );
@@ -853,6 +859,7 @@ mod tests {
             None,
             &[],
             None,
+            false,
             &tx,
             &waker,
         );

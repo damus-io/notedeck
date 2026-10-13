@@ -240,6 +240,7 @@ fn handle_tool_result(
         parent_override,
         subagent_stack,
         Some(tool_use_id),
+        tool_result.is_error == Some(true),
         response_tx,
         waker,
     );
@@ -3278,6 +3279,27 @@ cat > /dev/null
             !results[0].summary.is_empty(),
             "the summary is what the chat row renders"
         );
+        assert!(!results[0].is_error, "a call that worked is not a failure");
+    }
+
+    /// The CLI's `is_error` on a tool result is what marks a failed call; it
+    /// reaches the executed row so a folded run can break the failure out.
+    #[test]
+    fn failed_tool_result_is_marked_an_error() {
+        let mut harness = StreamHarness::new();
+        harness.feed(serde_json::json!({
+            "type": "assistant",
+            "message": { "content": [
+                tool_use("toolu_bad", "Bash", serde_json::json!({ "command": "false" })),
+            ]},
+        }));
+        let mut failed = tool_result("toolu_bad", "Exit code 1");
+        failed["is_error"] = serde_json::json!(true);
+        harness.feed(user_with(vec![failed]));
+
+        let results = harness.tool_results();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error, "the CLI reported the call as failed");
     }
 
     #[test]

@@ -776,6 +776,7 @@ fn handle_codex_message(
                                 None,
                                 subagent_stack,
                                 None,
+                                false,
                                 response_tx,
                                 waker,
                             );
@@ -792,6 +793,7 @@ fn handle_codex_message(
                                 None,
                                 subagent_stack,
                                 None,
+                                false,
                                 response_tx,
                                 waker,
                             );
@@ -1009,6 +1011,7 @@ fn handle_codex_message(
                             None,
                             subagent_stack,
                             None,
+                            false,
                             response_tx,
                             waker,
                         );
@@ -1463,6 +1466,8 @@ fn handle_item_completed(
             let command = completed.command.clone().unwrap_or_default();
             let exit_code = completed.exit_code.unwrap_or(-1);
             let output = completed.output.clone().unwrap_or_default();
+            // A command that exits nonzero failed, as Claude's Bash reports it.
+            let failed = completed.exit_code.is_some_and(|code| code != 0);
 
             let tool_input = serde_json::json!({ "command": command });
             let result_value = serde_json::json!({ "output": output, "exit_code": exit_code });
@@ -1474,6 +1479,7 @@ fn handle_item_completed(
                 None,
                 subagent_stack,
                 None,
+                failed,
                 response_tx,
                 waker,
             );
@@ -1513,6 +1519,7 @@ fn handle_item_completed(
                 None,
                 subagent_stack,
                 None,
+                false,
                 response_tx,
                 waker,
             );
@@ -3451,11 +3458,41 @@ mod tests {
             DaveApiResponse::ToolResult(tool) => {
                 assert_eq!(tool.tool_name, "Bash");
                 assert!(tool.parent_task_id.is_none());
+                assert!(!tool.is_error, "exit 0 is a call that worked");
             }
             other => panic!(
                 "Expected ToolResult, got {:?}",
                 std::mem::discriminant(&other)
             ),
+        }
+    }
+
+    /// A command that exits nonzero is a failed call, as Claude's Bash
+    /// reports it; one with no exit code reported is not called a failure.
+    #[test]
+    fn test_item_completed_command_nonzero_exit_is_an_error() {
+        let (tx, rx) = mpsc::channel();
+        let waker = Waker::noop();
+        let mut subagents = Vec::new();
+        for (exit_code, failed) in [(Some(2), true), (None, false)] {
+            let completed = ItemCompletedParams {
+                item_type: "commandExecution".to_string(),
+                item_id: None,
+                command: Some("cargo test".to_string()),
+                exit_code,
+                output: None,
+                file_path: None,
+                diff: None,
+                kind: None,
+                result: None,
+                pre_tokens: None,
+                content: None,
+            };
+            handle_item_completed(&completed, &tx, &waker, &mut subagents);
+            let Ok(DaveApiResponse::ToolResult(tool)) = rx.try_recv() else {
+                panic!("expected a ToolResult");
+            };
+            assert_eq!(tool.is_error, failed, "exit code {exit_code:?}");
         }
     }
 

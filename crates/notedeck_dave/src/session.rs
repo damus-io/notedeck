@@ -4326,6 +4326,7 @@ mod tests {
             file_update: None,
             tool_use_id: None,
             description: None,
+            is_error: false,
         };
 
         // Should be folded (returns None)
@@ -4355,6 +4356,7 @@ mod tests {
             file_update: None,
             tool_use_id: None,
             description: None,
+            is_error: false,
         };
 
         // Should NOT be folded (returns Some)
@@ -4385,6 +4387,7 @@ mod tests {
             file_update: None,
             tool_use_id: Some(id.to_string()),
             description: None,
+            is_error: false,
         }
     }
 
@@ -4467,6 +4470,7 @@ mod tests {
             file_update: None,
             tool_use_id: None,
             description: None,
+            is_error: false,
         };
         // Parent doesn't exist — should return the result unfolded
         let not_folded = session.fold_tool_result(result);

@@ -350,6 +350,7 @@ pub(crate) mod tests {
             file_update: None,
             tool_use_id: None,
             description: None,
+            is_error: false,
         }))
     }
 

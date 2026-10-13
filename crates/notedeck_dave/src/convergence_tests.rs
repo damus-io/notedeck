@@ -919,6 +919,7 @@ fn executed(
         file_update: None,
         tool_use_id: Some(tool_use_id.to_string()),
         description: None,
+        is_error: false,
     }))
 }
 
@@ -966,6 +967,7 @@ async fn unpaired_tool_result() {
             file_update: None,
             tool_use_id: None,
             description: None,
+            is_error: false,
         })),
         token("it is short"),
         Step::StreamEnd,
@@ -1013,6 +1015,28 @@ async fn tool_description_travels() {
         ]);
     }
     script.extend([token("tests pass"), Step::StreamEnd]);
+    assert_host_matches_fold(script).await;
+}
+
+/// A failed call's `is_error` reaches the fold on its `tool_result` note (the
+/// `tool-error` tag), and a call that worked stays unmarked beside it, so a
+/// reload or a remote observer sees the same failures as the host.
+#[tokio::test]
+async fn tool_error_travels() {
+    let mut script = Vec::from(user_turn("run it"));
+    for (id, failed) in [("t1", true), ("t2", false)] {
+        let Step::Backend(DaveApiResponse::ToolResult(mut result)) =
+            executed(id, "Bash", "`cargo test`", None)
+        else {
+            unreachable!()
+        };
+        result.is_error = failed;
+        script.extend([
+            running(id, "Bash", "`cargo test`"),
+            Step::Backend(DaveApiResponse::ToolResult(result)),
+        ]);
+    }
+    script.extend([token("one failed"), Step::StreamEnd]);
     assert_host_matches_fold(script).await;
 }
 
@@ -1744,6 +1768,7 @@ async fn reconcile_keeps_dropped_diff() {
             file_update: Some(edit),
             tool_use_id: Some("t1".to_string()),
             description: None,
+            is_error: false,
         })),
         Step::StreamEnd,
     ]);
@@ -1802,6 +1827,7 @@ async fn reconcile_keeps_capped_tool_output() {
             file_update: None,
             tool_use_id: Some("t1".to_string()),
             description: None,
+            is_error: false,
         })),
         Step::StreamEnd,
     ]);
@@ -2497,6 +2523,7 @@ async fn reconcile_keeps_subagent_tool_output() {
             file_update: None,
             tool_use_id: Some("t1".to_string()),
             description: None,
+            is_error: false,
         })),
         Step::Backend(DaveApiResponse::SubagentCompleted {
             task_id: "s1".to_string(),

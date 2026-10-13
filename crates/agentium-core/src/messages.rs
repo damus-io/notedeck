@@ -682,6 +682,13 @@ pub struct ExecutedTool {
     /// Travels on the kind-1988 `tool_result` note as its `tool-desc` tag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Whether the call failed: the backend's `is_error` on the tool result
+    /// (Claude), or a command's nonzero exit (Codex). A failed call is the one
+    /// a reader most needs to see, so a folded run breaks it out. `false` for
+    /// results recorded before it was captured. Travels on the kind-1988
+    /// `tool_result` note as its `tool-error` tag.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_error: bool,
 }
 
 /// An in-flight tool call surfaced at `tool_use` time, before its result lands.
@@ -709,7 +716,8 @@ impl RunningTool {
     /// Build the terminal [`ExecutedTool`] row for a running tool that never
     /// received a result (an interrupted turn), so the spinner stops. Carries
     /// only what the call-time row already knows — name, summary, description
-    /// and the correlation id — with no output/diff/parent.
+    /// and the correlation id — with no output/diff/parent. Not an error: the
+    /// call never reported one.
     pub fn to_executed(&self) -> ExecutedTool {
         ExecutedTool {
             tool_name: self.tool_name.clone(),
@@ -719,6 +727,7 @@ impl RunningTool {
             file_update: None,
             tool_use_id: Some(self.tool_use_id.clone()),
             description: self.description.clone(),
+            is_error: false,
         }
     }
 }

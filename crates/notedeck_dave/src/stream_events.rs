@@ -583,7 +583,7 @@ fn publish_todo(
 /// with the whole output: an edit the CLI auto-approved has no
 /// permission_request note to rebuild it from. Past that it is dropped whole,
 /// never cut into a diff that didn't happen. The tool name, tool use id,
-/// description and parent task travel as tags.
+/// description, failure and parent task travel as tags.
 fn publish_tool_result(
     session: &mut session::ChatSession,
     result: &ExecutedTool,
@@ -594,6 +594,7 @@ fn publish_tool_result(
         tool_id: result.tool_use_id.as_deref(),
         tool_name: Some(&result.tool_name),
         tool_desc: result.description.as_deref(),
+        tool_error: result.is_error,
         parent_task: result.parent_task_id.as_deref(),
         ..Default::default()
     };
@@ -1272,6 +1273,7 @@ mod tests {
             file_update: None,
             tool_use_id: tool_use_id.map(str::to_string),
             description: None,
+            is_error: false,
         }
     }
 
