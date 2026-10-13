@@ -1,19 +1,18 @@
 //! Saved list views: an account's [`ViewSpec`]s, kept in nostrdb as kind-30626
 //! notes ([`event::KIND_VIEW`]), one per view slug, latest-wins.
 //!
-//! Personal, like the board preference ([`crate::store::save_board_pref`]): each
-//! note is signed by the account key and PNS-wrapped, so only that account can
-//! read it, and front ends pass [`NoPublish`](crate::store::NoPublish) so it
-//! stays in the local cache. A deleted view is a tombstone — the slug
-//! republished with empty content — so a delete supersedes like any edit. See
-//! `headway:headway/brave-project-parade`.
+//! Personal, like the board preference ([`crate::store::save_board_pref`]):
+//! each view is a private latest-wins note ([`private_note`]), signed by the
+//! account key and PNS-wrapped, so only that account can read it. A deleted
+//! view is a tombstone — the slug republished with empty content — so a delete
+//! supersedes like any edit. See `headway:headway/brave-project-parade`.
 
-use nostrdb::Ndb;
+use nostrdb::{Ndb, Transaction};
 use nostrdb_net::Pubkey;
 
-use crate::event::{self, ViewNote};
+use crate::event::KIND_VIEW;
 use crate::query::ViewSpec;
-use crate::store::{Publisher, board_slug, ingest_pns, next_after};
+use crate::store::board_slug;
 
 /// A view an account has saved: the slug its notes are keyed by, and its spec.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,26 +24,27 @@ pub struct SavedView {
     pub spec: ViewSpec,
 }
 
-/// Every view `author` has saved and not deleted, in slug order. A note whose
-/// content isn't a [`ViewSpec`] is skipped rather than failing the rest.
+/// Every view `author` has saved and not deleted, in slug order: the newest
+/// revision of each slug ([`private_note::latest_per_d`]). A note whose content
+/// isn't a [`ViewSpec`] is skipped rather than failing the rest.
 pub fn load_views(ndb: &Ndb, author: &Pubkey) -> Vec<SavedView> {
-    event::view_notes(ndb, author)
+    let Ok(txn) = Transaction::new(ndb) else {
+        return Vec::new();
+    };
+    private_note::latest_per_d(ndb, &txn, author, KIND_VIEW)
         .into_iter()
         .filter_map(decode)
         .collect()
 }
 
-/// The live view a stored note holds, or `None` for a tombstone or content
+/// The live view a stored revision holds, or `None` for a tombstone or content
 /// that doesn't parse.
-fn decode(note: ViewNote) -> Option<SavedView> {
-    if note.content.is_empty() {
+fn decode(slot: private_note::SlotRevision) -> Option<SavedView> {
+    if slot.revision.content.is_empty() {
         return None;
     }
-    let spec = serde_json::from_str(&note.content).ok()?;
-    Some(SavedView {
-        slug: note.slug,
-        spec,
-    })
+    let spec = serde_json::from_str(&slot.revision.content).ok()?;
+    Some(SavedView { slug: slot.d, spec })
 }
 
 /// The view among `views` that `name` names: by its name, ignoring case, or
@@ -64,54 +64,46 @@ pub fn new_slug(views: &[SavedView], name: &str) -> String {
 
 /// Save `view` for `author`: its spec as JSON under its slug, signed with
 /// `secret`, PNS-wrapped and ingested, superseding any earlier revision of
-/// that slug (including a tombstone).
+/// that slug (including a tombstone). Returns the stamp to pass as the next
+/// write's `after` (see [`write`]).
 pub fn save_view(
     ndb: &Ndb,
     author: &Pubkey,
     secret: &[u8; 32],
     view: &SavedView,
-    publisher: &mut dyn Publisher,
-) {
+    after: u64,
+) -> u64 {
     let Ok(content) = serde_json::to_string(&view.spec) else {
-        return;
+        return after;
     };
-    write(ndb, author, secret, &view.slug, &content, publisher);
+    write(ndb, author, secret, &view.slug, &content, after)
 }
 
 /// Delete `author`'s view `slug`: a tombstone (empty content) that supersedes
-/// its last revision.
-pub fn delete_view(
-    ndb: &Ndb,
-    author: &Pubkey,
-    secret: &[u8; 32],
-    slug: &str,
-    publisher: &mut dyn Publisher,
-) {
-    write(ndb, author, secret, slug, "", publisher);
+/// its last revision. Returns the stamp to pass as the next write's `after`.
+pub fn delete_view(ndb: &Ndb, author: &Pubkey, secret: &[u8; 32], slug: &str, after: u64) -> u64 {
+    write(ndb, author, secret, slug, "", after)
 }
 
-/// Sign and ingest one revision of view `slug`, stamped strictly past its
-/// current one so a same-second re-save still wins latest-wins.
+/// Write one revision of view `slug` with [`private_note::write`], stamped
+/// strictly past both its stored revision and `after`, the stamp of the
+/// caller's last view write: two quick edits made before the first is
+/// ingested would otherwise tie in the same second. Returns the new stamp,
+/// or `after` when nothing was stored.
 fn write(
     ndb: &Ndb,
     author: &Pubkey,
     secret: &[u8; 32],
     slug: &str,
     content: &str,
-    publisher: &mut dyn Publisher,
-) {
-    let current = event::view_notes(ndb, author)
-        .into_iter()
-        .find(|n| n.slug == slug)
-        .map_or(0, |n| n.created_at);
-    let Some(inner) = event::build_view(slug, content)
-        .created_at(next_after(current))
-        .sign(secret)
-        .build()
-    else {
-        return;
+    after: u64,
+) -> u64 {
+    let slot = private_note::Slot {
+        author,
+        kind: KIND_VIEW,
+        d: slug,
     };
-    ingest_pns(ndb, &inner, secret, publisher);
+    private_note::write(ndb, secret, slot, content, after).unwrap_or(after)
 }
 
 #[cfg(test)]
@@ -124,7 +116,6 @@ mod tests {
     use crate::query::{
         DisplayProp, DisplayProps, GroupBy, Grouping, SortBy, Sorting, StateFilter,
     };
-    use crate::store::NoPublish;
     use crate::test_config;
 
     /// A view with every field off its default.
@@ -205,17 +196,18 @@ mod tests {
         assert!(ndb.add_key(&secret));
         let filter = nostrdb::Filter::new()
             .authors([kp.pubkey.bytes()])
-            .kinds([event::KIND_VIEW as u64])
+            .kinds([KIND_VIEW as u64])
             .build();
         let sub = ndb.subscribe(&[filter]).unwrap();
         let mut stream = SubscriptionStream::new(ndb.clone(), sub).notes_per_await(64);
         let me = &kp.pubkey;
+        let mut stamp = 0;
 
         assert!(load_views(&ndb, me).is_empty());
         let slug = new_slug(&[], "Hot issues!");
         assert_eq!(slug, "hot-issues");
         let mut view = SavedView { slug, spec: hot() };
-        save_view(&ndb, me, &secret, &view, &mut NoPublish);
+        stamp = save_view(&ndb, me, &secret, &view, stamp);
         wait_views(&ndb, &mut stream, me, std::slice::from_ref(&view)).await;
         let views = load_views(&ndb, me);
         assert_eq!(find_view(&views, "hot").map(|v| &v.spec), Some(&hot()));
@@ -225,13 +217,13 @@ mod tests {
         );
 
         view.spec.name = "Urgent".to_string();
-        save_view(&ndb, me, &secret, &view, &mut NoPublish);
+        stamp = save_view(&ndb, me, &secret, &view, stamp);
         wait_views(&ndb, &mut stream, me, std::slice::from_ref(&view)).await;
 
-        delete_view(&ndb, me, &secret, &view.slug, &mut NoPublish);
+        stamp = delete_view(&ndb, me, &secret, &view.slug, stamp);
         wait_views(&ndb, &mut stream, me, &[]).await;
 
-        save_view(&ndb, me, &secret, &view, &mut NoPublish);
+        save_view(&ndb, me, &secret, &view, stamp);
         wait_views(&ndb, &mut stream, me, std::slice::from_ref(&view)).await;
     }
 }

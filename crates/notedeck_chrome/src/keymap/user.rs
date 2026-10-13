@@ -4,13 +4,13 @@
 //! for what one can say) carried as the content of a NIP-78
 //! application-data note: kind [`KIND_APP_DATA`], `d` = [`KEYMAP_D`], signed
 //! by the account. It is written PNS-wrapped through
-//! [`notedeck::write_private_note`], so it never leaves the device in the
+//! [`private_note::write`], so it never leaves the device in the
 //! clear, and syncs to the account's other devices over its private relays
 //! with the rest of its PNS stream. nostrdb unwraps it on ingest, so it reads
 //! back like any other note of the account's; a watch-only account can't
 //! unwrap it and gets the defaults.
 
-use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
+use nostrdb::{Filter, Ndb, Transaction};
 use nostrdb_net::Pubkey;
 
 /// NIP-78 application-specific data: parameterized-replaceable, so the newest
@@ -20,12 +20,9 @@ pub const KIND_APP_DATA: u32 = 30078;
 /// The `d` tag of the keymap's [`KIND_APP_DATA`] note.
 pub const KEYMAP_D: &str = "notedeck/keymap";
 
-/// The filter for `author`'s app-data notes, the keymap's among them.
-///
-/// Kind and author only: the `d` tag is checked in Rust (see
-/// [`is_keymap_note`]), because nostrdb answers an authors + kinds + tags
-/// filter by scanning every note of the author's kinds anyway, slower than
-/// filtering the handful of app-data notes ourselves.
+/// The filter for `author`'s app-data notes, the keymap's among them: what
+/// a subscription that watches for keymap edits listens on. The `d` tag is
+/// checked when reading (see [`load_user_keymap`]).
 pub fn user_keymap_filter(author: &Pubkey) -> Filter {
     Filter::new()
         .kinds([KIND_APP_DATA as u64])
@@ -33,67 +30,31 @@ pub fn user_keymap_filter(author: &Pubkey) -> Filter {
         .build()
 }
 
-/// Whether `note` is a revision of the keymap note: its `d` is [`KEYMAP_D`].
-fn is_keymap_note(note: &Note<'_>) -> bool {
-    note.tags()
-        .iter()
-        .find(|tag| tag.count() >= 2 && tag.get_str(0) == Some("d"))
-        .is_some_and(|tag| tag.get_str(1) == Some(KEYMAP_D))
-}
-
-/// The newest revision of a keymap note.
-struct Revision {
-    /// When it was written.
-    created_at: u64,
-    /// Its TOML.
-    content: String,
-}
-
-/// `author`'s newest keymap revision, if any. Newest by `created_at`, ties
-/// broken by note id, so two revisions stamped in the same second resolve the
-/// same way on every device and every run (nostrdb hands them back in no
-/// particular order).
-fn current(ndb: &Ndb, author: &Pubkey) -> Option<Revision> {
-    let txn = Transaction::new(ndb).ok()?;
-    let newest = ndb
-        .fold(
-            &txn,
-            &[user_keymap_filter(author)],
-            None::<Note<'_>>,
-            |best, note| {
-                if !is_keymap_note(&note) {
-                    return best;
-                }
-                match best {
-                    Some(b) if (b.created_at(), b.id()) >= (note.created_at(), note.id()) => {
-                        Some(b)
-                    }
-                    _ => Some(note),
-                }
-            },
-        )
-        .ok()??;
-    Some(Revision {
-        created_at: newest.created_at(),
-        content: newest.content().to_owned(),
-    })
+/// `author`'s keymap slot: their [`KIND_APP_DATA`] note with `d` =
+/// [`KEYMAP_D`].
+fn keymap_slot(author: &Pubkey) -> private_note::Slot<'_> {
+    private_note::Slot {
+        author,
+        kind: KIND_APP_DATA,
+        d: KEYMAP_D,
+    }
 }
 
 /// The TOML of `author`'s keymap overrides, or `None` when they have none
-/// (or the account is watch-only, so nostrdb couldn't unwrap the note).
+/// (or the account is watch-only, so nostrdb couldn't unwrap the note). The
+/// newest revision wins, ties broken by note id ([`private_note::latest`]).
 pub fn load_user_keymap(ndb: &Ndb, author: &Pubkey) -> Option<String> {
-    current(ndb, author).map(|revision| revision.content)
+    let txn = Transaction::new(ndb).ok()?;
+    private_note::latest(ndb, &txn, keymap_slot(author)).map(|revision| revision.content)
 }
 
 /// Write `toml` as `author`'s keymap overrides, signed with their `secret`,
 /// returning the `created_at` it was stamped with.
 ///
-/// Stamped strictly after both the stored revision and `after`, so a re-save
-/// in the same second still supersedes. `after` is the stamp of the last
-/// write the caller made: nostrdb ingests asynchronously, so a write made
-/// before the last one has landed can't see it stored, and without `after`
-/// would tie it in the same second and lose to it on note id half the time.
-/// Doesn't check `toml`: that's
+/// Stamped strictly after both the stored revision and `after`, the stamp of
+/// the last write the caller made, so a re-save in the same second, or one
+/// made before the last has landed, still supersedes (see
+/// [`private_note::write`]). Doesn't check `toml`: that's
 /// [`Chrome::save_user_keymap`](crate::Chrome::save_user_keymap)'s job,
 /// which merges it first.
 pub fn write_user_keymap(
@@ -103,28 +64,14 @@ pub fn write_user_keymap(
     toml: &str,
     after: u64,
 ) -> Result<u64, String> {
-    let stored = current(ndb, author).map_or(0, |revision| revision.created_at);
-    let created_at = notedeck::unix_time_secs().max(stored.max(after) + 1);
-    let note = NoteBuilder::new()
-        .kind(KIND_APP_DATA)
-        .content(toml)
-        .options(NoteBuildOptions::default())
-        .created_at(created_at)
-        .start_tag()
-        .tag_str("d")
-        .tag_str(KEYMAP_D)
-        .sign(secret)
-        .build()
-        .ok_or("couldn't build the keymap note")?;
-    let json = note.json().map_err(|err| err.to_string())?;
-    notedeck::write_private_note(ndb, secret, &json).map_err(|err| err.to_string())?;
-    Ok(created_at)
+    private_note::write(ndb, secret, keymap_slot(author), toml, after)
+        .map_err(|err| err.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostrdb::{Config, SubscriptionStream};
+    use nostrdb::{Config, NoteBuilder, SubscriptionStream};
     use nostrdb_net::FullKeypair;
     use std::time::Duration;
 

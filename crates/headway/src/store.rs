@@ -11,7 +11,7 @@
 
 use std::collections::HashSet;
 
-use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder, Transaction};
+use nostrdb::{IngestMetadata, Ndb, NoteBuilder, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
 
 use crate::event::{
@@ -297,64 +297,36 @@ pub fn ingest_signed(
     Some(id)
 }
 
-/// Persist `coord` as `author`'s selected-board preference: a replaceable
-/// kind-30623 note ([`event::build_board_pref`]) whose content is the board's
-/// coordinate, signed by the account key and PNS-wrapped, ingested into the local
-/// nostrdb. This is the on-nostrdb replacement for the old `headway-boards.json`;
-/// [`event::load_board_pref`] reads it back latest-wins. Carrying the full
-/// coordinate (not just the slug) lets the restored selection disambiguate an own
-/// board from a joined shared board of the same slug.
+/// Persist `coord` as `author`'s selected-board preference: the private
+/// latest-wins note in [`event::board_pref_slot`] whose content is the board's
+/// coordinate, written by [`private_note::write`] (signed by the account key,
+/// PNS-wrapped and ingested into the local nostrdb). This is the on-nostrdb
+/// replacement for the old `headway-boards.json`; [`event::load_board_pref`]
+/// reads it back latest-wins. Carrying the full coordinate (not just the slug)
+/// lets the restored selection disambiguate an own board from a joined shared
+/// board of the same slug.
 ///
-/// Callers pass [`NoPublish`], so the note stays local — it is never fanned out
-/// to a relay, and its inner kind isn't in `headway_filter`, so the board sync
-/// never picks it up either. A watch-only account has no `secret` and so can't
-/// save one (it never had a real preference to persist); callers guard on the
+/// Returns the stamp to pass as the next save's `after`: the one this save was
+/// stamped with, or `after` itself when it stored nothing. Rapid board
+/// switching saves again before the last save is ingested, and only `after`
+/// keeps the two apart. A watch-only account has no `secret` and so can't save
+/// one (it never had a real preference to persist); callers guard on the
 /// signer.
 pub fn save_board_pref(
     ndb: &Ndb,
     author: &Pubkey,
     secret: &[u8; 32],
     coord: &event::BoardCoord,
-    publisher: &mut dyn Publisher,
-) {
-    // Stamp strictly past the current preference so a same-second re-save (rapid
-    // board switching) still supersedes rather than tying latest-wins.
-    let created_at = next_after(event::board_pref_created_at(ndb, author));
-    let coordinate = coord.coordinate();
-    let Some(inner) = event::build_board_pref(&coordinate)
-        .created_at(created_at)
-        .sign(secret)
-        .build()
-    else {
-        return;
-    };
-    ingest_pns(ndb, &inner, secret, publisher);
-}
-
-/// PNS-wrap a signed `inner` note and ingest the kind-1080 wrapper into the local
-/// nostrdb, then publish it. The crypto + wrapper construction lives in
-/// [`nostrdb_net::pns::wrap`]; this only adds the app-specific ingest/publish glue (the
-/// [`Publisher`] seam differs per crate, so it can't be shared). nostrdb
-/// transparently unwraps the envelope on read once the account key is registered
-/// via `Ndb::add_key`, so the inner note stays queryable. Returns the inner note's
-/// id.
-pub(crate) fn ingest_pns(
-    ndb: &Ndb,
-    inner: &Note,
-    device_secret: &[u8; 32],
-    publisher: &mut dyn Publisher,
-) -> Option<NoteId> {
-    let inner_id = NoteId::new(*inner.id());
-    let pns_keys = nostrdb_net::pns::derive_pns_keys(device_secret);
-    let wrapper = nostrdb_net::pns::wrap(&pns_keys, &inner.json().ok()?, now_secs())?;
-    let frame = nostrdb_net::ClientMessage::event(&wrapper)
-        .ok()?
-        .to_json()
-        .ok()?;
-    ndb.process_event_with(&frame, IngestMetadata::new().client(true))
-        .ok()?;
-    publisher.publish(&frame);
-    Some(inner_id)
+    after: u64,
+) -> u64 {
+    private_note::write(
+        ndb,
+        secret,
+        event::board_pref_slot(author),
+        &coord.coordinate(),
+        after,
+    )
+    .unwrap_or(after)
 }
 
 /// The default columns a fresh board is seeded with. `In Review` and `Done` are
@@ -4736,11 +4708,11 @@ mod tests {
         // Nothing saved yet.
         assert_eq!(event::load_board_pref(&ndb, &kp.pubkey), None);
 
-        save_board_pref(&ndb, &kp.pubkey, &secret, &work, &mut NoPublish);
+        let stamp = save_board_pref(&ndb, &kp.pubkey, &secret, &work, 0);
         wait_pref(&ndb, &mut stream, &kp.pubkey, &work).await;
 
         // A later save supersedes the previous revision latest-wins.
-        save_board_pref(&ndb, &kp.pubkey, &secret, &personal, &mut NoPublish);
+        save_board_pref(&ndb, &kp.pubkey, &secret, &personal, stamp);
         wait_pref(&ndb, &mut stream, &kp.pubkey, &personal).await;
     }
 
@@ -4764,12 +4736,8 @@ mod tests {
         let mut stream = SubscriptionStream::new(ndb.clone(), sub).notes_per_await(64);
 
         // Hand-write the legacy note: its content is a bare slug, not a coordinate.
-        let inner = event::build_board_pref("work")
-            .created_at(1)
-            .sign(&secret)
-            .build()
-            .expect("build legacy pref");
-        ingest_pns(&ndb, &inner, &secret, &mut NoPublish);
+        private_note::write(&ndb, &secret, event::board_pref_slot(&kp.pubkey), "work", 0)
+            .expect("write legacy pref");
 
         // It resolves to an own-board coordinate.
         let want = event::BoardCoord::new(*kp.pubkey.bytes(), "work");

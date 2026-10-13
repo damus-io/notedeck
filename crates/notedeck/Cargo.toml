@@ -18,6 +18,7 @@ dirs = { workspace = true }
 enostr = { workspace = true }
 nostr = { workspace = true }
 nostrdb_net = { workspace = true }
+private_note = { workspace = true }
 egui = { workspace = true }
 egui_nav = { workspace = true }
 egui_extras = { workspace = true }

@@ -3968,6 +3968,7 @@ dependencies = [
  "nostr 0.37.0",
  "nostrdb",
  "nostrdb_net",
+ "private_note",
  "profiling",
  "serde",
  "serde_json",
@@ -5804,6 +5805,7 @@ dependencies = [
  "nwc",
  "once_cell",
  "poll-promise",
+ "private_note",
  "profiling",
  "puffin",
  "puffin_egui",
@@ -5867,6 +5869,7 @@ dependencies = [
  "notedeck_wasm",
  "objc2 0.5.2",
  "oot_bitset",
+ "private_note",
  "profiling",
  "puffin",
  "puffin_egui",
@@ -7447,6 +7450,17 @@ checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "private_note"
+version = "0.11.0-beta.1"
+dependencies = [
+ "nostrdb",
+ "nostrdb_net",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

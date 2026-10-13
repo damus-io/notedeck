@@ -18,7 +18,6 @@ use headway::query::{
     BuiltinView, DisplayProp, DisplayProps, IssueFilter, ListGroup, ListQuery, ListRow, SortBy,
     ViewSpec, group, list, ready_set,
 };
-use headway::store::NoPublish;
 use headway::views::{SavedView, find_view, new_slug};
 use nostrdb::Ndb;
 use nostrdb_net::Pubkey;
@@ -235,7 +234,7 @@ pub(crate) fn save_named_view(
             ..spec
         },
     };
-    headway::views::save_view(ndb, author, secret, &view, &mut NoPublish);
+    headway::views::save_view(ndb, author, secret, &view, 0);
     if json {
         println!(
             "{}",
@@ -256,7 +255,7 @@ pub(crate) fn delete_named_view(
     name: &str,
 ) -> Result<()> {
     let view = find_view(saved, name).ok_or_else(|| format!("no saved view named '{name}'"))?;
-    headway::views::delete_view(ndb, author, secret, &view.slug, &mut NoPublish);
+    headway::views::delete_view(ndb, author, secret, &view.slug, 0);
     println!("deleted view '{}'", view.spec.name);
     Ok(())
 }

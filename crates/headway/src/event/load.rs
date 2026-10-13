@@ -7,9 +7,9 @@ use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
 
 use super::kinds::{
-    HEADWAY_KINDS, KIND_BLOCKERS, KIND_BOARD, KIND_BOARD_PREF, KIND_COMMENT, KIND_COVER_NOTE,
-    KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW,
-    KIND_SEQUENCE, KIND_VIEW,
+    BOARD_PREF_D, HEADWAY_KINDS, KIND_BLOCKERS, KIND_BOARD, KIND_BOARD_PREF, KIND_COMMENT,
+    KIND_COVER_NOTE, KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION,
+    KIND_REVIEW, KIND_SEQUENCE,
 };
 use super::model::BoardCoord;
 use super::parse::{BlockerSet, RelatedSet, parse, parse_blockers, parse_related};
@@ -17,23 +17,23 @@ use super::reduce::BoardReducer;
 use super::resolve::pick_board;
 use super::view::BoardView;
 
-/// A filter for `author`'s board-preference note (kind 30623). Kind 30623 is
-/// replaceable, so nostrdb returns revisions newest-first — [`load_board_pref`]
-/// takes the first, which is the winning (latest) one.
-fn board_pref_filter(author: &Pubkey) -> Filter {
-    Filter::new()
-        .authors([author.bytes()])
-        .kinds([KIND_BOARD_PREF as u64])
-        .limit(1)
-        .build()
+/// `author`'s board-preference slot: the one kind-30623 note, `d` =
+/// [`BOARD_PREF_D`], that [`load_board_pref`] reads and
+/// [`crate::store::save_board_pref`] writes.
+pub fn board_pref_slot(author: &Pubkey) -> private_note::Slot<'_> {
+    private_note::Slot {
+        author,
+        kind: KIND_BOARD_PREF,
+        d: BOARD_PREF_D,
+    }
 }
 
 /// The [`BoardCoord`] `author` last selected, or `None` if none was ever saved
 /// (or the account is watch-only, so nostrdb can't unwrap the PNS envelope). The
-/// newest revision wins — the same latest-wins read as the notebook's
-/// `load_longform`. The note is stored PNS-wrapped, but nostrdb has already
-/// unwrapped it on read (the account key is registered via `Ndb::add_key` at
-/// sign-in), so this only ever sees the inner note.
+/// newest revision wins, read by [`private_note::latest`]. The note is stored
+/// PNS-wrapped, but nostrdb has already unwrapped it on read (the account key is
+/// registered via `Ndb::add_key` at sign-in), so this only ever sees the inner
+/// note.
 ///
 /// The content is the selected board's coordinate. A legacy note whose content is
 /// a bare slug — written before selection became coordinate-aware — is read as an
@@ -41,99 +41,13 @@ fn board_pref_filter(author: &Pubkey) -> Filter {
 /// without a migration.
 pub fn load_board_pref(ndb: &Ndb, author: &Pubkey) -> Option<BoardCoord> {
     let txn = Transaction::new(ndb).ok()?;
-    let content = ndb
-        .query(&txn, &[board_pref_filter(author)], 1)
-        .ok()?
-        .into_iter()
-        .next()
-        .map(|r| r.note.content().to_string())
-        .filter(|c| !c.is_empty())?;
+    let content = private_note::latest(ndb, &txn, board_pref_slot(author))?.content;
+    if content.is_empty() {
+        return None;
+    }
     Some(match BoardCoord::parse(&content) {
         Some(coord) => coord,
         None => BoardCoord::new(*author.bytes(), content),
-    })
-}
-
-/// The `created_at` of `author`'s current board-preference note, or 0 if none —
-/// the supersede baseline the next save stamps strictly past (see
-/// [`crate::store::save_board_pref`]) so a same-second re-save still wins.
-pub fn board_pref_created_at(ndb: &Ndb, author: &Pubkey) -> u64 {
-    Transaction::new(ndb)
-        .ok()
-        .and_then(|txn| {
-            ndb.query(&txn, &[board_pref_filter(author)], 1)
-                .ok()?
-                .into_iter()
-                .next()
-                .map(|r| r.note.created_at())
-        })
-        .unwrap_or(0)
-}
-
-/// The winning revision of one of `author`'s saved list views (kind 30626),
-/// as stored: its slug, its JSON content (empty for a deleted view) and when
-/// it was written. Decoding the content is [`crate::views`]' business.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ViewNote {
-    /// The view's `d` tag.
-    pub slug: String,
-    /// The view's spec as JSON; empty for a tombstone.
-    pub content: String,
-    /// When this revision was written: the supersede baseline the next save
-    /// of the same slug stamps strictly past.
-    pub created_at: u64,
-}
-
-/// How many view revisions [`view_notes`] reads. nostrdb keeps every revision
-/// of a replaceable note, so this bounds a fold over a long edit history.
-const VIEW_REVISIONS: i32 = 4096;
-
-/// Every saved list view `author` has written, latest-wins per slug,
-/// tombstones included (so a re-save of a deleted slug still stamps past it),
-/// in slug order. Like [`load_board_pref`], the notes are stored PNS-wrapped
-/// and nostrdb has already unwrapped them on read.
-pub fn view_notes(ndb: &Ndb, author: &Pubkey) -> Vec<ViewNote> {
-    let Ok(txn) = Transaction::new(ndb) else {
-        return Vec::new();
-    };
-    let filter = Filter::new()
-        .authors([author.bytes()])
-        .kinds([KIND_VIEW as u64])
-        .limit(VIEW_REVISIONS as u64)
-        .build();
-    let Ok(results) = ndb.query(&txn, &[filter], VIEW_REVISIONS) else {
-        return Vec::new();
-    };
-    let mut latest: std::collections::BTreeMap<String, ViewNote> = Default::default();
-    for result in results {
-        let note = result.note;
-        let Some(slug) = d_tag(&note) else {
-            continue;
-        };
-        if latest
-            .get(slug)
-            .is_some_and(|have| have.created_at >= note.created_at())
-        {
-            continue;
-        }
-        latest.insert(
-            slug.to_string(),
-            ViewNote {
-                slug: slug.to_string(),
-                content: note.content().to_string(),
-                created_at: note.created_at(),
-            },
-        );
-    }
-    latest.into_values().collect()
-}
-
-/// `note`'s `d` tag value, when it's a string.
-fn d_tag<'a>(note: &Note<'a>) -> Option<&'a str> {
-    note.tags().iter().find_map(|tag| {
-        (tag.count() >= 2 && tag.get_str(0) == Some("d"))
-            .then(|| tag.get_str(1))
-            .flatten()
     })
 }
 
@@ -143,7 +57,7 @@ fn d_tag<'a>(note: &Note<'a>) -> Option<&'a str> {
 /// edges the fold couldn't resolve (e.g. a cross-board blocker) — reconstructing
 /// from the resolved view would silently discard them. The returned
 /// [`BlockerSet::created_at`] is the supersede baseline the next write stamps
-/// strictly past (see [`crate::store`]). Mirrors [`board_pref_created_at`].
+/// strictly past (see [`crate::store`]).
 pub fn current_blockers(ndb: &Ndb, author: &Pubkey, blocked: &NoteId) -> Option<BlockerSet> {
     let txn = Transaction::new(ndb).ok()?;
     // Keyed by the `#e` id-tag, not `#d`: the blocked card's id is 64-char hex, so
@@ -157,7 +71,7 @@ pub fn current_blockers(ndb: &Ndb, author: &Pubkey, blocked: &NoteId) -> Option<
         .limit(1)
         .build();
     // nostrdb returns replaceable revisions newest-first, so the first match is
-    // the winning (latest) set — the same read as [`board_pref_created_at`].
+    // the winning (latest) set.
     let note = ndb.query(&txn, &[filter], 1).ok()?.into_iter().next()?.note;
     parse_blockers(&note)
 }

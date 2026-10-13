@@ -32,6 +32,7 @@ members = [
     "crates/notedeck_wasm",
     "crates/notedeck_release",
     "crates/notedeck_testing",
+    "crates/private_note",
 ]
 
 [workspace.dependencies]
@@ -106,6 +107,7 @@ notedeck_headway = { path = "crates/notedeck_headway" }
 notedeck_nostrverse = { path = "crates/notedeck_nostrverse" }
 renderbud = { path = "crates/renderbud", features = ["egui"] }
 notedeck_ui = { path = "crates/notedeck_ui" }
+private_note = { path = "crates/private_note" }
 notedeck_testing = { path = "crates/notedeck_testing" }
 notedeck_wasm = { path = "crates/notedeck_wasm" }
 tokenator = { path = "crates/tokenator" }

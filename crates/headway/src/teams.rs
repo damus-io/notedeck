@@ -610,7 +610,7 @@ mod tests {
             &me.pubkey,
             &secret,
             &crate::event::BoardCoord::new(*me.pubkey.bytes(), "tune-assistant"),
-            &mut crate::store::NoPublish,
+            0,
         );
         ndb.wait_for_all_notes_within(pns_sub, 2, Duration::from_secs(5))
             .await

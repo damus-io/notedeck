@@ -33,18 +33,7 @@ use crate::{
 };
 
 /// Errors from [`write_private_note`], the host-owned outbound write path.
-#[derive(Debug, thiserror::Error)]
-pub enum PrivateWriteError {
-    /// PNS encryption or 1080-envelope signing failed (see [`nostrdb_net::pns::wrap`]).
-    #[error("PNS wrap failed")]
-    Wrap,
-    /// Serializing the signed 1080 envelope back to JSON failed.
-    #[error("envelope serialization failed: {0}")]
-    Serialize(String),
-    /// nostrdb rejected the envelope ingest frame.
-    #[error("ndb ingest failed: {0}")]
-    Ingest(String),
-}
+pub use private_note::WriteError as PrivateWriteError;
 
 /// Author a private note for the selected account: PNS-wrap a signed inner event
 /// into a kind-1080 envelope and ingest it into the local nostrdb.
@@ -61,13 +50,10 @@ pub enum PrivateWriteError {
 ///   ([`HostPrivateSync::fan_out_local_envelopes`]), so the user's other devices
 ///   see it.
 ///
-/// `secret_key` is the account's 32-byte device secret; its PNS keypair is
-/// derived here ([`nostrdb_net::pns::derive_pns_keys`]). With no private relay marked
-/// the fan-out is a no-op and the note simply stays local.
-///
-/// The 3-element `["EVENT","_pns",{…}]` relay frame drives nostrdb's PNS-unwrap
-/// ingest path; the `"_pns"` subid is a local marker (the envelope carries no
-/// seen-on relay, so the fan-out publishes it to every private relay).
+/// `secret_key` is the account's 32-byte device secret. With no private relay
+/// marked the fan-out is a no-op and the note simply stays local. The wrap and
+/// the ingest are [`private_note::ingest`]; an app keeping a latest-wins note
+/// writes it with [`private_note::write`], which stamps it and comes here.
 ///
 /// Designed as the convergence point for every app's private write: dave's
 /// session events today, notebook/headway private documents later.
@@ -76,14 +62,7 @@ pub fn write_private_note(
     secret_key: &[u8; 32],
     inner_json: &str,
 ) -> Result<(), PrivateWriteError> {
-    let pns_keys = nostrdb_net::pns::derive_pns_keys(secret_key);
-    let envelope = nostrdb_net::pns::wrap(&pns_keys, inner_json, crate::time::unix_time_secs())
-        .ok_or(PrivateWriteError::Wrap)?;
-    let envelope_json = envelope
-        .json()
-        .map_err(|e| PrivateWriteError::Serialize(e.to_string()))?;
-    ndb.process_event(&format!("[\"EVENT\",\"_pns\",{envelope_json}]"))
-        .map_err(|e| PrivateWriteError::Ingest(e.to_string()))
+    private_note::ingest(ndb, secret_key, inner_json)
 }
 
 /// Fan a single locally-ingested `["EVENT", {…}]` frame out to `relays` as a

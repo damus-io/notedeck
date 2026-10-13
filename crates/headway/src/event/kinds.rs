@@ -47,7 +47,7 @@ pub const KIND_BOARD_PREF: u32 = 30623;
 
 /// The fixed `d` tag on every [`KIND_BOARD_PREF`] note: one preference slot per
 /// account, superseded latest-wins on each board switch.
-pub(super) const BOARD_PREF_D: &str = "selected-board";
+pub(crate) const BOARD_PREF_D: &str = "selected-board";
 
 /// Headway card blockers: addressable, `d` = the blocked issue id, carrying zero
 /// or more `blocked-by` tags each naming a blocker's issue event id. The set is a

@@ -5,9 +5,8 @@ use nostrdb::{NoteBuildOptions, NoteBuilder};
 use nostrdb_net::{NoteId, Pubkey};
 
 use super::kinds::{
-    BOARD_PREF_D, KIND_BLOCKERS, KIND_BOARD, KIND_BOARD_PREF, KIND_COMMENT, KIND_COVER_NOTE,
-    KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW,
-    KIND_SEQUENCE, KIND_VIEW, NS_SUBJECT, NS_TAG,
+    KIND_BLOCKERS, KIND_BOARD, KIND_COMMENT, KIND_COVER_NOTE, KIND_ISSUE, KIND_LABEL,
+    KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW, KIND_SEQUENCE, NS_SUBJECT, NS_TAG,
 };
 use super::model::{COL_ARCHIVED, ColumnDef, Field, LineSide, ReviewFields, ReviewLocation};
 use super::parse::Container;
@@ -76,30 +75,6 @@ pub fn build_board_def<'a>(
     }
 
     b
-}
-
-/// Build the per-account board-selection preference note (kind 30623): a
-/// parameterized-replaceable note whose content is the selected board's
-/// coordinate ([`BoardCoord::coordinate`](super::BoardCoord::coordinate)) and whose fixed `d` ([`BOARD_PREF_D`])
-/// makes each save supersede the last. The caller signs it with the account key
-/// and PNS-wraps it — see [`crate::store::save_board_pref`], which owns the
-/// `coordinate` string this borrows.
-pub fn build_board_pref(coordinate: &str) -> NoteBuilder<'_> {
-    base(KIND_BOARD_PREF, coordinate)
-        .start_tag()
-        .tag_str("d")
-        .tag_str(BOARD_PREF_D)
-}
-
-/// Build a saved list view note (kind 30626): parameterized-replaceable under
-/// `d` = `slug`, so a re-save supersedes the last. `content` is the view's
-/// spec as JSON, or empty to delete it. The caller signs it with the account
-/// key and PNS-wraps it — see [`crate::views::save_view`].
-pub fn build_view<'a>(slug: &str, content: &'a str) -> NoteBuilder<'a> {
-    base(KIND_VIEW, content)
-        .start_tag()
-        .tag_str("d")
-        .tag_str(slug)
 }
 
 /// Build a card (NIP-34 issue, kind 1621) anchored to `board_addr`. The body is

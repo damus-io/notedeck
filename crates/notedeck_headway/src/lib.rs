@@ -126,6 +126,14 @@ pub struct Headway {
     /// card that leaves the board takes its history entries with it (see
     /// [`SeenCards`]).
     seen_cards: SeenCards,
+    /// The stamp of the last board-preference save, passed back as the next
+    /// save's `after` (see [`store::save_board_pref`]): rapid board switching
+    /// saves again before the last save is ingested, and only this keeps the
+    /// two from tying in the same second.
+    pref_stamp: u64,
+    /// The stamp of the last saved-view write, passed back the same way (see
+    /// [`headway::views::save_view`]) so two quick view edits don't tie.
+    view_stamp: u64,
 }
 
 impl Default for Headway {
@@ -145,6 +153,8 @@ impl Default for Headway {
             pending_selfshares: Vec::new(),
             board_cache: Rc::new(RefCell::new(BoardCache::default())),
             seen_cards: SeenCards::default(),
+            pref_stamp: 0,
+            view_stamp: 0,
         }
     }
 }
@@ -462,12 +472,12 @@ impl Headway {
                 .selected_filled()
                 .map(|f| f.secret_key.secret_bytes())
             {
-                store::save_board_pref(
+                self.pref_stamp = store::save_board_pref(
                     ctx.ndb,
                     author,
                     &secret,
                     self.active(),
-                    &mut store::NoPublish,
+                    self.pref_stamp,
                 );
             }
             self.wake();
@@ -1249,15 +1259,15 @@ impl Headway {
                     let Some(secret) = signer else {
                         continue;
                     };
-                    let publish = &mut store::NoPublish;
-                    match edit {
+                    let after = self.view_stamp;
+                    self.view_stamp = match edit {
                         ViewEdit::Save(view) => {
-                            headway::views::save_view(ctx.ndb, author, secret, &view, publish)
+                            headway::views::save_view(ctx.ndb, author, secret, &view, after)
                         }
                         ViewEdit::Delete(slug) => {
-                            headway::views::delete_view(ctx.ndb, author, secret, &slug, publish)
+                            headway::views::delete_view(ctx.ndb, author, secret, &slug, after)
                         }
-                    }
+                    };
                 }
             }
         }
@@ -1390,12 +1400,12 @@ impl Headway {
             BoardNav::Switch(coord) => {
                 self.active = Some(coord);
                 if let Some(secret) = signer {
-                    store::save_board_pref(
+                    self.pref_stamp = store::save_board_pref(
                         ctx.ndb,
                         author,
                         secret,
                         self.active(),
-                        &mut store::NoPublish,
+                        self.pref_stamp,
                     );
                 }
                 self.wake();
@@ -1425,13 +1435,8 @@ impl Headway {
                 self.create_board(ctx.ndb, author, secret, &slug, &title);
                 // A new board is ours: coordinate owner = the account.
                 self.active = Some(event::BoardCoord::new(*author.bytes(), slug));
-                store::save_board_pref(
-                    ctx.ndb,
-                    author,
-                    secret,
-                    self.active(),
-                    &mut store::NoPublish,
-                );
+                self.pref_stamp =
+                    store::save_board_pref(ctx.ndb, author, secret, self.active(), self.pref_stamp);
                 self.wake();
             }
             // A delete needs the folded board and its channel, so
