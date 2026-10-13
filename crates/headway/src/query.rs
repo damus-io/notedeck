@@ -577,8 +577,9 @@ pub enum GroupBy {
     /// No groups: one flat list.
     #[default]
     None,
-    /// By column, matched by name across boards: In Progress, In Review,
-    /// the other open columns nearest In Progress first, done last.
+    /// By column, matched by name across boards: In Progress, then the
+    /// terminal columns before the last (In Review), the other open columns
+    /// nearest In Progress first, the last terminal column (Done) last.
     Status,
     /// By priority, Urgent first and "No priority" last.
     Priority,
@@ -903,21 +904,24 @@ struct SeededStatus {
 /// Where a column's status group goes: the work in flight first, then
 /// what's next to be picked up, then what's finished. In Progress leads
 /// because it should hold the fewest cards, and it is what is being
-/// worked on now. In Review follows (Linear puts it first). The other
-/// open columns come next, nearest In Progress first, so Todo comes
-/// before Backlog. The remaining done columns come last, in board order.
+/// worked on now. The terminal columns before a board's last one (In
+/// Review) follow (Linear puts In Review first). The other open columns
+/// come next, nearest In Progress first, so Todo comes before Backlog. The
+/// board's last terminal column (Done) comes last. Read from the terminal
+/// flags, not column names, so a board's own columns order the same way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum StatusOrder {
     /// An In Progress column.
     InProgress,
-    /// A review column (`in-review`, or any named "…review…").
+    /// A terminal column before the board's last terminal column: work
+    /// that's finished but not done with, like In Review.
     InReview,
     /// Another open column, by how many columns before its board's In
     /// Progress column it sits (or before its first terminal column, on a
     /// board without one). A distance, unlike a raw position, compares
     /// across boards: Backlog is 2 wherever it sits.
     Open(usize),
-    /// Another terminal column, by board position.
+    /// The board's last terminal column (Done), by board position.
     Done(usize),
 }
 
@@ -926,10 +930,16 @@ impl StatusOrder {
     fn of(board: &BoardView, column: &ColumnView, at: usize) -> StatusOrder {
         if column.is_in_progress() {
             StatusOrder::InProgress
-        } else if column.id == "in-review" || column.name.to_lowercase().contains("review") {
-            StatusOrder::InReview
         } else if board.column_is_terminal(&column.id) {
-            StatusOrder::Done(at)
+            let last = board
+                .columns
+                .iter()
+                .rposition(|c| board.column_is_terminal(&c.id));
+            if last == Some(at) {
+                StatusOrder::Done(at)
+            } else {
+                StatusOrder::InReview
+            }
         } else {
             let anchor = board
                 .columns
@@ -2104,10 +2114,8 @@ mod tests {
             0,
             column("backlog", "Backlog", false, vec![card(5, "e", &[])]),
         );
-        two.columns.insert(
-            3,
-            column("review", "Review", false, vec![card(4, "d", &[])]),
-        );
+        two.columns
+            .insert(3, column("review", "Review", true, vec![card(4, "d", &[])]));
         let boards = [one, two];
         let refs: Vec<&BoardView> = boards.iter().collect();
         let rows = list(&boards, &ListQuery::default());
