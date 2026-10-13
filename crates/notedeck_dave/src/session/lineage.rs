@@ -137,15 +137,53 @@ fn attach(node: &Node<'_>, nodes: &HashMap<SessionId, Node<'_>>) -> Attach {
     }
 }
 
+/// A line the scene map draws between two sessions for how one spawned the
+/// other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Edge {
+    /// The spawner.
+    pub from: SessionId,
+    /// The session it spawned.
+    pub to: SessionId,
+    pub kind: EdgeKind,
+}
+
+/// How an [`Edge`]'s sessions are related.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeKind {
+    /// A child session, tethered to the session that spawned it.
+    Child,
+    /// Work handed into a successor chain: the chain's first link spawning
+    /// its second.
+    Handoff,
+    /// One link of a successor chain to the next, after the handoff into it.
+    Chain,
+}
+
+/// The result of walking the lineage once: every node's [`Entry`] for the
+/// list, and the [`Edge`]s for the map.
+pub(crate) struct Lineage {
+    pub entries: Vec<Entry>,
+    pub edges: Vec<Edge>,
+}
+
 /// Every node's [`Entry`], each with its nested sessions and chain links in
 /// draw order: a session, then its subagents and children (oldest first,
 /// recursively), then the next link of its chain. A spawn loop, which no
 /// real lineage has, is cut where it closes, so the walk always ends.
+#[cfg(test)]
 pub(crate) fn entries(nodes: &[Node<'_>]) -> Vec<Entry> {
+    walk(nodes).entries
+}
+
+/// Walk `nodes`' lineage into list [`Entry`]s (see [`entries`]) and map
+/// [`Edge`]s. A subagent draws no edge: it orbits its parent instead.
+pub(crate) fn walk(nodes: &[Node<'_>]) -> Lineage {
     let by_id: HashMap<SessionId, Node<'_>> = nodes.iter().map(|n| (n.id, *n)).collect();
     let mut attached: HashMap<SessionId, Attach> =
         nodes.iter().map(|n| (n.id, attach(n, &by_id))).collect();
     cut_loops(&mut attached);
+    let edges = edges(&attached);
 
     let mut kids: HashMap<SessionId, Vec<Kid>> = HashMap::new();
     for (&id, a) in &attached {
@@ -163,10 +201,43 @@ pub(crate) fn entries(nodes: &[Node<'_>]) -> Vec<Entry> {
         .map(|(&id, _)| id)
         .collect();
     roots.sort_unstable();
-    roots
+    let entries = roots
         .into_iter()
         .map(|root| entry(root, &kids, &by_id))
-        .collect()
+        .collect();
+    Lineage { entries, edges }
+}
+
+/// The map's edge for each attached session, sorted so the list is stable
+/// across walks. A chain link whose spawner is itself a link continues the
+/// chain; one whose spawner isn't is the handoff into it.
+fn edges(attached: &HashMap<SessionId, Attach>) -> Vec<Edge> {
+    let mut edges: Vec<Edge> = attached
+        .iter()
+        .filter_map(|(&to, a)| {
+            let Attach::Under { parent, nesting } = *a else {
+                return None;
+            };
+            let kind = match nesting {
+                Nesting::Child => EdgeKind::Child,
+                Nesting::Link { .. } => match attached.get(&parent) {
+                    Some(Attach::Under {
+                        nesting: Nesting::Link { .. },
+                        ..
+                    }) => EdgeKind::Chain,
+                    _ => EdgeKind::Handoff,
+                },
+                Nesting::Subagent | Nesting::Top => return None,
+            };
+            Some(Edge {
+                from: parent,
+                to,
+                kind,
+            })
+        })
+        .collect();
+    edges.sort_unstable_by_key(|e| e.to);
+    edges
 }
 
 /// Make every node whose spawner chain leads back to itself top-level.
@@ -492,6 +563,38 @@ mod tests {
                 drawn(9, Nesting::Subagent, 1),
                 drawn(3, done, 0),
                 drawn(4, Nesting::Link { handed_on: false }, 0),
+            ]
+        );
+    }
+
+    /// The map draws the handoff into a chain, then chain links between its
+    /// later links, a tether to a child, and nothing for a subagent or a
+    /// plain spawn.
+    #[test]
+    fn edges_name_the_handoff_chain_links_and_children() {
+        let cards = ["headway:dave/a", "headway:dave/b", "headway:dave/c"];
+        let n1 = on_card(1, cards[0], Some(EPIC));
+        let n2 = spawned(
+            on_card(2, cards[1], Some(EPIC)),
+            1,
+            SessionRelation::Successor,
+        );
+        // Inferred: sibling cards under one epic.
+        let n3 = spawned(on_card(3, cards[2], Some(EPIC)), 2, SessionRelation::None);
+        let child = spawned(node(5), 3, SessionRelation::Child);
+        let sub = Node {
+            subagent: true,
+            ..spawned(node(6), 3, SessionRelation::Child)
+        };
+        let plain = spawned(node(7), 1, SessionRelation::None);
+        let edges = walk(&[plain, sub, child, n3, n2, n1]).edges;
+        let edge = |from, to, kind| Edge { from, to, kind };
+        assert_eq!(
+            edges,
+            vec![
+                edge(1, 2, EdgeKind::Handoff),
+                edge(2, 3, EdgeKind::Chain),
+                edge(3, 5, EdgeKind::Child),
             ]
         );
     }

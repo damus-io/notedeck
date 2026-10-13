@@ -27,6 +27,7 @@ pub mod reference;
 pub mod render;
 mod restore;
 mod run_configs;
+pub mod scene_edges;
 pub mod scene_layout;
 pub mod session;
 pub mod session_cache;

@@ -2117,7 +2117,7 @@ pub fn from_session_message_ui(
 
 /// The accent of a message another session sent: its card's outline and its
 /// "from" header (see [`from_session_message_ui`]).
-const FROM_SESSION_VIOLET: egui::Color32 = egui::Color32::from_rgb(0xA9, 0x8B, 0xF0);
+pub(crate) const FROM_SESSION_VIOLET: egui::Color32 = egui::Color32::from_rgb(0xA9, 0x8B, 0xF0);
 
 /// A `user` message's content, shared by the bubble a person's message sits in
 /// and the card another session's does: its images, its text as ref-aware

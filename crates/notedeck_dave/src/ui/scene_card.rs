@@ -1,6 +1,6 @@
 //! The card the scene map shows beside a hovered session's node: its code
 //! and full title, where it runs, its status and age, its worktree's git
-//! +/- and its subagents.
+//! +/-, the messages it sent and received and its subagents.
 //!
 //! Its text is built when the hovered session or anything the card says
 //! about it changes, and kept on the [`AgentScene`](super::AgentScene)
@@ -11,9 +11,11 @@ use std::hash::{Hash, Hasher};
 use egui::{Color32, RichText};
 use headway::title::TitleParts;
 
+use super::dave::FROM_SESSION_VIOLET;
 use super::scene::{node_code, shown_title};
 use super::session_list::{age_text, git_lines, GitLines, GIT_ADDED_COLOR, GIT_DELETED_COLOR};
 use crate::agent_status::AgentStatus;
+use crate::scene_edges::MessageLine;
 use crate::session::{now_unix, ChatSession, SessionId, SessionManager};
 
 /// A hovered session's card text, as last built.
@@ -29,6 +31,8 @@ pub struct HoverCard {
     /// Time since the session's last activity, empty when there was none.
     age: String,
     git: Option<GitLines>,
+    /// `2 received from QA2 · 1 sent`, empty when it has none.
+    messages: String,
     subagents: Vec<SubagentLine>,
 }
 
@@ -49,11 +53,12 @@ impl HoverCard {
     pub fn cached<'s>(
         slot: &'s mut Option<HoverCard>,
         sessions: &SessionManager,
+        messages: &[MessageLine],
         session: &ChatSession,
     ) -> &'s HoverCard {
-        let key = Self::key(sessions, session, now_unix());
+        let key = Self::key(sessions, messages, session, now_unix());
         if slot.as_ref().is_none_or(|card| card.key != key) {
-            *slot = Some(Self::build(key, sessions, session));
+            *slot = Some(Self::build(key, sessions, messages, session));
         }
         slot.as_ref().expect("hover card was just built")
     }
@@ -61,7 +66,12 @@ impl HoverCard {
     /// A hash of what the card for `session` says at `now`, computed without
     /// allocating. The age goes in by the minute, so a card shown for a
     /// while is rebuilt at most once a minute.
-    fn key(sessions: &SessionManager, session: &ChatSession, now: u64) -> u64 {
+    fn key(
+        sessions: &SessionManager,
+        messages: &[MessageLine],
+        session: &ChatSession,
+        now: u64,
+    ) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         session.id.hash(&mut h);
         shown_title(session, &sessions.card_titles).hash(&mut h);
@@ -73,6 +83,14 @@ impl HoverCard {
             .map(|t| now.saturating_sub(t) / 60)
             .hash(&mut h);
         git_lines(session).hash(&mut h);
+        for line in messages
+            .iter()
+            .filter(|l| l.from == session.id || l.to == session.id)
+        {
+            line.from.hash(&mut h);
+            line.to.hash(&mut h);
+            line.count.hash(&mut h);
+        }
         for sub in subagents_of(sessions, session.id) {
             sub.id.hash(&mut h);
             sub.status().hash(&mut h);
@@ -81,7 +99,12 @@ impl HoverCard {
         h.finish()
     }
 
-    fn build(key: u64, sessions: &SessionManager, session: &ChatSession) -> Self {
+    fn build(
+        key: u64,
+        sessions: &SessionManager,
+        messages: &[MessageLine],
+        session: &ChatSession,
+    ) -> Self {
         let title = shown_title(session, &sessions.card_titles);
         let parts = TitleParts::split(title);
         let ws = session.workspace();
@@ -106,6 +129,7 @@ impl HoverCard {
             status: session.status(),
             age,
             git: git_lines(session),
+            messages: messages_text(sessions, messages, session.id),
             subagents: subagents_of(sessions, session.id)
                 .map(|sub| SubagentLine {
                     title: sub.details.display_title().to_owned(),
@@ -180,6 +204,22 @@ impl HoverCard {
             );
         }
 
+        if !self.messages.is_empty() {
+            row(
+                ui,
+                |ui| {
+                    ui.label(RichText::new("messages").size(11.0).color(weak));
+                },
+                |ui| {
+                    ui.label(
+                        RichText::new(&self.messages)
+                            .size(11.0)
+                            .color(FROM_SESSION_VIOLET),
+                    );
+                },
+            );
+        }
+
         if self.subagents.is_empty() {
             return;
         }
@@ -230,4 +270,81 @@ fn subagents_of(
             .as_ref()
             .is_some_and(|link| link.parent == parent)
     })
+}
+
+/// What session `id` has sent and received, as the card says it: each
+/// direction's count, naming the other session's code when there is only
+/// one. `2 received from QA2 · 1 sent`, or empty for none.
+fn messages_text(sessions: &SessionManager, lines: &[MessageLine], id: SessionId) -> String {
+    let mut text = String::new();
+    let received = Direction {
+        verb: "received",
+        preposition: "from",
+    };
+    received.push(
+        &mut text,
+        sessions,
+        lines.iter().filter(|l| l.to == id).map(|l| Peer {
+            id: l.from,
+            count: l.count,
+        }),
+    );
+    let sent = Direction {
+        verb: "sent",
+        preposition: "to",
+    };
+    sent.push(
+        &mut text,
+        sessions,
+        lines.iter().filter(|l| l.from == id).map(|l| Peer {
+            id: l.to,
+            count: l.count,
+        }),
+    );
+    text
+}
+
+/// The session on the other end of a message line, and how many messages
+/// went along it.
+struct Peer {
+    id: SessionId,
+    count: usize,
+}
+
+/// One direction of a session's messages, as [`messages_text`] words it.
+struct Direction {
+    verb: &'static str,
+    preposition: &'static str,
+}
+
+impl Direction {
+    /// Append `3 sent`, or `1 sent to QA2` when there is one peer, to
+    /// `text`, after a separator if it isn't empty. Nothing for no peers.
+    fn push(
+        &self,
+        text: &mut String,
+        sessions: &SessionManager,
+        mut peers: impl Iterator<Item = Peer>,
+    ) {
+        use std::fmt::Write;
+        let Some(first) = peers.next() else {
+            return;
+        };
+        let mut count = first.count;
+        let mut only = Some(first.id);
+        for peer in peers {
+            count += peer.count;
+            only = None;
+        }
+        if !text.is_empty() {
+            text.push_str(" · ");
+        }
+        let _ = write!(text, "{count} {}", self.verb);
+        let code = only
+            .and_then(|peer| sessions.get(peer))
+            .map(|s| node_code(shown_title(s, &sessions.card_titles)));
+        if let Some(code) = code {
+            let _ = write!(text, " {} {code}", self.preposition);
+        }
+    }
 }

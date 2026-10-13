@@ -1,8 +1,10 @@
 use crate::agent_status::AgentStatus;
 use crate::card_titles::CardTitles;
 use crate::focus_queue::{FocusPriority, FocusQueue};
+use crate::scene_edges::{MessageLine, MessageLines};
 use crate::scene_layout::{AreaKind, EasedLayout, Synced};
-use crate::session::{ChatSession, SessionId, SessionManager};
+use crate::session::{ChatSession, Edge, EdgeKind, SessionId, SessionManager};
+use crate::ui::dave::FROM_SESSION_VIOLET;
 use crate::ui::paint_keybind_hint;
 use crate::ui::scene_card::HoverCard;
 use egui::{Color32, Pos2, Rect, Response, Sense, Vec2};
@@ -27,6 +29,8 @@ pub struct AgentScene {
     map: EasedLayout,
     /// The hover card last shown, kept while its session's data is unchanged.
     hover_card: Option<HoverCard>,
+    /// Which sessions have messaged which, for the map's message lines.
+    messages: MessageLines,
 }
 
 /// State for box/marquee selection
@@ -77,6 +81,7 @@ impl AgentScene {
             focus_pending: None,
             map: EasedLayout::default(),
             hover_card: None,
+            messages: MessageLines::default(),
         }
     }
 
@@ -130,11 +135,15 @@ impl AgentScene {
         let mut response = SceneResponse::default();
 
         let now = ui.input(|i| i.time);
-        if self.map.sync(session_manager, now) == Synced::First {
+        let wall = wall_clock();
+        let synced = self.map.sync(session_manager, now);
+        if synced == Synced::First {
             if let Some(bounds) = self.map.target().bounds() {
                 self.scene_rect = bounds.expand(40.0);
             }
         }
+        self.messages
+            .sync(session_manager, now, wall as u64, synced != Synced::Same);
         if self.map.is_easing(now) {
             ui.ctx().request_repaint();
         }
@@ -180,12 +189,20 @@ impl AgentScene {
         let map = &self.map;
         let hover_card = &mut self.hover_card;
         let titles = &session_manager.card_titles;
+        let edges = MapEdges {
+            lineage: session_manager.lineage_edges(),
+            messages: self.messages.lines(),
+        };
 
         let scene_response =
             egui::Scene::new()
                 .zoom_range(ZOOM_RANGE)
                 .show(ui, &mut scene_rect, |ui| {
                     Self::draw_areas(ui, map, now);
+                    // Over the territories, under the nodes.
+                    if let Some(change) = draw_edges(ui, map, &edges, now, wall) {
+                        next_change = Some(change);
+                    }
 
                     // Empty space: a click deselects, a drag box-selects.
                     // Registered before the nodes so they sit on top of it
@@ -225,7 +242,12 @@ impl AgentScene {
                             }
                         }
                         if agent_response.hovered() {
-                            let card = HoverCard::cached(hover_card, session_manager, session);
+                            let card = HoverCard::cached(
+                                hover_card,
+                                session_manager,
+                                edges.messages,
+                                session,
+                            );
                             card.show(&agent_response);
                         }
                         if agent_response.clicked() {
@@ -505,6 +527,183 @@ impl AgentScene {
     }
 }
 
+/// The lines the map draws between sessions.
+struct MapEdges<'a> {
+    lineage: &'a [Edge],
+    messages: &'a [MessageLine],
+}
+
+/// Draw every edge whose ends are both on the map: lineage edges (handoff,
+/// chain link, child tether) and message lines with any packet travelling
+/// them. Returns when the soonest visible edge next looks different.
+fn draw_edges(
+    ui: &egui::Ui,
+    map: &EasedLayout,
+    edges: &MapEdges<'_>,
+    now: f64,
+    wall: f64,
+) -> Option<f64> {
+    let painter = ui.painter();
+    let line = ui.visuals().text_color();
+    for edge in edges.lineage {
+        let (Some(from), Some(to)) = (map.node(edge.from, now), map.node(edge.to, now)) else {
+            continue;
+        };
+        match edge.kind {
+            EdgeKind::Handoff => {
+                let curve = Curve::bent(from, to);
+                let stroke = egui::Stroke::new(EDGE_WIDTH, line.gamma_multiply(HANDOFF_OPACITY));
+                curve.stroke(painter, stroke);
+                curve.arrowhead(painter, stroke);
+            }
+            EdgeKind::Chain => {
+                painter.line_segment(
+                    [from, to],
+                    egui::Stroke::new(EDGE_WIDTH, line.gamma_multiply(CHAIN_OPACITY)),
+                );
+            }
+            EdgeKind::Child => {
+                dashed_line(
+                    painter,
+                    from,
+                    to,
+                    TETHER_DASH,
+                    egui::Stroke::new(EDGE_WIDTH, line.gamma_multiply(TETHER_OPACITY)),
+                );
+            }
+        }
+    }
+
+    let mut next_change: Option<f64> = None;
+    for msg in edges.messages {
+        let opacity = msg.opacity(wall);
+        if opacity <= 0.0 {
+            continue;
+        }
+        let (Some(from), Some(to)) = (map.node(msg.from, now), map.node(msg.to, now)) else {
+            continue;
+        };
+        let curve = Curve::bent(from, to);
+        if !ui.is_rect_visible(curve.bounds()) {
+            continue;
+        }
+        curve.stroke(
+            painter,
+            egui::Stroke::new(
+                EDGE_WIDTH,
+                FROM_SESSION_VIOLET.gamma_multiply(MESSAGE_OPACITY * opacity),
+            ),
+        );
+        if let Some(t) = msg.packet(now) {
+            // Fades in as it leaves and out as it arrives.
+            let alpha = (t * 6.0).min((1.0 - t) * 6.0).min(1.0);
+            let at = curve.at(t);
+            painter.circle_filled(
+                at,
+                PACKET_GLOW_RADIUS,
+                PACKET_COLOR.gamma_multiply(0.25 * alpha),
+            );
+            painter.circle_filled(at, PACKET_RADIUS, PACKET_COLOR.gamma_multiply(alpha));
+        }
+        if let Some(change) = msg.next_change(now, wall, ANIMATION_FRAME_SECS) {
+            next_change = Some(next_change.map_or(change, |c| c.min(change)));
+        }
+    }
+    next_change
+}
+
+/// A quadratic curve from one node to another, bent to one side of the
+/// chord so lines between the same nodes in opposite directions don't
+/// overlap.
+#[derive(Clone, Copy)]
+struct Curve {
+    from: Pos2,
+    ctrl: Pos2,
+    to: Pos2,
+}
+
+impl Curve {
+    /// Bent perpendicular to the chord by a share of its length, at most
+    /// [`MAX_BEND`].
+    fn bent(from: Pos2, to: Pos2) -> Self {
+        let chord = to - from;
+        let len = chord.length();
+        let ctrl = if len > 0.0 {
+            let bend = (len * BEND).min(MAX_BEND);
+            from.lerp(to, 0.5) + chord.rot90() / len * -bend
+        } else {
+            from
+        };
+        Self { from, ctrl, to }
+    }
+
+    /// The point `t` of the way along, 0 to 1.
+    fn at(&self, t: f32) -> Pos2 {
+        let u = 1.0 - t;
+        let v = self.from.to_vec2() * (u * u)
+            + self.ctrl.to_vec2() * (2.0 * u * t)
+            + self.to.to_vec2() * (t * t);
+        v.to_pos2()
+    }
+
+    /// A rect holding the whole curve.
+    fn bounds(&self) -> Rect {
+        Rect::from_two_pos(self.from, self.to).union(Rect::from_center_size(self.ctrl, Vec2::ZERO))
+    }
+
+    /// Stroke the curve as short chords, so it allocates no path.
+    fn stroke(&self, painter: &egui::Painter, stroke: egui::Stroke) {
+        let mut prev = self.from;
+        for i in 1..=CURVE_CHORDS {
+            let next = self.at(i as f32 / CURVE_CHORDS as f32);
+            painter.line_segment([prev, next], stroke);
+            prev = next;
+        }
+    }
+
+    /// An open arrowhead where the curve meets the edge of its end node.
+    fn arrowhead(&self, painter: &egui::Painter, stroke: egui::Stroke) {
+        // The curve's distance from its end shrinks towards the end, so
+        // bisect for where it crosses the node's ring.
+        let reach = NODE_RADIUS + SELECTION_GAP;
+        let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
+        for _ in 0..16 {
+            let mid = (lo + hi) / 2.0;
+            if self.at(mid).distance(self.to) > reach {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let tip = self.at(lo);
+        let back = self.at((lo - 0.05).max(0.0));
+        let dir = (tip - back).normalized();
+        if dir == Vec2::ZERO {
+            return;
+        }
+        for side in [ARROW_SPREAD, -ARROW_SPREAD] {
+            let wing = Vec2::angled(dir.angle() + std::f32::consts::PI + side) * ARROW_LENGTH;
+            painter.line_segment([tip, tip + wing], stroke);
+        }
+    }
+}
+
+/// Stroke from `from` to `to` as dashes, without allocating a path.
+fn dashed_line(painter: &egui::Painter, from: Pos2, to: Pos2, dash: Dash, stroke: egui::Stroke) {
+    let len = from.distance(to);
+    let period = dash.on + dash.off;
+    if len <= 0.0 || period <= 0.0 {
+        return;
+    }
+    let dir = (to - from) / len;
+    let mut at = 0.0;
+    while at < len {
+        let end = (at + dash.on).min(len);
+        painter.line_segment([from + dir * at, from + dir * end], stroke);
+        at += period;
+    }
+}
+
 /// What [`AgentScene::draw_agent`] draws for one session.
 struct MapNode<'a> {
     id: SessionId,
@@ -759,6 +958,43 @@ const FALLBACK_CODE_CHARS: usize = 4;
 /// Zoom range of the map. The low end keeps area labels legible.
 const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.3..=2.0;
 
+/// Width of every line between sessions.
+const EDGE_WIDTH: f32 = 1.0;
+/// Opacity of a handoff's curve and arrowhead, against the text colour.
+const HANDOFF_OPACITY: f32 = 0.45;
+/// Opacity of a chain link's line, against the text colour.
+const CHAIN_OPACITY: f32 = 0.22;
+/// Opacity of a child's tether, against the text colour.
+const TETHER_OPACITY: f32 = 0.35;
+/// A child's tether is dotted, so it doesn't read as a chain link.
+const TETHER_DASH: Dash = Dash { on: 2.0, off: 3.0 };
+/// Opacity of a message line, against its violet, before it fades.
+const MESSAGE_OPACITY: f32 = 0.45;
+/// How far a curved edge bends, as a share of its length.
+const BEND: f32 = 0.22;
+/// The most a curved edge bends, in points.
+const MAX_BEND: f32 = 60.0;
+/// How many chords a curved edge is drawn with.
+const CURVE_CHORDS: usize = 24;
+/// Length of a handoff arrowhead's wings.
+const ARROW_LENGTH: f32 = 5.0;
+/// Angle of an arrowhead's wings off the line, in radians.
+const ARROW_SPREAD: f32 = 0.5;
+/// A packet's dot.
+const PACKET_RADIUS: f32 = 2.4;
+/// The soft glow around a packet.
+const PACKET_GLOW_RADIUS: f32 = 5.0;
+/// A packet: a lighter violet than its line, so it reads as a glow.
+const PACKET_COLOR: Color32 = Color32::from_rgb(0xD4, 0xC2, 0xFF);
+
+/// Now, in unix seconds with a fraction, for how long ago a message was
+/// sent.
+fn wall_clock() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
+}
+
 /// Easing function for smooth camera animation
 fn ease_out_cubic(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
@@ -864,9 +1100,68 @@ mod tests {
         sm
     }
 
+    /// The sample session whose title starts with `code`.
+    fn coded(sm: &SessionManager, code: &str) -> SessionId {
+        sm.iter()
+            .find(|s| s.details.title.starts_with(code))
+            .unwrap_or_else(|| panic!("no session {code}"))
+            .id
+    }
+
+    /// The `agentium:` ref of the sample session coded `code`.
+    fn ref_of(sm: &SessionManager, code: &str) -> String {
+        let session = sm.get(coded(sm, code)).expect("session");
+        let event_id = session
+            .agentic
+            .as_ref()
+            .expect("agentic")
+            .event_session_id();
+        agentium_core::wordid::session_ref(event_id)
+    }
+
+    /// One lineage edge of each kind: SC1 hands off to SC2, which passes
+    /// the chain on to SC3, and ST1 spawned IN1 as a child.
+    fn add_lineage(sm: &mut SessionManager) {
+        use agentium_core::session_events::SessionRelation;
+        let links = [
+            ("SC1", "SC2", SessionRelation::Successor),
+            ("SC2", "SC3", SessionRelation::Successor),
+            ("ST1", "IN1", SessionRelation::Child),
+        ];
+        for (parent, child, relation) in links {
+            let parent_ref = ref_of(sm, parent);
+            let id = coded(sm, child);
+            let s = sm.get_mut(id).expect("child");
+            s.details.parent_session = Some(parent_ref);
+            s.details.relation = relation;
+        }
+        sm.rebuild_groups();
+    }
+
+    /// BL4, on the other host, messages SC3 at unix time `sent_at`.
+    fn send_message(sm: &mut SessionManager, sent_at: u64) {
+        let from = ref_of(sm, "BL4");
+        let to = coded(sm, "SC3");
+        sm.get_mut(to)
+            .expect("SC3")
+            .chat
+            .push(crate::messages::Message::User(
+                crate::messages::UserMessage {
+                    from_session: Some(from),
+                    sent_at: Some(sent_at),
+                    ..crate::messages::UserMessage::from("the pack code is in scene_layout")
+                },
+            ));
+    }
+
     /// A harness drawing the sample map with SC2 selected, with the software
     /// renderer when it is for a `snapshot`.
     fn map_harness(snapshot: bool) -> Harness<'static, MapState> {
+        map_harness_with(snapshot, sample_sessions())
+    }
+
+    /// [`map_harness`] over `sessions`.
+    fn map_harness_with(snapshot: bool, sessions: SessionManager) -> Harness<'static, MapState> {
         let mut builder = Harness::builder().with_size(egui::Vec2::new(640.0, 520.0));
         if snapshot {
             builder = builder.renderer(notedeck::software_renderer());
@@ -878,7 +1173,6 @@ mod tests {
                     .ui(&state.sessions, &state.focus_queue, ui, false);
             },
             {
-                let sessions = sample_sessions();
                 let mut scene = AgentScene::new();
                 let selected = sessions
                     .iter()
@@ -924,6 +1218,52 @@ mod tests {
         hover_node(&harness, "SC1");
         harness.run_steps(3);
         harness.snapshot("scene_hover_card");
+    }
+
+    /// A handoff, a chain link, a child's tether and a message line with
+    /// its packet partway across, from one host to the other.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_scene_map_edges() {
+        let mut sessions = sample_sessions();
+        add_lineage(&mut sessions);
+        let mut harness = map_harness_with(true, sessions);
+        harness.run_steps(2);
+        // Arrives after the map first looked, so it sends a packet.
+        send_message(
+            &mut harness.state_mut().sessions,
+            crate::session::now_unix(),
+        );
+        harness.run_steps(4);
+        harness.snapshot("scene_map_edges");
+    }
+
+    /// The map's lineage edges come from the regroup, one of each kind.
+    #[test]
+    fn lineage_edges_reach_the_map() {
+        let mut sm = sample_sessions();
+        add_lineage(&mut sm);
+        let kinds: Vec<EdgeKind> = sm.lineage_edges().iter().map(|e| e.kind).collect();
+        assert_eq!(kinds.len(), 3, "{kinds:?}");
+        for kind in [EdgeKind::Handoff, EdgeKind::Chain, EdgeKind::Child] {
+            assert!(kinds.contains(&kind), "{kind:?} in {kinds:?}");
+        }
+    }
+
+    /// A hovered node's card says who it heard from.
+    #[test]
+    fn hover_card_counts_messages() {
+        let mut sessions = sample_sessions();
+        send_message(&mut sessions, crate::session::now_unix());
+        let mut harness = map_harness_with(false, sessions);
+        harness.run_steps(3);
+        hover_node(&harness, "SC3");
+        harness.run_steps(3);
+        harness.get_by_label("1 received from BL4");
+
+        hover_node(&harness, "BL4");
+        harness.run_steps(3);
+        harness.get_by_label("1 sent to SC3");
     }
 
     /// Hovering a node shows its card: the full headline, the detail,

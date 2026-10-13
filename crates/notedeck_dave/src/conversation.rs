@@ -551,6 +551,7 @@ pub(crate) fn process_conversation_notes<'a>(
                     note_id: Some(message_id),
                     queued: true,
                     from_session: from_session.map(str::to_string),
+                    sent_at: Some(note.created_at()),
                     ..messages::UserMessage::from(text.as_ref())
                 }));
                 // Appended where it arrived; the reconcile at rest moves it to

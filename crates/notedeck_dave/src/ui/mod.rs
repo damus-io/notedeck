@@ -646,6 +646,8 @@ pub fn scene_ui(
                     }
                 });
                 ui.separator();
+                // The map draws lineage edges from the regrouped state.
+                session_manager.ensure_grouping_cache();
                 scene_response_opt = Some(scene.ui(session_manager, focus_queue, ui, ctrl_held));
             });
 

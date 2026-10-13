@@ -58,6 +58,10 @@ pub struct UserMessage {
     /// than a person typing it. A chat shows such a message as from that
     /// session.
     pub from_session: Option<String>,
+    /// When its note was signed, in unix seconds, for a row that came from a
+    /// note (as [`note_id`](Self::note_id)). Lets a view tell a message just
+    /// sent from one in history.
+    pub sent_at: Option<u64>,
 }
 
 impl UserMessage {

@@ -24,7 +24,7 @@ pub type SessionId = u32;
 
 mod lineage;
 mod subagent;
-pub use lineage::{Nesting, Place};
+pub use lineage::{Edge, EdgeKind, Nesting, Place};
 pub use subagent::{SubagentOf, COMPOSER_DISABLED};
 
 /// A user message bound for a session's backend: a remote client's message,
@@ -1377,6 +1377,9 @@ pub struct SessionManager {
     /// Each session's `agentium:` ref, to find the session a
     /// `parent-session` names when regrouping.
     session_refs: lineage::SessionRefs,
+    /// How sessions spawned one another, for the map's lines (see
+    /// [`lineage::walk`]). Rebuilt with the groups.
+    lineage_edges: Vec<lineage::Edge>,
 }
 
 /// Where a session runs (see [`ChatSession::workspace`]).
@@ -1625,6 +1628,7 @@ impl SessionManager {
             chat_ids_dirty: false,
             card_titles: Default::default(),
             session_refs: Default::default(),
+            lineage_edges: Vec::new(),
         }
     }
 
@@ -1831,6 +1835,18 @@ impl SessionManager {
         self.order.clone()
     }
 
+    /// How sessions spawned one another, as of the last regroup (see
+    /// [`ensure_grouping_cache`](Self::ensure_grouping_cache)).
+    pub fn lineage_edges(&self) -> &[Edge] {
+        &self.lineage_edges
+    }
+
+    /// The session whose `agentium:` ref is `session_ref`, among those
+    /// known at the last regroup.
+    pub fn find_by_ref(&self, session_ref: &str) -> Option<SessionId> {
+        self.session_refs.find(session_ref)
+    }
+
     /// Get cached agent session groups: host → cwd → sessions.
     pub fn host_groups(&mut self) -> &[HostGroup] {
         self.ensure_grouping_cache();
@@ -1948,10 +1964,10 @@ impl SessionManager {
                 }
             })
             .collect();
-        let mut entries: HashMap<SessionId, lineage::Entry> = lineage::entries(&nodes)
-            .into_iter()
-            .map(|e| (e.anchor, e))
-            .collect();
+        let walked = lineage::walk(&nodes);
+        self.lineage_edges = walked.edges;
+        let mut entries: HashMap<SessionId, lineage::Entry> =
+            walked.entries.into_iter().map(|e| (e.anchor, e)).collect();
 
         for &id in &self.order {
             let Some(session) = self.sessions.get(&id) else {
@@ -2104,7 +2120,7 @@ impl SessionManager {
     }
 
     /// Ensure host/cwd and chat caches are rebuilt before read access.
-    fn ensure_grouping_cache(&mut self) {
+    pub fn ensure_grouping_cache(&mut self) {
         if self.host_groups_dirty || self.chat_ids_dirty {
             self.rebuild_groups();
         }

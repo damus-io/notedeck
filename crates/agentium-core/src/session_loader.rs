@@ -591,6 +591,7 @@ pub fn render_conversation_note_with_content(
         Some("user") => Some(Message::User(UserMessage {
             note_id: Some(*note.id()),
             from_session: crate::session_events::from_session(note).map(str::to_string),
+            sent_at: Some(note.created_at()),
             // As far as this note alone says; the loader clears it when a
             // dispatch marker exists.
             queued: is_queued_note(note),
