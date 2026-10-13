@@ -63,6 +63,25 @@ use headway::views::{SavedView, new_slug};
 /// screen ([`egui::ScrollArea::show_rows`]).
 const ROW_HEIGHT: f32 = 32.0;
 
+/// A group header's band: the panel a shade lighter, as Linear's, never the
+/// elevated surface (a slab in dark mode, and white-on-white in light).
+fn header_fill(theme: &ColorTheme) -> egui::Color32 {
+    theme.surface_secondary
+}
+
+/// A hovered row's fill: the header band at half strength, so over the panel
+/// it lands halfway between panel and band in either theme, a faint lift
+/// that never reads as a header.
+fn hover_fill(theme: &ColorTheme) -> egui::Color32 {
+    header_fill(theme).gamma_multiply(0.5)
+}
+
+/// The keyboard cursor's fill, under its 1px accent ring: an accent tint,
+/// unlike both the grey hover and the grey header band.
+fn cursor_fill(theme: &ColorTheme) -> egui::Color32 {
+    theme.accent.gamma_multiply(0.15)
+}
+
 /// The issue list's view state: whether it shows, what it's asked, its rows
 /// and its keyboard cursor. Kept across frames on
 /// [`BoardUiState`](super::BoardUiState), so leaving the list and coming
@@ -2227,11 +2246,8 @@ fn group_header_ui(
     });
     let sub = header.key.sub.is_some();
     let corner = egui::CornerRadius::same(RADIUS_MD as u8);
-    // A quiet band, as Linear's: the panel a shade lighter, never the
-    // elevated surface (a slab in dark mode, and white-on-white in light).
     if on_cursor {
-        ui.painter()
-            .rect_filled(rect, corner, theme.accent.gamma_multiply(0.15));
+        ui.painter().rect_filled(rect, corner, cursor_fill(theme));
         ui.painter().rect_stroke(
             rect,
             corner,
@@ -2239,8 +2255,7 @@ fn group_header_ui(
             egui::StrokeKind::Inside,
         );
     } else if !sub {
-        ui.painter()
-            .rect_filled(rect, corner, theme.surface_secondary);
+        ui.painter().rect_filled(rect, corner, header_fill(theme));
     }
     let indent = if sub {
         SPACING_LG + SPACING_SM
@@ -2344,11 +2359,9 @@ fn list_row_ui(
 
     let corner = egui::CornerRadius::same(RADIUS_MD as u8);
     if on_cursor {
-        ui.painter()
-            .rect_filled(rect, corner, theme.accent.gamma_multiply(0.15));
+        ui.painter().rect_filled(rect, corner, cursor_fill(theme));
     } else if ui.rect_contains_pointer(rect) {
-        ui.painter()
-            .rect_filled(rect, corner, theme.surface_secondary);
+        ui.painter().rect_filled(rect, corner, hover_fill(theme));
     }
 
     let inner = rect.shrink2(egui::vec2(SPACING_SM, 0.0));

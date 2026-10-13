@@ -1919,6 +1919,36 @@ fn snapshot_headway_list() {
     harness.snapshot("headway_list");
 }
 
+/// The issue list with the pointer resting on the side board's row
+/// (headway:headway/choose-plunge-once): the hovered row lifts faintly off
+/// the panel, quieter than the group header bands, so it never reads as a
+/// header.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_list_hover() {
+    list_hover_snapshot(egui::ThemePreference::Dark, "headway_list_hover");
+}
+
+/// [`snapshot_headway_list_hover`] in the light theme, where the header band
+/// is barely off white and the hover has to sit between them.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_list_hover_light() {
+    list_hover_snapshot(egui::ThemePreference::Light, "headway_list_hover_light");
+}
+
+/// Open the issue list in `theme`, rest the pointer on the side board's
+/// row, and snapshot it as `name`.
+fn list_hover_snapshot(theme: egui::ThemePreference, name: &str) {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    harness.ctx.options_mut(|o| o.theme_preference = theme);
+    seed_side_board(&mut harness);
+    open_issue_list(&mut harness);
+    harness.get_by_label(SIDE_CARD).hover();
+    harness.run_steps(3);
+    harness.snapshot(name);
+}
+
 /// Open the issue list from the View menu, widen it to every board with the
 /// scope chip, and wait for the side board's card, so both boards' rows have
 /// folded in.
