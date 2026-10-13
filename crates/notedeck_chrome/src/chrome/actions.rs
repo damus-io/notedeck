@@ -429,6 +429,8 @@ pub(super) fn chrome_handle_app_action(
 
         AppAction::CallTool(invocation) => route_call_tool(chrome, ctx, &invocation, ui),
 
+        AppAction::RecordJump(from) => chrome.record_jump_from(from),
+
         AppAction::Open(open) => {
             let Some(note_id) = resolve_reference(ctx, &open.reference) else {
                 // Often just not resolvable *yet* (see `PendingOpen`): hold it

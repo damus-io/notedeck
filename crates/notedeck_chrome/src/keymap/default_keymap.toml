@@ -23,6 +23,26 @@ tool  = "chrome_hide_key_hints"
 label = "hide keys"
 group = "help"
 
+# Vim's jump list, per app: a binding marked `jump = true` (`g g`, `G`, `] q`)
+# records where the app's view was before it fires, and Ctrl-O / Ctrl-I walk
+# back and forward through those (crates/notedeck_chrome/src/chrome/jumps.rs).
+# Each is offered only while there is somewhere to go, so the keys fall
+# through otherwise.
+
+[[bind]]
+scope = "global"
+keys  = "<C-o>"
+tool  = "chrome_jump_back"
+label = "jump back/forward"
+group = "jump"
+
+[[bind]]
+scope = "global"
+keys  = "<C-i>"
+tool  = "chrome_jump_forward"
+label = "jump back/forward"
+group = "jump"
+
 # ── Headway ─────────────────────────────────────────────────────────────────
 #
 # Headway reports a stack of these scopes per view (crates/notedeck_headway/
@@ -529,6 +549,7 @@ scope = "dave.chat"
 keys  = "g g"
 tool  = "dave_block_cursor"
 args  = { to = "first" }
+jump  = true
 label = "first/last"
 group = "blocks"
 
@@ -537,6 +558,7 @@ scope = "dave.chat"
 keys  = "G"
 tool  = "dave_block_cursor"
 args  = { to = "last" }
+jump  = true
 label = "first/last"
 group = "blocks"
 
@@ -639,6 +661,7 @@ scope = "dave.sessions"
 keys  = "g g"
 tool  = "dave_session_cursor"
 args  = { to = "first" }
+jump  = true
 label = "first/last"
 group = "sessions"
 
@@ -647,6 +670,7 @@ scope = "dave.sessions"
 keys  = "G"
 tool  = "dave_session_cursor"
 args  = { to = "last" }
+jump  = true
 label = "first/last"
 group = "sessions"
 
@@ -816,6 +840,7 @@ scope = "dave.normal"
 keys  = "] q"
 tool  = "dave_focus_queue"
 args  = { dir = "next" }
+jump  = true
 label = "focus queue"
 group = "queue"
 
@@ -824,6 +849,7 @@ scope = "dave.normal"
 keys  = "[ q"
 tool  = "dave_focus_queue"
 args  = { dir = "prev" }
+jump  = true
 label = "focus queue"
 group = "queue"
 

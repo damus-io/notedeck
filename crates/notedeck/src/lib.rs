@@ -16,6 +16,7 @@ mod frame_history;
 pub mod i18n;
 mod imgcache;
 pub mod jobs;
+mod jump;
 mod keypair_tokens;
 pub mod kind_renderer;
 pub mod media;
@@ -104,6 +105,7 @@ pub use jobs::{
     deliver_completed_media_job, run_media_job_pre_action, JobCache, JobPool, MediaJobSender,
     MediaJobs,
 };
+pub use jump::{JumpLocation, JumpTarget};
 pub use kind_renderer::{
     open_on_click, resolve_ref, InlineChrome, Interaction, KindRenderRequest, KindRenderResponse,
     KindRenderer, KindRendererRegistry, Outline, Progress, RenderContext,

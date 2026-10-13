@@ -5103,6 +5103,7 @@ fn a_detail_session_chip_click_opens_its_records_session() {
                 notedeck::AppAction::Note(_) => Err("AppAction::Note"),
                 notedeck::AppAction::ToggleChrome => Err("AppAction::ToggleChrome"),
                 notedeck::AppAction::CallTool(_) => Err("AppAction::CallTool"),
+                notedeck::AppAction::RecordJump(_) => Err("AppAction::RecordJump"),
             })
             .collect::<Vec<_>>()
     };

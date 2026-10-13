@@ -265,6 +265,13 @@ impl NormalMode {
         self.pane
     }
 
+    /// Point the motions at `pane`, as a jump list restore does. The
+    /// session list falls back to the chat if the next frame finds it off
+    /// screen.
+    pub(crate) fn set_pane(&mut self, pane: Pane) {
+        self.pane = pane;
+    }
+
     /// Whether the session list was on screen last frame, so `h` can reach it.
     pub fn sessions_shown(&self) -> bool {
         self.sessions_shown

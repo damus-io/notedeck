@@ -38,13 +38,17 @@ pub(super) fn chrome_ui_tools() -> [ToolSpec; 2] {
 impl Chrome {
     /// Run the chrome's own UI tool `invocation`, or `None` when it isn't
     /// one: the which-key strip's here, the keymap editor's in
-    /// [`call_keymap_editor_tool`](Self::call_keymap_editor_tool).
+    /// [`call_keymap_editor_tool`](Self::call_keymap_editor_tool), the jump
+    /// list's in [`call_jump_tool`](Self::call_jump_tool).
     pub(super) fn call_chrome_tool(
         &mut self,
         ctx: &mut AppContext,
         invocation: &ToolInvocation,
     ) -> Option<ToolOutcome> {
         if let Some(outcome) = self.call_keymap_editor_tool(ctx, invocation) {
+            return Some(outcome);
+        }
+        if let Some(outcome) = self.call_jump_tool(ctx, invocation) {
             return Some(outcome);
         }
         let pinned = self.key_hints_pinned();
@@ -70,6 +74,9 @@ impl Chrome {
     /// other app keeps the key.
     pub(super) fn chrome_tool_available(&self, name: &str) -> Option<bool> {
         if let Some(available) = self.keymap_editor_tool_available(name) {
+            return Some(available);
+        }
+        if let Some(available) = self.jump_tool_available(name) {
             return Some(available);
         }
         match name {

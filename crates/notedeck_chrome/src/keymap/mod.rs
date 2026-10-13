@@ -182,6 +182,9 @@ pub struct Binding {
     pub label: Option<String>,
     /// Its which-key group.
     pub group: Option<String>,
+    /// A far move (`g g`, `G`): the chrome records where the app was on its
+    /// jump list before it fires, for Ctrl-O.
+    pub jump: bool,
     /// Its position in the file, for the which-key strip's order.
     order: usize,
     /// The which-key keycap of `keys` from each stroke on (`gg`, then `g`),
@@ -397,6 +400,9 @@ pub struct KeyEngine {
     /// The keys of a chord in progress (`g` of `g g`), lapsing after
     /// [`chord::CHORD_TIMEOUT`].
     chord: ChordState<KeySeq>,
+    /// Whether the binding the last [`resolve`](Self::resolve) fired is a
+    /// [jump](Binding::jump).
+    fired_jump: bool,
 }
 
 /// What the active scopes make of a key sequence.
@@ -415,6 +421,7 @@ impl KeyEngine {
         Self {
             keymap,
             chord: ChordState::default(),
+            fired_jump: false,
         }
     }
 
@@ -439,6 +446,13 @@ impl KeyEngine {
         self.chord.pending()
     }
 
+    /// Whether the binding the last [`resolve`](Self::resolve) fired is a
+    /// [jump](Binding::jump), for the chrome to record the app's location
+    /// before it dispatches. False after a resolve that fired nothing.
+    pub fn fired_jump(&self) -> bool {
+        self.fired_jump
+    }
+
     /// Resolve this frame's key press against the app's `scopes` (most
     /// specific first) and then [`GLOBAL_SCOPE`], asking `available` whether a
     /// bound tool does anything right now. A binding whose args name
@@ -458,6 +472,7 @@ impl KeyEngine {
         scopes: Scopes<'_>,
         available: impl Fn(&str) -> bool,
     ) -> Option<KeyDispatch<'_>> {
+        self.fired_jump = false;
         let pending = self.chord.tick(ctx);
         if chord::focus_taken(ctx) {
             self.chord.clear();
@@ -497,6 +512,7 @@ impl KeyEngine {
             }
             Found::Fire(binding) => {
                 self.chord.clear();
+                self.fired_jump = binding.jump;
                 chord::swallow_key_events(ctx);
                 Some(match &binding.action {
                     BindAction::Tool(invocation) => {

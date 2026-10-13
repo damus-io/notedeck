@@ -50,6 +50,11 @@ pub enum AppAction {
     /// [`AppContext::call_tool`], which returns it as an
     /// [`Intent`](crate::ToolOutcome::Intent).
     CallTool(crate::ToolInvocation),
+    /// Record a jump on the chrome's jump list for the app that raised it:
+    /// this is where its view was before a far move the keymap didn't make
+    /// (a hard-coded key), so Ctrl-O comes back here. See
+    /// [`App::jump_location`].
+    RecordJump(crate::JumpLocation),
 }
 
 /// A frame-local queue of [`AppAction`]s raised imperatively *during* rendering
@@ -328,6 +333,30 @@ pub trait App {
     /// Defaults to none.
     fn current_ref(&self) -> Option<&str> {
         None
+    }
+
+    /// Where the app's view is, for the chrome's jump list (vim's Ctrl-O /
+    /// Ctrl-I): the chrome asks before a key binding marked `jump = true`
+    /// fires, and before it moves along the list, and keeps what this
+    /// returns. The token is opaque to the chrome, like
+    /// [`ChromeNavEntry::token`](crate::ChromeNavEntry); it only compares two
+    /// with [`JumpTarget::same`](crate::JumpTarget::same). Read per jump key
+    /// press, never per frame. `None`, the default, keeps the app off the
+    /// list: its jump keys still run, Ctrl-O just has nowhere to go.
+    ///
+    /// A jump list moves within one app's view. Route history across apps
+    /// is the chrome's global nav (Alt-←/→), not this.
+    fn jump_location(&self) -> Option<crate::JumpLocation> {
+        None
+    }
+
+    /// Put the app's view back at `location`, one this app's
+    /// [`jump_location`](Self::jump_location) returned. Downcast it with
+    /// [`JumpTarget::as_any`](crate::JumpTarget::as_any); one naming
+    /// something that is gone (a deleted session), or not this app's type,
+    /// is a no-op. The default does nothing.
+    fn restore_jump(&mut self, ctx: &mut AppContext<'_>, location: &dyn crate::JumpTarget) {
+        let _ = (ctx, location);
     }
 
     /// Host hook, invoked each frame **only on the top-level app** (the shell):

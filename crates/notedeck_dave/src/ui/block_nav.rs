@@ -21,6 +21,17 @@ struct BlockRef {
     default_open: bool,
 }
 
+/// Where the block cursor is, kept for the jump list (vim's Ctrl-O): its
+/// position and the block's id, so a restore lands on the same block even
+/// if blocks streamed in above it since.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlockSpot {
+    /// The cursor's position in registration order.
+    pub index: usize,
+    /// The id of the block it was on.
+    pub id: egui::Id,
+}
+
 /// What a collapsible row learns about itself the moment it registers: how to
 /// draw, whether the keyboard cursor is on it, and whether this frame should
 /// bring it into view.
@@ -149,6 +160,28 @@ impl BlockNav {
         self.cursor
     }
 
+    /// Where the cursor is, for the jump list; `None` with no cursor.
+    pub fn spot(&self) -> Option<BlockSpot> {
+        let index = self.cursor?;
+        let block = self.blocks.get(index)?;
+        Some(BlockSpot {
+            index,
+            id: block.id,
+        })
+    }
+
+    /// Put the cursor back at `spot`, one [`spot`](Self::spot) returned, and
+    /// scroll to it: at its position now, then on its block if the next
+    /// pass still draws it somewhere else. `None` drops the cursor.
+    pub fn restore(&mut self, spot: Option<BlockSpot>) {
+        let Some(spot) = spot else {
+            self.clear_cursor();
+            return;
+        };
+        self.set_cursor(spot.index);
+        self.seek = Some(spot.id);
+    }
+
     /// Move the cursor one block down, stopping at the last. With no cursor yet
     /// this selects the first block.
     pub fn down(&mut self) {
@@ -269,6 +302,18 @@ impl BlockNav {
     #[cfg(test)]
     pub(crate) fn seed_cursor(&mut self, idx: usize) {
         self.set_cursor(idx);
+    }
+
+    /// Register `count` blocks as a render pass would, for tests with no
+    /// egui pass to draw them.
+    #[cfg(test)]
+    pub(crate) fn seed_blocks(&mut self, count: usize) {
+        for i in 0..count {
+            self.blocks.push(BlockRef {
+                id: egui::Id::unique(("seeded block", i)),
+                default_open: false,
+            });
+        }
     }
 
     fn clamp_cursor(&mut self) {

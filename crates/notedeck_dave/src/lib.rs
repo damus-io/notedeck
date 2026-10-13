@@ -15,6 +15,7 @@ pub(crate) mod git_status;
 pub mod inspector;
 mod inspector_sync;
 pub mod ipc;
+mod jump;
 pub(crate) mod mesh;
 mod notifications;
 mod path_normalize;
@@ -1716,6 +1717,16 @@ impl notedeck::App for Dave {
     /// (see [`ui_tools::key_scopes`]).
     fn key_scopes(&self) -> &'static [&'static str] {
         ui_tools::key_scopes(self.normal_view())
+    }
+
+    /// The active session, its pane, block cursor and tab (see [`jump`]).
+    fn jump_location(&self) -> Option<notedeck::JumpLocation> {
+        self.jump_location_token()
+    }
+
+    /// Back to a session and the spot in it a jump left (see [`jump`]).
+    fn restore_jump(&mut self, _ctx: &mut AppContext<'_>, location: &dyn notedeck::JumpTarget) {
+        self.restore_jump_token(location);
     }
 
     fn tab_notifications(&self, _ctx: &AppContext<'_>) -> notedeck::TabNotifications {

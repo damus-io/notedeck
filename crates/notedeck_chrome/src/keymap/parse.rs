@@ -8,6 +8,7 @@
 //! label = "first card"      # which-key label
 //! group = "move"            # which-key group
 //! args  = { count = 1 }     # optional; passed to the tool as JSON
+//! jump  = true              # optional; records a jump for Ctrl-O first
 //!
 //! [[bind]]
 //! scope = "headway.card"
@@ -93,6 +94,10 @@ struct RawBind {
     label: Option<String>,
     group: Option<String>,
     args: Option<toml::Table>,
+    /// A far move: the app's location goes on the chrome's jump list before
+    /// it fires, so Ctrl-O comes back.
+    #[serde(default)]
+    jump: bool,
     /// In a user keymap: remove the default binding of these keys rather
     /// than bind them (see [`parse_over`]).
     #[serde(default)]
@@ -438,6 +443,7 @@ fn build(raw: RawKeymap, mut warnings: Vec<String>) -> Result<Keymap, KeymapErro
             keys,
             action,
             uses_current,
+            jump: bind.jump,
             label: bind.label,
             group: bind.group,
             order: i,

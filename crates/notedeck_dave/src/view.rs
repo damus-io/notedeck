@@ -599,7 +599,7 @@ impl Dave {
             }),
         };
         match check_keybindings(egui_ctx, &mut self.normal_mode, keys) {
-            Some(action) => self.dispatch_key_action(action, egui_ctx),
+            Some(action) => self.dispatch_with_jump(action, egui_ctx),
             // Focus settles every frame, key or not: a request made while
             // normal mode is on waits for it to end.
             None => {
@@ -614,7 +614,7 @@ impl Dave {
     /// has changed the mode: dispatch it, then settle keyboard focus the way
     /// normal mode wants it — held while the mode is on, handed to the
     /// (possibly new) active session's input when it ends.
-    fn dispatch_key_action(
+    pub(crate) fn dispatch_key_action(
         &mut self,
         key_action: KeyAction,
         egui_ctx: &egui::Context,

@@ -33,7 +33,8 @@ impl Chrome {
     /// dispatch what it's bound to: a UI tool goes to the app that owns it, a
     /// data tool runs here and now. A key the keymap takes is swallowed, so
     /// the app rendering after this never sees it; any other key reaches the
-    /// app untouched.
+    /// app untouched. A binding marked `jump` first records where the app
+    /// is on its jump list (see [`super::jumps`]).
     #[profiling::function]
     pub(super) fn dispatch_keys(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) {
         let app = self.apps.get(self.active as usize);
@@ -50,7 +51,11 @@ impl Chrome {
             Some(KeyDispatch::Tool(invocation)) => Some(Fired::Tool(invocation)),
             Some(KeyDispatch::Macro(name)) => Some(Fired::Macro(name.to_owned())),
         };
+        let jump = keys.fired_jump();
         self.keys = keys;
+        if jump {
+            self.record_active_jump();
+        }
 
         match fired {
             None => {}

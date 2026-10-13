@@ -39,6 +39,7 @@ mod frame;
 mod header;
 #[cfg(all(test, feature = "headway", not(debug_assertions)))]
 mod headway_nav_tests;
+mod jumps;
 mod key_dispatch;
 mod key_hints;
 mod keyboard;
@@ -54,6 +55,7 @@ mod user_keymap;
 pub use actions::ChromePanelAction;
 use actions::PendingOpen;
 use focus::AppFocus;
+pub use jumps::{JumpList, JUMP_BACK, JUMP_FORWARD, JUMP_LIST_CAP};
 pub use key_hints::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
 use keyboard::AnimState;
 pub use keymap_editor::{EDIT_KEYMAP, KEYMAP_TEMPLATE};
@@ -137,6 +139,9 @@ pub struct Chrome {
     /// (see [`Chrome::advance_macro`]). One at a time: a newer macro key
     /// replaces it.
     macro_run: Option<MacroRun>,
+
+    /// Each app's jump list, for Ctrl-O / Ctrl-I (see [`jumps`]).
+    jumps: jumps::JumpLists,
 
     /// The selected account's keymap overrides, merged over the defaults
     /// into `keys` (see [`Chrome::poll_user_keymap`]).
@@ -352,6 +357,7 @@ impl Chrome {
             global_nav_in_flight: false,
             keys: KeyEngine::with_default_keymap(),
             key_hints: [0u16; MAX_APPS / 16],
+            jumps: Default::default(),
             macro_run: None,
             user_keymap: UserKeymap::default(),
             #[cfg(feature = "auto-update")]
@@ -466,6 +472,7 @@ impl notedeck::App for Chrome {
         let chrome_tools = key_hints::chrome_ui_tools()
             .into_iter()
             .chain(keymap_editor::keymap_editor_tools())
+            .chain(jumps::jump_tools())
             .map(notedeck::UiToolEntry::shell);
         Some(notedeck::ToolUpdate {
             tools: running_apps().flat_map(|(_, app)| app.tools()).collect(),

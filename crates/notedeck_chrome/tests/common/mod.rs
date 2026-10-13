@@ -10,8 +10,8 @@ use std::sync::mpsc;
 
 use egui::{Event, Key, Modifiers};
 use notedeck::{
-    App, AppContext, AppResponse, AppTool, Notedeck, RegisteredTool, ToolContext, ToolOutcome,
-    ToolSpec,
+    App, AppContext, AppResponse, AppTool, JumpLocation, JumpTarget, Notedeck, RegisteredTool,
+    ToolContext, ToolOutcome, ToolSpec,
 };
 use notedeck_chrome::keymap::{self, KeySeq};
 use notedeck_chrome::{Chrome, NotedeckApp};
@@ -54,6 +54,9 @@ pub struct FakeState {
     pub marked: mpsc::Receiver<serde_json::Value>,
     /// The room the app had to lay out in on its last render.
     pub area: Option<egui::Rect>,
+    /// Where the app's view is, for the jump list: `fake_down` adds one,
+    /// `fake_first` goes to 0.
+    pub location: u32,
 }
 
 /// [`DATA_TOOL`]: sends its args to the test, which runs it on another
@@ -137,7 +140,13 @@ impl App for FakeApp {
         name: &str,
         _args: &serde_json::Value,
     ) -> ToolOutcome {
-        self.state.borrow_mut().calls.push(name.to_owned());
+        let mut state = self.state.borrow_mut();
+        state.calls.push(name.to_owned());
+        match name {
+            "fake_down" => state.location += 1,
+            "fake_first" => state.location = 0,
+            _ => {}
+        }
         if name == ANSWER_TOOL {
             return ToolOutcome::Data(answer());
         }
@@ -150,6 +159,16 @@ impl App for FakeApp {
 
     fn key_scopes(&self) -> &'static [&'static str] {
         &["fake"]
+    }
+
+    fn jump_location(&self) -> Option<JumpLocation> {
+        Some(Rc::new(self.state.borrow().location))
+    }
+
+    fn restore_jump(&mut self, _ctx: &mut AppContext<'_>, location: &dyn JumpTarget) {
+        if let Some(&to) = location.as_any().downcast_ref::<u32>() {
+            self.state.borrow_mut().location = to;
+        }
     }
 }
 
@@ -225,6 +244,7 @@ impl Fixture {
             current: None,
             marked,
             area: None,
+            location: 0,
         }));
         // The fake app as the nav root unless `front` has apps: switching to
         // it from another app would slide, and a full chrome frame mid-slide
@@ -336,6 +356,11 @@ impl Fixture {
     /// The args of the [`DATA_TOOL`] calls since the last take.
     pub fn marked(&self) -> Vec<serde_json::Value> {
         self.state.borrow().marked.try_iter().collect()
+    }
+
+    /// Where the app's view is (see [`FakeState::location`]).
+    pub fn location(&self) -> u32 {
+        self.state.borrow().location
     }
 
     /// The keys whose press reached the app so far.

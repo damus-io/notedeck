@@ -422,6 +422,14 @@ impl notedeck::App for NotedeckApp {
     fn current_ref(&self) -> Option<&str> {
         self.as_app().current_ref()
     }
+
+    fn jump_location(&self) -> Option<notedeck::JumpLocation> {
+        self.as_app().jump_location()
+    }
+
+    fn restore_jump(&mut self, ctx: &mut AppContext<'_>, location: &dyn notedeck::JumpTarget) {
+        self.as_app_mut().restore_jump(ctx, location)
+    }
 }
 
 impl NotedeckApp {

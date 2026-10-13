@@ -27,7 +27,7 @@ mod top_buttons;
 pub mod worktree_creator;
 
 pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
-pub use block_nav::BlockNav;
+pub use block_nav::{BlockNav, BlockSpot};
 pub(crate) use dave::input_id;
 pub use dave::{
     from_session_message_ui, DaveAction, DaveResponse, DaveUi, InputMode, InputboxLayout,
