@@ -271,13 +271,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         };
         let queue_priority = self.focus_queue.get_session_priority(session.id);
 
-        let rename_id = egui::Id::unique("session_rename_state");
-        let mut renaming: Option<(SessionId, String)> =
-            ui.data(|d| d.get_temp::<(SessionId, String)>(rename_id));
-        let is_renaming = renaming
-            .as_ref()
-            .map(|(id, _)| *id == session.id)
-            .unwrap_or(false);
+        let is_renaming = renaming(ui.ctx()) == Some(session.id);
 
         let display_title = if is_renaming {
             ""
@@ -323,22 +317,11 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         }
 
         if is_renaming {
-            let outcome = renaming
-                .as_mut()
-                .and_then(|(_, buf)| inline_rename_ui(ui, &response, buf));
-            match outcome {
-                Some(RenameOutcome::Confirmed(title)) => {
-                    action = Some(SessionListAction::Rename(session.id, title));
-                    ui.data_mut(|d| d.remove_by_type::<(SessionId, String)>());
-                }
-                Some(RenameOutcome::Cancelled) => {
-                    ui.data_mut(|d| d.remove_by_type::<(SessionId, String)>());
-                }
-                None => {
-                    if let Some(r) = renaming {
-                        ui.data_mut(|d| d.insert_temp(rename_id, r));
-                    }
-                }
+            let renamed = rename_ui(ui, session.id, |ui, buf| {
+                inline_rename_field(ui, response.rect, buf)
+            });
+            if let Some(title) = renamed {
+                action = Some(SessionListAction::Rename(session.id, title));
             }
         } else if response.clicked() {
             action = Some(SessionListAction::SwitchTo(session.id));
@@ -354,9 +337,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                     ui.data_mut(|d| d.insert_temp(press_id, PressStart(now)));
                 } else if let Some(s) = start {
                     if now - s.0 > 0.5 {
-                        let rename_state =
-                            (session.id, session.details.display_title().to_string());
-                        ui.data_mut(|d| d.insert_temp(rename_id, rename_state));
+                        start_rename(ui.ctx(), session.id, session.details.display_title());
                         ui.data_mut(|d| d.remove_by_type::<PressStart>());
                     }
                 }
@@ -372,9 +353,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         notedeck_ui::context_menu::context_menu(&response, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Rename").clicked() {
-                    let rename_state = (session.id, session.details.display_title().to_string());
-                    ui.ctx()
-                        .data_mut(|d| d.insert_temp(rename_id, rename_state));
+                    start_rename(ui.ctx(), session.id, session.details.display_title());
                     ui.close();
                 }
                 if is_active && ctrl_held {
@@ -903,9 +882,24 @@ fn title_run_ui(ui: &mut egui::Ui, text: &str, font_id: &egui::FontId) {
 #[derive(Clone, Copy)]
 struct PressStart(f64);
 
-enum RenameOutcome {
-    Confirmed(String),
-    Cancelled,
+/// Where the open rename keeps the session it renames and the title typed
+/// so far.
+fn rename_state_id() -> egui::Id {
+    egui::Id::unique("session_rename_state")
+}
+
+/// Open the rename of session `id`, its field starting at `title`. The
+/// session list draws the field over the session's row, the scene view in
+/// its toolbar (see [`rename_ui`]).
+pub(crate) fn start_rename(ctx: &egui::Context, id: SessionId, title: &str) {
+    let state = (id, title.to_owned());
+    ctx.data_mut(|d| d.insert_temp(rename_state_id(), state));
+}
+
+/// The session being renamed, if a rename is open.
+pub(crate) fn renaming(ctx: &egui::Context) -> Option<SessionId> {
+    ctx.data(|d| d.get_temp::<(SessionId, String)>(rename_state_id()))
+        .map(|(id, _)| id)
 }
 
 /// The inline session rename field's id. Keybindings check it so Esc cancels
@@ -914,13 +908,40 @@ pub(crate) fn rename_edit_id() -> egui::Id {
     egui::Id::unique("session_rename_edit")
 }
 
-fn inline_rename_ui(
+/// Draw the open rename of session `id`, if it is the one being renamed:
+/// `field` draws the text field, with [`rename_edit_id`], over the title
+/// typed so far. Returns the new title once Enter, or a click away,
+/// confirms it; Esc cancels it. Either closes the rename.
+pub(crate) fn rename_ui(
     ui: &mut egui::Ui,
-    response: &egui::Response,
-    buf: &mut String,
-) -> Option<RenameOutcome> {
-    let edit_rect = response.rect.shrink2(egui::vec2(8.0, 4.0));
-    let edit = egui::Area::new(egui::Id::unique("rename_textedit"))
+    id: SessionId,
+    field: impl FnOnce(&mut egui::Ui, &mut String) -> egui::Response,
+) -> Option<String> {
+    let state_id = rename_state_id();
+    let (renamed, mut buf) = ui.data(|d| d.get_temp::<(SessionId, String)>(state_id))?;
+    if renamed != id {
+        return None;
+    }
+    let edit = field(ui, &mut buf);
+    if !edit.has_focus() && !edit.lost_focus() {
+        edit.request_focus();
+    }
+
+    let confirmed = edit.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if !confirmed && !edit.lost_focus() {
+        ui.data_mut(|d| d.insert_temp(state_id, (id, buf)));
+        return None;
+    }
+    ui.data_mut(|d| d.remove::<(SessionId, String)>(state_id));
+    let cancelled =
+        !confirmed && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    (!cancelled).then_some(buf)
+}
+
+/// The session list's rename field, floating over the row at `row`.
+fn inline_rename_field(ui: &mut egui::Ui, row: egui::Rect, buf: &mut String) -> egui::Response {
+    let edit_rect = row.shrink2(egui::vec2(8.0, 4.0));
+    egui::Area::new(egui::Id::unique("rename_textedit"))
         .fixed_pos(edit_rect.min)
         .order(egui::Order::Foreground)
         .show(ui.ctx(), |ui| {
@@ -932,23 +953,7 @@ fn inline_rename_ui(
                     .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2))),
             )
         })
-        .inner;
-
-    if !edit.has_focus() && !edit.lost_focus() {
-        edit.request_focus();
-    }
-
-    if edit.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-        Some(RenameOutcome::Confirmed(buf.clone()))
-    } else if edit.lost_focus() {
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            Some(RenameOutcome::Cancelled)
-        } else {
-            Some(RenameOutcome::Confirmed(buf.clone()))
-        }
-    } else {
-        None
-    }
+        .inner
 }
 
 /// Truncate text from the start, showing "…" + the longest suffix that fits.

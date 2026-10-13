@@ -1019,7 +1019,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // below takes over, so a run of `dd`s (or Deletes) walks down it.
         // Left to itself the manager falls back to the most recent session,
         // wherever that sits.
-        let neighbor = if self.session_manager.active_id() == Some(id) {
+        let was_active = self.session_manager.active_id() == Some(id);
+        let neighbor = if was_active {
             update::visual_neighbor(&mut self.session_manager, &self.collapse_state, id)
         } else {
             None
@@ -1038,9 +1039,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             id,
         );
 
+        if !deleted {
+            return;
+        }
+        // Without a row below or above (a collapsed folder, which the scene's
+        // map still shows), whichever session the manager fell back to. The
+        // scene's selection follows either, so its side panel and its steps
+        // never stay on the deleted node.
+        let next = neighbor.or_else(|| was_active.then(|| self.session_manager.active_id())?);
         // No focus request: a chord's `dd` still holds the keyboard, and the
         // Delete key never asked for the input either.
-        if let (true, Some(next)) = (deleted, neighbor) {
+        if let Some(next) = next {
             update::switch_session(
                 &mut self.session_manager,
                 &mut self.scene,

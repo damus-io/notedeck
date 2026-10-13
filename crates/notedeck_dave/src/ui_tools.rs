@@ -951,6 +951,62 @@ mod dispatch_tests {
         );
     }
 
+    /// `dd` in the scene view takes the map's whole selection when a box
+    /// select made it several, as Delete does: the map has no Delete of its
+    /// own to run beside it.
+    #[test]
+    fn dd_in_the_scene_deletes_the_maps_selection() {
+        let mut f = Fixture::new();
+        let third = f.dave.session_manager.new_session(
+            PathBuf::from("/tmp/tool-c"),
+            AiMode::Agentic,
+            BackendType::Remote,
+        );
+        let [first, second] = f.sessions;
+        f.dave.show_scene = true;
+        f.dave.scene.select(first);
+        f.dave.scene.add_to_selection(second);
+        f.dave.session_manager.switch_to(first);
+
+        assert!(is_null(&f.call(DELETE_SESSION, Value::Null)));
+        assert!(f.dave.session_manager.get(first).is_none());
+        assert!(f.dave.session_manager.get(second).is_none());
+        assert_eq!(f.dave.session_manager.active_id(), Some(third));
+        assert_eq!(f.dave.scene.selected, [third], "the selection follows");
+    }
+
+    /// `dd` on a session the list has folded away (the scene's map still
+    /// shows it) has no row below to move to: the scene's selection follows
+    /// the session the manager falls back to, not the deleted node.
+    #[test]
+    fn dd_in_the_scene_without_a_neighbor_moves_the_selection_on() {
+        let mut f = Fixture::new();
+        let [first, second] = f.sessions;
+        let host = f
+            .dave
+            .session_manager
+            .get(first)
+            .unwrap()
+            .details
+            .hostname
+            .clone();
+        f.dave.collapse_state.toggle_host(&host);
+        assert!(
+            f.dave
+                .session_manager
+                .visual_order(&f.dave.collapse_state)
+                .is_empty(),
+            "folded away"
+        );
+        f.dave.show_scene = true;
+        f.dave.scene.select(first);
+
+        assert!(is_null(&f.call(DELETE_SESSION, Value::Null)));
+        assert!(f.dave.session_manager.get(first).is_none());
+        assert_eq!(f.dave.session_manager.active_id(), Some(second));
+        assert_eq!(f.dave.scene.selected, [second]);
+    }
+
     /// An overlay over the chat takes Dave's keys, so it takes its tools too.
     #[test]
     fn an_overlay_offers_no_scopes_or_tools() {

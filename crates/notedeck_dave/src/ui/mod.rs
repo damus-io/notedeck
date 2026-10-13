@@ -591,7 +591,8 @@ pub enum SceneViewAction {
     None,
     ToggleToListView,
     SpawnAgent,
-    DeleteSelected(Vec<SessionId>),
+    /// The rename the toolbar drew was confirmed: retitle the session.
+    Rename(SessionId, String),
     /// The user selected a session node in the scene. Already switched to
     /// inline; surfaced so the app can anchor auto-steal focus to it.
     SelectedSession(SessionId),
@@ -624,6 +625,56 @@ fn scene_layout_toggle(ui: &mut egui::Ui, mode: &mut crate::scene_layout::SceneL
         .on_hover_text("Lay the map out as rectangles that fill the panel");
     ui.selectable_value(mode, SceneLayoutMode::Circles, "Circles")
         .on_hover_text("Lay the map out as nested circles");
+}
+
+/// The scene's toolbar: a new agent, back to the list view, and the map's
+/// layout switch.
+fn scene_toolbar_ui(
+    ui: &mut egui::Ui,
+    ctrl_held: bool,
+    scene_layout: &mut crate::scene_layout::SceneLayoutMode,
+    view_action: &mut SceneViewAction,
+) {
+    ui.horizontal(|ui| {
+        if ui
+            .button("+ New Agent")
+            .on_hover_text("Hold Ctrl to see keybindings")
+            .clicked()
+        {
+            *view_action = SceneViewAction::SpawnAgent;
+        }
+        if ctrl_held {
+            keybind_hint(ui, "N");
+        }
+        ui.separator();
+        if ui
+            .button("List View")
+            .on_hover_text("Ctrl+L to toggle views")
+            .clicked()
+        {
+            *view_action = SceneViewAction::ToggleToListView;
+        }
+        if ctrl_held {
+            keybind_hint(ui, "L");
+        }
+        ui.separator();
+        scene_layout_toggle(ui, scene_layout);
+    });
+}
+
+/// The scene's rename field, in the toolbar's row: the title typed so far,
+/// across the map's width.
+fn scene_rename_field(ui: &mut egui::Ui, buf: &mut String) -> egui::Response {
+    ui.horizontal(|ui| {
+        let label = ui.label("Rename");
+        ui.add(
+            egui::TextEdit::singleline(buf)
+                .id(session_list::rename_edit_id())
+                .desired_width(f32::INFINITY),
+        )
+        .labelled_by(label.id)
+    })
+    .inner
 }
 
 /// Render the scene view with RTS-style agent visualization and chat side panel.
@@ -665,31 +716,15 @@ pub fn scene_ui(
         .clip(true)
         .horizontal(|mut strip| {
             strip.cell(|ui| {
-                ui.horizontal(|ui| {
-                    if ui
-                        .button("+ New Agent")
-                        .on_hover_text("Hold Ctrl to see keybindings")
-                        .clicked()
-                    {
-                        view_action = SceneViewAction::SpawnAgent;
+                // An open rename (`r`) takes the toolbar's row: the scene
+                // has no list row to draw it over.
+                if let Some(id) = session_list::renaming(ui.ctx()) {
+                    if let Some(title) = session_list::rename_ui(ui, id, scene_rename_field) {
+                        view_action = SceneViewAction::Rename(id, title);
                     }
-                    if ctrl_held {
-                        keybind_hint(ui, "N");
-                    }
-                    ui.separator();
-                    if ui
-                        .button("List View")
-                        .on_hover_text("Ctrl+L to toggle views")
-                        .clicked()
-                    {
-                        view_action = SceneViewAction::ToggleToListView;
-                    }
-                    if ctrl_held {
-                        keybind_hint(ui, "L");
-                    }
-                    ui.separator();
-                    scene_layout_toggle(ui, scene_layout);
-                });
+                } else {
+                    scene_toolbar_ui(ui, ctrl_held, scene_layout, &mut view_action);
+                }
                 ui.separator();
                 // The map draws lineage edges from the regrouped state.
                 session_manager.ensure_grouping_cache();
@@ -727,9 +762,6 @@ pub fn scene_ui(
                 }
                 SceneAction::SpawnAgent => {
                     view_action = SceneViewAction::SpawnAgent;
-                }
-                SceneAction::DeleteSelected => {
-                    view_action = SceneViewAction::DeleteSelected(scene.selected.clone());
                 }
             }
         }
@@ -1023,6 +1055,8 @@ pub enum KeyActionResult {
     CloneAgent,
     NewAgent,
     DeleteSession(SessionId),
+    /// The scene's selection, when it holds several sessions.
+    DeleteSessions(Vec<SessionId>),
     ClearAgent,
     SetAutoSteal(bool),
     /// Permission response needs relay publishing.
@@ -1276,6 +1310,11 @@ pub fn handle_key_action(
                 None => KeyActionResult::None,
             }
         }
+        // On the scene's map the selection is what you're on, and a box
+        // select makes it several: Delete and `dd` take them all.
+        KeyAction::DeleteActiveSession if show_scene && scene.selected.len() > 1 => {
+            KeyActionResult::DeleteSessions(scene.selected.clone())
+        }
         KeyAction::DeleteActiveSession => {
             if let Some(id) = session_manager.active_id() {
                 KeyActionResult::DeleteSession(id)
@@ -1295,12 +1334,8 @@ pub fn handle_key_action(
         KeyAction::BlockExpandAll => with_block_nav(session_manager, |nav| nav.expand_all(ctx)),
         KeyAction::BlockCollapseAll => with_block_nav(session_manager, |nav| nav.collapse_all(ctx)),
         KeyAction::RenameAgent => {
-            if let Some(id) = session_manager.active_id() {
-                if let Some(session) = session_manager.get(id) {
-                    let rename_id = egui::Id::unique("session_rename_state");
-                    let rename_state = (id, session.details.display_title().to_string());
-                    ctx.data_mut(|d| d.insert_temp(rename_id, rename_state));
-                }
+            if let Some(session) = session_manager.get_active() {
+                session_list::start_rename(ctx, session.id, session.details.display_title());
             }
             KeyActionResult::None
         }
@@ -1862,6 +1897,95 @@ mod tests {
         if std::mem::take(&mut session.focus_requested) {
             input.request_focus();
         }
+    }
+
+    /// [`Dispatch`] in the scene view, keyed as Dave keys it, with what its
+    /// toolbar's rename confirmed.
+    struct SceneRename {
+        d: Dispatch,
+        renamed: Option<(SessionId, String)>,
+    }
+
+    /// The scene view's frame, cut down to its keys and its toolbar row:
+    /// the rename field while a rename is open, as [`super::scene_ui`] draws
+    /// it.
+    fn scene_rename_frame(ui: &mut egui::Ui, s: &mut SceneRename) {
+        let d = &mut s.d;
+        let offers = ActiveOffers {
+            ai_mode: AiMode::Agentic,
+            interruptible: false,
+            has_issue: false,
+        };
+        if let Some(action) = d.chrome.frame(ui.ctx(), &mut d.normal_mode, offers, false) {
+            d.dispatch(action, ui.ctx());
+        }
+        let keys = KeyContext {
+            ai_mode: AiMode::Agentic,
+            sessions_shown: true,
+            scene: true,
+            has_pending_permission: false,
+            has_pending_question: false,
+            in_tentative_state: false,
+            overlay_open: false,
+            renaming: ui.ctx().memory(|m| {
+                let id = super::session_list::rename_edit_id();
+                m.has_focus(id) || m.had_focus_last_frame(id)
+            }),
+        };
+        if let Some(action) = check_keybindings(ui.ctx(), &mut d.normal_mode, keys) {
+            d.dispatch(action, ui.ctx());
+        }
+        settle_normal_mode_focus(&mut d.normal_mode, &mut d.session_manager);
+        if let Some(id) = super::session_list::renaming(ui.ctx()) {
+            if let Some(title) = super::session_list::rename_ui(ui, id, super::scene_rename_field) {
+                s.renamed = Some((id, title));
+            }
+        }
+    }
+
+    /// `r` in the scene view, which draws no session list to rename a row
+    /// of: the toolbar's row takes the field, focused, starting at the
+    /// title. Enter confirms what was typed; Esc cancels and leaves the
+    /// title alone.
+    #[test]
+    fn r_in_the_scene_renames_in_the_toolbar() {
+        let mut d = Dispatch::new();
+        let [first, _] = d.sessions;
+        d.session_manager.get_mut(first).unwrap().details.title = "old".to_owned();
+        let mut harness =
+            Harness::new_ui_state(scene_rename_frame, SceneRename { d, renamed: None });
+        harness.run();
+        let edit_id = super::session_list::rename_edit_id();
+
+        harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
+        harness.press_key_modifiers(Modifiers::NONE, Key::R);
+        harness.run();
+        assert_eq!(super::session_list::renaming(&harness.ctx), Some(first));
+        assert_eq!(harness.ctx.memory(|m| m.focused()), Some(edit_id));
+
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text("er".to_owned()));
+        harness.run();
+        harness.press_key_modifiers(Modifiers::NONE, Key::Enter);
+        harness.run();
+        assert_eq!(
+            harness.state().renamed,
+            Some((first, "older".to_owned())),
+            "Enter confirms the title typed"
+        );
+        assert_eq!(super::session_list::renaming(&harness.ctx), None);
+
+        harness.state_mut().renamed = None;
+        harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
+        harness.press_key_modifiers(Modifiers::NONE, Key::R);
+        harness.run();
+        assert_eq!(super::session_list::renaming(&harness.ctx), Some(first));
+        harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
+        harness.run();
+        assert_eq!(super::session_list::renaming(&harness.ctx), None);
+        assert_eq!(harness.state().renamed, None, "Esc cancels");
     }
 
     /// Esc, then `!` on a pending permission: the answer waits for a message,

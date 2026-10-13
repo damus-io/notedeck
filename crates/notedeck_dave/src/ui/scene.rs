@@ -86,8 +86,6 @@ pub enum SceneAction {
     SelectionChanged(Vec<SessionId>),
     /// Request to spawn a new agent
     SpawnAgent,
-    /// Request to delete selected agents
-    DeleteSelected,
 }
 
 /// Response from scene rendering
@@ -441,14 +439,9 @@ impl AgentScene {
             }
         }
 
-        // Handle keyboard input (only when no text input has focus)
-        // Note: N key for spawning agents is handled globally in keybindings.rs
-        if !ui.ctx().egui_wants_keyboard_input()
-            && ui.input(|i| i.key_pressed(egui::Key::Delete))
-            && !self.selected.is_empty()
-        {
-            response = SceneResponse::new(SceneAction::DeleteSelected);
-        }
+        // The map takes no keys of its own: Delete, `n` and the rest are
+        // Dave's keybindings, which act on the selection in the scene view
+        // (see `KeyAction::DeleteActiveSession`).
 
         // Handle box selection completion
         if let Some(drag) = &self.drag_select {

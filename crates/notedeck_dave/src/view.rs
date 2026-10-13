@@ -279,15 +279,8 @@ impl Dave {
             SceneViewAction::SpawnAgent => {
                 return DaveResponse::new(DaveAction::NewChat);
             }
-            SceneViewAction::DeleteSelected(ids) => {
-                for id in ids {
-                    self.delete_session(id);
-                }
-                if let Some(session) = self.session_manager.sessions_ordered().first() {
-                    self.scene.select(session.id);
-                } else {
-                    self.scene.clear_selection();
-                }
+            SceneViewAction::Rename(id, title) => {
+                self.rename_session(id, title);
             }
             SceneViewAction::SelectedSession(id) => {
                 self.anchor_focus(id);
@@ -669,6 +662,17 @@ impl Dave {
             }
             KeyActionResult::DeleteSession(id) => {
                 self.delete_session(id);
+            }
+            KeyActionResult::DeleteSessions(ids) => {
+                for id in ids {
+                    self.delete_session(id);
+                }
+                // Deleting the active one moved the selection onto its
+                // successor; deleting only others leaves it to collect.
+                match self.session_manager.active_id() {
+                    Some(active) => self.scene.select(active),
+                    None => self.scene.clear_selection(),
+                }
             }
             KeyActionResult::ClearAgent => {
                 if let Some(id) = self.session_manager.active_id() {
