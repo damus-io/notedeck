@@ -389,12 +389,14 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                     keybind_hint(ui, "Del");
                 }
             });
-            let is_git_repo = session
-                .agentic
-                .as_ref()
-                .and_then(|a| a.git_status.current())
-                .map(|r| r.is_ok())
-                .unwrap_or(false);
+            // A remote session's tree is on its host, out of reach of a
+            // worktree made here.
+            let is_git_repo = !session.is_remote()
+                && session
+                    .agentic
+                    .as_ref()
+                    .and_then(|a| a.git_status.current())
+                    .is_some_and(|status| status.work_tree().is_some());
             if is_git_repo && ui.button("New worktree from this session").clicked() {
                 action = Some(SessionListAction::NewWorktree(session.id));
                 ui.close();
@@ -725,15 +727,15 @@ pub(crate) struct GitLines {
     pub deleted: usize,
 }
 
-/// `session`'s +/- lines against HEAD, if its repo has tracked changes.
+/// `session`'s +/- lines against HEAD, if its repo has tracked changes. A
+/// remote session's come from its host's inspector snapshot.
 pub(crate) fn git_lines(session: &ChatSession) -> Option<GitLines> {
     let diff = session
         .agentic
         .as_ref()?
         .git_status
         .current()?
-        .as_ref()
-        .ok()?;
+        .work_tree()?;
     let lines = GitLines {
         added: diff.added_lines,
         deleted: diff.deleted_lines,

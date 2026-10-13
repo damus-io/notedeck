@@ -709,8 +709,8 @@ impl<'a> DaveUi<'a> {
                             .git_status
                             .as_deref()
                             .and_then(|git| git.current())
-                            .and_then(|status| status.as_ref().ok())
-                            .and_then(|data| data.branch.as_deref());
+                            .and_then(|status| status.work_tree())
+                            .and_then(|tree| tree.branch.as_deref());
                         let details = self.details;
                         let permission_mode = self.permission_mode;
                         let backend_type = self.backend_type;

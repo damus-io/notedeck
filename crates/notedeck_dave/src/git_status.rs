@@ -1,84 +1,19 @@
+use agentium_core::inspector_snapshot::{GitFile, GitStatus, WorkTree};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
 
-/// A single file entry from git status --short
-#[derive(Debug, Clone)]
-pub struct GitFileEntry {
-    /// Two-character status code (e.g., "M ", " M", "??", "A ")
-    pub status: String,
-    /// File path relative to repo root
-    pub path: String,
-}
-
-/// Parsed result of git status --short --branch
-#[derive(Debug, Clone)]
-pub struct GitStatusData {
-    /// Current branch name (None if detached HEAD)
-    pub branch: Option<String>,
-    /// List of file entries
-    pub files: Vec<GitFileEntry>,
-    /// Total inserted lines in tracked files vs HEAD (from `git diff --numstat`)
-    pub added_lines: usize,
-    /// Total deleted lines in tracked files vs HEAD (from `git diff --numstat`)
-    pub deleted_lines: usize,
-    /// When this data was fetched
-    pub fetched_at: Instant,
-}
-
-impl GitStatusData {
-    pub fn modified_count(&self) -> usize {
-        self.files
-            .iter()
-            .filter(|f| {
-                let b = f.status.as_bytes();
-                (b[0] == b'M' || b[1] == b'M') && b[0] != b'?' && b[0] != b'A' && b[0] != b'D'
-            })
-            .count()
-    }
-
-    pub fn added_count(&self) -> usize {
-        self.files
-            .iter()
-            .filter(|f| f.status.starts_with('A'))
-            .count()
-    }
-
-    pub fn deleted_count(&self) -> usize {
-        self.files
-            .iter()
-            .filter(|f| {
-                let b = f.status.as_bytes();
-                b[0] == b'D' || b[1] == b'D'
-            })
-            .count()
-    }
-
-    pub fn untracked_count(&self) -> usize {
-        self.files
-            .iter()
-            .filter(|f| f.status.starts_with('?'))
-            .count()
-    }
-
-    pub fn is_clean(&self) -> bool {
-        self.files.is_empty()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum GitStatusError {
-    NotARepo,
-    CommandFailed(String),
-}
-
-pub type GitStatusResult = Result<GitStatusData, GitStatusError>;
-
-/// Manages periodic git status checks for a session
+/// A session's working-tree status: read from git every few seconds for a
+/// local session, or folded in from the host's inspector snapshot for a
+/// remote one ([`Self::set_remote`]). Either way the status bar reads it from
+/// here.
 pub struct GitStatusCache {
     cwd: PathBuf,
-    current: Option<GitStatusResult>,
-    receiver: Option<mpsc::Receiver<GitStatusResult>>,
+    current: Option<GitStatus>,
+    /// Bumped each time a read lands that differs from the one before, so
+    /// the host knows its snapshot is stale.
+    generation: u64,
+    receiver: Option<mpsc::Receiver<GitStatus>>,
     last_fetch: Option<Instant>,
     /// Whether a fetch is currently in-flight
     fetching: bool,
@@ -93,6 +28,7 @@ impl GitStatusCache {
         Self {
             cwd,
             current: None,
+            generation: 0,
             receiver: None,
             last_fetch: None,
             fetching: false,
@@ -121,7 +57,7 @@ impl GitStatusCache {
         if let Some(rx) = &self.receiver {
             match rx.try_recv() {
                 Ok(result) => {
-                    self.current = Some(result);
+                    self.land(result);
                     self.fetching = false;
                     self.receiver = None;
                 }
@@ -145,20 +81,50 @@ impl GitStatusCache {
         }
     }
 
-    pub fn current(&self) -> Option<&GitStatusResult> {
+    /// Take a read that came back, counting it as a change only when it
+    /// differs from the last: an idle tree polled every few seconds must not
+    /// republish the session's snapshot each time.
+    fn land(&mut self, status: GitStatus) {
+        if self.current.as_ref() != Some(&status) {
+            self.generation += 1;
+        }
+        self.current = Some(status);
+    }
+
+    pub fn current(&self) -> Option<&GitStatus> {
         self.current.as_ref()
+    }
+
+    /// How many reads have changed the status, for the snapshot's key.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Land a read of a tree with `added` and `deleted` lines, as a poll
+    /// would, for tests of what a change republishes.
+    #[cfg(test)]
+    pub(crate) fn land_for_test(&mut self, added: usize, deleted: usize) {
+        self.land(GitStatus::WorkTree(WorkTree {
+            added_lines: added,
+            deleted_lines: deleted,
+            ..Default::default()
+        }));
+    }
+
+    /// Take a remote session's status from its host's snapshot. `None` (a
+    /// host too old to send one) shows no git at all.
+    pub fn set_remote(&mut self, status: Option<GitStatus>) {
+        self.current = status;
     }
 
     /// Set the current status as if a fetch had returned `lines` added and
     /// deleted, for tests that draw a dirty worktree.
     #[cfg(test)]
     pub(crate) fn set_lines(&mut self, added: usize, deleted: usize) {
-        self.current = Some(Ok(GitStatusData {
-            branch: None,
-            files: Vec::new(),
+        self.current = Some(GitStatus::WorkTree(WorkTree {
             added_lines: added,
             deleted_lines: deleted,
-            fetched_at: Instant::now(),
+            ..Default::default()
         }));
     }
 
@@ -168,9 +134,8 @@ impl GitStatusCache {
     }
 }
 
-fn parse_git_status(output: &str) -> GitStatusData {
-    let mut branch = None;
-    let mut files = Vec::new();
+fn parse_git_status(output: &str) -> WorkTree {
+    let mut tree = WorkTree::default();
 
     for line in output.lines() {
         if let Some(rest) = line.strip_prefix("## ") {
@@ -183,22 +148,37 @@ fn parse_git_status(output: &str) -> GitStatusData {
                 .next()
                 .unwrap_or(rest);
             if branch_name != "HEAD" {
-                branch = Some(branch_name.to_string());
+                tree.branch = Some(branch_name.to_string());
             }
         } else if line.len() >= 3 {
             // File entry: "XY path" where XY is 2-char status
-            let status = line[..2].to_string();
-            let path = line[3..].to_string();
-            files.push(GitFileEntry { status, path });
+            let file = GitFile {
+                status: line[..2].to_string(),
+                path: line[3..].to_string(),
+            };
+            count_file(&mut tree, file.status.as_bytes());
+            tree.files.push(file);
         }
     }
 
-    GitStatusData {
-        branch,
-        files,
-        added_lines: 0,
-        deleted_lines: 0,
-        fetched_at: Instant::now(),
+    tree
+}
+
+/// Count one `XY` status code into `tree`'s per-kind totals.
+fn count_file(tree: &mut WorkTree, xy: &[u8]) {
+    let [x, y] = [xy[0], xy[1]];
+    tree.changed += 1;
+    if (x == b'M' || y == b'M') && x != b'?' && x != b'A' && x != b'D' {
+        tree.modified += 1;
+    }
+    if x == b'A' {
+        tree.added += 1;
+    }
+    if x == b'D' || y == b'D' {
+        tree.deleted += 1;
+    }
+    if x == b'?' {
+        tree.untracked += 1;
     }
 }
 
@@ -255,30 +235,31 @@ fn run_git_numstat(cwd: &Path) -> LineCounts {
     }
 }
 
-fn run_git_status(cwd: &Path) -> GitStatusResult {
+fn run_git_status(cwd: &Path) -> GitStatus {
     let mut cmd = std::process::Command::new("git");
     cmd.args(["-c", "color.ui=never", "status", "--short", "--branch"])
         .current_dir(cwd);
     configure_git_command(&mut cmd);
 
-    let output = cmd
-        .output()
-        .map_err(|e| GitStatusError::CommandFailed(e.to_string()))?;
+    let output = match cmd.output() {
+        Ok(output) => output,
+        Err(e) => return GitStatus::Failed(e.to_string()),
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("not a git repository") {
-            return Err(GitStatusError::NotARepo);
+            return GitStatus::NotARepo;
         }
-        return Err(GitStatusError::CommandFailed(stderr.into_owned()));
+        return GitStatus::Failed(stderr.into_owned());
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut data = parse_git_status(&stdout);
+    let mut tree = parse_git_status(&stdout);
     let LineCounts { added, deleted } = run_git_numstat(cwd);
-    data.added_lines = added;
-    data.deleted_lines = deleted;
-    Ok(data)
+    tree.added_lines = added;
+    tree.deleted_lines = deleted;
+    GitStatus::WorkTree(tree)
 }
 
 #[cfg(test)]
@@ -299,10 +280,11 @@ mod tests {
         let data = parse_git_status(output);
         assert_eq!(data.branch.as_deref(), Some("dave"));
         assert_eq!(data.files.len(), 4);
-        assert_eq!(data.modified_count(), 2);
-        assert_eq!(data.added_count(), 1);
-        assert_eq!(data.untracked_count(), 1);
-        assert_eq!(data.deleted_count(), 0);
+        assert_eq!(data.changed, 4);
+        assert_eq!(data.modified, 2);
+        assert_eq!(data.added, 1);
+        assert_eq!(data.untracked, 1);
+        assert_eq!(data.deleted, 0);
     }
 
     #[test]
@@ -317,7 +299,20 @@ mod tests {
     fn test_parse_deleted_file() {
         let output = "## main\n D deleted.rs\n";
         let data = parse_git_status(output);
-        assert_eq!(data.deleted_count(), 1);
+        assert_eq!(data.deleted, 1);
+    }
+
+    /// Only a read that changes the status moves the generation.
+    #[test]
+    fn generation_moves_only_when_the_status_does() {
+        let mut cache = GitStatusCache::new(PathBuf::from("/tmp/project"));
+        let tree = || GitStatus::WorkTree(parse_git_status("## main\n M a.rs\n"));
+        cache.land(tree());
+        assert_eq!(cache.generation(), 1);
+        cache.land(tree());
+        assert_eq!(cache.generation(), 1, "the same tree again is no change");
+        cache.land(GitStatus::WorkTree(parse_git_status("## main\n")));
+        assert_eq!(cache.generation(), 2);
     }
 
     #[test]

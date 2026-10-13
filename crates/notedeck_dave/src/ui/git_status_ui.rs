@@ -1,4 +1,5 @@
 use crate::git_status::GitStatusCache;
+use agentium_core::inspector_snapshot::GitStatus;
 use egui::{Color32, RichText, Ui};
 
 const MODIFIED_COLOR: Color32 = Color32::from_rgb(200, 170, 50);
@@ -43,25 +44,25 @@ pub struct StatusSnapshot {
 
 impl StatusSnapshot {
     pub fn from_cache(cache: &GitStatusCache) -> Option<Result<Self, ()>> {
-        match cache.current() {
-            Some(Ok(data)) => Some(Ok(StatusSnapshot {
-                branch: data.branch.clone(),
-                modified: data.modified_count(),
-                added: data.added_count(),
-                deleted: data.deleted_count(),
-                untracked: data.untracked_count(),
-                added_lines: data.added_lines,
-                deleted_lines: data.deleted_lines,
-                is_clean: data.is_clean(),
-                files: data
-                    .files
-                    .iter()
-                    .map(|f| (f.status.clone(), f.path.clone()))
-                    .collect(),
-            })),
-            Some(Err(_)) => Some(Err(())),
-            None => None,
-        }
+        let tree = match cache.current()? {
+            GitStatus::WorkTree(tree) => tree,
+            GitStatus::NotARepo | GitStatus::Failed(_) => return Some(Err(())),
+        };
+        Some(Ok(StatusSnapshot {
+            branch: tree.branch.clone(),
+            modified: tree.modified,
+            added: tree.added,
+            deleted: tree.deleted,
+            untracked: tree.untracked,
+            added_lines: tree.added_lines,
+            deleted_lines: tree.deleted_lines,
+            is_clean: tree.is_clean(),
+            files: tree
+                .files
+                .iter()
+                .map(|f| (f.status.clone(), f.path.clone()))
+                .collect(),
+        }))
     }
 }
 

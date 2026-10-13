@@ -229,8 +229,9 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
                 responded: &agentic.permissions.responded,
             }));
 
-        // Only show git status for local sessions
-        if !is_remote {
+        // A remote session's status comes from its host's snapshot; until
+        // one carries it, draw no git rather than a spinner nothing will end.
+        if !is_remote || agentic.git_status.current().is_some() {
             ui_builder = ui_builder.git_status(&mut agentic.git_status);
         }
     }
@@ -2766,6 +2767,52 @@ mod tests {
 
         assert_eq!(count_labels(&harness, "34K / 200K"), 1);
         assert_eq!(count_labels(&harness, "$1.34"), 1);
+    }
+
+    /// A remote session's working tree arrives only in its host's inspector
+    /// snapshot. Before one does, its status bar draws no git (and no spinner
+    /// waiting on a read that never runs here); after, the same segment a
+    /// local session draws.
+    #[test]
+    fn a_remote_session_draws_git_from_its_snapshot() {
+        use agentium_core::inspector_snapshot::{GitStatus, InspectorSnapshot, WorkTree};
+
+        let mut harness = session_view_harness(egui::vec2(1100.0, 900.0));
+        let session = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap();
+        session.source = crate::session::SessionSource::Remote;
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "checking git..."), 0);
+        assert_eq!(count_labels(&harness, "autowork"), 0);
+
+        let session = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap();
+        let snapshot = InspectorSnapshot {
+            git: Some(GitStatus::WorkTree(WorkTree {
+                branch: Some("autowork".into()),
+                changed: 3,
+                modified: 2,
+                untracked: 1,
+                added_lines: 142,
+                deleted_lines: 37,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        crate::inspector_sync::fold_snapshot(session, 1, snapshot);
+        harness.run_ok();
+
+        assert_eq!(count_labels(&harness, "autowork"), 1);
+        assert_eq!(count_labels(&harness, "●2"), 1);
+        assert_eq!(count_labels(&harness, "○1"), 1);
+        assert_eq!(count_labels(&harness, "+142"), 1);
+        assert_eq!(count_labels(&harness, "-37"), 1);
     }
 
     /// Clicking the status bar's usage meter opens Details at Usage.

@@ -3,8 +3,9 @@
 //! Details tab, apart from file contents.
 //!
 //! A host session's inspector state — usage, rate limits, background work,
-//! subagent totals, its temp files and its commits — lives only in the host's
-//! memory, fed by the backend's stream or read from the host's disk and git.
+//! subagent totals, its temp files, its commits and its working tree's git
+//! status — lives only in the host's memory, fed by the backend's stream or
+//! read from the host's disk and git.
 //! Nothing of it reaches an observer through the transcript. So the host
 //! publishes an [`InspectorSnapshot`] as its own parameterized-replaceable
 //! event, kind [`AI_SESSION_DETAILS_KIND`], one per session (`d` = the
@@ -162,6 +163,70 @@ pub enum CommitList {
     Failed(String),
 }
 
+/// One changed path in the working tree, as `git status --short` lists it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitFile {
+    /// Two-character status code (e.g. `"M "`, `" M"`, `"??"`, `"A "`).
+    pub status: String,
+    /// The path, relative to the repository root.
+    pub path: String,
+}
+
+/// The session's working tree as `git status` and `git diff --numstat` read
+/// it: what the status bar draws.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkTree {
+    /// The branch checked out; `None` on a detached HEAD.
+    pub branch: Option<String>,
+    /// The changed paths, in git's order. A snapshot may carry only the first
+    /// of them; the counts below cover every one.
+    pub files: Vec<GitFile>,
+    /// Every changed path, listed or not.
+    pub changed: usize,
+    /// Modified in the index or the tree.
+    pub modified: usize,
+    /// Added to the index.
+    pub added: usize,
+    /// Deleted from the index or the tree.
+    pub deleted: usize,
+    pub untracked: usize,
+    /// Lines inserted in tracked files against HEAD.
+    pub added_lines: usize,
+    /// Lines deleted from tracked files against HEAD.
+    pub deleted_lines: usize,
+}
+
+impl WorkTree {
+    /// Nothing changed against HEAD, untracked files included.
+    pub fn is_clean(&self) -> bool {
+        self.changed == 0
+    }
+}
+
+/// What `git status` answered for the session's cwd: its working tree, or
+/// why there is none to show.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitStatus {
+    WorkTree(WorkTree),
+    /// The cwd isn't in a git repository.
+    NotARepo,
+    /// git failed some other way; its stderr.
+    Failed(String),
+}
+
+impl GitStatus {
+    /// The working tree, if git read one.
+    pub fn work_tree(&self) -> Option<&WorkTree> {
+        match self {
+            GitStatus::WorkTree(tree) => Some(tree),
+            _ => None,
+        }
+    }
+}
+
 /// A session's usage history as the host holds it: the live context, the
 /// session's totals, and the newest turns and compactions.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -204,6 +269,8 @@ pub struct InspectorSnapshot {
     pub files: Option<TempListing>,
     /// The commits carrying the session's `Agentium:` trailer.
     pub commits: Option<CommitList>,
+    /// The working tree of the session's cwd, as its status bar draws it.
+    pub git: Option<GitStatus>,
 }
 
 impl InspectorSnapshot {
@@ -249,6 +316,14 @@ impl InspectorSnapshot {
             }),
             commits: self.commits.as_ref().map(|list| match list {
                 CommitList::Commits(commits) => CommitList::Commits(first(commits, cap)),
+                other => other.clone(),
+            }),
+            git: self.git.as_ref().map(|status| match status {
+                GitStatus::WorkTree(tree) => GitStatus::WorkTree(WorkTree {
+                    branch: tree.branch.clone(),
+                    files: first(&tree.files, cap),
+                    ..*tree
+                }),
                 other => other.clone(),
             }),
         }
@@ -403,6 +478,25 @@ mod tests {
                 short: "ab".into(),
                 subject: "dave: a thing".into(),
             }])),
+            git: Some(GitStatus::WorkTree(WorkTree {
+                branch: Some("autowork".into()),
+                files: vec![
+                    GitFile {
+                        status: " M".into(),
+                        path: "src/a.rs".into(),
+                    },
+                    GitFile {
+                        status: "??".into(),
+                        path: "notes.md".into(),
+                    },
+                ],
+                changed: 2,
+                modified: 1,
+                untracked: 1,
+                added_lines: 12,
+                deleted_lines: 3,
+                ..Default::default()
+            })),
         }
     }
 
@@ -435,6 +529,18 @@ mod tests {
         assert_eq!(capped.usage.turns_recorded, 5);
         assert_eq!(capped.background.len(), 2);
         assert_eq!(capped.capped(1).background[0].id, "b1");
+    }
+
+    /// A cut working tree lists fewer paths but keeps counting all of them,
+    /// so the status bar's counts stay true.
+    #[test]
+    fn capped_work_tree_keeps_its_counts() {
+        let capped = sample().capped(1);
+        let tree = capped.git.as_ref().and_then(GitStatus::work_tree).unwrap();
+        assert_eq!(tree.files.len(), 1);
+        assert_eq!(tree.changed, 2);
+        assert_eq!(tree.untracked, 1);
+        assert_eq!(tree.branch.as_deref(), Some("autowork"));
     }
 
     /// A snapshot too big for the wire is cut until it fits, not dropped.

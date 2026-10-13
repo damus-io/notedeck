@@ -12,8 +12,9 @@
 //! same thing.
 
 use super::SessionInspector;
+use crate::git_status::GitStatusCache;
 use crate::messages::RateLimitInfo;
-use agentium_core::inspector_snapshot::{InspectorSnapshot, UsageSnapshot};
+use agentium_core::inspector_snapshot::{GitStatus, InspectorSnapshot, UsageSnapshot};
 use std::time::{Duration, Instant};
 
 /// Least time between two snapshots of a session with no turn running, so
@@ -44,6 +45,11 @@ pub struct SnapshotKey {
     pub files: u64,
     /// `git log` reads landed.
     pub commits: u64,
+    /// Working-tree reads that changed it, counted only while the CLI runs
+    /// (zero otherwise): a dormant session's tree moves when another session
+    /// in the same cwd edits it, and that must not republish every session
+    /// there.
+    pub git: u64,
 }
 
 impl SnapshotKey {
@@ -151,8 +157,10 @@ impl RemoteSnapshot {
 }
 
 impl SessionInspector {
-    /// What the inspector holds now, as [`SnapshotKey`] counters.
-    pub fn snapshot_key(&self) -> SnapshotKey {
+    /// What the inspector holds now, with the session's working tree `git`,
+    /// as [`SnapshotKey`] counters.
+    pub fn snapshot_key(&self, git: &GitStatusCache) -> SnapshotKey {
+        let running = self.cli.is_some_and(|cli| cli.connected);
         SnapshotKey {
             overview: self.overview_generation,
             usage: self.usage.generation(),
@@ -161,12 +169,18 @@ impl SessionInspector {
             subagents: self.subagents.generation(),
             files: self.files.generation(),
             commits: self.outputs.commits.generation(),
+            git: if running { git.generation() } else { 0 },
         }
     }
 
     /// The inspector as a snapshot for observers, with `rate_limit` as the
-    /// account's windows (newer than any one session's report).
-    pub fn snapshot(&self, rate_limit: Option<RateLimitInfo>) -> InspectorSnapshot {
+    /// account's windows (newer than any one session's report) and `git` as
+    /// the session's working tree.
+    pub fn snapshot(
+        &self,
+        rate_limit: Option<RateLimitInfo>,
+        git: &GitStatusCache,
+    ) -> InspectorSnapshot {
         let usage = &self.usage;
         InspectorSnapshot {
             session_info: self.session_info.clone(),
@@ -184,12 +198,16 @@ impl SessionInspector {
             subagents: self.subagents.all_progress(),
             files: self.files.listing().cloned(),
             commits: self.outputs.commits.list().cloned(),
+            git: git.current().cloned(),
         }
     }
 
     /// Replace what the inspector shows with a host's snapshot. For a remote
     /// session, whose backend streams nothing here.
-    pub fn restore(&mut self, snapshot: InspectorSnapshot) {
+    ///
+    /// Returns the snapshot's working tree, which is the session's
+    /// [`GitStatusCache`]'s to hold rather than the inspector's.
+    pub fn restore(&mut self, snapshot: InspectorSnapshot) -> Option<GitStatus> {
         let InspectorSnapshot {
             session_info,
             cli,
@@ -199,6 +217,7 @@ impl SessionInspector {
             subagents,
             files,
             commits,
+            git,
         } = snapshot;
         self.session_info = session_info;
         self.cli = cli;
@@ -209,6 +228,7 @@ impl SessionInspector {
         self.subagents.replace(subagents);
         self.files.set_remote(files);
         self.outputs.commits.set_remote(commits);
+        git
     }
 }
 
@@ -219,6 +239,11 @@ mod tests {
         BackgroundEntry, BackgroundTask, BackgroundWork, CliState, DaveApiResponse,
         SubagentProgress, TaskUsage, UsageInfo,
     };
+
+    /// `inspector`'s key beside a working tree that never landed a read.
+    fn key_of(inspector: &SessionInspector) -> SnapshotKey {
+        inspector.snapshot_key(&GitStatusCache::new("/tmp/project".into()))
+    }
 
     fn busy_inspector() -> SessionInspector {
         let mut inspector = SessionInspector::default();
@@ -257,12 +282,16 @@ mod tests {
     #[test]
     fn restore_reproduces_the_hosts_snapshot() {
         let host = busy_inspector();
-        let snapshot = host.snapshot(None);
+        let mut host_git = GitStatusCache::new("/tmp/project".into());
+        host_git.set_lines(142, 37);
+        let snapshot = host.snapshot(None, &host_git);
+        assert!(snapshot.git.is_some());
 
         let mut observer = SessionInspector::default();
-        observer.restore(snapshot.clone());
+        let mut observer_git = GitStatusCache::new("/tmp/project".into());
+        observer_git.set_remote(observer.restore(snapshot.clone()));
 
-        assert_eq!(observer.snapshot(None), snapshot);
+        assert_eq!(observer.snapshot(None, &observer_git), snapshot);
         assert_eq!(observer.usage.turns_recorded(), 1);
         assert_eq!(observer.usage.total_cost(), Some(0.25));
         assert_eq!(observer.usage.sparkline().values.len(), 1);
@@ -282,10 +311,11 @@ mod tests {
     #[test]
     fn a_burst_of_changes_publishes_once_per_interval() {
         let mut inspector = SessionInspector::default();
+        let git = GitStatusCache::new("/tmp/project".into());
         let mut publisher = SnapshotPublisher::default();
         let start = Instant::now();
         assert_eq!(
-            publisher.due(inspector.snapshot_key(), false, start),
+            publisher.due(key_of(&inspector), false, start),
             PublishDue::Idle
         );
 
@@ -296,7 +326,7 @@ mod tests {
                 ..Default::default()
             }));
             let now = start + Duration::from_millis(100 * i);
-            let key = inspector.snapshot_key();
+            let key = key_of(&inspector);
             if publisher.due(key, false, now) == PublishDue::Now {
                 publisher.published(key, now, publisher.next_created_at(100));
                 published += 1;
@@ -306,15 +336,15 @@ mod tests {
 
         let later = start + Duration::from_millis(1900);
         assert!(matches!(
-            publisher.due(inspector.snapshot_key(), false, later),
+            publisher.due(key_of(&inspector), false, later),
             PublishDue::After(_)
         ));
         let after_interval = start + SNAPSHOT_INTERVAL;
         assert_eq!(
-            publisher.due(inspector.snapshot_key(), false, after_interval),
+            publisher.due(key_of(&inspector), false, after_interval),
             PublishDue::Now
         );
-        let key = inspector.snapshot_key();
+        let key = inspector.snapshot_key(&git);
         publisher.published(key, after_interval, publisher.next_created_at(100));
         assert_eq!(publisher.created_at, 101, "same second is stamped later");
         assert_eq!(
@@ -331,7 +361,7 @@ mod tests {
         now: Instant,
         published: &mut u32,
     ) {
-        let key = inspector.snapshot_key();
+        let key = key_of(&inspector);
         if publisher.due(key, turn_running, now) != PublishDue::Now {
             return;
         }
@@ -396,9 +426,9 @@ mod tests {
         let ended = start + Duration::from_secs(121);
         publish_if_due(&inspector, &mut publisher, false, ended, &mut published);
         assert_eq!(published, 2, "the turn's end goes out");
-        assert_eq!(publisher.published, Some(inspector.snapshot_key()));
+        assert_eq!(publisher.published, Some(key_of(&inspector)));
         assert_eq!(
-            publisher.due(inspector.snapshot_key(), false, ended + SNAPSHOT_INTERVAL),
+            publisher.due(key_of(&inspector), false, ended + SNAPSHOT_INTERVAL),
             PublishDue::Idle
         );
     }
@@ -418,7 +448,7 @@ mod tests {
             num_turns: 3,
             ..Default::default()
         }));
-        let key = inspector.snapshot_key();
+        let key = key_of(&inspector);
         let ended = start + Duration::from_secs(1);
         assert_eq!(
             publisher.due(key, false, ended),
@@ -428,6 +458,30 @@ mod tests {
             publisher.due(key, false, start + SNAPSHOT_INTERVAL),
             PublishDue::Now
         );
+    }
+
+    /// A working-tree change republishes a session whose CLI runs, and not a
+    /// dormant one, whose tree another session in its cwd may be editing.
+    #[test]
+    fn git_changes_count_only_while_the_cli_runs() {
+        let mut inspector = SessionInspector::default();
+        let mut git = GitStatusCache::new("/tmp/project".into());
+        git.land_for_test(1, 0);
+        assert_eq!(
+            inspector.snapshot_key(&git),
+            SnapshotKey::default(),
+            "a dormant session's tree is no change"
+        );
+
+        inspector.cli = Some(CliState {
+            connected: true,
+            reap_at: None,
+        });
+        let running = inspector.snapshot_key(&git);
+        git.land_for_test(1, 0);
+        assert_eq!(inspector.snapshot_key(&git), running, "same tree, same key");
+        git.land_for_test(2, 0);
+        assert_ne!(inspector.snapshot_key(&git), running);
     }
 
     /// An observer folds only revisions newer than the one it has.

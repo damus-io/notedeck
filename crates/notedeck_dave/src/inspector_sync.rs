@@ -36,9 +36,13 @@ impl Dave {
             }
             refresh_host_reads(session, now);
 
-            let key = session.inspector.snapshot_key();
             let turn_running = session.is_dispatched() || session.is_streaming();
-            match session.inspector.publisher.due(key, turn_running, now) {
+            let Some(agentic) = &session.agentic else {
+                continue;
+            };
+            let inspector = &mut session.inspector;
+            let key = inspector.snapshot_key(&agentic.git_status);
+            match inspector.publisher.due(key, turn_running, now) {
                 PublishDue::Idle => continue,
                 PublishDue::After(left) => {
                     wait = Some(wait.map_or(left, |w| w.min(left)));
@@ -47,16 +51,9 @@ impl Dave {
                 PublishDue::Now => {}
             }
 
-            let Some(agentic) = &session.agentic else {
-                continue;
-            };
-            let inspector = &mut session.inspector;
             let created_at = inspector.publisher.next_created_at(now_secs);
-            let built = inspector.snapshot(self.rate_limit).build_event(
-                agentic.event_session_id(),
-                created_at,
-                &sk,
-            );
+            let snapshot = inspector.snapshot(self.rate_limit, &agentic.git_status);
+            let built = snapshot.build_event(agentic.event_session_id(), created_at, &sk);
             ingest_built_event(built, "publishing inspector snapshot", host.ndb, &sk);
             // Marked published even when the build failed, so a snapshot that
             // can't be built isn't retried every frame; the next change tries
@@ -180,10 +177,18 @@ fn is_remote_session(session: &ChatSession, session_id: &str) -> bool {
 }
 
 /// Fold a snapshot revision stamped `created_at` into a remote session's
-/// inspector, unless it already has a newer one.
-fn fold_snapshot(session: &mut ChatSession, created_at: u64, snapshot: InspectorSnapshot) {
-    if session.inspector.remote.accept(created_at) {
-        session.inspector.restore(snapshot);
+/// inspector and its working tree, unless it already has a newer one.
+pub(crate) fn fold_snapshot(
+    session: &mut ChatSession,
+    created_at: u64,
+    snapshot: InspectorSnapshot,
+) {
+    if !session.inspector.remote.accept(created_at) {
+        return;
+    }
+    let git = session.inspector.restore(snapshot);
+    if let Some(agentic) = &mut session.agentic {
+        agentic.git_status.set_remote(git);
     }
 }
 
@@ -317,7 +322,10 @@ mod tests {
     async fn observer_folds_the_hosts_snapshot() {
         let mut host = TestDave::new();
         let host_sid = add_session(&mut host, SessionSource::Local);
-        stream_into(host.dave.session_manager.get_mut(host_sid).unwrap());
+        let host_session = host.dave.session_manager.get_mut(host_sid).unwrap();
+        stream_into(host_session);
+        let git = &mut host_session.agentic.as_mut().unwrap().git_status;
+        git.set_lines(142, 37);
         let envelope = publish(&mut host).await;
 
         let mut observer = TestDave::new();
@@ -329,22 +337,19 @@ mod tests {
         let parts = observer.parts();
         parts.dave.poll_inspector_snapshots(&parts.host);
 
-        let expected = host
-            .dave
-            .session_manager
-            .get(host_sid)
-            .unwrap()
-            .inspector
-            .snapshot(None);
-        let seen = &observer
-            .dave
-            .session_manager
-            .get(observer_sid)
-            .unwrap()
-            .inspector;
-        assert_eq!(seen.snapshot(None), expected);
-        assert_eq!(seen.usage.total_cost(), Some(1.5));
-        assert_eq!(seen.background.entries()[0].id, "bash-1");
+        let expected = snapshot_of(host.dave.session_manager.get(host_sid).unwrap());
+        let seen = observer.dave.session_manager.get(observer_sid).unwrap();
+        assert_eq!(snapshot_of(seen), expected);
+        assert_eq!(seen.inspector.usage.total_cost(), Some(1.5));
+        assert_eq!(seen.inspector.background.entries()[0].id, "bash-1");
+        let lines = crate::ui::session_list::git_lines(seen).unwrap();
+        assert_eq!((lines.added, lines.deleted), (142, 37));
+    }
+
+    /// `session`'s snapshot as its host would publish it now.
+    fn snapshot_of(session: &ChatSession) -> InspectorSnapshot {
+        let git = &session.agentic.as_ref().unwrap().git_status;
+        session.inspector.snapshot(None, git)
     }
 
     /// A remote session opened after its snapshot arrived looks the stored
@@ -388,31 +393,23 @@ mod tests {
         ) -> &mut crate::inspector::SessionInspector {
             &mut host.dave.session_manager.get_mut(sid).unwrap().inspector
         }
+        fn due(host: &TestDave, sid: SessionId) -> PublishDue {
+            let session = host.dave.session_manager.get(sid).unwrap();
+            let git = &session.agentic.as_ref().unwrap().git_status;
+            let key = session.inspector.snapshot_key(git);
+            session.inspector.publisher.due(key, false, Instant::now())
+        }
 
         let parts = host.parts();
         parts.dave.publish_inspector_snapshots(&parts.host);
-        let untouched = inspector(&mut host, sid);
-        let key = untouched.snapshot_key();
-        assert_eq!(
-            untouched.publisher.due(key, false, Instant::now()),
-            PublishDue::Idle
-        );
+        assert_eq!(due(&host, sid), PublishDue::Idle);
 
         stream_into(host.dave.session_manager.get_mut(sid).unwrap());
         let parts = host.parts();
         parts.dave.publish_inspector_snapshots(&parts.host);
-        let published = inspector(&mut host, sid);
-        let key = published.snapshot_key();
-        assert_eq!(
-            published.publisher.due(key, false, Instant::now()),
-            PublishDue::Idle
-        );
+        assert_eq!(due(&host, sid), PublishDue::Idle);
 
-        published.apply(&DaveApiResponse::UsageUpdate(UsageInfo::default()));
-        let key = published.snapshot_key();
-        assert!(matches!(
-            published.publisher.due(key, false, Instant::now()),
-            PublishDue::After(_)
-        ));
+        inspector(&mut host, sid).apply(&DaveApiResponse::UsageUpdate(UsageInfo::default()));
+        assert!(matches!(due(&host, sid), PublishDue::After(_)));
     }
 }
