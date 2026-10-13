@@ -22,7 +22,8 @@ use crate::{
     messages::{
         ApprovalPromptInput, AssistantMessage, CompactionInfo, ExecutedTool, ImageAttachment,
         Message, PermissionRequest, PermissionResponse, PermissionResponseType, PermissionView,
-        QuestionAnswer, RunningTool, SubagentInfo, SubagentStatus, DEFAULT_DENY_REASON,
+        QuestionAnswer, RunningTool, SubagentInfo, SubagentStatus, SystemMessage,
+        DEFAULT_DENY_REASON,
     },
     session::{PermissionMessageState, SessionDetails, SessionId},
     tools::{PresentNotesCall, ToolCall, ToolCalls, ToolResponse, ToolResponses},
@@ -845,7 +846,7 @@ impl<'a> DaveUi<'a> {
                     Self::tool_response_ui(msg, is_agentic, self.nav, ui);
                 }
                 Message::System(text) => {
-                    Self::system_message_ui(text.text(), is_agentic, ui);
+                    Self::system_message_ui(text, is_agentic, ui);
                 }
                 Message::ToolCalls(toolcalls) => {
                     if let Some(note_action) = Self::tool_calls_ui(ctx, toolcalls, ui) {
@@ -1850,23 +1851,29 @@ impl<'a> DaveUi<'a> {
 
     /// A `system` row: in an agentic session, a notice the session wrote into
     /// its own chat, such as a slash command's reply (`/mcp`, `/context`) or
-    /// "Model set to …", drawn as weak monospace so a reply's table keeps its
-    /// columns, with a right-click Copy. A chat-mode session's only `system`
-    /// row is its system prompt, which stays hidden.
-    fn system_message_ui(text: &str, is_agentic: bool, ui: &mut egui::Ui) {
+    /// "Model set to …". It is drawn as markdown in the weak text colour, so a
+    /// `/context` reply shows its heading and table, with a right-click Copy.
+    /// A chat-mode session's only `system` row is its system prompt, which
+    /// stays hidden.
+    ///
+    /// Notices are the CLI's text, not the model's, so they carry no nostr
+    /// references: the markdown is drawn without a note context.
+    fn system_message_ui(system: &SystemMessage, is_agentic: bool, ui: &mut egui::Ui) {
         if !is_agentic {
             return;
         }
-        let row = ui.add(
-            egui::Label::new(
-                egui::RichText::new(text)
-                    .size(11.0)
-                    .color(ui.visuals().weak_text_color())
-                    .monospace(),
-            )
-            .wrap_mode(egui::TextWrapMode::Wrap),
-        );
-        message_menu(&row, None, text);
+        let row = ui.scope(|ui| {
+            ui.visuals_mut().override_text_color = Some(ui.visuals().weak_text_color());
+            markdown_ui::render_parsed_markdown(
+                system.parsed_elements(),
+                None,
+                system.text(),
+                None,
+                None,
+                ui,
+            );
+        });
+        message_menu(&row.response, None, system.text());
     }
 
     /// Render a single subagent's status with expandable tool results.
@@ -3525,7 +3532,7 @@ mod tests {
     use crate::config::AiMode;
     use crate::messages::{
         PermissionRequest, PermissionResponse, PermissionResponseType, QuestionAnswer,
-        SubagentInfo, SubagentStatus,
+        SubagentInfo, SubagentStatus, SystemMessage,
     };
     use claude_agent_sdk_rs::PermissionMode;
     use egui_kittest::{
@@ -4278,8 +4285,8 @@ mod tests {
         harness.snapshot("running_tool_rows");
     }
 
-    /// What `/context` replies with: a markdown table, which the notice row
-    /// draws as plain monospace so its columns line up.
+    /// What `/context` replies with: a heading and a markdown table, which the
+    /// notice row draws through the markdown renderer.
     const CONTEXT_REPLY: &str = "## Context Usage\n\n\
 | Category      | Tokens | Percentage |\n\
 |---------------|--------|------------|\n\
@@ -4289,9 +4296,10 @@ mod tests {
 
     /// Draw `text` as a `system` row in a harness, agentic or not.
     fn system_row_harness(text: &'static str, is_agentic: bool) -> Harness<'static> {
+        let system = SystemMessage::from(text);
         let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(460.0, 200.0))
-            .build_ui(move |ui| DaveUi::system_message_ui(text, is_agentic, ui));
+            .build_ui(move |ui| DaveUi::system_message_ui(&system, is_agentic, ui));
         harness.run();
         harness
     }
@@ -4305,12 +4313,15 @@ mod tests {
     }
 
     /// In an agentic session a `system` row is a notice, such as a slash
-    /// command's reply (headway:dave/repeat-garage-liberty): it is drawn, and a
-    /// right-click on it offers Copy.
+    /// command's reply (headway:dave/repeat-garage-liberty): it is drawn as
+    /// markdown, and a right-click on it offers Copy.
     #[test]
     fn system_row_drawn_in_agentic_mode_with_copy() {
         let mut harness = system_row_harness(CONTEXT_REPLY, true);
-        let node = harness.get_by_label_contains("Context Usage");
+        // Drawn as markdown: the heading without its `##`, and each table cell
+        // as its own label rather than one line of pipes.
+        harness.get_by_label("155.7k");
+        let node = harness.get_by_label("Context Usage");
         let bounds = node.accesskit_node().raw_bounds().expect("notice bounds");
         let pos = egui::pos2(
             ((bounds.x0 + bounds.x1) / 2.0) as f32,
@@ -4333,19 +4344,21 @@ mod tests {
         assert!(harness.query_by_label("Copy").is_some());
     }
 
-    /// The `system` notice rows an agentic session draws: a `/context` reply
-    /// table and a `/model` confirmation. Render with
+    /// The `system` notice rows an agentic session draws, as markdown: a
+    /// `/context` reply's heading and table, and a `/model` confirmation. Render with
     /// `scripts/snapshot-test snapshot_system_notice_rows`.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_system_notice_rows() {
+        let context = SystemMessage::from(CONTEXT_REPLY);
+        let model = SystemMessage::from("Model set to `opus` for the next turn");
         let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(460.0, 200.0))
             .renderer(notedeck::software_renderer())
-            .build_ui(|ui| {
-                DaveUi::system_message_ui(CONTEXT_REPLY, true, ui);
+            .build_ui(move |ui| {
+                DaveUi::system_message_ui(&context, true, ui);
                 ui.add_space(4.0);
-                DaveUi::system_message_ui("Model set to opus for the next turn", true, ui);
+                DaveUi::system_message_ui(&model, true, ui);
             });
         harness.run();
         harness.snapshot("system_notice_rows");
