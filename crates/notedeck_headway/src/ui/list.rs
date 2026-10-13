@@ -2719,13 +2719,15 @@ mod tests {
     #[test]
     fn j_and_k_walk_headers_and_rows() {
         let mut list = grouped();
+        // `b` sits nearer the terminal `c` than `a` does, so its group
+        // leads (`headway::query`'s status order).
         let walk = [
+            on_group("b"),
+            on_card(4),
             on_group("a"),
             on_card(1),
             on_card(2),
             on_card(3),
-            on_group("b"),
-            on_card(4),
             on_group("c"),
             on_card(5),
             on_card(6),
@@ -2744,7 +2746,7 @@ mod tests {
         list.move_cursor(CursorMove::Last);
         assert_eq!(list.cursor, on_card(6));
         list.move_cursor(CursorMove::First);
-        assert_eq!(list.cursor, on_group("a"));
+        assert_eq!(list.cursor, on_group("b"));
         // On a header there's no card for the card keys to act on.
         assert_eq!(list.cursor(), None);
     }
@@ -2758,9 +2760,9 @@ mod tests {
         assert_eq!(list.cursor, on_group("c"));
         list.cursor = None;
         list.step_group(GroupStep::Next);
-        assert_eq!(list.cursor, on_group("a"));
-        list.step_group(GroupStep::Next);
         assert_eq!(list.cursor, on_group("b"));
+        list.step_group(GroupStep::Next);
+        assert_eq!(list.cursor, on_group("a"));
         list.cursor = on_card(5);
         list.step_group(GroupStep::Prev);
         assert_eq!(list.cursor, on_group("c"));
@@ -2778,7 +2780,7 @@ mod tests {
         assert!(list.collapsed.contains(&group("a")));
         assert_eq!(list.cursor, on_group("a"));
         list.move_cursor(CursorMove::Down);
-        assert_eq!(list.cursor, on_group("b"), "a's rows are folded away");
+        assert_eq!(list.cursor, on_group("c"), "a's rows are folded away");
         list.move_cursor(CursorMove::Up);
         list.fold(ListFold::Toggle);
         assert!(list.collapsed.is_empty());
@@ -2829,14 +2831,14 @@ mod tests {
     #[test]
     fn a_refold_keeps_the_cursor_on_its_group() {
         let mut list = grouped();
-        list.cursor = on_group("b");
+        list.cursor = on_group("a");
         let at = list.cursor_entry();
-        // 5 moves from `c` up into `a`, above `b`'s header.
+        // 5 moves from `c` up into `b`, above `a`'s header.
         let mut view = grid();
         let five = view.columns[2].cards.remove(0);
-        view.columns[0].cards.push(five);
+        view.columns[1].cards.push(five);
         list.refresh(&sources(view));
-        assert_eq!(list.cursor, on_group("b"));
+        assert_eq!(list.cursor, on_group("a"));
         assert_eq!(list.cursor_entry(), at.map(|at| at + 1));
     }
 

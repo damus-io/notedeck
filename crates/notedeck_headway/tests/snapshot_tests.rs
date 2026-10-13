@@ -1627,8 +1627,12 @@ fn snapshot_headway_list_key_hints() {
     harness.run_ok();
     harness.press_key(egui::Key::Escape);
     wait_for_absent(&mut harness, "Ordering");
-    // The first header, then its first row.
-    press_board_keys(&mut harness, &[egui::Key::J, egui::Key::J]);
+    // Todo's first row: In Progress leads the groups, and its one card has
+    // nowhere to move, so `J`/`K` aren't offered on it.
+    press_board_keys(
+        &mut harness,
+        &[egui::Key::J, egui::Key::J, egui::Key::J, egui::Key::J],
+    );
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
     wait_for_label(&mut harness, "save view");
     wait_for_label(&mut harness, "reorder");

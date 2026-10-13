@@ -1405,10 +1405,12 @@ mod tests {
             at(&harness),
             Some(ListCursor::Group(ListState::status_group("a")))
         );
+        // `c`'s header comes next: `b` leads the groups, nearest the
+        // terminal `c` (`headway::query`'s status order).
         press(&mut harness, Key::J);
         assert_eq!(
             at(&harness),
-            Some(ListCursor::Group(ListState::status_group("b")))
+            Some(ListCursor::Group(ListState::status_group("c")))
         );
         press(&mut harness, Key::K);
         press(&mut harness, Key::Enter);
@@ -1424,12 +1426,12 @@ mod tests {
         press(&mut harness, Key::Z);
         press_with(&mut harness, Modifiers::SHIFT, Key::R);
         assert_eq!(shown(&harness), 12);
-        // `]g` from `a`'s header goes to `b`'s, and `c` composes there.
+        // `]g` from `a`'s header goes to `c`'s, and `c` composes there.
         press(&mut harness, Key::CloseBracket);
         press(&mut harness, Key::G);
         assert_eq!(
             at(&harness),
-            Some(ListCursor::Group(ListState::status_group("b")))
+            Some(ListCursor::Group(ListState::status_group("c")))
         );
         press(&mut harness, Key::C);
         assert!(harness.state().state.list_composing());
