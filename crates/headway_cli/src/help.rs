@@ -221,8 +221,8 @@ The title is always printed; --json always prints the whole card.
 
 --group <by> gathers the rows under `## <group> (<count>)` headers, and
 --sub-group <by> splits each group again, indented. <by> is one of:
-status (same-named columns across boards are one group, done columns
-last), priority (urgent first), label (a card with two labels is in
+status (same-named columns across boards are one group; in progress,
+in review, then todo before backlog, done last), priority (urgent first), label (a card with two labels is in
 both groups), board, parent, none. --empty also prints the groups no
 card is in: every column, priority or board. A row leaves out what its
 header already says. With --json, a grouped list is an array of

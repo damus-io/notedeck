@@ -577,7 +577,8 @@ pub enum GroupBy {
     /// No groups: one flat list.
     #[default]
     None,
-    /// By column, matched by name across boards, terminal columns last.
+    /// By column, matched by name across boards: In Progress, In Review,
+    /// the other open columns nearest In Progress first, done last.
     Status,
     /// By priority, Urgent first and "No priority" last.
     Priority,
@@ -781,8 +782,9 @@ pub struct ListGroup {
 /// `boards` are the boards the rows were listed from, which say what empty
 /// groups exist ([`Grouping::show_empty`]) and in what order the columns go.
 ///
-/// Orders: status follows the boards' columns, board by board, a name joining
-/// at its first appearance, terminal columns last and archived after them;
+/// Orders: status runs In Progress, In Review, the other open columns nearest
+/// In Progress first (Todo, then Backlog), then done columns, archived after
+/// them, a name shared by several boards' columns being one group;
 /// priority runs Urgent to No priority; labels go alphabetically, "No label"
 /// last; boards keep `boards`' order; parents go in the order they're first
 /// met, "No parent" last. Ungrouped ([`GroupBy::None`]), it is one
@@ -858,25 +860,21 @@ fn seed_groups(boards: &[&BoardView], by: GroupBy) -> Vec<ListGroup> {
     };
     match by {
         GroupBy::Status => {
-            let mut open = Vec::new();
-            let mut terminal = Vec::new();
+            let mut seeded: Vec<SeededStatus> = Vec::new();
             for board in boards {
-                for column in &board.columns {
+                for (at, column) in board.columns.iter().enumerate() {
                     let key = GroupKey::Status(column.name.to_lowercase());
-                    let seen = |g: &ListGroup| g.key == key;
-                    if open.iter().any(seen) || terminal.iter().any(seen) {
+                    if seeded.iter().any(|s| s.group.key == key) {
                         continue;
                     }
-                    let side = if board.column_is_terminal(&column.id) {
-                        &mut terminal
-                    } else {
-                        &mut open
-                    };
-                    side.push(empty(key, &column.name));
+                    seeded.push(SeededStatus {
+                        order: StatusOrder::of(board, column, at),
+                        group: empty(key, &column.name),
+                    });
                 }
             }
-            open.extend(terminal);
-            open
+            seeded.sort_by_key(|s| s.order);
+            seeded.into_iter().map(|s| s.group).collect()
         }
         GroupBy::Priority => PRIORITY_ORDER
             .into_iter()
@@ -893,6 +891,59 @@ fn seed_groups(boards: &[&BoardView], by: GroupBy) -> Vec<ListGroup> {
             })
             .collect(),
         GroupBy::None | GroupBy::Label | GroupBy::Parent => Vec::new(),
+    }
+}
+
+/// A status group being seeded, with where it goes.
+struct SeededStatus {
+    order: StatusOrder,
+    group: ListGroup,
+}
+
+/// Where a column's status group goes: the work in flight first, then
+/// what's next to be picked up, then what's finished. In Progress leads
+/// because it should hold the fewest cards, and it is what is being
+/// worked on now. In Review follows (Linear puts it first). The other
+/// open columns come next, nearest In Progress first, so Todo comes
+/// before Backlog. The remaining done columns come last, in board order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum StatusOrder {
+    /// An In Progress column.
+    InProgress,
+    /// A review column (`in-review`, or any named "…review…").
+    InReview,
+    /// Another open column, by how many columns before its board's In
+    /// Progress column it sits (or before its first terminal column, on a
+    /// board without one). A distance, unlike a raw position, compares
+    /// across boards: Backlog is 2 wherever it sits.
+    Open(usize),
+    /// Another terminal column, by board position.
+    Done(usize),
+}
+
+impl StatusOrder {
+    /// The order of `column`, at position `at` on `board`.
+    fn of(board: &BoardView, column: &ColumnView, at: usize) -> StatusOrder {
+        if column.is_in_progress() {
+            StatusOrder::InProgress
+        } else if column.id == "in-review" || column.name.to_lowercase().contains("review") {
+            StatusOrder::InReview
+        } else if board.column_is_terminal(&column.id) {
+            StatusOrder::Done(at)
+        } else {
+            let anchor = board
+                .columns
+                .iter()
+                .position(ColumnView::is_in_progress)
+                .or_else(|| {
+                    board
+                        .columns
+                        .iter()
+                        .position(|c| board.column_is_terminal(&c.id))
+                })
+                .unwrap_or(board.columns.len());
+            StatusOrder::Open(anchor.saturating_sub(at))
+        }
     }
 }
 
@@ -2050,7 +2101,11 @@ mod tests {
         );
         let mut two = board("two", vec![card(3, "c", &[])], vec![], vec![]);
         two.columns.insert(
-            1,
+            0,
+            column("backlog", "Backlog", false, vec![card(5, "e", &[])]),
+        );
+        two.columns.insert(
+            3,
             column("review", "Review", false, vec![card(4, "d", &[])]),
         );
         let boards = [one, two];
@@ -2064,15 +2119,17 @@ mod tests {
         let groups = group(&refs, &rows, by(false));
         assert_eq!(
             group_titles(&rows, &groups),
-            ["Todo: a c", "Review: d", "Done: b",]
+            ["Review: d", "Todo: a c", "Backlog: e", "Done: b",]
         );
-        assert_eq!(groups[0].key, GroupKey::Status("todo".to_string()));
-        // Empty columns show only when asked, still in column order.
+        assert_eq!(groups[0].key, GroupKey::Status("review".to_string()));
+        // Empty columns show only when asked: In Progress leads, then
+        // review, then the open columns nearest In Progress first, done
+        // last.
         let labels: Vec<String> = group(&refs, &rows, by(true))
             .into_iter()
             .map(|g| g.label)
             .collect();
-        assert_eq!(labels, ["Todo", "In Progress", "Review", "Done"]);
+        assert_eq!(labels, ["In Progress", "Review", "Todo", "Backlog", "Done"]);
     }
 
     #[test]
