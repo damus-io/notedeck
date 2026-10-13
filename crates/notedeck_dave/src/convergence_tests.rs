@@ -901,6 +901,7 @@ fn running(tool_use_id: &str, tool_name: &str, summary: &str) -> Step {
         tool_use_id: tool_use_id.to_string(),
         tool_name: tool_name.to_string(),
         summary: summary.to_string(),
+        description: None,
     }))
 }
 
@@ -917,6 +918,7 @@ fn executed(
         parent_task_id: parent_task_id.map(str::to_string),
         file_update: None,
         tool_use_id: Some(tool_use_id.to_string()),
+        description: None,
     }))
 }
 
@@ -963,6 +965,7 @@ async fn unpaired_tool_result() {
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
+            description: None,
         })),
         token("it is short"),
         Step::StreamEnd,
@@ -981,6 +984,35 @@ async fn tool_pairing() {
         token("tests pass"),
         Step::StreamEnd,
     ]);
+    assert_host_matches_fold(script).await;
+}
+
+/// A Bash call's description reaches the fold on both its notes (the
+/// `tool-desc` tag), so the running row and the finished one carry the same
+/// label as the host's. One past the cut checks both sides cut it alike.
+#[tokio::test]
+async fn tool_description_travels() {
+    let long = "d".repeat(agentium_core::session_loader::TOOL_SUMMARY_MAX_CHARS + 5);
+    let mut script = Vec::from(user_turn("run it"));
+    for (id, desc) in [("t1", "Run the tests".to_string()), ("t2", long)] {
+        let Step::Backend(DaveApiResponse::ToolRunning(mut call)) =
+            running(id, "Bash", "`cargo test`")
+        else {
+            unreachable!()
+        };
+        call.description = Some(desc.clone());
+        let Step::Backend(DaveApiResponse::ToolResult(mut result)) =
+            executed(id, "Bash", "`cargo test`", None)
+        else {
+            unreachable!()
+        };
+        result.description = Some(desc);
+        script.extend([
+            Step::Backend(DaveApiResponse::ToolRunning(call)),
+            Step::Backend(DaveApiResponse::ToolResult(result)),
+        ]);
+    }
+    script.extend([token("tests pass"), Step::StreamEnd]);
     assert_host_matches_fold(script).await;
 }
 
@@ -1711,6 +1743,7 @@ async fn reconcile_keeps_dropped_diff() {
             parent_task_id: None,
             file_update: Some(edit),
             tool_use_id: Some("t1".to_string()),
+            description: None,
         })),
         Step::StreamEnd,
     ]);
@@ -1768,6 +1801,7 @@ async fn reconcile_keeps_capped_tool_output() {
             parent_task_id: None,
             file_update: None,
             tool_use_id: Some("t1".to_string()),
+            description: None,
         })),
         Step::StreamEnd,
     ]);
@@ -2462,6 +2496,7 @@ async fn reconcile_keeps_subagent_tool_output() {
             parent_task_id: Some("s1".to_string()),
             file_update: None,
             tool_use_id: Some("t1".to_string()),
+            description: None,
         })),
         Step::Backend(DaveApiResponse::SubagentCompleted {
             task_id: "s1".to_string(),

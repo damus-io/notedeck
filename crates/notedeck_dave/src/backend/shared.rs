@@ -2,7 +2,7 @@
 
 use crate::auto_accept::AutoAcceptRules;
 use crate::backend::tool_summary::{
-    extract_response_content, format_tool_summary, truncate_output,
+    extract_response_content, format_tool_summary, tool_description, truncate_output,
 };
 use crate::file_update::FileUpdate;
 use crate::messages::{
@@ -226,6 +226,7 @@ pub fn send_tool_result(
         parent_task_id,
         file_update,
         tool_use_id: tool_use_id.map(str::to_string),
+        description: tool_description(tool_name, tool_input),
     };
     let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
     waker.wake();
@@ -785,7 +786,7 @@ mod tests {
         let waker = Waker::noop();
         send_tool_result(
             "Bash",
-            &serde_json::json!({"command": "ls"}),
+            &serde_json::json!({"command": "ls", "description": "List files"}),
             &serde_json::json!({"output": "file.txt"}),
             None,
             None,
@@ -805,6 +806,8 @@ mod tests {
                 assert!(!tool.summary.is_empty(), "summary should not be empty");
                 // Bash stdout/stderr is surfaced inline for the transcript.
                 assert_eq!(tool.output.as_deref(), Some("file.txt"));
+                // The model's description rides along as the row's label.
+                assert_eq!(tool.description.as_deref(), Some("List files"));
             }
             _ => panic!("expected ToolResult"),
         }

@@ -4399,6 +4399,7 @@ mod tests {
                 parent_task_id: None,
                 file_update: None,
                 tool_use_id: None,
+                description: None,
             },
             crate::messages::ExecutedTool {
                 tool_name: "Bash".to_string(),
@@ -4407,6 +4408,7 @@ mod tests {
                 parent_task_id: None,
                 file_update: None,
                 tool_use_id: None,
+                description: None,
             },
             crate::messages::ExecutedTool {
                 tool_name: "Read".to_string(),
@@ -4415,6 +4417,7 @@ mod tests {
                 parent_task_id: None,
                 file_update: None,
                 tool_use_id: None,
+                description: None,
             },
         ]
     }
@@ -4446,6 +4449,7 @@ mod tests {
             parent_task_id: None,
             file_update: Some(file_update),
             tool_use_id: None,
+            description: None,
         }];
         let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(420.0, 800.0))
@@ -4476,6 +4480,7 @@ mod tests {
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
+            description: None,
         }];
         let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(420.0, 120.0))
@@ -4535,16 +4540,19 @@ mod tests {
                 tool_use_id: "t1".to_string(),
                 tool_name: "Bash".to_string(),
                 summary: "`cargo test --all`".to_string(),
+                description: None,
             },
             crate::messages::RunningTool {
                 tool_use_id: "t2".to_string(),
                 tool_name: "Read".to_string(),
                 summary: "lib.rs (0 lines)".to_string(),
+                description: None,
             },
             crate::messages::RunningTool {
                 tool_use_id: "t3".to_string(),
                 tool_name: "Grep".to_string(),
                 summary: "'fn handle_stream_message'".to_string(),
+                description: None,
             },
         ];
         let mut harness = notedeck::test_harness::lenient_builder()
@@ -4733,6 +4741,7 @@ mod tests {
                 parent_task_id: None,
                 file_update: None,
                 tool_use_id: None,
+                description: None,
             })
             .collect();
 
@@ -4797,6 +4806,7 @@ mod tests {
                 parent_task_id: None,
                 file_update: None,
                 tool_use_id: None,
+                description: None,
             }],
             background: false,
             agent_id: None,
@@ -4879,6 +4889,7 @@ mod tests {
                 parent_task_id: None,
                 file_update: None,
                 tool_use_id: None,
+                description: None,
             },
             crate::messages::ExecutedTool {
                 tool_name: "Agent".to_string(),
@@ -4887,6 +4898,7 @@ mod tests {
                 parent_task_id: None,
                 file_update: None,
                 tool_use_id: None,
+                description: None,
             },
             crate::messages::ExecutedTool {
                 tool_name: "SendMessage".to_string(),
@@ -4895,6 +4907,7 @@ mod tests {
                 parent_task_id: None,
                 file_update: None,
                 tool_use_id: None,
+                description: None,
             },
         ];
         let mut harness = notedeck::test_harness::lenient_builder()
@@ -4945,6 +4958,7 @@ mod tests {
                 parent_task_id: None,
                 file_update: None,
                 tool_use_id: None,
+                description: None,
             },
         ));
         assert_eq!(row_group(&tool, true), Some(RowGroup::Tool));
@@ -4967,6 +4981,7 @@ mod tests {
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
+            description: None,
         };
         let subagent = SubagentInfo {
             task_id: "toolu_agent".to_string(),
@@ -5055,6 +5070,7 @@ mod tests {
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
+            description: None,
         }];
         let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(460.0, 140.0))
@@ -5092,6 +5108,7 @@ mod tests {
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
+            description: None,
         }];
         let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(700.0, 260.0))
@@ -5134,6 +5151,7 @@ mod tests {
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
+            description: None,
         }];
         let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(460.0, 80.0))
@@ -5175,6 +5193,7 @@ mod tests {
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
+            description: None,
         }];
         notedeck::test_harness::lenient_builder()
             .with_size(size)
@@ -5289,6 +5308,7 @@ mod tests {
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
+            description: None,
         }];
         let mut harness = notedeck::test_harness::lenient_builder()
             .with_size(egui::Vec2::new(520.0, 360.0))

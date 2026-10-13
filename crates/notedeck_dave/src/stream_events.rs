@@ -512,6 +512,7 @@ fn publish_response(
             let tags = LiveEventTags {
                 tool_id: Some(&running.tool_use_id),
                 tool_name: Some(&running.tool_name),
+                tool_desc: running.description.as_deref(),
                 ..Default::default()
             };
             ingest_live_event(session, ndb, sk, &running.summary, "tool_call", tags);
@@ -581,8 +582,8 @@ fn publish_todo(
 /// truncates for display). An edit's diff rides along when the note fits
 /// with the whole output: an edit the CLI auto-approved has no
 /// permission_request note to rebuild it from. Past that it is dropped whole,
-/// never cut into a diff that didn't happen. The tool name, tool use id and
-/// parent task travel as tags.
+/// never cut into a diff that didn't happen. The tool name, tool use id,
+/// description and parent task travel as tags.
 fn publish_tool_result(
     session: &mut session::ChatSession,
     result: &ExecutedTool,
@@ -592,6 +593,7 @@ fn publish_tool_result(
     let tags = LiveEventTags {
         tool_id: result.tool_use_id.as_deref(),
         tool_name: Some(&result.tool_name),
+        tool_desc: result.description.as_deref(),
         parent_task: result.parent_task_id.as_deref(),
         ..Default::default()
     };
@@ -1269,6 +1271,7 @@ mod tests {
             parent_task_id: parent_task_id.map(str::to_string),
             file_update: None,
             tool_use_id: tool_use_id.map(str::to_string),
+            description: None,
         }
     }
 
@@ -1352,6 +1355,7 @@ mod tests {
             tool_use_id: "t1".to_string(),
             tool_name: "Grep".to_string(),
             summary: "loader".to_string(),
+            description: None,
         }));
         f.apply(DaveApiResponse::Token("while ".to_string()));
         f.apply(DaveApiResponse::ToolResult(executed(None, Some("s1"))));

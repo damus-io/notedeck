@@ -674,6 +674,14 @@ pub struct ExecutedTool {
     /// reconstructed from notes.
     #[serde(skip)]
     pub tool_use_id: Option<String>,
+    /// The model's own one-line account of what the call does, from the tool
+    /// input's `description` (today only Bash sends one; see
+    /// `tool_summary::tool_description`). A quieter label than the raw
+    /// command. `None` for tools without one and for results recorded before
+    /// it was captured, so a reader falls back to [`summary`](Self::summary).
+    /// Travels on the kind-1988 `tool_result` note as its `tool-desc` tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// An in-flight tool call surfaced at `tool_use` time, before its result lands.
@@ -692,13 +700,16 @@ pub struct RunningTool {
     /// Call-time summary derived from the tool input (e.g. a file path, a
     /// command), same formatting as the completed row's summary.
     pub summary: String,
+    /// The tool input's `description`, as on [`ExecutedTool::description`].
+    /// Travels on the kind-1988 `tool_call` note as its `tool-desc` tag.
+    pub description: Option<String>,
 }
 
 impl RunningTool {
     /// Build the terminal [`ExecutedTool`] row for a running tool that never
     /// received a result (an interrupted turn), so the spinner stops. Carries
-    /// only what the call-time row already knows — name, summary, and the
-    /// correlation id — with no output/diff/parent.
+    /// only what the call-time row already knows — name, summary, description
+    /// and the correlation id — with no output/diff/parent.
     pub fn to_executed(&self) -> ExecutedTool {
         ExecutedTool {
             tool_name: self.tool_name.clone(),
@@ -707,6 +718,7 @@ impl RunningTool {
             parent_task_id: None,
             file_update: None,
             tool_use_id: Some(self.tool_use_id.clone()),
+            description: self.description.clone(),
         }
     }
 }

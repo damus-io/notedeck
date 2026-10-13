@@ -614,6 +614,13 @@ impl ToolResultContent {
     }
 }
 
+/// A tool note's description ([`TOOL_DESC_TAG`](crate::session_events::TOOL_DESC_TAG)),
+/// cut like a summary so a note from any publisher can't overrun a row.
+fn tool_desc(note: &nostrdb::Note) -> Option<String> {
+    get_tag_value(note, crate::session_events::TOOL_DESC_TAG)
+        .map(|desc| crate::util::truncate(desc, TOOL_SUMMARY_MAX_CHARS))
+}
+
 /// Render one conversation note into a chat [`Message`], or `None` for roles
 /// that carry no display message (progress, queue-operation, …). A
 /// `permission_response` renders only when it carries user-authored reply text
@@ -667,6 +674,7 @@ pub fn render_conversation_note_with_content(
                     .unwrap_or("tool")
                     .to_string(),
                 summary: content.to_string(),
+                description: tool_desc(note),
             }))
         }
         Some("assistant") | Some("tool_call") => Some(Message::Assistant(
@@ -687,6 +695,7 @@ pub fn render_conversation_note_with_content(
                     parent_task_id: get_tag_value(note, "parent-task").map(str::to_string),
                     file_update: decoded.file_update.map(FileUpdate::from),
                     tool_use_id: get_tag_value(note, "tool-id").map(str::to_string),
+                    description: tool_desc(note),
                 },
             )))
         }
@@ -794,6 +803,8 @@ pub enum RowSig {
     ToolRunning {
         tool_use_id: String,
         tool_name: String,
+        /// The call's description, cut like `ToolResponse`'s summary.
+        description: Option<String>,
     },
     /// A finished agentic tool.
     ToolResponse {
@@ -804,6 +815,8 @@ pub enum RowSig {
         /// makes the host's raw summary and the loader's truncated one agree.
         summary: String,
         tool_use_id: Option<String>,
+        /// The call's description, cut like the summary.
+        description: Option<String>,
     },
     /// A chat-mode tool response (query, present-notes, error), by call id.
     ChatToolResponse(String),
@@ -852,15 +865,14 @@ fn row_signature(message: &Message) -> RowSig {
         Message::ToolRunning(running) => RowSig::ToolRunning {
             tool_use_id: running.tool_use_id.clone(),
             tool_name: running.tool_name.clone(),
+            description: running.description.as_deref().map(cut_tool_text),
         },
         Message::ToolResponse(resp) => match resp.responses() {
             ToolResponses::ExecutedTool(tool) => RowSig::ToolResponse {
                 tool_name: tool.tool_name.clone(),
-                summary: strip_tool_name_prefix(&tool.summary, &tool.tool_name)
-                    .chars()
-                    .take(TOOL_SUMMARY_MAX_CHARS)
-                    .collect(),
+                summary: cut_tool_text(strip_tool_name_prefix(&tool.summary, &tool.tool_name)),
                 tool_use_id: tool.tool_use_id.clone(),
+                description: tool.description.as_deref().map(cut_tool_text),
             },
             _ => RowSig::ChatToolResponse(resp.id().to_string()),
         },
@@ -879,6 +891,13 @@ fn row_signature(message: &Message) -> RowSig {
         },
         Message::TodoUpdate(todos) => RowSig::TodoUpdate(todos.to_string()),
     }
+}
+
+/// A tool row's summary or description as a [`RowSig`] compares it: its first
+/// [`TOOL_SUMMARY_MAX_CHARS`] characters, which the host's raw text and the
+/// loader's truncated copy share.
+fn cut_tool_text(text: &str) -> String {
+    text.chars().take(TOOL_SUMMARY_MAX_CHARS).collect()
 }
 
 /// Collapse a rendered `role=subagent` message into the row already shown for
@@ -2102,6 +2121,7 @@ mod tests {
             parent_task_id: None,
             file_update: None,
             tool_use_id: tool_use_id.map(str::to_string),
+            description: None,
         }))
     }
 

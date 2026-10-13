@@ -58,6 +58,21 @@ pub fn format_tool_summary(
     }
 }
 
+/// The model's own one-line account of what a tool call does: a Bash call's
+/// `description` input ("List the crates"), trimmed. A quieter label for the
+/// call than its raw command.
+///
+/// `None` for other tools (Task and Agent already fold their description into
+/// the summary) and for a Bash call without one, so a reader falls back to the
+/// summary.
+pub fn tool_description(tool_name: &str, input: &serde_json::Value) -> Option<String> {
+    if tool_name != "Bash" {
+        return None;
+    }
+    let desc = input.get("description")?.as_str()?.trim();
+    (!desc.is_empty()).then(|| desc.to_string())
+}
+
 fn format_read_summary(input: &serde_json::Value, response: &serde_json::Value) -> String {
     let file = input
         .get("file_path")
@@ -236,6 +251,34 @@ mod tests {
     #[test]
     fn bash_summary_missing_command_is_empty_backticks() {
         assert_eq!(format_bash_summary(&json!({})), "``");
+    }
+
+    #[test]
+    fn bash_description_is_the_trimmed_input() {
+        let input = json!({"command": "ls -la crates", "description": "  List the crates\n"});
+        assert_eq!(
+            tool_description("Bash", &input).as_deref(),
+            Some("List the crates")
+        );
+    }
+
+    #[test]
+    fn bash_description_absent_or_blank_is_none() {
+        // A call without one falls back to the summary, so a blank one must
+        // not stand in for it as an empty label.
+        assert_eq!(tool_description("Bash", &json!({"command": "ls"})), None);
+        let blank = json!({"command": "ls", "description": "   "});
+        assert_eq!(tool_description("Bash", &blank), None);
+        let not_text = json!({"command": "ls", "description": 3});
+        assert_eq!(tool_description("Bash", &not_text), None);
+    }
+
+    #[test]
+    fn description_is_bash_only() {
+        // Agent's description is already its summary; carrying it twice would
+        // label the row with the same words again.
+        let input = json!({"description": "audit the login flow", "prompt": "…"});
+        assert_eq!(tool_description("Agent", &input), None);
     }
 
     // ---- Bug fix: truncate_output panicked on multi-byte UTF-8 ----

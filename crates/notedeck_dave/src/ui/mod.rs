@@ -3370,6 +3370,7 @@ mod tests {
             parent_task_id: Some("toolu_explore".into()),
             file_update: None,
             tool_use_id: None,
+            description: None,
         };
         let mut info = SubagentInfo {
             task_id: "toolu_explore".into(),
@@ -3732,6 +3733,7 @@ mod tests {
             parent_task_id: None,
             file_update: Some(update),
             tool_use_id: None,
+            description: None,
         };
         let edit = |path: &str, old: &str, new: &str| {
             result(FileUpdate::new(
@@ -3897,6 +3899,7 @@ mod tests {
                 parent_task_id: None,
                 file_update: None,
                 tool_use_id: None,
+                description: None,
             })),
             crate::Message::Assistant(reply),
         ]);
@@ -4245,6 +4248,7 @@ mod tests {
                     parent_task_id: None,
                     file_update: None,
                     tool_use_id: None,
+                    description: None,
                 },
             ))
         };
@@ -4268,6 +4272,7 @@ mod tests {
                 parent_task_id: None,
                 file_update: None,
                 tool_use_id: None,
+                description: None,
             })),
             say("The user named \"notedeck-headway\", and there is a literal `/Users/jb55/dev/notedeck-headway` worktree (branch `scene-map`). Checking it's free for an autowork handoff."),
             bash("cd /Users/jb55/dev/notedeck-headway && git status --porcelain | head -5; git worktree list | grep -c autowork", &lines(4)),

@@ -513,6 +513,7 @@ mod tests {
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
+            description: None,
         }
     }
 
@@ -537,6 +538,7 @@ mod tests {
                 tool_use_id: "t1".into(),
                 tool_name: "Bash".into(),
                 summary: "headway move headway:dave/one-two-three --col done".into(),
+                description: None,
             }),
             Message::ToolResponse(ToolResponse::executed_tool(tool(
                 "sharefile page.html",

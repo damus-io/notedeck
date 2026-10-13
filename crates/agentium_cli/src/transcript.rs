@@ -349,6 +349,7 @@ pub(crate) mod tests {
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
+            description: None,
         }))
     }
 

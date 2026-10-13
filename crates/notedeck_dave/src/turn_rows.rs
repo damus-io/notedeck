@@ -178,6 +178,7 @@ mod tests {
             tool_use_id: id.to_string(),
             tool_name: "Bash".to_string(),
             summary: "ls".to_string(),
+            description: None,
         })
     }
 

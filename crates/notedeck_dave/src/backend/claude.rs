@@ -1,7 +1,9 @@
 use crate::backend::session_info::parse_session_info;
 use crate::backend::shared::{self, SessionCommand, SessionHandle};
 use crate::backend::task_tracker::TaskTracker;
-use crate::backend::tool_summary::{extract_response_content, format_tool_summary};
+use crate::backend::tool_summary::{
+    extract_response_content, format_tool_summary, tool_description,
+};
 use crate::backend::traits::{AiBackend, ResponseStream};
 use crate::backend::wait_tracker::WaitTracker;
 use crate::file_update::FileUpdate;
@@ -615,6 +617,7 @@ fn handle_stream_message(
                             tool_use_id: id.clone(),
                             tool_name: name.clone(),
                             summary,
+                            description: tool_description(name, input),
                         }));
                         waker.wake();
                     }

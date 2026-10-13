@@ -672,6 +672,11 @@ fn build_single_event(
         builder = builder.start_tag().tag_str("tool-name").tag_str(tn);
     }
 
+    // -- Tool description tag --
+    if let Some(desc) = tags.tool_desc {
+        builder = builder.start_tag().tag_str(TOOL_DESC_TAG).tag_str(desc);
+    }
+
     // -- Parent task tag (a subagent-internal tool result) --
     if let Some(task) = tags.parent_task {
         builder = builder.start_tag().tag_str("parent-task").tag_str(task);
@@ -723,6 +728,9 @@ pub struct LiveEventTags<'a> {
     pub tool_id: Option<&'a str>,
     /// The tool name (`tool-name`), e.g. `"Bash"` or `"Read"`.
     pub tool_name: Option<&'a str>,
+    /// The model's one-line account of a tool call ([`TOOL_DESC_TAG`]), on a
+    /// `tool_call` and its `tool_result`, from the tool input's `description`.
+    pub tool_desc: Option<&'a str>,
     /// The subagent task id (`parent-task`) a subagent-internal `tool_result`
     /// ran under, so a fold nests it in that subagent's row.
     pub parent_task: Option<&'a str>,
@@ -741,6 +749,13 @@ pub struct LiveEventTags<'a> {
     /// ([`TURN_START_TAG`]).
     pub turn_start: Option<u64>,
 }
+
+/// The tag carrying a tool call's description, the model's own one-line
+/// account of what it does (a Bash call's `description` input), on both its
+/// `tool_call` and `tool_result` notes: `["tool-desc", "List the crates"]`.
+/// Notes published before it existed have none; a reader falls back to the
+/// summary.
+pub const TOOL_DESC_TAG: &str = "tool-desc";
 
 /// The role of the marker a host publishes when it hands a queued user note to
 /// the backend. Its content is empty and its [`LiveEventTags::refs`] names the

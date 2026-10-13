@@ -4325,6 +4325,7 @@ mod tests {
             parent_task_id: Some("task-1".to_string()),
             file_update: None,
             tool_use_id: None,
+            description: None,
         };
 
         // Should be folded (returns None)
@@ -4353,6 +4354,7 @@ mod tests {
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
+            description: None,
         };
 
         // Should NOT be folded (returns Some)
@@ -4370,6 +4372,7 @@ mod tests {
             tool_use_id: id.to_string(),
             tool_name: name.to_string(),
             summary: summary.to_string(),
+            description: None,
         }
     }
 
@@ -4381,6 +4384,7 @@ mod tests {
             parent_task_id: None,
             file_update: None,
             tool_use_id: Some(id.to_string()),
+            description: None,
         }
     }
 
@@ -4462,6 +4466,7 @@ mod tests {
             parent_task_id: Some("nonexistent-task".to_string()),
             file_update: None,
             tool_use_id: None,
+            description: None,
         };
         // Parent doesn't exist — should return the result unfolded
         let not_folded = session.fold_tool_result(result);

@@ -447,6 +447,7 @@ mod tests {
             parent_task_id: Some(parent.into()),
             file_update: None,
             tool_use_id: None,
+            description: None,
         }
     }
 

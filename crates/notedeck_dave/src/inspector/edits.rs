@@ -194,6 +194,7 @@ mod tests {
             parent_task_id: None,
             file_update: update,
             tool_use_id: None,
+            description: None,
         }
     }
 
