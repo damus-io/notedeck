@@ -293,6 +293,16 @@ its word-id and `path:line` (`path:old a-b` for deleted lines). Answer one with
 record under the same lines, not into the card's comment thread. It is signed
 by the comment key like any comment (see below).
 
+When the app sends review comments or an X send-back into your session, the
+message ends with this same hint. Answer each comment where it was left, so the
+reviewer sees the answer beside it, rather than only in your transcript:
+
+```bash
+headway show headway:headway/some-card     # each review comment prints with its word-id
+headway comment headway:headway/some-card --reply-to ball-double-claw "done in abc1234"
+headway comment headway:headway/some-card --path src/lib.rs --line 40-44 "kept the clone: X needs it"
+```
+
 When commenting a finished card's commit hash, a Dave agentic session should also
 quote its own `agentium:` session ref (from `$AGENTIUM_SESSION`) beside the hash —
 see AGENTS.md "When done with the work" and the `agentium` skill.

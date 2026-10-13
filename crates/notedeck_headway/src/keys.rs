@@ -2132,7 +2132,9 @@ diff --git a/b.txt b/b.txt
                     format!(
                         "Review comments on commit 136ceb9d3bfa (card {card_ref}):\n\n\
                          src/a.rs:1-2\n```diff\n fn a() {{\n-    old();\n+    new();\n```\nrename it\n\n\
-                         b.txt:old 1\n```diff\n-gone\n```\nwhy drop this?"
+                         b.txt:old 1\n```diff\n-gone\n```\nwhy drop this?\n\n\
+                         Reply with `headway comment {card_ref} --reply-to <word-id> <text>`; \
+                         `headway show {card_ref}` lists each comment's word-id."
                     )
                     .as_str()
                 )
@@ -2191,7 +2193,9 @@ diff --git a/b.txt b/b.txt
                 format!(
                     "Review comments on commit 136ceb9d3bfa (card {card_ref}):\n\n\
                      split this commit\n\n\
-                     src/a.rs:1-2\n```diff\n fn a() {{\n-    old();\n+    new();\n```\nrename it"
+                     src/a.rs:1-2\n```diff\n fn a() {{\n-    old();\n+    new();\n```\nrename it\n\n\
+                     Reply with `headway comment {card_ref} --reply-to <word-id> <text>`; \
+                     `headway show {card_ref}` lists each comment's word-id."
                 )
                 .as_str()
             )
@@ -2479,7 +2483,9 @@ diff --git a/b.txt b/b.txt
             Some(notedeck::OpenUri {
                 reference: SESSION.to_string(),
                 msg: Some(format!(
-                    "Sent back for changes (commit 136ceb9d3bfa, card {card_ref}): no tests"
+                    "Sent back for changes (commit 136ceb9d3bfa, card {card_ref}): no tests\n\n\
+                     Reply with `headway comment {card_ref} --reply-to <word-id> <text>`; \
+                     `headway show {card_ref}` lists each comment's word-id."
                 )),
             }),
             "the reason goes to the record's session"

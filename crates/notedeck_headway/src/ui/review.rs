@@ -412,16 +412,18 @@ pub(crate) fn session_open(
 /// The [`AppAction::Open`](notedeck::AppAction::Open) request an `X`
 /// send-back raises alongside its `review:` comment: open `fields`' agentium
 /// session with `reason`, as `Sent back for changes (commit <short sha>, card
-/// <card ref>): <reason>`, so the agent that made the commit hears it. `None`
-/// when the record names no session. Built on submit, never per frame.
+/// <card ref>): <reason>` and then [`reply_hint`], so the agent that made the
+/// commit hears it and knows how to answer. `None` when the record names no
+/// session. Built on submit, never per frame.
 pub(crate) fn send_back_open(
     fields: &ReviewFields,
     card_ref: &str,
     reason: &str,
 ) -> Option<notedeck::OpenUri> {
     let msg = format!(
-        "{SEND_BACK_PROMPT} {}: {reason}",
-        record_context(fields, card_ref)
+        "{SEND_BACK_PROMPT} {}: {reason}\n\n{}",
+        record_context(fields, card_ref),
+        reply_hint(card_ref)
     );
     open_record_session(fields, Some(msg))
 }
@@ -443,9 +445,11 @@ pub(crate) fn send_back_open(
 /// +the picked lines
 /// ```
 /// the comment
+///
+/// Reply with `headway comment headway:<board>/<word-id> --reply-to …`
 /// ````
 ///
-/// The lines are quoted though the events only name them, since the session
+/// The last paragraph is [`reply_hint`]. The lines are quoted though the events only name them, since the session
 /// may have moved on from the commit since. `None` when the record names no
 /// session. Built on send, never per frame.
 pub(crate) fn review_comments_open(
@@ -481,7 +485,21 @@ pub(crate) fn review_comments_open(
             at.place, at.quote, draft.body
         );
     }
+    let _ = write!(msg, "\n\n{}", reply_hint(card_ref));
     open_record_session(fields, Some(msg))
+}
+
+/// The paragraph that ends every review message into a record's session,
+/// saying how to answer from the CLI. A reply to a review comment lands on its
+/// record under the same lines, and a reply to a card comment (the send-back's
+/// `review:` one) in the card's thread; `--reply-to` takes either. The
+/// comments' word-ids don't exist yet when the message is built (they're
+/// signed when the action applies), so it points at `headway show` for them.
+fn reply_hint(card_ref: &str) -> String {
+    format!(
+        "Reply with `headway comment {card_ref} --reply-to <word-id> <text>`; \
+         `headway show {card_ref}` lists each comment's word-id."
+    )
 }
 
 /// Open `fields`' agentium session with `msg`, or `None` when the record
