@@ -67,6 +67,16 @@ use widgets::KeyedText;
 pub(crate) use board_picker::{BoardStep, has_other_board, step_board};
 pub(crate) use review::{Notice, QueueNotice, QueueScope, SessionOpen};
 
+/// A card key pressed in the issue list, run once the card's detail shows
+/// ([`BoardUiState::take_arrival`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Arrival {
+    /// The row's card.
+    pub(crate) card: NoteId,
+    /// What its key does there.
+    pub(crate) action: keys::CardAction,
+}
+
 /// Transient, per-board UI state that must persist across frames but isn't part
 /// of the data model (e.g. which column has an open "add card" composer).
 #[derive(Default)]
@@ -264,6 +274,10 @@ pub struct BoardUiState {
     /// closes when that view goes. Every keymap stands down while it's open;
     /// it takes Enter and Esc unless another widget has the keyboard.
     reason: Option<ReasonComposer>,
+    /// A card key the issue list pressed on a row whose action opens in or
+    /// over the card's detail (`r`, `X`, `C`), waiting for the detail the
+    /// list opened, on the row's board, to have the card.
+    arrival: Option<Arrival>,
     /// A scroll the detail's keys asked of it, applied on its next pass.
     detail_scroll: Option<DetailScroll>,
     /// How far down the detail was scrolled as its last pass ended, and on
@@ -660,10 +674,20 @@ impl BoardUiState {
 
     /// Latch, as the pass ends, the card chrome's keymap edits next pass:
     /// the [view in front](ui_tools::key_view)'s current card, the grid's
-    /// cursor only where the grid drew it, and only a card on the board.
+    /// cursor only where the grid drew it, and only a card on the board;
+    /// the issue list's cursor row on whichever board it's on.
     /// Whether it has a parent is latched with it.
     pub(crate) fn latch_current_ref(&mut self, view: &BoardView) {
-        let found = ui_tools::key_view(self)
+        let at = ui_tools::key_view(self);
+        // The list's card is its cursor row's, on whichever board that is,
+        // and has no parent to open (`g p` isn't offered there).
+        if at == Some(KeyView::List) {
+            self.parented = None;
+            self.current_ref
+                .latch_ref(self.list.cursor(), self.list.cursor_ref());
+            return;
+        }
+        let found = at
             .and_then(|at| match at {
                 KeyView::Grid => self
                     .cursor_slot
@@ -678,6 +702,22 @@ impl BoardUiState {
             .map(|found| found.card.id);
         self.current_ref
             .latch(&view.id, found.map(|found| found.card.id));
+    }
+
+    /// Take the [`Arrival`] waiting on the detail of a card `view` has: the
+    /// list opened it, on this board, and its key can run now. One whose card
+    /// isn't the detail's any more (it was left before the card folded in)
+    /// is dropped; one whose card hasn't folded in yet waits on.
+    pub(crate) fn take_arrival(&mut self, view: &BoardView) -> Option<Arrival> {
+        let arrival = self.arrival.take()?;
+        if self.selected != Some(arrival.card) {
+            return None;
+        }
+        if find_card(view, arrival.card).is_none() {
+            self.arrival = Some(arrival);
+            return None;
+        }
+        Some(arrival)
     }
 
     /// Forget the current card: no board is drawn to edit.

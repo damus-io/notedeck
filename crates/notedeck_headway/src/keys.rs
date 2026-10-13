@@ -13,7 +13,8 @@
 //! The actions come in two classes.
 //!
 //! - **Card actions** act on *the current card* — the grid's cursor card, the
-//!   queue's card, a review pane's card, the open detail's card — and mean the
+//!   queue's card, a review pane's card, the open detail's card, the issue
+//!   list's cursor row on whichever board it's on — and mean the
 //!   same thing in every view: open it, its explainer, its agentium session
 //!   (optionally asking for a code review), its review, send back with a
 //!   reason, comment, next/previous card. One enum ([`CardAction`]) and
@@ -242,10 +243,11 @@ pub(crate) fn apply_grid_tool(
 /// or fold the header it rests on, `za`/`zc`/`zo`/`zM`/`zR` fold the groups,
 /// `c` opens the composer in the cursor's group, `/` focuses the query,
 /// `gt`/`gT`, `go` and `gs` and the other `headway_list_*` layout tools change
-/// the tab, grouping, ordering or display, `q`/`Esc` leave for the grid. `sources` are the boards the list's rows were
-/// read from. Nothing else means anything here: the card actions act on a
-/// card of the board showing, and a list row may be on another, so they wait
-/// for its detail.
+/// the tab, grouping, ordering or display, `q`/`Esc` leave for the grid.
+/// The other card keys act on the cursor's row on whichever board it's on
+/// ([`BoardUiState::act_on_list_cursor`]); `a` and `D` are data tools chrome
+/// runs on the row's ref, never reaching here. `sources` are the boards the
+/// list's rows were read from.
 pub(crate) fn apply_list_tool(
     ctx: &egui::Context,
     view: &BoardView,
@@ -259,6 +261,9 @@ pub(crate) fn apply_list_tool(
             action: CardAction::Open,
             card: None,
         } => state.open_list_cursor(view, sources),
+        HeadwayUiTool::Card { action, card: None } => {
+            state.act_on_list_cursor(ctx, view, sources, *action)
+        }
         HeadwayUiTool::ListFold(fold) => state.fold_list(*fold),
         HeadwayUiTool::ListStepGroup(step) => state.step_list_group(*step),
         HeadwayUiTool::ListLayout(change) => state.lay_out_list(change),
@@ -502,7 +507,18 @@ pub(crate) fn pane_tools(
     view: &BoardView,
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
-    let mut action = None;
+    // A key the issue list pressed on a row it opened runs first, as it
+    // would have had the row's detail been open when it was pressed.
+    let mut action = state.take_arrival(view).and_then(|arrival| {
+        apply_card_action(
+            ctx,
+            view,
+            state,
+            arrival.card,
+            arrival.action,
+            ActionView::Detail,
+        )
+    });
     while let Some(pane) = tool_pane(view, state) {
         let Some(tool) = state.next_queued_tool() else {
             break;
@@ -1867,15 +1883,36 @@ mod tests {
         cursor: crate::ui::ListCursor,
         folded: &[&str],
     ) -> Harness<'static, KeysHarness> {
+        list_harness_on(|| vec![square_grid()], cursor, folded)
+    }
+
+    /// [`list_harness`] over the boards `boards` makes, the first of them the
+    /// board showing.
+    fn list_harness_on(
+        boards: fn() -> Vec<BoardView>,
+        cursor: crate::ui::ListCursor,
+        folded: &[&str],
+    ) -> Harness<'static, KeysHarness> {
         use crate::ui::ListCursor;
         let mut harness = keys_harness(None);
         // The list draws glyphs (its `←` back, the fold arrows) egui's own
         // fonts lack.
         notedeck::fonts::setup_fonts(&harness.ctx);
-        let boards: std::rc::Rc<[BoardView]> = std::rc::Rc::from(vec![square_grid()]);
+        let showing = boards().swap_remove(0);
+        let boards: std::rc::Rc<[BoardView]> = std::rc::Rc::from(boards());
+        let slugs: Vec<String> = boards.iter().map(|b| b.id.clone()).collect();
         let h = harness.state_mut();
-        h.list_sources =
-            vec![crate::cache::BoardRef::find(boards, &[0; 32], "headway").expect("the board")];
+        // The board `a` and `D` edit, as chrome's data tools would the row's:
+        // the showing one, with a Done column for `D` to move the card to.
+        h.view = showing;
+        h.view.columns[2].name = "Done".to_string();
+        h.list_sources = slugs
+            .iter()
+            .map(|slug| {
+                crate::cache::BoardRef::find(std::rc::Rc::clone(&boards), &[0; 32], slug)
+                    .expect("the board")
+            })
+            .collect();
         h.state.open_list();
         harness.run();
         harness.get_by_label("All issues").click();
@@ -1889,6 +1926,59 @@ mod tests {
         harness.state_mut().state.list_mut().set_cursor(cursor);
         harness.run();
         harness
+    }
+
+    /// A second board, "side", for the issue list to read beside
+    /// [`square_grid`]: [`review_board`] with its cards renumbered 21 to 29,
+    /// so 25 carries the record with an explainer.
+    fn side_board() -> BoardView {
+        let mut view = review_board();
+        view.id = "side".to_string();
+        view.title = "Side".to_string();
+        for card in view.columns.iter_mut().flat_map(|c| c.cards.iter_mut()) {
+            card.id = id(card.id.bytes()[0] + 20);
+        }
+        view
+    }
+
+    /// The list's card keys act on the cursor row on whichever board it's
+    /// on (headway:notedeck/exile-finger-birth): the current card chrome's
+    /// `a` and `D` edit is the row's own `headway:side/<word-id>`, `e` opens
+    /// the explainer the side board records, and `C` opens the row's detail,
+    /// switching to its board, then the comment composer over it once the
+    /// card has folded in there.
+    #[test]
+    fn list_card_keys_act_on_the_rows_board() {
+        use crate::ui::ListCursor;
+        let card = id(25);
+        let mut harness = list_harness_on(
+            || vec![square_grid(), side_board()],
+            ListCursor::Card(card),
+            &[],
+        );
+        let side_ref = headway::wordid::card_ref("side", card.bytes());
+        assert_eq!(harness.state().state.current_ref(), Some(side_ref.as_str()));
+
+        press(&mut harness, Key::E);
+        assert_eq!(
+            harness.state().opened.as_deref(),
+            Some("https://example.com/explainer")
+        );
+
+        press_with(&mut harness, Modifiers::SHIFT, Key::C);
+        assert_eq!(harness.state().switched.as_deref(), Some("side"));
+        assert_eq!(harness.state().state.selected(), Some(card));
+        assert!(
+            !harness.state().state.rejecting(),
+            "the composer waits for the card's board"
+        );
+        // The app shows the board it switched to.
+        harness.state_mut().view = side_board();
+        harness.run();
+        assert!(
+            harness.state().state.rejecting(),
+            "the comment composer opens over the card's detail"
+        );
     }
 
     /// `headway_list_tab` steps through the tabs, wrapping from the last
@@ -2390,21 +2480,25 @@ mod tests {
             (
                 "issue list",
                 list_harness(crate::ui::ListCursor::Card(id(5)), &[]),
-                vec![
-                    "up/down",
-                    "first/last",
-                    "open",
-                    "filter",
-                    "next/prev group",
-                    "fold group",
-                    "close/open group",
-                    "fold/unfold all",
-                    "new in group",
-                    "next/prev tab",
-                    "next ordering",
-                    "save view",
-                    "back to board",
-                ],
+                [
+                    &[
+                        "up/down",
+                        "first/last",
+                        "filter",
+                        "next/prev group",
+                        "fold group",
+                        "close/open group",
+                        "fold/unfold all",
+                        "new in group",
+                        "next/prev tab",
+                        "next ordering",
+                        "save view",
+                        "back to board",
+                    ],
+                    // `j`/`k` are the list's steps, so no `n`/`p`.
+                    &CARD[..CARD.len() - 1],
+                ]
+                .concat(),
             ),
         ];
         for (name, harness, mut expected) in views {

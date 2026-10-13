@@ -44,11 +44,11 @@ use super::widgets::{
     KeyedText, StatusIcon, label_color, pill_height, priority_icon_ui, priority_label,
     status_icon_ui, text_pill, tinted_pill,
 };
-use super::{BoardEffect, BoardNav, BoardUiState, ViewEdit};
+use super::{Arrival, BoardEffect, BoardNav, BoardUiState, ViewEdit};
 use crate::cache::BoardRef;
 use crate::cursor::CursorMove;
 use crate::event::{self, BoardView, CardView, Priority};
-use crate::keys;
+use crate::keys::{self, CardAction};
 use crate::store::{self, BoardAction, NewCard};
 use headway::query::{
     BuiltinView, DisplayProp, DisplayProps, GroupBy, GroupKey, Grouping, ListGroup, ListQuery,
@@ -397,8 +397,10 @@ struct ListLine {
     slot: RowSlot,
     /// The card's id.
     id: NoteId,
-    /// The card's word-id (`maple-river-canyon`).
-    word_id: String,
+    /// The card's `headway:<board>/<word-id>`, its board's slug and all:
+    /// the list's current card when the cursor is on it, which chrome's
+    /// card keys act on wherever it sits ([`ListState::cursor_ref`]).
+    card_ref: String,
     /// Its status circle, decided once with its board in hand, so a group
     /// header (which has no board) can wear its first row's.
     icon: StatusIcon,
@@ -429,6 +431,15 @@ struct LineText {
     created: String,
     /// When its content last changed, relative, likewise.
     updated: String,
+}
+
+impl ListLine {
+    /// The card's word-id (`maple-river-canyon`): its ref past the board.
+    fn word_id(&self) -> &str {
+        self.card_ref
+            .rsplit_once('/')
+            .map_or(self.card_ref.as_str(), |(_, words)| words)
+    }
 }
 
 impl LineText {
@@ -545,6 +556,15 @@ impl ListState {
         self.cursor.as_ref()
     }
 
+    /// The `headway:<board>/<word-id>` of the card under the cursor, naming
+    /// the board the row is on, which may not be the one showing. `None` on
+    /// a header, or with no cursor the list shows. Formatted once with the
+    /// rows, so asking allocates nothing.
+    pub(crate) fn cursor_ref(&self) -> Option<&str> {
+        let row = self.entry_row(self.cursor_entry()?)?;
+        Some(self.rows.get(row)?.card_ref.as_str())
+    }
+
     /// Whether the list draws group headers, for the fold and `]g`/`[g` keys
     /// to act on. Allocates nothing: chrome asks every frame.
     pub(crate) fn has_groups(&self) -> bool {
@@ -637,7 +657,7 @@ impl ListState {
                 board: pos.board,
                 slot: pos.slot,
                 id: row.card.id,
-                word_id: headway::wordid::encode(row.card.id.bytes()),
+                card_ref: headway::wordid::card_ref(&row.board.id, row.card.id.bytes()),
                 icon: slot_icon(pos.slot, row.board),
                 ready: ready.contains(row.card.id.bytes()),
                 text: LineText::of(row.board, row.card),
@@ -1199,6 +1219,13 @@ impl ListState {
             board: event::BoardCoord::new(board.author, board.id.clone()),
         })
     }
+
+    /// The board entry `at`'s row is on, out of the `sources` the rows came
+    /// from. `None` for a header.
+    fn row_board<'s>(&self, sources: &'s [BoardRef], at: usize) -> Option<&'s BoardView> {
+        let line = self.rows.get(self.entry_row(at)?)?;
+        sources.get(line.board).map(|board| &**board)
+    }
 }
 
 impl BoardUiState {
@@ -1232,6 +1259,46 @@ impl BoardUiState {
             return;
         }
         self.open_list_row(view, sources, at);
+    }
+
+    /// Run the card key `action` on the card under the list's cursor, on
+    /// whichever board its row is on. `e` and `s` read that board's fold
+    /// for the record they open, as they would from its grid. `r`, `X` and
+    /// `C` open in or over the card's detail, so they open the row first
+    /// (switching boards when it's on another) and run there once the card
+    /// has arrived ([`BoardUiState::take_arrival`]). The rest are other
+    /// views' keys: `Enter` has [`open_list_cursor`](Self::open_list_cursor),
+    /// and `n`/`p` and `g p` aren't offered in the list.
+    pub(crate) fn act_on_list_cursor(
+        &mut self,
+        ctx: &egui::Context,
+        view: &BoardView,
+        sources: &[BoardRef],
+        action: CardAction,
+    ) {
+        let Some(at) = self.list.cursor_entry() else {
+            return;
+        };
+        let Some(board) = self.list.row_board(sources, at) else {
+            return;
+        };
+        let Some(card) = self.list.cursor() else {
+            return;
+        };
+        match action {
+            CardAction::Explainer(record) => self.open_explainer(ctx, board, card, record),
+            CardAction::Deploy(record) => self.open_deploy(ctx, board, card, record),
+            CardAction::Session(how, record) => {
+                self.open_card_session(board, card, how, record, ctx.input(|i| i.time))
+            }
+            CardAction::Review(_) | CardAction::SendBack | CardAction::Comment => {
+                self.open_list_row(view, sources, at);
+                self.arrival = Some(Arrival { card, action });
+            }
+            CardAction::Open | CardAction::Parent | CardAction::Step(_) => {
+                tracing::debug!("headway: {action:?} isn't a list key; dropped");
+            }
+        }
     }
 
     /// Whether the list's `+` composer or view-name field is open: Esc
@@ -2183,7 +2250,7 @@ fn row_lead_ui(
         // A fixed-width cell, wide enough for most word-ids, so the circles
         // after them line up down the list.
         let id = egui::Label::new(
-            egui::RichText::new(&line.word_id)
+            egui::RichText::new(line.word_id())
                 .small()
                 .color(theme.text_muted.gamma_multiply(0.7)),
         )

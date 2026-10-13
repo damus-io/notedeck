@@ -52,7 +52,7 @@ group = "jump"
 #   queue   headway.card, headway.scroll, headway.diff, headway.queue
 #   pane    headway.card, headway.scroll, headway.diff, headway.pane
 #   detail  headway.card, headway.scroll, headway.detail
-#   list    headway.list
+#   list    headway.list, headway.card
 #
 # No two scopes of one stack bind the same keys, so their order only sets the
 # which-key strip's: a view's own navigation and the card actions in the order
@@ -478,8 +478,13 @@ tool  = "headway_back"
 label = "back"
 group = "detail"
 
-# The issue list, every board's cards in one list. No card actions: a row may
-# be on another board than the one showing, so they wait for its detail.
+# The issue list, every board's cards in one list. Its current card is the
+# cursor row's, on whichever board that is (headway:notedeck/exile-finger-birth),
+# so the card actions above act there: `a` and `D` edit the row's board, `e`
+# and `s` read it, and `r`, `X` and `C` open the row's detail, switching boards,
+# and run over it. `Enter`/`o` are the card actions' too, and fold a group
+# header the cursor rests on. `n`/`p` and `g p` aren't offered: `j`/`k` step,
+# and every parent is a row already.
 
 [[bind]]
 scope = "headway.list"
@@ -513,20 +518,6 @@ tool  = "headway_cursor_move"
 args  = { to = "last" }
 jump  = true
 label = "first/last"
-group = "list"
-
-[[bind]]
-scope = "headway.list"
-keys  = "<Enter>"
-tool  = "headway_open_card"
-label = "open"
-group = "list"
-
-[[bind]]
-scope = "headway.list"
-keys  = "o"
-tool  = "headway_open_card"
-label = "open"
 group = "list"
 
 [[bind]]

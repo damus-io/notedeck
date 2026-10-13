@@ -902,9 +902,10 @@ const DETAIL_SCOPES: &[&str] = &[
 ];
 /// The grid's key scopes.
 const GRID_SCOPES: &[&str] = &["headway.grid", "headway.card", "headway"];
-/// The issue list's key scopes. Not `headway.card`: its board edits act on a
-/// card of the board showing, and a list row may be on another.
-const LIST_SCOPES: &[&str] = &["headway.list", "headway"];
+/// The issue list's key scopes, its own first as the grid's. Its current card
+/// is the cursor row's on whichever board that is
+/// ([`BoardUiState::latch_current_ref`]), so the card keys act there.
+const LIST_SCOPES: &[&str] = &["headway.list", "headway.card", "headway"];
 
 /// The key scopes of the [view in front](key_view), most specific first, or
 /// none while no view takes keys.
@@ -960,6 +961,21 @@ impl CurrentRef {
         self.text = headway::wordid::card_ref(board, card.bytes());
     }
 
+    /// Make `card`, whose ref is `text`, the current card, or clear it with
+    /// either missing: for the issue list, whose rows carry their refs ready
+    /// made. Copies the ref into the buffer it keeps only when it changes.
+    pub(crate) fn latch_ref(&mut self, card: Option<nostrdb_net::NoteId>, text: Option<&str>) {
+        let (Some(card), Some(text)) = (card, text) else {
+            self.card = None;
+            return;
+        };
+        self.card = Some(card);
+        if self.text != text {
+            self.text.clear();
+            self.text.push_str(text);
+        }
+    }
+
     /// The current card's ref, if there is one.
     pub(crate) fn get(&self) -> Option<&str> {
         self.card.map(|_| self.text.as_str())
@@ -986,14 +1002,16 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
             (card && at != KeyView::Detail) || (list && state.list_cursor_spot().is_some())
         }
         // Say there's no explainer, or no session, when there's none, so
-        // the key answers rather than falling through. The list's card may
-        // be on another board, so these wait for its detail.
-        OPEN_EXPLAINER | OPEN_SESSION | OPEN_REVIEW | SEND_BACK | QUICK_COMMENT => card && !list,
+        // the key answers rather than falling through. On a list row they
+        // act on the row's board; `r`, `X` and `C` open its detail first.
+        OPEN_EXPLAINER | OPEN_SESSION | OPEN_REVIEW | SEND_BACK | QUICK_COMMENT => card,
         // Only a subissue has a parent to open: on any other card the key
-        // falls through, and a macro's step waits and aborts.
+        // falls through, and a macro's step waits and aborts. Not from the
+        // list, whose rows are already every card, parents and all.
         OPEN_PARENT => !list && current_card(state, at).is_some_and(|c| state.has_parent(c)),
         // The grid's step lands a missing cursor on the first card; the
-        // queue's steps off a card that has left the board.
+        // queue's steps off a card that has left the board. The list's `j`/`k`
+        // are its steps.
         STEP_CARD => (card && !list) || grid || at == KeyView::Queue,
         CURSOR_MOVE | FOCUS_FILTER => grid || list,
         COMPOSE_CARD => grid || (list && state.list_can_compose()),

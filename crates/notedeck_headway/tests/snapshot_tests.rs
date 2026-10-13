@@ -1255,6 +1255,43 @@ fn issue_list_spans_boards_filters_and_opens_cards() {
     wait_for_label(&mut harness, "1 card · 5 columns");
 }
 
+/// A card key on a list row acts on the row's board, not the one showing
+/// (headway:notedeck/exile-finger-birth): `j` walks the cursor onto the Side
+/// board's card while the demo board shows, its current card is the row's
+/// own `headway:side/<word-id>`, and `a` archives it there through chrome's
+/// data tool, so the row leaves Active and the demo board keeps its cards.
+/// Behavioural (accesskit only), so it runs without lavapipe.
+#[test]
+fn issue_list_card_keys_act_on_another_boards_row() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1000.0));
+    seed_side_board(&mut harness);
+    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
+    wait_for_label(&mut harness, SIDE_CARD);
+    harness.get_by_label("7 issues");
+
+    let on_side = |h: &Harness<'static, HeadwayTestState>| {
+        h.state()
+            .headway
+            .current_ref()
+            .is_some_and(|r| r.starts_with("headway:side/"))
+    };
+    for _ in 0..20 {
+        if on_side(&harness) {
+            break;
+        }
+        press_board_keys(&mut harness, &[egui::Key::J]);
+    }
+    assert!(on_side(&harness), "j never reached the Side row");
+
+    press_board_keys(&mut harness, &[egui::Key::A]);
+    wait_for_absent(&mut harness, SIDE_CARD);
+    wait_for_label(&mut harness, "6 issues");
+    assert!(
+        harness.query_by_label("Issues").is_some(),
+        "the list stays open"
+    );
+}
+
 /// The issue list's Display menu turns a row property off and on
 /// (headway:headway/end-kick-draft): with Labels on, the side card's `quest`
 /// chip shows; flipping it off in the menu hides every label chip, and Reset
@@ -1532,14 +1569,16 @@ fn snapshot_headway_list_group_cursor() {
 
 /// Snapshot: the issue list with `?` pinning its key strip, the view keys
 /// (`gt`/`gT`, `go`, `gs`; headway:notedeck/mercy-unique-foil) among its
-/// fold and navigation keys.
+/// fold and navigation keys, and with the cursor on a row the card keys
+/// after them (headway:notedeck/exile-finger-birth).
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_headway_list_key_hints() {
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
     seed_side_board(&mut harness);
     open_issue_list(&mut harness);
-    press_board_keys(&mut harness, &[egui::Key::J]);
+    // The first header, then its first row.
+    press_board_keys(&mut harness, &[egui::Key::J, egui::Key::J]);
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
     wait_for_label(&mut harness, "save view");
     harness.run_steps(3);
