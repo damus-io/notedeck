@@ -35,7 +35,7 @@ use notedeck::{ToolArg, ToolArgType, ToolSpec};
 
 use crate::cursor::CursorMove;
 use crate::keys::{CardAction, PaneScroll};
-use crate::ui::{BoardUiState, CardStep, SessionOpen};
+use crate::ui::{BoardStep, BoardUiState, CardStep, SessionOpen};
 
 /// `Enter`/`o`: open the current card's detail.
 pub(crate) const OPEN_CARD: &str = "headway_open_card";
@@ -62,6 +62,12 @@ pub(crate) const FOCUS_FILTER: &str = "headway_focus_filter";
 pub(crate) const OPEN_REVIEW_QUEUE: &str = "headway_open_review_queue";
 /// `v` on the grid: open the cross-board issue list.
 pub(crate) const OPEN_LIST: &str = "headway_open_list";
+/// `]b` on the grid: switch to the next board, in the switcher's order.
+pub(crate) const NEXT_BOARD: &str = "headway_next_board";
+/// `[b` on the grid: switch to the previous board, in the switcher's order.
+pub(crate) const PREV_BOARD: &str = "headway_prev_board";
+/// `gb` on the grid: open the board picker.
+pub(crate) const PICK_BOARD: &str = "headway_pick_board";
 /// The grid's `Esc`: drop the cursor.
 pub(crate) const CLEAR: &str = "headway_clear";
 /// `j`/`k`, `Space`, `^d`/`^u`, `gg`/`G` over a pane: scroll it.
@@ -98,6 +104,10 @@ pub(crate) enum HeadwayUiTool {
     ReviewQueue,
     /// Open the cross-board issue list from the grid.
     OpenList,
+    /// Switch to the next or previous board, from the grid.
+    StepBoard(BoardStep),
+    /// Open the board picker over the grid.
+    PickBoard,
     /// The grid's `Esc`.
     Clear,
     /// Scroll the review pane's diff or the detail.
@@ -320,6 +330,24 @@ impl HeadwayUiTool {
                 vec![],
             )
             .ui(),
+            ToolSpec::new(
+                NEXT_BOARD,
+                "Switch to the next board, in the board switcher's order, wrapping around.",
+                vec![],
+            )
+            .ui(),
+            ToolSpec::new(
+                PREV_BOARD,
+                "Switch to the previous board, in the board switcher's order, wrapping around.",
+                vec![],
+            )
+            .ui(),
+            ToolSpec::new(
+                PICK_BOARD,
+                "Open the board picker: every board, narrowed as you type, to switch to one.",
+                vec![],
+            )
+            .ui(),
             ToolSpec::new(CLEAR, "Drop the board grid's cursor.", vec![]).ui(),
             ToolSpec::new(
                 SCROLL,
@@ -403,6 +431,9 @@ impl HeadwayUiTool {
             FOCUS_FILTER => no_args(name, args, Self::FocusFilter)?,
             OPEN_REVIEW_QUEUE => no_args(name, args, Self::ReviewQueue)?,
             OPEN_LIST => no_args(name, args, Self::OpenList)?,
+            NEXT_BOARD => no_args(name, args, Self::StepBoard(BoardStep::Next))?,
+            PREV_BOARD => no_args(name, args, Self::StepBoard(BoardStep::Prev))?,
+            PICK_BOARD => no_args(name, args, Self::PickBoard)?,
             CLEAR => no_args(name, args, Self::Clear)?,
             SCROLL => {
                 let ScrollArgs { to } = parse_args(name, args)?;
@@ -599,7 +630,8 @@ impl CurrentRef {
 /// Whether the UI tool `name` does anything in the view in front: a card tool
 /// needs a current card, a grid tool the grid, a pane tool a pane. `headway_clear` is
 /// available only with a cursor to drop, so an `Esc` with nothing to clear
-/// falls through to chrome. Unknown names aren't. Doesn't allocate.
+/// falls through to chrome, and `]b`/`[b` only with another board to step
+/// to. Unknown names aren't. Doesn't allocate.
 pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
     let Some(at) = key_view(state) else {
         return false;
@@ -619,7 +651,8 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
         // queue's steps off a card that has left the board.
         STEP_CARD => (card && !list) || grid || at == KeyView::Queue,
         CURSOR_MOVE | FOCUS_FILTER => grid || list,
-        COMPOSE_CARD | OPEN_LIST => grid,
+        COMPOSE_CARD | OPEN_LIST | PICK_BOARD => grid,
+        NEXT_BOARD | PREV_BOARD => grid && state.other_boards(),
         OPEN_REVIEW_QUEUE => grid || at == KeyView::Detail,
         CLEAR => grid && card,
         SCROLL => !grid && !list,

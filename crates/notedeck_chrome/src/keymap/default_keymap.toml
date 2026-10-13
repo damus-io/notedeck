@@ -270,6 +270,30 @@ tool  = "headway_open_list"
 label = "issue list"
 group = "grid"
 
+# Boards: `] b` / `[ b` step through them in the switcher's order, `g b`
+# opens the picker, whose filter field then has the keyboard.
+
+[[bind]]
+scope = "headway.grid"
+keys  = "] b"
+tool  = "headway_next_board"
+label = "next/prev board"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "[ b"
+tool  = "headway_prev_board"
+label = "next/prev board"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
+keys  = "g b"
+tool  = "headway_pick_board"
+label = "boards"
+group = "grid"
+
 [[bind]]
 scope = "headway.grid"
 keys  = "<Esc>"

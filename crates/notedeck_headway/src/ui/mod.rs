@@ -28,6 +28,7 @@ use crate::store::BoardAction;
 use crate::ui_tools::{self, CurrentRef, HeadwayUiTool, KeyView};
 
 mod archived;
+mod board_picker;
 mod card_actions;
 mod detail;
 mod filter;
@@ -61,6 +62,7 @@ use list::{ListState, list_view_ui};
 use review::{NOTICE_SECS, ReviewQueue, ReviewSection, ReviewUi, review_pane_ui, review_queue_ui};
 use widgets::KeyedText;
 
+pub(crate) use board_picker::{BoardStep, has_other_board, step_board};
 pub(crate) use review::{Notice, QueueNotice, QueueScope, SessionOpen};
 
 /// Transient, per-board UI state that must persist across frames but isn't part
@@ -154,6 +156,12 @@ pub struct BoardUiState {
     comment_draft: String,
     /// Whether the archived-cards sheet is open.
     showing_archived: bool,
+    /// The `gb` board picker ([`board_picker::board_picker_ui`]).
+    picker: board_picker::BoardPicker,
+    /// Whether the board switcher listed a board other than the open one as
+    /// the grid last drew, for `]b`/`[b`'s availability, which chrome asks
+    /// before the pass renders ([`latch_other_boards`](Self::latch_other_boards)).
+    other_boards: bool,
     /// The archived sheet's filter field, read as an [`IssueFilter`] over
     /// the archived cards (see [`archived_sheet_ui`]).
     archived_query: String,
@@ -631,11 +639,12 @@ impl BoardUiState {
     }
 
     /// Whether a board-level overlay owns the keyboard: an inline editor (card
-    /// composer, column rename, new column/board), the archived sheet, the `X`
-    /// composer, or the review queue (whose keys are its own scopes').
+    /// composer, column rename, new column/board), the archived sheet, the
+    /// board picker, the `X` composer, or the review queue (whose keys are its own scopes').
     pub(crate) fn keys_blocked(&self) -> bool {
         self.edit != InlineEdit::None
             || self.showing_archived
+            || self.picker.is_open()
             || self.reason.is_some()
             || self.queue.is_open()
     }
@@ -650,6 +659,28 @@ impl BoardUiState {
     /// pass drew, for the key scopes chrome asks for before this pass renders.
     pub(crate) fn grid_menu_open(&self) -> bool {
         self.grid_menu_open
+    }
+
+    /// Open the `gb` board picker over the grid.
+    pub(crate) fn open_board_picker(&mut self) {
+        self.picker.open();
+    }
+
+    /// Whether the `gb` board picker is open.
+    #[cfg(test)]
+    pub(crate) fn board_picker_open(&self) -> bool {
+        self.picker.is_open()
+    }
+
+    /// Latch, as the grid draws, whether `boards` lists a board other than
+    /// `view`'s, for `]b`/`[b`'s availability next pass.
+    pub(crate) fn latch_other_boards(&mut self, view: &BoardView, boards: &[BoardSummary]) {
+        self.other_boards = has_other_board(view, boards);
+    }
+
+    /// Whether the grid last drew with another board to step to.
+    pub(crate) fn other_boards(&self) -> bool {
+        self.other_boards
     }
 
     /// Queue a UI tool for the next render pass to run where its key would.
@@ -966,7 +997,9 @@ fn board_pane_ui(
     // focused this frame (chrome swallowed the key, so it types nothing).
     // Chrome's keymap stands down during a drag, but should a tool and a drop
     // below ever land in one frame, the drop overwrites it.
-    let mut action: Option<BoardAction> = keys::grid_tools(ui.ctx(), view, &view_filter, state);
+    state.latch_other_boards(view, boards);
+    let mut action: Option<BoardAction> =
+        keys::grid_tools(ui.ctx(), view, &view_filter, boards, state);
     // Drawn after the keys, so a grid `X` shows its composer this frame.
     reason_bar_ui(ui, theme, state);
     // The card a click landed on this frame; opens the detail view next frame.
@@ -1116,6 +1149,8 @@ fn board_pane_ui(
 
     // Archived-cards sheet floats above the board.
     archived_sheet_ui(ui, theme, view, state, &mut action);
+    // So does the `gb` board picker.
+    board_picker::board_picker_ui(ui, theme, view, boards, state);
     state.latch_cursor_slot(view, &view_filter);
 
     action

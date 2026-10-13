@@ -37,13 +37,15 @@ use egui::{Key, Modifiers};
 use nostrdb_net::NoteId;
 use notedeck_ui::diff::PatchScroll;
 
+use crate::BoardSummary;
 use crate::cache::BoardRef;
 use crate::cursor::{self, CursorMove};
 use crate::event::BoardView;
 use crate::store::BoardAction;
 use crate::ui::{
-    BoardUiState, CardStep, DetailScroll, QueueNotice, QueueScope, SessionOpen, ViewFilter,
-    filter_field_id, find_card, find_detail_card, list_field_id, reason_field_id,
+    BoardEffect, BoardNav, BoardUiState, CardStep, DetailScroll, QueueNotice, QueueScope,
+    SessionOpen, ViewFilter, filter_field_id, find_card, find_detail_card, list_field_id,
+    reason_field_id, step_board,
 };
 use crate::ui_tools::HeadwayUiTool;
 
@@ -158,7 +160,7 @@ fn step_move(step: CardStep) -> CursorMove {
 
 /// Apply `tool` to the grid: what its key does there. Returns the board edit
 /// it makes, if any. A tool the grid has no use for (a pane's scroll, `Back`)
-/// does nothing.
+/// does nothing. `boards` are the switcher's, which `]b`/`[b` step through.
 ///
 /// A card tool acts on the cursor card. One naming a card moves the cursor
 /// to it first, so it acts as the key would with the cursor there; a named
@@ -167,6 +169,7 @@ pub(crate) fn apply_grid_tool(
     ctx: &egui::Context,
     view: &BoardView,
     filter: &ViewFilter,
+    boards: &[BoardSummary],
     state: &mut BoardUiState,
     tool: &HeadwayUiTool,
 ) -> Option<BoardAction> {
@@ -209,6 +212,12 @@ pub(crate) fn apply_grid_tool(
             state.open_review_queue(view, QueueScope::Board, ctx.input(|i| i.time))
         }
         HeadwayUiTool::OpenList => state.open_list(),
+        HeadwayUiTool::StepBoard(step) => {
+            if let Some(to) = step_board(view, boards, *step) {
+                state.raise(BoardEffect::Nav(BoardNav::Switch(to)));
+            }
+        }
+        HeadwayUiTool::PickBoard => state.open_board_picker(),
         // The grid's `Esc`. Chrome's keymap owns the pending chord and the
         // which-key strip, so all that's left to drop is the cursor.
         HeadwayUiTool::Clear => state.clear_cursor(),
@@ -268,6 +277,7 @@ pub(crate) fn grid_tools(
     ctx: &egui::Context,
     view: &BoardView,
     filter: &ViewFilter,
+    boards: &[BoardSummary],
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
     let mut action = None;
@@ -275,7 +285,7 @@ pub(crate) fn grid_tools(
         let Some(tool) = state.next_queued_tool() else {
             break;
         };
-        let edit = apply_grid_tool(ctx, view, filter, state, &tool);
+        let edit = apply_grid_tool(ctx, view, filter, boards, state, &tool);
         action = first_edit(action, edit);
     }
     action
@@ -366,6 +376,8 @@ pub(crate) fn apply_pane_tool(
         HeadwayUiTool::Cursor(_)
         | HeadwayUiTool::AddCard
         | HeadwayUiTool::OpenList
+        | HeadwayUiTool::StepBoard(_)
+        | HeadwayUiTool::PickBoard
         | HeadwayUiTool::FocusFilter
         | HeadwayUiTool::ReviewQueue
         | HeadwayUiTool::Clear => {}
@@ -420,6 +432,8 @@ pub(crate) fn apply_detail_tool(
         HeadwayUiTool::Cursor(_)
         | HeadwayUiTool::AddCard
         | HeadwayUiTool::OpenList
+        | HeadwayUiTool::StepBoard(_)
+        | HeadwayUiTool::PickBoard
         | HeadwayUiTool::FocusFilter
         | HeadwayUiTool::Clear
         | HeadwayUiTool::Comment
@@ -626,6 +640,11 @@ mod tests {
         keys: KeyEngine,
         /// Whether `?` pinned chrome's which-key strip.
         hints_pinned: bool,
+        /// The board switcher's list: [`grid`]'s board and one other, for
+        /// `]b`/`[b` to step between.
+        boards: Vec<BoardSummary>,
+        /// The slug of the last board a key switched to.
+        switched: Option<String>,
     }
 
     /// Headway's data tools the shipped keymap binds its board edits to
@@ -796,15 +815,18 @@ mod tests {
                         filter: &everything,
                     };
                     h.state.follow_cursor(&h.view, &filter);
-                    let action = grid_tools(ui.ctx(), &h.view, &filter, &mut h.state);
+                    h.state.latch_other_boards(&h.view, &h.boards);
+                    let action = grid_tools(ui.ctx(), &h.view, &filter, &h.boards, &mut h.state);
                     h.state.latch_cursor_slot(&h.view, &filter);
                     action
                 };
                 h.state.drop_queued_tools();
                 h.state.latch_current_ref(&h.view);
                 for effect in h.state.take_effects() {
-                    if let BoardEffect::Open(open) = effect {
-                        h.session = Some(open);
+                    match effect {
+                        BoardEffect::Open(open) => h.session = Some(open),
+                        BoardEffect::Nav(BoardNav::Switch(to)) => h.switched = Some(to.slug),
+                        _ => {}
                     }
                 }
                 match action.or_else(|| h.state.take_follow_up()) {
@@ -856,6 +878,19 @@ mod tests {
                 review_comments: None,
                 keys: KeyEngine::with_default_keymap(),
                 hints_pinned: false,
+                boards: vec![
+                    BoardSummary {
+                        owner: [0; 32],
+                        id: "headway".to_owned(),
+                        title: "Headway".to_owned(),
+                    },
+                    BoardSummary {
+                        owner: [0; 32],
+                        id: "side".to_owned(),
+                        title: "Side".to_owned(),
+                    },
+                ],
+                switched: None,
             },
         );
         harness.run();
@@ -1056,6 +1091,10 @@ mod tests {
         notice: Option<QueueNotice>,
         opened: Option<String>,
         session: Option<notedeck::OpenUri>,
+        /// The board picker is open.
+        picker: bool,
+        /// The last board switched to.
+        switched: Option<String>,
     }
 
     fn effects(harness: &Harness<'static, KeysHarness>) -> Effects {
@@ -1075,6 +1114,8 @@ mod tests {
             notice: h.state.notice(),
             opened: h.opened.clone(),
             session: h.session.clone(),
+            picker: h.state.board_picker_open(),
+            switched: h.switched.clone(),
         }
     }
 
@@ -1239,6 +1280,43 @@ mod tests {
         );
     }
 
+    /// `]b`/`[b` step through the switcher's boards from the open one,
+    /// wrapping; `gb` opens the picker, which takes the keyboard from the
+    /// grid; with no other board, `]b`/`[b` aren't offered.
+    #[test]
+    fn board_keys_step_boards_and_open_the_picker() {
+        let mut harness = keys_harness(None);
+        harness.state_mut().boards.push(BoardSummary {
+            owner: [0; 32],
+            id: "third".to_owned(),
+            title: "Third".to_owned(),
+        });
+        harness.run();
+
+        press(&mut harness, Key::CloseBracket);
+        press(&mut harness, Key::B);
+        assert_eq!(harness.state().switched.as_deref(), Some("side"));
+        press(&mut harness, Key::OpenBracket);
+        press(&mut harness, Key::B);
+        assert_eq!(harness.state().switched.as_deref(), Some("third"));
+
+        press(&mut harness, Key::G);
+        press(&mut harness, Key::B);
+        assert!(harness.state().state.board_picker_open());
+        assert!(
+            key_scopes(&harness.state().state).is_empty(),
+            "the picker has the keys"
+        );
+
+        let mut alone = keys_harness(None);
+        alone.state_mut().boards.truncate(1);
+        alone.run();
+        let state = &alone.state().state;
+        assert!(!available(state, crate::ui_tools::NEXT_BOARD));
+        assert!(!available(state, crate::ui_tools::PREV_BOARD));
+        assert!(available(state, crate::ui_tools::PICK_BOARD));
+    }
+
     #[test]
     fn a_pending_g_shows_only_its_continuation() {
         let mut harness = keys_harness(None);
@@ -1247,10 +1325,16 @@ mod tests {
         press(&mut harness, Key::G);
         assert_eq!(
             strip_now(&harness),
-            [StripKey {
-                cap: "g".to_owned(),
-                label: "first/last".to_owned(),
-            }]
+            [
+                StripKey {
+                    cap: "g".to_owned(),
+                    label: "first/last".to_owned(),
+                },
+                StripKey {
+                    cap: "b".to_owned(),
+                    label: "boards".to_owned(),
+                }
+            ]
         );
         assert!(harness.query_by_label("first/last").is_some());
         assert!(harness.query_by_label("up/down").is_none());
@@ -1870,6 +1954,8 @@ mod tests {
             "review queue",
             "filter",
             "issue list",
+            "next/prev board",
+            "boards",
             "clear",
         ];
         let views = [

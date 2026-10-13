@@ -5781,6 +5781,60 @@ fn question_mark_toggles_the_key_hint_strip() {
     wait_for_absent(&mut harness, "columns");
 }
 
+/// The board keys (headway:notedeck/next-various-calm): `]b` steps to the
+/// Side board and `[b` back, through chrome's keymap; `gb` opens the picker,
+/// whose focused filter narrows to Side as "side" is typed, and Enter
+/// switches to it. Behavioural (accesskit only), so it runs without lavapipe.
+#[test]
+fn board_keys_step_and_pick_boards() {
+    const SIDE_SWITCHER: &str = "Side  ▾";
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_side_board(&mut harness);
+    wait_for_board_in_switcher(&mut harness, "Side");
+
+    press_board_keys(&mut harness, &[egui::Key::CloseBracket, egui::Key::B]);
+    wait_for_label(&mut harness, SIDE_SWITCHER);
+    press_board_keys(&mut harness, &[egui::Key::OpenBracket, egui::Key::B]);
+    wait_for_label(&mut harness, SWITCHER_LABEL);
+
+    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::B]);
+    wait_for_label(&mut harness, "headway");
+    harness.get_by_label("side");
+    focused_text_input(&harness).type_text("side");
+    wait_for_absent(&mut harness, "headway");
+    harness.get_by_label("side");
+    press_board_keys(&mut harness, &[egui::Key::Enter]);
+    wait_for_label(&mut harness, SIDE_SWITCHER);
+    assert!(
+        harness.query_by_label("Switch to board…").is_none(),
+        "Enter closes the picker"
+    );
+}
+
+/// Pump frames until the board switcher lists a board titled `title`: a
+/// seeded board reaches the switcher a fold after it reaches nostrdb.
+fn wait_for_board_in_switcher(harness: &mut Harness<'static, HeadwayTestState>, title: &str) {
+    harness.get_by_label(SWITCHER_LABEL).click();
+    wait_for_label(harness, title);
+    press_board_keys(harness, &[egui::Key::Escape]);
+    wait_for_absent(harness, title);
+}
+
+/// Snapshot: the `gb` board picker over the grid, the open board ticked and
+/// the highlight moved down onto Side.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_board_picker() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_side_board(&mut harness);
+    wait_for_board_in_switcher(&mut harness, "Side");
+    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::B]);
+    wait_for_label(&mut harness, "side");
+    press_board_keys(&mut harness, &[egui::Key::ArrowDown]);
+    harness.run_steps(3);
+    harness.snapshot("headway_board_picker");
+}
+
 /// Snapshot: the board with the which-key strip pinned open under the columns,
 /// the cursor on Backlog's first card.
 #[test]
