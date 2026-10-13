@@ -1530,6 +1530,22 @@ fn snapshot_headway_list_group_cursor() {
     harness.snapshot("headway_list_group_cursor");
 }
 
+/// Snapshot: the issue list with `?` pinning its key strip, the view keys
+/// (`gt`/`gT`, `go`, `gs`; headway:notedeck/mercy-unique-foil) among its
+/// fold and navigation keys.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_list_key_hints() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_side_board(&mut harness);
+    open_issue_list(&mut harness);
+    press_board_keys(&mut harness, &[egui::Key::J]);
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
+    wait_for_label(&mut harness, "save view");
+    harness.run_steps(3);
+    harness.snapshot("headway_list_key_hints");
+}
+
 /// Drag the list row labelled `from` onto the upper half of the row
 /// labelled `onto` and let go there, a frame per pointer move, the way a
 /// hand drags (egui's drag-and-drop starts only once the pointer has moved).

@@ -47,7 +47,10 @@ pub use inline::{ChipStatus, board_inline_ui, card_chip_ui, card_inline_ui, issu
 
 pub(crate) use card_actions::{CardStep, DetailScroll, DetailSpot, reason_field_id};
 pub(crate) use filter::{ViewFilter, filter_field_id, parse_board_filter};
-pub(crate) use list::{GroupStep, ListCursor, ListFold, ListState, list_field_id, list_view_ui};
+pub(crate) use list::{
+    DisplaySwitch, GroupStep, ListCursor, ListFold, ListLayout, ListState, OrderDir, Pick, TabPick,
+    list_field_id, list_view_ui,
+};
 #[cfg(test)]
 pub(crate) use review_comments::DraftComment;
 
@@ -407,6 +410,12 @@ impl BoardUiState {
     /// Fold the issue list's groups (`za`, `zc`, `zo`, `zM`, `zR`).
     pub(crate) fn fold_list(&mut self, fold: ListFold) {
         self.list.fold(fold);
+    }
+
+    /// Change the issue list's tab, grouping, ordering or display, as its
+    /// tabs and Display menu do (`gt`/`gT`, `go`, `gs`).
+    pub(crate) fn lay_out_list(&mut self, change: &ListLayout) {
+        self.list.apply_layout(change);
     }
 
     /// Step the issue list's cursor to the next or previous group header.

@@ -605,6 +605,44 @@ tool  = "headway_compose_card"
 label = "new in group"
 group = "fold"
 
+# The list's view tabs and Display menu (headway:notedeck/mercy-unique-foil):
+# `gt`/`gT` step through the tabs as vim's do, `go` cycles the ordering and
+# `gs` names what the list shows as a new view. The grouping, sub-grouping,
+# ordering direction and row properties are UI tools without a key
+# (`headway_list_group`, `headway_list_subgroup`, `headway_list_order_dir`,
+# `headway_list_display`), for the action bar.
+
+[[bind]]
+scope = "headway.list"
+keys  = "g t"
+tool  = "headway_list_tab"
+args  = { to = "next" }
+label = "next/prev tab"
+group = "view"
+
+[[bind]]
+scope = "headway.list"
+keys  = "g T"
+tool  = "headway_list_tab"
+args  = { to = "prev" }
+label = "next/prev tab"
+group = "view"
+
+[[bind]]
+scope = "headway.list"
+keys  = "g o"
+tool  = "headway_list_order"
+args  = { by = "next" }
+label = "next ordering"
+group = "view"
+
+[[bind]]
+scope = "headway.list"
+keys  = "g s"
+tool  = "headway_list_save_view"
+label = "save view"
+group = "view"
+
 [[bind]]
 scope = "headway.list"
 keys  = "q"

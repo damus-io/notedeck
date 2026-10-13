@@ -225,6 +225,85 @@ pub(crate) enum GroupStep {
     Prev,
 }
 
+/// A change to the issue list's layout, as its view tabs and Display menu
+/// make one by mouse: the `headway_list_*` UI tools carry these, so keys and
+/// the action bar reach them too (headway:notedeck/mercy-unique-foil).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ListLayout {
+    /// Show a view tab (`gt`/`gT` step through them).
+    Tab(TabPick),
+    /// Group the rows.
+    Group(Pick<GroupBy>),
+    /// Split each group again.
+    SubGroup(Pick<GroupBy>),
+    /// Order the rows, run the ordering's natural way (`go` cycles them).
+    Order(Pick<SortBy>),
+    /// Run the ordering the other way, or one way.
+    OrderDir(OrderDir),
+    /// Show or hide one of a row's properties.
+    Display(DisplaySwitch),
+    /// Open the view-name field to save what the list shows as a new view
+    /// (`gs`), as "+ View" does.
+    SaveView,
+}
+
+/// Which view tab [`ListLayout::Tab`] shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TabPick {
+    /// The tab after the one showing, wrapping: built-ins, then saved views.
+    Next,
+    /// The tab before the one showing, wrapping.
+    Prev,
+    /// A built-in view.
+    Builtin(BuiltinView),
+    /// The saved view with this slug, or else this name (any case).
+    Saved(String),
+}
+
+/// A pick from one of the Display menu's rows of chips: one chip, or the one
+/// after the chip picked now, wrapping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pick<T> {
+    /// The next chip in the menu's order.
+    Next,
+    /// This chip.
+    To(T),
+}
+
+impl<T: Copy + PartialEq> Pick<T> {
+    /// What the pick picks when `now` is picked, out of `all` in the menu's
+    /// order.
+    fn from(self, now: T, all: &[T]) -> T {
+        match self {
+            Pick::To(to) => to,
+            Pick::Next => {
+                let at = all.iter().position(|&x| x == now).map_or(0, |at| at + 1);
+                all[at % all.len()]
+            }
+        }
+    }
+}
+
+/// Which way [`ListLayout::OrderDir`] runs the ordering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OrderDir {
+    /// The other way from now, as the menu's arrow does.
+    Toggle,
+    /// Low to high.
+    Ascending,
+    /// High to low.
+    Descending,
+}
+
+/// What [`ListLayout::Display`] does to a row property.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DisplaySwitch {
+    /// The property.
+    pub(crate) prop: DisplayProp,
+    /// Show it (`Some(true)`), hide it, or flip it (`None`), as its chip does.
+    pub(crate) on: Option<bool>,
+}
+
 /// One line the list draws: a group's header, or a card's row.
 enum ListEntry {
     /// A group's header.
@@ -808,6 +887,111 @@ impl ListState {
             self.select_tab(ListTab::Builtin(BuiltinView::Active));
         }
         ViewEdit::Delete(slug.to_string())
+    }
+
+    /// Change the layout as `change` says, as the tab or Display-menu chip
+    /// it names would. The rows follow on the next
+    /// [`refresh`](Self::refresh).
+    pub(crate) fn apply_layout(&mut self, change: &ListLayout) {
+        match change {
+            ListLayout::Tab(pick) => self.pick_tab(pick),
+            ListLayout::Group(pick) => {
+                self.grouping.by = pick.from(self.grouping.by, &GroupBy::ALL);
+            }
+            ListLayout::SubGroup(pick) => {
+                self.grouping.sub = pick.from(self.grouping.sub, &GroupBy::ALL);
+            }
+            ListLayout::Order(pick) => {
+                let by = pick.from(self.sorting.by, &SortBy::ALL);
+                reorder(&mut self.sorting, by);
+            }
+            ListLayout::OrderDir(dir) => {
+                self.sorting.descending = match dir {
+                    OrderDir::Toggle => !self.sorting.descending,
+                    OrderDir::Ascending => false,
+                    OrderDir::Descending => true,
+                };
+            }
+            ListLayout::Display(DisplaySwitch { prop, on: None }) => self.display.toggle(*prop),
+            ListLayout::Display(DisplaySwitch { prop, on: Some(on) }) => {
+                self.display.set(*prop, *on)
+            }
+            ListLayout::SaveView => self.start_naming(None),
+        }
+    }
+
+    /// Open the view-name field: naming a new view of what the list shows,
+    /// or renaming saved view `rename`.
+    fn start_naming(&mut self, rename: Option<String>) {
+        let name = rename
+            .as_deref()
+            .and_then(|slug| self.saved_view(slug))
+            .map(|v| v.spec.name.clone());
+        self.naming = Some(ViewNaming {
+            rename,
+            name: name.unwrap_or_default(),
+            focus: true,
+        });
+    }
+
+    /// Show the tab `pick` picks. A saved view the account hasn't is
+    /// logged and ignored.
+    fn pick_tab(&mut self, pick: &TabPick) {
+        let count = BuiltinView::ALL.len() + self.saved.len();
+        let tab = match pick {
+            TabPick::Builtin(builtin) => ListTab::Builtin(*builtin),
+            TabPick::Saved(name) => {
+                let found = self.saved_view(name).or_else(|| {
+                    self.saved
+                        .iter()
+                        .find(|v| v.spec.name.eq_ignore_ascii_case(name.trim()))
+                });
+                let Some(view) = found else {
+                    tracing::debug!("headway: no saved view {name:?}; tab unchanged");
+                    return;
+                };
+                ListTab::Saved(view.slug.clone())
+            }
+            TabPick::Next => self.tab_at((self.tab_index() + 1) % count),
+            TabPick::Prev => self.tab_at((self.tab_index() + count - 1) % count),
+        };
+        self.select_tab(tab);
+    }
+
+    /// Where the showing tab sits in the tab row: the built-ins, then the
+    /// saved views.
+    fn tab_index(&self) -> usize {
+        match &self.tab {
+            ListTab::Builtin(builtin) => BuiltinView::ALL
+                .iter()
+                .position(|b| b == builtin)
+                .unwrap_or(0),
+            ListTab::Saved(slug) => {
+                let at = self.saved.iter().position(|v| v.slug == *slug);
+                BuiltinView::ALL.len() + at.unwrap_or(0)
+            }
+        }
+    }
+
+    /// The tab at `at` in the tab row; `at` is below the tab count.
+    fn tab_at(&self, at: usize) -> ListTab {
+        match BuiltinView::ALL.get(at) {
+            Some(builtin) => ListTab::Builtin(*builtin),
+            None => ListTab::Saved(self.saved[at - BuiltinView::ALL.len()].slug.clone()),
+        }
+    }
+
+    /// What the list shows, as a view: its tab's name, query and layout,
+    /// for a test to read.
+    #[cfg(test)]
+    pub(crate) fn layout(&self) -> ViewSpec {
+        self.spec()
+    }
+
+    /// Whether the view-name field is open, for a test to read.
+    #[cfg(test)]
+    pub(crate) fn naming(&self) -> bool {
+        self.naming.is_some()
     }
 
     /// The row (an index into [`rows`](Self::rows)) entry `at` draws, if
@@ -1439,12 +1623,7 @@ fn view_tabs_ui(ui: &mut egui::Ui, theme: &ColorTheme, list: &mut ListState) -> 
         list.select_tab(tab);
     }
     if let Some(slug) = rename {
-        let name = list.saved_view(&slug).map(|v| v.spec.name.clone());
-        list.naming = Some(ViewNaming {
-            rename: Some(slug),
-            name: name.unwrap_or_default(),
-            focus: true,
-        });
+        list.start_naming(Some(slug));
     }
     if let Some(slug) = delete {
         edit = Some(list.delete_view(&slug));
@@ -1468,11 +1647,7 @@ fn view_tabs_ui(ui: &mut egui::Ui, theme: &ColorTheme, list: &mut ListState) -> 
         .on_hover_text("Save what the list shows as a new view")
         .clicked()
     {
-        list.naming = Some(ViewNaming {
-            rename: None,
-            name: String::new(),
-            focus: true,
-        });
+        list.start_naming(None);
     }
     edit
 }
@@ -1630,12 +1805,8 @@ fn sort_chips_ui(ui: &mut egui::Ui, sorting: &mut Sorting) {
                 if ui
                     .selectable_label(sorting.by == choice, choice.label())
                     .clicked()
-                    && sorting.by != choice
                 {
-                    *sorting = Sorting {
-                        completed_by_recency: sorting.completed_by_recency,
-                        ..Sorting::by(choice)
-                    };
+                    reorder(sorting, choice);
                 }
             }
             let (arrow, hint) = if sorting.descending {
@@ -1648,6 +1819,18 @@ fn sort_chips_ui(ui: &mut egui::Ui, sorting: &mut Sorting) {
             }
         });
     });
+}
+
+/// Order by `by`, run its natural way ([`Sorting::by`]), keeping whether
+/// done rows trail by recency. Picking the ordering already picked keeps its
+/// direction.
+fn reorder(sorting: &mut Sorting, by: SortBy) {
+    if sorting.by != by {
+        *sorting = Sorting {
+            completed_by_recency: sorting.completed_by_recency,
+            ..Sorting::by(by)
+        };
+    }
 }
 
 /// The list's headers and rows, only those on screen laid out: every entry

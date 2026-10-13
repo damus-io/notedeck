@@ -35,7 +35,11 @@ use notedeck::{ToolArg, ToolArgType, ToolSpec};
 
 use crate::cursor::CursorMove;
 use crate::keys::{CardAction, PaneScroll};
-use crate::ui::{BoardStep, BoardUiState, CardStep, GroupStep, ListFold, SessionOpen};
+use crate::ui::{
+    BoardStep, BoardUiState, CardStep, DisplaySwitch, GroupStep, ListFold, ListLayout, OrderDir,
+    Pick, SessionOpen, TabPick,
+};
+use headway::query::{BuiltinView, DisplayProp, GroupBy, SortBy};
 
 /// `Enter`/`o`: open the current card's detail.
 pub(crate) const OPEN_CARD: &str = "headway_open_card";
@@ -79,6 +83,21 @@ pub(crate) const LIST_FOLD: &str = "headway_list_fold";
 /// `]g`/`[g` in the issue list: step the cursor to the next/previous group
 /// header.
 pub(crate) const LIST_STEP_GROUP: &str = "headway_list_step_group";
+/// `gt`/`gT` in the issue list: show the next/previous view tab, or a named
+/// one.
+pub(crate) const LIST_TAB: &str = "headway_list_tab";
+/// The issue list's grouping, as its Display menu picks it.
+pub(crate) const LIST_GROUP: &str = "headway_list_group";
+/// The issue list's sub-grouping, as its Display menu picks it.
+pub(crate) const LIST_SUBGROUP: &str = "headway_list_subgroup";
+/// `go` in the issue list: the next ordering, or a named one.
+pub(crate) const LIST_ORDER: &str = "headway_list_order";
+/// The issue list's ordering direction, as the Display menu's arrow flips it.
+pub(crate) const LIST_ORDER_DIR: &str = "headway_list_order_dir";
+/// Show or hide one of the issue list's row properties.
+pub(crate) const LIST_DISPLAY: &str = "headway_list_display";
+/// `gs` in the issue list: name what it shows as a new saved view.
+pub(crate) const LIST_SAVE_VIEW: &str = "headway_list_save_view";
 /// `j`/`k`, `Space`, `^d`/`^u`, `gg`/`G` over a pane: scroll it.
 pub(crate) const SCROLL: &str = "headway_scroll";
 /// `]`/`[`: the next/previous file of a review pane's diff.
@@ -124,6 +143,8 @@ pub(crate) enum HeadwayUiTool {
     ListFold(ListFold),
     /// Step the issue list's cursor to the next or previous group header.
     ListStepGroup(GroupStep),
+    /// Change the issue list's tab, grouping, ordering or display.
+    ListLayout(ListLayout),
     /// Scroll the review pane's diff or the detail.
     Scroll(PaneScroll),
     /// Write a comment in a review pane.
@@ -259,6 +280,91 @@ struct FoldArgs {
     to: FoldTo,
 }
 
+/// Which tab `headway_list_tab` shows: a step, or a built-in view.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum TabTo {
+    Next,
+    Prev,
+    Active,
+    Backlog,
+    All,
+}
+
+/// The values of [`TabTo`].
+const TAB_TOS: &[&str] = &["next", "prev", "active", "backlog", "all"];
+
+/// `headway_list_tab`'s arguments: a step or built-in view, or a saved view
+/// by slug or name; not both.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct TabArgs {
+    #[serde(default)]
+    to: Option<TabTo>,
+    #[serde(default)]
+    view: Option<String>,
+}
+
+/// The arguments of `headway_list_group`, `headway_list_subgroup` and
+/// `headway_list_order`: `next`, or a [`GroupBy`] or [`SortBy`] name.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ByArgs {
+    #[serde(default)]
+    by: Option<String>,
+}
+
+/// Which way `headway_list_order_dir` runs the ordering.
+#[derive(Deserialize, Default, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum DirTo {
+    #[default]
+    Toggle,
+    Asc,
+    Desc,
+}
+
+/// The values of [`DirTo`].
+const DIR_TOS: &[&str] = &["toggle", "asc", "desc"];
+
+/// `headway_list_order_dir`'s arguments.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct OrderDirArgs {
+    #[serde(default)]
+    dir: DirTo,
+}
+
+/// `headway_list_display`'s `on`: `toggle`, or show or hide, as a word or a
+/// JSON boolean.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(untagged)]
+enum SwitchArg {
+    Bool(bool),
+    Word(SwitchWord),
+}
+
+/// [`SwitchArg`]'s words.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum SwitchWord {
+    Toggle,
+    True,
+    False,
+}
+
+/// The values of [`SwitchWord`].
+const SWITCH_WORDS: &[&str] = &["toggle", "true", "false"];
+
+/// `headway_list_display`'s arguments.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DisplayArgs {
+    prop: String,
+    #[serde(default)]
+    on: Option<SwitchArg>,
+}
+
 /// `headway_scroll`'s arguments.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -291,7 +397,32 @@ fn card_spec(name: &'static str, description: &'static str, more: Vec<ToolArg>) 
 
 /// An enum argument named `name` over `values`, defaulting to the first.
 fn enum_arg(name: &'static str, values: &'static [&'static str], doc: &'static str) -> ToolArg {
-    ToolArg::new(name, ToolArgType::Enum(values.to_vec()), doc).default(json!(values[0]))
+    names_arg(name, values.to_vec(), doc)
+}
+
+/// An enum argument named `name` over `values`, defaulting to the first.
+fn names_arg(name: &'static str, values: Vec<&'static str>, doc: &'static str) -> ToolArg {
+    let first = values[0];
+    ToolArg::new(name, ToolArgType::Enum(values), doc).default(json!(first))
+}
+
+/// `next`, then the names of `all`: a Display-menu pick's values.
+fn pick_values<T: Copy>(all: &[T], name: fn(T) -> &'static str) -> Vec<&'static str> {
+    std::iter::once("next")
+        .chain(all.iter().map(|&x| name(x)))
+        .collect()
+}
+
+/// Read a Display-menu pick: `next` (or nothing) for [`Pick::Next`], else a
+/// name `T` parses.
+fn parse_pick<T: std::str::FromStr>(by: Option<String>) -> Result<Pick<T>, String>
+where
+    T::Err: std::fmt::Display,
+{
+    match by.as_deref().map(str::trim) {
+        None | Some("next") => Ok(Pick::Next),
+        Some(name) => name.parse::<T>().map(Pick::To).map_err(|e| e.to_string()),
+    }
 }
 
 impl HeadwayUiTool {
@@ -409,6 +540,86 @@ impl HeadwayUiTool {
             )
             .ui(),
             ToolSpec::new(
+                LIST_TAB,
+                "Show one of the issue list's view tabs: the next or previous one, a built-in \
+                 view (active, backlog, all), or a saved view by slug or name.",
+                vec![
+                    enum_arg("to", TAB_TOS, "A step or a built-in view."),
+                    ToolArg::new(
+                        "view",
+                        ToolArgType::String,
+                        "A saved view's slug or name, instead of `to`.",
+                    ),
+                ],
+            )
+            .ui(),
+            ToolSpec::new(
+                LIST_GROUP,
+                "Group the issue list's rows: by status, priority, label, board or parent, \
+                 none, or the next grouping in the Display menu's order.",
+                vec![names_arg(
+                    "by",
+                    pick_values(&GroupBy::ALL, GroupBy::name),
+                    "What to group by.",
+                )],
+            )
+            .ui(),
+            ToolSpec::new(
+                LIST_SUBGROUP,
+                "Split each of the issue list's groups again: by status, priority, label, \
+                 board or parent, none, or the next sub-grouping in the Display menu's order.",
+                vec![names_arg(
+                    "by",
+                    pick_values(&GroupBy::ALL, GroupBy::name),
+                    "What to sub-group by.",
+                )],
+            )
+            .ui(),
+            ToolSpec::new(
+                LIST_ORDER,
+                "Order the issue list's rows, run the ordering's natural way: manually, by \
+                 priority, last updated, created, due date or work order, or the next ordering \
+                 in the Display menu's order.",
+                vec![names_arg(
+                    "by",
+                    pick_values(&SortBy::ALL, SortBy::name),
+                    "What to order by.",
+                )],
+            )
+            .ui(),
+            ToolSpec::new(
+                LIST_ORDER_DIR,
+                "Run the issue list's ordering the other way, or ascending or descending.",
+                vec![enum_arg("dir", DIR_TOS, "Which way to run it.")],
+            )
+            .ui(),
+            ToolSpec::new(
+                LIST_DISPLAY,
+                "Show or hide one of the properties each issue-list row draws beside its \
+                 title, as the Display menu's chips do.",
+                vec![
+                    names_arg(
+                        "prop",
+                        DisplayProp::ALL.iter().map(|p| p.name()).collect(),
+                        "The property, by the name `headway list --show` reads.",
+                    )
+                    .required(true),
+                    enum_arg(
+                        "on",
+                        SWITCH_WORDS,
+                        "Show it (true), hide it (false), or flip it.",
+                    ),
+                ],
+            )
+            .ui(),
+            ToolSpec::new(
+                LIST_SAVE_VIEW,
+                "Save what the issue list shows, its query and layout, as a new view: opens \
+                 the view-name field.",
+                vec![],
+            )
+            .ui(),
+            ToolSpec::new(
                 SCROLL,
                 "Scroll the review pane's diff or the card detail.",
                 vec![enum_arg("to", SCROLL_TOS, "How far to scroll.")],
@@ -512,6 +723,40 @@ impl HeadwayUiTool {
                     Dir::Prev => GroupStep::Prev,
                 })
             }
+            LIST_TAB => Self::ListLayout(ListLayout::Tab(parse_tab(name, args)?)),
+            LIST_GROUP | LIST_SUBGROUP => {
+                let ByArgs { by } = parse_args(name, args)?;
+                let pick = parse_pick(by).map_err(|e| format!("'{name}': {e}"))?;
+                Self::ListLayout(match name {
+                    LIST_GROUP => ListLayout::Group(pick),
+                    _ => ListLayout::SubGroup(pick),
+                })
+            }
+            LIST_ORDER => {
+                let ByArgs { by } = parse_args(name, args)?;
+                let pick = parse_pick(by).map_err(|e| format!("'{name}': {e}"))?;
+                Self::ListLayout(ListLayout::Order(pick))
+            }
+            LIST_ORDER_DIR => {
+                let OrderDirArgs { dir } = parse_args(name, args)?;
+                Self::ListLayout(ListLayout::OrderDir(match dir {
+                    DirTo::Toggle => OrderDir::Toggle,
+                    DirTo::Asc => OrderDir::Ascending,
+                    DirTo::Desc => OrderDir::Descending,
+                }))
+            }
+            LIST_DISPLAY => {
+                let DisplayArgs { prop, on } = parse_args(name, args)?;
+                let prop = prop.parse().map_err(|e| format!("'{name}': {e}"))?;
+                let on = match on {
+                    None | Some(SwitchArg::Word(SwitchWord::Toggle)) => None,
+                    Some(SwitchArg::Bool(on)) => Some(on),
+                    Some(SwitchArg::Word(SwitchWord::True)) => Some(true),
+                    Some(SwitchArg::Word(SwitchWord::False)) => Some(false),
+                };
+                Self::ListLayout(ListLayout::Display(DisplaySwitch { prop, on }))
+            }
+            LIST_SAVE_VIEW => no_args(name, args, Self::ListLayout(ListLayout::SaveView))?,
             SCROLL => {
                 let ScrollArgs { to } = parse_args(name, args)?;
                 Self::Scroll(match to {
@@ -543,6 +788,23 @@ impl HeadwayUiTool {
 /// Deserialize `args` for the tool `name`.
 fn parse_args<T: DeserializeOwned>(name: &str, args: &Value) -> Result<T, String> {
     T::deserialize(args).map_err(|e| format!("failed to parse '{name}' arguments: {e}"))
+}
+
+/// `headway_list_tab`'s tab: `to`'s step or built-in, else `view`'s saved
+/// view, else the next tab. Errors on both.
+fn parse_tab(name: &str, args: &Value) -> Result<TabPick, String> {
+    let TabArgs { to, view } = parse_args(name, args)?;
+    Ok(match (to, view) {
+        (Some(_), Some(_)) => {
+            return Err(format!("'{name}' takes `to` or `view`, not both"));
+        }
+        (None, Some(view)) => TabPick::Saved(view),
+        (None, None) | (Some(TabTo::Next), None) => TabPick::Next,
+        (Some(TabTo::Prev), None) => TabPick::Prev,
+        (Some(TabTo::Active), None) => TabPick::Builtin(BuiltinView::Active),
+        (Some(TabTo::Backlog), None) => TabPick::Builtin(BuiltinView::Backlog),
+        (Some(TabTo::All), None) => TabPick::Builtin(BuiltinView::All),
+    })
 }
 
 /// A card tool with nothing to choose but its card.
@@ -737,6 +999,8 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
         COMPOSE_CARD => grid || (list && state.list_can_compose()),
         OPEN_LIST | PICK_BOARD => grid,
         LIST_FOLD | LIST_STEP_GROUP => list && state.list_has_groups(),
+        LIST_TAB | LIST_GROUP | LIST_SUBGROUP | LIST_ORDER | LIST_ORDER_DIR | LIST_DISPLAY
+        | LIST_SAVE_VIEW => list,
         NEXT_BOARD | PREV_BOARD => grid && state.other_boards(),
         OPEN_REVIEW_QUEUE => grid || at == KeyView::Detail,
         CLEAR => grid && card,
@@ -758,16 +1022,46 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Every advertised spec is a UI tool that parses with no arguments, and
-    /// `null` arguments mean none.
+    /// The arguments `spec` requires, each its first advertised value: the
+    /// least a call of it can pass.
+    fn required_args(spec: &ToolSpec) -> serde_json::Map<String, Value> {
+        let schema = spec.json_schema();
+        let required = schema["required"].as_array().expect("required");
+        required
+            .iter()
+            .map(|arg| {
+                let arg = arg.as_str().expect("an arg name");
+                let first = schema["properties"][arg]["enum"][0].clone();
+                assert!(
+                    !first.is_null(),
+                    "{}: required {arg} is no enum",
+                    spec.name()
+                );
+                (arg.to_owned(), first)
+            })
+            .collect()
+    }
+
+    /// Every advertised spec is a UI tool that parses with no arguments but
+    /// those it requires, and a tool that requires none takes `null` for
+    /// none.
     #[test]
     fn every_spec_parses_with_its_defaults() {
         for spec in HeadwayUiTool::specs() {
             assert_eq!(spec.kind(), notedeck::ToolKind::Ui, "{}", spec.name());
-            HeadwayUiTool::parse(spec.name(), &json!({}))
+            let least = required_args(&spec);
+            HeadwayUiTool::parse(spec.name(), &Value::Object(least.clone()))
                 .unwrap_or_else(|e| panic!("{} with no args: {e}", spec.name()));
-            HeadwayUiTool::parse(spec.name(), &Value::Null)
-                .unwrap_or_else(|e| panic!("{} with null args: {e}", spec.name()));
+            if least.is_empty() {
+                HeadwayUiTool::parse(spec.name(), &Value::Null)
+                    .unwrap_or_else(|e| panic!("{} with null args: {e}", spec.name()));
+            } else {
+                assert!(
+                    HeadwayUiTool::parse(spec.name(), &json!({})).is_err(),
+                    "{} without its required args",
+                    spec.name()
+                );
+            }
         }
     }
 
@@ -780,10 +1074,42 @@ mod tests {
             let props = schema["properties"].as_object().expect("properties");
             for (arg, prop) in props {
                 for value in prop["enum"].as_array().into_iter().flatten() {
-                    HeadwayUiTool::parse(spec.name(), &json!({ arg: value }))
+                    let mut args = required_args(&spec);
+                    args.insert(arg.clone(), value.clone());
+                    HeadwayUiTool::parse(spec.name(), &Value::Object(args))
                         .unwrap_or_else(|e| panic!("{} {arg}={value}: {e}", spec.name()));
                 }
             }
+        }
+    }
+
+    /// The Display menu's tools advertise every grouping, ordering and row
+    /// property `headway list` knows, by the names it reads, so the action
+    /// bar's picker offers each.
+    #[test]
+    fn list_layout_tools_advertise_every_choice() {
+        let values = |name: &str, arg: &str| -> Vec<String> {
+            let spec = HeadwayUiTool::specs()
+                .into_iter()
+                .find(|s| s.name() == name)
+                .expect("the spec");
+            let schema = spec.json_schema();
+            schema["properties"][arg]["enum"]
+                .as_array()
+                .expect("an enum")
+                .iter()
+                .map(|v| v.as_str().expect("a name").to_owned())
+                .collect()
+        };
+        for by in GroupBy::ALL {
+            assert!(values(LIST_GROUP, "by").contains(&by.name().to_owned()));
+            assert!(values(LIST_SUBGROUP, "by").contains(&by.name().to_owned()));
+        }
+        for by in SortBy::ALL {
+            assert!(values(LIST_ORDER, "by").contains(&by.name().to_owned()));
+        }
+        for prop in DisplayProp::ALL {
+            assert!(values(LIST_DISPLAY, "prop").contains(&prop.name().to_owned()));
         }
     }
 
@@ -811,6 +1137,15 @@ mod tests {
                 json!({ "card": "headway:b/maple-river-canyon" }),
             ),
             (SCROLL, json!({ "to": "left" })),
+            (LIST_TAB, json!({ "to": "next", "view": "mine" })),
+            (LIST_TAB, json!({ "to": "sideways" })),
+            (LIST_GROUP, json!({ "by": "colour" })),
+            (LIST_ORDER, json!({ "by": "alphabet" })),
+            (LIST_ORDER_DIR, json!({ "dir": "up" })),
+            (LIST_DISPLAY, json!({})),
+            (LIST_DISPLAY, json!({ "prop": "nope" })),
+            (LIST_DISPLAY, json!({ "prop": "due", "on": "maybe" })),
+            (LIST_SAVE_VIEW, json!({ "name": "x" })),
             (BACK, json!([])),
         ];
         for (name, args) in bad {

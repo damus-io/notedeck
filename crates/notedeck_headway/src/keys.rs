@@ -227,6 +227,7 @@ pub(crate) fn apply_grid_tool(
         HeadwayUiTool::Clear => state.clear_cursor(),
         HeadwayUiTool::ListFold(_)
         | HeadwayUiTool::ListStepGroup(_)
+        | HeadwayUiTool::ListLayout(_)
         | HeadwayUiTool::Scroll(_)
         | HeadwayUiTool::Comment
         | HeadwayUiTool::SendComments
@@ -240,7 +241,8 @@ pub(crate) fn apply_grid_tool(
 /// `Enter`/`o` open the cursor's card (switching boards when it's on another)
 /// or fold the header it rests on, `za`/`zc`/`zo`/`zM`/`zR` fold the groups,
 /// `c` opens the composer in the cursor's group, `/` focuses the query,
-/// `q`/`Esc` leave for the grid. `sources` are the boards the list's rows were
+/// `gt`/`gT`, `go` and `gs` and the other `headway_list_*` layout tools change
+/// the tab, grouping, ordering or display, `q`/`Esc` leave for the grid. `sources` are the boards the list's rows were
 /// read from. Nothing else means anything here: the card actions act on a
 /// card of the board showing, and a list row may be on another, so they wait
 /// for its detail.
@@ -259,6 +261,7 @@ pub(crate) fn apply_list_tool(
         } => state.open_list_cursor(view, sources),
         HeadwayUiTool::ListFold(fold) => state.fold_list(*fold),
         HeadwayUiTool::ListStepGroup(step) => state.step_list_group(*step),
+        HeadwayUiTool::ListLayout(change) => state.lay_out_list(change),
         HeadwayUiTool::AddCard => state.compose_in_list_group(view),
         HeadwayUiTool::FocusFilter => ctx.memory_mut(|m| m.request_focus(list_field_id())),
         HeadwayUiTool::Back => state.close_list(),
@@ -392,6 +395,7 @@ pub(crate) fn apply_pane_tool(
         | HeadwayUiTool::PickBoard
         | HeadwayUiTool::ListFold(_)
         | HeadwayUiTool::ListStepGroup(_)
+        | HeadwayUiTool::ListLayout(_)
         | HeadwayUiTool::FocusFilter
         | HeadwayUiTool::ReviewQueue
         | HeadwayUiTool::Clear => {}
@@ -450,6 +454,7 @@ pub(crate) fn apply_detail_tool(
         | HeadwayUiTool::PickBoard
         | HeadwayUiTool::ListFold(_)
         | HeadwayUiTool::ListStepGroup(_)
+        | HeadwayUiTool::ListLayout(_)
         | HeadwayUiTool::FocusFilter
         | HeadwayUiTool::Clear
         | HeadwayUiTool::Comment
@@ -1126,6 +1131,8 @@ mod tests {
         list_shown: usize,
         /// The issue list's `+` composer or view-name field is open.
         list_composing: bool,
+        /// The issue list's tab and layout.
+        list_layout: headway::query::ViewSpec,
     }
 
     fn effects(harness: &Harness<'static, KeysHarness>) -> Effects {
@@ -1150,6 +1157,7 @@ mod tests {
             list_cursor: h.state.list_cursor_spot().cloned(),
             list_shown: h.state.list().shown(),
             list_composing: h.state.list_composing(),
+            list_layout: h.state.list().layout(),
         }
     }
 
@@ -1303,6 +1311,9 @@ mod tests {
             "close/open group",
             "fold/unfold all",
             "new in group",
+            "next/prev tab",
+            "next ordering",
+            "save view",
         ] {
             assert!(labels.contains(&label), "{label:?} missing from {labels:?}");
         }
@@ -1880,6 +1891,127 @@ mod tests {
         harness
     }
 
+    /// `headway_list_tab` steps through the tabs, wrapping from the last
+    /// saved view to Active, and picks a built-in or a saved view by slug or
+    /// name; a saved view the account hasn't leaves the tab alone.
+    #[test]
+    fn list_tab_tool_picks_and_steps_tabs() {
+        use crate::ui::ListCursor;
+        use crate::ui_tools::LIST_TAB;
+        use headway::query::{GroupBy, Grouping, ViewSpec};
+        use serde_json::json;
+        let mut harness = list_harness(ListCursor::Card(id(5)), &[]);
+        let tab = |h: &Harness<'static, KeysHarness>| h.state().state.list().layout().name;
+        assert_eq!(tab(&harness), "All issues");
+        call_tool(&mut harness, LIST_TAB, json!({ "to": "next" }));
+        assert_eq!(tab(&harness), "Active", "wraps past the built-ins");
+        call_tool(&mut harness, LIST_TAB, json!({ "to": "prev" }));
+        assert_eq!(tab(&harness), "All issues");
+        call_tool(&mut harness, LIST_TAB, json!({ "to": "backlog" }));
+        assert_eq!(tab(&harness), "Backlog");
+
+        let mine = headway::views::SavedView {
+            slug: "mine".to_owned(),
+            spec: ViewSpec {
+                name: "Mine".to_owned(),
+                query: "is:any".to_owned(),
+                grouping: Grouping {
+                    by: GroupBy::Priority,
+                    ..Grouping::default()
+                },
+                ..ViewSpec::default()
+            },
+        };
+        harness.state_mut().state.set_saved_views(vec![mine]);
+        call_tool(&mut harness, LIST_TAB, json!({}));
+        assert_eq!(tab(&harness), "All issues", "no `to` is the next tab");
+        call_tool(&mut harness, LIST_TAB, json!({}));
+        assert_eq!(tab(&harness), "Mine", "the next tab after the built-ins");
+        let layout = harness.state().state.list().layout();
+        assert_eq!(layout.grouping.by, GroupBy::Priority, "the view's layout");
+        call_tool(&mut harness, LIST_TAB, json!({ "to": "next" }));
+        assert_eq!(tab(&harness), "Active", "wraps from the last saved view");
+        call_tool(&mut harness, LIST_TAB, json!({ "view": "MINE" }));
+        assert_eq!(tab(&harness), "Mine", "by name, any case");
+        call_tool(&mut harness, LIST_TAB, json!({ "to": "active" }));
+        call_tool(&mut harness, LIST_TAB, json!({ "view": "mine" }));
+        assert_eq!(tab(&harness), "Mine", "by slug");
+        call_tool(&mut harness, LIST_TAB, json!({ "view": "nope" }));
+        assert_eq!(tab(&harness), "Mine", "an unknown view changes nothing");
+    }
+
+    /// The Display menu's tools: grouping, sub-grouping, ordering and its
+    /// direction, the row properties, and the view-name field, each as the
+    /// menu's chip or the tabs' "+ View" sets it.
+    #[test]
+    fn list_layout_tools_set_the_display_menu() {
+        use crate::ui::ListCursor;
+        use crate::ui_tools::{
+            LIST_DISPLAY, LIST_GROUP, LIST_ORDER, LIST_ORDER_DIR, LIST_SAVE_VIEW, LIST_SUBGROUP,
+        };
+        use headway::query::{DisplayProp, GroupBy, SortBy, Sorting};
+        use serde_json::json;
+        let mut harness = list_harness(ListCursor::Card(id(5)), &[]);
+        let layout = |h: &Harness<'static, KeysHarness>| h.state().state.list().layout();
+
+        call_tool(&mut harness, LIST_GROUP, json!({ "by": "priority" }));
+        assert_eq!(layout(&harness).grouping.by, GroupBy::Priority);
+        call_tool(&mut harness, LIST_GROUP, json!({}));
+        assert_eq!(layout(&harness).grouping.by, GroupBy::Label, "next");
+        call_tool(&mut harness, LIST_GROUP, json!({ "by": "none" }));
+        assert_eq!(layout(&harness).grouping.by, GroupBy::None);
+        assert!(!harness.state().state.list_has_groups(), "the rows regroup");
+        call_tool(&mut harness, LIST_SUBGROUP, json!({ "by": "board" }));
+        assert_eq!(layout(&harness).grouping.sub, GroupBy::Board);
+
+        call_tool(&mut harness, LIST_ORDER, json!({ "by": "due" }));
+        assert_eq!(layout(&harness).sorting, Sorting::by(SortBy::Due));
+        call_tool(&mut harness, LIST_ORDER, json!({ "by": "next" }));
+        assert_eq!(layout(&harness).sorting, Sorting::by(SortBy::WorkOrder));
+        call_tool(&mut harness, LIST_ORDER, json!({}));
+        assert_eq!(
+            layout(&harness).sorting,
+            Sorting::by(SortBy::Manual),
+            "next wraps"
+        );
+        call_tool(&mut harness, LIST_ORDER_DIR, json!({}));
+        assert!(layout(&harness).sorting.descending, "toggled");
+        call_tool(&mut harness, LIST_ORDER_DIR, json!({ "dir": "asc" }));
+        assert!(!layout(&harness).sorting.descending);
+        call_tool(&mut harness, LIST_ORDER_DIR, json!({ "dir": "desc" }));
+        assert!(layout(&harness).sorting.descending);
+
+        let shows = |h: &Harness<'static, KeysHarness>, prop| layout(h).display.contains(prop);
+        assert!(shows(&harness, DisplayProp::Due));
+        call_tool(&mut harness, LIST_DISPLAY, json!({ "prop": "due" }));
+        assert!(!shows(&harness, DisplayProp::Due), "toggled off");
+        call_tool(
+            &mut harness,
+            LIST_DISPLAY,
+            json!({ "prop": "board", "on": true }),
+        );
+        assert!(shows(&harness, DisplayProp::Board));
+        call_tool(
+            &mut harness,
+            LIST_DISPLAY,
+            json!({ "prop": "board", "on": "true" }),
+        );
+        assert!(shows(&harness, DisplayProp::Board), "on stays on");
+        call_tool(
+            &mut harness,
+            LIST_DISPLAY,
+            json!({ "prop": "Board", "on": "false" }),
+        );
+        assert!(!shows(&harness, DisplayProp::Board));
+
+        assert!(!harness.state().state.list().naming());
+        call_tool(&mut harness, LIST_SAVE_VIEW, json!({}));
+        assert!(
+            harness.state().state.list().naming(),
+            "the name field opens"
+        );
+    }
+
     /// **The guard.** Every card action's key, pressed in each of the four
     /// views with card 5 current (the grid's cursor, the queue's card, a
     /// plain review pane's, the detail's), applies the same [`CardAction`]
@@ -2268,6 +2400,9 @@ mod tests {
                     "close/open group",
                     "fold/unfold all",
                     "new in group",
+                    "next/prev tab",
+                    "next ordering",
+                    "save view",
                     "back to board",
                 ],
             ),
