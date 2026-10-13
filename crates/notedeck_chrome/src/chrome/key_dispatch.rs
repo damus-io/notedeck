@@ -349,8 +349,6 @@ fn is_registered_data_tool(tools: &notedeck::ToolRegistry, name: &str) -> bool {
     tools.contains(name) && tools.ui_owner(name).is_none()
 }
 
-/// Whether the key's tool `name` is an app's data tool, to run here rather
-/// than route to an app.
 /// Run `invocation` as a key bound to it would, returning the action it
 /// raised for the chrome to route: a data tool runs here and now, a UI tool
 /// becomes an [`AppAction::CallTool`] for the app that owns it.
@@ -362,6 +360,8 @@ pub(super) fn tool_action(ctx: &mut AppContext, invocation: ToolInvocation) -> O
     }
 }
 
+/// Whether the key's tool `name` is an app's data tool, to run here rather
+/// than route to an app.
 fn is_data_tool(ctx: &AppContext, name: &str) -> bool {
     is_registered_data_tool(&ctx.registries.tools, name)
 }

@@ -34,6 +34,7 @@ mod actions;
 #[cfg(all(test, feature = "headway", not(debug_assertions)))]
 mod columns_input_tests;
 mod command_bar;
+mod command_tools;
 mod debug;
 mod focus;
 mod frame;

@@ -92,6 +92,7 @@ impl AppTool for ListBoards {
             vec![],
         )
 .titled("List boards")
+.read_only()
 .filed_under(crate::TOOL_CATEGORY)
     }
 
@@ -140,6 +141,7 @@ impl AppTool for ShowBoard {
             )],
         )
 .titled("Show board")
+.read_only()
 .filed_under(crate::TOOL_CATEGORY)
     }
 
@@ -190,6 +192,7 @@ impl AppTool for ShowCard {
             ],
         )
 .titled("Show card")
+.read_only()
 .filed_under(crate::TOOL_CATEGORY)
     }
 
@@ -263,6 +266,7 @@ impl AppTool for ReadyItems {
             ],
         )
 .titled("List ready cards")
+.read_only()
 .filed_under(crate::TOOL_CATEGORY)
     }
 

@@ -355,6 +355,9 @@ Deck_name_cd32 = Deck name
 # Label for decks section in side panel
 DECKS_1fad = DECKS
 
+# Command bar: marks the value a command takes when none is picked
+default_38ce = default
+
 # Label for default zap amount input
 Default_amount_per_zap_399d = Default amount per zap:
 
@@ -789,6 +792,9 @@ Open_Email_25e9 = Open Email
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = Open your default email client to get help from the Damus team
 
+# Command bar section for commands that name no app or part of the shell
+Other_0ba2 = Other
+
 # Section header for non-advertised connected relays
 Other_65fa = Other
 
@@ -830,6 +836,9 @@ Overview_d736 = Overview
 
 # Button label to post a note
 Post_now_8a49 = Post now
+
+# Shown in the command bar while the query is the text a command needs
+Press_Enter_to_run_it_6829 = Press Enter to run it
 
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = Press the button below to copy your most recent logs to your system's clipboard. Then paste it into your email.
@@ -875,6 +884,9 @@ Reactions_68e3 = Reactions
 
 # Label for read-only profile mode
 Read_only_82ff = Read only
+
+# Command bar section listing the commands run from it lately
+Recent_2a39 = Recent
 
 # Dave session inspector background: a cron job that fires on every match
 recurring_8830 = recurring

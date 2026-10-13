@@ -87,6 +87,28 @@ pub fn fuzzy_match(query: &str, candidate: &str, positions: &mut Vec<usize>) -> 
     Some(score)
 }
 
+/// Whether every word of `query` (split on whitespace) appears somewhere in
+/// `haystack`, ignoring case, in any order: `list group` is in "Group the
+/// issue list's rows". For matching long text a person doesn't see, like a
+/// command's description, where [`fuzzy_match`]'s scattered letters would
+/// match nearly anything. An empty query is in everything. Allocates
+/// nothing.
+pub fn contains_words(query: &str, haystack: &str) -> bool {
+    query
+        .split_whitespace()
+        .all(|word| contains_ignoring_case(haystack, word))
+}
+
+/// Whether `needle` appears in `haystack`, ignoring case.
+fn contains_ignoring_case(haystack: &str, needle: &str) -> bool {
+    haystack.char_indices().any(|(at, _)| {
+        let mut hay = haystack[at..].chars();
+        needle
+            .chars()
+            .all(|nc| hay.next().is_some_and(|c| same_char(c, nc)))
+    })
+}
+
 /// Whether `a` and `b` are the same letter, ignoring case.
 fn same_char(a: char, b: char) -> bool {
     a == b || a.to_lowercase().eq(b.to_lowercase())
@@ -172,6 +194,18 @@ mod tests {
             .collect();
         scored.sort_by_key(|&(s, _)| std::cmp::Reverse(s));
         scored.into_iter().map(|(_, c)| c).collect()
+    }
+
+    #[test]
+    fn words_match_anywhere_in_any_order() {
+        let text = "Group the issue list's rows";
+        assert!(contains_words("list group", text));
+        assert!(contains_words("ISSUE", text));
+        assert!(contains_words("", text));
+        assert!(!contains_words("list cards", text));
+        assert!(!contains_words("gtil", text), "words aren't fuzzy");
+        assert!(contains_words("rows", "rows"));
+        assert!(!contains_words("rowss", "rows"));
     }
 
     #[test]

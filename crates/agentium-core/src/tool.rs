@@ -149,6 +149,9 @@ pub struct ToolSpec {
     title: Option<&'static str>,
     /// What it's listed under, e.g. "Headway"; `None` until set.
     category: Option<&'static str>,
+    /// Whether it only answers, changing nothing (see
+    /// [`read_only`](ToolSpec::read_only)).
+    read_only: bool,
 }
 
 impl ToolSpec {
@@ -162,6 +165,7 @@ impl ToolSpec {
             kind: ToolKind::Data,
             title: None,
             category: None,
+            read_only: false,
         }
     }
 
@@ -193,6 +197,21 @@ impl ToolSpec {
             Some(_) => self,
             None => self.filed_under(category),
         }
+    }
+
+    /// Mark the tool as one that only answers, changing nothing: a query
+    /// like "Show card", whose JSON is for an agent or a macro step. MCP's
+    /// `readOnlyHint`. A command bar, which would throw the answer away,
+    /// doesn't list it.
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self
+    }
+
+    /// Whether it only answers, changing nothing (see
+    /// [`read_only`](Self::read_only)).
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     /// Whether this tool runs over data or against an app's UI state.

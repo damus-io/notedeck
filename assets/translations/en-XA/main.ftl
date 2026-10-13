@@ -355,6 +355,9 @@ Deck_name_cd32 = {"["}Déçk ñàmé{"]"}
 # Label for decks section in side panel
 DECKS_1fad = {"["}DÉÇKS{"]"}
 
+# Command bar: marks the value a command takes when none is picked
+default_38ce = {"["}défàúlt{"]"}
+
 # Label for default zap amount input
 Default_amount_per_zap_399d = {"["}Défàúlt àmóúñt pér zàp:{"]"}
 
@@ -789,6 +792,9 @@ Open_Email_25e9 = {"["}Ópéñ Émàíl{"]"}
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = {"["}Ópéñ yóúr défàúlt émàíl çlíéñt tó gét hélp fróm thé Dàmús téàm{"]"}
 
+# Command bar section for commands that name no app or part of the shell
+Other_0ba2 = {"["}Óthér{"]"}
+
 # Section header for non-advertised connected relays
 Other_65fa = {"["}Óthér{"]"}
 
@@ -830,6 +836,9 @@ Overview_d736 = {"["}Óvérvíéw{"]"}
 
 # Button label to post a note
 Post_now_8a49 = {"["}Póst ñów{"]"}
+
+# Shown in the command bar while the query is the text a command needs
+Press_Enter_to_run_it_6829 = {"["}Préss Éñtér tó rúñ ít{"]"}
 
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = {"["}Préss thé búttóñ bélów tó çópy yóúr móst réçéñt lógs tó yóúr systém's çlípbóàrd. Théñ pàsté ít íñtó yóúr émàíl.{"]"}
@@ -875,6 +884,9 @@ Reactions_68e3 = {"["}Réàçtíóñs{"]"}
 
 # Label for read-only profile mode
 Read_only_82ff = {"["}Réàd óñly{"]"}
+
+# Command bar section listing the commands run from it lately
+Recent_2a39 = {"["}Réçéñt{"]"}
 
 # Dave session inspector background: a cron job that fires on every match
 recurring_8830 = {"["}réçúrríñg{"]"}

@@ -19,3 +19,4 @@ too, so every card strips that out by hand to keep its commit standalone.
 - headway:dave/large-denial-card — ~2 min: a twelfth splice (1 key) out of a ~300-line rewrite of both files, by a fresh scratch script that inserts the entry into HEAD's file in key order
 - headway:dave/among-unusual-hazard — ~2 min: a thirteenth splice (4 keys) out of a ~230-line rewrite of both files, by another scratchpad splice.py
 - headway:notedeck/fury-excuse-accident — ~3 min: a 225-line rewrite of both files for 2 keys, which also picked up the test-only `"no ftl entry exists for this"` from `i18n/manager.rs` tests and so failed two i18n tests; spliced the 2 entries in by script
+- headway:notedeck/save-jump-disease — the export rewrote 237 lines of each FTL for 4 new strings; a script spliced just those 4 back into the committed files

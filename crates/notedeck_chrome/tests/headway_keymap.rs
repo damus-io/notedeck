@@ -450,3 +450,81 @@ async fn a_focused_field_keeps_its_keys() {
     assert!(f.take_calls().is_empty(), "the filter took j and k");
     f.wait_to_draw("jk");
 }
+
+/// Press Cmd-K the way this platform's keyboard reports it: Ctrl sets
+/// `command` too off macOS.
+#[cfg(not(debug_assertions))]
+fn cmd_k(f: &mut Fixture) {
+    f.press(Modifiers::COMMAND | Modifiers::CTRL, Key::K, None);
+}
+
+/// The command bar's selected row's title.
+#[cfg(not(debug_assertions))]
+fn selected(f: &mut Fixture) -> Option<String> {
+    f.chrome
+        .command_bar_mut()
+        .selected()
+        .map(|item| item.title.clone())
+}
+
+/// Cmd-K lists Headway's tools; "issue list" picks Open issue list, and
+/// Enter runs it on Headway, which opens the list.
+///
+/// Release only, with its own CI step, as is every test that opens the
+/// list: its push slides through egui_nav, which draws both routes on two
+/// layers with repeating widget ids, and egui debug-asserts against that
+/// (see `chrome/headway_nav_tests.rs`).
+#[cfg(not(debug_assertions))]
+#[tokio::test]
+async fn the_command_bar_opens_the_issue_list() {
+    let mut f = Fixture::new().await;
+    cmd_k(&mut f);
+    assert!(f.chrome.command_bar().is_open());
+    f.frame(vec![Event::Text("issue list".to_owned())]);
+    assert_eq!(selected(&mut f).as_deref(), Some("Open issue list"));
+
+    f.key(Key::Enter);
+    assert!(!f.chrome.command_bar().is_open());
+    let calls = f.take_calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0].name, "headway_open_list");
+    f.wait_to_draw("All issues");
+}
+
+/// An enum argument from the command bar: Group list by asks what to group
+/// by, listing Headway's own values, and the one picked reaches Headway.
+/// Release only, as the test above.
+#[cfg(not(debug_assertions))]
+#[tokio::test]
+async fn the_command_bar_groups_the_list_by_a_picked_value() {
+    let mut f = Fixture::new().await;
+    cmd_k(&mut f);
+    f.frame(vec![Event::Text("issue list".to_owned())]);
+    f.key(Key::Enter);
+    f.wait_to_draw("All issues");
+    f.take_calls();
+
+    cmd_k(&mut f);
+    f.frame(vec![Event::Text("group list".to_owned())]);
+    assert_eq!(selected(&mut f).as_deref(), Some("Group list by"));
+    f.key(Key::Enter);
+    assert_eq!(f.chrome.command_bar().prompt(), Some("Group list by"));
+    let values: Vec<String> = f
+        .chrome
+        .command_bar_mut()
+        .matches()
+        .map(|item| item.title.clone())
+        .collect();
+    for value in ["Next", "Status", "Priority", "None"] {
+        assert!(values.iter().any(|v| v == value), "{value}: {values:?}");
+    }
+    assert!(f.take_calls().is_empty(), "nothing ran yet");
+
+    f.frame(vec![Event::Text("priority".to_owned())]);
+    f.key(Key::Enter);
+    assert!(!f.chrome.command_bar().is_open());
+    assert_eq!(
+        f.take_calls(),
+        [call("headway_list_group", json!({ "by": "priority" }))]
+    );
+}

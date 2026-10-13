@@ -11,13 +11,18 @@
 //! [`CommandBar::set_items`] hands it a list, which it filters each time the
 //! query changes, never per frame. Each row's text is laid out once per
 //! filter, so a frame with the bar open only draws.
+//!
+//! A chosen row can ask for more before it runs: a tool's argument (see
+//! [`super::command_tools`]). The bar then steps into a new level, its prompt
+//! drawn before the query: another list to pick from, or the query itself as
+//! the argument's text. Backspace in an empty query steps back out.
 
 use std::ops::Range;
 use std::sync::Arc;
 
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, FontId, Galley, Key, Modifiers, Sense, Stroke, Vec2};
-use notedeck::fuzzy::fuzzy_match;
+use notedeck::fuzzy::{contains_words, fuzzy_match};
 use notedeck::theme::selection_fill;
 use notedeck::tokens::{RADIUS_LG, RADIUS_MD, SPACING_LG, SPACING_MD, SPACING_SM, STROKE_THIN};
 use notedeck::{
@@ -73,6 +78,10 @@ const BACKDROP_ALPHA: u8 = 128;
 /// full-strength fill would drown the title's highlighted matches.
 const SELECTED_TINT: f32 = 0.35;
 
+/// The score of a row matched only by its [keywords](CommandItem::keywords):
+/// below every row whose title matched.
+const KEYWORD_ONLY: i32 = i32::MIN;
+
 /// The query field's id, for focusing it.
 fn field_id() -> egui::Id {
     egui::Id::unique("chrome-command-bar-query")
@@ -98,6 +107,83 @@ struct RowText {
     heading: Option<Arc<Galley>>,
     /// Its title, matched characters highlighted, then its subtitle.
     line: Arc<Galley>,
+}
+
+/// What a level of the bar asks for.
+#[derive(Default)]
+enum Asking {
+    /// One of its rows.
+    #[default]
+    Row,
+    /// Text typed into the query, for one argument of a tool call.
+    Text(TextArg),
+}
+
+/// A tool call waiting on one argument, typed into the query.
+pub(super) struct TextArg {
+    /// The call so far.
+    pub invocation: ToolInvocation,
+    /// The argument the query fills.
+    pub arg: &'static str,
+    /// Whether the text must be a number, and goes in as one.
+    pub number: bool,
+}
+
+impl TextArg {
+    /// The call with the argument set to `text`, or `None` when the text
+    /// isn't a value it takes: empty, or not a number when it must be one.
+    fn filled(&self, text: &str) -> Option<ToolInvocation> {
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let value = if self.number {
+            let n: f64 = text.parse().ok()?;
+            match n.fract() == 0.0 && n.abs() < i64::MAX as f64 {
+                true => serde_json::Value::from(n as i64),
+                false => serde_json::Value::from(n),
+            }
+        } else {
+            serde_json::Value::from(text)
+        };
+        Some(with_arg(&self.invocation, self.arg, value))
+    }
+}
+
+/// `invocation` with its argument `arg` set to `value`, its other args kept.
+pub(super) fn with_arg(
+    invocation: &ToolInvocation,
+    arg: &str,
+    value: serde_json::Value,
+) -> ToolInvocation {
+    let mut args = match &invocation.args {
+        serde_json::Value::Object(args) => args.clone(),
+        _ => serde_json::Map::new(),
+    };
+    args.insert(arg.to_owned(), value);
+    ToolInvocation::new(invocation.name.clone(), serde_json::Value::Object(args))
+}
+
+/// A level the bar stepped into a deeper one from, kept to step back to.
+struct Level {
+    /// Its prompt, if it had one.
+    prompt: Option<String>,
+    /// Its rows.
+    items: Vec<CommandItem>,
+    /// What had been typed into it.
+    query: String,
+    /// What it asked for.
+    asking: Asking,
+    /// Its query field's placeholder.
+    hint: String,
+}
+
+/// The prompt drawn before the query, laid out once per level.
+struct PromptText {
+    /// What it was laid out for.
+    key: LayoutKey,
+    /// The prompt.
+    galley: Arc<Galley>,
 }
 
 /// What [`RowText`]s were laid out for: a change in any of them lays them
@@ -148,7 +234,23 @@ pub struct CommandBar {
     hint: String,
     /// What it says when nothing matches, translated as the bar opens.
     no_results: String,
+    /// What it says while the query is a tool argument's text, translated
+    /// as the bar opens.
+    enter_to_run: String,
+    /// What this level asks for, drawn before the query; `None` at the top.
+    prompt: Option<String>,
+    /// [`prompt`](Self::prompt), laid out.
+    prompt_text: Option<PromptText>,
+    /// What this level asks for: a row, or text.
+    asking: Asking,
+    /// The levels it stepped in from, innermost last.
+    back: Vec<Level>,
+    /// The tools chosen from it lately, by name, latest first.
+    recent: Vec<String>,
 }
+
+/// How many tools [`CommandBar::recent`] remembers.
+const RECENT_TOOLS: usize = 5;
 
 impl CommandBar {
     /// Whether it is showing.
@@ -187,6 +289,67 @@ impl CommandBar {
             .map(|row| &self.items[row.item])
     }
 
+    /// The prompt of the level it is at, if it stepped into one: the tool
+    /// whose argument it is asking for.
+    pub fn prompt(&self) -> Option<&str> {
+        self.prompt.as_deref()
+    }
+
+    /// The tools chosen from it lately, by name, latest first.
+    pub fn recent(&self) -> impl Iterator<Item = &str> {
+        self.recent.iter().map(String::as_str)
+    }
+
+    /// Remember that the tool `name` was chosen, for listing it first next
+    /// time.
+    pub(super) fn remember(&mut self, name: &str) {
+        self.recent.retain(|recent| recent != name);
+        self.recent.insert(0, name.to_owned());
+        self.recent.truncate(RECENT_TOOLS);
+    }
+
+    /// Step into a level that asks for one of `items`, under `prompt`, with
+    /// `hint` as the query's placeholder. Backspace in its empty query steps
+    /// back.
+    pub(super) fn ask_row(&mut self, prompt: String, hint: String, items: Vec<CommandItem>) {
+        self.step_in(prompt, hint, Asking::Row, items);
+    }
+
+    /// Step into a level that asks for `arg`'s text, typed into the query,
+    /// under `prompt`, with `hint` as the query's placeholder.
+    pub(super) fn ask_text(&mut self, prompt: String, hint: String, arg: TextArg) {
+        self.step_in(prompt, hint, Asking::Text(arg), Vec::new());
+    }
+
+    /// Keep this level to step back to and start a new one.
+    fn step_in(&mut self, prompt: String, hint: String, asking: Asking, items: Vec<CommandItem>) {
+        self.back.push(Level {
+            prompt: self.prompt.replace(prompt),
+            items: std::mem::replace(&mut self.items, items),
+            query: std::mem::take(&mut self.query),
+            asking: std::mem::replace(&mut self.asking, asking),
+            hint: std::mem::replace(&mut self.hint, hint),
+        });
+        self.prompt_text = None;
+        self.stale = true;
+    }
+
+    /// Step back out to the level it stepped in from, its query as it was
+    /// left. Returns false at the top.
+    fn step_out(&mut self) -> bool {
+        let Some(level) = self.back.pop() else {
+            return false;
+        };
+        self.prompt = level.prompt;
+        self.items = level.items;
+        self.query = level.query;
+        self.asking = level.asking;
+        self.hint = level.hint;
+        self.prompt_text = None;
+        self.stale = true;
+        true
+    }
+
     /// Show it with an empty query and nothing to list yet; the query field
     /// takes focus the next time it is drawn.
     fn open(&mut self, i18n: &mut Localization) {
@@ -194,6 +357,10 @@ impl CommandBar {
         self.focus_pending = true;
         self.query.clear();
         self.items.clear();
+        self.back.clear();
+        self.prompt = None;
+        self.prompt_text = None;
+        self.asking = Asking::Row;
         self.stale = true;
         self.hint = tr!(
             i18n,
@@ -205,15 +372,24 @@ impl CommandBar {
             "No results",
             "Shown in the command bar when nothing matches the query"
         );
+        self.enter_to_run = tr!(
+            i18n,
+            "Press Enter to run it",
+            "Shown in the command bar while the query is the text a command needs"
+        );
     }
 
     /// Hide it and give focus back to what had it when it opened.
-    fn close(&mut self, ctx: &egui::Context) {
+    pub(super) fn close(&mut self, ctx: &egui::Context) {
         self.open = false;
         self.focus_pending = false;
         self.items.clear();
         self.rows.clear();
         self.texts.clear();
+        self.back.clear();
+        self.prompt = None;
+        self.prompt_text = None;
+        self.asking = Asking::Row;
         let return_focus = self.return_focus.take();
         ctx.memory_mut(|m| match return_focus {
             Some(id) => m.request_focus(id),
@@ -228,16 +404,18 @@ impl CommandBar {
         self.reveal_selected = true;
     }
 
-    /// Close it, handing back what the selected row does, if anything is
-    /// selected.
-    fn choose(&mut self, ctx: &egui::Context) -> Option<CommandAction> {
+    /// What choosing now does: the selected row's action, or, while the
+    /// query is a tool argument's text, the call with it filled in. `None`
+    /// when there is nothing to choose. Leaves the bar open: the caller
+    /// closes it or steps it into the next argument.
+    fn choose(&mut self) -> Option<CommandAction> {
+        if let Asking::Text(arg) = &self.asking {
+            return arg.filled(&self.query).map(CommandAction::RunTool);
+        }
         self.refilter_if_stale();
-        let action = self
-            .rows
+        self.rows
             .get(self.selected)
-            .map(|row| self.items[row.item].action.clone());
-        self.close(ctx);
-        action
+            .map(|row| self.items[row.item].action.clone())
     }
 
     /// [`refilter`](Self::refilter), if the query or items changed since.
@@ -247,11 +425,11 @@ impl CommandBar {
         }
     }
 
-    /// Match the query against every row's title and order the matches:
-    /// sections by their best row, rows by score within them, ties in the
-    /// order they were given (so an empty query lists the rows as given,
-    /// grouped by section). Selects the first. Allocates only to grow its
-    /// buffers.
+    /// Match the query against every row's title, then its keywords, and
+    /// order the matches: sections by their best row, rows by score within
+    /// them, ties in the order they were given (so an empty query lists the
+    /// rows as given, grouped by section). Selects the first. Allocates only
+    /// to grow its buffers.
     fn refilter(&mut self) {
         self.stale = false;
         self.rows.clear();
@@ -262,8 +440,16 @@ impl CommandBar {
         self.reveal_selected = true;
 
         for (item, entry) in self.items.iter().enumerate() {
-            let Some(score) = fuzzy_match(&self.query, &entry.title, &mut self.scratch) else {
-                continue;
+            let score = match fuzzy_match(&self.query, &entry.title, &mut self.scratch) {
+                Some(score) => score,
+                None if entry
+                    .keywords
+                    .as_deref()
+                    .is_some_and(|keywords| contains_words(&self.query, keywords)) =>
+                {
+                    KEYWORD_ONLY
+                }
+                None => continue,
             };
             let start = self.positions.len();
             self.positions.extend_from_slice(&self.scratch);
@@ -299,8 +485,10 @@ impl CommandBar {
         let mut section: Option<&str> = None;
         for row in &self.rows {
             let item = &self.items[row.item];
-            let heading = (section != Some(item.section.as_ref())).then(|| {
-                section = Some(item.section.as_ref());
+            let new_section = section != Some(item.section.as_ref());
+            section = Some(item.section.as_ref());
+            // An unnamed section, like a tool argument's values, has none.
+            let heading = (new_section && !item.section.is_empty()).then(|| {
                 let mut job = LayoutJob::single_section(
                     item.section.to_string(),
                     TextFormat::simple(FontId::proportional(SMALL_SIZE), theme.text_muted),
@@ -375,7 +563,7 @@ impl CommandBar {
                             .shadow(ui.visuals().popup_shadow)
                             .show(ui, |ui| {
                                 ui.set_width(width);
-                                self.query_ui(ui);
+                                self.query_ui(ui, &theme, layout);
                                 let y = ui.cursor().top();
                                 ui.painter().hline(
                                     ui.max_rect().x_range(),
@@ -397,7 +585,7 @@ impl CommandBar {
 
         if let Some(row) = clicked {
             self.selected = row;
-            return self.choose(ctx);
+            return self.choose();
         }
         if close {
             self.close(ctx);
@@ -405,9 +593,69 @@ impl CommandBar {
         None
     }
 
-    /// The query field, refiltering when it changes. It keeps focus while
-    /// the bar is open.
-    fn query_ui(&mut self, ui: &mut egui::Ui) {
+    /// The query field, after the level's prompt if it has one, refiltering
+    /// when it changes. It keeps focus while the bar is open.
+    fn query_ui(&mut self, ui: &mut egui::Ui, theme: &ColorTheme, layout: LayoutKey) {
+        let Some(prompt) = self.prompt_galley(ui.ctx(), theme, layout) else {
+            self.query_field_ui(ui);
+            return;
+        };
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add_space(SPACING_LG);
+            let padding = egui::vec2(SPACING_SM, SPACING_SM / 2.0);
+            let chip = prompt.size() + 2.0 * padding;
+            // As tall as the query field, so the chip centres on its text.
+            let field_height = ui.fonts_mut(|f| f.row_height(&FontId::proportional(QUERY_SIZE)))
+                + 2.0 * SPACING_MD;
+            let (slot, _) = ui.allocate_exact_size(
+                egui::vec2(chip.x + SPACING_SM, field_height),
+                Sense::hover(),
+            );
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(slot.left(), slot.center().y - chip.y / 2.0),
+                chip,
+            );
+            ui.painter().rect_filled(
+                rect,
+                RADIUS_MD,
+                selection_fill(ui.visuals()).gamma_multiply(SELECTED_TINT),
+            );
+            ui.painter()
+                .galley(rect.min + padding, prompt, theme.text_primary);
+            self.query_field_ui(ui);
+        });
+    }
+
+    /// The level's prompt, laid out for `key`; laid out again only when the
+    /// prompt or `key` changed. `None` at the top level.
+    fn prompt_galley(
+        &mut self,
+        ctx: &egui::Context,
+        theme: &ColorTheme,
+        key: LayoutKey,
+    ) -> Option<Arc<Galley>> {
+        let prompt = self.prompt.as_deref()?;
+        if let Some(text) = self.prompt_text.as_ref().filter(|text| text.key == key) {
+            return Some(text.galley.clone());
+        }
+        let mut job = LayoutJob::single_section(
+            prompt.to_owned(),
+            TextFormat::simple(FontId::proportional(TITLE_SIZE), theme.text_primary),
+        );
+        job.wrap.max_width = key.width / 2.0;
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        let galley = ctx.fonts_mut(|f| f.layout_job(job));
+        self.prompt_text = Some(PromptText {
+            key,
+            galley: galley.clone(),
+        });
+        Some(galley)
+    }
+
+    /// The query field itself.
+    fn query_field_ui(&mut self, ui: &mut egui::Ui) {
         let field = egui::TextEdit::singleline(&mut self.query)
             .id(field_id())
             .frame(
@@ -440,11 +688,16 @@ impl CommandBar {
         // Here rather than before the query field, which refilters as it
         // changes.
         self.lay_out(ui.ctx(), theme, layout);
-        if self.rows.is_empty() {
+        let empty = match self.asking {
+            Asking::Text(_) => Some(self.enter_to_run.as_str()),
+            Asking::Row if self.rows.is_empty() => Some(self.no_results.as_str()),
+            Asking::Row => None,
+        };
+        if let Some(empty) = empty {
             egui::Frame::new()
                 .inner_margin(egui::Margin::same(SPACING_LG as i8))
                 .show(ui, |ui| {
-                    ui.colored_label(theme.text_muted, self.no_results.as_str());
+                    ui.colored_label(theme.text_muted, empty);
                 });
             return None;
         }
@@ -577,20 +830,25 @@ impl Chrome {
             self.command_bar.close(ctx);
         } else {
             self.command_bar.open(app_ctx.i18n);
+            self.list_tools(app_ctx);
         }
     }
 
     /// The keys the open command bar takes before the app renders, so the
     /// app never sees them: Esc closes it, ↑/↓ and Ctrl-P/Ctrl-N move the
-    /// selection, Enter runs it. Typed text is left for its query field.
+    /// selection, Enter runs it, and Backspace in an empty query steps back
+    /// out of an argument. Typed text is left for its query field.
     pub(super) fn command_bar_keys(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) {
         if !self.command_bar.open {
             return;
         }
         let ctx = ui.ctx().clone();
         let (mut escape, mut up, mut down, mut enter) = (false, false, false, false);
+        let mut back = false;
+        let can_step_out = self.command_bar.query.is_empty() && !self.command_bar.back.is_empty();
         ctx.input_mut(|i| {
             escape = i.consume_key(Modifiers::NONE, Key::Escape);
+            back = can_step_out && i.consume_key(Modifiers::NONE, Key::Backspace);
             up = i.consume_key(Modifiers::NONE, Key::ArrowUp)
                 | consume_exact(i, Modifiers::CTRL, Key::P);
             down = i.consume_key(Modifiers::NONE, Key::ArrowDown)
@@ -601,16 +859,24 @@ impl Chrome {
             self.command_bar.close(&ctx);
             return;
         }
+        if back {
+            self.command_bar.step_out();
+        }
         if up {
             self.command_bar.move_selection(-1);
         }
         if down {
             self.command_bar.move_selection(1);
         }
-        if enter {
-            if let Some(action) = self.command_bar.choose(&ctx) {
-                self.run_command(app_ctx, action, ui);
-            }
+        if !enter {
+            return;
+        }
+        match self.command_bar.choose() {
+            Some(action) => self.run_command(app_ctx, action, ui),
+            // Nothing to run: an empty list closes, an argument's text not
+            // typed yet waits for it.
+            None if matches!(self.command_bar.asking, Asking::Row) => self.command_bar.close(&ctx),
+            None => {}
         }
     }
 
@@ -622,12 +888,25 @@ impl Chrome {
         }
     }
 
-    /// Do what a chosen row does: run its tool as a key bound to it would,
-    /// or open its reference.
+    /// Do what a chosen row does: step into the next argument its tool asks
+    /// for, or close the bar and run the tool as a key bound to it would, or
+    /// open its reference. Closing first lets a tool that opens a view land
+    /// on it.
     fn run_command(&mut self, app_ctx: &mut AppContext, action: CommandAction, ui: &mut egui::Ui) {
         let action = match action {
-            CommandAction::RunTool(invocation) => tool_action(app_ctx, invocation),
-            CommandAction::Open(uri) => Some(AppAction::Open(uri)),
+            CommandAction::RunTool(invocation) => {
+                if self.ask_next_arg(app_ctx, &invocation) {
+                    return;
+                }
+                self.command_bar.close(ui.ctx());
+                self.command_bar.remember(&invocation.name);
+                let invocation = self.fill_current_args(app_ctx, invocation);
+                tool_action(app_ctx, invocation)
+            }
+            CommandAction::Open(uri) => {
+                self.command_bar.close(ui.ctx());
+                Some(AppAction::Open(uri))
+            }
         };
         if let Some(action) = action {
             chrome_handle_app_action(self, app_ctx, action, ui);
@@ -646,6 +925,7 @@ impl Chrome {
         }
         if !self.command_bar.open {
             self.command_bar.open(ctx.i18n);
+            self.list_tools(ctx);
         }
         Some(ToolOutcome::Data(serde_json::json!({ "open": true })))
     }

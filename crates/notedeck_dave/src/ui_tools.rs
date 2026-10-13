@@ -77,6 +77,7 @@ pub(crate) fn session_issue_spec() -> ToolSpec {
     )
     .ui()
     .titled("Get session's issue")
+    .read_only()
     .filed_under(TOOL_CATEGORY)
 }
 

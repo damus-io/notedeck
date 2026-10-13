@@ -14,11 +14,17 @@ use crate::{OpenUri, ToolInvocation};
 pub struct CommandItem {
     /// The heading it is listed under (`Headway`, `Dave sessions`). Rows of
     /// one section are listed together, in the order their best row ranks.
+    /// An empty one has no heading drawn.
     pub section: Cow<'static, str>,
     /// What it is or does, as a person reads it. The query matches this.
     pub title: String,
     /// More about it, drawn muted after the title. Not matched.
     pub subtitle: Option<String>,
+    /// More words the query matches but nobody sees, like a tool's name and
+    /// description. A row matched only here ranks below every row whose
+    /// title matched, and each query word must appear whole
+    /// ([`contains_words`](crate::fuzzy::contains_words)).
+    pub keywords: Option<String>,
     /// The keys that run it outside the bar, as a keycap (`gb`, `^w j`).
     pub keycap: Option<String>,
     /// What choosing it does.
@@ -37,6 +43,7 @@ impl CommandItem {
             section: section.into(),
             title: title.into(),
             subtitle: None,
+            keywords: None,
             keycap: None,
             action,
         }
@@ -45,6 +52,12 @@ impl CommandItem {
     /// This row with `subtitle` drawn after its title.
     pub fn subtitled(mut self, subtitle: impl Into<String>) -> Self {
         self.subtitle = Some(subtitle.into());
+        self
+    }
+
+    /// This row matched by `keywords` too (see [`CommandItem::keywords`]).
+    pub fn with_keywords(mut self, keywords: impl Into<String>) -> Self {
+        self.keywords = Some(keywords.into());
         self
     }
 

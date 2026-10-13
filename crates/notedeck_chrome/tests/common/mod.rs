@@ -11,7 +11,7 @@ use std::sync::mpsc;
 use egui::{Event, Key, Modifiers};
 use notedeck::{
     App, AppContext, AppResponse, AppTool, JumpLocation, JumpTarget, Notedeck, RegisteredTool,
-    ToolContext, ToolOutcome, ToolSpec,
+    ToolArg, ToolArgType, ToolContext, ToolOutcome, ToolSpec,
 };
 use notedeck_chrome::keymap::{self, KeySeq};
 use notedeck_chrome::{Chrome, NotedeckApp};
@@ -31,6 +31,14 @@ pub fn answer() -> serde_json::Value {
 /// The data tool [`FakeApp`] contributes: it sends its args to the test.
 pub const DATA_TOOL: &str = "fake_mark";
 
+/// A UI tool of [`FakeApp`]'s with an enum argument `by`, `alpha` (the
+/// default) or `beta`, for a command bar to ask for.
+pub const PICK_TOOL: &str = "fake_pick";
+
+/// A UI tool of [`FakeApp`]'s with a required string argument `name`, and a
+/// `target` filled from the current ref.
+pub const NAME_TOOL: &str = "fake_name";
+
 /// The id of the text field [`FakeApp`] draws when asked to.
 pub fn field_id() -> egui::Id {
     egui::Id::unique("keymap_engine_field")
@@ -40,6 +48,8 @@ pub fn field_id() -> egui::Id {
 pub struct FakeState {
     /// UI tools that reached the app, in order.
     pub calls: Vec<String>,
+    /// The args of each of [`calls`](Self::calls), in order.
+    pub call_args: Vec<serde_json::Value>,
     /// Keys whose press reached the app's render.
     pub seen: Vec<Key>,
     /// Whether `fake_gated` is available.
@@ -129,8 +139,32 @@ impl App for FakeApp {
     fn ui_tools(&self) -> Vec<ToolSpec> {
         TOOLS
             .iter()
-            .chain([&ANSWER_TOOL])
             .map(|name| ToolSpec::new(name, "A fake UI tool.", Vec::new()))
+            .chain([
+                ToolSpec::new(ANSWER_TOOL, "A fake UI tool that answers.", Vec::new()).read_only(),
+                ToolSpec::new(
+                    PICK_TOOL,
+                    "A fake UI tool that picks a letter.",
+                    vec![ToolArg::new(
+                        "by",
+                        ToolArgType::Enum(vec!["alpha", "beta"]),
+                        "Which letter.",
+                    )
+                    .default(serde_json::json!("alpha"))],
+                )
+                .titled("Pick a letter")
+                .filed_under("Fake"),
+                ToolSpec::new(
+                    NAME_TOOL,
+                    "A fake UI tool that names the current thing.",
+                    vec![
+                        ToolArg::new("name", ToolArgType::String, "The new name.").required(true),
+                        ToolArg::new("target", ToolArgType::String, "What to name.").from_current(),
+                    ],
+                )
+                .titled("Name it")
+                .filed_under("Fake"),
+            ])
             .collect()
     }
 
@@ -138,10 +172,11 @@ impl App for FakeApp {
         &mut self,
         _ctx: &mut AppContext<'_>,
         name: &str,
-        _args: &serde_json::Value,
+        args: &serde_json::Value,
     ) -> ToolOutcome {
         let mut state = self.state.borrow_mut();
         state.calls.push(name.to_owned());
+        state.call_args.push(args.clone());
         match name {
             "fake_down" => state.location += 1,
             "fake_first" => state.location = 0,
@@ -237,6 +272,7 @@ impl Fixture {
         let (sent, marked) = mpsc::channel();
         let state = Rc::new(RefCell::new(FakeState {
             calls: Vec::new(),
+            call_args: Vec::new(),
             seen: Vec::new(),
             gated_available: true,
             show_field: false,
