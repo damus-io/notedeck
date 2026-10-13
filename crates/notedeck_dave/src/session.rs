@@ -73,9 +73,39 @@ impl Walltime {
     }
 }
 
+/// A chat's finished turns, oldest first, with the seconds they add up to kept
+/// beside them so the walltime never walks the list.
+#[derive(Debug, Default)]
+pub struct Turns {
+    spans: Vec<TurnSpan>,
+    worked_secs: u64,
+}
+
+impl Turns {
+    /// The finished turns, oldest first.
+    pub fn spans(&self) -> &[TurnSpan] {
+        &self.spans
+    }
+
+    /// The seconds the finished turns add up to.
+    pub fn worked_secs(&self) -> u64 {
+        self.worked_secs
+    }
+
+    fn push(&mut self, span: TurnSpan) {
+        self.worked_secs += span.duration_secs();
+        self.spans.push(span);
+    }
+
+    fn set(&mut self, spans: Vec<TurnSpan>) {
+        self.worked_secs = spans.iter().map(TurnSpan::duration_secs).sum();
+        self.spans = spans;
+    }
+}
+
 /// When a chat row was written, for the rows that know: a user message or an
 /// assistant reply.
-fn row_time(message: &Message) -> Option<u64> {
+pub(crate) fn row_time(message: &Message) -> Option<u64> {
     match message {
         Message::User(user) => user.sent_at,
         Message::Assistant(reply) => reply.sent_at(),
@@ -651,11 +681,13 @@ pub struct ChatSession {
     /// This chat's finished turns, oldest first: where each ended and how long
     /// it ran. Pushed by [`end_turn`](Self::end_turn) and the live append
     /// path, and replaced with the fold's own whenever the chat is (see
-    /// `conversation::apply_loaded_chat`).
-    turns: Vec<TurnSpan>,
-    /// The seconds [`turns`](Self::turns) add up to, kept beside them so the
-    /// walltime never walks the list.
-    worked_secs: u64,
+    /// `conversation::apply_loaded_chat`). A field rather than only
+    /// [`turns`](Self::turns) so the chat view can borrow it beside the
+    /// session's other fields.
+    pub turns: Turns,
+    /// The chat's turn headers and footers, as text: reseeded when the rows,
+    /// the turns or the local day change, read by the chat view every frame.
+    pub chat_times: crate::ui::chat_times::ChatTimes,
     /// What the backend says will resume the session once its foreground turn
     /// ends ([`DaveApiResponse::WaitingOn`]); drives [`AgentStatus::Waiting`].
     pub waiting_on: crate::messages::WaitingOn,
@@ -780,8 +812,8 @@ impl ChatSession {
             task_handle: None,
             wakeup_turn: false,
             turn_started_at: None,
-            worked_secs: 0,
-            turns: Vec::new(),
+            turns: Turns::default(),
+            chat_times: Default::default(),
             waiting_on: Default::default(),
             inspector: Default::default(),
             inspector_view: Default::default(),
@@ -865,8 +897,8 @@ impl ChatSession {
             task_handle: None,
             wakeup_turn: false,
             turn_started_at: None,
-            worked_secs: 0,
-            turns: Vec::new(),
+            turns: Turns::default(),
+            chat_times: Default::default(),
             waiting_on: Default::default(),
             inspector: Default::default(),
             inspector_view: Default::default(),
@@ -2453,27 +2485,25 @@ impl ChatSession {
 
     /// This chat's finished turns, oldest first.
     pub fn turns(&self) -> &[TurnSpan] {
-        &self.turns
+        self.turns.spans()
     }
 
     /// Record a finished turn after the others.
     pub fn push_turn(&mut self, span: TurnSpan) {
-        self.worked_secs += span.duration_secs();
         self.turns.push(span);
     }
 
     /// Replace the finished turns with a fold's, which point into the chat it
     /// installed.
     pub fn set_turns(&mut self, turns: Vec<TurnSpan>) {
-        self.worked_secs = turns.iter().map(TurnSpan::duration_secs).sum();
-        self.turns = turns;
+        self.turns.set(turns);
     }
 
     /// How long this session has spent working: its finished turns, and the
     /// start of the one running.
     pub fn walltime(&self) -> Walltime {
         Walltime {
-            worked_secs: self.worked_secs,
+            worked_secs: self.turns.worked_secs(),
             working_since: self.running_turn_start(),
         }
     }
@@ -2496,7 +2526,7 @@ impl ChatSession {
         if !agentium_core::session_loader::status_in_turn(self.status().as_str()) {
             return None;
         }
-        let after_turn = self.turns.last().map_or(0, |t| t.last_row + 1);
+        let after_turn = self.turns().last().map_or(0, |t| t.last_row + 1);
         let last_user = self
             .chat
             .iter()
@@ -2756,7 +2786,7 @@ mod tests {
                 end: 1_090,
             }
         );
-        assert_eq!(session.turns, [span]);
+        assert_eq!(session.turns(), [span]);
         assert_eq!(session.end_turn(1_100), None, "ended already");
         assert_eq!(
             session.walltime(),
@@ -2770,8 +2800,8 @@ mod tests {
         session.start_turn(2_010);
         assert_eq!(session.walltime().total_at(2_020), 110);
         session.end_turn(2_030);
-        assert_eq!(session.worked_secs, 120);
-        assert_eq!(session.turns.len(), 2);
+        assert_eq!(session.turns.worked_secs(), 120);
+        assert_eq!(session.turns().len(), 2);
     }
 
     /// A message queued during a turn is the next turn's, so the turn ends on
@@ -2797,7 +2827,7 @@ mod tests {
         session.chat.push(Message::User("go".into()));
         session.start_turn(1_000);
         session.end_turn(1_030);
-        assert_eq!(session.turns.len(), 1);
+        assert_eq!(session.turns().len(), 1);
 
         session.replace_chat(vec![Message::User("go".into())]);
         assert!(session.turns().is_empty());

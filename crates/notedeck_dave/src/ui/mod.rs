@@ -1,6 +1,7 @@
 mod ask_question;
 pub mod badge;
 pub mod block_nav;
+pub mod chat_times;
 mod dave;
 pub mod diff;
 pub mod directory_picker;
@@ -155,6 +156,7 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
         session.inspector.set_session_id(agentic.event_session_id());
     }
 
+    let working_since = session.walltime().working_since;
     let mut ui_builder = DaveUi::new(
         model_config.trial,
         session.id,
@@ -187,6 +189,8 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
     .running_config_ids(running_config_ids)
     .pending_images(&mut session.pending_images)
     .slash(&mut session.slash)
+    .chat_times(&mut session.chat_times, session.turns.spans())
+    .working_since(working_since)
     .rate_limit(rate_limit)
     // The inspector's session info is the one a host's snapshot restores, so
     // a remote session's meter fills against its model's window too.
@@ -2230,6 +2234,8 @@ mod tests {
         rate_limit: Option<crate::messages::RateLimitInfo>,
         /// The clock the Details tab reads, pinned for snapshots.
         now_unix: Option<u64>,
+        /// The zone the chat names times in, pinned for snapshots.
+        time_zone: Option<chrono::FixedOffset>,
         /// The tasks the UI asked the backend to stop, in order.
         stop_requests: Vec<String>,
         /// Messages sent from a subagent's session, as `Dave` hands them to
@@ -2268,6 +2274,7 @@ mod tests {
             set_up: false,
             rate_limit: None,
             now_unix: None,
+            time_zone: None,
             stop_requests: Vec::new(),
             subagent_sends: Vec::new(),
             visuals: None,
@@ -2304,6 +2311,9 @@ mod tests {
             let mut dave_ui = super::build_dave_ui(session, &chat);
             if let Some(now) = state.now_unix {
                 dave_ui = dave_ui.now_unix(now);
+            }
+            if let Some(zone) = state.time_zone {
+                dave_ui = dave_ui.time_zone(zone);
             }
             let response = dave_ui.ui(&mut app_ctx, ui);
             if let Some(action) = response.action {
@@ -4652,6 +4662,191 @@ mod tests {
                 draft: "rebase onto autowork and land it",
                 mode: PermissionMode::Auto,
             },
+        );
+    }
+
+    /// Unix seconds for 2026-10-`day` `h`:`m`:`sec` UTC, the zone these tests
+    /// pin the chat to.
+    fn chat_time(day: u32, h: u32, m: u32, sec: u32) -> u64 {
+        chrono::NaiveDate::from_ymd_opt(2026, 10, day)
+            .unwrap()
+            .and_hms_opt(h, m, sec)
+            .unwrap()
+            .and_utc()
+            .timestamp() as u64
+    }
+
+    /// Yesterday's short exchange, then this morning's long agentic turn (a
+    /// dozen tool rows between three replies, 9:41 to 9:53), then a quick
+    /// follow-up, with the turn spans their turn-end markers fold to.
+    fn seed_chat_times(session: &mut crate::session::ChatSession) {
+        use crate::messages::{AssistantMessage, ExecutedTool, Message, UserMessage};
+        use crate::session::TurnSpan;
+
+        let user = |text: &str, t| {
+            Message::User(UserMessage {
+                sent_at: Some(t),
+                ..UserMessage::from(text)
+            })
+        };
+        let reply = |text: &str, t| {
+            Message::Assistant(AssistantMessage::from_text(text.to_owned()).with_sent_at(t))
+        };
+        let tool = |name: &str, summary: &str| {
+            Message::ToolResponse(crate::ToolResponse::executed_tool(ExecutedTool {
+                tool_name: name.to_string(),
+                summary: summary.to_string(),
+                output: None,
+                parent_task_id: None,
+                file_update: None,
+                tool_use_id: None,
+                description: None,
+                is_error: false,
+            }))
+        };
+        session.replace_chat(vec![
+            user("why does the relay pool reconnect in a loop when a relay is down?", chat_time(12, 16, 12, 0)),
+            reply("It retries immediately on every `Disconnected` event with no delay, so a dead relay is redialed every frame.", chat_time(12, 16, 13, 10)),
+            user("ok let's fix it — add exponential backoff and a test", chat_time(13, 9, 41, 0)),
+            reply("I'll start by reading the pool and how it handles disconnects.", chat_time(13, 9, 41, 20)),
+            tool("Read", "crates/enostr/src/relay/pool.rs (412 lines)"),
+            tool("Grep", "'reconnect' in crates/enostr (9 matches)"),
+            reply("Found it: `keepalive_ping` calls `connect()` for any relay in `Disconnected`. I'll keep a per-relay retry delay that doubles up to 5 minutes.", chat_time(13, 9, 44, 0)),
+            tool("Edit", "pool.rs +38 −6"),
+            tool("Bash", "`cargo test -p enostr backoff`"),
+            reply("Done. A dead relay is now retried after 1s, 2s, 4s… capped at 5 minutes, and a successful connect resets it.", chat_time(13, 9, 53, 0)),
+            user("nice — commit it", chat_time(13, 9, 58, 0)),
+            reply("Committed `4f2a9c1` \"enostr: back off reconnects to a dead relay\".", chat_time(13, 9, 58, 30)),
+        ]);
+        session.set_turns(vec![
+            TurnSpan {
+                last_row: 1,
+                start: chat_time(12, 16, 12, 0),
+                end: chat_time(12, 16, 13, 10),
+            },
+            TurnSpan {
+                last_row: 9,
+                start: chat_time(13, 9, 41, 0),
+                end: chat_time(13, 9, 53, 5),
+            },
+            TurnSpan {
+                last_row: 11,
+                start: chat_time(13, 9, 58, 0),
+                end: chat_time(13, 9, 58, 32),
+            },
+        ]);
+    }
+
+    /// The long turn still running: its last reply not in yet, started 9:41.
+    fn seed_running_turn(session: &mut crate::session::ChatSession) {
+        seed_chat_times(session);
+        let mut chat = std::mem::take(&mut session.chat);
+        chat.truncate(9);
+        let turns = session.turns()[..1].to_vec();
+        session.replace_chat(chat);
+        session.set_turns(turns);
+        session.turn_started_at = Some(chat_time(13, 9, 41, 0));
+        session.wakeup_turn = true;
+        session.update_status();
+    }
+
+    /// A session view of the chat `seed` leaves, at `now`.
+    fn chat_times_state(now: u64, seed: fn(&mut crate::session::ChatSession)) -> SessionViewState {
+        let mut state = session_view_state();
+        state.now_unix = Some(now);
+        state.time_zone = chrono::FixedOffset::east_opt(0);
+        seed(state.session_manager.get_active_mut().unwrap());
+        state
+    }
+
+    /// Headers go above the turns that start a day or follow an hour's quiet,
+    /// one footer goes under each finished turn, and the follow-up five
+    /// minutes on gets a footer but no header.
+    #[test]
+    fn the_chat_heads_and_foots_its_turns() {
+        let state = chat_times_state(chat_time(13, 10, 1, 10), seed_chat_times);
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(760.0, 1400.0))
+            .build_ui_state(render_session_view, state);
+        harness.run_ok();
+        // Fluent isolates each argument in the labels it formats.
+        for label in [
+            "Yesterday 4:12 PM",
+            "Yesterday 4:13 PM · worked \u{2068}1m\u{2069}",
+            "Today 9:41 AM",
+            "\u{2068}8m\u{2069} ago · worked \u{2068}12m\u{2069}",
+            "\u{2068}2m\u{2069} ago",
+        ] {
+            assert_eq!(count_labels(&harness, label), 1, "{label}");
+        }
+        assert_eq!(count_labels(&harness, "Today 9:58 AM"), 0, "5m on");
+    }
+
+    /// A running turn has no footer: its time is on the status line.
+    #[test]
+    fn a_running_turn_shows_its_time_on_the_status_line() {
+        let state = chat_times_state(chat_time(13, 9, 52, 0), seed_running_turn);
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(760.0, 1400.0))
+            .build_ui_state(render_session_view, state);
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "11m"), 1);
+        assert_eq!(count_labels(&harness, "Today 9:41 AM"), 1);
+        assert_eq!(
+            count_labels(&harness, "Yesterday 4:13 PM · worked \u{2068}1m\u{2069}"),
+            1
+        );
+    }
+
+    fn snapshot_chat_times(
+        name: &str,
+        visuals: egui::Visuals,
+        now: u64,
+        seed: fn(&mut crate::session::ChatSession),
+    ) {
+        let mut state = chat_times_state(now, seed);
+        state.visuals = Some(visuals);
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(760.0, 1180.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, state);
+        harness.run_ok();
+        harness.snapshot(name);
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_chat_times_dark() {
+        let now = chat_time(13, 10, 1, 10);
+        snapshot_chat_times(
+            "chat_times_dark",
+            notedeck::theme::dark_mode(false),
+            now,
+            seed_chat_times,
+        );
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_chat_times_light() {
+        let now = chat_time(13, 10, 1, 10);
+        snapshot_chat_times(
+            "chat_times_light",
+            notedeck::theme::light_mode(),
+            now,
+            seed_chat_times,
+        );
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_chat_times_running() {
+        let now = chat_time(13, 9, 52, 0);
+        snapshot_chat_times(
+            "chat_times_running",
+            notedeck::theme::dark_mode(false),
+            now,
+            seed_running_turn,
         );
     }
 }

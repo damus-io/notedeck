@@ -144,6 +144,16 @@ pub struct DaveUi<'a> {
     inspector: Option<Inspected<'a>>,
     /// The input's slash-command popup; `None` draws no popup.
     slash: Option<&'a mut crate::slash::SlashPopup>,
+    /// The zone the chat's headers and footers name times in; `None` is the
+    /// system's. Pinned by tests, beside `now_unix`.
+    time_zone: Option<chrono::FixedOffset>,
+    /// The chat's turn headers and footers; `None` draws neither.
+    chat_times: Option<&'a mut super::chat_times::ChatTimes>,
+    /// The chat's finished turns, which the footers go under.
+    turns: &'a [crate::session::TurnSpan],
+    /// When the running turn started, in unix seconds, for the "· 3m" on the
+    /// status line; `None` when no turn runs.
+    working_since: Option<u64>,
 }
 
 /// The session the Details tab inspects: its inspector and tab state, plus
@@ -342,7 +352,30 @@ impl<'a> DaveUi<'a> {
             normal_mode: None,
             inspector: None,
             slash: None,
+            time_zone: None,
+            chat_times: None,
+            turns: &[],
+            working_since: None,
         }
+    }
+
+    /// Draw turn headers and footers from `times`, reseeded from the chat and
+    /// its finished `turns` when they change.
+    pub fn chat_times(
+        mut self,
+        times: &'a mut super::chat_times::ChatTimes,
+        turns: &'a [crate::session::TurnSpan],
+    ) -> Self {
+        self.chat_times = Some(times);
+        self.turns = turns;
+        self
+    }
+
+    /// When the running turn started (unix seconds), shown as "· 3m" on the
+    /// status line.
+    pub fn working_since(mut self, since: Option<u64>) -> Self {
+        self.working_since = since;
+        self
     }
 
     /// Give the session view its `Chat | Details` tab strip, drawing Details
@@ -546,6 +579,12 @@ impl<'a> DaveUi<'a> {
     /// Pin the clock the Details tab reads (see `now_unix` on the struct).
     pub fn now_unix(mut self, now_unix: u64) -> Self {
         self.now_unix = Some(now_unix);
+        self
+    }
+
+    /// Pin the zone the chat's turn headers and footers name times in.
+    pub fn time_zone(mut self, zone: chrono::FixedOffset) -> Self {
+        self.time_zone = Some(zone);
         self
     }
 
@@ -821,6 +860,35 @@ impl<'a> DaveUi<'a> {
         );
 
         let live = self.flags.contains(DaveUiFlags::IsWorking);
+        let now = self.now_unix.unwrap_or_else(crate::session::now_unix);
+        let weak = ui.visuals().weak_text_color();
+        // Taken for the loop, which also borrows `self` mutably; put back below.
+        let mut times = self.chat_times.take();
+        if let Some(times) = times.as_deref_mut() {
+            let chat = self.chat;
+            let turns = self.turns;
+            match &self.time_zone {
+                Some(tz) => {
+                    let input = super::chat_times::TimesInput {
+                        chat,
+                        turns,
+                        now,
+                        tz,
+                    };
+                    times.refresh(input, ctx.i18n);
+                }
+                None => {
+                    let input = super::chat_times::TimesInput {
+                        chat,
+                        turns,
+                        now,
+                        tz: &chrono::Local,
+                    };
+                    times.refresh(input, ctx.i18n);
+                }
+            }
+        }
+
         let mut prev_group = None;
         // Rows before this were drawn by a fold that stands for them.
         let mut folded_until = 0;
@@ -841,10 +909,23 @@ impl<'a> DaveUi<'a> {
             prev_group = group.or(prev_group);
             if let Some(run) = run {
                 folded_until = run.rows.end;
+                let rows = run.rows.clone();
                 Self::tool_fold_ui(self.chat, run, self.nav, ui);
+                // A turn can end inside the folded run: its footer goes under it.
+                for row in rows {
+                    let footer = times
+                        .as_deref_mut()
+                        .and_then(|t| t.footer(row, now, weak, ctx.time_cache, ctx.i18n));
+                    if let Some(footer) = footer {
+                        super::chat_times::footer_ui(ui, footer);
+                    }
+                }
                 continue;
             }
             self.nav.enter_row(i);
+            if let Some(header) = times.as_deref_mut().and_then(|t| t.header(i, weak)) {
+                super::chat_times::header_ui(ui, header);
+            }
             match message {
                 Message::Error(err) => {
                     self.error_chat(ctx.i18n, err, ui);
@@ -901,12 +982,29 @@ impl<'a> DaveUi<'a> {
                     // TodoUpdate is displayed in the task list sidebar, not in chat
                 }
             };
+            let footer = times
+                .as_deref_mut()
+                .and_then(|t| t.footer(i, now, weak, ctx.time_cache, ctx.i18n));
+            if let Some(footer) = footer {
+                super::chat_times::footer_ui(ui, footer);
+            }
         }
+        if let Some(secs) = times
+            .as_deref()
+            .and_then(|t| t.next_change(now, self.working_since))
+        {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs(secs));
+        }
+        self.chat_times = times;
 
         // Show status line at the bottom of chat when working or compacting
+        // When the turn "computing..." stands for started, for its "· 3m".
+        let mut computing_since = None;
         let status_text = if is_agentic && self.flags.contains(DaveUiFlags::IsCompacting) {
             Some("compacting...")
         } else if self.flags.contains(DaveUiFlags::IsWorking) {
+            computing_since = self.working_since;
             Some("computing...")
         } else if self.flags.contains(DaveUiFlags::IsConnecting) {
             // A pending placeholder (remote spawn/resume in flight): show progress
@@ -924,6 +1022,12 @@ impl<'a> DaveUi<'a> {
                         .color(ui.visuals().weak_text_color())
                         .italics(),
                 );
+                // How long the running turn has gone: "· 3m".
+                if let Some(since) = computing_since {
+                    let ran = ctx.time_cache.time_ago_between(ctx.i18n, since, now);
+                    ui.label(egui::RichText::new("·").color(weak));
+                    ui.label(egui::RichText::new(ran).color(weak));
+                }
                 // Remote sessions can now be interrupted too — the Esc keystroke
                 // publishes a command the host applies to its backend.
                 ui.label(

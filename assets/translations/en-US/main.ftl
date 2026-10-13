@@ -127,6 +127,9 @@ Ask_dave_anything_33d1 = Ask dave anything...
 # Dave session inspector permissions row: prompts a user was asked to answer
 Asked_4b58 = Asked
 
+# Dave chat: the time after a full date in a turn header, as in 'Mon, Oct 6 at 4:12 PM'
+at__time_3940 = at {$time}
+
 # Dave session inspector permissions row: prompts accepted without asking
 Auto-accepted_b9fd = Auto-accepted
 
@@ -1191,11 +1194,17 @@ Thread_0f20 = Thread
 # Link text for thread references
 thread_ad1f = thread
 
+# Dave chat: when a turn ended, in its footer, as in '8m ago'
+time__ago_1f6d = {$time} ago
+
 # Label shown between chat messages for the current day
 Today_bd04 = Today
 
 # Dave session inspector section: the agent's task list
 Tasks_2037 = Tasks
+
+# Dave chat: the day a turn header names, for today
+Today_f170 = Today
 
 # Dave session inspector background: tokens a background task has used
 tokens__tok_87e0 = {$tokens} tok
@@ -1278,6 +1287,9 @@ Welcome_5cce = Welcome
 # Welcome screen title
 Welcome_to_Notedeck_e2e7 = Welcome to Notedeck
 
+# Dave chat: how long a turn ran, in its footer, as in 'worked 12m'
+worked__duration_81bb = worked {$duration}
+
 # Dave session inspector background: badge for a background workflow
 workflow_dd36 = workflow
 
@@ -1295,6 +1307,9 @@ Yest_0505 = Yest
 
 # Label shown between chat messages for the previous day
 Yesterday_82b1 = Yesterday
+
+# Dave chat: the day a turn header names, for yesterday
+Yesterday_a850 = Yesterday
 
 # Placeholder text for key input field
 Your_key_here_81bd = Your key here...
