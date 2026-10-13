@@ -305,7 +305,8 @@ impl Host {
     }
 
     /// Feed the observer what has been indexed since it was last fed, as one
-    /// poll batch, and assert its chat is the fold.
+    /// poll batch, and assert its chat, and the turn spans on it, are the
+    /// fold's.
     async fn assert_observer_matches_fold(&mut self) {
         self.settle().await;
         let keys = std::mem::take(&mut self.unobserved);
@@ -316,6 +317,11 @@ impl Host {
             view_signature(&self.observer.session.chat),
             fold_signature(&self.ndb, &sk),
             "the observer's chat and the fold disagree"
+        );
+        assert_eq!(
+            self.observer.session.turns(),
+            fold_turns(&self.ndb, &sk),
+            "the observer's turn spans and the fold's disagree"
         );
     }
 
@@ -763,6 +769,15 @@ fn fold_signature(ndb: &Ndb, sk: &[u8; 32]) -> Vec<RowSig> {
         .pubkey;
     let txn = Transaction::new(ndb).unwrap();
     view_signature(&load_session_messages_for_author(ndb, &txn, &author, SESSION).messages)
+}
+
+/// The finished turns the fold over `ndb` records.
+fn fold_turns(ndb: &Ndb, sk: &[u8; 32]) -> Vec<agentium_core::session_loader::TurnSpan> {
+    let author = nostrdb_net::FullKeypair::from_secret_bytes(sk)
+        .unwrap()
+        .pubkey;
+    let txn = Transaction::new(ndb).unwrap();
+    load_session_messages_for_author(ndb, &txn, &author, SESSION).turns
 }
 
 /// Backfill the PNS envelopes behind `ids` from `from` into a fresh ndb, newest

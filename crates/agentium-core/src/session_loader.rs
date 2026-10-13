@@ -11,8 +11,8 @@ use crate::messages::{
 use crate::session::PermissionTracker;
 use crate::session_events::{
     build_session_state_event, decode_permission_response, get_tag_value, is_conversation_role,
-    is_queued_note, referenced_note_id, split_head, AI_CONVERSATION_KIND, DISPATCHED_ROLE,
-    LIVE_EVENT_SOURCE,
+    is_queued_note, referenced_note_id, split_head, turn_start, AI_CONVERSATION_KIND,
+    DISPATCHED_ROLE, LIVE_EVENT_SOURCE, TURN_END_ROLE,
 };
 use crate::split_message::SplitParts;
 use crate::tools::ToolResponse;
@@ -123,6 +123,35 @@ pub struct LoadedSession {
     /// bound because the caller had seen it (see
     /// [`load_session_messages_seen_through`]) doesn't count. `None` when empty.
     pub max_key: Option<NoteKey>,
+    /// The finished turns, oldest first, each from its [`TURN_END_ROLE`]
+    /// marker. A turn ended before markers were published has none.
+    pub turns: Vec<TurnSpan>,
+}
+
+/// One finished turn on a chat: when it started and ended, and the row it
+/// ended on.
+///
+/// A host records it when the turn ends and publishes it as a
+/// [`TURN_END_ROLE`] marker, whose `created_at` is the end and whose
+/// [`TURN_START_TAG`](crate::session_events::TURN_START_TAG) the start. A fold
+/// puts it on the last row shown before the marker, so the span lands where
+/// the host saw the turn end, on every device and after a restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnSpan {
+    /// Index into the chat of the turn's last row: its footer goes under it.
+    pub last_row: usize,
+    /// When the turn started, in unix seconds: when the host dispatched it, or
+    /// when the backend began a wake-up turn on its own.
+    pub start: u64,
+    /// When it ended, in unix seconds.
+    pub end: u64,
+}
+
+impl TurnSpan {
+    /// How long the turn ran, in seconds.
+    pub fn duration_secs(&self) -> u64 {
+        self.end.saturating_sub(self.start)
+    }
 }
 
 /// A permission request in a loaded session that no response has answered yet —
@@ -342,6 +371,7 @@ fn load_session_messages_with_author(
                 note_ids: HashSet::new(),
                 max_order: None,
                 max_key: None,
+                turns: Vec::new(),
             };
         }
     };
@@ -417,10 +447,15 @@ fn load_session_messages_with_author(
     // renders to nothing contributes to neither vector).
     let mut messages = Vec::new();
     let mut orders = Vec::new();
+    let mut turns = Vec::new();
     // A split message shows once, at its first part, with every part's content.
     let splits = SplitParts::collect(&notes);
     for (order, note) in display {
         if split_head(note).is_some_and(|head| note_ids.contains(head)) {
+            continue;
+        }
+        if let Some(turn) = turn_span(note, &messages) {
+            turns.push(turn);
             continue;
         }
         let joined = splits.joined(note);
@@ -456,7 +491,25 @@ fn load_session_messages_with_author(
         note_ids,
         max_order,
         max_key,
+        turns,
     }
+}
+
+/// The span a [`TURN_END_ROLE`] marker records, on the last of `messages`: the
+/// rows the fold has shown before it. `None` for any other note, a marker
+/// without a start, or one before any row.
+///
+/// Shared by the loader and the live poll-merge append path in notedeck_dave,
+/// as [`render_conversation_note`] is, so the two place a span alike.
+pub fn turn_span(note: &nostrdb::Note, messages: &[Message]) -> Option<TurnSpan> {
+    if get_tag_value(note, "role") != Some(TURN_END_ROLE) {
+        return None;
+    }
+    Some(TurnSpan {
+        last_row: messages.len().checked_sub(1)?,
+        start: turn_start(note)?,
+        end: note.created_at(),
+    })
 }
 
 /// The order of each queued user note's dispatch marker, keyed by the user
@@ -2505,6 +2558,78 @@ mod tests {
         load_session_messages(&ndb, &txn, session_id).messages
     }
 
+    /// The finished turns a fold of `events` records, after checking the fold
+    /// doesn't depend on the order they were ingested.
+    async fn load_turns_both_orders(session_id: &str, events: &[String]) -> Vec<TurnSpan> {
+        let mut turns = Vec::new();
+        for events in [events.to_vec(), events.iter().rev().cloned().collect()] {
+            let tmp_dir = TempDir::new().unwrap();
+            let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+            let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+            ingest_all(&ndb, &filter, &events).await;
+            let txn = Transaction::new(&ndb).unwrap();
+            turns.push(load_session_messages(&ndb, &txn, session_id).turns);
+        }
+        assert_eq!(turns[0], turns[1], "the fold depends on ingestion order");
+        turns.swap_remove(0)
+    }
+
+    /// A turn-end marker puts its turn's span on the last row shown before it,
+    /// so a reload shows each finished turn where it ended. A turn still
+    /// running has no marker and no span.
+    #[tokio::test]
+    async fn turn_end_markers_fold_into_turn_spans() {
+        let sk = test_secret_key();
+        let sid = "turn-spans";
+        let marker = |start: &str, at: u64, seq: u32| {
+            build_1988_event_json(
+                &sk,
+                sid,
+                TURN_END_ROLE,
+                "",
+                at,
+                seq,
+                &[("turn-start", start)],
+            )
+        };
+        let events = [
+            build_1988_event_json(&sk, sid, "user", "go", 1_000, 0, &[]),
+            build_1988_event_json(&sk, sid, "assistant", "on it", 1_030, 1, &[]),
+            build_1988_event_json(&sk, sid, "assistant", "done", 1_090, 2, &[]),
+            marker("1000", 1_095, 3),
+            build_1988_event_json(&sk, sid, "user", "next", 1_200, 4, &[]),
+            build_1988_event_json(&sk, sid, "assistant", "still going", 1_210, 5, &[]),
+        ];
+        let turns = load_turns_both_orders(sid, &events).await;
+        assert_eq!(
+            turns,
+            [TurnSpan {
+                last_row: 2,
+                start: 1_000,
+                end: 1_095,
+            }]
+        );
+        assert_eq!(turns[0].duration_secs(), 95);
+
+        // The marker renders no row of its own.
+        let messages = load_events(sid, &events).await;
+        assert_eq!(messages.len(), 5);
+    }
+
+    /// A row built from bare text has no time of its own, rather than the
+    /// moment it happened to be built.
+    #[test]
+    fn a_row_from_bare_text_has_no_time() {
+        assert_eq!(AssistantMessage::from_text("hi".into()).sent_at(), None);
+        assert_eq!(
+            AssistantMessage::from_text("hi".into())
+                .with_sent_at(1_700_000_000)
+                .sent_at(),
+            Some(1_700_000_000)
+        );
+        assert!(AssistantMessage::new().sent_at().is_some());
+    }
+
     /// A chat shows when each message was sent, so a row restored from a note
     /// carries the note's `created_at`, not the moment it was loaded.
     #[tokio::test]
@@ -2521,7 +2646,7 @@ mod tests {
             _ => None,
         });
         let assistant = messages.iter().find_map(|m| match m {
-            Message::Assistant(a) => Some(a.sent_at()),
+            Message::Assistant(a) => a.sent_at(),
             _ => None,
         });
         assert_eq!(user, Some(1_700_000_000));

@@ -1326,6 +1326,7 @@ mod tests {
             note_ids: note_ids.clone(),
             max_order: None,
             max_key: None,
+            turns: Vec::new(),
         };
 
         let session = manager.get_mut(sid).unwrap();
@@ -1380,6 +1381,7 @@ mod tests {
             note_ids: HashSet::new(),
             max_order: None,
             max_key: None,
+            turns: Vec::new(),
         };
 
         let session = manager.get_mut(sid).unwrap();

@@ -596,9 +596,14 @@ pub(crate) fn process_conversation_notes<'a>(
         );
         queue_moved |= role == Some(session_events::DISPATCHED_ROLE)
             || (role == Some("user") && session_events::is_queued_note(note));
+        // A turn-end marker renders no row, but goes through the display pass
+        // all the same: it puts its turn's span on the last row shown before
+        // it (see `session_loader::turn_span`), on the append path as in the
+        // fold.
+        let turn_end = role == Some(session_events::TURN_END_ROLE);
         // Only a rebuild joins a split message's parts into one row.
         split_arrived |= split_message::is_split_part(note);
-        if displayable {
+        if displayable || turn_end {
             let created_at = note.created_at();
             latest_activity = Some(latest_activity.map_or(created_at, |p| p.max(created_at)));
             new_display_idxs.push(idx);
@@ -708,7 +713,13 @@ pub(crate) fn process_conversation_notes<'a>(
         let min_new = session_loader::EventOrder::from_note(&notes[new_display_idxs[0]]);
         let appendable = matches!(agentic.tail_order, Some(tail) if min_new > tail);
         if appendable {
+            // Recorded once the loop is done with `agentic`.
+            let mut ended = Vec::new();
             for &i in &new_display_idxs {
+                if let Some(span) = session_loader::turn_span(&notes[i], &session.chat) {
+                    ended.push(span);
+                    continue;
+                }
                 let msg = session_loader::render_conversation_note(
                     &notes[i],
                     &agentic.permissions.responded,
@@ -721,6 +732,9 @@ pub(crate) fn process_conversation_notes<'a>(
             }
             let last = *new_display_idxs.last().expect("non-empty");
             agentic.tail_order = Some(session_loader::EventOrder::from_note(&notes[last]));
+            for span in ended {
+                session.push_turn(span);
+            }
             // A subagent note may have added or folded into a row.
             session.mark_subagents_changed();
         } else {
@@ -821,6 +835,8 @@ pub(crate) fn rebuild_chat_from_fold(
 /// - the turn's tracked rows are re-indexed against the new chat
 ///   ([`ChatSession::replace_chat`](session::ChatSession::replace_chat)),
 ///   since a background subagent outlives its turn and finds its row there;
+/// - the finished turns' spans are the fold's, from their markers, since they
+///   point at rows of the chat they came with;
 /// - in-memory permission decisions the fold can't know yet are laid over
 ///   it: an auto-accept recorded this poll, its response not yet ingested,
 ///   would otherwise render as pending (and collapsed).
@@ -829,6 +845,7 @@ pub(crate) fn apply_loaded_chat(
     loaded: session_loader::LoadedSession,
 ) {
     session.replace_chat(loaded.messages);
+    session.set_turns(loaded.turns);
 
     let Some(agentic) = &mut session.agentic else {
         return;

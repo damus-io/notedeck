@@ -1093,8 +1093,10 @@ pub struct AssistantMessage {
     cached_elements: Option<Vec<MdElement>>,
     /// When it was written, in unix seconds: when the row was created for a
     /// live reply, or its note's `created_at` for one loaded from a note (see
-    /// [`Self::with_sent_at`]).
-    sent_at: u64,
+    /// [`Self::with_sent_at`]). `None` for a row built from text with no time
+    /// of its own ([`Self::from_text`]), such as a subagent's transcript, so a
+    /// chat never shows the moment it happened to be built as when it was said.
+    sent_at: Option<u64>,
 }
 
 impl std::fmt::Debug for AssistantMessage {
@@ -1144,11 +1146,12 @@ impl AssistantMessage {
             text: String::new(),
             parser: Some(StreamParser::new()),
             cached_elements: None,
-            sent_at: crate::session_events::now_secs(),
+            sent_at: Some(crate::session_events::now_secs()),
         }
     }
 
-    /// Create from existing text (e.g., when loading from storage).
+    /// Create from existing text (e.g., when loading from storage), with no
+    /// time: chain [`Self::with_sent_at`] when the text has one.
     pub fn from_text(text: String) -> Self {
         let mut parser = StreamParser::new();
         parser.push(&text);
@@ -1158,19 +1161,20 @@ impl AssistantMessage {
             text,
             parser: None,
             cached_elements: Some(cached),
-            sent_at: crate::session_events::now_secs(),
+            sent_at: None,
         }
     }
 
     /// The same message, written at `sent_at` (unix seconds) rather than now:
     /// for a row loaded from a note, its `created_at`.
     pub fn with_sent_at(mut self, sent_at: u64) -> Self {
-        self.sent_at = sent_at;
+        self.sent_at = Some(sent_at);
         self
     }
 
-    /// When it was written, in unix seconds (see [`Self::with_sent_at`]).
-    pub fn sent_at(&self) -> u64 {
+    /// When it was written, in unix seconds, if known (see
+    /// [`Self::with_sent_at`]).
+    pub fn sent_at(&self) -> Option<u64> {
         self.sent_at
     }
 

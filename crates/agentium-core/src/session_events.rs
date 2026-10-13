@@ -692,6 +692,14 @@ fn build_single_event(
         builder = builder.start_tag().tag_str("e").tag_id(id);
     }
 
+    // -- Turn start (a turn-end marker's span) --
+    if let Some(start) = tags.turn_start {
+        builder = builder
+            .start_tag()
+            .tag_str(TURN_START_TAG)
+            .tag_str(&start.to_string());
+    }
+
     // -- Discoverability --
     builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
 
@@ -729,6 +737,9 @@ pub struct LiveEventTags<'a> {
     /// The note this one is about (an unmarked `["e", <id>]`, beside the NIP-10
     /// `root`/`reply` threading tags): a [`DISPATCHED_ROLE`] marker's user note.
     pub refs: Option<&'a [u8; 32]>,
+    /// When the turn a [`TURN_END_ROLE`] marker ends started, in unix seconds
+    /// ([`TURN_START_TAG`]).
+    pub turn_start: Option<u64>,
 }
 
 /// The role of the marker a host publishes when it hands a queued user note to
@@ -736,6 +747,24 @@ pub struct LiveEventTags<'a> {
 /// user note, which a fold then shows at the marker's place in the turn rather
 /// than at its own send time (see [`referenced_note_id`]).
 pub const DISPATCHED_ROLE: &str = "dispatched";
+
+/// The role of the marker a host publishes when a turn ends. Its content is
+/// empty, its `created_at` is when the turn ended and its [`TURN_START_TAG`]
+/// when it started, so the one note holds the turn's span. A fold puts the
+/// span on the row the marker sorts after, the turn's last (see
+/// `session_loader::TurnSpan`). A reader that doesn't know the role renders
+/// nothing for it.
+pub const TURN_END_ROLE: &str = "turn_end";
+
+/// The tag on a [`TURN_END_ROLE`] marker that says when its turn started, in
+/// unix seconds: `["turn-start", "1760380000"]`.
+pub const TURN_START_TAG: &str = "turn-start";
+
+/// When the turn a [`TURN_END_ROLE`] marker ends started ([`TURN_START_TAG`]),
+/// or `None` for any other note, or one whose tag doesn't parse.
+pub fn turn_start(note: &nostrdb::Note) -> Option<u64> {
+    get_tag_value(note, TURN_START_TAG)?.parse().ok()
+}
 
 /// Whether a `user` note carries the `queued` tag: it was sent while a turn
 /// was in flight, so it waits at the tail until its [`DISPATCHED_ROLE`] marker.

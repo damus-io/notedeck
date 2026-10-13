@@ -17,6 +17,7 @@ use crate::session_events::ThreadingState;
 use crate::turn_rows::TurnRows;
 use crate::ui::BlockNav;
 use crate::{DaveApiResponse, Message};
+pub use agentium_core::session_loader::TurnSpan;
 use claude_agent_sdk_rs::PermissionMode;
 use uuid::Uuid;
 
@@ -44,6 +45,42 @@ pub(crate) fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// How long a session has spent working: its finished turns' total, and when
+/// the turn now running started.
+///
+/// Foreground turns only, from dispatch (or a wake-up turn's start) to turn
+/// end; a background subagent that outlives its turn doesn't count. Read from
+/// the chat ([`ChatSession::walltime`]): the finished turns are its
+/// [`TurnSpan`]s, which every device folds from the same turn-end markers.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Walltime {
+    /// Seconds spent over the finished turns.
+    pub worked_secs: u64,
+    /// When the running turn started, in unix seconds; `None` when idle.
+    pub working_since: Option<u64>,
+}
+
+impl Walltime {
+    /// Seconds spent working as of `now` (unix seconds): the finished turns
+    /// plus the running one so far.
+    pub fn total_at(&self, now: u64) -> u64 {
+        let running = self
+            .working_since
+            .map_or(0, |since| now.saturating_sub(since));
+        self.worked_secs + running
+    }
+}
+
+/// When a chat row was written, for the rows that know: a user message or an
+/// assistant reply.
+fn row_time(message: &Message) -> Option<u64> {
+    match message {
+        Message::User(user) => user.sent_at,
+        Message::Assistant(reply) => reply.sent_at(),
+        _ => None,
+    }
 }
 
 /// Convert PermissionMode to a stable string for nostr tags.
@@ -606,6 +643,19 @@ pub struct ChatSession {
     /// [`DaveApiResponse::WakeupTurnStarted`], cleared at its `QueryComplete`.
     /// Such a turn has no `task_handle`, so this is what shows it Working.
     pub wakeup_turn: bool,
+    /// When the turn this host runs started, in unix seconds; `None` between
+    /// turns, and on a remote session. Set by [`start_turn`](Self::start_turn)
+    /// at dispatch or a wake-up turn's start, taken by
+    /// [`end_turn`](Self::end_turn).
+    pub turn_started_at: Option<u64>,
+    /// This chat's finished turns, oldest first: where each ended and how long
+    /// it ran. Pushed by [`end_turn`](Self::end_turn) and the live append
+    /// path, and replaced with the fold's own whenever the chat is (see
+    /// `conversation::apply_loaded_chat`).
+    turns: Vec<TurnSpan>,
+    /// The seconds [`turns`](Self::turns) add up to, kept beside them so the
+    /// walltime never walks the list.
+    worked_secs: u64,
     /// What the backend says will resume the session once its foreground turn
     /// ends ([`DaveApiResponse::WaitingOn`]); drives [`AgentStatus::Waiting`].
     pub waiting_on: crate::messages::WaitingOn,
@@ -729,6 +779,9 @@ impl ChatSession {
             incoming_tokens: None,
             task_handle: None,
             wakeup_turn: false,
+            turn_started_at: None,
+            worked_secs: 0,
+            turns: Vec::new(),
             waiting_on: Default::default(),
             inspector: Default::default(),
             inspector_view: Default::default(),
@@ -811,6 +864,9 @@ impl ChatSession {
             incoming_tokens: None,
             task_handle: None,
             wakeup_turn: false,
+            turn_started_at: None,
+            worked_secs: 0,
+            turns: Vec::new(),
             waiting_on: Default::default(),
             inspector: Default::default(),
             inspector_view: Default::default(),
@@ -1036,9 +1092,12 @@ impl ChatSession {
     }
 
     /// Replace the whole chat, re-indexing the rows the turn tracks against
-    /// the new one.
+    /// the new one. The finished turns pointed into the old chat, so they are
+    /// cleared: a fold installs its own after this
+    /// ([`set_turns`](Self::set_turns)).
     pub fn replace_chat(&mut self, chat: Vec<Message>) {
         self.chat = chat;
+        self.set_turns(Vec::new());
         self.turn_rows.reindex(&self.chat);
         self.mark_subagents_changed();
     }
@@ -2361,6 +2420,90 @@ impl ChatSession {
         // A fresh turn has produced nothing yet, so its first content must skip
         // past the just-dispatched user message(s).
         self.turn_has_content = false;
+        self.start_turn(now_unix());
+    }
+
+    /// Record that a turn started at `now` (unix seconds), unless one is
+    /// already running: a wake-up turn reported while a dispatched one runs
+    /// is the same turn.
+    pub fn start_turn(&mut self, now: u64) {
+        if self.turn_started_at.is_some() {
+            return;
+        }
+        self.turn_started_at = Some(now);
+    }
+
+    /// End the running turn at `now` (unix seconds) and record its span on
+    /// the turn's last row, which is returned for the host to publish. `None`,
+    /// changing nothing, when no turn is running, so a second stream end for
+    /// one turn (a disconnect after its `QueryComplete`) counts it once.
+    ///
+    /// Call it before the dispatch state resets: the turn's last row is found
+    /// from it, before any message queued behind the turn.
+    pub fn end_turn(&mut self, now: u64) -> Option<TurnSpan> {
+        let start = self.turn_started_at.take()?;
+        let span = TurnSpan {
+            last_row: self.turn_content_pos().checked_sub(1)?,
+            start,
+            end: now.max(start),
+        };
+        self.push_turn(span);
+        Some(span)
+    }
+
+    /// This chat's finished turns, oldest first.
+    pub fn turns(&self) -> &[TurnSpan] {
+        &self.turns
+    }
+
+    /// Record a finished turn after the others.
+    pub fn push_turn(&mut self, span: TurnSpan) {
+        self.worked_secs += span.duration_secs();
+        self.turns.push(span);
+    }
+
+    /// Replace the finished turns with a fold's, which point into the chat it
+    /// installed.
+    pub fn set_turns(&mut self, turns: Vec<TurnSpan>) {
+        self.worked_secs = turns.iter().map(TurnSpan::duration_secs).sum();
+        self.turns = turns;
+    }
+
+    /// How long this session has spent working: its finished turns, and the
+    /// start of the one running.
+    pub fn walltime(&self) -> Walltime {
+        Walltime {
+            worked_secs: self.worked_secs,
+            working_since: self.running_turn_start(),
+        }
+    }
+
+    /// When the running turn started, in unix seconds, or `None` when none
+    /// runs.
+    ///
+    /// The host that runs it knows ([`turn_started_at`](Self::turn_started_at)).
+    /// An observer infers it from the chat while the owner's status says a
+    /// turn is on: the first timed row since the turn began, which is after
+    /// both the last finished turn and the last user message dispatched (a
+    /// queued one waits at the tail and starts no turn yet). A wake-up turn
+    /// has no user message, so it reads from its first reply: a little late.
+    /// So does a dispatched queued message, from when it was typed: a little
+    /// early.
+    fn running_turn_start(&self) -> Option<u64> {
+        if !self.is_remote() {
+            return self.turn_started_at;
+        }
+        if !agentium_core::session_loader::status_in_turn(self.status().as_str()) {
+            return None;
+        }
+        let after_turn = self.turns.last().map_or(0, |t| t.last_row + 1);
+        let last_user = self
+            .chat
+            .iter()
+            .rposition(|m| matches!(m, Message::User(u) if !u.permission_reply && !u.queued))
+            .unwrap_or(0);
+        let from = after_turn.max(last_user);
+        self.chat.get(from..)?.iter().find_map(row_time)
     }
 
     /// Index at which this turn's next content (assistant text, a tool row, a
@@ -2589,6 +2732,125 @@ mod tests {
             AiMode::Agentic,
             BackendType::Claude,
         )
+    }
+
+    /// A turn's time counts once, from its start to its end, and lands on the
+    /// row it ended on; a second end for the same turn (a disconnect after its
+    /// `QueryComplete`) changes nothing, and a start while one runs is the
+    /// same turn.
+    #[test]
+    fn turn_time_counts_once_per_turn() {
+        let mut session = test_session();
+        session.chat.push(Message::User("go".into()));
+        session.start_turn(1_000);
+        session.mark_dispatched();
+        assert_eq!(session.turn_started_at, Some(1_000), "dispatch keeps it");
+        session.append_token("done");
+
+        let span = session.end_turn(1_090).expect("a turn was running");
+        assert_eq!(
+            span,
+            TurnSpan {
+                last_row: 1,
+                start: 1_000,
+                end: 1_090,
+            }
+        );
+        assert_eq!(session.turns, [span]);
+        assert_eq!(session.end_turn(1_100), None, "ended already");
+        assert_eq!(
+            session.walltime(),
+            Walltime {
+                worked_secs: 90,
+                working_since: None,
+            }
+        );
+
+        session.start_turn(2_000);
+        session.start_turn(2_010);
+        assert_eq!(session.walltime().total_at(2_020), 110);
+        session.end_turn(2_030);
+        assert_eq!(session.worked_secs, 120);
+        assert_eq!(session.turns.len(), 2);
+    }
+
+    /// A message queued during a turn is the next turn's, so the turn ends on
+    /// the row before it.
+    #[test]
+    fn a_turn_ends_before_the_message_queued_behind_it() {
+        let mut session = test_session();
+        session.chat.push(Message::User("first".into()));
+        session.start_turn(1_000);
+        session.mark_dispatched();
+        session.append_token("working on it");
+        session.chat.push(Message::User("second".into()));
+
+        let span = session.end_turn(1_060).expect("a turn was running");
+        assert_eq!(span.last_row, 1, "the reply, not the queued message");
+    }
+
+    /// The finished turns point into the chat they were recorded on, so a
+    /// replaced chat drops them until a fold installs its own.
+    #[test]
+    fn replacing_the_chat_drops_its_turns() {
+        let mut session = test_session();
+        session.chat.push(Message::User("go".into()));
+        session.start_turn(1_000);
+        session.end_turn(1_030);
+        assert_eq!(session.turns.len(), 1);
+
+        session.replace_chat(vec![Message::User("go".into())]);
+        assert!(session.turns().is_empty());
+        assert_eq!(session.walltime().worked_secs, 0);
+
+        session.set_turns(vec![TurnSpan {
+            last_row: 0,
+            start: 1_000,
+            end: 1_045,
+        }]);
+        assert_eq!(session.walltime().worked_secs, 45, "the fold's turns");
+    }
+
+    /// An observer has no clock of its own for the owner's turn: while the
+    /// owner says one runs, it starts at the first timed row since the last
+    /// finished turn and the last dispatched message. A message still queued
+    /// at the tail starts nothing.
+    #[test]
+    fn an_observer_infers_the_running_turn_start() {
+        use crate::messages::UserMessage;
+
+        let mut session = test_session();
+        session.source = SessionSource::Remote;
+        let user = |text: &str, sent_at: u64, queued: bool| {
+            Message::User(UserMessage {
+                sent_at: Some(sent_at),
+                queued,
+                ..UserMessage::from(text)
+            })
+        };
+        session.replace_chat(vec![
+            user("first", 1_000, false),
+            Message::Assistant(AssistantMessage::new().with_sent_at(1_020)),
+            user("second", 2_000, false),
+            Message::ToolResponse(crate::tools::ToolResponse::error("t".into(), "x".into())),
+            Message::Assistant(AssistantMessage::new().with_sent_at(2_050)),
+            user("waiting", 2_060, true),
+        ]);
+        session.set_turns(vec![TurnSpan {
+            last_row: 1,
+            start: 1_000,
+            end: 1_030,
+        }]);
+
+        session.agentic.as_mut().unwrap().remote_status = None;
+        session.update_status();
+        assert_eq!(session.walltime().working_since, None, "idle");
+
+        session.agentic.as_mut().unwrap().remote_status = Some(AgentStatus::Working);
+        session.update_status();
+        let walltime = session.walltime();
+        assert_eq!(walltime.working_since, Some(2_000));
+        assert_eq!(walltime.total_at(2_100), 30 + 100);
     }
 
     #[test]

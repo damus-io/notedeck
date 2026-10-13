@@ -467,6 +467,7 @@ pub(crate) fn apply_response(
         }
         DaveApiResponse::WakeupTurnStarted => {
             session.wakeup_turn = true;
+            session.start_turn(session::now_unix());
         }
         // Only the inspector keeps these, folded above (and the account's
         // rate limits on `Dave`, by the drain loop).
@@ -958,6 +959,13 @@ pub(crate) fn handle_stream_end(
         publish_error(session, NO_RESPONSE_ERROR, ndb, secret_key);
     }
 
+    // The turn is over: count its time and mark where it ended, before the
+    // dispatch state resets (the turn's last row is found from it) and before
+    // a queued message is redispatched as the next turn.
+    if let Some(span) = session.end_turn(session::now_unix()) {
+        publish_turn_end(session, span, ndb, secret_key);
+    }
+
     if redispatch {
         tracing::info!(
             "Session {}: redispatching queued user message after stream end",
@@ -985,6 +993,31 @@ pub(crate) fn handle_stream_end(
         }
         needs_send.insert(session_id);
     }
+}
+
+/// Publish a turn's end as a [`TURN_END_ROLE`](session_events::TURN_END_ROLE)
+/// marker (locally ingested; the host fans it out), so observers and a restart
+/// fold the same span onto the turn's last row.
+fn publish_turn_end(
+    session: &mut session::ChatSession,
+    span: session::TurnSpan,
+    ndb: &nostrdb::Ndb,
+    secret_key: &Option<[u8; 32]>,
+) {
+    let Some(sk) = secret_key else {
+        return;
+    };
+    ingest_live_event(
+        session,
+        ndb,
+        sk,
+        "",
+        session_events::TURN_END_ROLE,
+        LiveEventTags {
+            turn_start: Some(span.start),
+            ..Default::default()
+        },
+    );
 }
 
 /// The error a turn shows when the backend ended it without producing anything.
@@ -1281,15 +1314,19 @@ mod tests {
         f.session.mark_dispatched();
         f.apply(DaveApiResponse::Token("first answer".to_string()));
         f.stream_end();
-        assert_eq!(f.published(), 1, "the text turn publishes its segment");
+        assert_eq!(
+            f.published(),
+            2,
+            "the text turn publishes its segment and its turn-end marker"
+        );
 
         f.session.mark_dispatched();
         f.apply(DaveApiResponse::ToolResult(executed(None, None)));
         f.stream_end();
         assert_eq!(
             f.published(),
-            2,
-            "the tool-only turn publishes its tool result and nothing else"
+            4,
+            "the tool-only turn publishes its tool result and its marker, and no text"
         );
     }
 
@@ -1426,7 +1463,11 @@ mod tests {
             })
             .collect();
         assert_eq!(rows, ["first", NO_RESPONSE_ERROR, "queued"]);
-        assert_eq!(f.published(), 1, "the error is published");
+        assert_eq!(
+            f.published(),
+            2,
+            "the error is published, and the turn-end marker"
+        );
     }
 
     /// The host publishes each subagent lifecycle transition as a
@@ -1556,6 +1597,109 @@ mod tests {
         f.stream_end();
         f.session.update_status();
         assert_eq!(f.session.status(), AgentStatus::Done);
+    }
+
+    /// A turn counts its time from dispatch to its end once, and publishes one
+    /// turn-end marker, however many times its stream ends.
+    #[test]
+    fn a_turn_counts_its_time_once() {
+        use crate::messages::UsageInfo;
+
+        let mut f = Fixture::new();
+        f.session.chat.push(Message::User("go".into()));
+        f.session.mark_dispatched();
+        let start = session::now_unix() - 90;
+        // The clock, moved back rather than slept past: the turn started 90s ago.
+        f.session.turn_started_at = Some(start);
+        f.apply(DaveApiResponse::Token("done".into()));
+        f.apply(DaveApiResponse::QueryComplete(UsageInfo::default()));
+        let before = f.published();
+        f.stream_end();
+
+        assert_eq!(f.session.turn_started_at, None);
+        let worked = f.session.walltime().worked_secs;
+        assert!((90..=91).contains(&worked), "worked {worked}s");
+        assert_eq!(f.session.turns().len(), 1);
+        assert_eq!(f.session.turns()[0].start, start);
+        assert_eq!(f.session.turns()[0].last_row, 1, "on the reply");
+        // The reply's last segment and the turn-end marker.
+        assert_eq!(f.published(), before + 2);
+
+        // The channel then drops: the same turn ends again.
+        let before = f.published();
+        f.stream_end();
+        assert_eq!(f.session.walltime().worked_secs, worked, "counted once");
+        assert_eq!(f.session.turns().len(), 1);
+        assert_eq!(f.published(), before, "no second marker");
+    }
+
+    /// A wake-up turn starts its own clock, and ends once.
+    #[test]
+    fn a_wakeup_turn_counts_once() {
+        use crate::messages::UsageInfo;
+
+        let mut f = Fixture::new();
+        f.apply(DaveApiResponse::WakeupTurnStarted);
+        let start = f
+            .session
+            .turn_started_at
+            .expect("the wake-up started a turn");
+        f.apply(DaveApiResponse::WakeupTurnStarted);
+        assert_eq!(f.session.turn_started_at, Some(start), "the same turn");
+        f.session.turn_started_at = Some(start - 30);
+        f.apply(DaveApiResponse::Token("the card moved".into()));
+        f.apply(DaveApiResponse::QueryComplete(UsageInfo::default()));
+        f.stream_end();
+        f.stream_end();
+
+        let worked = f.session.walltime().worked_secs;
+        assert!((30..=31).contains(&worked), "worked {worked}s");
+        assert_eq!(f.session.turns().len(), 1);
+    }
+
+    /// A finished turn's span reaches the wire: a fold of the session's notes,
+    /// as a restart or an observer makes, puts it on the row it ended on.
+    #[tokio::test]
+    async fn a_fold_restores_the_turn_spans() {
+        use crate::messages::UsageInfo;
+
+        let mut f = Fixture::new();
+        let sk = test_secret_key();
+        assert!(f.ndb.add_key(&sk), "ndb must accept the PNS key");
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let sub = f.ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+
+        crate::publish::record_user_message(&mut f.session, &f.ndb, Some(&sk), "go".into(), vec![]);
+        f.session.mark_dispatched();
+        f.session.turn_started_at = Some(session::now_unix() - 60);
+        f.apply(DaveApiResponse::Token("done".into()));
+        f.apply(DaveApiResponse::QueryComplete(UsageInfo::default()));
+        f.stream_end();
+        // The user message, the reply and the turn-end marker.
+        f.ndb
+            .wait_for_all_notes_within(sub, 3, std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
+
+        let local = f.session.turns()[0];
+        let author = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
+            .unwrap()
+            .pubkey;
+        let txn = Transaction::new(&f.ndb).unwrap();
+        let claude_sid = f.session.agentic.as_ref().unwrap().event_session_id();
+        let loaded = agentium_core::session_loader::load_session_messages_for_author(
+            &f.ndb, &txn, &author, claude_sid,
+        );
+        assert_eq!(loaded.messages.len(), 2);
+        let [folded] = loaded.turns[..] else {
+            panic!("one turn, got {:?}", loaded.turns);
+        };
+        assert_eq!(folded.last_row, local.last_row);
+        assert_eq!(folded.start, local.start);
+        // The marker's `created_at` is stamped as it is built, a moment after.
+        assert!((local.end..=local.end + 1).contains(&folded.end));
     }
 
     /// A scheduled wake-up holds the session Waiting only until it is due.

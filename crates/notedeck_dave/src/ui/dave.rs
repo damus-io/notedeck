@@ -2306,7 +2306,7 @@ pub fn assistant_message_ui(msg: &AssistantMessage, ctx: &mut AppContext, ui: &m
             ui,
         );
     });
-    message_menu(&r.response, Some(msg.sent_at()), msg.text());
+    message_menu(&r.response, msg.sent_at(), msg.text());
 }
 
 /// The right-click menu on a chat message's `content`: when it was sent, if
