@@ -535,21 +535,65 @@ pub(crate) enum Invocation {
     CommandHelp(&'static help::Command),
 }
 
+/// Everything [`Cli::parse`] reads from outside its arguments: the `HEADWAY_*`
+/// environment variables and what `headway login` / `headway board <id>` stored.
+///
+/// `parse` reads only this, never the process, so a test hands it
+/// [`CliEnv::default`] (the empty environment) and stays deterministic inside
+/// an agent session that exports `HEADWAY_COMMENT_NSEC`, or on a machine with a
+/// stored login and board.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct CliEnv {
+    /// `$HEADWAY_NSEC`: the signing key, below `--nsec`.
+    pub(crate) nsec: Option<String>,
+    /// `$HEADWAY_COMMENT_NSEC`: the comment key, below `--comment-nsec`.
+    pub(crate) comment_nsec: Option<String>,
+    /// `$HEADWAY_COMMENT_NSEC_FILE`: a file holding the comment key, read only
+    /// when no inline comment key is set.
+    pub(crate) comment_nsec_file: Option<OsString>,
+    /// `$HEADWAY_RELAY`: the relay, below `--relay`.
+    pub(crate) relay: Option<String>,
+    /// `$HEADWAY_BOARD`: the board, below `--board` and a self-routing ref.
+    pub(crate) board: Option<String>,
+    /// The key `headway login` stored, below `$HEADWAY_NSEC`.
+    pub(crate) stored_nsec: Option<String>,
+    /// The board `headway board <id>` stored, below `$HEADWAY_BOARD`.
+    pub(crate) stored_board: Option<String>,
+}
+
+impl CliEnv {
+    /// Read the environment and the stored login key and board from this
+    /// process, as the `headway` binary runs.
+    pub(crate) fn from_process() -> Self {
+        Self {
+            nsec: env::var("HEADWAY_NSEC").ok(),
+            comment_nsec: env::var("HEADWAY_COMMENT_NSEC").ok(),
+            comment_nsec_file: env::var_os(COMMENT_NSEC_FILE_VAR),
+            relay: env::var("HEADWAY_RELAY").ok(),
+            board: env::var("HEADWAY_BOARD").ok(),
+            stored_nsec: nostrdb_net::relay::sync::stored_nsec(APP),
+            stored_board: nostrdb_net::relay::sync::read_config(APP, "board"),
+        }
+    }
+}
+
 impl Cli {
     /// Parse args (without the program name), deciding between a run and a help
-    /// page (see [`Invocation`]).
-    pub(crate) fn parse(args: impl Iterator<Item = String>) -> Result<Invocation> {
+    /// page (see [`Invocation`]). Everything beyond `args` comes from `cli_env`.
+    pub(crate) fn parse(
+        args: impl Iterator<Item = String>,
+        cli_env: &CliEnv,
+    ) -> Result<Invocation> {
         // Precedence: `--nsec` (set below) overrides the `HEADWAY_NSEC` env var,
         // which overrides the key stored by `login`.
-        let mut nsec = env::var("HEADWAY_NSEC")
-            .ok()
-            .or_else(|| nostrdb_net::relay::sync::stored_nsec(APP));
+        let mut nsec = cli_env.nsec.clone().or_else(|| cli_env.stored_nsec.clone());
         // `--comment-nsec` (set below) overrides `HEADWAY_COMMENT_NSEC`, which
         // overrides the key file `HEADWAY_COMMENT_NSEC_FILE` names (read only
         // when neither is set, in `comment_key_text`).
-        let mut comment_nsec = env::var("HEADWAY_COMMENT_NSEC").ok();
-        let mut relay = env::var("HEADWAY_RELAY")
-            .ok()
+        let mut comment_nsec = cli_env.comment_nsec.clone();
+        let mut relay = cli_env
+            .relay
+            .clone()
             .unwrap_or_else(|| nostrdb_net::relay::sync::DEFAULT_RELAY.to_string());
         let mut db = None;
         // Resolved after the command is parsed: `--board` overrides the board
@@ -819,8 +863,8 @@ impl Cli {
         // `board_explicit`).
         let board_explicit = board.is_some();
         let board = board
-            .or_else(|| env::var("HEADWAY_BOARD").ok())
-            .or_else(|| nostrdb_net::relay::sync::read_config(APP, "board"))
+            .or_else(|| cli_env.board.clone())
+            .or_else(|| cli_env.stored_board.clone())
             .unwrap_or_else(|| store::BOARD_ID.to_string());
 
         // `grep` searches every board unless `--board` (or a self-routing ref)
@@ -867,7 +911,7 @@ impl Cli {
         };
         let comment_secret = match &command {
             Command::Login { .. } | Command::Logout => None,
-            _ => match comment_key_text(comment_nsec, env::var_os(COMMENT_NSEC_FILE_VAR))? {
+            _ => match comment_key_text(comment_nsec, cli_env.comment_nsec_file.clone())? {
                 Some(key) => Some(parse_secret_key(&key).map_err(|e| {
                     format!(
                         "--comment-nsec / $HEADWAY_COMMENT_NSEC / ${COMMENT_NSEC_FILE_VAR}: {e}"
@@ -1233,8 +1277,15 @@ mod tests {
     use super::*;
     use headway::query::DisplayProp;
 
+    /// Parse args in the empty environment: no `HEADWAY_*` variables and no
+    /// stored login or board, whatever the process running the tests has.
     fn parse(args: &[&str]) -> Cli {
-        match Cli::parse(args.iter().map(|s| s.to_string())).expect("parse ok") {
+        parse_in(&CliEnv::default(), args)
+    }
+
+    /// Parse args in the given environment, expecting a command.
+    fn parse_in(cli_env: &CliEnv, args: &[&str]) -> Cli {
+        match Cli::parse(args.iter().map(|s| s.to_string()), cli_env).expect("parse ok") {
             Invocation::Run(cli) => *cli,
             _ => panic!("expected a command, got help"),
         }
@@ -1242,7 +1293,8 @@ mod tests {
 
     /// The help page a command line asks for, or `None` when it asks to run.
     fn help_of(args: &[&str]) -> Option<Option<&'static str>> {
-        match Cli::parse(args.iter().map(|s| s.to_string())).expect("parse ok") {
+        match Cli::parse(args.iter().map(|s| s.to_string()), &CliEnv::default()).expect("parse ok")
+        {
             Invocation::Run(_) => None,
             Invocation::Usage => Some(None),
             Invocation::CommandHelp(cmd) => Some(Some(cmd.name)),
@@ -1460,6 +1512,7 @@ mod tests {
             ]
             .iter()
             .map(|s| s.to_string()),
+            &CliEnv::default(),
         );
         let err = match res {
             Err(e) => e,
@@ -1477,21 +1530,20 @@ mod tests {
 
     #[test]
     fn non_ref_selectors_do_not_route() {
-        // These fall through to the usual precedence; with no env/config in a
-        // test environment that may be the stored board, so only assert the
-        // selector itself didn't force one by checking against a routed run.
+        // These fall through to the usual precedence, which in the empty test
+        // environment is the default board.
         let routed = parse(&["show", "headway:commerce/purse-metal-toilet"]).board;
         assert_eq!(routed, "commerce");
         for sel in ["purse-metal-toilet", "2716e5db"] {
             let cli = parse(&["show", sel]);
-            // Whatever board was picked, it wasn't derived from the selector.
             assert_eq!(cli.command.selector_board().unwrap(), None);
+            assert_eq!(cli.board, store::BOARD_ID);
         }
     }
 
     /// Parse args expecting an error, returning its message.
     fn parse_err(args: &[&str]) -> String {
-        match Cli::parse(args.iter().map(|s| s.to_string())) {
+        match Cli::parse(args.iter().map(|s| s.to_string()), &CliEnv::default()) {
             Err(e) => e.to_string(),
             Ok(_) => panic!("expected an error for {args:?}"),
         }
@@ -1557,11 +1609,76 @@ mod tests {
             ["--nsec", &test_nsec(), "--comment-nsec", "nope", "show"]
                 .iter()
                 .map(|s| s.to_string()),
+            &CliEnv::default(),
         ) {
             Err(e) => e.to_string(),
             Ok(_) => panic!("a malformed comment key must be refused"),
         };
         assert!(err.contains("--comment-nsec"), "unexpected error: {err}");
+    }
+
+    /// The comment key's precedence through the full parser: `--comment-nsec`
+    /// beats `$HEADWAY_COMMENT_NSEC`, which beats `$HEADWAY_COMMENT_NSEC_FILE`,
+    /// whose file is read only when neither is set.
+    #[test]
+    fn comment_key_precedence_reads_the_given_env() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nsec");
+        std::fs::write(&path, format!("{}\n", hex::encode([9u8; 32]))).expect("key file");
+        let from_env = CliEnv {
+            comment_nsec: Some(hex::encode([8u8; 32])),
+            comment_nsec_file: Some(OsString::from("/nonexistent/headway-comment-nsec")),
+            ..CliEnv::default()
+        };
+        let from_file = CliEnv {
+            comment_nsec_file: Some(path.into_os_string()),
+            ..CliEnv::default()
+        };
+        let comment_key = |cli_env: &CliEnv, args: &[&str]| {
+            parse_in(cli_env, args)
+                .comment_secret
+                .expect("comment key")
+                .secret
+        };
+
+        assert_eq!(comment_key(&from_file, &["show"]), [9u8; 32]);
+        assert_eq!(comment_key(&from_env, &["show"]), [8u8; 32]);
+        let flag = hex::encode(TEST_SECRET);
+        assert_eq!(
+            comment_key(&from_env, &["--comment-nsec", &flag, "show"]),
+            TEST_SECRET
+        );
+    }
+
+    /// `--nsec` beats `$HEADWAY_NSEC`, which beats the stored login key; and
+    /// `--board` beats `$HEADWAY_BOARD`, which beats the stored board.
+    #[test]
+    fn signing_key_and_board_precedence_read_the_given_env() {
+        let stored = CliEnv {
+            stored_nsec: Some(hex::encode([1u8; 32])),
+            stored_board: Some("stored".to_string()),
+            ..CliEnv::default()
+        };
+        let env = CliEnv {
+            nsec: Some(hex::encode([2u8; 32])),
+            board: Some("env".to_string()),
+            relay: Some("wss://relay.example".to_string()),
+            ..stored.clone()
+        };
+
+        let cli = parse_in(&stored, &["show"]);
+        assert_eq!(cli.secret.expect("signer").secret, [1u8; 32]);
+        assert_eq!(cli.board, "stored");
+
+        let cli = parse_in(&env, &["show"]);
+        assert_eq!(cli.secret.expect("signer").secret, [2u8; 32]);
+        assert_eq!(cli.board, "env");
+        assert_eq!(cli.relay, "wss://relay.example");
+
+        let flag = hex::encode(TEST_SECRET);
+        let cli = parse_in(&env, &["--nsec", &flag, "--board", "flag", "show"]);
+        assert_eq!(cli.secret.expect("signer").secret, TEST_SECRET);
+        assert_eq!(cli.board, "flag");
     }
 
     /// A key file named by `$HEADWAY_COMMENT_NSEC_FILE` yields the same key as

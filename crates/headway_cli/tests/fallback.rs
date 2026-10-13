@@ -149,6 +149,8 @@ fn run_timed(url: &str, db: &str, args: &[&str], secs: u64) -> std::process::Out
         // Pin the default board so the developer's persisted `headway board
         // <id>` selection can't leak into the test run.
         .env("HEADWAY_BOARD", "headway")
+        .env_remove("HEADWAY_COMMENT_NSEC")
+        .env_remove("HEADWAY_COMMENT_NSEC_FILE")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

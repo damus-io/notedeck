@@ -55,6 +55,8 @@ fn headway(bin: &Path, url: &str, db: &str, extra: &[&str]) -> std::process::Out
         .args(extra)
         .env("HEADWAY_BOARD", "headway")
         .env("AGENTIUM_SESSION", "agentium:test-review-session")
+        .env_remove("HEADWAY_COMMENT_NSEC")
+        .env_remove("HEADWAY_COMMENT_NSEC_FILE")
         .output()
         .expect("run headway")
 }

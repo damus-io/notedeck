@@ -90,6 +90,10 @@ fn headway_as(key: &str, url: &str, db: &str, extra: &[&str]) -> std::process::O
         // *developer's* persisted `headway board <id>` selection, and the test
         // seeds/reads whatever board they happened to leave current.
         .env("HEADWAY_BOARD", "headway")
+        // An agent session exports a comment key; inherited, it would sign
+        // every comment here as the session rather than as `key`.
+        .env_remove("HEADWAY_COMMENT_NSEC")
+        .env_remove("HEADWAY_COMMENT_NSEC_FILE")
         .output()
         .expect("run headway")
 }

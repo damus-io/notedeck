@@ -35,7 +35,7 @@ use nostrdb::Ndb;
 use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
 
-use crate::args::{Cli, Command, Invocation};
+use crate::args::{Cli, CliEnv, Command, Invocation};
 use crate::boards::{Roster, list_all_boards, list_boards, list_shared_with_me, load_board};
 use crate::edit::{Collect, build_action, resolve_container};
 use crate::output::{
@@ -210,7 +210,7 @@ fn shared_owner(ndb: &Ndb, roster: &Roster, me: &Pubkey, board_id: &str) -> Resu
 }
 
 async fn run() -> Result<()> {
-    let cli = match Cli::parse(env::args().skip(1))? {
+    let cli = match Cli::parse(env::args().skip(1), &CliEnv::from_process())? {
         Invocation::Run(cli) => *cli,
         Invocation::Usage => {
             print_usage();
