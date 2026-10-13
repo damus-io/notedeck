@@ -168,7 +168,7 @@ pub(super) fn view_options_menu(ui: &mut egui::Ui, theme: &ColorTheme, state: &m
         // The other way to see the cards: every board's, as one list.
         if ui
             .button("Issue list")
-            .on_hover_text("Every board's cards as one filterable list (v)")
+            .on_hover_text("Every board's cards as one filterable list (g i)")
             .clicked()
         {
             state.open_list();

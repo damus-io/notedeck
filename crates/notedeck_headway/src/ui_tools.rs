@@ -63,7 +63,7 @@ pub(crate) const COMPOSE_CARD: &str = "headway_compose_card";
 pub(crate) const FOCUS_FILTER: &str = "headway_focus_filter";
 /// `R`: the review queue over the board's In Review, or the detail card's.
 pub(crate) const OPEN_REVIEW_QUEUE: &str = "headway_open_review_queue";
-/// `v` on the grid: open the cross-board issue list.
+/// `gi` on the grid: open the cross-board issue list.
 pub(crate) const OPEN_LIST: &str = "headway_open_list";
 /// `]b` on the grid: switch to the next board, in the switcher's order.
 pub(crate) const NEXT_BOARD: &str = "headway_next_board";

@@ -1169,7 +1169,7 @@ fn seed_side_board(harness: &mut Harness<'static, HeadwayTestState>) {
     }
 }
 
-/// The issue list (headway:headway/match-belt-quit): `v` opens it from the
+/// The issue list (headway:headway/match-belt-quit): `g i` opens it from the
 /// grid as one global-nav entry, it lists open cards from every board, All
 /// adds the done ones, a query narrows it live, and a row on another board
 /// opens that card's detail there, with the list still beneath it.
@@ -1185,7 +1185,14 @@ fn issue_list_spans_boards_filters_and_opens_cards() {
     // Drop what booting enqueued, so the push below is the only request.
     harness.state_mut().notedeck.app_context().navigator.take();
 
-    harness.press_key(egui::Key::V);
+    // `v` was the old key (headway:headway/must-wash-special); it opens nothing now.
+    press_board_keys(&mut harness, &[egui::Key::V]);
+    assert!(
+        harness.query_by_label("Issues").is_none(),
+        "`v` opened the list"
+    );
+
+    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
     wait_for_label(&mut harness, "Issues");
     let pushed: Vec<bool> = harness
         .state_mut()
@@ -1258,7 +1265,7 @@ fn issue_list_display_menu_toggles_a_property() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
     seed_side_board(&mut harness);
 
-    harness.press_key(egui::Key::V);
+    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
     wait_for_label(&mut harness, SIDE_CARD);
     harness.get_by_label("quest");
 
@@ -1285,7 +1292,7 @@ fn issue_list_view_tabs_switch_and_save() {
     seed_side_board(&mut harness);
     let author = harness.state_mut().account.pubkey;
 
-    harness.press_key(egui::Key::V);
+    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
     wait_for_label(&mut harness, SIDE_CARD);
     harness.get_by_label("7 issues");
 
@@ -1388,7 +1395,7 @@ fn issue_list_groups_rows_folds_and_adds_to_a_group() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1000.0));
     seed_side_board(&mut harness);
 
-    harness.press_key(egui::Key::V);
+    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
     wait_for_label(&mut harness, SIDE_CARD);
     // Grouped by status: the side board's Todo and the demo board's are one
     // group, and the rows drop the status circle the header already says.
@@ -1534,7 +1541,7 @@ fn issue_list_orders_rows_and_drags_in_work_order() {
         label_top(harness, title).expect("the row is on screen")
     };
 
-    harness.press_key(egui::Key::V);
+    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
     wait_for_label(&mut harness, INLINE);
     assert!(
         row_top(&harness, LOW) < row_top(&harness, INLINE),
@@ -1631,7 +1638,7 @@ fn archived_cards_are_searchable_and_open_their_detail() {
     wait_for_absent(&mut harness, BANNER);
 
     // The issue list lists archived cards for `is:archived`, and only then.
-    harness.press_key(egui::Key::V);
+    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
     wait_for_label(&mut harness, "Issues");
     harness
         .get_by_role(egui::accesskit::Role::TextInput)

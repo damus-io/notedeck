@@ -1335,6 +1335,10 @@ mod tests {
                     label: "first/last".to_owned(),
                 },
                 StripKey {
+                    cap: "i".to_owned(),
+                    label: "issue list".to_owned(),
+                },
+                StripKey {
                     cap: "b".to_owned(),
                     label: "boards".to_owned(),
                 }

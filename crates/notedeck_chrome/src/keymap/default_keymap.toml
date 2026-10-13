@@ -274,7 +274,7 @@ group = "grid"
 
 [[bind]]
 scope = "headway.grid"
-keys  = "v"
+keys  = "g i"
 tool  = "headway_open_list"
 label = "issue list"
 group = "grid"

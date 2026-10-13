@@ -127,7 +127,7 @@ pub enum HeadwayRoute {
         title: Option<String>,
     },
 
-    /// The cross-board issue list, opened from the grid's View menu or `v`.
+    /// The cross-board issue list, opened from the grid's View menu or `g i`.
     /// What it shows — the query, Active/All, which row has the cursor —
     /// lives in [`BoardUiState`](crate::ui::BoardUiState), not here: the list
     /// reads every board, so it names no card and is the same entry whichever
