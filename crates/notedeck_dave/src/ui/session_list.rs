@@ -887,7 +887,14 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             render_title(ui, title, pos, max_width);
             return;
         }
-        title_with_refs_ui(ui, &mut refs, title, pos, max_width);
+        title_with_refs_ui(
+            ui,
+            &mut refs,
+            title,
+            pos,
+            max_width,
+            &egui::FontId::proportional(14.0),
+        );
     }
 }
 
@@ -1223,7 +1230,8 @@ pub(crate) fn age_text(secs: u64, out: &mut String) {
 }
 
 /// Lay `title` out left to right in a child ui at `pos`, `max_width` wide:
-/// its text runs painted as in [`render_title`], and each reference in it drawn
+/// its text runs painted in `font_id` (a row's title is
+/// [`render_title`]'s 14px, the chat header's 13px), and each reference in it drawn
 /// by the [`KindRenderer`](notedeck::KindRenderer) for the kind it resolves to
 /// (a headway card's chip) with [`InlineChrome::Bare`](notedeck::InlineChrome::Bare):
 /// the chat's widget for that ref without its pill, since the row already
@@ -1235,15 +1243,15 @@ pub(crate) fn age_text(secs: u64, out: &mut String) {
 /// the local db yet — stays text, so a loose parser match never shows as a
 /// broken chip. Whatever overflows `max_width` is clipped, like a long plain
 /// title.
-fn title_with_refs_ui(
+pub(crate) fn title_with_refs_ui(
     ui: &mut egui::Ui,
     refs: &mut TitleRefs<'_, '_>,
     title: &str,
     pos: Pos2,
     max_width: f32,
+    font_id: &egui::FontId,
 ) {
-    let font_id = egui::FontId::proportional(14.0);
-    let row_height = ui.fonts_mut(|f| f.row_height(&font_id));
+    let row_height = ui.fonts_mut(|f| f.row_height(font_id));
     // Leave room on both sides of the title's centre line, so `Align::Center`
     // centres a widget taller than the text row on the line the plain title
     // would sit on rather than letting it hang off the bottom of a
@@ -1260,9 +1268,9 @@ fn title_with_refs_ui(
     child.set_clip_rect(rect.intersect(ui.clip_rect()));
     child.spacing_mut().item_spacing.x = 0.0;
     // An inline widget sizes itself to the surrounding prose, which it takes
-    // to be `TextStyle::Body`. Here the prose is the row's 14px title, so the
-    // chip matches the plain titles above and below it instead of standing a
-    // size larger.
+    // to be `TextStyle::Body`. Here the prose is the title, so the chip
+    // matches the plain titles above and below it instead of standing a size
+    // larger.
     child
         .style_mut()
         .text_styles
@@ -1270,7 +1278,7 @@ fn title_with_refs_ui(
 
     let mut rest = title;
     while let Some(m) = refs.note.registries.reference_parsers.find_next(rest) {
-        title_run_ui(&mut child, &rest[..m.range.start], &font_id);
+        title_run_ui(&mut child, &rest[..m.range.start], font_id);
         let matched = &rest[m.range.clone()];
         let drawn = notedeck_ui::markdown::reference_ui(
             &mut child,
@@ -1286,11 +1294,11 @@ fn title_with_refs_ui(
             notedeck::Interaction::Inert,
         );
         if drawn.is_none() {
-            title_run_ui(&mut child, matched, &font_id);
+            title_run_ui(&mut child, matched, font_id);
         }
         rest = &rest[m.range.end..];
     }
-    title_run_ui(&mut child, rest, &font_id);
+    title_run_ui(&mut child, rest, font_id);
 }
 
 /// Paint one plain-text run of a title at `ui`'s cursor and advance past it.
@@ -3276,6 +3284,8 @@ mod tests {
         /// App actions drained so far (an inert chip raises none).
         app_actions: usize,
         setup_done: bool,
+        /// Draw the chat header of the first session instead of the list.
+        header: bool,
         _tmpdir: tempfile::TempDir,
     }
 
@@ -3296,6 +3306,22 @@ mod tests {
         let mut app_ctx = state.notedeck.app_context();
         let mut note_ctx = app_ctx.note_context();
         let txn = nostrdb::Transaction::new(note_ctx.ndb).expect("txn");
+        if state.header {
+            let id = state.session_manager.session_ids()[0];
+            let details = &state.session_manager.get(id).expect("session").details;
+            let mut refs = super::TitleRefs {
+                note: &mut note_ctx,
+                txn: &txn,
+            };
+            crate::ui::dave::session_header_ui(
+                ui,
+                details,
+                BackendType::Claude,
+                false,
+                Some(&mut refs),
+            );
+            return;
+        }
         let action = SessionListUi::new(
             &mut state.session_manager,
             &state.focus_queue,
@@ -3336,13 +3362,11 @@ mod tests {
             .expect("ingest");
     }
 
-    /// A session titled with a reference — here another session's
-    /// `agentium:` ref, the way autowork titles a session with its card's
-    /// `headway:` ref — draws the referenced entity's chip in its row rather
-    /// than the raw ref, and a click on the chip is a click on the row: it
-    /// switches to the row's session rather than opening the referenced one.
-    #[test]
-    fn a_ref_title_draws_its_chip_and_a_chip_click_switches_to_the_row() {
+    /// A harness drawing one session titled with another session's `agentium:`
+    /// ref — the list when `header` is false, its chat header when true — and
+    /// waits until that ref's chip shows the referenced session's title,
+    /// which it returns beside the harness and the titled session's id.
+    fn ref_title_harness(header: bool) -> RefTitleHarness {
         use std::cell::RefCell;
         use std::rc::Rc;
         use std::time::{Duration, Instant};
@@ -3382,6 +3406,7 @@ mod tests {
             action: None,
             app_actions: 0,
             setup_done: false,
+            header,
             _tmpdir: tmpdir,
         };
         let mut harness = Harness::builder()
@@ -3405,6 +3430,32 @@ mod tests {
             std::thread::sleep(Duration::from_millis(25));
             harness.run_ok();
         }
+        RefTitleHarness {
+            harness,
+            id,
+            chip_title,
+        }
+    }
+
+    /// What [`ref_title_harness`] hands back.
+    struct RefTitleHarness {
+        harness: Harness<'static, RefTitleState>,
+        id: SessionId,
+        chip_title: &'static str,
+    }
+
+    /// A session titled with a reference — here another session's
+    /// `agentium:` ref, the way autowork titles a session with its card's
+    /// `headway:` ref — draws the referenced entity's chip in its row rather
+    /// than the raw ref, and a click on the chip is a click on the row: it
+    /// switches to the row's session rather than opening the referenced one.
+    #[test]
+    fn a_ref_title_draws_its_chip_and_a_chip_click_switches_to_the_row() {
+        let RefTitleHarness {
+            mut harness,
+            id,
+            chip_title,
+        } = ref_title_harness(false);
 
         let bounds = harness
             .get_by_label(chip_title)
@@ -3435,6 +3486,24 @@ mod tests {
             matches!(harness.state().action, Some(SessionListAction::SwitchTo(s)) if s == id),
             "the row under the chip takes the click: got {:?}",
             harness.state().action
+        );
+    }
+
+    /// The chat header draws a ref-titled session's title the way its row
+    /// does: the referenced entity's chip, not the raw ref.
+    #[test]
+    fn the_chat_header_draws_a_ref_title_as_its_chip() {
+        let RefTitleHarness { harness, id, .. } = ref_title_harness(true);
+        let raw = &harness
+            .state()
+            .session_manager
+            .get(id)
+            .expect("session")
+            .details
+            .title;
+        assert!(
+            harness.query_by_label(raw).is_none(),
+            "the header shouldn't draw the raw ref {raw} once its chip resolves"
         );
     }
 }

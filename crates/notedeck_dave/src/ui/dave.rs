@@ -9,6 +9,7 @@ use super::keybindings::NormalView;
 use super::markdown_ui;
 use super::query_ui::query_call_ui;
 use super::run_ui;
+use super::session_list::{title_with_refs_ui, TitleRefs};
 use super::square_loading_spinner::SquareLoadingSpinner;
 use super::top_buttons::top_buttons_ui;
 use crate::{
@@ -588,6 +589,15 @@ impl<'a> DaveUi<'a> {
                     egui::pos2(result.right_edge_x, result.y),
                     egui::vec2(max_width, 32.0),
                 );
+                // The transaction the title's references resolve in, dropped
+                // with the header: nostrdb allows one per thread, and the chat
+                // below opens its own.
+                let mut note_ctx = app_ctx.note_context();
+                let txn = Transaction::new(note_ctx.ndb).ok();
+                let mut refs = txn.as_ref().map(|txn| TitleRefs {
+                    note: &mut note_ctx,
+                    txn,
+                });
                 let truncation = ui
                     .scope_builder(egui::UiBuilder::new().max_rect(details_rect), |ui| {
                         ui.set_clip_rect(details_rect);
@@ -596,6 +606,7 @@ impl<'a> DaveUi<'a> {
                             details,
                             self.backend_type,
                             self.flags.contains(DaveUiFlags::IsSubagent),
+                            refs.as_mut(),
                         )
                     })
                     .inner;
@@ -3285,7 +3296,7 @@ fn toggle_badges_ui(
 }
 
 /// Full CWD string from the session header, for tooltip display on hover.
-struct HeaderCwd {
+pub(crate) struct HeaderCwd {
     full: Option<String>,
 }
 
@@ -3293,11 +3304,22 @@ struct HeaderCwd {
 /// shown are its parent's.
 const SUBAGENT_INHERITS: &str = "inherited from its parent";
 
-fn session_header_ui(
+/// Font of the header's title line.
+const HEADER_TITLE_SIZE: f32 = 13.0;
+
+/// Draw the chat header: the backend icon, the session's title, and a
+/// subtitle of its model and cwd.
+///
+/// With `refs`, a title holding a reference (autowork titles a session with
+/// its card's `headway:<board>/<word-id>`) draws the reference as its inline
+/// chip, through the session list's [`title_with_refs_ui`], so the header
+/// shows the card's live status and title rather than the raw ref.
+pub(crate) fn session_header_ui(
     ui: &mut egui::Ui,
     details: &SessionDetails,
     backend_type: BackendType,
     is_subagent: bool,
+    refs: Option<&mut TitleRefs<'_, '_>>,
 ) -> HeaderCwd {
     let mut header_cwd = HeaderCwd { full: None };
 
@@ -3311,11 +3333,7 @@ fn session_header_ui(
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
 
-            // Title — normal end-truncation
-            ui.add(
-                egui::Label::new(egui::RichText::new(details.display_title()).size(13.0))
-                    .wrap_mode(egui::TextWrapMode::Truncate),
-            );
+            header_title_ui(ui, details.display_title(), refs);
 
             // Subtitle line: model + cwd
             let model_text = details.display_model();
@@ -3356,6 +3374,33 @@ fn session_header_ui(
     });
 
     header_cwd
+}
+
+/// The header's title line: `title` with its references drawn as their
+/// chips when `refs` is given and the title holds one, else plain text,
+/// end-truncated.
+fn header_title_ui(ui: &mut egui::Ui, title: &str, refs: Option<&mut TitleRefs<'_, '_>>) {
+    let refs = refs.filter(|refs| {
+        refs.note
+            .registries
+            .reference_parsers
+            .find_next(title)
+            .is_some()
+    });
+    let Some(refs) = refs else {
+        ui.add(
+            egui::Label::new(egui::RichText::new(title).size(HEADER_TITLE_SIZE))
+                .wrap_mode(egui::TextWrapMode::Truncate),
+        );
+        return;
+    };
+    let font_id = egui::FontId::proportional(HEADER_TITLE_SIZE);
+    let height = ui.fonts_mut(|f| f.row_height(&font_id));
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    title_with_refs_ui(ui, refs, title, rect.min, rect.width(), &font_id);
 }
 
 #[cfg(test)]
