@@ -587,14 +587,15 @@ impl Dave {
             .and_then(|s| s.agentic.as_ref())
             .map(|a| a.permission_message_state != crate::session::PermissionMessageState::None)
             .unwrap_or(false);
-        // Normal mode's `h` needs the session list on screen: the desktop layout,
-        // with no overlay covering it.
-        let sessions_shown = !is_narrow(egui_ctx)
-            && !self.show_scene
-            && matches!(self.active_overlay, DaveOverlay::None);
+        // Normal mode's `h` needs the session list on screen, or the scene's
+        // map standing in for it: the desktop layout, with no overlay
+        // covering it.
+        let sessions_shown =
+            !is_narrow(egui_ctx) && matches!(self.active_overlay, DaveOverlay::None);
         let keys = KeyContext {
             ai_mode: self.active_offers().ai_mode,
             sessions_shown,
+            scene: self.show_scene,
             has_pending_permission,
             has_pending_question,
             in_tentative_state,
@@ -690,6 +691,9 @@ impl Dave {
             // Chrome resolves the URI: a `headway:` ref opens its card.
             KeyActionResult::OpenUri(uri) => {
                 return Some(AppAction::Open(notedeck::OpenUri::new(uri)));
+            }
+            KeyActionResult::FocusChatPane => {
+                self.normal_mode.after_action(&KeyAction::FocusChatPane);
             }
             KeyActionResult::None => {}
         }

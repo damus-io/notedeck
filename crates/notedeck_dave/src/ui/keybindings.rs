@@ -1,4 +1,5 @@
 use crate::config::AiMode;
+use crate::ui::scene::SceneDir;
 use egui::Key;
 use notedeck_ui::chord;
 
@@ -90,6 +91,10 @@ pub enum KeyAction {
     SessionPaneFirst,
     /// Switch to the last session in the list (normal h G)
     SessionPaneLast,
+    /// Step the scene's selection to the nearest node that way, switching to
+    /// it without focusing its input (normal h, then h / j / k / l on the
+    /// map)
+    SceneStep(SceneDir),
     /// Leave normal mode for the chat input (`i` / `a`)
     InsertMode,
     /// Show the active session's Details tab (normal gd)
@@ -123,7 +128,9 @@ pub enum KeyAction {
 ///
 /// `h` / `l` point the motions at the session list or the chat ([`Pane`]),
 /// which picks the key scope: `j` / `k` walk blocks in the chat and sessions
-/// in the list.
+/// in the list. In the scene view the map stands in for the list: `h` steps
+/// onto it, and there `h` / `j` / `k` / `l` step between its nodes, `l` off
+/// its right edge back to the chat beside it.
 #[derive(Default)]
 pub struct NormalMode {
     /// Whether normal mode is on.
@@ -134,6 +141,9 @@ pub struct NormalMode {
     /// Whether the session list is on screen, as of the last frame. `h` is a
     /// no-op without it.
     sessions_shown: bool,
+    /// Whether the scene view's map stands in for the session list, as of
+    /// the last frame.
+    scene: bool,
     /// Normal mode ended wanting the active input focused; taken by
     /// [`Self::take_input_focus`].
     input_focus_due: bool,
@@ -142,7 +152,8 @@ pub struct NormalMode {
 /// Which part of Dave normal mode's motions move through.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Pane {
-    /// The session list: `j` / `k` switch sessions.
+    /// The session list: `j` / `k` switch sessions. In the scene view, the
+    /// map: `h` / `j` / `k` / `l` step between its nodes.
     Sessions,
     /// The chat transcript: `j` / `k` walk its collapsible blocks.
     #[default]
@@ -171,6 +182,8 @@ pub struct NormalView {
     pub pane: Pane,
     /// `h` can reach the session list.
     pub sessions_shown: bool,
+    /// The scene view's map stands in for the session list.
+    pub scene: bool,
     /// The agentic-only keys (`c`, `v`, `m`, `]q`, `[q`) apply.
     pub agentic: bool,
     /// `S` has a running turn to stop.
@@ -186,6 +199,7 @@ impl NormalMode {
         self.on.then_some(NormalView {
             pane: self.pane,
             sessions_shown: self.sessions_shown,
+            scene: self.scene,
             agentic: offers.ai_mode == AiMode::Agentic,
             interruptible: offers.interruptible,
             has_issue: offers.has_issue,
@@ -231,9 +245,10 @@ impl NormalMode {
     }
 
     /// Record what this frame offers normal mode. With the session list off
-    /// screen (a narrow layout, the scene view) it falls back to the chat.
+    /// screen (a narrow layout, an overlay) it falls back to the chat.
     fn observe(&mut self, keys: &KeyContext) {
         self.sessions_shown = keys.sessions_shown;
+        self.scene = keys.scene;
         if !keys.sessions_shown {
             self.pane = Pane::Chat;
         }
@@ -382,8 +397,11 @@ pub struct KeyContext {
     /// The active session's mode; agentic-only bindings need
     /// [`AiMode::Agentic`].
     pub ai_mode: AiMode,
-    /// The session list is on screen, for normal mode's `h`.
+    /// The session list, or the scene's map standing in for it, is on
+    /// screen, for normal mode's `h`.
     pub sessions_shown: bool,
+    /// The scene view is up: the session pane is its map.
+    pub scene: bool,
     /// A permission request is waiting, for the bare `1` / `2` / `3` keys.
     pub has_pending_permission: bool,
     /// The waiting request is a question set, which takes the number keys
@@ -686,6 +704,7 @@ mod tests {
         keys: KeyContext {
             ai_mode: AiMode::Agentic,
             sessions_shown: true,
+            scene: false,
             has_pending_permission: false,
             has_pending_question: false,
             in_tentative_state: false,
@@ -892,29 +911,44 @@ mod tests {
     /// own args, and Dave takes the call: no binding is shadowed by another
     /// scope's prefix, unavailable with everything on offer, or broken. The
     /// which-key strip lists the bindings the keys would run (chrome's
-    /// `Keymap::hints`), so this is what keeps it honest.
+    /// `Keymap::hints`), so this is what keeps it honest. The one shadowing
+    /// by design is the scene's map: its `h j k l` steps stand over the
+    /// session list's `j` / `k` and the panes' `h` / `l`.
     #[test]
     fn every_dave_binding_calls_its_tool_from_its_pane() {
         let keymap_keys = ChromeKeys::new();
         let keymap = keymap_keys.engine().keymap();
-        let panes = [(Pane::Chat, vec![ESC]), (Pane::Sessions, vec![ESC, H])];
+        let panes = [
+            (Pane::Chat, false, vec![ESC]),
+            (Pane::Sessions, false, vec![ESC, H]),
+            (Pane::Sessions, true, vec![ESC, H]),
+        ];
         let mut checked = 0;
-        for (pane, prefix) in panes {
+        for (pane, scene, prefix) in panes {
             let view = NormalView {
                 pane,
                 sessions_shown: true,
+                scene,
                 agentic: true,
                 interruptible: true,
                 has_issue: true,
             };
+            let frame = FRAME.keys(|k| k.scene = scene);
+            let scene_steps = keymap.bindings("dave.scene");
             for scope in crate::ui_tools::key_scopes(Some(view)) {
                 for binding in keymap.bindings(scope) {
                     let notedeck_chrome::keymap::BindAction::Tool(want) = &binding.action else {
                         continue;
                     };
+                    let stepped_over = scene
+                        && *scope != "dave.scene"
+                        && scene_steps.iter().any(|step| step.keys == binding.keys);
+                    if stepped_over {
+                        continue;
+                    }
                     let mut presses = prefix.clone();
                     presses.extend(binding.keys.as_slice().iter().map(stroke_press));
-                    let h = keys_after_in(FRAME, &presses);
+                    let h = keys_after_in(frame, &presses);
                     assert_eq!(
                         h.state().last_call(),
                         Some(want),
@@ -937,6 +971,36 @@ mod tests {
         assert_eq!(
             detect_sequence(&[ESC, H, press(SHIFT, Key::G)]),
             Some(KeyAction::SessionPaneLast),
+        );
+    }
+
+    /// In the scene view `h` steps onto the map, where `h j k l` step
+    /// between its nodes rather than switching panes or sessions in order.
+    #[test]
+    fn normal_h_on_the_scene_steps_across_the_map() {
+        let scene = FRAME.keys(|k| k.scene = true);
+        let steps = [
+            (Key::H, SceneDir::Left),
+            (Key::J, SceneDir::Down),
+            (Key::K, SceneDir::Up),
+            (Key::L, SceneDir::Right),
+        ];
+        for (key, dir) in steps {
+            assert_eq!(
+                detect_sequence_in(scene, &[ESC, H, press(NONE, key)]),
+                Some(KeyAction::SceneStep(dir)),
+                "{key:?}"
+            );
+        }
+        assert_eq!(
+            detect_sequence_in(scene, &[ESC, H, press(SHIFT, Key::G)]),
+            Some(KeyAction::SessionPaneLast),
+            "the list's keys the map doesn't take still apply"
+        );
+        assert_eq!(
+            detect_sequence_in(scene, &[ESC, press(NONE, Key::J)]),
+            Some(KeyAction::BlockCursorDown),
+            "Esc lands in the chat, as it does beside the list"
         );
     }
 

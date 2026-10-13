@@ -417,9 +417,12 @@ group = "detail"
 #
 #   chat      dave.chat, dave.normal, dave
 #   sessions  dave.sessions, dave.normal, dave
+#   scene     dave.scene, dave.sessions, dave.normal, dave
 #
 # `h` / `l` switch between the two panes: `j k g g G` walk the chat's blocks
-# in one and the session list in the other. Insert mode reports none, so
+# in one and the session list in the other. In the scene view the map is the
+# session pane: `h` steps onto it, and there `h j k l` step between its nodes,
+# `l` off its right edge back onto the chat. Insert mode reports none, so
 # every key types. Esc at normal mode's root isn't bound here: it falls
 # through to the side menu, and normal mode stays on. The permission keys
 # (`1 2 3 !`), a question's digits and Enter, and Delete are Dave's own, read
@@ -575,6 +578,41 @@ keys  = "<Enter>"
 tool  = "dave_insert_mode"
 label = "pick"
 group = "exit"
+
+# The scene's map, in place of the session list: step to the nearest node
+# that way. The list's `g g`, `G` and Enter still apply beneath these.
+
+[[bind]]
+scope = "dave.scene"
+keys  = "h"
+tool  = "dave_scene_cursor"
+args  = { to = "left" }
+label = "step on the map"
+group = "scene"
+
+[[bind]]
+scope = "dave.scene"
+keys  = "j"
+tool  = "dave_scene_cursor"
+args  = { to = "down" }
+label = "step on the map"
+group = "scene"
+
+[[bind]]
+scope = "dave.scene"
+keys  = "k"
+tool  = "dave_scene_cursor"
+args  = { to = "up" }
+label = "step on the map"
+group = "scene"
+
+[[bind]]
+scope = "dave.scene"
+keys  = "l"
+tool  = "dave_scene_cursor"
+args  = { to = "right" }
+label = "step on the map"
+group = "scene"
 
 # Either pane: the panes, back to the input, and the session's own keys.
 

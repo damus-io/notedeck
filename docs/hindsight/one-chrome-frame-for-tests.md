@@ -14,3 +14,4 @@ render), so each copy drifts from the real one and misses what it skipped.
 - headway:notedeck/juice-crystal-stumble — a fourth copy of chrome's key step, ui_tools::chrome_keys in notedeck_dave, so Dave's key tests resolve through the real engine and keymap ahead of Dave
 - headway:notedeck/write-stock-illness — a fifth hand-rolled frame (keymap_macros Session::frame), plus no public read of the chrome's active app, so "Headway is in front" is inferred from a stand-in not rendering and the text drawn
 - headway:notedeck/bleak-tornado-rose — no public read of which app is in front or whether Notebook's editor is open through the chrome, so the keymap-editor tests infer both from the text the frame drew
+- headway:dave/enact-evolve-glove — a third hand-rolled Dave key frame (scene.rs KeyedScene, beside ui/mod.rs normal_mode_frame and keybindings Keys::frame); the first copy skipped settle_normal_mode_focus, so Enter's focus handoff failed until it was copied in too

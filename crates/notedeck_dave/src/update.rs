@@ -3017,6 +3017,7 @@ mod tests {
                 let keys = KeyContext {
                     ai_mode: AiMode::Agentic,
                     sessions_shown: true,
+                    scene: false,
                     has_pending_permission: false,
                     has_pending_question: false,
                     in_tentative_state: false,

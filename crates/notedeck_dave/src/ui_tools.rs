@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 use notedeck::{ToolArg, ToolArgType, ToolSpec};
 
 use crate::ui::keybindings::{KeyAction, NormalMode, NormalView, Pane};
+use crate::ui::SceneDir;
 
 /// `j`/`k`/`gg`/`G`/`q` in the chat: move or drop the block cursor.
 pub(crate) const BLOCK_CURSOR: &str = "dave_block_cursor";
@@ -29,6 +30,8 @@ pub(crate) const BLOCK: &str = "dave_block";
 pub(crate) const FOCUS_PANE: &str = "dave_focus_pane";
 /// `j`/`k`/`gg`/`G` in the session list: switch sessions.
 pub(crate) const SESSION_CURSOR: &str = "dave_session_cursor";
+/// `h`/`j`/`k`/`l` on the scene's map: step to the nearest node that way.
+pub(crate) const SCENE_CURSOR: &str = "dave_scene_cursor";
 /// `i` / `a`: leave normal mode for the chat input.
 pub(crate) const INSERT_MODE: &str = "dave_insert_mode";
 /// `n`: start a new agent.
@@ -78,6 +81,7 @@ pub(crate) enum DaveUiTool {
     Block,
     FocusPane,
     SessionCursor,
+    SceneCursor,
     InsertMode,
     NewAgent,
     CloneAgent,
@@ -144,6 +148,19 @@ enum SessionTo {
 /// The values of [`SessionTo`].
 const SESSION_TOS: &[&str] = &["next", "prev", "first", "last"];
 
+/// Which way `dave_scene_cursor` steps on the map.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum SceneTo {
+    Left,
+    Down,
+    Up,
+    Right,
+}
+
+/// The values of [`SceneTo`].
+const SCENE_TOS: &[&str] = &["left", "down", "up", "right"];
+
 /// Next or previous, for `dave_focus_queue`.
 #[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
@@ -194,6 +211,13 @@ struct SessionArgs {
     to: SessionTo,
 }
 
+/// `dave_scene_cursor`'s arguments.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SceneArgs {
+    to: SceneTo,
+}
+
 /// `dave_focus_queue`'s arguments.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -220,11 +244,12 @@ fn enum_arg(name: &'static str, values: &'static [&'static str], doc: &'static s
 
 impl DaveUiTool {
     /// Every tool, in the order [`specs`](Self::specs) lists them.
-    pub(crate) const ALL: [Self; 16] = [
+    pub(crate) const ALL: [Self; 17] = [
         Self::BlockCursor,
         Self::Block,
         Self::FocusPane,
         Self::SessionCursor,
+        Self::SceneCursor,
         Self::InsertMode,
         Self::NewAgent,
         Self::CloneAgent,
@@ -246,6 +271,7 @@ impl DaveUiTool {
             Self::Block => BLOCK,
             Self::FocusPane => FOCUS_PANE,
             Self::SessionCursor => SESSION_CURSOR,
+            Self::SceneCursor => SCENE_CURSOR,
             Self::InsertMode => INSERT_MODE,
             Self::NewAgent => NEW_AGENT,
             Self::CloneAgent => CLONE_AGENT,
@@ -291,6 +317,12 @@ impl DaveUiTool {
             Self::SessionCursor => (
                 "Switch sessions from the session list, without focusing the input.",
                 vec![enum_arg("to", SESSION_TOS, "Which session to switch to.")],
+            ),
+            Self::SceneCursor => (
+                "Step the scene view's selection to the nearest node on the map that way, \
+                 switching to it without focusing the input. Right off the map's edge is \
+                 the chat beside it.",
+                vec![enum_arg("to", SCENE_TOS, "Which way to step.")],
             ),
             Self::InsertMode => (
                 "Leave normal mode and focus the active session's chat input.",
@@ -381,6 +413,15 @@ impl DaveUiTool {
                     SessionTo::Last => A::SessionPaneLast,
                 }
             }
+            Self::SceneCursor => {
+                let SceneArgs { to } = parse_args(name, args)?;
+                A::SceneStep(match to {
+                    SceneTo::Left => SceneDir::Left,
+                    SceneTo::Down => SceneDir::Down,
+                    SceneTo::Up => SceneDir::Up,
+                    SceneTo::Right => SceneDir::Right,
+                })
+            }
             Self::FocusQueue => {
                 let QueueArgs { dir } = parse_args(name, args)?;
                 match dir {
@@ -423,7 +464,8 @@ fn no_args(name: &str, args: &Value, action: KeyAction) -> Result<KeyAction, Str
 /// Whether `tool` does anything now. `normal` is normal mode as Dave sees it
 /// this frame, or `None` outside it (insert mode, an overlay open, renaming),
 /// where no tool is available. In it, the block tools need the chat pane and
-/// the session cursor the session list; `dave_open_issue` needs an issue,
+/// the session cursor the session list, and the scene cursor the scene's map
+/// standing in for it; `dave_open_issue` needs an issue,
 /// `dave_interrupt` a running turn, and the agentic-only tools an agentic
 /// session. A key bound to a tool that isn't available falls through to Dave,
 /// whose normal mode swallows it.
@@ -438,6 +480,7 @@ pub(crate) fn available(tool: DaveUiTool, normal: Option<NormalView>) -> bool {
     match tool {
         DaveUiTool::BlockCursor | DaveUiTool::Block => view.pane == Pane::Chat,
         DaveUiTool::SessionCursor => view.pane == Pane::Sessions,
+        DaveUiTool::SceneCursor => view.pane == Pane::Sessions && view.scene,
         DaveUiTool::OpenIssue => view.has_issue,
         DaveUiTool::Interrupt => view.interruptible,
         DaveUiTool::CloneAgent
@@ -483,6 +526,9 @@ pub(crate) fn begin_call(
 
 /// Normal mode in the session list.
 const SESSIONS_SCOPES: &[&str] = &["dave.sessions", "dave.normal", "dave"];
+/// Normal mode on the scene's map: its steps, ahead of the session list's
+/// keys (`gg`, `G`, Enter), which it stands in for.
+const SCENE_SCOPES: &[&str] = &["dave.scene", "dave.sessions", "dave.normal", "dave"];
 /// Normal mode in the chat.
 const CHAT_SCOPES: &[&str] = &["dave.chat", "dave.normal", "dave"];
 
@@ -490,10 +536,13 @@ const CHAT_SCOPES: &[&str] = &["dave.chat", "dave.normal", "dave"];
 /// covers): the pane's, then normal mode's, then Dave's. None outside normal
 /// mode, where keys are typing.
 pub(crate) fn key_scopes(normal: Option<NormalView>) -> &'static [&'static str] {
-    match normal.map(|view| view.pane) {
-        None => &[],
-        Some(Pane::Sessions) => SESSIONS_SCOPES,
-        Some(Pane::Chat) => CHAT_SCOPES,
+    let Some(view) = normal else {
+        return &[];
+    };
+    match view.pane {
+        Pane::Sessions if view.scene => SCENE_SCOPES,
+        Pane::Sessions => SESSIONS_SCOPES,
+        Pane::Chat => CHAT_SCOPES,
     }
 }
 
@@ -506,6 +555,7 @@ mod tests {
         NormalView {
             pane,
             sessions_shown: true,
+            scene: false,
             agentic: true,
             interruptible: true,
             has_issue: true,
@@ -549,6 +599,26 @@ mod tests {
             (SESSION_CURSOR, json!({"to": "prev"}), A::SessionPanePrev),
             (SESSION_CURSOR, json!({"to": "first"}), A::SessionPaneFirst),
             (SESSION_CURSOR, json!({"to": "last"}), A::SessionPaneLast),
+            (
+                SCENE_CURSOR,
+                json!({"to": "left"}),
+                A::SceneStep(SceneDir::Left),
+            ),
+            (
+                SCENE_CURSOR,
+                json!({"to": "down"}),
+                A::SceneStep(SceneDir::Down),
+            ),
+            (
+                SCENE_CURSOR,
+                json!({"to": "up"}),
+                A::SceneStep(SceneDir::Up),
+            ),
+            (
+                SCENE_CURSOR,
+                json!({"to": "right"}),
+                A::SceneStep(SceneDir::Right),
+            ),
             (FOCUS_QUEUE, json!({"dir": "next"}), A::FocusQueueNext),
             (FOCUS_QUEUE, json!({"dir": "prev"}), A::FocusQueuePrev),
             (INSERT_MODE, Value::Null, A::InsertMode),
@@ -599,15 +669,31 @@ mod tests {
                     assert!(in_chat && !in_sessions, "{tool:?}")
                 }
                 DaveUiTool::SessionCursor => assert!(!in_chat && in_sessions, "{tool:?}"),
+                DaveUiTool::SceneCursor => assert!(!in_chat && !in_sessions, "{tool:?}"),
                 _ => assert!(in_chat && in_sessions, "{tool:?}"),
             }
         }
+
+        // The scene's map stands in for the list: its steps join the list's
+        // cursor there, and stay off in the chat beside it.
+        let map = NormalView {
+            scene: true,
+            ..view(Pane::Sessions)
+        };
+        let scene_chat = NormalView {
+            scene: true,
+            ..view(Pane::Chat)
+        };
+        assert!(available(DaveUiTool::SceneCursor, Some(map)));
+        assert!(available(DaveUiTool::SessionCursor, Some(map)));
+        assert!(!available(DaveUiTool::SceneCursor, Some(scene_chat)));
 
         let bare = NormalView {
             agentic: false,
             interruptible: false,
             has_issue: false,
             sessions_shown: false,
+            scene: false,
             ..view(Pane::Chat)
         };
         for tool in DaveUiTool::ALL {
@@ -619,7 +705,7 @@ mod tests {
                     | DaveUiTool::ToggleView
                     | DaveUiTool::CyclePermissionMode
                     | DaveUiTool::FocusQueue
-            ) || tool == DaveUiTool::SessionCursor;
+            ) || matches!(tool, DaveUiTool::SessionCursor | DaveUiTool::SceneCursor);
             assert_eq!(available(tool, Some(bare)), !off, "{tool:?}");
         }
     }
@@ -634,6 +720,14 @@ mod tests {
         assert_eq!(
             key_scopes(Some(view(Pane::Sessions))),
             ["dave.sessions", "dave.normal", "dave"]
+        );
+        let map = NormalView {
+            scene: true,
+            ..view(Pane::Sessions)
+        };
+        assert_eq!(
+            key_scopes(Some(map)),
+            ["dave.scene", "dave.sessions", "dave.normal", "dave"]
         );
     }
 }

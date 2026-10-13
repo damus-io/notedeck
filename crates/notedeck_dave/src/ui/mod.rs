@@ -36,7 +36,7 @@ pub use host_picker::HostPickerAction;
 pub use keybind_hint::{keybind_hint, paint_keybind_hint};
 pub use keybindings::check_keybindings;
 pub(crate) use run_config_editor::{run_config_editor_overlay_ui, RunConfigChange};
-pub use scene::{AgentScene, SceneAction, SceneResponse};
+pub use scene::{AgentScene, SceneAction, SceneDir, SceneResponse};
 pub use session_kind_picker::SessionKindAction;
 pub use session_list::{SessionListAction, SessionListUi};
 pub use session_picker::{SessionPicker, SessionPickerAction};
@@ -1034,6 +1034,9 @@ pub enum KeyActionResult {
     /// Open this URI (the active session's issue) through chrome, which routes
     /// a `headway:` ref to its card.
     OpenUri(String),
+    /// `l` on the scene's map found no node to its right: the motions step
+    /// off the map onto the chat beside it.
+    FocusChatPane,
 }
 
 /// Run a block-cursor action against the active chat's [`BlockNav`].
@@ -1214,6 +1217,25 @@ pub fn handle_key_action(
                 InputFocus::Leave,
             );
             KeyActionResult::None
+        }
+        // The scene's motions, the map standing in for the session list: the
+        // same switch as its `j` / `k`, to the nearest node that way.
+        KeyAction::SceneStep(dir) => {
+            let from = scene.primary_selection().or(session_manager.active_id());
+            match from.and_then(|id| scene.neighbor(id, dir)) {
+                Some(id) => {
+                    update::switch_session(
+                        session_manager,
+                        scene,
+                        show_scene,
+                        id,
+                        InputFocus::Leave,
+                    );
+                    KeyActionResult::None
+                }
+                None if dir == SceneDir::Right => KeyActionResult::FocusChatPane,
+                None => KeyActionResult::None,
+            }
         }
         // The pane and the mode live on NormalMode; there is nothing to
         // dispatch.
@@ -1819,6 +1841,7 @@ mod tests {
         let keys = KeyContext {
             ai_mode: AiMode::Agentic,
             sessions_shown: true,
+            scene: false,
             has_pending_permission: update::first_pending_permission(&d.session_manager).is_some(),
             has_pending_question: false,
             in_tentative_state,
