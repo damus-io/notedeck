@@ -90,9 +90,14 @@ pub(crate) struct ListState {
     /// The view-name field, while one is open: naming a new view, or
     /// renaming a saved one.
     naming: Option<ViewNaming>,
-    /// The card under the keyboard cursor. A card rather than a row index,
-    /// so a re-fold that reorders the rows leaves it on the same card.
-    cursor: Option<NoteId>,
+    /// The card or group header under the keyboard cursor. A card or a group
+    /// rather than an entry index, so a re-fold that reorders the rows, or a
+    /// header folding, leaves it on the same one.
+    cursor: Option<ListCursor>,
+    /// Whether `c` has a group to compose a card in: the cursor sits in a
+    /// group that takes a card on the board showing. Latched as the list
+    /// draws ([`ListState::latch_compose`]), since chrome asks before then.
+    can_compose: bool,
     /// Scroll the cursor's row into view on the next draw.
     scroll_to_cursor: bool,
     /// The rows the query keeps, in board order. Valid for
@@ -137,6 +142,7 @@ impl Default for ListState {
             saved: Vec::new(),
             naming: None,
             cursor: None,
+            can_compose: false,
             scroll_to_cursor: false,
             rows: Vec::new(),
             seen: None,
@@ -177,11 +183,46 @@ struct ViewNaming {
 
 /// Which header a fold or a `+` is for: a group, or a sub-group within one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct CollapseKey {
+pub(crate) struct CollapseKey {
     /// The top-level group.
     group: GroupKey,
     /// The sub-group within it, for a sub-group's header.
     sub: Option<GroupKey>,
+}
+
+/// Where the issue list's keyboard cursor rests: on a card's row, or on a
+/// group's header (headway:notedeck/ice-basket-taxi).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ListCursor {
+    /// The row of this card: the first, for a card listed under two labels.
+    Card(NoteId),
+    /// The header of this group or sub-group.
+    Group(CollapseKey),
+}
+
+/// What a fold key does to the list's group headers (`za`, `zc`, `zo`, `zM`,
+/// `zR`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ListFold {
+    /// Fold the cursor's group shut, or open it again (`za`).
+    Toggle,
+    /// Open the cursor's group (`zo`).
+    Open,
+    /// Fold the cursor's group shut (`zc`).
+    Close,
+    /// Fold every group and sub-group shut (`zM`).
+    CloseAll,
+    /// Open every group (`zR`).
+    OpenAll,
+}
+
+/// Which way `]g`/`[g` step through the list's group headers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GroupStep {
+    /// To the next header down (`]g`).
+    Next,
+    /// To the previous header up (`[g`).
+    Prev,
 }
 
 /// One line the list draws: a group's header, or a card's row.
@@ -412,9 +453,50 @@ impl ListState {
         self.open
     }
 
-    /// The card under the keyboard cursor, if any.
+    /// The card under the keyboard cursor, if it's on a card's row.
     pub(crate) fn cursor(&self) -> Option<NoteId> {
-        self.cursor
+        match self.cursor {
+            Some(ListCursor::Card(card)) => Some(card),
+            _ => None,
+        }
+    }
+
+    /// Where the keyboard cursor rests, card or header.
+    pub(crate) fn cursor_spot(&self) -> Option<&ListCursor> {
+        self.cursor.as_ref()
+    }
+
+    /// Whether the list draws group headers, for the fold and `]g`/`[g` keys
+    /// to act on. Allocates nothing: chrome asks every frame.
+    pub(crate) fn has_groups(&self) -> bool {
+        matches!(self.entries.first(), Some(ListEntry::Header(_)))
+    }
+
+    /// Whether `c` has a group to compose a card in (see
+    /// [`can_compose`](Self::can_compose)'s field).
+    pub(crate) fn can_compose(&self) -> bool {
+        self.can_compose
+    }
+
+    /// How many headers and rows the list draws: fewer once a group folds.
+    #[cfg(test)]
+    pub(crate) fn shown(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Put the cursor at `to`, for a test.
+    #[cfg(test)]
+    pub(crate) fn set_cursor(&mut self, to: ListCursor) {
+        self.cursor = Some(to);
+    }
+
+    /// The header key of status group `name`, for a test.
+    #[cfg(test)]
+    pub(crate) fn status_group(name: &str) -> CollapseKey {
+        CollapseKey {
+            group: GroupKey::Status(name.to_string()),
+            sub: None,
+        }
     }
 
     /// Show or hide the list.
@@ -552,12 +634,14 @@ impl ListState {
         }
     }
 
-    /// Fold the header `key` shut, or open it again.
+    /// Fold the header `key` shut, or open it again, as a click on it does.
     fn toggle_collapsed(&mut self, key: &CollapseKey) {
+        let here = self.cursor_group().cloned();
         if !self.collapsed.remove(key) {
             self.collapsed.insert(key.clone());
         }
         self.rebuild_entries();
+        self.settle_cursor(here);
     }
 
     /// What the list shows, as a view: the tab's name, its query narrowed
@@ -633,6 +717,7 @@ impl ListState {
         self.hide_subissues = spec.hide_subissues;
         self.board_scope = spec.board;
         self.cursor = None;
+        self.can_compose = false;
     }
 
     /// Whether the showing tab is a saved view the list no longer matches:
@@ -734,45 +819,190 @@ impl ListState {
         }
     }
 
-    /// The entry of the cursor's row, if the cursor is on a row the list
-    /// shows: the first, for a card listed under two labels.
-    fn cursor_entry(&self) -> Option<usize> {
-        let cursor = self.cursor?;
-        (0..self.entries.len()).find(|&at| {
-            self.entry_row(at)
-                .is_some_and(|row| self.rows[row].id == cursor)
+    /// The header entry `at` draws, if it's a header rather than a row.
+    fn entry_header(&self, at: usize) -> Option<&GroupHeader> {
+        match self.entries.get(at)? {
+            ListEntry::Header(header) => Some(header),
+            ListEntry::Row(_) => None,
+        }
+    }
+
+    /// Whether entry `at` is where `cursor` rests: its card's row, or its
+    /// group's header.
+    fn entry_is(&self, at: usize, cursor: &ListCursor) -> bool {
+        match (&self.entries[at], cursor) {
+            (ListEntry::Row(row), ListCursor::Card(card)) => self.rows[*row].id == *card,
+            (ListEntry::Header(header), ListCursor::Group(key)) => header.key == *key,
+            _ => false,
+        }
+    }
+
+    /// The cursor for entry `at`: its card, or its header's group.
+    fn cursor_of(&self, at: usize) -> Option<ListCursor> {
+        Some(match self.entries.get(at)? {
+            ListEntry::Row(row) => ListCursor::Card(self.rows[*row].id),
+            ListEntry::Header(header) => ListCursor::Group(header.key.clone()),
         })
     }
 
-    /// Move the cursor a row down or up, or to the first or last row,
-    /// stepping over headers. With no cursor (or one on a card the list no
-    /// longer shows), any move lands on the first row. Left and right mean
-    /// nothing in one list.
+    /// The entry the cursor rests on, if the list shows it: the first, for a
+    /// card listed under two labels.
+    fn cursor_entry(&self) -> Option<usize> {
+        let cursor = self.cursor.as_ref()?;
+        (0..self.entries.len()).find(|&at| self.entry_is(at, cursor))
+    }
+
+    /// The group the cursor is in: the header it rests on, or the nearest
+    /// header above its row (a sub-group's, when the list is sub-grouped).
+    /// `None` without a cursor the list shows, or in an ungrouped list.
+    /// Allocates nothing: the list asks every frame
+    /// ([`latch_compose`](Self::latch_compose)).
+    fn cursor_group(&self) -> Option<&CollapseKey> {
+        let at = self.cursor_entry()?;
+        (0..=at)
+            .rev()
+            .find_map(|at| self.entry_header(at))
+            .map(|header| &header.key)
+    }
+
+    /// Put the cursor on entry `at` and scroll it into view.
+    fn put_cursor(&mut self, at: usize) {
+        if let Some(cursor) = self.cursor_of(at) {
+            self.cursor = Some(cursor);
+            self.scroll_to_cursor = true;
+        }
+    }
+
+    /// Move the cursor an entry down or up, or to the first or last entry,
+    /// group headers included. With no cursor (or one on a card or group the
+    /// list no longer shows), any move lands on the first entry. Left and
+    /// right mean nothing in one list.
     pub(crate) fn move_cursor(&mut self, mv: CursorMove) {
-        let is_row = |at: &usize| self.entry_row(*at).is_some();
-        let mut entries = 0..self.entries.len();
+        let last = self.entries.len().checked_sub(1);
         let to = match (self.cursor_entry(), mv) {
-            (None, _) | (_, CursorMove::First) => entries.find(is_row),
-            (_, CursorMove::Last) => entries.rev().find(is_row),
-            (Some(at), CursorMove::Down) => (at + 1..self.entries.len()).find(is_row),
-            (Some(at), CursorMove::Up) => (0..at).rev().find(is_row),
+            (None, _) | (_, CursorMove::First) => last.map(|_| 0),
+            (_, CursorMove::Last) => last,
+            (Some(at), CursorMove::Down) => (at + 1 < self.entries.len()).then_some(at + 1),
+            (Some(at), CursorMove::Up) => at.checked_sub(1),
             (Some(_), CursorMove::Left | CursorMove::Right) => return,
         };
-        let Some(row) = to.and_then(|at| self.entry_row(at)) else {
+        if let Some(at) = to {
+            self.put_cursor(at);
+        }
+    }
+
+    /// Move the cursor to the next or previous group header (`]g`/`[g`).
+    /// With no cursor, `]g` lands on the first header and `[g` on the last.
+    pub(crate) fn step_group(&mut self, step: GroupStep) {
+        let is_header = |at: &usize| self.entry_header(*at).is_some();
+        let here = self.cursor_entry();
+        let to = match (here, step) {
+            (None, GroupStep::Next) => (0..self.entries.len()).find(is_header),
+            (None, GroupStep::Prev) => (0..self.entries.len()).rev().find(is_header),
+            (Some(at), GroupStep::Next) => (at + 1..self.entries.len()).find(is_header),
+            (Some(at), GroupStep::Prev) => (0..at).rev().find(is_header),
+        };
+        if let Some(at) = to {
+            self.put_cursor(at);
+        }
+    }
+
+    /// Fold the list's groups as `fold` says: the cursor's group, or all of
+    /// them. A cursor whose row folds away moves up onto the header that
+    /// hid it.
+    pub(crate) fn fold(&mut self, fold: ListFold) {
+        let here = self.cursor_group().cloned();
+        match fold {
+            ListFold::Toggle | ListFold::Open | ListFold::Close => {
+                let Some(key) = here.clone() else {
+                    return;
+                };
+                let shut = self.collapsed.contains(&key);
+                let close = match fold {
+                    ListFold::Toggle => !shut,
+                    ListFold::Close => true,
+                    _ => false,
+                };
+                if close == shut {
+                    return;
+                }
+                if close {
+                    self.collapsed.insert(key);
+                } else {
+                    self.collapsed.remove(&key);
+                }
+            }
+            ListFold::CloseAll => {
+                for g in &self.groups {
+                    let group = || CollapseKey {
+                        group: g.key.clone(),
+                        sub: None,
+                    };
+                    self.collapsed.insert(group());
+                    self.collapsed
+                        .extend(g.subgroups.iter().map(|sub| CollapseKey {
+                            sub: Some(sub.key.clone()),
+                            ..group()
+                        }));
+                }
+            }
+            ListFold::OpenAll => self.collapsed.clear(),
+        }
+        self.rebuild_entries();
+        self.settle_cursor(here);
+    }
+
+    /// After a fold, move a cursor whose row or sub-group header folded away
+    /// onto the header that hid it: `here`, the group it was in before the
+    /// fold, while that still shows, else `here`'s top-level group.
+    fn settle_cursor(&mut self, here: Option<CollapseKey>) {
+        if self.cursor.is_none() || self.cursor_entry().is_some() {
+            return;
+        }
+        let Some(here) = here else {
             return;
         };
-        self.cursor = Some(self.rows[row].id);
+        let shows = |key: &CollapseKey| {
+            (0..self.entries.len()).any(|at| self.entry_header(at).is_some_and(|h| h.key == *key))
+        };
+        let to = if shows(&here) {
+            here
+        } else {
+            CollapseKey { sub: None, ..here }
+        };
+        self.cursor = Some(ListCursor::Group(to));
         self.scroll_to_cursor = true;
     }
 
-    /// Put the cursor back on `card` and scroll it into view, if the list
-    /// has its row; otherwise leave it where it is.
-    pub(crate) fn restore_cursor(&mut self, card: NoteId) {
-        if !self.rows.iter().any(|row| row.id == card) {
+    /// Latch whether `c` has a group to compose in: the cursor's group takes
+    /// a card on `view`, the board showing ([`group_add`]). Run as the list
+    /// draws, for chrome to ask before the next frame's keys. Allocates
+    /// nothing.
+    fn latch_compose(&mut self, view: &BoardView) {
+        self.can_compose = self
+            .cursor_group()
+            .is_some_and(|key| group_add(key, view).is_some());
+    }
+
+    /// Open the composer for a card in the cursor's group, as its header's
+    /// `+` does (`c`), if a card added there can land in it on `view`.
+    pub(crate) fn compose_at_cursor(&mut self, view: &BoardView) {
+        let Some(key) = self
+            .cursor_group()
+            .filter(|key| group_add(key, view).is_some())
+            .cloned()
+        else {
             return;
+        };
+        self.open_compose(key);
+    }
+
+    /// Put the cursor back where `to` rests and scroll it into view, if the
+    /// list shows that card or header; otherwise leave it where it is.
+    pub(crate) fn restore_cursor(&mut self, to: &ListCursor) {
+        if let Some(at) = (0..self.entries.len()).find(|&at| self.entry_is(at, to)) {
+            self.put_cursor(at);
         }
-        self.cursor = Some(card);
-        self.scroll_to_cursor = true;
     }
 
     /// Where entry `at`'s row opens, read from the `sources` the rows came
@@ -807,11 +1037,17 @@ impl BoardUiState {
         self.list.set_open(open);
     }
 
-    /// Open the card under the list's cursor, if there is one.
+    /// Open the card under the list's cursor, or fold or unfold the group
+    /// header it rests on, as a click on either does (`Enter`/`o`).
     pub(crate) fn open_list_cursor(&mut self, view: &BoardView, sources: &[BoardRef]) {
-        if let Some(at) = self.list.cursor_entry() {
-            self.open_list_row(view, sources, at);
+        let Some(at) = self.list.cursor_entry() else {
+            return;
+        };
+        if self.list.entry_header(at).is_some() {
+            self.list.fold(ListFold::Toggle);
+            return;
         }
+        self.open_list_row(view, sources, at);
     }
 
     /// Whether the list's `+` composer or view-name field is open: Esc
@@ -836,7 +1072,7 @@ impl BoardUiState {
         if target.board.owner != view.author || target.board.slug != view.id {
             self.raise(BoardEffect::Nav(BoardNav::Switch(target.board)));
         }
-        self.list.cursor = Some(target.card);
+        self.list.cursor = Some(ListCursor::Card(target.card));
         self.selected = Some(target.card);
     }
 }
@@ -852,7 +1088,7 @@ pub(crate) fn list_field_id() -> egui::Id {
 /// away from when opened, and which a group's `+` adds its card to. Runs the
 /// list's UI tools first, so a key that opens a card or leaves the list lands
 /// this frame. Returns the card a group's composer adds, if one does.
-pub(super) fn list_view_ui(
+pub(crate) fn list_view_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     view: &BoardView,
@@ -886,6 +1122,7 @@ pub(super) fn list_view_ui(
     if let Some(key) = rows.toggle {
         state.list.toggle_collapsed(&key);
     }
+    state.list.latch_compose(view);
     if let Some(key) = rows.add {
         state.list.open_compose(key);
     }
@@ -1449,8 +1686,11 @@ fn list_rows_ui(
             for at in range {
                 match &list.entries[at] {
                     ListEntry::Header(header) => {
-                        let add = group_add(&header.key, view).is_some();
-                        let clicked = group_header_ui(ui, theme, header, add);
+                        let look = HeaderLook {
+                            add: group_add(&header.key, view).is_some(),
+                            on_cursor: cursor == Some(at),
+                        };
+                        let clicked = group_header_ui(ui, theme, header, look);
                         if clicked.toggle {
                             response.toggle = Some(header.key.clone());
                         }
@@ -1487,15 +1727,26 @@ struct HeaderClicks {
     add: bool,
 }
 
+/// How a group header draws this frame, beyond its group.
+#[derive(Clone, Copy)]
+struct HeaderLook {
+    /// A card added here can land in the group: it draws a `+`.
+    add: bool,
+    /// It's the keyboard cursor's header: ringed, as a cursor row is.
+    on_cursor: bool,
+}
+
 /// A group's header, one row tall: a fold arrow, the group's name and its
-/// count, and on the right a `+` when `add` (a card added here can land in
-/// the group). A sub-group's header sits indented under its group's.
+/// count, and on the right a `+` when `look.add` (a card added here can land
+/// in the group). A sub-group's header sits indented under its group's. The
+/// keyboard cursor's header is tinted and ringed, as a cursor row is.
 fn group_header_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     header: &GroupHeader,
-    add: bool,
+    look: HeaderLook,
 ) -> HeaderClicks {
+    let HeaderLook { add, on_cursor } = look;
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ROW_HEIGHT),
         egui::Sense::hover(),
@@ -1517,14 +1768,21 @@ fn group_header_ui(
         )
     });
     let sub = header.key.sub.is_some();
+    let corner = egui::CornerRadius::same(RADIUS_MD as u8);
     // A quiet band, as Linear's: the panel a shade lighter, never the
     // elevated surface (a slab in dark mode, and white-on-white in light).
-    if !sub {
-        ui.painter().rect_filled(
+    if on_cursor {
+        ui.painter()
+            .rect_filled(rect, corner, theme.accent.gamma_multiply(0.15));
+        ui.painter().rect_stroke(
             rect,
-            egui::CornerRadius::same(RADIUS_MD as u8),
-            theme.surface_secondary,
+            corner,
+            egui::Stroke::new(1.0, theme.accent),
+            egui::StrokeKind::Inside,
         );
+    } else if !sub {
+        ui.painter()
+            .rect_filled(rect, corner, theme.surface_secondary);
     }
     let indent = if sub {
         SPACING_LG + SPACING_SM
@@ -1907,4 +2165,214 @@ fn prop_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, label: &str, on: bool) ->
         .stroke(egui::Stroke::new(STROKE_THIN, theme.border_strong))
         .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8));
     ui.add(chip)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cursor::tests::{grid, id};
+    use std::rc::Rc;
+
+    /// [`grid`] as the one source the list reads.
+    fn sources(view: BoardView) -> Vec<BoardRef> {
+        let boards: Rc<[BoardView]> = Rc::from(vec![view]);
+        vec![BoardRef::find(boards, &[0; 32], "headway").expect("the board")]
+    }
+
+    /// A list over [`grid`], on All issues (Active would drop `c`, the last
+    /// column, as done) and grouped by status: `a` (1, 2, 3), `b` (4) and `c`
+    /// (5, 6), each under its header.
+    fn grouped() -> ListState {
+        let mut list = ListState {
+            base: BuiltinView::All.query().to_string(),
+            ..ListState::default()
+        };
+        list.refresh(&sources(grid()));
+        list
+    }
+
+    /// The status group named `name`'s header key.
+    fn group(name: &str) -> CollapseKey {
+        CollapseKey {
+            group: GroupKey::Status(name.to_string()),
+            sub: None,
+        }
+    }
+
+    fn on_card(n: u8) -> Option<ListCursor> {
+        Some(ListCursor::Card(id(n)))
+    }
+
+    fn on_group(name: &str) -> Option<ListCursor> {
+        Some(ListCursor::Group(group(name)))
+    }
+
+    /// `j` walks the headers along with the rows, top to bottom, and `k`
+    /// back up; `gg` and `G` land on the first and last entries, the first a
+    /// header.
+    #[test]
+    fn j_and_k_walk_headers_and_rows() {
+        let mut list = grouped();
+        let walk = [
+            on_group("a"),
+            on_card(1),
+            on_card(2),
+            on_card(3),
+            on_group("b"),
+            on_card(4),
+            on_group("c"),
+            on_card(5),
+            on_card(6),
+        ];
+        for want in &walk {
+            list.move_cursor(CursorMove::Down);
+            assert_eq!(&list.cursor, want);
+        }
+        // Clamped at the bottom.
+        list.move_cursor(CursorMove::Down);
+        assert_eq!(list.cursor, on_card(6));
+        for want in walk.iter().rev().skip(1) {
+            list.move_cursor(CursorMove::Up);
+            assert_eq!(&list.cursor, want);
+        }
+        list.move_cursor(CursorMove::Last);
+        assert_eq!(list.cursor, on_card(6));
+        list.move_cursor(CursorMove::First);
+        assert_eq!(list.cursor, on_group("a"));
+        // On a header there's no card for the card keys to act on.
+        assert_eq!(list.cursor(), None);
+    }
+
+    /// `]g` and `[g` step from header to header, from a row too; with no
+    /// cursor they land on the first and the last header.
+    #[test]
+    fn step_group_goes_header_to_header() {
+        let mut list = grouped();
+        list.step_group(GroupStep::Prev);
+        assert_eq!(list.cursor, on_group("c"));
+        list.cursor = None;
+        list.step_group(GroupStep::Next);
+        assert_eq!(list.cursor, on_group("a"));
+        list.step_group(GroupStep::Next);
+        assert_eq!(list.cursor, on_group("b"));
+        list.cursor = on_card(5);
+        list.step_group(GroupStep::Prev);
+        assert_eq!(list.cursor, on_group("c"));
+        list.step_group(GroupStep::Next);
+        assert_eq!(list.cursor, on_group("c"), "no header below c's");
+    }
+
+    /// `za` on a row folds its group, moving the cursor up onto the header
+    /// that hid it, and `j` then skips the folded rows; `za` again opens it.
+    #[test]
+    fn toggling_a_rows_group_moves_the_cursor_onto_its_header() {
+        let mut list = grouped();
+        list.cursor = on_card(2);
+        list.fold(ListFold::Toggle);
+        assert!(list.collapsed.contains(&group("a")));
+        assert_eq!(list.cursor, on_group("a"));
+        list.move_cursor(CursorMove::Down);
+        assert_eq!(list.cursor, on_group("b"), "a's rows are folded away");
+        list.move_cursor(CursorMove::Up);
+        list.fold(ListFold::Toggle);
+        assert!(list.collapsed.is_empty());
+        assert_eq!(list.cursor, on_group("a"), "the cursor stays on the header");
+        list.move_cursor(CursorMove::Down);
+        assert_eq!(list.cursor, on_card(1));
+    }
+
+    /// `zc` only closes and `zo` only opens; neither moves a cursor that
+    /// still shows.
+    #[test]
+    fn close_and_open_only_close_and_open() {
+        let mut list = grouped();
+        list.cursor = on_card(4);
+        list.fold(ListFold::Open);
+        assert!(list.collapsed.is_empty());
+        assert_eq!(list.cursor, on_card(4));
+        list.fold(ListFold::Close);
+        list.fold(ListFold::Close);
+        assert!(list.collapsed.contains(&group("b")));
+        assert_eq!(list.cursor, on_group("b"));
+        list.fold(ListFold::Open);
+        list.fold(ListFold::Open);
+        assert!(list.collapsed.is_empty());
+    }
+
+    /// `zM` folds every group and sub-group, leaving the cursor on its row's
+    /// top-level header; `zR` opens them all.
+    #[test]
+    fn fold_all_and_open_all() {
+        let mut list = grouped();
+        list.grouping.sub = GroupBy::Priority;
+        list.refresh(&sources(grid()));
+        list.cursor = on_card(5);
+        list.fold(ListFold::CloseAll);
+        // Three groups, each with its one "No priority" sub-group.
+        assert_eq!(list.collapsed.len(), 6);
+        assert_eq!(list.entries.len(), 3, "only the top-level headers show");
+        assert_eq!(list.cursor, on_group("c"));
+        list.fold(ListFold::OpenAll);
+        assert!(list.collapsed.is_empty());
+        assert_eq!(list.entries.len(), 3 + 3 + 6);
+        assert_eq!(list.cursor, on_group("c"));
+    }
+
+    /// A board re-fold that moves the cursor's header leaves the cursor on
+    /// the same group.
+    #[test]
+    fn a_refold_keeps_the_cursor_on_its_group() {
+        let mut list = grouped();
+        list.cursor = on_group("b");
+        let at = list.cursor_entry();
+        // 5 moves from `c` up into `a`, above `b`'s header.
+        let mut view = grid();
+        let five = view.columns[2].cards.remove(0);
+        view.columns[0].cards.push(five);
+        list.refresh(&sources(view));
+        assert_eq!(list.cursor, on_group("b"));
+        assert_eq!(list.cursor_entry(), at.map(|at| at + 1));
+    }
+
+    /// `c` opens the composer for the cursor's group, from its header or a
+    /// row under it, and is offered only where a card can land: the board
+    /// showing's own groups.
+    #[test]
+    fn c_composes_in_the_cursors_group() {
+        let view = grid();
+        let mut list = grouped();
+        list.latch_compose(&view);
+        assert!(!list.can_compose(), "no cursor, no group");
+        list.cursor = on_card(4);
+        list.latch_compose(&view);
+        assert!(list.can_compose());
+        list.compose_at_cursor(&view);
+        let compose = list.compose.as_ref().expect("the composer");
+        assert_eq!(compose.key, group("b"));
+        assert_eq!(compose.label, "b");
+
+        // A board where `b` isn't a column takes no card in its group.
+        let mut other = grid();
+        other.columns.remove(1);
+        list.compose = None;
+        list.latch_compose(&other);
+        assert!(!list.can_compose());
+        list.compose_at_cursor(&other);
+        assert!(list.compose.is_none());
+    }
+
+    /// Ungrouped, the list has no headers: the cursor walks rows alone and the
+    /// fold keys aren't offered.
+    #[test]
+    fn an_ungrouped_list_has_no_headers() {
+        let mut list = grouped();
+        list.grouping.by = GroupBy::None;
+        list.refresh(&sources(grid()));
+        assert!(!list.has_groups());
+        list.move_cursor(CursorMove::First);
+        assert_eq!(list.cursor, on_card(1));
+        list.fold(ListFold::Toggle);
+        assert!(list.collapsed.is_empty());
+        assert!(grouped().has_groups());
+    }
 }

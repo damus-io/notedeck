@@ -47,7 +47,7 @@ pub use inline::{ChipStatus, board_inline_ui, card_chip_ui, card_inline_ui, issu
 
 pub(crate) use card_actions::{CardStep, DetailScroll, DetailSpot, reason_field_id};
 pub(crate) use filter::{ViewFilter, filter_field_id, parse_board_filter};
-pub(crate) use list::list_field_id;
+pub(crate) use list::{GroupStep, ListCursor, ListFold, ListState, list_field_id, list_view_ui};
 #[cfg(test)]
 pub(crate) use review_comments::DraftComment;
 
@@ -58,7 +58,6 @@ use filter::{filter_archived_jump, filter_ref_jump};
 use graph::{GraphMode, graph_view_ui};
 use grid::{add_column_ui, column_ui, start_move_anims};
 use header::{board_switcher, filtered_badge, sync_indicator, view_options_menu};
-use list::{ListState, list_view_ui};
 use review::{NOTICE_SECS, ReviewQueue, ReviewSection, ReviewUi, review_pane_ui, review_queue_ui};
 use widgets::KeyedText;
 
@@ -383,10 +382,53 @@ impl BoardUiState {
         self.list.move_cursor(mv);
     }
 
-    /// Put the issue list's cursor back on `card` (a jump back), if the
-    /// list still has its row.
-    pub(crate) fn restore_list_cursor(&mut self, card: NoteId) {
-        self.list.restore_cursor(card);
+    /// Where the issue list's cursor rests, card or group header.
+    pub(crate) fn list_cursor_spot(&self) -> Option<&ListCursor> {
+        self.list.cursor_spot()
+    }
+
+    /// Put the issue list's cursor back where `to` rests (a jump back), if
+    /// the list still shows that row or header.
+    pub(crate) fn restore_list_cursor(&mut self, to: &ListCursor) {
+        self.list.restore_cursor(to);
+    }
+
+    /// Whether the issue list draws group headers for its fold and `]g`/`[g`
+    /// keys.
+    pub(crate) fn list_has_groups(&self) -> bool {
+        self.list.has_groups()
+    }
+
+    /// Whether the issue list's `c` has a group to compose a card in.
+    pub(crate) fn list_can_compose(&self) -> bool {
+        self.list.can_compose()
+    }
+
+    /// Fold the issue list's groups (`za`, `zc`, `zo`, `zM`, `zR`).
+    pub(crate) fn fold_list(&mut self, fold: ListFold) {
+        self.list.fold(fold);
+    }
+
+    /// Step the issue list's cursor to the next or previous group header.
+    pub(crate) fn step_list_group(&mut self, step: GroupStep) {
+        self.list.step_group(step);
+    }
+
+    /// Open the issue list's composer in the cursor's group (`c`).
+    pub(crate) fn compose_in_list_group(&mut self, view: &BoardView) {
+        self.list.compose_at_cursor(view);
+    }
+
+    /// The issue list, for a test to set up and read.
+    #[cfg(test)]
+    pub(crate) fn list_mut(&mut self) -> &mut ListState {
+        &mut self.list
+    }
+
+    /// The issue list, for a test to read.
+    #[cfg(test)]
+    pub(crate) fn list(&self) -> &ListState {
+        &self.list
     }
 
     /// Seed whether the review queue shows, and over what, from the chrome

@@ -13,16 +13,16 @@ use nostrdb_net::NoteId;
 use notedeck::{JumpLocation, JumpTarget};
 
 use crate::Headway;
-use crate::ui::{DetailScroll, DetailSpot};
+use crate::ui::{DetailScroll, DetailSpot, ListCursor};
 
 /// Where Headway's keyboard is: each view's cursor, and how far down the
 /// open card's detail is scrolled.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct HeadwayJump {
     /// The board grid's cursor.
     grid: Option<NoteId>,
-    /// The issue list's cursor.
-    list: Option<NoteId>,
+    /// The issue list's cursor: a card's row or a group's header.
+    list: Option<ListCursor>,
     /// The open card's detail scroll, while a card is open.
     detail: Option<DetailSpot>,
 }
@@ -32,7 +32,7 @@ impl Headway {
     pub(crate) fn jump_here(&self) -> HeadwayJump {
         HeadwayJump {
             grid: self.state.cursor(),
-            list: self.state.list_cursor(),
+            list: self.state.list_cursor_spot().cloned(),
             detail: self.state.detail_spot(),
         }
     }
@@ -45,8 +45,8 @@ impl Headway {
         if let Some(card) = to.grid.filter(|&card| self.seen_cards.contains(card)) {
             self.state.set_cursor(card);
         }
-        if let Some(card) = to.list {
-            self.state.restore_list_cursor(card);
+        if let Some(spot) = &to.list {
+            self.state.restore_list_cursor(spot);
         }
         if let Some(spot) = to
             .detail

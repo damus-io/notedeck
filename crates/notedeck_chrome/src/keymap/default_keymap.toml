@@ -536,6 +536,75 @@ tool  = "headway_focus_filter"
 label = "filter"
 group = "list"
 
+# The list's group headers (headway:notedeck/ice-basket-taxi): the cursor
+# rests on them as on a row, so `j`/`k` walk them too, and Enter or `o` on one
+# folds it as a click does. Offered only while the list is grouped.
+
+[[bind]]
+scope = "headway.list"
+keys  = "] g"
+tool  = "headway_list_step_group"
+args  = { dir = "next" }
+label = "next/prev group"
+group = "fold"
+
+[[bind]]
+scope = "headway.list"
+keys  = "[ g"
+tool  = "headway_list_step_group"
+args  = { dir = "prev" }
+label = "next/prev group"
+group = "fold"
+
+[[bind]]
+scope = "headway.list"
+keys  = "z a"
+tool  = "headway_list_fold"
+args  = { to = "toggle" }
+label = "fold group"
+group = "fold"
+
+[[bind]]
+scope = "headway.list"
+keys  = "z c"
+tool  = "headway_list_fold"
+args  = { to = "close" }
+label = "close/open group"
+group = "fold"
+
+[[bind]]
+scope = "headway.list"
+keys  = "z o"
+tool  = "headway_list_fold"
+args  = { to = "open" }
+label = "close/open group"
+group = "fold"
+
+[[bind]]
+scope = "headway.list"
+keys  = "z M"
+tool  = "headway_list_fold"
+args  = { to = "all" }
+label = "fold/unfold all"
+group = "fold"
+
+[[bind]]
+scope = "headway.list"
+keys  = "z R"
+tool  = "headway_list_fold"
+args  = { to = "none" }
+label = "fold/unfold all"
+group = "fold"
+
+# `c` composes a card in the cursor's group, as its header's `+` does.
+
+[[bind]]
+scope = "headway.list"
+keys  = "c"
+tool  = "headway_compose_card"
+label = "new in group"
+group = "fold"
+
 [[bind]]
 scope = "headway.list"
 keys  = "q"

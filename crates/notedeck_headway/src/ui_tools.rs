@@ -35,7 +35,7 @@ use notedeck::{ToolArg, ToolArgType, ToolSpec};
 
 use crate::cursor::CursorMove;
 use crate::keys::{CardAction, PaneScroll};
-use crate::ui::{BoardStep, BoardUiState, CardStep, SessionOpen};
+use crate::ui::{BoardStep, BoardUiState, CardStep, GroupStep, ListFold, SessionOpen};
 
 /// `Enter`/`o`: open the current card's detail.
 pub(crate) const OPEN_CARD: &str = "headway_open_card";
@@ -56,7 +56,8 @@ pub(crate) const QUICK_COMMENT: &str = "headway_quick_comment";
 pub(crate) const STEP_CARD: &str = "headway_step_card";
 /// `j`/`k`/`h`/`l`, `gg`/`G`: move the grid's cursor.
 pub(crate) const CURSOR_MOVE: &str = "headway_cursor_move";
-/// `c` on the grid: open the add-card composer. Creating the card is the
+/// `c` on the grid: open the add-card composer; in the issue list, the
+/// composer for a card in the cursor's group. Creating the card is the
 /// composer's (or the `headway_add_card` data tool's).
 pub(crate) const COMPOSE_CARD: &str = "headway_compose_card";
 /// `/`: focus the grid's filter.
@@ -73,6 +74,11 @@ pub(crate) const PREV_BOARD: &str = "headway_prev_board";
 pub(crate) const PICK_BOARD: &str = "headway_pick_board";
 /// The grid's `Esc`: drop the cursor.
 pub(crate) const CLEAR: &str = "headway_clear";
+/// `za`/`zc`/`zo`/`zM`/`zR` in the issue list: fold its group headers.
+pub(crate) const LIST_FOLD: &str = "headway_list_fold";
+/// `]g`/`[g` in the issue list: step the cursor to the next/previous group
+/// header.
+pub(crate) const LIST_STEP_GROUP: &str = "headway_list_step_group";
 /// `j`/`k`, `Space`, `^d`/`^u`, `gg`/`G` over a pane: scroll it.
 pub(crate) const SCROLL: &str = "headway_scroll";
 /// `]`/`[`: the next/previous file of a review pane's diff.
@@ -97,9 +103,10 @@ pub(crate) enum HeadwayUiTool {
         action: CardAction,
         card: Option<String>,
     },
-    /// Move the grid's cursor.
+    /// Move the grid's or the issue list's cursor.
     Cursor(CursorMove),
-    /// Open the add-card composer in the cursor's column.
+    /// Open the add-card composer in the grid cursor's column, or the issue
+    /// list's in the cursor's group.
     AddCard,
     /// Focus the grid's filter field.
     FocusFilter,
@@ -113,6 +120,10 @@ pub(crate) enum HeadwayUiTool {
     PickBoard,
     /// The grid's `Esc`.
     Clear,
+    /// Fold the issue list's group headers.
+    ListFold(ListFold),
+    /// Step the issue list's cursor to the next or previous group header.
+    ListStepGroup(GroupStep),
     /// Scroll the review pane's diff or the detail.
     Scroll(PaneScroll),
     /// Write a comment in a review pane.
@@ -141,7 +152,8 @@ struct SessionArgs {
     code_review: bool,
 }
 
-/// Next or previous, for `headway_step_card` and `headway_step_file`.
+/// Next or previous, for `headway_step_card`, `headway_step_file` and
+/// `headway_list_step_group`.
 #[derive(Deserialize, Default, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 enum Dir {
@@ -163,10 +175,11 @@ struct StepArgs {
     dir: Dir,
 }
 
-/// `headway_step_file`'s arguments.
+/// The arguments of `headway_step_file` and `headway_list_step_group`: a
+/// direction.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-struct FileArgs {
+struct DirArgs {
     #[serde(default)]
     dir: Dir,
 }
@@ -222,6 +235,29 @@ const SCROLL_TOS: &[&str] = &[
     "top",
     "bottom",
 ];
+
+/// What `headway_list_fold` folds.
+#[derive(Deserialize, Default, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum FoldTo {
+    #[default]
+    Toggle,
+    Open,
+    Close,
+    All,
+    None,
+}
+
+/// The values of [`FoldTo`].
+const FOLD_TOS: &[&str] = &["toggle", "open", "close", "all", "none"];
+
+/// `headway_list_fold`'s arguments.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct FoldArgs {
+    #[serde(default)]
+    to: FoldTo,
+}
 
 /// `headway_scroll`'s arguments.
 #[derive(Deserialize, Default)]
@@ -316,7 +352,8 @@ impl HeadwayUiTool {
             .ui(),
             ToolSpec::new(
                 COMPOSE_CARD,
-                "Open the add-card composer in the grid cursor's column.",
+                "Open the add-card composer in the grid cursor's column, or in the issue \
+                 list, the composer for a card in the cursor's group.",
                 vec![],
             )
             .ui(),
@@ -358,6 +395,19 @@ impl HeadwayUiTool {
             )
             .ui(),
             ToolSpec::new(CLEAR, "Drop the board grid's cursor.", vec![]).ui(),
+            ToolSpec::new(
+                LIST_FOLD,
+                "Fold the issue list's group headers: toggle, open or close the cursor's \
+                 group, or close (all) or open (none) every group.",
+                vec![enum_arg("to", FOLD_TOS, "What to fold.")],
+            )
+            .ui(),
+            ToolSpec::new(
+                LIST_STEP_GROUP,
+                "Move the issue list's cursor to the next or previous group header.",
+                vec![enum_arg("dir", DIRS, "Which way to step.")],
+            )
+            .ui(),
             ToolSpec::new(
                 SCROLL,
                 "Scroll the review pane's diff or the card detail.",
@@ -445,6 +495,23 @@ impl HeadwayUiTool {
             PREV_BOARD => no_args(name, args, Self::StepBoard(BoardStep::Prev))?,
             PICK_BOARD => no_args(name, args, Self::PickBoard)?,
             CLEAR => no_args(name, args, Self::Clear)?,
+            LIST_FOLD => {
+                let FoldArgs { to } = parse_args(name, args)?;
+                Self::ListFold(match to {
+                    FoldTo::Toggle => ListFold::Toggle,
+                    FoldTo::Open => ListFold::Open,
+                    FoldTo::Close => ListFold::Close,
+                    FoldTo::All => ListFold::CloseAll,
+                    FoldTo::None => ListFold::OpenAll,
+                })
+            }
+            LIST_STEP_GROUP => {
+                let DirArgs { dir } = parse_args(name, args)?;
+                Self::ListStepGroup(match dir {
+                    Dir::Next => GroupStep::Next,
+                    Dir::Prev => GroupStep::Prev,
+                })
+            }
             SCROLL => {
                 let ScrollArgs { to } = parse_args(name, args)?;
                 Self::Scroll(match to {
@@ -459,7 +526,7 @@ impl HeadwayUiTool {
                 })
             }
             STEP_FILE => {
-                let FileArgs { dir } = parse_args(name, args)?;
+                let DirArgs { dir } = parse_args(name, args)?;
                 Self::Scroll(match dir {
                     Dir::Next => PaneScroll::NextFile,
                     Dir::Prev => PaneScroll::PrevFile,
@@ -651,8 +718,11 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
     let list = at == KeyView::List;
     let review = matches!(at, KeyView::Queue | KeyView::Pane);
     match name {
-        // The detail has nothing to open: its card is open.
-        OPEN_CARD => card && at != KeyView::Detail,
+        // The detail has nothing to open: its card is open. The list's
+        // Enter on a group header folds it.
+        OPEN_CARD => {
+            (card && at != KeyView::Detail) || (list && state.list_cursor_spot().is_some())
+        }
         // Say there's no explainer, or no session, when there's none, so
         // the key answers rather than falling through. The list's card may
         // be on another board, so these wait for its detail.
@@ -664,7 +734,9 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
         // queue's steps off a card that has left the board.
         STEP_CARD => (card && !list) || grid || at == KeyView::Queue,
         CURSOR_MOVE | FOCUS_FILTER => grid || list,
-        COMPOSE_CARD | OPEN_LIST | PICK_BOARD => grid,
+        COMPOSE_CARD => grid || (list && state.list_can_compose()),
+        OPEN_LIST | PICK_BOARD => grid,
+        LIST_FOLD | LIST_STEP_GROUP => list && state.list_has_groups(),
         NEXT_BOARD | PREV_BOARD => grid && state.other_boards(),
         OPEN_REVIEW_QUEUE => grid || at == KeyView::Detail,
         CLEAR => grid && card,

@@ -225,7 +225,9 @@ pub(crate) fn apply_grid_tool(
         // The grid's `Esc`. Chrome's keymap owns the pending chord and the
         // which-key strip, so all that's left to drop is the cursor.
         HeadwayUiTool::Clear => state.clear_cursor(),
-        HeadwayUiTool::Scroll(_)
+        HeadwayUiTool::ListFold(_)
+        | HeadwayUiTool::ListStepGroup(_)
+        | HeadwayUiTool::Scroll(_)
         | HeadwayUiTool::Comment
         | HeadwayUiTool::SendComments
         | HeadwayUiTool::Back => {}
@@ -234,11 +236,14 @@ pub(crate) fn apply_grid_tool(
 }
 
 /// Apply one UI tool in the cross-board issue list: `j`/`k`/`gg`/`G` move its
-/// cursor over the rows, `Enter`/`o` open the cursor's card (switching boards
-/// when it's on another), `/` focuses the query, `q`/`Esc` leave for the grid.
-/// `sources` are the boards the list's rows were read from. Nothing else
-/// means anything here: the card actions act on a card of the board showing,
-/// and a list row may be on another, so they wait for its detail.
+/// cursor over the rows and group headers, `]g`/`[g` from header to header,
+/// `Enter`/`o` open the cursor's card (switching boards when it's on another)
+/// or fold the header it rests on, `za`/`zc`/`zo`/`zM`/`zR` fold the groups,
+/// `c` opens the composer in the cursor's group, `/` focuses the query,
+/// `q`/`Esc` leave for the grid. `sources` are the boards the list's rows were
+/// read from. Nothing else means anything here: the card actions act on a
+/// card of the board showing, and a list row may be on another, so they wait
+/// for its detail.
 pub(crate) fn apply_list_tool(
     ctx: &egui::Context,
     view: &BoardView,
@@ -252,6 +257,9 @@ pub(crate) fn apply_list_tool(
             action: CardAction::Open,
             card: None,
         } => state.open_list_cursor(view, sources),
+        HeadwayUiTool::ListFold(fold) => state.fold_list(*fold),
+        HeadwayUiTool::ListStepGroup(step) => state.step_list_group(*step),
+        HeadwayUiTool::AddCard => state.compose_in_list_group(view),
         HeadwayUiTool::FocusFilter => ctx.memory_mut(|m| m.request_focus(list_field_id())),
         HeadwayUiTool::Back => state.close_list(),
         _ => tracing::debug!("headway: {tool:?} means nothing in the issue list; dropped"),
@@ -382,6 +390,8 @@ pub(crate) fn apply_pane_tool(
         | HeadwayUiTool::OpenList
         | HeadwayUiTool::StepBoard(_)
         | HeadwayUiTool::PickBoard
+        | HeadwayUiTool::ListFold(_)
+        | HeadwayUiTool::ListStepGroup(_)
         | HeadwayUiTool::FocusFilter
         | HeadwayUiTool::ReviewQueue
         | HeadwayUiTool::Clear => {}
@@ -438,6 +448,8 @@ pub(crate) fn apply_detail_tool(
         | HeadwayUiTool::OpenList
         | HeadwayUiTool::StepBoard(_)
         | HeadwayUiTool::PickBoard
+        | HeadwayUiTool::ListFold(_)
+        | HeadwayUiTool::ListStepGroup(_)
         | HeadwayUiTool::FocusFilter
         | HeadwayUiTool::Clear
         | HeadwayUiTool::Comment
@@ -649,6 +661,9 @@ mod tests {
         boards: Vec<BoardSummary>,
         /// The slug of the last board a key switched to.
         switched: Option<String>,
+        /// The boards the issue list reads, while a test draws it
+        /// ([`list_harness`]): set, an open list draws in the grid's place.
+        list_sources: Vec<crate::cache::BoardRef>,
     }
 
     /// Headway's data tools the shipped keymap binds its board edits to
@@ -811,8 +826,13 @@ mod tests {
                 let keyed = reason_keys(ui.ctx(), &h.view, &mut h.state);
                 let keyed = keyed.or(pane_tools(ui.ctx(), &h.view, &mut h.state));
                 h.state.retire_stale_notice(ui.ctx().cumulative_pass_nr());
+                let list = h.state.list_open() && !h.list_sources.is_empty();
                 let action = if showed_pane || keyed.is_some() {
                     keyed
+                } else if list {
+                    let theme = ColorTheme::current(ui.ctx());
+                    let sources = &h.list_sources;
+                    crate::ui::list_view_ui(ui, &theme, &sources[0], sources, &mut h.state)
                 } else {
                     let filter = ViewFilter {
                         view: &h.view,
@@ -895,6 +915,7 @@ mod tests {
                     },
                 ],
                 switched: None,
+                list_sources: Vec::new(),
             },
         );
         harness.run();
@@ -1099,6 +1120,12 @@ mod tests {
         picker: bool,
         /// The last board switched to.
         switched: Option<String>,
+        /// Where the issue list's cursor rests.
+        list_cursor: Option<crate::ui::ListCursor>,
+        /// How many headers and rows the issue list draws.
+        list_shown: usize,
+        /// The issue list's `+` composer or view-name field is open.
+        list_composing: bool,
     }
 
     fn effects(harness: &Harness<'static, KeysHarness>) -> Effects {
@@ -1120,6 +1147,9 @@ mod tests {
             session: h.session.clone(),
             picker: h.state.board_picker_open(),
             switched: h.switched.clone(),
+            list_cursor: h.state.list_cursor_spot().cloned(),
+            list_shown: h.state.list().shown(),
+            list_composing: h.state.list_composing(),
         }
     }
 
@@ -1245,6 +1275,94 @@ mod tests {
                 "keycap {cap:?} ({label}) did nothing"
             );
         }
+    }
+
+    /// Replay every keycap of chrome's strip over the issue list and check
+    /// it did *something*, as [`every_hint_does_what_it_says`] does for the
+    /// grid. From two places, since no one place has every fold key do
+    /// something (`zo` needs a closed group, `zc` an open one): the cursor on
+    /// 5 in `b` with `a` folded, and on `c`'s folded header. A keycap passes
+    /// when it changes something from either.
+    #[test]
+    fn every_list_hint_does_what_it_says() {
+        use crate::ui::ListCursor;
+        let starts = || {
+            [
+                list_harness(ListCursor::Card(id(5)), &["a"]),
+                list_harness(
+                    ListCursor::Group(crate::ui::ListState::status_group("c")),
+                    &["c"],
+                ),
+            ]
+        };
+        let caps = strip_now(&starts()[0]);
+        let labels: Vec<_> = caps.iter().map(|k| k.label.as_str()).collect();
+        for label in [
+            "next/prev group",
+            "fold group",
+            "close/open group",
+            "fold/unfold all",
+            "new in group",
+        ] {
+            assert!(labels.contains(&label), "{label:?} missing from {labels:?}");
+        }
+        for StripKey { cap, label } in caps {
+            let did = starts().into_iter().any(|mut harness| {
+                let before = effects(&harness);
+                for KeyPress { modifiers, key } in keycap_presses(&cap) {
+                    press_with(&mut harness, modifiers, key);
+                }
+                effects(&harness) != before
+            });
+            assert!(did, "keycap {cap:?} ({label}) did nothing in the list");
+        }
+    }
+
+    /// Through chrome's keymap: `za` folds the cursor row's group, putting the
+    /// cursor on its header, `j` then skips the folded rows, `Enter` on the
+    /// header unfolds it, and `zM`/`zR` fold and unfold everything.
+    #[test]
+    fn list_fold_keys_fold_and_skip() {
+        use crate::ui::{ListCursor, ListState};
+        let mut harness = list_harness(ListCursor::Card(id(2)), &[]);
+        let shown = |h: &Harness<'static, KeysHarness>| h.state().state.list().shown();
+        let at = |h: &Harness<'static, KeysHarness>| h.state().state.list_cursor_spot().cloned();
+        assert_eq!(shown(&harness), 12);
+        press(&mut harness, Key::Z);
+        press(&mut harness, Key::A);
+        assert_eq!(shown(&harness), 9);
+        assert_eq!(
+            at(&harness),
+            Some(ListCursor::Group(ListState::status_group("a")))
+        );
+        press(&mut harness, Key::J);
+        assert_eq!(
+            at(&harness),
+            Some(ListCursor::Group(ListState::status_group("b")))
+        );
+        press(&mut harness, Key::K);
+        press(&mut harness, Key::Enter);
+        assert_eq!(shown(&harness), 12);
+        assert_eq!(
+            harness.state().state.selected(),
+            None,
+            "a header opens no card"
+        );
+        press(&mut harness, Key::Z);
+        press_with(&mut harness, Modifiers::SHIFT, Key::M);
+        assert_eq!(shown(&harness), 3);
+        press(&mut harness, Key::Z);
+        press_with(&mut harness, Modifiers::SHIFT, Key::R);
+        assert_eq!(shown(&harness), 12);
+        // `]g` from `a`'s header goes to `b`'s, and `c` composes there.
+        press(&mut harness, Key::CloseBracket);
+        press(&mut harness, Key::G);
+        assert_eq!(
+            at(&harness),
+            Some(ListCursor::Group(ListState::status_group("b")))
+        );
+        press(&mut harness, Key::C);
+        assert!(harness.state().state.list_composing());
     }
 
     #[test]
@@ -1731,6 +1849,37 @@ mod tests {
         harness
     }
 
+    /// The issue list open over [`square_grid`] on All issues, grouped by
+    /// status (`a` 1-3, `b` 4-6, `c` 7-9 under their headers), the cursor at
+    /// `cursor` and the groups in `folded` folded shut.
+    fn list_harness(
+        cursor: crate::ui::ListCursor,
+        folded: &[&str],
+    ) -> Harness<'static, KeysHarness> {
+        use crate::ui::ListCursor;
+        let mut harness = keys_harness(None);
+        // The list draws glyphs (its `←` back, the fold arrows) egui's own
+        // fonts lack.
+        notedeck::fonts::setup_fonts(&harness.ctx);
+        let boards: std::rc::Rc<[BoardView]> = std::rc::Rc::from(vec![square_grid()]);
+        let h = harness.state_mut();
+        h.list_sources =
+            vec![crate::cache::BoardRef::find(boards, &[0; 32], "headway").expect("the board")];
+        h.state.open_list();
+        harness.run();
+        harness.get_by_label("All issues").click();
+        harness.run();
+        for name in folded {
+            let key = crate::ui::ListState::status_group(name);
+            let list = harness.state_mut().state.list_mut();
+            list.set_cursor(ListCursor::Group(key));
+            list.fold(crate::ui::ListFold::Close);
+        }
+        harness.state_mut().state.list_mut().set_cursor(cursor);
+        harness.run();
+        harness
+    }
+
     /// **The guard.** Every card action's key, pressed in each of the four
     /// views with card 5 current (the grid's cursor, the queue's card, a
     /// plain review pane's, the detail's), applies the same [`CardAction`]
@@ -2105,6 +2254,22 @@ mod tests {
                 "detail",
                 detail_harness(None),
                 [&CARD[1..], SCROLL, &["review queue here", "back"]].concat(),
+            ),
+            (
+                "issue list",
+                list_harness(crate::ui::ListCursor::Card(id(5)), &[]),
+                vec![
+                    "up/down",
+                    "first/last",
+                    "open",
+                    "filter",
+                    "next/prev group",
+                    "fold group",
+                    "close/open group",
+                    "fold/unfold all",
+                    "new in group",
+                    "back to board",
+                ],
             ),
         ];
         for (name, harness, mut expected) in views {

@@ -1476,6 +1476,60 @@ fn issue_list_groups_rows_folds_and_adds_to_a_group() {
     }
 }
 
+/// The issue list's fold keys (headway:notedeck/ice-basket-taxi), through
+/// chrome's keymap over the list grouped by status: `j` lands on the first
+/// header and then its first row, `za` folds that row's group, `j` from its
+/// header skips the folded rows onto the next header, Enter there folds it as
+/// a click does, and `zR` opens every group again. Behavioural (accesskit
+/// only), so it runs without lavapipe.
+#[test]
+fn issue_list_fold_keys_fold_groups_and_skip_their_rows() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1000.0));
+    seed_side_board(&mut harness);
+    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
+    wait_for_label(&mut harness, SIDE_CARD);
+    let headers = group_headers(&harness);
+    assert!(headers.len() >= 2, "{headers:?}");
+    assert!(
+        headers.iter().all(|h| h.starts_with("Collapse ")),
+        "{headers:?}"
+    );
+    let name = |header: &str| header.trim_start_matches("Collapse ").to_string();
+    let (first, second) = (name(&headers[0]), name(&headers[1]));
+
+    press_board_keys(&mut harness, &[egui::Key::J, egui::Key::J]);
+    press_board_keys(&mut harness, &[egui::Key::Z, egui::Key::A]);
+    wait_for_label(&mut harness, &format!("Expand {first}"));
+    press_board_keys(&mut harness, &[egui::Key::J, egui::Key::Enter]);
+    wait_for_label(&mut harness, &format!("Expand {second}"));
+    assert!(
+        harness.query_by_label("Issues").is_some(),
+        "Enter on a header folds it rather than opening a card"
+    );
+
+    harness.press_key(egui::Key::Z);
+    harness.run_ok();
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    harness.run_ok();
+    wait_for_label(&mut harness, &format!("Collapse {first}"));
+    assert_eq!(group_headers(&harness), headers, "zR opens every group");
+}
+
+/// Snapshot: the issue list's keyboard cursor resting on a group header
+/// (headway:notedeck/ice-basket-taxi), the second one, `]g` from the first,
+/// tinted and ringed as a cursor row is.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_list_group_cursor() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_side_board(&mut harness);
+    open_issue_list(&mut harness);
+    press_board_keys(&mut harness, &[egui::Key::J]);
+    press_board_keys(&mut harness, &[egui::Key::CloseBracket, egui::Key::G]);
+    harness.run_steps(3);
+    harness.snapshot("headway_list_group_cursor");
+}
+
 /// Drag the list row labelled `from` onto the upper half of the row
 /// labelled `onto` and let go there, a frame per pointer move, the way a
 /// hand drags (egui's drag-and-drop starts only once the pointer has moved).
