@@ -1,7 +1,7 @@
 //! The current titles of the cards session titles refer to.
 //!
 //! A session titled `headway:<board>/<word-id>` is listed under its card's
-//! title, split into code and headline (see [`headway::title::TitleParts`]).
+//! title.
 //! Getting that title folds the card's board and returns an owned `String`
 //! ([`KindRendererRegistry::title`](notedeck::KindRendererRegistry::title)), too
 //! much to do for every row every frame, and the board cache has no revision

@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use egui::{Align, Color32, Layout, Pos2, Sense};
-use headway::title::TitleParts;
 use nostrdb::Transaction;
 use notedeck::NoteContext;
 use notedeck_ui::app_images;
@@ -236,7 +235,6 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                     .color(ui.visuals().weak_text_color()),
             );
             ui.add_space(4.0);
-            let code_column = self.code_column(ui, &chat_ids);
             for id in chat_ids {
                 if let Some(session) = self.session_manager.get(id) {
                     if let Some(a) = self.render_session_item(
@@ -244,10 +242,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                         session,
                         visual_index,
                         active_id,
-                        RowPlace {
-                            cwd: None,
-                            code_column,
-                        },
+                        RowPlace { cwd: None },
                         cycle,
                     ) {
                         action = Some(a);
@@ -298,20 +293,16 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             AiMode::Agentic => {
                 // A session titled with its card's ref is listed under the
                 // card's current title, once one has been looked up.
-                let card = (!is_renaming)
+                let card_title = (!is_renaming)
                     .then(|| session.details.title_ref())
                     .flatten()
-                    .and_then(|card_ref| {
-                        let title = self.session_manager.card_titles.get(card_ref)?;
-                        Some(CardTitle { card_ref, title })
-                    });
+                    .and_then(|card_ref| self.session_manager.card_titles.get(card_ref));
                 self.agent_row_ui(
                     ui,
                     AgentRow {
                         session_id: session.id,
                         title: display_title,
-                        card,
-                        code_column: place.code_column,
+                        card_title,
                         cwd_display: place.cwd,
                         is_active,
                         shortcut_hint,
@@ -464,10 +455,9 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
     /// focus dot.
     ///
     /// A row whose session is titled with its card's ref, with the card's
-    /// title looked up ([`AgentRow::card`]), shows that title as option C: the
-    /// card's code in a narrow column on the left and its headline wrapped to
-    /// at most two lines, the full title on hover. Any other title is one
-    /// line, clipped. When `cwd_display` is `Some` (a session alone in its
+    /// title looked up ([`AgentRow::card_title`]), shows that title wrapped to at
+    /// most two lines and cut with an ellipsis, the whole of it on hover. Any
+    /// other title is one line, clipped. When `cwd_display` is `Some` (a session alone in its
     /// cwd), the cwd path goes on a last line.
     fn agent_row_ui(&self, ui: &mut egui::Ui, row: AgentRow<'_>) -> RowResponse {
         let width = ui.available_width();
@@ -475,28 +465,16 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         if row.status == AgentStatus::Pending {
             text_start_x += PENDING_SPINNER_SLOT + 2.0;
         }
-        let text_x = text_start_x
-            + if row.card.is_some() {
-                row.code_column.width
-            } else {
-                0.0
-            };
+        let text_x = text_start_x;
         // Laid out before the row is allocated, since its height follows the
-        // headline's wrap. The focus dot always takes its slot, so the wrap
+        // title's wrap. The focus dot always takes its slot, so the wrap
         // stays put while ctrl's transient hints come and go.
         let reserve = right_reserve(row.queue_priority);
-        let headline = row.card.map(|card| {
-            let parts = TitleParts::split(card.title);
-            let galley = headline_galley(ui, parts.headline, width - text_x - reserve);
-            CardLayout {
-                card,
-                code: parts.code,
-                column: row.code_column,
-                headline: galley,
-            }
-        });
-        let title_height = match &headline {
-            Some(l) => l.headline.size().y,
+        let wrapped = row
+            .card_title
+            .map(|title| card_title_galley(ui, title, width - text_x - reserve));
+        let title_height = match &wrapped {
+            Some(galley) => galley.size().y,
             None => row_height(ui, &title_font()),
         };
         let meta = meta_line(
@@ -570,10 +548,10 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         );
         let text_right = rect.right() - right_used;
 
-        match &headline {
-            Some(layout) => {
-                let code_pos = egui::pos2(rect.left() + text_start_x, top);
-                self.card_title_ui(ui, layout, code_pos, text_right);
+        match &wrapped {
+            Some(galley) => {
+                let pos = egui::pos2(rect.left() + text_x, top);
+                paint_clipped(ui, pos, galley.clone(), text_right);
             }
             None => {
                 self.title_ui(
@@ -595,10 +573,10 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             cwd_inline_ui(ui, cwd, cwd_pos, text_right - cwd_pos.x);
         }
 
-        // The detail after the dash, and the rest the wrap cut, is on hover.
-        let response = match headline {
-            Some(layout) => response.on_hover_ui(|ui| {
-                ui.label(layout.card.title);
+        // What the wrap cut is on hover.
+        let response = match row.card_title {
+            Some(title) => response.on_hover_ui(|ui| {
+                ui.label(title);
             }),
             None => response,
         };
@@ -607,66 +585,6 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             response,
             action: dot_action,
         }
-    }
-
-    /// Draw a card's code column and headline, the code's top-left at
-    /// `pos`, nothing past `right`.
-    ///
-    /// The column leads with the card's status glyph — its column on the
-    /// board, as its chip in the chat shows it — drawn by clipping the
-    /// card's own inline chip to the glyph, so it tracks the board without
-    /// the list knowing how a card draws. A list drawn without
-    /// [`title_refs`](Self::title_refs) leaves the slot empty.
-    fn card_title_ui(&self, ui: &mut egui::Ui, layout: &CardLayout<'_>, pos: Pos2, right: f32) {
-        let line = row_height(ui, &title_font());
-        let column = layout.column;
-        self.card_glyph_ui(
-            ui,
-            layout.card.card_ref,
-            egui::Rect::from_min_size(pos, egui::vec2(GLYPH_SLOT - 4.0, line)),
-        );
-        if column.codes {
-            let weak = ui.visuals().weak_text_color();
-            let code = layout.code.unwrap_or(NO_CODE);
-            let code_galley = ui
-                .painter()
-                .layout_no_wrap(code.to_owned(), code_font(), weak);
-            let code_pos = pos + egui::vec2(column.glyph, (line - code_galley.size().y) / 2.0);
-            let code_right = (pos.x + column.width - CODE_GAP).min(right);
-            paint_clipped(ui, code_pos, code_galley, code_right);
-        }
-        let headline_pos = pos + egui::vec2(column.width, 0.0);
-        paint_clipped(ui, headline_pos, layout.headline.clone(), right);
-    }
-
-    /// Draw `card_ref`'s inline chip into `rect`, clipped to it: the chip's
-    /// status glyph, without the title beside it.
-    fn card_glyph_ui(&self, ui: &mut egui::Ui, card_ref: &str, rect: egui::Rect) {
-        let Some(refs) = &self.title_refs else {
-            return;
-        };
-        let mut refs = refs.borrow_mut();
-        let mut child = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(rect.with_max_x(rect.right() + 200.0))
-                .layout(Layout::left_to_right(Align::Center)),
-        );
-        child.set_clip_rect(rect.intersect(ui.clip_rect()));
-        child
-            .style_mut()
-            .text_styles
-            .insert(egui::TextStyle::Body, title_font());
-        let refs = &mut *refs;
-        notedeck_ui::markdown::reference_ui(
-            &mut child,
-            refs.note,
-            refs.txn,
-            card_ref,
-            notedeck::RenderContext::Inline,
-            notedeck::InlineChrome::Bare,
-            // The row's click switches to its session.
-            notedeck::Interaction::Inert,
-        );
     }
 
     /// Render a chat session row (no status bar, no cwd).
@@ -733,55 +651,6 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             return;
         };
         refresh_card_titles(self.session_manager, &refs.borrow(), now);
-    }
-
-    /// The code column for the folder holding `ids`, sized to the widest
-    /// code its rows show (see [`row_code`](Self::row_code)). Measured as
-    /// char counts times the code font's advance, which is monospace, so
-    /// sizing it each frame lays nothing out.
-    fn code_column(&self, ui: &egui::Ui, ids: &[SessionId]) -> CodeColumn {
-        let glyph = if self.title_refs.is_some() {
-            GLYPH_SLOT
-        } else {
-            0.0
-        };
-        // No title in the folder has a code: the column is the glyph slot
-        // alone, with no `·` placeholders and no gap after them.
-        let Some(chars) = ids
-            .iter()
-            .filter_map(|&id| self.row_code(id))
-            .map(|code| code.chars().count())
-            .max()
-        else {
-            return CodeColumn {
-                glyph,
-                width: glyph,
-                codes: false,
-            };
-        };
-        let advance = ui.fonts_mut(|f| f.glyph_width(&code_font(), '0'));
-        CodeColumn {
-            glyph,
-            width: glyph + chars as f32 * advance + CODE_GAP,
-            codes: true,
-        }
-    }
-
-    /// The code before the colon in the title of the card session `id`'s
-    /// row shows, or `None` when it shows no card (see
-    /// [`render_session_item`](Self::render_session_item)) or the card's
-    /// title has no code. A row without one shows [`NO_CODE`] in a column
-    /// another row's code made.
-    fn row_code(&self, id: SessionId) -> Option<&str> {
-        let session = self.session_manager.get(id)?;
-        if session.ai_mode != AiMode::Agentic {
-            return None;
-        }
-        let title = self
-            .session_manager
-            .card_titles
-            .get(session.details.title_ref()?)?;
-        TitleParts::split(title).code
     }
 
     /// Draw a row's `title` with its top-left at `pos`, clipped to `max_width`.
@@ -881,47 +750,6 @@ struct RowPlace<'a> {
     /// The path shown in the row when the session is alone in its cwd, with
     /// no folder header above it.
     cwd: Option<&'a str>,
-    /// Its folder's code column, used when the row shows a card.
-    code_column: CodeColumn,
-}
-
-/// The code column of the card rows in one folder: where the code starts
-/// after the status glyph, and where the headline starts after the code.
-/// Sized by [`SessionListUi::code_column`] to the folder's widest code, so
-/// short codes don't leave a gap before the headline, long ones aren't
-/// clipped, and the headlines within a folder still line up.
-#[derive(Clone, Copy, Default)]
-struct CodeColumn {
-    /// The status glyph's slot before the code: [`GLYPH_SLOT`], or nothing
-    /// when the list draws without [`title_refs`](SessionListUi::title_refs)
-    /// and so has no glyph to draw.
-    glyph: f32,
-    /// The whole column: the glyph slot, the widest code and [`CODE_GAP`];
-    /// the glyph slot alone when no row in the folder has a code.
-    width: f32,
-    /// Whether any row in the folder has a code, so the column draws one
-    /// per row ([`NO_CODE`] for a title without).
-    codes: bool,
-}
-
-/// A card a row is titled by: its ref, and its current title.
-#[derive(Clone, Copy)]
-struct CardTitle<'s> {
-    /// The card's `headway:<board>/<word-id>` ref.
-    card_ref: &'s str,
-    /// Its title as last looked up (see [`CardTitles`](crate::card_titles::CardTitles)).
-    title: &'s str,
-}
-
-/// A [`CardTitle`] laid out for a row.
-struct CardLayout<'s> {
-    card: CardTitle<'s>,
-    /// The code before the title's colon, if it has one (see [`TitleParts`]).
-    code: Option<&'s str>,
-    /// The folder's code column the code is drawn in.
-    column: CodeColumn,
-    /// The headline, wrapped to at most two lines.
-    headline: Arc<egui::Galley>,
 }
 
 /// Lines a session's worktree has added and deleted against HEAD.
@@ -952,10 +780,9 @@ struct AgentRow<'s> {
     session_id: SessionId,
     /// The session's title, drawn when `card` is `None`.
     title: &'s str,
-    /// The card the session is titled by, once its title has been looked up.
-    card: Option<CardTitle<'s>>,
-    /// Its folder's code column, for `card`'s code.
-    code_column: CodeColumn,
+    /// The current title of the card the session is titled by, once it has
+    /// been looked up.
+    card_title: Option<&'s str>,
     /// The cwd path, for a session alone in its cwd.
     cwd_display: Option<&'s str>,
     is_active: bool,
@@ -974,12 +801,6 @@ struct AgentRow<'s> {
 
 /// Left padding of a row's text, past the status bar.
 const TEXT_LEFT: f32 = 12.0;
-/// Width of the glyph slot at the head of the code column.
-const GLYPH_SLOT: f32 = 18.0;
-/// Space between a folder's widest code and its headlines.
-const CODE_GAP: f32 = 6.0;
-/// What a card row's code column shows for a title with no code.
-const NO_CODE: &str = "·";
 /// Width of the "Connecting…" spinner before a pending row's title.
 const PENDING_SPINNER_SLOT: f32 = 22.0;
 /// Space above and below a row's text.
@@ -992,11 +813,6 @@ fn title_font() -> egui::FontId {
     egui::FontId::proportional(14.0)
 }
 
-/// A card's code's font.
-fn code_font() -> egui::FontId {
-    egui::FontId::monospace(11.0)
-}
-
 /// The font of a row's meta and cwd lines.
 fn cwd_font() -> egui::FontId {
     egui::FontId::monospace(10.0)
@@ -1007,8 +823,8 @@ fn row_height(ui: &egui::Ui, font: &egui::FontId) -> f32 {
     ui.fonts_mut(|f| f.row_height(font))
 }
 
-/// Width a row keeps clear on its right for the focus dot, which a headline
-/// wraps short of. Ctrl's hints come and go and only clip it.
+/// Width a row keeps clear on its right for the focus dot, which a card
+/// title wraps short of. Ctrl's hints come and go and only clip it.
 fn right_reserve(queue_priority: Option<FocusPriority>) -> f32 {
     match queue_priority {
         Some(_) => 26.0,
@@ -1016,11 +832,11 @@ fn right_reserve(queue_priority: Option<FocusPriority>) -> f32 {
     }
 }
 
-/// Lay a card's headline out `width` wide, wrapped to at most two lines and
+/// Lay a card's title out `width` wide, wrapped to at most two lines and
 /// cut with an ellipsis.
-fn headline_galley(ui: &egui::Ui, headline: &str, width: f32) -> Arc<egui::Galley> {
+fn card_title_galley(ui: &egui::Ui, title: &str, width: f32) -> Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::single_section(
-        headline.to_owned(),
+        title.to_owned(),
         egui::TextFormat::simple(title_font(), ui.visuals().text_color()),
     );
     job.wrap = egui::text::TextWrapping {
@@ -1956,7 +1772,6 @@ fn cwd_section_ui(
                 active_id,
                 RowPlace {
                     cwd: Some(cwd_group.display_cwd.as_str()),
-                    code_column: list_ui.code_column(ui, &cwd_group.session_ids),
                 },
                 cycle,
             ) {
@@ -2046,7 +1861,6 @@ fn cwd_folder_ui(
                 visual_index,
                 active_id,
                 cycle,
-                code_column: list_ui.code_column(ui, &cwd_group.session_ids),
             },
         ) {
             action = Some(a);
@@ -2083,8 +1897,6 @@ struct RowWalk<'v> {
     visual_index: &'v mut usize,
     active_id: Option<SessionId>,
     cycle: CycleHints,
-    /// The folder's code column (see [`SessionListUi::code_column`]).
-    code_column: CodeColumn,
 }
 
 /// Left indent of each lineage level of a nested child row.
@@ -2152,7 +1964,6 @@ fn lineage_row_ui(
     let session = list_ui.session_manager.get(id)?;
     let place = RowPlace {
         cwd: row.elsewhere.as_deref(),
-        code_column: walk.code_column,
     };
     let indent = NEST_INDENT * f32::from(row.place.depth);
     let dim = row.place.nesting == (Nesting::Link { handed_on: true });
@@ -2326,7 +2137,7 @@ fn delete_worktree_menu_item(
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentRow, CodeColumn, GitLines, SessionListAction, SessionListUi, CODE_GAP};
+    use super::{AgentRow, GitLines, SessionListAction, SessionListUi};
     use crate::agent_status::AgentStatus;
     use crate::backend::BackendType;
     use crate::collapse_state::CollapseState;
@@ -2582,8 +2393,7 @@ mod tests {
         AgentRow {
             session_id: id,
             title,
-            card: None,
-            code_column: CodeColumn::default(),
+            card_title: None,
             cwd_display: None,
             is_active: false,
             shortcut_hint: None,
@@ -2728,7 +2538,7 @@ mod tests {
         harness.snapshot("session_list_project_grouping");
     }
 
-    /// Card refs and their titles for the option C list: long gamedev titles
+    /// Card refs and their titles for the card-row list: long gamedev titles
     /// in the `CODE: headline — detail` shape, one without a code.
     const CARDS: [(&str, &str); 5] = [
         (
@@ -2789,8 +2599,7 @@ mod tests {
         sm
     }
 
-    /// The whole list as option C: codes in their own column, headlines
-    /// wrapped to two lines, a meta line under each, and the two QA2
+    /// The whole list as card rows: each card's title wrapped to two lines, a meta line under each, and the two QA2
     /// sessions on a row each.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
@@ -2808,62 +2617,6 @@ mod tests {
             );
         harness.run();
         harness.snapshot("session_list_card_titles");
-    }
-
-    /// A folder whose card titles have no code gives the column no width
-    /// past the glyph slot (none in this harness, which draws no glyphs),
-    /// so its headlines start at the row's text, not after a column of `·`.
-    /// One code in the folder sizes the column to it.
-    #[test]
-    fn a_folder_without_codes_has_no_code_column() {
-        fn column_of(titles: &[&str]) -> CodeColumn {
-            let mut sm = SessionManager::new();
-            let ids: Vec<SessionId> = titles
-                .iter()
-                .zip([
-                    "headway:game/able-bench-coil",
-                    "headway:game/crane-drift-oak",
-                ])
-                .map(|(title, card_ref)| {
-                    let id = sm.new_session(
-                        PathBuf::from("/home/dev/crownfolk"),
-                        AiMode::Agentic,
-                        BackendType::Claude,
-                    );
-                    let details = &mut sm.get_mut(id).expect("session").details;
-                    details.title = card_ref.to_string();
-                    assert_eq!(details.title_ref(), Some(card_ref), "a card row");
-                    let lookup = crate::card_titles::CardLookup::titled(title);
-                    sm.card_titles.store(card_ref, lookup, 0.0);
-                    id
-                })
-                .collect();
-            let column = std::cell::Cell::new(None);
-            let mut harness = Harness::builder().build_ui(|ui| {
-                let focus_queue = FocusQueue::new();
-                let collapse_state = CollapseState::new();
-                let list = SessionListUi::new(&mut sm, &focus_queue, &collapse_state, false);
-                column.set(Some(list.code_column(ui, &ids)));
-            });
-            harness.run();
-            drop(harness);
-            column.get().expect("measured")
-        }
-
-        let none = column_of(&[
-            "a morphing prop's foot worked out once",
-            "the capital films ~10x cheaper",
-        ]);
-        assert!(!none.codes);
-        assert_eq!(none.width, none.glyph, "no codes, no column past the glyph");
-
-        let one = column_of(&["the capital films ~10x cheaper", "QA2: the town stood"]);
-        assert!(one.codes);
-        assert!(
-            one.width > one.glyph + CODE_GAP,
-            "one code sizes the column: {} wide",
-            one.width
-        );
     }
 
     /// Two sessions on one card sort next to each other, and each still has
