@@ -730,7 +730,7 @@ impl Dave {
     pub(crate) fn handle_ui_action(
         &mut self,
         action: DaveAction,
-        ctx: &AppContext,
+        ctx: &mut AppContext,
         ui: &egui::Ui,
     ) -> Option<AppAction> {
         // Intercept NewChat to handle chat vs agentic mode
@@ -891,6 +891,10 @@ impl Dave {
             }
             UiActionResult::Compact => {
                 self.compact_active(&crate::stream_events::HostCtx::from_app(ctx));
+                None
+            }
+            UiActionResult::OpenedSubagent(route) => {
+                ctx.navigator.push_route(route);
                 None
             }
             UiActionResult::Handled => None,

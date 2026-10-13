@@ -17,6 +17,7 @@ mod inspector_sync;
 pub mod ipc;
 mod jump;
 pub(crate) mod mesh;
+mod nav;
 mod notifications;
 mod path_normalize;
 pub(crate) mod path_utils;
@@ -238,6 +239,8 @@ pub struct Dave {
     scene: AgentScene,
     /// Whether to show scene view (vs classic chat view)
     show_scene: bool,
+    /// The nav stack's top Dave last seeded its view from (see [`nav`]).
+    seen_route: nav::SeenRoute,
     /// Focus queue for agents needing attention
     focus_queue: FocusQueue,
     /// Tracks which host/cwd folders are collapsed in the session list
@@ -574,6 +577,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             settings_panel: DaveSettingsPanel::new(),
             scene: AgentScene::new(),
             show_scene: false, // Default to list view
+            seen_route: nav::SeenRoute::default(),
             focus_queue: FocusQueue::new(),
             collapse_state,
             collapse_serializer,
@@ -1674,6 +1678,28 @@ impl notedeck::App for Dave {
         }
 
         AppResponse::action(app_action)
+    }
+
+    /// Dave draws itself whatever the entry; a subagent entry that just
+    /// became the top opens its session first (see [`nav`]).
+    fn render_nav(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        ui: &mut egui::Ui,
+        token: &std::rc::Rc<dyn std::any::Any>,
+    ) -> AppResponse {
+        self.seed_from_route(token);
+        self.render(ctx, ui)
+    }
+
+    /// A subagent entry reads as the subagent's session title.
+    fn nav_title(&self, token: &std::rc::Rc<dyn std::any::Any>) -> Option<String> {
+        self.route_title(token)
+    }
+
+    /// A popped subagent entry returns to its parent's chat.
+    fn cleanup_nav(&mut self, _ctx: &mut AppContext<'_>, token: &std::rc::Rc<dyn std::any::Any>) {
+        self.leave_route(token);
     }
 
     /// The normal-mode chord's actions, by name (see [`ui_tools`]).

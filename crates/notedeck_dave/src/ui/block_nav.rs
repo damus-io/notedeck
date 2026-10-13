@@ -299,6 +299,12 @@ impl BlockNav {
 
     /// Place the cursor directly, for render tests that have no keybinding to
     /// move it with.
+    /// The block a [`seek`](Self::seek) is waiting to land on, if any.
+    #[cfg(test)]
+    pub(crate) fn seeking(&self) -> Option<egui::Id> {
+        self.seek
+    }
+
     #[cfg(test)]
     pub(crate) fn seed_cursor(&mut self, idx: usize) {
         self.set_cursor(idx);

@@ -29,6 +29,7 @@ pub mod worktree_creator;
 pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
 pub use block_nav::{BlockNav, BlockSpot};
 pub(crate) use dave::input_id;
+pub(crate) use dave::subagent_block_id;
 pub use dave::{
     assistant_message_ui, from_session_message_ui, user_message_ui, DaveAction, DaveResponse,
     DaveUi, InputMode, InputboxLayout, InputboxResult, Inspected, RunAction,
@@ -1538,6 +1539,9 @@ pub enum UiActionResult {
     PublishInterruptCommand(update::InterruptPublish),
     /// Navigate to next focus queue item (mobile)
     FocusQueueNext,
+    /// A subagent's session was opened: the caller pushes the route onto
+    /// Dave's nav stack, so a back returns to the parent (see [`crate::nav`]).
+    OpenedSubagent(crate::nav::DaveRoute),
 }
 
 /// Handle a UI action from DaveUi.
@@ -1690,10 +1694,11 @@ pub fn handle_ui_action(
             };
             // A row that appeared this frame may not have its session yet.
             session_manager.sync_subagent_sessions();
-            if let Some(id) = session_manager.subagent_session(parent, &task_id) {
-                session_manager.switch_to(id);
-            }
-            UiActionResult::Handled
+            let Some(id) = session_manager.subagent_session(parent, &task_id) else {
+                return UiActionResult::Handled;
+            };
+            session_manager.switch_to(id);
+            UiActionResult::OpenedSubagent(crate::nav::DaveRoute::Subagent { parent, task_id })
         }
         DaveAction::ShowSubagent(task_id) => {
             if let Some(session) = session_manager.get_active_mut() {
