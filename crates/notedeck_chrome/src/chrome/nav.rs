@@ -212,7 +212,14 @@ impl Chrome {
     /// `slot`, switch to it, and remember the app it came from as its
     /// [`Opener`], so one chrome back pops the entry and returns there.
     ///
-    /// An open from the app itself is a plain in-app push, with no opener.
+    /// An open from another app lands at once, with no slide: like an app
+    /// switch, it comes from a different app's screen, so there is nothing of
+    /// the target's to slide from. A slide would also draw the entry beneath
+    /// the opened one, and the target's render of that entry can act on the
+    /// open a second time (Headway's pending open then pushed the card again,
+    /// leaving the stack one past the opener's depth, so the return took two
+    /// backs). An open from the app itself is a plain in-app push, which
+    /// slides, with no opener.
     ///
     /// Split out from [`open_note_in_app`](Chrome::open_note_in_app) so the
     /// open is testable without an [`AppContext`].
@@ -224,10 +231,11 @@ impl Chrome {
         };
         nav.stack.route_to(token);
         let depth = nav.stack.len();
-        self.set_active(slot as i32);
         if from as usize == slot {
             return;
         }
+        nav.stack.navigating_mut(false);
+        self.set_active(slot as i32);
         self.app_navs[slot].opener = Some(Opener {
             app: AppId(from as usize),
             depth,
@@ -627,6 +635,7 @@ mod app_nav_tests {
         chrome.push_app_route(2, Rc::new(7u32));
 
         assert_eq!(history(&chrome, 2), vec![None, Some(7)], "one entry");
+        assert!(!stack(&chrome, 2).navigating(), "landed at once, no slide");
         assert_eq!(history(&chrome, 1), vec![None], "none on the source");
         assert_eq!(chrome.active, 2);
         assert!(chrome.is_opened(2), "the opened app is marked opened");

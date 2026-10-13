@@ -735,3 +735,27 @@ async fn a_card_opened_from_another_app_lands_unfocused() {
     about(&harness, NEXT_CARD, CARD);
     assert_eq!(harness.ctx.memory(|m| m.focused()), None);
 }
+
+/// A card opened from another app is one chrome back from it. The open
+/// lands with no slide: a slide drew Headway's root under the card, whose
+/// render took the still-pending open and pushed the card a second time, so
+/// the stack sat one past the opener's depth and the return took two backs.
+#[tokio::test]
+async fn a_card_opened_from_another_app_is_one_chrome_back_from_it() {
+    let repo = tempfile::tempdir().expect("repo dir");
+    let mut harness = two_in_review(repo.path()).await;
+    harness.state_mut().chrome.switch_to_columns();
+    wait_until(&mut harness, "columns, still", |h| {
+        let nav = history(h);
+        !nav.navigating() && !nav.returning() && h.query_by_label(GRID).is_none()
+    });
+    let columns = harness.state().chrome.active;
+
+    open_from_outside(&mut harness, CARD);
+    let nav = harness.state().chrome.active_nav().expect("headway's nav");
+    assert_eq!(nav.stack.len(), 2, "the board, then the card, once");
+    assert!(nav.hop().is_some(), "the open's return applies on the card");
+
+    let _popped = harness.state_mut().chrome.step_back();
+    assert_eq!(harness.state().chrome.active, columns, "one back returns");
+}
