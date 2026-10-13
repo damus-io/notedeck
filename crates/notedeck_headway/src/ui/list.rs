@@ -101,6 +101,12 @@ pub(crate) struct ListState {
     /// rather than an entry index, so a re-fold that reorders the rows, or a
     /// header folding, leaves it on the same one.
     cursor: Option<ListCursor>,
+    /// The entry the cursor was last put on. A card listed under two labels
+    /// draws two rows, and this says which one the cursor is on; the card
+    /// stays the truth, so a hint the entries no longer bear out (after a
+    /// refresh or fold reorders them) falls back to the card's first row
+    /// ([`cursor_entry`](ListState::cursor_entry)).
+    cursor_at: Option<usize>,
     /// Whether `c` has a group to compose a card in: the cursor sits in a
     /// group that takes a card on the board showing. Latched as the list
     /// draws ([`ListState::latch_compose`]), since chrome asks before then.
@@ -153,6 +159,7 @@ impl Default for ListState {
             saved: Vec::new(),
             naming: None,
             cursor: None,
+            cursor_at: None,
             can_compose: false,
             can_move: ListMoves::default(),
             scroll_to_cursor: false,
@@ -232,7 +239,8 @@ pub(crate) struct CollapseKey {
 /// group's header (headway:notedeck/ice-basket-taxi).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ListCursor {
-    /// The row of this card: the first, for a card listed under two labels.
+    /// The row of this card. For a card listed under two labels, which row
+    /// is [`ListState::cursor_at`]'s to say.
     Card(NoteId),
     /// The header of this group or sub-group.
     Group(CollapseKey),
@@ -636,6 +644,7 @@ impl ListState {
     #[cfg(test)]
     pub(crate) fn set_cursor(&mut self, to: ListCursor) {
         self.cursor = Some(to);
+        self.cursor_at = None;
     }
 
     /// The header key of status group `name`, for a test.
@@ -868,6 +877,7 @@ impl ListState {
         self.hide_subissues = spec.hide_subissues;
         self.board_scope = spec.board;
         self.cursor = None;
+        self.cursor_at = None;
         self.can_compose = false;
     }
 
@@ -1101,11 +1111,16 @@ impl ListState {
         })
     }
 
-    /// The entry the cursor rests on, if the list shows it: the first, for a
-    /// card listed under two labels.
+    /// The entry the cursor rests on, if the list shows it. For a card
+    /// listed under two labels, the row it was put on
+    /// ([`cursor_at`](Self::cursor_at)) while that still draws the card,
+    /// else the card's first row.
     fn cursor_entry(&self) -> Option<usize> {
         let cursor = self.cursor.as_ref()?;
-        (0..self.entries.len()).find(|&at| self.entry_is(at, cursor))
+        let hinted = self
+            .cursor_at
+            .filter(|&at| at < self.entries.len() && self.entry_is(at, cursor));
+        hinted.or_else(|| (0..self.entries.len()).find(|&at| self.entry_is(at, cursor)))
     }
 
     /// The group the cursor is in: the header it rests on, or the nearest
@@ -1125,6 +1140,7 @@ impl ListState {
     fn put_cursor(&mut self, at: usize) {
         if let Some(cursor) = self.cursor_of(at) {
             self.cursor = Some(cursor);
+            self.cursor_at = Some(at);
             self.scroll_to_cursor = true;
         }
     }
@@ -1227,6 +1243,7 @@ impl ListState {
             CollapseKey { sub: None, ..here }
         };
         self.cursor = Some(ListCursor::Group(to));
+        self.cursor_at = None;
         self.scroll_to_cursor = true;
     }
 
@@ -1442,6 +1459,7 @@ impl BoardUiState {
             self.raise(BoardEffect::Nav(BoardNav::Switch(target.board)));
         }
         self.list.cursor = Some(ListCursor::Card(target.card));
+        self.list.cursor_at = Some(at);
         self.selected = Some(target.card);
     }
 }
@@ -2645,6 +2663,41 @@ mod tests {
 
     fn on_group(name: &str) -> Option<ListCursor> {
         Some(ListCursor::Group(group(name)))
+    }
+
+    /// Grouped by label, a card with two labels is listed twice: 2 (`bug`
+    /// and `ui`) under both headers, between 1 (`bug`) and 3 (`ui`). `j`
+    /// steps through every entry in order, the second 2 included, and the
+    /// entry it lands on is the one the list highlights; `k` walks back up
+    /// the same way (headway:headway/law-audit-palm).
+    #[test]
+    fn j_steps_through_a_card_listed_twice() {
+        let mut view = grid();
+        let labels = [(0, &["bug"][..]), (1, &["bug", "ui"]), (2, &["ui"])];
+        for (row, names) in labels {
+            view.columns[0].cards[row].labels = names.iter().map(|l| l.to_string()).collect();
+        }
+        let mut list = ListState {
+            base: BuiltinView::All.query().to_string(),
+            grouping: Grouping {
+                by: GroupBy::Label,
+                ..Grouping::default()
+            },
+            ..ListState::default()
+        };
+        list.refresh(&sources(view));
+        let twice = (0..list.entries.len())
+            .filter(|&at| list.entry_is(at, &ListCursor::Card(id(2))))
+            .count();
+        assert_eq!(twice, 2, "2 is listed under both its labels");
+        for want in 0..list.entries.len() {
+            list.move_cursor(CursorMove::Down);
+            assert_eq!(list.cursor_entry(), Some(want));
+        }
+        for want in (0..list.entries.len() - 1).rev() {
+            list.move_cursor(CursorMove::Up);
+            assert_eq!(list.cursor_entry(), Some(want));
+        }
     }
 
     /// `j` walks the headers along with the rows, top to bottom, and `k`
