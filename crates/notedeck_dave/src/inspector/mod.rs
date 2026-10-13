@@ -35,7 +35,10 @@ pub use outputs::{
     MENTIONS_CAP,
 };
 pub use permissions::{PermissionCounts, PermissionLabels, PermissionMemo};
-pub use snapshot::{PublishDue, RemoteSnapshot, SnapshotKey, SnapshotPublisher, SNAPSHOT_INTERVAL};
+pub use snapshot::{
+    PublishDue, RemoteSnapshot, SnapshotKey, SnapshotPublisher, SNAPSHOT_INTERVAL,
+    STREAMING_SNAPSHOT_INTERVAL,
+};
 pub use subagents::{subagent, ProgressById, SubagentRow, SubagentRows, SubagentState};
 pub use usage::{Compaction, Sparkline, Tokens, TurnUsage, UsageHistory, HISTORY_CAP};
 

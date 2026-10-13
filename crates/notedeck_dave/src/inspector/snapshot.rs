@@ -4,7 +4,8 @@
 //! The host side takes a [`SessionInspector`] apart into an
 //! [`InspectorSnapshot`] ([`SessionInspector::snapshot`]) whenever what it
 //! holds has moved ([`SnapshotKey`]), at most once every
-//! [`SNAPSHOT_INTERVAL`] ([`SnapshotPublisher`]). The observer side puts one
+//! [`SNAPSHOT_INTERVAL`] while the session is settled and once every
+//! [`STREAMING_SNAPSHOT_INTERVAL`] while a turn runs ([`SnapshotPublisher`]). The observer side puts one
 //! back together ([`SessionInspector::restore`]), newest revision only
 //! ([`RemoteSnapshot`]). The wire shape and the event live in
 //! [`agentium_core::inspector_snapshot`], so the `agentium` CLI reads the
@@ -15,8 +16,16 @@ use crate::messages::RateLimitInfo;
 use agentium_core::inspector_snapshot::{InspectorSnapshot, UsageSnapshot};
 use std::time::{Duration, Instant};
 
-/// Least time between two snapshots of one session.
+/// Least time between two snapshots of a session with no turn running, so
+/// the one that goes out when a turn ends follows it closely.
 pub const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Least time between two snapshots of a session while a turn runs. Every
+/// snapshot is kept as its own version in ndb (and again as its PNS
+/// envelope), and a streaming turn moves something every few seconds, so a
+/// remote reader gets a coarse view of the turn and the settled one when it
+/// ends.
+pub const STREAMING_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
 
 /// What a snapshot was built from: one counter per part of the inspector
 /// that changes, so a frame can tell whether anything moved without building
@@ -35,6 +44,22 @@ pub struct SnapshotKey {
     pub files: u64,
     /// `git log` reads landed.
     pub commits: u64,
+}
+
+impl SnapshotKey {
+    /// Whether a snapshot built at `self` shows a reader something one built
+    /// at `published` didn't. While a turn runs (`turn_running`) the usage
+    /// counter alone doesn't count: it moves on every token tick, and the
+    /// snapshot that goes out when the turn ends carries the turn's usage.
+    fn moved_from(&self, published: &SnapshotKey, turn_running: bool) -> bool {
+        if !turn_running {
+            return self != published;
+        }
+        SnapshotKey {
+            usage: published.usage,
+            ..*self
+        } != *published
+    }
 }
 
 /// Whether a session's snapshot should go out this frame.
@@ -62,22 +87,26 @@ pub struct SnapshotPublisher {
 }
 
 impl SnapshotPublisher {
-    /// Whether a snapshot built at `key` should go out at `now`.
+    /// Whether a snapshot built at `key` should go out at `now`, with
+    /// `turn_running` saying whether the session is in a turn (see
+    /// [`STREAMING_SNAPSHOT_INTERVAL`]).
     ///
     /// A session nothing has happened to since Dave started (a restored,
     /// dormant one) has the default key and never publishes: the snapshot it
     /// published before the restart is still the newest.
-    pub fn due(&self, key: SnapshotKey, now: Instant) -> PublishDue {
-        let unchanged = match self.published {
-            Some(published) => published == key,
-            None => key == SnapshotKey::default(),
-        };
-        if unchanged {
+    pub fn due(&self, key: SnapshotKey, turn_running: bool, now: Instant) -> PublishDue {
+        let published = self.published.unwrap_or_default();
+        if !key.moved_from(&published, turn_running) {
             return PublishDue::Idle;
         }
+        let interval = if turn_running {
+            STREAMING_SNAPSHOT_INTERVAL
+        } else {
+            SNAPSHOT_INTERVAL
+        };
         match self.published_at {
-            Some(at) if now.duration_since(at) < SNAPSHOT_INTERVAL => {
-                PublishDue::After(SNAPSHOT_INTERVAL - now.duration_since(at))
+            Some(at) if now.duration_since(at) < interval => {
+                PublishDue::After(interval - now.duration_since(at))
             }
             _ => PublishDue::Now,
         }
@@ -188,7 +217,7 @@ mod tests {
     use super::*;
     use crate::messages::{
         BackgroundEntry, BackgroundTask, BackgroundWork, CliState, DaveApiResponse,
-        SubagentProgress, UsageInfo,
+        SubagentProgress, TaskUsage, UsageInfo,
     };
 
     fn busy_inspector() -> SessionInspector {
@@ -247,15 +276,16 @@ mod tests {
         );
     }
 
-    /// A burst of changes inside one interval publishes once, then once
-    /// more for whatever moved after it, and an unchanged inspector never.
+    /// With no turn running, a burst of changes inside one interval publishes
+    /// once, then once more for whatever moved after it, and an unchanged
+    /// inspector never.
     #[test]
     fn a_burst_of_changes_publishes_once_per_interval() {
         let mut inspector = SessionInspector::default();
         let mut publisher = SnapshotPublisher::default();
         let start = Instant::now();
         assert_eq!(
-            publisher.due(inspector.snapshot_key(), start),
+            publisher.due(inspector.snapshot_key(), false, start),
             PublishDue::Idle
         );
 
@@ -267,7 +297,7 @@ mod tests {
             }));
             let now = start + Duration::from_millis(100 * i);
             let key = inspector.snapshot_key();
-            if publisher.due(key, now) == PublishDue::Now {
+            if publisher.due(key, false, now) == PublishDue::Now {
                 publisher.published(key, now, publisher.next_created_at(100));
                 published += 1;
             }
@@ -276,20 +306,127 @@ mod tests {
 
         let later = start + Duration::from_millis(1900);
         assert!(matches!(
-            publisher.due(inspector.snapshot_key(), later),
+            publisher.due(inspector.snapshot_key(), false, later),
             PublishDue::After(_)
         ));
         let after_interval = start + SNAPSHOT_INTERVAL;
         assert_eq!(
-            publisher.due(inspector.snapshot_key(), after_interval),
+            publisher.due(inspector.snapshot_key(), false, after_interval),
             PublishDue::Now
         );
         let key = inspector.snapshot_key();
         publisher.published(key, after_interval, publisher.next_created_at(100));
         assert_eq!(publisher.created_at, 101, "same second is stamped later");
         assert_eq!(
-            publisher.due(key, after_interval + SNAPSHOT_INTERVAL),
+            publisher.due(key, false, after_interval + SNAPSHOT_INTERVAL),
             PublishDue::Idle
+        );
+    }
+
+    /// Publish `inspector` at `now` if it is due, counting it in `published`.
+    fn publish_if_due(
+        inspector: &SessionInspector,
+        publisher: &mut SnapshotPublisher,
+        turn_running: bool,
+        now: Instant,
+        published: &mut u32,
+    ) {
+        let key = inspector.snapshot_key();
+        if publisher.due(key, turn_running, now) != PublishDue::Now {
+            return;
+        }
+        publisher.published(key, now, publisher.next_created_at(*published as u64));
+        *published += 1;
+    }
+
+    /// An hour-long turn that ticks usage five times a second and moves a
+    /// subagent every two seconds publishes at most once a minute, not every
+    /// [`SNAPSHOT_INTERVAL`] (720 an hour). The card's target was fewer than
+    /// 60 per active session-hour.
+    #[test]
+    fn a_streaming_turn_publishes_at_most_once_a_minute() {
+        let mut inspector = busy_inspector();
+        let mut publisher = SnapshotPublisher::default();
+        let start = Instant::now();
+        let mut published = 0;
+
+        for tick in 0..(5 * 3600u64) {
+            let now = start + Duration::from_millis(200 * tick);
+            inspector.apply(&DaveApiResponse::UsageUpdate(UsageInfo {
+                output_tokens: tick,
+                ..Default::default()
+            }));
+            if tick % 10 == 0 {
+                inspector.apply(&DaveApiResponse::SubagentProgress(SubagentProgress {
+                    task_id: "toolu_1".into(),
+                    usage: TaskUsage {
+                        tool_uses: tick,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }));
+            }
+            publish_if_due(&inspector, &mut publisher, true, now, &mut published);
+        }
+
+        assert_eq!(published, 60, "one snapshot a minute, the first at once");
+    }
+
+    /// Usage ticks alone never publish while the turn runs; the turn's end
+    /// publishes within [`SNAPSHOT_INTERVAL`], carrying the final usage.
+    #[test]
+    fn a_turns_end_publishes_its_final_usage() {
+        let mut inspector = busy_inspector();
+        let mut publisher = SnapshotPublisher::default();
+        let start = Instant::now();
+        let mut published = 0;
+        publish_if_due(&inspector, &mut publisher, false, start, &mut published);
+        assert_eq!(published, 1);
+
+        for tick in 1..=600u64 {
+            let now = start + Duration::from_millis(200 * tick);
+            inspector.apply(&DaveApiResponse::UsageUpdate(UsageInfo {
+                output_tokens: tick,
+                ..Default::default()
+            }));
+            publish_if_due(&inspector, &mut publisher, true, now, &mut published);
+        }
+        assert_eq!(published, 1, "two minutes of usage ticks publish nothing");
+
+        let ended = start + Duration::from_secs(121);
+        publish_if_due(&inspector, &mut publisher, false, ended, &mut published);
+        assert_eq!(published, 2, "the turn's end goes out");
+        assert_eq!(publisher.published, Some(inspector.snapshot_key()));
+        assert_eq!(
+            publisher.due(inspector.snapshot_key(), false, ended + SNAPSHOT_INTERVAL),
+            PublishDue::Idle
+        );
+    }
+
+    /// A turn that ends right after a publish still sends its final state,
+    /// once [`SNAPSHOT_INTERVAL`] has passed rather than a streaming one.
+    #[test]
+    fn a_turns_end_waits_only_the_settled_interval() {
+        let mut inspector = busy_inspector();
+        let mut publisher = SnapshotPublisher::default();
+        let start = Instant::now();
+        let mut published = 0;
+        publish_if_due(&inspector, &mut publisher, true, start, &mut published);
+
+        inspector.apply(&DaveApiResponse::QueryComplete(UsageInfo {
+            cost_usd: Some(0.5),
+            num_turns: 3,
+            ..Default::default()
+        }));
+        let key = inspector.snapshot_key();
+        let ended = start + Duration::from_secs(1);
+        assert_eq!(
+            publisher.due(key, false, ended),
+            PublishDue::After(SNAPSHOT_INTERVAL - Duration::from_secs(1))
+        );
+        assert_eq!(
+            publisher.due(key, false, start + SNAPSHOT_INTERVAL),
+            PublishDue::Now
         );
     }
 

@@ -17,7 +17,9 @@ use std::time::{Duration, Instant};
 impl Dave {
     /// Publish a snapshot for every local session whose inspector moved since
     /// its last, at most once every
-    /// [`SNAPSHOT_INTERVAL`](crate::inspector::SNAPSHOT_INTERVAL) each. One
+    /// [`SNAPSHOT_INTERVAL`](crate::inspector::SNAPSHOT_INTERVAL) each, or
+    /// [`STREAMING_SNAPSHOT_INTERVAL`](crate::inspector::STREAMING_SNAPSHOT_INTERVAL)
+    /// while a turn is dispatched or streaming. One
     /// held back by the interval schedules a wake for when it is due, so the
     /// burst's last change goes out even if nothing else wakes Dave.
     pub(crate) fn publish_inspector_snapshots(&mut self, host: &HostCtx<'_>) {
@@ -35,7 +37,8 @@ impl Dave {
             refresh_host_reads(session, now);
 
             let key = session.inspector.snapshot_key();
-            match session.inspector.publisher.due(key, now) {
+            let turn_running = session.is_dispatched() || session.is_streaming();
+            match session.inspector.publisher.due(key, turn_running, now) {
                 PublishDue::Idle => continue,
                 PublishDue::After(left) => {
                     wait = Some(wait.map_or(left, |w| w.min(left)));
@@ -391,7 +394,7 @@ mod tests {
         let untouched = inspector(&mut host, sid);
         let key = untouched.snapshot_key();
         assert_eq!(
-            untouched.publisher.due(key, Instant::now()),
+            untouched.publisher.due(key, false, Instant::now()),
             PublishDue::Idle
         );
 
@@ -401,14 +404,14 @@ mod tests {
         let published = inspector(&mut host, sid);
         let key = published.snapshot_key();
         assert_eq!(
-            published.publisher.due(key, Instant::now()),
+            published.publisher.due(key, false, Instant::now()),
             PublishDue::Idle
         );
 
         published.apply(&DaveApiResponse::UsageUpdate(UsageInfo::default()));
         let key = published.snapshot_key();
         assert!(matches!(
-            published.publisher.due(key, Instant::now()),
+            published.publisher.due(key, false, Instant::now()),
             PublishDue::After(_)
         ));
     }
