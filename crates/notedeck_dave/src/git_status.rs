@@ -149,6 +149,19 @@ impl GitStatusCache {
         self.current.as_ref()
     }
 
+    /// Set the current status as if a fetch had returned `lines` added and
+    /// deleted, for tests that draw a dirty worktree.
+    #[cfg(test)]
+    pub(crate) fn set_lines(&mut self, added: usize, deleted: usize) {
+        self.current = Some(Ok(GitStatusData {
+            branch: None,
+            files: Vec::new(),
+            added_lines: added,
+            deleted_lines: deleted,
+            fetched_at: Instant::now(),
+        }));
+    }
+
     /// Mark cache as stale so next poll triggers a refresh
     pub fn invalidate(&mut self) {
         self.last_fetch = None;

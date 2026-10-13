@@ -1,10 +1,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
-use std::sync::Arc;
-
 use egui::{Align, Color32, Layout, Pos2, Sense};
-use headway::title::TitleParts;
 use nostrdb::Transaction;
 use notedeck::NoteContext;
 use notedeck_ui::app_images;
@@ -236,7 +233,6 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                     .color(ui.visuals().weak_text_color()),
             );
             ui.add_space(4.0);
-            let code_column = self.code_column(ui, &chat_ids);
             for id in chat_ids {
                 if let Some(session) = self.session_manager.get(id) {
                     if let Some(a) = self.render_session_item(
@@ -244,11 +240,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                         session,
                         visual_index,
                         active_id,
-                        RowPlace {
-                            cwd: None,
-                            code_column,
-                            subagent: false,
-                        },
+                        RowPlace { cwd: None },
                         cycle,
                     ) {
                         action = Some(a);
@@ -296,48 +288,23 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             response,
             action: dot_action,
         } = match session.ai_mode {
-            _ if place.subagent => self.subagent_row_ui(
+            AiMode::Agentic => self.agent_row_ui(
                 ui,
-                SubagentRow {
+                AgentRow {
                     session_id: session.id,
                     title: display_title,
-                    background: session.subagent_of.as_ref().is_some_and(|l| l.background),
+                    cwd_display: place.cwd,
                     is_active,
                     shortcut_hint,
                     cycle_hint,
                     status: session.status(),
+                    last_activity: session.last_activity,
                     queue_priority,
+                    // Only a row with no folder header above it shows its
+                    // worktree's +/-; under a header, the header does.
+                    git_lines: place.cwd.and_then(|_| git_lines(session)),
                 },
             ),
-            AiMode::Agentic => {
-                // A session titled with its card's ref is listed under the
-                // card's current title, once one has been looked up.
-                let card = (!is_renaming)
-                    .then(|| session.details.title_ref())
-                    .flatten()
-                    .and_then(|card_ref| {
-                        let title = self.session_manager.card_titles.get(card_ref)?;
-                        Some(CardTitle { card_ref, title })
-                    });
-                self.agent_row_ui(
-                    ui,
-                    AgentRow {
-                        session_id: session.id,
-                        title: display_title,
-                        card,
-                        code_column: place.code_column,
-                        cwd_display: place.cwd,
-                        is_active,
-                        shortcut_hint,
-                        cycle_hint,
-                        status: session.status(),
-                        last_activity: session.last_activity,
-                        queue_priority,
-                        git_lines: git_lines(session),
-                        subagents: session.subagent_count(),
-                    },
-                )
-            }
             _ => self.chat_row_ui(
                 ui,
                 session.id,
@@ -473,60 +440,23 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         action
     }
 
-    /// Render an agentic session row: the status bar, the title, a dim meta
-    /// line under it (see [`meta_line`]; left out when it's empty) and the
-    /// focus dot.
+    /// Render an agentic session row: the status bar, the title on one line
+    /// (see [`title_ui`](Self::title_ui); a session titled with its card's
+    /// ref draws the card's inline chip) and the focus dot.
     ///
-    /// A row whose session is titled with its card's ref, with the card's
-    /// title looked up ([`AgentRow::card`]), shows that title as option C: the
-    /// card's code in a narrow column on the left and its headline wrapped to
-    /// at most two lines, the full title on hover. Any other title is one
-    /// line, clipped. When `cwd_display` is `Some` (a session alone in its
-    /// cwd), the cwd path goes on a last line.
+    /// When `cwd_display` is `Some` (a session with no folder header above
+    /// it) the row is two lines: the cwd path under the title, the worktree's
+    /// git +/- at its bottom right and the focus dot moved to the top right.
+    /// A row under a folder header draws no git +/-: the header shows its
+    /// worktree's once.
     fn agent_row_ui(&self, ui: &mut egui::Ui, row: AgentRow<'_>) -> RowResponse {
-        let width = ui.available_width();
-        let mut text_start_x = TEXT_LEFT;
-        if row.status == AgentStatus::Pending {
-            text_start_x += PENDING_SPINNER_SLOT + 2.0;
-        }
-        let text_x = text_start_x
-            + if row.card.is_some() {
-                row.code_column.width
-            } else {
-                0.0
-            };
-        // Laid out before the row is allocated, since its height follows the
-        // headline's wrap. The focus dot always takes its slot, so the wrap
-        // stays put while ctrl's transient hints come and go.
-        let reserve = right_reserve(row.queue_priority);
-        let headline = row.card.map(|card| {
-            let parts = TitleParts::split(card.title);
-            let galley = headline_galley(ui, parts.headline, width - text_x - reserve);
-            CardLayout {
-                card,
-                code: parts.code,
-                column: row.code_column,
-                headline: galley,
-            }
-        });
-        let title_height = match &headline {
-            Some(l) => l.headline.size().y,
-            None => row_height(ui, &title_font()),
+        let height = if row.cwd_display.is_some() {
+            48.0
+        } else {
+            32.0
         };
-        let meta = meta_line(
-            ui,
-            MetaLine {
-                age: row.last_activity.map(|t| now_unix().saturating_sub(t)),
-                git_lines: row.git_lines,
-                subagents: row.subagents,
-            },
-        );
-        let cwd_height = row
-            .cwd_display
-            .map_or(0.0, |_| LINE_GAP + row_height(ui, &cwd_font()));
-        let height = ROW_PAD + title_height + meta_height(&meta) + cwd_height + ROW_PAD;
-
-        let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
+        let desired_size = egui::vec2(ui.available_width(), height);
+        let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
         paint_row_background(ui, rect, row.is_active, self.chord_cursor, &response);
@@ -543,8 +473,8 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             egui::vec2(STATUS_BAR_WIDTH, rect.height() - 8.0),
         );
         paint_status_bar(ui.painter(), status_bar_rect, status_color);
+        let mut text_start_x = TEXT_LEFT;
 
-        let top = rect.top() + ROW_PAD;
         // A pending placeholder (a remote spawn/resume in flight) shows a small
         // loading spinner before its "Connecting…" title so the row reads as
         // in-progress. Reuses SquareLoadingSpinner (interval-based repaint) over
@@ -554,8 +484,8 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             let spin_size = 12.0;
             let spin_rect = egui::Rect::from_min_size(
                 egui::pos2(
-                    rect.left() + TEXT_LEFT,
-                    top + (title_height - spin_size).max(0.0) / 2.0,
+                    rect.left() + text_start_x,
+                    rect.center().y - spin_size / 2.0,
                 ),
                 egui::vec2(PENDING_SPINNER_SLOT, spin_size),
             );
@@ -565,188 +495,73 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                     .size(spin_size)
                     .color(status_color),
             );
+            text_start_x += PENDING_SPINNER_SLOT + 2.0;
         }
 
         let hints: &[(&str, &str)] = &[("⇧T", "Duplicate"), ("⇧K", "Clear"), ("⇧R", "Rename")];
-        let RightSide {
-            width: right_used,
+        // Standalone (cwd) rows get the worktree treatment: status dot moves to
+        // the top-right and the git +/- line stats sit on the bottom-right next
+        // to the cwd path. Grouped rows keep the centered layout.
+        let AgentRightSide {
+            title_right,
+            cwd_right,
             action: dot_action,
-        } = render_row_right_side(
-            ui,
-            rect,
-            row.session_id,
-            row.is_active,
-            self.ctrl_held,
-            row.shortcut_hint,
-            row.cycle_hint,
-            row.queue_priority,
-            hints,
-        );
-        let text_right = rect.right() - right_used;
-
-        match &headline {
-            Some(layout) => {
-                let code_pos = egui::pos2(rect.left() + text_start_x, top);
-                self.card_title_ui(ui, layout, code_pos, text_right);
+        } = if row.cwd_display.is_some() {
+            render_agent_row_right_side(
+                ui,
+                rect,
+                row.session_id,
+                row.is_active,
+                self.ctrl_held,
+                row.shortcut_hint,
+                row.cycle_hint,
+                row.queue_priority,
+                row.git_lines,
+                hints,
+            )
+        } else {
+            let RightSide { width, action } = render_row_right_side(
+                ui,
+                rect,
+                row.session_id,
+                row.is_active,
+                self.ctrl_held,
+                row.shortcut_hint,
+                row.cycle_hint,
+                row.queue_priority,
+                hints,
+            );
+            AgentRightSide {
+                title_right: width,
+                cwd_right: width,
+                action,
             }
-            None => {
-                self.title_ui(
-                    ui,
-                    row.title,
-                    egui::pos2(rect.left() + text_start_x, top),
-                    text_right - rect.left() - text_start_x,
-                );
-            }
-        }
-
-        let meta_bottom = top + title_height + meta_height(&meta);
-        if !meta.is_empty() {
-            let meta_pos = egui::pos2(rect.left() + text_x, meta_bottom - meta.size().y);
-            paint_clipped(ui, meta_pos, meta, text_right);
-        }
-        if let Some(cwd) = row.cwd_display {
-            let cwd_pos = egui::pos2(rect.left() + text_x, meta_bottom + LINE_GAP);
-            cwd_inline_ui(ui, cwd, cwd_pos, text_right - cwd_pos.x);
-        }
-
-        // The detail after the dash, and the rest the wrap cut, is on hover.
-        let response = match headline {
-            Some(layout) => response.on_hover_ui(|ui| {
-                ui.label(layout.card.title);
-            }),
-            None => response,
         };
+
+        let title_max_width = rect.width() - text_start_x - title_right;
+        let cwd_max_width = rect.width() - text_start_x - cwd_right;
+        let title_height = row_height(ui, &title_font());
+        let title_top = if row.cwd_display.is_some() {
+            rect.top() + ROW_PAD
+        } else {
+            rect.center().y - title_height / 2.0
+        };
+        self.title_ui(
+            ui,
+            row.title,
+            egui::pos2(rect.left() + text_start_x, title_top),
+            title_max_width,
+        );
+
+        if let Some(cwd) = row.cwd_display {
+            let cwd_pos = egui::pos2(rect.left() + text_start_x, title_top + title_height + 1.0);
+            cwd_inline_ui(ui, cwd, cwd_pos, cwd_max_width);
+        }
 
         RowResponse {
             response,
             action: dot_action,
         }
-    }
-
-    /// Draw a card's code column and headline, the code's top-left at
-    /// `pos`, nothing past `right`.
-    ///
-    /// The column leads with the card's status glyph — its column on the
-    /// board, as its chip in the chat shows it — drawn by clipping the
-    /// card's own inline chip to the glyph, so it tracks the board without
-    /// the list knowing how a card draws. A list drawn without
-    /// [`title_refs`](Self::title_refs) leaves the slot empty.
-    fn card_title_ui(&self, ui: &mut egui::Ui, layout: &CardLayout<'_>, pos: Pos2, right: f32) {
-        let line = row_height(ui, &title_font());
-        let column = layout.column;
-        self.card_glyph_ui(
-            ui,
-            layout.card.card_ref,
-            egui::Rect::from_min_size(pos, egui::vec2(GLYPH_SLOT - 4.0, line)),
-        );
-        if column.codes {
-            let weak = ui.visuals().weak_text_color();
-            let code = layout.code.unwrap_or(NO_CODE);
-            let code_galley = ui
-                .painter()
-                .layout_no_wrap(code.to_owned(), code_font(), weak);
-            let code_pos = pos + egui::vec2(column.glyph, (line - code_galley.size().y) / 2.0);
-            let code_right = (pos.x + column.width - CODE_GAP).min(right);
-            paint_clipped(ui, code_pos, code_galley, code_right);
-        }
-        let headline_pos = pos + egui::vec2(column.width, 0.0);
-        paint_clipped(ui, headline_pos, layout.headline.clone(), right);
-    }
-
-    /// Draw `card_ref`'s inline chip into `rect`, clipped to it: the chip's
-    /// status glyph, without the title beside it.
-    fn card_glyph_ui(&self, ui: &mut egui::Ui, card_ref: &str, rect: egui::Rect) {
-        let Some(refs) = &self.title_refs else {
-            return;
-        };
-        let mut refs = refs.borrow_mut();
-        let mut child = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(rect.with_max_x(rect.right() + 200.0))
-                .layout(Layout::left_to_right(Align::Center)),
-        );
-        child.set_clip_rect(rect.intersect(ui.clip_rect()));
-        child
-            .style_mut()
-            .text_styles
-            .insert(egui::TextStyle::Body, title_font());
-        let refs = &mut *refs;
-        notedeck_ui::markdown::reference_ui(
-            &mut child,
-            refs.note,
-            refs.txn,
-            card_ref,
-            notedeck::RenderContext::Inline,
-            notedeck::InlineChrome::Bare,
-            // The row's click switches to its session.
-            notedeck::Interaction::Inert,
-        );
-    }
-
-    /// Render a Claude subagent's session as one dim line under the session
-    /// running it: ● for a foreground subagent, ○ for a background one, a
-    /// spinner in its place while it works, then its title.
-    fn subagent_row_ui(&self, ui: &mut egui::Ui, row: SubagentRow<'_>) -> RowResponse {
-        let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), Sense::click());
-        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-        paint_row_background(ui, rect, row.is_active, self.chord_cursor, &response);
-
-        let weak = ui.visuals().weak_text_color();
-        let glyph = egui::Rect::from_center_size(
-            egui::pos2(rect.left() + TEXT_LEFT + 3.0, rect.center().y),
-            egui::vec2(9.0, 9.0),
-        );
-        match row.status {
-            AgentStatus::Working | AgentStatus::Pending => {
-                let mut spinner_ui = ui.new_child(egui::UiBuilder::new().max_rect(glyph));
-                spinner_ui.add(SquareLoadingSpinner::new().size(9.0).color(weak));
-            }
-            status => {
-                let color = match status {
-                    AgentStatus::NeedsInput | AgentStatus::Error => status.color(),
-                    _ => weak,
-                };
-                if row.background {
-                    let stroke = egui::Stroke::new(1.2, color);
-                    ui.painter().circle_stroke(glyph.center(), 3.0, stroke);
-                } else {
-                    ui.painter().circle_filled(glyph.center(), 3.0, color);
-                }
-            }
-        }
-
-        let hints: &[(&str, &str)] = &[];
-        let RightSide {
-            width: right_used,
-            action,
-        } = render_row_right_side(
-            ui,
-            rect,
-            row.session_id,
-            row.is_active,
-            self.ctrl_held,
-            row.shortcut_hint,
-            row.cycle_hint,
-            row.queue_priority,
-            hints,
-        );
-
-        let galley = ui.painter().layout_no_wrap(
-            row.title.to_owned(),
-            egui::FontId::proportional(12.0),
-            weak,
-        );
-        let pos = egui::pos2(glyph.right() + 6.0, rect.center().y - galley.size().y / 2.0);
-        paint_clipped(ui, pos, galley, rect.right() - right_used);
-        let response = if row.title.is_empty() {
-            response
-        } else {
-            response.on_hover_ui(|ui| {
-                ui.label(row.title);
-            })
-        };
-        RowResponse { response, action }
     }
 
     /// Render a chat session row (no status bar, no cwd).
@@ -813,55 +628,6 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             return;
         };
         refresh_card_titles(self.session_manager, &refs.borrow(), now);
-    }
-
-    /// The code column for the folder holding `ids`, sized to the widest
-    /// code its rows show (see [`row_code`](Self::row_code)). Measured as
-    /// char counts times the code font's advance, which is monospace, so
-    /// sizing it each frame lays nothing out.
-    fn code_column(&self, ui: &egui::Ui, ids: &[SessionId]) -> CodeColumn {
-        let glyph = if self.title_refs.is_some() {
-            GLYPH_SLOT
-        } else {
-            0.0
-        };
-        // No title in the folder has a code: the column is the glyph slot
-        // alone, with no `·` placeholders and no gap after them.
-        let Some(chars) = ids
-            .iter()
-            .filter_map(|&id| self.row_code(id))
-            .map(|code| code.chars().count())
-            .max()
-        else {
-            return CodeColumn {
-                glyph,
-                width: glyph,
-                codes: false,
-            };
-        };
-        let advance = ui.fonts_mut(|f| f.glyph_width(&code_font(), '0'));
-        CodeColumn {
-            glyph,
-            width: glyph + chars as f32 * advance + CODE_GAP,
-            codes: true,
-        }
-    }
-
-    /// The code before the colon in the title of the card session `id`'s
-    /// row shows, or `None` when it shows no card (see
-    /// [`render_session_item`](Self::render_session_item)) or the card's
-    /// title has no code. A row without one shows [`NO_CODE`] in a column
-    /// another row's code made.
-    fn row_code(&self, id: SessionId) -> Option<&str> {
-        let session = self.session_manager.get(id)?;
-        if session.ai_mode != AiMode::Agentic {
-            return None;
-        }
-        let title = self
-            .session_manager
-            .card_titles
-            .get(session.details.title_ref()?)?;
-        TitleParts::split(title).code
     }
 
     /// Draw a row's `title` with its top-left at `pos`, clipped to `max_width`.
@@ -968,50 +734,6 @@ struct RowPlace<'a> {
     /// The path shown in the row when the session is alone in its cwd, with
     /// no folder header above it.
     cwd: Option<&'a str>,
-    /// Its folder's code column, used when the row shows a card.
-    code_column: CodeColumn,
-    /// A Claude subagent's virtual session, drawn as a dim line under the
-    /// session running it (see [`SessionListUi::subagent_row_ui`]).
-    subagent: bool,
-}
-
-/// The code column of the card rows in one folder: where the code starts
-/// after the status glyph, and where the headline starts after the code.
-/// Sized by [`SessionListUi::code_column`] to the folder's widest code, so
-/// short codes don't leave a gap before the headline, long ones aren't
-/// clipped, and the headlines within a folder still line up.
-#[derive(Clone, Copy, Default)]
-struct CodeColumn {
-    /// The status glyph's slot before the code: [`GLYPH_SLOT`], or nothing
-    /// when the list draws without [`title_refs`](SessionListUi::title_refs)
-    /// and so has no glyph to draw.
-    glyph: f32,
-    /// The whole column: the glyph slot, the widest code and [`CODE_GAP`];
-    /// the glyph slot alone when no row in the folder has a code.
-    width: f32,
-    /// Whether any row in the folder has a code, so the column draws one
-    /// per row ([`NO_CODE`] for a title without).
-    codes: bool,
-}
-
-/// A card a row is titled by: its ref, and its current title.
-#[derive(Clone, Copy)]
-struct CardTitle<'s> {
-    /// The card's `headway:<board>/<word-id>` ref.
-    card_ref: &'s str,
-    /// Its title as last looked up (see [`CardTitles`](crate::card_titles::CardTitles)).
-    title: &'s str,
-}
-
-/// A [`CardTitle`] laid out for a row.
-struct CardLayout<'s> {
-    card: CardTitle<'s>,
-    /// The code before the title's colon, if it has one (see [`TitleParts`]).
-    code: Option<&'s str>,
-    /// The folder's code column the code is drawn in.
-    column: CodeColumn,
-    /// The headline, wrapped to at most two lines.
-    headline: Arc<egui::Galley>,
 }
 
 /// Lines a session's worktree has added and deleted against HEAD.
@@ -1040,12 +762,8 @@ pub(crate) fn git_lines(session: &ChatSession) -> Option<GitLines> {
 /// What [`SessionListUi::agent_row_ui`] draws.
 struct AgentRow<'s> {
     session_id: SessionId,
-    /// The session's title, drawn when `card` is `None`.
+    /// The session's title: a card's ref draws as the card's inline chip.
     title: &'s str,
-    /// The card the session is titled by, once its title has been looked up.
-    card: Option<CardTitle<'s>>,
-    /// Its folder's code column, for `card`'s code.
-    code_column: CodeColumn,
     /// The cwd path, for a session alone in its cwd.
     cwd_display: Option<&'s str>,
     is_active: bool,
@@ -1057,50 +775,23 @@ struct AgentRow<'s> {
     /// Unix time of the session's last activity.
     last_activity: Option<u64>,
     queue_priority: Option<FocusPriority>,
+    /// The worktree's +/- lines, drawn on a row with a `cwd_display` only.
     git_lines: Option<GitLines>,
-    /// Subagents the session has started.
-    subagents: usize,
-}
-
-/// What [`SessionListUi::subagent_row_ui`] draws.
-struct SubagentRow<'s> {
-    session_id: SessionId,
-    title: &'s str,
-    /// Runs in the background (○) rather than the foreground (●).
-    background: bool,
-    is_active: bool,
-    shortcut_hint: Option<usize>,
-    cycle_hint: Option<&'static str>,
-    status: AgentStatus,
-    queue_priority: Option<FocusPriority>,
 }
 
 /// Left padding of a row's text, past the status bar.
 const TEXT_LEFT: f32 = 12.0;
-/// Width of the glyph slot at the head of the code column.
-const GLYPH_SLOT: f32 = 18.0;
-/// Space between a folder's widest code and its headlines.
-const CODE_GAP: f32 = 6.0;
-/// What a card row's code column shows for a title with no code.
-const NO_CODE: &str = "·";
 /// Width of the "Connecting…" spinner before a pending row's title.
 const PENDING_SPINNER_SLOT: f32 = 22.0;
 /// Space above and below a row's text.
 const ROW_PAD: f32 = 6.0;
-/// Space between a row's lines.
-const LINE_GAP: f32 = 2.0;
 
 /// A row title's font.
 fn title_font() -> egui::FontId {
     egui::FontId::proportional(14.0)
 }
 
-/// A card's code's font.
-fn code_font() -> egui::FontId {
-    egui::FontId::monospace(11.0)
-}
-
-/// The font of a row's meta and cwd lines.
+/// The font of a row's cwd line and of git +/- counts.
 fn cwd_font() -> egui::FontId {
     egui::FontId::monospace(10.0)
 }
@@ -1110,115 +801,7 @@ fn row_height(ui: &egui::Ui, font: &egui::FontId) -> f32 {
     ui.fonts_mut(|f| f.row_height(font))
 }
 
-/// Width a row keeps clear on its right for the focus dot, which a headline
-/// wraps short of. Ctrl's hints come and go and only clip it.
-fn right_reserve(queue_priority: Option<FocusPriority>) -> f32 {
-    match queue_priority {
-        Some(_) => 26.0,
-        None => 8.0,
-    }
-}
-
-/// Lay a card's headline out `width` wide, wrapped to at most two lines and
-/// cut with an ellipsis.
-fn headline_galley(ui: &egui::Ui, headline: &str, width: f32) -> Arc<egui::Galley> {
-    let mut job = egui::text::LayoutJob::single_section(
-        headline.to_owned(),
-        egui::TextFormat::simple(title_font(), ui.visuals().text_color()),
-    );
-    job.wrap = egui::text::TextWrapping {
-        max_width: width.max(0.0),
-        max_rows: 2,
-        break_anywhere: false,
-        overflow_character: Some('…'),
-    };
-    ui.painter().layout_job(job)
-}
-
-/// Paint `galley` at `pos`, clipped at `right`.
-fn paint_clipped(ui: &egui::Ui, pos: Pos2, galley: Arc<egui::Galley>, right: f32) {
-    let clip = egui::Rect::from_min_max(pos, egui::pos2(right, pos.y + galley.size().y));
-    let color = ui.visuals().text_color();
-    ui.painter()
-        .with_clip_rect(clip.intersect(ui.clip_rect()))
-        .galley(pos, galley, color);
-}
-
-/// What a row's meta line says, each part present only when it has
-/// something to say.
-struct MetaLine {
-    /// Seconds since the session's last activity.
-    age: Option<u64>,
-    git_lines: Option<GitLines>,
-    /// Subagents started, shown as `<n> sub`.
-    subagents: usize,
-}
-
-/// Lay out a row's dim meta line, e.g. `12m · +88 -4 · 2 sub`: the time
-/// since the last activity, the worktree's +/- lines against HEAD and how
-/// many subagents it started. The status isn't on it: the row's status bar
-/// already shows it in colour. Empty when there is
-/// nothing to say (see [`meta_height`]).
-fn meta_line(ui: &egui::Ui, meta: MetaLine) -> Arc<egui::Galley> {
-    use std::fmt::Write;
-    let font = cwd_font();
-    let weak = ui.visuals().weak_text_color();
-    let mut job = egui::text::LayoutJob::default();
-    let part = |job: &mut egui::text::LayoutJob, text: &str, color: Color32| {
-        if !job.text.is_empty() {
-            job.append(" · ", 0.0, egui::TextFormat::simple(font.clone(), weak));
-        }
-        job.append(text, 0.0, egui::TextFormat::simple(font.clone(), color));
-    };
-    let mut buf = String::new();
-    if let Some(age) = meta.age {
-        buf.clear();
-        age_text(age, &mut buf);
-        part(&mut job, &buf, weak);
-    }
-    if let Some(lines) = meta.git_lines {
-        if lines.added > 0 {
-            buf.clear();
-            let _ = write!(buf, "+{}", lines.added);
-            part(&mut job, &buf, GIT_ADDED_COLOR);
-        }
-        if lines.deleted > 0 {
-            buf.clear();
-            let _ = write!(buf, "-{}", lines.deleted);
-            // `+88 -4` reads as one part, so no dot between the two.
-            let sep = if lines.added > 0 { " " } else { "" };
-            if sep.is_empty() {
-                part(&mut job, &buf, GIT_DELETED_COLOR);
-            } else {
-                job.append(sep, 0.0, egui::TextFormat::simple(font.clone(), weak));
-                job.append(
-                    &buf,
-                    0.0,
-                    egui::TextFormat::simple(font.clone(), GIT_DELETED_COLOR),
-                );
-            }
-        }
-    }
-    if meta.subagents > 0 {
-        buf.clear();
-        let _ = write!(buf, "{} sub", meta.subagents);
-        part(&mut job, &buf, weak);
-    }
-    ui.painter().layout_job(job)
-}
-
-/// The height a row gives its `meta` line, with the gap above it: none
-/// when the line is empty, so a row with nothing to say under its title
-/// stays one line.
-fn meta_height(meta: &egui::Galley) -> f32 {
-    if meta.is_empty() {
-        0.0
-    } else {
-        LINE_GAP + meta.size().y
-    }
-}
-
-/// Write `secs` as the meta line's age: `now`, `12m`, `3h`, `2d`.
+/// Write `secs` as a short age: `now`, `12m`, `3h`, `2d`.
 pub(crate) fn age_text(secs: u64, out: &mut String) {
     use std::fmt::Write;
     let _ = match secs {
@@ -1579,6 +1162,117 @@ fn render_row_right_side(
     }
 }
 
+/// What a standalone agent row's right side took, as
+/// [`render_agent_row_right_side`] draws it.
+struct AgentRightSide {
+    /// The width to reserve on the title (top) line.
+    title_right: f32,
+    /// The width to reserve on the cwd (bottom) line.
+    cwd_right: f32,
+    /// What clicking its focus dot asks, if it was clicked.
+    action: Option<SessionListAction>,
+}
+
+/// Render the right side of a standalone (cwd) agent row: the shortcut
+/// number and ctrl+shift hints centered, the focus dot in the top-right
+/// corner and the worktree's git +/- in the bottom-right one.
+#[allow(clippy::too_many_arguments)]
+fn render_agent_row_right_side(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    session_id: SessionId,
+    is_active: bool,
+    ctrl_held: bool,
+    shortcut_hint: Option<usize>,
+    cycle_hint: Option<&str>,
+    queue_priority: Option<FocusPriority>,
+    git_lines: Option<GitLines>,
+    hints: &[(&str, &str)],
+) -> AgentRightSide {
+    // The hints, centered, take what a dotless row's right side would.
+    let RightSide {
+        width: center_offset,
+        ..
+    } = render_row_right_side(
+        ui,
+        rect,
+        session_id,
+        is_active,
+        ctrl_held,
+        shortcut_hint,
+        cycle_hint,
+        None,
+        hints,
+    );
+
+    // Status dot, top-right corner.
+    let mut dot_action = None;
+    let mut dot_width = 0.0;
+    if let Some(priority) = queue_priority {
+        let dot_radius = 5.0;
+        let dot_center = egui::pos2(rect.right() - 4.0 - dot_radius, rect.top() + 9.0);
+        ui.painter()
+            .circle_filled(dot_center, dot_radius, priority.color());
+
+        if priority == FocusPriority::Done {
+            let dot_rect = egui::Rect::from_center_size(
+                dot_center,
+                egui::vec2(dot_radius * 4.0, dot_radius * 4.0),
+            );
+            let dot_response = ui.interact(
+                dot_rect,
+                ui.scope_id().with(("dismiss_dot", session_id)),
+                egui::Sense::click(),
+            );
+            if dot_response.clicked() {
+                dot_action = Some(SessionListAction::DismissDone(session_id));
+            }
+            if dot_response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        }
+
+        dot_width = dot_radius * 2.0 + 8.0;
+    }
+
+    // Git +/- line stats, bottom-right corner.
+    let git_width = git_lines.map_or(0.0, |lines| {
+        let right = egui::pos2(rect.right() - 6.0, rect.bottom() - 9.0);
+        paint_git_lines(ui, lines, right) + 10.0
+    });
+
+    AgentRightSide {
+        title_right: center_offset.max(dot_width),
+        cwd_right: center_offset.max(git_width),
+        action: dot_action,
+    }
+}
+
+/// Paint a worktree's +/- lines against HEAD, e.g. `+88 -4`, right-aligned
+/// so they end at `right_center` and centered on its y. Returns the width
+/// they took.
+fn paint_git_lines(ui: &egui::Ui, lines: GitLines, right_center: Pos2) -> f32 {
+    let painter = ui.painter();
+    let mut x = right_center.x;
+    // Laid out right to left, so the deleted count goes first.
+    let mut paint = |text: String, color: Color32| {
+        if x < right_center.x {
+            x -= 5.0;
+        }
+        let galley = painter.layout_no_wrap(text, cwd_font(), color);
+        x -= galley.size().x;
+        let pos = egui::pos2(x, right_center.y - galley.size().y / 2.0);
+        painter.galley(pos, galley, color);
+    };
+    if lines.deleted > 0 {
+        paint(format!("-{}", lines.deleted), GIT_DELETED_COLOR);
+    }
+    if lines.added > 0 {
+        paint(format!("+{}", lines.added), GIT_ADDED_COLOR);
+    }
+    right_center.x - x
+}
+
 /// The colour of a worktree's added-lines count.
 pub(crate) const GIT_ADDED_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 180, 60);
 /// The colour of a worktree's deleted-lines count.
@@ -1649,6 +1343,7 @@ fn host_section_ui(
             icon: HeaderIcon::Host,
             height: 24.0,
             truncate_from_start: false,
+            git_lines: None,
         },
         openness,
     );
@@ -1740,6 +1435,7 @@ fn project_section_ui(
             icon: HeaderIcon::Folder,
             height: 22.0,
             truncate_from_start: false,
+            git_lines: None,
         },
         openness,
     );
@@ -1880,6 +1576,9 @@ struct HeaderParams<'a> {
     /// [`truncate_host_and_path`], as the workspace cwd path does; otherwise
     /// truncate normally from the end with an ellipsis.
     truncate_from_start: bool,
+    /// A worktree's +/- lines, drawn right-aligned before the disclosure
+    /// arrow: a cwd folder's, so its rows needn't each repeat them.
+    git_lines: Option<GitLines>,
 }
 
 /// What [`collapsible_header_ui`] drew.
@@ -1932,10 +1631,16 @@ fn collapsible_header_ui(
     let arrow_center = egui::pos2(rect.right() - 2.0 - arrow_box / 2.0, rect.center().y);
     paint_disclosure_arrow(ui.painter(), arrow_center, openness, color);
 
-    // Header text between the icon and the arrow, as a real accessible widget so
-    // it can be found and right-clicked.
+    // Git +/- just left of the arrow.
+    let mut text_right = arrow_center.x - arrow_box / 2.0 - 4.0;
+    if let Some(lines) = params.git_lines {
+        let right = egui::pos2(text_right, rect.center().y);
+        text_right -= paint_git_lines(ui, lines, right) + 6.0;
+    }
+
+    // Header text between the icon and the git +/- (or the arrow), as a real
+    // accessible widget so it can be found and right-clicked.
     let text_left = icon_rect.right() + 6.0;
-    let text_right = arrow_center.x - arrow_box / 2.0 - 4.0;
     let label_rect = egui::Rect::from_min_max(
         egui::pos2(text_left, rect.top()),
         egui::pos2(text_right, rect.bottom()),
@@ -2060,8 +1765,6 @@ fn cwd_section_ui(
                 active_id,
                 RowPlace {
                     cwd: Some(cwd_group.display_cwd.as_str()),
-                    code_column: list_ui.code_column(ui, &cwd_group.session_ids),
-                    subagent: false,
                 },
                 cycle,
             ) {
@@ -2096,6 +1799,22 @@ fn cwd_section_ui(
 
     ui.add_space(2.0);
     action
+}
+
+/// The +/- lines of `group`'s worktree, for its folder header. Every session
+/// in the folder runs in that worktree, so any one's git status is its
+/// status; a session running elsewhere ([`ListRow::elsewhere`](crate::session::ListRow::elsewhere))
+/// is in another worktree, and keeps its own +/- on its row.
+fn folder_git_lines(
+    session_manager: &SessionManager,
+    group: &crate::session::CwdGroup,
+) -> Option<GitLines> {
+    group
+        .session_ids
+        .iter()
+        .zip(&group.rows)
+        .filter(|(_, row)| row.elsewhere.is_none())
+        .find_map(|(&id, _)| git_lines(session_manager.get(id)?))
 }
 
 /// Render the collapsible folder for a multi-session cwd: header, body
@@ -2136,6 +1855,7 @@ fn cwd_folder_ui(
             icon: HeaderIcon::Worktree,
             height: 20.0,
             truncate_from_start: true,
+            git_lines: folder_git_lines(list_ui.session_manager, cwd_group),
         },
         openness,
     );
@@ -2151,7 +1871,6 @@ fn cwd_folder_ui(
                 visual_index,
                 active_id,
                 cycle,
-                code_column: list_ui.code_column(ui, &cwd_group.session_ids),
             },
         ) {
             action = Some(a);
@@ -2188,18 +1907,16 @@ struct RowWalk<'v> {
     visual_index: &'v mut usize,
     active_id: Option<SessionId>,
     cycle: CycleHints,
-    /// The folder's code column (see [`SessionListUi::code_column`]).
-    code_column: CodeColumn,
 }
 
-/// Left indent of each lineage level of a nested child or subagent row.
+/// Left indent of each lineage level of a nested child row.
 const NEST_INDENT: f32 = 14.0;
 
 /// Draw a workspace's rows in [`CwdGroup::session_ids`](crate::session::CwdGroup::session_ids)
 /// order, which `visual_order` and Ctrl+J / K walk, so the drawn order and the
 /// keyboard's cannot disagree: a successor chain as its block (see
 /// [`chain_ui`]), any other session as its own row, followed by its
-/// subagents and children nested under it (see [`lineage_row_ui`]).
+/// children nested under it (see [`lineage_row_ui`]).
 fn workspace_rows_ui(
     ui: &mut egui::Ui,
     list_ui: &SessionListUi<'_, '_>,
@@ -2244,9 +1961,8 @@ fn lineage_rows_ui(
     action
 }
 
-/// Draw session `id` where `row` places it: a subagent as a dim one-line
-/// row and a child as a full row, each indented under the session that
-/// spawned it, and a chain link that has handed its work on dimmed. A
+/// Draw session `id` where `row` places it: a child indented under the
+/// session that spawned it, and a chain link that has handed its work on dimmed. A
 /// session running outside the folder's workspace says where on its row.
 fn lineage_row_ui(
     ui: &mut egui::Ui,
@@ -2258,8 +1974,6 @@ fn lineage_row_ui(
     let session = list_ui.session_manager.get(id)?;
     let place = RowPlace {
         cwd: row.elsewhere.as_deref(),
-        code_column: walk.code_column,
-        subagent: row.place.nesting == Nesting::Subagent,
     };
     let indent = NEST_INDENT * f32::from(row.place.depth);
     let dim = row.place.nesting == (Nesting::Link { handed_on: true });
@@ -2311,6 +2025,7 @@ fn chain_ui(
             icon: HeaderIcon::Chain,
             height: 20.0,
             truncate_from_start: false,
+            git_lines: None,
         },
         if collapsed { 0.0 } else { 1.0 },
     );
@@ -2391,7 +2106,7 @@ fn paint_worktree_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::C
 /// don't get a surrounding folder header.
 fn cwd_inline_ui(ui: &mut egui::Ui, cwd_display: &str, pos: Pos2, max_width: f32) {
     let text = truncate_host_and_path(ui, "", cwd_display, max_width);
-    let cwd_font = egui::FontId::monospace(10.0);
+    let cwd_font = cwd_font();
     let cwd_color = ui.visuals().weak_text_color();
     ui.painter()
         .text(pos, egui::Align2::LEFT_TOP, &text, cwd_font, cwd_color);
@@ -2433,7 +2148,7 @@ fn delete_worktree_menu_item(
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentRow, CodeColumn, GitLines, SessionListAction, SessionListUi, CODE_GAP};
+    use super::{folder_git_lines, AgentRow, GitLines, SessionListAction, SessionListUi};
     use crate::agent_status::AgentStatus;
     use crate::backend::BackendType;
     use crate::collapse_state::CollapseState;
@@ -2651,6 +2366,40 @@ mod tests {
         );
     }
 
+    /// A cwd folder's header carries its worktree's +/- lines, taken from
+    /// any session in it, and a session running elsewhere doesn't lend its
+    /// own.
+    #[test]
+    fn a_folder_header_shows_its_worktrees_git_lines() {
+        let mut sm = SessionManager::new();
+        let mut add = |cwd: &str, lines: Option<GitLines>| {
+            let id = sm.new_session(PathBuf::from(cwd), AiMode::Agentic, BackendType::Claude);
+            if let Some(l) = lines {
+                let s = sm.get_mut(id).expect("session");
+                let git = &mut s.agentic.as_mut().expect("agentic").git_status;
+                git.set_lines(l.added, l.deleted);
+            }
+            id
+        };
+        let lines = GitLines {
+            added: 9,
+            deleted: 2,
+        };
+        // The first session's status hasn't been fetched yet.
+        add("/tmp/wt", None);
+        add("/tmp/wt", Some(lines));
+        sm.rebuild_groups();
+        let group = sm
+            .host_groups()
+            .iter()
+            .flat_map(|h| &h.project_groups)
+            .flat_map(|p| &p.cwd_groups)
+            .find(|g| g.session_ids.len() == 2)
+            .expect("a two-session folder")
+            .clone();
+        assert!(folder_git_lines(&sm, &group) == Some(lines));
+    }
+
     /// Render a single standalone (cwd) agentic row in isolation so the
     /// worktree layout — status dot top-right, git +/- bottom-right — can be
     /// verified visually via snapshot.
@@ -2659,7 +2408,7 @@ mod tests {
         git_lines: Option<GitLines>,
     ) -> Harness<'static> {
         Harness::builder()
-            .with_size(egui::Vec2::new(260.0, 64.0))
+            .with_size(egui::Vec2::new(260.0, 56.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
                 let mut session_manager = SessionManager::new();
@@ -2689,8 +2438,6 @@ mod tests {
         AgentRow {
             session_id: id,
             title,
-            card: None,
-            code_column: CodeColumn::default(),
             cwd_display: None,
             is_active: false,
             shortcut_hint: None,
@@ -2699,7 +2446,6 @@ mod tests {
             last_activity: None,
             queue_priority: None,
             git_lines: None,
-            subagents: 0,
         }
     }
 
@@ -2798,8 +2544,10 @@ mod tests {
                 );
 
                 // A multi-worktree "notedeck" project: main checkout + two
-                // worktrees, all sharing one repo root.
-                let wt = |sm: &mut SessionManager, cwd: &str, title: &str| {
+                // worktrees, all sharing one repo root. The dave worktree,
+                // which holds two sessions, is dirty: its folder header shows
+                // the +/- once, and its rows show none.
+                let wt = |sm: &mut SessionManager, cwd: &str, title: &str, lines: GitLines| {
                     let id =
                         sm.new_session(PathBuf::from(cwd), AiMode::Agentic, BackendType::Claude);
                     let s = sm.get_mut(id).expect("session");
@@ -2807,12 +2555,36 @@ mod tests {
                     s.details.home_dir = "/home/dev".to_string();
                     s.details.project_root = Some(PathBuf::from("/home/dev/notedeck"));
                     s.details.project_slug = Some("notedeck".to_string());
+                    let git = &mut s.agentic.as_mut().expect("agentic").git_status;
+                    git.set_lines(lines.added, lines.deleted);
                     id
                 };
-                wt(&mut sm, "/home/dev/notedeck", "fix streaming bug");
-                wt(&mut sm, "/home/dev/notedeck-dave", "project grouping");
-                wt(&mut sm, "/home/dev/notedeck-dave", "render tool results");
-                wt(&mut sm, "/home/dev/notedeck-feature", "responsive layout");
+                let clean = GitLines {
+                    added: 0,
+                    deleted: 0,
+                };
+                let dave = GitLines {
+                    added: 142,
+                    deleted: 37,
+                };
+                wt(&mut sm, "/home/dev/notedeck", "fix streaming bug", clean);
+                wt(&mut sm, "/home/dev/notedeck-dave", "project grouping", dave);
+                wt(
+                    &mut sm,
+                    "/home/dev/notedeck-dave",
+                    "render tool results",
+                    dave,
+                );
+                let feature = GitLines {
+                    added: 12,
+                    deleted: 0,
+                };
+                wt(
+                    &mut sm,
+                    "/home/dev/notedeck-feature",
+                    "responsive layout",
+                    feature,
+                );
 
                 if let Some(s) = sm.get_mut(solo) {
                     s.details.title = "one-off".to_string();
@@ -2835,7 +2607,7 @@ mod tests {
         harness.snapshot("session_list_project_grouping");
     }
 
-    /// Card refs and their titles for the option C list: long gamedev titles
+    /// Card refs and their titles for the card-row list: long gamedev titles
     /// in the `CODE: headline — detail` shape, one without a code.
     const CARDS: [(&str, &str); 5] = [
         (
@@ -2896,9 +2668,8 @@ mod tests {
         sm
     }
 
-    /// The whole list as option C: codes in their own column, headlines
-    /// wrapped to two lines, a meta line under each, and the two QA2
-    /// sessions on a row each.
+    /// The whole list as card-titled rows, the two QA2 sessions on a row
+    /// each. Drawn without title refs, so each row is its card's raw ref.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_card_titles() {
@@ -2915,62 +2686,6 @@ mod tests {
             );
         harness.run();
         harness.snapshot("session_list_card_titles");
-    }
-
-    /// A folder whose card titles have no code gives the column no width
-    /// past the glyph slot (none in this harness, which draws no glyphs),
-    /// so its headlines start at the row's text, not after a column of `·`.
-    /// One code in the folder sizes the column to it.
-    #[test]
-    fn a_folder_without_codes_has_no_code_column() {
-        fn column_of(titles: &[&str]) -> CodeColumn {
-            let mut sm = SessionManager::new();
-            let ids: Vec<SessionId> = titles
-                .iter()
-                .zip([
-                    "headway:game/able-bench-coil",
-                    "headway:game/crane-drift-oak",
-                ])
-                .map(|(title, card_ref)| {
-                    let id = sm.new_session(
-                        PathBuf::from("/home/dev/crownfolk"),
-                        AiMode::Agentic,
-                        BackendType::Claude,
-                    );
-                    let details = &mut sm.get_mut(id).expect("session").details;
-                    details.title = card_ref.to_string();
-                    assert_eq!(details.title_ref(), Some(card_ref), "a card row");
-                    let lookup = crate::card_titles::CardLookup::titled(title);
-                    sm.card_titles.store(card_ref, lookup, 0.0);
-                    id
-                })
-                .collect();
-            let column = std::cell::Cell::new(None);
-            let mut harness = Harness::builder().build_ui(|ui| {
-                let focus_queue = FocusQueue::new();
-                let collapse_state = CollapseState::new();
-                let list = SessionListUi::new(&mut sm, &focus_queue, &collapse_state, false);
-                column.set(Some(list.code_column(ui, &ids)));
-            });
-            harness.run();
-            drop(harness);
-            column.get().expect("measured")
-        }
-
-        let none = column_of(&[
-            "a morphing prop's foot worked out once",
-            "the capital films ~10x cheaper",
-        ]);
-        assert!(!none.codes);
-        assert_eq!(none.width, none.glyph, "no codes, no column past the glyph");
-
-        let one = column_of(&["the capital films ~10x cheaper", "QA2: the town stood"]);
-        assert!(one.codes);
-        assert!(
-            one.width > one.glyph + CODE_GAP,
-            "one code sizes the column: {} wide",
-            one.width
-        );
     }
 
     /// Two sessions on one card sort next to each other, and each still has
@@ -3192,26 +2907,23 @@ mod tests {
         ids: Lineage,
     }
 
-    /// Subagents and child sessions nest under their parent, and the chain's
-    /// links follow one another in one run, listed in the workspace of its
-    /// last link, the first link saying where it ran; Ctrl+J / K walks them
-    /// in that order. Collapsed, the chain keeps only its last link.
+    /// A child session nests under its parent and the parent's subagents
+    /// get no row at all, and the chain's links follow one another in one
+    /// run, listed in the workspace of its last link, the first link saying
+    /// where it ran; Ctrl+J / K walks them in that order. Collapsed, the chain
+    /// keeps only its last link.
     #[test]
     fn lineage_nests_in_visual_order_and_a_collapsed_chain_keeps_its_last_link() {
         let LineageFixture { mut sm, ids } = lineage_sessions();
         let mut collapse = CollapseState::new();
         let chain = &ids.links;
         let expanded = [
-            chain[0],
-            chain[1],
-            chain[2],
-            chain[3],
-            ids.parent,
-            ids.subagents[0],
-            ids.subagents[1],
-            ids.child,
+            chain[0], chain[1], chain[2], chain[3], ids.parent, ids.child,
         ];
         assert_eq!(sm.visual_order(&collapse), expanded);
+        for sub in ids.subagents {
+            assert!(sm.get(sub).is_some(), "the subagent's session still exists");
+        }
 
         let group = sm.host_groups()[0].project_groups[0].cwd_groups[0].clone();
         assert_eq!(group.display_cwd, "~/notedeck-scene");
@@ -3227,8 +2939,8 @@ mod tests {
         assert_eq!(collapsed.len(), expanded.len() - 3);
     }
 
-    /// The lineage list: a parent with a foreground (●) and a background (○)
-    /// subagent and a child session under it, and a four-link chain headed
+    /// The lineage list: a parent with a child session under it (its two
+    /// subagents draw no rows), and a four-link chain headed
     /// `chain · SM · 3/13`, its handed-on links dimmed.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
@@ -3504,6 +3216,173 @@ mod tests {
         assert!(
             harness.query_by_label(raw).is_none(),
             "the header shouldn't draw the raw ref {raw} once its chip resolves"
+        );
+    }
+
+    /// Stands in for headway's `headway:` parser, which Dave doesn't load:
+    /// the one card ref it knows resolves to its seeded kind-1621 note.
+    struct StubCardParser {
+        card: std::rc::Rc<std::cell::RefCell<Option<CardNote>>>,
+    }
+
+    /// The card [`StubCardParser`] resolves: its ref and its note.
+    struct CardNote {
+        card_ref: String,
+        note: nostrdb_net::NoteId,
+    }
+
+    impl notedeck::ReferenceParser for StubCardParser {
+        fn id(&self) -> &'static str {
+            "headway"
+        }
+
+        fn find(&self, text: &str) -> Option<std::ops::Range<usize>> {
+            headway::wordid::find_ref(text)
+        }
+
+        fn resolve(
+            &self,
+            matched: &str,
+            _ctx: &notedeck::ReferenceResolveCtx,
+        ) -> Option<notedeck::ResolvedRef> {
+            let card = self.card.borrow();
+            let card = card.as_ref().filter(|c| c.card_ref == matched)?;
+            Some(notedeck::ResolvedRef::note(card.note))
+        }
+    }
+
+    /// Stands in for headway's card renderer: the note's content is the
+    /// card's title, which its chip shows beside a status glyph.
+    struct StubCardRenderer;
+
+    impl notedeck::KindRenderer for StubCardRenderer {
+        fn id(&self) -> &'static str {
+            "test.card"
+        }
+
+        fn name(&self) -> &'static str {
+            "Test card"
+        }
+
+        fn kinds(&self) -> &'static [u32] {
+            &[1621]
+        }
+
+        fn render(
+            &self,
+            ui: &mut egui::Ui,
+            _note_context: &mut notedeck::NoteContext,
+            req: &notedeck::KindRenderRequest,
+        ) -> notedeck::KindRenderResponse {
+            let theme = notedeck::ColorTheme::current(ui.ctx());
+            let response =
+                notedeck_ui::inline_chip(ui, &theme, req.note.content(), req.chrome, |ui, size| {
+                    ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+                });
+            notedeck::open_on_click(ui, response, req)
+        }
+
+        fn title(
+            &self,
+            _ndb: &nostrdb::Ndb,
+            _txn: &nostrdb::Transaction,
+            note: &nostrdb::Note,
+        ) -> Option<String> {
+            Some(note.content().to_owned())
+        }
+    }
+
+    /// A session titled with its card's ref draws the card's inline chip on
+    /// its row, showing the card's title, not the raw ref. The regression: the
+    /// row painted the title as bare text and drew no chip.
+    #[test]
+    fn a_card_titled_row_leads_with_the_cards_chip() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use std::time::{Duration, Instant};
+
+        let card_ref = "headway:dave/able-badge-brick";
+        let title = "Session list title chip steals the row click from the session";
+
+        let tmpdir = tempfile::TempDir::new().expect("tmpdir");
+        let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+        let mut notedeck =
+            notedeck::Notedeck::init(&egui::Context::default(), tmpdir.path(), &args);
+        let card = Rc::new(RefCell::new(None));
+        notedeck.register_reference_parser(Box::new(StubCardParser { card: card.clone() }));
+        notedeck.register_kind_renderer(Box::new(StubCardRenderer));
+
+        let mut session_manager = SessionManager::new();
+        let id = session_manager.new_session(
+            PathBuf::from("/tmp/card-title"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        let session = session_manager.get_mut(id).expect("session");
+        session.details.title = card_ref.to_string();
+        session.details.custom_title = None;
+        session_manager.rebuild_groups();
+
+        let state = RefTitleState {
+            notedeck,
+            account: nostrdb_net::FullKeypair::generate(),
+            session_manager,
+            focus_queue: FocusQueue::new(),
+            collapse_state: CollapseState::new(),
+            action: None,
+            app_actions: 0,
+            setup_done: false,
+            header: false,
+            _tmpdir: tmpdir,
+        };
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(300.0, 200.0))
+            .build_ui_state(ref_title_ui, state);
+        harness.run_steps(2);
+
+        let secret = harness.state().account.secret_key.secret_bytes();
+        let note = nostrdb::NoteBuilder::new()
+            .kind(1621)
+            .content(title)
+            .created_at(1_700_000_000)
+            .sign(&secret)
+            .build()
+            .expect("note");
+        *card.borrow_mut() = Some(CardNote {
+            card_ref: card_ref.to_string(),
+            note: nostrdb_net::NoteId::new(*note.id()),
+        });
+        let frame = nostrdb_net::ClientMessage::event(&note)
+            .expect("event")
+            .to_json()
+            .expect("json");
+        harness
+            .state_mut()
+            .notedeck
+            .app_context()
+            .ndb
+            .process_event_with(&frame, nostrdb::IngestMetadata::new().client(true))
+            .expect("ingest");
+
+        // The card's title is looked up for the list, and the row's chip
+        // draws it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            harness.run_ok();
+            let looked_up =
+                harness.state().session_manager.card_titles.get(card_ref) == Some(title);
+            if looked_up && harness.query_by_label(title).is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the card-titled row never drew its card's chip (looked up: {looked_up})"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            harness.query_by_label(card_ref).is_none(),
+            "the row shows the card, not its raw ref"
         );
     }
 }

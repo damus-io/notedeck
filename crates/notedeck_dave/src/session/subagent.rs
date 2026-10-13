@@ -507,13 +507,13 @@ mod tests {
             "a spawn doesn't steal focus"
         );
 
-        let fg = sm.subagent_session(parent, "toolu_fg").unwrap();
-        let bg = sm.subagent_session(parent, "toolu_bg").unwrap();
+        assert!(sm.subagent_session(parent, "toolu_fg").is_some());
+        assert!(sm.subagent_session(parent, "toolu_bg").is_some());
         let ids = &sm.host_groups()[0].project_groups[0].cwd_groups[0].session_ids;
         assert_eq!(
             ids,
-            &vec![parent, fg, bg],
-            "nested under the parent, oldest first"
+            &vec![parent],
+            "the session list draws no subagent rows"
         );
     }
 
