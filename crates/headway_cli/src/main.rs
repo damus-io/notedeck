@@ -34,11 +34,11 @@ use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
 
 use crate::args::{Cli, Command, Invocation};
-use crate::boards::{Roster, list_boards, list_shared_with_me, load_board};
+use crate::boards::{Roster, list_all_boards, list_boards, list_shared_with_me, load_board};
 use crate::edit::{Collect, build_action, resolve_container};
 use crate::output::{
-    card_count, declined_message, plain_ref, print_all_boards, print_board, print_boards,
-    print_cards, print_next, print_seq_place,
+    card_count, declined_message, deleted_board_error, plain_ref, print_all_boards, print_board,
+    print_boards, print_cards, print_deleted_boards, print_next, print_seq_place,
 };
 use crate::sync::{
     flush_own_selfshares, plaintext_sync_filter, pull_giftwraps, pull_pns_keyshares,
@@ -102,13 +102,18 @@ fn require_owner(me: &Pubkey, owner: &Pubkey, cmd: &str) -> Result<()> {
 ///
 /// Not the listings — `headway board`, `show --all` and `grep --all` cover
 /// every board, so no one slug is theirs to resolve (and an ambiguous current
-/// board mustn't break them). Not `seed`/`migrate` either: they only ever act on a board *we* own,
+/// board mustn't break them). Not `seed`/`migrate`/`delete-board`/`restore-board`
+/// either: they only ever act on a board *we* own,
 /// and `headway --board shared seed` must create our own `shared` even when
 /// someone else's is in the roster.
 fn resolves_owner_by_slug(cmd: &Command, show_all: bool) -> bool {
     !matches!(
         cmd,
-        Command::Board { id: None } | Command::Seed { .. } | Command::Migrate
+        Command::Board { id: None }
+            | Command::Seed { .. }
+            | Command::Migrate
+            | Command::DeleteBoard { .. }
+            | Command::RestoreBoard { .. }
     ) && !(show_all && matches!(cmd, Command::Show { .. } | Command::Grep { .. }))
 }
 
@@ -324,8 +329,16 @@ async fn run() -> Result<()> {
         Command::Seed { title } => {
             let secret = secret.ok_or("seed needs --nsec to sign")?;
             require_owner(&me, &author, "seed")?;
-            if load_board(&ndb, &roster, &author, &board).is_some() {
-                return Err(format!("board '{board}' already exists").into());
+            match load_board(&ndb, &roster, &author, &board) {
+                Some(view) if view.deleted => {
+                    return Err(format!(
+                        "board '{board}' was deleted — bring it back with \
+                         `headway restore-board {board}`"
+                    )
+                    .into());
+                }
+                Some(_) => return Err(format!("board '{board}' already exists").into()),
+                None => {}
             }
             // Title defaults to the slug (an explicit `--title` overrides). Every
             // board is named after itself — no board is titled "Headway" unless its
@@ -501,6 +514,9 @@ async fn run() -> Result<()> {
             Some(id) => {
                 nostrdb_net::relay::sync::write_config(APP, "board", &id)?;
                 match load_board(&ndb, &roster, &author, &id) {
+                    Some(view) if view.deleted => println!(
+                        "switched to board '{id}' — it is deleted, run `headway restore-board {id}`"
+                    ),
                     Some(view) => {
                         println!("switched to board '{id}' ({} cards)", card_count(&view))
                     }
@@ -518,9 +534,78 @@ async fn run() -> Result<()> {
                 } else {
                     Vec::new()
                 };
-                print_boards(&list_boards(&ndb, &roster, &author), &shared, &board)
+                let (own, deleted): (Vec<_>, Vec<_>) = list_all_boards(&ndb, &roster, &author)
+                    .into_iter()
+                    .partition(|v| !v.deleted);
+                print_boards(&own, &shared, &board);
+                print_deleted_boards(&deleted);
             }
         },
+
+        // Board deletion: a tombstone on the board definition, so it goes
+        // through `apply` like any board-level edit, but needs its own path —
+        // the generic one below refuses every edit to a deleted board.
+        cmd @ (Command::DeleteBoard { .. } | Command::RestoreBoard { .. }) => {
+            let delete = matches!(cmd, Command::DeleteBoard { .. });
+            let (verb, name) = if delete {
+                ("delete", "delete-board")
+            } else {
+                ("restore", "restore-board")
+            };
+            let secret = secret.ok_or_else(|| format!("{name} needs --nsec to sign"))?;
+            require_owner(&me, &author, name)?;
+            let view = load_board(&ndb, &roster, &author, &board)
+                .ok_or_else(|| format!("no board '{board}' to {verb}"))?;
+            if view.deleted == delete {
+                let state = if delete {
+                    "already deleted"
+                } else {
+                    "not deleted"
+                };
+                if as_json {
+                    println!("{}", json!({ "ok": true, "events": 0, "noop": state }));
+                } else {
+                    println!("ok (0 events) — board '{board}' is {state}");
+                }
+                return Ok(());
+            }
+            let action = if delete {
+                store::BoardAction::DeleteBoard
+            } else {
+                store::BoardAction::RestoreBoard
+            };
+            let mut sink = Collect::default();
+            let channel = roster.channel(&board);
+            store::apply(
+                &ndb,
+                &board,
+                &view,
+                &me,
+                &store::Signer::new(&secret, channel.as_ref()),
+                action,
+                &mut sink,
+            );
+            if sink.0.is_empty() {
+                return Err(format!("{name} produced no events").into());
+            }
+            let n = sink.0.len();
+            nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
+            if as_json {
+                println!("{}", json!({ "ok": true, "events": n, "board": board }));
+            } else if delete {
+                println!(
+                    "deleted board '{board}' ({} cards kept) — undo with `headway restore-board {board}`{}",
+                    card_count(&view),
+                    nostrdb_net::relay::sync::offline_note(&relay)
+                );
+            } else {
+                println!(
+                    "restored board '{board}' ({} cards){}",
+                    card_count(&view),
+                    nostrdb_net::relay::sync::offline_note(&relay)
+                );
+            }
+        }
 
         // Cross-board: place/move a card from the current board onto another.
         // These touch two boards, so they sidestep the single-board `apply` path.
@@ -693,6 +778,9 @@ async fn run() -> Result<()> {
             let secret = secret.ok_or("this command needs --nsec to sign")?;
             let view = load_board(&ndb, &roster, &author, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
+            if view.deleted {
+                return Err(deleted_board_error(&board).into());
+            }
             // `review` echoes what it recorded (below), so keep a copy before
             // `build_action` consumes the command.
             let recorded = match &edit {

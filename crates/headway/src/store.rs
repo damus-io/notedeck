@@ -17,9 +17,9 @@ use nostrdb_net::{NoteId, Pubkey};
 use crate::event::{
     self, BoardView, COL_DELETED, CardView, ColumnDef, Container, Date, Field, Priority,
     ReviewFields, board_address, build_archive_placement, build_blockers, build_board,
-    build_comment, build_cover_note, build_field, build_issue, build_labels, build_placement,
-    build_related, build_relation, build_review, build_review_comment, build_sequence,
-    build_subject_edit, rank_between,
+    build_board_def, build_comment, build_cover_note, build_field, build_issue, build_labels,
+    build_placement, build_related, build_relation, build_review, build_review_comment,
+    build_sequence, build_subject_edit, rank_between,
 };
 use crate::teams;
 
@@ -145,6 +145,14 @@ pub enum BoardAction {
     /// Rename the board itself: republish its definition with a new display
     /// `title`, preserving the slug, columns, and description.
     RenameBoard { title: String },
+    /// Delete the board: republish its definition as a tombstone (see
+    /// [`event::build_board_def`]). Reversible — the cards, columns and title
+    /// are untouched, and [`Self::RestoreBoard`] brings it back. A no-op on a
+    /// board that is already deleted.
+    DeleteBoard,
+    /// Restore a deleted board: republish its definition without the tombstone.
+    /// A no-op on a live board.
+    RestoreBoard,
 }
 
 /// One inline review comment for [`BoardAction::AddReviewComments`]: the lines
@@ -1578,16 +1586,17 @@ fn apply_edit(
         }
         BoardAction::RenameBoard { title } => {
             // Same addressable-event republish as `republish_board`, but swapping
-            // the title instead of the columns. Bump `created_at` past the current
-            // board so the reducer keeps the renamed version (see `republish_board`).
-            let cols = column_defs(view);
-            let created_at = now_secs().max(view.created_at + 1);
-            ingest_signed(
-                ndb,
-                build_board(board_id, &title, &view.description, &cols).created_at(created_at),
-                signer,
-                publisher,
-            );
+            // the title instead of the columns.
+            let def = BoardDef {
+                title: &title,
+                columns: &column_defs(view),
+                deleted: view.deleted,
+            };
+            republish_board_def(ndb, board_id, view, signer, def, publisher);
+        }
+        BoardAction::DeleteBoard => set_board_deleted(ndb, board_id, view, signer, true, publisher),
+        BoardAction::RestoreBoard => {
+            set_board_deleted(ndb, board_id, view, signer, false, publisher)
         }
     }
 
@@ -1809,13 +1818,66 @@ fn republish_board(
     columns: &[ColumnDef],
     publisher: &mut dyn Publisher,
 ) {
+    let def = BoardDef {
+        title: &view.title,
+        columns,
+        deleted: view.deleted,
+    };
+    republish_board_def(ndb, board_id, view, signer, def, publisher);
+}
+
+/// Delete (`deleted`) or restore the board by republishing its definition with
+/// the tombstone flag set or cleared, everything else carried over. A no-op when
+/// the board is already in that state, so a repeat delete writes nothing.
+fn set_board_deleted(
+    ndb: &Ndb,
+    board_id: &str,
+    view: &BoardView,
+    signer: &Signer,
+    deleted: bool,
+    publisher: &mut dyn Publisher,
+) {
+    if view.deleted == deleted {
+        return;
+    }
+    let def = BoardDef {
+        title: &view.title,
+        columns: &column_defs(view),
+        deleted,
+    };
+    republish_board_def(ndb, board_id, view, signer, def, publisher);
+}
+
+/// The parts of a board definition a republish may change: everything but the
+/// slug and description, which every board-level edit carries over from the view.
+struct BoardDef<'a> {
+    title: &'a str,
+    columns: &'a [ColumnDef],
+    /// The tombstone flag. An edit that isn't a delete or restore passes the
+    /// view's own flag through, so it never revives (or deletes) the board.
+    deleted: bool,
+}
+
+/// Republish `board_id`'s definition as `def`, stamped strictly after the
+/// version in `view` (see [`republish_board`]). The one write path for every
+/// board-level edit — columns, title, delete and restore.
+fn republish_board_def(
+    ndb: &Ndb,
+    board_id: &str,
+    view: &BoardView,
+    signer: &Signer,
+    def: BoardDef,
+    publisher: &mut dyn Publisher,
+) {
     let created_at = now_secs().max(view.created_at + 1);
-    ingest_signed(
-        ndb,
-        build_board(board_id, &view.title, &view.description, columns).created_at(created_at),
-        signer,
-        publisher,
+    let note = build_board_def(
+        board_id,
+        def.title,
+        &view.description,
+        def.columns,
+        def.deleted,
     );
+    ingest_signed(ndb, note.created_at(created_at), signer, publisher);
 }
 
 /// The `created_at` to stamp on a re-placement that must supersede a prior
@@ -3491,6 +3553,72 @@ mod tests {
         // Columns and cards ride along the republished definition unchanged.
         assert_eq!(col_titles(&view), cols_before);
         assert_eq!(view.columns.iter().map(|c| c.cards.len()).sum::<usize>(), 7);
+    }
+
+    /// Deleting a board tombstones its definition without touching anything
+    /// else, a board-level edit while deleted keeps it deleted, and a restore
+    /// brings back the board exactly as it was.
+    #[tokio::test]
+    async fn delete_board_is_a_reversible_tombstone() {
+        let t = TestNdb::new();
+        seed_demo(&t).await;
+        let view = t
+            .wait(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7)
+            .await;
+        let cols_before = col_titles(&view);
+        assert!(!view.deleted);
+
+        t.apply(&view, BoardAction::DeleteBoard);
+        let view = t.wait(|v| v.deleted).await;
+        // Still folds: the cards, columns and title ride along the tombstone, so
+        // a restore loses nothing.
+        assert_eq!(col_titles(&view), cols_before);
+        assert_eq!(view.columns.iter().map(|c| c.cards.len()).sum::<usize>(), 7);
+
+        // A rename on the deleted board must not revive it.
+        t.apply(
+            &view,
+            BoardAction::RenameBoard {
+                title: "Renamed While Deleted".to_string(),
+            },
+        );
+        let view = t.wait(|v| v.title == "Renamed While Deleted").await;
+        assert!(
+            view.deleted,
+            "a board-level edit carries the tombstone over"
+        );
+
+        t.apply(&view, BoardAction::RestoreBoard);
+        let view = t.wait(|v| !v.deleted).await;
+        assert_eq!(view.title, "Renamed While Deleted");
+        assert_eq!(col_titles(&view), cols_before);
+        assert_eq!(view.columns.iter().map(|c| c.cards.len()).sum::<usize>(), 7);
+    }
+
+    /// Deleting a deleted board (or restoring a live one) writes nothing, so a
+    /// repeat doesn't churn the definition.
+    #[tokio::test]
+    async fn delete_and_restore_are_noops_in_the_state_they_reach() {
+        let t = TestNdb::new();
+        seed_demo(&t).await;
+        let mut view = t.wait(|_| true).await;
+        let published = |view: &BoardView, action| {
+            let mut count = CountPublish::default();
+            super::apply(
+                &t.ndb,
+                BOARD_ID,
+                view,
+                &t.kp.pubkey,
+                &Signer::new(&t.secret(), None),
+                action,
+                &mut count,
+            );
+            count.0
+        };
+        assert_eq!(published(&view, BoardAction::RestoreBoard), 0);
+        view.deleted = true;
+        assert_eq!(published(&view, BoardAction::DeleteBoard), 0);
+        assert_eq!(published(&view, BoardAction::RestoreBoard), 1);
     }
 
     #[test]

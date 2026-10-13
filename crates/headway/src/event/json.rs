@@ -16,6 +16,7 @@ pub fn board_json(view: &BoardView) -> serde_json::Value {
         "id": view.id,
         "title": view.title,
         "description": view.description,
+        "deleted": view.deleted,
         "columns": view.columns.iter().map(|c| serde_json::json!({
             "id": c.id,
             "name": c.name,

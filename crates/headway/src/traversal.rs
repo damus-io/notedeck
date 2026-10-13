@@ -349,6 +349,7 @@ mod tests {
                 },
             ],
             archived: Vec::<ArchivedCard>::new(),
+            deleted: false,
         }
     }
 

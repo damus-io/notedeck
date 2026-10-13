@@ -99,6 +99,9 @@ impl AppTool for ListBoards {
         Ok(reducer
             .finalize()
             .into_iter()
+            // A deleted board still folds (so the CLI can restore it), but it is
+            // no longer one of the account's boards.
+            .filter(|board| !board.deleted)
             .map(|board| BoardSummary {
                 card_count: board.columns.iter().map(|c| c.cards.len()).sum(),
                 id: board.id,
@@ -446,6 +449,11 @@ fn mutate(
     // is read straight from nostrdb (see [`teams::teams_from_ndb`]).
     let teams = teams::teams_from_ndb(cx.ndb, &author);
     let ResolvedTarget { view, channel } = resolve_target(cx.ndb, &author, board_id, &teams)?;
+    if view.deleted {
+        return Err(format!(
+            "board '{board_id}' is deleted — it can be restored with `headway restore-board {board_id}`"
+        ));
+    }
     let action = build(&view)?;
 
     let secret = cx

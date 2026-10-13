@@ -1048,6 +1048,7 @@ mod tests {
                 cards,
             }],
             archived: vec![],
+            deleted: false,
         }
     }
 

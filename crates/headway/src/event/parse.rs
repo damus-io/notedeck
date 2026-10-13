@@ -18,6 +18,11 @@ pub struct BoardEvent {
     pub title: String,
     pub description: String,
     pub columns: Vec<ColumnDef>,
+    /// Whether this revision tombstones the board (a bare `["deleted"]` tag). A
+    /// deleted board drops out of board listings but keeps its cards, and a later
+    /// revision without the tag restores it — see
+    /// [`build_board_def`](super::build_board_def).
+    pub deleted: bool,
     pub created_at: u64,
 }
 
@@ -269,10 +274,12 @@ fn parse_board(note: &Note) -> Option<BoardEvent> {
     let mut title = String::new();
     let mut description = String::new();
     let mut columns = Vec::new();
+    let mut deleted = false;
 
     for tag in note.tags() {
         match tag.get_str(0) {
             Some("d") => id = tag.get_str(1).map(|s| s.to_owned()),
+            Some("deleted") => deleted = true,
             Some("title") => {
                 if let Some(t) = tag.get_str(1) {
                     title = t.to_owned();
@@ -300,6 +307,7 @@ fn parse_board(note: &Note) -> Option<BoardEvent> {
         title,
         description,
         columns,
+        deleted,
         created_at: note.created_at(),
     })
 }
@@ -677,9 +685,9 @@ pub(crate) mod tests {
     use nostrdb::NoteBuilder;
 
     use crate::event::build::{
-        build_blockers, build_board, build_comment, build_cover_note, build_issue, build_labels,
-        build_placement, build_related, build_relation, build_review, build_review_comment,
-        build_sequence, build_subject_edit,
+        build_blockers, build_board, build_board_def, build_comment, build_cover_note, build_issue,
+        build_labels, build_placement, build_related, build_relation, build_review,
+        build_review_comment, build_sequence, build_subject_edit,
     };
     use crate::event::model::{LineRange, board_address};
 
@@ -717,6 +725,23 @@ pub(crate) mod tests {
         assert_eq!(b.description, "a desc");
         assert_eq!(b.columns, cols);
         assert_eq!(b.author, *kp.pubkey.bytes());
+        assert!(!b.deleted);
+    }
+
+    /// The deletion tombstone survives a round trip alongside the rest of the
+    /// definition, which a restore republishes from.
+    #[test]
+    fn deleted_board_roundtrips() {
+        let kp = FullKeypair::generate();
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+        let ev = roundtrip(build_board_def("b1", "My Board", "", &cols, true), &kp);
+
+        let HeadwayEvent::Board(b) = ev else {
+            panic!("expected board");
+        };
+        assert!(b.deleted);
+        assert_eq!(b.title, "My Board");
+        assert_eq!(b.columns, cols);
     }
 
     #[test]

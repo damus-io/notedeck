@@ -629,6 +629,32 @@ than seed whichever board happens to be current.",
         examples: &["headway rename --board ios-port iOS Port"],
     },
     Command {
+        name: "delete-board",
+        group: Group::Boards,
+        summary: "Delete a board you own (a reversible tombstone)",
+        usage: &["delete-board <board>"],
+        details: "\
+Republishes the board's definition marked deleted. The board drops out of
+`headway board`, `show --all`, `grep` and the app's switcher, and refuses
+further edits, but nothing else is touched: its cards, columns and title
+stay, card refs into it still resolve, and `restore-board` brings it back
+exactly as it was. Takes the board as an argument rather than using the
+current one, so a stale selection can't delete the wrong board.",
+        options: &[],
+        examples: &["headway delete-board scratch"],
+    },
+    Command {
+        name: "restore-board",
+        group: Group::Boards,
+        summary: "Bring back a deleted board",
+        usage: &["restore-board <board>"],
+        details: "\
+Republishes the board's definition without the deletion mark. `headway
+board` lists deleted boards at the end so their slugs can be found.",
+        options: &[],
+        examples: &["headway restore-board scratch"],
+    },
+    Command {
         name: "terminal",
         group: Group::Boards,
         summary: "Mark a column \"done\", or clear the flag",

@@ -176,15 +176,24 @@ pub(super) fn view_options_menu(ui: &mut egui::Ui, theme: &ColorTheme, state: &m
 
 /// The board switcher in the header: the active board's title as a dropdown that
 /// lists the account's boards (current one marked), with a "+ New board" entry
-/// that opens an inline name composer. Requests are raised in [`BoardUiState::nav`]
-/// for the app to act on; this function never mutates the board itself.
+/// that opens an inline name composer and, when `deletable`, a "Delete board…"
+/// entry that asks for confirmation inline. Requests are raised in
+/// [`BoardUiState::nav`] for the app to act on; this function never mutates the
+/// board itself.
 pub(super) fn board_switcher(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     view: &BoardView,
     boards: &[BoardSummary],
+    deletable: bool,
     state: &mut BoardUiState,
 ) {
+    // Confirming a delete takes over the switcher the same way, so the choice is
+    // made with the board's name in view rather than from a menu item alone.
+    if state.edit == InlineEdit::DeleteBoard {
+        delete_board_confirm(ui, theme, view, state);
+        return;
+    }
     // Naming a new board takes over the switcher with a single-line composer.
     if state.edit == InlineEdit::NewBoard {
         ui.horizontal(|ui| {
@@ -245,7 +254,57 @@ pub(super) fn board_switcher(
             state.focus_edit = true;
             ui.close();
         }
+        if deletable
+            && ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("Delete board…").color(theme.destructive),
+                    )
+                    .frame(false),
+                )
+                .clicked()
+        {
+            state.edit = InlineEdit::DeleteBoard;
+            ui.close();
+        }
     });
     // Open this frame: hold the board keys off it (see `grid_menu_open`).
     state.grid_menu_open |= menu.inner.is_some();
+}
+
+/// The switcher's inline delete confirmation: names the board, says what a
+/// delete keeps, and raises [`BoardNav::Delete`] on "Delete". Esc or "Cancel"
+/// backs out.
+fn delete_board_confirm(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    view: &BoardView,
+    state: &mut BoardUiState,
+) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!("Delete \u{201c}{}\u{201d}?", view.title))
+                .size(18.0)
+                .strong()
+                .color(theme.text_primary),
+        );
+        let delete = ui
+            .button(egui::RichText::new("Delete").color(theme.destructive))
+            .on_hover_text(
+                "Removes the board from your boards. Its cards are kept, and \
+                 `headway restore-board` brings it back.",
+            )
+            .clicked();
+        let cancel = ui.button("Cancel").clicked();
+        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if delete {
+            state.edit = InlineEdit::None;
+            state.raise(BoardEffect::Nav(BoardNav::Delete(event::BoardCoord::new(
+                view.author,
+                view.id.clone(),
+            ))));
+        } else if cancel || escape {
+            state.edit = InlineEdit::None;
+        }
+    });
 }
