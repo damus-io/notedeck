@@ -80,6 +80,8 @@ pub(crate) enum Command {
         /// Initial description (cover note), already resolved from `--desc` or
         /// `--desc-file`. `None` means no description event is emitted.
         description: Option<String>,
+        /// Initial priority, estimate and due date.
+        fields: AddFields,
     },
     Move {
         card: String,
@@ -616,6 +618,7 @@ impl Cli {
         // `--desc-file` (a path, or `-` for stdin); folded into one value below.
         let mut desc = None;
         let mut desc_file = None;
+        let mut add_fields = AddFields::default();
         let mut on = None;
         // `seed` display title; when unset the title defaults to the board slug
         // (see `Command::Seed`).
@@ -675,6 +678,9 @@ impl Cli {
                 "--parent" => parent = Some(value("--parent")?),
                 "--desc" => desc = Some(value("--desc")?),
                 "--desc-file" => desc_file = Some(value("--desc-file")?),
+                "--priority" => add_fields.priority = Some(value("--priority")?),
+                "--estimate" => add_fields.estimate = Some(value("--estimate")?),
+                "--due" => add_fields.due = Some(value("--due")?),
                 "--on" => on = Some(value("--on")?),
                 "-t" | "--title" => title = Some(value("--title")?),
                 "--after" => seq.after = Some(value("--after")?),
@@ -803,6 +809,7 @@ impl Cli {
             reply_to,
             parent,
             description,
+            add_fields,
             on,
             title,
             labels,
@@ -956,6 +963,15 @@ fn split_labels(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// `add`'s `--priority`, `--estimate` and `--due`, as typed: `edit` parses
+/// them the way the `priority`, `estimate` and `due` commands parse theirs.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct AddFields {
+    pub(crate) priority: Option<String>,
+    pub(crate) estimate: Option<String>,
+    pub(crate) due: Option<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn parse_command(
     name: &str,
@@ -966,6 +982,7 @@ fn parse_command(
     reply_to: Option<String>,
     parent: Option<String>,
     description: Option<String>,
+    add_fields: AddFields,
     on: Option<String>,
     title: Option<String>,
     labels: Vec<String>,
@@ -1005,6 +1022,7 @@ fn parse_command(
             labels,
             parent,
             description,
+            fields: add_fields,
         },
         "move" => Command::Move {
             card: card()?,
@@ -1374,6 +1392,7 @@ mod tests {
                 None,
                 None,
                 None,
+                AddFields::default(),
                 None,
                 None,
                 Vec::new(),
@@ -1473,6 +1492,33 @@ mod tests {
                 assert_eq!(title, "a card");
                 assert_eq!(description.as_deref(), Some("the details"));
             }
+            _ => panic!("expected an Add command"),
+        }
+    }
+
+    /// `add --priority/--estimate/--due` reach the command as typed, for
+    /// `edit` to parse.
+    #[test]
+    fn add_takes_priority_estimate_and_due() {
+        let cli = parse(&[
+            "add",
+            "a card",
+            "--priority",
+            "high",
+            "--estimate",
+            "3",
+            "--due",
+            "2026-11-02",
+        ]);
+        match cli.command {
+            Command::Add { fields, .. } => assert_eq!(
+                fields,
+                AddFields {
+                    priority: Some("high".to_string()),
+                    estimate: Some("3".to_string()),
+                    due: Some("2026-11-02".to_string()),
+                }
+            ),
             _ => panic!("expected an Add command"),
         }
     }

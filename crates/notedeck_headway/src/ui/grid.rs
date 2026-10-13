@@ -16,7 +16,7 @@ use super::widgets::{
 use super::{BoardEffect, BoardUiState, CardBoardMove, CardBoardOp, CardPos, InlineEdit};
 use crate::BoardSummary;
 use crate::event::{self, BoardView, CardView, ColumnView, Priority};
-use crate::store::BoardAction;
+use crate::store::{BoardAction, NewCard};
 
 /// Width of a single kanban column.
 const COLUMN_WIDTH: f32 = 280.0;
@@ -698,13 +698,11 @@ fn add_card_ui(
                 // Committing nothing means "I'm done" — close the composer.
                 state.edit = InlineEdit::None;
             } else {
-                *action = Some(BoardAction::AddCard {
+                *action = Some(BoardAction::AddCard(NewCard {
                     col: col_idx,
                     title,
-                    description: String::new(),
-                    labels: vec![],
-                    parent: None,
-                });
+                    ..NewCard::default()
+                }));
                 // Keep the composer open and refocused so you can rattle off
                 // several cards in a row without re-clicking "+ Add card".
                 state.focus_edit = true;

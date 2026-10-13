@@ -1113,13 +1113,12 @@ fn seed_side_board(harness: &mut Harness<'static, HeadwayTestState>) {
         &view,
         &author,
         &store::Signer::new(&secret, None),
-        store::BoardAction::AddCard {
+        store::BoardAction::AddCard(store::NewCard {
             col: 1,
             title: SIDE_CARD.to_string(),
-            description: String::new(),
             labels: vec!["quest".to_string()],
-            parent: None,
-        },
+            ..store::NewCard::default()
+        }),
         &mut store::NoPublish,
     );
     let deadline = Instant::now() + SETTLE_TIMEOUT;
@@ -1420,7 +1419,7 @@ fn issue_list_groups_rows_folds_and_adds_to_a_group() {
     harness.key_press(egui::Key::Enter);
     wait_for_label(&mut harness, NEW_URGENT);
     harness.press_key(egui::Key::Escape);
-    // The priority is the add's follow-up edit; give it frames to fold.
+    // The priority rides on the add itself; give the ingest frames to fold.
     let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         harness.get_by_label(&format!("Collapse {top}")).click();
@@ -2461,13 +2460,11 @@ fn own_shared_board_folds_teammate_card_in_render() {
             &view,
             &teammate.pubkey,
             &store::Signer::shared(&teammate.secret_key.secret_bytes(), &channel),
-            store::BoardAction::AddCard {
+            store::BoardAction::AddCard(store::NewCard {
                 col: 0,
                 title: TEAMMATE_CARD.to_string(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
+                ..store::NewCard::default()
+            }),
             &mut store::NoPublish,
         );
     }
@@ -6640,13 +6637,11 @@ fn seed_roadmap_board(harness: &mut Harness<'static, HeadwayTestState>) -> NoteI
         &view,
         &author,
         &store::Signer::plain(&secret),
-        store::BoardAction::AddCard {
+        store::BoardAction::AddCard(store::NewCard {
             col: 0,
             title: ROADMAP_CARD.to_string(),
-            description: String::new(),
-            labels: vec![],
-            parent: None,
-        },
+            ..store::NewCard::default()
+        }),
         &mut store::NoPublish,
     );
 

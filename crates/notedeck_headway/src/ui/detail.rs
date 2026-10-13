@@ -23,7 +23,7 @@ use crate::event::{
 };
 use crate::keys::{ActionView, CardAction, apply_card_action};
 use crate::nav::NavPos;
-use crate::store::{self, BoardAction};
+use crate::store::{self, BoardAction, NewCard};
 
 /// Max width the full-pane card detail body is constrained to, so a card reads
 /// comfortably instead of stretching across a wide window.
@@ -1949,15 +1949,14 @@ fn resolve_detail_outcome(
         DetailOutcome::AddSubissue => {
             let title = state.new_subissue.trim().to_string();
             if !title.is_empty() {
-                *action = Some(BoardAction::AddCard {
+                *action = Some(BoardAction::AddCard(NewCard {
                     // New subissues land in the first column, like the CLI's
                     // `add --parent` default.
                     col: 0,
                     title,
-                    description: String::new(),
-                    labels: vec![],
                     parent: Some(ctx.card_id),
-                });
+                    ..NewCard::default()
+                }));
             }
             state.new_subissue.clear();
         }

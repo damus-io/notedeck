@@ -47,7 +47,7 @@ use crate::cache::BoardRef;
 use crate::cursor::CursorMove;
 use crate::event::{self, BoardView, CardView, Priority};
 use crate::keys;
-use crate::store::{self, BoardAction};
+use crate::store::{self, BoardAction, NewCard};
 use headway::query::{
     BuiltinView, DisplayProp, DisplayProps, GroupBy, GroupKey, Grouping, ListGroup, ListQuery,
     ListRow, RowSlot, SortBy, Sorting, ViewSpec,
@@ -121,9 +121,6 @@ pub(crate) struct ListState {
     entries: Vec<ListEntry>,
     /// The `+` composer, while one is open: a card for a group.
     compose: Option<GroupCompose>,
-    /// The priority the card the list just asked to add should get, set on
-    /// it once it exists (see [`BoardUiState::card_added`]).
-    pending_priority: Option<Priority>,
 }
 
 impl Default for ListState {
@@ -152,7 +149,6 @@ impl Default for ListState {
             collapsed: std::collections::HashSet::new(),
             entries: Vec::new(),
             compose: None,
-            pending_priority: None,
         }
     }
 }
@@ -774,17 +770,6 @@ impl BoardUiState {
         self.list.set_saved(views);
     }
 
-    /// The card the frame's edit added, now that it exists: a card the
-    /// list's `+` added to a priority group gets that priority, as the next
-    /// frame's edit (a card is made by one edit and prioritised by another).
-    /// `None` when the edit added no card.
-    pub fn card_added(&mut self, card: Option<NoteId>) {
-        let priority = self.list.pending_priority.take();
-        if let (Some(card), Some(priority)) = (card, priority) {
-            self.follow_up = Some(BoardAction::SetPriority { card, priority });
-        }
-    }
-
     /// Open entry `at`'s card: its detail, on top of the list, switching to its
     /// board first when that isn't the board showing. The list stays open
     /// beneath, so leaving the card returns to it.
@@ -937,8 +922,8 @@ struct GroupAdd<'a> {
     label: Option<&'a str>,
     /// A parent on the board showing.
     parent: Option<NoteId>,
-    /// A priority, set by a follow-up edit once the card exists.
-    priority: Option<Priority>,
+    /// A priority ([`Priority::None`] for the no-priority group).
+    priority: Priority,
 }
 
 /// What a card added under header `key` needs to land in its group on
@@ -951,7 +936,7 @@ fn group_add<'a>(key: &'a CollapseKey, view: &BoardView) -> Option<GroupAdd<'a>>
         col: 0,
         label: None,
         parent: None,
-        priority: None,
+        priority: Priority::None,
     };
     for group in std::iter::once(&key.group).chain(key.sub.as_ref()) {
         match group {
@@ -963,7 +948,7 @@ fn group_add<'a>(key: &'a CollapseKey, view: &BoardView) -> Option<GroupAdd<'a>>
                     .iter()
                     .position(|c| c.name.chars().flat_map(char::to_lowercase).eq(name.chars()))?;
             }
-            GroupKey::Priority(p) => add.priority = Some(*p).filter(|p| *p != Priority::None),
+            GroupKey::Priority(p) => add.priority = *p,
             GroupKey::Label(Some(label)) => add.label = Some(label),
             GroupKey::Board { author, id } => {
                 if *author != view.author || *id != view.id {
@@ -1056,14 +1041,14 @@ fn compose_ui(
         list.compose = None;
         return None;
     };
-    let action = BoardAction::AddCard {
+    let action = BoardAction::AddCard(NewCard {
         col: add.col,
         title,
-        description: String::new(),
         labels: add.label.map(str::to_string).into_iter().collect(),
         parent: add.parent,
-    };
-    list.pending_priority = add.priority;
+        priority: add.priority,
+        ..NewCard::default()
+    });
     compose.title.clear();
     compose.focus = true;
     Some(action)

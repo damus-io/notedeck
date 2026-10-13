@@ -9,7 +9,7 @@ use headway::event::{
     self, BoardView, CardView, Container, Date, LineSide, Priority, ReviewCommentView,
     ReviewLocation, ReviewView, resolve_card,
 };
-use headway::store::{self, BoardAction, NewReviewComment, Publisher};
+use headway::store::{self, BoardAction, NewCard, NewReviewComment, Publisher};
 use headway::wordid;
 
 use nostrdb_net::relay::sync::Result;
@@ -27,19 +27,32 @@ pub(crate) fn build_action(view: &BoardView, command: Command) -> Result<BoardAc
             labels,
             parent,
             description,
+            fields,
         } => {
             let col = col.as_deref().map_or(Ok(0), |c| resolve_col(view, c))?;
             let parent = parent
                 .as_deref()
                 .map(|sel| resolve_card(view, sel))
                 .transpose()?;
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col,
                 title,
                 description: description.unwrap_or_default(),
                 labels,
                 parent,
-            }
+                priority: fields
+                    .priority
+                    .as_deref()
+                    .map(Priority::parse)
+                    .unwrap_or_default(),
+                estimate: fields
+                    .estimate
+                    .as_deref()
+                    .map(parse_estimate)
+                    .transpose()?
+                    .flatten(),
+                due: fields.due.as_deref().map(parse_due).transpose()?.flatten(),
+            })
         }
         Command::Move { card, col, row } => {
             let card = resolve_card(view, &card)?;
@@ -69,16 +82,11 @@ pub(crate) fn build_action(view: &BoardView, command: Command) -> Result<BoardAc
         },
         Command::Due { card, date } => BoardAction::SetDue {
             card: resolve_card(view, &card)?,
-            due: parse_clearable(&date, |s| {
-                Date::parse(s).ok_or_else(|| format!("invalid date '{s}' (want YYYY-MM-DD)").into())
-            })?,
+            due: parse_due(&date)?,
         },
         Command::Estimate { card, points } => BoardAction::SetEstimate {
             card: resolve_card(view, &card)?,
-            estimate: parse_clearable(&points, |s| {
-                s.parse::<u32>()
-                    .map_err(|_| format!("invalid estimate '{s}' (want a number)").into())
-            })?,
+            estimate: parse_estimate(&points)?,
         },
         Command::Parent { card, parent } => BoardAction::SetParent {
             card: resolve_card(view, &card)?,
@@ -180,6 +188,21 @@ pub(crate) fn build_action(view: &BoardView, command: Command) -> Result<BoardAc
 /// Parse a "set or clear" scalar CLI value: `none` (or an empty string) clears
 /// the field (`Ok(None)`); any other value is run through `parse`. Shared by the
 /// `due`/`estimate` commands so both take `none` to clear.
+/// A due date as `due` and `add --due` take it: `YYYY-MM-DD`, or `none`.
+fn parse_due(s: &str) -> Result<Option<Date>> {
+    parse_clearable(s, |s| {
+        Date::parse(s).ok_or_else(|| format!("invalid date '{s}' (want YYYY-MM-DD)").into())
+    })
+}
+
+/// An estimate as `estimate` and `add --estimate` take it: a number, or `none`.
+fn parse_estimate(s: &str) -> Result<Option<u32>> {
+    parse_clearable(s, |s| {
+        s.parse::<u32>()
+            .map_err(|_| format!("invalid estimate '{s}' (want a number)").into())
+    })
+}
+
 fn parse_clearable<T>(s: &str, parse: impl Fn(&str) -> Result<T>) -> Result<Option<T>> {
     let s = s.trim();
     if s.is_empty() || s.eq_ignore_ascii_case("none") {

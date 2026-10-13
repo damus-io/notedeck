@@ -9,7 +9,7 @@
 
 use enostr::RelayId;
 use headway::event::{self, BoardView, CardView, Container, Priority, resolve_card};
-use headway::store::{self, BoardAction};
+use headway::store::{self, BoardAction, NewCard};
 use headway::{traversal, wordid};
 use nostrdb::{Ndb, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
@@ -555,13 +555,13 @@ impl AppTool for AddCard {
                 Some(p) => Some(resolve_card(view, p)?),
                 None => None,
             };
-            Ok(BoardAction::AddCard {
+            Ok(BoardAction::AddCard(NewCard {
                 col,
                 title: args.title.clone(),
-                description: String::new(),
                 labels: args.labels.as_deref().map(split_labels).unwrap_or_default(),
                 parent,
-            })
+                ..NewCard::default()
+            }))
         })
     }
 }

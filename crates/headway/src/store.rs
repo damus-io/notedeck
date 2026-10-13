@@ -37,19 +37,9 @@ pub enum BoardAction {
         to_col: usize,
         to_row: usize,
     },
-    /// Create a new card titled `title` at the end of column `col`, optionally
-    /// tagging it with `labels` and/or parenting it under `parent` (a subissue
-    /// created in one step).
-    AddCard {
-        col: usize,
-        title: String,
-        /// Initial description (cover note). Empty string means none, so the
-        /// create path emits no cover-note event — same as an `add` with no
-        /// `--desc`.
-        description: String,
-        labels: Vec<String>,
-        parent: Option<NoteId>,
-    },
+    /// Create a new card at the end of a column, with every field it starts
+    /// with (see [`NewCard`]) ingested in the same publish as the create.
+    AddCard(NewCard),
     /// Replace a card's title (subject edit).
     EditTitle { card: NoteId, title: String },
     /// Replace a card's description (cover note).
@@ -1090,26 +1080,12 @@ pub fn apply_outcome(
     action: BoardAction,
     publisher: &mut dyn Publisher,
 ) -> ApplyOutcome {
-    let BoardAction::AddCard {
-        col,
-        title,
-        description,
-        labels,
-        parent,
-    } = action
-    else {
+    let BoardAction::AddCard(new) = action else {
         let declined = apply_edit(ndb, board_id, view, author, signer, action, publisher);
         return ApplyOutcome {
             declined,
             created: None,
         };
-    };
-    let new = NewCard {
-        col,
-        title,
-        description,
-        labels,
-        parent,
     };
     ApplyOutcome {
         declined: None,
@@ -1117,13 +1093,29 @@ pub fn apply_outcome(
     }
 }
 
-/// The fields of a [`BoardAction::AddCard`], handed to [`add_card`].
-struct NewCard {
-    col: usize,
-    title: String,
-    description: String,
-    labels: Vec<String>,
-    parent: Option<NoteId>,
+/// A card to create: the payload of [`BoardAction::AddCard`], handed to
+/// [`add_card`]. Every field but `col` and `title` is optional, so a caller
+/// names what it has and takes the rest from [`Default`]:
+/// `NewCard { col, title, ..NewCard::default() }`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NewCard {
+    /// Index of the column the card is appended to.
+    pub col: usize,
+    /// The card's title.
+    pub title: String,
+    /// Initial description (cover note). Empty means none, so the create
+    /// emits no cover-note event, same as an `add` with no `--desc`.
+    pub description: String,
+    /// Labels to tag the card with.
+    pub labels: Vec<String>,
+    /// The card to make this one a subissue of.
+    pub parent: Option<NoteId>,
+    /// Starting priority. [`Priority::None`] sets none.
+    pub priority: Priority,
+    /// Starting estimate, if any.
+    pub estimate: Option<u32>,
+    /// Starting due date, if any.
+    pub due: Option<Date>,
 }
 
 /// Ingest a new card — its issue, placement and optional description, labels
@@ -1167,6 +1159,19 @@ fn add_card(
     }
     if let Some(parent) = parent {
         ingest_signed(ndb, build_relation(&id, Some(&parent)), signer, publisher);
+    }
+    // The scalar fields go through the same builders their `Set*` edits use.
+    if new.priority != Priority::None {
+        let f = build_field(&id, Field::Priority, new.priority.as_str());
+        ingest_signed(ndb, f, signer, publisher);
+    }
+    if let Some(estimate) = new.estimate {
+        let f = build_field(&id, Field::Estimate, &estimate.to_string());
+        ingest_signed(ndb, f, signer, publisher);
+    }
+    if let Some(due) = new.due {
+        let f = build_field(&id, Field::Due, &due.to_string());
+        ingest_signed(ndb, f, signer, publisher);
     }
     Some(id)
 }
@@ -1214,7 +1219,7 @@ fn apply_edit(
                 publisher,
             );
         }
-        BoardAction::AddCard { .. } => {
+        BoardAction::AddCard(_) => {
             unreachable!("apply_outcome routes AddCard to add_card")
         }
         BoardAction::EditTitle { card, title } => {
@@ -2593,13 +2598,11 @@ mod tests {
         let view = t.wait(|v| v.columns.len() == 5).await;
         t.apply(
             &view,
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 0,
                 title: "existing card".into(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
         );
         let plaintext = t
             .wait(|v| card_id_by_title(v, "existing card").is_some())
@@ -2698,13 +2701,11 @@ mod tests {
                 &view,
                 &kp.pubkey,
                 &Signer::new(&secret, None),
-                BoardAction::AddCard {
+                BoardAction::AddCard(NewCard {
                     col: 0,
                     title: "existing card".into(),
-                    description: String::new(),
-                    labels: vec![],
-                    parent: None,
-                },
+                    ..NewCard::default()
+                }),
                 &mut NoPublish,
             );
             wait_plaintext(&ndb, &kp.pubkey, |v| {
@@ -2761,13 +2762,11 @@ mod tests {
         // A parent with three children, all left unsequenced (creation order).
         t.apply(
             &view,
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 1,
                 title: "epic".into(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
         );
         let view = t.wait(|v| card_id_by_title(v, "epic").is_some()).await;
         let epic = card_id_by_title(&view, "epic").unwrap();
@@ -2775,13 +2774,12 @@ mod tests {
             let v = t.wait(|v| card_id_by_title(v, "epic").is_some()).await;
             t.apply(
                 &v,
-                BoardAction::AddCard {
+                BoardAction::AddCard(NewCard {
                     col: 1,
                     title: title.into(),
-                    description: String::new(),
-                    labels: vec![],
                     parent: Some(epic),
-                },
+                    ..NewCard::default()
+                }),
             );
         }
         let view = t
@@ -2920,13 +2918,11 @@ mod tests {
 
         t.apply(
             &view,
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 1,
                 title: "New idea".to_string(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
         );
 
         let view = t.wait(|v| v.columns[1].cards.len() == 3).await;
@@ -2941,13 +2937,12 @@ mod tests {
 
         t.apply(
             &view,
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 1,
                 title: "Tagged idea".to_string(),
-                description: String::new(),
                 labels: vec!["bug".to_string(), "ux".to_string()],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
         );
 
         let view = t
@@ -2977,13 +2972,12 @@ mod tests {
         // the create path emits the same cover note in one publish.
         t.apply(
             &view,
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 1,
                 title: "Documented idea".to_string(),
                 description: "the details".to_string(),
-                labels: vec![],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
         );
 
         let view = t
@@ -3003,6 +2997,41 @@ mod tests {
         assert_eq!(card.description, "the details");
     }
 
+    /// An `AddCard` carrying a priority, estimate and due date folds to a card
+    /// with all three, from the one apply: no follow-up `Set*` edit.
+    #[tokio::test]
+    async fn add_card_with_priority_estimate_and_due() {
+        let t = TestNdb::new();
+        seed_demo(&t).await;
+        let view = wait_for_demo_seed(&t).await;
+        let due = Date::parse("2026-11-02");
+
+        t.apply(
+            &view,
+            BoardAction::AddCard(NewCard {
+                col: 1,
+                title: "Planned idea".to_string(),
+                priority: Priority::High,
+                estimate: Some(3),
+                due,
+                ..NewCard::default()
+            }),
+        );
+
+        let view = t
+            .wait(|v| {
+                v.columns[1].cards.iter().any(|c| {
+                    c.title == "Planned idea"
+                        && c.priority == Priority::High
+                        && c.estimate == Some(3)
+                        && c.due == due
+                })
+            })
+            .await;
+        assert!(due.is_some());
+        assert_eq!(card_titles(&view, 1).last().unwrap(), "Planned idea");
+    }
+
     #[tokio::test]
     async fn block_and_unblock_edit_the_dependency_set() {
         let t = TestNdb::new();
@@ -3013,13 +3042,11 @@ mod tests {
         for title in ["blocked", "dep one", "dep two"] {
             t.apply(
                 &view,
-                BoardAction::AddCard {
+                BoardAction::AddCard(NewCard {
                     col: 0,
                     title: title.to_string(),
-                    description: String::new(),
-                    labels: vec![],
-                    parent: None,
-                },
+                    ..NewCard::default()
+                }),
             );
             view = t.wait(|v| card_id_by_title(v, title).is_some()).await;
         }
@@ -3105,13 +3132,11 @@ mod tests {
         for title in ["hub", "sib one", "sib two"] {
             t.apply(
                 &view,
-                BoardAction::AddCard {
+                BoardAction::AddCard(NewCard {
                     col: 0,
                     title: title.to_string(),
-                    description: String::new(),
-                    labels: vec![],
-                    parent: None,
-                },
+                    ..NewCard::default()
+                }),
             );
             view = t.wait(|v| card_id_by_title(v, title).is_some()).await;
         }
@@ -3206,13 +3231,11 @@ mod tests {
         for title in ["first", "second", "third"] {
             t.apply(
                 &view,
-                BoardAction::AddCard {
+                BoardAction::AddCard(NewCard {
                     col: 0,
                     title: title.to_string(),
-                    description: String::new(),
-                    labels: vec![],
-                    parent: None,
-                },
+                    ..NewCard::default()
+                }),
             );
             view = t.wait(|v| card_id_by_title(v, title).is_some()).await;
         }
@@ -3347,13 +3370,11 @@ mod tests {
             &view,
             &t.kp.pubkey,
             &Signer::new(&t.secret(), None),
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 1,
                 title: "Tracked".to_string(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
             &mut sink,
         );
 
@@ -3730,13 +3751,12 @@ mod tests {
             &src,
             &t.kp.pubkey,
             &Signer::new(&t.secret(), None),
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 0,
                 title: "Roamer".to_string(),
-                description: String::new(),
                 labels: vec!["wandering".to_string()],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
             &mut NoPublish,
         );
         poll_board(t, "src", |v| v.columns[0].cards.len() == 1)
@@ -3872,13 +3892,11 @@ mod tests {
             &src,
             &t.kp.pubkey,
             &Signer::new(&t.secret(), chan(src_channel)),
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 0,
                 title: "Roamer".to_string(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
             &mut NoPublish,
         );
 
@@ -4018,13 +4036,11 @@ mod tests {
             &src,
             &t.kp.pubkey,
             &Signer::new(&t.secret(), Some(&src_ch.channel)),
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 0,
                 title: "Stayer".to_string(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
             &mut NoPublish,
         );
 
@@ -4074,13 +4090,11 @@ mod tests {
             &view,
             &t.kp.pubkey,
             &Signer::new(&t.secret(), Some(&ch.channel)),
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 0,
                 title: "Homebody".to_string(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
             &mut NoPublish,
         );
 
@@ -4115,13 +4129,11 @@ mod tests {
             &view,
             &t.kp.pubkey,
             &signer,
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 0,
                 title: "Reviewed".to_string(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
             &mut NoPublish,
         );
         let view = poll_board_via(&t, "src", Some(&ch), |v| v.columns[0].cards.len() == 1).await;
@@ -4187,13 +4199,11 @@ mod tests {
 
         apply(
             &view,
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 0,
                 title: "Reviewed".to_string(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
         );
         let view = poll_board_via(&t, "src", Some(&ch), |v| v.columns[0].cards.len() == 1).await;
         let card = view.columns[0].cards[0].id;
@@ -4310,13 +4320,11 @@ mod tests {
             &view,
             &t.kp.pubkey,
             &signer,
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 0,
                 title: "Minted".to_string(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
             &mut NoPublish,
         );
         assert_eq!(outcome.declined, None);
@@ -4485,13 +4493,11 @@ mod tests {
             &src,
             &t.kp.pubkey,
             &Signer::new(&t.secret(), None),
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 2, // in-progress
                 title: "Homeless".to_string(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
             &mut NoPublish,
         );
 
@@ -4600,13 +4606,11 @@ mod tests {
             &view,
             &t.kp.pubkey,
             &Signer::new(&t.secret(), Some(&channel)),
-            BoardAction::AddCard {
+            BoardAction::AddCard(NewCard {
                 col: 0,
                 title: "Sealed card".to_string(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
+                ..NewCard::default()
+            }),
             &mut NoPublish,
         );
 

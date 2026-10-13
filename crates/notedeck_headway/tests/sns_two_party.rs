@@ -27,7 +27,7 @@ use common::{
 use nostrdb_net::{FullKeypair, Pubkey};
 use notedeck_headway::{
     event::{self, ColumnDef},
-    store::{BoardAction, SnsChannel},
+    store::{BoardAction, NewCard, SnsChannel},
 };
 use notedeck_testing::{device::DeviceHarness, init_tracing, stepping::wait_for_device_condition};
 
@@ -185,13 +185,11 @@ async fn owner_sealed_edits_converge_to_member_over_relay() {
         &fx.owner.pubkey,
         &fx.owner.secret_key.secret_bytes(),
         &fx.channel,
-        BoardAction::AddCard {
+        BoardAction::AddCard(NewCard {
             col: 0,
             title: "owner-sentinel-card".to_owned(),
-            description: String::new(),
-            labels: vec![],
-            parent: None,
-        },
+            ..NewCard::default()
+        }),
     );
 
     // The card folds into the member's view of the shared board — proof the sealed
@@ -236,13 +234,11 @@ async fn member_own_card_folds_into_owners_shared_board_over_relay() {
         &fx.member.pubkey,
         &fx.member.secret_key.secret_bytes(),
         &fx.channel,
-        BoardAction::AddCard {
+        BoardAction::AddCard(NewCard {
             col: 0,
             title: "member-own-card".to_owned(),
-            description: String::new(),
-            labels: vec![],
-            parent: None,
-        },
+            ..NewCard::default()
+        }),
     );
 
     // Converges to the owner: the sealed 1081 crossed the relay, nostrdb unwrapped
@@ -291,13 +287,11 @@ async fn owner_comment_on_card_converges_to_member_over_relay() {
         &fx.owner.pubkey,
         &fx.owner.secret_key.secret_bytes(),
         &fx.channel,
-        BoardAction::AddCard {
+        BoardAction::AddCard(NewCard {
             col: 0,
             title: "comment-host-card".to_owned(),
-            description: String::new(),
-            labels: vec![],
-            parent: None,
-        },
+            ..NewCard::default()
+        }),
     );
     wait_for_convergence(
         &mut fx.owner_device,
@@ -365,13 +359,11 @@ async fn member_comment_on_owners_card_converges_to_owner_over_relay() {
         &fx.owner.pubkey,
         &fx.owner.secret_key.secret_bytes(),
         &fx.channel,
-        BoardAction::AddCard {
+        BoardAction::AddCard(NewCard {
             col: 0,
             title: "cross-comment-card".to_owned(),
-            description: String::new(),
-            labels: vec![],
-            parent: None,
-        },
+            ..NewCard::default()
+        }),
     );
     wait_for_convergence(
         &mut fx.owner_device,
@@ -478,13 +470,11 @@ async fn sealed_rumors_never_cross_the_wire_in_plaintext() {
         &owner.pubkey,
         &owner.secret_key.secret_bytes(),
         &channel,
-        BoardAction::AddCard {
+        BoardAction::AddCard(NewCard {
             col: 0,
             title: "plaintext-sentinel-card".to_owned(),
-            description: String::new(),
-            labels: vec![],
-            parent: None,
-        },
+            ..NewCard::default()
+        }),
     );
     wait_for_convergence(
         &mut owner_device,
@@ -553,13 +543,11 @@ async fn member_editing_owners_card_counts_over_relay() {
         &fx.owner.pubkey,
         &fx.owner.secret_key.secret_bytes(),
         &fx.channel,
-        BoardAction::AddCard {
+        BoardAction::AddCard(NewCard {
             col: 0,
             title: "owner-card".to_owned(),
-            description: String::new(),
-            labels: vec![],
-            parent: None,
-        },
+            ..NewCard::default()
+        }),
     );
     wait_for_convergence(
         &mut fx.owner_device,

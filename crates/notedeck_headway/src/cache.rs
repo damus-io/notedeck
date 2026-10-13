@@ -500,13 +500,11 @@ pub(crate) mod tests {
                 &view,
                 &t.kp.pubkey,
                 &store::Signer::new(&t.secret(), None),
-                store::BoardAction::AddCard {
+                store::BoardAction::AddCard(store::NewCard {
                     col: 1,
                     title: "Fresh card".to_string(),
-                    description: String::new(),
-                    labels: vec![],
-                    parent: None,
-                },
+                    ..store::NewCard::default()
+                }),
                 &mut store::NoPublish,
             );
         }
@@ -610,13 +608,11 @@ pub(crate) mod tests {
                 &view,
                 &t.kp.pubkey,
                 &store::Signer::new(&t.secret(), None),
-                store::BoardAction::AddCard {
+                store::BoardAction::AddCard(store::NewCard {
                     col: 1,
                     title: "Delta card".to_string(),
-                    description: String::new(),
-                    labels: vec![],
-                    parent: None,
-                },
+                    ..store::NewCard::default()
+                }),
                 &mut store::NoPublish,
             );
         }
@@ -942,13 +938,11 @@ pub(crate) mod tests {
             &view,
             &t.kp.pubkey,
             &store::Signer::new(&t.secret(), Some(&channel)),
-            store::BoardAction::AddCard {
+            store::BoardAction::AddCard(store::NewCard {
                 col: 0,
                 title: "Sealed".to_string(),
-                description: String::new(),
-                labels: vec![],
-                parent: None,
-            },
+                ..store::NewCard::default()
+            }),
             &mut store::NoPublish,
         );
 

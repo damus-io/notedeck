@@ -386,9 +386,22 @@ omitted).",
                 "--desc-file <p>",
                 "Like --desc, but read from file <p> — or stdin when <p> is `-`, so a long markdown description heredocs in with no shell-escaping. Mutually exclusive with --desc",
             ),
+            (
+                "--priority <p>",
+                "Starting priority (none/low/medium/high/urgent), as `priority` takes it",
+            ),
+            (
+                "--estimate <n>",
+                "Starting estimate, as `estimate` takes it",
+            ),
+            (
+                "--due <date>",
+                "Starting due date (YYYY-MM-DD), as `due` takes it",
+            ),
         ],
         examples: &[
             "headway add fix the flaky selfshare test --col todo -l test,flake",
+            "headway add ship the beta --priority high --estimate 3 --due 2026-11-02",
             "headway add design the graph view --parent headway:headway/layer-ticket-vintage",
             "headway add write up the spike --desc-file - <<'EOF'\n    ## Context\n    ...\n    EOF",
         ],
