@@ -531,6 +531,7 @@ mod tests {
             created_at: 0,
             columns,
             archived: Vec::<ArchivedCard>::new(),
+            deleted: false,
         }
     }
 

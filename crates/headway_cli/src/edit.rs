@@ -162,6 +162,8 @@ pub(crate) fn build_action(view: &BoardView, command: Command) -> Result<BoardAc
         | Command::Grep { .. }
         | Command::Diff { .. }
         | Command::Seed { .. }
+        | Command::DeleteBoard { .. }
+        | Command::RestoreBoard { .. }
         | Command::Migrate
         | Command::Share { .. }
         | Command::Link { .. }

@@ -72,6 +72,28 @@ pub(crate) fn print_boards(own: &[BoardView], shared: &[BoardView], current: &st
     }
 }
 
+/// The tail of `headway board`: the deleted boards, by slug, so a restore can
+/// name them. Silent when there are none.
+pub(crate) fn print_deleted_boards(deleted: &[BoardView]) {
+    if deleted.is_empty() {
+        return;
+    }
+    println!(
+        "\ndeleted {}",
+        nostrdb_net::relay::sync::dim("(`headway restore-board <board>` brings one back)")
+    );
+    for view in deleted {
+        let detail =
+            nostrdb_net::relay::sync::dim(&format!("{} · {} cards", view.title, card_count(view)));
+        println!("  {}  {detail}", view.id);
+    }
+}
+
+/// Why an edit to a deleted board is refused, and how to undo the delete.
+pub(crate) fn deleted_board_error(board: &str) -> String {
+    format!("board '{board}' is deleted — restore it with `headway restore-board {board}` first")
+}
+
 /// A board owner as a short npub (`npub1pjn83hs2…`) — enough to tell owners
 /// apart in a listing. `--author` wants the whole key, which the ambiguity error
 /// prints in full.
@@ -92,6 +114,15 @@ pub(crate) fn print_board(view: &BoardView, as_json: bool, show_archived: bool) 
     }
 
     println!("{}", view.title);
+    if view.deleted {
+        println!(
+            "{}",
+            nostrdb_net::relay::sync::dim(&format!(
+                "(deleted — `headway restore-board {}` brings it back)",
+                view.id
+            ))
+        );
+    }
     if !view.description.is_empty() {
         println!("{}", view.description);
     }
@@ -749,6 +780,7 @@ mod tests {
             created_at: 0,
             columns: vec![],
             archived: vec![],
+            deleted: false,
         };
         let card = NoteId::new([1u8; 32]);
         let other = NoteId::new([2u8; 32]);

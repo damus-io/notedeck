@@ -161,10 +161,19 @@ pub(crate) fn load_board(
     )
 }
 
-/// All of `author`'s boards in the cache, sorted by id for a stable listing.
-/// Each shared board is re-folded by coordinate so its card counts match what
-/// the app draws, rather than the plaintext-only subset the author fold sees.
+/// `author`'s live boards in the cache — [`list_all_boards`] without the deleted
+/// ones, which only `headway board` lists (apart, so they can be restored).
 pub(crate) fn list_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Vec<BoardView> {
+    let mut boards = list_all_boards(ndb, roster, author);
+    boards.retain(|v| !v.deleted);
+    boards
+}
+
+/// All of `author`'s boards in the cache, deleted ones included, sorted by id
+/// for a stable listing. Each shared board is re-folded by coordinate so its
+/// card counts match what the app draws, rather than the plaintext-only subset
+/// the author fold sees.
+pub(crate) fn list_all_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Vec<BoardView> {
     let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
     };
@@ -191,7 +200,7 @@ pub(crate) fn list_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Vec<Bo
 /// Folded with the shared fold, gathering every channel of each board, so a
 /// board's card count includes every member's edits. A board we hold a key for
 /// but whose envelopes haven't arrived yet doesn't fold, and is left out rather
-/// than listed empty.
+/// than listed empty; so is one its owner deleted.
 pub(crate) fn list_shared_with_me(ndb: &Ndb, roster: &Roster, me: &Pubkey) -> Vec<BoardView> {
     let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
@@ -204,6 +213,7 @@ pub(crate) fn list_shared_with_me(ndb: &Ndb, roster: &Roster, me: &Pubkey) -> Ve
             let channels = teams::board_channel_pubkeys(&roster.teams, &addr);
             event::load_shared_board(ndb, &txn, &addr, &channels)
         })
+        .filter(|v| !v.deleted)
         .collect()
 }
 

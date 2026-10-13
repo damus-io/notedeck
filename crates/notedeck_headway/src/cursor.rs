@@ -277,6 +277,7 @@ pub(crate) mod tests {
             created_at: 0,
             columns,
             archived: vec![],
+            deleted: false,
         }
     }
 

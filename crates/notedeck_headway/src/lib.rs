@@ -252,16 +252,20 @@ impl Headway {
             .filter_map(|team| {
                 let coord = event::BoardCoord::parse(&team.board_addr)?;
                 let channels = teams::board_channel_pubkeys(&self.teams, &team.board_addr);
-                let title = Transaction::new(ctx.ndb)
-                    .ok()
-                    .and_then(|txn| {
-                        self.board_cache.borrow_mut().shared_board(
-                            ctx.ndb,
-                            &txn,
-                            &team.board_addr,
-                            &channels,
-                        )
-                    })
+                let folded = Transaction::new(ctx.ndb).ok().and_then(|txn| {
+                    self.board_cache.borrow_mut().shared_board(
+                        ctx.ndb,
+                        &txn,
+                        &team.board_addr,
+                        &channels,
+                    )
+                });
+                // Its owner deleted it: the key-share outlives the board, so the
+                // roster still names it, but it is no longer a board to switch to.
+                if folded.as_ref().is_some_and(|v| v.deleted) {
+                    return None;
+                }
+                let title = folded
                     .map(|v| v.title.clone())
                     .unwrap_or_else(|| coord.slug.clone());
                 Some(BoardSummary {
@@ -983,6 +987,22 @@ impl Headway {
         // across the render would panic the `RefCell`.
         let boards = self.board_summaries_with_shared(ctx, own_boards.as_deref().unwrap_or(&[]));
 
+        // A deleted board isn't drawn, whether it was deleted here, from the CLI
+        // or on another device: land on another board (next frame draws it), or,
+        // with none left, fall through to the placeholder and its switcher.
+        let active_deleted = view.as_ref().is_some_and(|v| v.deleted);
+        if active_deleted && let Some(next) = boards.first() {
+            let next = event::BoardCoord::new(next.owner, next.id.clone());
+            self.apply_board_nav(
+                ctx,
+                &author,
+                signer.as_ref(),
+                &boards,
+                BoardNav::Switch(next),
+            );
+        }
+        let view = view.filter(|v| !v.deleted);
+
         let Some(view) = view else {
             // No board folded yet. `update` auto-seeds one for a signing account;
             // a watch-only account can't create one; a joined shared board is
@@ -1005,7 +1025,9 @@ impl Headway {
                 );
                 return AppResponse::default();
             };
-            let msg = if active_team.is_some() {
+            let msg = if active_deleted {
+                "This board was deleted. Pick another board or create a new one."
+            } else if active_team.is_some() {
                 "Loading shared board…"
             } else {
                 "Setting up your board…"
@@ -1132,13 +1154,14 @@ impl Headway {
     }
 
     /// Act on what the frame's render asked of the app
-    /// ([`BoardUiState::take_effects`]), in the order it asked: switch or
-    /// create a board, move a card across boards, open a reference in its app.
+    /// ([`BoardUiState::take_effects`]), in the order it asked: switch, create
+    /// or delete a board, move a card across boards, open a reference in its app.
     ///
     /// `folded` is the board the frame drew, `None` on the placeholder an
     /// unfolded board draws (see [`ui::unfolded_board_ui`]). Only its switcher
-    /// is live there, so a card move can't have been asked; one that somehow
-    /// was is dropped rather than applied against the placeholder.
+    /// is live there, so neither a card move nor a delete can have been asked;
+    /// one that somehow was is dropped rather than applied against the
+    /// placeholder.
     fn drain_effects(
         &mut self,
         ctx: &mut AppContext<'_>,
@@ -1149,6 +1172,11 @@ impl Headway {
     ) {
         for effect in self.state.take_effects() {
             match effect {
+                BoardEffect::Nav(BoardNav::Delete(coord)) => {
+                    if let (Some(folded), Some(secret)) = (&folded, signer) {
+                        self.delete_board(ctx, author, secret, folded, &coord, boards);
+                    }
+                }
                 BoardEffect::Nav(nav) => self.apply_board_nav(ctx, author, signer, boards, nav),
                 BoardEffect::CardMove(mv) => {
                     if let (Some(folded), Some(secret)) = (&folded, signer) {
@@ -1227,6 +1255,47 @@ impl Headway {
         self.wake();
     }
 
+    /// Delete the board the frame drew (`folded`, which `coord` must name — the
+    /// switcher only offers the active board) and land on another of `boards`,
+    /// persisting the switch like [`BoardNav::Switch`]. The delete is a
+    /// tombstone republished through the board's own channel, so it syncs like
+    /// any board edit and `headway restore-board` undoes it.
+    fn delete_board(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        author: &Pubkey,
+        secret: &[u8; 32],
+        folded: &FoldedBoard<'_>,
+        coord: &event::BoardCoord,
+        boards: &[BoardSummary],
+    ) {
+        let view = folded.view;
+        if view.id != coord.slug || view.author != coord.owner || view.author != *author.bytes() {
+            tracing::warn!(
+                "headway: refused to delete '{}': not the active own board",
+                coord.slug
+            );
+            return;
+        }
+        store::apply(
+            ctx.ndb,
+            &coord.slug,
+            view,
+            author,
+            &store::Signer::new(secret, folded.channel),
+            store::BoardAction::DeleteBoard,
+            &mut store::NoPublish,
+        );
+        let next = boards
+            .iter()
+            .find(|b| b.id != coord.slug || b.owner != coord.owner)
+            .map(|b| event::BoardCoord::new(b.owner, b.id.clone()));
+        if let Some(next) = next {
+            self.apply_board_nav(ctx, author, Some(secret), boards, BoardNav::Switch(next));
+        }
+        self.wake();
+    }
+
     /// Act on a switcher request: switch the active board or seed a new one.
     /// Both persist the selection so it survives a restart, which needs
     /// `signer` — a watch-only account can still switch boards for the
@@ -1260,7 +1329,20 @@ impl Headway {
                 let Some(secret) = signer else {
                     return;
                 };
-                let slug = store::board_slug(&title, |s| boards.iter().any(|b| b.id == s));
+                // The switcher list leaves deleted boards out, but their slugs
+                // stay taken: seeding over one would revive it, cards and all,
+                // under the new title.
+                let own = Transaction::new(ctx.ndb).ok().and_then(|txn| {
+                    self.board_cache
+                        .borrow_mut()
+                        .all_boards(ctx.ndb, &txn, author)
+                });
+                let slug = store::board_slug(&title, |s| {
+                    boards.iter().any(|b| b.id == s)
+                        || own
+                            .as_deref()
+                            .is_some_and(|own| own.iter().any(|v| v.id == s))
+                });
                 // Born a team-of-one SNS board (sealed + self-shared), so it can be
                 // shared later with no history re-seal. Ingest locally only;
                 // `update`'s poll fans the new events out to the private relays
@@ -1277,6 +1359,9 @@ impl Headway {
                 );
                 self.wake();
             }
+            // A delete needs the folded board and its channel, so
+            // `drain_effects` routes it to `delete_board` instead.
+            BoardNav::Delete(_) => {}
         }
     }
 }
@@ -1310,6 +1395,7 @@ fn placeholder_board(active: &event::BoardCoord, boards: &[BoardSummary]) -> Boa
         created_at: 0,
         columns: Vec::new(),
         archived: Vec::new(),
+        deleted: false,
     }
 }
 
@@ -1344,12 +1430,15 @@ fn sync_status(ctx: &AppContext) -> ui::SyncStatus {
 }
 
 /// The switcher's [`BoardSummary`] list for an already-finalized set of boards,
-/// sorted by slug. A free function over [`BoardCache::all_boards`]'s output so the
+/// leaving out deleted ones, sorted by slug. A free function over [`BoardCache::all_boards`]'s output so the
 /// foreground render and the test harness summarize one finalize identically,
 /// without a second finalize.
 fn board_summaries(boards: &[BoardView]) -> Vec<BoardSummary> {
     let mut summaries: Vec<BoardSummary> = boards
         .iter()
+        // Deleted boards still fold (a card ref into one still resolves), but
+        // they aren't boards to switch to.
+        .filter(|v| !v.deleted)
         .map(|v| BoardSummary {
             owner: v.author,
             id: v.id.clone(),

@@ -1188,6 +1188,7 @@ impl BoardReducer {
                 created_at: board.created_at,
                 columns,
                 archived,
+                deleted: board.deleted,
             });
         }
 

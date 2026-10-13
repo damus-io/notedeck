@@ -6321,6 +6321,63 @@ fn unfolded_shared_board_keeps_the_switcher_reachable() {
     wait_for_board(&mut harness);
 }
 
+/// Deleting a board through the switcher: "Delete board…" asks for confirmation
+/// by name, the confirmed delete lands on another board, and the deleted one
+/// leaves the switcher while its definition folds as a tombstone (so
+/// `headway restore-board` can bring it back).
+#[test]
+fn switcher_deletes_the_active_board_and_lands_on_another() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let account = test_keypair();
+    {
+        let state = harness.state_mut();
+        let app_ctx = &mut state.notedeck.app_context();
+        store::seed_board(
+            app_ctx.ndb,
+            &account.pubkey,
+            &account.secret_key.secret_bytes(),
+            "scratch",
+            "Scratch",
+            &mut store::NoPublish,
+        );
+        wait_own_board(app_ctx.ndb, &account.pubkey, "scratch");
+    }
+
+    harness.get_by_label(SWITCHER_LABEL).click();
+    wait_for_label(&mut harness, "Scratch");
+    harness.get_by_label("Scratch").click();
+    wait_for_label(&mut harness, "Scratch  ▾");
+
+    harness.get_by_label("Scratch  ▾").click();
+    wait_for_label(&mut harness, "Delete board…");
+    harness.get_by_label("Delete board…").click();
+    wait_for_label(&mut harness, "Delete \u{201c}Scratch\u{201d}?");
+    harness.get_by_label("Delete").click();
+
+    // Landed back on the demo board, which draws in full.
+    wait_for_label(&mut harness, SWITCHER_LABEL);
+    wait_for_board(&mut harness);
+
+    // The definition is a tombstone, not gone: it still folds, marked deleted.
+    {
+        let state = harness.state_mut();
+        let app_ctx = &mut state.notedeck.app_context();
+        let ndb: &Ndb = app_ctx.ndb;
+        let deadline = Instant::now() + SETTLE_TIMEOUT;
+        while !wait_own_board(ndb, &account.pubkey, "scratch").deleted {
+            assert!(Instant::now() < deadline, "the delete never folded");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    // And it's no longer a board to switch to. The demo board is now the only
+    // one, so there's nothing to land on and no delete is offered either.
+    harness.get_by_label(SWITCHER_LABEL).click();
+    wait_for_label(&mut harness, "+ New board");
+    assert!(harness.query_by_label("Scratch").is_none());
+    assert!(harness.query_by_label("Delete board…").is_none());
+}
+
 /// Deliverable 2 (pixel snapshot, needs lavapipe): the switcher keeps two joined
 /// boards that share a slug but differ in owner as two distinct entries (breakage
 /// #3), and lists a board you own AND shared only once (coordinate dedup). Run via

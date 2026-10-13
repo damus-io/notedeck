@@ -19,12 +19,31 @@ fn base<'a>(kind: u32, content: &'a str) -> NoteBuilder<'a> {
         .options(NoteBuildOptions::default())
 }
 
-/// Build a board event (kind 30619) with its ordered columns.
+/// Build a board event (kind 30619) with its ordered columns. A live board; see
+/// [`build_board_def`] for one that can carry the deleted tombstone.
 pub fn build_board<'a>(
     board_id: &str,
     title: &str,
     description: &str,
     columns: &[ColumnDef],
+) -> NoteBuilder<'a> {
+    build_board_def(board_id, title, description, columns, false)
+}
+
+/// Build a board event (kind 30619), tombstoned when `deleted`.
+///
+/// Deleting a board republishes its definition with a bare `["deleted"]` tag,
+/// the board-level counterpart of a card's `__deleted__` placement: the
+/// addressable slot's latest revision wins, so the board drops out of listings
+/// while its cards, columns and title stay intact, and republishing without the
+/// tag restores it. Every republish of a board definition passes the board's
+/// current flag through, so an edit to a deleted board never revives it.
+pub fn build_board_def<'a>(
+    board_id: &str,
+    title: &str,
+    description: &str,
+    columns: &[ColumnDef],
+    deleted: bool,
 ) -> NoteBuilder<'a> {
     let mut b = base(KIND_BOARD, "")
         .start_tag()
@@ -33,6 +52,10 @@ pub fn build_board<'a>(
         .start_tag()
         .tag_str("title")
         .tag_str(title);
+
+    if deleted {
+        b = b.start_tag().tag_str("deleted");
+    }
 
     if !description.is_empty() {
         b = b.start_tag().tag_str("description").tag_str(description);

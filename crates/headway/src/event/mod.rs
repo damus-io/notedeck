@@ -47,9 +47,10 @@ mod resolve;
 mod view;
 
 pub use build::{
-    build_archive_placement, build_blockers, build_board, build_board_pref, build_comment,
-    build_cover_note, build_field, build_issue, build_labels, build_placement, build_related,
-    build_relation, build_review, build_review_comment, build_sequence, build_subject_edit,
+    build_archive_placement, build_blockers, build_board, build_board_def, build_board_pref,
+    build_comment, build_cover_note, build_field, build_issue, build_labels, build_placement,
+    build_related, build_relation, build_review, build_review_comment, build_sequence,
+    build_subject_edit,
 };
 pub use json::{
     activity_json, board_json, card_json, comment_json, review_comment_json, review_json,

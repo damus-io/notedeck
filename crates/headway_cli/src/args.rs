@@ -216,6 +216,17 @@ pub(crate) enum Command {
     Rename {
         title: String,
     },
+    /// Delete the board named by the positional `board` (a reversible tombstone,
+    /// see [`store::BoardAction::DeleteBoard`]). The board comes from the
+    /// argument, never the persisted current one, so a stale selection can't
+    /// delete the wrong board.
+    DeleteBoard {
+        board: String,
+    },
+    /// Restore the deleted board named by the positional `board`.
+    RestoreBoard {
+        board: String,
+    },
     /// Mark a column terminal (a "done" column) or clear the flag. A card in a
     /// terminal column clears its dependents and drops out of the `next`
     /// frontier. Republishes the board definition.
@@ -380,6 +391,8 @@ impl Command {
             | Command::Share { .. }
             | Command::Rename { .. }
             | Command::Terminal { .. }
+            | Command::DeleteBoard { .. }
+            | Command::RestoreBoard { .. }
             | Command::Board { .. }
             | Command::Login { .. }
             | Command::Logout => {}
@@ -666,6 +679,18 @@ impl Cli {
                     );
                 }
                 _ => board = Some(named),
+            }
+        }
+        // `delete-board`/`restore-board` name their board as an argument, which
+        // targets the run like `--board` does (and must agree with one).
+        if let Command::DeleteBoard { board: named } | Command::RestoreBoard { board: named } =
+            &command
+        {
+            match &board {
+                Some(flag) if flag != named => {
+                    return Err(format!("--board {flag} conflicts with board '{named}'").into());
+                }
+                _ => board = Some(named.clone()),
             }
         }
         // `seed` creates a board, so it never falls back to the persisted current
@@ -955,6 +980,12 @@ fn parse_command(
                     return Err(format!("terminal state must be on/off, got '{other}'").into());
                 }
             },
+        },
+        "delete-board" => Command::DeleteBoard {
+            board: arg(rest, 0, name)?,
+        },
+        "restore-board" => Command::RestoreBoard {
+            board: arg(rest, 0, name)?,
         },
         "board" => Command::Board {
             id: rest.first().cloned(),
