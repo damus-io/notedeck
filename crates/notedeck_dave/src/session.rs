@@ -1954,8 +1954,8 @@ impl SessionManager {
     /// Rebuild the cached host → project → cwd groups from current sessions.
     /// Call after adding/removing sessions or changing a session's cwd/project.
     ///
-    /// Sessions are grouped by lineage first (see [`lineage`]): a subagent or
-    /// child session is listed under the session that spawned it, and a
+    /// Sessions are grouped by lineage first (see [`lineage`]): a child
+    /// session is listed under the session that spawned it, and a
     /// successor chain as one run, in the workspace of its last link, even
     /// when some of them run in another worktree or on another host.
     pub fn rebuild_groups(&mut self) {
@@ -1963,6 +1963,9 @@ impl SessionManager {
         self.chat_ids.clear();
 
         let agentic = |s: &&ChatSession| s.ai_mode == AiMode::Agentic;
+        // A subagent's virtual session gets no row of its own: it is reached
+        // from its parent's chat, the inspector or the scene map.
+        let listed = |s: &&ChatSession| s.subagent_of.is_none();
         self.session_refs.sync(
             self.sessions
                 .values()
@@ -1975,20 +1978,17 @@ impl SessionManager {
             .iter()
             .filter_map(|id| self.sessions.get(id))
             .filter(agentic)
+            .filter(listed)
             .map(|s| {
                 let card = s.details.card_ref();
                 lineage::Node {
                     id: s.id,
-                    spawner: match &s.subagent_of {
-                        Some(link) => Some(link.parent),
-                        None => s
-                            .details
-                            .parent_session
-                            .as_deref()
-                            .and_then(|r| self.session_refs.find(r)),
-                    },
+                    spawner: s
+                        .details
+                        .parent_session
+                        .as_deref()
+                        .and_then(|r| self.session_refs.find(r)),
                     relation: s.details.relation,
-                    subagent: s.subagent_of.is_some(),
                     card,
                     card_parent: card.and_then(|c| titles.parent(c)),
                 }
@@ -2004,7 +2004,7 @@ impl SessionManager {
                 continue;
             };
             if session.ai_mode != AiMode::Agentic {
-                // A subagent is listed under its parent, never as a chat.
+                // A subagent's session gets no row, as a chat or otherwise.
                 if session.ai_mode == AiMode::Chat && session.subagent_of.is_none() {
                     self.chat_ids.push(id);
                 }

@@ -1,15 +1,17 @@
 //! Session lineage for the session list: which sessions nest under which, and
 //! which run as one successor chain.
 //!
-//! Three relations put a session somewhere other than the top of its
+//! Two relations put a session somewhere other than the top of its
 //! workspace:
 //!
-//! - a Claude subagent's virtual session ([`SubagentOf`](super::SubagentOf))
-//!   nests under the session running it, as a dim one-line row;
 //! - a child session (`relation=child`) nests under the session that spawned
 //!   it, as a full row;
 //! - a chain link follows the session that spawned it in one successor chain
 //!   (see [`is_chain_link`]).
+//!
+//! A Claude subagent's virtual session ([`SubagentOf`](super::SubagentOf))
+//! isn't walked: the list draws no row for it, and the scene map orbits it
+//! round its parent instead.
 //!
 //! [`entries`] walks those relations once per regroup into [`Entry`]s, each a
 //! top-level session or a chain with everything nested under it, already in
@@ -24,12 +26,10 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Node<'a> {
     pub id: SessionId,
-    /// The session that spawned this one, when it is known here: the session
-    /// running it for a subagent, else the one its `parent-session` names.
+    /// The session that spawned this one, when it is known here: the one its
+    /// `parent-session` names.
     pub spawner: Option<SessionId>,
     pub relation: SessionRelation,
-    /// Whether this is a Claude subagent's virtual session.
-    pub subagent: bool,
     /// The card the session works (its title ref, else its issue url).
     pub card: Option<&'a str>,
     /// The card `card` is a subissue of, as last looked up.
@@ -44,8 +44,6 @@ pub enum Nesting {
     /// A link of a successor chain. `handed_on` when a later link follows
     /// it, so the list dims it as done.
     Link { handed_on: bool },
-    /// A Claude subagent, under the session running it.
-    Subagent,
     /// A child session, under the session that spawned it.
     Child,
 }
@@ -122,9 +120,7 @@ fn attach(node: &Node<'_>, nodes: &HashMap<SessionId, Node<'_>>) -> Attach {
     let Some(spawner) = node.spawner.and_then(|id| nodes.get(&id)) else {
         return Attach::Top;
     };
-    let nesting = if node.subagent {
-        Nesting::Subagent
-    } else if node.relation == SessionRelation::Child {
+    let nesting = if node.relation == SessionRelation::Child {
         Nesting::Child
     } else if is_chain_link(node, spawner) {
         Nesting::Link { handed_on: false }
@@ -168,7 +164,7 @@ pub(crate) struct Lineage {
 }
 
 /// Every node's [`Entry`], each with its nested sessions and chain links in
-/// draw order: a session, then its subagents and children (oldest first,
+/// draw order: a session, then its children (oldest first,
 /// recursively), then the next link of its chain. A spawn loop, which no
 /// real lineage has, is cut where it closes, so the walk always ends.
 #[cfg(test)]
@@ -177,7 +173,7 @@ pub(crate) fn entries(nodes: &[Node<'_>]) -> Vec<Entry> {
 }
 
 /// Walk `nodes`' lineage into list [`Entry`]s (see [`entries`]) and map
-/// [`Edge`]s. A subagent draws no edge: it orbits its parent instead.
+/// [`Edge`]s.
 pub(crate) fn walk(nodes: &[Node<'_>]) -> Lineage {
     let by_id: HashMap<SessionId, Node<'_>> = nodes.iter().map(|n| (n.id, *n)).collect();
     let mut attached: HashMap<SessionId, Attach> =
@@ -227,7 +223,7 @@ fn edges(attached: &HashMap<SessionId, Attach>) -> Vec<Edge> {
                     }) => EdgeKind::Chain,
                     _ => EdgeKind::Handoff,
                 },
-                Nesting::Subagent | Nesting::Top => return None,
+                Nesting::Top => return None,
             };
             Some(Edge {
                 from: parent,
@@ -309,7 +305,7 @@ fn entry(
     out
 }
 
-/// Push `id` at `depth`, then its subagents and children under it. A chain
+/// Push `id` at `depth`, then its children under it. A chain
 /// link spawned from a nested session isn't part of the top-level chain, so
 /// it nests under its spawner like a child.
 fn push_with_nested(
@@ -401,7 +397,6 @@ mod tests {
             id,
             spawner: None,
             relation: SessionRelation::None,
-            subagent: false,
             card: None,
             card_parent: None,
         }
@@ -498,32 +493,21 @@ mod tests {
     }
 
     #[test]
-    fn subagents_and_children_nest_under_their_parent_oldest_first() {
+    fn children_nest_under_their_parent_oldest_first() {
         let parent = node(1);
-        let sub_b = Node {
-            subagent: true,
-            ..spawned(node(4), 1, SessionRelation::Child)
-        };
-        let sub_a = Node {
-            subagent: true,
-            ..spawned(node(3), 1, SessionRelation::Child)
-        };
-        let child = spawned(node(2), 1, SessionRelation::Child);
-        let grandchild_sub = Node {
-            subagent: true,
-            ..spawned(node(5), 2, SessionRelation::Child)
-        };
+        let child_b = spawned(node(4), 1, SessionRelation::Child);
+        let child_a = spawned(node(2), 1, SessionRelation::Child);
+        let grandchild = spawned(node(5), 2, SessionRelation::Child);
         let loner = node(6);
-        let e = entries(&[sub_b, loner, parent, grandchild_sub, child, sub_a]);
+        let e = entries(&[child_b, loner, parent, grandchild, child_a]);
         assert_eq!(e.len(), 2);
         assert_eq!(
             nestings(&e[0]),
             vec![
                 drawn(1, Nesting::Top, 0),
                 drawn(2, Nesting::Child, 1),
-                drawn(5, Nesting::Subagent, 2),
-                drawn(3, Nesting::Subagent, 1),
-                drawn(4, Nesting::Subagent, 1),
+                drawn(5, Nesting::Child, 2),
+                drawn(4, Nesting::Child, 1),
             ]
         );
         assert_eq!(e[0].anchor, 1);
@@ -534,17 +518,14 @@ mod tests {
     fn a_four_link_chain_walks_in_order_and_anchors_at_its_tail() {
         let cards = ["headway:dave/a", "headway:dave/b", "headway:dave/c"];
         // Link 1 → 2 explicit; 2 → 3 inferred; 3 → 4 explicit. Link 2 has a
-        // subagent of its own, which stays under it.
+        // child of its own, which stays under it.
         let n1 = on_card(1, cards[0], Some(EPIC));
         let n2 = spawned(
             on_card(2, cards[1], Some(EPIC)),
             1,
             SessionRelation::Successor,
         );
-        let sub = Node {
-            subagent: true,
-            ..spawned(node(9), 2, SessionRelation::Child)
-        };
+        let sub = spawned(node(9), 2, SessionRelation::Child);
         let n3 = spawned(on_card(3, cards[2], Some(EPIC)), 2, SessionRelation::None);
         let n4 = spawned(node(4), 3, SessionRelation::Successor);
         let e = entries(&[n4, n3, sub, n2, n1]);
@@ -560,7 +541,7 @@ mod tests {
             vec![
                 drawn(1, done, 0),
                 drawn(2, done, 0),
-                drawn(9, Nesting::Subagent, 1),
+                drawn(9, Nesting::Child, 1),
                 drawn(3, done, 0),
                 drawn(4, Nesting::Link { handed_on: false }, 0),
             ]
@@ -568,8 +549,7 @@ mod tests {
     }
 
     /// The map draws the handoff into a chain, then chain links between its
-    /// later links, a tether to a child, and nothing for a subagent or a
-    /// plain spawn.
+    /// later links, a tether to a child, and nothing for a plain spawn.
     #[test]
     fn edges_name_the_handoff_chain_links_and_children() {
         let cards = ["headway:dave/a", "headway:dave/b", "headway:dave/c"];
@@ -582,12 +562,8 @@ mod tests {
         // Inferred: sibling cards under one epic.
         let n3 = spawned(on_card(3, cards[2], Some(EPIC)), 2, SessionRelation::None);
         let child = spawned(node(5), 3, SessionRelation::Child);
-        let sub = Node {
-            subagent: true,
-            ..spawned(node(6), 3, SessionRelation::Child)
-        };
         let plain = spawned(node(7), 1, SessionRelation::None);
-        let edges = walk(&[plain, sub, child, n3, n2, n1]).edges;
+        let edges = walk(&[plain, child, n3, n2, n1]).edges;
         let edge = |from, to, kind| Edge { from, to, kind };
         assert_eq!(
             edges,
