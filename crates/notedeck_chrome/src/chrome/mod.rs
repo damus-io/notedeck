@@ -45,6 +45,8 @@ mod key_hints;
 mod keyboard;
 mod keymap_editor;
 mod nav;
+#[cfg(all(test, not(feature = "auto-update")))]
+mod nav_scenarios;
 mod roster;
 mod sidebar;
 mod toolbar;

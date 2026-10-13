@@ -86,7 +86,7 @@ impl Chrome {
     /// Split out from [`open_note_in_app`](Chrome::open_note_in_app) so the
     /// one-entry invariant is testable without an [`AppContext`].
     #[cfg(any(feature = "headway", test))]
-    fn push_app_route(&mut self, slot: usize, token: Rc<dyn std::any::Any>) {
+    pub(super) fn push_app_route(&mut self, slot: usize, token: Rc<dyn std::any::Any>) {
         if let Some(nav) = self.global_nav.as_mut() {
             nav.route_to(ChromeNavEntry::new(AppId(slot), token));
         }
@@ -300,6 +300,38 @@ impl Chrome {
     }
 }
 
+/// A bare chrome over `apps` with a seeded global history and nothing else:
+/// no egui or ndb context, so tests can drive the history machinery
+/// (`set_active`, the `Navigator` drain, back / forward) directly. Mirrors
+/// the real constructors' seeding via [`seed_global_nav`].
+#[cfg(all(test, not(feature = "auto-update")))]
+impl Chrome {
+    pub(super) fn without_context(apps: Vec<crate::app::NotedeckApp>) -> Self {
+        use super::MAX_APPS;
+        Chrome {
+            active: 0,
+            options: crate::ChromeOptions::default(),
+            apps,
+            opened: [0u16; MAX_APPS / 16],
+            app_focus: Default::default(),
+            prev_active: 0,
+            tools_snapshot: [0u16; MAX_APPS / 16],
+            soft_kb_anim_state: Default::default(),
+            repaint_causes: Default::default(),
+            nav: Default::default(),
+            global_nav: Some(seed_global_nav()),
+            pending_open: None,
+            pending_prunes: Vec::new(),
+            global_nav_in_flight: false,
+            keys: Default::default(),
+            key_hints: [0u16; MAX_APPS / 16],
+            jumps: Default::default(),
+            macro_run: None,
+            user_keymap: Default::default(),
+        }
+    }
+}
+
 // The global-nav wiring exercised here is independent of the auto-update
 // `updater` field, which needs a live egui/ndb context to build. Gating on
 // `not(auto-update)` lets these tests construct a bare `Chrome` with no context
@@ -309,42 +341,15 @@ impl Chrome {
 #[cfg(all(test, not(feature = "auto-update")))]
 mod global_nav_tests {
     use super::*;
-    use crate::chrome::focus::AppFocus;
-    use crate::chrome::keyboard::AnimState;
-    use crate::chrome::MAX_APPS;
-    use crate::keymap::KeyEngine;
-    use crate::ChromeOptions;
     use egui_nav::{NavAction, ReturnType};
     use notedeck::ActiveNavEntry;
-    use notedeck::DrawerRouter;
-    use std::collections::HashMap;
 
     /// Build a bare chrome with a seeded global history and no apps — enough to
     /// drive the stack machinery (`set_active`, the `Navigator` drain, and the
     /// active-app derive) without an egui/ndb context. Mirrors the real
     /// constructors' seeding via [`seed_global_nav`].
     fn nav_test_chrome() -> Chrome {
-        Chrome {
-            active: 0,
-            options: ChromeOptions::default(),
-            apps: Vec::new(),
-            opened: [0u16; MAX_APPS / 16],
-            app_focus: AppFocus::default(),
-            prev_active: 0,
-            tools_snapshot: [0u16; MAX_APPS / 16],
-            soft_kb_anim_state: AnimState::default(),
-            repaint_causes: HashMap::new(),
-            nav: DrawerRouter::default(),
-            global_nav: Some(seed_global_nav()),
-            pending_open: None,
-            pending_prunes: Vec::new(),
-            global_nav_in_flight: false,
-            keys: KeyEngine::default(),
-            key_hints: [0u16; MAX_APPS / 16],
-            jumps: Default::default(),
-            macro_run: None,
-            user_keymap: Default::default(),
-        }
+        Chrome::without_context(Vec::new())
     }
 
     /// Land the global history's in-flight forward slide, as `nav_frame`
@@ -862,14 +867,9 @@ mod global_nav_tests {
 mod cleanup_tests {
     use super::*;
     use crate::app::NotedeckApp;
-    use crate::chrome::focus::AppFocus;
-    use crate::chrome::keyboard::AnimState;
-    use crate::chrome::MAX_APPS;
-    use crate::ChromeOptions;
     use egui_nav::NavAction;
-    use notedeck::{AppResponse, DrawerRouter, Notedeck};
+    use notedeck::{AppResponse, Notedeck};
     use std::cell::RefCell;
-    use std::collections::HashMap;
 
     /// An app whose `cleanup_nav` records each `u32` token it is handed.
     struct CleanupRecorder {
@@ -909,27 +909,10 @@ mod cleanup_tests {
             let recorder = CleanupRecorder {
                 cleaned: cleaned.clone(),
             };
-            let chrome = Chrome {
-                active: 0,
-                options: ChromeOptions::default(),
-                apps: vec![NotedeckApp::Other("recorder".into(), Box::new(recorder))],
-                opened: [0u16; MAX_APPS / 16],
-                app_focus: AppFocus::default(),
-                prev_active: 0,
-                tools_snapshot: [0u16; MAX_APPS / 16],
-                soft_kb_anim_state: AnimState::default(),
-                repaint_causes: HashMap::new(),
-                nav: DrawerRouter::default(),
-                global_nav: Some(seed_global_nav()),
-                pending_open: None,
-                pending_prunes: Vec::new(),
-                global_nav_in_flight: false,
-                keys: crate::keymap::KeyEngine::default(),
-                key_hints: [0u16; MAX_APPS / 16],
-                jumps: Default::default(),
-                macro_run: None,
-                user_keymap: Default::default(),
-            };
+            let chrome = Chrome::without_context(vec![NotedeckApp::Other(
+                "recorder".into(),
+                Box::new(recorder),
+            )]);
             Self {
                 _dir: dir,
                 notedeck,
