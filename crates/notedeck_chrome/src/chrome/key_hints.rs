@@ -41,7 +41,8 @@ impl Chrome {
     /// Run the chrome's own UI tool `invocation`, or `None` when it isn't
     /// one: the which-key strip's here, the keymap editor's in
     /// [`call_keymap_editor_tool`](Self::call_keymap_editor_tool), the jump
-    /// list's in [`call_jump_tool`](Self::call_jump_tool).
+    /// list's in [`call_jump_tool`](Self::call_jump_tool), the nav stack's in
+    /// [`call_nav_tool`](Self::call_nav_tool).
     pub(super) fn call_chrome_tool(
         &mut self,
         ctx: &mut AppContext,
@@ -51,6 +52,9 @@ impl Chrome {
             return Some(outcome);
         }
         if let Some(outcome) = self.call_jump_tool(ctx, invocation) {
+            return Some(outcome);
+        }
+        if let Some(outcome) = self.call_nav_tool(ctx, invocation) {
             return Some(outcome);
         }
         let pinned = self.key_hints_pinned();
@@ -79,6 +83,9 @@ impl Chrome {
             return Some(available);
         }
         if let Some(available) = self.jump_tool_available(name) {
+            return Some(available);
+        }
+        if let Some(available) = self.nav_tool_available(name) {
             return Some(available);
         }
         match name {

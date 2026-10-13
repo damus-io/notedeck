@@ -63,6 +63,7 @@ pub use key_hints::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
 use keyboard::AnimState;
 pub use keymap_editor::{EDIT_KEYMAP, KEYMAP_TEMPLATE};
 use nav::AppNav;
+pub use nav::{NAV_BACK, NAV_FORWARD};
 pub use runnable::{RunnableTool, ToolPlace};
 #[cfg(feature = "auto-update")]
 use update::poll_updater;
@@ -467,6 +468,7 @@ impl notedeck::App for Chrome {
             .into_iter()
             .chain(keymap_editor::keymap_editor_tools())
             .chain(jumps::jump_tools())
+            .chain(nav::nav_tools())
             .map(|spec| notedeck::UiToolEntry::shell(spec.filed_under(TOOL_CATEGORY)));
         Some(notedeck::ToolUpdate {
             tools: running_apps()

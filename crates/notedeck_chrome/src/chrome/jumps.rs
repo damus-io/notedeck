@@ -8,8 +8,11 @@
 //! [`Chrome::dispatch_keys`](super::Chrome)), and an app records its own
 //! hard-coded jumps with [`AppAction::RecordJump`](notedeck::AppAction).
 //!
-//! This is not route history: Alt-←/→ walk the chrome's global nav across
-//! apps, and a jump never pushes a route.
+//! This is not route history: Alt-←/→ walk the active app's nav stack (see
+//! `nav.rs`), and a jump never pushes a route. Ctrl-O / Ctrl-I reach that
+//! history too once the jump list has nowhere to go: the keymap binds them a
+//! second time, to [`NAV_BACK`](super::NAV_BACK) and
+//! [`NAV_FORWARD`](super::NAV_FORWARD).
 
 use std::collections::HashMap;
 

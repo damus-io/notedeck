@@ -19,9 +19,39 @@
 
 use super::Chrome;
 use notedeck::{App, AppContext};
-use notedeck::{AppId, NavRequest, NavStack, RoutePredicate};
+use notedeck::{
+    AppId, NavRequest, NavStack, RoutePredicate, ToolInvocation, ToolOutcome, ToolSpec,
+};
 use std::any::Any;
 use std::rc::Rc;
+
+/// The chrome's back, as a UI tool: what Alt-← does. Bound to Ctrl-O after
+/// the jump list's [`JUMP_BACK`](super::JUMP_BACK), so Ctrl-O walks the
+/// app's jumps first and then steps back, as vim's Ctrl-O goes on across
+/// files.
+pub const NAV_BACK: &str = "chrome_nav_back";
+
+/// The chrome's forward, as a UI tool: what Alt-→ does. Bound to Ctrl-I
+/// after [`JUMP_FORWARD`](super::JUMP_FORWARD).
+pub const NAV_FORWARD: &str = "chrome_nav_forward";
+
+/// The nav stack's UI tools, for the host's tool registry.
+pub(super) fn nav_tools() -> [ToolSpec; 2] {
+    [
+        ToolSpec::new(
+            NAV_BACK,
+            "Go back in the active app's history, or to the app a cross-app open came from (Alt-←).",
+            Vec::new(),
+        )
+        .titled("Back"),
+        ToolSpec::new(
+            NAV_FORWARD,
+            "Go forward again in the active app's history (Alt-→).",
+            Vec::new(),
+        )
+        .titled("Forward"),
+    ]
+}
 
 /// One app's navigation: its own back / forward stack, and the app that
 /// opened it, while a cross-app open's return still applies.
@@ -176,6 +206,40 @@ fn prune(stack: &mut NavStack<Rc<dyn Any>>, is_dead: &RoutePredicate) -> Vec<Rc<
 }
 
 impl Chrome {
+    /// Run [`NAV_BACK`] or [`NAV_FORWARD`], or `None` for another tool.
+    pub(super) fn call_nav_tool(
+        &mut self,
+        ctx: &mut AppContext,
+        invocation: &ToolInvocation,
+    ) -> Option<ToolOutcome> {
+        let back = match invocation.name.as_str() {
+            NAV_BACK => true,
+            NAV_FORWARD => false,
+            _ => return None,
+        };
+        let moved = self.nav_tool_available(invocation.name.as_str()) == Some(true);
+        if back {
+            self.go_back(ctx);
+        } else {
+            self.go_forward();
+        }
+        Some(ToolOutcome::Data(serde_json::json!({ "moved": moved })))
+    }
+
+    /// Whether [`NAV_BACK`] or [`NAV_FORWARD`] has anywhere to go in the
+    /// app in front, or `None` for another tool, so their keys fall through
+    /// when they don't. Back is live while the active app's stack can go
+    /// back or its opener return applies, as the header chevron is. Doesn't
+    /// allocate.
+    pub(super) fn nav_tool_available(&self, name: &str) -> Option<bool> {
+        let nav = self.active_nav();
+        match name {
+            NAV_BACK => Some(nav.is_some_and(|nav| nav.stack.can_go_back() || nav.hop().is_some())),
+            NAV_FORWARD => Some(nav.is_some_and(|nav| nav.stack.can_go_forward())),
+            _ => None,
+        }
+    }
+
     /// The navigation of the app in `slot`, if there is one.
     pub(super) fn app_nav(&self, slot: usize) -> Option<&AppNav> {
         self.app_navs.get(slot)
@@ -846,6 +910,35 @@ mod app_nav_tests {
         assert_eq!(chrome.app_nav(2).unwrap().opener, None, "names app 1");
     }
 
+    #[test]
+    fn the_nav_tools_are_offered_only_while_there_is_somewhere_to_go() {
+        let mut chrome = nav_test_chrome();
+        let back = |chrome: &Chrome| chrome.nav_tool_available(NAV_BACK);
+        let forward = |chrome: &Chrome| chrome.nav_tool_available(NAV_FORWARD);
+        assert_eq!(
+            back(&chrome),
+            Some(false),
+            "at the root: Ctrl-O falls through"
+        );
+        assert_eq!(forward(&chrome), Some(false));
+        assert_eq!(chrome.nav_tool_available("chrome_jump_back"), None);
+
+        navigate(&mut chrome, vec![push(7)]);
+        land_slide(&mut chrome);
+        assert_eq!(back(&chrome), Some(true));
+
+        navigate(&mut chrome, vec![NavRequest::Back]);
+        land_back(&mut chrome);
+        assert_eq!(back(&chrome), Some(false));
+        assert_eq!(forward(&chrome), Some(true), "7 can be redone");
+
+        // An open that pushed nothing: Dave's root, with the return to app 0.
+        chrome.set_active(1);
+        chrome.remember_opener(0);
+        assert!(!stack(&chrome, 1).can_go_back());
+        assert_eq!(back(&chrome), Some(true), "the opener return counts");
+    }
+
     // Driven through the real egui-nav, a drag included. Release only, as
     // `headway_nav_tests` is and for the same reason: mid-transition egui-nav
     // draws the routes on two layers under one widget id, which egui
@@ -1116,6 +1209,22 @@ mod cleanup_tests {
         fx.drain_prune(8);
         assert_eq!(fx.cleaned(), vec![9, 8], "no double clean");
         assert_eq!(fx.tokens(), vec![None, Some(7)]);
+    }
+
+    #[test]
+    fn the_nav_back_tool_is_the_chrome_back() {
+        let mut fx = CleanupFixture::new();
+        fx.chrome.set_active(1);
+        fx.chrome.push_app_route(0, Rc::new(7u32));
+
+        let mut ctx = fx.notedeck.app_context();
+        let back = ToolInvocation::new(NAV_BACK, serde_json::Value::Null);
+        let outcome = fx.chrome.call_chrome_tool(&mut ctx, &back);
+        drop(ctx);
+
+        assert!(matches!(outcome, Some(ToolOutcome::Data(v)) if v["moved"] == true));
+        assert_eq!(fx.chrome.active, 1, "the opener return, as Alt-← takes it");
+        assert_eq!(fx.cleaned(), vec![7]);
     }
 
     #[test]

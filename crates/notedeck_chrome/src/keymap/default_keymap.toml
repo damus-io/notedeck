@@ -43,6 +43,24 @@ tool  = "chrome_jump_forward"
 label = "jump back/forward"
 group = "jump"
 
+# With no jump to walk, Ctrl-O / Ctrl-I fall through to the app's history:
+# the chrome's back and forward (Alt-←/→), as vim's Ctrl-O goes on across
+# files. Back also returns to the app a cross-app open came from.
+
+[[bind]]
+scope = "global"
+keys  = "<C-o>"
+tool  = "chrome_nav_back"
+label = "back/forward"
+group = "jump"
+
+[[bind]]
+scope = "global"
+keys  = "<C-i>"
+tool  = "chrome_nav_forward"
+label = "back/forward"
+group = "jump"
+
 # ── Headway ─────────────────────────────────────────────────────────────────
 #
 # Headway reports a stack of these scopes per view (crates/notedeck_headway/

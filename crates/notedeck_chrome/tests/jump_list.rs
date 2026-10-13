@@ -109,3 +109,30 @@ fn the_default_keymap_binds_ctrl_o_and_ctrl_i() {
     assert!(tools.contains(&notedeck_chrome::JUMP_BACK));
     assert!(tools.contains(&notedeck_chrome::JUMP_FORWARD));
 }
+
+/// Ctrl-O / Ctrl-I are bound twice in `global`: the jump list first, then
+/// the nav stack's back / forward, so the keys reach the app's history once
+/// the jump list has nowhere to go (each is offered only while it does).
+#[test]
+fn the_default_keymap_falls_ctrl_o_and_ctrl_i_through_to_nav() {
+    let keymap = notedeck_chrome::keymap::parse(DEFAULT_KEYMAP).expect("default keymap");
+    let tools_on = |key: &str| -> Vec<String> {
+        keymap
+            .bindings("global")
+            .iter()
+            .filter(|b| b.keys.to_string() == key)
+            .filter_map(|b| match &b.action {
+                notedeck_chrome::keymap::BindAction::Tool(call) => Some(call.name.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        tools_on("<C-o>"),
+        vec![notedeck_chrome::JUMP_BACK, notedeck_chrome::NAV_BACK]
+    );
+    assert_eq!(
+        tools_on("<C-i>"),
+        vec![notedeck_chrome::JUMP_FORWARD, notedeck_chrome::NAV_FORWARD]
+    );
+}
