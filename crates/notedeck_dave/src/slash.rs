@@ -68,10 +68,18 @@ pub struct SlashCatalog {
 }
 
 impl SlashCatalog {
-    /// The catalog in a Claude CLI's `initialize` response (what
-    /// `ClaudeClient::get_server_info` returns). Lenient: a missing or
-    /// misshapen field comes out empty.
+    /// The catalog in a Claude CLI's `initialize` response. Lenient: a
+    /// missing or misshapen field comes out empty.
+    ///
+    /// `ClaudeClient::get_server_info` returns the control response's data,
+    /// with the CLI's payload one level down under `response`
+    /// (`{"response": {"commands": …, "models": …}}`), so that envelope is
+    /// unwrapped. The bare payload is taken too.
     pub fn from_server_info(info: &Value) -> Self {
+        let info = info
+            .get("response")
+            .filter(|payload| payload.is_object())
+            .unwrap_or(info);
         let field = |v: &Value, key: &str| {
             v.get(key)
                 .and_then(Value::as_str)
@@ -612,9 +620,16 @@ fn probe_claude(cwd: PathBuf, repaint: egui::Context) -> Promise<Option<SlashCat
         }
         let mut client = claude_agent_sdk_rs::ClaudeClient::new(options);
         let catalog = match client.connect().await {
-            Ok(()) => client
-                .get_server_info()
-                .map(|info| SlashCatalog::from_server_info(&info)),
+            Ok(()) => client.get_server_info().map(|info| {
+                let catalog = SlashCatalog::from_server_info(&info);
+                if catalog.commands.is_empty() {
+                    tracing::warn!(
+                        "slash command probe in {} listed no commands",
+                        cwd.display()
+                    );
+                }
+                catalog
+            }),
             Err(err) => {
                 tracing::warn!("slash command probe in {} failed: {err}", cwd.display());
                 None
@@ -694,7 +709,18 @@ mod tests {
 
     /// A catalog shaped like a real `initialize` response, cut down.
     fn catalog() -> Rc<SlashCatalog> {
-        Rc::new(SlashCatalog::from_server_info(&json!({
+        Rc::new(SlashCatalog::from_server_info(&sdk_server_info()))
+    }
+
+    /// What `ClaudeClient::get_server_info` returns: the CLI's `initialize`
+    /// payload under the control response's `response` key.
+    fn sdk_server_info() -> Value {
+        json!({ "response": initialize_payload() })
+    }
+
+    /// A Claude CLI's `initialize` payload, cut down.
+    fn initialize_payload() -> Value {
+        json!({
             "commands": [
                 {"name": "headway", "description": "Read and edit a Headway board (user)", "argumentHint": ""},
                 {"name": "code-review", "description": "Review the current diff", "argumentHint": "[low|medium|high]"},
@@ -710,7 +736,7 @@ mod tests {
                 {"value": "sonnet", "displayName": "Sonnet 5.5", "description": "efficient"},
                 {"value": "haiku", "displayName": "Haiku 5.5", "description": "fastest"},
             ],
-        })))
+        })
     }
 
     /// A popup over `catalog`.
@@ -729,6 +755,21 @@ mod tests {
                 _ => catalog.commands[r.index].name.clone(),
             })
             .collect()
+    }
+
+    /// `get_server_info` wraps the payload in `response`; reading the
+    /// commands from the top level left the popup empty, so it showed
+    /// "loading commands…" and then closed for good. Both shapes give the
+    /// same catalog.
+    #[test]
+    fn server_info_unwraps_the_sdks_response_envelope() {
+        let wrapped = SlashCatalog::from_server_info(&sdk_server_info());
+        assert_eq!(wrapped.commands.len(), 6);
+        assert_eq!(wrapped.models.len(), 4);
+        assert_eq!(
+            wrapped,
+            SlashCatalog::from_server_info(&initialize_payload())
+        );
     }
 
     #[test]
