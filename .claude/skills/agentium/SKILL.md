@@ -300,7 +300,15 @@ way to steer another session from the shell.
 agentium send maple-river-canyon run the tests and fix any failures
 agentium send maple-river-canyon "keep the exact  spacing"   # quote to preserve it
 agentium send maple-river-canyon hi --json                   # {"session","event_id"}
+agentium send --immediate maple-river-canyon stop, read this  # send, then interrupt its turn
 ```
+
+`--immediate` redirects a running agent: it sends the message, then interrupts
+the session's in-flight turn, so the agent stops and reads the message now
+instead of when the turn ends. That replaces `agentium send <s> "…" &&
+agentium interrupt <s>`. Only a session whose status is `working` or
+`needs_input` is interrupted; an idle one isn't, since the message alone starts
+its turn and an interrupt would abort it. `--json` adds `"interrupted": true|false`.
 
 Notes:
 

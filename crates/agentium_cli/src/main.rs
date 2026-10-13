@@ -171,10 +171,13 @@ enum Command {
     /// (local or remote) picks it up over relay sync. The selector is required
     /// (unlike `show`/`log`, it can't default to `$AGENTIUM_SESSION` — the first
     /// positional would be ambiguous against the message text), and the message
-    /// is the remaining positionals joined with spaces.
+    /// is the remaining positionals joined with spaces. `--immediate` also
+    /// interrupts the session's running turn, so the agent reads the message now
+    /// rather than when that turn ends.
     Send {
         session: String,
         text: String,
+        immediate: bool,
     },
     /// Publish a kind-31989 spawn command telling a (local or remote) Dave host
     /// to create a fresh session, then optionally block until the host answers
@@ -392,9 +395,11 @@ async fn run() -> Result<()> {
             cli.json,
         )?,
         Command::Resume { session } => cmd_resume(&engine, &read_pk, &session).await?,
-        Command::Send { session, text } => {
-            cmd_send(&engine, &read_pk, &session, &text, cli.json).await?
-        }
+        Command::Send {
+            session,
+            text,
+            immediate,
+        } => cmd_send(&engine, &read_pk, &session, &text, immediate, cli.json).await?,
         Command::Spawn {
             host,
             cwd,
@@ -579,6 +584,8 @@ impl Cli {
         let mut request = None;
         let mut message = None;
         let mut interrupt = false;
+        // `send --immediate`: interrupt the running turn after sending.
+        let mut immediate = false;
         // `config add`/`edit` fields.
         let mut config_name = None;
         let mut config_command = None;
@@ -656,6 +663,7 @@ impl Cli {
                 "--request" => request = Some(value("--request")?),
                 "--message" => message = Some(value("--message")?),
                 "--interrupt" => interrupt = true,
+                "--immediate" => immediate = true,
                 "--name" => config_name = Some(value("--name")?),
                 "--command" => config_command = Some(value("--command")?),
                 other if other.starts_with("--") => {
@@ -751,6 +759,12 @@ impl Cli {
                 wait,
                 wait_timeout,
             }
+        } else if name == "send" {
+            Command::Send {
+                session: arg(rest, 0, name)?,
+                text: join_message(&rest[1..])?,
+                immediate,
+            }
         } else {
             parse_command(name, rest, view, case)?
         };
@@ -830,10 +844,6 @@ fn parse_command(
         },
         "resume" => Command::Resume {
             session: arg(rest, 0, name)?,
-        },
-        "send" => Command::Send {
-            session: arg(rest, 0, name)?,
-            text: join_message(&rest[1..])?,
         },
         "interrupt" => Command::Interrupt {
             session: arg(rest, 0, name)?,
@@ -950,7 +960,7 @@ COMMANDS:
                       a new message drives its backend again. Takes any selector
                       `list` accepts (d-tag, cli-session id, or agentium: ref);
                       revives the session's agentium: reference in place.
-    send <session> <text…>
+    send [--immediate] <session> <text…>
                       Send a user message to a live session so its running agent
                       (local or remote) picks it up over relay sync, then report
                       the resulting event id. The selector is required (no
@@ -959,7 +969,11 @@ COMMANDS:
                       spaces (quote to preserve exact spacing). Reopen a deleted
                       session with `resume` first. Sent from inside a session
                       ($AGENTIUM_SESSION set), it names that session as its
-                      sender. --json emits the event id.
+                      sender. --json emits the event id. --immediate then
+                      interrupts the session's running turn, so the agent
+                      stops and reads the message now instead of when the turn
+                      ends; an idle session isn't interrupted, since the
+                      message starts its turn (--json adds `interrupted`).
     spawn             Tell a (local or remote) Dave host to create a fresh
                       session, then print its new agentium: ref. --host/--cwd/
                       --backend pick the target; omitted, they default to the
@@ -1382,17 +1396,65 @@ mod tests {
         }
     }
 
+    /// Parse `args` (after `--nsec`) as a `send`, returning its fields.
+    fn parse_send(args: &[&str]) -> Result<SendArgs> {
+        let mut full = vec!["--nsec", TEST_NSEC];
+        full.extend_from_slice(args);
+        match parse_cli(&full)?.expect("a command").command {
+            Command::Send {
+                session,
+                text,
+                immediate,
+            } => Ok(SendArgs {
+                session,
+                text,
+                immediate,
+            }),
+            _ => panic!("expected Send"),
+        }
+    }
+
+    /// The fields of a parsed `send`, for [`parse_send`].
+    #[derive(Debug, PartialEq)]
+    struct SendArgs {
+        session: String,
+        text: String,
+        immediate: bool,
+    }
+
     #[test]
     fn send_requires_session_and_joins_text() {
         // `send <sel> hey there` → the first positional is the selector, the rest
-        // join into the message with single spaces (no quoting needed).
-        let rest = ["agentium:a-b-c", "hey", "there"].map(String::from);
-        match parse_command("send", &rest, view_all(), CaseMode::Smart).unwrap() {
-            Command::Send { session, text } => {
-                assert_eq!(session, "agentium:a-b-c");
-                assert_eq!(text, "hey there");
+        // join into the message with single spaces (no quoting needed). Without
+        // `--immediate` the send doesn't interrupt.
+        assert_eq!(
+            parse_send(&["send", "agentium:a-b-c", "hey", "there"]).unwrap(),
+            SendArgs {
+                session: "agentium:a-b-c".into(),
+                text: "hey there".into(),
+                immediate: false,
             }
-            _ => panic!("expected Send"),
+        );
+    }
+
+    #[test]
+    fn send_immediate_is_a_flag_anywhere_on_the_line() {
+        // `--immediate` before the selector, between it and the text, or after
+        // the text all set it, and never leak into the message.
+        for args in [
+            &["send", "--immediate", "agentium:a-b-c", "stop", "now"][..],
+            &["send", "agentium:a-b-c", "--immediate", "stop", "now"][..],
+            &["send", "agentium:a-b-c", "stop", "now", "--immediate"][..],
+        ] {
+            assert_eq!(
+                parse_send(args).unwrap(),
+                SendArgs {
+                    session: "agentium:a-b-c".into(),
+                    text: "stop now".into(),
+                    immediate: true,
+                },
+                "{args:?}"
+            );
         }
     }
 
@@ -1400,13 +1462,13 @@ mod tests {
     fn send_missing_session_and_empty_text_are_errors() {
         // No positionals at all → the missing-selector error (session is required;
         // there is no $AGENTIUM_SESSION default for `send`).
-        assert!(parse_command("send", &[], view_all(), CaseMode::Smart).is_err());
+        assert!(parse_send(&["send"]).is_err());
         // A selector but no message words → the empty-message error.
-        let one = ["agentium:a-b-c"].map(String::from);
-        assert!(parse_command("send", &one, view_all(), CaseMode::Smart).is_err());
+        assert!(parse_send(&["send", "agentium:a-b-c"]).is_err());
         // A selector plus a whitespace-only quoted arg is also rejected.
-        let blank = ["agentium:a-b-c", "   "].map(String::from);
-        assert!(parse_command("send", &blank, view_all(), CaseMode::Smart).is_err());
+        assert!(parse_send(&["send", "agentium:a-b-c", "   "]).is_err());
+        // `--immediate` is no message.
+        assert!(parse_send(&["send", "agentium:a-b-c", "--immediate"]).is_err());
     }
 
     #[test]
