@@ -232,6 +232,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                     .color(ui.visuals().weak_text_color()),
             );
             ui.add_space(4.0);
+            let code_column = self.code_column(ui, &chat_ids);
             for id in chat_ids {
                 if let Some(session) = self.session_manager.get(id) {
                     if let Some(a) = self.render_session_item(
@@ -239,7 +240,10 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                         session,
                         visual_index,
                         active_id,
-                        RowKind::Full { cwd: None },
+                        RowKind::Full {
+                            cwd: None,
+                            code_column,
+                        },
                         cycle,
                     ) {
                         action = Some(a);
@@ -287,7 +291,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             response,
             action: dot_action,
         } = match (session.ai_mode, kind) {
-            (AiMode::Agentic, RowKind::Full { cwd }) => {
+            (AiMode::Agentic, RowKind::Full { cwd, code_column }) => {
                 // A session titled with its card's ref is listed under the
                 // card's current title, once one has been looked up.
                 let card = (!is_renaming)
@@ -303,6 +307,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                         session_id: session.id,
                         title: display_title,
                         card,
+                        code_column,
                         cwd_display: cwd,
                         is_active,
                         shortcut_hint,
@@ -315,12 +320,19 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                     },
                 )
             }
-            (AiMode::Agentic, RowKind::Nested { ordinal }) => self.nested_row_ui(
+            (
+                AiMode::Agentic,
+                RowKind::Nested {
+                    ordinal,
+                    code_column,
+                },
+            ) => self.nested_row_ui(
                 ui,
                 NestedRow {
                     session_id: session.id,
                     title: display_title,
                     ordinal,
+                    code_column,
                     is_active,
                     shortcut_hint,
                     cycle_hint,
@@ -465,7 +477,8 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
     }
 
     /// Render an agentic session row: the status bar, the title, a dim meta
-    /// line under it (see [`meta_line`]) and the focus dot.
+    /// line under it (see [`meta_line`]; left out when it's empty) and the
+    /// focus dot.
     ///
     /// A row whose session is titled with its card's ref, with the card's
     /// title looked up ([`AgentRow::card`]), shows that title as option C: the
@@ -479,7 +492,12 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         if row.status == AgentStatus::Pending {
             text_start_x += PENDING_SPINNER_SLOT + 2.0;
         }
-        let text_x = text_start_x + if row.card.is_some() { CODE_COLUMN } else { 0.0 };
+        let text_x = text_start_x
+            + if row.card.is_some() {
+                row.code_column.width
+            } else {
+                0.0
+            };
         // Laid out before the row is allocated, since its height follows the
         // headline's wrap. The focus dot always takes its slot, so the wrap
         // stays put while ctrl's transient hints come and go.
@@ -490,6 +508,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             CardLayout {
                 card,
                 code: parts.code,
+                column: row.code_column,
                 headline: galley,
             }
         });
@@ -501,7 +520,6 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             ui,
             MetaLine {
                 prefix: None,
-                status: Some(row.status),
                 age: row.last_activity.map(|t| now_unix().saturating_sub(t)),
                 git_lines: row.git_lines,
                 subagents: row.subagents,
@@ -511,7 +529,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         let cwd_height = row
             .cwd_display
             .map_or(0.0, |_| LINE_GAP + row_height(ui, &cwd_font()));
-        let height = ROW_PAD + title_height + LINE_GAP + meta.size().y + cwd_height + ROW_PAD;
+        let height = ROW_PAD + title_height + meta_height(&meta) + cwd_height + ROW_PAD;
 
         let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -586,10 +604,13 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             }
         }
 
-        let meta_pos = egui::pos2(rect.left() + text_x, top + title_height + LINE_GAP);
-        paint_clipped(ui, meta_pos, meta.clone(), text_right);
+        let meta_bottom = top + title_height + meta_height(&meta);
+        if !meta.is_empty() {
+            let meta_pos = egui::pos2(rect.left() + text_x, meta_bottom - meta.size().y);
+            paint_clipped(ui, meta_pos, meta, text_right);
+        }
         if let Some(cwd) = row.cwd_display {
-            let cwd_pos = meta_pos + egui::vec2(0.0, meta.size().y + LINE_GAP);
+            let cwd_pos = egui::pos2(rect.left() + text_x, meta_bottom + LINE_GAP);
             cwd_inline_ui(ui, cwd, cwd_pos, text_right - cwd_pos.x);
         }
 
@@ -617,21 +638,21 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
     /// [`title_refs`](Self::title_refs) leaves the slot empty.
     fn card_title_ui(&self, ui: &mut egui::Ui, layout: &CardLayout<'_>, pos: Pos2, right: f32) {
         let line = row_height(ui, &title_font());
+        let column = layout.column;
         self.card_glyph_ui(
             ui,
             layout.card.card_ref,
             egui::Rect::from_min_size(pos, egui::vec2(GLYPH_SLOT - 4.0, line)),
         );
-        let code_font = egui::FontId::monospace(11.0);
         let weak = ui.visuals().weak_text_color();
-        let code = layout.code.unwrap_or("·");
+        let code = layout.code.unwrap_or(NO_CODE);
         let code_galley = ui
             .painter()
-            .layout_no_wrap(code.to_owned(), code_font, weak);
-        let code_pos = pos + egui::vec2(GLYPH_SLOT, (line - code_galley.size().y) / 2.0);
-        let code_right = (pos.x + CODE_COLUMN - 6.0).min(right);
+            .layout_no_wrap(code.to_owned(), code_font(), weak);
+        let code_pos = pos + egui::vec2(column.glyph, (line - code_galley.size().y) / 2.0);
+        let code_right = (pos.x + column.width - CODE_GAP).min(right);
         paint_clipped(ui, code_pos, code_galley, code_right);
-        let headline_pos = pos + egui::vec2(CODE_COLUMN, 0.0);
+        let headline_pos = pos + egui::vec2(column.width, 0.0);
         paint_clipped(ui, headline_pos, layout.headline.clone(), right);
     }
 
@@ -666,8 +687,8 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
     }
 
     /// Render one session among several on a card, under the card's row (see
-    /// [`card_group_ui`]): a status-coloured dot and `session <ordinal> ·
-    /// <status> · <age>`, its own title on hover.
+    /// [`card_group_ui`]): a status-coloured dot, which is its status, and
+    /// `session <ordinal> · <age>`, its own title on hover.
     fn nested_row_ui(&self, ui: &mut egui::Ui, row: NestedRow<'_>) -> RowResponse {
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), Sense::click());
@@ -675,7 +696,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         paint_row_background(ui, rect, row.is_active, self.chord_cursor, &response);
 
         let age = row.last_activity.map(|t| now_unix().saturating_sub(t));
-        let dot_x = rect.left() + TEXT_LEFT + CODE_COLUMN + 3.0;
+        let dot_x = rect.left() + TEXT_LEFT + row.code_column.width + 3.0;
         ui.painter().circle_filled(
             egui::pos2(dot_x, rect.center().y),
             2.5,
@@ -702,7 +723,6 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             ui,
             MetaLine {
                 prefix: Some(row.ordinal),
-                status: Some(row.status),
                 age,
                 git_lines: None,
                 subagents: 0,
@@ -808,6 +828,47 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         self.session_manager.get(id)?.details.card_ref()
     }
 
+    /// The code column for the folder holding `ids`, sized to the widest
+    /// code its rows show (see [`run_code`](Self::run_code)). Measured as
+    /// char counts times the code font's advance, which is monospace, so
+    /// sizing it each frame lays nothing out.
+    fn code_column(&self, ui: &egui::Ui, ids: &[SessionId]) -> CodeColumn {
+        let chars = card_runs(self, ids)
+            .filter_map(|run| self.run_code(&run))
+            .map(|code| code.chars().count())
+            .max()
+            .unwrap_or(0);
+        let advance = ui.fonts_mut(|f| f.glyph_width(&code_font(), '0'));
+        let glyph = if self.title_refs.is_some() {
+            GLYPH_SLOT
+        } else {
+            0.0
+        };
+        CodeColumn {
+            glyph,
+            width: glyph + chars as f32 * advance + CODE_GAP,
+        }
+    }
+
+    /// The code `run`'s row shows in its code column, or `None` when it shows
+    /// none: a card's sessions' row ([`card_group_ui`]) always does, a lone
+    /// agentic session's row once its card's title has been looked up (see
+    /// [`render_session_item`](Self::render_session_item)).
+    fn run_code<'s>(&'s self, run: &CardRun<'s>) -> Option<&'s str> {
+        let titles = &self.session_manager.card_titles;
+        let title = if run.ids.len() > 1 {
+            let card_ref = run.card_ref?;
+            titles.get(card_ref).unwrap_or(card_ref)
+        } else {
+            let session = self.session_manager.get(run.ids[0])?;
+            if session.ai_mode != AiMode::Agentic {
+                return None;
+            }
+            titles.get(session.details.title_ref()?)?
+        };
+        Some(TitleParts::split(title).code.unwrap_or(NO_CODE))
+    }
+
     /// Draw a row's `title` with its top-left at `pos`, clipped to `max_width`.
     ///
     /// A title holding a reference the registered parsers recognize — a
@@ -864,10 +925,64 @@ fn lookup_card_title(refs: &TitleRefs<'_, '_>, card_ref: &str) -> Option<String>
 enum RowKind<'a> {
     /// Its own row. `cwd` is the path shown in it when the session is alone
     /// in its cwd, with no folder header above it.
-    Full { cwd: Option<&'a str> },
+    Full {
+        cwd: Option<&'a str>,
+        /// Its folder's code column, used when the row shows a card.
+        code_column: CodeColumn,
+    },
     /// One of several sessions on one card, drawn small under the card's row
     /// (see [`card_group_ui`]); `ordinal` is its 1-based place among them.
-    Nested { ordinal: usize },
+    Nested {
+        ordinal: usize,
+        /// Its folder's code column, which its dot sits just past.
+        code_column: CodeColumn,
+    },
+}
+
+/// The code column of the card rows in one folder: where the code starts
+/// after the status glyph, and where the headline starts after the code.
+/// Sized by [`SessionListUi::code_column`] to the folder's widest code, so
+/// short codes don't leave a gap before the headline, long ones aren't
+/// clipped, and the headlines within a folder still line up.
+#[derive(Clone, Copy, Default)]
+struct CodeColumn {
+    /// The status glyph's slot before the code: [`GLYPH_SLOT`], or nothing
+    /// when the list draws without [`title_refs`](SessionListUi::title_refs)
+    /// and so has no glyph to draw.
+    glyph: f32,
+    /// The whole column: the glyph slot, the widest code and [`CODE_GAP`].
+    width: f32,
+}
+
+/// A run of sessions next to each other in a folder: the sessions on one
+/// card when `card_ref` is `Some` and there are several, else one session.
+struct CardRun<'s> {
+    card_ref: Option<&'s str>,
+    ids: &'s [SessionId],
+}
+
+/// Split a folder's `ids` into the [`CardRun`]s it draws as rows, in order.
+/// Sessions on one card sort together (see `rebuild_groups`), so a card's
+/// sessions are one run.
+fn card_runs<'s, 'a, 'n>(
+    list_ui: &'s SessionListUi<'a, 'n>,
+    ids: &'s [SessionId],
+) -> impl Iterator<Item = CardRun<'s>> + use<'s, 'a, 'n> {
+    let mut start = 0;
+    std::iter::from_fn(move || {
+        let rest = ids.get(start..).filter(|r| !r.is_empty())?;
+        let card_ref = list_ui.card_ref_of(rest[0]);
+        let len = card_ref.map_or(1, |card_ref| {
+            rest.iter()
+                .take_while(|&&id| list_ui.card_ref_of(id) == Some(card_ref))
+                .count()
+        });
+        start += len;
+        Some(CardRun {
+            card_ref,
+            ids: &rest[..len],
+        })
+    })
 }
 
 /// A card a row is titled by: its ref, and its current title.
@@ -884,6 +999,8 @@ struct CardLayout<'s> {
     card: CardTitle<'s>,
     /// The code before the title's colon, if it has one (see [`TitleParts`]).
     code: Option<&'s str>,
+    /// The folder's code column the code is drawn in.
+    column: CodeColumn,
     /// The headline, wrapped to at most two lines.
     headline: Arc<egui::Galley>,
 }
@@ -918,6 +1035,8 @@ struct AgentRow<'s> {
     title: &'s str,
     /// The card the session is titled by, once its title has been looked up.
     card: Option<CardTitle<'s>>,
+    /// Its folder's code column, for `card`'s code.
+    code_column: CodeColumn,
     /// The cwd path, for a session alone in its cwd.
     cwd_display: Option<&'s str>,
     is_active: bool,
@@ -941,6 +1060,8 @@ struct NestedRow<'s> {
     title: &'s str,
     /// Its 1-based place among the card's sessions.
     ordinal: usize,
+    /// Its folder's code column, which its dot sits just past.
+    code_column: CodeColumn,
     is_active: bool,
     shortcut_hint: Option<usize>,
     cycle_hint: Option<&'static str>,
@@ -951,10 +1072,12 @@ struct NestedRow<'s> {
 
 /// Left padding of a row's text, past the status bar.
 const TEXT_LEFT: f32 = 12.0;
-/// Width of a card row's code column: the status glyph, then the code.
-const CODE_COLUMN: f32 = 64.0;
 /// Width of the glyph slot at the head of the code column.
 const GLYPH_SLOT: f32 = 18.0;
+/// Space between a folder's widest code and its headlines.
+const CODE_GAP: f32 = 6.0;
+/// What a card row's code column shows for a title with no code.
+const NO_CODE: &str = "·";
 /// Width of the "Connecting…" spinner before a pending row's title.
 const PENDING_SPINNER_SLOT: f32 = 22.0;
 /// Space above and below a row's text.
@@ -965,6 +1088,11 @@ const LINE_GAP: f32 = 2.0;
 /// A row title's font.
 fn title_font() -> egui::FontId {
     egui::FontId::proportional(14.0)
+}
+
+/// A card's code's font.
+fn code_font() -> egui::FontId {
+    egui::FontId::monospace(11.0)
 }
 
 /// The font of a row's meta and cwd lines.
@@ -1016,7 +1144,6 @@ fn paint_clipped(ui: &egui::Ui, pos: Pos2, galley: Arc<egui::Galley>, right: f32
 struct MetaLine {
     /// `session <n>`, for a session nested under its card.
     prefix: Option<usize>,
-    status: Option<AgentStatus>,
     /// Seconds since the session's last activity.
     age: Option<u64>,
     git_lines: Option<GitLines>,
@@ -1026,10 +1153,11 @@ struct MetaLine {
     sessions: usize,
 }
 
-/// Lay out a row's dim meta line, e.g. `working · 12m · +88 -4 · 2 sub`:
-/// the status, coloured when it wants attention (working, needs input,
-/// error), then the time since the last activity, the worktree's +/- lines
-/// against HEAD and how many subagents it started.
+/// Lay out a row's dim meta line, e.g. `12m · +88 -4 · 2 sub`: the time
+/// since the last activity, the worktree's +/- lines against HEAD and how
+/// many subagents it started. The status isn't on it: the row's status bar
+/// and a nested row's dot already show it in colour. Empty when there is
+/// nothing to say (see [`meta_height`]).
 fn meta_line(ui: &egui::Ui, meta: MetaLine) -> Arc<egui::Galley> {
     use std::fmt::Write;
     let font = cwd_font();
@@ -1045,13 +1173,6 @@ fn meta_line(ui: &egui::Ui, meta: MetaLine) -> Arc<egui::Galley> {
     if let Some(n) = meta.prefix {
         let _ = write!(buf, "session {n}");
         part(&mut job, &buf, weak);
-    }
-    if let Some(status) = meta.status {
-        let color = match status {
-            AgentStatus::Working | AgentStatus::NeedsInput | AgentStatus::Error => status.color(),
-            _ => weak,
-        };
-        part(&mut job, status_word(status), color);
     }
     if let Some(age) = meta.age {
         buf.clear();
@@ -1094,16 +1215,14 @@ fn meta_line(ui: &egui::Ui, meta: MetaLine) -> Arc<egui::Galley> {
     ui.painter().layout_job(job)
 }
 
-/// A status as the meta line says it.
-fn status_word(status: AgentStatus) -> &'static str {
-    match status {
-        AgentStatus::Idle => "idle",
-        AgentStatus::Working => "working",
-        AgentStatus::NeedsInput => "needs input",
-        AgentStatus::Error => "error",
-        AgentStatus::Done => "done",
-        AgentStatus::Pending => "connecting",
-        AgentStatus::Waiting => "waiting",
+/// The height a row gives its `meta` line, with the gap above it: none
+/// when the line is empty, so a row with nothing to say under its title
+/// stays one line.
+fn meta_height(meta: &egui::Galley) -> f32 {
+    if meta.is_empty() {
+        0.0
+    } else {
+        LINE_GAP + meta.size().y
     }
 }
 
@@ -1144,6 +1263,7 @@ fn card_group_ui(
     card_ref: &str,
     ids: &[SessionId],
     visual_index: &mut usize,
+    code_column: CodeColumn,
     active_id: Option<SessionId>,
     cycle: CycleHints,
 ) -> Option<SessionListAction> {
@@ -1161,17 +1281,17 @@ fn card_group_ui(
     let parts = TitleParts::split(title);
 
     let width = ui.available_width();
-    let text_x = TEXT_LEFT + CODE_COLUMN;
+    let text_x = TEXT_LEFT + code_column.width;
     let layout = CardLayout {
         card: CardTitle { card_ref, title },
         code: parts.code,
+        column: code_column,
         headline: headline_galley(ui, parts.headline, width - text_x - right_reserve(None)),
     };
     let meta = meta_line(
         ui,
         MetaLine {
             prefix: None,
-            status: None,
             age: None,
             git_lines: None,
             subagents: 0,
@@ -1179,7 +1299,7 @@ fn card_group_ui(
         },
     );
     let title_height = layout.headline.size().y;
-    let height = ROW_PAD + title_height + LINE_GAP + meta.size().y + 2.0;
+    let height = ROW_PAD + title_height + meta_height(&meta) + 2.0;
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     paint_row_background(ui, rect, false, false, &response);
@@ -1218,7 +1338,10 @@ fn card_group_ui(
             session,
             *visual_index,
             active_id,
-            RowKind::Nested { ordinal: n + 1 },
+            RowKind::Nested {
+                ordinal: n + 1,
+                code_column,
+            },
             cycle,
         ) {
             action = Some(a);
@@ -2070,6 +2193,7 @@ fn cwd_section_ui(
                 active_id,
                 RowKind::Full {
                     cwd: Some(cwd_group.display_cwd.as_str()),
+                    code_column: list_ui.code_column(ui, &cwd_group.session_ids),
                 },
                 cycle,
             ) {
@@ -2150,37 +2274,33 @@ fn cwd_folder_ui(
 
     cwd_state.show_body_unindented(ui, |ui| {
         ui.add_space(2.0);
-        // Sessions on one card sort together (see `rebuild_groups`); a run of
-        // two or more is drawn as the card's row with them nested under it,
-        // still in this order, so Ctrl+J / K and `visual_order` walk them as
-        // drawn.
+        // A run of two or more sessions on one card is drawn as the card's
+        // row with them nested under it, still in this order, so Ctrl+J / K
+        // and `visual_order` walk them as drawn.
         let ids = cwd_group.session_ids.as_slice();
-        let mut start = 0;
-        while start < ids.len() {
-            let card_ref = list_ui.card_ref_of(ids[start]);
-            let run = card_ref.map_or(1, |card_ref| {
-                ids[start..]
-                    .iter()
-                    .take_while(|&&id| list_ui.card_ref_of(id) == Some(card_ref))
-                    .count()
-            });
-            let a = match card_ref {
-                Some(card_ref) if run > 1 => card_group_ui(
+        let code_column = list_ui.code_column(ui, ids);
+        for run in card_runs(list_ui, ids) {
+            let a = match run.card_ref {
+                Some(card_ref) if run.ids.len() > 1 => card_group_ui(
                     ui,
                     list_ui,
                     card_ref,
-                    &ids[start..start + run],
+                    run.ids,
                     visual_index,
+                    code_column,
                     active_id,
                     cycle,
                 ),
-                _ => list_ui.session_manager.get(ids[start]).and_then(|session| {
+                _ => list_ui.session_manager.get(run.ids[0]).and_then(|session| {
                     let a = list_ui.render_session_item(
                         ui,
                         session,
                         *visual_index,
                         active_id,
-                        RowKind::Full { cwd: None },
+                        RowKind::Full {
+                            cwd: None,
+                            code_column,
+                        },
                         cycle,
                     );
                     *visual_index += 1;
@@ -2190,7 +2310,6 @@ fn cwd_folder_ui(
             if a.is_some() {
                 action = a;
             }
-            start += run;
         }
     });
     cwd_state.store(ui.ctx());
@@ -2287,7 +2406,7 @@ fn delete_worktree_menu_item(
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentRow, GitLines, SessionListAction, SessionListUi};
+    use super::{AgentRow, CodeColumn, GitLines, SessionListAction, SessionListUi};
     use crate::agent_status::AgentStatus;
     use crate::backend::BackendType;
     use crate::collapse_state::CollapseState;
@@ -2544,6 +2663,7 @@ mod tests {
             session_id: id,
             title,
             card: None,
+            code_column: CodeColumn::default(),
             cwd_display: None,
             is_active: false,
             shortcut_hint: None,
@@ -2705,7 +2825,7 @@ mod tests {
         ),
         (
             "headway:game/gale-hush-iris",
-            "ZL2: a level band on every zone — a row of ZONES carries its levels",
+            "Crag 1.6: the cliff relief modelled — a row of ZONES carries its levels",
         ),
         (
             "headway:game/jade-knot-lark",
