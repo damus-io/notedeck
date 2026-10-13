@@ -437,19 +437,21 @@ where
 impl HeadwayUiTool {
     /// The spec of every Headway UI tool, for [`notedeck::App::ui_tools`].
     pub(crate) fn specs() -> Vec<ToolSpec> {
-        vec![
-            card_spec(OPEN_CARD, "Open the current card's detail.", vec![]),
+        [
+            card_spec(OPEN_CARD, "Open the current card's detail.", vec![]).titled("Open card"),
             card_spec(
                 OPEN_EXPLAINER,
                 "Open the explainer of the current card's review record in a browser.",
                 vec![],
-            ),
+            )
+            .titled("Open card's explainer"),
             card_spec(
                 OPEN_PARENT,
                 "Open the detail of the current card's parent, switching boards when the \
                  parent is on another. Only offered on a card that has a parent.",
                 vec![],
-            ),
+            )
+            .titled("Open parent card"),
             card_spec(
                 OPEN_SESSION,
                 "Open the agentium session of the current card's review record.",
@@ -461,93 +463,110 @@ impl HeadwayUiTool {
                     )
                     .default(json!(false)),
                 ],
-            ),
+            )
+            .titled("Open card's agent session"),
             card_spec(
                 OPEN_REVIEW,
                 "Open the current card's review pane on its newest record.",
                 vec![],
-            ),
+            )
+            .titled("Review card's commit"),
             card_spec(
                 SEND_BACK,
                 "Send the current card back to In Progress, asking for a reason.",
                 vec![],
-            ),
+            )
+            .titled("Send card back"),
             card_spec(
                 QUICK_COMMENT,
                 "Ask for a one-line comment on the current card, post it, and send it to its \
                  review record's agentium session with any line comments drafted on the record.",
                 vec![],
-            ),
+            )
+            .titled("Comment on card"),
             card_spec(
                 STEP_CARD,
                 "Step to the next or previous card: the grid cursor's, the review queue's, \
                  or the card's column neighbour.",
                 vec![enum_arg("dir", DIRS, "Which way to step.")],
-            ),
+            )
+            .titled("Step to next or previous card"),
             ToolSpec::new(
                 CURSOR_MOVE,
                 "Move the board grid's or the issue list's cursor.",
                 vec![enum_arg("to", CURSOR_TOS, "Where the cursor goes.")],
             )
-            .ui(),
+            .ui()
+            .titled("Move cursor"),
             ToolSpec::new(
                 COMPOSE_CARD,
                 "Open the add-card composer in the grid cursor's column, or in the issue \
                  list, the composer for a card in the cursor's group.",
                 vec![],
             )
-            .ui(),
+            .ui()
+            .titled("New card"),
             ToolSpec::new(
                 FOCUS_FILTER,
                 "Focus the board grid's filter, or the issue list's query.",
                 vec![],
             )
-            .ui(),
+            .ui()
+            .titled("Filter cards"),
             ToolSpec::new(
                 OPEN_REVIEW_QUEUE,
                 "Open the review queue: over the board's In Review column from the grid, \
                  over the card's In Review subissues from its detail.",
                 vec![],
             )
-            .ui(),
+            .ui()
+            .titled("Open review queue"),
             ToolSpec::new(
                 OPEN_LIST,
                 "Open the issue list: every board's cards as one filterable list.",
                 vec![],
             )
-            .ui(),
+            .ui()
+            .titled("Open issue list"),
             ToolSpec::new(
                 NEXT_BOARD,
                 "Switch to the next board, in the board switcher's order, wrapping around.",
                 vec![],
             )
-            .ui(),
+            .ui()
+            .titled("Next board"),
             ToolSpec::new(
                 PREV_BOARD,
                 "Switch to the previous board, in the board switcher's order, wrapping around.",
                 vec![],
             )
-            .ui(),
+            .ui()
+            .titled("Previous board"),
             ToolSpec::new(
                 PICK_BOARD,
                 "Open the board picker: every board, narrowed as you type, to switch to one.",
                 vec![],
             )
-            .ui(),
-            ToolSpec::new(CLEAR, "Drop the board grid's cursor.", vec![]).ui(),
+            .ui()
+            .titled("Switch board"),
+            ToolSpec::new(CLEAR, "Drop the board grid's cursor.", vec![])
+                .ui()
+                .titled("Clear cursor"),
             ToolSpec::new(
                 LIST_FOLD,
                 "Fold the issue list's group headers: toggle, open or close the cursor's \
                  group, or close (all) or open (none) every group.",
                 vec![enum_arg("to", FOLD_TOS, "What to fold.")],
             )
-            .ui(),
+            .ui()
+            .titled("Fold groups"),
             ToolSpec::new(
                 LIST_STEP_GROUP,
                 "Move the issue list's cursor to the next or previous group header.",
                 vec![enum_arg("dir", DIRS, "Which way to step.")],
             )
-            .ui(),
+            .ui()
+            .titled("Step to next or previous group"),
             ToolSpec::new(
                 LIST_MOVE_DOWN,
                 "Move the issue list cursor's card one place later in its board's work \
@@ -555,7 +574,8 @@ impl HeadwayUiTool {
                  work order, top first.",
                 vec![],
             )
-            .ui(),
+            .ui()
+            .titled("Move card down in work order"),
             ToolSpec::new(
                 LIST_MOVE_UP,
                 "Move the issue list cursor's card one place earlier in its board's work \
@@ -563,7 +583,8 @@ impl HeadwayUiTool {
                  by work order, top first.",
                 vec![],
             )
-            .ui(),
+            .ui()
+            .titled("Move card up in work order"),
             ToolSpec::new(
                 LIST_TAB,
                 "Show one of the issue list's view tabs: the next or previous one, a built-in \
@@ -577,7 +598,8 @@ impl HeadwayUiTool {
                     ),
                 ],
             )
-            .ui(),
+            .ui()
+            .titled("Switch list view"),
             ToolSpec::new(
                 LIST_GROUP,
                 "Group the issue list's rows: by status, priority, label, board or parent, \
@@ -588,7 +610,8 @@ impl HeadwayUiTool {
                     "What to group by.",
                 )],
             )
-            .ui(),
+            .ui()
+            .titled("Group list by"),
             ToolSpec::new(
                 LIST_SUBGROUP,
                 "Split each of the issue list's groups again: by status, priority, label, \
@@ -599,7 +622,8 @@ impl HeadwayUiTool {
                     "What to sub-group by.",
                 )],
             )
-            .ui(),
+            .ui()
+            .titled("Sub-group list by"),
             ToolSpec::new(
                 LIST_ORDER,
                 "Order the issue list's rows, run the ordering's natural way: manually, by \
@@ -611,13 +635,15 @@ impl HeadwayUiTool {
                     "What to order by.",
                 )],
             )
-            .ui(),
+            .ui()
+            .titled("Order list by"),
             ToolSpec::new(
                 LIST_ORDER_DIR,
                 "Run the issue list's ordering the other way, or ascending or descending.",
                 vec![enum_arg("dir", DIR_TOS, "Which way to run it.")],
             )
-            .ui(),
+            .ui()
+            .titled("Reverse list order"),
             ToolSpec::new(
                 LIST_DISPLAY,
                 "Show or hide one of the properties each issue-list row draws beside its \
@@ -636,46 +662,56 @@ impl HeadwayUiTool {
                     ),
                 ],
             )
-            .ui(),
+            .ui()
+            .titled("Show or hide row property"),
             ToolSpec::new(
                 LIST_SAVE_VIEW,
                 "Save what the issue list shows, its query and layout, as a new view: opens \
                  the view-name field.",
                 vec![],
             )
-            .ui(),
+            .ui()
+            .titled("Save list view"),
             ToolSpec::new(
                 SCROLL,
                 "Scroll the review pane's diff or the card detail.",
                 vec![enum_arg("to", SCROLL_TOS, "How far to scroll.")],
             )
-            .ui(),
+            .ui()
+            .titled("Scroll"),
             ToolSpec::new(
                 STEP_FILE,
                 "Scroll the review pane's diff to the next or previous file.",
                 vec![enum_arg("dir", DIRS, "Which way to step.")],
             )
-            .ui(),
+            .ui()
+            .titled("Step to next or previous file"),
             ToolSpec::new(
                 COMMENT,
                 "Write a review comment on the picked diff lines, or on the commit.",
                 vec![],
             )
-            .ui(),
+            .ui()
+            .titled("Write review comment"),
             ToolSpec::new(
                 SEND_COMMENTS,
                 "Send the review pane's drafted comments.",
                 vec![],
             )
-            .ui(),
+            .ui()
+            .titled("Send review comments"),
             ToolSpec::new(
                 BACK,
                 "Leave the review queue, back a review pane out to its card, or leave the \
                  card detail or the issue list for the grid.",
                 vec![],
             )
-            .ui(),
+            .ui()
+            .titled("Go back"),
         ]
+        .into_iter()
+        .map(|spec| spec.filed_under(crate::TOOL_CATEGORY))
+        .collect()
     }
 
     /// Parse a call of the tool `name` with `args` (an object, or `null` for

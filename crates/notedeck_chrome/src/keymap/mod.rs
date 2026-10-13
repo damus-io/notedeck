@@ -37,6 +37,7 @@ pub mod keys;
 pub mod macros;
 mod parse;
 pub mod template;
+mod tool_keys;
 pub mod user;
 
 use std::collections::BTreeMap;

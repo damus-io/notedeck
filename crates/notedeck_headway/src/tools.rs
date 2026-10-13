@@ -91,6 +91,8 @@ impl AppTool for ListBoards {
             "List the headway boards for the current account: each board's id (slug), title, and live card count.",
             vec![],
         )
+.titled("List boards")
+.filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, _args: Self::Args) -> Result<Self::Output, String> {
@@ -137,6 +139,8 @@ impl AppTool for ShowBoard {
                 "The board id (slug) to show. Defaults to the primary board when omitted.",
             )],
         )
+.titled("Show board")
+.filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -185,6 +189,8 @@ impl AppTool for ShowCard {
                 card_board_arg(),
             ],
         )
+.titled("Show card")
+.filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -256,6 +262,8 @@ impl AppTool for ReadyItems {
                 board_arg(),
             ],
         )
+.titled("List ready cards")
+.filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -543,6 +551,8 @@ impl AppTool for AddCard {
                 board_arg(),
             ],
         )
+.titled("Add card")
+.filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -653,6 +663,8 @@ impl AppTool for MoveCard {
                 card_board_arg(),
             ],
         )
+        .titled("Move card")
+        .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -711,6 +723,8 @@ impl AppTool for SetTitle {
                 card_board_arg(),
             ],
         )
+        .titled("Set card title")
+        .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -750,6 +764,8 @@ impl AppTool for SetDescription {
                 card_board_arg(),
             ],
         )
+        .titled("Set card description")
+        .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -790,6 +806,8 @@ impl AppTool for SetLabels {
                 card_board_arg(),
             ],
         )
+.titled("Add card labels")
+.filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -834,6 +852,8 @@ impl AppTool for SetPriority {
                 card_board_arg(),
             ],
         )
+        .titled("Set card priority")
+        .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -878,6 +898,8 @@ impl AppTool for SetParent {
                 card_board_arg(),
             ],
         )
+.titled("Set card parent")
+.filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -918,6 +940,8 @@ impl AppTool for CommentCard {
                 card_board_arg(),
             ],
         )
+        .titled("Post comment")
+        .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -952,6 +976,8 @@ impl AppTool for ArchiveCard {
             "Archive a headway card: take it off the board but keep it recoverable.",
             vec![card_arg(), card_board_arg()],
         )
+        .titled("Archive card")
+        .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -1003,6 +1029,8 @@ impl AppTool for RestoreCard {
             "Restore an archived headway card to the column it was archived from.",
             vec![card_arg(), card_board_arg()],
         )
+        .titled("Restore card")
+        .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -1027,6 +1055,8 @@ impl AppTool for DeleteCard {
             "Remove a headway card from the board (tombstone its placement).",
             vec![card_arg(), card_board_arg()],
         )
+        .titled("Delete card")
+        .filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -1062,6 +1092,8 @@ impl AppTool for RenameBoard {
                 board_arg(),
             ],
         )
+.titled("Rename board")
+.filed_under(crate::TOOL_CATEGORY)
     }
 
     fn call(&self, cx: &mut ToolContext, args: Self::Args) -> Result<Self::Output, String> {
@@ -1083,6 +1115,7 @@ fn card_arg() -> ToolArg {
          word-id alone is not a card ref.",
     )
     .required(true)
+    .from_current()
 }
 
 /// A card tool's optional `board` argument, defaulting to the board the card

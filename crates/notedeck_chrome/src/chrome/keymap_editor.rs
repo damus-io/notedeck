@@ -71,7 +71,8 @@ pub(super) fn keymap_editor_tools() -> [ToolSpec; 2] {
             EDIT_KEYMAP,
             "Open the editor for the account's keymap overrides.",
             Vec::new(),
-        ),
+        )
+        .titled("Edit keymap"),
         ToolSpec::new(
             SAVE_KEYMAP_TOOL,
             "Save the account's keymap overrides, merged over the built-in keymap.",
@@ -81,7 +82,8 @@ pub(super) fn keymap_editor_tools() -> [ToolSpec; 2] {
                 "The user keymap, in the keymap's TOML format.",
             )
             .required(true)],
-        ),
+        )
+        .titled("Save keymap"),
     ]
 }
 

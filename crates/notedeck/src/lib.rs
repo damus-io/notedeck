@@ -167,7 +167,7 @@ pub use time::{
 };
 pub use timecache::TimeCached;
 pub use tool::{
-    AppTool, QueryCall, RegisteredTool, ToolArg, ToolArgType, ToolCall, ToolContext,
+    AppTool, QueryCall, RegisteredTool, ToolArg, ToolArgType, ToolCall, ToolContext, ToolEntry,
     ToolInvocation, ToolKind, ToolOutcome, ToolOwner, ToolRegistry, ToolSpec, ToolUpdate,
     UiToolEntry, SAVE_KEYMAP_TOOL,
 };

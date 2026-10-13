@@ -194,6 +194,9 @@ type ErasedHandler = Box<dyn Fn(&mut ToolContext, &Value) -> ToolOutcome + Send 
 pub struct RegisteredTool {
     spec: ToolSpec,
     handler: ErasedHandler,
+    /// The app that contributed it, once the shell has said (see
+    /// [`owned_by`](Self::owned_by)).
+    owner: Option<AppId>,
 }
 
 impl RegisteredTool {
@@ -216,7 +219,24 @@ impl RegisteredTool {
                 Err(err) => ToolOutcome::Error(err),
             }
         });
-        Self { spec, handler }
+        Self {
+            spec,
+            handler,
+            owner: None,
+        }
+    }
+
+    /// Tag the tool with the app slot that contributed it, so a command bar
+    /// can list it with that app's tools. The shell does this as it collects
+    /// the running apps' tools; an app never needs to.
+    pub fn owned_by(mut self, owner: AppId) -> Self {
+        self.owner = Some(owner);
+        self
+    }
+
+    /// The app slot that contributed it, if the shell has said.
+    pub fn owner(&self) -> Option<AppId> {
+        self.owner
     }
 
     /// The portable spec advertised for this tool.
@@ -326,6 +346,18 @@ pub struct ToolUpdate {
     pub ui_tools: Vec<UiToolEntry>,
 }
 
+/// One registered tool as [`ToolRegistry::entries`] lists it: its spec and
+/// who it belongs to.
+#[derive(Clone, Copy)]
+pub struct ToolEntry<'a> {
+    /// The tool's spec; its [`kind`](ToolSpec::kind) tells data from UI.
+    pub spec: &'a ToolSpec,
+    /// Who it belongs to: for a UI tool who runs it, for a data tool the app
+    /// that contributed it. `None` for a data tool registered without one
+    /// (see [`RegisteredTool::owned_by`]).
+    pub owner: Option<ToolOwner>,
+}
+
 /// Where a registered name points: into the data tools or the UI tools.
 #[derive(Clone, Copy)]
 enum ToolSlot {
@@ -400,6 +432,20 @@ impl ToolRegistry {
             .iter()
             .map(RegisteredTool::spec)
             .chain(self.ui_tools.iter().map(UiToolEntry::spec))
+    }
+
+    /// Every registered tool with its owner, in [`specs`](Self::specs)' order:
+    /// what a command bar lists, before it asks which can run now.
+    pub fn entries(&self) -> impl Iterator<Item = ToolEntry<'_>> {
+        let data = self.tools.iter().map(|tool| ToolEntry {
+            spec: tool.spec(),
+            owner: tool.owner.map(ToolOwner::App),
+        });
+        let ui = self.ui_tools.iter().map(|entry| ToolEntry {
+            spec: entry.spec(),
+            owner: Some(entry.owner),
+        });
+        data.chain(ui)
     }
 
     /// Whether a tool with `name` is registered, of either kind.

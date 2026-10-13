@@ -26,12 +26,14 @@ pub(super) fn chrome_ui_tools() -> [ToolSpec; 2] {
             TOGGLE_KEY_HINTS,
             "Show or hide the which-key strip listing the active app's key bindings.",
             Vec::new(),
-        ),
+        )
+        .titled("Toggle key hints"),
         ToolSpec::new(
             HIDE_KEY_HINTS,
             "Hide the which-key strip, if it is showing.",
             Vec::new(),
-        ),
+        )
+        .titled("Hide key hints"),
     ]
 }
 

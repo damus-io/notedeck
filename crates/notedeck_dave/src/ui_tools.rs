@@ -58,6 +58,10 @@ pub(crate) const FOCUS_QUEUE: &str = "dave_focus_queue";
 /// `gd` / `gc`: show the active session's Details or Chat tab.
 pub(crate) const SESSION_TAB: &str = "dave_session_tab";
 
+/// What Dave's tools are filed under in a command bar
+/// ([`ToolSpec::category`]).
+const TOOL_CATEGORY: &str = "Dave";
+
 /// The active session's issue, as data, for a macro step to hand on (its
 /// `as`, or `{prev}`): `{"issue": "headway:<board>/<word-id>"}`. No key does
 /// this, so it isn't a [`DaveUiTool`]: it reads, and doesn't act.
@@ -72,6 +76,8 @@ pub(crate) fn session_issue_spec() -> ToolSpec {
         vec![],
     )
     .ui()
+    .titled("Get session's issue")
+    .filed_under(TOOL_CATEGORY)
 }
 
 /// One of Dave's UI tools, by name. Its arguments pick the [`KeyAction`]
@@ -309,6 +315,29 @@ impl DaveUiTool {
         }
     }
 
+    /// The tool's human title, for a command bar ([`ToolSpec::title`]).
+    fn title(self) -> &'static str {
+        match self {
+            Self::BlockCursor => "Move block cursor",
+            Self::Block => "Fold blocks",
+            Self::FocusPane => "Focus session list or chat",
+            Self::SessionCursor => "Switch session",
+            Self::SceneCursor => "Step through scene",
+            Self::InsertMode => "Focus chat input",
+            Self::NewAgent => "New agent",
+            Self::CloneAgent => "Clone agent",
+            Self::RenameAgent => "Rename session",
+            Self::DeleteSession => "Delete session",
+            Self::ToggleView => "Toggle scene view",
+            Self::SetPermissionMode => "Set permission mode",
+            Self::ExternalEditor => "Compose in external editor",
+            Self::OpenIssue => "Open session's issue",
+            Self::Interrupt => "Stop session",
+            Self::FocusQueue => "Step through focus queue",
+            Self::SessionTab => "Show chat or details",
+        }
+    }
+
     /// The tool called `name`, if Dave has one.
     pub(crate) fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|tool| tool.name() == name)
@@ -383,7 +412,10 @@ impl DaveUiTool {
                 vec![enum_arg("tab", TABS, "The tab to show.")],
             ),
         };
-        ToolSpec::new(self.name(), description, args).ui()
+        ToolSpec::new(self.name(), description, args)
+            .ui()
+            .titled(self.title())
+            .filed_under(TOOL_CATEGORY)
     }
 
     /// Parse a call of the tool `name` with `args` (an object, or `null` for

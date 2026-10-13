@@ -48,6 +48,7 @@ mod nav;
 #[cfg(all(test, not(feature = "auto-update")))]
 mod nav_scenarios;
 mod roster;
+mod runnable;
 mod sidebar;
 mod toolbar;
 #[cfg(feature = "auto-update")]
@@ -62,6 +63,7 @@ pub use key_hints::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
 use keyboard::AnimState;
 pub use keymap_editor::{EDIT_KEYMAP, KEYMAP_TEMPLATE};
 use nav::AppNav;
+pub use runnable::{RunnableTool, ToolPlace};
 #[cfg(feature = "auto-update")]
 use update::poll_updater;
 use user_keymap::UserKeymap;
@@ -69,6 +71,10 @@ use user_keymap::UserKeymap;
 /// Upper bound on the number of apps the running-app bitset can track. One bit
 /// per app index; see [`Chrome::tools_snapshot`].
 const MAX_APPS: usize = 256;
+
+/// What the chrome's own tools are filed under in a command bar
+/// ([`notedeck::ToolSpec::category`]).
+const TOOL_CATEGORY: &str = "Chrome";
 
 pub struct Chrome {
     active: i32,
@@ -461,9 +467,15 @@ impl notedeck::App for Chrome {
             .into_iter()
             .chain(keymap_editor::keymap_editor_tools())
             .chain(jumps::jump_tools())
-            .map(notedeck::UiToolEntry::shell);
+            .map(|spec| notedeck::UiToolEntry::shell(spec.filed_under(TOOL_CATEGORY)));
         Some(notedeck::ToolUpdate {
-            tools: running_apps().flat_map(|(_, app)| app.tools()).collect(),
+            tools: running_apps()
+                .flat_map(|(i, app)| {
+                    app.tools()
+                        .into_iter()
+                        .map(move |tool| tool.owned_by(notedeck::AppId(i)))
+                })
+                .collect(),
             ui_tools: chrome_tools
                 .chain(running_apps().flat_map(|(i, app)| {
                     app.ui_tools()

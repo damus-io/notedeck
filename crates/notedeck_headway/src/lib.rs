@@ -37,6 +37,10 @@ pub use ui::{
 
 use event::BoardView;
 
+/// What Headway's tools are filed under in a command bar
+/// ([`notedeck::ToolSpec::category`]).
+pub(crate) const TOOL_CATEGORY: &str = "Headway";
+
 /// A Linear/Trello-style issue & todo tracker app for notedeck.
 ///
 /// The board is backed by nostr events in the local nostrdb: [`BoardCache`] keeps

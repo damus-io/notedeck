@@ -32,12 +32,14 @@ pub(super) fn jump_tools() -> [ToolSpec; 2] {
             JUMP_BACK,
             "Go back to where the active app's view was before its last far jump (vim's Ctrl-O).",
             Vec::new(),
-        ),
+        )
+        .titled("Jump back"),
         ToolSpec::new(
             JUMP_FORWARD,
             "Go forward again along the active app's jump list (vim's Ctrl-I).",
             Vec::new(),
-        ),
+        )
+        .titled("Jump forward"),
     ]
 }
 

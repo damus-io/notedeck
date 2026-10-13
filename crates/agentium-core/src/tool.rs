@@ -45,6 +45,9 @@ pub struct ToolArg {
     description: &'static str,
     required: bool,
     default: Option<Value>,
+    /// Whether it names what the app's view is on (see
+    /// [`from_current`](ToolArg::from_current)).
+    from_current: bool,
 }
 
 impl ToolArg {
@@ -57,6 +60,7 @@ impl ToolArg {
             description,
             required: false,
             default: None,
+            from_current: false,
         }
     }
 
@@ -73,8 +77,42 @@ impl ToolArg {
         self
     }
 
+    /// Mark this argument as naming what the app's view is on, e.g. a card
+    /// tool's `card`: a person running the tool from a command bar doesn't
+    /// type it, the bar fills it with the app's current ref, as a key
+    /// binding's `{current}` does.
+    pub fn from_current(mut self) -> Self {
+        self.from_current = true;
+        self
+    }
+
     pub fn name(&self) -> &'static str {
         self.name
+    }
+
+    /// Its JSON type.
+    pub fn typ(&self) -> &ToolArgType {
+        &self.typ
+    }
+
+    pub fn description(&self) -> &'static str {
+        self.description
+    }
+
+    /// Whether the caller must supply it.
+    pub fn is_required(&self) -> bool {
+        self.required
+    }
+
+    /// The value it takes when left out, if it has one.
+    pub fn default_value(&self) -> Option<&Value> {
+        self.default.as_ref()
+    }
+
+    /// Whether it names what the app's view is on (see
+    /// [`from_current`](Self::from_current)).
+    pub fn is_from_current(&self) -> bool {
+        self.from_current
     }
 }
 
@@ -97,12 +135,20 @@ pub enum ToolKind {
 /// does, and the arguments it accepts. Reused to build an OpenAI
 /// `FunctionObject` (via [`json_schema`](Self::json_schema)) or an MCP
 /// `tools/list` entry, so a tool is declared exactly once.
+///
+/// A tool a person runs by hand (from a command bar, a menu) also carries a
+/// human [`title`](Self::title) and a [`category`](Self::category) to list it
+/// under. Neither reaches a model's schema.
 #[derive(Debug, Clone)]
 pub struct ToolSpec {
     name: &'static str,
     description: &'static str,
     arguments: Vec<ToolArg>,
     kind: ToolKind,
+    /// What a person calls it, e.g. "Open issue list"; `None` until set.
+    title: Option<&'static str>,
+    /// What it's listed under, e.g. "Headway"; `None` until set.
+    category: Option<&'static str>,
 }
 
 impl ToolSpec {
@@ -114,6 +160,8 @@ impl ToolSpec {
             description,
             arguments,
             kind: ToolKind::Data,
+            title: None,
+            category: None,
         }
     }
 
@@ -121,6 +169,30 @@ impl ToolSpec {
     pub fn ui(mut self) -> Self {
         self.kind = ToolKind::Ui;
         self
+    }
+
+    /// Give the tool a human title, a short imperative phrase in sentence
+    /// case: "Open issue list", "Toggle key hints".
+    pub fn titled(mut self, title: &'static str) -> Self {
+        self.title = Some(title);
+        self
+    }
+
+    /// File the tool under `category`, the name of the app or part of the
+    /// shell it belongs to: "Headway", "Chrome".
+    pub fn filed_under(mut self, category: &'static str) -> Self {
+        self.category = Some(category);
+        self
+    }
+
+    /// File the tool under `category` unless it is filed already, so an app
+    /// can stamp its name on all its specs while one of them files itself
+    /// elsewhere.
+    pub fn default_category(self, category: &'static str) -> Self {
+        match self.category {
+            Some(_) => self,
+            None => self.filed_under(category),
+        }
     }
 
     /// Whether this tool runs over data or against an app's UI state.
@@ -138,6 +210,30 @@ impl ToolSpec {
 
     pub fn arguments(&self) -> &[ToolArg] {
         &self.arguments
+    }
+
+    /// Its human title, set with [`titled`](Self::titled).
+    pub fn title(&self) -> Option<&'static str> {
+        self.title
+    }
+
+    /// What to show a person: its [title](Self::title), else its registered
+    /// name.
+    pub fn display_title(&self) -> &'static str {
+        self.title.unwrap_or(self.name)
+    }
+
+    /// What it's filed under, set with [`filed_under`](Self::filed_under).
+    pub fn category(&self) -> Option<&'static str> {
+        self.category
+    }
+
+    /// Whether it can only run on what an app's view is on: a required
+    /// argument is [from the current ref](ToolArg::from_current).
+    pub fn needs_current(&self) -> bool {
+        self.arguments
+            .iter()
+            .any(|arg| arg.required && arg.from_current)
     }
 
     /// The JSON Schema object describing this tool's arguments — the `parameters`
