@@ -3,6 +3,7 @@ use crate::card_titles::CardTitles;
 use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::scene_edges::{MessageLine, MessageLines};
 use crate::scene_layout::{AreaKind, EasedLayout, Synced};
+use crate::scene_orbits::{Orbits, Satellite, SatelliteKind};
 use crate::session::{ChatSession, Edge, EdgeKind, SessionId, SessionManager};
 use crate::ui::dave::FROM_SESSION_VIOLET;
 use crate::ui::paint_keybind_hint;
@@ -31,6 +32,8 @@ pub struct AgentScene {
     hover_card: Option<HoverCard>,
     /// Which sessions have messaged which, for the map's message lines.
     messages: MessageLines,
+    /// The subagents and child sessions orbiting their parents.
+    orbits: Orbits,
 }
 
 /// State for box/marquee selection
@@ -82,6 +85,7 @@ impl AgentScene {
             map: EasedLayout::default(),
             hover_card: None,
             messages: MessageLines::default(),
+            orbits: Orbits::default(),
         }
     }
 
@@ -144,11 +148,16 @@ impl AgentScene {
         }
         self.messages
             .sync(session_manager, now, wall as u64, synced != Synced::Same);
+        self.orbits.sync(session_manager, now);
         if self.map.is_easing(now) {
             ui.ctx().request_repaint();
         }
         if let Some(id) = self.focus_pending.take() {
-            if let Some(pos) = self.map.node(id, now) {
+            let placed = Placed {
+                map: &self.map,
+                orbits: &self.orbits,
+            };
+            if let Some(pos) = placed.node(id, now) {
                 self.focus_on(pos.to_vec2());
             }
         }
@@ -187,6 +196,8 @@ impl AgentScene {
         let mut scene_rect = self.scene_rect;
         let selected_ids = &self.selected;
         let map = &self.map;
+        let orbits = &self.orbits;
+        let placed = Placed { map, orbits };
         let hover_card = &mut self.hover_card;
         let titles = &session_manager.card_titles;
         let edges = MapEdges {
@@ -200,7 +211,7 @@ impl AgentScene {
                 .show(ui, &mut scene_rect, |ui| {
                     Self::draw_areas(ui, map, now);
                     // Over the territories, under the nodes.
-                    if let Some(change) = draw_edges(ui, map, &edges, now, wall) {
+                    if let Some(change) = draw_edges(ui, &placed, &edges, now, wall) {
                         next_change = Some(change);
                     }
 
@@ -226,7 +237,6 @@ impl AgentScene {
                             id: session.id,
                             keybind_number: keybind_idx + 1,
                             center,
-                            satellite: session.subagent_of.is_some(),
                             status: session.status(),
                             code: node_code(shown_title(session, titles)),
                             selected: selected_ids.contains(&session.id),
@@ -235,8 +245,7 @@ impl AgentScene {
                         };
                         let agent_response = Self::draw_agent(ui, &node, now);
 
-                        // Satellites are still dots, whatever their status.
-                        if !node.satellite && ui.is_rect_visible(agent_response.rect) {
+                        if ui.is_rect_visible(agent_response.rect) {
                             if let Some(change) = RingLook::of(node.status).next_change(now) {
                                 next_change = Some(next_change.map_or(change, |c| c.min(change)));
                             }
@@ -254,6 +263,48 @@ impl AgentScene {
                             let shift = ui.input(|i| i.modifiers.shift);
                             clicked_agent = Some((session.id, shift));
                         }
+                    }
+
+                    // Over the nodes, so a satellite crossing its parent's
+                    // ring still gets the hover and the click.
+                    for sat in orbits.satellites() {
+                        let Some(parent) = map.node(sat.parent, now) else {
+                            continue;
+                        };
+                        let Some(session) = session_manager.get(sat.id) else {
+                            continue;
+                        };
+                        let center = orbits.position(sat, parent, ORBIT_RADIUS);
+                        let dot = SatelliteDot {
+                            sat,
+                            center,
+                            code: node_code(shown_title(session, titles)),
+                            selected: sat.kind != SatelliteKind::Child
+                                && selected_ids.contains(&sat.id),
+                        };
+                        let sat_response = draw_satellite(ui, &dot);
+                        if sat.running() && ui.is_rect_visible(sat_response.rect) {
+                            next_change = Some(
+                                next_change
+                                    .map_or(ANIMATION_FRAME_SECS, |c| c.min(ANIMATION_FRAME_SECS)),
+                            );
+                        }
+                        if sat_response.hovered() {
+                            let card = HoverCard::cached(
+                                hover_card,
+                                session_manager,
+                                edges.messages,
+                                session,
+                            );
+                            card.show(&sat_response);
+                        }
+                        if sat_response.clicked() {
+                            let shift = ui.input(|i| i.modifiers.shift);
+                            clicked_agent = Some((sat.id, shift));
+                        }
+                    }
+                    if let Some(secs) = orbits.next_expiry(now) {
+                        next_change = Some(next_change.map_or(secs, |c| c.min(secs)));
                     }
 
                     if bg_response.clicked() && clicked_agent.is_none() {
@@ -421,14 +472,9 @@ impl AgentScene {
 
     /// Draw a single session's node and return the interaction Response: a
     /// status ring with the session's code in it, moving as its status does
-    /// (see [`RingLook`]), or its Ctrl+N number while Ctrl is held. A
-    /// subagent is a small still dot in its status colour.
+    /// (see [`RingLook`]), or its Ctrl+N number while Ctrl is held.
     fn draw_agent(ui: &mut egui::Ui, node: &MapNode<'_>, now: f64) -> Response {
-        let radius = if node.satellite {
-            SATELLITE_RADIUS
-        } else {
-            NODE_RADIUS
-        };
+        let radius = NODE_RADIUS;
         let center = node.center;
         let agent_rect = Rect::from_center_size(center, Vec2::splat(radius * 2.0));
         let code = node.code;
@@ -459,11 +505,6 @@ impl AgentScene {
                         .gamma_multiply(notedeck::tokens::OPACITY_MUTED),
                 ),
             );
-        }
-
-        if node.satellite {
-            painter.circle_filled(center, radius, color);
-            return response;
         }
 
         if look.ripple {
@@ -533,12 +574,91 @@ struct MapEdges<'a> {
     messages: &'a [MessageLine],
 }
 
+/// Where the map draws each session: placed by the layout, or a subagent in
+/// orbit around its parent.
+struct Placed<'a> {
+    map: &'a EasedLayout,
+    orbits: &'a Orbits,
+}
+
+impl Placed<'_> {
+    /// Where session `id` is drawn at `now`, if it is on the map.
+    fn node(&self, id: SessionId, now: f64) -> Option<Pos2> {
+        if let Some(at) = self.map.node(id, now) {
+            return Some(at);
+        }
+        let sat = self.orbits.subagent(id)?;
+        let parent = self.map.node(sat.parent, now)?;
+        Some(self.orbits.position(sat, parent, ORBIT_RADIUS))
+    }
+}
+
+/// What [`draw_satellite`] draws for one satellite.
+struct SatelliteDot<'a> {
+    sat: &'a Satellite,
+    center: Pos2,
+    /// The code of the session it opens, for its accessible label.
+    code: &'a str,
+    selected: bool,
+}
+
+/// Draw a satellite and return its interaction Response: a small dot in its
+/// status colour, filled for a foreground subagent, hollow for a background
+/// one, larger for a child session, dimmed once finished. It answers to a
+/// pointer well beyond the dot, which is too small to aim at.
+fn draw_satellite(ui: &mut egui::Ui, dot: &SatelliteDot<'_>) -> Response {
+    let sat = dot.sat;
+    let hit = Rect::from_center_size(dot.center, Vec2::splat(SATELLITE_HIT_RADIUS * 2.0));
+    let response = ui
+        .interact(
+            hit,
+            ui.scope_id().with(("satellite", sat.id, sat.parent)),
+            Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| {
+        let label = match sat.kind {
+            SatelliteKind::Child => format!("{} satellite", dot.code),
+            _ => dot.code.to_owned(),
+        };
+        egui::WidgetInfo::labeled(egui::Role::Button, true, label)
+    });
+
+    let radius = match sat.kind {
+        SatelliteKind::Child => CHILD_DOT_RADIUS,
+        _ => SUBAGENT_DOT_RADIUS,
+    };
+    let color = sat.status.color().gamma_multiply(sat.opacity());
+    let painter = ui.painter();
+    if dot.selected || response.hovered() {
+        painter.circle_stroke(
+            dot.center,
+            radius + SATELLITE_SELECTION_GAP,
+            egui::Stroke::new(
+                notedeck::tokens::STROKE_THIN,
+                ui.visuals()
+                    .text_color()
+                    .gamma_multiply(notedeck::tokens::OPACITY_MUTED),
+            ),
+        );
+    }
+    match sat.kind {
+        SatelliteKind::Background => {
+            painter.circle_stroke(dot.center, radius, egui::Stroke::new(HOLLOW_WIDTH, color));
+        }
+        _ => {
+            painter.circle_filled(dot.center, radius, color);
+        }
+    }
+    response
+}
+
 /// Draw every edge whose ends are both on the map: lineage edges (handoff,
 /// chain link, child tether) and message lines with any packet travelling
 /// them. Returns when the soonest visible edge next looks different.
 fn draw_edges(
     ui: &egui::Ui,
-    map: &EasedLayout,
+    map: &Placed<'_>,
     edges: &MapEdges<'_>,
     now: f64,
     wall: f64,
@@ -710,8 +830,6 @@ struct MapNode<'a> {
     /// 1-indexed, shown when Ctrl is held (matches Ctrl+N keybindings).
     keybind_number: usize,
     center: Pos2,
-    /// A subagent, drawn as a small dot in orbit around its parent.
-    satellite: bool,
     status: AgentStatus,
     /// The short code drawn in the ring (see [`node_code`]).
     code: &'a str,
@@ -923,8 +1041,19 @@ fn code_size(code: &str) -> f32 {
 /// Radius a session's circle is drawn at, inside its
 /// [`LEAF_RADIUS`](crate::scene_layout::LEAF_RADIUS) slot.
 const NODE_RADIUS: f32 = 15.0;
-/// Radius a subagent's circle is drawn at, in orbit around its parent.
-const SATELLITE_RADIUS: f32 = 5.0;
+/// How far a satellite orbits from its parent's center: just outside the
+/// ring.
+const ORBIT_RADIUS: f32 = NODE_RADIUS + 8.0;
+/// A subagent's dot.
+const SUBAGENT_DOT_RADIUS: f32 = 2.8;
+/// A child session's dot, a step larger than a subagent's.
+const CHILD_DOT_RADIUS: f32 = 4.0;
+/// How near a pointer must be to a satellite to hover or click it.
+const SATELLITE_HIT_RADIUS: f32 = 7.0;
+/// How far outside a satellite's dot its selection or hover hairline is.
+const SATELLITE_SELECTION_GAP: f32 = 2.5;
+/// Width of a background subagent's hollow dot.
+const HOLLOW_WIDTH: f32 = 1.2;
 /// Width of a node's status ring.
 const RING_WIDTH: f32 = 1.6;
 /// Width of the soft ring under an active node's ring.
@@ -1013,6 +1142,8 @@ mod tests {
         sessions: SessionManager,
         scene: AgentScene,
         focus_queue: FocusQueue,
+        /// The last action the scene returned.
+        action: Option<SceneAction>,
     }
 
     /// Two hosts: one with a three-worktree project and a flat one, the
@@ -1168,9 +1299,12 @@ mod tests {
         }
         builder.build_ui_state(
             |ui, state: &mut MapState| {
-                state
+                let response = state
                     .scene
                     .ui(&state.sessions, &state.focus_queue, ui, false);
+                if response.action.is_some() {
+                    state.action = response.action;
+                }
             },
             {
                 let mut scene = AgentScene::new();
@@ -1183,6 +1317,7 @@ mod tests {
                     sessions,
                     scene,
                     focus_queue: FocusQueue::new(),
+                    action: None,
                 }
             },
         )
@@ -1198,6 +1333,64 @@ mod tests {
             .memory(|m| m.to_global.values().next().copied())
             .expect("the scene's layer transform");
         harness.hover_at(to_screen * at);
+    }
+
+    /// Map `code`'s node, in the scene's own coordinates, to the screen,
+    /// `nudge` points away in the scene.
+    fn node_on_screen(harness: &Harness<'_, MapState>, code: &str, nudge: Vec2) -> Pos2 {
+        let at = harness.get_by_label(code).rect().center() + nudge;
+        let to_screen = harness
+            .ctx
+            .memory(|m| m.to_global.values().next().copied())
+            .expect("the scene's layer transform");
+        to_screen * at
+    }
+
+    /// Click the primary button at `pos` on the screen.
+    fn click_at(harness: &mut Harness<'_, MapState>, pos: Pos2) {
+        harness.hover_at(pos);
+        harness.run_steps(1);
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        harness.run_steps(2);
+    }
+
+    /// Satellites of every kind: SC1 runs the sample's foreground subagent
+    /// and a background one, and BL4 spawned QT2 as a child, so QT2 orbits
+    /// BL4 as well as having its own node.
+    fn add_satellites(sm: &mut SessionManager) {
+        let parent = coded(sm, "SC1");
+        let id = sm.new_session(
+            PathBuf::from("/home/dev/notedeck-scene"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        let s = sm.get_mut(id).expect("subagent");
+        s.details.title = "Explore: scan the edges".to_string();
+        // A subagent's session runs where its parent does.
+        s.details.hostname = "monad".to_string();
+        s.details.project_root = Some(PathBuf::from("/home/dev/notedeck"));
+        s.details.project_slug = Some("notedeck".to_string());
+        s.subagent_of = Some(crate::session::SubagentOf {
+            parent,
+            task_id: "task-2".to_string(),
+            agent_id: None,
+            status: AgentStatus::Working,
+            background: true,
+        });
+        s.update_status();
+
+        let parent_ref = ref_of(sm, "BL4");
+        let child = sm.get_mut(coded(sm, "QT2")).expect("QT2");
+        child.details.parent_session = Some(parent_ref);
+        child.details.relation = agentium_core::session_events::SessionRelation::Child;
+        sm.rebuild_groups();
     }
 
     /// Territories, and a node in every status with its code in the ring.
@@ -1236,6 +1429,72 @@ mod tests {
         );
         harness.run_steps(4);
         harness.snapshot("scene_map_edges");
+    }
+
+    /// Foreground, background and child satellites in orbit, with the
+    /// background subagent's card.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_scene_satellites() {
+        let mut sessions = sample_sessions();
+        add_satellites(&mut sessions);
+        let mut harness = map_harness_with(true, sessions);
+        harness.run_steps(3);
+        hover_node(&harness, "Explore");
+        harness.run_steps(3);
+        harness.snapshot("scene_satellites");
+    }
+
+    /// Clicking near a subagent's satellite, not dead on its small dot,
+    /// opens its session.
+    #[test]
+    fn clicking_a_subagent_satellite_opens_it() {
+        let sessions = sample_sessions();
+        let sub = sessions
+            .iter()
+            .find(|s| s.subagent_of.is_some())
+            .expect("subagent")
+            .id;
+        let mut harness = map_harness_with(false, sessions);
+        harness.run_steps(3);
+        let pos = node_on_screen(&harness, "find", Vec2::new(3.0, 3.0));
+        click_at(&mut harness, pos);
+        let state = harness.state();
+        assert_eq!(state.scene.selected, [sub]);
+        assert!(
+            matches!(&state.action, Some(SceneAction::SelectionChanged(ids)) if ids[..] == [sub]),
+            "{:?}",
+            state.action
+        );
+    }
+
+    /// Clicking a child's satellite opens the child session.
+    #[test]
+    fn clicking_a_child_satellite_opens_the_child() {
+        let mut sessions = sample_sessions();
+        add_satellites(&mut sessions);
+        let child = coded(&sessions, "QT2");
+        let mut harness = map_harness_with(false, sessions);
+        harness.run_steps(3);
+        let pos = node_on_screen(&harness, "QT2 satellite", Vec2::ZERO);
+        click_at(&mut harness, pos);
+        assert_eq!(harness.state().scene.selected, [child]);
+    }
+
+    /// A satellite's card says what spawned it.
+    #[test]
+    fn satellite_card_names_its_parent() {
+        let mut sessions = sample_sessions();
+        add_satellites(&mut sessions);
+        let mut harness = map_harness_with(false, sessions);
+        harness.run_steps(3);
+        hover_node(&harness, "Explore");
+        harness.run_steps(3);
+        harness.get_by_label("background subagent of SC1 · 0 tools");
+
+        hover_node(&harness, "QT2 satellite");
+        harness.run_steps(3);
+        harness.get_by_label("child of BL4");
     }
 
     /// The map's lineage edges come from the regroup, one of each kind.

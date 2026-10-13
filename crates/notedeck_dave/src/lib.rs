@@ -29,6 +29,7 @@ mod restore;
 mod run_configs;
 pub mod scene_edges;
 pub mod scene_layout;
+pub mod scene_orbits;
 pub mod session;
 pub mod session_cache;
 mod session_commands;

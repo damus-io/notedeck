@@ -1,6 +1,6 @@
 //! The card the scene map shows beside a hovered session's node: its code
-//! and full title, where it runs, its status and age, its worktree's git
-//! +/-, the messages it sent and received and its subagents.
+//! and full title, where it runs, what spawned it, its status and age, its
+//! worktree's git +/-, the messages it sent and received and its subagents.
 //!
 //! Its text is built when the hovered session or anything the card says
 //! about it changes, and kept on the [`AgentScene`](super::AgentScene)
@@ -16,7 +16,8 @@ use super::scene::{node_code, shown_title};
 use super::session_list::{age_text, git_lines, GitLines, GIT_ADDED_COLOR, GIT_DELETED_COLOR};
 use crate::agent_status::AgentStatus;
 use crate::scene_edges::MessageLine;
-use crate::session::{now_unix, ChatSession, SessionId, SessionManager};
+use crate::session::{now_unix, ChatSession, EdgeKind, SessionId, SessionManager};
+use crate::Message;
 
 /// A hovered session's card text, as last built.
 pub struct HoverCard {
@@ -27,6 +28,9 @@ pub struct HoverCard {
     detail: Option<String>,
     /// `host / project / worktree`.
     path: String,
+    /// `background subagent of SC1 · 4 tools`, or `child of ST1`; empty for
+    /// a session nothing spawned.
+    origin: String,
     status: AgentStatus,
     /// Time since the session's last activity, empty when there was none.
     age: String,
@@ -83,6 +87,15 @@ impl HoverCard {
             .map(|t| now.saturating_sub(t) / 60)
             .hash(&mut h);
         git_lines(session).hash(&mut h);
+        session
+            .subagent_of
+            .as_ref()
+            .map(|l| l.background)
+            .hash(&mut h);
+        spawner(sessions, session).hash(&mut h);
+        if session.subagent_of.is_some() {
+            session.chat.len().hash(&mut h);
+        }
         for line in messages
             .iter()
             .filter(|l| l.from == session.id || l.to == session.id)
@@ -126,6 +139,7 @@ impl HoverCard {
             headline: parts.headline.to_owned(),
             detail: parts.detail.map(str::to_owned),
             path,
+            origin: origin_text(sessions, session),
             status: session.status(),
             age,
             git: git_lines(session),
@@ -171,6 +185,9 @@ impl HoverCard {
             ui.label(RichText::new(detail).size(11.0).color(weak));
         }
         ui.label(RichText::new(&self.path).monospace().size(10.0).color(weak));
+        if !self.origin.is_empty() {
+            ui.label(RichText::new(&self.origin).size(11.0).color(weak));
+        }
         ui.add_space(4.0);
 
         row(
@@ -270,6 +287,48 @@ fn subagents_of(
             .as_ref()
             .is_some_and(|link| link.parent == parent)
     })
+}
+
+/// The session that spawned `session` as a subagent or a child, if it is on
+/// hand.
+fn spawner(sessions: &SessionManager, session: &ChatSession) -> Option<SessionId> {
+    if let Some(link) = &session.subagent_of {
+        return Some(link.parent);
+    }
+    sessions
+        .lineage_edges()
+        .iter()
+        .find(|e| e.kind == EdgeKind::Child && e.to == session.id)
+        .map(|e| e.from)
+}
+
+/// What spawned `session`, as the card says it: `subagent of SC1 · 4 tools`
+/// (`background subagent` for one in the background), `child of ST1`, or
+/// empty for neither.
+fn origin_text(sessions: &SessionManager, session: &ChatSession) -> String {
+    use std::fmt::Write;
+    let mut text = String::new();
+    let Some(parent) = spawner(sessions, session) else {
+        return text;
+    };
+    let code = sessions
+        .get(parent)
+        .map_or("?", |p| node_code(shown_title(p, &sessions.card_titles)));
+    let Some(link) = &session.subagent_of else {
+        let _ = write!(text, "child of {code}");
+        return text;
+    };
+    if link.background {
+        text.push_str("background ");
+    }
+    let tools = session
+        .chat
+        .iter()
+        .filter(|m| matches!(m, Message::ToolResponse(_)))
+        .count();
+    let plural = if tools == 1 { "" } else { "s" };
+    let _ = write!(text, "subagent of {code} · {tools} tool{plural}");
+    text
 }
 
 /// What session `id` has sent and received, as the card says it: each

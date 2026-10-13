@@ -20,10 +20,8 @@ use egui::Pos2;
 use crate::session::{ChatSession, SessionId, SessionManager, Workspace};
 
 /// Radius of a session's circle: room for a 15 px status ring and the
-/// satellites that orbit it.
-pub const LEAF_RADIUS: f32 = 22.0;
-/// How far a subagent sits from the center of the session running it.
-pub const SATELLITE_ORBIT: f32 = 20.0;
+/// satellites that orbit it (see [`crate::scene_orbits`]).
+pub const LEAF_RADIUS: f32 = 28.0;
 
 /// Gap between hosts.
 const ROOT_PADDING: f64 = 30.0;
@@ -41,19 +39,11 @@ pub struct SceneSession<'a> {
     pub project_slug: Cow<'a, str>,
 }
 
-/// A subagent the map draws in orbit around the session running it.
-pub struct Satellite {
-    pub id: SessionId,
-    pub parent: SessionId,
-}
-
 /// The tree the map is packed from: host → project → worktree → session,
 /// every level sorted by stable key.
 #[derive(Debug, Default)]
 pub struct SceneTree {
     pub hosts: Vec<HostNode>,
-    /// Subagents, by parent then id.
-    pub satellites: Vec<Satellite>,
 }
 
 #[derive(Debug)]
@@ -83,19 +73,10 @@ pub struct WorktreeNode {
     pub sessions: Vec<SessionId>,
 }
 
-impl std::fmt::Debug for Satellite {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}@{}", self.id, self.parent)
-    }
-}
-
 impl SceneTree {
     /// Group `sessions` into the tree, sorted by host name, project root,
     /// cwd and session id, so the input's order never shows in the map.
-    pub fn new<'a>(
-        sessions: impl IntoIterator<Item = SceneSession<'a>>,
-        satellites: impl IntoIterator<Item = Satellite>,
-    ) -> Self {
+    pub fn new<'a>(sessions: impl IntoIterator<Item = SceneSession<'a>>) -> Self {
         let mut hosts: Vec<HostNode> = Vec::new();
         for s in sessions {
             let ws = s.workspace;
@@ -140,40 +121,28 @@ impl SceneTree {
             }
         }
 
-        let mut satellites: Vec<Satellite> = satellites.into_iter().collect();
-        satellites.sort_by_key(|s| (s.parent, s.id));
-        SceneTree { hosts, satellites }
+        SceneTree { hosts }
     }
 
-    /// The tree of every session the scene draws: subagents as satellites
-    /// of the session running them, the rest by where they run.
+    /// The tree of every session the scene places, by where they run.
+    /// Subagents aren't placed: they orbit the session running them (see
+    /// [`crate::scene_orbits`]).
     pub fn from_sessions(sessions: &SessionManager) -> Self {
-        let members = || sessions.iter().filter(|s| on_map(s));
-        SceneTree::new(
-            members()
-                .filter(|s| s.subagent_of.is_none())
-                .map(|s| SceneSession {
-                    id: s.id,
-                    workspace: s.workspace(),
-                    project_slug: s.project_slug(),
-                }),
-            members().filter_map(|s| {
-                Some(Satellite {
-                    id: s.id,
-                    parent: s.subagent_of.as_ref()?.parent,
-                })
-            }),
-        )
+        SceneTree::new(sessions.iter().filter(|s| on_map(s)).map(|s| SceneSession {
+            id: s.id,
+            workspace: s.workspace(),
+            project_slug: s.project_slug(),
+        }))
     }
 }
 
-/// The scene draws agentic sessions only.
+/// The scene places agentic sessions only, and no subagent.
 fn on_map(session: &ChatSession) -> bool {
-    session.agentic.is_some()
+    session.agentic.is_some() && session.subagent_of.is_none()
 }
 
 /// A hash of what the map's layout depends on: which sessions it holds,
-/// where each runs, and which session each subagent orbits. Nothing else, so
+/// and where each runs. Nothing else, so
 /// a status or title change never relayouts. Order-independent, and runs
 /// without allocating, so it can be checked every frame.
 pub fn membership(sessions: &SessionManager) -> u64 {
@@ -184,7 +153,6 @@ pub fn membership(sessions: &SessionManager) -> u64 {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             s.id.hash(&mut h);
             s.workspace().hash(&mut h);
-            s.subagent_of.as_ref().map(|l| l.parent).hash(&mut h);
             h.finish()
         })
         .fold(0u64, u64::wrapping_add)
@@ -217,7 +185,7 @@ pub struct LayoutArea {
 pub struct SceneLayout {
     /// Outermost first, so drawing in order puts children on top.
     pub areas: Vec<LayoutArea>,
-    /// Each session's center, subagents included.
+    /// Each placed session's center.
     pub nodes: HashMap<SessionId, Pos2>,
 }
 
@@ -233,20 +201,6 @@ impl SceneLayout {
         let mut layout = SceneLayout::default();
         root.place(0.0, 0.0, &mut layout);
 
-        for (i, sat) in tree.satellites.iter().enumerate() {
-            let Some(parent) = layout.nodes.get(&sat.parent).copied() else {
-                continue;
-            };
-            // Siblings of one parent spread by the golden angle, so a new one
-            // never lands on an old one.
-            let nth = tree.satellites[..i]
-                .iter()
-                .filter(|s| s.parent == sat.parent)
-                .count();
-            let angle = -std::f32::consts::FRAC_PI_4 + nth as f32 * 2.399_963;
-            let offset = egui::vec2(angle.cos(), angle.sin()) * SATELLITE_ORBIT;
-            layout.nodes.insert(sat.id, parent + offset);
-        }
         layout
     }
 
@@ -858,18 +812,15 @@ mod tests {
     }
 
     fn tree(specs: &[Spec]) -> SceneTree {
-        SceneTree::new(
-            specs.iter().map(|s| SceneSession {
-                id: s.id,
-                workspace: Workspace {
-                    host: s.host,
-                    project_root: Path::new(s.root),
-                    cwd: Path::new(s.cwd),
-                },
-                project_slug: s.root.rsplit('/').next().unwrap().into(),
-            }),
-            [],
-        )
+        SceneTree::new(specs.iter().map(|s| SceneSession {
+            id: s.id,
+            workspace: Workspace {
+                host: s.host,
+                project_root: Path::new(s.root),
+                cwd: Path::new(s.cwd),
+            },
+            project_slug: s.root.rsplit('/').next().unwrap().into(),
+        }))
     }
 
     /// Three hosts, several projects, worktrees and a flat project.
@@ -1012,29 +963,5 @@ mod tests {
         // A new session appears where it belongs.
         assert_eq!(eased.node(30, 10.0), Some(after.nodes[&30]));
         assert!(!eased.is_easing(10.0 + EASE_SECS));
-    }
-
-    #[test]
-    fn satellites_orbit_their_parent() {
-        let t = SceneTree::new(
-            [SceneSession {
-                id: 1,
-                workspace: Workspace {
-                    host: "",
-                    project_root: Path::new("/a"),
-                    cwd: Path::new("/a"),
-                },
-                project_slug: "a".into(),
-            }],
-            [
-                Satellite { id: 2, parent: 1 },
-                Satellite { id: 3, parent: 1 },
-            ],
-        );
-        let layout = SceneLayout::pack(&t);
-        for id in [2, 3] {
-            assert!((dist(layout.nodes[&id], layout.nodes[&1]) - SATELLITE_ORBIT).abs() < 1e-3);
-        }
-        assert!(dist(layout.nodes[&2], layout.nodes[&3]) > 1.0);
     }
 }
