@@ -644,6 +644,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
+    /// Collapse a successor chain to its last link, or expand it again.
+    fn toggle_chain_collapse(&mut self, hostname: &str, key: &str) {
+        self.collapse_state.toggle_chain(hostname, key);
+        self.collapse_serializer
+            .try_save(self.collapse_state.clone());
+        if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
+            self.auto_steal = focus_queue::AutoStealState::Pending;
+        }
+    }
+
     /// Queue a thread summary request. The thread is fetched and formatted
     /// in update() where AppContext (ndb) is available.
     pub fn summarize_thread(&mut self, note_id: nostrdb_net::NoteId) {

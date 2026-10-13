@@ -14,6 +14,10 @@ pub struct CollapseState {
     projects: HashSet<String>,
     /// Collapsed workspaces, stored as "hostname\0raw_cwd" (see [`scoped_key`]).
     cwds: HashSet<String>,
+    /// Collapsed successor chains, stored as "hostname\0key", the key being
+    /// the chain's [`ChainSpan::key`](crate::session::ChainSpan::key).
+    #[serde(default)]
+    chains: HashSet<String>,
 }
 
 /// A host-scoped path key ("hostname\0path"), used for both project roots and
@@ -48,6 +52,13 @@ impl CollapseState {
         }
     }
 
+    pub fn toggle_chain(&mut self, hostname: &str, key: &str) {
+        let key = scoped_key(hostname, Path::new(key));
+        if !self.chains.remove(&key) {
+            self.chains.insert(key);
+        }
+    }
+
     pub fn is_host_collapsed(&self, hostname: &str) -> bool {
         self.hosts.contains(hostname)
     }
@@ -58,6 +69,14 @@ impl CollapseState {
 
     pub fn is_cwd_collapsed(&self, hostname: &str, cwd: &Path) -> bool {
         self.cwds.contains(&scoped_key(hostname, cwd))
+    }
+
+    /// Whether the chain with [`ChainSpan::key`](crate::session::ChainSpan::key)
+    /// `key` on `hostname` is collapsed to its last link.
+    pub fn is_chain_collapsed(&self, hostname: &str, key: &str) -> bool {
+        // Nothing to look up until a chain has been collapsed, so the list
+        // pays for the key only then.
+        !self.chains.is_empty() && self.chains.contains(&scoped_key(hostname, Path::new(key)))
     }
 }
 

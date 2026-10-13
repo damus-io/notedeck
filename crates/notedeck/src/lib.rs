@@ -106,7 +106,7 @@ pub use jobs::{
 };
 pub use kind_renderer::{
     open_on_click, resolve_ref, InlineChrome, Interaction, KindRenderRequest, KindRenderResponse,
-    KindRenderer, KindRendererRegistry, RenderContext,
+    KindRenderer, KindRendererRegistry, Outline, Progress, RenderContext,
 };
 pub use media::{
     update_imeta_blurhashes, ImageMetadata, ImageType, MediaAction, ObfuscationType,

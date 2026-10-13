@@ -10,10 +10,11 @@ use notedeck::NoteContext;
 use notedeck_ui::app_images;
 
 use crate::agent_status::{paint_status_bar, stale_color, AgentStatus, STATUS_BAR_WIDTH};
+use crate::card_titles::CardLookup;
 use crate::collapse_state::CollapseState;
 use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
-use crate::session::{now_unix, ChatSession, SessionId, SessionManager};
+use crate::session::{now_unix, ChatSession, Nesting, SessionId, SessionManager};
 use crate::ui::keybind_hint::{keybind_hint, paint_keybind_hint, KeybindHint};
 use crate::ui::SquareLoadingSpinner;
 
@@ -32,6 +33,9 @@ pub enum SessionListAction {
     ToggleHostCollapse(String),
     ToggleProjectCollapse(String, PathBuf),
     ToggleCwdCollapse(String, PathBuf),
+    /// Collapse or expand a successor chain: its host and
+    /// [`ChainSpan::key`](crate::session::ChainSpan::key).
+    ToggleChainCollapse(String, String),
     NewSessionInCwd(String, PathBuf),
 }
 
@@ -243,6 +247,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                         RowPlace {
                             cwd: None,
                             code_column,
+                            subagent: false,
                         },
                         cycle,
                     ) {
@@ -291,6 +296,19 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             response,
             action: dot_action,
         } = match session.ai_mode {
+            _ if place.subagent => self.subagent_row_ui(
+                ui,
+                SubagentRow {
+                    session_id: session.id,
+                    title: display_title,
+                    background: session.subagent_of.as_ref().is_some_and(|l| l.background),
+                    is_active,
+                    shortcut_hint,
+                    cycle_hint,
+                    status: session.status(),
+                    queue_priority,
+                },
+            ),
             AiMode::Agentic => {
                 // A session titled with its card's ref is listed under the
                 // card's current title, once one has been looked up.
@@ -663,6 +681,72 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         );
     }
 
+    /// Render a Claude subagent's session as one dim line under the session
+    /// running it: ● for a foreground subagent, ○ for a background one, a
+    /// spinner in its place while it works, then its title.
+    fn subagent_row_ui(&self, ui: &mut egui::Ui, row: SubagentRow<'_>) -> RowResponse {
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), Sense::click());
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        paint_row_background(ui, rect, row.is_active, self.chord_cursor, &response);
+
+        let weak = ui.visuals().weak_text_color();
+        let glyph = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + TEXT_LEFT + 3.0, rect.center().y),
+            egui::vec2(9.0, 9.0),
+        );
+        match row.status {
+            AgentStatus::Working | AgentStatus::Pending => {
+                let mut spinner_ui = ui.new_child(egui::UiBuilder::new().max_rect(glyph));
+                spinner_ui.add(SquareLoadingSpinner::new().size(9.0).color(weak));
+            }
+            status => {
+                let color = match status {
+                    AgentStatus::NeedsInput | AgentStatus::Error => status.color(),
+                    _ => weak,
+                };
+                if row.background {
+                    let stroke = egui::Stroke::new(1.2, color);
+                    ui.painter().circle_stroke(glyph.center(), 3.0, stroke);
+                } else {
+                    ui.painter().circle_filled(glyph.center(), 3.0, color);
+                }
+            }
+        }
+
+        let hints: &[(&str, &str)] = &[];
+        let RightSide {
+            width: right_used,
+            action,
+        } = render_row_right_side(
+            ui,
+            rect,
+            row.session_id,
+            row.is_active,
+            self.ctrl_held,
+            row.shortcut_hint,
+            row.cycle_hint,
+            row.queue_priority,
+            hints,
+        );
+
+        let galley = ui.painter().layout_no_wrap(
+            row.title.to_owned(),
+            egui::FontId::proportional(12.0),
+            weak,
+        );
+        let pos = egui::pos2(glyph.right() + 6.0, rect.center().y - galley.size().y / 2.0);
+        paint_clipped(ui, pos, galley, rect.right() - right_used);
+        let response = if row.title.is_empty() {
+            response
+        } else {
+            response.on_hover_ui(|ui| {
+                ui.label(row.title);
+            })
+        };
+        RowResponse { response, action }
+    }
+
     /// Render a chat session row (no status bar, no cwd).
     #[allow(clippy::too_many_arguments)]
     fn chat_row_ui(
@@ -719,27 +803,41 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         }
     }
 
-    /// Look up the current title of each card a session is on, unless it was
-    /// looked up within [`REFRESH_SECS`](crate::card_titles::REFRESH_SECS) of
-    /// `now`, so the rows draw from text kept on the
-    /// [`SessionManager`] instead of folding a board per row per frame.
-    /// Without [`title_refs`](Self::title_refs) there is nothing to look up
-    /// through, and the rows draw what was kept.
+    /// Look up the current title and outline of each card a session is on,
+    /// and of each such card's parent, unless it was looked up within
+    /// [`REFRESH_SECS`](crate::card_titles::REFRESH_SECS) of `now`, so the
+    /// rows draw from text kept on the [`SessionManager`] instead of folding
+    /// a board per row per frame. A lookup that changed what was kept
+    /// regroups the list, since card parents link successor chains and the
+    /// parent's title and progress head them. Without
+    /// [`title_refs`](Self::title_refs) there is nothing to look up through,
+    /// and the rows draw what was kept.
     fn refresh_card_titles(&mut self, now: f64) {
         let Some(refs) = &self.title_refs else {
             return;
         };
         let refs = refs.borrow();
         let mut titles = std::mem::take(&mut self.session_manager.card_titles);
+        let mut changed = false;
         for session in self.session_manager.iter() {
             let Some(card_ref) = session.details.card_ref() else {
                 continue;
             };
             if !titles.is_fresh(card_ref, now) {
-                titles.store(card_ref, lookup_card_title(&refs, card_ref), now);
+                changed |= titles.store(card_ref, lookup_card(&refs, card_ref), now);
+            }
+            let Some(parent) = titles.parent(card_ref) else {
+                continue;
+            };
+            if !titles.is_fresh(parent, now) {
+                let parent = parent.to_owned();
+                changed |= titles.store(&parent, lookup_card(&refs, &parent), now);
             }
         }
         self.session_manager.card_titles = titles;
+        if changed {
+            self.session_manager.lineage_changed();
+        }
     }
 
     /// The code column for the folder holding `ids`, sized to the widest
@@ -808,28 +906,33 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
     }
 }
 
-/// The current title of the card `card_ref` names, through the registered
-/// reference parsers and the kind renderer of the note it resolves to (see
-/// [`KindRendererRegistry::title`](notedeck::KindRendererRegistry::title)).
-/// `None` when it doesn't resolve or its renderer offers no title.
-fn lookup_card_title(refs: &TitleRefs<'_, '_>, card_ref: &str) -> Option<String> {
+/// The current title and outline of the card `card_ref` names, through the
+/// registered reference parsers and the kind renderer of the note it resolves
+/// to (see [`KindRendererRegistry::title`](notedeck::KindRendererRegistry::title)
+/// and [`outline`](notedeck::KindRendererRegistry::outline)). Empty when it
+/// doesn't resolve.
+fn lookup_card(refs: &TitleRefs<'_, '_>, card_ref: &str) -> CardLookup {
     let note = &*refs.note;
     let ctx = notedeck::ReferenceResolveCtx {
         ndb: note.ndb,
         txn: refs.txn,
         selected_account: Some(*note.accounts.selected_account_pubkey()),
     };
-    let resolved = note
+    let Some(resolved) = note
         .registries
         .reference_parsers
-        .resolve_exact(card_ref, &ctx)?;
-    let card = note
-        .ndb
-        .get_note_by_id(refs.txn, resolved.note_id.bytes())
-        .ok()?;
-    note.registries
-        .kind_renderers
-        .title(note.ndb, refs.txn, &card, None)
+        .resolve_exact(card_ref, &ctx)
+    else {
+        return CardLookup::default();
+    };
+    let Ok(card) = note.ndb.get_note_by_id(refs.txn, resolved.note_id.bytes()) else {
+        return CardLookup::default();
+    };
+    let renderers = &note.registries.kind_renderers;
+    CardLookup {
+        title: renderers.title(note.ndb, refs.txn, &card, None),
+        outline: renderers.outline(note.ndb, refs.txn, &card, None),
+    }
 }
 
 /// Where a session's row sits in the list. Every row is one session.
@@ -840,6 +943,9 @@ struct RowPlace<'a> {
     cwd: Option<&'a str>,
     /// Its folder's code column, used when the row shows a card.
     code_column: CodeColumn,
+    /// A Claude subagent's virtual session, drawn as a dim line under the
+    /// session running it (see [`SessionListUi::subagent_row_ui`]).
+    subagent: bool,
 }
 
 /// The code column of the card rows in one folder: where the code starts
@@ -923,6 +1029,19 @@ struct AgentRow<'s> {
     git_lines: Option<GitLines>,
     /// Subagents the session has started.
     subagents: usize,
+}
+
+/// What [`SessionListUi::subagent_row_ui`] draws.
+struct SubagentRow<'s> {
+    session_id: SessionId,
+    title: &'s str,
+    /// Runs in the background (○) rather than the foreground (●).
+    background: bool,
+    is_active: bool,
+    shortcut_hint: Option<usize>,
+    cycle_hint: Option<&'static str>,
+    status: AgentStatus,
+    queue_priority: Option<FocusPriority>,
 }
 
 /// Left padding of a row's text, past the status bar.
@@ -1647,6 +1766,8 @@ enum HeaderIcon {
     Folder,
     /// A git-branch glyph for a workspace (worktree/cwd) section.
     Worktree,
+    /// Two links of a chain, for a successor chain's block.
+    Chain,
 }
 
 impl HeaderIcon {
@@ -1668,7 +1789,7 @@ impl HeaderIcon {
                     egui::vec2(s, s * 0.8),
                 )
             }
-            HeaderIcon::Worktree => {
+            HeaderIcon::Worktree | HeaderIcon::Chain => {
                 let s = 12.0;
                 egui::Rect::from_min_size(
                     egui::pos2(left, rect.center().y - s / 2.0),
@@ -1684,6 +1805,7 @@ impl HeaderIcon {
             HeaderIcon::Host => paint_host_icon(painter, rect, color),
             HeaderIcon::Folder => paint_folder_icon(painter, rect, color),
             HeaderIcon::Worktree => paint_worktree_icon(painter, rect, color),
+            HeaderIcon::Chain => paint_chain_icon(painter, rect, color),
         }
     }
 }
@@ -1905,6 +2027,7 @@ fn cwd_section_ui(
                 RowPlace {
                     cwd: Some(cwd_group.display_cwd.as_str()),
                     code_column: list_ui.code_column(ui, &cwd_group.session_ids),
+                    subagent: false,
                 },
                 cycle,
             ) {
@@ -1985,28 +2108,19 @@ fn cwd_folder_ui(
 
     cwd_state.show_body_unindented(ui, |ui| {
         ui.add_space(2.0);
-        // One row per session, in this order, so Ctrl+J / K and
-        // `visual_order` walk them as drawn.
-        let ids = cwd_group.session_ids.as_slice();
-        let code_column = list_ui.code_column(ui, ids);
-        for &id in ids {
-            let Some(session) = list_ui.session_manager.get(id) else {
-                continue;
-            };
-            if let Some(a) = list_ui.render_session_item(
-                ui,
-                session,
-                *visual_index,
+        if let Some(a) = workspace_rows_ui(
+            ui,
+            list_ui,
+            hostname,
+            cwd_group,
+            &mut RowWalk {
+                visual_index,
                 active_id,
-                RowPlace {
-                    cwd: None,
-                    code_column,
-                },
                 cycle,
-            ) {
-                action = Some(a);
-            }
-            *visual_index += 1;
+                code_column: list_ui.code_column(ui, &cwd_group.session_ids),
+            },
+        ) {
+            action = Some(a);
         }
     });
     cwd_state.store(ui.ctx());
@@ -2031,6 +2145,188 @@ fn cwd_folder_ui(
     });
 
     action
+}
+
+/// What every row of one folder is drawn with besides its session, carried
+/// down the lineage walk.
+struct RowWalk<'v> {
+    /// The next drawn session's place in visual order (its Ctrl+<n> hint).
+    visual_index: &'v mut usize,
+    active_id: Option<SessionId>,
+    cycle: CycleHints,
+    /// The folder's code column (see [`SessionListUi::code_column`]).
+    code_column: CodeColumn,
+}
+
+/// Left indent of each lineage level of a nested child or subagent row.
+const NEST_INDENT: f32 = 14.0;
+
+/// Draw a workspace's rows in [`CwdGroup::session_ids`](crate::session::CwdGroup::session_ids)
+/// order, which `visual_order` and Ctrl+J / K walk, so the drawn order and the
+/// keyboard's cannot disagree: a successor chain as its block (see
+/// [`chain_ui`]), any other session as its own row, followed by its
+/// subagents and children nested under it (see [`lineage_row_ui`]).
+fn workspace_rows_ui(
+    ui: &mut egui::Ui,
+    list_ui: &SessionListUi<'_, '_>,
+    hostname: &str,
+    group: &crate::session::CwdGroup,
+    walk: &mut RowWalk<'_>,
+) -> Option<SessionListAction> {
+    let mut action = None;
+    let mut start = 0;
+    while start < group.session_ids.len() {
+        if let Some(chain) = group.chain_at(start) {
+            let a = chain_ui(ui, list_ui, hostname, group, chain, walk);
+            action = a.or(action);
+            start = chain.end;
+            continue;
+        }
+        let a = lineage_row_ui(
+            ui,
+            list_ui,
+            group.session_ids[start],
+            &group.rows[start],
+            walk,
+        );
+        action = a.or(action);
+        start += 1;
+    }
+    action
+}
+
+/// Draw `ids` with their [`ListRow`](crate::session::ListRow)s `rows`.
+fn lineage_rows_ui(
+    ui: &mut egui::Ui,
+    list_ui: &SessionListUi<'_, '_>,
+    ids: &[SessionId],
+    rows: &[crate::session::ListRow],
+    walk: &mut RowWalk<'_>,
+) -> Option<SessionListAction> {
+    let mut action = None;
+    for (&id, row) in ids.iter().zip(rows) {
+        action = lineage_row_ui(ui, list_ui, id, row, walk).or(action);
+    }
+    action
+}
+
+/// Draw session `id` where `row` places it: a subagent as a dim one-line
+/// row and a child as a full row, each indented under the session that
+/// spawned it, and a chain link that has handed its work on dimmed. A
+/// session running outside the folder's workspace says where on its row.
+fn lineage_row_ui(
+    ui: &mut egui::Ui,
+    list_ui: &SessionListUi<'_, '_>,
+    id: SessionId,
+    row: &crate::session::ListRow,
+    walk: &mut RowWalk<'_>,
+) -> Option<SessionListAction> {
+    let session = list_ui.session_manager.get(id)?;
+    let place = RowPlace {
+        cwd: row.elsewhere.as_deref(),
+        code_column: walk.code_column,
+        subagent: row.place.nesting == Nesting::Subagent,
+    };
+    let indent = NEST_INDENT * f32::from(row.place.depth);
+    let dim = row.place.nesting == (Nesting::Link { handed_on: true });
+    let index = *walk.visual_index;
+    *walk.visual_index += 1;
+    let RowWalk {
+        active_id, cycle, ..
+    } = *walk;
+    let draw = |ui: &mut egui::Ui| {
+        if dim {
+            ui.multiply_opacity(0.55);
+        }
+        list_ui.render_session_item(ui, session, index, active_id, place, cycle)
+    };
+    if indent == 0.0 && !dim {
+        return draw(ui);
+    }
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: indent.min(i8::MAX as f32) as i8,
+            ..Default::default()
+        })
+        .show(ui, draw)
+        .inner
+}
+
+/// Draw a successor chain: a collapsible header reading
+/// [`ChainSpan::label`](crate::session::ChainSpan::label), then its links in
+/// order behind a rail, each with what nests under it. Links that handed
+/// their work on are dimmed. Collapsed, only the last link shows, so the live
+/// one stays a click away.
+fn chain_ui(
+    ui: &mut egui::Ui,
+    list_ui: &SessionListUi<'_, '_>,
+    hostname: &str,
+    group: &crate::session::CwdGroup,
+    chain: &crate::session::ChainSpan,
+    walk: &mut RowWalk<'_>,
+) -> Option<SessionListAction> {
+    let collapsed = list_ui
+        .collapse_state
+        .is_chain_collapsed(hostname, &chain.key);
+    let header = collapsible_header_ui(
+        ui,
+        HeaderParams {
+            text: &chain.label,
+            font: egui::FontId::monospace(10.0),
+            color: HeaderColor::Weak,
+            icon: HeaderIcon::Chain,
+            height: 20.0,
+            truncate_from_start: false,
+        },
+        if collapsed { 0.0 } else { 1.0 },
+    );
+    let mut action = header
+        .clicked()
+        .then(|| SessionListAction::ToggleChainCollapse(hostname.to_owned(), chain.key.clone()));
+
+    let from = if collapsed { chain.tail } else { chain.start };
+    let body_top = ui.cursor().top();
+    let rail_x = ui.cursor().left() + 8.0;
+    let a = egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 12,
+            ..Default::default()
+        })
+        .show(ui, |ui| {
+            lineage_rows_ui(
+                ui,
+                list_ui,
+                &group.session_ids[from..chain.end],
+                &group.rows[from..chain.end],
+                walk,
+            )
+        })
+        .inner;
+    action = a.or(action);
+
+    let rail = egui::Stroke::new(1.0, ui.visuals().weak_text_color().gamma_multiply(0.5));
+    ui.painter().vline(
+        rail_x,
+        egui::Rangef::new(body_top + 2.0, ui.cursor().top() - 4.0),
+        rail,
+    );
+    ui.add_space(2.0);
+    action
+}
+
+/// Paint two links of a chain inside `rect`: two rounded outlines, the
+/// second overlapping the first diagonally.
+fn paint_chain_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let stroke = egui::Stroke::new(1.3, color);
+    let link = egui::vec2(rect.width() * 0.62, rect.height() * 0.38);
+    let first = egui::Rect::from_min_size(rect.left_top() + egui::vec2(0.0, 1.0), link);
+    let second = egui::Rect::from_min_size(
+        egui::pos2(rect.right() - link.x, rect.bottom() - link.y - 1.0),
+        link,
+    );
+    for r in [first, second] {
+        painter.rect_stroke(r, link.y / 2.0, stroke, egui::StrokeKind::Middle);
+    }
 }
 
 /// Paint a small git-branch (worktree) glyph inside `rect`: a trunk with two
@@ -2559,7 +2855,8 @@ mod tests {
         add(CARDS[3].0, AgentStatus::Idle, 120);
         add(CARDS[4].0, AgentStatus::Idle, 180);
         for (card_ref, title) in CARDS {
-            sm.card_titles.store(card_ref, Some(title.to_string()), 0.0);
+            sm.card_titles
+                .store(card_ref, crate::card_titles::CardLookup::titled(title), 0.0);
         }
         sm.rebuild_groups();
         sm
@@ -2661,6 +2958,228 @@ mod tests {
             y += 4.0;
         }
         assert_eq!(reached, order, "each session has a row of its own");
+    }
+
+    /// The epic a [`lineage_sessions`] chain's cards are subissues of.
+    const EPIC: (&str, &str) = (
+        "headway:dave/subway-unusual-any",
+        "SM: scene map — hosts, projects and worktrees, with session lineage",
+    );
+
+    /// The chain's four cards, all subissues of [`EPIC`].
+    const CHAIN: [(&str, &str); 4] = [
+        (
+            "headway:dave/width-useless-choose",
+            "SM1: from-session tag on messages sent between sessions",
+        ),
+        (
+            "headway:dave/name-tree-bulk",
+            "SM2: spawn lineage — parent-session and relation on spawn",
+        ),
+        (
+            "headway:dave/tone-grief-hour",
+            "SM3: code column and two-line headline rows",
+        ),
+        (
+            "headway:dave/throw-draw-draw",
+            "SM4: nest subagents and child sessions; group successor chains",
+        ),
+    ];
+
+    /// Ids of the sessions in [`lineage_sessions`].
+    struct Lineage {
+        parent: SessionId,
+        subagents: [SessionId; 2],
+        child: SessionId,
+        links: [SessionId; 4],
+    }
+
+    /// One workspace holding a session with a foreground and a background
+    /// subagent and a child session, and a four-link successor chain on
+    /// [`EPIC`]'s cards: two links spawned with `--successor`, one inferred
+    /// from its sibling card. The first link ran in another worktree.
+    fn lineage_sessions() -> LineageFixture {
+        use agentium_core::session_events::SessionRelation;
+        use agentium_core::wordid::session_ref;
+        let now = crate::session::now_unix();
+        let mut sm = SessionManager::new();
+        let mut add = |cwd: &str, title: &str, status: AgentStatus, mins: u64| {
+            let id = sm.new_session(PathBuf::from(cwd), AiMode::Agentic, BackendType::Claude);
+            let s = sm.get_mut(id).expect("session");
+            s.details.title = title.to_string();
+            s.details.home_dir = "/home/dev".to_string();
+            s.details.project_root = Some(PathBuf::from("/home/dev/notedeck"));
+            s.details.project_slug = Some("notedeck".to_string());
+            s.last_activity = Some(now - mins * 60);
+            s.source = crate::session::SessionSource::Remote;
+            s.agentic.as_mut().expect("agentic").remote_status = Some(status);
+            s.update_status();
+            id
+        };
+        let lane = "/home/dev/notedeck-scene";
+        let parent = add(lane, "refactor the session list", AgentStatus::Working, 2);
+        let fg = add(
+            lane,
+            "Explore: find the grouping code",
+            AgentStatus::Done,
+            2,
+        );
+        let bg = add(
+            lane,
+            "Bash: cargo test -p notedeck_dave",
+            AgentStatus::Idle,
+            1,
+        );
+        let child = add(lane, "which crate owns the scene?", AgentStatus::Idle, 4);
+        let links = [
+            add("/home/dev/notedeck", CHAIN[0].0, AgentStatus::Done, 200),
+            add(lane, CHAIN[1].0, AgentStatus::Done, 150),
+            add(lane, CHAIN[2].0, AgentStatus::Done, 60),
+            add(lane, CHAIN[3].0, AgentStatus::Working, 1),
+        ];
+        let ref_of = |sm: &SessionManager, id: SessionId| {
+            session_ref(
+                sm.get(id)
+                    .unwrap()
+                    .agentic
+                    .as_ref()
+                    .unwrap()
+                    .event_session_id(),
+            )
+        };
+        for (id, background) in [(fg, false), (bg, true)] {
+            let status = sm.get(id).unwrap().status();
+            sm.get_mut(id).unwrap().subagent_of = Some(crate::session::SubagentOf {
+                parent,
+                task_id: format!("task-{id}"),
+                agent_id: None,
+                status,
+                background,
+            });
+        }
+        let spawn = |sm: &mut SessionManager, id, by, relation| {
+            let by = ref_of(sm, by);
+            let s = sm.get_mut(id).unwrap();
+            s.details.parent_session = Some(by);
+            s.details.relation = relation;
+        };
+        spawn(&mut sm, child, parent, SessionRelation::Child);
+        spawn(&mut sm, links[1], links[0], SessionRelation::Successor);
+        spawn(&mut sm, links[2], links[1], SessionRelation::None);
+        spawn(&mut sm, links[3], links[2], SessionRelation::Successor);
+
+        let outline = |parent: Option<&str>, parts| {
+            Some(notedeck::Outline {
+                parent: parent.map(str::to_owned),
+                parts,
+            })
+        };
+        for (card_ref, title) in CHAIN {
+            let lookup = crate::card_titles::CardLookup {
+                title: Some(title.to_owned()),
+                outline: outline(Some(EPIC.0), None),
+            };
+            sm.card_titles.store(card_ref, lookup, 0.0);
+        }
+        let epic = crate::card_titles::CardLookup {
+            title: Some(EPIC.1.to_owned()),
+            outline: outline(None, Some(notedeck::Progress { done: 3, total: 13 })),
+        };
+        sm.card_titles.store(EPIC.0, epic, 0.0);
+        sm.rebuild_groups();
+        let ids = Lineage {
+            parent,
+            subagents: [fg, bg],
+            child,
+            links,
+        };
+        LineageFixture { sm, ids }
+    }
+
+    /// What [`lineage_sessions`] builds.
+    struct LineageFixture {
+        sm: SessionManager,
+        ids: Lineage,
+    }
+
+    /// Subagents and child sessions nest under their parent, and the chain's
+    /// links follow one another in one run, listed in the workspace of its
+    /// last link, the first link saying where it ran; Ctrl+J / K walks them
+    /// in that order. Collapsed, the chain keeps only its last link.
+    #[test]
+    fn lineage_nests_in_visual_order_and_a_collapsed_chain_keeps_its_last_link() {
+        let LineageFixture { mut sm, ids } = lineage_sessions();
+        let mut collapse = CollapseState::new();
+        let chain = &ids.links;
+        let expanded = [
+            chain[0],
+            chain[1],
+            chain[2],
+            chain[3],
+            ids.parent,
+            ids.subagents[0],
+            ids.subagents[1],
+            ids.child,
+        ];
+        assert_eq!(sm.visual_order(&collapse), expanded);
+
+        let group = sm.host_groups()[0].project_groups[0].cwd_groups[0].clone();
+        assert_eq!(group.display_cwd, "~/notedeck-scene");
+        let span = &group.chains[0];
+        assert_eq!(span.label, "chain · SM · 3/13");
+        assert_eq!((span.start, span.tail, span.end), (0, 3, 4));
+        assert_eq!(group.rows[0].elsewhere.as_deref(), Some("~/notedeck"));
+        assert_eq!(group.rows[1].elsewhere, None);
+
+        collapse.toggle_chain("", &span.key);
+        let collapsed = sm.visual_order(&collapse);
+        assert_eq!(collapsed[0], chain[3]);
+        assert_eq!(collapsed.len(), expanded.len() - 3);
+    }
+
+    /// The lineage list: a parent with a foreground (●) and a background (○)
+    /// subagent and a child session under it, and a four-link chain headed
+    /// `chain · SM · 3/13`, its handed-on links dimmed.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_lineage() {
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(300.0, 560.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(
+                |ui, sm: &mut SessionManager| {
+                    let focus_queue = FocusQueue::new();
+                    let collapse_state = CollapseState::new();
+                    SessionListUi::new(sm, &focus_queue, &collapse_state, false).ui(ui);
+                },
+                lineage_sessions().sm,
+            );
+        harness.run();
+        harness.snapshot("session_list_lineage");
+    }
+
+    /// The chain collapsed to its live link.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_lineage_chain_collapsed() {
+        let mut sm = lineage_sessions().sm;
+        let mut collapse_state = CollapseState::new();
+        let key = sm.host_groups()[0].project_groups[0].cwd_groups[0].chains[0]
+            .key
+            .clone();
+        collapse_state.toggle_chain("", &key);
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(300.0, 400.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(
+                move |ui, sm: &mut SessionManager| {
+                    let focus_queue = FocusQueue::new();
+                    SessionListUi::new(sm, &focus_queue, &collapse_state, false).ui(ui);
+                },
+                sm,
+            );
+        harness.run();
+        harness.snapshot("session_list_lineage_chain_collapsed");
     }
 
     /// State for [`a_ref_title_draws_its_chip_and_a_chip_click_switches_to_the_row`]: a

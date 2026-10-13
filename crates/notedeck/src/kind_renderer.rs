@@ -247,6 +247,34 @@ pub trait KindRenderer {
         let _ = (ndb, txn, note);
         None
     }
+
+    /// Where the entity `note` stands for sits in an outline, current as of
+    /// `txn`: the entity it is part of, and how far along its own parts are
+    /// (a card's parent card and its subissues). `None` when the kind has no
+    /// such structure; the default. Costs what [`title`](Self::title) costs,
+    /// so a per-frame caller keeps the result the same way.
+    fn outline(&self, ndb: &Ndb, txn: &Transaction, note: &Note) -> Option<Outline> {
+        let _ = (ndb, txn, note);
+        None
+    }
+}
+
+/// An entity's place in an outline (see [`KindRenderer::outline`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Outline {
+    /// A reference to the entity this one is part of, in the form the
+    /// registered [reference parsers](crate::ReferenceParser) resolve (a parent
+    /// card's `headway:<board>/<word-id>`), or `None` at the top.
+    pub parent: Option<String>,
+    /// How many of the entity's own parts are done, or `None` when it has none.
+    pub parts: Option<Progress>,
+}
+
+/// `done` of `total` parts finished.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Progress {
+    pub done: usize,
+    pub total: usize,
 }
 
 /// A set of [`KindRenderer`]s indexed by the kinds they handle.
@@ -310,6 +338,20 @@ impl KindRendererRegistry {
     ) -> Option<String> {
         self.default_for(note.kind(), chosen_id)?
             .title(ndb, txn, note)
+    }
+
+    /// The outline of the entity `note` stands for, from the renderer
+    /// [`default_for`](Self::default_for) its kind picks (see
+    /// [`KindRenderer::outline`]).
+    pub fn outline(
+        &self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        note: &Note,
+        chosen_id: Option<&str>,
+    ) -> Option<Outline> {
+        self.default_for(note.kind(), chosen_id)?
+            .outline(ndb, txn, note)
     }
 }
 

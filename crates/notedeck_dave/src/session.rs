@@ -22,7 +22,9 @@ use uuid::Uuid;
 
 pub type SessionId = u32;
 
+mod lineage;
 mod subagent;
+pub use lineage::{Nesting, Place};
 pub use subagent::{SubagentOf, COMPOSER_DISABLED};
 
 /// A user message bound for a session's backend: a remote client's message,
@@ -1358,6 +1360,9 @@ pub struct SessionManager {
     /// The current titles of the cards session titles refer to, kept for the
     /// session list (see [`CardTitles`](crate::card_titles::CardTitles)).
     pub card_titles: crate::card_titles::CardTitles,
+    /// Each session's `agentium:` ref, to find the session a
+    /// `parent-session` names when regrouping.
+    session_refs: lineage::SessionRefs,
 }
 
 /// A group of sessions under a single hostname.
@@ -1397,7 +1402,49 @@ impl ProjectGroup {
 pub struct CwdGroup {
     pub display_cwd: String,
     pub cwd: PathBuf,
+    /// Every session listed here, in the order the list draws them: each
+    /// top-level session or chain followed by what nests under it (see
+    /// [`lineage`]).
     pub session_ids: Vec<SessionId>,
+    /// Where each of [`session_ids`](Self::session_ids) is drawn, parallel to it.
+    pub rows: Vec<ListRow>,
+    /// The successor chains among [`session_ids`](Self::session_ids), in order.
+    pub chains: Vec<ChainSpan>,
+}
+
+/// Where one session of a [`CwdGroup`] is drawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListRow {
+    pub place: Place,
+    /// Where the session runs, `host:cwd` or `cwd`, when that isn't the
+    /// group's own workspace: a child or chain link listed under a session
+    /// in another worktree, or on another host.
+    pub elsewhere: Option<String>,
+}
+
+/// A successor chain's run of rows in a [`CwdGroup`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainSpan {
+    /// Index of the first link in [`CwdGroup::session_ids`].
+    pub start: usize,
+    /// Index of the last link, which stays visible while the chain is
+    /// collapsed, along with what nests under it.
+    pub tail: usize,
+    /// One past the chain's last row.
+    pub end: usize,
+    /// `chain · <epic code> · <done>/<total>`, or with the link count when
+    /// the epic's progress isn't known.
+    pub label: String,
+    /// Stable across restarts: the first link's event id. Collapse state is
+    /// kept under it.
+    pub key: String,
+}
+
+impl CwdGroup {
+    /// The chain starting at row `index`, if one does.
+    pub fn chain_at(&self, index: usize) -> Option<&ChainSpan> {
+        self.chains.iter().find(|c| c.start == index)
+    }
 }
 
 /// Fallback project slug for a root that carries no persisted slug (old events /
@@ -1429,30 +1476,109 @@ fn push_visible_cwd(
     if collapsible && collapse.is_cwd_collapsed(hostname, &cwd_group.cwd) {
         return;
     }
-    ids.extend_from_slice(&cwd_group.session_ids);
+    // A collapsed chain keeps only its last link (and what nests under it).
+    let mut from = 0;
+    for chain in &cwd_group.chains {
+        if !collapse.is_chain_collapsed(hostname, &chain.key) {
+            continue;
+        }
+        ids.extend_from_slice(&cwd_group.session_ids[from..chain.start]);
+        from = chain.tail;
+    }
+    ids.extend_from_slice(&cwd_group.session_ids[from..]);
 }
 
-/// Put each session's subagent sessions right after it, oldest first.
-fn nest_subagent_sessions(sessions: &HashMap<SessionId, ChatSession>, cwd_group: &mut CwdGroup) {
-    let has_children = |id: SessionId| {
-        sessions
-            .values()
-            .any(|s| s.subagent_of.as_ref().is_some_and(|link| link.parent == id))
-    };
-    if !cwd_group.session_ids.iter().any(|&id| has_children(id)) {
+/// How a session's cwd reads in the list: home-abbreviated, or
+/// `(unknown)` when it has none.
+fn display_cwd(session: &ChatSession) -> String {
+    match session.cwd().or(session.details.cwd.as_ref()) {
+        Some(cwd) => {
+            let home = &session.details.home_dir;
+            if home.is_empty() {
+                crate::path_utils::abbreviate_path(cwd)
+            } else {
+                crate::path_utils::abbreviate_with_home(cwd, home)
+            }
+        }
+        None => "(unknown)".to_string(),
+    }
+}
+
+/// Append `entry`'s sessions to `group` with their places, and its chain's
+/// span. A session running somewhere other than `group`'s workspace on
+/// `hostname` says where on its row.
+fn expand_entry(
+    group: &mut CwdGroup,
+    hostname: &str,
+    entry: lineage::Entry,
+    sessions: &HashMap<SessionId, ChatSession>,
+    titles: &crate::card_titles::CardTitles,
+) {
+    let start = group.session_ids.len();
+    for (&id, &place) in entry.ids.iter().zip(&entry.places) {
+        let session = sessions.get(&id);
+        let elsewhere = session.and_then(|s| {
+            let cwd = s.cwd().or(s.details.cwd.as_ref())?;
+            let same_host = s.details.hostname == hostname;
+            if same_host && *cwd == group.cwd {
+                return None;
+            }
+            let shown = display_cwd(s);
+            Some(if same_host {
+                shown
+            } else {
+                format!("{}:{shown}", s.details.hostname)
+            })
+        });
+        group.session_ids.push(id);
+        group.rows.push(ListRow { place, elsewhere });
+    }
+    let Some(chain) = entry.chain else {
         return;
+    };
+    let first = sessions.get(&entry.ids[0]);
+    group.chains.push(ChainSpan {
+        start,
+        tail: start + chain.tail,
+        end: group.session_ids.len(),
+        label: chain_label(&chain, first, titles),
+        key: first.and_then(|s| s.agentic.as_ref()).map_or_else(
+            || entry.ids[0].to_string(),
+            |a| a.event_session_id().to_owned(),
+        ),
+    });
+}
+
+/// A chain's header text (see [`ChainSpan::label`]): its epic's code, else
+/// its first link's card code, then the epic's done/total subissues, else
+/// how many links it has.
+fn chain_label(
+    chain: &lineage::ChainShape,
+    first: Option<&ChatSession>,
+    titles: &crate::card_titles::CardTitles,
+) -> String {
+    use std::fmt::Write;
+    let code_of = |card: &str| {
+        let title = titles.get(card)?;
+        headway::title::TitleParts::split(title).code
+    };
+    let epic = chain.epic.as_deref();
+    let code = epic
+        .and_then(code_of)
+        .or_else(|| first.and_then(|s| s.details.card_ref()).and_then(code_of));
+    let mut label = String::from("chain");
+    if let Some(code) = code {
+        let _ = write!(label, " · {code}");
     }
-    let parents = std::mem::take(&mut cwd_group.session_ids);
-    for id in parents {
-        cwd_group.session_ids.push(id);
-        let mut children: Vec<SessionId> = sessions
-            .values()
-            .filter(|s| s.subagent_of.as_ref().is_some_and(|l| l.parent == id))
-            .map(|s| s.id)
-            .collect();
-        children.sort_unstable();
-        cwd_group.session_ids.extend(children);
+    match epic.and_then(|e| titles.parts(e)) {
+        Some(parts) => {
+            let _ = write!(label, " · {}/{}", parts.done, parts.total);
+        }
+        None => {
+            let _ = write!(label, " · {} links", chain.links);
+        }
     }
+    label
 }
 
 impl Default for SessionManager {
@@ -1474,6 +1600,7 @@ impl SessionManager {
             chat_ids: Vec::new(),
             chat_ids_dirty: false,
             card_titles: Default::default(),
+            session_refs: Default::default(),
         }
     }
 
@@ -1756,98 +1883,133 @@ impl SessionManager {
 
     /// Rebuild the cached host → project → cwd groups from current sessions.
     /// Call after adding/removing sessions or changing a session's cwd/project.
+    ///
+    /// Sessions are grouped by lineage first (see [`lineage`]): a subagent or
+    /// child session is listed under the session that spawned it, and a
+    /// successor chain as one run, in the workspace of its last link, even
+    /// when some of them run in another worktree or on another host.
     pub fn rebuild_groups(&mut self) {
         self.host_groups.clear();
         self.chat_ids.clear();
 
+        let agentic = |s: &&ChatSession| s.ai_mode == AiMode::Agentic;
+        self.session_refs.sync(
+            self.sessions
+                .values()
+                .filter(agentic)
+                .filter_map(|s| Some((s.id, s.agentic.as_ref()?.event_session_id()))),
+        );
+        let titles = &self.card_titles;
+        let nodes: Vec<lineage::Node<'_>> = self
+            .order
+            .iter()
+            .filter_map(|id| self.sessions.get(id))
+            .filter(agentic)
+            .map(|s| {
+                let card = s.details.card_ref();
+                lineage::Node {
+                    id: s.id,
+                    spawner: match &s.subagent_of {
+                        Some(link) => Some(link.parent),
+                        None => s
+                            .details
+                            .parent_session
+                            .as_deref()
+                            .and_then(|r| self.session_refs.find(r)),
+                    },
+                    relation: s.details.relation,
+                    subagent: s.subagent_of.is_some(),
+                    card,
+                    card_parent: card.and_then(|c| titles.parent(c)),
+                }
+            })
+            .collect();
+        let mut entries: HashMap<SessionId, lineage::Entry> = lineage::entries(&nodes)
+            .into_iter()
+            .map(|e| (e.anchor, e))
+            .collect();
+
         for &id in &self.order {
-            if let Some(session) = self.sessions.get(&id) {
-                // A subagent's session is listed right under its parent
-                // (below), not grouped on its own.
-                if session.subagent_of.is_some() {
-                    continue;
+            let Some(session) = self.sessions.get(&id) else {
+                continue;
+            };
+            if session.ai_mode != AiMode::Agentic {
+                // A subagent is listed under its parent, never as a chat.
+                if session.ai_mode == AiMode::Chat && session.subagent_of.is_none() {
+                    self.chat_ids.push(id);
                 }
-                if session.ai_mode != AiMode::Agentic {
-                    if session.ai_mode == AiMode::Chat {
-                        self.chat_ids.push(id);
-                    }
-                    continue;
-                }
+                continue;
+            }
+            // Only an entry's anchor places it; the rest of the entry follows.
+            if !entries.contains_key(&id) {
+                continue;
+            }
 
-                let hostname = session.details.hostname.clone();
-                let cwd = session.cwd().or(session.details.cwd.as_ref());
-                let raw_cwd = cwd.cloned().unwrap_or_default();
-                let cwd_display = match cwd {
-                    Some(cwd) => {
-                        let home = &session.details.home_dir;
-                        if home.is_empty() {
-                            crate::path_utils::abbreviate_path(cwd)
-                        } else {
-                            crate::path_utils::abbreviate_with_home(cwd, home)
-                        }
-                    }
-                    None => "(unknown)".to_string(),
-                };
+            let hostname = session.details.hostname.clone();
+            let cwd = session.cwd().or(session.details.cwd.as_ref());
+            let raw_cwd = cwd.cloned().unwrap_or_default();
 
-                // Project identity: the persisted/computed repo root groups all
-                // worktrees together. Old events / non-git cwds have no project,
-                // so fall back to the cwd itself as a single-workspace project.
-                let project_root = session
-                    .details
-                    .project_root
-                    .clone()
-                    .unwrap_or_else(|| raw_cwd.clone());
-                let project_slug = session
-                    .details
-                    .project_slug
-                    .clone()
-                    .unwrap_or_else(|| project_slug_from_root(&project_root));
+            // Project identity: the persisted/computed repo root groups all
+            // worktrees together. Old events / non-git cwds have no project,
+            // so fall back to the cwd itself as a single-workspace project.
+            let project_root = session
+                .details
+                .project_root
+                .clone()
+                .unwrap_or_else(|| raw_cwd.clone());
+            let project_slug = session
+                .details
+                .project_slug
+                .clone()
+                .unwrap_or_else(|| project_slug_from_root(&project_root));
 
-                // Find or create host group
-                let host_group = if let Some(hg) = self
-                    .host_groups
-                    .iter_mut()
-                    .find(|hg| hg.hostname == hostname)
-                {
-                    hg
-                } else {
-                    self.host_groups.push(HostGroup {
-                        hostname: hostname.clone(),
-                        project_groups: Vec::new(),
-                    });
-                    self.host_groups.last_mut().unwrap()
-                };
+            // Find or create host group
+            let host_group = if let Some(hg) = self
+                .host_groups
+                .iter_mut()
+                .find(|hg| hg.hostname == hostname)
+            {
+                hg
+            } else {
+                self.host_groups.push(HostGroup {
+                    hostname: hostname.clone(),
+                    project_groups: Vec::new(),
+                });
+                self.host_groups.last_mut().unwrap()
+            };
 
-                // Find or create project group within host (keyed by root)
-                let project_group = if let Some(pg) = host_group
-                    .project_groups
-                    .iter_mut()
-                    .find(|pg| pg.root == project_root)
-                {
-                    pg
-                } else {
-                    host_group.project_groups.push(ProjectGroup {
-                        slug: project_slug,
-                        root: project_root,
-                        cwd_groups: Vec::new(),
-                    });
-                    host_group.project_groups.last_mut().unwrap()
-                };
+            // Find or create project group within host (keyed by root)
+            let project_group = if let Some(pg) = host_group
+                .project_groups
+                .iter_mut()
+                .find(|pg| pg.root == project_root)
+            {
+                pg
+            } else {
+                host_group.project_groups.push(ProjectGroup {
+                    slug: project_slug,
+                    root: project_root,
+                    cwd_groups: Vec::new(),
+                });
+                host_group.project_groups.last_mut().unwrap()
+            };
 
-                // Find or create cwd group within project
-                if let Some(cg) = project_group
-                    .cwd_groups
-                    .iter_mut()
-                    .find(|cg| cg.cwd == raw_cwd)
-                {
-                    cg.session_ids.push(id);
-                } else {
-                    project_group.cwd_groups.push(CwdGroup {
-                        display_cwd: cwd_display,
-                        cwd: raw_cwd,
-                        session_ids: vec![id],
-                    });
-                }
+            // Find or create cwd group within project. Its session_ids hold
+            // only entry anchors until they are sorted and expanded below.
+            if let Some(cg) = project_group
+                .cwd_groups
+                .iter_mut()
+                .find(|cg| cg.cwd == raw_cwd)
+            {
+                cg.session_ids.push(id);
+            } else {
+                project_group.cwd_groups.push(CwdGroup {
+                    display_cwd: display_cwd(session),
+                    cwd: raw_cwd,
+                    session_ids: vec![id],
+                    rows: Vec::new(),
+                    chains: Vec::new(),
+                });
             }
         }
 
@@ -1868,23 +2030,57 @@ impl SessionManager {
 
                 for cwd_group in &mut project.cwd_groups {
                     // By card, then title: sessions on one card sort by its
-                    // ref, so their rows sit together.
-                    let key = |id: &SessionId| {
+                    // ref, so their rows sit together. A chain sorts by its
+                    // epic, or its first link.
+                    let session_key = |id: SessionId| {
                         self.sessions
-                            .get(id)
+                            .get(&id)
                             .map(|s| s.details.card_ref().unwrap_or(s.details.display_title()))
                             .unwrap_or("")
+                    };
+                    let key = |anchor: &SessionId| {
+                        let Some(entry) = entries.get(anchor) else {
+                            return session_key(*anchor);
+                        };
+                        match &entry.chain {
+                            Some(chain) => chain
+                                .epic
+                                .as_deref()
+                                .unwrap_or_else(|| session_key(entry.ids[0])),
+                            None => session_key(entry.ids[0]),
+                        }
                     };
                     cwd_group
                         .session_ids
                         .sort_by(|a, b| key(a).cmp(key(b)).then(a.cmp(b)));
-                    nest_subagent_sessions(&self.sessions, cwd_group);
+
+                    let anchors = std::mem::take(&mut cwd_group.session_ids);
+                    for anchor in anchors {
+                        let Some(entry) = entries.remove(&anchor) else {
+                            continue;
+                        };
+                        expand_entry(
+                            cwd_group,
+                            &host_group.hostname,
+                            entry,
+                            &self.sessions,
+                            titles,
+                        );
+                    }
                 }
             }
         }
 
         self.host_groups_dirty = false;
         self.chat_ids_dirty = false;
+    }
+
+    /// Regroup on the next read, because something lineage reads outside
+    /// the sessions changed: a card's parent, or a card or epic title or
+    /// progress a chain's header shows (see
+    /// [`CardTitles::store`](crate::card_titles::CardTitles::store)).
+    pub fn lineage_changed(&mut self) {
+        self.mark_grouping_cache_dirty();
     }
 
     /// Mark cached grouping state dirty after mutable session access.

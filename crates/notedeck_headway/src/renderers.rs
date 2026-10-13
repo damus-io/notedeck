@@ -97,6 +97,29 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
             });
         Some(title.to_owned())
     }
+
+    /// The card's parent card, as a `headway:<board>/<word-id>` ref on the
+    /// board the card was found on, and how many of its live subissues are
+    /// done. `None` when the card is on no folded board.
+    fn outline(&self, ndb: &Ndb, txn: &Transaction, note: &Note) -> Option<notedeck::Outline> {
+        let Some(event::HeadwayEvent::Issue(issue)) = event::parse(note) else {
+            return None;
+        };
+        let author = Pubkey::new(issue.board_author);
+        let boards = self.cache.borrow_mut().all_boards(ndb, txn, &author)?;
+        let located = event::locate_card_in_boards(&boards, &author, &issue.id)?;
+        let card = located.card;
+        let parent = card
+            .parent
+            .map(|parent| headway::wordid::card_ref(located.board_id, parent.bytes()));
+        let live = || card.subissues.iter().filter(|s| !s.archived);
+        let total = live().count();
+        let parts = (total > 0).then(|| notedeck::Progress {
+            done: live().filter(|s| s.done).count(),
+            total,
+        });
+        Some(notedeck::Outline { parent, parts })
+    }
 }
 
 /// Renders a headway board (kind 30619) referenced inline. The note is the

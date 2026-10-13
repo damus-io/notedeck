@@ -38,6 +38,9 @@ pub struct SubagentOf {
     /// The status the session shows, set at each sync (see
     /// [`virtual_status`]).
     pub status: AgentStatus,
+    /// Whether the subagent runs in the background
+    /// ([`SubagentInfo::background`]); the list marks it ○ rather than ●.
+    pub background: bool,
 }
 
 /// What a parent's virtual sessions were last built from. When the parent's
@@ -159,6 +162,7 @@ struct Built {
     title: String,
     chat: Vec<Message>,
     status: AgentStatus,
+    background: bool,
 }
 
 impl ChatSession {
@@ -209,6 +213,7 @@ impl ChatSession {
                     title: subagent_title(info),
                     chat: subagent_chat(info, prompts()),
                     status: virtual_status(info, pending, parent_status),
+                    background: info.background,
                 }
             })
             .collect()
@@ -250,6 +255,7 @@ impl ChatSession {
             task_id: built.task_id,
             agent_id: built.agent_id,
             status: built.status,
+            background: built.background,
         });
         session.replace_chat(built.chat);
         session.update_status();
@@ -295,6 +301,7 @@ impl SessionManager {
                 if let Some(link) = &mut session.subagent_of {
                     link.agent_id = b.agent_id;
                     link.status = b.status;
+                    link.background = b.background;
                 }
                 session.update_status();
                 session.state_dirty = false;
