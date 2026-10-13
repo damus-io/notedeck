@@ -36,11 +36,13 @@
 
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
-use notedeck::tokens::{RADIUS_MD, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
+use notedeck::tokens::{
+    RADIUS_MD, RADIUS_PILL, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THIN,
+};
 
 use super::widgets::{
-    KeyedText, StatusIcon, label_chip, priority_icon_ui, priority_label, status_icon_ui, text_pill,
-    tinted_pill,
+    KeyedText, StatusIcon, label_color, pill_height, priority_icon_ui, priority_label,
+    status_icon_ui, text_pill, tinted_pill,
 };
 use super::{BoardEffect, BoardNav, BoardUiState, ViewEdit};
 use crate::cache::BoardRef;
@@ -201,16 +203,54 @@ struct GroupHeader {
     count: String,
     /// Whether it's folded shut.
     collapsed: bool,
+    /// The glyph before its name, Linear's way: a status circle, a priority
+    /// icon or a label's colour.
+    icon: HeaderIcon,
+}
+
+/// The glyph a [`GroupHeader`] leads with, by what it groups.
+#[derive(Clone, Copy)]
+enum HeaderIcon {
+    /// A status group: the circle its cards wear.
+    Status(StatusIcon),
+    /// A priority group: that priority's icon.
+    Priority(Priority),
+    /// A label group: a dot of the label's colour.
+    Label(egui::Color32),
+    /// A board or parent group: nothing.
+    None,
+}
+
+impl HeaderIcon {
+    /// The glyph for group `g`, whose rows index `lines`. A status group
+    /// takes its first row's circle (columns are matched by name across
+    /// boards, so the group has no single board to ask); an empty one, the
+    /// plain ring.
+    fn of(g: &ListGroup, lines: &[ListLine]) -> HeaderIcon {
+        match &g.key {
+            GroupKey::Status(_) => HeaderIcon::Status(
+                g.rows
+                    .first()
+                    .and_then(|&at| lines.get(at))
+                    .map_or(StatusIcon::Todo, |line| line.icon),
+            ),
+            GroupKey::Archived => HeaderIcon::Status(StatusIcon::Archived),
+            GroupKey::Priority(p) => HeaderIcon::Priority(*p),
+            GroupKey::Label(Some(label)) => HeaderIcon::Label(label_color(label)),
+            _ => HeaderIcon::None,
+        }
+    }
 }
 
 impl GroupHeader {
-    /// The header for group `g`, under `key`.
-    fn of(key: CollapseKey, g: &ListGroup, collapsed: bool) -> GroupHeader {
+    /// The header for group `g`, under `key`; its rows index `lines`.
+    fn of(key: CollapseKey, g: &ListGroup, collapsed: bool, lines: &[ListLine]) -> GroupHeader {
         GroupHeader {
             key,
             label: g.label.clone(),
             count: g.rows.len().to_string(),
             collapsed,
+            icon: HeaderIcon::of(g, lines),
         }
     }
 }
@@ -239,6 +279,9 @@ struct ListLine {
     id: NoteId,
     /// The card's word-id (`maple-river-canyon`).
     word_id: String,
+    /// Its status circle, decided once with its board in hand, so a group
+    /// header (which has no board) can wear its first row's.
+    icon: StatusIcon,
     /// The card is in its board's ready frontier and the list is ordered by
     /// work order: the row wears the accent bar.
     ready: bool,
@@ -434,6 +477,7 @@ impl ListState {
                 slot: pos.slot,
                 id: row.card.id,
                 word_id: headway::wordid::encode(row.card.id.bytes()),
+                icon: slot_icon(pos.slot, row.board),
                 ready: ready.contains(row.card.id.bytes()),
                 text: LineText::of(row.board, row.card),
             }));
@@ -480,8 +524,9 @@ impl ListState {
                 sub: None,
             };
             let collapsed = self.collapsed.contains(&key);
-            self.entries
-                .push(ListEntry::Header(GroupHeader::of(key, g, collapsed)));
+            self.entries.push(ListEntry::Header(GroupHeader::of(
+                key, g, collapsed, &self.rows,
+            )));
             if collapsed {
                 continue;
             }
@@ -496,8 +541,9 @@ impl ListState {
                     sub: Some(sub.key.clone()),
                 };
                 let collapsed = self.collapsed.contains(&key);
-                self.entries
-                    .push(ListEntry::Header(GroupHeader::of(key, sub, collapsed)));
+                self.entries.push(ListEntry::Header(GroupHeader::of(
+                    key, sub, collapsed, &self.rows,
+                )));
                 if !collapsed {
                     self.entries
                         .extend(sub.rows.iter().copied().map(ListEntry::Row));
@@ -1279,9 +1325,11 @@ fn display_menu_ui(ui: &mut egui::Ui, theme: &ColorTheme, menu: DisplayMenu) -> 
         );
         ui.add_space(SPACING_XS);
         ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(SPACING_XS, SPACING_XS);
+            ui.spacing_mut().button_padding = egui::vec2(SPACING_SM + 2.0, 3.0);
             for prop in DisplayProp::ALL {
                 let on = display.contains(prop);
-                if ui.selectable_label(on, prop.label()).clicked() {
+                if prop_chip_ui(ui, theme, prop.label(), on).clicked() {
                     display.toggle(prop);
                 }
             }
@@ -1459,11 +1507,13 @@ fn group_header_ui(
         )
     });
     let sub = header.key.sub.is_some();
+    // A quiet band, as Linear's: the panel a shade lighter, never the
+    // elevated surface (a slab in dark mode, and white-on-white in light).
     if !sub {
         ui.painter().rect_filled(
             rect,
             egui::CornerRadius::same(RADIUS_MD as u8),
-            theme.surface_elevated,
+            theme.surface_secondary,
         );
     }
     let indent = if sub {
@@ -1491,6 +1541,7 @@ fn group_header_ui(
                     .selectable(false)
             };
             ui.add(quiet(arrow));
+            header_icon_ui(ui, theme, header.icon);
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(&header.label)
@@ -1504,8 +1555,12 @@ fn group_header_ui(
                 return;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let plus = egui::Button::new(egui::RichText::new("+").color(theme.text_muted))
-                    .frame(false);
+                let plus = egui::Button::new(
+                    egui::RichText::new("+")
+                        .size(ICON_SIZE + 2.0)
+                        .color(theme.text_muted),
+                )
+                .frame(false);
                 if ui
                     .add(plus)
                     .on_hover_text("New issue in this group")
@@ -1567,7 +1622,7 @@ fn list_row_ui(
             .rect_filled(rect, corner, theme.accent.gamma_multiply(0.15));
     } else if ui.rect_contains_pointer(rect) {
         ui.painter()
-            .rect_filled(rect, corner, theme.surface_elevated);
+            .rect_filled(rect, corner, theme.surface_secondary);
     }
 
     let inner = rect.shrink2(egui::vec2(SPACING_SM, 0.0));
@@ -1665,7 +1720,9 @@ fn row_lead_ui(
 ) {
     if display.contains(DisplayProp::Priority) {
         if card.priority == Priority::None {
-            ui.add_space(ICON_SIZE);
+            // An empty icon-sized slot, spaced like the icon it stands in
+            // for (`add_space` skips the item spacing, a few points short).
+            ui.allocate_exact_size(egui::vec2(ICON_SIZE, ICON_SIZE), egui::Sense::hover());
         } else {
             priority_icon_ui(ui, theme, card.priority, ICON_SIZE)
                 .on_hover_text(priority_label(card.priority));
@@ -1681,13 +1738,16 @@ fn row_lead_ui(
         )
         .selectable(false)
         .truncate();
-        let (cell, _) =
-            ui.allocate_exact_size(egui::vec2(ID_WIDTH, ROW_HEIGHT), egui::Sense::hover());
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(cell)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            |ui| ui.add(id),
+        // Laid out in an ID_WIDTH box that claims all of it: a child ui
+        // placed over an already-allocated rect would move the cursor back
+        // to the end of its text, and the titles would start ragged.
+        ui.allocate_ui_with_layout(
+            egui::vec2(ID_WIDTH, ROW_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_width(ID_WIDTH);
+                ui.add(id)
+            },
         );
     }
     if display.contains(DisplayProp::Status) {
@@ -1747,7 +1807,7 @@ fn row_trail_ui(
     }
     if display.contains(DisplayProp::Labels) {
         for label in card.labels.iter().rev() {
-            label_chip(ui, theme, label);
+            label_pill_ui(ui, theme, label);
         }
     }
     if !display.contains(DisplayProp::SubIssues) {
@@ -1765,4 +1825,76 @@ fn row_trail_ui(
 const ICON_SIZE: f32 = 14.0;
 
 /// Width a row gives its word-id.
-const ID_WIDTH: f32 = 150.0;
+const ID_WIDTH: f32 = 128.0;
+
+/// A label as a list row draws it, Linear's way: a thin outline pill with a
+/// dot of the label's colour and its name in secondary text. The pill is
+/// one fixed height ([`pill_height`]) whatever row it sits in, where the
+/// grid's filled [`label_chip`](super::widgets::label_chip) grows to the height it's given.
+fn label_pill_ui(ui: &mut egui::Ui, theme: &ColorTheme, label: &str) -> egui::Response {
+    const DOT: f32 = 6.0;
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font, theme.text_secondary);
+    let size = egui::vec2(
+        SPACING_SM + DOT + SPACING_XS + galley.size().x + SPACING_SM,
+        pill_height(ui),
+    );
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    // Painted, so it names itself to accesskit the way a label would.
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::accesskit::Role::Label, true, label));
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let painter = ui.painter();
+    painter.rect_stroke(
+        rect,
+        egui::CornerRadius::same(RADIUS_PILL as u8),
+        egui::Stroke::new(STROKE_THIN, theme.border_strong),
+        egui::StrokeKind::Inside,
+    );
+    let dot = egui::pos2(rect.left() + SPACING_SM + DOT / 2.0, rect.center().y);
+    painter.circle_filled(dot, DOT / 2.0, label_color(label));
+    let text = egui::pos2(
+        rect.left() + SPACING_SM + DOT + SPACING_XS,
+        rect.center().y - galley.size().y / 2.0,
+    );
+    painter.galley(text, galley, theme.text_secondary);
+    response
+}
+
+/// A group header's leading glyph, [`ICON_SIZE`] square; nothing for
+/// [`HeaderIcon::None`].
+fn header_icon_ui(ui: &mut egui::Ui, theme: &ColorTheme, icon: HeaderIcon) {
+    match icon {
+        HeaderIcon::Status(status) => {
+            status_icon_ui(ui, theme, status, ICON_SIZE);
+        }
+        HeaderIcon::Priority(priority) => {
+            priority_icon_ui(ui, theme, priority, ICON_SIZE);
+        }
+        HeaderIcon::Label(color) => {
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(ICON_SIZE, ICON_SIZE), egui::Sense::hover());
+            ui.painter().circle_filled(rect.center(), 4.0, color);
+        }
+        HeaderIcon::None => {}
+    }
+}
+
+/// One display-property toggle in the Display menu, Linear's way: an
+/// outline pill, filled and in primary text while the property shows, bare
+/// and muted while it's hidden.
+fn prop_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, label: &str, on: bool) -> egui::Response {
+    let (fill, text) = if on {
+        (theme.surface_elevated, theme.text_primary)
+    } else {
+        (egui::Color32::TRANSPARENT, theme.text_muted)
+    };
+    let chip = egui::Button::new(egui::RichText::new(label).small().color(text))
+        .fill(fill)
+        .stroke(egui::Stroke::new(STROKE_THIN, theme.border_strong))
+        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8));
+    ui.add(chip)
+}

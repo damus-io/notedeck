@@ -1106,19 +1106,31 @@ fn seed_side_board(harness: &mut Harness<'static, HeadwayTestState>) {
         "Side",
         &mut store::NoPublish,
     );
-    let view = wait_own_board(app_ctx.ndb, &author, "side");
-    store::apply(
+    wait_own_board(app_ctx.ndb, &author, "side");
+    // The card is written at a fixed instant, as the demo board's are, so its
+    // id (and the word-id a list row prints) and its age are the same on
+    // every run.
+    let created = SEED_AT - 3 * 86_400;
+    let addr = event::board_address(&author, "side");
+    let id = store::ingest(
         app_ctx.ndb,
-        "side",
-        &view,
-        &author,
-        &store::Signer::new(&secret, None),
-        store::BoardAction::AddCard(store::NewCard {
-            col: 1,
-            title: SIDE_CARD.to_string(),
-            labels: vec!["quest".to_string()],
-            ..store::NewCard::default()
-        }),
+        event::build_issue(&addr, SIDE_CARD, "").created_at(created),
+        &secret,
+        &mut store::NoPublish,
+    )
+    .expect("side card");
+    let rank = event::rank_between(None, None);
+    let placement = event::build_placement("side", &addr, &id, "todo", &rank);
+    store::ingest(
+        app_ctx.ndb,
+        placement.created_at(created),
+        &secret,
+        &mut store::NoPublish,
+    );
+    store::ingest(
+        app_ctx.ndb,
+        event::build_labels(&id, &["quest"]).created_at(created),
+        &secret,
         &mut store::NoPublish,
     );
     let deadline = Instant::now() + SETTLE_TIMEOUT;
