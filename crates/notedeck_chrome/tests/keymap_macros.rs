@@ -460,8 +460,20 @@ mod session_explainer {
     impl Session {
         /// Seed the demo board, give [`CARD`] a review record with an
         /// explainer, and start the chrome with a Dave stand-in whose session
-        /// works `issue` (a demo card's title), or none.
+        /// works `issue` (a demo card's title), or none. Navigation doesn't
+        /// slide.
         async fn new(issue: Option<&str>) -> Self {
+            Self::start(issue, false).await
+        }
+
+        /// [`Session::new`], but navigation slides as it does for a user
+        /// with the default settings, so a macro step can land mid-slide.
+        async fn animated(issue: Option<&str>) -> Self {
+            Self::start(issue, true).await
+        }
+
+        /// [`Session::new`], with nav transitions animated when `animate`.
+        async fn start(issue: Option<&str>, animate: bool) -> Self {
             let dir = tempfile::TempDir::new().expect("tmp dir");
             let kp = FullKeypair::generate();
             let args: Vec<String> = [
@@ -478,7 +490,7 @@ mod session_explainer {
             let issue_ref = {
                 let app_ctx = notedeck.app_context();
                 app_ctx.settings.complete_welcome();
-                app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
+                app_ctx.settings.get_settings_mut().animate_nav_transitions = animate;
                 let ndb = &*app_ctx.ndb;
                 let secret = kp.secret_key.secret_bytes();
                 let mine = || Filter::new().authors([kp.pubkey.bytes()]).build();
@@ -797,9 +809,11 @@ mod session_explainer {
     }
 
     /// A session on `issue` with [`EPIC_REVIEW`] bound and [`EPIC_DONE`]
-    /// moved to In Review, folded.
+    /// moved to In Review, folded. Navigation slides: `headway_open_parent`
+    /// pushes one card's detail over another's, and the next step must wait
+    /// for that slide to land, not just for the push to apply.
     async fn epic_review_session(issue: &str) -> Session {
-        let mut s = Session::new(Some(issue)).await;
+        let mut s = Session::animated(Some(issue)).await;
         s.set_user_keymap(EPIC_REVIEW);
         let done = {
             let ctx = s.notedeck.app_context();

@@ -5,7 +5,7 @@
 //! and the next acts on where it landed (Headway's `headway_open_explainer`).
 //! So a step runs only once the one before it has **settled** ([`Settle`]):
 //! the open it raised has resolved, the navigation it queued has been
-//! applied, the step's app is in front with the tool available, the app in
+//! applied and has finished sliding into place, the step's app is in front with the tool available, the app in
 //! front has a current ref if the step's args name one, and that app has had
 //! a full frame to draw what it landed on. A step that doesn't
 //! settle within [`MACRO_TIMEOUT_SECS`] aborts the run.
@@ -57,6 +57,12 @@ pub struct Settle {
     pub open_pending: bool,
     /// Navigation requests are queued that the chrome hasn't applied yet.
     pub nav_queued: bool,
+    /// The global history is still sliding (or being dragged) between
+    /// entries. Until it lands, egui-nav renders the outgoing route beside
+    /// the incoming one, and an app that seeds its view from each route's
+    /// token (Headway's card detail, pushed over another card's) would run
+    /// the step against whichever route rendered last.
+    pub nav_sliding: bool,
     /// The app that owns the next step's tool is the one in front (always so
     /// for the chrome's own tools and data tools).
     pub owner_active: bool,
@@ -75,6 +81,8 @@ pub enum Unsettled {
     OpenPending,
     /// Navigation is still queued.
     NavQueued,
+    /// Navigation is still sliding into place.
+    NavSliding,
     /// The tool's app isn't in front.
     OwnerInactive,
     /// The tool isn't available.
@@ -90,6 +98,7 @@ impl fmt::Display for Unsettled {
         f.write_str(match self {
             Self::OpenPending => "the open it waits on never resolved",
             Self::NavQueued => "navigation stayed queued",
+            Self::NavSliding => "navigation never finished sliding",
             Self::OwnerInactive => "its app never came to the front",
             Self::Unavailable => "its tool never became available",
             Self::NoCurrent => "the app in front never had a current ref for its {current}",
@@ -100,13 +109,15 @@ impl fmt::Display for Unsettled {
 
 impl Settle {
     /// The first condition that doesn't hold, in the order the world settles:
-    /// the open resolves, its navigation applies, the app comes to the front,
-    /// the tool becomes available, the app has something current.
+    /// the open resolves, its navigation applies and lands, the app comes to
+    /// the front, the tool becomes available, the app has something current.
     pub fn unmet(&self) -> Option<Unsettled> {
         if self.open_pending {
             Some(Unsettled::OpenPending)
         } else if self.nav_queued {
             Some(Unsettled::NavQueued)
+        } else if self.nav_sliding {
+            Some(Unsettled::NavSliding)
         } else if !self.owner_active {
             Some(Unsettled::OwnerInactive)
         } else if !self.available {
@@ -215,6 +226,7 @@ mod tests {
     const SETTLED: Settle = Settle {
         open_pending: false,
         nav_queued: false,
+        nav_sliding: false,
         owner_active: true,
         available: true,
         has_current: true,
@@ -245,6 +257,13 @@ mod tests {
                     ..SETTLED
                 },
                 Unsettled::NavQueued,
+            ),
+            (
+                Settle {
+                    nav_sliding: true,
+                    ..SETTLED
+                },
+                Unsettled::NavSliding,
             ),
             (
                 Settle {
@@ -282,12 +301,30 @@ mod tests {
         let all = Settle {
             open_pending: true,
             nav_queued: true,
+            nav_sliding: true,
             owner_active: false,
             available: false,
             has_current: false,
         };
         assert_eq!(all.unmet(), Some(Unsettled::OpenPending), "earliest first");
         assert_eq!(SETTLED.unmet(), None);
+    }
+
+    /// A step that navigated within one app (Headway's card detail pushed
+    /// over another card's) waits for the slide to land, not just for the
+    /// push to apply: mid-slide both routes render and seed the app.
+    #[test]
+    fn a_step_waits_for_the_slide_to_land() {
+        let mut run = waiting();
+        let sliding = Settle {
+            nav_sliding: true,
+            ..SETTLED
+        };
+        for frame in 1..20 {
+            assert_eq!(run.poll(f64::from(frame) / 60.0, sliding), Advance::Wait);
+        }
+        assert_eq!(run.poll(0.4, SETTLED), Advance::Wait, "the landed frame");
+        assert_eq!(run.poll(0.5, SETTLED), Advance::Run(1));
     }
 
     /// Settled, the step waits one frame for the app to render what it

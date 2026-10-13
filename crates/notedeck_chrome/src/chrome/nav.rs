@@ -212,6 +212,17 @@ impl Chrome {
         removed
     }
 
+    /// True while the global history is still sliding (or being dragged)
+    /// between entries: until the slide lands, egui-nav renders both the
+    /// outgoing and the incoming route, so an app seeding its view from each
+    /// route's token sees both. A macro step waits this out (see
+    /// [`Settle::nav_sliding`](crate::keymap::macros::Settle::nav_sliding)).
+    pub(super) fn global_nav_sliding(&self) -> bool {
+        self.global_nav
+            .as_ref()
+            .is_some_and(|nav| sliding(nav, self.global_nav_in_flight))
+    }
+
     /// Drain the navigation requests apps queued this frame on
     /// [`AppContext::navigator`](notedeck::AppContext), apply them (see
     /// [`apply_nav_requests`](Chrome::apply_nav_requests)), and hand every
