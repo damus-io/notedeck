@@ -75,9 +75,9 @@ pub(crate) enum CardAction {
     /// `X`: ask for a reason, post it as a `review:` comment, send it to the
     /// record's agentium session, and send the card back to In Progress.
     SendBack,
-    /// `C`: ask for a one-line comment, post it, and send it to the record's
-    /// agentium session with any line comments drafted on the record; the
-    /// card stays where it is.
+    /// `C`: send the line comments drafted on the card's record, if any;
+    /// else ask for a one-line comment, post it, and send it to the record's
+    /// agentium session. The card stays where it is.
     Comment,
     /// `n`/`p`: the next/previous card — the grid's cursor, the queue's card,
     /// or the neighbouring card in the column of a detail or review pane.
@@ -137,7 +137,7 @@ pub(crate) fn apply_card_action(
             }
         },
         CardAction::SendBack => state.start_reject(view, card, now),
-        CardAction::Comment => state.start_comment(view, card),
+        CardAction::Comment => return state.start_comment(view, card, now),
         CardAction::Step(step) => match at {
             ActionView::Grid(filter) => move_cursor(view, filter, state, step_move(step)),
             ActionView::Queue => state.step_queue(step),
@@ -526,7 +526,7 @@ impl PaneScroll {
 }
 
 /// The `X`/`C` composer's keys: Enter sends the line (an empty one sends
-/// nothing, bar `C`'s drafted line comments), Esc cancels. Both are consumed before the field sees them, and
+/// nothing), Esc cancels. Both are consumed before the field sees them, and
 /// the field's focus goes with the composer. While another widget has the
 /// keyboard they're left to it ([`BoardUiState::reason_keys_live`]); the
 /// view's own keys stay down either way (its [key scopes](crate::ui_tools::key_scopes)
@@ -1976,12 +1976,12 @@ diff --git a/b.txt b/b.txt
         press(harness, Key::Enter);
     }
 
-    /// `C` and an empty Enter in a review pane posts the shown record's
-    /// drafts as review comments on it, in order, and sends them all to the
-    /// record's session in one message that names each place, quotes its
-    /// lines and carries its comment. The drafts go with the send, so a
-    /// second empty `C` sends nothing and leaves its composer open. A record
-    /// with no session still gets its comments, and nothing opens.
+    /// `C` in a review pane with drafts queued posts the shown record's
+    /// drafts as review comments on it at once, in order, and sends them all
+    /// to the record's session in one message that names each place, quotes
+    /// its lines and carries its comment; no composer opens. The drafts go
+    /// with the send, so a second `C` has none and asks for a line instead.
+    /// A record with no session still gets its comments, and nothing opens.
     #[test]
     fn send_comments_posts_each_and_opens_the_session_once() {
         for session in [true, false] {
@@ -1994,9 +1994,10 @@ diff --git a/b.txt b/b.txt
             for draft in two_drafts() {
                 harness.state_mut().state.add_review_draft(id(50), draft);
             }
-            comment_line(&mut harness, "");
+            press_with(&mut harness, Modifiers::SHIFT, Key::C);
 
             let h = harness.state();
+            assert!(!h.state.rejecting(), "drafts queued: no composer");
             let (card, record, comments) = h.review_comments.clone().expect("comments posted");
             assert_eq!((card, record), (id(5), id(50)));
             let posted: Vec<_> = comments
@@ -2051,12 +2052,12 @@ diff --git a/b.txt b/b.txt
                 )
             );
 
-            assert_eq!(h.commented, None, "an empty line posts no comment");
+            assert_eq!(h.commented, None, "no line comment");
 
             harness.state_mut().review_comments = None;
-            comment_line(&mut harness, "");
+            press_with(&mut harness, Modifiers::SHIFT, Key::C);
             assert_eq!(harness.state().review_comments, None);
-            assert!(harness.state().state.rejecting(), "nothing to send");
+            assert!(harness.state().state.rejecting(), "nothing queued: a line");
         }
     }
 
@@ -2084,7 +2085,7 @@ diff --git a/b.txt b/b.txt
             id(50),
             crate::ui::DraftComment::on_commit("split this commit".to_string()),
         );
-        comment_line(&mut harness, "");
+        press_with(&mut harness, Modifiers::SHIFT, Key::C);
 
         let h = harness.state();
         let (_, _, comments) = h.review_comments.clone().expect("comments posted");
@@ -2165,39 +2166,27 @@ diff --git a/b.txt b/b.txt
         }
     }
 
-    /// `C` with line comments drafted on the record sends them with the
-    /// line: the drafts publish as review comments first, the line as a card
-    /// comment the frame after, and the session hears both in one message,
-    /// the line leading.
+    /// `C` with drafts queued sends them, from any view: the detail's `C`
+    /// sends what was drafted in the card's review pane. The line composer
+    /// only opens with nothing queued.
     #[test]
-    fn c_takes_the_drafted_line_comments_along() {
-        let mut harness = pane_harness();
+    fn c_with_drafts_queued_sends_them_from_the_detail() {
+        let mut harness = detail_harness(None);
         let [lines, _] = two_drafts();
         harness.state_mut().state.add_review_draft(id(50), lines);
-        comment_line(&mut harness, "one more thing");
+        press_with(&mut harness, Modifiers::SHIFT, Key::C);
 
         let h = harness.state();
+        assert!(!h.state.rejecting(), "no composer");
         let (card, record, comments) = h.review_comments.clone().expect("drafts posted");
         assert_eq!((card, record), (id(5), id(50)));
         let bodies: Vec<_> = comments.iter().map(|c| c.body.as_str()).collect();
-        assert_eq!(bodies, vec!["rename it"], "the line isn't a review comment");
-        let card_ref = headway::wordid::card_ref(&h.view.id, id(5).bytes());
+        assert_eq!(bodies, vec!["rename it"]);
         assert_eq!(
-            h.session.as_ref().and_then(|o| o.msg.as_deref()),
-            Some(
-                format!(
-                    "Review comments on commit 136ceb9d3bfa (card {card_ref}):\n\n\
-                     one more thing\n\n\
-                     src/a.rs:1-2\n```diff\n fn a() {{\n-    old();\n+    new();\n```\nrename it"
-                )
-                .as_str()
-            )
+            h.session.as_ref().map(|o| o.reference.as_str()),
+            Some(SESSION)
         );
-        assert_eq!(
-            h.commented,
-            Some((id(5), "one more thing".to_string())),
-            "the line follows as a card comment"
-        );
+        assert_eq!(h.commented, None);
         assert_eq!(h.moved, None);
     }
 

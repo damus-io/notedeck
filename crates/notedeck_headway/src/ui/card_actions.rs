@@ -50,8 +50,8 @@ pub(crate) enum ComposerKind {
     /// `X`: post it as a `review:` comment, tell the session, and move the
     /// card back to In Progress.
     SendBack,
-    /// `C`: post it as a comment and tell the session, with any line comments
-    /// drafted on the record; the card stays where it is.
+    /// `C`: post it as a comment and tell the session; the card stays where
+    /// it is.
     Comment,
 }
 
@@ -359,9 +359,22 @@ impl BoardUiState {
         self.open_composer(view, card, ComposerKind::SendBack);
     }
 
-    /// `C`: open the comment composer for `card`.
-    pub(crate) fn start_comment(&mut self, view: &BoardView, card: NoteId) {
+    /// `C`: send the line comments drafted on `card`'s record at once, if
+    /// there are any ([`send_review_comments`]); else open the comment
+    /// composer for `card`.
+    ///
+    /// [`send_review_comments`]: Self::send_review_comments
+    pub(crate) fn start_comment(
+        &mut self,
+        view: &BoardView,
+        card: NoteId,
+        now: f64,
+    ) -> Option<BoardAction> {
+        if self.has_queued_comments(view, card) {
+            return self.send_review_comments(view, card, now);
+        }
         self.open_composer(view, card, ComposerKind::Comment);
+        None
     }
 
     /// Open the one-line composer on `card`, if it's on the board.
@@ -402,8 +415,8 @@ impl BoardUiState {
     }
 
     /// Enter in the one-line composer: for `X`, the send-back below; for `C`,
-    /// [`send_line_comment`](Self::send_line_comment), which keeps the
-    /// composer open only when there was nothing to send.
+    /// [`send_line_comment`](Self::send_line_comment). An empty line sends
+    /// nothing and keeps the composer open.
     pub(crate) fn submit_reject(&mut self, view: &BoardView, now: f64) -> Option<BoardAction> {
         let composer = self.reason.take()?;
         let line = composer.text.trim();
@@ -562,7 +575,7 @@ fn reason_composer_ui(ui: &mut egui::Ui, theme: &ColorTheme, composer: &mut Reas
         ),
         ComposerKind::Comment => (
             egui::RichText::new("Comment").color(theme.accent),
-            "Enter comments and tells its session, with any drafted line comments; Esc cancels",
+            "Enter comments and tells its session; Esc cancels",
         ),
     };
     ui.horizontal(|ui| {

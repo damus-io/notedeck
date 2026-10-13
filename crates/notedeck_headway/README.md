@@ -339,7 +339,7 @@ replays each key in each view).
 | `a`           | archive                                                                |
 | `D`           | move to Done                                                           |
 | `X`           | ask for a reason, post it as a `review: …` comment, move to In Progress |
-| `C`           | ask for a line, post it as a comment and send it to the record's session with any drafted line comments; the card stays put |
+| `C`           | send the line comments drafted on the record, if any; else ask for a line, post it as a comment and send it to the record's session. The card stays put |
 | `n` / `p`     | next / previous card (see below)                                       |
 
 The record is the one a review pane shows, else the card's newest. What differs

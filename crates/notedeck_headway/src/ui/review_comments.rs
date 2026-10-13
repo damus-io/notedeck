@@ -563,7 +563,7 @@ impl BoardUiState {
         self.review.drafts.add(record, draft);
     }
 
-    /// The header's "Send N comments": publish the drafts on `card`'s
+    /// `C` with drafts queued, or the header's "Send N comments": publish the drafts on `card`'s
     /// shown record as review comments on it, and send them all, in one
     /// message, to the record's agentium session as a [`BoardEffect::Open`].
     /// A record with no session still gets its comments. With no drafts it
@@ -585,22 +585,38 @@ impl BoardUiState {
         if let Some(open) = review_comments_open(&record.fields, &card_ref, &drafts) {
             self.raise(BoardEffect::Open(open));
         }
+        let comments = drafts
+            .into_iter()
+            .map(|d| NewReviewComment {
+                location: d.at.map(|at| at.location),
+                body: d.body,
+                reply_to: None,
+            })
+            .collect();
         Some(BoardAction::AddReviewComments {
             card,
             record: record.id,
-            comments: new_review_comments(&drafts),
+            comments,
         })
+    }
+
+    /// Whether `card`'s record ([`acted_record`]) has line comments drafted
+    /// on it, waiting for a send: what makes `C` send them rather than ask for
+    /// a line.
+    ///
+    /// [`acted_record`]: Self::acted_record
+    pub(crate) fn has_queued_comments(&self, view: &BoardView, card: NoteId) -> bool {
+        let Some(FoundCard { card: found, .. }) = find_card(view, card) else {
+            return false;
+        };
+        self.acted_record(found)
+            .is_some_and(|r| !self.review.drafts.of(r.id).is_empty())
     }
 
     /// Enter in the `C` composer: post `line` as a comment on `card` and send
     /// it to the agentium session of the card's record ([`acted_record`]),
-    /// leaving the card where it is. Line comments drafted on that record go
-    /// with it: published as review comments on the record now, the line
-    /// following on the next frame (a frame applies one action), and both in
-    /// one message to the session, the line first. A record with no session,
-    /// or a card with no record, still gets its comment. An empty line sends
-    /// just the drafts; with none either, nothing is sent and `None` comes
-    /// back.
+    /// leaving the card where it is. A record with no session, or a card with
+    /// no record, still gets its comment. An empty line sends nothing.
     ///
     /// [`acted_record`]: Self::acted_record
     pub(crate) fn send_line_comment(
@@ -609,56 +625,24 @@ impl BoardUiState {
         card: NoteId,
         line: &str,
     ) -> Option<BoardAction> {
-        let found = find_card(view, card)?.card;
-        let record = self.acted_record(found);
-        let drafts = record
-            .map(|r| self.review.drafts.take(r.id))
-            .unwrap_or_default();
-        if line.is_empty() && drafts.is_empty() {
+        if line.is_empty() {
             return None;
         }
-        let comment = (!line.is_empty()).then(|| BoardAction::AddComment {
+        let found = find_card(view, card)?.card;
+        if let Some(record) = self.acted_record(found) {
+            let card_ref = headway::wordid::card_ref(&view.id, card.bytes());
+            let said = [DraftComment {
+                at: None,
+                body: line.to_owned(),
+            }];
+            if let Some(open) = review_comments_open(&record.fields, &card_ref, &said) {
+                self.raise(BoardEffect::Open(open));
+            }
+        }
+        Some(BoardAction::AddComment {
             card,
             body: line.to_owned(),
             reply_to: None,
-        });
-        let Some(record) = record else {
-            return comment;
-        };
-        let comments = new_review_comments(&drafts);
-        let mut message = Vec::with_capacity(drafts.len() + 1);
-        if !line.is_empty() {
-            message.push(DraftComment {
-                at: None,
-                body: line.to_owned(),
-            });
-        }
-        message.extend(drafts);
-        let card_ref = headway::wordid::card_ref(&view.id, card.bytes());
-        if let Some(open) = review_comments_open(&record.fields, &card_ref, &message) {
-            self.raise(BoardEffect::Open(open));
-        }
-        if comments.is_empty() {
-            return comment;
-        }
-        self.follow_up = comment;
-        Some(BoardAction::AddReviewComments {
-            card,
-            record: record.id,
-            comments,
         })
     }
-}
-
-/// `drafts` as the review comments a send publishes. Allocates, so it's
-/// built on the send, never per frame.
-fn new_review_comments(drafts: &[DraftComment]) -> Vec<NewReviewComment> {
-    drafts
-        .iter()
-        .map(|d| NewReviewComment {
-            location: d.at.as_ref().map(|at| at.location.clone()),
-            body: d.body.clone(),
-            reply_to: None,
-        })
-        .collect()
 }

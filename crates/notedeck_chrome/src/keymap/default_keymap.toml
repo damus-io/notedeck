@@ -363,7 +363,8 @@ group = "scroll"
 
 # A review pane's diff, in the queue or opened from a card: its files, and
 # commenting on the lines picked in it (or, with none picked, the commit).
-# The card's `C` sends what's drafted here along with its own line.
+# The card's `C` sends what's drafted here; with nothing drafted it asks for a
+# one-line comment instead.
 
 [[bind]]
 scope = "headway.diff"
