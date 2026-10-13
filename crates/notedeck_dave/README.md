@@ -46,7 +46,7 @@ You can use either mode depending on your needs—simple chat for quick Nostr qu
   - Small edits (2 lines or less by default)
   - Read-only bash commands (grep, ls, cat, find, etc.)
   - Cargo commands (build, check, test, fmt, clippy)
-- **Plan Mode** - Toggle plan mode with `Ctrl+M` for architectural planning
+- **Permission Modes** - Manual, Plan, Accept Edits and Auto, set with normal mode's `m` chords or the mode badge's menu
 - **Session Resume** - Resume previous Claude Code sessions from filesystem
 - **AskUserQuestion Support** - Answer multi-choice questions from the AI
 
@@ -77,14 +77,14 @@ what can finish a half-typed prefix like `z`.
 | `dd` | Delete the agent |
 | `v` | Toggle scene / list view |
 | `gd` / `gc` | Show the session's Details tab / back to the chat |
-| `m` | Cycle permission mode |
+| `mm` / `mp` / `me` / `ma` | Permission mode: Manual / Plan / Accept Edits / Auto |
 | `e` | Open the external editor (leaves normal mode) |
 | `s` | Open the issue the session works (e.g. its headway card) |
 | `S` | Stop the running turn (same as the Stop button) |
 | `]q` / `[q` | Next / previous session in the focus queue |
 | `i` / `a` | Back to insert mode |
 | `q` | Drop the block cursor and go back to insert mode |
-| `Esc` | Cancel a half-typed prefix (`z`, `g`, `d`, `]`, `[`); with none, open the side menu |
+| `Esc` | Cancel a half-typed prefix (`z`, `g`, `d`, `m`, `]`, `[`); with none, open the side menu |
 
 Normal mode is a latch: it stays on after a command until you leave it. A
 half-typed prefix lapses after two seconds.
@@ -121,7 +121,6 @@ doesn't have focus.
 | `Ctrl+Shift+E` / `Ctrl+Shift+M` | Expand / collapse every block |
 | `Ctrl+N` / `Ctrl+P` | Focus queue navigation (higher / lower priority) |
 | `Ctrl+D` | Toggle Done status in the focus queue |
-| `Ctrl+M` | Cycle permission mode |
 | `Ctrl+\` | Toggle auto-steal focus |
 | `Ctrl+L` | Toggle scene view |
 | `Ctrl+G` | Open external editor for input |

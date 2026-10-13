@@ -1311,15 +1311,11 @@ pub fn handle_key_action(
             }
             KeyActionResult::None
         }
-        KeyAction::CyclePermissionMode => {
-            let publish = update::cycle_permission_mode(session_manager, backend, ctx);
-            if let Some(session) = session_manager.get_active_mut() {
-                session.focus_requested = true;
-            }
-            match publish {
-                Some(cmd) => KeyActionResult::PublishModeCommand(cmd),
-                None => KeyActionResult::None,
-            }
+        // Normal mode's `m` chords: it keeps the keyboard, so the input
+        // isn't asked for focus.
+        KeyAction::SetPermissionMode(mode) => {
+            update::set_permission_mode(session_manager, backend, mode, ctx)
+                .map_or(KeyActionResult::None, KeyActionResult::PublishModeCommand)
         }
         // On the scene's map the selection is what you're on, and a box
         // select makes it several: Delete and `dd` take them all.
@@ -1399,9 +1395,9 @@ pub fn handle_key_action(
 /// input when it ends. Runs every frame, after the keybindings are dispatched.
 ///
 /// While normal mode is on, an action's request to focus the active input (a
-/// focus-queue jump, cycling the permission mode) is dropped: focusing the
-/// input mid-mode would put it back under the bare keys, and the input is
-/// focused anyway when normal mode ends — whichever session is active then.
+/// focus-queue jump) is dropped: focusing the input mid-mode would put it back
+/// under the bare keys, and the input is focused anyway when normal mode ends —
+/// whichever session is active then.
 pub fn settle_normal_mode_focus(
     normal_mode: &mut NormalMode,
     session_manager: &mut SessionManager,
@@ -1618,16 +1614,6 @@ pub fn handle_ui_action(
             UiActionResult::Handled,
             UiActionResult::PublishPermissionResponse,
         ),
-        DaveAction::CyclePermissionMode => {
-            let publish = update::cycle_permission_mode(session_manager, backend, ctx);
-            if let Some(session) = session_manager.get_active_mut() {
-                session.focus_requested = true;
-            }
-            match publish {
-                Some(cmd) => UiActionResult::PublishModeCommand(cmd),
-                None => UiActionResult::Handled,
-            }
-        }
         DaveAction::SetPermissionMode(mode) => {
             let publish = update::set_permission_mode(session_manager, backend, mode, ctx);
             if let Some(session) = session_manager.get_active_mut() {
@@ -1762,6 +1748,7 @@ mod tests {
     use crate::ui::AgentScene;
     use crate::ui_tools::chrome_keys::ChromeKeys;
     use crate::update;
+    use claude_agent_sdk_rs::PermissionMode;
     use egui::{Key, Modifiers};
     use egui_kittest::Harness;
     use notedeck::test_harness::PressKey;
@@ -2073,6 +2060,47 @@ mod tests {
         harness.press_key_modifiers(Modifiers::NONE, Key::I);
         harness.run();
         assert_eq!(harness.ctx.memory(|m| m.focused()), Some(input_id(second)));
+    }
+
+    /// Through the real key engine, on an agentic session: `m a` sets Auto
+    /// and `m m` Manual, `m` alone changes nothing, and normal mode keeps
+    /// the keyboard throughout.
+    #[test]
+    fn m_chords_set_the_active_sessions_permission_mode() {
+        let mut harness = Harness::new_ui_state(normal_mode_frame, Dispatch::new());
+        let [first, _] = harness.state().sessions;
+        let mode = |d: &Dispatch| {
+            d.session_manager
+                .get(first)
+                .and_then(|s| s.agentic.as_ref())
+                .map(|a| a.permission_mode)
+        };
+        harness.run();
+        assert_eq!(
+            mode(harness.state()),
+            Some(PermissionMode::Auto),
+            "a new agentic session starts in Auto"
+        );
+
+        harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
+        harness.press_key_modifiers(Modifiers::NONE, Key::M);
+        harness.press_key_modifiers(Modifiers::NONE, Key::M);
+        harness.run();
+        assert_eq!(mode(harness.state()), Some(PermissionMode::Default));
+
+        harness.press_key_modifiers(Modifiers::NONE, Key::M);
+        harness.run();
+        assert_eq!(
+            mode(harness.state()),
+            Some(PermissionMode::Default),
+            "m alone is no toggle"
+        );
+
+        harness.press_key_modifiers(Modifiers::NONE, Key::A);
+        harness.run();
+        assert_eq!(mode(harness.state()), Some(PermissionMode::Auto));
+        assert!(harness.state().normal_mode.is_normal());
+        assert_eq!(harness.ctx.memory(|m| m.focused()), None);
     }
 
     /// egui drops the input's focus on Esc before Dave reads the key, so

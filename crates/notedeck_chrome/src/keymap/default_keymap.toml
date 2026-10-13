@@ -932,12 +932,40 @@ tool  = "dave_toggle_view"
 label = "scene view"
 group = "view"
 
+# Permission mode, by name: `m` then the mode's letter. No cycle, so no key
+# lands on a mode you didn't ask for. Bypass is deliberately unbound.
+
 [[bind]]
 scope = "dave.normal"
-keys  = "m"
-tool  = "dave_cycle_permission_mode"
-label = "permission mode"
-group = "view"
+keys  = "m m"
+tool  = "dave_set_permission_mode"
+args  = { mode = "manual" }
+label = "manual"
+group = "mode"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "m p"
+tool  = "dave_set_permission_mode"
+args  = { mode = "plan" }
+label = "plan"
+group = "mode"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "m e"
+tool  = "dave_set_permission_mode"
+args  = { mode = "accept_edits" }
+label = "accept edits"
+group = "mode"
+
+[[bind]]
+scope = "dave.normal"
+keys  = "m a"
+tool  = "dave_set_permission_mode"
+args  = { mode = "auto" }
+label = "auto"
+group = "mode"
 
 [[bind]]
 scope = "dave.normal"

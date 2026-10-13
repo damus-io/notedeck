@@ -260,11 +260,8 @@ pub enum DaveAction {
     CompactAndApprove {
         request_id: Uuid,
     },
-    /// Cycle permission mode: Manual → Plan → Accept Edits → Auto (clicked mode
-    /// badge)
-    CyclePermissionMode,
-    /// Set a specific permission mode (chosen from the mode badge's right-click
-    /// menu): Manual / Plan / Accept Edits / Auto.
+    /// Set a specific permission mode (chosen from the mode badge's menu):
+    /// Manual / Plan / Accept Edits / Auto.
     SetPermissionMode(PermissionMode),
     /// Toggle auto-steal focus mode (clicked FOCUS badge)
     ToggleAutoSteal,
@@ -3354,16 +3351,13 @@ fn toggle_badges_ui(
         action = Some(DaveAction::ToggleAutoSteal);
     }
 
-    // Permission mode badge. Left-click / Ctrl+M cycles Manual → Plan → Accept
-    // Edits → Auto; right-click sets any mode directly.
-    let mut mode_badge = permission_mode_badge(permission_mode);
-    if ctrl_held {
-        mode_badge = mode_badge.keybind("M");
-    }
-    let mode_resp = mode_badge.show(ui).on_hover_text(
-        "Click / Ctrl+M to cycle: Manual → Plan → Accept Edits → Auto · right-click for more",
-    );
-    notedeck_ui::context_menu::context_menu(&mode_resp, |ui| {
+    // Permission mode badge. Either click opens a menu that sets a mode; there
+    // is no cycle to step through by accident. In normal mode `m m`, `m p`,
+    // `m e` and `m a` set them by name.
+    let mode_resp = permission_mode_badge(permission_mode)
+        .show(ui)
+        .on_hover_text("Permission mode · click to pick (normal mode: mm / mp / me / ma)");
+    notedeck_ui::context_menu::click_menu(&mode_resp, |ui| {
         ui.label(egui::RichText::new("Permission mode").small().weak());
         if ui.button("Manual").clicked() {
             action = Some(DaveAction::SetPermissionMode(PermissionMode::Default));
@@ -3389,9 +3383,6 @@ fn toggle_badges_ui(
             ui.close();
         }
     });
-    if mode_resp.clicked() {
-        action = Some(DaveAction::CyclePermissionMode);
-    }
 
     // COMPACT badge
     let compact_badge =
@@ -3591,19 +3582,27 @@ mod tests {
     }
 
     #[test]
-    fn mode_badge_left_click_cycles() {
-        // Left-clicking the badge (shows "MANUAL" in Default) cycles — it must
-        // NOT jump straight to a specific mode.
+    fn mode_badge_left_click_opens_the_menu() {
+        // Left-clicking the badge (shows "MANUAL" in Default) changes nothing
+        // by itself: it opens the same menu the right click does.
         let mut harness = badge_harness(PermissionMode::Default);
         harness.run();
         harness.get_by_label("MANUAL").click_accesskit();
+        // The menu's first frame is an invisible sizing pass.
+        harness.run();
+        assert!(
+            harness.state().action.is_none(),
+            "a click alone must not change the mode"
+        );
+
+        harness.get_by_label("Plan").click_accesskit();
         harness.run();
         assert!(
             matches!(
                 harness.state().action,
-                Some(DaveAction::CyclePermissionMode)
+                Some(DaveAction::SetPermissionMode(PermissionMode::Plan))
             ),
-            "left-click should cycle, never set a specific mode"
+            "the menu's Plan item should set Plan"
         );
     }
 

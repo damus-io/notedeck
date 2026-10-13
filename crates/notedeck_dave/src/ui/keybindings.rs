@@ -1,5 +1,6 @@
 use crate::config::AiMode;
 use crate::ui::scene::SceneDir;
+use claude_agent_sdk_rs::PermissionMode;
 use egui::Key;
 use notedeck_ui::chord;
 
@@ -37,8 +38,9 @@ pub enum KeyAction {
     OpenIssue,
     /// Toggle between scene view and classic view
     ToggleView,
-    /// Cycle permission mode: Manual → Plan → Accept Edits → Auto (Ctrl+M)
-    CyclePermissionMode,
+    /// Set the active session's permission mode (normal `m m` Manual, `m p`
+    /// Plan, `m e` Accept Edits, `m a` Auto)
+    SetPermissionMode(PermissionMode),
     /// Delete the active session
     DeleteActiveSession,
     /// Navigate to next item in focus queue (Ctrl+N)
@@ -579,11 +581,6 @@ fn check_regular_bindings(ctx: &egui::Context, keys: KeyContext) -> Option<KeyAc
         return Some(KeyAction::OpenTerminal);
     }
 
-    // Ctrl+M to cycle permission mode - agentic only
-    if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::M)) {
-        return Some(KeyAction::CyclePermissionMode);
-    }
-
     // Ctrl+D to toggle Done status for current focus queue item - agentic only
     if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::D)) {
         return Some(KeyAction::FocusQueueToggleDone);
@@ -967,6 +964,57 @@ mod tests {
             }
         }
         assert!(checked > 40, "Dave's keymap is in: {checked} bindings");
+    }
+
+    /// `m` then a mode's letter sets that mode by name; `m` alone only
+    /// waits for the letter, and the which-key strip offers the four.
+    #[test]
+    fn normal_m_chords_set_the_permission_mode_by_name() {
+        let m = press(NONE, Key::M);
+        for (key, mode) in [
+            (Key::M, PermissionMode::Default),
+            (Key::P, PermissionMode::Plan),
+            (Key::E, PermissionMode::AcceptEdits),
+            (Key::A, PermissionMode::Auto),
+        ] {
+            assert_eq!(
+                detect_sequence(&[ESC, m, press(NONE, key)]),
+                Some(KeyAction::SetPermissionMode(mode)),
+                "m {key:?}"
+            );
+        }
+
+        let h = keys_after_in(FRAME, &[ESC, m]);
+        assert_eq!(h.state().action, None, "m alone changes nothing");
+        let pending = h.state().chrome.engine().pending();
+        assert!(pending.is_some(), "m waits for the mode's letter");
+
+        let view = NormalView {
+            pane: Pane::Chat,
+            sessions_shown: true,
+            scene: false,
+            agentic: true,
+            interruptible: false,
+            has_issue: false,
+        };
+        let scopes = notedeck_chrome::keymap::Scopes::new(crate::ui_tools::key_scopes(Some(view)));
+        let strip: Vec<(&str, &str)> = h
+            .state()
+            .chrome
+            .engine()
+            .keymap()
+            .hints(scopes, pending, |_| true)
+            .map(|hint| (hint.keycaps()[0], hint.label))
+            .collect();
+        assert_eq!(
+            strip,
+            [
+                ("m", "manual"),
+                ("p", "plan"),
+                ("e", "accept edits"),
+                ("a", "auto")
+            ]
+        );
     }
 
     #[test]
@@ -1642,13 +1690,5 @@ mod tests {
 
         type_key(&mut harness, Key::J, "j");
         assert_eq!(harness.state().2, "j", "typing lands in the clicked field");
-    }
-
-    #[test]
-    fn ctrl_m_cycles_permission_mode() {
-        assert_eq!(
-            detect(Modifiers::CTRL, Key::M),
-            Some(KeyAction::CyclePermissionMode),
-        );
     }
 }

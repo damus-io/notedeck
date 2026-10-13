@@ -238,44 +238,10 @@ pub struct ModeCommandPublish {
     pub mode: &'static str,
 }
 
-/// The next mode in the click / Ctrl+M cycle: Manual (Default) → Plan →
-/// AcceptEdits → Auto → Manual. These are the modes the CLI honors as a runtime
-/// switch. `Auto` is Claude Code's classifier-gated auto-execution mode: safe
-/// tool calls run without prompting while flagged/dangerous ones still route to
-/// dave's permission UI. `BypassPermissions` is deliberately never in the cycle
-/// — dave can't enter it mid-session and it does no safety checking.
-fn next_cycle_permission_mode(mode: PermissionMode) -> PermissionMode {
-    match mode {
-        PermissionMode::Default => PermissionMode::Plan,
-        PermissionMode::Plan => PermissionMode::AcceptEdits,
-        PermissionMode::AcceptEdits => PermissionMode::Auto,
-        _ => PermissionMode::Default,
-    }
-}
-
-pub fn cycle_permission_mode(
-    session_manager: &mut SessionManager,
-    backend: &dyn AiBackend,
-    ctx: &egui::Context,
-) -> Option<ModeCommandPublish> {
-    let current = session_manager
-        .get_active()?
-        .agentic
-        .as_ref()?
-        .permission_mode;
-
-    set_permission_mode(
-        session_manager,
-        backend,
-        next_cycle_permission_mode(current),
-        ctx,
-    )
-}
-
-/// Apply an explicit permission mode (Default / Plan / AcceptEdits) to the
-/// active session.
+/// Apply an explicit permission mode (Manual / Plan / AcceptEdits / Auto) to
+/// the active session.
 ///
-/// Shared by [`cycle_permission_mode`] and by deliberate selection from the mode
+/// Shared by the `m` chords (`m m`, `m p`, `m e`, `m a`) and the mode badge's
 /// menu. Local sessions apply on the backend and mark state dirty; remote
 /// sessions return a command for the caller to publish to the host.
 pub fn set_permission_mode(
@@ -1657,60 +1623,6 @@ mod tests {
     use crate::focus_queue::{FocusPriority, FocusQueue};
     use crate::session::{SessionId, SessionSource};
     use notedeck::test_harness::PressKey;
-
-    #[test]
-    fn cycle_walks_manual_plan_edits_auto() {
-        // The click / Ctrl+M cycle is a closed 4-cycle over the modes the CLI
-        // honors at runtime: Manual (Default) → Plan → AcceptEdits → Auto →
-        // Manual.
-        assert_eq!(
-            next_cycle_permission_mode(PermissionMode::Default),
-            PermissionMode::Plan
-        );
-        assert_eq!(
-            next_cycle_permission_mode(PermissionMode::Plan),
-            PermissionMode::AcceptEdits
-        );
-        assert_eq!(
-            next_cycle_permission_mode(PermissionMode::AcceptEdits),
-            PermissionMode::Auto
-        );
-        assert_eq!(
-            next_cycle_permission_mode(PermissionMode::Auto),
-            PermissionMode::Default
-        );
-    }
-
-    #[test]
-    fn cycle_never_reaches_bypass_permissions() {
-        // BypassPermissions does no safety checking and dave can't enter it
-        // mid-session, so it must never appear in the click / Ctrl+M cycle —
-        // not from any starting mode.
-        for start in [
-            PermissionMode::Default,
-            PermissionMode::Plan,
-            PermissionMode::AcceptEdits,
-            PermissionMode::Auto,
-            PermissionMode::BypassPermissions,
-        ] {
-            let mut mode = start;
-            for _ in 0..8 {
-                mode = next_cycle_permission_mode(mode);
-                assert_ne!(
-                    mode,
-                    PermissionMode::BypassPermissions,
-                    "cycling from {start:?} reached BypassPermissions"
-                );
-            }
-        }
-
-        // Cycling out of BypassPermissions (should it ever be set) exits to
-        // Manual (Default).
-        assert_eq!(
-            next_cycle_permission_mode(PermissionMode::BypassPermissions),
-            PermissionMode::Default
-        );
-    }
 
     fn create_named_agent_session(
         sm: &mut SessionManager,

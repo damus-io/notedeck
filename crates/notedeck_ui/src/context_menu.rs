@@ -259,6 +259,26 @@ pub fn stationary_arbitrary_menu_button_padding<R>(
     egui::InnerResponse::new(inner.map(|r| r.inner), button_response)
 }
 
+/// A menu anchored to `button_response` that either click toggles, for a
+/// widget whose only job is to offer the menu (a left click has nothing else
+/// to do), with our standard menu padding. A click outside it, or on an item
+/// that closes it, shuts it.
+pub fn click_menu<R>(
+    button_response: &egui::Response,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<R> {
+    let padding = MenuPadding::default();
+    let clicked = button_response.clicked() || button_response.secondary_clicked();
+    egui::Popup::menu(button_response)
+        .open_memory(clicked.then_some(egui::SetOpenCommand::Toggle))
+        .show(|ui| {
+            ui.spacing_mut().button_padding = padding.button_padding;
+            ui.spacing_mut().item_spacing.y = padding.item_spacing_y;
+            add_contents(ui)
+        })
+        .map(|inner| inner.inner)
+}
+
 /// Drop-in replacement for `response.context_menu()` with configurable padding.
 pub fn context_menu_padding(
     response: &egui::Response,

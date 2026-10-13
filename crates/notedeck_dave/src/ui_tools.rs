@@ -13,6 +13,7 @@
 //! from state alone, without allocating, which tools are
 //! [available](available) and which [key scopes](key_scopes) are active.
 
+use claude_agent_sdk_rs::PermissionMode;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -44,8 +45,8 @@ pub(crate) const RENAME_AGENT: &str = "dave_rename_agent";
 pub(crate) const DELETE_SESSION: &str = "dave_delete_session";
 /// `v`: flip between the scene and the classic view.
 pub(crate) const TOGGLE_VIEW: &str = "dave_toggle_view";
-/// `m`: cycle the permission mode.
-pub(crate) const CYCLE_PERMISSION_MODE: &str = "dave_cycle_permission_mode";
+/// `m m` / `m p` / `m e` / `m a`: set the permission mode.
+pub(crate) const SET_PERMISSION_MODE: &str = "dave_set_permission_mode";
 /// `e`: compose the message in an external editor.
 pub(crate) const EXTERNAL_EDITOR: &str = "dave_external_editor";
 /// `s`: open the issue the active session works.
@@ -88,7 +89,7 @@ pub(crate) enum DaveUiTool {
     RenameAgent,
     DeleteSession,
     ToggleView,
-    CyclePermissionMode,
+    SetPermissionMode,
     ExternalEditor,
     OpenIssue,
     Interrupt,
@@ -183,6 +184,20 @@ enum Tab {
 /// The values of [`Tab`].
 const TABS: &[&str] = &["chat", "details"];
 
+/// The permission mode `dave_set_permission_mode` sets. Bypass isn't one:
+/// Dave can't enter it mid-session, and it does no safety checking.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum ModeArg {
+    Manual,
+    Plan,
+    AcceptEdits,
+    Auto,
+}
+
+/// The values of [`ModeArg`].
+const MODES: &[&str] = &["manual", "plan", "accept_edits", "auto"];
+
 /// `dave_block_cursor`'s arguments.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -232,6 +247,13 @@ struct TabArgs {
     tab: Tab,
 }
 
+/// `dave_set_permission_mode`'s arguments.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModeArgs {
+    mode: ModeArg,
+}
+
 /// An argument-free tool's arguments: none.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -256,7 +278,7 @@ impl DaveUiTool {
         Self::RenameAgent,
         Self::DeleteSession,
         Self::ToggleView,
-        Self::CyclePermissionMode,
+        Self::SetPermissionMode,
         Self::ExternalEditor,
         Self::OpenIssue,
         Self::Interrupt,
@@ -278,7 +300,7 @@ impl DaveUiTool {
             Self::RenameAgent => RENAME_AGENT,
             Self::DeleteSession => DELETE_SESSION,
             Self::ToggleView => TOGGLE_VIEW,
-            Self::CyclePermissionMode => CYCLE_PERMISSION_MODE,
+            Self::SetPermissionMode => SET_PERMISSION_MODE,
             Self::ExternalEditor => EXTERNAL_EDITOR,
             Self::OpenIssue => OPEN_ISSUE,
             Self::Interrupt => INTERRUPT,
@@ -336,9 +358,11 @@ impl DaveUiTool {
             Self::RenameAgent => ("Rename the active session.", vec![]),
             Self::DeleteSession => ("Delete the active session.", vec![]),
             Self::ToggleView => ("Flip between the scene view and the classic view.", vec![]),
-            Self::CyclePermissionMode => (
-                "Cycle the active session's permission mode: Manual, Plan, Accept Edits, Auto.",
-                vec![],
+            Self::SetPermissionMode => (
+                "Set the active session's permission mode: manual (ask before each tool \
+                 call), plan, accept_edits or auto (Claude Code's safety classifier \
+                 decides). Bypass is never offered.",
+                vec![enum_arg("mode", MODES, "The mode to set.")],
             ),
             Self::ExternalEditor => (
                 "Compose the active session's message in an external editor.",
@@ -429,6 +453,15 @@ impl DaveUiTool {
                     Dir::Prev => A::FocusQueuePrev,
                 }
             }
+            Self::SetPermissionMode => {
+                let ModeArgs { mode } = parse_args(name, args)?;
+                A::SetPermissionMode(match mode {
+                    ModeArg::Manual => PermissionMode::Default,
+                    ModeArg::Plan => PermissionMode::Plan,
+                    ModeArg::AcceptEdits => PermissionMode::AcceptEdits,
+                    ModeArg::Auto => PermissionMode::Auto,
+                })
+            }
             Self::SessionTab => {
                 let TabArgs { tab } = parse_args(name, args)?;
                 match tab {
@@ -442,7 +475,6 @@ impl DaveUiTool {
             Self::RenameAgent => no_args(name, args, A::RenameAgent)?,
             Self::DeleteSession => no_args(name, args, A::DeleteActiveSession)?,
             Self::ToggleView => no_args(name, args, A::ToggleView)?,
-            Self::CyclePermissionMode => no_args(name, args, A::CyclePermissionMode)?,
             Self::ExternalEditor => no_args(name, args, A::OpenExternalEditor)?,
             Self::OpenIssue => no_args(name, args, A::OpenIssue)?,
             Self::Interrupt => no_args(name, args, A::Interrupt)?,
@@ -485,7 +517,7 @@ pub(crate) fn available(tool: DaveUiTool, normal: Option<NormalView>) -> bool {
         DaveUiTool::Interrupt => view.interruptible,
         DaveUiTool::CloneAgent
         | DaveUiTool::ToggleView
-        | DaveUiTool::CyclePermissionMode
+        | DaveUiTool::SetPermissionMode
         | DaveUiTool::FocusQueue => view.agentic,
         DaveUiTool::FocusPane
         | DaveUiTool::InsertMode
@@ -627,7 +659,26 @@ mod tests {
             (RENAME_AGENT, json!({}), A::RenameAgent),
             (DELETE_SESSION, json!({}), A::DeleteActiveSession),
             (TOGGLE_VIEW, json!({}), A::ToggleView),
-            (CYCLE_PERMISSION_MODE, json!({}), A::CyclePermissionMode),
+            (
+                SET_PERMISSION_MODE,
+                json!({"mode": "manual"}),
+                A::SetPermissionMode(PermissionMode::Default),
+            ),
+            (
+                SET_PERMISSION_MODE,
+                json!({"mode": "plan"}),
+                A::SetPermissionMode(PermissionMode::Plan),
+            ),
+            (
+                SET_PERMISSION_MODE,
+                json!({"mode": "accept_edits"}),
+                A::SetPermissionMode(PermissionMode::AcceptEdits),
+            ),
+            (
+                SET_PERMISSION_MODE,
+                json!({"mode": "auto"}),
+                A::SetPermissionMode(PermissionMode::Auto),
+            ),
             (EXTERNAL_EDITOR, json!({}), A::OpenExternalEditor),
             (OPEN_ISSUE, json!({}), A::OpenIssue),
             (INTERRUPT, json!({}), A::Interrupt),
@@ -646,6 +697,8 @@ mod tests {
             (BLOCK_CURSOR, json!({})),
             (BLOCK_CURSOR, json!({"to": "sideways"})),
             (BLOCK, json!({"op": "toggle", "extra": 1})),
+            (SET_PERMISSION_MODE, json!({})),
+            (SET_PERMISSION_MODE, json!({"mode": "bypass_permissions"})),
             (NEW_AGENT, json!({"now": true})),
             (INSERT_MODE, json!([])),
         ] {
@@ -703,7 +756,7 @@ mod tests {
                     | DaveUiTool::Interrupt
                     | DaveUiTool::CloneAgent
                     | DaveUiTool::ToggleView
-                    | DaveUiTool::CyclePermissionMode
+                    | DaveUiTool::SetPermissionMode
                     | DaveUiTool::FocusQueue
             ) || matches!(tool, DaveUiTool::SessionCursor | DaveUiTool::SceneCursor);
             assert_eq!(available(tool, Some(bare)), !off, "{tool:?}");
