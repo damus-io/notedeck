@@ -1,9 +1,9 @@
 //! What the shared card-action keys ([`crate::keys::CardAction`]) do to a
 //! card, whichever view pressed them: open its explainer, deployed build or
 //! agentium session, open its review, move it to Done, send it back with a
-//! reason, archive it, step to its neighbour. [`crate::keys::apply_card_action`] picks the method
-//! for the key and the view; these are the steps it takes. Also the `X`
-//! composer the send-back asks its reason in, drawn over any view.
+//! reason, comment on it, archive it, step to its neighbour. [`crate::keys::apply_card_action`]
+//! picks the method for the key and the view; these are the steps it takes. Also the one-line
+//! composer the send-back asks its reason in, and `C` its comment, drawn over any view.
 
 use headway::event::{BoardView, CardView, ReviewView};
 use nostrdb_net::NoteId;
@@ -24,22 +24,35 @@ pub(crate) enum CardStep {
     Prev,
 }
 
-/// The `X` composer: the one-line reason a send-back posts as a `review:`
-/// comment and sends to the record's agentium session, the card it sends
-/// back, and the view it was asked in, which it closes with
+/// The one-line composer `X` and `C` open: the line it posts as a comment and
+/// sends to the record's agentium session, what it's for ([`ComposerKind`]),
+/// the card it's on, and the view it was asked in, which it closes with
 /// ([`BoardUiState::retire_stale_reason`]).
 pub(crate) struct ReasonComposer {
-    /// The card being sent back, fixed when `X` opened the composer.
+    /// What Enter does with the line.
+    kind: ComposerKind,
+    /// The card it's on, fixed when the key opened the composer.
     card: NoteId,
-    /// The card's title as `X` found it, so the bar can name the card
+    /// The card's title as the key found it, so the bar can name the card
     /// without a lookup or a copy each frame.
     title: String,
-    /// The view `X` was pressed in.
+    /// The view the key was pressed in.
     pos: NavPos,
     text: String,
     /// Grab focus on the composer's next layout. Until it lands, the
     /// composer's Enter and Esc are its own ([`BoardUiState::reason_keys_live`]).
     focus: bool,
+}
+
+/// What a [`ReasonComposer`]'s Enter does with its line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ComposerKind {
+    /// `X`: post it as a `review:` comment, tell the session, and move the
+    /// card back to In Progress.
+    SendBack,
+    /// `C`: post it as a comment and tell the session, with any line comments
+    /// drafted on the record; the card stays where it is.
+    Comment,
 }
 
 /// How many body-text lines a detail `j`/`k` scrolls: a mouse-wheel notch's
@@ -313,14 +326,25 @@ impl BoardUiState {
     /// `X`: open the reason composer for `card`. Nothing opens on a board it
     /// couldn't be sent back on.
     pub(crate) fn start_reject(&mut self, view: &BoardView, card: NoteId, now: f64) {
-        let Some(FoundCard { card: found, .. }) = find_card(view, card) else {
-            return;
-        };
-        if IN_PROGRESS.index(view).is_none() {
+        if IN_PROGRESS.index(view).is_none() && find_card(view, card).is_some() {
             self.set_notice(QueueNotice::NoInProgressColumn, now);
             return;
         }
+        self.open_composer(view, card, ComposerKind::SendBack);
+    }
+
+    /// `C`: open the comment composer for `card`.
+    pub(crate) fn start_comment(&mut self, view: &BoardView, card: NoteId) {
+        self.open_composer(view, card, ComposerKind::Comment);
+    }
+
+    /// Open the one-line composer on `card`, if it's on the board.
+    fn open_composer(&mut self, view: &BoardView, card: NoteId, kind: ComposerKind) {
+        let Some(FoundCard { card: found, .. }) = find_card(view, card) else {
+            return;
+        };
         self.reason = Some(ReasonComposer {
+            kind,
             card,
             title: found.title.clone(),
             pos: self.nav_pos(),
@@ -340,8 +364,8 @@ impl BoardUiState {
         }
     }
 
-    /// Whether the `X` composer's Enter and Esc are its own this frame: its
-    /// field has the keyboard, or is about to take it (the frame `X` opened
+    /// Whether the `X`/`C` composer's Enter and Esc are its own this frame: its
+    /// field has the keyboard, or is about to take it (the frame the key opened
     /// it), or nothing else does. While another widget has focus — a comment
     /// box, a title editor — they're that widget's.
     pub(crate) fn reason_keys_live(&self, focused: Option<egui::Id>) -> bool {
@@ -351,7 +375,23 @@ impl BoardUiState {
         composer.focus || focused.is_none_or(|id| id == reason_field_id())
     }
 
-    /// Enter in the reason composer: post the reason as a `review:` comment
+    /// Enter in the one-line composer: for `X`, the send-back below; for `C`,
+    /// [`send_line_comment`](Self::send_line_comment), which keeps the
+    /// composer open only when there was nothing to send.
+    pub(crate) fn submit_reject(&mut self, view: &BoardView, now: f64) -> Option<BoardAction> {
+        let composer = self.reason.take()?;
+        let line = composer.text.trim();
+        let action = match composer.kind {
+            ComposerKind::SendBack => self.send_back(view, composer.card, line, now),
+            ComposerKind::Comment => self.send_line_comment(view, composer.card, line),
+        };
+        if action.is_none() && line.is_empty() {
+            self.reason = Some(composer);
+        }
+        action
+    }
+
+    /// Enter in the `X` composer: post the reason as a `review:` comment
     /// now, move the card to In Progress on the next frame (a frame applies one
     /// action), and, on the queue's current card, step the queue on. The
     /// reason also goes to the agentium session of the card's record
@@ -360,24 +400,23 @@ impl BoardUiState {
     /// empty reason posts nothing and keeps the composer open.
     ///
     /// [`acted_record`]: Self::acted_record
-    pub(crate) fn submit_reject(&mut self, view: &BoardView, now: f64) -> Option<BoardAction> {
-        let composer = self.reason.as_ref()?;
-        let reason = composer.text.trim();
+    fn send_back(
+        &mut self,
+        view: &BoardView,
+        card: NoteId,
+        reason: &str,
+        now: f64,
+    ) -> Option<BoardAction> {
         if reason.is_empty() {
             return None;
         }
-        let card = composer.card;
-        let Some(FoundCard { card: found, .. }) = find_card(view, card) else {
-            self.reason = None;
-            return None;
-        };
+        let FoundCard { card: found, .. } = find_card(view, card)?;
         let body = format!("review: {reason}");
         let card_ref = headway::wordid::card_ref(&view.id, card.bytes());
         // Before the queue steps on: the record is the one the pane shows.
         let open = self
             .acted_record(found)
             .and_then(|r| send_back_open(&r.fields, &card_ref, reason));
-        self.reason = None;
         let to_col = IN_PROGRESS.index(view)?;
         if let Some(open) = open {
             self.raise(BoardEffect::Open(open));
@@ -393,23 +432,23 @@ impl BoardUiState {
         })
     }
 
-    /// Esc in the reason composer: close it, sending nothing.
+    /// Esc in the one-line composer: close it, sending nothing.
     pub(crate) fn cancel_reject(&mut self) {
         self.reason = None;
     }
 
-    /// Whether the `X` reason composer is open.
+    /// Whether the one-line composer (`X`'s or `C`'s) is open.
     pub(crate) fn rejecting(&self) -> bool {
         self.reason.is_some()
     }
 
-    /// The `X` composer's text, empty when it's closed.
+    /// The one-line composer's text, empty when it's closed.
     #[cfg(test)]
     pub(crate) fn reason_text(&self) -> &str {
         self.reason.as_ref().map_or("", |r| r.text.as_str())
     }
 
-    /// Lay the `X` composer out alone, if it's open, for the keymap tests.
+    /// Lay the one-line composer out alone, if it's open, for the keymap tests.
     #[cfg(test)]
     pub(crate) fn reason_test_ui(&mut self, ui: &mut egui::Ui) {
         if let Some(composer) = &mut self.reason {
@@ -459,13 +498,13 @@ fn move_to_end(view: &BoardView, card: NoteId, to_col: usize) -> BoardAction {
     }
 }
 
-/// The id of the `X` composer's text field, so tests (and focus requests) can
+/// The id of the one-line composer's text field, so tests (and focus requests) can
 /// find it.
 pub(crate) fn reason_field_id() -> egui::Id {
     egui::Id::unique("headway-review-reason")
 }
 
-/// The `X` composer across the top of the view it was asked in, while it's
+/// The one-line composer across the top of the view it was asked in, while it's
 /// open. Its Enter and Esc are read before anything lays out
 /// ([`crate::keys::pane_keys`]), so the field only has to take the text and
 /// its focus.
@@ -487,10 +526,21 @@ pub(super) fn reason_bar_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut B
 /// reason field's.
 const TITLE_SHARE: f32 = 0.4;
 
-/// The `X` composer's one-line reason field, after the card it sends back.
+/// The one-line composer's field, after what Enter does and the card it does
+/// it to.
 fn reason_composer_ui(ui: &mut egui::Ui, theme: &ColorTheme, composer: &mut ReasonComposer) {
+    let (verb, hint) = match composer.kind {
+        ComposerKind::SendBack => (
+            egui::RichText::new("Send back").color(theme.destructive),
+            "Why? Enter comments, tells its session, moves it to In Progress; Esc cancels",
+        ),
+        ComposerKind::Comment => (
+            egui::RichText::new("Comment").color(theme.accent),
+            "Enter comments and tells its session, with any drafted line comments; Esc cancels",
+        ),
+    };
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Send back").color(theme.destructive));
+        ui.label(verb);
         ui.scope(|ui| {
             ui.set_max_width(ui.available_width() * TITLE_SHARE);
             ui.add(egui::Label::new(egui::RichText::new(&composer.title).strong()).truncate());
@@ -498,9 +548,7 @@ fn reason_composer_ui(ui: &mut egui::Ui, theme: &ColorTheme, composer: &mut Reas
         let field = egui::TextEdit::singleline(&mut composer.text)
             .id(reason_field_id())
             .desired_width(f32::INFINITY)
-            .hint_text(
-                "Why? Enter comments, tells its session, moves it to In Progress; Esc cancels",
-            );
+            .hint_text(hint);
         let response = ui.add(field);
         if std::mem::take(&mut composer.focus) {
             response.request_focus();

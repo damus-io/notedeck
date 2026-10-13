@@ -3343,13 +3343,13 @@ const QUEUE_HINT_LABELS: [&str; 13] = [
     "session/review",
     "review diff",
     "send back",
+    "comment",
     "next/prev card",
     "scroll",
     "half page",
     "top/bottom",
     "next/prev file",
     "comment (picked lines or commit)",
-    "send comments",
     "leave",
 ];
 
@@ -3422,7 +3422,7 @@ fn raised_opens(harness: &mut Harness<'static, HeadwayTestState>) -> Vec<notedec
 const POSTED_COMMENT: &str = "current() and next() could share an index guard";
 
 /// Post [`POSTED_COMMENT`] on new lines 8-10 of `src/queue.rs` (the
-/// `current` fn) in the first queue card's record, as `C` would have.
+/// `current` fn) in the first queue card's record, as `C` would have sent it.
 fn post_queue_comment(harness: &mut Harness<'static, HeadwayTestState>, fixture: &ReviewFixture) {
     let card = harness_card_id(harness, QUEUE_CARDS[0]);
     // The seeded record lands on the async writer thread like any edit, so
@@ -3488,8 +3488,8 @@ fn draft_on_keys_hunk(harness: &mut Harness<'static, HeadwayTestState>, body: &s
 /// header picks it and opens the
 /// composer, where `c` puts the keyboard; Ctrl+Enter files a draft, drawn under
 /// its lines and counted on the header's "Send 1 comment"; a click on a line's
-/// numbers then a shift-click picks a run; and `C` posts the draft on the
-/// record and sends it to the record's session in one message quoting its
+/// numbers then a shift-click picks a run; and `C` and an empty Enter post the
+/// draft on the record and sends it to the record's session in one message quoting its
 /// lines, after which it comes back from the fold as a posted comment.
 #[test]
 fn review_comments_draft_then_send_to_the_session() {
@@ -3527,6 +3527,8 @@ fn review_comments_draft_then_send_to_the_session() {
     wait_for_label(&mut harness, "src/queue.rs:5-17");
 
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::C);
+    harness.run_ok();
+    harness.press_key(egui::Key::Enter);
     wait_for_absent(&mut harness, "Send 1 comment");
     let opens = raised_opens(&mut harness);
     assert_eq!(opens.len(), 1, "one open for the batch: {opens:?}");
@@ -3550,7 +3552,8 @@ fn review_comments_draft_then_send_to_the_session() {
 
 /// A comment on the commit as a whole, as a reviewer writes it in the queue
 /// with no lines picked: `c` opens the composer on "this commit", Ctrl+Enter
-/// files it as a draft listed over the diff, and `C` posts it on the record
+/// files it as a draft listed over the diff, and `C` and an empty Enter post it
+/// on the record
 /// with no location and sends it to the record's session as just what it
 /// says, after which it folds back and draws over the diff, author and all.
 #[test]
@@ -3575,6 +3578,8 @@ fn review_comment_on_the_whole_commit() {
     assert!(harness.query_by_label(BODY).is_some(), "draft row");
 
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::C);
+    harness.run_ok();
+    harness.press_key(egui::Key::Enter);
     wait_for_absent(&mut harness, "Send 1 comment");
     let opens = raised_opens(&mut harness);
     assert_eq!(opens.len(), 1, "one open: {opens:?}");

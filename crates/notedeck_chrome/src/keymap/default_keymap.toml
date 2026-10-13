@@ -114,6 +114,13 @@ group = "card"
 
 [[bind]]
 scope = "headway.card"
+keys  = "C"
+tool  = "headway_quick_comment"
+label = "comment"
+group = "card"
+
+[[bind]]
+scope = "headway.card"
 keys  = "n"
 tool  = "headway_step_card"
 args  = { dir = "next" }
@@ -322,6 +329,7 @@ group = "scroll"
 
 # A review pane's diff, in the queue or opened from a card: its files, and
 # commenting on the lines picked in it (or, with none picked, the commit).
+# The card's `C` sends what's drafted here along with its own line.
 
 [[bind]]
 scope = "headway.diff"
@@ -344,13 +352,6 @@ scope = "headway.diff"
 keys  = "c"
 tool  = "headway_comment"
 label = "comment (picked lines or commit)"
-group = "comment"
-
-[[bind]]
-scope = "headway.diff"
-keys  = "C"
-tool  = "headway_send_comments"
-label = "send comments"
 group = "comment"
 
 # Leaving the review queue, for the grid (or an epic's detail).

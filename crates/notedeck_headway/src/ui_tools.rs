@@ -47,6 +47,8 @@ pub(crate) const OPEN_SESSION: &str = "headway_open_session";
 pub(crate) const OPEN_REVIEW: &str = "headway_open_review";
 /// `X`: send the current card back, asking for a reason.
 pub(crate) const SEND_BACK: &str = "headway_send_back";
+/// `C`: comment on the current card, telling its record's session.
+pub(crate) const QUICK_COMMENT: &str = "headway_quick_comment";
 /// `n`/`p`: step to the next/previous card.
 pub(crate) const STEP_CARD: &str = "headway_step_card";
 /// `j`/`k`/`h`/`l`, `gg`/`G`: move the grid's cursor.
@@ -66,7 +68,8 @@ pub(crate) const SCROLL: &str = "headway_scroll";
 pub(crate) const STEP_FILE: &str = "headway_step_file";
 /// `c` in a review pane: comment on the picked lines, or the commit.
 pub(crate) const COMMENT: &str = "headway_comment";
-/// `C` in a review pane: send the drafted comments.
+/// The review pane's "Send N comments": send the drafted comments. No key:
+/// `C`'s comment takes them along.
 pub(crate) const SEND_COMMENTS: &str = "headway_send_comments";
 /// `q`/`Esc` over a pane: leave the queue, back a review pane out to its
 /// card, or leave the detail for the grid.
@@ -271,6 +274,12 @@ impl HeadwayUiTool {
                 vec![],
             ),
             card_spec(
+                QUICK_COMMENT,
+                "Ask for a one-line comment on the current card, post it, and send it to its \
+                 review record's agentium session with any line comments drafted on the record.",
+                vec![],
+            ),
+            card_spec(
                 STEP_CARD,
                 "Step to the next or previous card: the grid cursor's, the review queue's, \
                  or the card's column neighbour.",
@@ -355,6 +364,7 @@ impl HeadwayUiTool {
             }
             OPEN_REVIEW => card_tool(name, args, CardAction::Review(None))?,
             SEND_BACK => card_tool(name, args, CardAction::SendBack)?,
+            QUICK_COMMENT => card_tool(name, args, CardAction::Comment)?,
             STEP_CARD => {
                 let StepArgs { card, dir } = parse_args(name, args)?;
                 let step = match dir {
@@ -449,7 +459,7 @@ pub(crate) enum KeyView {
     Detail,
 }
 
-/// The view whose keys and tools are live: nothing while the `X`
+/// The view whose keys and tools are live: nothing while the `X`/`C`
 /// composer is open (its Enter/Esc are its field's) or the dependency graph
 /// is; else the queue, a review pane, the detail; else the grid, unless an
 /// inline editor, the archived sheet or one of the grid's menus has the
@@ -576,7 +586,7 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
         OPEN_CARD => card && at != KeyView::Detail,
         // Say there's no explainer, or no session, when there's none, so
         // the key answers rather than falling through.
-        OPEN_EXPLAINER | OPEN_SESSION | OPEN_REVIEW | SEND_BACK => card,
+        OPEN_EXPLAINER | OPEN_SESSION | OPEN_REVIEW | SEND_BACK | QUICK_COMMENT => card,
         // The grid's step lands a missing cursor on the first card; the
         // queue's steps off a card that has left the board.
         STEP_CARD => card || grid || at == KeyView::Queue,

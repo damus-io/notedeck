@@ -232,9 +232,10 @@ pub struct BoardUiState {
     /// [`NOTICE_SECS`] seconds, or until its view is left.
     notice: Option<Notice>,
     /// A board edit left for the next frame, because a frame applies one: the
-    /// move behind an `X` verdict's comment.
+    /// move behind an `X` verdict's comment, or a `C` comment behind the line
+    /// comments it sent.
     follow_up: Option<BoardAction>,
-    /// The `X` composer, while it's open, in the view `X` was pressed in; it
+    /// The `X`/`C` composer, while it's open, in the view its key was pressed in; it
     /// closes when that view goes. Every keymap stands down while it's open;
     /// it takes Enter and Esc unless another widget has the keyboard.
     reason: Option<ReasonComposer>,

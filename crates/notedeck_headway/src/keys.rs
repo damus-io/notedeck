@@ -15,7 +15,7 @@
 //!   queue's card, a review pane's card, the open detail's card — and mean the
 //!   same thing in every view: open it, its explainer, its agentium session
 //!   (optionally asking for a code review), its review, send back with a
-//!   reason, next/previous card. One enum ([`CardAction`]) and
+//!   reason, comment, next/previous card. One enum ([`CardAction`]) and
 //!   one dispatcher ([`apply_card_action`]), which every view shares.
 //! - **Navigation** keeps its meaning while its target is whatever the view
 //!   shows: the grid's cursor and its card moves, a pane's or the detail's
@@ -27,7 +27,7 @@
 //! and the view follows the edit as it folds in
 //! (`BoardUiState::follow_cursor`, `BoardUiState::follow_queue`).
 //!
-//! What stays here as keys is the text fields': the `X` composer's Enter and
+//! What stays here as keys is the text fields': the `X`/`C` composer's Enter and
 //! Esc ([`reason_keys`]), which run while its field has the keyboard, where
 //! chrome's keymap stands down. (The detail's Esc out of a field is an
 //! availability rule instead: [`BoardUiState::detail_field_focused`].)
@@ -73,6 +73,10 @@ pub(crate) enum CardAction {
     /// `X`: ask for a reason, post it as a `review:` comment, send it to the
     /// record's agentium session, and send the card back to In Progress.
     SendBack,
+    /// `C`: ask for a one-line comment, post it, and send it to the record's
+    /// agentium session with any line comments drafted on the record; the
+    /// card stays where it is.
+    Comment,
     /// `n`/`p`: the next/previous card — the grid's cursor, the queue's card,
     /// or the neighbouring card in the column of a detail or review pane.
     Step(CardStep),
@@ -131,6 +135,7 @@ pub(crate) fn apply_card_action(
             }
         },
         CardAction::SendBack => state.start_reject(view, card, now),
+        CardAction::Comment => state.start_comment(view, card),
         CardAction::Step(step) => match at {
             ActionView::Grid(filter) => move_cursor(view, filter, state, step_move(step)),
             ActionView::Queue => state.step_queue(step),
@@ -490,8 +495,8 @@ impl PaneScroll {
     }
 }
 
-/// The `X` composer's keys: Enter posts the reason (an empty one does
-/// nothing), Esc cancels. Both are consumed before the field sees them, and
+/// The `X`/`C` composer's keys: Enter sends the line (an empty one sends
+/// nothing, bar `C`'s drafted line comments), Esc cancels. Both are consumed before the field sees them, and
 /// the field's focus goes with the composer. While another widget has the
 /// keyboard they're left to it ([`BoardUiState::reason_keys_live`]); the
 /// view's own keys stay down either way (its [key scopes](crate::ui_tools::key_scopes)
@@ -1816,14 +1821,11 @@ mod tests {
             "archive",
             "done",
             "send back",
+            "comment",
             "next/prev card",
         ];
         const SCROLL: &[&str] = &["scroll", "page", "half page", "top/bottom"];
-        const DIFF: &[&str] = &[
-            "next/prev file",
-            "comment (picked lines or commit)",
-            "send comments",
-        ];
+        const DIFF: &[&str] = &["next/prev file", "comment (picked lines or commit)"];
         let grid: &[&str] = &[
             "up/down",
             "columns",
@@ -1926,12 +1928,25 @@ diff --git a/b.txt b/b.txt
         ]
     }
 
-    /// `C` in a review pane posts the shown record's drafts as review
-    /// comments on it, in order, and sends them all to the record's session
-    /// in one message that names each place, quotes its lines and carries
-    /// its comment. The drafts go with the send, so a second `C` only says
-    /// there's nothing left. A record with no session still gets its
-    /// comments, and nothing opens.
+    /// `C`, `line` typed into its composer, and Enter, as a keyboard
+    /// delivers them.
+    fn comment_line(harness: &mut Harness<'static, KeysHarness>, line: &str) {
+        press_with(harness, Modifiers::SHIFT, Key::C);
+        harness.run();
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text(line.to_string()));
+        harness.step();
+        press(harness, Key::Enter);
+    }
+
+    /// `C` and an empty Enter in a review pane posts the shown record's
+    /// drafts as review comments on it, in order, and sends them all to the
+    /// record's session in one message that names each place, quotes its
+    /// lines and carries its comment. The drafts go with the send, so a
+    /// second empty `C` sends nothing and leaves its composer open. A record
+    /// with no session still gets its comments, and nothing opens.
     #[test]
     fn send_comments_posts_each_and_opens_the_session_once() {
         for session in [true, false] {
@@ -1944,7 +1959,7 @@ diff --git a/b.txt b/b.txt
             for draft in two_drafts() {
                 harness.state_mut().state.add_review_draft(id(50), draft);
             }
-            press_with(&mut harness, Modifiers::SHIFT, Key::C);
+            comment_line(&mut harness, "");
 
             let h = harness.state();
             let (card, record, comments) = h.review_comments.clone().expect("comments posted");
@@ -2001,13 +2016,12 @@ diff --git a/b.txt b/b.txt
                 )
             );
 
+            assert_eq!(h.commented, None, "an empty line posts no comment");
+
             harness.state_mut().review_comments = None;
-            press_with(&mut harness, Modifiers::SHIFT, Key::C);
+            comment_line(&mut harness, "");
             assert_eq!(harness.state().review_comments, None);
-            assert_eq!(
-                harness.state().state.notice(),
-                Some(QueueNotice::NoComments)
-            );
+            assert!(harness.state().state.rejecting(), "nothing to send");
         }
     }
 
@@ -2035,7 +2049,7 @@ diff --git a/b.txt b/b.txt
             id(50),
             crate::ui::DraftComment::on_commit("split this commit".to_string()),
         );
-        press_with(&mut harness, Modifiers::SHIFT, Key::C);
+        comment_line(&mut harness, "");
 
         let h = harness.state();
         let (_, _, comments) = h.review_comments.clone().expect("comments posted");
@@ -2061,6 +2075,134 @@ diff --git a/b.txt b/b.txt
             )
         );
         assert_eq!(h.moved, None, "no verdict");
+    }
+
+    /// `C` comments on the current card in every view, the detail too:
+    /// Enter posts the line as a plain comment and sends it to the record's
+    /// session, and the card stays where it is: no move, no queue step.
+    #[test]
+    fn c_comments_and_tells_the_session_in_every_view() {
+        let views = [
+            ActionTestView {
+                name: "grid",
+                open: grid_harness,
+            },
+            ActionTestView {
+                name: "queue",
+                open: queue_harness,
+            },
+            ActionTestView {
+                name: "review pane",
+                open: pane_harness,
+            },
+            ActionTestView {
+                name: "detail",
+                open: || detail_harness(None),
+            },
+        ];
+        for ActionTestView { name, open } in views {
+            let mut harness = open();
+            comment_line(&mut harness, "looks good, ship it");
+            let h = harness.state();
+            assert_eq!(
+                h.commented,
+                Some((id(5), "looks good, ship it".to_string())),
+                "{name}"
+            );
+            let card_ref = headway::wordid::card_ref(&h.view.id, id(5).bytes());
+            assert_eq!(
+                h.session,
+                Some(notedeck::OpenUri {
+                    reference: SESSION.to_string(),
+                    msg: Some(format!(
+                        "Review comments on commit 136ceb9d3bfa (card {card_ref}):\n\n\
+                         looks good, ship it"
+                    )),
+                }),
+                "{name}"
+            );
+            assert!(!h.state.rejecting(), "{name}: composer closed");
+            harness.step();
+            assert_eq!(harness.state().moved, None, "{name}: no move");
+            if name == "queue" {
+                assert_eq!(harness.state().state.review_card(), Some(id(5)), "no step");
+            }
+        }
+    }
+
+    /// `C` with line comments drafted on the record sends them with the
+    /// line: the drafts publish as review comments first, the line as a card
+    /// comment the frame after, and the session hears both in one message,
+    /// the line leading.
+    #[test]
+    fn c_takes_the_drafted_line_comments_along() {
+        let mut harness = pane_harness();
+        let [lines, _] = two_drafts();
+        harness.state_mut().state.add_review_draft(id(50), lines);
+        comment_line(&mut harness, "one more thing");
+
+        let h = harness.state();
+        let (card, record, comments) = h.review_comments.clone().expect("drafts posted");
+        assert_eq!((card, record), (id(5), id(50)));
+        let bodies: Vec<_> = comments.iter().map(|c| c.body.as_str()).collect();
+        assert_eq!(bodies, vec!["rename it"], "the line isn't a review comment");
+        let card_ref = headway::wordid::card_ref(&h.view.id, id(5).bytes());
+        assert_eq!(
+            h.session.as_ref().and_then(|o| o.msg.as_deref()),
+            Some(
+                format!(
+                    "Review comments on commit 136ceb9d3bfa (card {card_ref}):\n\n\
+                     one more thing\n\n\
+                     src/a.rs:1-2\n```diff\n fn a() {{\n-    old();\n+    new();\n```\nrename it"
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(
+            h.commented,
+            Some((id(5), "one more thing".to_string())),
+            "the line follows as a card comment"
+        );
+        assert_eq!(h.moved, None);
+    }
+
+    /// `C` on a card with no review record still posts its comment; there's
+    /// no session to tell.
+    #[test]
+    fn c_on_a_card_without_a_record_only_comments() {
+        let mut harness = keys_harness(None);
+        harness.state_mut().view = review_board();
+        harness.state_mut().state.set_selected(Some(id(6)));
+        harness.run();
+        comment_line(&mut harness, "picking this up tomorrow");
+        assert_eq!(
+            harness.state().commented,
+            Some((id(6), "picking this up tomorrow".to_string()))
+        );
+        assert_eq!(harness.state().session, None);
+        assert_eq!(harness.state().review_comments, None);
+    }
+
+    /// `X` sends the card back from its detail as from any other view.
+    #[test]
+    fn x_from_the_detail_sends_the_card_back() {
+        let mut harness = detail_harness(None);
+        press_with(&mut harness, Modifiers::SHIFT, Key::X);
+        harness.run();
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text("flaky".to_string()));
+        harness.step();
+        press(&mut harness, Key::Enter);
+        assert_eq!(
+            harness.state().commented,
+            Some((id(5), "review: flaky".to_string()))
+        );
+        assert!(harness.state().session.is_some(), "its session hears it");
+        harness.step();
+        assert_eq!(harness.state().moved, Some((id(5), 0, 3)));
+        assert_eq!(harness.state().state.selected(), Some(id(5)), "still open");
     }
 
     /// The scroll keys each ask the diff for their scroll; `]` the next file.
@@ -2692,6 +2834,7 @@ diff --git a/b.txt b/b.txt
             key_tool("S", OPEN_SESSION, json!({ "code_review": true })),
             key_tool("r", OPEN_REVIEW, json!({})),
             key_tool("X", SEND_BACK, json!({})),
+            key_tool("C", QUICK_COMMENT, json!({})),
             key_tool("n", STEP_CARD, json!({ "dir": "next" })),
             key_tool("p", STEP_CARD, json!({ "dir": "prev" })),
         ]
@@ -2753,7 +2896,6 @@ diff --git a/b.txt b/b.txt
             key_tool("]", STEP_FILE, json!({ "dir": "next" })),
             key_tool("[", STEP_FILE, json!({ "dir": "prev" })),
             key_tool("c", COMMENT, json!({})),
-            key_tool("C", SEND_COMMENTS, json!({})),
         ];
         let detail = [key_tool("R", OPEN_REVIEW_QUEUE, json!({}))];
         let with = |extra: &[KeyTool], scroll: bool| {
