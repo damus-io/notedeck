@@ -9,6 +9,18 @@
 //! restart or a remote viewer folds it back out of the parent's
 //! `role=subagent` notes, and the virtual session follows either way.
 //!
+//! A subagent is messaged from its session through its parent. Claude Code
+//! has no way to address a subagent from outside: a stream-json user message
+//! always goes to the main conversation, `parent_tool_use_id` or not. So the
+//! message goes to the parent as an instruction to pass it on with
+//! `SendMessage` ([`parent_instruction`]), which queues it for a running
+//! background subagent or resumes a finished one, also after the parent's
+//! process was restarted with `--resume`. The resumed subagent's text comes
+//! back keyed by its original launch, so it lands in the same session (see
+//! [`ChatSession::resume_subagent`]). A foreground subagent still running
+//! can't be messaged: its parent is blocked inside the call that launched it
+//! ([`composer_block`]).
+//!
 //! Nothing that walks every session needs to know about them by name: they
 //! have no [`AgenticSessionData`](super::AgenticSessionData), no channel and
 //! never go state-dirty, so state publishing, inspector snapshots, the
@@ -58,8 +70,40 @@ pub struct SubagentStamp {
     parent_status: AgentStatus,
 }
 
-/// The hover text on a virtual session's disabled composer.
-pub const COMPOSER_DISABLED: &str = "messaging subagents: headway:dave/large-denial-card";
+/// Why a subagent's session can't be messaged now, or `None` when it can.
+/// The reason is the hover text on its disabled composer.
+pub fn composer_block(link: &SubagentOf) -> Option<&'static str> {
+    if link.agent_id.is_none() {
+        return Some("Claude hasn't named this subagent yet, so it can't be messaged");
+    }
+    let running = matches!(link.status, AgentStatus::Working | AgentStatus::NeedsInput);
+    if running && !link.background {
+        return Some(
+            "A foreground subagent can be messaged once it finishes: its parent is waiting on it",
+        );
+    }
+    None
+}
+
+/// What the parent is sent so it passes `text` on to its subagent
+/// `agent_id` (titled `title`) with `SendMessage`, and stays out of the
+/// conversation itself.
+pub fn parent_instruction(agent_id: &str, title: &str, text: &str) -> String {
+    format!(
+        "[The user wrote the message below to your subagent \"{title}\" (agentId {agent_id}) \
+         from its own view. Pass it on unchanged with SendMessage to \"{agent_id}\", then end \
+         your turn without acting on it: the subagent's reply reaches the user directly.]\n\n{text}"
+    )
+}
+
+/// A message for a subagent, addressed to the parent that delivers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentMessage {
+    /// The session whose backend runs the subagent.
+    pub parent: SessionId,
+    /// What the parent is sent ([`parent_instruction`]).
+    pub text: String,
+}
 
 /// The status a subagent's session shows.
 ///
@@ -118,6 +162,10 @@ pub fn subagent_chat<'a>(
         let text = match run.kind {
             TranscriptKind::Text => run.text.clone(),
             TranscriptKind::Thinking => format!("*Thinking*\n\n{}", run.text),
+            TranscriptKind::User => {
+                chat.push(Message::User(UserMessage::from(run.text.as_str())));
+                continue;
+            }
         };
         chat.push(Message::Assistant(AssistantMessage::from_text(text)));
     }
@@ -320,6 +368,35 @@ impl SessionManager {
         if added {
             self.rebuild_groups();
         }
+    }
+
+    /// Take the draft of the subagent session `sid` as a message for its
+    /// subagent, addressed to the parent that delivers it. The message joins
+    /// the subagent's transcript as a user turn, so its session shows it in
+    /// place.
+    ///
+    /// `None`, leaving the draft, when `sid` isn't a subagent's session, the
+    /// subagent can't be messaged now ([`composer_block`]) or the draft is
+    /// blank.
+    pub fn take_subagent_message(&mut self, sid: SessionId) -> Option<SubagentMessage> {
+        let session = self.sessions.get_mut(&sid)?;
+        let link = session.subagent_of.clone()?;
+        if composer_block(&link).is_some() || session.input.trim().is_empty() {
+            return None;
+        }
+        let agent_id = link.agent_id.as_deref()?;
+        let text = std::mem::take(&mut session.input);
+        let text = text.trim();
+        let instruction = parent_instruction(agent_id, &session.details.title, text);
+        self.sessions.get_mut(&link.parent)?.push_subagent_text(
+            &link.task_id,
+            TranscriptKind::User,
+            text,
+        );
+        Some(SubagentMessage {
+            parent: link.parent,
+            text: instruction,
+        })
     }
 
     /// The virtual session of `parent`'s subagent `task_id`, if it has one.
@@ -585,5 +662,108 @@ mod tests {
         assert!(sm.get(sub).is_none());
         assert!(sm.is_empty());
         assert_eq!(sm.active_id(), None);
+    }
+
+    /// A subagent row that ran in the foreground, was named `a1` and
+    /// finished.
+    fn finished(sm: &mut SessionManager, parent: SessionId) -> SessionId {
+        let session = sm.get_mut(parent).unwrap();
+        session.insert_turn_content(spawned("toolu_a", false));
+        session.set_subagent_agent_id("toolu_a", "a1".into());
+        session.complete_subagent("toolu_a", "found it");
+        sm.sync_subagent_sessions();
+        sm.subagent_session(parent, "toolu_a").unwrap()
+    }
+
+    /// The parent is told to pass the message on, word for word, to the
+    /// agent it names.
+    #[test]
+    fn the_parent_is_told_to_send_the_message_on() {
+        let text = parent_instruction("a1", "Explore: find the parser", "check codex.rs too");
+        assert!(text.contains("SendMessage to \"a1\""), "{text}");
+        assert!(text.contains("\"Explore: find the parser\""), "{text}");
+        assert!(text.ends_with("\n\ncheck codex.rs too"), "{text}");
+    }
+
+    /// A message to a finished subagent goes to its parent, addressed by
+    /// `agentId`, and shows in the subagent's session as a user turn.
+    #[test]
+    fn messaging_a_subagent_goes_through_its_parent() {
+        let Setup { mut sm, parent } = manager();
+        let sid = finished(&mut sm, parent);
+        sm.get_mut(sid).unwrap().input = "  check codex.rs too \n".into();
+
+        let message = sm.take_subagent_message(sid).expect("it can be messaged");
+        assert_eq!(message.parent, parent);
+        assert_eq!(
+            message.text,
+            parent_instruction("a1", "Explore: find the parser", "check codex.rs too")
+        );
+        assert!(sm.get(sid).unwrap().input.is_empty(), "the draft is sent");
+
+        sm.sync_subagent_sessions();
+        let last = child(&sm, parent, "toolu_a").chat.last().cloned();
+        assert!(
+            matches!(&last, Some(Message::User(u)) if u.as_str() == "check codex.rs too"),
+            "{last:?}"
+        );
+    }
+
+    /// A foreground subagent still running, or one not yet named, keeps its
+    /// draft and sends nothing; a background one can be messaged mid-run.
+    #[test]
+    fn only_a_reachable_subagent_can_be_messaged() {
+        let Setup { mut sm, parent } = manager();
+        let session = sm.get_mut(parent).unwrap();
+        session.insert_turn_content(spawned("toolu_fg", false));
+        session.set_subagent_agent_id("toolu_fg", "a1".into());
+        session.insert_turn_content(spawned("toolu_unnamed", true));
+        session.insert_turn_content(spawned("toolu_bg", true));
+        session.set_subagent_agent_id("toolu_bg", "a2".into());
+        sm.sync_subagent_sessions();
+
+        for (task_id, reachable) in [
+            ("toolu_fg", false),
+            ("toolu_unnamed", false),
+            ("toolu_bg", true),
+        ] {
+            let sid = sm.subagent_session(parent, task_id).unwrap();
+            let link = sm.get(sid).unwrap().subagent_of.clone().unwrap();
+            assert_eq!(composer_block(&link).is_none(), reachable, "{task_id}");
+            sm.get_mut(sid).unwrap().input = "hi".into();
+            let sent = sm.take_subagent_message(sid);
+            assert_eq!(sent.is_some(), reachable, "{task_id}");
+            let draft = &sm.get(sid).unwrap().input;
+            assert_eq!(draft.is_empty(), reachable, "{task_id}");
+        }
+    }
+
+    /// The task a `SendMessage` resume starts runs on the subagent's own row,
+    /// found by `agentId`, and its completion lands there; an unknown agent
+    /// is a new subagent.
+    #[test]
+    fn a_resume_runs_on_the_subagents_row() {
+        let Setup { mut sm, parent } = manager();
+        finished(&mut sm, parent);
+        let session = sm.get_mut(parent).unwrap();
+
+        let Message::Subagent(mut resume) = spawned("toolu_send", true) else {
+            unreachable!()
+        };
+        resume.agent_id = Some("a1".into());
+        assert_eq!(session.resume_subagent(&resume).as_deref(), Some("toolu_a"));
+        let row = |s: &ChatSession| match &s.chat[0] {
+            Message::Subagent(info) => info.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(session.chat.len(), 1, "no second row");
+        assert_eq!(row(session).status, SubagentStatus::Running);
+
+        session.complete_subagent("toolu_send", "PINEAPPLE");
+        assert_eq!(row(session).status, SubagentStatus::Completed);
+        assert_eq!(row(session).output, "PINEAPPLE");
+
+        resume.agent_id = Some("a9".into());
+        assert_eq!(session.resume_subagent(&resume), None);
     }
 }

@@ -358,8 +358,14 @@ pub(crate) fn apply_response(
             handle_session_info(session, info);
         }
         DaveApiResponse::SubagentSpawned(subagent) => {
-            let task_id = subagent.task_id.clone();
-            handle_subagent_spawned(session, subagent);
+            let task_id = match session.resume_subagent(&subagent) {
+                Some(task_id) => task_id,
+                None => {
+                    let task_id = subagent.task_id.clone();
+                    handle_subagent_spawned(session, subagent);
+                    task_id
+                }
+            };
             publish_subagent(session, &task_id, &ctx.host.secret_key, ctx.host.ndb);
         }
         DaveApiResponse::SubagentOutput { task_id, output } => {

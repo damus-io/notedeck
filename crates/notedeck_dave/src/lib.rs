@@ -1156,6 +1156,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext) {
         let host = HostCtx::from_app(app_ctx);
+        // A subagent's session runs no backend: its message goes to the
+        // parent, which passes it on (see `session::subagent`).
+        if let Some(sid) = self.session_manager.active_id() {
+            if self.session_manager.backing_id(sid) != sid {
+                self.send_to_subagent(sid, &host);
+                return;
+            }
+        }
         // Check for /cd command first (agentic only)
         let cd_result = self
             .session_manager
@@ -1196,6 +1204,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let images = std::mem::take(&mut session.pending_images);
         if self.add_user_message_for_session(sid, &host, user_text, images) {
             self.send_user_message_for(sid, &host);
+        }
+    }
+
+    /// Send the draft of the subagent session `sid` to its parent, which
+    /// passes it on to the subagent. Nothing is sent when the subagent can't
+    /// be messaged now or the draft is blank.
+    fn send_to_subagent(&mut self, sid: SessionId, host: &HostCtx<'_>) {
+        let Some(message) = self.session_manager.take_subagent_message(sid) else {
+            return;
+        };
+        if self.add_user_message_for_session(message.parent, host, message.text, Vec::new()) {
+            self.send_user_message_for(message.parent, host);
         }
     }
 

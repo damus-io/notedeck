@@ -33,6 +33,11 @@ pub struct TurnRows {
     running_tools: HashMap<String, usize>,
     /// `Message::Subagent` rows, keyed by task id.
     subagents: HashMap<String, usize>,
+    /// Other task ids a subagent row answers to, mapped to the row's own task
+    /// id: a subagent resumed by `SendMessage` runs as a new task keyed by
+    /// that call's tool_use id, but it is the same subagent and writes to the
+    /// same row (see [`alias_subagent`](Self::alias_subagent)).
+    subagent_aliases: HashMap<String, String>,
 }
 
 impl TurnRows {
@@ -52,7 +57,8 @@ impl TurnRows {
     /// that just replaced the one these positions pointed into.
     ///
     /// Only subagent rows are recorded: a background subagent keeps running
-    /// after its turn ends, and its completion finds its row here. A chat is
+    /// after its turn ends, and its completion finds its row here. Aliases
+    /// name rows by task id rather than position, so they are kept. A chat is
     /// replaced only while nothing streams into it (a local session's
     /// reconcile at rest, a remote session's rebuild, a restore), so no
     /// assistant segment is open. A `ToolRunning` row in a replaced chat
@@ -105,9 +111,20 @@ impl TurnRows {
         rows
     }
 
-    /// Position of the subagent row for `task_id`.
+    /// Position of the subagent row for `task_id`, or for the row `task_id`
+    /// is an alias of.
     pub fn subagent(&self, task_id: &str) -> Option<usize> {
+        let task_id = self
+            .subagent_aliases
+            .get(task_id)
+            .map_or(task_id, String::as_str);
         self.subagents.get(task_id).copied()
+    }
+
+    /// Make `alias` name the subagent row of `task_id`, so a resumed
+    /// subagent's new task finds its original row.
+    pub fn alias_subagent(&mut self, alias: String, task_id: String) {
+        self.subagent_aliases.insert(alias, task_id);
     }
 
     /// Positions of every subagent row, in no particular order.
@@ -185,6 +202,21 @@ mod tests {
 
     fn is_subagent(chat: &[Message], idx: Option<usize>, task_id: &str) -> bool {
         matches!(idx.and_then(|i| chat.get(i)), Some(Message::Subagent(s)) if s.task_id == task_id)
+    }
+
+    /// An alias finds its subagent's row, still after the chat is replaced.
+    #[test]
+    fn alias_finds_the_subagent_row_across_a_reindex() {
+        let mut chat = vec![Message::User("go".into())];
+        let mut rows = TurnRows::default();
+        rows.insert(&mut chat, 1, subagent("s1"));
+        rows.alias_subagent("send".into(), "s1".into());
+        assert!(is_subagent(&chat, rows.subagent("send"), "s1"));
+
+        chat.insert(0, Message::User("earlier".into()));
+        rows.reindex(&chat);
+        assert!(is_subagent(&chat, rows.subagent("send"), "s1"));
+        assert_eq!(rows.subagent("other"), None);
     }
 
     /// A turn's rows are recorded where they land, ahead of a queued user

@@ -55,8 +55,8 @@ bitflags! {
         /// A not-yet-materialized placeholder session (a remote spawn or resume in
         /// flight) — drives the "connecting…" status line + spinner.
         const IsConnecting     = 1 << 8;
-        /// A Claude subagent's virtual session: no composer of its own, and
-        /// the header says what it inherits.
+        /// A Claude subagent's virtual session: the header says what it
+        /// inherits, and its composer sends through its parent.
         const IsSubagent       = 1 << 9;
     }
 }
@@ -87,6 +87,9 @@ pub struct DaveUi<'a> {
     /// Color for the notification dot on the mobile hamburger icon,
     /// derived from FocusPriority of the next focus queue entry.
     status_dot_color: Option<egui::Color32>,
+    /// Why the composer can't send now, if it can't (see
+    /// [`DaveUi::composer_block`]).
+    composer_block: Option<&'static str>,
     /// Usage metrics for the current session (tokens, cost)
     usage: Option<&'a crate::messages::UsageInfo>,
     /// Context window size for the current model
@@ -307,6 +310,7 @@ impl<'a> DaveUi<'a> {
             git_status: None,
             details: None,
             status_dot_color: None,
+            composer_block: None,
             usage: None,
             context_window: crate::messages::context_window_for_model(None),
             rate_limit: None,
@@ -467,6 +471,14 @@ impl<'a> DaveUi<'a> {
     /// [`crate::session::SubagentOf`]).
     pub fn is_subagent(mut self, val: bool) -> Self {
         self.flags.set(DaveUiFlags::IsSubagent, val);
+        self
+    }
+
+    /// Why this subagent's session can't be messaged now, if it can't
+    /// ([`crate::session::composer_block`]): its composer is disabled, with
+    /// the reason on hover.
+    pub fn composer_block(mut self, reason: Option<&'static str>) -> Self {
+        self.composer_block = reason;
         self
     }
 
@@ -1883,8 +1895,8 @@ impl<'a> DaveUi<'a> {
     }
 
     fn inputbox(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
-        if self.flags.contains(DaveUiFlags::IsSubagent) {
-            return self.subagent_composer_ui(ui);
+        if let Some(reason) = self.composer_block {
+            return self.blocked_composer_ui(reason, ui);
         }
         let i18n = &mut *app_ctx.i18n;
         // Remote sessions can be interrupted too: the Stop button / normal `s`
@@ -1898,9 +1910,17 @@ impl<'a> DaveUi<'a> {
             None => InputMode::Insert,
         };
 
-        let layout = InputboxLayout::new(self.input, i18n, mode)
+        let mut layout = InputboxLayout::new(self.input, i18n, mode)
             .show_stop(show_stop)
             .id(input_id(self.session_id));
+        // A subagent's session messages the subagent, not dave.
+        if self.flags.contains(DaveUiFlags::IsSubagent) && mode == InputMode::Insert {
+            layout.hint_text = notedeck::tr!(
+                i18n,
+                "Message this subagent...",
+                "Placeholder text for the input in a Claude subagent's session, which sends to that subagent"
+            );
+        }
 
         let result = layout.show(ui);
 
@@ -1961,10 +1981,10 @@ impl<'a> DaveUi<'a> {
         result.action()
     }
 
-    /// A subagent's composer: shown, but it can't send yet (see
-    /// [`crate::session::COMPOSER_DISABLED`]). Stop still works while the
+    /// A composer that can't send now, saying why on hover (see
+    /// [`crate::session::composer_block`]). Stop still works while the
     /// subagent runs.
-    fn subagent_composer_ui(&mut self, ui: &mut egui::Ui) -> DaveResponse {
+    fn blocked_composer_ui(&mut self, reason: &'static str, ui: &mut egui::Ui) -> DaveResponse {
         let button_size = egui::vec2(60.0, notedeck::tokens::BUTTON_LG);
         let show_stop = self.flags.contains(DaveUiFlags::IsWorking);
         // The height a one-line input box takes (see `InputboxLayout::show`).
@@ -1981,10 +2001,10 @@ impl<'a> DaveUi<'a> {
                         egui::TextEdit::singleline(self.input)
                             .desired_width(f32::INFINITY)
                             .hint_text(
-                                egui::RichText::new("subagents can't be messaged yet").weak(),
+                                egui::RichText::new("this subagent can't be messaged now").weak(),
                             ),
                     )
-                    .on_disabled_hover_text(crate::session::COMPOSER_DISABLED);
+                    .on_disabled_hover_text(reason);
                     stop_clicked
                 })
                 .inner

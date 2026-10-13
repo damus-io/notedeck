@@ -594,6 +594,9 @@ Media_from_someone_you_don_t_follow_5611 = Media from someone you don't follow
 # Filter label for mentions only view
 Mentions_28d3 = Mentions
 
+# Placeholder text for the input in a Claude subagent's session, which sends to that subagent
+Message_this_subagent_bdd4 = Message this subagent...
+
 # Description shown under the private key prompt in the Messages view
 Messages_are_end-to-end_encrypted__Add_your_nsec_in_Accounts_to_read_and_send_chats_67db = Messages are end-to-end encrypted. Add your nsec in Accounts to read and send chats.
 

@@ -594,6 +594,9 @@ Media_from_someone_you_don_t_follow_5611 = {"["}Médíà fróm sóméóñé yó�
 # Filter label for mentions only view
 Mentions_28d3 = {"["}Méñtíóñs{"]"}
 
+# Placeholder text for the input in a Claude subagent's session, which sends to that subagent
+Message_this_subagent_bdd4 = {"["}Méssàgé thís súbàgéñt...{"]"}
+
 # Description shown under the private key prompt in the Messages view
 Messages_are_end-to-end_encrypted__Add_your_nsec_in_Accounts_to_read_and_send_chats_67db = {"["}Méssàgés àré éñd-tó-éñd éñçryptéd. Àdd yóúr ñséç íñ Àççóúñts tó réàd àñd séñd çhàts.{"]"}
 

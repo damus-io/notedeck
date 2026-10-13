@@ -291,7 +291,9 @@ fn handle_subagent_result(
 ///
 /// Only `local_agent` tasks (background subagents) get a sidebar entry — a
 /// background `local_bash` still renders as an ordinary Bash tool result in
-/// chat. The entry is keyed by the originating `tool_use_id`, which matches
+/// chat. A subagent resumed by `SendMessage` starts one too, keyed by that
+/// call; the session folds it into the subagent's row by its `agentId`
+/// (`ChatSession::resume_subagent`). The entry is keyed by the originating `tool_use_id`, which matches
 /// both the `parent_tool_use_id` on the subagent's internal messages and the
 /// `tool_use_id` on its eventual `task_notification`.
 fn handle_task_started(
@@ -331,7 +333,12 @@ fn handle_task_started(
         max_output_size: 4000,
         tool_results: Vec::new(),
         background: true,
-        agent_id: None,
+        // A subagent task's id is its `agentId`, which is how a resume by
+        // `SendMessage` is told apart from a new subagent.
+        agent_id: data
+            .get("task_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
         transcript: Default::default(),
     };
     let _ = response_tx.send(DaveApiResponse::SubagentSpawned(subagent_info));
@@ -2698,6 +2705,8 @@ cat > /dev/null
                 assert_eq!(info.description, "do background work");
                 assert_eq!(info.status, SubagentStatus::Running);
                 assert!(info.background);
+                // The task id is the `agentId`, which tells a resume apart.
+                assert_eq!(info.agent_id.as_deref(), Some("abc123"));
             }
             other => panic!(
                 "expected SubagentSpawned, got {:?}",

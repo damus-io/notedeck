@@ -880,12 +880,16 @@ pub struct SubagentInfo {
     pub transcript: SubagentTranscript,
 }
 
-/// Whether a [`TranscriptRun`] is prose or extended thinking.
+/// Whether a [`TranscriptRun`] is the subagent's prose or extended thinking,
+/// or a message the user sent it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptKind {
     Text,
     Thinking,
+    /// A message the user sent the subagent from its own session, delivered
+    /// through its parent (see `notedeck_dave::session::subagent`).
+    User,
 }
 
 /// One text or thinking block a subagent wrote.

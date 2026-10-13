@@ -25,7 +25,7 @@ pub type SessionId = u32;
 mod lineage;
 mod subagent;
 pub use lineage::{Edge, EdgeKind, Nesting, Place};
-pub use subagent::{SubagentOf, COMPOSER_DISABLED};
+pub use subagent::{composer_block, parent_instruction, SubagentMessage, SubagentOf};
 
 /// A user message bound for a session's backend: a remote client's message,
 /// or the first prompt a spawn command carries.
@@ -1046,6 +1046,36 @@ impl ChatSession {
             Some(Message::Subagent(subagent)) => Some(subagent),
             _ => None,
         }
+    }
+
+    /// Treat `info`, a subagent task that just started, as a resume of the
+    /// subagent row with the same `agentId`, if there is one: `SendMessage`
+    /// to a finished subagent runs it again as a new task, keyed by that
+    /// call's tool_use id. The new task id is made an alias of the row, which
+    /// runs again in the background, so the resumed run's completion and
+    /// progress land on it rather than on a second row. Its text and tool
+    /// calls already do: the CLI keys them by the original launch.
+    ///
+    /// Returns the row's own task id when `info` was a resume.
+    pub fn resume_subagent(&mut self, info: &SubagentInfo) -> Option<String> {
+        let agent_id = info.agent_id.as_deref()?;
+        let task_id = self
+            .turn_rows
+            .subagent_rows()
+            .find_map(|idx| match self.chat.get(idx) {
+                Some(Message::Subagent(row))
+                    if row.task_id != info.task_id && row.agent_id.as_deref() == Some(agent_id) =>
+                {
+                    Some(row.task_id.clone())
+                }
+                _ => None,
+            })?;
+        self.turn_rows
+            .alias_subagent(info.task_id.clone(), task_id.clone());
+        let row = self.subagent_mut(&task_id)?;
+        row.status = SubagentStatus::Running;
+        row.background = true;
+        Some(task_id)
     }
 
     /// Record the CLI's `agentId` for a subagent (see

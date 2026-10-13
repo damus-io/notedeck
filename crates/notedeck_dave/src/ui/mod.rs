@@ -144,6 +144,12 @@ fn build_dave_ui<'a>(
     .is_working(is_working)
     .is_connecting(is_connecting)
     .is_subagent(is_subagent)
+    .composer_block(
+        session
+            .subagent_of
+            .as_ref()
+            .and_then(crate::session::composer_block),
+    )
     .has_pending_permission(has_pending_permission)
     .permission_mode(permission_mode)
     .auto_steal_focus(auto_steal_focus)
@@ -1999,6 +2005,9 @@ mod tests {
         now_unix: Option<u64>,
         /// The tasks the UI asked the backend to stop, in order.
         stop_requests: Vec<String>,
+        /// Messages sent from a subagent's session, as `Dave` hands them to
+        /// the parent.
+        subagent_sends: Vec<crate::session::SubagentMessage>,
     }
 
     fn session_view_state() -> SessionViewState {
@@ -2030,6 +2039,7 @@ mod tests {
             rate_limit: None,
             now_unix: None,
             stop_requests: Vec::new(),
+            subagent_sends: Vec::new(),
         }
     }
 
@@ -2065,6 +2075,14 @@ mod tests {
                 // The harness's backend drops stops, so note them here.
                 if let super::DaveAction::StopTask(task_id) = &action {
                     state.stop_requests.push(task_id.clone());
+                }
+                // A send from a subagent's session takes the route
+                // `Dave::send_to_subagent` does, short of a backend.
+                if matches!(action, super::DaveAction::Send) {
+                    let sm = &mut state.session_manager;
+                    if let Some(sent) = sm.active_id().and_then(|id| sm.take_subagent_message(id)) {
+                        state.subagent_sends.push(sent);
+                    }
                 }
                 super::handle_ui_action(
                     action,
@@ -2899,6 +2917,11 @@ mod tests {
     /// One running Explore subagent in the active session's chat that has
     /// thought, read two files and written a line in between.
     fn seed_subagent_session(state: &mut SessionViewState) {
+        seed_subagent_session_in(state, true);
+    }
+
+    /// [`seed_subagent_session`], running in the background or not.
+    fn seed_subagent_session_in(state: &mut SessionViewState, background: bool) {
         use crate::messages::{ExecutedTool, SubagentInfo, SubagentStatus, TranscriptKind};
 
         let read = |path: &str| ExecutedTool {
@@ -2917,7 +2940,7 @@ mod tests {
             output: String::new(),
             max_output_size: 4000,
             tool_results: vec![read("backend/claude.rs")],
-            background: true,
+            background,
             agent_id: Some("af234d4591821f8d0".into()),
             transcript: Default::default(),
         };
@@ -2944,7 +2967,7 @@ mod tests {
 
     /// Clicking "open" on a subagent's row switches to its own session,
     /// drawn by the normal session view: its text among its tool rows, the
-    /// header saying what it inherits, and a composer that can't send.
+    /// header saying what it inherits, and a composer that sends to it.
     #[test]
     fn opening_a_subagent_row_switches_to_its_session() {
         use egui_kittest::kittest::{NodeT, Queryable};
@@ -2974,8 +2997,70 @@ mod tests {
             count_labels_containing(&harness, "inherited from its parent"),
             1
         );
+        let composer = harness.get_by_role(egui::accesskit::Role::MultilineTextInput);
+        assert!(
+            !composer.accesskit_node().is_disabled(),
+            "a background subagent can be messaged"
+        );
+    }
+
+    /// Typing in a subagent's session and pressing Enter sends the message to
+    /// its parent, addressed to the subagent by `agentId`, and the
+    /// subagent's session shows it.
+    #[test]
+    fn sending_from_a_subagent_session_routes_to_its_parent() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut harness = session_view_harness(egui::vec2(1000.0, 800.0));
+        seed_subagent_session(harness.state_mut());
+        harness.run_ok();
+        let parent = harness.state().session_manager.active_id().unwrap();
+        harness.get_by_label("open \u{203A}").click();
+        harness.run_ok();
+
+        harness
+            .get_by_role(egui::accesskit::Role::MultilineTextInput)
+            .click();
+        harness.run_ok();
+        harness
+            .get_by_role(egui::accesskit::Role::MultilineTextInput)
+            .type_text("look at the wait tracker too");
+        harness.run_ok();
+        harness.key_press(egui::Key::Enter);
+        harness.run_ok();
+
+        let expected = crate::session::SubagentMessage {
+            parent,
+            text: crate::session::parent_instruction(
+                "af234d4591821f8d0",
+                "Explore: Find where task_progress is parsed",
+                "look at the wait tracker too",
+            ),
+        };
+        assert_eq!(harness.state().subagent_sends, [expected]);
+
+        harness.state_mut().session_manager.sync_subagent_sessions();
+        harness.run_ok();
+        assert_eq!(
+            count_labels_containing(&harness, "look at the wait tracker too"),
+            1
+        );
+    }
+
+    /// A foreground subagent still running holds its parent inside the
+    /// launching call, so its composer is disabled.
+    #[test]
+    fn a_running_foreground_subagent_cant_be_messaged() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+
+        let mut harness = session_view_harness(egui::vec2(1000.0, 800.0));
+        seed_subagent_session_in(harness.state_mut(), false);
+        harness.run_ok();
+        harness.get_by_label("open \u{203A}").click();
+        harness.run_ok();
+
         let composer = harness.get_by_role(egui::accesskit::Role::TextInput);
-        assert!(composer.accesskit_node().is_disabled(), "it can't send yet");
+        assert!(composer.accesskit_node().is_disabled());
     }
 
     /// A running subagent's session, opened from its parent's row.
