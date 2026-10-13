@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn edits_sum_per_file_and_include_subagents() {
         let chat = vec![
-            Message::System(String::new()),
+            Message::System("".into()),
             // a → b c: one removed, two added.
             tool_row(Some(edit("/w/src/lib.rs", "a\n", "b\nc\n"))),
             tool_row(None),

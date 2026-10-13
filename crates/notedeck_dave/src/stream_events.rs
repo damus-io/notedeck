@@ -400,7 +400,7 @@ pub(crate) fn apply_response(
             session.slash_catalog = Some(std::rc::Rc::new(catalog));
         }
         DaveApiResponse::CommandReply(text) => {
-            session.insert_turn_content(Message::System(text));
+            session.insert_turn_content(Message::System(text.into()));
         }
         DaveApiResponse::SubagentSpawned(subagent) => {
             let task_id = match session.resume_subagent(&subagent) {

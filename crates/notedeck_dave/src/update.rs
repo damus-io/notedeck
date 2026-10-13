@@ -1610,7 +1610,7 @@ pub fn handle_model_command(
         return false;
     }
     session.input.clear();
-    let notice = Message::System(format!("Model set to {value} for the next turn"));
+    let notice = Message::System(format!("Model set to {value} for the next turn").into());
     push_notice(session, notice, ndb, secret_key);
     true
 }
@@ -1629,7 +1629,7 @@ fn push_notice(
     secret_key: &Option<[u8; 32]>,
 ) {
     let wire = match &notice {
-        Message::System(text) => Some(("system", text.clone())),
+        Message::System(system) => Some(("system", system.text().to_owned())),
         Message::Error(text) => Some(("error", text.clone())),
         _ => None,
     };

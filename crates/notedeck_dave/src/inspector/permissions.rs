@@ -111,7 +111,7 @@ mod tests {
         let chat: Vec<Message> = [allowed, denied, auto, pending, tracked]
             .into_iter()
             .map(Message::PermissionRequest)
-            .chain([Message::System(String::new())])
+            .chain([Message::System("".into())])
             .collect();
 
         let counts = PermissionCounts::of(&chat, Some(&responded));

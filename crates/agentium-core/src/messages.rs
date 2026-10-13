@@ -1035,6 +1035,51 @@ pub struct TranscriptTail<'a> {
     pub dropped: bool,
 }
 
+/// A `system` row: a chat-mode session's system prompt, or a notice a session
+/// writes into its own chat, such as a slash command's reply (`/context`) or
+/// "Model set to …". Its markdown is parsed the first time a view asks for
+/// it, so rows that are never drawn never pay for a parse.
+#[derive(Debug, Clone)]
+pub struct SystemMessage {
+    text: String,
+    /// The parse of `text`, filled by [`Self::parsed_elements`].
+    elements: std::sync::OnceLock<Vec<MdElement>>,
+}
+
+impl SystemMessage {
+    /// The raw text, as written and as sent on the wire.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// `text` parsed as markdown, parsed on the first call and cached. The
+    /// elements' spans index into [`Self::text`], the buffer to render them
+    /// against.
+    pub fn parsed_elements(&self) -> &[MdElement] {
+        self.elements.get_or_init(|| {
+            let mut parser = StreamParser::new();
+            parser.push(&self.text);
+            parser.finalize();
+            parser.parsed().to_vec()
+        })
+    }
+}
+
+impl From<String> for SystemMessage {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            elements: std::sync::OnceLock::new(),
+        }
+    }
+}
+
+impl From<&str> for SystemMessage {
+    fn from(text: &str) -> Self {
+        Self::from(text.to_owned())
+    }
+}
+
 /// An assistant message with incremental markdown parsing support.
 ///
 /// During streaming, tokens are pushed to the parser incrementally.
@@ -1188,7 +1233,7 @@ impl Default for AssistantMessage {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    System(String),
+    System(SystemMessage),
     Error(String),
     User(UserMessage),
     Assistant(AssistantMessage),
@@ -1743,7 +1788,7 @@ impl Message {
                     SubagentStatus::Failed => "failed",
                 },
             }),
-            Message::System(s) => json!({ "role": "system", "text": s }),
+            Message::System(s) => json!({ "role": "system", "text": s.text() }),
             Message::Error(e) => json!({ "role": "error", "text": e }),
             Message::TodoUpdate(v) => json!({ "role": "todo", "todos": v }),
         }

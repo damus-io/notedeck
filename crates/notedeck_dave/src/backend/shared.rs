@@ -82,7 +82,7 @@ pub fn messages_to_prompt(messages: &[Message]) -> String {
     // Include system message if present
     for msg in messages {
         if let Message::System(content) = msg {
-            prompt.push_str(content);
+            prompt.push_str(content.text());
             prompt.push_str("\n\n");
             break;
         }
@@ -540,7 +540,7 @@ mod tests {
     fn prepare_prompt_and_images_first_turn_keeps_single_user_images() {
         let image = img(&[7, 8], "image/png");
         let messages = vec![
-            Message::System("sys".to_string()),
+            Message::System("sys".into()),
             Message::User(UserMessage::new("hello", vec![image.clone()])),
         ];
 

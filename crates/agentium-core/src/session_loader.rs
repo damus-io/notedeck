@@ -680,7 +680,7 @@ pub fn render_conversation_note_with_content(
             crate::session_events::decode_subagent_note(note).map(Message::Subagent)
         }
         Some("error") => Some(Message::Error(content.to_string())),
-        Some("system") => Some(Message::System(content.to_string())),
+        Some("system") => Some(Message::System(content.into())),
         // The TodoWrite list as JSON; a note that doesn't parse is skipped
         // rather than shown as an empty list.
         Some("todo") => serde_json::from_str(content).ok().map(Message::TodoUpdate),
@@ -787,7 +787,7 @@ pub fn view_signature(messages: &[Message]) -> Vec<RowSig> {
 fn row_signature(message: &Message) -> RowSig {
     use crate::tools::ToolResponses;
     match message {
-        Message::System(text) => RowSig::System(text.clone()),
+        Message::System(system) => RowSig::System(system.text().to_owned()),
         Message::Error(text) => RowSig::Error(text.clone()),
         Message::User(user) => RowSig::User {
             text: user.as_str().to_string(),
@@ -3222,7 +3222,7 @@ mod tests {
             3,
             "the unparseable todo is skipped: {messages:?}"
         );
-        assert!(matches!(&messages[0], Message::System(t) if t == "cwd set"));
+        assert!(matches!(&messages[0], Message::System(t) if t.text() == "cwd set"));
         let Message::TodoUpdate(list) = &messages[1] else {
             panic!("expected a todo row, got {:?}", messages[1]);
         };

@@ -86,7 +86,7 @@ use stream_events::{
 pub use agentium_core::messages::{
     AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
     PermissionResponseType, QuestionAnswer, QuestionSetInput, RunningTool, SessionInfo,
-    SubagentInfo, SubagentStatus, UserMessage,
+    SubagentInfo, SubagentStatus, SystemMessage, UserMessage,
 };
 pub use avatar::DaveAvatar;
 pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
@@ -422,7 +422,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 - When a user asks for a digest instead of specific query terms, make sure to include both since and until to pull notes for the correct range.
 - When tasked with open-ended queries such as looking for interesting notes or summarizing the day, make sure to add enough notes to the context (limit: 100-200) so that it returns enough data for summarization.
 "#
-        ))
+        ).into())
     }
 
     /// Build Dave over the host's store, serving the `agentium` CLI on the
@@ -759,7 +759,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         );
 
         if let Some(session) = self.session_manager.get_mut(id) {
-            session.chat.push(Message::System(system));
+            session.chat.push(Message::System(system.into()));
 
             // Show the root note inline so the user can see what's being summarized
             let present = tools::ToolCall::new(

@@ -239,7 +239,7 @@ pub(crate) fn message_body(m: &Message) -> String {
             s.description,
             subagent_status_label(s.status)
         ),
-        Message::System(s) => s.clone(),
+        Message::System(s) => s.text().to_owned(),
         Message::Error(e) => e.clone(),
         Message::TodoUpdate(v) => todo_summary(v),
     }

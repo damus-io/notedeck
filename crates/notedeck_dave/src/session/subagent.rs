@@ -149,9 +149,7 @@ pub fn subagent_chat<'a>(
     let mut chat = Vec::with_capacity(2 + info.transcript.runs().len() + info.tool_results.len());
     chat.push(Message::User(UserMessage::from(info.description.as_str())));
     if info.transcript.dropped() {
-        chat.push(Message::System(
-            SubagentTranscript::DROPPED_MARKER.to_string(),
-        ));
+        chat.push(Message::System(SubagentTranscript::DROPPED_MARKER.into()));
     }
 
     let mut tools = info.tool_results.iter().enumerate().peekable();

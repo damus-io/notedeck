@@ -845,7 +845,7 @@ impl<'a> DaveUi<'a> {
                     Self::tool_response_ui(msg, is_agentic, self.nav, ui);
                 }
                 Message::System(text) => {
-                    Self::system_message_ui(text, is_agentic, ui);
+                    Self::system_message_ui(text.text(), is_agentic, ui);
                 }
                 Message::ToolCalls(toolcalls) => {
                     if let Some(note_action) = Self::tool_calls_ui(ctx, toolcalls, ui) {

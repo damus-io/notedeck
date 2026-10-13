@@ -1886,7 +1886,7 @@ async fn reconcile_reports_unpublished_row() {
         Step::Act(Box::new(|host: &mut Host| {
             host.session()
                 .chat
-                .push(Message::System("only on the host".to_string()));
+                .push(Message::System("only on the host".into()));
         })),
     ]);
     let mut host = driven(script).await;
@@ -2223,7 +2223,7 @@ async fn reconcile_reports_middle_row_drift() {
         Step::Act(Box::new(|host: &mut Host| {
             host.session()
                 .chat
-                .insert(1, Message::System("only on the host".to_string()));
+                .insert(1, Message::System("only on the host".into()));
         })),
     ]);
     let mut host = driven(script).await;
@@ -2287,7 +2287,7 @@ async fn reconcile_moves_a_background_subagent_row() {
         Step::Act(Box::new(|host: &mut Host| {
             host.session()
                 .chat
-                .push(Message::System("only on the host".to_string()));
+                .push(Message::System("only on the host".into()));
         })),
         Step::Backend(DaveApiResponse::SubagentSpawned(SubagentInfo {
             task_id: "s1".to_string(),

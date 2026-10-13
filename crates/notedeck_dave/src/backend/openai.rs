@@ -248,7 +248,7 @@ fn message_to_api(
 
         Message::System(m) => Some(ChatCompletionRequestMessage::System(
             ChatCompletionRequestSystemMessage {
-                content: ChatCompletionRequestSystemMessageContent::Text(m.clone()),
+                content: ChatCompletionRequestSystemMessageContent::Text(m.text().to_owned()),
                 ..Default::default()
             },
         )),
@@ -337,7 +337,7 @@ mod tests {
             Some(ChatCompletionRequestMessage::User(_))
         ));
         assert!(matches!(
-            message_to_api(&Message::System("sys".to_string()), &txn, &ndb),
+            message_to_api(&Message::System("sys".into()), &txn, &ndb),
             Some(ChatCompletionRequestMessage::System(_))
         ));
         assert!(matches!(
