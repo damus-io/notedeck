@@ -2231,17 +2231,13 @@ impl<'a> DaveUi<'a> {
     /// [`crate::session::composer_block`]). Stop still works while the
     /// subagent runs.
     fn blocked_composer_ui(&mut self, reason: &'static str, ui: &mut egui::Ui) -> DaveResponse {
-        let button_size = egui::vec2(60.0, notedeck::tokens::BUTTON_LG);
         let show_stop = self.flags.contains(DaveUiFlags::IsWorking);
         // The height a one-line input box takes (see `InputboxLayout::show`).
-        let height = notedeck::tokens::BUTTON_LG + 20.0;
         let stop_clicked = ui
-            .allocate_ui(egui::vec2(ui.available_width(), height), |ui| {
+            .allocate_ui(egui::vec2(ui.available_width(), COMPOSER_BUTTON), |ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let stop_clicked = show_stop
-                        && ui
-                            .add(egui::Button::new("Stop").min_size(button_size))
-                            .clicked();
+                    let stop_clicked =
+                        show_stop && composer_button_ui(ui, ComposerButton::Stop, "Stop").clicked();
                     ui.add_enabled(
                         false,
                         egui::TextEdit::singleline(self.input)
@@ -2494,7 +2490,8 @@ pub(crate) fn input_fill(visuals: &egui::Visuals, normal_mode: bool) -> egui::Co
 
 /// Extracted inputbox layout used by both DaveUi and tests.
 ///
-/// Renders the Ask/Stop buttons and text input in a right-to-left layout.
+/// Renders the text input with its round icon buttons on the right: Send
+/// (labelled Ask), and Stop in its place while a turn runs.
 pub struct InputboxLayout<'a> {
     pub input: &'a mut String,
     pub ask_label: String,
@@ -2578,61 +2575,77 @@ impl<'a> InputboxLayout<'a> {
     }
 
     pub fn show(self, ui: &mut egui::Ui) -> InputboxResult {
-        let line_count = self.input.lines().count().max(1).clamp(1, 8);
+        let line_count = self.input.lines().count().clamp(1, 8);
         let line_height = 20.0;
-        let base_height = notedeck::tokens::BUTTON_LG;
-        let input_height = base_height + (line_count as f32 * line_height);
-        let button_size = egui::vec2(60.0, notedeck::tokens::BUTTON_LG);
+        // One line sits level with the buttons; each further one grows the box.
+        let input_height = (line_count as f32 * line_height + 14.0).max(COMPOSER_BUTTON);
+        let has_text = !self.input.trim().is_empty();
+        // While a turn runs, Stop takes Send's place, and Send comes back
+        // beside it once there is something to queue.
+        let show_send = !self.show_stop || has_text;
 
         let inner = ui.allocate_ui(egui::vec2(ui.available_width(), input_height), |ui| {
             ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let ask_clicked = ui
-                        .add(egui::Button::new(&self.ask_label).min_size(button_size))
+                ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
+                    let ask_clicked = show_send
+                        && composer_button_ui(
+                            ui,
+                            ComposerButton::Send { ready: has_text },
+                            &self.ask_label,
+                        )
                         .clicked();
 
                     let stop_clicked = self.show_stop
-                        && ui
-                            .add(egui::Button::new(&self.stop_label).min_size(button_size))
-                            .clicked();
+                        && composer_button_ui(ui, ComposerButton::Stop, &self.stop_label).clicked();
 
-                    let text_response = egui::ScrollArea::vertical()
-                        .max_height(ui.available_height())
-                        .show(ui, |ui| {
-                            let mut edit = egui::TextEdit::multiline(self.input)
-                                .desired_width(f32::INFINITY)
-                                .return_key(KeyboardShortcut::new(
-                                    Modifiers {
-                                        shift: true,
-                                        ..Default::default()
-                                    },
-                                    Key::Enter,
-                                ))
-                                .hint_text(egui::RichText::new(&self.hint_text).weak())
-                                .frame(
-                                    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2)),
-                                );
+                    // Top down inside the row, so the text starts at the top
+                    // while the buttons sit at the bottom.
+                    let field = egui::Layout::top_down_justified(Align::Min);
+                    let text_response = ui
+                        .with_layout(field, |ui| {
+                            egui::ScrollArea::vertical()
+                                .max_height(ui.available_height())
+                                .show(ui, |ui| {
+                                    let mut edit = egui::TextEdit::multiline(self.input)
+                                        .desired_width(f32::INFINITY)
+                                        .desired_rows(1)
+                                        .min_size(egui::vec2(0.0, COMPOSER_BUTTON))
+                                        .align(egui::Align2::LEFT_CENTER)
+                                        .return_key(KeyboardShortcut::new(
+                                            Modifiers {
+                                                shift: true,
+                                                ..Default::default()
+                                            },
+                                            Key::Enter,
+                                        ))
+                                        .hint_text(egui::RichText::new(&self.hint_text).weak())
+                                        .frame(
+                                            egui::Frame::NONE
+                                                .inner_margin(egui::Margin::symmetric(4, 2)),
+                                        );
 
-                            if self.mode != InputMode::Insert {
-                                edit = edit.text_color(ui.visuals().weak_text_color());
-                            }
+                                    if self.mode != InputMode::Insert {
+                                        edit = edit.text_color(ui.visuals().weak_text_color());
+                                    }
 
-                            if self.claim_popup_keys {
-                                edit = edit.event_filter(egui::EventFilter {
-                                    horizontal_arrows: true,
-                                    vertical_arrows: true,
-                                    tab: true,
-                                    escape: true,
-                                });
-                            }
+                                    if self.claim_popup_keys {
+                                        edit = edit.event_filter(egui::EventFilter {
+                                            horizontal_arrows: true,
+                                            vertical_arrows: true,
+                                            tab: true,
+                                            escape: true,
+                                        });
+                                    }
 
-                            // The exact id, not a salt, so the slash popup's
-                            // key step can ask whether this input has focus.
-                            if let Some(id) = self.id {
-                                edit = edit.id(id);
-                            }
+                                    // The exact id, not a salt, so the slash popup's
+                                    // key step can ask whether this input has focus.
+                                    if let Some(id) = self.id {
+                                        edit = edit.id(id);
+                                    }
 
-                            ui.add(edit)
+                                    ui.add(edit)
+                                })
+                                .inner
                         })
                         .inner;
 
@@ -2652,6 +2665,72 @@ impl<'a> InputboxLayout<'a> {
             ..inner.inner
         }
     }
+}
+
+/// Diameter of the composer's round icon buttons.
+const COMPOSER_BUTTON: f32 = notedeck::tokens::BUTTON_MD;
+
+/// The composer's round icon buttons.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ComposerButton {
+    /// Send what's typed: an up arrow, filled with the accent once there is
+    /// something to send and quiet until then.
+    Send { ready: bool },
+    /// Stop the running turn: a square, which reddens on hover.
+    Stop,
+}
+
+/// Draw one of the composer's round icon buttons. `label` is its name for
+/// screen readers and tests ("Ask", "Stop") and its hover text.
+fn composer_button_ui(ui: &mut egui::Ui, kind: ComposerButton, label: &str) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::Vec2::splat(COMPOSER_BUTTON), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Lazily, so a frame nobody hovers builds no tooltip text.
+    let response = response.on_hover_ui(|ui| {
+        ui.label(label);
+    });
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+
+    let visuals = ui.visuals();
+    let quiet = ui.style().interact(&response).weak_bg_fill;
+    let (fill, fg) = match kind {
+        ComposerButton::Send { ready: true } => {
+            let accent = notedeck::theme::selection_fill(visuals);
+            let accent = if response.hovered() {
+                accent.gamma_multiply(1.15)
+            } else {
+                accent
+            };
+            (accent, egui::Color32::WHITE)
+        }
+        ComposerButton::Send { ready: false } => (quiet, visuals.weak_text_color()),
+        ComposerButton::Stop if response.hovered() => (quiet, visuals.error_fg_color),
+        ComposerButton::Stop => (quiet, visuals.text_color()),
+    };
+
+    let painter = ui.painter();
+    painter.circle_filled(rect.center(), COMPOSER_BUTTON / 2.0, fill);
+    let c = rect.center();
+    match kind {
+        ComposerButton::Send { .. } => {
+            // A shaft and a chevron head, drawn as segments so the arrow
+            // stays crisp at any scale and costs no allocation.
+            let stroke = egui::Stroke::new(notedeck::tokens::STROKE_THICK, fg);
+            let tip = c - egui::vec2(0.0, 6.0);
+            painter.line_segment([c + egui::vec2(0.0, 6.0), tip], stroke);
+            painter.line_segment([tip, tip + egui::vec2(-5.0, 5.0)], stroke);
+            painter.line_segment([tip, tip + egui::vec2(5.0, 5.0)], stroke);
+        }
+        ComposerButton::Stop => {
+            let square = egui::Rect::from_center_size(c, egui::Vec2::splat(10.0));
+            painter.rect_filled(square, 2.0, fg);
+        }
+    }
+    response
 }
 
 /// Dave-specific input context menu that prefers image paste before text paste.
@@ -3073,84 +3152,116 @@ impl DaveUi<'_> {
             .and_then(git_status_ui::StatusSnapshot::from_cache);
 
         ui.vertical(|ui| {
-            let bar_action = ui
-                .horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
+            let row = egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(ui.available_width(), STATUS_ROW_HEIGHT),
+            );
+            // The right group first, so the left one gets what it leaves and
+            // is cut there: a long branch never draws under the meter.
+            let mut right_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(row)
+                    .layout(Layout::right_to_left(Align::Center)),
+            );
+            right_ui.spacing_mut().item_spacing.x = 6.0;
+            let right = if is_agentic {
+                self.status_right_ui(i18n, &mut right_ui)
+            } else {
+                None
+            };
+            let left_end = (right_ui.min_rect().left() - notedeck::tokens::SPACING_SM)
+                .clamp(row.left(), row.right());
+            let left_rect = egui::Rect::from_min_max(row.min, egui::pos2(left_end, row.bottom()));
+            let mut left_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(left_rect)
+                    .layout(Layout::left_to_right(Align::Center)),
+            );
+            left_ui.set_clip_rect(
+                egui::Rect::from_x_y_ranges(row.left()..=left_end, ui.clip_rect().y_range())
+                    .intersect(ui.clip_rect()),
+            );
+            left_ui.spacing_mut().item_spacing.x = 6.0;
 
-                    // Run config buttons — leftmost elements, local sessions only
-                    let mut action = if !is_remote {
-                        let a = cwd.and_then(|p| {
-                            run_ui::run_configs_ui(self.run_configs, self.running_config_ids, p, ui)
-                        });
-                        if cwd.is_some() {
-                            ui.separator();
-                        }
-                        a
-                    } else {
-                        None
-                    };
-
-                    if let Some(gs) = self.git_status.as_deref_mut() {
-                        git_status_ui::git_status_content_ui(gs, &snapshot, ui);
-                    }
-
-                    let right = ui
-                        .with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let badge_action = if is_agentic {
-                                toggle_badges_ui(
-                                    ui,
-                                    self.permission_mode,
-                                    self.flags.contains(DaveUiFlags::AutoStealFocus),
-                                    self.focus_queue_info,
-                                )
-                            } else {
-                                None
-                            };
-                            if is_agentic {
-                                if let Some(ts) = self.last_activity {
-                                    ui.label(
-                                        egui::RichText::new(format_relative_time(ts))
-                                            .size(10.0)
-                                            .color(ui.visuals().weak_text_color()),
-                                    );
-                                }
-                                // The inspector's usage history, which both a
-                                // local stream and a host's snapshot fill.
-                                let usage = self.inspector.as_ref().map(|i| &i.inspector.usage);
-                                if usage_meter_ui(usage, self.context_window, ui).clicked() {
-                                    return Some(DaveAction::OpenInspector(
-                                        InspectorSection::Usage,
-                                    ));
-                                }
-                                if self.rate_limit_pill_ui(i18n, ui) {
-                                    return Some(DaveAction::OpenInspector(
-                                        InspectorSection::RateLimits,
-                                    ));
-                                }
-                                if self.waiting_pill_ui(i18n, ui) {
-                                    return Some(DaveAction::OpenInspector(
-                                        InspectorSection::Background,
-                                    ));
-                                }
-                            }
-                            badge_action
-                        })
-                        .inner;
-
-                    action = action.or(right);
-                    action
-                })
-                .inner;
+            // Run config buttons — leftmost elements, local sessions only
+            let mut action = if !is_remote {
+                let a = cwd.and_then(|p| {
+                    run_ui::run_configs_ui(
+                        self.run_configs,
+                        self.running_config_ids,
+                        p,
+                        &mut left_ui,
+                    )
+                });
+                if cwd.is_some() {
+                    left_ui.separator();
+                }
+                a
+            } else {
+                None
+            };
+            if let Some(gs) = self.git_status.as_deref_mut() {
+                git_status_ui::git_status_content_ui(gs, &snapshot, &mut left_ui);
+            }
+            ui.advance_cursor_after_rect(row);
+            action = action.or(right);
 
             if let Some(gs) = self.git_status.as_deref() {
                 git_status_ui::git_expanded_files_ui(gs, &snapshot, ui);
             }
 
-            bar_action
+            action
         })
         .inner
     }
+
+    /// The status bar's right group, laid out right to left: the session's
+    /// switches, then its context and what it can do about it, then when it
+    /// last moved, then anything that wants attention. A narrow bar drops the
+    /// time and folds the meter to a percentage.
+    fn status_right_ui(
+        &mut self,
+        i18n: &mut notedeck::Localization,
+        ui: &mut egui::Ui,
+    ) -> Option<DaveAction> {
+        let narrow = notedeck::ui::is_narrow(ui.ctx());
+        let mut clicked = toggle_badges_ui(
+            ui,
+            self.permission_mode,
+            self.flags.contains(DaveUiFlags::AutoStealFocus),
+            self.focus_queue_info,
+        );
+        ui.add_space(notedeck::tokens::SPACING_SM);
+        // The inspector's usage history, which both a local stream and a
+        // host's snapshot fill.
+        let usage = self.inspector.as_ref().map(|i| &i.inspector.usage);
+        let context = context_group_ui(usage, self.context_window, narrow, ui);
+        if context.compact {
+            clicked = Some(DaveAction::Compact);
+        }
+        if context.meter {
+            clicked = Some(DaveAction::OpenInspector(InspectorSection::Usage));
+        }
+        if let Some(ts) = self.last_activity.filter(|_| !narrow) {
+            ui.add_space(notedeck::tokens::SPACING_SM);
+            ui.label(
+                egui::RichText::new(format_relative_time(ts))
+                    .size(11.0)
+                    .color(ui.visuals().weak_text_color()),
+            );
+        }
+        if self.rate_limit_pill_ui(i18n, ui) {
+            clicked = Some(DaveAction::OpenInspector(InspectorSection::RateLimits));
+        }
+        if self.waiting_pill_ui(i18n, ui) {
+            clicked = Some(DaveAction::OpenInspector(InspectorSection::Background));
+        }
+        clicked
+    }
 }
+
+/// Height of the status bar's row: a pill's, with room to centre text.
+const STATUS_ROW_HEIGHT: f32 = 22.0;
 
 impl DaveUi<'_> {
     /// The status bar's rate-limit pill, shown while the account is near or
@@ -3196,18 +3307,112 @@ pub(crate) fn format_tokens(tokens: u64) -> String {
     }
 }
 
-/// The status bar's usage meter (cost, tokens and fill bar) as one clickable
-/// group: a click opens the Details tab at its Usage card.
-fn usage_meter_ui(
+/// What a click in the status bar's context group asked for.
+#[derive(Default)]
+struct ContextClicks {
+    /// The meter: open the Details tab at its Usage card.
+    meter: bool,
+    /// `compact`: compact the context now.
+    compact: bool,
+}
+
+/// The status bar's context group, drawn right to left so it reads
+/// `45K / 200K ▬▬▬ compact`: the meter, then the action that empties it.
+/// `compact` stays as quiet as the text around it until the context is
+/// four-fifths full, then takes the meter's red. The session's cost is on
+/// the meter's hover. A narrow bar shows the meter as a percentage whose
+/// click opens a menu holding both actions.
+/// Draws nothing until a request has been counted, since there is nothing
+/// to compact before then.
+fn context_group_ui(
     usage: Option<&crate::inspector::UsageHistory>,
     context_window: u64,
+    narrow: bool,
     ui: &mut egui::Ui,
-) -> egui::Response {
-    let meter = ui.scope(|ui| usage_bar_ui(usage, context_window, ui));
-    ui.interact(
-        meter.response.rect,
-        ui.scope_id().with("dave_usage_meter"),
-        egui::Sense::click(),
+) -> ContextClicks {
+    let Some(usage) = usage else {
+        return ContextClicks::default();
+    };
+    let total = usage.current().map(|t| t.context()).unwrap_or(0);
+    if total == 0 {
+        return ContextClicks::default();
+    }
+    let fraction = (total as f64 / context_window as f64).min(1.0) as f32;
+
+    if narrow {
+        // One number in the meter's colour, with both actions in its menu:
+        // a narrow bar has no room for `compact` beside it.
+        let percent = (fraction * 100.0).round() as u32;
+        let meter = quiet_button_ui(ui, &format!("{percent}%"), fill_color(fraction));
+        let mut clicks = ContextClicks::default();
+        notedeck_ui::context_menu::click_menu(&meter, |ui| {
+            if ui.button("Compact now").clicked() {
+                clicks.compact = true;
+                ui.close();
+            }
+            if ui.button("Usage").clicked() {
+                clicks.meter = true;
+                ui.close();
+            }
+        });
+        return clicks;
+    }
+
+    let compact_color = if fraction >= 0.8 {
+        fill_color(fraction)
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    let compact = quiet_button_ui(ui, "compact", compact_color)
+        .on_hover_text("Compact the context now")
+        .clicked();
+
+    let meter = ui.scope(|ui| {
+        usage_bar_ui(fraction, ui);
+        {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} / {}",
+                    format_tokens(total),
+                    format_tokens(context_window)
+                ))
+                .size(11.0)
+                .color(ui.visuals().weak_text_color()),
+            );
+        }
+    });
+    let meter = ui
+        .interact(
+            meter.response.rect,
+            ui.scope_id().with("dave_usage_meter"),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_ui(|ui| {
+            ui.label(format!(
+                "{} of {} tokens in context",
+                format_tokens(total),
+                format_tokens(context_window)
+            ));
+            if let Some(cost) = usage.total_cost().filter(|cost| *cost > 0.0) {
+                ui.label(format!("${cost:.2} this session"));
+            }
+            ui.label(egui::RichText::new("Click for usage").weak());
+        });
+    ContextClicks {
+        meter: meter.clicked(),
+        compact,
+    }
+}
+
+/// A status-bar control drawn as plain small text, for a default state or
+/// an action: a pill would make it louder than it is. Pills are kept for a
+/// setting that is on and for something that wants attention.
+fn quiet_button_ui(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
+    ui.add(
+        egui::Label::new(egui::RichText::new(text).size(11.0).color(color))
+            .sense(egui::Sense::click())
+            .selectable(false),
     )
     .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -3224,62 +3429,19 @@ pub(crate) fn fill_color(fraction: f32) -> egui::Color32 {
     }
 }
 
-/// Renders the usage fill bar showing context window consumption: the
-/// latest request's context and the session's cost, from `usage`. Draws
-/// nothing until a request has been counted.
-fn usage_bar_ui(
-    usage: Option<&crate::inspector::UsageHistory>,
-    context_window: u64,
-    ui: &mut egui::Ui,
-) {
-    let Some(usage) = usage else {
-        return;
-    };
-    let total = usage.current().map(|t| t.context()).unwrap_or(0);
-    if total == 0 {
-        return;
-    }
-    let fraction = (total as f64 / context_window as f64).min(1.0) as f32;
-
-    let bar_color = fill_color(fraction);
-
-    let weak = ui.visuals().weak_text_color();
-
-    // Cost label
-    if let Some(cost) = usage.total_cost() {
-        if cost > 0.0 {
-            ui.add(egui::Label::new(
-                egui::RichText::new(format!("${:.2}", cost))
-                    .size(10.0)
-                    .color(weak),
-            ));
-        }
-    }
-
-    // Token count label
-    ui.add(egui::Label::new(
-        egui::RichText::new(format!(
-            "{} / {}",
-            format_tokens(total),
-            format_tokens(context_window)
-        ))
-        .size(10.0)
-        .color(weak),
-    ));
-
-    // Fill bar
+/// The context meter's fill bar, `fraction` full and coloured by
+/// [`fill_color`].
+fn usage_bar_ui(fraction: f32, ui: &mut egui::Ui) {
     let bar_width = 60.0;
-    let bar_height = 8.0;
+    let bar_height = 6.0;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_width, bar_height), egui::Sense::hover());
     let painter = ui.painter_at(rect);
-
-    // Background
-    painter.rect_filled(rect, 3.0, ui.visuals().faint_bg_color);
-
-    // Fill
+    // The inactive widget fill, which reads against the panel in both
+    // themes (`faint_bg_color` vanishes in light).
+    painter.rect_filled(rect, 3.0, ui.visuals().widgets.inactive.bg_fill);
     let fill_rect =
         egui::Rect::from_min_size(rect.min, egui::vec2(bar_width * fraction, bar_height));
-    painter.rect_filled(fill_rect, 3.0, bar_color);
+    painter.rect_filled(fill_rect, 3.0, fill_color(fraction));
 }
 
 /// The status-bar badge for a permission mode: its label and colour, matching
@@ -3296,7 +3458,12 @@ pub(crate) fn permission_mode_badge(mode: PermissionMode) -> StatusBadge<'static
     StatusBadge::new(label).variant(variant)
 }
 
-/// Render clickable permission mode and FOCUS toggle badges. Returns an action if clicked.
+/// The status bar's switches, right to left: Next (narrow only), focus and
+/// the permission mode. Each is a pill only while it is set to something
+/// other than its default (FOCUS on, a mode other than Manual), and plain
+/// text otherwise, so a pill always means "this session is different".
+/// Holding Ctrl draws focus as a pill with its key. Returns an action if
+/// clicked.
 fn toggle_badges_ui(
     ui: &mut egui::Ui,
     permission_mode: PermissionMode,
@@ -3334,17 +3501,22 @@ fn toggle_badges_ui(
         }
     }
 
-    // AUTO badge (rendered first in right-to-left, so it appears rightmost)
-    let mut focus_badge = super::badge::StatusBadge::new("FOCUS").variant(if auto_steal_focus {
-        super::badge::BadgeVariant::Info
+    // Focus (rendered first in right-to-left, so it appears rightmost).
+    let focus_resp = if auto_steal_focus || ctrl_held {
+        let mut focus_badge =
+            super::badge::StatusBadge::new("FOCUS").variant(if auto_steal_focus {
+                super::badge::BadgeVariant::Info
+            } else {
+                super::badge::BadgeVariant::Default
+            });
+        if ctrl_held {
+            focus_badge = focus_badge.keybind("\\");
+        }
+        focus_badge.show(ui)
     } else {
-        super::badge::BadgeVariant::Default
-    });
-    if ctrl_held {
-        focus_badge = focus_badge.keybind("\\");
-    }
-    if focus_badge
-        .show(ui)
+        quiet_button_ui(ui, "focus", ui.visuals().weak_text_color())
+    };
+    if focus_resp
         .on_hover_text("Click or Ctrl+\\ to toggle auto-focus mode")
         .clicked()
     {
@@ -3354,9 +3526,13 @@ fn toggle_badges_ui(
     // Permission mode badge. Either click opens a menu that sets a mode; there
     // is no cycle to step through by accident. In normal mode `m m`, `m p`,
     // `m e` and `m a` set them by name.
-    let mode_resp = permission_mode_badge(permission_mode)
-        .show(ui)
-        .on_hover_text("Permission mode · click to pick (normal mode: mm / mp / me / ma)");
+    let mode_resp = if permission_mode == PermissionMode::Default {
+        quiet_button_ui(ui, "manual", ui.visuals().weak_text_color())
+    } else {
+        permission_mode_badge(permission_mode).show(ui)
+    };
+    let mode_resp =
+        mode_resp.on_hover_text("Permission mode · click to pick (normal mode: mm / mp / me / ma)");
     notedeck_ui::context_menu::click_menu(&mode_resp, |ui| {
         ui.label(egui::RichText::new("Permission mode").small().weak());
         if ui.button("Manual").clicked() {
@@ -3383,17 +3559,6 @@ fn toggle_badges_ui(
             ui.close();
         }
     });
-
-    // COMPACT badge
-    let compact_badge =
-        super::badge::StatusBadge::new("COMPACT").variant(super::badge::BadgeVariant::Default);
-    if compact_badge
-        .show(ui)
-        .on_hover_text("Click to compact context")
-        .clicked()
-    {
-        action = Some(DaveAction::Compact);
-    }
 
     action
 }
@@ -3583,11 +3748,11 @@ mod tests {
 
     #[test]
     fn mode_badge_left_click_opens_the_menu() {
-        // Left-clicking the badge (shows "MANUAL" in Default) changes nothing
+        // Left-clicking the badge (plain "manual" text in Default) changes nothing
         // by itself: it opens the same menu the right click does.
         let mut harness = badge_harness(PermissionMode::Default);
         harness.run();
-        harness.get_by_label("MANUAL").click_accesskit();
+        harness.get_by_label("manual").click_accesskit();
         // The menu's first frame is an invisible sizing pass.
         harness.run();
         assert!(
@@ -3612,7 +3777,7 @@ mod tests {
         harness.run();
 
         // Open the mode badge's context menu and pick "Auto".
-        right_click(&mut harness, "MANUAL");
+        right_click(&mut harness, "manual");
         harness.get_by_label("Auto").click_accesskit();
         harness.run();
 

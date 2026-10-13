@@ -2229,6 +2229,9 @@ mod tests {
         /// Messages sent from a subagent's session, as `Dave` hands them to
         /// the parent.
         subagent_sends: Vec<crate::session::SubagentMessage>,
+        /// A theme to draw in instead of notedeck's default dark one, taken
+        /// once the first frame has set the context up.
+        visuals: Option<egui::Visuals>,
     }
 
     fn session_view_state() -> SessionViewState {
@@ -2261,6 +2264,7 @@ mod tests {
             now_unix: None,
             stop_requests: Vec::new(),
             subagent_sends: Vec::new(),
+            visuals: None,
         }
     }
 
@@ -2269,6 +2273,10 @@ mod tests {
             if !state.set_up {
                 state.notedeck.setup(ui.ctx());
                 state.set_up = true;
+            }
+            if let Some(visuals) = state.visuals.take() {
+                ui.ctx().set_visuals(visuals.clone());
+                ui.style_mut().visuals = visuals;
             }
             // The app's root panel paints this; a bare harness doesn't.
             ui.painter()
@@ -2766,7 +2774,14 @@ mod tests {
         harness.run_ok();
 
         assert_eq!(count_labels(&harness, "34K / 200K"), 1);
-        assert_eq!(count_labels(&harness, "$1.34"), 1);
+        // The cost is on the meter's hover, not the bar.
+        assert_eq!(count_labels(&harness, "$1.34 this session"), 0);
+        {
+            use egui_kittest::kittest::Queryable;
+            harness.get_by_label("34K / 200K").hover();
+        }
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "$1.34 this session"), 1);
     }
 
     /// A remote session's working tree arrives only in its host's inspector
@@ -2809,8 +2824,6 @@ mod tests {
         harness.run_ok();
 
         assert_eq!(count_labels(&harness, "autowork"), 1);
-        assert_eq!(count_labels(&harness, "●2"), 1);
-        assert_eq!(count_labels(&harness, "○1"), 1);
         assert_eq!(count_labels(&harness, "+142"), 1);
         assert_eq!(count_labels(&harness, "-37"), 1);
     }
@@ -4293,5 +4306,133 @@ mod tests {
             .show_details();
         harness.run_ok();
         harness.snapshot("session_details_tab");
+    }
+
+    /// What the composer and status bar are drawn over: whether a turn runs,
+    /// what is typed, and the permission mode.
+    struct ComposerScene {
+        working: bool,
+        draft: &'static str,
+        mode: PermissionMode,
+    }
+
+    /// Seed the active session with everything the composer and status bar
+    /// show at once: a dirty tree on a branch, a context partly spent (see
+    /// [`seed_usage`]), the mode, a draft, and a turn running or not.
+    fn seed_composer(state: &mut SessionViewState, scene: &ComposerScene) {
+        use agentium_core::inspector_snapshot::{GitFile, GitStatus, WorkTree};
+
+        seed_usage(state);
+        let session = state.session_manager.get_active_mut().unwrap();
+        session.input = scene.draft.to_string();
+        session.wakeup_turn = scene.working;
+        session.update_status();
+        let agentic = session.agentic.as_mut().unwrap();
+        agentic.permission_mode = scene.mode;
+        let file = |status: &str, path: &str| GitFile {
+            status: status.into(),
+            path: path.into(),
+        };
+        agentic
+            .git_status
+            .set_remote(Some(GitStatus::WorkTree(WorkTree {
+                branch: Some("autowork".into()),
+                files: vec![
+                    file(" M", "crates/notedeck_dave/src/ui/dave.rs"),
+                    file(" M", "crates/notedeck_dave/src/ui/mod.rs"),
+                    file(" M", "crates/notedeck_dave/src/ui/badge.rs"),
+                    file("??", "docs/composer.md"),
+                ],
+                changed: 4,
+                modified: 3,
+                untracked: 1,
+                added_lines: 182,
+                deleted_lines: 47,
+                ..Default::default()
+            })));
+    }
+
+    /// The bottom of a session's chat, composer and status bar, at `size` in
+    /// `visuals`.
+    fn snapshot_composer(
+        name: &str,
+        size: egui::Vec2,
+        visuals: egui::Visuals,
+        scene: &ComposerScene,
+    ) {
+        let mut state = session_view_state();
+        state.visuals = Some(visuals);
+        seed_composer(&mut state, scene);
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(size)
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, state);
+        harness.run_ok();
+        harness.snapshot(name);
+    }
+
+    /// Wide and dark, mid-turn with a draft typed: Stop and Send both show,
+    /// with the branch, its churn, the context meter and the Plan mode.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_composer_wide_dark_working() {
+        snapshot_composer(
+            "composer_wide_dark_working",
+            egui::vec2(1000.0, 340.0),
+            notedeck::theme::dark_mode(false),
+            &ComposerScene {
+                working: true,
+                draft: "and keep the old meter behind a hover",
+                mode: PermissionMode::Plan,
+            },
+        );
+    }
+
+    /// Wide and light, idle with nothing typed, in the default (Manual) mode.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_composer_wide_light_idle() {
+        snapshot_composer(
+            "composer_wide_light_idle",
+            egui::vec2(1000.0, 340.0),
+            notedeck::theme::light_mode(),
+            &ComposerScene {
+                working: false,
+                draft: "",
+                mode: PermissionMode::Default,
+            },
+        );
+    }
+
+    /// Narrow and dark, mid-turn with nothing typed: Stop alone.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_composer_narrow_dark_working() {
+        snapshot_composer(
+            "composer_narrow_dark_working",
+            egui::vec2(420.0, 340.0),
+            notedeck::theme::dark_mode(false),
+            &ComposerScene {
+                working: true,
+                draft: "",
+                mode: PermissionMode::AcceptEdits,
+            },
+        );
+    }
+
+    /// Narrow and light, idle with a draft typed.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_composer_narrow_light_idle() {
+        snapshot_composer(
+            "composer_narrow_light_idle",
+            egui::vec2(420.0, 340.0),
+            notedeck::theme::light_mode(),
+            &ComposerScene {
+                working: false,
+                draft: "rebase onto autowork and land it",
+                mode: PermissionMode::Auto,
+            },
+        );
     }
 }

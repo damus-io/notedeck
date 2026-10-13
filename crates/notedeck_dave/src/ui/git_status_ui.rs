@@ -30,14 +30,12 @@ fn abbreviate_branch(branch: &str) -> String {
 /// borrow conflicts when mutating `cache.expanded`.
 pub struct StatusSnapshot {
     branch: Option<String>,
-    modified: usize,
-    added: usize,
-    deleted: usize,
-    untracked: usize,
     /// Total inserted lines vs HEAD (line churn, not file count).
     added_lines: usize,
     /// Total deleted lines vs HEAD (line churn, not file count).
     deleted_lines: usize,
+    /// Every changed path, untracked included.
+    changed: usize,
     is_clean: bool,
     files: Vec<(String, String)>, // (status, path)
 }
@@ -50,12 +48,9 @@ impl StatusSnapshot {
         };
         Some(Ok(StatusSnapshot {
             branch: tree.branch.clone(),
-            modified: tree.modified,
-            added: tree.added,
-            deleted: tree.deleted,
-            untracked: tree.untracked,
             added_lines: tree.added_lines,
             deleted_lines: tree.deleted_lines,
+            changed: tree.changed,
             is_clean: tree.is_clean(),
             files: tree
                 .files
@@ -115,7 +110,11 @@ fn status_symbol(status: &str) -> &'static str {
     }
 }
 
-/// Render the left-side git status content (expand arrow, branch, counts).
+/// Render the left-side git status content: the branch, then the line churn
+/// against HEAD, the same `+N -M` the session list shows. A dirty tree's
+/// branch carries a chevron that opens the changed files; the per-kind file
+/// counts live in that list, not on the bar. A tree changed only by files
+/// git doesn't track yet, which have no lines to count, says how many.
 pub fn git_status_content_ui(
     cache: &mut GitStatusCache,
     snapshot: &Option<Result<StatusSnapshot, ()>>,
@@ -150,20 +149,17 @@ pub fn git_status_content_ui(
             }
 
             if snap.is_clean {
-                ui.label(RichText::new("clean").weak().size(11.0));
+                return;
+            }
+            if snap.added_lines > 0 || snap.deleted_lines > 0 {
+                count_label(ui, "+", snap.added_lines, ADDED_COLOR);
+                count_label(ui, "-", snap.deleted_lines, DELETED_COLOR);
             } else {
-                count_label(ui, "●", snap.modified, MODIFIED_COLOR);
-                count_label(ui, "+", snap.added, ADDED_COLOR);
-                count_label(ui, "-", snap.deleted, DELETED_COLOR);
-                count_label(ui, "○", snap.untracked, UNTRACKED_COLOR);
-
-                // Line churn vs HEAD (distinct from the file counts above), set
-                // off by a separator so the +/- here reads as lines, not files.
-                if snap.added_lines > 0 || snap.deleted_lines > 0 {
-                    ui.separator();
-                    count_label(ui, "+", snap.added_lines, ADDED_COLOR);
-                    count_label(ui, "-", snap.deleted_lines, DELETED_COLOR);
-                }
+                ui.label(
+                    RichText::new(format!("{} changed", snap.changed))
+                        .weak()
+                        .size(11.0),
+                );
             }
         }
         Some(Err(_)) => {
@@ -222,70 +218,73 @@ mod tests {
     use egui_kittest::Harness;
     use std::path::PathBuf;
 
-    /// Render the git status content line in isolation so the layout — branch,
-    /// file counts, and the line-churn group set off by a separator — can be
-    /// verified visually. A leading `ui.separator()` mirrors the real toolbar
-    /// (the divider after the Run button) so both separators can be compared.
-    #[allow(clippy::too_many_arguments)]
+    /// Render the git status content line in isolation so its layout —
+    /// chevron, branch and line churn — can be verified visually. A leading
+    /// `ui.separator()` mirrors the real toolbar (the divider after the Run
+    /// button). `render` gives it lavapipe, for a snapshot.
     fn status_line_harness(
         branch: &str,
-        modified: usize,
-        added: usize,
-        deleted: usize,
-        untracked: usize,
+        changed: usize,
         added_lines: usize,
         deleted_lines: usize,
+        render: bool,
     ) -> Harness<'static> {
         let branch = branch.to_string();
-        Harness::builder()
-            .with_size(egui::Vec2::new(360.0, 28.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                let snap = StatusSnapshot {
-                    branch: Some(branch.clone()),
-                    modified,
-                    added,
-                    deleted,
-                    untracked,
-                    added_lines,
-                    deleted_lines,
-                    is_clean: false,
-                    files: Vec::new(),
-                };
-                let mut cache = GitStatusCache::new(PathBuf::from("/tmp/project"));
-                let snapshot = Some(Ok(snap));
-                ui.horizontal(|ui| {
-                    ui.label("Run");
-                    ui.separator();
-                    git_status_content_ui(&mut cache, &snapshot, ui);
-                });
-            })
+        let mut builder = Harness::builder().with_size(egui::Vec2::new(360.0, 28.0));
+        if render {
+            builder = builder.renderer(notedeck::software_renderer());
+        }
+        builder.build_ui(move |ui| {
+            let snap = StatusSnapshot {
+                branch: Some(branch.clone()),
+                added_lines,
+                deleted_lines,
+                changed,
+                is_clean: false,
+                files: Vec::new(),
+            };
+            let mut cache = GitStatusCache::new(PathBuf::from("/tmp/project"));
+            let snapshot = Some(Ok(snap));
+            ui.horizontal(|ui| {
+                ui.label("Run");
+                ui.separator();
+                git_status_content_ui(&mut cache, &snapshot, ui);
+            });
+        })
     }
 
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_git_status_line_churn() {
-        let mut harness = status_line_harness("dave", 2, 0, 0, 1, 142, 37);
+        let mut harness = status_line_harness("dave", 3, 142, 37, true);
         harness.run();
         harness.snapshot("git_status_line_churn");
     }
 
-    /// A pathological branch name must be middle-truncated so the counts to
-    /// its right stay on the status line instead of wrapping.
+    /// A pathological branch name must be middle-truncated so the churn to
+    /// its right stays on the status line instead of wrapping.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_git_status_long_branch() {
         let mut harness = status_line_harness(
             "rental-614-requirements-generalize-evaluateonboarding-derived-gate",
-            2,
-            0,
-            0,
-            1,
+            3,
             142,
             37,
+            true,
         );
         harness.run();
         harness.snapshot("git_status_long_branch");
+    }
+
+    /// A tree changed only by untracked files has no lines to count, so the
+    /// bar says how many files changed instead.
+    #[test]
+    fn untracked_only_tree_counts_files() {
+        use egui_kittest::kittest::Queryable;
+        let mut harness = status_line_harness("dave", 2, 0, 0, false);
+        harness.run();
+        let _ = harness.get_by_label("2 changed");
     }
 
     #[test]
