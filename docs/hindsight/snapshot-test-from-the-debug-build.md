@@ -9,3 +9,4 @@ pays a cold release build of the crate's whole dependency tree to update one png
 - headway:dave/february-album-decrease — ~6 min of a cold --release build to re-record six session-list pngs after a 29-line row change
 - headway:dave/width-useless-choose — 33-min session: ~12 min of a cold --release snapshot-test build for one png, killed; the debug-build render took 0.7s
 - headway:dave/trade-thought-leisure — ~6 min: the --release snapshot build in the container was OOM-killed mid-rustc, and the retry then failed to link on the half-written objects until `cargo clean -p notedeck_dave --release` inside the container
+- headway:dave/eye-legend-stay — ~8 min: the --release snapshot build OOM-killed again (two snapshot containers building at once), then failed to link on the half-written objects until a `cargo clean --release -p notedeck_dave -p egui_kittest` inside the container and a rerun with CARGO_BUILD_JOBS=3

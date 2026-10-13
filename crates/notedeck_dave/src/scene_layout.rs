@@ -202,7 +202,7 @@ pub enum AreaKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayoutArea {
     pub kind: AreaKind,
-    /// Host name, project slug, or worktree directory name.
+    /// Host name in capitals, project slug, or worktree directory name.
     pub label: String,
     /// Stable across relayouts: the area's path through the tree, one line
     /// per level, so an area can ease from where it was.
@@ -481,10 +481,11 @@ fn host_node(host: &HostNode) -> PackNode {
         .iter()
         .map(|p| project_node(p, &key))
         .collect();
+    // Hosts are labelled in capitals, as the map draws them.
     let label = if host.name.is_empty() {
-        "local".to_owned()
+        "LOCAL".to_owned()
     } else {
-        host.name.clone()
+        host.name.to_uppercase()
     };
     PackNode::branch(
         Some(AreaInfo {
@@ -957,7 +958,7 @@ mod tests {
         };
         assert_eq!(kinds("damus"), [AreaKind::Project]);
         assert_eq!(kinds("notedeck-scene"), [AreaKind::Worktree]);
-        assert_eq!(kinds("local"), [AreaKind::Host]);
+        assert_eq!(kinds("LOCAL"), [AreaKind::Host]);
     }
 
     #[test]

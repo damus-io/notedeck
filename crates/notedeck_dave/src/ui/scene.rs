@@ -1,9 +1,12 @@
 use crate::agent_status::AgentStatus;
+use crate::card_titles::CardTitles;
 use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::scene_layout::{AreaKind, EasedLayout, Synced};
-use crate::session::{SessionId, SessionManager};
+use crate::session::{ChatSession, SessionId, SessionManager};
 use crate::ui::paint_keybind_hint;
+use crate::ui::scene_card::HoverCard;
 use egui::{Color32, Pos2, Rect, Response, Sense, Vec2};
+use headway::title::TitleParts;
 
 /// The RTS-style scene view for managing agents
 pub struct AgentScene {
@@ -22,6 +25,8 @@ pub struct AgentScene {
     focus_pending: Option<SessionId>,
     /// Where the map draws every host, project, worktree and session.
     map: EasedLayout,
+    /// The hover card last shown, kept while its session's data is unchanged.
+    hover_card: Option<HoverCard>,
 }
 
 /// State for box/marquee selection
@@ -71,6 +76,7 @@ impl AgentScene {
             animation_progress: 1.0,
             focus_pending: None,
             map: EasedLayout::default(),
+            hover_card: None,
         }
     }
 
@@ -165,73 +171,82 @@ impl AgentScene {
         let mut clicked_agent: Option<(SessionId, bool)> = None; // (id, shift_held)
         let mut bg_clicked = false;
         let mut bg_drag_started = false;
+        // When the soonest visible node next looks different.
+        let mut next_change: Option<f64> = None;
 
         // Use a local copy of scene_rect to avoid borrow conflict
         let mut scene_rect = self.scene_rect;
         let selected_ids = &self.selected;
         let map = &self.map;
+        let hover_card = &mut self.hover_card;
+        let titles = &session_manager.card_titles;
 
         let scene_response =
             egui::Scene::new()
-                .zoom_range(0.1..=1.0)
+                .zoom_range(ZOOM_RANGE)
                 .show(ui, &mut scene_rect, |ui| {
                     Self::draw_areas(ui, map, now);
 
-                    // Draw agents and collect interaction responses
-                    // Use sessions_ordered() to match keybinding order (Ctrl+1 = first in order, etc.)
-                    for (keybind_idx, session) in
-                        session_manager.sessions_ordered().into_iter().enumerate()
-                    {
-                        let id = session.id;
-                        let keybind_number = keybind_idx + 1; // 1-indexed for display
-                                                              // Only agentic sessions are on the map.
-                        let Some(position) = map.node(id, now) else {
-                            continue;
-                        };
-                        let radius = if session.subagent_of.is_some() {
-                            SATELLITE_RADIUS
-                        } else {
-                            NODE_RADIUS
-                        };
-                        let status = session.status();
-                        let title = session.details.display_title();
-                        let is_selected = selected_ids.contains(&id);
-                        let queue_priority = focus_queue.get_session_priority(id);
-
-                        let agent_response = Self::draw_agent(
-                            ui,
-                            id,
-                            keybind_number,
-                            position,
-                            radius,
-                            status,
-                            title,
-                            is_selected,
-                            ctrl_held,
-                            queue_priority,
-                        );
-
-                        if agent_response.clicked() {
-                            let shift = ui.input(|i| i.modifiers.shift);
-                            clicked_agent = Some((id, shift));
-                        }
-                    }
-
-                    // Handle click on empty space to deselect
+                    // Empty space: a click deselects, a drag box-selects.
+                    // Registered before the nodes so they sit on top of it
+                    // and get their own hovers and clicks.
                     let bg_response = ui.interact(
                         ui.max_rect(),
                         ui.scope_id().with("scene_bg"),
                         Sense::click_and_drag(),
                     );
 
+                    // Draw agents and collect interaction responses
+                    // Use sessions_ordered() to match keybinding order (Ctrl+1 = first in order, etc.)
+                    for (keybind_idx, session) in
+                        session_manager.sessions_ordered().into_iter().enumerate()
+                    {
+                        // Only agentic sessions are on the map.
+                        let Some(center) = map.node(session.id, now) else {
+                            continue;
+                        };
+                        let node = MapNode {
+                            id: session.id,
+                            keybind_number: keybind_idx + 1,
+                            center,
+                            satellite: session.subagent_of.is_some(),
+                            status: session.status(),
+                            code: node_code(shown_title(session, titles)),
+                            selected: selected_ids.contains(&session.id),
+                            show_keybinding: ctrl_held,
+                            queue_priority: focus_queue.get_session_priority(session.id),
+                        };
+                        let agent_response = Self::draw_agent(ui, &node, now);
+
+                        // Satellites are still dots, whatever their status.
+                        if !node.satellite && ui.is_rect_visible(agent_response.rect) {
+                            if let Some(change) = RingLook::of(node.status).next_change(now) {
+                                next_change = Some(next_change.map_or(change, |c| c.min(change)));
+                            }
+                        }
+                        if agent_response.hovered() {
+                            let card = HoverCard::cached(hover_card, session_manager, session);
+                            card.show(&agent_response);
+                        }
+                        if agent_response.clicked() {
+                            let shift = ui.input(|i| i.modifiers.shift);
+                            clicked_agent = Some((session.id, shift));
+                        }
+                    }
+
                     if bg_response.clicked() && clicked_agent.is_none() {
                         bg_clicked = true;
                     }
-
                     if bg_response.drag_started() && clicked_agent.is_none() {
                         bg_drag_started = true;
                     }
                 });
+
+        // Idle, done and pending scenes don't spin the frame loop.
+        if let Some(secs) = next_change {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(secs));
+        }
 
         // Get the viewport rect for coordinate transforms
         let viewport_rect = scene_response.response.rect;
@@ -338,109 +353,151 @@ impl AgentScene {
     }
 
     /// Draw the map's hosts, projects and worktrees, outermost first, as
-    /// faint circles labelled at the top.
+    /// nested territories each a step lighter than the one around it, with
+    /// worktrees on a dashed edge. Labels sit at the top inside each circle,
+    /// on a halo of the panel colour so they read over the lines drawn
+    /// across them.
     fn draw_areas(ui: &egui::Ui, map: &EasedLayout, now: f64) {
         let painter = ui.painter();
-        let stroke_color = ui.visuals().weak_text_color();
+        let visuals = ui.visuals();
+        let tint = visuals.text_color();
+        let edge = visuals.weak_text_color();
+        let halo = visuals.panel_fill;
         for (i, area) in map.target().areas.iter().enumerate() {
             let at = map.area(i, now);
-            let (alpha, font) = match area.kind {
-                AreaKind::Host => (0.5, 13.0),
-                AreaKind::Project => (0.35, 11.0),
-                AreaKind::Worktree => (0.25, 9.0),
-            };
-            painter.circle_stroke(
-                at.center,
-                at.radius,
-                egui::Stroke::new(1.0, stroke_color.gamma_multiply(alpha)),
+            let look = AreaLook::of(area.kind);
+            painter.circle_filled(at.center, at.radius, tint.gamma_multiply(AREA_FILL));
+            let stroke = egui::Stroke::new(
+                notedeck::tokens::STROKE_THIN,
+                edge.gamma_multiply(look.edge),
             );
-            painter.text(
-                at.center - Vec2::new(0.0, at.radius - 4.0),
-                egui::Align2::CENTER_TOP,
+            if area.kind == AreaKind::Worktree {
+                dashed_circle(painter, at.center, at.radius, WORKTREE_DASH, 0.0, stroke);
+            } else {
+                painter.circle_stroke(at.center, at.radius, stroke);
+            }
+
+            let mut job = egui::text::LayoutJob::default();
+            job.append(
                 &area.label,
-                egui::FontId::proportional(font),
-                stroke_color,
+                0.0,
+                egui::TextFormat {
+                    font_id: look.font.clone(),
+                    color: look.color(visuals),
+                    extra_letter_spacing: look.letter_spacing,
+                    ..Default::default()
+                },
             );
+            let galley = painter.layout_job(job);
+            let pos = at.center + Vec2::new(-galley.size().x / 2.0, -at.radius + look.inset);
+            for offset in HALO_OFFSETS {
+                painter.galley_with_override_text_color(pos + offset, galley.clone(), halo);
+            }
+            painter.galley(pos, galley, tint);
         }
     }
 
-    /// Draw a single agent unit and return the interaction Response
-    /// `keybind_number` is the 1-indexed number displayed when Ctrl is held (matches Ctrl+N keybindings)
-    #[allow(clippy::too_many_arguments)]
-    fn draw_agent(
-        ui: &mut egui::Ui,
-        id: SessionId,
-        keybind_number: usize,
-        center: Pos2,
-        agent_radius: f32,
-        status: AgentStatus,
-        title: &str,
-        is_selected: bool,
-        show_keybinding: bool,
-        queue_priority: Option<FocusPriority>,
-    ) -> Response {
-        let agent_rect = Rect::from_center_size(center, Vec2::splat(agent_radius * 2.0));
-
-        // Interact with the agent
+    /// Draw a single session's node and return the interaction Response: a
+    /// status ring with the session's code in it, moving as its status does
+    /// (see [`RingLook`]), or its Ctrl+N number while Ctrl is held. A
+    /// subagent is a small still dot in its status colour.
+    fn draw_agent(ui: &mut egui::Ui, node: &MapNode<'_>, now: f64) -> Response {
+        let radius = if node.satellite {
+            SATELLITE_RADIUS
+        } else {
+            NODE_RADIUS
+        };
+        let center = node.center;
+        let agent_rect = Rect::from_center_size(center, Vec2::splat(radius * 2.0));
+        let code = node.code;
         let response = ui
             .interact(
                 agent_rect,
-                ui.scope_id().with(("agent", id)),
+                ui.scope_id().with(("agent", node.id)),
                 Sense::click(),
             )
-            .on_hover_text(title);
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, code));
 
+        let look = RingLook::of(node.status);
+        let opacity = look.opacity(now);
+        let color = node.status.color().gamma_multiply(opacity);
         let painter = ui.painter();
+        let visuals = ui.visuals();
 
-        // Selection highlight (outer ring)
-        if is_selected {
+        // Selection: a hairline outside the ring.
+        if node.selected {
             painter.circle_stroke(
                 center,
-                agent_radius + 3.0,
-                egui::Stroke::new(1.5_f32, Color32::from_rgb(255, 255, 100)),
+                radius + SELECTION_GAP,
+                egui::Stroke::new(
+                    notedeck::tokens::STROKE_THIN,
+                    visuals
+                        .text_color()
+                        .gamma_multiply(notedeck::tokens::OPACITY_MUTED),
+                ),
             );
         }
 
-        // Status ring
-        let status_color = status.color();
-        painter.circle_stroke(
-            center,
-            agent_radius,
-            egui::Stroke::new(2.0_f32, status_color),
-        );
+        if node.satellite {
+            painter.circle_filled(center, radius, color);
+            return response;
+        }
 
-        // Fill
-        let fill_color = if response.hovered() {
-            ui.visuals().widgets.hovered.bg_fill
+        if look.ripple {
+            let t = ((now % RIPPLE_SECS) / RIPPLE_SECS) as f32;
+            painter.circle_stroke(
+                center,
+                radius * (1.0 + t),
+                egui::Stroke::new(
+                    notedeck::tokens::STROKE_THIN,
+                    color.gamma_multiply(0.6 * (1.0 - t)),
+                ),
+            );
+        }
+
+        let core = if response.hovered() {
+            visuals.widgets.hovered.bg_fill
         } else {
-            ui.visuals().widgets.inactive.bg_fill
+            visuals.extreme_bg_color
         };
-        painter.circle_filled(center, agent_radius - 1.5, fill_color);
+        painter.circle_filled(center, radius, core.gamma_multiply(opacity.max(0.5)));
+        if look.glow {
+            painter.circle_stroke(
+                center,
+                radius,
+                egui::Stroke::new(GLOW_WIDTH, color.gamma_multiply(0.2)),
+            );
+        }
+        let ring = egui::Stroke::new(RING_WIDTH, color);
+        match look.dash {
+            Some(dash) => {
+                let phase = look.spin.map_or(0.0, |secs| {
+                    ((now % secs as f64) / secs as f64) as f32 * std::f32::consts::TAU
+                });
+                dashed_circle(painter, center, radius, dash, phase, ring);
+            }
+            None => {
+                painter.circle_stroke(center, radius, ring);
+            }
+        }
 
-        // Focus queue indicator dot (top-right of the agent circle)
-        if let Some(priority) = queue_priority {
-            let dot_radius = agent_radius * 0.3;
-            let dot_offset = Vec2::new(agent_radius * 0.7, -agent_radius * 0.7);
+        // Focus queue indicator dot (top-right of the ring)
+        if let Some(priority) = node.queue_priority {
+            let dot_radius = radius * 0.3;
+            let dot_offset = Vec2::new(radius * 0.7, -radius * 0.7);
             painter.circle_filled(center + dot_offset, dot_radius, priority.color());
         }
 
-        // Agent icon in center: show keybind frame when Ctrl held, otherwise first letter
-        if show_keybinding {
-            paint_keybind_hint(ui, center, &keybind_number.to_string(), agent_radius);
+        if node.show_keybinding {
+            paint_keybind_hint(ui, center, &node.keybind_number.to_string(), radius);
         } else {
-            let mut buf = [0u8; 4];
-            let icon = title
-                .chars()
-                .next()
-                .unwrap_or('?')
-                .to_ascii_uppercase()
-                .encode_utf8(&mut buf);
             painter.text(
                 center,
                 egui::Align2::CENTER_CENTER,
-                &*icon,
-                egui::FontId::proportional(agent_radius * 0.9),
-                ui.visuals().text_color(),
+                code,
+                egui::FontId::monospace(code_size(code)),
+                color,
             );
         }
 
@@ -448,11 +505,259 @@ impl AgentScene {
     }
 }
 
+/// What [`AgentScene::draw_agent`] draws for one session.
+struct MapNode<'a> {
+    id: SessionId,
+    /// 1-indexed, shown when Ctrl is held (matches Ctrl+N keybindings).
+    keybind_number: usize,
+    center: Pos2,
+    /// A subagent, drawn as a small dot in orbit around its parent.
+    satellite: bool,
+    status: AgentStatus,
+    /// The short code drawn in the ring (see [`node_code`]).
+    code: &'a str,
+    selected: bool,
+    show_keybinding: bool,
+    queue_priority: Option<FocusPriority>,
+}
+
+/// How a territory of one [`AreaKind`] is drawn.
+struct AreaLook {
+    /// Opacity of the edge, against the weak text colour.
+    edge: f32,
+    font: egui::FontId,
+    letter_spacing: f32,
+    /// Opacity of the label, against the text colour.
+    label: f32,
+    /// How far below the circle's top the label starts.
+    inset: f32,
+}
+
+impl AreaLook {
+    fn of(kind: AreaKind) -> Self {
+        match kind {
+            AreaKind::Host => Self {
+                edge: 0.35,
+                font: egui::FontId::proportional(11.0),
+                letter_spacing: 1.8,
+                label: 0.85,
+                inset: 8.0,
+            },
+            AreaKind::Project => Self {
+                edge: 0.45,
+                font: egui::FontId::monospace(10.0),
+                letter_spacing: 0.3,
+                label: 0.6,
+                inset: 6.0,
+            },
+            AreaKind::Worktree => Self {
+                edge: 0.55,
+                font: egui::FontId::monospace(9.0),
+                letter_spacing: 0.3,
+                label: 0.45,
+                inset: 5.0,
+            },
+        }
+    }
+
+    fn color(&self, visuals: &egui::Visuals) -> Color32 {
+        visuals.text_color().gamma_multiply(self.label)
+    }
+}
+
+/// How a node's ring looks and moves for one status: working is a rotating
+/// dashed arc, needs-input a soft ripple, error a blink, waiting a slow
+/// dashed spin, pending a still dashed ghost, idle and done still with done
+/// dimmed.
+#[derive(Clone, Copy)]
+struct RingLook {
+    /// The ring's dash pattern, `None` for a solid ring.
+    dash: Option<Dash>,
+    /// Seconds per turn of a dashed ring, `None` for a still one.
+    spin: Option<f32>,
+    /// A ring spreads out from the node and fades.
+    ripple: bool,
+    /// The node blinks between full and dim.
+    blink: bool,
+    /// A soft wider ring under the ring.
+    glow: bool,
+    /// The node's opacity, before any blink.
+    base_opacity: f32,
+}
+
+/// A dash pattern along a circle, in points.
+#[derive(Clone, Copy)]
+struct Dash {
+    on: f32,
+    off: f32,
+}
+
+impl RingLook {
+    const STILL: Self = Self {
+        dash: None,
+        spin: None,
+        ripple: false,
+        blink: false,
+        glow: false,
+        base_opacity: 1.0,
+    };
+
+    fn of(status: AgentStatus) -> Self {
+        match status {
+            AgentStatus::Working => Self {
+                dash: Some(Dash { on: 22.0, off: 6.0 }),
+                spin: Some(6.0),
+                glow: true,
+                ..Self::STILL
+            },
+            AgentStatus::NeedsInput => Self {
+                ripple: true,
+                glow: true,
+                ..Self::STILL
+            },
+            AgentStatus::Error => Self {
+                blink: true,
+                glow: true,
+                ..Self::STILL
+            },
+            AgentStatus::Waiting => Self {
+                dash: Some(Dash { on: 3.0, off: 4.0 }),
+                spin: Some(12.0),
+                ..Self::STILL
+            },
+            AgentStatus::Pending => Self {
+                dash: Some(Dash { on: 3.0, off: 4.0 }),
+                base_opacity: 0.4,
+                ..Self::STILL
+            },
+            AgentStatus::Done => Self {
+                base_opacity: 0.75,
+                ..Self::STILL
+            },
+            AgentStatus::Idle => Self::STILL,
+        }
+    }
+
+    /// The node's opacity at `now`.
+    fn opacity(&self, now: f64) -> f32 {
+        if self.blink && (now / BLINK_SECS) as i64 % 2 == 1 {
+            return self.base_opacity * 0.3;
+        }
+        self.base_opacity
+    }
+
+    /// How long until the node looks different, `None` if it never does.
+    fn next_change(&self, now: f64) -> Option<f64> {
+        if self.spin.is_some() || self.ripple {
+            return Some(ANIMATION_FRAME_SECS);
+        }
+        if self.blink {
+            return Some(BLINK_SECS - now % BLINK_SECS);
+        }
+        None
+    }
+}
+
+/// Stroke `radius` around `center` as dashes, the pattern rounded so a whole
+/// number of dashes closes the circle, starting `phase` radians round. Each
+/// dash is a few short chords rather than a path, so drawing one allocates
+/// nothing of its own.
+fn dashed_circle(
+    painter: &egui::Painter,
+    center: Pos2,
+    radius: f32,
+    dash: Dash,
+    phase: f32,
+    stroke: egui::Stroke,
+) {
+    use std::f32::consts::TAU;
+    let period = dash.on + dash.off;
+    let dashes = (TAU * radius / period).round().max(1.0);
+    let step = TAU / dashes;
+    let on = step * dash.on / period;
+    let chords = (on * radius / MAX_CHORD).ceil().max(1.0) as usize;
+    let at = |angle: f32| center + Vec2::angled(angle) * radius;
+    for i in 0..dashes as usize {
+        let start = phase + i as f32 * step;
+        let mut prev = at(start);
+        for k in 1..=chords {
+            let next = at(start + on * k as f32 / chords as f32);
+            painter.line_segment([prev, next], stroke);
+            prev = next;
+        }
+    }
+}
+
+/// The title a session's node and hover card show: its card's current title
+/// when it is titled by a card ref that has been looked up, the ref's word id
+/// when it hasn't been yet, else its own title.
+pub(super) fn shown_title<'a>(session: &'a ChatSession, titles: &'a CardTitles) -> &'a str {
+    match session.details.title_ref() {
+        Some(card_ref) => titles
+            .get(card_ref)
+            .unwrap_or_else(|| card_ref.rsplit('/').next().unwrap_or(card_ref)),
+        None => session.details.display_title(),
+    }
+}
+
+/// The short code a node shows for `title`: the code before its colon (see
+/// [`TitleParts`]), else the first four characters of its headline.
+pub(super) fn node_code(title: &str) -> &str {
+    let parts = TitleParts::split(title);
+    if let Some(code) = parts.code {
+        return code;
+    }
+    let headline = parts.headline;
+    let end = headline
+        .char_indices()
+        .nth(FALLBACK_CODE_CHARS)
+        .map_or(headline.len(), |(i, _)| i);
+    headline[..end].trim_end()
+}
+
+/// The font size that fits `code` inside a ring: up to three characters at
+/// full size, longer codes smaller.
+fn code_size(code: &str) -> f32 {
+    (34.0 / code.chars().count().max(1) as f32).clamp(4.5, 9.5)
+}
+
 /// Radius a session's circle is drawn at, inside its
 /// [`LEAF_RADIUS`](crate::scene_layout::LEAF_RADIUS) slot.
 const NODE_RADIUS: f32 = 15.0;
 /// Radius a subagent's circle is drawn at, in orbit around its parent.
 const SATELLITE_RADIUS: f32 = 5.0;
+/// Width of a node's status ring.
+const RING_WIDTH: f32 = 1.6;
+/// Width of the soft ring under an active node's ring.
+const GLOW_WIDTH: f32 = 5.0;
+/// How far outside the ring the selection hairline is.
+const SELECTION_GAP: f32 = 5.0;
+/// Each territory's fill, as an opacity of the text colour. Nested
+/// territories stack, so each level reads a step lighter (darker in light
+/// mode) than the one around it.
+const AREA_FILL: f32 = 0.045;
+/// A worktree's dashed edge.
+const WORKTREE_DASH: Dash = Dash { on: 2.0, off: 3.0 };
+/// Where an area label's halo is drawn, around the label.
+const HALO_OFFSETS: [Vec2; 4] = [
+    Vec2::new(-1.0, -1.0),
+    Vec2::new(1.0, -1.0),
+    Vec2::new(-1.0, 1.0),
+    Vec2::new(1.0, 1.0),
+];
+/// The longest chord a dashed circle is drawn with, in points.
+const MAX_CHORD: f32 = 3.0;
+/// Seconds per needs-input ripple.
+const RIPPLE_SECS: f64 = 2.0;
+/// Seconds an erroring node stays bright, then dim.
+const BLINK_SECS: f64 = 0.5;
+/// How often a spinning or rippling node is redrawn: 30 fps is smooth for
+/// motion this slow and half the cost of 60.
+const ANIMATION_FRAME_SECS: f64 = 1.0 / 30.0;
+/// Characters of a title without a code that stand in for one.
+const FALLBACK_CODE_CHARS: usize = 4;
+/// Zoom range of the map. The low end keeps area labels legible.
+const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.3..=2.0;
 
 /// Easing function for smooth camera animation
 fn ease_out_cubic(t: f32) -> f32 {
@@ -464,6 +769,7 @@ mod tests {
     use super::*;
     use crate::backend::BackendType;
     use crate::config::AiMode;
+    use egui_kittest::kittest::Queryable;
     use egui_kittest::Harness;
     use std::path::PathBuf;
 
@@ -474,49 +780,197 @@ mod tests {
     }
 
     /// Two hosts: one with a three-worktree project and a flat one, the
-    /// other with a single project, so every level of the map shows.
+    /// other with a single project, so every level of the map shows, and a
+    /// session in every status. Titles are coded card titles, except one
+    /// plain title that falls back to its first characters.
     fn sample_sessions() -> SessionManager {
+        let now = crate::session::now_unix();
         let mut sm = SessionManager::new();
-        let mut add = |host: &str, root: &str, cwd: &str, title: &str| {
+        let mut add = |host: &str, root: &str, cwd: &str, title: &str, status: AgentStatus| {
             let id = sm.new_session(PathBuf::from(cwd), AiMode::Agentic, BackendType::Claude);
             let s = sm.get_mut(id).expect("session");
             s.details.hostname = host.to_string();
             s.details.title = title.to_string();
             s.details.project_root = Some(PathBuf::from(root));
             s.details.project_slug = Some(root.rsplit('/').next().unwrap().to_string());
+            s.last_activity = Some(now - 6 * 60);
+            // Observed remotely, so the status is the one its state reports.
+            s.source = crate::session::SessionSource::Remote;
+            s.agentic.as_mut().expect("agentic").remote_status = Some(status);
+            s.update_status();
+            id
         };
         let nd = "/home/dev/notedeck";
-        add("monad", nd, nd, "Fix streaming");
-        add("monad", nd, "/home/dev/notedeck-scene", "Scene layout");
-        add("monad", nd, "/home/dev/notedeck-scene", "Territories");
-        add("monad", nd, "/home/dev/notedeck-scene", "Edges");
-        add("monad", nd, "/home/dev/notedeck-dave", "Inspector");
-        add("monad", "/home/dev/damus", "/home/dev/damus", "Damus build");
-        add("hydra", "/u/hydra", "/u/hydra", "Billing");
-        add("hydra", "/u/hydra", "/u/hydra", "Quota");
+        let scene = "/home/dev/notedeck-scene";
+        add("monad", nd, nd, "ST1: fix streaming", AgentStatus::Done);
+        let layout = add(
+            "monad",
+            nd,
+            scene,
+            "SC1: circle-packed layout — host, project, worktree",
+            AgentStatus::Working,
+        );
+        add(
+            "monad",
+            nd,
+            scene,
+            "SC2: territories and status rings",
+            AgentStatus::NeedsInput,
+        );
+        add("monad", nd, scene, "SC3: edges", AgentStatus::Waiting);
+        add(
+            "monad",
+            nd,
+            "/home/dev/notedeck-dave",
+            "IN1: inspector",
+            AgentStatus::Error,
+        );
+        add(
+            "monad",
+            "/home/dev/damus",
+            "/home/dev/damus",
+            "Damus build",
+            AgentStatus::Idle,
+        );
+        add(
+            "hydra",
+            "/u/hydra",
+            "/u/hydra",
+            "BL4: billing",
+            AgentStatus::Pending,
+        );
+        add(
+            "hydra",
+            "/u/hydra",
+            "/u/hydra",
+            "QT2: quota",
+            AgentStatus::Idle,
+        );
+        let sub = add(
+            "monad",
+            nd,
+            scene,
+            "find the pack code",
+            AgentStatus::Working,
+        );
+        sm.get_mut(sub).expect("subagent").subagent_of = Some(crate::session::SubagentOf {
+            parent: layout,
+            task_id: "task-1".to_string(),
+            agent_id: None,
+            status: AgentStatus::Working,
+            background: false,
+        });
         sm.rebuild_groups();
         sm
     }
 
+    /// A harness drawing the sample map with SC2 selected, with the software
+    /// renderer when it is for a `snapshot`.
+    fn map_harness(snapshot: bool) -> Harness<'static, MapState> {
+        let mut builder = Harness::builder().with_size(egui::Vec2::new(640.0, 520.0));
+        if snapshot {
+            builder = builder.renderer(notedeck::software_renderer());
+        }
+        builder.build_ui_state(
+            |ui, state: &mut MapState| {
+                state
+                    .scene
+                    .ui(&state.sessions, &state.focus_queue, ui, false);
+            },
+            {
+                let sessions = sample_sessions();
+                let mut scene = AgentScene::new();
+                let selected = sessions
+                    .iter()
+                    .find(|s| s.details.title.starts_with("SC2"))
+                    .expect("SC2");
+                scene.select(selected.id);
+                MapState {
+                    sessions,
+                    scene,
+                    focus_queue: FocusQueue::new(),
+                }
+            },
+        )
+    }
+
+    /// Move the pointer onto the node labelled `code`. A node's accesskit
+    /// rect is in the scene's own coordinates, so kittest's `hover` would
+    /// point at the wrong spot; map it through the scene layer's transform.
+    fn hover_node(harness: &Harness<'_, MapState>, code: &str) {
+        let at = harness.get_by_label(code).rect().center();
+        let to_screen = harness
+            .ctx
+            .memory(|m| m.to_global.values().next().copied())
+            .expect("the scene's layer transform");
+        harness.hover_at(to_screen * at);
+    }
+
+    /// Territories, and a node in every status with its code in the ring.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_scene_map_layout() {
-        let mut harness = Harness::builder()
-            .with_size(egui::Vec2::new(640.0, 520.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui_state(
-                |ui, state: &mut MapState| {
-                    state
-                        .scene
-                        .ui(&state.sessions, &state.focus_queue, ui, false);
-                },
-                MapState {
-                    sessions: sample_sessions(),
-                    scene: AgentScene::new(),
-                    focus_queue: FocusQueue::new(),
-                },
-            );
-        harness.run();
+        let mut harness = map_harness(true);
+        harness.run_steps(3);
         harness.snapshot("scene_map_layout");
+    }
+
+    /// The hover card beside a hovered node.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_scene_hover_card() {
+        let mut harness = map_harness(true);
+        harness.run_steps(3);
+        hover_node(&harness, "SC1");
+        harness.run_steps(3);
+        harness.snapshot("scene_hover_card");
+    }
+
+    /// Hovering a node shows its card: the full headline, the detail,
+    /// where it runs, and its subagent.
+    #[test]
+    fn hover_shows_card() {
+        let mut harness = map_harness(false);
+        harness.run_steps(3);
+        assert!(harness.query_by_label("circle-packed layout").is_none());
+
+        hover_node(&harness, "SC1");
+        harness.run_steps(3);
+        harness.get_by_label("circle-packed layout");
+        harness.get_by_label("host, project, worktree");
+        harness.get_by_label("monad / notedeck / notedeck-scene");
+        harness.get_by_label("find the pack code");
+    }
+
+    /// A node shows its title's code, or the first four characters of a
+    /// title without one.
+    #[test]
+    fn node_code_falls_back_to_title() {
+        assert_eq!(node_code("UT7c: the key list — crews"), "UT7c");
+        assert_eq!(node_code("Damus build"), "Damu");
+        assert_eq!(node_code("ab c"), "ab c");
+        assert_eq!(node_code("ab "), "ab");
+        assert_eq!(node_code("éèêëx"), "éèêë");
+    }
+
+    /// Only animated statuses ask for another frame.
+    #[test]
+    fn still_statuses_do_not_repaint() {
+        for status in [AgentStatus::Idle, AgentStatus::Done, AgentStatus::Pending] {
+            assert_eq!(RingLook::of(status).next_change(1.0), None, "{status:?}");
+        }
+        for status in [
+            AgentStatus::Working,
+            AgentStatus::NeedsInput,
+            AgentStatus::Waiting,
+        ] {
+            assert_eq!(
+                RingLook::of(status).next_change(1.0),
+                Some(ANIMATION_FRAME_SECS),
+                "{status:?}"
+            );
+        }
+        let blink = RingLook::of(AgentStatus::Error).next_change(1.2).unwrap();
+        assert!((blink - 0.3).abs() < 1e-9, "{blink}");
     }
 }

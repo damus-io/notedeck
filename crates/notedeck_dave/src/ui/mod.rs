@@ -15,6 +15,7 @@ mod query_ui;
 pub(crate) mod run_config_editor;
 pub(crate) mod run_ui;
 pub mod scene;
+mod scene_card;
 pub mod session_kind_picker;
 pub mod session_list;
 pub mod session_picker;
@@ -613,6 +614,7 @@ pub fn scene_ui(
     let mut view_action = SceneViewAction::None;
 
     let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+    refresh_scene_card_titles(session_manager, app_ctx, ui.input(|i| i.time));
 
     StripBuilder::new(ui)
         .size(Size::relative(0.55))
@@ -706,6 +708,26 @@ pub fn scene_ui(
         response: dave_response,
         action: view_action,
     }
+}
+
+/// Keep the card titles the scene's nodes show their codes from current, as
+/// the session list does for its rows (see
+/// [`refresh_card_titles`](session_list::refresh_card_titles)): in the scene
+/// view no list is drawn to do it.
+fn refresh_scene_card_titles(
+    session_manager: &mut SessionManager,
+    app_ctx: &mut notedeck::AppContext,
+    now: f64,
+) {
+    let mut note = app_ctx.note_context();
+    let Ok(txn) = nostrdb::Transaction::new(note.ndb) else {
+        return;
+    };
+    let refs = session_list::TitleRefs {
+        note: &mut note,
+        txn: &txn,
+    };
+    session_list::refresh_card_titles(session_manager, &refs, now);
 }
 
 /// What [`session_list_ui`] builds a [`SessionListUi`] from.

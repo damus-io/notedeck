@@ -1,5 +1,5 @@
 /// Represents the current status of an agent in the RTS scene
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AgentStatus {
     /// Agent is idle, no active work
     #[default]

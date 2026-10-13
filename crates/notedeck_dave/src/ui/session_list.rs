@@ -805,41 +805,14 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         }
     }
 
-    /// Look up the current title and outline of each card a session is on,
-    /// and of each such card's parent, unless it was looked up within
-    /// [`REFRESH_SECS`](crate::card_titles::REFRESH_SECS) of `now`, so the
-    /// rows draw from text kept on the [`SessionManager`] instead of folding
-    /// a board per row per frame. A lookup that changed what was kept
-    /// regroups the list, since card parents link successor chains and the
-    /// parent's title and progress head them. Without
-    /// [`title_refs`](Self::title_refs) there is nothing to look up through,
-    /// and the rows draw what was kept.
+    /// Refresh the kept card titles through [`title_refs`](Self::title_refs)
+    /// (see [`refresh_card_titles`]). Without them there is nothing to look
+    /// up through, and the rows draw what was kept.
     fn refresh_card_titles(&mut self, now: f64) {
         let Some(refs) = &self.title_refs else {
             return;
         };
-        let refs = refs.borrow();
-        let mut titles = std::mem::take(&mut self.session_manager.card_titles);
-        let mut changed = false;
-        for session in self.session_manager.iter() {
-            let Some(card_ref) = session.details.card_ref() else {
-                continue;
-            };
-            if !titles.is_fresh(card_ref, now) {
-                changed |= titles.store(card_ref, lookup_card(&refs, card_ref), now);
-            }
-            let Some(parent) = titles.parent(card_ref) else {
-                continue;
-            };
-            if !titles.is_fresh(parent, now) {
-                let parent = parent.to_owned();
-                changed |= titles.store(&parent, lookup_card(&refs, &parent), now);
-            }
-        }
-        self.session_manager.card_titles = titles;
-        if changed {
-            self.session_manager.lineage_changed();
-        }
+        refresh_card_titles(self.session_manager, &refs.borrow(), now);
     }
 
     /// The code column for the folder holding `ids`, sized to the widest
@@ -915,6 +888,41 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             return;
         }
         title_with_refs_ui(ui, &mut refs, title, pos, max_width);
+    }
+}
+
+/// Look up the current title and outline of each card a session is on, and
+/// of each such card's parent, unless it was looked up within
+/// [`REFRESH_SECS`](crate::card_titles::REFRESH_SECS) of `now`, so the list
+/// and the scene draw from text kept on the [`SessionManager`] instead of
+/// folding a board per session per frame. A lookup that changed what was
+/// kept regroups the list, since card parents link successor chains and the
+/// parent's title and progress head them.
+pub fn refresh_card_titles(
+    session_manager: &mut SessionManager,
+    refs: &TitleRefs<'_, '_>,
+    now: f64,
+) {
+    let mut titles = std::mem::take(&mut session_manager.card_titles);
+    let mut changed = false;
+    for session in session_manager.iter() {
+        let Some(card_ref) = session.details.card_ref() else {
+            continue;
+        };
+        if !titles.is_fresh(card_ref, now) {
+            changed |= titles.store(card_ref, lookup_card(refs, card_ref), now);
+        }
+        let Some(parent) = titles.parent(card_ref) else {
+            continue;
+        };
+        if !titles.is_fresh(parent, now) {
+            let parent = parent.to_owned();
+            changed |= titles.store(&parent, lookup_card(refs, &parent), now);
+        }
+    }
+    session_manager.card_titles = titles;
+    if changed {
+        session_manager.lineage_changed();
     }
 }
 
@@ -1000,14 +1008,14 @@ struct CardLayout<'s> {
 }
 
 /// Lines a session's worktree has added and deleted against HEAD.
-#[derive(Clone, Copy)]
-struct GitLines {
-    added: usize,
-    deleted: usize,
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct GitLines {
+    pub added: usize,
+    pub deleted: usize,
 }
 
 /// `session`'s +/- lines against HEAD, if its repo has tracked changes.
-fn git_lines(session: &ChatSession) -> Option<GitLines> {
+pub(crate) fn git_lines(session: &ChatSession) -> Option<GitLines> {
     let diff = session
         .agentic
         .as_ref()?
@@ -1204,7 +1212,7 @@ fn meta_height(meta: &egui::Galley) -> f32 {
 }
 
 /// Write `secs` as the meta line's age: `now`, `12m`, `3h`, `2d`.
-fn age_text(secs: u64, out: &mut String) {
+pub(crate) fn age_text(secs: u64, out: &mut String) {
     use std::fmt::Write;
     let _ = match secs {
         0..60 => write!(out, "now"),
@@ -1563,8 +1571,10 @@ fn render_row_right_side(
     }
 }
 
-const GIT_ADDED_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 180, 60);
-const GIT_DELETED_COLOR: egui::Color32 = egui::Color32::from_rgb(200, 60, 60);
+/// The colour of a worktree's added-lines count.
+pub(crate) const GIT_ADDED_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 180, 60);
+/// The colour of a worktree's deleted-lines count.
+pub(crate) const GIT_DELETED_COLOR: egui::Color32 = egui::Color32::from_rgb(200, 60, 60);
 
 /// Render a title string at the given position, clipping if it exceeds max_width.
 fn render_title(ui: &mut egui::Ui, title: &str, title_pos: Pos2, max_width: f32) {
