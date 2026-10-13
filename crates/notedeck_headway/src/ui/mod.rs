@@ -437,6 +437,23 @@ impl BoardUiState {
         self.list.step_group(step);
     }
 
+    /// Whether the issue list's `J` (`Down`) or `K` (`Up`) has somewhere to
+    /// move the cursor's card in work order.
+    pub(crate) fn list_can_move(&self, dir: cursor::Vertical) -> bool {
+        self.list.can_move(dir)
+    }
+
+    /// The work-order edit the issue list's `J` (`Down`) or `K` (`Up`)
+    /// makes of the cursor's card on `view`, the board showing.
+    pub(crate) fn move_list_card(
+        &mut self,
+        view: &BoardView,
+        sources: &[BoardRef],
+        dir: cursor::Vertical,
+    ) -> Option<BoardAction> {
+        self.list.move_cursor_card(sources, view, dir)
+    }
+
     /// Open the issue list's composer in the cursor's group (`c`).
     pub(crate) fn compose_in_list_group(&mut self, view: &BoardView) {
         self.list.compose_at_cursor(view);

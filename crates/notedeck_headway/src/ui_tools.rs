@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 
 use notedeck::{ToolArg, ToolArgType, ToolSpec};
 
-use crate::cursor::CursorMove;
+use crate::cursor::{CursorMove, Vertical};
 use crate::keys::{CardAction, PaneScroll};
 use crate::ui::{
     BoardStep, BoardUiState, CardStep, DisplaySwitch, GroupStep, ListFold, ListLayout, OrderDir,
@@ -86,6 +86,12 @@ pub(crate) const LIST_STEP_GROUP: &str = "headway_list_step_group";
 /// `gt`/`gT` in the issue list: show the next/previous view tab, or a named
 /// one.
 pub(crate) const LIST_TAB: &str = "headway_list_tab";
+/// `J` in the issue list, ordered by work order: move the cursor's card one
+/// place later.
+pub(crate) const LIST_MOVE_DOWN: &str = "headway_list_move_down";
+/// `K` in the issue list, ordered by work order: move the cursor's card one
+/// place earlier.
+pub(crate) const LIST_MOVE_UP: &str = "headway_list_move_up";
 /// The issue list's grouping, as its Display menu picks it.
 pub(crate) const LIST_GROUP: &str = "headway_list_group";
 /// The issue list's sub-grouping, as its Display menu picks it.
@@ -145,6 +151,9 @@ pub(crate) enum HeadwayUiTool {
     ListStepGroup(GroupStep),
     /// Change the issue list's tab, grouping, ordering or display.
     ListLayout(ListLayout),
+    /// Move the issue list cursor's card a place later (`Down`) or earlier
+    /// in work order.
+    ListMove(Vertical),
     /// Scroll the review pane's diff or the detail.
     Scroll(PaneScroll),
     /// Write a comment in a review pane.
@@ -540,6 +549,22 @@ impl HeadwayUiTool {
             )
             .ui(),
             ToolSpec::new(
+                LIST_MOVE_DOWN,
+                "Move the issue list cursor's card one place later in its board's work \
+                 order, past the next card in its group. Only while the list is ordered by \
+                 work order, top first.",
+                vec![],
+            )
+            .ui(),
+            ToolSpec::new(
+                LIST_MOVE_UP,
+                "Move the issue list cursor's card one place earlier in its board's work \
+                 order, past the card before it in its group. Only while the list is ordered \
+                 by work order, top first.",
+                vec![],
+            )
+            .ui(),
+            ToolSpec::new(
                 LIST_TAB,
                 "Show one of the issue list's view tabs: the next or previous one, a built-in \
                  view (active, backlog, all), or a saved view by slug or name.",
@@ -723,6 +748,8 @@ impl HeadwayUiTool {
                     Dir::Prev => GroupStep::Prev,
                 })
             }
+            LIST_MOVE_DOWN => no_args(name, args, Self::ListMove(Vertical::Down))?,
+            LIST_MOVE_UP => no_args(name, args, Self::ListMove(Vertical::Up))?,
             LIST_TAB => Self::ListLayout(ListLayout::Tab(parse_tab(name, args)?)),
             LIST_GROUP | LIST_SUBGROUP => {
                 let ByArgs { by } = parse_args(name, args)?;
@@ -1017,6 +1044,10 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
         COMPOSE_CARD => grid || (list && state.list_can_compose()),
         OPEN_LIST | PICK_BOARD => grid,
         LIST_FOLD | LIST_STEP_GROUP => list && state.list_has_groups(),
+        // Only with a neighbour in its group to step past, so `J`/`K` fall
+        // through otherwise.
+        LIST_MOVE_DOWN => list && state.list_can_move(Vertical::Down),
+        LIST_MOVE_UP => list && state.list_can_move(Vertical::Up),
         LIST_TAB | LIST_GROUP | LIST_SUBGROUP | LIST_ORDER | LIST_ORDER_DIR | LIST_DISPLAY
         | LIST_SAVE_VIEW => list,
         NEXT_BOARD | PREV_BOARD => grid && state.other_boards(),

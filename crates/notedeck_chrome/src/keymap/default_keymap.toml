@@ -527,6 +527,26 @@ tool  = "headway_focus_filter"
 label = "filter"
 group = "list"
 
+# `J`/`K` move the cursor's card a place later or earlier in its board's work
+# order, as dragging its row does (headway:notedeck/until-object-oak): past
+# the next or previous card in its group, an epic's subissues and all.
+# Offered only while the list runs in work order, top first, and the card has
+# such a neighbour on the board showing, so otherwise they fall through.
+
+[[bind]]
+scope = "headway.list"
+keys  = "J"
+tool  = "headway_list_move_down"
+label = "reorder"
+group = "list"
+
+[[bind]]
+scope = "headway.list"
+keys  = "K"
+tool  = "headway_list_move_up"
+label = "reorder"
+group = "list"
+
 # The list's group headers (headway:notedeck/ice-basket-taxi): the cursor
 # rests on them as on a row, so `j`/`k` walk them too, and Enter or `o` on one
 # folds it as a click does. Offered only while the list is grouped.

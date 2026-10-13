@@ -229,6 +229,7 @@ pub(crate) fn apply_grid_tool(
         HeadwayUiTool::ListFold(_)
         | HeadwayUiTool::ListStepGroup(_)
         | HeadwayUiTool::ListLayout(_)
+        | HeadwayUiTool::ListMove(_)
         | HeadwayUiTool::Scroll(_)
         | HeadwayUiTool::Comment
         | HeadwayUiTool::SendComments
@@ -243,7 +244,8 @@ pub(crate) fn apply_grid_tool(
 /// or fold the header it rests on, `za`/`zc`/`zo`/`zM`/`zR` fold the groups,
 /// `c` opens the composer in the cursor's group, `/` focuses the query,
 /// `gt`/`gT`, `go` and `gs` and the other `headway_list_*` layout tools change
-/// the tab, grouping, ordering or display, `q`/`Esc` leave for the grid.
+/// the tab, grouping, ordering or display, `J`/`K` move the cursor's card
+/// in work order (returning that edit), `q`/`Esc` leave for the grid.
 /// The other card keys act on the cursor's row on whichever board it's on
 /// ([`BoardUiState::act_on_list_cursor`]); `a` and `D` are data tools chrome
 /// runs on the row's ref, never reaching here. `sources` are the boards the
@@ -254,8 +256,9 @@ pub(crate) fn apply_list_tool(
     sources: &[BoardRef],
     state: &mut BoardUiState,
     tool: &HeadwayUiTool,
-) {
+) -> Option<BoardAction> {
     match tool {
+        HeadwayUiTool::ListMove(dir) => return state.move_list_card(view, sources, *dir),
         HeadwayUiTool::Cursor(mv) => state.move_list_cursor(*mv),
         HeadwayUiTool::Card {
             action: CardAction::Open,
@@ -272,6 +275,28 @@ pub(crate) fn apply_list_tool(
         HeadwayUiTool::Back => state.close_list(),
         _ => tracing::debug!("headway: {tool:?} means nothing in the issue list; dropped"),
     }
+    None
+}
+
+/// Run the UI tools queued on `state` against the issue list
+/// ([`apply_list_tool`]) as it starts to draw, while it shows and no card
+/// has been opened from it. Returns the first board edit, as
+/// [`grid_tools`] does.
+pub(crate) fn list_tools(
+    ctx: &egui::Context,
+    view: &BoardView,
+    sources: &[BoardRef],
+    state: &mut BoardUiState,
+) -> Option<BoardAction> {
+    let mut action = None;
+    while state.list_open() && state.selected().is_none() {
+        let Some(tool) = state.next_queued_tool() else {
+            break;
+        };
+        let edit = apply_list_tool(ctx, view, sources, state, &tool);
+        action = first_edit(action, edit);
+    }
+    action
 }
 
 /// The card a card tool names: `None` for a tool on the current card, else
@@ -401,6 +426,7 @@ pub(crate) fn apply_pane_tool(
         | HeadwayUiTool::ListFold(_)
         | HeadwayUiTool::ListStepGroup(_)
         | HeadwayUiTool::ListLayout(_)
+        | HeadwayUiTool::ListMove(_)
         | HeadwayUiTool::FocusFilter
         | HeadwayUiTool::ReviewQueue
         | HeadwayUiTool::Clear => {}
@@ -460,6 +486,7 @@ pub(crate) fn apply_detail_tool(
         | HeadwayUiTool::ListFold(_)
         | HeadwayUiTool::ListStepGroup(_)
         | HeadwayUiTool::ListLayout(_)
+        | HeadwayUiTool::ListMove(_)
         | HeadwayUiTool::FocusFilter
         | HeadwayUiTool::Clear
         | HeadwayUiTool::Comment
@@ -662,6 +689,9 @@ mod tests {
         moved: Option<(NoteId, usize, usize)>,
         /// The card of the last `ArchiveCard` the keymap returned, if any.
         archived: Option<NoteId>,
+        /// The order of the last `Resequence` the keymap returned, if any:
+        /// the issue list's `J`/`K` over a board with no sequence yet.
+        resequenced: Option<Vec<NoteId>>,
         /// The `(card, body)` of the last `AddComment` the keymap returned.
         commented: Option<(NoteId, String)>,
         /// The last URL a key asked the platform to open.
@@ -881,6 +911,7 @@ mod tests {
                         to_row,
                     }) => h.moved = Some((card, to_col, to_row)),
                     Some(BoardAction::ArchiveCard { card }) => h.archived = Some(card),
+                    Some(BoardAction::Resequence { order, .. }) => h.resequenced = Some(order),
                     Some(BoardAction::AddComment { card, body, .. }) => {
                         h.commented = Some((card, body))
                     }
@@ -917,6 +948,7 @@ mod tests {
                 esc_left: false,
                 moved: None,
                 archived: None,
+                resequenced: None,
                 commented: None,
                 opened: None,
                 session: None,
@@ -1127,6 +1159,7 @@ mod tests {
         focused: Option<egui::Id>,
         moved: Option<(NoteId, usize, usize)>,
         archived: Option<NoteId>,
+        resequenced: Option<Vec<NoteId>>,
         /// The review queue is open.
         queue: bool,
         /// The issue list is open.
@@ -1161,6 +1194,7 @@ mod tests {
             focused: harness.ctx.memory(|m| m.focused()),
             moved: h.moved,
             archived: h.archived,
+            resequenced: h.resequenced.clone(),
             queue: h.state.queue_open(),
             list: h.state.list_open(),
             review: h.state.review_card(),
@@ -1317,9 +1351,17 @@ mod tests {
                     ListCursor::Group(crate::ui::ListState::status_group("c")),
                     &["c"],
                 ),
+                work_order_list(|| vec![square_grid()], id(5)),
             ]
         };
-        let caps = strip_now(&starts()[0]);
+        // The first start's strip, and `J`/`K`, which only the work-order
+        // one offers.
+        let mut caps = strip_now(&starts()[0]);
+        caps.extend(
+            strip_now(&starts()[2])
+                .into_iter()
+                .filter(|k| k.label == "reorder"),
+        );
         let labels: Vec<_> = caps.iter().map(|k| k.label.as_str()).collect();
         for label in [
             "next/prev group",
@@ -1330,6 +1372,7 @@ mod tests {
             "next/prev tab",
             "next ordering",
             "save view",
+            "reorder",
         ] {
             assert!(labels.contains(&label), "{label:?} missing from {labels:?}");
         }
@@ -1978,6 +2021,140 @@ mod tests {
         assert!(
             harness.state().state.rejecting(),
             "the comment composer opens over the card's detail"
+        );
+    }
+
+    /// [`list_harness_on`] over `boards`, unfolded, ordered by work order,
+    /// the cursor on `card`.
+    fn work_order_list(
+        boards: fn() -> Vec<BoardView>,
+        card: NoteId,
+    ) -> Harness<'static, KeysHarness> {
+        let mut harness = list_harness_on(boards, crate::ui::ListCursor::Card(card), &[]);
+        call_tool(
+            &mut harness,
+            crate::ui_tools::LIST_ORDER,
+            serde_json::json!({ "by": "work-order" }),
+        );
+        harness.run();
+        harness
+    }
+
+    /// Whether the list's `J` and `K` are offered: their tools' availability.
+    #[derive(Debug, PartialEq)]
+    struct Moves {
+        down: bool,
+        up: bool,
+    }
+
+    fn moves(harness: &Harness<'static, KeysHarness>) -> Moves {
+        use crate::ui_tools::{LIST_MOVE_DOWN, LIST_MOVE_UP};
+        let state = &harness.state().state;
+        Moves {
+            down: available(state, LIST_MOVE_DOWN),
+            up: available(state, LIST_MOVE_UP),
+        }
+    }
+
+    /// The ids `ns` name, as a `Resequence` orders them.
+    fn ids(ns: &[u8]) -> Vec<NoteId> {
+        ns.iter().map(|&n| id(n)).collect()
+    }
+
+    /// `J`/`K` in the issue list (headway:notedeck/until-object-oak), ordered
+    /// by work order: through chrome's keymap they make the drag's edit,
+    /// moving the cursor's card past the next or previous card in its group,
+    /// and the cursor stays on it. Out of work order, or at either end of
+    /// its group (the rows are grouped by status: `b` holds 4, 5, 6), there
+    /// is nowhere to move and they aren't offered, so they fall through.
+    #[test]
+    fn list_shift_j_and_k_reorder_in_work_order() {
+        use crate::ui::ListCursor;
+        let by_priority = list_harness(ListCursor::Card(id(5)), &[]);
+        assert_eq!(
+            moves(&by_priority),
+            Moves {
+                down: false,
+                up: false
+            }
+        );
+
+        let mut harness = work_order_list(|| vec![square_grid()], id(5));
+        assert_eq!(
+            moves(&harness),
+            Moves {
+                down: true,
+                up: true
+            }
+        );
+        press_with(&mut harness, Modifiers::SHIFT, Key::J);
+        // No card was sequenced, so the edit sequences the board's top-level
+        // cards whole, 5 now after 6.
+        assert_eq!(
+            harness.state().resequenced,
+            Some(ids(&[1, 2, 3, 4, 6, 5, 7, 8, 9]))
+        );
+        assert_eq!(
+            harness.state().state.list_cursor_spot(),
+            Some(&ListCursor::Card(id(5)))
+        );
+        // The harness doesn't fold the edit in, so 5 still sits between 4
+        // and 6.
+        press_with(&mut harness, Modifiers::SHIFT, Key::K);
+        assert_eq!(
+            harness.state().resequenced,
+            Some(ids(&[1, 2, 3, 5, 4, 6, 7, 8, 9]))
+        );
+
+        let last = work_order_list(|| vec![square_grid()], id(6));
+        assert_eq!(
+            moves(&last),
+            Moves {
+                down: false,
+                up: true
+            }
+        );
+        let first = work_order_list(|| vec![square_grid()], id(4));
+        assert_eq!(
+            moves(&first),
+            Moves {
+                down: true,
+                up: false
+            }
+        );
+    }
+
+    /// With 5 a subissue of 4, `J` on 4 steps it past 6 with its subissue,
+    /// rather than onto it; `K` on 6 steps over the pair; and 5 stays under
+    /// its parent, so neither key moves it out (it is 4's only subissue).
+    #[test]
+    fn list_shift_j_and_k_step_over_an_epic_and_stay_in_one() {
+        fn epic() -> Vec<BoardView> {
+            let mut view = square_grid();
+            crate::ui::tests::link(&mut view, id(4), id(5));
+            vec![view]
+        }
+        let mut harness = work_order_list(epic, id(4));
+        press_with(&mut harness, Modifiers::SHIFT, Key::J);
+        assert_eq!(
+            harness.state().resequenced,
+            Some(ids(&[1, 2, 3, 6, 4, 7, 8, 9]))
+        );
+
+        let mut harness = work_order_list(epic, id(6));
+        press_with(&mut harness, Modifiers::SHIFT, Key::K);
+        assert_eq!(
+            harness.state().resequenced,
+            Some(ids(&[1, 2, 3, 6, 4, 7, 8, 9]))
+        );
+
+        let sub = work_order_list(epic, id(5));
+        assert_eq!(
+            moves(&sub),
+            Moves {
+                down: false,
+                up: false
+            }
         );
     }
 

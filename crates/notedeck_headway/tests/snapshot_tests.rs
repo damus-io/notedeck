@@ -1570,17 +1570,26 @@ fn snapshot_headway_list_group_cursor() {
 /// Snapshot: the issue list with `?` pinning its key strip, the view keys
 /// (`gt`/`gT`, `go`, `gs`; headway:notedeck/mercy-unique-foil) among its
 /// fold and navigation keys, and with the cursor on a row the card keys
-/// after them (headway:notedeck/exile-finger-birth).
+/// after them (headway:notedeck/exile-finger-birth). Ordered by work order,
+/// so `J`/`K` reorder among the list's own keys
+/// (headway:notedeck/until-object-oak).
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_headway_list_key_hints() {
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
     seed_side_board(&mut harness);
     open_issue_list(&mut harness);
+    harness.get_by_label("☰ Display").click();
+    wait_for_label(&mut harness, "Ordering");
+    harness.get_by_label("Work order").click();
+    harness.run_ok();
+    harness.press_key(egui::Key::Escape);
+    wait_for_absent(&mut harness, "Ordering");
     // The first header, then its first row.
     press_board_keys(&mut harness, &[egui::Key::J, egui::Key::J]);
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
     wait_for_label(&mut harness, "save view");
+    wait_for_label(&mut harness, "reorder");
     harness.run_steps(3);
     harness.snapshot("headway_list_key_hints");
 }
@@ -1701,6 +1710,89 @@ fn issue_list_orders_rows_and_drags_in_work_order() {
     // And the list, still in work order, follows it.
     harness.run_ok();
     assert!(row_top(&harness, second) < row_top(&harness, first));
+}
+
+/// The `headway:<board>/<word-id>` of the demo board's card titled `title`,
+/// folded fresh from the database.
+fn demo_card_ref(harness: &mut Harness<'static, HeadwayTestState>, title: &str) -> String {
+    let state = harness.state_mut();
+    let author = state.account.pubkey;
+    let app_ctx = state.notedeck.app_context();
+    let txn = Transaction::new(app_ctx.ndb).expect("txn");
+    let boards = event::fold_board(app_ctx.ndb, &txn, &author)
+        .expect("folded")
+        .finalize();
+    let view = event::find_board(&boards, &author, store::BOARD_ID).expect("demo board");
+    let card = view
+        .columns
+        .iter()
+        .flat_map(|c| c.cards.iter())
+        .find(|c| c.title == title)
+        .expect("the card");
+    headway::wordid::card_ref(&view.id, card.id.bytes())
+}
+
+/// `J` in the issue list, ordered by work order
+/// (headway:notedeck/until-object-oak): with the cursor on the earlier of
+/// Todo's two cards, it moves that card past the later one, written as the
+/// same sequence edit a drag makes, so the board's own walk follows; the
+/// rows follow it and the cursor stays on the card. Behavioural (accesskit
+/// only), so it runs without lavapipe.
+#[test]
+fn issue_list_shift_j_reorders_in_work_order() {
+    const INLINE: &str = "Inline card creation";
+    const LOW: &str = "Column reordering";
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1000.0));
+    let row_top = |harness: &Harness<'static, HeadwayTestState>, title: &str| {
+        label_top(harness, title).expect("the row is on screen")
+    };
+
+    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
+    wait_for_label(&mut harness, INLINE);
+    harness.get_by_label("☰ Display").click();
+    wait_for_label(&mut harness, "Ordering");
+    harness.get_by_label("Work order").click();
+    harness.run_ok();
+    harness.press_key(egui::Key::Escape);
+    wait_for_absent(&mut harness, "Ordering");
+
+    let walk = demo_work_order(&mut harness);
+    let at = |title: &str| walk.iter().position(|t| t == title).expect("in the walk");
+    let (first, second) = if at(INLINE) < at(LOW) {
+        (INLINE, LOW)
+    } else {
+        (LOW, INLINE)
+    };
+    let first_ref = demo_card_ref(&mut harness, first);
+    let on_first = |h: &Harness<'static, HeadwayTestState>| {
+        h.state().headway.current_ref() == Some(first_ref.as_str())
+    };
+    for _ in 0..30 {
+        if on_first(&harness) {
+            break;
+        }
+        press_board_keys(&mut harness, &[egui::Key::J]);
+    }
+    assert!(on_first(&harness), "j never reached {first:?}");
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::J);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        harness.run_ok();
+        let walk = demo_work_order(&mut harness);
+        let at = |title: &str| walk.iter().position(|t| t == title);
+        if at(second) < at(first) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "J never reordered the work order: {walk:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    harness.run_ok();
+    assert!(row_top(&harness, second) < row_top(&harness, first));
+    assert!(on_first(&harness), "the cursor stays on the card it moved");
 }
 
 /// Archived cards are as reachable as live ones

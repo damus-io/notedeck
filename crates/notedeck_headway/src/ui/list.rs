@@ -46,7 +46,7 @@ use super::widgets::{
 };
 use super::{Arrival, BoardEffect, BoardNav, BoardUiState, ViewEdit};
 use crate::cache::BoardRef;
-use crate::cursor::CursorMove;
+use crate::cursor::{CursorMove, Vertical};
 use crate::event::{self, BoardView, CardView, Priority};
 use crate::keys::{self, CardAction};
 use crate::store::{self, BoardAction, NewCard};
@@ -98,6 +98,9 @@ pub(crate) struct ListState {
     /// group that takes a card on the board showing. Latched as the list
     /// draws ([`ListState::latch_compose`]), since chrome asks before then.
     can_compose: bool,
+    /// Which way `J`/`K` can move the cursor's card in work order. Latched
+    /// as the list draws ([`ListState::latch_moves`]), as `c`'s is.
+    can_move: ListMoves,
     /// Scroll the cursor's row into view on the next draw.
     scroll_to_cursor: bool,
     /// The rows the query keeps, in board order. Valid for
@@ -143,6 +146,7 @@ impl Default for ListState {
             naming: None,
             cursor: None,
             can_compose: false,
+            can_move: ListMoves::default(),
             scroll_to_cursor: false,
             rows: Vec::new(),
             seen: None,
@@ -575,6 +579,15 @@ impl ListState {
     /// [`can_compose`](Self::can_compose)'s field).
     pub(crate) fn can_compose(&self) -> bool {
         self.can_compose
+    }
+
+    /// Whether `J` (`Down`) or `K` (`Up`) has somewhere to move the cursor's
+    /// card (see [`can_move`](Self::can_move)'s field).
+    pub(crate) fn can_move(&self, dir: Vertical) -> bool {
+        match dir {
+            Vertical::Down => self.can_move.down,
+            Vertical::Up => self.can_move.up,
+        }
     }
 
     /// How many headers and rows the list draws: fewer once a group folds.
@@ -1188,6 +1201,70 @@ impl ListState {
             .is_some_and(|key| group_add(key, view).is_some());
     }
 
+    /// Latch which way `J`/`K` can move the cursor's card on `view`, the
+    /// board an edit applies to. Run as the list draws, for chrome to ask
+    /// before the next frame's keys. Allocates nothing.
+    fn latch_moves(&mut self, sources: &[BoardRef], view: &BoardView) {
+        self.can_move = ListMoves {
+            down: self.move_drop(sources, view, Vertical::Down).is_some(),
+            up: self.move_drop(sources, view, Vertical::Up).is_some(),
+        };
+    }
+
+    /// The drop `J` (`Down`) or `K` (`Up`) makes of the cursor's card on
+    /// `view`: the drag's, onto its neighbouring row. Down, below the next
+    /// row that isn't one of its own subissues; up, above the row before it.
+    /// Either lands it past that row's sibling in its container
+    /// ([`drop_sibling`]), so a card steps over a whole epic, subissues and
+    /// all.
+    ///
+    /// `None` where a drag couldn't move it ([`can_drag`](Self::can_drag)),
+    /// where the neighbour is past a group's header (a move never leaves its
+    /// group), or where it lies outside the card's container. Allocates
+    /// nothing.
+    fn move_drop(&self, sources: &[BoardRef], view: &BoardView, dir: Vertical) -> Option<RowDrop> {
+        let at = self.cursor_entry()?;
+        let line = self.rows.get(self.entry_row(at)?)?;
+        if !self.can_drag(sources, line, view) {
+            return None;
+        }
+        let card = line.id;
+        // A header ends the run: the neighbour is in the card's group or
+        // there is none.
+        let row_card = |entry: &ListEntry| match entry {
+            ListEntry::Row(row) => self.rows.get(*row).map(|line| line.id),
+            ListEntry::Header(_) => None,
+        };
+        let onto = match dir {
+            Vertical::Down => self.entries[at + 1..]
+                .iter()
+                .map_while(row_card)
+                .find(|&id| !descends_from(view, id, card))?,
+            Vertical::Up => self.entries[..at].iter().rev().map_while(row_card).next()?,
+        };
+        let drop = RowDrop {
+            card,
+            onto,
+            below: dir == Vertical::Down,
+        };
+        drop_sibling(view, drop).map(|_| drop)
+    }
+
+    /// The work-order edit `J` (`Down`) or `K` (`Up`) makes of the cursor's
+    /// card on `view` ([`move_drop`](Self::move_drop)): the drag's
+    /// [`work_order_drop`]. The cursor stays on the card, and its row is
+    /// scrolled to as it moves.
+    pub(crate) fn move_cursor_card(
+        &mut self,
+        sources: &[BoardRef],
+        view: &BoardView,
+        dir: Vertical,
+    ) -> Option<BoardAction> {
+        let drop = self.move_drop(sources, view, dir)?;
+        self.scroll_to_cursor = true;
+        work_order_drop(view, drop)
+    }
+
     /// Open the composer for a card in the cursor's group, as its header's
     /// `+` does (`c`), if a card added there can land in it on `view`.
     pub(crate) fn compose_at_cursor(&mut self, view: &BoardView) {
@@ -1338,7 +1415,9 @@ pub(crate) fn list_field_id() -> egui::Id {
 /// lists. `view` is the board showing, which a row on another board switches
 /// away from when opened, and which a group's `+` adds its card to. Runs the
 /// list's UI tools first, so a key that opens a card or leaves the list lands
-/// this frame. Returns the card a group's composer adds, if one does.
+/// this frame. Returns the board edit the frame makes, if it makes one: a
+/// card a group's composer adds, or a work-order move by a key (`J`/`K`) or
+/// a drag.
 pub(crate) fn list_view_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1347,12 +1426,7 @@ pub(crate) fn list_view_ui(
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
     state.list.refresh(sources);
-    while state.list.is_open() && state.selected.is_none() {
-        let Some(tool) = state.next_queued_tool() else {
-            break;
-        };
-        keys::apply_list_tool(ui.ctx(), view, sources, state, &tool);
-    }
+    let keyed = keys::list_tools(ui.ctx(), view, sources, state);
 
     let mut rows = RowsResponse::default();
     let mut action = None;
@@ -1374,6 +1448,7 @@ pub(crate) fn list_view_ui(
         state.list.toggle_collapsed(&key);
     }
     state.list.latch_compose(view);
+    state.list.latch_moves(sources, view);
     if let Some(key) = rows.add {
         state.list.open_compose(key);
     }
@@ -1383,7 +1458,7 @@ pub(crate) fn list_view_ui(
     if let Some(drop) = rows.dropped {
         action = action.or_else(|| work_order_drop(view, drop));
     }
-    action
+    keyed.or(action)
 }
 
 /// A row let go over another in work-order mode: the card dragged, the card
@@ -1410,18 +1485,7 @@ struct RowDrop {
 /// subissue drag makes.
 fn work_order_drop(view: &BoardView, drop: RowDrop) -> Option<BoardAction> {
     let parent = view.card(drop.card)?.parent;
-    let mut sibling = view.card(drop.onto)?;
-    // Bounded, so a parent cycle that slipped past the write-time guard
-    // can't spin here.
-    for _ in 0..64 {
-        if sibling.parent == parent {
-            break;
-        }
-        sibling = view.card(sibling.parent?)?;
-    }
-    if sibling.parent != parent || sibling.id == drop.card {
-        return None;
-    }
+    let sibling = drop_sibling(view, drop)?;
     let container = match parent {
         Some(parent) => event::Container::Card(*parent.bytes()),
         None => event::Container::BoardRoot(view.id.clone()),
@@ -1437,6 +1501,49 @@ fn work_order_drop(view: &BoardView, drop: RowDrop) -> Option<BoardAction> {
         Some(sibling.id)
     };
     store::reorder(view, &container, drop.card, before)
+}
+
+/// The member of `drop.card`'s container that `drop` lands beside:
+/// `drop.onto`, or whichever of its ancestors shares the card's parent.
+/// `None` when `onto` lies outside that container (a subissue never leaves
+/// its parent), or the sibling is the card itself (dropped on itself or its
+/// own subtree). Allocates nothing: `J`/`K` ask it every frame.
+fn drop_sibling(view: &BoardView, drop: RowDrop) -> Option<&CardView> {
+    let parent = view.card(drop.card)?.parent;
+    let mut sibling = view.card(drop.onto)?;
+    // Bounded, so a parent cycle that slipped past the write-time guard
+    // can't spin here.
+    for _ in 0..64 {
+        if sibling.parent == parent {
+            break;
+        }
+        sibling = view.card(sibling.parent?)?;
+    }
+    (sibling.parent == parent && sibling.id != drop.card).then_some(sibling)
+}
+
+/// Whether `id` is a subissue of `card`, at any depth, on `view`. Bounded as
+/// [`drop_sibling`]'s walk is.
+fn descends_from(view: &BoardView, id: NoteId, card: NoteId) -> bool {
+    let mut at = view.card(id).and_then(|c| c.parent);
+    for _ in 0..64 {
+        match at {
+            Some(parent) if parent == card => return true,
+            Some(parent) => at = view.card(parent).and_then(|c| c.parent),
+            None => return false,
+        }
+    }
+    false
+}
+
+/// Which of `J` and `K` has somewhere to move the cursor's card in work
+/// order ([`ListState::move_drop`]).
+#[derive(Clone, Copy, Default)]
+struct ListMoves {
+    /// `J`: a later place.
+    down: bool,
+    /// `K`: an earlier place.
+    up: bool,
 }
 
 /// The payload a work-order row drag carries: the dragged card.
