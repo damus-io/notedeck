@@ -639,14 +639,16 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             layout.card.card_ref,
             egui::Rect::from_min_size(pos, egui::vec2(GLYPH_SLOT - 4.0, line)),
         );
-        let weak = ui.visuals().weak_text_color();
-        let code = layout.code.unwrap_or(NO_CODE);
-        let code_galley = ui
-            .painter()
-            .layout_no_wrap(code.to_owned(), code_font(), weak);
-        let code_pos = pos + egui::vec2(column.glyph, (line - code_galley.size().y) / 2.0);
-        let code_right = (pos.x + column.width - CODE_GAP).min(right);
-        paint_clipped(ui, code_pos, code_galley, code_right);
+        if column.codes {
+            let weak = ui.visuals().weak_text_color();
+            let code = layout.code.unwrap_or(NO_CODE);
+            let code_galley = ui
+                .painter()
+                .layout_no_wrap(code.to_owned(), code_font(), weak);
+            let code_pos = pos + egui::vec2(column.glyph, (line - code_galley.size().y) / 2.0);
+            let code_right = (pos.x + column.width - CODE_GAP).min(right);
+            paint_clipped(ui, code_pos, code_galley, code_right);
+        }
         let headline_pos = pos + egui::vec2(column.width, 0.0);
         paint_clipped(ui, headline_pos, layout.headline.clone(), right);
     }
@@ -845,28 +847,38 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
     /// char counts times the code font's advance, which is monospace, so
     /// sizing it each frame lays nothing out.
     fn code_column(&self, ui: &egui::Ui, ids: &[SessionId]) -> CodeColumn {
-        let chars = ids
-            .iter()
-            .filter_map(|&id| self.row_code(id))
-            .map(|code| code.chars().count())
-            .max()
-            .unwrap_or(0);
-        let advance = ui.fonts_mut(|f| f.glyph_width(&code_font(), '0'));
         let glyph = if self.title_refs.is_some() {
             GLYPH_SLOT
         } else {
             0.0
         };
+        // No title in the folder has a code: the column is the glyph slot
+        // alone, with no `·` placeholders and no gap after them.
+        let Some(chars) = ids
+            .iter()
+            .filter_map(|&id| self.row_code(id))
+            .map(|code| code.chars().count())
+            .max()
+        else {
+            return CodeColumn {
+                glyph,
+                width: glyph,
+                codes: false,
+            };
+        };
+        let advance = ui.fonts_mut(|f| f.glyph_width(&code_font(), '0'));
         CodeColumn {
             glyph,
             width: glyph + chars as f32 * advance + CODE_GAP,
+            codes: true,
         }
     }
 
-    /// The code session `id`'s row shows in its code column, or `None` when
-    /// it shows none: an agentic session titled with its card's ref shows
-    /// one once the card's title has been looked up (see
-    /// [`render_session_item`](Self::render_session_item)).
+    /// The code before the colon in the title of the card session `id`'s
+    /// row shows, or `None` when it shows no card (see
+    /// [`render_session_item`](Self::render_session_item)) or the card's
+    /// title has no code. A row without one shows [`NO_CODE`] in a column
+    /// another row's code made.
     fn row_code(&self, id: SessionId) -> Option<&str> {
         let session = self.session_manager.get(id)?;
         if session.ai_mode != AiMode::Agentic {
@@ -876,7 +888,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             .session_manager
             .card_titles
             .get(session.details.title_ref()?)?;
-        Some(TitleParts::split(title).code.unwrap_or(NO_CODE))
+        TitleParts::split(title).code
     }
 
     /// Draw a row's `title` with its top-left at `pos`, clipped to `max_width`.
@@ -959,8 +971,12 @@ struct CodeColumn {
     /// when the list draws without [`title_refs`](SessionListUi::title_refs)
     /// and so has no glyph to draw.
     glyph: f32,
-    /// The whole column: the glyph slot, the widest code and [`CODE_GAP`].
+    /// The whole column: the glyph slot, the widest code and [`CODE_GAP`];
+    /// the glyph slot alone when no row in the folder has a code.
     width: f32,
+    /// Whether any row in the folder has a code, so the column draws one
+    /// per row ([`NO_CODE`] for a title without).
+    codes: bool,
 }
 
 /// A card a row is titled by: its ref, and its current title.
@@ -2399,7 +2415,7 @@ fn delete_worktree_menu_item(
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentRow, CodeColumn, GitLines, SessionListAction, SessionListUi};
+    use super::{AgentRow, CodeColumn, GitLines, SessionListAction, SessionListUi, CODE_GAP};
     use crate::agent_status::AgentStatus;
     use crate::backend::BackendType;
     use crate::collapse_state::CollapseState;
@@ -2881,6 +2897,62 @@ mod tests {
             );
         harness.run();
         harness.snapshot("session_list_card_titles");
+    }
+
+    /// A folder whose card titles have no code gives the column no width
+    /// past the glyph slot (none in this harness, which draws no glyphs),
+    /// so its headlines start at the row's text, not after a column of `·`.
+    /// One code in the folder sizes the column to it.
+    #[test]
+    fn a_folder_without_codes_has_no_code_column() {
+        fn column_of(titles: &[&str]) -> CodeColumn {
+            let mut sm = SessionManager::new();
+            let ids: Vec<SessionId> = titles
+                .iter()
+                .zip([
+                    "headway:game/able-bench-coil",
+                    "headway:game/crane-drift-oak",
+                ])
+                .map(|(title, card_ref)| {
+                    let id = sm.new_session(
+                        PathBuf::from("/home/dev/crownfolk"),
+                        AiMode::Agentic,
+                        BackendType::Claude,
+                    );
+                    let details = &mut sm.get_mut(id).expect("session").details;
+                    details.title = card_ref.to_string();
+                    assert_eq!(details.title_ref(), Some(card_ref), "a card row");
+                    let lookup = crate::card_titles::CardLookup::titled(title);
+                    sm.card_titles.store(card_ref, lookup, 0.0);
+                    id
+                })
+                .collect();
+            let column = std::cell::Cell::new(None);
+            let mut harness = Harness::builder().build_ui(|ui| {
+                let focus_queue = FocusQueue::new();
+                let collapse_state = CollapseState::new();
+                let list = SessionListUi::new(&mut sm, &focus_queue, &collapse_state, false);
+                column.set(Some(list.code_column(ui, &ids)));
+            });
+            harness.run();
+            drop(harness);
+            column.get().expect("measured")
+        }
+
+        let none = column_of(&[
+            "a morphing prop's foot worked out once",
+            "the capital films ~10x cheaper",
+        ]);
+        assert!(!none.codes);
+        assert_eq!(none.width, none.glyph, "no codes, no column past the glyph");
+
+        let one = column_of(&["the capital films ~10x cheaper", "QA2: the town stood"]);
+        assert!(one.codes);
+        assert!(
+            one.width > one.glyph + CODE_GAP,
+            "one code sizes the column: {} wide",
+            one.width
+        );
     }
 
     /// Two sessions on one card sort next to each other, and each still has
