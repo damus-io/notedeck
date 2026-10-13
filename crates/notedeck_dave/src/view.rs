@@ -890,7 +890,7 @@ impl Dave {
                 None
             }
             UiActionResult::Compact => {
-                self.dispatch_compact(bt, ui);
+                self.compact_active(&crate::stream_events::HostCtx::from_app(ctx));
                 None
             }
             UiActionResult::Handled => None,

@@ -237,11 +237,48 @@ impl Dave {
         }
     }
 
-    /// Dispatch a compact request to the backend for the active session.
-    pub(crate) fn dispatch_compact(&mut self, bt: BackendType, ui: &egui::Ui) {
-        dispatch_compact_for_active(&mut self.session_manager, &self.backends, bt, ui.ctx());
+    /// The status bar's COMPACT: compact the active session's context.
+    ///
+    /// A Claude or remote session gets [`COMPACT_COMMAND`] as a user turn,
+    /// the same as if it were typed. Asking the backend directly
+    /// ([`AiBackend::compact_session`]) needs a live CLI process, so it did
+    /// nothing for a restored session that hadn't sent a turn in this
+    /// process, and nothing at all for a remote session, which has no local
+    /// backend. A turn starts the CLI if there is none, waits behind a turn
+    /// already running, and for a remote session is published for the host
+    /// to run. The turn's dispatch shows at once; the CLI's
+    /// `compaction_started` then shows the session compacting.
+    ///
+    /// Codex has no slash commands, so a local Codex session asks its
+    /// backend instead. A remote Codex session can't be compacted from here.
+    pub(crate) fn compact_active(&mut self, host: &HostCtx<'_>) {
+        let Some(sid) = self.session_manager.active_id() else {
+            return;
+        };
+        // A subagent's session runs no backend of its own.
+        if self.session_manager.backing_id(sid) != sid {
+            return;
+        }
+        let Some(session) = self.session_manager.get(sid) else {
+            return;
+        };
+        if session.backend_type == BackendType::Codex {
+            if session.is_remote() {
+                tracing::warn!("Compact: a remote Codex session can't be compacted");
+                return;
+            }
+            dispatch_compact_to_backend(&mut self.session_manager, &self.backends, sid, host.waker);
+            return;
+        }
+        if self.add_user_message_for_session(sid, host, COMPACT_COMMAND.to_owned(), Vec::new()) {
+            self.send_user_message_for(sid, host);
+        }
     }
 }
+
+/// The turn the status bar's COMPACT sends a Claude session
+/// ([`Dave::compact_active`]).
+pub(crate) const COMPACT_COMMAND: &str = "/compact";
 
 /// Reconcile each session whose turn ended this drain
 /// ([`reconcile::maybe_reconcile_at_rest`]).
@@ -973,35 +1010,26 @@ fn publish_error(
     ingest_live_event(session, ndb, sk, text, "error", LiveEventTags::default());
 }
 
-/// Dispatch a compact request to the backend for the active session.
-fn dispatch_compact_for_active(
+/// Ask session `sid`'s backend to compact it, for a backend with no slash
+/// commands ([`Dave::compact_active`]). Does nothing when the backend has no
+/// live session to compact.
+fn dispatch_compact_to_backend(
     session_manager: &mut session::SessionManager,
     backends: &HashMap<BackendType, Box<dyn AiBackend>>,
-    bt: BackendType,
-    ctx: &egui::Context,
+    sid: SessionId,
+    waker: &Waker,
 ) {
-    let Some(session) = session_manager.get_active() else {
+    let Some(session) = session_manager.get_mut(sid) else {
         return;
     };
-    let session_id = format!("dave-session-{}", session.id);
-    tracing::info!("Compact requested for session {}", session_id);
-    let backend = get_backend(backends, bt);
-    let persistent = backend.persistent_stream();
-    if let Some(rx) = backend.compact_session(session_id.clone(), notedeck::Waker::egui(ctx)) {
-        tracing::info!("Compact dispatched for session {}", session_id);
-        if let Some(session) = session_manager.get_active_mut() {
-            session.incoming_tokens = Some(rx);
-        }
-    } else if persistent {
-        // Persistent-stream backend: compaction responses flow on the session's
-        // existing channel, so there's no new receiver to install.
-        tracing::info!(
-            "Compact dispatched on persistent channel for session {}",
-            session_id
-        );
-    } else {
+    let session_id = format!("dave-session-{}", sid);
+    let backend = get_backend(backends, session.backend_type);
+    let Some(rx) = backend.compact_session(session_id.clone(), waker.clone()) else {
         tracing::warn!("Compact failed: no backend session for {}", session_id);
-    }
+        return;
+    };
+    tracing::info!("Compact dispatched for session {}", session_id);
+    session.incoming_tokens = Some(rx);
 }
 
 /// Dispatch a compact query for a specific session (compact-and-proceed flow).
@@ -1554,5 +1582,150 @@ mod tests {
         f.session.waiting_on.wakeup_at = Some(session::now_unix().saturating_sub(1));
         f.session.update_status();
         assert_eq!(f.session.status(), AgentStatus::Done);
+    }
+
+    /// A backend that records what the status bar's COMPACT asks of it: the
+    /// last user message of each turn it is handed, and how many times it
+    /// was asked to compact directly.
+    struct CompactProbe {
+        turns: std::sync::mpsc::Sender<String>,
+        compacts: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl AiBackend for CompactProbe {
+        fn stream_request(
+            &self,
+            messages: Vec<Message>,
+            _tools: Arc<HashMap<String, Tool>>,
+            _model: Option<String>,
+            _user_id: String,
+            _session_id: String,
+            _session_env: BTreeMap<String, String>,
+            _cwd: Option<std::path::PathBuf>,
+            _resume_session_id: Option<String>,
+            _permission_mode: claude_agent_sdk_rs::PermissionMode,
+            _waker: Waker,
+        ) -> crate::backend::ResponseStream {
+            let last_user = messages.iter().rev().find_map(|m| match m {
+                Message::User(u) => Some(u.text.clone()),
+                _ => None,
+            });
+            let _ = self.turns.send(last_user.unwrap_or_default());
+            crate::backend::ResponseStream {
+                rx: None,
+                task: None,
+            }
+        }
+
+        fn cleanup_session(&self, _session_id: String) {}
+
+        fn interrupt_session(&self, _session_id: String, _waker: Waker) {}
+
+        fn set_permission_mode(
+            &self,
+            _session_id: String,
+            _mode: claude_agent_sdk_rs::PermissionMode,
+            _waker: Waker,
+        ) {
+        }
+
+        fn compact_session(
+            &self,
+            _session_id: String,
+            _waker: Waker,
+        ) -> Option<std::sync::mpsc::Receiver<DaveApiResponse>> {
+            self.compacts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            None
+        }
+    }
+
+    /// What one COMPACT press did: the turns the backend was handed and the
+    /// direct compacts it was asked for.
+    struct CompactRun {
+        turns: Vec<String>,
+        compacts: usize,
+        /// The session's last chat row, when it is a user message.
+        last_user: Option<UserMessageRow>,
+    }
+
+    /// The user row a COMPACT press left at the end of the chat.
+    struct UserMessageRow {
+        text: String,
+        published: bool,
+    }
+
+    /// Press COMPACT on one fresh session on `backend`, made remote when
+    /// `remote`, with a [`CompactProbe`] standing in for that backend.
+    fn press_compact(backend: BackendType, remote: bool) -> CompactRun {
+        let mut test = crate::tests::TestDave::new();
+        let [sid] = test.add_sessions(["/tmp/compact"], backend);
+        if remote {
+            test.dave.session_manager.get_mut(sid).unwrap().source = session::SessionSource::Remote;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let compacts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        test.dave.backends.insert(
+            backend,
+            Box::new(CompactProbe {
+                turns: tx,
+                compacts: compacts.clone(),
+            }),
+        );
+        let parts = test.parts();
+        parts.dave.compact_active(&parts.host);
+        let last_user = match test.dave.session_manager.get(sid).unwrap().chat.last() {
+            Some(Message::User(u)) => Some(UserMessageRow {
+                text: u.text.clone(),
+                published: u.note_id.is_some(),
+            }),
+            _ => None,
+        };
+        CompactRun {
+            turns: rx.try_iter().collect(),
+            compacts: compacts.load(std::sync::atomic::Ordering::SeqCst),
+            last_user,
+        }
+    }
+
+    /// A local Claude session with no live CLI (restored, no turn sent in
+    /// this process) is compacted by a `/compact` turn, which starts one;
+    /// asking the backend directly would find no session and do nothing.
+    #[test]
+    fn compact_on_a_claude_session_with_no_live_cli_sends_a_compact_turn() {
+        let run = press_compact(BackendType::Claude, false);
+        assert_eq!(run.turns, vec![COMPACT_COMMAND.to_owned()]);
+        assert_eq!(run.compacts, 0);
+        let row = run.last_user.expect("the compact turn shows in the chat");
+        assert_eq!(row.text, COMPACT_COMMAND);
+        assert!(row.published, "the turn is published for observers");
+    }
+
+    /// A remote session has no local backend: COMPACT publishes `/compact`
+    /// as a user message for the host to run, and touches no backend here.
+    #[test]
+    fn compact_on_a_remote_session_publishes_a_compact_message() {
+        let run = press_compact(BackendType::Claude, true);
+        assert!(run.turns.is_empty(), "no local turn: {:?}", run.turns);
+        assert_eq!(run.compacts, 0);
+        let row = run
+            .last_user
+            .expect("the compact message shows in the chat");
+        assert_eq!(row.text, COMPACT_COMMAND);
+        assert!(row.published, "the host only sees a published message");
+    }
+
+    /// Codex has no slash commands, so a local Codex session asks its
+    /// backend to compact rather than sending `/compact` to the model.
+    #[test]
+    fn compact_on_a_codex_session_asks_the_backend() {
+        let run = press_compact(BackendType::Codex, false);
+        assert!(
+            run.turns.is_empty(),
+            "no turn to the model: {:?}",
+            run.turns
+        );
+        assert_eq!(run.compacts, 1);
+        assert!(run.last_user.is_none());
     }
 }
