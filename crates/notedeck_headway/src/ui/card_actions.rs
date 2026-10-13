@@ -74,6 +74,19 @@ pub(crate) enum DetailScroll {
     Top,
     /// To the bottom of the detail (`G`).
     Bottom,
+    /// To this far down from the detail's top, in points: a jump back
+    /// (Ctrl-O) to where it was scrolled.
+    To(f32),
+}
+
+/// How far down a card's detail was scrolled as its last pass ended, for the
+/// jump list ([`crate::jump`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DetailSpot {
+    /// The card the detail showed.
+    pub(crate) card: NoteId,
+    /// Its scroll offset from the top, in points.
+    pub(crate) offset: f32,
 }
 
 impl BoardUiState {
@@ -295,6 +308,19 @@ impl BoardUiState {
     /// Ask the detail to scroll; applied on its next pass.
     pub(crate) fn scroll_detail(&mut self, request: DetailScroll) {
         self.detail_scroll = Some(request);
+    }
+
+    /// Latch, as a detail pass ends, how far down `card`'s detail is
+    /// scrolled.
+    pub(crate) fn latch_detail_offset(&mut self, card: NoteId, offset: f32) {
+        self.detail_spot = Some(DetailSpot { card, offset });
+    }
+
+    /// How far down the open card's detail was scrolled as its last pass
+    /// ended, or `None` with no card open (or one not drawn yet).
+    pub(crate) fn detail_spot(&self) -> Option<DetailSpot> {
+        self.detail_spot
+            .filter(|spot| self.selected == Some(spot.card))
     }
 
     /// The scroll the detail keys left for the detail's next pass.
@@ -560,7 +586,8 @@ fn reason_composer_ui(ui: &mut egui::Ui, theme: &ColorTheme, composer: &mut Reas
 /// content, so this area's end takes the delta rather than a scroll area
 /// nested in the content: a line (`j`/`k`, [`DETAIL_LINES_PER_KEY`] body
 /// lines) or a fraction of the view by delta, the top or bottom by scrolling
-/// to the content's first or last point (`top` is where the content started).
+/// to the content's first or last point, and a jump back by scrolling that
+/// far below the content's first point (`top` is where the content started).
 pub(super) fn detail_scroll_ui(ui: &mut egui::Ui, scroll: Option<DetailScroll>, top: egui::Pos2) {
     let Some(scroll) = scroll else {
         return;
@@ -580,6 +607,13 @@ pub(super) fn detail_scroll_ui(ui: &mut egui::Ui, scroll: Option<DetailScroll>, 
         }
         DetailScroll::Bottom => {
             ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
+            return;
+        }
+        DetailScroll::To(offset) => {
+            ui.scroll_to_rect(
+                egui::Rect::from_min_size(top + egui::vec2(0.0, offset), egui::Vec2::ZERO),
+                Some(egui::Align::TOP),
+            );
             return;
         }
     };

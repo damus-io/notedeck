@@ -8,7 +8,7 @@ use nostrdb::{Filter, IngestMetadata, Ndb, NoteBuilder, Subscription, Transactio
 use nostrdb_net::{FullKeypair, Keypair, NoteId, Pubkey};
 use notedeck::{App, AppContext, InlineChrome, Notedeck};
 use notedeck_chrome::keymap::{KeyDispatch, KeyEngine, Scopes};
-use notedeck_chrome::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
+use notedeck_chrome::{HIDE_KEY_HINTS, JUMP_BACK, JUMP_FORWARD, JumpList, TOGGLE_KEY_HINTS};
 use notedeck_headway::{Headway, event, store, views};
 
 /// The two-party suite's SNS helpers; here we reuse only its gift-wrap key-share
@@ -47,11 +47,14 @@ const BOARD_EDITS: &[&str] = &["headway_archive_card", "headway_move_card"];
 /// engine, with the shipped keymap, resolves each frame's press against
 /// Headway's key scopes and current card before Headway renders and calls the
 /// tool it's bound to; `?` pins the which-key strip the chrome draws below
-/// the app.
+/// the app. A binding marked `jump` records Headway's location on its jump
+/// list first, which Ctrl-O / Ctrl-I walk.
 struct ChromeKeys {
     engine: KeyEngine,
     /// Whether `?` pinned the strip.
     pinned: bool,
+    /// Headway's jump list, as the chrome keeps one per app.
+    jumps: JumpList,
 }
 
 impl ChromeKeys {
@@ -59,6 +62,7 @@ impl ChromeKeys {
         Self {
             engine: KeyEngine::with_default_keymap(),
             pinned: false,
+            jumps: JumpList::default(),
         }
     }
 
@@ -66,10 +70,12 @@ impl ChromeKeys {
     /// Headway's board-edit keys are bound to is available, as chrome asks:
     /// `?` only while Headway reports scopes, the strip's Esc only while it's
     /// pinned, a data tool always (the keymap holds it to the current card).
-    fn available(pinned: bool, headway: &Headway, name: &str) -> bool {
+    fn available(pinned: bool, jumps: &JumpList, headway: &Headway, name: &str) -> bool {
         match name {
             TOGGLE_KEY_HINTS => !headway.key_scopes().is_empty(),
             HIDE_KEY_HINTS => pinned,
+            JUMP_BACK => jumps.can_go_back(),
+            JUMP_FORWARD => jumps.can_go_forward(),
             name if BOARD_EDITS.contains(&name) => true,
             name => headway.ui_tool_available(name),
         }
@@ -84,15 +90,31 @@ impl ChromeKeys {
     /// in Headway, a data tool at once, as chrome does.
     fn dispatch(&mut self, ctx: &egui::Context, app_ctx: &mut AppContext, headway: &mut Headway) {
         let pinned = self.pinned;
+        let jumps = &self.jumps;
         let dispatch = self.engine.resolve(ctx, Self::scopes(headway), |name| {
-            Self::available(pinned, headway, name)
+            Self::available(pinned, jumps, headway, name)
         });
         let Some(KeyDispatch::Tool(call)) = dispatch else {
             return;
         };
+        if self.engine.fired_jump()
+            && let Some(here) = headway.jump_location()
+        {
+            self.jumps.push(here);
+        }
         match call.name.as_str() {
             TOGGLE_KEY_HINTS => self.pinned = !pinned,
             HIDE_KEY_HINTS => self.pinned = false,
+            JUMP_BACK => {
+                if let Some(to) = self.jumps.back(headway.jump_location()) {
+                    headway.restore_jump(app_ctx, &*to);
+                }
+            }
+            JUMP_FORWARD => {
+                if let Some(to) = self.jumps.forward() {
+                    headway.restore_jump(app_ctx, &*to);
+                }
+            }
             name if BOARD_EDITS.contains(&name) => {
                 let tools = headway.tools();
                 let tool = tools
@@ -121,11 +143,12 @@ impl ChromeKeys {
     fn strip_ui(&self, ui: &egui::Ui, rect: egui::Rect, headway: &Headway) {
         let pending = self.engine.pending();
         let pinned = self.pinned;
+        let jumps = &self.jumps;
         let hints = (pending.is_some() || pinned).then(|| {
             self.engine
                 .keymap()
                 .hints(Self::scopes(headway), pending, move |name| {
-                    Self::available(pinned, headway, name)
+                    Self::available(pinned, jumps, headway, name)
                 })
                 .map(|hint| (hint.keycap_iter(), hint.label))
         });
@@ -5532,6 +5555,39 @@ fn j_and_k_walk_the_first_column() {
     } = open_card_by_keys(&[J, J, K]);
     let first = harness_card_id(&mut harness, "Define nostr event model for boards");
     assert_eq!(opened, first, "j j k lands back on the first");
+}
+
+/// Behavioural (no lavapipe): `g g` is a jump, so Ctrl-O puts the grid's
+/// cursor back on the card it left from, and Ctrl-I takes it to the first
+/// card again.
+#[test]
+fn ctrl_o_and_ctrl_i_walk_the_grid_cursor_across_g_g() {
+    use egui::Key::{G, I, J, O};
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let first = harness_card_id(&mut harness, "Define nostr event model for boards");
+    let second = harness_card_id(&mut harness, "Sync cards across relays");
+    press_board_keys(&mut harness, &[J, J]);
+    assert_eq!(harness.state().headway.cursor(), Some(second));
+
+    press_board_keys(&mut harness, &[G, G]);
+    assert_eq!(harness.state().headway.cursor(), Some(first), "g g");
+
+    harness.press_key_modifiers(egui::Modifiers::CTRL, O);
+    harness.run_ok();
+    assert_eq!(
+        harness.state().headway.cursor(),
+        Some(second),
+        "Ctrl-O back to where g g left from"
+    );
+
+    harness.press_key_modifiers(egui::Modifiers::CTRL, I);
+    harness.run_ok();
+    assert_eq!(
+        harness.state().headway.cursor(),
+        Some(first),
+        "Ctrl-I forward to the first card"
+    );
 }
 
 /// The name of the column `card` sits in on the demo board, folded fresh off

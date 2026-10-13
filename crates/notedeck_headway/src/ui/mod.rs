@@ -44,7 +44,7 @@ pub use graph::{GRAPH_NODE_SIZE, GraphNodeView, graph_node_ui};
 pub use header::SyncStatus;
 pub use inline::{ChipStatus, board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui};
 
-pub(crate) use card_actions::{CardStep, DetailScroll, reason_field_id};
+pub(crate) use card_actions::{CardStep, DetailScroll, DetailSpot, reason_field_id};
 pub(crate) use filter::{ViewFilter, filter_field_id, parse_board_filter};
 pub(crate) use list::list_field_id;
 #[cfg(test)]
@@ -254,6 +254,9 @@ pub struct BoardUiState {
     reason: Option<ReasonComposer>,
     /// A scroll the detail's keys asked of it, applied on its next pass.
     detail_scroll: Option<DetailScroll>,
+    /// How far down the detail was scrolled as its last pass ended, and on
+    /// which card: the jump list's detail location.
+    detail_spot: Option<DetailSpot>,
     /// Whether a widget in the detail held the keyboard as the last detail
     /// pass ended: what tells the detail's Esc that it only unfocused a field
     /// ([`BoardUiState::detail_field_focused`]). Dropped with the card.
@@ -368,6 +371,12 @@ impl BoardUiState {
     /// Move the issue list's cursor.
     pub(crate) fn move_list_cursor(&mut self, mv: cursor::CursorMove) {
         self.list.move_cursor(mv);
+    }
+
+    /// Put the issue list's cursor back on `card` (a jump back), if the
+    /// list still has its row.
+    pub(crate) fn restore_list_cursor(&mut self, card: NoteId) {
+        self.list.restore_cursor(card);
     }
 
     /// Seed whether the review queue shows, and over what, from the chrome

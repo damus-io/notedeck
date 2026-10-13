@@ -765,6 +765,16 @@ impl ListState {
         self.scroll_to_cursor = true;
     }
 
+    /// Put the cursor back on `card` and scroll it into view, if the list
+    /// has its row; otherwise leave it where it is.
+    pub(crate) fn restore_cursor(&mut self, card: NoteId) {
+        if !self.rows.iter().any(|row| row.id == card) {
+            return;
+        }
+        self.cursor = Some(card);
+        self.scroll_to_cursor = true;
+    }
+
     /// Where entry `at`'s row opens, read from the `sources` the rows came
     /// from. `None` for a header.
     fn target(&self, sources: &[BoardRef], at: usize) -> Option<RowTarget> {

@@ -145,6 +145,7 @@ scope = "headway.card"
 keys  = "n"
 tool  = "headway_step_card"
 args  = { dir = "next" }
+jump  = true
 label = "next/prev card"
 group = "card"
 
@@ -153,6 +154,7 @@ scope = "headway.card"
 keys  = "p"
 tool  = "headway_step_card"
 args  = { dir = "prev" }
+jump  = true
 label = "next/prev card"
 group = "card"
 
@@ -195,6 +197,7 @@ scope = "headway.grid"
 keys  = "g g"
 tool  = "headway_cursor_move"
 args  = { to = "first" }
+jump  = true
 label = "first/last"
 group = "grid"
 
@@ -203,6 +206,7 @@ scope = "headway.grid"
 keys  = "G"
 tool  = "headway_cursor_move"
 args  = { to = "last" }
+jump  = true
 label = "first/last"
 group = "grid"
 
@@ -344,6 +348,7 @@ scope = "headway.scroll"
 keys  = "g g"
 tool  = "headway_scroll"
 args  = { to = "top" }
+jump  = true
 label = "top/bottom"
 group = "scroll"
 
@@ -352,6 +357,7 @@ scope = "headway.scroll"
 keys  = "G"
 tool  = "headway_scroll"
 args  = { to = "bottom" }
+jump  = true
 label = "top/bottom"
 group = "scroll"
 
@@ -462,6 +468,7 @@ scope = "headway.list"
 keys  = "g g"
 tool  = "headway_cursor_move"
 args  = { to = "first" }
+jump  = true
 label = "first/last"
 group = "list"
 
@@ -470,6 +477,7 @@ scope = "headway.list"
 keys  = "G"
 tool  = "headway_cursor_move"
 args  = { to = "last" }
+jump  = true
 label = "first/last"
 group = "list"
 

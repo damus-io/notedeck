@@ -223,7 +223,7 @@ pub(super) fn card_detail_pane_ui(
                     );
                 });
             } else {
-                egui::ScrollArea::vertical()
+                let scrolled = egui::ScrollArea::vertical()
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         let top = ui.cursor().min;
@@ -239,6 +239,7 @@ pub(super) fn card_detail_pane_ui(
                         detail_comments_ui(ui, theme, app_ctx, &ctx, state, &mut outcome);
                         detail_scroll_ui(ui, ctx.scroll, top);
                     });
+                state.latch_detail_offset(ctx.card_id, scrolled.state.offset.y);
             }
         });
 
@@ -534,7 +535,7 @@ fn detail_main_column_ui(
     action: &mut Option<BoardAction>,
     outcome: &mut DetailOutcome,
 ) {
-    egui::ScrollArea::vertical()
+    let scrolled = egui::ScrollArea::vertical()
         .auto_shrink([false, true])
         .show(ui, |ui| {
             let top = ui.cursor().min;
@@ -546,6 +547,7 @@ fn detail_main_column_ui(
             detail_comments_ui(ui, theme, app_ctx, ctx, state, outcome);
             detail_scroll_ui(ui, ctx.scroll, top);
         });
+    state.latch_detail_offset(ctx.card_id, scrolled.state.offset.y);
 }
 
 /// The card body proper: breadcrumb, title, ref, description and subissues.

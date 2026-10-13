@@ -420,6 +420,11 @@ impl SeenCards {
         self.ids = now;
         gone
     }
+
+    /// Whether `card` was on the board when it was last drawn.
+    pub(crate) fn contains(&self, card: NoteId) -> bool {
+        self.ids.contains(&card)
+    }
 }
 
 /// The cards [`SeenCards::departed`] named, sorted by what becomes of their

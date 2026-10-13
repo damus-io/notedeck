@@ -10,6 +10,7 @@ pub use headway::{event, store, teams, views};
 
 mod cache;
 mod cursor;
+mod jump;
 mod keys;
 mod nav;
 mod renderers;
@@ -652,6 +653,19 @@ impl App for Headway {
     /// `H L J K` move it (data tools, see [`tools`]).
     fn current_ref(&self) -> Option<&str> {
         self.state.current_ref()
+    }
+
+    /// Where the keyboard is, for the chrome's jump list (Ctrl-O / Ctrl-I):
+    /// the grid's and the issue list's cursors and the detail's scroll (see
+    /// [`jump`]).
+    fn jump_location(&self) -> Option<notedeck::JumpLocation> {
+        Some(self.jump_location_token())
+    }
+
+    /// Put the keyboard back where [`jump_location`](App::jump_location)
+    /// said it was, as far as the board still allows.
+    fn restore_jump(&mut self, _ctx: &mut AppContext<'_>, location: &dyn notedeck::JumpTarget) {
+        self.restore_jump_token(location);
     }
 
     /// Background sync, run every frame for all *opened* apps (not just the
