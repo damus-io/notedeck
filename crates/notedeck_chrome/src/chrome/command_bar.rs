@@ -9,7 +9,8 @@
 //!
 //! The bar only lists and runs rows. Where they come from is the caller's:
 //! [`CommandBar::set_items`] hands it a list, which it filters each time the
-//! query changes, never per frame. Each row's text is laid out once per
+//! query changes, never per frame, and [`CommandBar::set_hits`] adds what a
+//! search found for the query after them (see [`super::command_search`]). Each row's text is laid out once per
 //! filter, so a frame with the bar open only draws.
 //!
 //! A chosen row can ask for more before it runs: a tool's argument (see
@@ -32,6 +33,7 @@ use notedeck::{
 use notedeck_ui::keybind_hint::{keycap_width, KeybindHint, KEYCAP};
 
 use super::actions::chrome_handle_app_action;
+use super::command_search::SearchState;
 use super::key_dispatch::tool_action;
 use super::Chrome;
 
@@ -170,6 +172,8 @@ struct Level {
     prompt: Option<String>,
     /// Its rows.
     items: Vec<CommandItem>,
+    /// Where its search hits start in `items`.
+    hits_from: usize,
     /// What had been typed into it.
     query: String,
     /// What it asked for.
@@ -210,8 +214,11 @@ pub struct CommandBar {
     return_focus: Option<egui::Id>,
     /// What has been typed.
     query: String,
-    /// Every row it can list.
+    /// Every row it can list: the rows it was given, then the search hits
+    /// from [`hits_from`](Self::hits_from) on.
     items: Vec<CommandItem>,
+    /// Where the search hits start in `items`.
+    hits_from: usize,
     /// Whether [`rows`](Self::rows) is out of date with the query or items.
     stale: bool,
     /// The rows the query matches, best section first, best row first
@@ -247,6 +254,8 @@ pub struct CommandBar {
     back: Vec<Level>,
     /// The tools chosen from it lately, by name, latest first.
     recent: Vec<String>,
+    /// The search for the query, the chrome's to run.
+    pub(super) search: SearchState,
 }
 
 /// How many tools [`CommandBar::recent`] remembers.
@@ -269,9 +278,26 @@ impl CommandBar {
         self.stale = true;
     }
 
-    /// Replace the rows it can list; the query filters them.
+    /// Replace the rows it can list, and any search hits; the query
+    /// filters them.
     pub fn set_items(&mut self, items: Vec<CommandItem>) {
         self.items = items;
+        self.hits_from = self.items.len();
+        self.stale = true;
+    }
+
+    /// What a search found for the query, listed after the rows it was
+    /// given.
+    pub fn hits(&self) -> &[CommandItem] {
+        &self.items[self.hits_from..]
+    }
+
+    /// Replace what a search found for the query, listed after the rows it
+    /// was given. A hit its provider [found](CommandItem::found) is kept
+    /// whatever its title matches.
+    pub fn set_hits(&mut self, hits: Vec<CommandItem>) {
+        self.items.truncate(self.hits_from);
+        self.items.extend(hits);
         self.stale = true;
     }
 
@@ -326,10 +352,12 @@ impl CommandBar {
         self.back.push(Level {
             prompt: self.prompt.replace(prompt),
             items: std::mem::replace(&mut self.items, items),
+            hits_from: std::mem::replace(&mut self.hits_from, 0),
             query: std::mem::take(&mut self.query),
             asking: std::mem::replace(&mut self.asking, asking),
             hint: std::mem::replace(&mut self.hint, hint),
         });
+        self.hits_from = self.items.len();
         self.prompt_text = None;
         self.stale = true;
     }
@@ -342,6 +370,7 @@ impl CommandBar {
         };
         self.prompt = level.prompt;
         self.items = level.items;
+        self.hits_from = level.hits_from;
         self.query = level.query;
         self.asking = level.asking;
         self.hint = level.hint;
@@ -357,6 +386,8 @@ impl CommandBar {
         self.focus_pending = true;
         self.query.clear();
         self.items.clear();
+        self.hits_from = 0;
+        self.search = SearchState::default();
         self.back.clear();
         self.prompt = None;
         self.prompt_text = None;
@@ -384,6 +415,8 @@ impl CommandBar {
         self.open = false;
         self.focus_pending = false;
         self.items.clear();
+        self.hits_from = 0;
+        self.search = SearchState::default();
         self.rows.clear();
         self.texts.clear();
         self.back.clear();
@@ -425,8 +458,9 @@ impl CommandBar {
         }
     }
 
-    /// Match the query against every row's title, then its keywords, and
-    /// order the matches: sections by their best row, rows by score within
+    /// Match the query against every row's title, then its keywords, keeping
+    /// a search hit its provider found whatever it matches, and order the
+    /// matches: sections by their best row, rows by score within
     /// them, ties in the order they were given (so an empty query lists the
     /// rows as given, grouped by section). Selects the first. Allocates only
     /// to grow its buffers.
@@ -440,16 +474,19 @@ impl CommandBar {
         self.reveal_selected = true;
 
         for (item, entry) in self.items.iter().enumerate() {
-            let score = match fuzzy_match(&self.query, &entry.title, &mut self.scratch) {
-                Some(score) => score,
-                None if entry
-                    .keywords
-                    .as_deref()
-                    .is_some_and(|keywords| contains_words(&self.query, keywords)) =>
+            let title = fuzzy_match(&self.query, &entry.title, &mut self.scratch);
+            let score = match (title, entry.found) {
+                (Some(score), _) => score,
+                (None, Some(found)) => found,
+                (None, None)
+                    if entry
+                        .keywords
+                        .as_deref()
+                        .is_some_and(|keywords| contains_words(&self.query, keywords)) =>
                 {
                     KEYWORD_ONLY
                 }
-                None => continue,
+                (None, None) => continue,
             };
             let start = self.positions.len();
             self.positions.extend_from_slice(&self.scratch);
@@ -824,6 +861,13 @@ impl Chrome {
         &mut self.command_bar
     }
 
+    /// The open the chrome is holding until its reference resolves, if any:
+    /// an [`AppAction::Open`] whose reference didn't resolve when it was
+    /// raised, retried for a moment.
+    pub fn pending_open(&self) -> Option<&notedeck::OpenUri> {
+        self.pending_open.as_ref().map(|pending| pending.open())
+    }
+
     /// Open the command bar, or close it if it is open. Bound to Cmd-K.
     pub(super) fn toggle_command_bar(&mut self, app_ctx: &mut AppContext, ctx: &egui::Context) {
         if self.command_bar.open {
@@ -880,17 +924,18 @@ impl Chrome {
         }
     }
 
-    /// Draw the command bar over everything, if it is open, and run a row
-    /// clicked in it.
+    /// Draw the command bar over everything, if it is open, run a row
+    /// clicked in it, and search for its query if that changed.
     pub(super) fn command_bar_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) {
         if let Some(action) = self.command_bar.show(ui.ctx()) {
             self.run_command(app_ctx, action, ui);
         }
+        self.search_if_due(app_ctx, ui.ctx());
     }
 
     /// Do what a chosen row does: step into the next argument its tool asks
-    /// for, or close the bar and run the tool as a key bound to it would, or
-    /// open its reference. Closing first lets a tool that opens a view land
+    /// for, or close the bar and run the tool as a key bound to it would,
+    /// open its reference, or switch to its app. Closing first lets a tool that opens a view land
     /// on it.
     fn run_command(&mut self, app_ctx: &mut AppContext, action: CommandAction, ui: &mut egui::Ui) {
         let action = match action {
@@ -906,6 +951,11 @@ impl Chrome {
             CommandAction::Open(uri) => {
                 self.command_bar.close(ui.ctx());
                 Some(AppAction::Open(uri))
+            }
+            CommandAction::SwitchApp(app) => {
+                self.command_bar.close(ui.ctx());
+                self.set_active(app.slot() as i32);
+                None
             }
         };
         if let Some(action) = action {

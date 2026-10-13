@@ -7,7 +7,7 @@
 
 use std::borrow::Cow;
 
-use crate::{OpenUri, ToolInvocation};
+use crate::{AppId, OpenUri, ToolInvocation};
 
 /// One row of a command bar.
 #[derive(Debug, Clone, PartialEq)]
@@ -27,6 +27,11 @@ pub struct CommandItem {
     pub keywords: Option<String>,
     /// The keys that run it outside the bar, as a keycap (`gb`, `^w j`).
     pub keycap: Option<String>,
+    /// Set on a search hit, which its provider already matched to the query
+    /// some way of its own: the score it matched at. The bar then keeps the
+    /// row whatever its title matches, ranked by its title's match when the
+    /// query matches it and by this when it doesn't.
+    pub found: Option<i32>,
     /// What choosing it does.
     pub action: CommandAction,
 }
@@ -45,6 +50,7 @@ impl CommandItem {
             subtitle: None,
             keywords: None,
             keycap: None,
+            found: None,
             action,
         }
     }
@@ -58,6 +64,13 @@ impl CommandItem {
     /// This row matched by `keywords` too (see [`CommandItem::keywords`]).
     pub fn with_keywords(mut self, keywords: impl Into<String>) -> Self {
         self.keywords = Some(keywords.into());
+        self
+    }
+
+    /// This row as a search hit its provider matched at `score` (see
+    /// [`CommandItem::found`]).
+    pub fn found(mut self, score: i32) -> Self {
+        self.found = Some(score);
         self
     }
 
@@ -77,4 +90,6 @@ pub enum CommandAction {
     /// Open the entity a reference names (`headway:board/word-id`), as a click
     /// on an inline reference does.
     Open(OpenUri),
+    /// Switch to the app in this slot of the chrome's roster.
+    SwitchApp(AppId),
 }

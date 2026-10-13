@@ -11,7 +11,7 @@ use std::sync::mpsc;
 use egui::{Event, Key, Modifiers};
 use notedeck::{
     App, AppContext, AppResponse, AppTool, JumpLocation, JumpTarget, Notedeck, RegisteredTool,
-    ToolArg, ToolArgType, ToolContext, ToolOutcome, ToolSpec,
+    SearchHit, SearchHits, SearchQuery, ToolArg, ToolArgType, ToolContext, ToolOutcome, ToolSpec,
 };
 use notedeck_chrome::keymap::{self, KeySeq};
 use notedeck_chrome::{Chrome, NotedeckApp};
@@ -67,6 +67,12 @@ pub struct FakeState {
     /// Where the app's view is, for the jump list: `fake_down` adds one,
     /// `fake_first` goes to 0.
     pub location: u32,
+    /// What the app finds for any search query, all of it.
+    pub results: Vec<SearchHit>,
+    /// Every query the app was asked to search, in order.
+    pub searched: Vec<String>,
+    /// Whether the app's answers are still coming, so it is asked again.
+    pub search_pending: bool,
 }
 
 /// [`DATA_TOOL`]: sends its args to the test, which runs it on another
@@ -113,6 +119,19 @@ impl App for FakeApp {
 
     fn current_ref(&self) -> Option<&str> {
         self.current.as_deref()
+    }
+
+    fn search(&mut self, _ctx: &mut AppContext<'_>, query: &SearchQuery<'_>, out: &mut SearchHits) {
+        let mut state = self.state.borrow_mut();
+        state.searched.push(query.text.to_owned());
+        for hit in &state.results {
+            if !out.push(hit.clone()) {
+                break;
+            }
+        }
+        if state.search_pending {
+            out.set_pending();
+        }
     }
 
     fn render(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
@@ -243,6 +262,11 @@ impl Fixture {
         Self::with_apps(keymap_src, &["--nsec", nsec], front)
     }
 
+    /// A fixture with `front` apps ahead of the fake one, signed out.
+    pub fn behind(keymap_src: &str, front: impl IntoIterator<Item = NotedeckApp>) -> Self {
+        Self::with_apps(keymap_src, &[], front)
+    }
+
     /// A fixture whose notedeck also got `extra` on its command line.
     fn with_args(keymap_src: &str, extra: &[&str]) -> Self {
         Self::with_apps(keymap_src, extra, [])
@@ -281,6 +305,9 @@ impl Fixture {
             marked,
             area: None,
             location: 0,
+            results: Vec::new(),
+            searched: Vec::new(),
+            search_pending: false,
         }));
         // The fake app as the nav root unless `front` has apps: switching to
         // it from another app would slide, and a full chrome frame mid-slide
@@ -382,6 +409,11 @@ impl Fixture {
         while self.time < until {
             self.frame(Vec::new());
         }
+    }
+
+    /// The queries the app was asked to search so far.
+    pub fn searched(&self) -> Vec<String> {
+        self.state.borrow().searched.clone()
     }
 
     /// The UI tools that reached the app so far.

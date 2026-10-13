@@ -415,6 +415,15 @@ impl notedeck::App for NotedeckApp {
         self.as_app().ui_tool_available(name)
     }
 
+    fn search(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        query: &notedeck::SearchQuery<'_>,
+        out: &mut notedeck::SearchHits,
+    ) {
+        self.as_app_mut().search(ctx, query, out)
+    }
+
     fn key_scopes(&self) -> &'static [&'static str] {
         self.as_app().key_scopes()
     }

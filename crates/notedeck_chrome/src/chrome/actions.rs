@@ -156,7 +156,10 @@ fn is_notebook_note(ctx: &mut AppContext, note_id: nostrdb_net::NoteId) -> bool 
 /// [`ReferenceParser`](notedeck::ReferenceParser)s the inline-chip renderer
 /// uses, relative to the selected account. `None` when no parser recognizes it
 /// or it doesn't resolve locally yet.
-fn resolve_reference(ctx: &mut AppContext, reference: &str) -> Option<nostrdb_net::NoteId> {
+pub(super) fn resolve_reference(
+    ctx: &mut AppContext,
+    reference: &str,
+) -> Option<nostrdb_net::NoteId> {
     let txn = Transaction::new(ctx.ndb).ok()?;
     let resolve_ctx = notedeck::ReferenceResolveCtx {
         ndb: ctx.ndb,
@@ -279,6 +282,11 @@ pub(super) struct PendingOpen {
 }
 
 impl PendingOpen {
+    /// What it opens.
+    pub(super) fn open(&self) -> &notedeck::OpenUri {
+        &self.open
+    }
+
     /// Hold `open`, whose first resolve just missed.
     fn new(open: notedeck::OpenUri, egui_ctx: &egui::Context) -> Self {
         Self {

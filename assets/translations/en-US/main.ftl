@@ -115,6 +115,9 @@ Appearance_4c7f = Appearance
 # Button label for applying websocket connection limit setting
 Apply_7d12 = Apply
 
+# Command bar section listing the apps whose name matches the query
+Apps_ed9a = Apps
+
 # Button to send message to Dave AI assistant
 Ask_b7f4 = Ask
 
@@ -786,6 +789,9 @@ Only_Claude_Code_sessions_keep_a_scratchpad_28c3 = Only Claude Code sessions kee
 # Dave session inspector files: open a file or folder with the system's default app
 Open_4300 = Open
 
+# Command bar: subtitle of the row that opens the reference typed into it
+Open_e932 = Open
+
 # Button label to open email client
 Open_Email_25e9 = Open Email
 
@@ -1142,6 +1148,9 @@ Support_75e2 = Support
 
 # Support email address
 Support_email_44d9 = Support email:
+
+# Command bar: subtitle of a row that switches to the app it names
+Switch_to_app_7f73 = Switch to app
 
 # Dave session inspector files: show the last lines of a background task's output log
 Tail_e0c4 = Tail

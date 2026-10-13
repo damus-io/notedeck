@@ -357,6 +357,25 @@ pub trait App {
         let _ = (ctx, location);
     }
 
+    /// Answer `query` from the bar's universal search: push what this app
+    /// finds for it into `out`, each hit a reference
+    /// [`AppAction::Open`] opens. The chrome lists the hits under the app's
+    /// name in its Cmd-K bar. Asked only when the query changes, never per
+    /// frame, and only for a running app; stop at
+    /// [`SearchHits::is_full`](crate::SearchHits::is_full). An answer that
+    /// needs slow I/O returns what it has and marks itself
+    /// [pending](crate::SearchHits::set_pending), and is asked again until it
+    /// isn't: see [`search`](crate::search) for the whole contract. Defaults
+    /// to finding nothing.
+    fn search(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        query: &crate::SearchQuery<'_>,
+        out: &mut crate::SearchHits,
+    ) {
+        let _ = (ctx, query, out);
+    }
+
     /// Host hook, invoked each frame **only on the top-level app** (the shell):
     /// return `Some(update)` to replace the host's
     /// [`ToolRegistry`](crate::ToolRegistry) when the contributed set changes, or

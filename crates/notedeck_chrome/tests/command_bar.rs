@@ -317,6 +317,42 @@ impl notedeck::App for Backdrop {
         notedeck::AppResponse::none()
     }
 
+    /// Cards and a board, as Headway's provider will find them, for a
+    /// query for cards only, so the other snapshots list tools alone.
+    fn search(
+        &mut self,
+        _ctx: &mut notedeck::AppContext<'_>,
+        query: &notedeck::SearchQuery<'_>,
+        out: &mut notedeck::SearchHits,
+    ) {
+        use notedeck::{OpenUri, SearchHit};
+        if query.text != "card" {
+            return;
+        }
+        let hits = [
+            SearchHit::new(
+                "chrome: Cmd-K command bar overlay and shared fuzzy matcher",
+                OpenUri::new("headway:notedeck/fury-excuse-accident"),
+                0,
+            )
+            .kind("Card")
+            .subtitled("In Review"),
+            SearchHit::new(
+                "chrome: Cmd-K action bar lists and runs app tools",
+                OpenUri::new("headway:notedeck/save-jump-disease"),
+                0,
+            )
+            .kind("Card")
+            .subtitled("In Review"),
+            SearchHit::new("notedeck", OpenUri::new("headway:notedeck"), -40)
+                .kind("Board")
+                .subtitled("matched a card's body"),
+        ];
+        for hit in hits {
+            out.push(hit);
+        }
+    }
+
     fn ui_tools(&self) -> Vec<notedeck::ToolSpec> {
         use notedeck::{ToolArg, ToolArgType, ToolSpec};
         vec![
@@ -428,6 +464,15 @@ fn snapshot_command_bar_filtered() {
     let mut harness = snapshot_harness("bo");
     assert!(harness.state().chrome.command_bar().is_open());
     harness.snapshot("command_bar_filtered");
+}
+
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_command_bar_search() {
+    let mut harness = snapshot_harness("card");
+    let _ = harness.run_ok();
+    assert!(harness.state().chrome.command_bar().is_open());
+    harness.snapshot("command_bar_search");
 }
 
 /// A fixture with the bar open on the tools, as Cmd-K opens it.
