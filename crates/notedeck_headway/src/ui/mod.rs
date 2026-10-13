@@ -9,7 +9,7 @@
 //! This module owns the board's top-level [`board_ui`] and its [`BoardUiState`];
 //! each surface it draws lives in a submodule: the [`header`], the kanban
 //! [`grid`], the card [`detail`] pane, the dependency [`graph`], the commit
-//! [`review`] pane, the [`archived`] sheet, the board [`filter`], the [`inline`] widgets the
+//! [`review`] pane, the cross-board issue [`list`], the [`archived`] sheet, the board [`filter`], the [`inline`] widgets the
 //! `KindRenderer`s use, and the small shared [`widgets`].
 
 use std::collections::{HashMap, HashSet};
@@ -19,6 +19,7 @@ use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM};
 
 use crate::BoardSummary;
+use crate::cache::BoardRef;
 use crate::cursor::{self, CursorPos};
 use crate::event::{self, BoardView, CardView};
 use crate::keys;
@@ -34,6 +35,7 @@ mod graph;
 mod grid;
 mod header;
 mod inline;
+mod list;
 mod review;
 mod review_comments;
 mod widgets;
@@ -44,6 +46,7 @@ pub use inline::{board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui}
 
 pub(crate) use card_actions::{CardStep, DetailScroll, reason_field_id};
 pub(crate) use filter::{ViewFilter, filter_field_id, parse_board_filter};
+pub(crate) use list::list_field_id;
 #[cfg(test)]
 pub(crate) use review_comments::DraftComment;
 
@@ -54,6 +57,7 @@ use filter::filter_ref_jump;
 use graph::{GraphMode, graph_view_ui};
 use grid::{add_column_ui, column_ui, start_move_anims};
 use header::{board_switcher, filtered_badge, sync_indicator, view_options_menu};
+use list::{ListState, list_view_ui};
 use review::{NOTICE_SECS, ReviewQueue, ReviewSection, ReviewUi, review_pane_ui, review_queue_ui};
 use widgets::KeyedText;
 
@@ -221,6 +225,9 @@ pub struct BoardUiState {
     /// epic's In Review descendants) and which card the review pane shows.
     /// While it's open the pane shows its card.
     queue: ReviewQueue,
+    /// The cross-board issue list: whether it shows (seeded from the nav
+    /// route), its query, its rows and its cursor.
+    list: ListState,
     /// The detail Sub-issues header's `"done/total"` count, keyed by
     /// `(done, total)`.
     subissue_count: KeyedText<(usize, usize)>,
@@ -328,12 +335,33 @@ impl BoardUiState {
     /// the review queue), the value the app diffs across a render into a nav
     /// request.
     pub(crate) fn nav_pos(&self) -> NavPos {
-        NavPos::of(
+        let pos = NavPos::of(
             self.selected,
             self.graph_epic,
             self.queue.is_open().then(|| self.queue.scope()),
             self.review.card(),
-        )
+        );
+        // The list sits over the grid and under everything opened from it,
+        // so it is the position only where the grid would otherwise be.
+        if pos == NavPos::Board && self.list.is_open() {
+            return NavPos::List;
+        }
+        pos
+    }
+
+    /// Whether the cross-board issue list shows.
+    pub fn list_open(&self) -> bool {
+        self.list.is_open()
+    }
+
+    /// The card under the issue list's cursor, if any.
+    pub(crate) fn list_cursor(&self) -> Option<NoteId> {
+        self.list.cursor()
+    }
+
+    /// Move the issue list's cursor.
+    pub(crate) fn move_list_cursor(&mut self, mv: cursor::CursorMove) {
+        self.list.move_cursor(mv);
     }
 
     /// Seed whether the review queue shows, and over what, from the chrome
@@ -754,12 +782,17 @@ fn seed_edit_mode(text: &str) -> EditMode {
 /// card detail sheet) and return the edit the user made this frame, if any —
 /// or, on a frame that made none, one an earlier frame left
 /// ([`BoardUiState::take_follow_up`]).
-pub fn board_ui(
+///
+/// `lists` is every board the issue list reads, gathered by the app only
+/// while the list shows (empty otherwise).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn board_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     view: &BoardView,
     boards: &[BoardSummary],
+    lists: &[BoardRef],
     sync: SyncStatus,
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
@@ -786,7 +819,7 @@ pub fn board_ui(
         // The next card, and an `X`'s follow-up move, want a frame.
         ui.ctx().request_repaint();
     }
-    let action = board_pane_ui(ui, theme, app_ctx, view, boards, sync, state);
+    let action = board_pane_ui(ui, theme, app_ctx, view, boards, lists, sync, state);
     state.drop_queued_tools();
     state.latch_current_ref(view);
     // A key swallowed the frame's keys, so the pane's edit could only be a
@@ -796,12 +829,14 @@ pub fn board_ui(
 }
 
 /// [`board_ui`]'s body: whichever pane the state names, and its edit.
+#[allow(clippy::too_many_arguments)]
 fn board_pane_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     view: &BoardView,
     boards: &[BoardSummary],
+    lists: &[BoardRef],
     sync: SyncStatus,
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
@@ -872,6 +907,13 @@ fn board_pane_ui(
     if state.selected.is_some() && gone {
         state.selected = None;
         state.detail_for = None;
+    }
+
+    // The issue list takes the grid's place while it's open; a card opened
+    // from it drew as the detail above.
+    if state.list.is_open() {
+        list_view_ui(ui, theme, view, lists, state);
+        return None;
     }
 
     // Parsed once per frame from the persisted query; reflects the prior

@@ -32,6 +32,7 @@ group = "help"
 #   queue   headway.card, headway.scroll, headway.diff, headway.queue
 #   pane    headway.card, headway.scroll, headway.diff, headway.pane
 #   detail  headway.card, headway.scroll, headway.detail
+#   list    headway.list
 #
 # No two scopes of one stack bind the same keys, so their order only sets the
 # which-key strip's: a view's own navigation and the card actions in the order
@@ -240,6 +241,13 @@ group = "grid"
 
 [[bind]]
 scope = "headway.grid"
+keys  = "v"
+tool  = "headway_open_list"
+label = "issue list"
+group = "grid"
+
+[[bind]]
+scope = "headway.grid"
 keys  = "<Esc>"
 tool  = "headway_clear"
 label = "clear"
@@ -409,6 +417,76 @@ keys  = "<Esc>"
 tool  = "headway_back"
 label = "back"
 group = "detail"
+
+# The issue list, every board's cards in one list. No card actions: a row may
+# be on another board than the one showing, so they wait for its detail.
+
+[[bind]]
+scope = "headway.list"
+keys  = "j"
+tool  = "headway_cursor_move"
+args  = { to = "down" }
+label = "up/down"
+group = "list"
+
+[[bind]]
+scope = "headway.list"
+keys  = "k"
+tool  = "headway_cursor_move"
+args  = { to = "up" }
+label = "up/down"
+group = "list"
+
+[[bind]]
+scope = "headway.list"
+keys  = "g g"
+tool  = "headway_cursor_move"
+args  = { to = "first" }
+label = "first/last"
+group = "list"
+
+[[bind]]
+scope = "headway.list"
+keys  = "G"
+tool  = "headway_cursor_move"
+args  = { to = "last" }
+label = "first/last"
+group = "list"
+
+[[bind]]
+scope = "headway.list"
+keys  = "<Enter>"
+tool  = "headway_open_card"
+label = "open"
+group = "list"
+
+[[bind]]
+scope = "headway.list"
+keys  = "o"
+tool  = "headway_open_card"
+label = "open"
+group = "list"
+
+[[bind]]
+scope = "headway.list"
+keys  = "/"
+tool  = "headway_focus_filter"
+label = "filter"
+group = "list"
+
+[[bind]]
+scope = "headway.list"
+keys  = "q"
+tool  = "headway_back"
+label = "back to board"
+group = "exit"
+
+[[bind]]
+scope = "headway.list"
+keys  = "<Esc>"
+tool  = "headway_back"
+label = "back to board"
+group = "exit"
 
 # ── Dave ────────────────────────────────────────────────────────────────────
 #

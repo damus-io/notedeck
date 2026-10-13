@@ -1086,6 +1086,151 @@ fn hide_subissues_view_option() {
     harness.get_by_label("Filtered · 5 of 7 shown");
 }
 
+/// A card on a second board, "Side", for the issue list to find beside the
+/// demo board's.
+const SIDE_CARD: &str = "Side quest card";
+
+/// Seed a second plaintext board, "Side", holding [`SIDE_CARD`] in its Todo
+/// column, and wait for the card to fold in: the issue list reads every board,
+/// and the demo seed makes only one.
+fn seed_side_board(harness: &mut Harness<'static, HeadwayTestState>) {
+    let state = harness.state_mut();
+    let author = state.account.pubkey;
+    let secret = state.account.secret_key.secret_bytes();
+    let app_ctx = state.notedeck.app_context();
+    store::seed_board(
+        app_ctx.ndb,
+        &author,
+        &secret,
+        "side",
+        "Side",
+        &mut store::NoPublish,
+    );
+    let view = wait_own_board(app_ctx.ndb, &author, "side");
+    store::apply(
+        app_ctx.ndb,
+        "side",
+        &view,
+        &author,
+        &store::Signer::new(&secret, None),
+        store::BoardAction::AddCard {
+            col: 1,
+            title: SIDE_CARD.to_string(),
+            description: String::new(),
+            labels: vec!["quest".to_string()],
+            parent: None,
+        },
+        &mut store::NoPublish,
+    );
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        let txn = Transaction::new(app_ctx.ndb).expect("txn");
+        let cards = event::load_board(app_ctx.ndb, &txn, &author, "side")
+            .map(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>());
+        if cards == Some(1) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "side card never folded");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// The issue list (headway:headway/match-belt-quit): `v` opens it from the
+/// grid as one global-nav entry, it lists open cards from every board, All
+/// adds the done ones, a query narrows it live, and a row on another board
+/// opens that card's detail there, with the list still beneath it.
+/// Behavioural (accesskit only), so it runs without lavapipe.
+#[test]
+fn issue_list_spans_boards_filters_and_opens_cards() {
+    use notedeck::NavRequest;
+    use notedeck_headway::HeadwayRoute;
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_side_board(&mut harness);
+    // Drop what booting enqueued, so the push below is the only request.
+    harness.state_mut().notedeck.app_context().navigator.take();
+
+    harness.press_key(egui::Key::V);
+    wait_for_label(&mut harness, "Issues");
+    let pushed: Vec<bool> = harness
+        .state_mut()
+        .notedeck
+        .app_context()
+        .navigator
+        .take()
+        .iter()
+        .filter_map(|req| match req {
+            NavRequest::PushToActive(entry) => entry.token.downcast_ref::<HeadwayRoute>(),
+            _ => None,
+        })
+        .map(HeadwayRoute::is_list)
+        .collect();
+    assert_eq!(pushed, vec![true], "opening the list pushes one List entry");
+
+    // Active: both boards' open cards, not the demo board's done one.
+    wait_for_label(&mut harness, SIDE_CARD);
+    harness.get_by_label("Define nostr event model for boards");
+    harness.get_by_label("7 issues");
+    assert!(
+        harness
+            .query_by_label("Scaffold the Headway app crate")
+            .is_none(),
+        "Active hides a card in a terminal column"
+    );
+
+    // All: the done card too.
+    harness.get_by_label("All").click();
+    wait_for_label(&mut harness, "Scaffold the Headway app crate");
+    harness.get_by_label("8 issues");
+
+    // A query narrows the rows as it's typed: a label term here.
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text("label:quest");
+    wait_for_label(&mut harness, "1 issue");
+    assert!(
+        harness
+            .query_by_label("Define nostr event model for boards")
+            .is_none()
+    );
+
+    // The row is on the Side board, not the one showing: opening it switches
+    // boards and shows its detail.
+    harness.get_by_label(SIDE_CARD).click();
+    wait_for_label(&mut harness, "← Back");
+    harness.get_by_label(SIDE_CARD);
+
+    // Leaving the card lands on the list again, as it was left.
+    harness.get_by_label("← Back").click();
+    wait_for_label(&mut harness, "1 issue");
+
+    // And Esc leaves the list for the grid, now the Side board's.
+    harness.press_key(egui::Key::Escape);
+    wait_for_absent(&mut harness, "Issues");
+    wait_for_label(&mut harness, "1 card · 5 columns");
+}
+
+/// The issue list across the demo board and a second one, All toggled on so
+/// the done card shows too.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_list() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_side_board(&mut harness);
+
+    harness.get_by_label("☰ View").click();
+    harness.run_ok();
+    harness.get_by_label("Issue list").click();
+    wait_for_label(&mut harness, SIDE_CARD);
+    harness.get_by_label("All").click();
+    wait_for_label(&mut harness, "8 issues");
+    harness.run_steps(3);
+    harness.snapshot("headway_list");
+}
+
 /// The inline card widget must render its content left-aligned even though the
 /// notebook lays node content out centered (egui's `Ui::put` →
 /// `centered_and_justified`). Reproduce that centered context and snapshot the

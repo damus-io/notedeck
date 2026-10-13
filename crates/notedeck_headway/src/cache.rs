@@ -119,6 +119,14 @@ impl BoardRef {
         Some(Self { boards, index })
     }
 
+    /// Whether `self` and `other` are the same board out of the same fold: a
+    /// pointer comparison, so a reader that cached something derived from a
+    /// board can tell, without looking at a card, that the board hasn't
+    /// re-folded since.
+    pub(crate) fn same_fold(&self, other: &BoardRef) -> bool {
+        Rc::ptr_eq(&self.boards, &other.boards) && self.index == other.index
+    }
+
     /// The first board in `boards` — a shared fold's only board — if it has one.
     fn first(boards: Rc<[BoardView]>) -> Option<Self> {
         (!boards.is_empty()).then_some(Self { boards, index: 0 })

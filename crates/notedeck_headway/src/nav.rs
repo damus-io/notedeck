@@ -126,6 +126,14 @@ pub enum HeadwayRoute {
         /// queue".
         title: Option<String>,
     },
+
+    /// The cross-board issue list, opened from the grid's View menu or `v`.
+    /// What it shows — the query, Active/All, which row has the cursor —
+    /// lives in [`BoardUiState`](crate::ui::BoardUiState), not here: the list
+    /// reads every board, so it names no card and is the same entry whichever
+    /// board is active. A card opened from it pushes a detail entry on top, so
+    /// a back off that card lands on the list again.
+    List,
 }
 
 impl HeadwayRoute {
@@ -169,8 +177,13 @@ impl HeadwayRoute {
             HeadwayRoute::Graph { epic, .. } => Some(*epic),
             HeadwayRoute::Review { card, .. } => Some(*card),
             HeadwayRoute::ReviewQueue { epic, .. } => *epic,
-            HeadwayRoute::Board => None,
+            HeadwayRoute::Board | HeadwayRoute::List => None,
         }
+    }
+
+    /// Whether this route opens the [`List`](Self::List).
+    pub fn is_list(&self) -> bool {
+        matches!(self, HeadwayRoute::List)
     }
 
     /// Whether this route opens the [`ReviewQueue`](Self::ReviewQueue).
@@ -183,6 +196,7 @@ impl HeadwayRoute {
         match self {
             HeadwayRoute::ReviewQueue { epic, .. } => Some(QueueScope::of(*epic)),
             HeadwayRoute::Board
+            | HeadwayRoute::List
             | HeadwayRoute::Card { .. }
             | HeadwayRoute::Graph { .. }
             | HeadwayRoute::Review { .. } => None,
@@ -195,6 +209,7 @@ impl HeadwayRoute {
         match self {
             HeadwayRoute::Graph { epic, .. } => Some(*epic),
             HeadwayRoute::Board
+            | HeadwayRoute::List
             | HeadwayRoute::Card { .. }
             | HeadwayRoute::Review { .. }
             | HeadwayRoute::ReviewQueue { .. } => None,
@@ -216,6 +231,7 @@ impl HeadwayRoute {
                 record: *record,
             }),
             HeadwayRoute::Board
+            | HeadwayRoute::List
             | HeadwayRoute::Card { .. }
             | HeadwayRoute::Graph { .. }
             | HeadwayRoute::ReviewQueue { .. } => None,
@@ -238,13 +254,13 @@ impl HeadwayRoute {
             HeadwayRoute::Card { id, .. } => Some(*id),
             HeadwayRoute::Graph { epic, .. } => Some(*epic),
             HeadwayRoute::Review { card, .. } => Some(*card),
-            HeadwayRoute::Board | HeadwayRoute::ReviewQueue { .. } => None,
+            HeadwayRoute::Board | HeadwayRoute::List | HeadwayRoute::ReviewQueue { .. } => None,
         }
     }
 
     /// The history-dropdown title for this entry: a card's or graph's snapshotted
     /// title, "Review queue" for the queue ("Review queue: <epic title>" for an
-    /// epic's), or `None` for the board (so the chrome falls back to the
+    /// epic's), "Issues" for the list, or `None` for the board (so the chrome falls back to the
     /// "Headway" app label).
     pub fn title(&self) -> Option<&str> {
         match self {
@@ -254,6 +270,7 @@ impl HeadwayRoute {
             HeadwayRoute::ReviewQueue { title, .. } => {
                 Some(title.as_deref().unwrap_or("Review queue"))
             }
+            HeadwayRoute::List => Some("Issues"),
             HeadwayRoute::Board => None,
         }
     }
@@ -289,6 +306,9 @@ pub(crate) enum NavPos {
     /// shows is deliberately not part of the position: stepping cards is a
     /// steady frame, not a transition.
     Queue(QueueScope),
+    /// The cross-board issue list. Like the queue, the row under its cursor
+    /// is not part of the position.
+    List,
 }
 
 impl NavPos {
@@ -324,7 +344,7 @@ impl NavPos {
     fn depth(&self) -> u8 {
         match self {
             NavPos::Board => 0,
-            NavPos::Card(_) | NavPos::Queue(QueueScope::Board) => 1,
+            NavPos::Card(_) | NavPos::Queue(QueueScope::Board) | NavPos::List => 1,
             NavPos::Graph(_) | NavPos::Review(_) | NavPos::Queue(QueueScope::Epic(_)) => 2,
         }
     }
@@ -336,7 +356,7 @@ impl NavPos {
         match self {
             NavPos::Graph(card) | NavPos::Review(card) => Some(*card),
             NavPos::Queue(scope) => scope.epic(),
-            NavPos::Board | NavPos::Card(_) => None,
+            NavPos::Board | NavPos::Card(_) | NavPos::List => None,
         }
     }
 
@@ -347,7 +367,7 @@ impl NavPos {
     pub(crate) fn entry_card(&self) -> Option<NoteId> {
         match self {
             NavPos::Card(card) | NavPos::Graph(card) | NavPos::Review(card) => Some(*card),
-            NavPos::Board | NavPos::Queue(_) => None,
+            NavPos::Board | NavPos::Queue(_) | NavPos::List => None,
         }
     }
 }
@@ -431,6 +451,9 @@ pub(crate) enum NavReconcile {
     /// its detail: push one queue entry, which every step through the queue
     /// then shares.
     PushQueue(QueueScope),
+    /// The issue list was opened from the grid: push its one entry, which
+    /// every cursor move and query edit inside it then shares.
+    PushList,
     /// The open screen was dismissed (a card close/delete/vanish, or the graph
     /// closing back to its epic): step one entry back in the global history.
     Back,
@@ -478,6 +501,11 @@ pub(crate) fn reconcile_nav(before: NavPos, after: NavPos) -> Option<NavReconcil
         // landing on it pushes. Stepping inside it never gets here: the
         // position doesn't name the card, so a step is the steady frame above.
         NavPos::Queue(scope) => Some(NavReconcile::PushQueue(scope)),
+        // The list opens only from the grid, so landing on it from the board
+        // pushes. A deeper screen stepping out onto it (a card opened from
+        // the list, closed) is a back to the list's entry beneath.
+        NavPos::List if before.depth() < after.depth() => Some(NavReconcile::PushList),
+        NavPos::List => Some(NavReconcile::Back),
         // Push a walkable card entry when opening a card that sits deeper than or
         // level with where we started (board→card, or a card→card drill), OR when a
         // node was clicked inside an epic's graph. That last step reads as *shallower*
@@ -675,6 +703,32 @@ mod tests {
         assert_eq!(
             reconcile_nav(queue, NavPos::Card(a)),
             Some(NavReconcile::PushCard(a))
+        );
+    }
+
+    /// The issue list is one entry over the grid: opening it pushes, moving
+    /// its cursor or editing its query is steady, leaving it for the grid is
+    /// one back, and a card opened from a row drills in with the list beneath.
+    #[test]
+    fn reconcile_nav_maps_list_transitions() {
+        let a = NoteId::new([1u8; 32]);
+        let list = NavPos::List;
+
+        assert_eq!(
+            reconcile_nav(NavPos::Board, list),
+            Some(NavReconcile::PushList)
+        );
+        assert_eq!(reconcile_nav(list, list), None);
+        assert_eq!(reconcile_nav(list, NavPos::Board), Some(NavReconcile::Back));
+        assert_eq!(
+            reconcile_nav(list, NavPos::Card(a)),
+            Some(NavReconcile::PushCard(a))
+        );
+        // A card opened from the list, closed with the list still open
+        // beneath it (a chrome-less embedding keeps it), backs to the list.
+        assert_eq!(
+            reconcile_nav(NavPos::Card(a), list),
+            Some(NavReconcile::Back)
         );
     }
 

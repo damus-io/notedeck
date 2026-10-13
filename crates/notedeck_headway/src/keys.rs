@@ -1,6 +1,7 @@
 //! What Headway's **key actions** do, one `apply_*` per view: the board grid
 //! ([`apply_grid_tool`]), the review pane in the queue or opened from a card
-//! ([`apply_pane_tool`]), and the card detail ([`apply_detail_tool`]).
+//! ([`apply_pane_tool`]), the card detail ([`apply_detail_tool`]), and the
+//! cross-board issue list ([`apply_list_tool`]).
 //!
 //! Headway reads no keys of its own. Chrome's keymap (`default_keymap.toml` in
 //! `notedeck_chrome`) binds each key, in the [key scopes](crate::ui_tools::key_scopes)
@@ -36,12 +37,13 @@ use egui::{Key, Modifiers};
 use nostrdb_net::NoteId;
 use notedeck_ui::diff::PatchScroll;
 
+use crate::cache::BoardRef;
 use crate::cursor::{self, CursorMove};
 use crate::event::BoardView;
 use crate::store::BoardAction;
 use crate::ui::{
     BoardUiState, CardStep, DetailScroll, QueueNotice, QueueScope, SessionOpen, ViewFilter,
-    filter_field_id, find_card, reason_field_id,
+    filter_field_id, find_card, list_field_id, reason_field_id,
 };
 use crate::ui_tools::HeadwayUiTool;
 
@@ -206,6 +208,7 @@ pub(crate) fn apply_grid_tool(
         HeadwayUiTool::ReviewQueue => {
             state.open_review_queue(view, QueueScope::Board, ctx.input(|i| i.time))
         }
+        HeadwayUiTool::OpenList => state.open_list(),
         // The grid's `Esc`. Chrome's keymap owns the pending chord and the
         // which-key strip, so all that's left to drop is the cursor.
         HeadwayUiTool::Clear => state.clear_cursor(),
@@ -215,6 +218,31 @@ pub(crate) fn apply_grid_tool(
         | HeadwayUiTool::Back => {}
     }
     None
+}
+
+/// Apply one UI tool in the cross-board issue list: `j`/`k`/`gg`/`G` move its
+/// cursor over the rows, `Enter`/`o` open the cursor's card (switching boards
+/// when it's on another), `/` focuses the query, `q`/`Esc` leave for the grid.
+/// `sources` are the boards the list's rows were read from. Nothing else
+/// means anything here: the card actions act on a card of the board showing,
+/// and a list row may be on another, so they wait for its detail.
+pub(crate) fn apply_list_tool(
+    ctx: &egui::Context,
+    view: &BoardView,
+    sources: &[BoardRef],
+    state: &mut BoardUiState,
+    tool: &HeadwayUiTool,
+) {
+    match tool {
+        HeadwayUiTool::Cursor(mv) => state.move_list_cursor(*mv),
+        HeadwayUiTool::Card {
+            action: CardAction::Open,
+            card: None,
+        } => state.open_list_cursor(view, sources),
+        HeadwayUiTool::FocusFilter => ctx.memory_mut(|m| m.request_focus(list_field_id())),
+        HeadwayUiTool::Back => state.close_list(),
+        _ => tracing::debug!("headway: {tool:?} means nothing in the issue list; dropped"),
+    }
 }
 
 /// The card a card tool names: `None` for a tool on the current card, else
@@ -337,6 +365,7 @@ pub(crate) fn apply_pane_tool(
         },
         HeadwayUiTool::Cursor(_)
         | HeadwayUiTool::AddCard
+        | HeadwayUiTool::OpenList
         | HeadwayUiTool::FocusFilter
         | HeadwayUiTool::ReviewQueue
         | HeadwayUiTool::Clear => {}
@@ -390,6 +419,7 @@ pub(crate) fn apply_detail_tool(
         HeadwayUiTool::Back => state.leave_card(),
         HeadwayUiTool::Cursor(_)
         | HeadwayUiTool::AddCard
+        | HeadwayUiTool::OpenList
         | HeadwayUiTool::FocusFilter
         | HeadwayUiTool::Clear
         | HeadwayUiTool::Comment
@@ -1018,6 +1048,8 @@ mod tests {
         archived: Option<NoteId>,
         /// The review queue is open.
         queue: bool,
+        /// The issue list is open.
+        list: bool,
         /// The review pane is open, on this card.
         review: Option<NoteId>,
         rejecting: bool,
@@ -1037,6 +1069,7 @@ mod tests {
             moved: h.moved,
             archived: h.archived,
             queue: h.state.queue_open(),
+            list: h.state.list_open(),
             review: h.state.review_card(),
             rejecting: h.state.rejecting(),
             notice: h.state.notice(),
@@ -1836,6 +1869,7 @@ mod tests {
             "new",
             "review queue",
             "filter",
+            "issue list",
             "clear",
         ];
         let views = [

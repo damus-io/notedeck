@@ -60,6 +60,8 @@ pub(crate) const COMPOSE_CARD: &str = "headway_compose_card";
 pub(crate) const FOCUS_FILTER: &str = "headway_focus_filter";
 /// `R`: the review queue over the board's In Review, or the detail card's.
 pub(crate) const OPEN_REVIEW_QUEUE: &str = "headway_open_review_queue";
+/// `v` on the grid: open the cross-board issue list.
+pub(crate) const OPEN_LIST: &str = "headway_open_list";
 /// The grid's `Esc`: drop the cursor.
 pub(crate) const CLEAR: &str = "headway_clear";
 /// `j`/`k`, `Space`, `^d`/`^u`, `gg`/`G` over a pane: scroll it.
@@ -94,6 +96,8 @@ pub(crate) enum HeadwayUiTool {
     FocusFilter,
     /// The review queue: the board's on the grid, the card's in its detail.
     ReviewQueue,
+    /// Open the cross-board issue list from the grid.
+    OpenList,
     /// The grid's `Esc`.
     Clear,
     /// Scroll the review pane's diff or the detail.
@@ -287,7 +291,7 @@ impl HeadwayUiTool {
             ),
             ToolSpec::new(
                 CURSOR_MOVE,
-                "Move the board grid's cursor.",
+                "Move the board grid's or the issue list's cursor.",
                 vec![enum_arg("to", CURSOR_TOS, "Where the cursor goes.")],
             )
             .ui(),
@@ -297,11 +301,22 @@ impl HeadwayUiTool {
                 vec![],
             )
             .ui(),
-            ToolSpec::new(FOCUS_FILTER, "Focus the board grid's filter.", vec![]).ui(),
+            ToolSpec::new(
+                FOCUS_FILTER,
+                "Focus the board grid's filter, or the issue list's query.",
+                vec![],
+            )
+            .ui(),
             ToolSpec::new(
                 OPEN_REVIEW_QUEUE,
                 "Open the review queue: over the board's In Review column from the grid, \
                  over the card's In Review subissues from its detail.",
+                vec![],
+            )
+            .ui(),
+            ToolSpec::new(
+                OPEN_LIST,
+                "Open the issue list: every board's cards as one filterable list.",
                 vec![],
             )
             .ui(),
@@ -333,7 +348,7 @@ impl HeadwayUiTool {
             ToolSpec::new(
                 BACK,
                 "Leave the review queue, back a review pane out to its card, or leave the \
-                 card detail for the grid.",
+                 card detail or the issue list for the grid.",
                 vec![],
             )
             .ui(),
@@ -387,6 +402,7 @@ impl HeadwayUiTool {
             COMPOSE_CARD => no_args(name, args, Self::AddCard)?,
             FOCUS_FILTER => no_args(name, args, Self::FocusFilter)?,
             OPEN_REVIEW_QUEUE => no_args(name, args, Self::ReviewQueue)?,
+            OPEN_LIST => no_args(name, args, Self::OpenList)?,
             CLEAR => no_args(name, args, Self::Clear)?,
             SCROLL => {
                 let ScrollArgs { to } = parse_args(name, args)?;
@@ -457,6 +473,8 @@ pub(crate) enum KeyView {
     Pane,
     /// The card detail.
     Detail,
+    /// The cross-board issue list.
+    List,
 }
 
 /// The view whose keys and tools are live: nothing while the `X`/`C`
@@ -476,6 +494,9 @@ pub(crate) fn key_view(state: &BoardUiState) -> Option<KeyView> {
     }
     if state.selected().is_some() {
         return Some(KeyView::Detail);
+    }
+    if state.list_open() {
+        return Some(KeyView::List);
     }
     if state.keys_blocked() || state.grid_menu_open() {
         return None;
@@ -511,6 +532,9 @@ const DETAIL_SCOPES: &[&str] = &[
 ];
 /// The grid's key scopes.
 const GRID_SCOPES: &[&str] = &["headway.grid", "headway.card", "headway"];
+/// The issue list's key scopes. Not `headway.card`: its board edits act on a
+/// card of the board showing, and a list row may be on another.
+const LIST_SCOPES: &[&str] = &["headway.list", "headway"];
 
 /// The key scopes of the [view in front](key_view), most specific first, or
 /// none while no view takes keys.
@@ -521,6 +545,7 @@ pub(crate) fn key_scopes(state: &BoardUiState) -> &'static [&'static str] {
         Some(KeyView::Pane) => PANE_SCOPES,
         Some(KeyView::Detail) => DETAIL_SCOPES,
         Some(KeyView::Grid) => GRID_SCOPES,
+        Some(KeyView::List) => LIST_SCOPES,
     }
 }
 
@@ -532,6 +557,7 @@ pub(crate) fn current_card(state: &BoardUiState, at: KeyView) -> Option<nostrdb_
         KeyView::Queue => state.queue_card(),
         KeyView::Pane => state.review_card(),
         KeyView::Detail => state.selected(),
+        KeyView::List => state.list_cursor(),
     }
 }
 
@@ -580,20 +606,23 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
     };
     let card = current_card(state, at).is_some();
     let grid = at == KeyView::Grid;
+    let list = at == KeyView::List;
     let review = matches!(at, KeyView::Queue | KeyView::Pane);
     match name {
         // The detail has nothing to open: its card is open.
         OPEN_CARD => card && at != KeyView::Detail,
         // Say there's no explainer, or no session, when there's none, so
-        // the key answers rather than falling through.
-        OPEN_EXPLAINER | OPEN_SESSION | OPEN_REVIEW | SEND_BACK | QUICK_COMMENT => card,
+        // the key answers rather than falling through. The list's card may
+        // be on another board, so these wait for its detail.
+        OPEN_EXPLAINER | OPEN_SESSION | OPEN_REVIEW | SEND_BACK | QUICK_COMMENT => card && !list,
         // The grid's step lands a missing cursor on the first card; the
         // queue's steps off a card that has left the board.
-        STEP_CARD => card || grid || at == KeyView::Queue,
-        CURSOR_MOVE | COMPOSE_CARD | FOCUS_FILTER => grid,
+        STEP_CARD => (card && !list) || grid || at == KeyView::Queue,
+        CURSOR_MOVE | FOCUS_FILTER => grid || list,
+        COMPOSE_CARD | OPEN_LIST => grid,
         OPEN_REVIEW_QUEUE => grid || at == KeyView::Detail,
         CLEAR => grid && card,
-        SCROLL => !grid,
+        SCROLL => !grid && !list,
         // An Esc that only left a detail field mustn't leave the card too.
         BACK => !grid && !(at == KeyView::Detail && state.detail_field_focused()),
         STEP_FILE => review,

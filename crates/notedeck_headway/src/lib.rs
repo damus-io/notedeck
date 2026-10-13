@@ -279,6 +279,37 @@ impl Headway {
         boards
     }
 
+    /// Every board the switcher lists, folded, for the issue list to read: a
+    /// shared board (one in the roster, owned or joined) through its
+    /// multi-writer fold, as the active board is, and the rest out of `own`.
+    /// Handles into the memoized folds, so it copies no cards. A board that
+    /// hasn't folded yet is left out until it has.
+    fn list_sources(
+        &self,
+        ctx: &AppContext,
+        own: Option<&Rc<[BoardView]>>,
+        boards: &[BoardSummary],
+    ) -> Vec<BoardRef> {
+        let Ok(txn) = Transaction::new(ctx.ndb) else {
+            return Vec::new();
+        };
+        let mut cache = self.board_cache.borrow_mut();
+        boards
+            .iter()
+            .filter_map(|summary| {
+                let coord = event::BoardCoord::new(summary.owner, summary.id.clone());
+                match active_shared_team(&self.teams, &coord) {
+                    Some(team) => {
+                        let channels = teams::board_channel_pubkeys(&self.teams, &team.board_addr);
+                        cache.shared_board(ctx.ndb, &txn, &team.board_addr, &channels)
+                    }
+                    None => BoardRef::find(Rc::clone(own?), &summary.owner, &summary.id),
+                }
+            })
+            .filter(|board| !board.deleted)
+            .collect()
+    }
+
     /// Rebuild the joined-boards roster from nostrdb, preserving boards created
     /// this session whose self-share hasn't folded back yet.
     ///
@@ -831,6 +862,8 @@ impl App for Headway {
         // epic's, not the board's.
         self.state
             .set_queue_open(route.and_then(HeadwayRoute::queue_scope));
+        self.state
+            .set_list_open(route.is_some_and(HeadwayRoute::is_list));
         let review = route
             .and_then(|r| r.review_target())
             .or_else(|| self.state.queue_review());
@@ -1056,9 +1089,26 @@ impl Headway {
                 });
         }
 
+        // The issue list reads every board, so gather them, but only while
+        // it shows: the grid and the panes need just the active one.
+        let lists = if self.state.list_open() {
+            self.list_sources(ctx, own_boards.as_ref(), &boards)
+        } else {
+            Vec::new()
+        };
+
         // Header sync indicator: are we reaching a private relay right now?
         let sync = sync_status(ctx);
-        let action = board_ui(ui, &theme, ctx, &view, &boards, sync, &mut self.state);
+        let action = board_ui(
+            ui,
+            &theme,
+            ctx,
+            &view,
+            &boards,
+            &lists,
+            sync,
+            &mut self.state,
+        );
 
         // Reconcile the chrome global-history stack with the view position the board
         // UI left, comparing it against `before` (seeded from this entry's route).
@@ -1113,6 +1163,9 @@ impl Headway {
                 ctx.navigator
                     .push_active_route(HeadwayRoute::review_queue(epic, title))
             }
+            // Opening the issue list from the grid pushes its one entry; moving
+            // through it and editing its query are view state under it.
+            Some(NavReconcile::PushList) => ctx.navigator.push_active_route(HeadwayRoute::List),
             // An entry whose card has left the board is the prune's to remove,
             // not a back's. The frame that draws it drops the gone card, which
             // reads as a back, and so would every other frame drawing it before

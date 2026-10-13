@@ -148,8 +148,9 @@ pub(super) fn filtered_badge(
         .on_hover_text("Showing a narrowed view — click to clear the filter and view options")
 }
 
-/// The header's "View" menu: Linear-style display options for the board grid.
-/// Today it holds a single toggle — hide sub-issue cards — but it's a menu, not a
+/// The header's "View" menu: the way into the issue list, and Linear-style
+/// display options for the board grid. Today the options are a single toggle —
+/// hide sub-issue cards — but it's a menu, not a
 /// lone checkbox, so further view options (grouping, ordering, hidden columns)
 /// can slot in beside it. Mutates [`BoardUiState::hide_subissues`] directly and
 /// stays open on toggle so several options can be flipped in one visit.
@@ -164,6 +165,16 @@ pub(super) fn view_options_menu(ui: &mut egui::Ui, theme: &ColorTheme, state: &m
         egui::RichText::new("☰ View").color(theme.text_secondary)
     };
     let menu = ui.menu_button(label, |ui| {
+        // The other way to see the cards: every board's, as one list.
+        if ui
+            .button("Issue list")
+            .on_hover_text("Every board's cards as one filterable list (v)")
+            .clicked()
+        {
+            state.open_list();
+            ui.close();
+        }
+        ui.separator();
         ui.checkbox(&mut state.hide_subissues, "Hide sub-issues")
             .on_hover_text(
                 "Hide cards that are a sub-issue of another card. They still \
