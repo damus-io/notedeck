@@ -13,17 +13,16 @@
 //! Two rules make "newest" agree everywhere:
 //!
 //! - **Reads order by `(created_at, id)`.** nostrdb keeps every revision and
-//!   hands same-second ones back in no particular order; the id tie-break
-//!   resolves them the same way on every device and every run.
+//!   hands same-second ones back in no particular order;
+//!   [`nostrdb_net::query_replaceable`]'s id tie-break resolves them the same
+//!   way on every device and every run.
 //! - **Writes stamp strictly past both the stored revision and the caller's
 //!   `after`** ([`next_stamp`]). nostrdb ingests asynchronously, so a write
 //!   made before the last one has landed can't see it stored; the stamp the
 //!   last [`write`] returned, passed back as `after`, keeps the two apart.
 
-use std::collections::BTreeMap;
-
 use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
-use nostrdb_net::Pubkey;
+use nostrdb_net::{query_replaceable, query_replaceable_filtered, Pubkey};
 
 /// One private latest-wins note of an account: every revision with this
 /// author, kind and `d` tag supersedes the last.
@@ -106,12 +105,6 @@ fn d_tag<'a>(note: &Note<'a>) -> Option<&'a str> {
     })
 }
 
-/// Whether `note` supersedes `than`: later `created_at`, ties broken by the
-/// larger id.
-fn supersedes(note: &Note<'_>, than: &Note<'_>) -> bool {
-    (note.created_at(), note.id()) > (than.created_at(), than.id())
-}
-
 /// The owned [`Revision`] `note` is.
 fn revision(note: &Note<'_>) -> Revision {
     Revision {
@@ -124,23 +117,15 @@ fn revision(note: &Note<'_>) -> Revision {
 /// The newest revision of `slot`, or `None` when it has none (or the account
 /// is watch-only, so nostrdb couldn't unwrap it).
 pub fn latest(ndb: &Ndb, txn: &Transaction, slot: Slot<'_>) -> Option<Revision> {
-    let newest = ndb
-        .fold(
-            txn,
-            &[filter(slot.author, slot.kind)],
-            None::<Note<'_>>,
-            |best, note| {
-                if d_tag(&note) != Some(slot.d) {
-                    return best;
-                }
-                match best {
-                    Some(best) if !supersedes(&note, &best) => Some(best),
-                    _ => Some(note),
-                }
-            },
-        )
-        .ok()??;
-    Some(revision(&newest))
+    // The predicate sees only each `d`'s newest revision, so it picks the
+    // slot's out of the author's slots of this kind.
+    let key = query_replaceable_filtered(ndb, txn, &[filter(slot.author, slot.kind)], |note| {
+        d_tag(note) == Some(slot.d)
+    })
+    .into_iter()
+    .next()?;
+    let note = ndb.get_note_by_key(txn, key).ok()?;
+    Some(revision(&note))
 }
 
 /// The newest revision of every `d` among `author`'s notes of `kind`, in `d`
@@ -163,25 +148,19 @@ pub fn newest_per_d<'a>(
     author: &Pubkey,
     kind: u32,
 ) -> Vec<SlotNote<'a>> {
-    let newest = ndb.fold(
-        txn,
-        &[filter(author, kind)],
-        BTreeMap::<&str, Note<'_>>::new(),
-        |mut newest, note| {
-            let Some(d) = d_tag(&note) else {
-                return newest;
-            };
-            if newest.get(d).is_none_or(|best| supersedes(&note, best)) {
-                newest.insert(d, note);
-            }
-            newest
-        },
-    );
-    newest
-        .unwrap_or_default()
+    let mut newest: Vec<SlotNote<'a>> = query_replaceable(ndb, txn, &[filter(author, kind)])
         .into_iter()
-        .map(|(d, note)| SlotNote { d, note })
-        .collect()
+        .filter_map(|key| ndb.get_note_by_key(txn, key).ok())
+        .filter_map(|note| {
+            Some(SlotNote {
+                d: d_tag(&note)?,
+                note,
+            })
+        })
+        .collect();
+    // query_replaceable hands its winners back in `HashMap` drain order.
+    newest.sort_unstable_by(|a, b| a.d.cmp(b.d));
+    newest
 }
 
 /// The `created_at` a write made at `now` stamps: strictly past both the
