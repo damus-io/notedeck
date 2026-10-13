@@ -1,5 +1,6 @@
 # export_source_strings.py adds only the strings the diff added
 
+Card: headway:notedeck/climb-gesture-physical
 The exporter rewrites both FTL files whole, committing the tree's existing drift
 too, so every card strips that out by hand to keep its commit standalone.
 

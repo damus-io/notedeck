@@ -1,5 +1,6 @@
 # One temporary-nostrdb test fixture every crate can use
 
+Card: headway:notedeck/napkin-orbit-shadow
 `TempNdb` lives twice: notedeck's cfg(test) test_util and notedeck_testing.
 headway and agentium-core sit below both and still write their own helper.
 

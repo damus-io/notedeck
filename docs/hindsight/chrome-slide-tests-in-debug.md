@@ -1,5 +1,6 @@
 # Chrome-through tests that slide egui_nav run under a plain debug `cargo test`
 
+Card: headway:notedeck/mansion-behave-sustain
 egui's debug "widget changed layer_id" assert fires in any test that slides
 egui_nav, so those tests run release-only and are found by tripping it.
 

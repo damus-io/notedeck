@@ -1,5 +1,6 @@
 # scripts/snapshot-test can render from the debug build a session already has
 
+Card: headway:notedeck/song-suggest-decorate
 `scripts/snapshot-test` always runs `cargo test --release`, so a fresh worktree
 pays a cold release build of the crate's whole dependency tree to update one png.
 
