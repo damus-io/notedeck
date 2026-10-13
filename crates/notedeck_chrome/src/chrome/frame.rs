@@ -330,7 +330,10 @@ impl Chrome {
                     // The keymap reads the key press before the app renders,
                     // so a key it binds never reaches the app; focus has just
                     // been restored, so a refocused text field keeps its keys.
-                    self.dispatch_keys(ctx, ui);
+                    // The open command bar's query field takes every key.
+                    if !self.command_bar.is_open() {
+                        self.dispatch_keys(ctx, ui);
+                    }
                     action = self.panel(ctx, ui, keyboard_height);
                 });
 
@@ -373,7 +376,11 @@ impl Chrome {
         // back when the user switches away and back. That's `prev_active`, not
         // `active`: an open or back raised mid-render has already moved
         // `active` on.
-        self.app_focus.remember(ui.ctx(), self.prev_active as usize);
+        // The open command bar has the focus; it gives the app back its own
+        // as it closes.
+        if !self.command_bar.is_open() {
+            self.app_focus.remember(ui.ctx(), self.prev_active as usize);
+        }
 
         action
     }

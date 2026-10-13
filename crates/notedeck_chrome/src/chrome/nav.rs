@@ -549,6 +549,7 @@ impl Chrome {
             key_hints: [0u16; MAX_APPS / 16],
             jumps: Default::default(),
             macro_run: None,
+            command_bar: Default::default(),
             user_keymap: Default::default(),
         }
     }

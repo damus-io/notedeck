@@ -1188,6 +1188,9 @@ tokens__tokens_d3b5 = {"["}{$tokens} tókéñs{"]"}
 # Dave session inspector usage: hover over one turn on the context sparkline
 Turn__number_____context_26c6 = {"["}Túrñ {$number} · {$context}{"]"}
 
+# Placeholder in the command bar's query field
+Type_a_command_or_search_b82d = {"["}Typé à çómmàñd ór séàrçh…{"]"}
+
 # Placeholder text for the message composer in chats
 Type_a_message_2a19 = {"["}Typé à méssàgé{"]"}
 
@@ -1523,6 +1526,9 @@ No_rate-limit_report_yet_c1f0 = {"["}Ñó ràté-límít répórt yét{"]"}
 
 # Dave session inspector outputs: the session has no working directory or agentium ref to find commits by
 No_repository_for_this_session_1a37 = {"["}Ñó répósítóry fór thís séssíóñ{"]"}
+
+# Shown in the command bar when nothing matches the query
+No_results_dd32 = {"["}Ñó résúlts{"]"}
 
 # Dave session inspector permissions: the session has no always-allow rules
 No_rules_yet__Allow_Always_on_a_prompt_adds_one_e188 = {"["}Ñó rúlés yét. Àllów Àlwàys óñ à prómpt àdds óñé.{"]"}

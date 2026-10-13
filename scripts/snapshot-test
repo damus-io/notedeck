@@ -99,7 +99,7 @@ export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
 # is still reported as a pass — so anything ignored for a reason other than
 # lavapipe has to be excluded here or CI claims to have run it.
 suites=(
-    "notedeck_chrome|--features auto-update,snapshot-testing --test ui_tests|"
+    "notedeck_chrome|--features auto-update,snapshot-testing --test ui_tests --test command_bar|"
     "notedeck_ui|--test widget_tests|"
     # test_real_codex_*: live-backend tests gated on CODEX_LIVE_TEST, which CI
     # never sets. Swept in they returned early and counted as passes.

@@ -33,6 +33,7 @@ use std::collections::HashMap;
 mod actions;
 #[cfg(all(test, feature = "headway", not(debug_assertions)))]
 mod columns_input_tests;
+mod command_bar;
 mod debug;
 mod focus;
 mod frame;
@@ -57,6 +58,7 @@ mod user_keymap;
 
 pub use actions::ChromePanelAction;
 use actions::PendingOpen;
+pub use command_bar::{CommandBar, OPEN_COMMAND_BAR};
 use focus::AppFocus;
 pub use jumps::{JumpList, JUMP_BACK, JUMP_FORWARD, JUMP_LIST_CAP};
 pub use key_hints::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
@@ -135,6 +137,10 @@ pub struct Chrome {
 
     /// Each app's jump list, for Ctrl-O / Ctrl-I (see [`jumps`]).
     jumps: jumps::JumpLists,
+
+    /// The Cmd-K command bar, drawn over every app while it is open (see
+    /// [`command_bar`]).
+    command_bar: CommandBar,
 
     /// The selected account's keymap overrides, merged over the defaults
     /// into `keys` (see [`Chrome::poll_user_keymap`]).
@@ -350,6 +356,7 @@ impl Chrome {
             key_hints: [0u16; MAX_APPS / 16],
             jumps: Default::default(),
             macro_run: None,
+            command_bar: CommandBar::default(),
             user_keymap: UserKeymap::default(),
             #[cfg(feature = "auto-update")]
             updater: notedeck::updater::Updater::new(
@@ -421,6 +428,12 @@ impl Chrome {
             self.toggle();
         }
 
+        // Cmd+K (Ctrl+K off macOS) opens or closes the command bar.
+        if ctx.input_mut(|i| command_bar::consume_exact(i, egui::Modifiers::COMMAND, egui::Key::K))
+        {
+            self.toggle_command_bar(app_ctx, ctx);
+        }
+
         // Ctrl+W (Cmd+W on macOS) closes the active app's tab.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
             let dropped = self.close_active_app();
@@ -469,6 +482,7 @@ impl notedeck::App for Chrome {
             .chain(keymap_editor::keymap_editor_tools())
             .chain(jumps::jump_tools())
             .chain(nav::nav_tools())
+            .chain(command_bar::command_bar_tools())
             .map(|spec| notedeck::UiToolEntry::shell(spec.filed_under(TOOL_CATEGORY)));
         Some(notedeck::ToolUpdate {
             tools: running_apps()
@@ -517,11 +531,15 @@ impl notedeck::App for Chrome {
         // Chrome-level keybindings — consumed before apps render,
         // so apps can never intercept them.
         self.handle_chrome_keybindings(ctx, ui.ctx());
+        self.command_bar_keys(ctx, ui);
 
         if let Some(action) = self.show(ctx, ui) {
             action.process(ctx, self, ui);
             self.nav.close();
         }
+
+        // The command bar floats over everything drawn above.
+        self.command_bar_ui(ctx, ui);
 
         // Apply any navigation requests the active app enqueued while
         // rendering to its stack.
