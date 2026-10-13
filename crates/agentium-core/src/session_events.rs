@@ -19,8 +19,9 @@ pub const AI_CONVERSATION_KIND: u32 = 1988;
 pub const AI_SOURCE_DATA_KIND: u32 = 1989;
 
 /// Nostr event kind for AI session state (parameterized replaceable, NIP-33).
-/// One event per session, auto-replaced by nostrdb on update.
-/// `d` tag = claude_session_id.
+/// One live event per session, `d` tag = claude_session_id. nostrdb keeps
+/// every version it ingests, not just the newest, so readers pick the latest
+/// (`query_replaceable`) and superseded versions stay on disk.
 pub const AI_SESSION_STATE_KIND: u32 = 31988;
 
 /// Nostr event kind for AI session commands (parameterized replaceable, NIP-33).
@@ -1510,8 +1511,9 @@ pub fn decode_permission_response(content: &str) -> DecodedPermissionResponse {
 /// Build a kind-31988 session state event (parameterized replaceable).
 ///
 /// Published on every status change so remote clients and startup restore
-/// can discover active sessions. nostrdb auto-replaces older versions
-/// with same (kind, pubkey, d-tag).
+/// can discover active sessions. nostrdb does not replace older versions with
+/// the same (kind, pubkey, d-tag): each publish is one more stored note, so
+/// readers must take the newest.
 ///
 /// Every tag reads from a field of `state`, which is what makes
 /// [`SessionState::from_note`] its exact inverse: a field added to
