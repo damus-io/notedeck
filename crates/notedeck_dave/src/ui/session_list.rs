@@ -639,6 +639,9 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             pos,
             max_width,
             &egui::FontId::proportional(14.0),
+            // The row's click switches to its session; the chip mustn't take
+            // it.
+            notedeck::Interaction::Inert,
         );
     }
 }
@@ -799,9 +802,14 @@ pub(crate) fn age_text(secs: u64, out: &mut String) {
 /// the chat's widget for that ref without its pill, since the row already
 /// frames the title.
 ///
-/// The widget is drawn [`Inert`](notedeck::Interaction::Inert): a click on
-/// the title is a click on the row, switching to the session, not one that
-/// opens the referenced card. A reference that doesn't resolve — its card isn't in
+/// `interaction` says whether the widget takes clicks. A row draws it
+/// [`Inert`](notedeck::Interaction::Inert): a click on the title is a click
+/// on the row, switching to the session, not one that opens the referenced
+/// card. The chat header draws it [`Open`](notedeck::Interaction::Open), and
+/// the action a click raises goes onto
+/// [`app_actions`](notedeck::AppContext::app_actions) for the host to route
+/// to the app that owns the entity (headway, for a card), as a chip in the
+/// chat's markdown does. A reference that doesn't resolve — its card isn't in
 /// the local db yet — stays text, so a loose parser match never shows as a
 /// broken chip. Whatever overflows `max_width` is clipped, like a long plain
 /// title.
@@ -812,6 +820,7 @@ pub(crate) fn title_with_refs_ui(
     pos: Pos2,
     max_width: f32,
     font_id: &egui::FontId,
+    interaction: notedeck::Interaction,
 ) {
     let row_height = ui.fonts_mut(|f| f.row_height(font_id));
     // Leave room on both sides of the title's centre line, so `Align::Center`
@@ -851,12 +860,15 @@ pub(crate) fn title_with_refs_ui(
             // The row already frames its title; a pill inside it is a box in
             // a box.
             notedeck::InlineChrome::Bare,
-            // The row's click switches to its session; the chip mustn't take
-            // it.
-            notedeck::Interaction::Inert,
+            interaction,
         );
-        if drawn.is_none() {
-            title_run_ui(&mut child, matched, font_id);
+        match drawn {
+            Some(drawn) => {
+                if let Some(action) = drawn.action {
+                    refs.note.app_actions.push(action);
+                }
+            }
+            None => title_run_ui(&mut child, matched, font_id),
         }
         rest = &rest[m.range.end..];
     }
@@ -3037,6 +3049,7 @@ mod tests {
                 false,
                 Some(&mut refs),
             );
+            state.app_actions += app_ctx.app_actions.take().len();
             return;
         }
         let action = SessionListUi::new(
@@ -3174,11 +3187,28 @@ mod tests {
             chip_title,
         } = ref_title_harness(false);
 
+        click_label(&mut harness, chip_title);
+
+        assert_eq!(
+            harness.state().app_actions,
+            0,
+            "the chip is inert in the row, so it shouldn't raise its open action"
+        );
+        assert!(
+            matches!(harness.state().action, Some(SessionListAction::SwitchTo(s)) if s == id),
+            "the row under the chip takes the click: got {:?}",
+            harness.state().action
+        );
+    }
+
+    /// Click the middle of the widget labelled `label`, and let two frames
+    /// take the press and release.
+    fn click_label(harness: &mut Harness<'static, RefTitleState>, label: &str) {
         let bounds = harness
-            .get_by_label(chip_title)
+            .get_by_label(label)
             .accesskit_node()
             .raw_bounds()
-            .expect("chip bounds");
+            .expect("label bounds");
         let center = egui::pos2(
             ((bounds.x0 + bounds.x1) / 2.0) as f32,
             ((bounds.y0 + bounds.y1) / 2.0) as f32,
@@ -3193,24 +3223,19 @@ mod tests {
             });
         }
         harness.run_steps(2);
-
-        assert_eq!(
-            harness.state().app_actions,
-            0,
-            "the chip is inert in the row, so it shouldn't raise its open action"
-        );
-        assert!(
-            matches!(harness.state().action, Some(SessionListAction::SwitchTo(s)) if s == id),
-            "the row under the chip takes the click: got {:?}",
-            harness.state().action
-        );
     }
 
     /// The chat header draws a ref-titled session's title the way its row
-    /// does: the referenced entity's chip, not the raw ref.
+    /// does: the referenced entity's chip, not the raw ref. Unlike the row's,
+    /// the header's chip takes a click: it raises the chip's open action for
+    /// the host to route to the app that owns the entity.
     #[test]
-    fn the_chat_header_draws_a_ref_title_as_its_chip() {
-        let RefTitleHarness { harness, id, .. } = ref_title_harness(true);
+    fn the_chat_header_draws_a_ref_title_as_a_chip_that_opens_it() {
+        let RefTitleHarness {
+            mut harness,
+            id,
+            chip_title,
+        } = ref_title_harness(true);
         let raw = &harness
             .state()
             .session_manager
@@ -3221,6 +3246,14 @@ mod tests {
         assert!(
             harness.query_by_label(raw).is_none(),
             "the header shouldn't draw the raw ref {raw} once its chip resolves"
+        );
+
+        click_label(&mut harness, chip_title);
+
+        assert_eq!(
+            harness.state().app_actions,
+            1,
+            "a click on the header's chip raises its open action"
         );
     }
 

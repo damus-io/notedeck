@@ -3391,7 +3391,8 @@ const HEADER_TITLE_SIZE: f32 = 13.0;
 /// With `refs`, a title holding a reference (autowork titles a session with
 /// its card's `headway:<board>/<word-id>`) draws the reference as its inline
 /// chip, through the session list's [`title_with_refs_ui`], so the header
-/// shows the card's live status and title rather than the raw ref.
+/// shows the card's live status and title rather than the raw ref. A click
+/// on the chip opens the card in headway.
 pub(crate) fn session_header_ui(
     ui: &mut egui::Ui,
     details: &SessionDetails,
@@ -3478,7 +3479,17 @@ fn header_title_ui(ui: &mut egui::Ui, title: &str, refs: Option<&mut TitleRefs<'
         egui::vec2(ui.available_width(), height),
         egui::Sense::hover(),
     );
-    title_with_refs_ui(ui, refs, title, rect.min, rect.width(), &font_id);
+    title_with_refs_ui(
+        ui,
+        refs,
+        title,
+        rect.min,
+        rect.width(),
+        &font_id,
+        // Unlike a row, the header has no click of its own: the chip opens
+        // its card.
+        notedeck::Interaction::Open,
+    );
 }
 
 #[cfg(test)]
