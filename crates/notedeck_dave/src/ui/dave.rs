@@ -63,7 +63,6 @@ bitflags! {
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct DaveUiFlags: u16 {
         const Trial            = 1 << 0;
-        const Compact          = 1 << 1;
         const IsWorking        = 1 << 2;
         const HasPendingPerm   = 1 << 4;
         const IsCompacting     = 1 << 5;
@@ -374,10 +373,10 @@ impl<'a> DaveUi<'a> {
         self
     }
 
-    /// Whether the session view draws its tab strip: everywhere but the
-    /// compact scene panel, given an inspector to draw.
+    /// Whether the session view draws its tab strip: whenever it has an
+    /// inspector to draw.
     fn shows_tabs(&self) -> bool {
-        self.inspector.is_some() && !self.flags.contains(DaveUiFlags::Compact)
+        self.inspector.is_some()
     }
 
     /// Whether the Details tab replaces the chat this frame.
@@ -427,11 +426,6 @@ impl<'a> DaveUi<'a> {
 
     pub fn question_index(mut self, index: &'a mut HashMap<Uuid, usize>) -> Self {
         self.question_index = Some(index);
-        self
-    }
-
-    pub fn compact(mut self, val: bool) -> Self {
-        self.flags.set(DaveUiFlags::Compact, val);
         self
     }
 
@@ -549,7 +543,7 @@ impl<'a> DaveUi<'a> {
     }
 
     fn chat_margin(&self, ctx: &egui::Context) -> i8 {
-        if self.flags.contains(DaveUiFlags::Compact) || notedeck::ui::is_narrow(ctx) {
+        if notedeck::ui::is_narrow(ctx) {
             8
         } else {
             20
@@ -584,47 +578,40 @@ impl<'a> DaveUi<'a> {
         // horizontal rows, folding inline chips into tall blocks.
         ui.style_mut().wrap_mode = None;
 
-        let is_compact = self.flags.contains(DaveUiFlags::Compact);
+        let result = top_buttons_ui(app_ctx, ui, self.status_dot_color);
 
-        // Skip top buttons in compact mode (scene panel has its own controls)
-        let action = if is_compact {
-            None
-        } else {
-            let result = top_buttons_ui(app_ctx, ui, self.status_dot_color);
+        // Render session details inline, to the right of the buttons
+        if let Some(details) = self.details {
+            let max_width = ui.max_rect().right() - result.right_edge_x;
+            if max_width > 50.0 {
+                let details_rect = egui::Rect::from_min_size(
+                    egui::pos2(result.right_edge_x, result.y),
+                    egui::vec2(max_width, 32.0),
+                );
+                let truncation = ui
+                    .scope_builder(egui::UiBuilder::new().max_rect(details_rect), |ui| {
+                        ui.set_clip_rect(details_rect);
+                        session_header_ui(
+                            ui,
+                            details,
+                            self.backend_type,
+                            self.flags.contains(DaveUiFlags::IsSubagent),
+                        )
+                    })
+                    .inner;
 
-            // Render session details inline, to the right of the buttons
-            if let Some(details) = self.details {
-                let max_width = ui.max_rect().right() - result.right_edge_x;
-                if max_width > 50.0 {
-                    let details_rect = egui::Rect::from_min_size(
-                        egui::pos2(result.right_edge_x, result.y),
-                        egui::vec2(max_width, 32.0),
+                if let Some(cwd) = &truncation.full {
+                    let hover_resp = ui.interact(
+                        details_rect,
+                        egui::Id::unique("session_header_hover"),
+                        egui::Sense::hover(),
                     );
-                    let truncation = ui
-                        .scope_builder(egui::UiBuilder::new().max_rect(details_rect), |ui| {
-                            ui.set_clip_rect(details_rect);
-                            session_header_ui(
-                                ui,
-                                details,
-                                self.backend_type,
-                                self.flags.contains(DaveUiFlags::IsSubagent),
-                            )
-                        })
-                        .inner;
-
-                    if let Some(cwd) = &truncation.full {
-                        let hover_resp = ui.interact(
-                            details_rect,
-                            egui::Id::unique("session_header_hover"),
-                            egui::Sense::hover(),
-                        );
-                        hover_resp.on_hover_text_at_pointer(cwd);
-                    }
+                    hover_resp.on_hover_text_at_pointer(cwd);
                 }
             }
+        }
 
-            result.action
-        };
+        let action = result.action;
 
         // The `Chat | Details` tab strip, under the header.
         let action = if self.shows_tabs() {

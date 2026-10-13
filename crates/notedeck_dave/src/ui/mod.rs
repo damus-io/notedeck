@@ -90,16 +90,35 @@ pub(crate) fn test_frame<R>(
     })
 }
 
+/// What a chat view is drawn with besides its session: Dave's settings and
+/// state that every session's chat reads the same way.
+///
+/// One value is handed to [`build_dave_ui`] by every layout, so the session
+/// list's chat and the scene view's can't be built differently.
+pub(crate) struct ChatViewContext<'a> {
+    pub model_config: &'a ModelConfig,
+    pub auto_steal_focus: bool,
+    pub normal_mode: Option<NormalView>,
+    /// Every cwd's run configs; the chat shows its session's.
+    pub run_configs:
+        &'a std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
+    /// The run configs running per session.
+    pub running_sessions:
+        &'a std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
+    /// The newest rate-limit report from any local session.
+    pub account_rate_limit: Option<crate::messages::RateLimitInfo>,
+}
+
 /// Build a DaveUi from a session, wiring up all the common builder fields.
-fn build_dave_ui<'a>(
-    session: &'a mut ChatSession,
-    model_config: &ModelConfig,
-    auto_steal_focus: bool,
-    normal_mode: Option<NormalView>,
-    run_configs: &'a std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
-    running_sessions: &'a std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
-    account_rate_limit: Option<crate::messages::RateLimitInfo>,
-) -> DaveUi<'a> {
+fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -> DaveUi<'a> {
+    let ChatViewContext {
+        model_config,
+        auto_steal_focus,
+        normal_mode,
+        run_configs,
+        running_sessions,
+        account_rate_limit,
+    } = *chat;
     let status = session.status();
     let is_working = status == AgentStatus::Working;
     // A placeholder (remote spawn/resume in flight) reports Pending — render it as
@@ -631,6 +650,14 @@ pub fn scene_ui(
 
     let ctrl_held = ui.input(|i| i.modifiers.ctrl);
     refresh_scene_card_titles(session_manager, app_ctx, ui.input(|i| i.time));
+    let chat = ChatViewContext {
+        model_config,
+        auto_steal_focus,
+        normal_mode,
+        run_configs,
+        running_sessions,
+        account_rate_limit,
+    };
 
     StripBuilder::new(ui)
         .size(Size::relative(0.55))
@@ -671,36 +698,19 @@ pub fn scene_ui(
             });
 
             strip.cell(|ui| {
-                egui::Frame::new()
-                    .fill(ui.visuals().faint_bg_color)
-                    .inner_margin(egui::Margin::symmetric(8, 12))
-                    .show(ui, |ui| {
-                        if let Some(selected_id) = scene.primary_selection() {
-                            if let Some(session) = session_manager.get_mut(selected_id) {
-                                ui.heading(session.details.display_title());
-                                ui.separator();
-
-                                let response = build_dave_ui(
-                                    session,
-                                    model_config,
-                                    auto_steal_focus,
-                                    normal_mode,
-                                    run_configs,
-                                    running_sessions,
-                                    account_rate_limit,
-                                )
-                                .compact(true)
-                                .ui(app_ctx, ui);
-                                if response.action.is_some() {
-                                    dave_response = response;
-                                }
-                            }
-                        } else {
-                            ui.centered_and_justified(|ui| {
-                                ui.label("Select an agent to view chat");
-                            });
-                        }
+                let selected = scene
+                    .primary_selection()
+                    .and_then(|id| session_manager.get_mut(id));
+                let Some(session) = selected else {
+                    ui.centered_and_justified(|ui| {
+                        ui.label("Select an agent to view chat");
                     });
+                    return;
+                };
+                let response = session_view_ui(session, &chat, app_ctx, ui);
+                if response.action.is_some() {
+                    dave_response = response;
+                }
             });
         });
 
@@ -791,6 +801,55 @@ fn session_list_ui(
     }
 }
 
+/// Width of the task panel the session view puts right of the chat.
+const TASK_PANEL_WIDTH: f32 = 200.0;
+
+/// The session view: the chat — its header, the `Chat | Details` tabs, the
+/// input — with the task panel to its right when the session has tasks.
+///
+/// The session list's chat column and the scene view's side panel both draw
+/// this, so the two show the same view and a change to one reaches the other.
+fn session_view_ui(
+    session: &mut ChatSession,
+    chat: &ChatViewContext<'_>,
+    app_ctx: &mut notedeck::AppContext,
+    ui: &mut egui::Ui,
+) -> DaveResponse {
+    use crate::ui::task_list::TaskListPanel;
+
+    let available = ui.available_rect_before_wrap();
+    let task_panel_width = if TaskListPanel::has_tasks(&session.chat) {
+        TASK_PANEL_WIDTH
+    } else {
+        0.0
+    };
+    let chat_rect = egui::Rect::from_min_size(
+        available.min,
+        egui::vec2(available.width() - task_panel_width, available.height()),
+    );
+
+    // The task panel (an immutable borrow) before the chat's mutable one.
+    if task_panel_width > 0.0 {
+        let task_panel_rect = egui::Rect::from_min_size(
+            egui::pos2(available.max.x - task_panel_width, available.min.y),
+            egui::vec2(task_panel_width, available.height()),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(task_panel_rect), |ui| {
+            egui::Frame::new()
+                .fill(ui.visuals().faint_bg_color)
+                .inner_margin(egui::Margin::symmetric(8, 12))
+                .show(ui, |ui| {
+                    TaskListPanel::ui(ui, &session.chat);
+                });
+        });
+    }
+
+    ui.scope_builder(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
+        build_dave_ui(session, chat).ui(app_ctx, ui)
+    })
+    .inner
+}
+
 /// Desktop layout with sidebar for session list.
 #[allow(clippy::too_many_arguments)]
 pub fn desktop_ui(
@@ -806,41 +865,20 @@ pub fn desktop_ui(
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
 ) -> ListUiResponse {
-    use crate::ui::task_list::TaskListPanel;
-
     let available = ui.available_rect_before_wrap();
     let sidebar_width = if available.width() < 830.0 {
         200.0
     } else {
         280.0
     };
-    let task_panel_width = 200.0;
     let ctrl_held = ui.input(|i| i.modifiers.ctrl);
     let mut toggle_scene = false;
 
-    // Show the task panel when the active session has any tasks.
-    let show_task_panel = session_manager
-        .get_active()
-        .map(|s| TaskListPanel::has_tasks(&s.chat))
-        .unwrap_or(false);
-    let right_panel_width = if show_task_panel {
-        task_panel_width
-    } else {
-        0.0
-    };
-
     let sidebar_rect =
         egui::Rect::from_min_size(available.min, egui::vec2(sidebar_width, available.height()));
-    let chat_rect = egui::Rect::from_min_size(
+    let session_view_rect = egui::Rect::from_min_max(
         egui::pos2(available.min.x + sidebar_width, available.min.y),
-        egui::vec2(
-            available.width() - sidebar_width - right_panel_width,
-            available.height(),
-        ),
-    );
-    let task_panel_rect = egui::Rect::from_min_size(
-        egui::pos2(available.max.x - task_panel_width, available.min.y),
-        egui::vec2(task_panel_width, available.height()),
+        available.max,
     );
 
     let session_action = ui
@@ -885,37 +923,20 @@ pub fn desktop_ui(
         })
         .inner;
 
-    // Render the task panel (immutable borrow) before the mutable chat borrow.
-    if show_task_panel {
-        if let Some(session) = session_manager.get_active() {
-            let chat = &session.chat;
-            ui.scope_builder(egui::UiBuilder::new().max_rect(task_panel_rect), |ui| {
-                egui::Frame::new()
-                    .fill(ui.visuals().faint_bg_color)
-                    .inner_margin(egui::Margin::symmetric(8, 12))
-                    .show(ui, |ui| {
-                        TaskListPanel::ui(ui, chat);
-                    });
-            });
-        }
-    }
-
+    let chat = ChatViewContext {
+        model_config,
+        auto_steal_focus,
+        normal_mode,
+        run_configs,
+        running_sessions,
+        account_rate_limit,
+    };
     let chat_response = ui
-        .scope_builder(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
-            if let Some(session) = session_manager.get_active_mut() {
-                build_dave_ui(
-                    session,
-                    model_config,
-                    auto_steal_focus,
-                    normal_mode,
-                    run_configs,
-                    running_sessions,
-                    account_rate_limit,
-                )
-                .ui(app_ctx, ui)
-            } else {
-                DaveResponse::default()
-            }
+        .scope_builder(egui::UiBuilder::new().max_rect(session_view_rect), |ui| {
+            let Some(session) = session_manager.get_active_mut() else {
+                return DaveResponse::default();
+            };
+            session_view_ui(session, &chat, app_ctx, ui)
         })
         .inner;
 
@@ -969,18 +990,18 @@ pub fn narrow_ui(
     } else if let Some(session) = session_manager.get_active_mut() {
         let dot_color = focus_queue.current().map(|e| e.priority.color());
         let fq_info = focus_queue.ui_info();
-        let response = build_dave_ui(
-            session,
+        let chat = ChatViewContext {
             model_config,
             auto_steal_focus,
             normal_mode,
             run_configs,
             running_sessions,
             account_rate_limit,
-        )
-        .status_dot_color(dot_color)
-        .focus_queue_info(fq_info)
-        .ui(app_ctx, ui);
+        };
+        let response = build_dave_ui(session, &chat)
+            .status_dot_color(dot_color)
+            .focus_queue_info(fq_info)
+            .ui(app_ctx, ui);
         ListUiResponse {
             response,
             session_action: None,
@@ -2071,15 +2092,15 @@ mod tests {
             let Some(session) = state.session_manager.get_active_mut() else {
                 return;
             };
-            let mut dave_ui = super::build_dave_ui(
-                session,
-                &state.model_config,
-                false,
-                None,
-                &no_configs,
-                &none_running,
-                state.rate_limit,
-            );
+            let chat = super::ChatViewContext {
+                model_config: &state.model_config,
+                auto_steal_focus: false,
+                normal_mode: None,
+                run_configs: &no_configs,
+                running_sessions: &none_running,
+                account_rate_limit: state.rate_limit,
+            };
+            let mut dave_ui = super::build_dave_ui(session, &chat);
             if let Some(now) = state.now_unix {
                 dave_ui = dave_ui.now_unix(now);
             }
@@ -2171,6 +2192,93 @@ mod tests {
         harness.run_ok();
         assert_eq!(count_labels(&harness, "No cards mentioned"), 0);
         assert_eq!(count_labels(&harness, "Ask"), 1);
+    }
+
+    /// [`SessionViewState`] drawn through the scene view instead of the
+    /// session list's chat column.
+    struct SceneViewState {
+        view: SessionViewState,
+        scene: super::AgentScene,
+        scene_layout: crate::scene_layout::SceneLayoutMode,
+        focus_queue: FocusQueue,
+    }
+
+    fn render_scene_view(ui: &mut egui::Ui, state: &mut SceneViewState) {
+        notedeck::test_harness::full_window(ui, |ui| {
+            let view = &mut state.view;
+            if !view.set_up {
+                view.notedeck.setup(ui.ctx());
+                view.set_up = true;
+            }
+            ui.painter()
+                .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
+            let no_configs = std::collections::HashMap::new();
+            let none_running = std::collections::HashMap::new();
+            let mut app_ctx = view.notedeck.app_context();
+            let response = super::scene_ui(
+                &mut view.session_manager,
+                &mut state.scene,
+                &mut state.scene_layout,
+                &mut state.focus_queue,
+                &view.model_config,
+                false,
+                None,
+                &no_configs,
+                &none_running,
+                view.rate_limit,
+                &mut app_ctx,
+                ui,
+            );
+            if let Some(action) = response.response.action {
+                super::handle_ui_action(
+                    action,
+                    &mut view.session_manager,
+                    &RemoteOnlyBackend,
+                    &mut crate::DaveOverlay::None,
+                    &mut false,
+                    ui.ctx(),
+                );
+            }
+        });
+    }
+
+    /// The scene view's side panel is the session list's session view: it
+    /// has the `Chat | Details` tabs, and they switch the same way.
+    #[test]
+    fn scene_view_chat_has_the_session_tabs() {
+        use egui_kittest::kittest::Queryable;
+
+        let view = session_view_state();
+        let mut scene = super::AgentScene::new();
+        scene.select(view.session_manager.active_id().unwrap());
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1600.0, 900.0))
+            .build_ui_state(
+                render_scene_view,
+                SceneViewState {
+                    view,
+                    scene,
+                    scene_layout: Default::default(),
+                    focus_queue: FocusQueue::new(),
+                },
+            );
+        harness.run_ok();
+        assert!(harness.query_by_label("No cards mentioned").is_none());
+        assert_eq!(
+            harness.query_all_by_label("Ask").count(),
+            1,
+            "the scene's chat has the input box"
+        );
+
+        harness.get_by_label("Details").click_accesskit();
+        harness.run_ok();
+        assert_eq!(harness.query_all_by_label("No cards mentioned").count(), 1);
+        assert_eq!(harness.query_all_by_label("Ask").count(), 0);
+
+        harness.get_by_label("Chat").click_accesskit();
+        harness.run_ok();
+        assert_eq!(harness.query_all_by_label("No cards mentioned").count(), 0);
+        assert_eq!(harness.query_all_by_label("Ask").count(), 1);
     }
 
     /// Give the active session what a Claude CLI's init would: a model, two
