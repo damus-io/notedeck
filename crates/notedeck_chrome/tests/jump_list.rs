@@ -135,4 +135,7 @@ fn the_default_keymap_falls_ctrl_o_and_ctrl_i_through_to_nav() {
         tools_on("<C-i>"),
         vec![notedeck_chrome::JUMP_FORWARD, notedeck_chrome::NAV_FORWARD]
     );
+    // Cmd-Shift-H / L go straight to nav, past the jump list.
+    assert_eq!(tools_on("<D-H>"), vec![notedeck_chrome::NAV_BACK]);
+    assert_eq!(tools_on("<D-L>"), vec![notedeck_chrome::NAV_FORWARD]);
 }

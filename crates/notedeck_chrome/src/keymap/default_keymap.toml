@@ -61,6 +61,23 @@ tool  = "chrome_nav_forward"
 label = "back/forward"
 group = "jump"
 
+# Cmd-Shift-H / Cmd-Shift-L: back and forward straight away, whatever the
+# jump list holds (a shifted `h` / `l`). Plain Cmd-H is macOS's Hide.
+
+[[bind]]
+scope = "global"
+keys  = "<D-H>"
+tool  = "chrome_nav_back"
+label = "back/forward"
+group = "jump"
+
+[[bind]]
+scope = "global"
+keys  = "<D-L>"
+tool  = "chrome_nav_forward"
+label = "back/forward"
+group = "jump"
+
 # ── Headway ─────────────────────────────────────────────────────────────────
 #
 # Headway reports a stack of these scopes per view (crates/notedeck_headway/
