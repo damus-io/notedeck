@@ -27,7 +27,7 @@ use std::process::ExitCode;
 use serde_json::json;
 
 use headway::event::{self, Container, resolve_card};
-use headway::query::ViewSpec;
+use headway::query::{ListQuery, ViewSpec};
 use headway::store;
 use headway::teams;
 
@@ -828,18 +828,19 @@ async fn run() -> Result<()> {
                     list::save_named_view(&ndb, &me, &secret, &saved, name, spec, as_json)?;
                 } else {
                     // A view scoped to a board reads that board, unless the
-                    // command line narrowed the run itself.
-                    let (scope_board, scope_all) = match &spec.board {
-                        Some(b) if !board_explicit && container.is_none() => (b.clone(), false),
-                        _ => (board.clone(), show_all),
-                    };
+                    // command line narrowed the run itself. Only that board
+                    // is loaded, and the query keeps only its rows.
+                    let view_board = spec
+                        .board
+                        .clone()
+                        .filter(|_| !board_explicit && container.is_none());
                     let scope = read_scope(
                         &ndb,
                         &roster,
                         &author,
                         &me,
-                        &scope_board,
-                        scope_all,
+                        view_board.as_ref().unwrap_or(&board),
+                        show_all && view_board.is_none(),
                         container,
                     )?;
                     let out = list::ListOutput {
@@ -847,11 +848,16 @@ async fn run() -> Result<()> {
                         color: cli.color,
                         pager: cli.pager,
                         limit,
+                    };
+                    let query = ListQuery {
+                        filter: spec.filter(),
+                        within: scope.subtree,
+                        board: view_board,
                         display: spec.display,
                         grouping: spec.grouping,
                         sorting: spec.sorting,
                     };
-                    list::cmd_list(&scope.boards, scope.subtree, spec.filter(), out)?;
+                    list::cmd_list(&scope.boards, &query, out)?;
                 }
             }
         }

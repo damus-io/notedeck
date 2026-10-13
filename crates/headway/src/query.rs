@@ -10,7 +10,8 @@
 //!   and the predicate it stands for.
 //! - [`ListRow`] — a card plus the board it's on and its [`Placement`] there
 //!   (a column, or the archive), the unit every predicate and renderer reads.
-//! - [`ListQuery`] + [`list`] — flatten boards into the rows a query keeps.
+//! - [`ListQuery`] + [`list`] — flatten boards into the rows a query keeps;
+//!   [`list_positions`] is the same walk as indices ([`RowPos`]).
 //! - [`Grouping`] + [`group`] — gather rows under headers.
 //! - [`Sorting`] + [`sort_order`] — order rows, by work order among others,
 //!   with [`ready_set`] marking what `headway next --ready` hands out.
@@ -1381,6 +1382,9 @@ pub struct ListQuery {
     /// Only this card and its descendants (`--in <card>`), on whichever board
     /// holds it. `None` looks at every card.
     pub within: Option<[u8; 32]>,
+    /// Only the board with this slug: a saved view's board scope
+    /// ([`ViewSpec::board`]). `None` looks at every board handed in.
+    pub board: Option<String>,
     /// Which properties each row shows beside its title. Rendering only:
     /// [`list`] keeps the same rows whatever it holds.
     pub display: DisplayProps,
@@ -1391,50 +1395,119 @@ pub struct ListQuery {
     pub sorting: Sorting,
 }
 
+/// Where a card sits on its board, by index: the lifetime-free form of a
+/// [`Placement`], for a caller that keeps rows across frames (the GUI list)
+/// and reads them back against the boards with [`RowPos::row`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowSlot {
+    /// `columns[col].cards[card]`.
+    Column { col: usize, card: usize },
+    /// `archived[at]`: listed only for an `is:archived` query.
+    Archived(usize),
+}
+
+impl RowSlot {
+    /// The card this slot names on `board`.
+    pub fn card(self, board: &BoardView) -> &CardView {
+        match self {
+            RowSlot::Column { col, card } => &board.columns[col].cards[card],
+            RowSlot::Archived(at) => &board.archived[at].card,
+        }
+    }
+
+    /// Where the card sits on `board`, as [`ListRow`] reads it.
+    pub fn placement(self, board: &BoardView) -> Placement<'_> {
+        match self {
+            RowSlot::Column { col, .. } => Placement::Column(&board.columns[col]),
+            RowSlot::Archived(_) => Placement::Archived,
+        }
+    }
+}
+
+/// A row [`list_positions`] keeps, by index: which of the boards it was handed
+/// the card is on, and where on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RowPos {
+    /// Index of the card's board among the boards the walk was handed.
+    pub board: usize,
+    /// Where the card sits on that board.
+    pub slot: RowSlot,
+}
+
+impl RowPos {
+    /// The row this position names, read against `board` — the one at
+    /// [`self.board`](Self::board) among the boards it was computed from.
+    pub fn row(self, board: &BoardView) -> ListRow<'_> {
+        ListRow {
+            board,
+            card: self.slot.card(board),
+            placement: self.slot.placement(board),
+        }
+    }
+}
+
 /// Every card on `boards` that `query` keeps, in [`query.sorting`](ListQuery::sorting)'s
-/// order. That starts from board order — board by board, column by column,
-/// each column by rank, the board as drawn — which [`SortBy::Manual`] keeps
-/// and every other ordering breaks ties by. Archived cards are listed only
-/// when the filter asks for them ([`IssueFilter::wants_archived`]), after each
-/// board's live ones, so a default list never changes for them.
-pub fn list<'a>(boards: &'a [BoardView], query: &ListQuery) -> Vec<ListRow<'a>> {
-    let mut rows = Vec::new();
-    for board in boards {
+/// order, as positions into `boards`. That starts from board order — board by
+/// board, column by column, each column by rank, the board as drawn — which
+/// [`SortBy::Manual`] keeps and every other ordering breaks ties by. Archived
+/// cards are listed only when the filter asks for them
+/// ([`IssueFilter::wants_archived`]), after each board's live ones, so a
+/// default list never changes for them. A board other than
+/// [`query.board`](ListQuery::board) is skipped, but still counts for the
+/// indices.
+///
+/// The one walk every list runs: [`list`] reads the positions back as rows,
+/// and the GUI keeps them across frames against its own board handles.
+pub fn list_positions<'a>(
+    boards: impl IntoIterator<Item = &'a BoardView>,
+    query: &ListQuery,
+) -> Vec<RowPos> {
+    // Index for index: each kept position and the row it reads as.
+    let mut kept: Vec<RowPos> = Vec::new();
+    let mut rows: Vec<ListRow<'a>> = Vec::new();
+    for (b, board) in boards.into_iter().enumerate() {
+        if query.board.as_ref().is_some_and(|slug| *slug != board.id) {
+            continue;
+        }
         let within = query.within.map(|root| subtree_ids(board, root));
-        let mut keep = |row: ListRow<'a>| {
+        let mut keep = |slot: RowSlot| {
+            let pos = RowPos { board: b, slot };
+            let row = pos.row(board);
             let inside = within
                 .as_ref()
                 .is_none_or(|ids| ids.contains(row.card.id.bytes()));
             if inside && query.filter.matches(&row) {
+                kept.push(pos);
                 rows.push(row);
             }
         };
-        for column in &board.columns {
-            for card in &column.cards {
-                keep(ListRow {
-                    board,
-                    card,
-                    placement: Placement::Column(column),
-                });
+        for (col, column) in board.columns.iter().enumerate() {
+            for card in 0..column.cards.len() {
+                keep(RowSlot::Column { col, card });
             }
         }
         if !query.filter.wants_archived() {
             continue;
         }
-        for archived in &board.archived {
-            keep(ListRow {
-                board,
-                card: &archived.card,
-                placement: Placement::Archived,
-            });
+        for at in 0..board.archived.len() {
+            keep(RowSlot::Archived(at));
         }
     }
     if query.sorting == Sorting::default() {
-        return rows;
+        return kept;
     }
     sort_order(&rows, query.sorting)
         .into_iter()
-        .map(|at| rows[at])
+        .map(|at| kept[at])
+        .collect()
+}
+
+/// Every card on `boards` that `query` keeps, as rows, in the order
+/// [`list_positions`] gives.
+pub fn list<'a>(boards: &'a [BoardView], query: &ListQuery) -> Vec<ListRow<'a>> {
+    list_positions(boards, query)
+        .into_iter()
+        .map(|pos| pos.row(&boards[pos.board]))
         .collect()
 }
 
@@ -1717,6 +1790,69 @@ mod tests {
             .map(|r| r.card.title.as_str())
             .collect();
         assert_eq!(kept, ["top"]);
+    }
+
+    /// `list_positions` is the walk as indices into the boards handed in: a
+    /// board scope skips the other boards but keeps their indices, archived
+    /// cards come after a board's live ones, and the order is the sorting's.
+    #[test]
+    fn list_positions_index_the_boards_handed_in() {
+        let mut urgent = card(5, "urgent", &["ui"]);
+        urgent.priority = Priority::Urgent;
+        let mut shelved = card(6, "shelved", &["ui"]);
+        shelved.priority = Priority::High;
+        let mut one = board("one", vec![card(1, "a", &["ui"])], vec![], vec![]);
+        one.archived = vec![ArchivedCard {
+            card: card(2, "one-shelved", &["ui"]),
+            from: None,
+        }];
+        let mut two = board(
+            "two",
+            vec![card(3, "low", &["ui"]), card(4, "plain", &[])],
+            vec![urgent],
+            vec![],
+        );
+        two.archived = vec![ArchivedCard {
+            card: shelved,
+            from: None,
+        }];
+        let boards = [one, two];
+
+        let scoped = ListQuery {
+            filter: IssueFilter::parse("label:ui", None),
+            board: Some("two".to_string()),
+            sorting: Sorting::by(SortBy::Priority),
+            ..ListQuery::default()
+        };
+        let pos = |board, slot| RowPos { board, slot };
+        assert_eq!(
+            list_positions(&boards, &scoped),
+            [
+                pos(1, RowSlot::Column { col: 1, card: 0 }),
+                pos(1, RowSlot::Column { col: 0, card: 0 }),
+            ]
+        );
+
+        let archived = ListQuery {
+            filter: IssueFilter::parse("is:archived", None),
+            sorting: Sorting::by(SortBy::Priority),
+            ..ListQuery::default()
+        };
+        let positions = list_positions(&boards, &archived);
+        assert_eq!(
+            positions,
+            [pos(1, RowSlot::Archived(0)), pos(0, RowSlot::Archived(0))]
+        );
+        // Each position reads back as the row `list` hands out for it.
+        let rows = list(&boards, &archived);
+        for (pos, row) in positions.iter().zip(&rows) {
+            let back = pos.row(&boards[pos.board]);
+            assert!(std::ptr::eq(back.card, row.card));
+            assert!(std::ptr::eq(back.board, row.board));
+            assert!(back.is_archived());
+        }
+        assert_eq!(rows[0].card.title, "shelved");
+        assert_eq!(rows[1].card.title, "one-shelved");
     }
 
     /// Rows come board by board, column by column, and archived cards never

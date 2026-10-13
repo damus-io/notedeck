@@ -15,8 +15,8 @@ use serde_json::json;
 use headway::event::{BoardView, Priority, card_json};
 use headway::fmt::rel_time;
 use headway::query::{
-    BuiltinView, DisplayProp, DisplayProps, Grouping, IssueFilter, ListGroup, ListQuery, ListRow,
-    SortBy, Sorting, ViewSpec, group, list, ready_set,
+    BuiltinView, DisplayProp, DisplayProps, IssueFilter, ListGroup, ListQuery, ListRow, SortBy,
+    ViewSpec, group, list, ready_set,
 };
 use headway::store::NoPublish;
 use headway::views::{SavedView, find_view, new_slug};
@@ -29,43 +29,27 @@ use crate::grep::{PAGER_VAR, SGR_DIM, SGR_REF, SGR_TITLE};
 use crate::output::{BLOCKED_GLYPH, labels_suffix, plain_ref, priority_glyph};
 
 /// How `list`'s rows are written: `--json`, or text under the `--color` and
-/// `--pager`/`--no-pager` modes, at most `limit` of them (`-n`), each text
-/// row printing the `display` properties (`--show`/`--hide`), gathered under
-/// `grouping`'s headers (`--group`/`--sub-group`/`--empty`), in `sorting`'s
-/// order (`--sort`, `--descending`/`--ascending`, `--completed-by-recency`).
+/// `--pager`/`--no-pager` modes, at most `limit` of them (`-n`). What each
+/// row shows, how rows are gathered and their order are the query's.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ListOutput {
     pub(crate) json: bool,
     pub(crate) color: ColorWhen,
     pub(crate) pager: PagerMode,
     pub(crate) limit: Option<usize>,
-    pub(crate) display: DisplayProps,
-    pub(crate) grouping: Grouping,
-    pub(crate) sorting: Sorting,
 }
 
 /// `headway list [query...]` — print every live card on `boards` that `query`
-/// keeps, one row per card, in `out.sorting`'s order: board order (board,
+/// keeps, one row per card, in `query.sorting`'s order: board order (board,
 /// then column, then rank) unless `--sort` says otherwise. `-n` keeps the
 /// first rows of that order. Sorted by work order, the rows `headway next
 /// --ready` would hand out are marked.
 ///
-/// `filter` is the run's view's ([`ViewSpec::filter`], see [`compose_view`]).
-/// `subtree` (`--in <card>`) keeps that card and its descendants.
-pub(crate) fn cmd_list(
-    boards: &[BoardView],
-    subtree: Option<[u8; 32]>,
-    filter: IssueFilter,
-    out: ListOutput,
-) -> Result<()> {
-    let query = ListQuery {
-        filter,
-        within: subtree,
-        display: out.display,
-        grouping: out.grouping,
-        sorting: out.sorting,
-    };
-    let mut rows = list(boards, &query);
+/// `query` carries the run's view: its filter ([`ViewSpec::filter`], see
+/// [`compose_view`]), its board scope, and `--in <card>`'s subtree, which
+/// keeps that card and its descendants.
+pub(crate) fn cmd_list(boards: &[BoardView], query: &ListQuery, out: ListOutput) -> Result<()> {
+    let mut rows = list(boards, query);
     if let Some(n) = out.limit {
         rows.truncate(n);
     }
@@ -497,7 +481,7 @@ mod tests {
     use super::*;
 
     use headway::event::{CardView, ColumnView};
-    use headway::query::Placement;
+    use headway::query::{Grouping, Placement, Sorting};
     use nostrdb_net::NoteId;
 
     fn card(n: u8, title: &str) -> CardView {

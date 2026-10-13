@@ -49,8 +49,8 @@ use crate::event::{self, BoardView, CardView, Priority};
 use crate::keys;
 use crate::store::{self, BoardAction};
 use headway::query::{
-    BuiltinView, DisplayProp, DisplayProps, GroupBy, GroupKey, Grouping, ListGroup, ListRow,
-    Placement, SortBy, Sorting, ViewSpec,
+    BuiltinView, DisplayProp, DisplayProps, GroupBy, GroupKey, Grouping, ListGroup, ListQuery,
+    ListRow, RowSlot, SortBy, Sorting, ViewSpec,
 };
 use headway::views::{SavedView, new_slug};
 
@@ -238,7 +238,7 @@ struct ListLine {
     /// Index of the card's board in the sources.
     board: usize,
     /// Where the card sits on that board.
-    slot: LineSlot,
+    slot: RowSlot,
     /// The card's id.
     id: NoteId,
     /// The card's word-id (`maple-river-canyon`).
@@ -317,57 +317,28 @@ fn short_date(date: event::Date) -> String {
     format!("{month} {}", date.day)
 }
 
-/// Where a [`ListLine`]'s card sits on its board, by index into the board the
-/// rows were computed from.
-#[derive(Clone, Copy)]
-enum LineSlot {
-    /// `columns[col].cards[card]`.
-    Column { col: usize, card: usize },
-    /// `archived[at]`: listed only for an `is:archived` query.
-    Archived(usize),
+/// The status icon for where `slot` sits on `board`: filled in a terminal
+/// column, half in In Progress, and otherwise by position, as the grid's
+/// column headers draw it.
+fn slot_icon(slot: RowSlot, board: &BoardView) -> StatusIcon {
+    let RowSlot::Column { col, .. } = slot else {
+        return StatusIcon::Archived;
+    };
+    let column = &board.columns[col];
+    if board.column_is_terminal(&column.id) {
+        StatusIcon::Done
+    } else if column.is_in_progress() {
+        StatusIcon::Started(0.5)
+    } else {
+        StatusIcon::for_column(col, board.columns.len())
+    }
 }
 
-impl LineSlot {
-    /// The card this slot names on `board`.
-    fn card(self, board: &BoardView) -> &CardView {
-        match self {
-            LineSlot::Column { col, card } => &board.columns[col].cards[card],
-            LineSlot::Archived(at) => &board.archived[at].card,
-        }
-    }
-
-    /// Where the card sits on `board`, as [`ListRow`] reads it.
-    fn placement(self, board: &BoardView) -> Placement<'_> {
-        match self {
-            LineSlot::Column { col, .. } => Placement::Column(&board.columns[col]),
-            LineSlot::Archived(_) => Placement::Archived,
-        }
-    }
-
-    /// The status icon for where the card sits on `board`: filled in a
-    /// terminal column, half in In Progress, and otherwise by position, as
-    /// the grid's column headers draw it.
-    fn icon(self, board: &BoardView) -> StatusIcon {
-        let LineSlot::Column { col, .. } = self else {
-            return StatusIcon::Archived;
-        };
-        let column = &board.columns[col];
-        if board.column_is_terminal(&column.id) {
-            StatusIcon::Done
-        } else if column.is_in_progress() {
-            StatusIcon::Started(0.5)
-        } else {
-            StatusIcon::for_column(col, board.columns.len())
-        }
-    }
-
-    /// The name of where the card sits on `board`: its column's, or
-    /// "Archived".
-    fn place(self, board: &BoardView) -> &str {
-        match self {
-            LineSlot::Column { col, .. } => &board.columns[col].name,
-            LineSlot::Archived(_) => "Archived",
-        }
+/// The name of where `slot` sits on `board`: its column's, or "Archived".
+fn slot_place(slot: RowSlot, board: &BoardView) -> &str {
+    match slot {
+        RowSlot::Column { col, .. } => &board.columns[col].name,
+        RowSlot::Archived(_) => "Archived",
     }
 }
 
@@ -440,72 +411,36 @@ impl ListState {
         if !self.stale(sources) {
             return;
         }
-        let filter = self.spec().filter();
-        self.rows.clear();
-        for (b, board) in sources.iter().enumerate() {
-            if self
-                .board_scope
-                .as_ref()
-                .is_some_and(|scope| *scope != board.id)
-            {
-                continue;
-            }
-            let mut keep = |card: &CardView, placement: Placement, slot: LineSlot| {
-                let row = ListRow {
-                    board,
-                    card,
-                    placement,
-                };
-                if filter.matches(&row) {
-                    self.rows.push(ListLine {
-                        board: b,
-                        slot,
-                        id: card.id,
-                        word_id: headway::wordid::encode(card.id.bytes()),
-                        ready: false,
-                        text: LineText::of(board, card),
-                    });
-                }
-            };
-            for (col, column) in board.columns.iter().enumerate() {
-                for (k, card) in column.cards.iter().enumerate() {
-                    let slot = LineSlot::Column { col, card: k };
-                    keep(card, Placement::Column(column), slot);
-                }
-            }
-            // Archived cards only when the query asks (`is:archived`), as
-            // `headway list` does.
-            if !filter.wants_archived() {
-                continue;
-            }
-            for (at, archived) in board.archived.iter().enumerate() {
-                keep(&archived.card, Placement::Archived, LineSlot::Archived(at));
-            }
-        }
+        let spec = self.spec();
+        let query = ListQuery {
+            filter: spec.filter(),
+            board: spec.board,
+            sorting: self.sorting,
+            ..ListQuery::default()
+        };
+        let positions = headway::query::list_positions(sources.iter().map(|b| &**b), &query);
         // The kept rows as `headway::query` reads them, index for index with
-        // `self.rows`, to order and group.
-        let mut kept: Vec<ListRow> = self
-            .rows
+        // `self.rows`, to mark and group.
+        let kept: Vec<ListRow> = positions
             .iter()
-            .map(|line| {
-                let board: &BoardView = &sources[line.board];
-                ListRow {
-                    board,
-                    card: line.slot.card(board),
-                    placement: line.slot.placement(board),
-                }
-            })
+            .map(|pos| pos.row(&sources[pos.board]))
             .collect();
-        let order = headway::query::sort_order(&kept, self.sorting);
-        let mut lines: Vec<Option<ListLine>> = self.rows.drain(..).map(Some).collect();
-        self.rows = order.iter().filter_map(|&at| lines[at].take()).collect();
-        kept = order.iter().map(|&at| kept[at]).collect();
-        if self.sorting.by == SortBy::WorkOrder {
-            let ready = headway::query::ready_set(&kept);
-            for line in &mut self.rows {
-                line.ready = ready.contains(line.id.bytes());
-            }
-        }
+        // Work order marks what `headway next --ready` would hand out.
+        let ready = if self.sorting.by == SortBy::WorkOrder {
+            headway::query::ready_set(&kept)
+        } else {
+            Default::default()
+        };
+        self.rows.clear();
+        self.rows
+            .extend(positions.iter().zip(&kept).map(|(pos, row)| ListLine {
+                board: pos.board,
+                slot: pos.slot,
+                id: row.card.id,
+                word_id: headway::wordid::encode(row.card.id.bytes()),
+                ready: ready.contains(row.card.id.bytes()),
+                text: LineText::of(row.board, row.card),
+            }));
         let boards: Vec<&BoardView> = sources.iter().map(|b| &**b).collect();
         self.groups = headway::query::group(&boards, &kept, self.grouping);
         self.rebuild_entries();
@@ -528,7 +463,7 @@ impl ListState {
             return false;
         }
         let board: &BoardView = &sources[line.board];
-        matches!(line.slot, LineSlot::Column { .. })
+        matches!(line.slot, RowSlot::Column { .. })
             && board.author == view.author
             && board.id == view.id
     }
@@ -1771,8 +1706,8 @@ fn row_lead_ui(
         );
     }
     if display.contains(DisplayProp::Status) {
-        status_icon_ui(ui, theme, line.slot.icon(board), ICON_SIZE)
-            .on_hover_text(line.slot.place(board));
+        status_icon_ui(ui, theme, slot_icon(line.slot, board), ICON_SIZE)
+            .on_hover_text(slot_place(line.slot, board));
     }
 }
 
