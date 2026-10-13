@@ -798,6 +798,7 @@ async fn run() -> Result<()> {
             container,
             include_done,
             limit,
+            display,
         } => {
             let scope = read_scope(&ndb, &roster, &author, &me, &board, show_all, container)?;
             let out = list::ListOutput {
@@ -805,6 +806,7 @@ async fn run() -> Result<()> {
                 color: cli.color,
                 pager: cli.pager,
                 limit,
+                display,
             };
             list::cmd_list(&scope.boards, scope.subtree, &query, include_done, out)?;
         }

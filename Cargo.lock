@@ -3969,6 +3969,7 @@ dependencies = [
  "nostrdb",
  "nostrdb_net",
  "profiling",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

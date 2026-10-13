@@ -328,9 +328,239 @@ fn ref_matches(r: &RefTerm, row: &ListRow) -> bool {
         && crate::wordid::encode(row.card.id.bytes()) == r.words
 }
 
+/// One property a list row can show beside its title — Linear's "display
+/// properties". Which are on is a [`DisplayProps`] set. Written by its
+/// [`name`](Self::name) in `headway list --show`/`--hide` and in a saved view.
+///
+/// Assignee, project and cycle join when cards carry those fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DisplayProp {
+    /// The card's reference (`headway:<board>/<word-id>`, or just the word-id
+    /// where the board is plain from context).
+    Id,
+    /// Its status: the column it sits in.
+    Status,
+    /// Its priority glyph.
+    Priority,
+    /// Its label chips.
+    Labels,
+    /// Its parent and its own subissues' `done/total`.
+    SubIssues,
+    /// How many cards block it, flagged while any is unfinished.
+    Blockers,
+    /// Its estimate, in points.
+    Estimate,
+    /// Its due date.
+    Due,
+    /// When it was created.
+    Created,
+    /// When its content last changed ([`CardView::updated_at`]).
+    Updated,
+    /// The board it's on.
+    Board,
+}
+
+impl DisplayProp {
+    /// Every property, in the order a row draws them left to right and a
+    /// toggle menu lists them.
+    pub const ALL: [DisplayProp; 11] = [
+        DisplayProp::Priority,
+        DisplayProp::Id,
+        DisplayProp::Status,
+        DisplayProp::SubIssues,
+        DisplayProp::Labels,
+        DisplayProp::Estimate,
+        DisplayProp::Blockers,
+        DisplayProp::Due,
+        DisplayProp::Created,
+        DisplayProp::Updated,
+        DisplayProp::Board,
+    ];
+
+    /// The property's written name: what `--show`/`--hide` and
+    /// [`FromStr`](std::str::FromStr) read, and the serde form.
+    pub fn name(self) -> &'static str {
+        match self {
+            DisplayProp::Id => "id",
+            DisplayProp::Status => "status",
+            DisplayProp::Priority => "priority",
+            DisplayProp::Labels => "labels",
+            DisplayProp::SubIssues => "subissues",
+            DisplayProp::Blockers => "blockers",
+            DisplayProp::Estimate => "estimate",
+            DisplayProp::Due => "due",
+            DisplayProp::Created => "created",
+            DisplayProp::Updated => "updated",
+            DisplayProp::Board => "board",
+        }
+    }
+
+    /// The property's name for a person, as a toggle chip shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            DisplayProp::Id => "ID",
+            DisplayProp::Status => "Status",
+            DisplayProp::Priority => "Priority",
+            DisplayProp::Labels => "Labels",
+            DisplayProp::SubIssues => "Sub-issues",
+            DisplayProp::Blockers => "Blockers",
+            DisplayProp::Estimate => "Estimate",
+            DisplayProp::Due => "Due date",
+            DisplayProp::Created => "Created",
+            DisplayProp::Updated => "Updated",
+            DisplayProp::Board => "Board",
+        }
+    }
+
+    /// This property's bit in a [`DisplayProps`].
+    fn bit(self) -> u16 {
+        1 << self as u16
+    }
+}
+
+impl std::fmt::Display for DisplayProp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// A name that is no [`DisplayProp`]'s.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnknownDisplayProp(pub String);
+
+impl std::fmt::Display for UnknownDisplayProp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown display property `{}` (expected one of ", self.0)?;
+        for (i, prop) in DisplayProp::ALL.iter().enumerate() {
+            let sep = if i == 0 { "" } else { ", " };
+            write!(f, "{sep}{prop}")?;
+        }
+        f.write_str(")")
+    }
+}
+
+impl std::error::Error for UnknownDisplayProp {}
+
+impl std::str::FromStr for DisplayProp {
+    type Err = UnknownDisplayProp;
+
+    /// A property by its [`name`](DisplayProp::name), ignoring case and
+    /// surrounding space. `sub-issues` and `blocked` are read too, as people
+    /// write them.
+    fn from_str(s: &str) -> Result<DisplayProp, UnknownDisplayProp> {
+        let name = s.trim().to_ascii_lowercase();
+        let alias = match name.as_str() {
+            "sub-issues" | "subissue" => "subissues",
+            "blocked" | "blocker" => "blockers",
+            "column" | "col" => "status",
+            "ref" => "id",
+            other => other,
+        };
+        DisplayProp::ALL
+            .into_iter()
+            .find(|prop| prop.name() == alias)
+            .ok_or(UnknownDisplayProp(s.trim().to_string()))
+    }
+}
+
+/// Which [`DisplayProp`]s a list row shows: a set, as bits, so asking costs
+/// nothing per frame. [`Default`] is Linear's: everything but created and
+/// board.
+///
+/// Serializes as the list of its properties' names, so a saved view reads
+/// `["priority","id",…]` and survives a property being added.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(into = "Vec<DisplayProp>", from = "Vec<DisplayProp>")]
+pub struct DisplayProps(u16);
+
+impl Default for DisplayProps {
+    fn default() -> DisplayProps {
+        DisplayProps::of(&[
+            DisplayProp::Priority,
+            DisplayProp::Id,
+            DisplayProp::Status,
+            DisplayProp::Labels,
+            DisplayProp::SubIssues,
+            DisplayProp::Blockers,
+            DisplayProp::Estimate,
+            DisplayProp::Due,
+            DisplayProp::Updated,
+        ])
+    }
+}
+
+impl DisplayProps {
+    /// The empty set: a row of just titles.
+    pub const NONE: DisplayProps = DisplayProps(0);
+
+    /// The set holding exactly `props`.
+    pub fn of(props: &[DisplayProp]) -> DisplayProps {
+        let mut set = DisplayProps::NONE;
+        for &prop in props {
+            set.set(prop, true);
+        }
+        set
+    }
+
+    /// Whether `prop` is shown.
+    pub fn contains(self, prop: DisplayProp) -> bool {
+        self.0 & prop.bit() != 0
+    }
+
+    /// Show (`on`) or hide `prop`.
+    pub fn set(&mut self, prop: DisplayProp, on: bool) {
+        if on {
+            self.0 |= prop.bit();
+        } else {
+            self.0 &= !prop.bit();
+        }
+    }
+
+    /// Flip whether `prop` is shown.
+    pub fn toggle(&mut self, prop: DisplayProp) {
+        self.set(prop, !self.contains(prop));
+    }
+
+    /// The shown properties, in [`DisplayProp::ALL`]'s order.
+    pub fn iter(self) -> impl Iterator<Item = DisplayProp> {
+        DisplayProp::ALL
+            .into_iter()
+            .filter(move |&prop| self.contains(prop))
+    }
+
+    /// Parse a comma-separated list of names (`labels,due`) into the set of
+    /// them. An empty list is the empty set.
+    pub fn parse_list(list: &str) -> Result<DisplayProps, UnknownDisplayProp> {
+        let mut set = DisplayProps::NONE;
+        for name in list.split(',').filter(|n| !n.trim().is_empty()) {
+            set.set(name.parse()?, true);
+        }
+        Ok(set)
+    }
+
+    /// The set `headway list --show`/`--hide` ask for: `show` when given,
+    /// else the [default](Self::default), less anything in `hide`.
+    pub fn shown_hidden(show: Option<DisplayProps>, hide: DisplayProps) -> DisplayProps {
+        DisplayProps(show.unwrap_or_default().0 & !hide.0)
+    }
+}
+
+impl From<DisplayProps> for Vec<DisplayProp> {
+    fn from(set: DisplayProps) -> Vec<DisplayProp> {
+        set.iter().collect()
+    }
+}
+
+impl From<Vec<DisplayProp>> for DisplayProps {
+    fn from(props: Vec<DisplayProp>) -> DisplayProps {
+        DisplayProps::of(&props)
+    }
+}
+
 /// What a list shows: the [`IssueFilter`] and where to look.
 ///
-/// Grouping, ordering and display properties land here as the list view grows
+/// Grouping and ordering land here as the list view grows
 /// (headway:headway/acoustic-canvas-diesel).
 #[derive(Clone, Debug, Default)]
 pub struct ListQuery {
@@ -339,6 +569,9 @@ pub struct ListQuery {
     /// Only this card and its descendants (`--in <card>`), on whichever board
     /// holds it. `None` looks at every card.
     pub within: Option<[u8; 32]>,
+    /// Which properties each row shows beside its title. Rendering only:
+    /// [`list`] keeps the same rows whatever it holds.
+    pub display: DisplayProps,
 }
 
 /// Every card on `boards` that `query` keeps, in board order: board by board,
@@ -477,6 +710,7 @@ mod tests {
         let query = ListQuery {
             filter: IssueFilter::parse(query, None),
             within: None,
+            ..ListQuery::default()
         };
         list(boards, &query)
             .iter()
@@ -654,6 +888,7 @@ mod tests {
         let query = ListQuery {
             filter,
             within: None,
+            ..ListQuery::default()
         };
         let kept: Vec<&str> = list(&boards, &query)
             .iter()
@@ -717,6 +952,7 @@ mod tests {
             &ListQuery {
                 filter: IssueFilter::parse("is:archived", None),
                 within: None,
+                ..ListQuery::default()
             },
         );
         assert!(rows.iter().all(ListRow::is_archived));
@@ -758,11 +994,73 @@ mod tests {
         let query = ListQuery {
             filter: IssueFilter::default(),
             within: Some([1; 32]),
+            ..ListQuery::default()
         };
         let kept: Vec<&str> = list(&boards, &query)
             .iter()
             .map(|r| r.card.title.as_str())
             .collect();
         assert_eq!(kept, ["epic", "child"]);
+    }
+
+    /// Names parse ignoring case, with the aliases people write; anything
+    /// else is an error naming the choices.
+    #[test]
+    fn display_props_parse_by_name() {
+        assert_eq!("labels".parse(), Ok(DisplayProp::Labels));
+        assert_eq!(" Due ".parse(), Ok(DisplayProp::Due));
+        assert_eq!("sub-issues".parse(), Ok(DisplayProp::SubIssues));
+        assert_eq!("blocked".parse(), Ok(DisplayProp::Blockers));
+        for prop in DisplayProp::ALL {
+            assert_eq!(prop.name().parse(), Ok(prop), "{prop} round-trips");
+        }
+        let err = "assignee".parse::<DisplayProp>().unwrap_err();
+        assert!(
+            err.to_string().contains("expected one of priority, id"),
+            "{err}"
+        );
+
+        let set = DisplayProps::parse_list("labels, due,,").unwrap();
+        assert_eq!(
+            set,
+            DisplayProps::of(&[DisplayProp::Labels, DisplayProp::Due])
+        );
+        assert_eq!(DisplayProps::parse_list(""), Ok(DisplayProps::NONE));
+        assert!(DisplayProps::parse_list("labels,nope").is_err());
+    }
+
+    /// The default is Linear's set, `--show` replaces it and `--hide` takes
+    /// from whichever applies.
+    #[test]
+    fn display_props_default_show_and_hide() {
+        let default = DisplayProps::default();
+        assert!(default.contains(DisplayProp::Labels));
+        assert!(default.contains(DisplayProp::Updated));
+        assert!(!default.contains(DisplayProp::Created));
+        assert!(!default.contains(DisplayProp::Board));
+
+        let hidden = DisplayProps::shown_hidden(None, DisplayProps::of(&[DisplayProp::Labels]));
+        assert!(!hidden.contains(DisplayProp::Labels));
+        assert!(hidden.contains(DisplayProp::Status));
+
+        let only = DisplayProps::of(&[DisplayProp::Id, DisplayProp::Board]);
+        let shown = DisplayProps::shown_hidden(Some(only), DisplayProps::of(&[DisplayProp::Id]));
+        assert_eq!(shown.iter().collect::<Vec<_>>(), [DisplayProp::Board]);
+
+        let mut set = DisplayProps::NONE;
+        set.toggle(DisplayProp::Due);
+        assert!(set.contains(DisplayProp::Due));
+        set.toggle(DisplayProp::Due);
+        assert_eq!(set, DisplayProps::NONE);
+    }
+
+    /// A set serializes as its names in row order, so a saved view reads
+    /// plainly and parses back.
+    #[test]
+    fn display_props_serialize_as_names() {
+        let set = DisplayProps::of(&[DisplayProp::Due, DisplayProp::Priority]);
+        let json = serde_json::to_string(&set).unwrap();
+        assert_eq!(json, r#"["priority","due"]"#);
+        assert_eq!(serde_json::from_str::<DisplayProps>(&json).unwrap(), set);
     }
 }

@@ -10,6 +10,7 @@ use nostrdb_net::Pubkey;
 use regex::Regex;
 
 use headway::event::{LineRange, ReviewFields};
+use headway::query::DisplayProps;
 use headway::store;
 
 use nostrdb_net::relay::sync::Result;
@@ -172,6 +173,9 @@ pub(crate) enum Command {
         include_done: bool,
         /// `-n <k>`: cap the number of rows printed.
         limit: Option<usize>,
+        /// Which properties each text row prints beside its title
+        /// (`--show`/`--hide`); `--json` always prints the whole card.
+        display: DisplayProps,
     },
     /// Comment on a card, or — with `--path`/`--line`/`--record`, or a
     /// `--reply-to` naming a review comment — on one of its review records'
@@ -545,6 +549,10 @@ impl Cli {
         // `grep`'s output modes: page and color only for a terminal unless told.
         let mut color = ColorWhen::Auto;
         let mut pager = PagerMode::Auto;
+        // `list`'s display properties: `--show` replaces the default set,
+        // `--hide` takes from it.
+        let mut show: Option<DisplayProps> = None;
+        let mut hide = DisplayProps::NONE;
         let mut review = ReviewFlags::default();
         // `diff --record`: which review record to show. `comment` shares it,
         // with its other review flags.
@@ -589,6 +597,8 @@ impl Cli {
                 "--color" => color = ColorWhen::parse(&value("--color")?)?,
                 "--pager" => pager = PagerMode::Always,
                 "--no-pager" => pager = PagerMode::Never,
+                "--show" => show = Some(DisplayProps::parse_list(&value("--show")?)?),
+                "--hide" => hide = DisplayProps::parse_list(&value("--hide")?)?,
                 "--commit" => review.commit = Some(value("--commit")?),
                 "--explainer" => review.explainer = Some(value("--explainer")?),
                 "--deploy" => review.deploy = Some(value("--deploy")?),
@@ -747,9 +757,11 @@ impl Cli {
         if let Command::List {
             container,
             include_done,
+            display,
             ..
         } = &mut command
         {
+            *display = DisplayProps::shown_hidden(show, hide);
             *include_done = all;
             all = !board_explicit && container.is_none();
         }
@@ -936,6 +948,7 @@ fn parse_command(
             container: seq.container,
             include_done: false,
             limit: count,
+            display: DisplayProps::default(),
         },
         // `parent <card> <parent>` sets, `parent <card>` detaches — mirrors how
         // `label` with no labels clears.
@@ -1124,6 +1137,7 @@ fn read_desc_source(path: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use headway::query::DisplayProp;
 
     fn parse(args: &[&str]) -> Cli {
         match Cli::parse(args.iter().map(|s| s.to_string())).expect("parse ok") {
@@ -1700,8 +1714,10 @@ mod tests {
                 container,
                 include_done,
                 limit,
+                display,
             } => {
                 assert_eq!(query, "p:high label:ui");
+                assert_eq!(display, DisplayProps::default());
                 assert!(container.is_none() && !include_done);
                 assert_eq!(limit, Some(3));
             }
@@ -1732,6 +1748,25 @@ mod tests {
         let cli = parse(&["list", "--in", "headway:notedeck/saddle-because-liquid"]);
         assert_eq!(cli.board, "notedeck");
         assert!(!cli.all);
+    }
+
+    /// `--show` names the properties a row prints, `--hide` drops some, and
+    /// an unknown name is an error before any relay work.
+    #[test]
+    fn list_parses_show_and_hide() {
+        let display = |args: &[&str]| match parse(args).command {
+            Command::List { display, .. } => display,
+            _ => panic!("expected a List command"),
+        };
+        let hidden = display(&["list", "--hide", "labels,due"]);
+        assert!(!hidden.contains(DisplayProp::Labels));
+        assert!(!hidden.contains(DisplayProp::Due));
+        assert!(hidden.contains(DisplayProp::Status));
+        assert_eq!(
+            display(&["list", "--show", "id,board"]),
+            DisplayProps::of(&[DisplayProp::Id, DisplayProp::Board])
+        );
+        assert!(parse_err(&["list", "--show", "assignee"]).contains("assignee"));
     }
 
     /// A missing, unparseable or split pattern fails at parse time, before any

@@ -207,4 +207,24 @@ fn list_filters_cards_across_boards() {
         headway(bin, url, db, &["list", "zzz-nothing"]).trim(),
         "no cards"
     );
+
+    // Display properties: `--hide labels` drops the label suffix and keeps
+    // the rest; `--show` prints just what it names beside the title.
+    let out = headway(bin, url, db, &["list", "--board", "other"]);
+    assert!(out.contains("Card on another board  [ui]"), "{out:?}");
+    let out = headway(
+        bin,
+        url,
+        db,
+        &["list", "--board", "other", "--hide", "labels"],
+    );
+    assert!(!out.contains("[ui]"), "{out:?}");
+    assert!(out.contains(&elsewhere), "the ref stays: {out:?}");
+    let out = headway(
+        bin,
+        url,
+        db,
+        &["list", "--board", "other", "--show", "status"],
+    );
+    assert_eq!(out.trim_end(), "[Backlog]  Card on another board");
 }

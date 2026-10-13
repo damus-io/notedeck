@@ -1213,6 +1213,31 @@ fn issue_list_spans_boards_filters_and_opens_cards() {
     wait_for_label(&mut harness, "1 card · 5 columns");
 }
 
+/// The issue list's Display menu turns a row property off and on
+/// (headway:headway/end-kick-draft): with Labels on, the side card's `quest`
+/// chip shows; flipping it off in the menu hides every label chip, and Reset
+/// brings them back. Behavioural (accesskit only), so it runs without
+/// lavapipe.
+#[test]
+fn issue_list_display_menu_toggles_a_property() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_side_board(&mut harness);
+
+    harness.press_key(egui::Key::V);
+    wait_for_label(&mut harness, SIDE_CARD);
+    harness.get_by_label("quest");
+
+    harness.get_by_label("☰ Display").click();
+    wait_for_label(&mut harness, "Display properties");
+    harness.get_by_label("Labels").click();
+    wait_for_absent(&mut harness, "quest");
+    // The row is still there; only its labels went.
+    harness.get_by_label(SIDE_CARD);
+
+    harness.get_by_label("Reset to default").click();
+    wait_for_label(&mut harness, "quest");
+}
+
 /// Archived cards are as reachable as live ones
 /// (headway:headway/album-trouble-treat): `is:archived` in the board filter
 /// opens the archived sheet with the query's other terms narrowing it, a title

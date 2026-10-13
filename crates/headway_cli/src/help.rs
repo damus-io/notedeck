@@ -202,18 +202,27 @@ they are neither. The pager is $HEADWAY_PAGER, else $PAGER, else
         name: "list",
         group: Group::Reading,
         summary: "List the cards a query matches, one row each, across every board",
-        usage: &["list [query...] [--board <b>] [--in <c>] [--all] [-n <k>] [--json]"],
+        usage: &[
+            "list [query...] [--board <b>] [--in <c>] [--all] [--show <props>] [--hide <props>] [-n <k>] [--json]",
+        ],
         details: "\
-Print one row per card the query keeps: its priority, full ref, column
-and title, labels and subissue rollup after it. Rows come in board order
+Print one row per card the query keeps: its blocked and priority
+markers, full ref, column and title, then its labels, subissue rollup,
+estimate, due date and when it last changed. Rows come in board order
 (board, then column, then rank).
+
+Which of those a row prints are its display properties: --show <props>
+prints just these, --hide <props> drops these from the default (or from
+--show's). Each is a comma-separated list of: id, status, priority,
+labels, subissues, blockers, estimate, due, created, updated, board.
+The title is always printed; --json always prints the whole card.
 
 The query is the same one the app's board filter reads: whitespace-
 separated terms, all of which must hold.
 
   label:x  l:x          a label containing x
   priority:x  p:x       urgent|high|medium|low|none; p:high,urgent for either
-  is:open|done|progress|any
+  is:open|done|progress|any|archived
   is:blocked|unblocked
   status:x  col:x       the column, by id or name; col:todo,backlog for either
   due:any|none|<date>   dated, undated, or due on or before YYYY-MM-DD
@@ -221,7 +230,7 @@ separated terms, all of which must hold.
   anything else         text in the title, description, labels or word-id
 
 With no is: term only open cards are listed (not in a done column);
---all lists done ones too. Archived cards are never listed.
+--all lists done ones too. Archived cards are listed only for is:archived.
 
 Lists every board you can read. --board <b> narrows it to that board, and
 --in to a card's subtree (on the board its ref names). A read-only command:
@@ -233,6 +242,14 @@ it never signs or publishes.",
                 "Only this card and everything under it (a card ref), or the board slug for the whole board",
             ),
             ("--board <b>", "List only this board"),
+            (
+                "--show <props>",
+                "Print only these properties beside the title, e.g. id,status,due",
+            ),
+            (
+                "--hide <props>",
+                "Leave these properties out, e.g. labels,updated",
+            ),
             ("-n, --count <k>", "Print at most k rows"),
             ("--color <when>", "auto (default) | always | never"),
             ("--pager", "Page the rows even when stdout isn't a terminal"),

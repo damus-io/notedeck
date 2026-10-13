@@ -8,20 +8,26 @@
 //! are recomputed only when a board re-folds or the query changes
 //! ([`ListState::refresh`]); a steady frame draws the cached rows, and only
 //! the ones on screen.
+//!
+//! A row is Linear's one line (headway:headway/end-kick-draft): priority, ref
+//! and status circle, the title, then right-aligned its parent and subissue
+//! rollup, labels, estimate, blockers, due date and when it changed — each a
+//! [`DisplayProp`] the header's Display menu turns on and off.
 
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{RADIUS_MD, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
 
 use super::widgets::{
-    KeyedText, StatusIcon, label_chip, priority_icon_ui, priority_label, status_icon_ui,
+    KeyedText, StatusIcon, label_chip, priority_icon_ui, priority_label, status_icon_ui, text_pill,
+    tinted_pill,
 };
 use super::{BoardEffect, BoardNav, BoardUiState};
 use crate::cache::BoardRef;
 use crate::cursor::CursorMove;
 use crate::event::{self, BoardView, CardView, Priority};
 use crate::keys;
-use headway::query::{IssueFilter, ListRow, Placement, StateFilter};
+use headway::query::{DisplayProp, DisplayProps, IssueFilter, ListRow, Placement, StateFilter};
 
 /// Height of one list row, fixed so the scroll area lays out only the rows on
 /// screen ([`egui::ScrollArea::show_rows`]).
@@ -53,6 +59,10 @@ pub(crate) struct ListState {
     seen: Option<ListInputs>,
     /// The header's `"N issues"` count.
     count: KeyedText<usize>,
+    /// Which properties each row shows beside its title, toggled in the
+    /// header's Display menu. Kept for the session; saved views will persist
+    /// it (headway:headway/brave-project-parade).
+    display: DisplayProps,
 }
 
 /// One row of the list: where its card sits in the sources it was computed
@@ -67,6 +77,75 @@ struct ListLine {
     id: NoteId,
     /// The card's word-id (`maple-river-canyon`).
     word_id: String,
+    /// The text of the row's properties, formatted once when the rows are
+    /// computed rather than every frame.
+    text: LineText,
+}
+
+/// A [`ListLine`]'s formatted property text. `None` where the card has no
+/// value for that property, so its cell is skipped rather than drawn empty.
+struct LineText {
+    /// `› <parent title>`, cut short, when the card is a subissue of a card
+    /// on its board.
+    parent: Option<String>,
+    /// `done/total` of its subissues.
+    subissues: Option<String>,
+    /// `3 pt`.
+    estimate: Option<String>,
+    /// `⊘ 2`: how many cards block it.
+    blockers: Option<String>,
+    /// `Oct 20`.
+    due: Option<String>,
+    /// When it was created, relative (`3d ago`). Relative to when the rows
+    /// were computed: a steady list doesn't re-age.
+    created: String,
+    /// When its content last changed, relative, likewise.
+    updated: String,
+}
+
+impl LineText {
+    /// The property text for `card` on `board`.
+    fn of(board: &BoardView, card: &CardView) -> LineText {
+        let parent = card
+            .parent
+            .and_then(|id| board.card(id))
+            .map(|parent| format!("› {}", clip(&parent.title, PARENT_CHARS)));
+        let subissues = (!card.subissues.is_empty()).then(|| {
+            let done = card.subissues.iter().filter(|s| s.done).count();
+            format!("{done}/{}", card.subissues.len())
+        });
+        let blockers =
+            (!card.blocked_by.is_empty()).then(|| format!("⊘ {}", card.blocked_by.len()));
+        LineText {
+            parent,
+            subissues,
+            estimate: card.estimate.map(|points| format!("{points} pt")),
+            blockers,
+            due: card.due.map(short_date),
+            created: headway::fmt::rel_time(card.created_at),
+            updated: headway::fmt::rel_time(card.updated_at),
+        }
+    }
+}
+
+/// How many characters of a parent's title a row's breadcrumb keeps.
+const PARENT_CHARS: usize = 28;
+
+/// `text`, cut to `max` characters with an ellipsis when it's longer.
+fn clip(text: &str, max: usize) -> std::borrow::Cow<'_, str> {
+    match text.char_indices().nth(max) {
+        None => std::borrow::Cow::Borrowed(text),
+        Some((at, _)) => std::borrow::Cow::Owned(format!("{}…", text[..at].trim_end())),
+    }
+}
+
+/// A due date the way Linear's row shows one: `Oct 20`.
+fn short_date(date: event::Date) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month = MONTHS[usize::from(date.month.clamp(1, 12)) - 1];
+    format!("{month} {}", date.day)
 }
 
 /// Where a [`ListLine`]'s card sits on its board, by index into the board the
@@ -88,11 +167,20 @@ impl LineSlot {
         }
     }
 
-    /// The status icon for where the card sits on `board`.
+    /// The status icon for where the card sits on `board`: filled in a
+    /// terminal column, half in In Progress, and otherwise by position, as
+    /// the grid's column headers draw it.
     fn icon(self, board: &BoardView) -> StatusIcon {
-        match self {
-            LineSlot::Column { col, .. } => StatusIcon::for_column(col, board.columns.len()),
-            LineSlot::Archived(_) => StatusIcon::Archived,
+        let LineSlot::Column { col, .. } = self else {
+            return StatusIcon::Archived;
+        };
+        let column = &board.columns[col];
+        if board.column_is_terminal(&column.id) {
+            StatusIcon::Done
+        } else if column.is_in_progress() {
+            StatusIcon::Started(0.5)
+        } else {
+            StatusIcon::for_column(col, board.columns.len())
         }
     }
 
@@ -177,6 +265,7 @@ impl ListState {
                         slot,
                         id: card.id,
                         word_id: headway::wordid::encode(card.id.bytes()),
+                        text: LineText::of(board, card),
                     });
                 }
             };
@@ -337,6 +426,7 @@ pub(super) fn list_view_ui(
 fn list_header_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiState) {
     let list = &mut state.list;
     let mut close = false;
+    let mut menu_open = false;
     ui.horizontal(|ui| {
         let back =
             egui::Button::new(egui::RichText::new("← Board").color(theme.text_muted)).frame(false);
@@ -359,6 +449,8 @@ fn list_header_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiStat
         if ui.selectable_label(list.all, "All").clicked() {
             list.all = true;
         }
+        ui.add_space(SPACING_SM);
+        menu_open = display_menu_ui(ui, theme, &mut list.display);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let field = egui::TextEdit::singleline(&mut list.query)
                 .id(list_field_id())
@@ -367,9 +459,52 @@ fn list_header_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiStat
             ui.add(field);
         });
     });
+    // Open this frame: hold the list keys off it (see `grid_menu_open`).
+    state.grid_menu_open |= menu_open;
     if close {
         state.close_list();
     }
+}
+
+/// The list's Display menu: one toggle chip per [`DisplayProp`], like
+/// Linear's view options. Stays open while chips are flipped. The trigger
+/// wears the filter's warm tint while the set differs from the default, so a
+/// list showing less than usual says so. Returns whether the menu is open.
+fn display_menu_ui(ui: &mut egui::Ui, theme: &ColorTheme, display: &mut DisplayProps) -> bool {
+    let label = if *display == DisplayProps::default() {
+        egui::RichText::new("☰ Display").color(theme.text_secondary)
+    } else {
+        egui::RichText::new("☰ Display")
+            .strong()
+            .color(theme.warning)
+    };
+    // Closes on a click outside only, so several chips can be flipped in
+    // one visit.
+    let config = egui::containers::menu::MenuConfig::new()
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    let menu = egui::containers::menu::MenuButton::new(label).config(config);
+    let (_, open) = menu.ui(ui, |ui| {
+        ui.label(
+            egui::RichText::new("Display properties")
+                .small()
+                .color(theme.text_muted),
+        );
+        ui.add_space(SPACING_XS);
+        ui.set_max_width(280.0);
+        ui.horizontal_wrapped(|ui| {
+            for prop in DisplayProp::ALL {
+                let on = display.contains(prop);
+                if ui.selectable_label(on, prop.label()).clicked() {
+                    display.toggle(prop);
+                }
+            }
+        });
+        ui.add_space(SPACING_XS);
+        if ui.button("Reset to default").clicked() {
+            *display = DisplayProps::default();
+        }
+    });
+    open.is_some()
 }
 
 /// The list's rows, only those on screen laid out. Returns the row clicked
@@ -404,7 +539,8 @@ fn list_rows_ui(
             }
             for at in range {
                 let line = &list.rows[at];
-                if list_row_ui(ui, theme, sources, line, cursor == Some(at)).clicked() {
+                let row = list_row_ui(ui, theme, sources, line, list.display, cursor == Some(at));
+                if row.clicked() {
                     clicked = Some(at);
                 }
             }
@@ -415,13 +551,17 @@ fn list_rows_ui(
     clicked
 }
 
-/// One row: status, priority, word-id, title, labels and where it sits (its
-/// column and board). `on_cursor` rings it as the keyboard cursor's row.
+/// One row, Linear's anatomy left to right: priority, word-id, status
+/// circle, the title (cut short to fit), then right-aligned the parent
+/// breadcrumb and subissue rollup, labels, estimate, blockers, due date, when
+/// it was created and changed, and its board — each drawn only while
+/// `display` holds it. `on_cursor` rings it as the keyboard cursor's row.
 fn list_row_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     sources: &[BoardRef],
     line: &ListLine,
+    display: DisplayProps,
     on_cursor: bool,
 ) -> egui::Response {
     let (rect, _) = ui.allocate_exact_size(
@@ -430,7 +570,6 @@ fn list_row_ui(
     );
     let board: &BoardView = &sources[line.board];
     let card = line.slot.card(board);
-    let place = line.slot.place(board);
 
     let corner = egui::CornerRadius::same(RADIUS_MD as u8);
     if on_cursor {
@@ -448,45 +587,13 @@ fn list_row_ui(
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
             ui.spacing_mut().item_spacing.x = SPACING_SM;
-            status_icon_ui(ui, theme, line.slot.icon(board), 14.0).on_hover_text(place);
-            if card.priority == Priority::None {
-                ui.add_space(14.0);
-            } else {
-                priority_icon_ui(ui, theme, card.priority, 14.0)
-                    .on_hover_text(priority_label(card.priority));
-            }
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(&line.word_id)
-                        .small()
-                        .color(theme.text_muted.gamma_multiply(0.7)),
-                )
-                .selectable(false),
-            );
+            row_lead_ui(ui, theme, board, card, line, display);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = SPACING_SM;
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(&board.title)
-                            .small()
-                            .color(theme.text_muted),
-                    )
-                    .selectable(false),
-                );
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(place)
-                            .small()
-                            .color(theme.text_secondary),
-                    )
-                    .selectable(false),
-                );
-                for label in card.labels.iter().rev() {
-                    label_chip(ui, theme, label);
-                }
+                row_trail_ui(ui, theme, board, card, line, display);
                 ui.add_space(SPACING_XS);
                 // The title takes what's left, from the left, cut short with
-                // an ellipsis rather than pushing the labels off the row.
+                // an ellipsis rather than pushing the properties off the row.
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add(
                         egui::Label::new(
@@ -514,3 +621,118 @@ fn list_row_ui(
     }
     response
 }
+
+/// A row's leading properties, before its title: priority, word-id and
+/// status circle. Priority keeps its slot when the card has none, so the refs
+/// line up down the list.
+fn row_lead_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    board: &BoardView,
+    card: &CardView,
+    line: &ListLine,
+    display: DisplayProps,
+) {
+    if display.contains(DisplayProp::Priority) {
+        if card.priority == Priority::None {
+            ui.add_space(ICON_SIZE);
+        } else {
+            priority_icon_ui(ui, theme, card.priority, ICON_SIZE)
+                .on_hover_text(priority_label(card.priority));
+        }
+    }
+    if display.contains(DisplayProp::Id) {
+        // A fixed-width cell, wide enough for most word-ids, so the circles
+        // after them line up down the list.
+        let id = egui::Label::new(
+            egui::RichText::new(&line.word_id)
+                .small()
+                .color(theme.text_muted.gamma_multiply(0.7)),
+        )
+        .selectable(false)
+        .truncate();
+        let (cell, _) =
+            ui.allocate_exact_size(egui::vec2(ID_WIDTH, ROW_HEIGHT), egui::Sense::hover());
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(cell)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| ui.add(id),
+        );
+    }
+    if display.contains(DisplayProp::Status) {
+        status_icon_ui(ui, theme, line.slot.icon(board), ICON_SIZE)
+            .on_hover_text(line.slot.place(board));
+    }
+}
+
+/// A row's trailing properties, right-aligned, drawn right to left (so in
+/// reverse of how they read): board, updated, created, due, blockers,
+/// estimate, labels, then the subissue rollup and parent breadcrumb nearest
+/// the title.
+fn row_trail_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    board: &BoardView,
+    card: &CardView,
+    line: &ListLine,
+    display: DisplayProps,
+) {
+    let text = &line.text;
+    let muted = |ui: &mut egui::Ui, text: &str| {
+        ui.add(
+            egui::Label::new(egui::RichText::new(text).small().color(theme.text_muted))
+                .selectable(false),
+        )
+    };
+    if display.contains(DisplayProp::Board) {
+        muted(ui, &board.title);
+    }
+    if display.contains(DisplayProp::Updated) {
+        muted(ui, &text.updated).on_hover_text("Updated");
+    }
+    if display.contains(DisplayProp::Created) {
+        muted(ui, &text.created).on_hover_text("Created");
+    }
+    if display.contains(DisplayProp::Due)
+        && let Some(due) = &text.due
+    {
+        muted(ui, due).on_hover_text("Due date");
+    }
+    if display.contains(DisplayProp::Blockers)
+        && let Some(blockers) = &text.blockers
+    {
+        // Red while any blocker is unfinished; muted once they're all done.
+        let color = if card.is_blocked() {
+            theme.destructive
+        } else {
+            theme.text_muted
+        };
+        tinted_pill(ui, blockers, color).on_hover_text("Blocked by");
+    }
+    if display.contains(DisplayProp::Estimate)
+        && let Some(estimate) = &text.estimate
+    {
+        text_pill(ui, theme, estimate).on_hover_text("Estimate");
+    }
+    if display.contains(DisplayProp::Labels) {
+        for label in card.labels.iter().rev() {
+            label_chip(ui, theme, label);
+        }
+    }
+    if !display.contains(DisplayProp::SubIssues) {
+        return;
+    }
+    if let Some(subissues) = &text.subissues {
+        text_pill(ui, theme, subissues).on_hover_text("Sub-issues done");
+    }
+    if let Some(parent) = &text.parent {
+        muted(ui, parent).on_hover_text("Parent");
+    }
+}
+
+/// Side of a row's priority and status icons.
+const ICON_SIZE: f32 = 14.0;
+
+/// Width a row gives its word-id.
+const ID_WIDTH: f32 = 150.0;

@@ -8,6 +8,7 @@ nostrdb = { workspace = true }
 nostrdb_net = { workspace = true }
 gethostname = "1"
 hex = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 wordid = { workspace = true }
 profiling = { workspace = true }
