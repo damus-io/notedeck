@@ -82,6 +82,15 @@ impl App for Recording {
     fn current_ref(&self) -> Option<&str> {
         self.headway.current_ref()
     }
+
+    fn search(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        query: &notedeck::SearchQuery<'_>,
+        out: &mut notedeck::SearchHits,
+    ) {
+        self.headway.search(ctx, query, out);
+    }
 }
 
 /// A headless chrome with the recording Headway in front, on the demo board.
@@ -453,7 +462,6 @@ async fn a_focused_field_keeps_its_keys() {
 
 /// Press Cmd-K the way this platform's keyboard reports it: Ctrl sets
 /// `command` too off macOS.
-#[cfg(not(debug_assertions))]
 fn cmd_k(f: &mut Fixture) {
     f.press(Modifiers::COMMAND | Modifiers::CTRL, Key::K, None);
 }
@@ -465,6 +473,56 @@ fn selected(f: &mut Fixture) -> Option<String> {
         .command_bar_mut()
         .selected()
         .map(|item| item.title.clone())
+}
+
+/// Headway answers the bar's search (headway:notedeck/tuition-raw-benefit):
+/// a word from a demo card's title lists that card under Headway, marked as a
+/// card on its board and column, and a keyed term narrows it the way the
+/// issue list's query does. Opening a hit is Headway's own test's business
+/// (`search_finds_boards_and_cards_and_opens_a_card_on_its_board`): this
+/// fixture runs Headway as an `Other` app, which the chrome's open routing
+/// doesn't send Headway's notes to.
+#[tokio::test]
+async fn the_command_bar_searches_headway_cards() {
+    const CARD: &str = "Sync cards across relays";
+    let mut f = Fixture::new().await;
+    cmd_k(&mut f);
+    f.frame(vec![Event::Text("relays".to_owned())]);
+    f.frame(Vec::new());
+
+    let listed = |f: &mut Fixture| -> Vec<String> {
+        f.chrome
+            .command_bar_mut()
+            .matches()
+            .map(|item| item.title.clone())
+            .collect()
+    };
+    assert!(
+        listed(&mut f).iter().any(|t| t == CARD),
+        "{:?}",
+        listed(&mut f)
+    );
+    assert!(
+        f.drawn
+            .iter()
+            .any(|d| d.contains(CARD) && d.contains("Card")),
+        "drawn as a card: {:?}",
+        f.drawn
+    );
+    assert!(
+        f.drawn.iter().any(|d| d.contains("Headway · Backlog")),
+        "on its board and column: {:?}",
+        f.drawn
+    );
+
+    // `label:` is the issue list's term, and this card is labelled `nostr`.
+    f.frame(vec![Event::Text(" label:ui".to_owned())]);
+    f.frame(Vec::new());
+    assert!(
+        !listed(&mut f).iter().any(|t| t == CARD),
+        "{:?}",
+        listed(&mut f)
+    );
 }
 
 /// Cmd-K lists Headway's tools; "issue list" picks Open issue list, and

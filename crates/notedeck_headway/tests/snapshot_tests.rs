@@ -1297,6 +1297,118 @@ fn issue_list_spans_boards_filters_and_opens_cards() {
     );
 }
 
+/// Universal search (headway:notedeck/tuition-raw-benefit): `side` finds the
+/// Side board by its title and the Side board's card by its own, each marked
+/// with what it is and the card placed by board and column. The card's hit
+/// opens it the way the chrome opens any hit: its reference resolves through
+/// the registered parsers and the note routes to Headway, which switches to
+/// the Side board and shows the card. Keyed terms narrow like the issue list's
+/// (`label:quest`), and an archived card waits for `is:archived`.
+/// Behavioural (accesskit only), so it runs without lavapipe.
+#[test]
+fn search_finds_boards_and_cards_and_opens_a_card_on_its_board() {
+    use notedeck::{SearchHit, SearchHits, SearchQuery};
+    use notedeck_headway::HeadwayRoute;
+
+    fn search(harness: &mut Harness<'static, HeadwayTestState>, text: &str) -> Vec<SearchHit> {
+        let state = harness.state_mut();
+        let mut app_ctx = state.notedeck.app_context();
+        let mut out = SearchHits::new(notedeck::search::HITS_PER_PROVIDER);
+        state
+            .headway
+            .search(&mut app_ctx, &SearchQuery { text }, &mut out);
+        out.hits().to_vec()
+    }
+    fn titles(hits: &[SearchHit]) -> Vec<&str> {
+        hits.iter().map(|h| h.title.as_str()).collect()
+    }
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_side_board(&mut harness);
+
+    let hits = search(&mut harness, "side");
+    let board = hits
+        .iter()
+        .find(|h| h.title == "Side")
+        .unwrap_or_else(|| panic!("no Side board in {:?}", titles(&hits)));
+    assert_eq!(board.kind.as_deref(), Some("Board"));
+    assert_eq!(board.subtitle.as_deref(), Some("side"));
+    let card = hits
+        .iter()
+        .find(|h| h.title == SIDE_CARD)
+        .unwrap_or_else(|| panic!("no Side card in {:?}", titles(&hits)))
+        .clone();
+    assert_eq!(card.kind.as_deref(), Some("Card"));
+    // Its board and column. Which column races the seed's placement event
+    // (`seed_side_board` waits only for the card), so just the board here.
+    assert!(
+        card.subtitle
+            .as_deref()
+            .is_some_and(|s| s.starts_with("Side · ")),
+        "placed by board and column: {:?}",
+        card.subtitle
+    );
+
+    // Keyed terms narrow as in the issue list; no free text, so no board.
+    assert_eq!(titles(&search(&mut harness, "label:quest")), [SIDE_CARD]);
+    assert!(search(&mut harness, "label:nope side").is_empty());
+    assert!(
+        search(&mut harness, "is:archived side").is_empty(),
+        "nothing is archived yet, and a board is no archived card"
+    );
+
+    // An archived card waits for `is:archived`, and says where it went.
+    const SHELVED: &str = "Column reordering";
+    let shelved = {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        demo_card_id(state.notedeck.app_context().ndb, &author, SHELVED)
+    };
+    assert_eq!(titles(&search(&mut harness, "reordering")), [SHELVED]);
+    archive_demo_cards(&mut harness, &[shelved]);
+    wait_for_label(&mut harness, "View archived (1)");
+    assert!(search(&mut harness, "reordering").is_empty());
+    let archived = search(&mut harness, "is:archived reordering");
+    assert_eq!(titles(&archived), [SHELVED]);
+    assert_eq!(archived[0].subtitle.as_deref(), Some("Headway · archived"));
+
+    // Open it as the chrome would: resolve its reference, route the note.
+    let token = {
+        let state = harness.state_mut();
+        let mut app_ctx = state.notedeck.app_context();
+        let txn = Transaction::new(app_ctx.ndb).expect("txn");
+        let resolve_ctx = notedeck::ReferenceResolveCtx {
+            ndb: app_ctx.ndb,
+            txn: &txn,
+            selected_account: Some(state.account.pubkey),
+        };
+        let note_id = app_ctx
+            .registries
+            .reference_parsers
+            .resolve_exact(&card.uri.reference, &resolve_ctx)
+            .expect("the card's hit resolves")
+            .note_id;
+        drop(txn);
+        state
+            .headway
+            .open_note_route(&mut app_ctx, note_id)
+            .expect("a card routes to Headway")
+    };
+    assert!(
+        token
+            .downcast_ref::<HeadwayRoute>()
+            .is_some_and(|route| matches!(route, HeadwayRoute::Card { .. })),
+        "the hit opens the card's detail"
+    );
+    harness.state_mut().nav_token = Some(token);
+    wait_for_label(&mut harness, "← Back");
+    harness.get_by_label(SIDE_CARD);
+
+    // Under the detail is the Side board, not the demo board it came from.
+    harness.state_mut().nav_token = Some(std::rc::Rc::new(HeadwayRoute::Board));
+    wait_for_label(&mut harness, "1 card · 5 columns");
+}
+
 /// A card key on a list row acts on the row's board, not the one showing
 /// (headway:notedeck/exile-finger-birth): `j` walks the cursor onto the Side
 /// board's card while the demo board shows, its current card is the row's

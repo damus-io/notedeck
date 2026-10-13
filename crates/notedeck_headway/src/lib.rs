@@ -17,6 +17,7 @@ mod renderers;
 mod review;
 mod review_images;
 mod review_models;
+mod search;
 mod tools;
 mod ui;
 mod ui_tools;
@@ -670,6 +671,26 @@ impl App for Headway {
     /// said it was, as far as the board still allows.
     fn restore_jump(&mut self, _ctx: &mut AppContext<'_>, location: &dyn notedeck::JumpTarget) {
         self.restore_jump_token(location);
+    }
+
+    /// Boards and cards for the chrome's Cmd-K bar (see [`search`]): folds
+    /// every board the switcher lists, own and shared, the way the issue list
+    /// does, but only here, once per query change, never per frame.
+    fn search(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        query: &notedeck::SearchQuery<'_>,
+        out: &mut notedeck::SearchHits,
+    ) {
+        let author = *ctx.accounts.selected_account_pubkey();
+        let own_boards: Option<Rc<[BoardView]>> = Transaction::new(ctx.ndb).ok().and_then(|txn| {
+            self.board_cache
+                .borrow_mut()
+                .all_boards(ctx.ndb, &txn, &author)
+        });
+        let boards = self.board_summaries_with_shared(ctx, own_boards.as_deref().unwrap_or(&[]));
+        let sources = self.list_sources(ctx, own_boards.as_ref(), &boards);
+        search::search(&sources, query, out);
     }
 
     /// Background sync, run every frame for all *opened* apps (not just the

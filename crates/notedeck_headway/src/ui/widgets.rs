@@ -638,7 +638,7 @@ pub(super) fn priority_icon_ui(
 
 /// A `nostr:nevent…` URI for an issue card, ready to paste into a notebook note
 /// (or anywhere else that resolves nostr refs). Carries the issue kind as a hint.
-pub(super) fn issue_nostr_uri(card_id: &NoteId) -> Option<String> {
+pub(crate) fn issue_nostr_uri(card_id: &NoteId) -> Option<String> {
     use nostr::nips::nip19::ToBech32;
     let event_id = nostr::EventId::from_slice(card_id.bytes()).ok()?;
     let nevent = nostr::nips::nip19::Nip19Event::new(event_id, Vec::<String>::new())
@@ -648,7 +648,7 @@ pub(super) fn issue_nostr_uri(card_id: &NoteId) -> Option<String> {
 
 /// A `nostr:naddr…` URI for a board, addressing the replaceable board event by
 /// its `(kind, author, identifier)` coordinate.
-pub(super) fn board_nostr_uri(author: &[u8; 32], board_id: &str) -> Option<String> {
+pub(crate) fn board_nostr_uri(author: &[u8; 32], board_id: &str) -> Option<String> {
     use nostr::nips::nip19::ToBech32;
     let pubkey = nostr::PublicKey::from_slice(author).ok()?;
     let mut coord =

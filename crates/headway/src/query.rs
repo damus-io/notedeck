@@ -248,6 +248,18 @@ impl IssueFilter {
         self.state == Some(StateFilter::Archived)
     }
 
+    /// Whether free text is all it holds: no keyed term and no pasted
+    /// reference. What a search that also matches things other than cards
+    /// (boards) asks before matching them by that text, since a keyed term
+    /// is about cards.
+    pub fn is_text_only(&self) -> bool {
+        *self
+            == IssueFilter {
+                text: self.text.clone(),
+                ..IssueFilter::default()
+            }
+    }
+
     /// Whether any constraint is set. An inactive filter keeps every card.
     pub fn is_active(&self) -> bool {
         *self != IssueFilter::default()
@@ -1602,6 +1614,15 @@ mod tests {
     use super::*;
     use crate::event::{ArchivedCard, EdgeRef, SubissueView};
     use nostrdb_net::NoteId;
+
+    #[test]
+    fn text_only_means_no_keyed_term_and_no_reference() {
+        assert!(IssueFilter::parse("relay side", None).is_text_only());
+        assert!(IssueFilter::parse("", None).is_text_only());
+        assert!(!IssueFilter::parse("relay p:high", None).is_text_only());
+        assert!(!IssueFilter::parse("label:ui", None).is_text_only());
+        assert!(!IssueFilter::parse("headway:side/maple-river-canyon", None).is_text_only());
+    }
 
     fn card(n: u8, title: &str, labels: &[&str]) -> CardView {
         CardView {

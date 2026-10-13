@@ -63,6 +63,7 @@ use grid::{add_column_ui, column_ui, start_move_anims};
 use header::{board_switcher, filtered_badge, sync_indicator, view_options_menu};
 use review::{NOTICE_SECS, ReviewQueue, ReviewSection, ReviewUi, review_pane_ui, review_queue_ui};
 use widgets::KeyedText;
+pub(crate) use widgets::{board_nostr_uri, issue_nostr_uri};
 
 pub(crate) use board_picker::{BoardStep, has_other_board, step_board};
 pub(crate) use review::{Notice, QueueNotice, QueueScope, SessionOpen};
