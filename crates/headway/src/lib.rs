@@ -19,6 +19,8 @@
 //!   commit on this host and reads it back as a patch.
 //! - [`title`] — splits a card title into `CODE: headline — detail` for
 //!   surfaces that show it in little room.
+//! - [`views`] — saved list views: an account's [`query::ViewSpec`]s, kept
+//!   PNS-wrapped in nostrdb, behind the list's tabs and `headway list --view`.
 //! - [`teams`] — the joined-shared-board roster: which SNS channels this account
 //!   holds keys for, so both front ends fold and seal the same shared boards.
 
@@ -56,4 +58,5 @@ pub(crate) fn test_config() -> nostrdb::Config {
 pub mod teams;
 pub mod title;
 pub mod traversal;
+pub mod views;
 pub mod wordid;

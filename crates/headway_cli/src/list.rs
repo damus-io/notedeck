@@ -15,9 +15,15 @@ use serde_json::json;
 use headway::event::{BoardView, Priority, card_json};
 use headway::fmt::rel_time;
 use headway::query::{
-    DisplayProp, DisplayProps, Grouping, IssueFilter, ListGroup, ListQuery, ListRow, SortBy,
-    Sorting, StateFilter, group, list, ready_set,
+    BuiltinView, DisplayProp, DisplayProps, Grouping, IssueFilter, ListGroup, ListQuery, ListRow,
+    SortBy, Sorting, ViewSpec, group, list, ready_set,
 };
+use headway::store::NoPublish;
+use headway::views::{SavedView, find_view, new_slug};
+use nostrdb::Ndb;
+use nostrdb_net::Pubkey;
+
+use crate::args::ListViews;
 
 use crate::grep::{PAGER_VAR, SGR_DIM, SGR_REF, SGR_TITLE};
 use crate::output::{BLOCKED_GLYPH, labels_suffix, plain_ref, priority_glyph};
@@ -44,19 +50,16 @@ pub(crate) struct ListOutput {
 /// first rows of that order. Sorted by work order, the rows `headway next
 /// --ready` would hand out are marked.
 ///
-/// `query` is parsed by [`IssueFilter::parse`] unscoped, so a pasted
-/// `headway:<board>/<word-id>` names exactly that card. With no `is:` term the
-/// list is the open cards (Linear's "Active"); `include_done` (`--all`) drops
-/// that default. `subtree` (`--in <card>`) keeps that card and its descendants.
+/// `filter` is the run's view's ([`ViewSpec::filter`], see [`compose_view`]).
+/// `subtree` (`--in <card>`) keeps that card and its descendants.
 pub(crate) fn cmd_list(
     boards: &[BoardView],
     subtree: Option<[u8; 32]>,
-    query: &str,
-    include_done: bool,
+    filter: IssueFilter,
     out: ListOutput,
 ) -> Result<()> {
     let query = ListQuery {
-        filter: default_state(IssueFilter::parse(query, None), include_done),
+        filter,
         within: subtree,
         display: out.display,
         grouping: out.grouping,
@@ -158,13 +161,171 @@ fn groups_json(rows: &[ListRow], groups: &[ListGroup], marks: RowMarks) -> serde
         .collect()
 }
 
-/// `filter` with the list's default state: open cards, unless the query says
-/// which state it wants or `include_done` asks for every state.
-fn default_state(mut filter: IssueFilter, include_done: bool) -> IssueFilter {
-    if filter.state.is_none() && !include_done {
-        filter.state = Some(StateFilter::Open);
+/// The view a `list` run shows: `run` — the query words and layout flags
+/// the command line gave, its board when `--board` named one — over the view
+/// `--view` names, if any. The query words narrow the view's query, a layout
+/// flag group that was passed replaces the view's, and `--all` (`include_done`)
+/// adds `is:any` when the query says nothing about state. With no `is:` term
+/// the list is the open cards, Linear's "Active" ([`ViewSpec::filter`]).
+///
+/// A saved view is looked up before a built-in one, so a view saved as
+/// "Backlog" shadows the built-in.
+pub(crate) fn compose_view(
+    saved: &[SavedView],
+    views: &ListViews,
+    run: ViewSpec,
+    include_done: bool,
+) -> Result<ViewSpec> {
+    let mut spec = match &views.apply {
+        None => run,
+        Some(name) => {
+            let base = match find_view(saved, name) {
+                Some(view) => view.spec.clone(),
+                None => BuiltinView::named(name)
+                    .ok_or_else(|| format!("no view named '{name}' (see `headway list --views`)"))?
+                    .spec(&run),
+            };
+            let given = views.given;
+            ViewSpec {
+                name: base.name,
+                query: join_terms(&base.query, &run.query),
+                display: if given.display {
+                    run.display
+                } else {
+                    base.display
+                },
+                grouping: if given.grouping {
+                    run.grouping
+                } else {
+                    base.grouping
+                },
+                sorting: if given.sorting {
+                    run.sorting
+                } else {
+                    base.sorting
+                },
+                hide_subissues: base.hide_subissues,
+                board: run.board.or(base.board),
+            }
+        }
+    };
+    if include_done && IssueFilter::parse(&spec.query, None).state.is_none() {
+        spec.query = join_terms(&spec.query, "is:any");
     }
-    filter
+    Ok(spec)
+}
+
+/// Two queries' terms as one query: both, space-separated, either may be
+/// empty.
+fn join_terms(a: &str, b: &str) -> String {
+    match (a.trim(), b.trim()) {
+        ("", b) => b.to_string(),
+        (a, "") => a.to_string(),
+        (a, b) => format!("{a} {b}"),
+    }
+}
+
+/// `headway list --save-view <name>`: save `spec` as `author`'s view `name`,
+/// over the view already called that (keeping its slug) or as a new one.
+pub(crate) fn save_named_view(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    saved: &[SavedView],
+    name: &str,
+    spec: ViewSpec,
+    json: bool,
+) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("--save-view needs a name".into());
+    }
+    let slug = match find_view(saved, name) {
+        Some(view) => view.slug.clone(),
+        None => new_slug(saved, name),
+    };
+    let view = SavedView {
+        slug,
+        spec: ViewSpec {
+            name: name.to_string(),
+            ..spec
+        },
+    };
+    headway::views::save_view(ndb, author, secret, &view, &mut NoPublish);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&view_json(&view.spec, Some(&view.slug)))?
+        );
+    } else {
+        println!("saved view '{}' ({})", view.spec.name, view.slug);
+    }
+    Ok(())
+}
+
+/// `headway list --delete-view <name>`: delete `author`'s saved view `name`.
+pub(crate) fn delete_named_view(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    saved: &[SavedView],
+    name: &str,
+) -> Result<()> {
+    let view = find_view(saved, name).ok_or_else(|| format!("no saved view named '{name}'"))?;
+    headway::views::delete_view(ndb, author, secret, &view.slug, &mut NoPublish);
+    println!("deleted view '{}'", view.spec.name);
+    Ok(())
+}
+
+/// `headway list --views`: the built-in views, then `saved`, one per line —
+/// name, query and any layout off `layout` (the list's defaults) — or as
+/// JSON, each with its slug (`null` for a built-in) and whole spec.
+pub(crate) fn print_views(saved: &[SavedView], layout: &ViewSpec, json: bool) -> Result<()> {
+    let builtins = BuiltinView::ALL.map(|v| v.spec(layout));
+    let rows = builtins
+        .iter()
+        .map(|spec| (spec, None))
+        .chain(saved.iter().map(|v| (&v.spec, Some(v.slug.as_str()))));
+    if json {
+        let all: Vec<serde_json::Value> = rows.map(|(spec, slug)| view_json(spec, slug)).collect();
+        println!("{}", serde_json::to_string_pretty(&all)?);
+        return Ok(());
+    }
+    let rows: Vec<(&ViewSpec, Option<&str>)> = rows.collect();
+    let width = rows
+        .iter()
+        .map(|(s, _)| s.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    for (spec, slug) in rows {
+        let mut line = format!("{:<width$}  {}", spec.name, spec.query);
+        if spec.grouping.is_grouped() {
+            line.push_str(&format!("  group:{}", spec.grouping.by));
+            if spec.grouping.effective_sub() != headway::query::GroupBy::None {
+                line.push_str(&format!("/{}", spec.grouping.sub));
+            }
+        }
+        if spec.sorting != layout.sorting {
+            line.push_str(&format!("  sort:{}", spec.sorting.by));
+        }
+        if let Some(board) = &spec.board {
+            line.push_str(&format!("  board:{board}"));
+        }
+        if slug.is_none() {
+            line.push_str("  (built-in)");
+        }
+        println!("{}", line.trim_end());
+    }
+    Ok(())
+}
+
+/// The `--views --json` shape of one view: its spec's fields, plus its slug
+/// and whether it's built in.
+fn view_json(spec: &ViewSpec, slug: Option<&str>) -> serde_json::Value {
+    let mut value = json!(spec);
+    value["slug"] = json!(slug);
+    value["builtin"] = json!(slug.is_none());
+    value
 }
 
 /// The `list --json` shape for one row: the card as `show --json` renders it,
@@ -383,14 +544,56 @@ mod tests {
         }
     }
 
-    /// No `is:` term means open cards; `--all` or any `is:` term overrides it.
+    /// No `is:` term means open cards; `--all` or any `is:` term overrides
+    /// it. `--view` lays its query under the run's words and its layout
+    /// under the flags that weren't passed.
     #[test]
-    fn open_is_the_default_state() {
-        let parsed = |q: &str, all| default_state(IssueFilter::parse(q, None), all).state;
-        assert_eq!(parsed("relay", false), Some(StateFilter::Open));
-        assert_eq!(parsed("relay", true), None);
-        assert_eq!(parsed("is:done", false), Some(StateFilter::Done));
-        assert_eq!(parsed("is:any", false), Some(StateFilter::Any));
+    fn compose_view_layers_the_run_over_the_view() {
+        use headway::query::{GroupBy, StateFilter};
+        let run = |query: &str| ViewSpec {
+            query: query.to_string(),
+            ..ViewSpec::default()
+        };
+        let none = ListViews::default();
+        let state = |spec: ViewSpec| spec.filter().state;
+        let composed = |q: &str, all| compose_view(&[], &none, run(q), all).unwrap();
+        assert_eq!(state(composed("relay", false)), Some(StateFilter::Open));
+        assert_eq!(state(composed("relay", true)), Some(StateFilter::Any));
+        assert_eq!(state(composed("is:done", true)), Some(StateFilter::Done));
+
+        let hot = SavedView {
+            slug: "hot".to_string(),
+            spec: ViewSpec {
+                name: "Hot".to_string(),
+                query: "p:high".to_string(),
+                grouping: Grouping {
+                    by: GroupBy::Label,
+                    ..Grouping::default()
+                },
+                sorting: Sorting::by(SortBy::Due),
+                ..ViewSpec::default()
+            },
+        };
+        let mut views = ListViews {
+            apply: Some("HOT".to_string()),
+            ..ListViews::default()
+        };
+        views.given.sorting = true;
+        let spec =
+            compose_view(std::slice::from_ref(&hot), &views, run("label:ui"), false).unwrap();
+        assert_eq!(spec.query, "p:high label:ui");
+        assert_eq!(
+            spec.grouping.by,
+            GroupBy::Label,
+            "the view's grouping stays"
+        );
+        assert_eq!(spec.sorting, Sorting::default(), "the passed sort wins");
+
+        views.apply = Some("backlog".to_string());
+        let spec = compose_view(&[], &views, run(""), false).unwrap();
+        assert_eq!(spec.query, "col:backlog");
+        views.apply = Some("nope".to_string());
+        assert!(compose_view(&[], &views, run(""), false).is_err());
     }
 
     /// A plain row: markers, padded ref, padded column, title, labels.

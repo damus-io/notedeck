@@ -1269,6 +1269,109 @@ pub fn ready_set(rows: &[ListRow]) -> HashSet<[u8; 32]> {
     ready
 }
 
+/// A list view as it's saved: its name, its query and how its rows are
+/// drawn, ordered and gathered — Linear's saved views, and the tabs above the
+/// list. Persisted as JSON in a kind-30626 note ([`crate::views`]); the
+/// filter is kept as its query *text*, read with [`IssueFilter::parse`], so
+/// the stored form stays readable and survives the filter's fields changing.
+/// Every field defaults when missing, so a view saved before a field existed
+/// still loads.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ViewSpec {
+    /// The view's name, as its tab shows it.
+    pub name: String,
+    /// The filter's query text (`p:high label:ui`). Without an `is:` term the
+    /// view keeps open cards, as `headway list` does.
+    pub query: String,
+    /// How the rows are gathered under headers.
+    pub grouping: Grouping,
+    /// How the rows are ordered.
+    pub sorting: Sorting,
+    /// Which properties a row shows.
+    pub display: DisplayProps,
+    /// Drop subissues, keeping top-level cards only
+    /// ([`IssueFilter::hide_subissues`]).
+    pub hide_subissues: bool,
+    /// The board slug the view is scoped to; `None` looks at every board.
+    pub board: Option<String>,
+}
+
+impl ViewSpec {
+    /// The view's filter: its query parsed (scoped to its board when it has
+    /// one), subissues dropped if it says so, and open cards only when the
+    /// query names no state.
+    pub fn filter(&self) -> IssueFilter {
+        let mut filter = IssueFilter::parse(&self.query, self.board.as_deref());
+        filter.hide_subissues = self.hide_subissues;
+        if filter.state.is_none() {
+            filter.state = Some(StateFilter::Open);
+        }
+        filter
+    }
+}
+
+/// The views every list has without saving one — the tabs Linear opens on:
+/// Active, Backlog and All issues. Saved views come after them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BuiltinView {
+    /// The open cards.
+    Active,
+    /// The cards in a column named Backlog.
+    Backlog,
+    /// Every card, done ones too.
+    All,
+}
+
+impl BuiltinView {
+    /// Every built-in view, in tab order.
+    pub const ALL: [BuiltinView; 3] = [BuiltinView::Active, BuiltinView::Backlog, BuiltinView::All];
+
+    /// The view's name, as its tab shows it.
+    pub fn name(self) -> &'static str {
+        match self {
+            BuiltinView::Active => "Active",
+            BuiltinView::Backlog => "Backlog",
+            BuiltinView::All => "All issues",
+        }
+    }
+
+    /// The view's query: what it narrows the list to.
+    pub fn query(self) -> &'static str {
+        match self {
+            BuiltinView::Active => "is:open",
+            BuiltinView::Backlog => "col:backlog",
+            BuiltinView::All => "is:any",
+        }
+    }
+
+    /// The built-in view `name` names, ignoring case, space and dashes
+    /// (`all`, `all-issues`, `All issues`).
+    pub fn named(name: &str) -> Option<BuiltinView> {
+        let squash = |s: &str| -> String {
+            s.chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect()
+        };
+        let want = squash(name);
+        BuiltinView::ALL
+            .into_iter()
+            .find(|v| squash(v.name()) == want || (want == "all" && *v == BuiltinView::All))
+    }
+
+    /// The view laid out as `layout` is: its name and query over `layout`'s
+    /// grouping, ordering and display. A built-in carries no layout of its
+    /// own, so each front end lays it out its default way.
+    pub fn spec(self, layout: &ViewSpec) -> ViewSpec {
+        ViewSpec {
+            name: self.name().to_string(),
+            query: self.query().to_string(),
+            ..layout.clone()
+        }
+    }
+}
+
 /// What a list shows: the [`IssueFilter`], where to look, and how its rows
 /// are drawn, ordered and gathered.
 #[derive(Clone, Debug, Default)]

@@ -27,6 +27,7 @@ use std::process::ExitCode;
 use serde_json::json;
 
 use headway::event::{self, Container, resolve_card};
+use headway::query::ViewSpec;
 use headway::store;
 use headway::teams;
 
@@ -801,18 +802,58 @@ async fn run() -> Result<()> {
             display,
             grouping,
             sorting,
+            views,
         } => {
-            let scope = read_scope(&ndb, &roster, &author, &me, &board, show_all, container)?;
-            let out = list::ListOutput {
-                json: as_json,
-                color: cli.color,
-                pager: cli.pager,
-                limit,
-                display,
+            // Saved views are the signer's own, PNS-wrapped: a read-only
+            // `--author` run can't unwrap them, and sees only the built-ins.
+            let saved = headway::views::load_views(&ndb, &me);
+            let run = ViewSpec {
+                name: String::new(),
+                query,
                 grouping,
                 sorting,
+                display,
+                hide_subissues: false,
+                board: board_explicit.then(|| board.clone()),
             };
-            list::cmd_list(&scope.boards, scope.subtree, &query, include_done, out)?;
+            if views.list {
+                list::print_views(&saved, &run, as_json)?;
+            } else if let Some(name) = &views.delete {
+                let secret = secret.ok_or("--delete-view needs --nsec to sign")?;
+                list::delete_named_view(&ndb, &me, &secret, &saved, name)?;
+            } else {
+                let spec = list::compose_view(&saved, &views, run, include_done)?;
+                if let Some(name) = &views.save {
+                    let secret = secret.ok_or("--save-view needs --nsec to sign")?;
+                    list::save_named_view(&ndb, &me, &secret, &saved, name, spec, as_json)?;
+                } else {
+                    // A view scoped to a board reads that board, unless the
+                    // command line narrowed the run itself.
+                    let (scope_board, scope_all) = match &spec.board {
+                        Some(b) if !board_explicit && container.is_none() => (b.clone(), false),
+                        _ => (board.clone(), show_all),
+                    };
+                    let scope = read_scope(
+                        &ndb,
+                        &roster,
+                        &author,
+                        &me,
+                        &scope_board,
+                        scope_all,
+                        container,
+                    )?;
+                    let out = list::ListOutput {
+                        json: as_json,
+                        color: cli.color,
+                        pager: cli.pager,
+                        limit,
+                        display: spec.display,
+                        grouping: spec.grouping,
+                        sorting: spec.sorting,
+                    };
+                    list::cmd_list(&scope.boards, scope.subtree, spec.filter(), out)?;
+                }
+            }
         }
 
         // Read command: resolve the card's review record to a commit (fetching

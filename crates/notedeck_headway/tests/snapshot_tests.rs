@@ -9,7 +9,7 @@ use nostrdb_net::{FullKeypair, Keypair, NoteId, Pubkey};
 use notedeck::{App, AppContext, InlineChrome, Notedeck};
 use notedeck_chrome::keymap::{KeyDispatch, KeyEngine, Scopes};
 use notedeck_chrome::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
-use notedeck_headway::{Headway, event, store};
+use notedeck_headway::{Headway, event, store, views};
 
 /// The two-party suite's SNS helpers; here we reuse only its gift-wrap key-share
 /// builder so the shared-board flows below don't hand-roll a kind-1059 envelope.
@@ -1139,6 +1139,7 @@ fn seed_side_board(harness: &mut Harness<'static, HeadwayTestState>) {
 /// grid as one global-nav entry, it lists open cards from every board, All
 /// adds the done ones, a query narrows it live, and a row on another board
 /// opens that card's detail there, with the list still beneath it.
+/// ("All" is the All issues tab now, headway:headway/brave-project-parade.)
 /// Behavioural (accesskit only), so it runs without lavapipe.
 #[test]
 fn issue_list_spans_boards_filters_and_opens_cards() {
@@ -1179,7 +1180,7 @@ fn issue_list_spans_boards_filters_and_opens_cards() {
     );
 
     // All: the done card too.
-    harness.get_by_label("All").click();
+    harness.get_by_label("All issues").click();
     wait_for_label(&mut harness, "Scaffold the Headway app crate");
     harness.get_by_label("8 issues");
 
@@ -1236,6 +1237,99 @@ fn issue_list_display_menu_toggles_a_property() {
 
     harness.get_by_label("Reset to default").click();
     wait_for_label(&mut harness, "quest");
+}
+
+/// The issue list's view tabs (headway:headway/brave-project-parade): the
+/// built-in Active, Backlog and All issues tabs each switch what the list
+/// holds; "+ View" saves what it shows as a tab of its own, persisted for the
+/// account; narrowing that tab's query offers Save; and its context menu
+/// deletes it. Behavioural (accesskit only), so it runs without lavapipe.
+#[test]
+fn issue_list_view_tabs_switch_and_save() {
+    const VIEW: &str = "UI everything";
+    let mut harness = behavioral_harness(egui::Vec2::new(1400.0, 800.0));
+    seed_side_board(&mut harness);
+    let author = harness.state_mut().account.pubkey;
+
+    harness.press_key(egui::Key::V);
+    wait_for_label(&mut harness, SIDE_CARD);
+    harness.get_by_label("7 issues");
+
+    // Backlog: the demo board's three backlog cards, not the side card in
+    // Todo. All issues: the done card too.
+    // The tab, drawn before the Backlog group's header.
+    harness
+        .query_all_by_label("Backlog")
+        .next()
+        .expect("the Backlog tab")
+        .click();
+    wait_for_label(&mut harness, "3 issues");
+    assert!(harness.query_by_label(SIDE_CARD).is_none());
+    harness.get_by_label("All issues").click();
+    wait_for_label(&mut harness, "8 issues");
+
+    // Narrow it and save that as a view: its tab appears and shows.
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text("label:ui");
+    wait_for_label(&mut harness, "2 issues");
+    harness.get_by_label("+ View").click();
+    harness.run_ok();
+    focused_text_input(&harness).type_text(VIEW);
+    harness.key_press(egui::Key::Enter);
+    wait_for_label(&mut harness, VIEW);
+    harness.get_by_label("2 issues");
+
+    // It's the account's now, its query the tab's and the field's together.
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        harness.run_ok();
+        let saved = {
+            let state = harness.state_mut();
+            views::load_views(state.notedeck.app_context().ndb, &author)
+        };
+        if let [view] = saved.as_slice() {
+            assert_eq!(view.spec.name, VIEW);
+            assert_eq!(view.spec.query, "is:any label:ui");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the view never persisted");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    // Away and back: Active forgets the narrowing, the saved tab restores it.
+    harness.get_by_label("Active").click();
+    wait_for_label(&mut harness, "7 issues");
+    assert!(
+        harness.query_by_label("Save").is_none(),
+        "a built-in has no Save"
+    );
+    harness.get_by_label(VIEW).click();
+    wait_for_label(&mut harness, "2 issues");
+    assert!(
+        harness.query_by_label("Save").is_none(),
+        "unchanged: no Save"
+    );
+
+    // Narrowing the saved tab further offers Save.
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text("inline");
+    wait_for_label(&mut harness, "1 issue");
+    wait_for_label(&mut harness, "Save");
+
+    // Its context menu deletes it, back to Active.
+    harness.get_by_label(VIEW).click_secondary();
+    wait_for_label(&mut harness, "Delete view");
+    harness.get_by_label("Delete view").click();
+    wait_for_absent(&mut harness, VIEW);
+    wait_for_label(&mut harness, "7 issues");
 }
 
 /// The labels of the issue list's group headers, top to bottom: each
@@ -1538,7 +1632,7 @@ fn snapshot_headway_list() {
     harness.run_ok();
     harness.get_by_label("Issue list").click();
     wait_for_label(&mut harness, SIDE_CARD);
-    harness.get_by_label("All").click();
+    harness.get_by_label("All issues").click();
     wait_for_label(&mut harness, "8 issues");
     harness.run_steps(3);
     harness.snapshot("headway_list");

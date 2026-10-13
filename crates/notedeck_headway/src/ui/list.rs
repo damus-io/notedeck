@@ -26,6 +26,13 @@
 //! prints. Ordered by work order, the rows `headway next --ready` would hand
 //! out wear an accent bar, and a row on the board showing drags into a new
 //! place in that order (see [`work_order_drop`]).
+//!
+//! Above the rows sit the view tabs (headway:headway/brave-project-parade):
+//! the built-in Active, Backlog and All issues, then the account's saved
+//! views ([`headway::views`]). A tab is a [`ViewSpec`] — a query and a
+//! layout — and selecting one loads it. The query field narrows the tab's
+//! own query rather than showing it; a saved view whose layout or query was
+//! changed offers Save, and "+ View" saves what the list shows as a new one.
 
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
@@ -35,16 +42,17 @@ use super::widgets::{
     KeyedText, StatusIcon, label_chip, priority_icon_ui, priority_label, status_icon_ui, text_pill,
     tinted_pill,
 };
-use super::{BoardEffect, BoardNav, BoardUiState};
+use super::{BoardEffect, BoardNav, BoardUiState, ViewEdit};
 use crate::cache::BoardRef;
 use crate::cursor::CursorMove;
 use crate::event::{self, BoardView, CardView, Priority};
 use crate::keys;
 use crate::store::{self, BoardAction};
 use headway::query::{
-    DisplayProp, DisplayProps, GroupBy, GroupKey, Grouping, IssueFilter, ListGroup, ListRow,
-    Placement, SortBy, Sorting, StateFilter,
+    BuiltinView, DisplayProp, DisplayProps, GroupBy, GroupKey, Grouping, ListGroup, ListRow,
+    Placement, SortBy, Sorting, ViewSpec,
 };
+use headway::views::{SavedView, new_slug};
 
 /// Height of one list row, fixed so the scroll area lays out only the rows on
 /// screen ([`egui::ScrollArea::show_rows`]).
@@ -58,11 +66,28 @@ pub(crate) struct ListState {
     /// Whether the list shows, seeded from the nav route each frame like the
     /// graph's epic (see [`BoardUiState::set_list_open`]).
     open: bool,
-    /// The query field's text, parsed with [`IssueFilter::parse`].
+    /// The query field's text: terms that narrow the tab's own query
+    /// ([`base`](Self::base)), parsed together with it by
+    /// [`IssueFilter::parse`](headway::query::IssueFilter::parse).
     query: String,
-    /// The All toggle: show done cards too. Off (Active) adds `is:open` to a
-    /// query that has no `is:` term of its own; one that does wins.
-    all: bool,
+    /// The tab showing: a built-in view or a saved one.
+    tab: ListTab,
+    /// The tab's own query, loaded with it. Without an `is:` term, it and
+    /// the field together keep open cards ([`ViewSpec::filter`]).
+    base: String,
+    /// Drop subissues, keeping top-level cards: the Display menu's
+    /// "Sub-issues" toggle, off.
+    hide_subissues: bool,
+    /// The board slug the tab's view is scoped to; `None` lists every board.
+    board_scope: Option<String>,
+    /// The account's saved views, in slug order: the tabs after the
+    /// built-ins. Loaded by the app on an account switch
+    /// ([`BoardUiState::set_saved_views`]) and kept in step with the edits
+    /// the tabs raise, so a save shows before its note is ingested.
+    saved: Vec<SavedView>,
+    /// The view-name field, while one is open: naming a new view, or
+    /// renaming a saved one.
+    naming: Option<ViewNaming>,
     /// The card under the keyboard cursor. A card rather than a row index,
     /// so a re-fold that reorders the rows leaves it on the same card.
     cursor: Option<NoteId>,
@@ -76,8 +101,7 @@ pub(crate) struct ListState {
     /// The header's `"N issues"` count.
     count: KeyedText<usize>,
     /// Which properties each row shows beside its title, toggled in the
-    /// header's Display menu. Kept for the session; saved views will persist
-    /// it (headway:headway/brave-project-parade).
+    /// header's Display menu; a saved view keeps it.
     display: DisplayProps,
     /// How the rows are gathered under headers, set in the Display menu.
     /// By status unless changed, as Linear's list is.
@@ -107,7 +131,12 @@ impl Default for ListState {
         ListState {
             open: false,
             query: String::new(),
-            all: false,
+            tab: ListTab::Builtin(BuiltinView::Active),
+            base: BuiltinView::Active.query().to_string(),
+            hide_subissues: false,
+            board_scope: None,
+            saved: Vec::new(),
+            naming: None,
             cursor: None,
             scroll_to_cursor: false,
             rows: Vec::new(),
@@ -126,6 +155,26 @@ impl Default for ListState {
             pending_priority: None,
         }
     }
+}
+
+/// Which view tab is showing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ListTab {
+    /// A built-in view.
+    Builtin(BuiltinView),
+    /// The saved view with this slug.
+    Saved(String),
+}
+
+/// The view-name field: what it names, and the name so far.
+struct ViewNaming {
+    /// The saved view it renames, by slug; `None` names a new view of what
+    /// the list shows.
+    rename: Option<String>,
+    /// The name typed so far.
+    name: String,
+    /// Focus the field on its next draw.
+    focus: bool,
 }
 
 /// Which header a fold or a `+` is for: a group, or a sub-group within one.
@@ -329,8 +378,12 @@ struct ListInputs {
     sources: Vec<BoardRef>,
     /// The query text.
     query: String,
-    /// The All toggle.
-    all: bool,
+    /// The tab's own query.
+    base: String,
+    /// The sub-issue toggle.
+    hide_subissues: bool,
+    /// The tab's board scope.
+    board_scope: Option<String>,
     /// The grouping.
     grouping: Grouping,
     /// The ordering.
@@ -366,7 +419,9 @@ impl ListState {
         let Some(seen) = &self.seen else {
             return true;
         };
-        seen.all != self.all
+        seen.hide_subissues != self.hide_subissues
+            || seen.base != self.base
+            || seen.board_scope != self.board_scope
             || seen.grouping != self.grouping
             || seen.sorting != self.sorting
             || seen.query != self.query
@@ -385,9 +440,16 @@ impl ListState {
         if !self.stale(sources) {
             return;
         }
-        let filter = self.filter();
+        let filter = self.spec().filter();
         self.rows.clear();
         for (b, board) in sources.iter().enumerate() {
+            if self
+                .board_scope
+                .as_ref()
+                .is_some_and(|scope| *scope != board.id)
+            {
+                continue;
+            }
             let mut keep = |card: &CardView, placement: Placement, slot: LineSlot| {
                 let row = ListRow {
                     board,
@@ -450,7 +512,9 @@ impl ListState {
         self.seen = Some(ListInputs {
             sources: sources.to_vec(),
             query: self.query.clone(),
-            all: self.all,
+            base: self.base.clone(),
+            hide_subissues: self.hide_subissues,
+            board_scope: self.board_scope.clone(),
             grouping: self.grouping,
             sorting: self.sorting,
         });
@@ -519,14 +583,169 @@ impl ListState {
         self.rebuild_entries();
     }
 
-    /// The query as a filter, with Active's `is:open` added when the query
-    /// says nothing about state itself — the default `headway list` takes.
-    fn filter(&self) -> IssueFilter {
-        let mut filter = IssueFilter::parse(&self.query, None);
-        if filter.state.is_none() && !self.all {
-            filter.state = Some(StateFilter::Open);
+    /// What the list shows, as a view: the tab's name, its query narrowed
+    /// by the field's, and the layout the Display menu holds. Its
+    /// [`filter`](ViewSpec::filter) keeps open cards when neither query
+    /// names a state, the default `headway list` takes.
+    fn spec(&self) -> ViewSpec {
+        let query = match (self.base.trim(), self.query.trim()) {
+            (base, "") => base.to_string(),
+            ("", query) => query.to_string(),
+            (base, query) => format!("{base} {query}"),
+        };
+        ViewSpec {
+            name: self.tab_name().to_string(),
+            query,
+            grouping: self.grouping,
+            sorting: self.sorting,
+            display: self.display,
+            hide_subissues: self.hide_subissues,
+            board: self.board_scope.clone(),
         }
-        filter
+    }
+
+    /// The layout a built-in tab loads: the list's defaults.
+    fn default_layout() -> ViewSpec {
+        let defaults = ListState::default();
+        ViewSpec {
+            grouping: defaults.grouping,
+            sorting: defaults.sorting,
+            display: defaults.display,
+            ..ViewSpec::default()
+        }
+    }
+
+    /// The saved view `slug`, if the account has it.
+    fn saved_view(&self, slug: &str) -> Option<&SavedView> {
+        self.saved.iter().find(|v| v.slug == slug)
+    }
+
+    /// The showing tab's name.
+    fn tab_name(&self) -> &str {
+        match &self.tab {
+            ListTab::Builtin(builtin) => builtin.name(),
+            ListTab::Saved(slug) => self.saved_view(slug).map_or("", |v| v.spec.name.as_str()),
+        }
+    }
+
+    /// Show `tab`, laid out as its view is: its query under an emptied
+    /// field, its layout in the Display menu. Re-picking the tab showing
+    /// keeps what was changed on it.
+    fn select_tab(&mut self, tab: ListTab) {
+        if tab == self.tab {
+            return;
+        }
+        let spec = match &tab {
+            ListTab::Builtin(builtin) => builtin.spec(&ListState::default_layout()),
+            ListTab::Saved(slug) => match self.saved_view(slug) {
+                Some(view) => view.spec.clone(),
+                None => return,
+            },
+        };
+        self.tab = tab;
+        self.load(spec);
+    }
+
+    /// Lay the list out as `spec`, its query as the tab's own.
+    fn load(&mut self, spec: ViewSpec) {
+        self.base = spec.query;
+        self.query.clear();
+        self.grouping = spec.grouping;
+        self.sorting = spec.sorting;
+        self.display = spec.display;
+        self.hide_subissues = spec.hide_subissues;
+        self.board_scope = spec.board;
+        self.cursor = None;
+    }
+
+    /// Whether the showing tab is a saved view the list no longer matches:
+    /// its query narrowed, or its layout changed. Allocates nothing; the
+    /// header asks every frame.
+    fn dirty(&self) -> bool {
+        let ListTab::Saved(slug) = &self.tab else {
+            return false;
+        };
+        let Some(view) = self.saved_view(slug) else {
+            return false;
+        };
+        let spec = &view.spec;
+        !self.query.trim().is_empty()
+            || spec.query != self.base
+            || spec.grouping != self.grouping
+            || spec.sorting != self.sorting
+            || spec.display != self.display
+            || spec.hide_subissues != self.hide_subissues
+    }
+
+    /// Replace the saved views with `views`, as loaded for a newly selected
+    /// account. A saved tab the account doesn't have falls back to Active.
+    fn set_saved(&mut self, views: Vec<SavedView>) {
+        self.saved = views;
+        if let ListTab::Saved(slug) = &self.tab
+            && self.saved_view(slug).is_none()
+        {
+            self.select_tab(ListTab::Builtin(BuiltinView::Active));
+        }
+    }
+
+    /// Keep `view` among the saved views, replacing the one with its slug,
+    /// in slug order as [`headway::views::load_views`] reads them.
+    fn keep_saved(&mut self, view: SavedView) {
+        match self.saved.binary_search_by(|v| v.slug.cmp(&view.slug)) {
+            Ok(at) => self.saved[at] = view,
+            Err(at) => self.saved.insert(at, view),
+        }
+    }
+
+    /// Save what the list shows as a new view named `name`, and show its
+    /// tab. Returns the edit to persist.
+    fn save_new_view(&mut self, name: &str) -> ViewEdit {
+        let spec = ViewSpec {
+            name: name.to_string(),
+            ..self.spec()
+        };
+        let view = SavedView {
+            slug: new_slug(&self.saved, name),
+            spec,
+        };
+        self.tab = ListTab::Saved(view.slug.clone());
+        self.base = view.spec.query.clone();
+        self.query.clear();
+        self.keep_saved(view.clone());
+        ViewEdit::Save(view)
+    }
+
+    /// Save what the list shows over the saved view showing (the dirty
+    /// tab's Save). `None` on a built-in tab.
+    fn save_over_tab(&mut self) -> Option<ViewEdit> {
+        let ListTab::Saved(slug) = &self.tab else {
+            return None;
+        };
+        let view = SavedView {
+            slug: slug.clone(),
+            spec: self.spec(),
+        };
+        self.base = view.spec.query.clone();
+        self.query.clear();
+        self.keep_saved(view.clone());
+        Some(ViewEdit::Save(view))
+    }
+
+    /// Rename saved view `slug` to `name`, keeping its slug.
+    fn rename_view(&mut self, slug: &str, name: &str) -> Option<ViewEdit> {
+        let mut view = self.saved_view(slug)?.clone();
+        view.spec.name = name.to_string();
+        self.keep_saved(view.clone());
+        Some(ViewEdit::Save(view))
+    }
+
+    /// Delete saved view `slug`, leaving for Active if it was showing.
+    fn delete_view(&mut self, slug: &str) -> ViewEdit {
+        self.saved.retain(|v| v.slug != slug);
+        if matches!(&self.tab, ListTab::Saved(s) if s == slug) {
+            self.select_tab(ListTab::Builtin(BuiltinView::Active));
+        }
+        ViewEdit::Delete(slug.to_string())
     }
 
     /// The row (an index into [`rows`](Self::rows)) entry `at` draws, if
@@ -608,10 +827,16 @@ impl BoardUiState {
         }
     }
 
-    /// Whether the list's `+` composer is open: Esc closes it rather than
-    /// the list.
+    /// Whether the list's `+` composer or view-name field is open: Esc
+    /// closes it rather than the list.
     pub(crate) fn list_composing(&self) -> bool {
-        self.list.is_open() && self.list.compose.is_some()
+        self.list.is_open() && (self.list.compose.is_some() || self.list.naming.is_some())
+    }
+
+    /// The account's saved list views, as the app loaded them for a newly
+    /// selected account: the tabs after the built-in ones.
+    pub fn set_saved_views(&mut self, views: Vec<SavedView>) {
+        self.list.set_saved(views);
     }
 
     /// The card the frame's edit added, now that it exists: a card the
@@ -909,12 +1134,14 @@ fn compose_ui(
     Some(action)
 }
 
-/// The list's header: a way back to the board, the count, the Active/All
-/// toggle and the query field.
+/// The list's header: a way back to the board, the count, the view tabs and
+/// their Save, the Display menu and the query field. A tab edit is raised for
+/// the app to persist ([`BoardEffect::View`]).
 fn list_header_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiState) {
     let list = &mut state.list;
     let mut close = false;
     let mut menu_open = false;
+    let mut edit = None;
     ui.horizontal(|ui| {
         let back =
             egui::Button::new(egui::RichText::new("← Board").color(theme.text_muted)).frame(false);
@@ -931,19 +1158,17 @@ fn list_header_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiStat
         });
         ui.label(egui::RichText::new(count).color(theme.text_muted));
         ui.add_space(SPACING_MD);
-        if ui.selectable_label(!list.all, "Active").clicked() {
-            list.all = false;
-        }
-        if ui.selectable_label(list.all, "All").clicked() {
-            list.all = true;
-        }
+        edit = view_tabs_ui(ui, theme, list);
         ui.add_space(SPACING_SM);
         menu_open = display_menu_ui(
             ui,
             theme,
-            &mut list.display,
-            &mut list.grouping,
-            &mut list.sorting,
+            DisplayMenu {
+                display: &mut list.display,
+                grouping: &mut list.grouping,
+                sorting: &mut list.sorting,
+                hide_subissues: &mut list.hide_subissues,
+            },
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let field = egui::TextEdit::singleline(&mut list.query)
@@ -955,28 +1180,144 @@ fn list_header_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiStat
     });
     // Open this frame: hold the list keys off it (see `grid_menu_open`).
     state.grid_menu_open |= menu_open;
+    if let Some(edit) = edit {
+        state.raise(BoardEffect::View(edit));
+    }
     if close {
         state.close_list();
     }
 }
 
+/// The view tabs: the built-ins, then each saved view (right-click to rename
+/// or delete it), then Save while a saved tab is [dirty](ListState::dirty)
+/// and "+ View" to save the list as a new one — or, while one is open, the
+/// view-name field. Returns the edit a save, rename or delete made.
+fn view_tabs_ui(ui: &mut egui::Ui, theme: &ColorTheme, list: &mut ListState) -> Option<ViewEdit> {
+    let mut pick = None;
+    let mut edit = None;
+    for builtin in BuiltinView::ALL {
+        let on = list.tab == ListTab::Builtin(builtin);
+        if ui.selectable_label(on, builtin.name()).clicked() {
+            pick = Some(ListTab::Builtin(builtin));
+        }
+    }
+    let mut rename = None;
+    let mut delete = None;
+    for view in &list.saved {
+        let on = matches!(&list.tab, ListTab::Saved(slug) if *slug == view.slug);
+        let tab = ui.selectable_label(on, &view.spec.name).on_hover_ui(|ui| {
+            ui.label(&view.spec.query);
+        });
+        if tab.clicked() {
+            pick = Some(ListTab::Saved(view.slug.clone()));
+        }
+        tab.context_menu(|ui| {
+            if ui.button("Rename…").clicked() {
+                rename = Some(view.slug.clone());
+                ui.close();
+            }
+            if ui.button("Delete view").clicked() {
+                delete = Some(view.slug.clone());
+                ui.close();
+            }
+        });
+    }
+    if let Some(tab) = pick {
+        list.select_tab(tab);
+    }
+    if let Some(slug) = rename {
+        let name = list.saved_view(&slug).map(|v| v.spec.name.clone());
+        list.naming = Some(ViewNaming {
+            rename: Some(slug),
+            name: name.unwrap_or_default(),
+            focus: true,
+        });
+    }
+    if let Some(slug) = delete {
+        edit = Some(list.delete_view(&slug));
+    }
+    if list.naming.is_some() {
+        return view_naming_ui(ui, list).or(edit);
+    }
+    if list.dirty() {
+        let save = egui::Button::new(egui::RichText::new("Save").strong().color(theme.accent));
+        if ui
+            .add(save)
+            .on_hover_text("Save these changes to the view")
+            .clicked()
+        {
+            edit = list.save_over_tab();
+        }
+    }
+    let new = egui::Button::new(egui::RichText::new("+ View").color(theme.text_muted)).frame(false);
+    if ui
+        .add(new)
+        .on_hover_text("Save what the list shows as a new view")
+        .clicked()
+    {
+        list.naming = Some(ViewNaming {
+            rename: None,
+            name: String::new(),
+            focus: true,
+        });
+    }
+    edit
+}
+
+/// The view-name field: Enter names the new view (or renames the one it's
+/// for), Esc or an empty name closes it. Returns the edit.
+fn view_naming_ui(ui: &mut egui::Ui, list: &mut ListState) -> Option<ViewEdit> {
+    let naming = list.naming.as_mut()?;
+    let field = egui::TextEdit::singleline(&mut naming.name)
+        .hint_text("View name…")
+        .desired_width(160.0);
+    let response = ui.add(field);
+    if std::mem::take(&mut naming.focus) {
+        response.request_focus();
+    }
+    let (enter, escape) = ui.input(|i| {
+        (
+            i.key_pressed(egui::Key::Enter),
+            i.key_pressed(egui::Key::Escape),
+        )
+    });
+    let submit = (enter && response.lost_focus()) || ui.button("Save view").clicked();
+    if escape {
+        list.naming = None;
+        return None;
+    }
+    if !submit {
+        return None;
+    }
+    let naming = list.naming.take()?;
+    let name = naming.name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    match naming.rename {
+        Some(slug) => list.rename_view(&slug, name),
+        None => Some(list.save_new_view(name)),
+    }
+}
+
 /// The list's Display menu, like Linear's view options: the grouping and
 /// sub-grouping, whether empty groups show, the ordering, its direction and
-/// whether done rows trail by recency, and one toggle chip per
-/// [`DisplayProp`]. Stays open while chips are flipped. The trigger wears the
+/// whether done rows trail by recency, one toggle chip per [`DisplayProp`],
+/// and whether sub-issues are listed. Stays open while chips are flipped. The trigger wears the
 /// filter's warm tint while any of it differs from the default, so a list
 /// laid out other than usual says so. Returns whether the menu is open.
-fn display_menu_ui(
-    ui: &mut egui::Ui,
-    theme: &ColorTheme,
-    display: &mut DisplayProps,
-    grouping: &mut Grouping,
-    sorting: &mut Sorting,
-) -> bool {
+fn display_menu_ui(ui: &mut egui::Ui, theme: &ColorTheme, menu: DisplayMenu) -> bool {
+    let DisplayMenu {
+        display,
+        grouping,
+        sorting,
+        hide_subissues,
+    } = menu;
     let defaults = ListState::default();
     let label = if *display == DisplayProps::default()
         && *grouping == defaults.grouping
         && *sorting == defaults.sorting
+        && !*hide_subissues
     {
         egui::RichText::new("☰ Display").color(theme.text_secondary)
     } else {
@@ -1026,13 +1367,27 @@ fn display_menu_ui(
             }
         });
         ui.add_space(SPACING_XS);
+        let mut subissues = !*hide_subissues;
+        if ui.checkbox(&mut subissues, "Show sub-issues").changed() {
+            *hide_subissues = !subissues;
+        }
+        ui.add_space(SPACING_XS);
         if ui.button("Reset to default").clicked() {
             *display = DisplayProps::default();
             *grouping = defaults.grouping;
             *sorting = defaults.sorting;
+            *hide_subissues = false;
         }
     });
     open.is_some()
+}
+
+/// What the Display menu edits: the list's layout.
+struct DisplayMenu<'a> {
+    display: &'a mut DisplayProps,
+    grouping: &'a mut Grouping,
+    sorting: &'a mut Sorting,
+    hide_subissues: &'a mut bool,
 }
 
 /// One chip per [`GroupBy`], the one `by` holds selected; a click picks it.

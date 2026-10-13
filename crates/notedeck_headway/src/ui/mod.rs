@@ -724,6 +724,19 @@ pub enum BoardEffect {
     /// review header's button — in the app that owns it, as an
     /// [`AppAction::Open`](notedeck::AppAction::Open).
     Open(notedeck::OpenUri),
+    /// Persist an edit to the account's saved list views, made on the
+    /// list's view tabs (the tabs already show it).
+    View(ViewEdit),
+}
+
+/// An edit to the account's saved list views, raised as a
+/// [`BoardEffect::View`] for the app to sign and store
+/// ([`headway::views::save_view`]/[`delete_view`](headway::views::delete_view)).
+pub enum ViewEdit {
+    /// Save this view: new, changed or renamed.
+    Save(headway::views::SavedView),
+    /// Delete the view with this slug.
+    Delete(String),
 }
 
 /// A request from the board switcher, raised as a [`BoardEffect::Nav`] for the

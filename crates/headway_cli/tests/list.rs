@@ -322,4 +322,63 @@ fn list_filters_cards_across_boards() {
     let rows: Value = serde_json::from_str(&out).expect("list --json --sort");
     assert_eq!(rows[0]["ready"], false);
     assert_eq!(rows[1]["ready"], true);
+
+    // Saved views: save the run's query and layout as a view, list the
+    // views, list through it (the run's words narrow it), and delete it.
+    let out = headway(
+        bin,
+        url,
+        db,
+        &[
+            "list",
+            "label:ui",
+            "--group",
+            "board",
+            "--save-view",
+            "UI work",
+        ],
+    );
+    assert_eq!(out.trim(), "saved view 'UI work' (ui-work)");
+    let out = headway(bin, url, db, &["list", "--views"]);
+    let names: Vec<&str> = out
+        .lines()
+        .map(|l| l.split("  ").next().unwrap_or("").trim())
+        .collect();
+    assert_eq!(
+        names,
+        ["Active", "Backlog", "All issues", "UI work"],
+        "{out}"
+    );
+    assert!(out.contains("label:ui  group:board"), "{out}");
+    assert_eq!(
+        list(bin, url, db, &["--view", "ui work", "--group", "none"]),
+        [epic.as_str(), elsewhere.as_str()]
+    );
+    assert_eq!(
+        list(
+            bin,
+            url,
+            db,
+            &["--view", "ui-work", "--group", "none", "p:high"]
+        ),
+        [elsewhere.as_str()]
+    );
+    let out = headway(bin, url, db, &["list", "--view", "UI work"]);
+    assert!(
+        out.starts_with("## headway (1)"),
+        "the view's grouping: {out}"
+    );
+    // A built-in view, and `--all` over it.
+    assert_eq!(
+        list(bin, url, db, &["--view", "all", "p:high", "label:ui"]),
+        [shipped.as_str(), elsewhere.as_str()]
+    );
+    assert_eq!(
+        list(bin, url, db, &["--view", "backlog", "--board", "other"]),
+        [elsewhere.as_str()]
+    );
+    let out = headway(bin, url, db, &["list", "--delete-view", "UI work"]);
+    assert_eq!(out.trim(), "deleted view 'UI work'");
+    let out = headway(bin, url, db, &["list", "--views"]);
+    assert!(!out.contains("UI work"), "{out}");
 }

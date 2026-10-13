@@ -203,7 +203,9 @@ they are neither. The pager is $HEADWAY_PAGER, else $PAGER, else
         group: Group::Reading,
         summary: "List the cards a query matches, one row each, across every board",
         usage: &[
-            "list [query...] [--board <b>] [--in <c>] [--all] [--show <props>] [--hide <props>] [--group <by>] [--sub-group <by>] [--empty] [--sort <by>] [--descending|--ascending] [--completed-by-recency] [-n <k>] [--json]",
+            "list [query...] [--board <b>] [--in <c>] [--all] [--show <props>] [--hide <props>] [--group <by>] [--sub-group <by>] [--empty] [--sort <by>] [--descending|--ascending] [--completed-by-recency] [--view <name>] [--save-view <name>] [-n <k>] [--json]",
+            "list --views [--json]",
+            "list --delete-view <name>",
         ],
         details: "\
 Print one row per card the query keeps: its blocked and priority
@@ -252,8 +254,20 @@ With no is: term only open cards are listed (not in a done column);
 --all lists done ones too. Archived cards are listed only for is:archived.
 
 Lists every board you can read. --board <b> narrows it to that board, and
---in to a card's subtree (on the board its ref names). A read-only command:
-it never signs or publishes.",
+--in to a card's subtree (on the board its ref names).
+
+A view is a named query and layout. --view <name> lists through one: its
+query, with the run's query words added to it, and its grouping, ordering
+and display properties, unless the run passes its own. Three are built in:
+Active (is:open), Backlog (col:backlog) and All issues (is:any).
+--save-view <name> saves the run's query and layout (and --board, if
+given) as a view instead of listing, replacing the view of that name;
+--views lists the views and --delete-view deletes one. Saved views are
+yours alone: signed with your key, encrypted to it and kept in this
+cache, never sent to a relay, so the app's list tabs keep their own.
+
+Saving or deleting a view signs; otherwise the command never signs or
+publishes.",
         options: &[
             ("--all", "Done cards too, when the query has no is: term"),
             (
@@ -293,6 +307,16 @@ it never signs or publishes.",
                 "--completed-by-recency",
                 "Done cards after the open ones, most recently updated first",
             ),
+            (
+                "--view <name>",
+                "List through a saved view, or Active, Backlog, All issues",
+            ),
+            (
+                "--save-view <name>",
+                "Save this run's query and layout as a view instead of listing",
+            ),
+            ("--views", "List the views instead of cards"),
+            ("--delete-view <name>", "Delete a saved view"),
             ("-n, --count <k>", "Print at most k rows"),
             ("--color <when>", "auto (default) | always | never"),
             ("--pager", "Page the rows even when stdout isn't a terminal"),

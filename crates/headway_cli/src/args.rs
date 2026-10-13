@@ -18,6 +18,35 @@ use nostrdb_net::relay::sync::Result;
 use crate::review::{self, ReviewFlags};
 use crate::{APP, help};
 
+/// `list`'s saved-view flags (see [`crate::list::run_list`]). At most one of
+/// `--views`/`--delete-view` makes sense alone; `--view` and `--save-view`
+/// combine, saving the applied view with the run's other flags over it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ListViews {
+    /// `--view <name>`: lay the list out as this saved or built-in view.
+    pub(crate) apply: Option<String>,
+    /// `--save-view <name>`: save the run's query and layout as this view.
+    pub(crate) save: Option<String>,
+    /// `--delete-view <name>`: delete this saved view.
+    pub(crate) delete: Option<String>,
+    /// `--views`: list the views instead of the cards.
+    pub(crate) list: bool,
+    /// Which layout flags the run passed, so they override the applied
+    /// view's rather than its being overridden by their defaults.
+    pub(crate) given: LayoutGiven,
+}
+
+/// Which of `list`'s layout flag groups were passed on the command line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LayoutGiven {
+    /// `--show`/`--hide`.
+    pub(crate) display: bool,
+    /// `--group`/`--sub-group`/`--empty`.
+    pub(crate) grouping: bool,
+    /// `--sort`/`--descending`/`--ascending`/`--completed-by-recency`.
+    pub(crate) sorting: bool,
+}
+
 /// A parsed command. Card arguments are still raw strings here; they're resolved
 /// against the board once it's folded.
 pub(crate) enum Command {
@@ -182,6 +211,8 @@ pub(crate) enum Command {
         /// How the rows are ordered (`--sort`, `--descending`/`--ascending`,
         /// `--completed-by-recency`). Board order by default.
         sorting: Sorting,
+        /// The saved-view flags: apply, save, list or delete a view.
+        views: ListViews,
     },
     /// Comment on a card, or — with `--path`/`--line`/`--record`, or a
     /// `--reply-to` naming a review comment — on one of its review records'
@@ -566,6 +597,9 @@ impl Cli {
         let mut sort_by = SortBy::default();
         let mut descending: Option<bool> = None;
         let mut completed_by_recency = false;
+        // `list`'s saved views: `--view`, `--save-view`, `--delete-view`,
+        // `--views`, and which layout flags were given over a view.
+        let mut views = ListViews::default();
         let mut review = ReviewFlags::default();
         // `diff --record`: which review record to show. `comment` shares it,
         // with its other review flags.
@@ -610,15 +644,42 @@ impl Cli {
                 "--color" => color = ColorWhen::parse(&value("--color")?)?,
                 "--pager" => pager = PagerMode::Always,
                 "--no-pager" => pager = PagerMode::Never,
-                "--show" => show = Some(DisplayProps::parse_list(&value("--show")?)?),
-                "--hide" => hide = DisplayProps::parse_list(&value("--hide")?)?,
-                "--group" => grouping.by = value("--group")?.parse::<GroupBy>()?,
-                "--sub-group" => grouping.sub = value("--sub-group")?.parse::<GroupBy>()?,
-                "--empty" => grouping.show_empty = true,
-                "--sort" => sort_by = value("--sort")?.parse::<SortBy>()?,
-                "--descending" => descending = Some(true),
-                "--ascending" => descending = Some(false),
-                "--completed-by-recency" => completed_by_recency = true,
+                "--show" => {
+                    show = Some(DisplayProps::parse_list(&value("--show")?)?);
+                    views.given.display = true;
+                }
+                "--hide" => {
+                    hide = DisplayProps::parse_list(&value("--hide")?)?;
+                    views.given.display = true;
+                }
+                "--group" => {
+                    grouping.by = value("--group")?.parse::<GroupBy>()?;
+                    views.given.grouping = true;
+                }
+                "--sub-group" => {
+                    grouping.sub = value("--sub-group")?.parse::<GroupBy>()?;
+                    views.given.grouping = true;
+                }
+                "--empty" => {
+                    grouping.show_empty = true;
+                    views.given.grouping = true;
+                }
+                "--sort" => {
+                    sort_by = value("--sort")?.parse::<SortBy>()?;
+                    views.given.sorting = true;
+                }
+                "--descending" | "--ascending" => {
+                    descending = Some(arg == "--descending");
+                    views.given.sorting = true;
+                }
+                "--completed-by-recency" => {
+                    completed_by_recency = true;
+                    views.given.sorting = true;
+                }
+                "--view" => views.apply = Some(value("--view")?),
+                "--save-view" => views.save = Some(value("--save-view")?),
+                "--delete-view" => views.delete = Some(value("--delete-view")?),
+                "--views" => views.list = true,
                 "--commit" => review.commit = Some(value("--commit")?),
                 "--explainer" => review.explainer = Some(value("--explainer")?),
                 "--deploy" => review.deploy = Some(value("--deploy")?),
@@ -780,9 +841,11 @@ impl Cli {
             display,
             grouping: list_grouping,
             sorting,
+            views: list_views,
             ..
         } = &mut command
         {
+            *list_views = views;
             *display = DisplayProps::shown_hidden(show, hide);
             *list_grouping = grouping;
             *sorting = Sorting {
@@ -979,6 +1042,7 @@ fn parse_command(
             display: DisplayProps::default(),
             grouping: Grouping::default(),
             sorting: Sorting::default(),
+            views: ListViews::default(),
         },
         // `parent <card> <parent>` sets, `parent <card>` detaches — mirrors how
         // `label` with no labels clears.
@@ -1733,6 +1797,38 @@ mod tests {
         assert!(parse_err(&["grep", "x", "--color", "loud"]).contains("--color"));
     }
 
+    /// The saved-view flags parse into [`ListViews`], noting which layout
+    /// flag groups were passed so they win over an applied view's.
+    #[test]
+    fn list_parses_view_flags() {
+        let views = |args: &[&str]| match parse(args).command {
+            Command::List { views, .. } => views,
+            _ => panic!("expected a List command"),
+        };
+        let v = views(&[
+            "list",
+            "--view",
+            "Hot",
+            "--sort",
+            "due",
+            "--save-view",
+            "Hot 2",
+        ]);
+        assert_eq!(v.apply.as_deref(), Some("Hot"));
+        assert_eq!(v.save.as_deref(), Some("Hot 2"));
+        assert_eq!(
+            v.given,
+            LayoutGiven {
+                sorting: true,
+                ..LayoutGiven::default()
+            }
+        );
+        let v = views(&["list", "--hide", "labels", "--empty", "--views"]);
+        assert!(v.list && v.given.display && v.given.grouping && !v.given.sorting);
+        let v = views(&["list", "--delete-view", "Hot"]);
+        assert_eq!(v.delete.as_deref(), Some("Hot"));
+    }
+
     /// `list` joins its words into one query, reads every board unless
     /// `--board`/`--in` narrows it, and spends `--all` on done cards instead.
     #[test]
@@ -1747,8 +1843,10 @@ mod tests {
                 display,
                 grouping,
                 sorting,
+                views,
             } => {
                 assert_eq!(query, "p:high label:ui");
+                assert_eq!(views, ListViews::default());
                 assert_eq!(grouping, Grouping::default());
                 assert_eq!(sorting, Sorting::default());
                 assert_eq!(display, DisplayProps::default());

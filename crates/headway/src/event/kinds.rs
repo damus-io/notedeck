@@ -74,6 +74,15 @@ pub const KIND_BLOCKERS: u32 = 30624;
 /// point at cards on other boards. See `headway:headway/obscure-demand-actor`.
 pub const KIND_RELATED: u32 = 30625;
 
+/// Headway saved list view: addressable, `d` = the view's slug, content = the
+/// view's [`ViewSpec`](crate::query::ViewSpec) as JSON, or empty for a deleted
+/// view (a tombstone, superseded latest-wins like any other revision). Personal
+/// like [`KIND_BOARD_PREF`]: one account's, written PNS-wrapped
+/// ([`crate::views::save_view`]) and kept out of [`HEADWAY_KINDS`], so the
+/// plaintext board sync never pushes it. See
+/// `headway:headway/brave-project-parade`.
+pub const KIND_VIEW: u32 = 30626;
+
 /// Headway review record: a **regular** (append-only, like [`KIND_COMMENT`])
 /// event carrying the structured metadata an agent records on a card when it
 /// finishes work — the commit (sha, subject, branch), where it lives (`host`,
@@ -161,6 +170,7 @@ mod tests {
             KIND_SEQUENCE,
             KIND_BLOCKERS,
             KIND_RELATED,
+            KIND_VIEW,
         ] {
             assert!(is_addressable(addressable), "{addressable} is addressable");
         }

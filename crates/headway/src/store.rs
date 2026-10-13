@@ -338,7 +338,7 @@ pub fn save_board_pref(
 /// transparently unwraps the envelope on read once the account key is registered
 /// via `Ndb::add_key`, so the inner note stays queryable. Returns the inner note's
 /// id.
-fn ingest_pns(
+pub(crate) fn ingest_pns(
     ndb: &Ndb,
     inner: &Note,
     device_secret: &[u8; 32],
@@ -1888,7 +1888,7 @@ fn republish_board_def(
 /// moved/deleted/archived in the same second it was last placed would *tie* the
 /// reducer's latest-wins and silently no-op; stamp strictly past `prev` so the
 /// new placement always wins (mirrors [`republish_board`]).
-fn next_after(prev: u64) -> u64 {
+pub(crate) fn next_after(prev: u64) -> u64 {
     now_secs().max(prev + 1)
 }
 

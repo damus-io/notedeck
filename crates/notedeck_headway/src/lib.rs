@@ -6,7 +6,7 @@ use nostrdb::{Ndb, NoteKey, Subscription, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
 use notedeck::{App, AppContext, AppResponse, ColorTheme, PrivateRelaySync, fan_out_unseen_notes};
 
-pub use headway::{event, store, teams};
+pub use headway::{event, store, teams, views};
 
 mod cache;
 mod cursor;
@@ -26,7 +26,9 @@ use cache::{BoardCache, BoardRef};
 use nav::{DepartedCards, NavReconcile, SeenCards, reconcile_nav};
 pub use nav::{HeadwayRoute, ReviewTarget};
 pub use renderers::{HeadwayBoardRenderer, HeadwayIssueRenderer, HeadwayRefParser};
-use ui::{BoardEffect, BoardNav, CardBoardMove, CardBoardOp, board_ui, card_title, empty_state};
+use ui::{
+    BoardEffect, BoardNav, CardBoardMove, CardBoardOp, ViewEdit, board_ui, card_title, empty_state,
+};
 pub use ui::{
     BoardUiState, ChipStatus, GRAPH_NODE_SIZE, GraphNodeView, board_inline_ui, card_chip_ui,
     card_inline_ui, graph_node_ui, issue_inline_ui,
@@ -668,6 +670,9 @@ impl App for Headway {
             );
             self.board_account = Some(author);
             self.seeded = false;
+            // The account's saved list views: the issue list's tabs.
+            self.state
+                .set_saved_views(headway::views::load_views(ctx.ndb, &author));
 
             // Reconstruct this account's joined shared boards from nostrdb — the
             // roster is the set of kind-1082 key-shares gift-wrapped to us, which
@@ -1238,6 +1243,22 @@ impl Headway {
                     }
                 }
                 BoardEffect::Open(open) => ctx.app_actions.push(notedeck::AppAction::Open(open)),
+                // Local only, like the board preference: a watch-only
+                // account can't sign, so its views last the session.
+                BoardEffect::View(edit) => {
+                    let Some(secret) = signer else {
+                        continue;
+                    };
+                    let publish = &mut store::NoPublish;
+                    match edit {
+                        ViewEdit::Save(view) => {
+                            headway::views::save_view(ctx.ndb, author, secret, &view, publish)
+                        }
+                        ViewEdit::Delete(slug) => {
+                            headway::views::delete_view(ctx.ndb, author, secret, &slug, publish)
+                        }
+                    }
+                }
             }
         }
     }

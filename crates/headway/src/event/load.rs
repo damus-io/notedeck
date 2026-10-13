@@ -9,7 +9,7 @@ use nostrdb_net::{NoteId, Pubkey};
 use super::kinds::{
     HEADWAY_KINDS, KIND_BLOCKERS, KIND_BOARD, KIND_BOARD_PREF, KIND_COMMENT, KIND_COVER_NOTE,
     KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW,
-    KIND_SEQUENCE,
+    KIND_SEQUENCE, KIND_VIEW,
 };
 use super::model::BoardCoord;
 use super::parse::{BlockerSet, RelatedSet, parse, parse_blockers, parse_related};
@@ -68,6 +68,73 @@ pub fn board_pref_created_at(ndb: &Ndb, author: &Pubkey) -> u64 {
                 .map(|r| r.note.created_at())
         })
         .unwrap_or(0)
+}
+
+/// The winning revision of one of `author`'s saved list views (kind 30626),
+/// as stored: its slug, its JSON content (empty for a deleted view) and when
+/// it was written. Decoding the content is [`crate::views`]' business.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewNote {
+    /// The view's `d` tag.
+    pub slug: String,
+    /// The view's spec as JSON; empty for a tombstone.
+    pub content: String,
+    /// When this revision was written: the supersede baseline the next save
+    /// of the same slug stamps strictly past.
+    pub created_at: u64,
+}
+
+/// How many view revisions [`view_notes`] reads. nostrdb keeps every revision
+/// of a replaceable note, so this bounds a fold over a long edit history.
+const VIEW_REVISIONS: i32 = 4096;
+
+/// Every saved list view `author` has written, latest-wins per slug,
+/// tombstones included (so a re-save of a deleted slug still stamps past it),
+/// in slug order. Like [`load_board_pref`], the notes are stored PNS-wrapped
+/// and nostrdb has already unwrapped them on read.
+pub fn view_notes(ndb: &Ndb, author: &Pubkey) -> Vec<ViewNote> {
+    let Ok(txn) = Transaction::new(ndb) else {
+        return Vec::new();
+    };
+    let filter = Filter::new()
+        .authors([author.bytes()])
+        .kinds([KIND_VIEW as u64])
+        .limit(VIEW_REVISIONS as u64)
+        .build();
+    let Ok(results) = ndb.query(&txn, &[filter], VIEW_REVISIONS) else {
+        return Vec::new();
+    };
+    let mut latest: std::collections::BTreeMap<String, ViewNote> = Default::default();
+    for result in results {
+        let note = result.note;
+        let Some(slug) = d_tag(&note) else {
+            continue;
+        };
+        if latest
+            .get(slug)
+            .is_some_and(|have| have.created_at >= note.created_at())
+        {
+            continue;
+        }
+        latest.insert(
+            slug.to_string(),
+            ViewNote {
+                slug: slug.to_string(),
+                content: note.content().to_string(),
+                created_at: note.created_at(),
+            },
+        );
+    }
+    latest.into_values().collect()
+}
+
+/// `note`'s `d` tag value, when it's a string.
+fn d_tag<'a>(note: &Note<'a>) -> Option<&'a str> {
+    note.tags().iter().find_map(|tag| {
+        (tag.count() >= 2 && tag.get_str(0) == Some("d"))
+            .then(|| tag.get_str(1))
+            .flatten()
+    })
 }
 
 /// The `author`'s current [`BlockerSet`] for the card `blocked`, read straight

@@ -50,7 +50,7 @@ pub use build::{
     build_archive_placement, build_blockers, build_board, build_board_def, build_board_pref,
     build_comment, build_cover_note, build_field, build_issue, build_labels, build_placement,
     build_related, build_relation, build_review, build_review_comment, build_sequence,
-    build_subject_edit,
+    build_subject_edit, build_view,
 };
 pub use json::{
     activity_json, board_json, card_json, comment_json, review_comment_json, review_json,
@@ -58,13 +58,14 @@ pub use json::{
 pub use kinds::{
     HEADWAY_KINDS, KIND_BLOCKERS, KIND_BOARD, KIND_BOARD_PREF, KIND_COMMENT, KIND_COVER_NOTE,
     KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW,
-    KIND_SEQUENCE, is_addressable,
+    KIND_SEQUENCE, KIND_VIEW, is_addressable,
 };
+pub use load::ViewNote;
 pub(crate) use load::shared_fold_admits;
 pub use load::{
     board_pref_created_at, board_scoped_filters, card_meta_filter, comment_filter,
     current_blockers, current_related, fold_board, fold_shared_board, headway_filter, load_board,
-    load_board_pref, load_shared_board, reduce_delta,
+    load_board_pref, load_shared_board, reduce_delta, view_notes,
 };
 pub use model::{
     BoardCoord, COL_ARCHIVED, COL_DELETED, ColumnDef, Date, Field, LineRange, LineSide, Priority,
