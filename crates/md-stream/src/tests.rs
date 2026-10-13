@@ -859,6 +859,48 @@ fn test_table_finalize_incomplete() {
         "Finalize should emit the table, got: {:#?}",
         parser.parsed()
     );
+
+    // The last row had no newline after it; finalize must still keep it.
+    let Some(MdElement::Table { rows, .. }) = parser.parsed().last() else {
+        panic!("expected a table, got: {:#?}", parser.parsed());
+    };
+    let buf = parser.buffer();
+    let cells: Vec<Vec<&str>> = rows
+        .iter()
+        .map(|row| row.iter().map(|c| r(&c.span, buf)).collect())
+        .collect();
+    assert_eq!(cells, vec![vec!["v1", "v2"]]);
+}
+
+#[test]
+fn test_table_finalize_keeps_unterminated_last_row() {
+    // A /context reply: a heading, then a table whose last row has no newline.
+    let mut parser = StreamParser::new();
+    parser.push(
+        "## Usage\n\n| Category | Tokens |\n|---|---|\n| Messages | 41.2k |\n| Free | 155.7k |",
+    );
+    parser.finalize();
+
+    let Some(MdElement::Table { rows, .. }) = parser.parsed().last() else {
+        panic!("expected a table, got: {:#?}", parser.parsed());
+    };
+    let buf = parser.buffer();
+    let firsts: Vec<&str> = rows.iter().map(|row| r(&row[0].span, buf)).collect();
+    assert_eq!(firsts, ["Messages", "Free"]);
+}
+
+#[test]
+fn test_table_finalize_header_and_unterminated_separator() {
+    // Only a header and a separator with no newline: still a table, no rows.
+    let mut parser = StreamParser::new();
+    parser.push("| H1 | H2 |\n|---|---|");
+    parser.finalize();
+
+    let Some(MdElement::Table { headers, rows }) = parser.parsed().last() else {
+        panic!("expected a table, got: {:#?}", parser.parsed());
+    };
+    assert_eq!(headers.len(), 2);
+    assert!(rows.is_empty());
 }
 
 #[test]

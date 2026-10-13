@@ -1075,9 +1075,20 @@ impl StreamParser {
                 }
                 PartialKind::Table {
                     headers,
-                    rows,
-                    seen_separator,
+                    mut rows,
+                    mut seen_separator,
                 } => {
+                    // Flush a trailing row line that never got its newline.
+                    let rest = &self.buffer[self.process_pos..];
+                    let line = rest.trim();
+                    let line_abs = self.process_pos + (rest.len() - rest.trim_start().len());
+                    if line.starts_with('|') {
+                        if seen_separator {
+                            rows.push(parse_table_row(line, line_abs));
+                        } else if is_separator_row(line) {
+                            seen_separator = true;
+                        }
+                    }
                     if seen_separator {
                         self.parsed.push(MdElement::Table { headers, rows });
                     } else {
