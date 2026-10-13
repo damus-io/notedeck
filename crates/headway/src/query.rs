@@ -8,32 +8,64 @@
 //!
 //! - [`IssueFilter`] — a parsed, Linear-ish query (`p:high label:ui is:done`)
 //!   and the predicate it stands for.
-//! - [`ListRow`] — a card plus the board and column it sits in, the unit every
-//!   predicate and renderer reads.
+//! - [`ListRow`] — a card plus the board it's on and its [`Placement`] there
+//!   (a column, or the archive), the unit every predicate and renderer reads.
 //! - [`ListQuery`] + [`list`] — flatten boards into the rows a query keeps.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::event::{self, BoardView, CardView, ColumnView, Date, Priority};
 
-/// A live card placed on a board: the card, its board and the column it sits
-/// in. Borrowed from the folded views, so a list of rows costs one `Vec`.
+/// Where a [`ListRow`]'s card sits on its board: in a live column, or taken
+/// off the board into its archive ([`BoardView::archived`]).
+#[derive(Clone, Copy, Debug)]
+pub enum Placement<'a> {
+    /// In this live column.
+    Column(&'a ColumnView),
+    /// Archived: on the board, but in no column.
+    Archived,
+}
+
+/// A card placed on a board: the card, its board and where it sits there.
+/// Borrowed from the folded views, so a list of rows costs one `Vec`.
 #[derive(Clone, Copy, Debug)]
 pub struct ListRow<'a> {
     /// The board the card is placed on.
     pub board: &'a BoardView,
     /// The card itself.
     pub card: &'a CardView,
-    /// The column it sits in on [`board`](Self::board).
-    pub column: &'a ColumnView,
+    /// Where it sits on [`board`](Self::board).
+    pub placement: Placement<'a>,
 }
 
-impl ListRow<'_> {
+impl<'a> ListRow<'a> {
+    /// The live column the card sits in, `None` when it's archived.
+    pub fn column(&self) -> Option<&'a ColumnView> {
+        match self.placement {
+            Placement::Column(column) => Some(column),
+            Placement::Archived => None,
+        }
+    }
+
+    /// Whether the card is archived.
+    pub fn is_archived(&self) -> bool {
+        matches!(self.placement, Placement::Archived)
+    }
+
+    /// The name of where the card sits: its column's, or `archived`. What
+    /// `headway list` prints in brackets, the way `grep` does.
+    pub fn place_name(&self) -> &'a str {
+        self.column().map_or("archived", |c| c.name.as_str())
+    }
+
     /// Whether the card counts as done here: it sits in a terminal column, or
     /// every live subissue under it is done. The same rule as
-    /// [`BoardView::card_is_done`], without re-finding the card.
+    /// [`BoardView::card_is_done`], without re-finding the card. An archived
+    /// card is neither done nor open: it's archived.
     pub fn is_done(&self) -> bool {
-        self.board.column_is_terminal(&self.column.id) || self.card.subissues_done()
+        self.column().is_some_and(|column| {
+            self.board.column_is_terminal(&column.id) || self.card.subissues_done()
+        })
     }
 }
 
@@ -46,19 +78,26 @@ pub enum StateFilter {
     Done,
     /// In the board's In Progress column ([`ColumnView::is_in_progress`]).
     InProgress,
-    /// Any state. Written `is:any`; lets a caller that defaults to
-    /// [`Open`](Self::Open) be told to show everything.
+    /// Any live state. Written `is:any`; lets a caller that defaults to
+    /// [`Open`](Self::Open) be told to show everything on the board.
     Any,
+    /// Archived ([`Placement::Archived`]). The one state that lists archived
+    /// cards: every other keeps only live ones.
+    Archived,
 }
 
 impl StateFilter {
     /// Does `row` sit in this state?
     fn matches(self, row: &ListRow) -> bool {
+        let Some(column) = row.column() else {
+            return self == StateFilter::Archived;
+        };
         match self {
             StateFilter::Open => !row.is_done(),
             StateFilter::Done => row.is_done(),
-            StateFilter::InProgress => row.column.is_in_progress(),
+            StateFilter::InProgress => column.is_in_progress(),
             StateFilter::Any => true,
+            StateFilter::Archived => false,
         }
     }
 }
@@ -87,7 +126,7 @@ pub struct IssueFilter {
     pub labels: Vec<String>,
     /// `priority:` values; the card's priority must be one of them.
     pub priority: Vec<Priority>,
-    /// `is:open|done|progress|any`.
+    /// `is:open|done|progress|any|archived`.
     pub state: Option<StateFilter>,
     /// `status:`/`col:` values: the card's column id or name must equal one of
     /// them, ignoring case.
@@ -115,6 +154,7 @@ impl IssueFilter {
     /// - `priority:x` / `p:x` — `urgent|high|medium|low|none`, comma-separated
     ///   for any of several (`p:high,urgent`);
     /// - `is:open|done|progress|any`, `is:blocked|unblocked`;
+    /// - `is:archived` — archived cards, and only them (see [`list`]);
     /// - `status:x` / `col:x` — the column, by id or name (`col:todo,backlog`);
     /// - `due:any|none|<YYYY-MM-DD>` — dated, undated, or due by that day;
     /// - anything else, free text matched against a card's title, description,
@@ -181,6 +221,7 @@ impl IssueFilter {
                     self.state = Some(StateFilter::InProgress)
                 }
                 "any" | "all" => self.state = Some(StateFilter::Any),
+                "archived" => self.state = Some(StateFilter::Archived),
                 "blocked" => self.blocked = Some(true),
                 "unblocked" => self.blocked = Some(false),
                 _ => {}
@@ -193,6 +234,12 @@ impl IssueFilter {
             _ => return false,
         }
         true
+    }
+
+    /// Whether the filter asks for archived cards (`is:archived`), which a
+    /// list leaves out otherwise.
+    pub fn wants_archived(&self) -> bool {
+        self.state == Some(StateFilter::Archived)
     }
 
     /// Whether any constraint is set. An inactive filter keeps every card.
@@ -216,8 +263,10 @@ impl IssueFilter {
             return false;
         }
         if !self.columns.is_empty()
-            && !self.columns.iter().any(|c| {
-                c.eq_ignore_ascii_case(&row.column.id) || c.eq_ignore_ascii_case(&row.column.name)
+            && !row.column().is_some_and(|column| {
+                self.columns.iter().any(|c| {
+                    c.eq_ignore_ascii_case(&column.id) || c.eq_ignore_ascii_case(&column.name)
+                })
             })
         {
             return false;
@@ -292,9 +341,10 @@ pub struct ListQuery {
     pub within: Option<[u8; 32]>,
 }
 
-/// Every live card on `boards` that `query` keeps, in board order: board by
-/// board, column by column, each column by rank — the board as drawn. Archived
-/// cards are never listed.
+/// Every card on `boards` that `query` keeps, in board order: board by board,
+/// column by column, each column by rank — the board as drawn. Archived cards
+/// are listed only when the filter asks for them ([`IssueFilter::wants_archived`]),
+/// after each board's live ones, so a default list never changes for them.
 ///
 /// Sorting and grouping are later cards of the list-view epic; until then the
 /// order is the boards' own.
@@ -302,23 +352,32 @@ pub fn list<'a>(boards: &'a [BoardView], query: &ListQuery) -> Vec<ListRow<'a>> 
     let mut rows = Vec::new();
     for board in boards {
         let within = query.within.map(|root| subtree_ids(board, root));
+        let mut keep = |row: ListRow<'a>| {
+            let inside = within
+                .as_ref()
+                .is_none_or(|ids| ids.contains(row.card.id.bytes()));
+            if inside && query.filter.matches(&row) {
+                rows.push(row);
+            }
+        };
         for column in &board.columns {
             for card in &column.cards {
-                if within
-                    .as_ref()
-                    .is_some_and(|ids| !ids.contains(card.id.bytes()))
-                {
-                    continue;
-                }
-                let row = ListRow {
+                keep(ListRow {
                     board,
                     card,
-                    column,
-                };
-                if query.filter.matches(&row) {
-                    rows.push(row);
-                }
+                    placement: Placement::Column(column),
+                });
             }
+        }
+        if !query.filter.wants_archived() {
+            continue;
+        }
+        for archived in &board.archived {
+            keep(ListRow {
+                board,
+                card: &archived.card,
+                placement: Placement::Archived,
+            });
         }
     }
     rows
@@ -431,7 +490,7 @@ mod tests {
         let row = ListRow {
             board: b,
             card: &b.columns[0].cards[0],
-            column: &b.columns[0],
+            placement: Placement::Column(&b.columns[0]),
         };
         IssueFilter::parse(query, Some(&b.id)).matches(&row)
     }
@@ -622,7 +681,47 @@ mod tests {
         assert_eq!(titles(&boards, ""), ["a", "b", "c"]);
         let rows = list(&boards, &ListQuery::default());
         assert_eq!(rows[2].board.id, "two");
-        assert_eq!(rows[1].column.name, "Done");
+        assert_eq!(rows[1].place_name(), "Done");
+    }
+
+    /// `is:archived` lists the archived cards and nothing else; `is:done` and
+    /// `is:any` stay live-only.
+    #[test]
+    fn is_archived_lists_only_archived_cards() {
+        let mut b = board(
+            "b",
+            vec![card(1, "live", &["ui"])],
+            vec![],
+            vec![card(2, "done", &[])],
+        );
+        b.archived = vec![
+            ArchivedCard {
+                card: card(3, "shelved", &["ui"]),
+                from: Some("done".to_string()),
+            },
+            ArchivedCard {
+                card: card(4, "dropped", &[]),
+                from: None,
+            },
+        ];
+        let boards = [b];
+        assert_eq!(titles(&boards, "is:archived"), ["shelved", "dropped"]);
+        assert_eq!(titles(&boards, "is:archived label:ui"), ["shelved"]);
+        assert_eq!(titles(&boards, "is:done"), ["done"]);
+        assert_eq!(titles(&boards, "is:any"), ["live", "done"]);
+        assert_eq!(titles(&boards, "is:open"), ["live"]);
+        // A column term never matches an archived card.
+        assert!(titles(&boards, "is:archived col:done").is_empty());
+        let rows = list(
+            &boards,
+            &ListQuery {
+                filter: IssueFilter::parse("is:archived", None),
+                within: None,
+            },
+        );
+        assert!(rows.iter().all(ListRow::is_archived));
+        assert_eq!(rows[0].place_name(), "archived");
+        assert!(!rows[0].is_done());
     }
 
     /// `within` keeps the container and everything under it, archived

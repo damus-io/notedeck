@@ -1213,6 +1213,73 @@ fn issue_list_spans_boards_filters_and_opens_cards() {
     wait_for_label(&mut harness, "1 card · 5 columns");
 }
 
+/// Archived cards are as reachable as live ones
+/// (headway:headway/album-trouble-treat): `is:archived` in the board filter
+/// opens the archived sheet with the query's other terms narrowing it, a title
+/// there opens the card's detail, archived, with Restore, and the issue list's
+/// `is:archived` lists them and opens the same detail. Behavioural (accesskit
+/// only), so it runs without lavapipe.
+#[test]
+fn archived_cards_are_searchable_and_open_their_detail() {
+    const SHELVED: &str = "Column reordering";
+    const DROPPED: &str = "Sync cards across relays";
+    const BANNER: &str = "This card is archived.";
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let ids = {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let app_ctx = state.notedeck.app_context();
+        [
+            demo_card_id(app_ctx.ndb, &author, SHELVED),
+            demo_card_id(app_ctx.ndb, &author, DROPPED),
+        ]
+    };
+    archive_demo_cards(&mut harness, &ids);
+    wait_for_label(&mut harness, "View archived (2)");
+
+    // The board filter hands an `is:archived` query to the archived sheet,
+    // focused on its own field with the rest of the terms.
+    type_key(&mut harness, egui::Key::Slash, "/");
+    focused_text_input(&harness).type_text("is:archived reorder");
+    wait_for_label(&mut harness, SHELVED);
+    wait_for_absent(&mut harness, DROPPED);
+    assert_eq!(
+        focused_text_input(&harness).value().as_deref(),
+        Some("reorder"),
+        "the sheet's field holds the other terms"
+    );
+
+    // A title there opens the card's detail, archived, Restore one click away.
+    harness.get_by_label(SHELVED).click();
+    wait_for_label(&mut harness, BANNER);
+    assert!(harness.query_all_by_label("Restore").next().is_some());
+    harness.get_by_label("← Back").click();
+    wait_for_absent(&mut harness, BANNER);
+
+    // The issue list lists archived cards for `is:archived`, and only then.
+    harness.press_key(egui::Key::V);
+    wait_for_label(&mut harness, "Issues");
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text("is:archived");
+    wait_for_label(&mut harness, "2 issues");
+    harness.get_by_label(DROPPED).click();
+    wait_for_label(&mut harness, BANNER);
+
+    // Restore puts it back on the board, the detail still open on it. The
+    // banner's comes first; the sidebar has another.
+    harness
+        .query_all_by_label("Restore")
+        .next()
+        .expect("the banner's Restore")
+        .click();
+    wait_for_absent(&mut harness, BANNER);
+    harness.get_by_label(DROPPED);
+}
+
 /// The issue list across the demo board and a second one, All toggled on so
 /// the done card shows too.
 #[test]
@@ -1332,7 +1399,7 @@ fn inline_card_snapshot(name: &str, title: &str, label: &str) {
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_inline_chip_row_wrapping() {
     use headway::event::ColumnPos;
-    use notedeck_headway::card_chip_ui;
+    use notedeck_headway::{ChipStatus, card_chip_ui};
 
     let tmpdir = tempfile::TempDir::new().unwrap();
     let ctx = egui::Context::default();
@@ -1341,7 +1408,7 @@ fn snapshot_inline_chip_row_wrapping() {
 
     let short = "cache the parse";
     let long = "notedeck_ui: cache per-frame markdown parse + reference scan";
-    let column = Some(ColumnPos { index: 1, count: 5 });
+    let column = ChipStatus::Column(ColumnPos { index: 1, count: 5 });
 
     let mut installed = false;
     let mut harness = Harness::builder()
@@ -1397,7 +1464,7 @@ fn snapshot_inline_chip_row_wrapping() {
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_inline_chip() {
     use headway::event::ColumnPos;
-    use notedeck_headway::card_chip_ui;
+    use notedeck_headway::{ChipStatus, card_chip_ui};
 
     let tmpdir = tempfile::TempDir::new().unwrap();
     let ctx = egui::Context::default();
@@ -1423,7 +1490,7 @@ fn snapshot_inline_chip() {
                     ui,
                     &theme,
                     "Render inline references as chips",
-                    Some(ColumnPos { index: 2, count: 5 }),
+                    ChipStatus::Column(ColumnPos { index: 2, count: 5 }),
                     InlineChrome::Pill,
                 );
                 ui.label("which unblocks");
@@ -1432,12 +1499,18 @@ fn snapshot_inline_chip() {
                     ui,
                     &theme,
                     "Thread AppContext through Dave",
-                    Some(ColumnPos { index: 0, count: 5 }),
+                    ChipStatus::Column(ColumnPos { index: 0, count: 5 }),
                     InlineChrome::Pill,
                 );
                 ui.label("and closes out the epic — superseding");
-                // Archived (no live column) → muted fallback icon.
-                card_chip_ui(ui, &theme, "The earlier sketch", None, InlineChrome::Pill);
+                // Archived (no live column) → the archive box.
+                card_chip_ui(
+                    ui,
+                    &theme,
+                    "The earlier sketch",
+                    ChipStatus::Archived,
+                    InlineChrome::Pill,
+                );
                 ui.label("entirely.");
             });
         });
@@ -5853,14 +5926,16 @@ fn chrome_nav_loop_queue_back_off_keeps_its_notice() {
     );
 }
 
-/// An epic archived while its review queue is open: `q` can't land on the
-/// epic's detail, so it ends on the board, one back off the queue and one
-/// off the epic's detail entry. Before, `q` selected the gone epic, the same
-/// frame dropped it and forgot it had shown, and the grid drew under the
-/// epic's detail entry for good. The queue is opened with the detail's
-/// "Review 1" button, the click `R` stands in for elsewhere.
+/// An epic archived while its review queue is open, with the queue's one
+/// card: the queue, left with nothing, closes onto the epic's detail, whose
+/// entry stays since an archived card's detail still opens, showing it
+/// archived. Leaving that is an ordinary back onto the board. Before an
+/// archived card's detail opened, `q` selected the gone epic, the same frame
+/// dropped it and forgot it had shown, and the grid drew under the epic's
+/// detail entry for good. The queue is opened with the detail's "Review 1"
+/// button, the click `R` stands in for elsewhere.
 #[test]
-fn chrome_nav_loop_epic_queue_whose_epic_left_ends_on_the_board() {
+fn chrome_nav_loop_epic_queue_whose_epic_was_archived_lands_on_its_detail() {
     const CARDS: [&str; 1] = ["Column reordering"];
     let repo = tempfile::tempdir().expect("repo dir");
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
@@ -5885,25 +5960,30 @@ fn chrome_nav_loop_epic_queue_whose_epic_left_ends_on_the_board() {
     chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "1 / 1");
 
-    // The queue's card goes too, so the pane says it has gone.
     archive_demo_cards(&mut harness, &[epic, ids[0]]);
-    wait_for_label(&mut harness, "This card is no longer on the board.");
+    chrome_frames_until(&mut harness, &mut stack, "the epic's detail", |s| {
+        s.len() == 2 && top_route(s).is_some_and(|r| r.selected_card() == Some(epic))
+    });
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "This card is archived.");
 
-    harness.press_key(egui::Key::Q);
+    harness.press_key(egui::Key::Escape);
     chrome_frames_until(&mut harness, &mut stack, "the board root", |s| s.len() == 1);
     chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "5 cards · 5 columns");
     assert!(harness.query_by_label("← Back").is_none());
 }
 
-/// As [`chrome_nav_loop_epic_queue_whose_epic_left_ends_on_the_board`], with
-/// the epic's queue reached by a history walk, so the epic's detail never
-/// drew. The queue's card stays, so `q` is what closes it. The epic's detail
-/// entry under the queue went with the epic, pruned when it left; were it
-/// still there, the back would land on it, and it would hold the selection
+/// As [`chrome_nav_loop_epic_queue_whose_epic_was_archived_lands_on_its_detail`],
+/// with the epic's queue reached by a history walk, so the epic's detail
+/// never drew. The queue's card stays, so `q` is what closes it, onto the
+/// epic's detail entry, which stayed with the epic archived and draws it so.
+/// A back from there reaches the board. Before an archived card's detail
+/// opened, that entry was pruned; had it stayed, the back would have landed
+/// on it, and it would have held the selection
 /// as a card not folded in yet and never back on to the board.
 #[test]
-fn chrome_nav_loop_gone_epics_queue_backs_off_its_undrawn_detail() {
+fn chrome_nav_loop_archived_epics_queue_backs_onto_its_undrawn_detail() {
     use notedeck::{AppId, ChromeNavEntry};
     use notedeck_headway::HeadwayRoute;
     use std::rc::Rc;
@@ -5928,6 +6008,13 @@ fn chrome_nav_loop_gone_epics_queue_backs_off_its_undrawn_detail() {
     archive_demo_cards(&mut harness, &[epic]);
 
     harness.press_key(egui::Key::Q);
+    chrome_frames_until(&mut harness, &mut stack, "the epic's detail", |s| {
+        s.len() == 2 && top_route(s).is_some_and(|r| r.selected_card() == Some(epic))
+    });
+    chrome_frame(&mut harness, &mut stack);
+    wait_for_label(&mut harness, "This card is archived.");
+
+    harness.press_key(egui::Key::Escape);
     chrome_frames_until(&mut harness, &mut stack, "the board root", |s| s.len() == 1);
     chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "6 cards · 5 columns");

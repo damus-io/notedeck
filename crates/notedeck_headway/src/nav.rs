@@ -377,7 +377,7 @@ impl NavPos {
 /// another. Each one that left takes its history entries with it, in one
 /// [`Navigator::remove_active_routes`](notedeck::Navigator::remove_active_routes)
 /// prune, rather than leaving entries that would draw a card that isn't
-/// there.
+/// there — all but an archived card's detail entries ([`DepartedCards`]).
 ///
 /// Diffed against the fold rather than raised by the actions that remove a
 /// card, so a remote archive and a local one take the same path.
@@ -419,6 +419,59 @@ impl SeenCards {
         };
         self.ids = now;
         gone
+    }
+}
+
+/// The cards [`SeenCards::departed`] named, sorted by what becomes of their
+/// history entries: a card archived off the board keeps its detail entries,
+/// since an archived card's detail still opens (with a Restore banner), and
+/// loses its graph and review ones, which need it in a column; any other
+/// card that left (deleted, moved to another board) loses them all.
+pub(crate) struct DepartedCards {
+    /// Every card that left the board's columns.
+    left: Vec<NoteId>,
+    /// The ones among [`left`](Self::left) still on the board, archived.
+    archived: Vec<NoteId>,
+}
+
+impl DepartedCards {
+    /// Sort `left`, the cards that left `view`'s columns, by whether `view`
+    /// still holds them archived.
+    pub(crate) fn new(left: Vec<NoteId>, view: &BoardView) -> DepartedCards {
+        let archived = left
+            .iter()
+            .copied()
+            .filter(|&card| is_archived(view, card))
+            .collect();
+        DepartedCards { left, archived }
+    }
+
+    /// Whether `route` names a card that left, and has nothing left to draw.
+    pub(crate) fn prunes(&self, route: &HeadwayRoute) -> bool {
+        let Some(card) = route.entry_card() else {
+            return false;
+        };
+        let detail = matches!(route, HeadwayRoute::Card { .. });
+        self.left.contains(&card) && !(detail && self.archived.contains(&card))
+    }
+}
+
+/// Whether `card` is in `view`'s archive.
+fn is_archived(view: &BoardView, card: NoteId) -> bool {
+    view.archived.iter().any(|a| a.card.id == card)
+}
+
+impl NavPos {
+    /// Whether this position names a card it has nothing to draw for on
+    /// `view` — the same call [`DepartedCards::prunes`] makes for its
+    /// entry: a card gone from the board, or an archived card's graph or
+    /// review. An archived card's detail still draws.
+    pub(crate) fn lost_card(&self, view: &BoardView) -> bool {
+        let Some(card) = self.entry_card() else {
+            return false;
+        };
+        let detail = matches!(self, NavPos::Card(_));
+        view.card(card).is_none() && !(detail && is_archived(view, card))
     }
 }
 
@@ -559,6 +612,41 @@ mod tests {
             seen.departed(&other).is_empty(),
             "a board switch isn't a departure"
         );
+    }
+
+    /// An archived card keeps its detail entries, since its detail still
+    /// opens, and loses its graph and review ones; a card deleted off the
+    /// board loses them all. The positions a frame reads agree.
+    #[test]
+    fn archived_cards_keep_their_detail_entries() {
+        use crate::cursor::tests::square_grid;
+        use headway::event::ArchivedCard;
+
+        let mut view = square_grid();
+        let shelved = view.columns[0].cards.remove(0);
+        let shelved_id = shelved.id;
+        view.archived.push(ArchivedCard {
+            card: shelved,
+            from: None,
+        });
+        let deleted = view.columns[1].cards.remove(0).id;
+        let departed = DepartedCards::new(vec![shelved_id, deleted], &view);
+
+        assert!(!departed.prunes(&HeadwayRoute::card(shelved_id, None)));
+        assert!(departed.prunes(&HeadwayRoute::Graph {
+            epic: shelved_id,
+            title: None,
+        }));
+        assert!(departed.prunes(&HeadwayRoute::card(deleted, None)));
+        assert!(!departed.prunes(&HeadwayRoute::Board));
+        let live = view.columns[2].cards[0].id;
+        assert!(!departed.prunes(&HeadwayRoute::card(live, None)));
+
+        assert!(!NavPos::Card(shelved_id).lost_card(&view));
+        assert!(NavPos::Graph(shelved_id).lost_card(&view));
+        assert!(NavPos::Card(deleted).lost_card(&view));
+        assert!(!NavPos::Card(live).lost_card(&view));
+        assert!(!NavPos::Board.lost_card(&view));
     }
 
     /// The board↔card↔graph transition → global-history request mapping (see

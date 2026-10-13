@@ -16,7 +16,9 @@ use super::widgets::{
     StatusIcon, count_badge, detail_heading, label_color, priority_icon_ui, priority_label,
     secondary_action_button, section_label, status_icon_ui,
 };
-use super::{BoardUiState, EditMode, FoundCard, find_card, notice_ui, seed_edit_mode};
+use super::{
+    BoardUiState, EditMode, FoundCard, find_card, find_detail_card, notice_ui, seed_edit_mode,
+};
 use crate::event::{
     self, ActivityKind, ActivityView, BoardView, ColumnPos, ColumnView, CommentView, Priority,
     ReviewView,
@@ -75,15 +77,13 @@ pub(super) fn card_detail_pane_ui(
     let Some(card_id) = state.selected else {
         return;
     };
-    let Some(FoundCard {
-        col: current_col,
-        card,
-    }) = find_card(view, card_id)
-    else {
+    let Some(found) = find_detail_card(view, card_id) else {
         state.selected = None;
         state.detail_for = None;
         return;
     };
+    let card = found.card;
+    let current_col = found.column.map(|pos| pos.index);
 
     // (Re)seed the edit buffers when the open card changes. The board is
     // immutable here, so live editing happens against these buffers and is
@@ -126,7 +126,7 @@ pub(super) fn card_detail_pane_ui(
         card_id,
         scroll: state.detail_scroll.take(),
         reviews: &card.reviews,
-        terminal: view.columns[current_col].terminal,
+        terminal: current_col.is_some_and(|col| view.columns[col].terminal),
         card_ref: headway::wordid::card_ref(&view.id, card_id.bytes()),
         current_col,
         title: &card.title,
@@ -185,6 +185,10 @@ pub(super) fn card_detail_pane_ui(
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_MD);
+            if ctx.current_col.is_none() {
+                archived_banner_ui(ui, theme, &mut outcome);
+                ui.add_space(SPACING_MD);
+            }
 
             // Linear-style layout: one reading column — body, then activity
             // always beneath it — with the card's properties (status, labels,
@@ -299,6 +303,28 @@ fn detail_pane_topbar_ui(
     });
 }
 
+/// The banner across an archived card's detail: it's archived, and Restore
+/// puts it back in the column it came from.
+fn archived_banner_ui(ui: &mut egui::Ui, theme: &ColorTheme, outcome: &mut DetailOutcome) {
+    egui::Frame::new()
+        .fill(theme.surface_elevated)
+        .corner_radius(egui::CornerRadius::same(RADIUS_MD as u8))
+        .inner_margin(egui::Margin::same(SPACING_SM as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = SPACING_XS;
+                status_icon_ui(ui, theme, StatusIcon::Archived, 14.0);
+                ui.label(egui::RichText::new("This card is archived.").color(theme.text_secondary));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Restore").clicked() {
+                        *outcome = DetailOutcome::Restore;
+                    }
+                });
+            });
+        });
+}
+
 /// The card data the detail sheet needs, copied out of the (immutable)
 /// `BoardView` so the sheet body doesn't borrow it while we also mutate `state`.
 struct DetailCtx<'a> {
@@ -315,7 +341,9 @@ struct DetailCtx<'a> {
     /// The card's human-friendly reference, e.g. `headway:maple-river-canyon`:
     /// the board slug plus the word-encoded event id (see [`headway::wordid`]).
     card_ref: String,
-    current_col: usize,
+    /// The card's column on the board, `None` when it's archived: the detail
+    /// then shows the Archived banner and status, and no column controls.
+    current_col: Option<usize>,
     /// The card's title, description and labels as folded — borrowed off the
     /// frame's view like [`reviews`](Self::reviews). The editable title and
     /// description render from `BoardUiState`'s buffers; these are what an edit
@@ -428,6 +456,8 @@ enum DetailOutcome {
     Close,
     Delete,
     Archive,
+    /// Put an archived card back in the column it was archived from.
+    Restore,
     /// Move the card to the column at this index.
     MoveTo(usize),
     /// Set the card's priority to this level.
@@ -647,15 +677,16 @@ fn detail_properties_ui(
     // the way rather than as filled buttons.
     ui.add_space(SPACING_LG);
     ui.horizontal(|ui| {
-        let archive = egui::Button::new(
-            egui::RichText::new("Archive")
-                .small()
-                .color(theme.text_muted),
-        )
-        .fill(egui::Color32::TRANSPARENT)
-        .frame(false);
-        if ui.add(archive).clicked() {
-            *outcome = DetailOutcome::Archive;
+        // An archived card's counterpart is Restore, as its banner offers.
+        let (text, archive) = match ctx.current_col {
+            Some(_) => ("Archive", DetailOutcome::Archive),
+            None => ("Restore", DetailOutcome::Restore),
+        };
+        let button = egui::Button::new(egui::RichText::new(text).small().color(theme.text_muted))
+            .fill(egui::Color32::TRANSPARENT)
+            .frame(false);
+        if ui.add(button).clicked() {
+            *outcome = archive;
         }
         let delete = egui::Button::new(
             egui::RichText::new("Delete card")
@@ -1356,15 +1387,21 @@ fn detail_status_row_ui(
     let n = ctx.columns.len();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = SPACING_XS;
-        status_icon_ui(ui, theme, StatusIcon::for_column(ctx.current_col, n), 14.0);
-        let name =
-            egui::RichText::new(&ctx.columns[ctx.current_col].name).color(theme.text_primary);
+        // An archived card is in no column to move from: its status is the
+        // archive, restored from the banner.
+        let Some(current_col) = ctx.current_col else {
+            status_icon_ui(ui, theme, StatusIcon::Archived, 14.0);
+            ui.label(egui::RichText::new("Archived").color(theme.text_primary));
+            return;
+        };
+        status_icon_ui(ui, theme, StatusIcon::for_column(current_col, n), 14.0);
+        let name = egui::RichText::new(&ctx.columns[current_col].name).color(theme.text_primary);
         // Flatten the dropdown's idle state so the row reads as plain text
         // (Linear-style); hover still highlights it as clickable.
         ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
         ui.menu_button(name, |ui| {
             for (i, col) in ctx.columns.iter().enumerate() {
-                let selected = i == ctx.current_col;
+                let selected = i == current_col;
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = SPACING_XS;
                     status_icon_ui(ui, theme, StatusIcon::for_column(i, n), 14.0);
@@ -1828,9 +1865,13 @@ fn resolve_detail_outcome(
             *action = Some(BoardAction::DeleteCard { card: ctx.card_id });
             close();
         }
+        // Archiving keeps the detail open: it shows the Archived banner, with
+        // Restore one click away to undo it.
         DetailOutcome::Archive => {
             *action = Some(BoardAction::ArchiveCard { card: ctx.card_id });
-            close();
+        }
+        DetailOutcome::Restore => {
+            *action = Some(BoardAction::RestoreCard { card: ctx.card_id });
         }
         DetailOutcome::MoveTo(to) => {
             let to_row = view.columns[to].cards.len();

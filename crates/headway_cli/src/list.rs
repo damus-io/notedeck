@@ -85,7 +85,7 @@ fn default_state(mut filter: IssueFilter, include_done: bool) -> IssueFilter {
 fn row_json(row: &ListRow) -> serde_json::Value {
     let mut card = card_json(&row.board.id, row.card);
     card["board"] = json!(row.board.id);
-    card["column"] = json!(row.column.name);
+    card["column"] = json!(row.place_name());
     card
 }
 
@@ -116,7 +116,7 @@ impl RowWidths {
             widths.priority |= row.card.priority != Priority::None;
             let reference = plain_ref(row.board, &row.card.id).chars().count();
             widths.reference = widths.reference.max(reference);
-            widths.column = widths.column.max(row.column.name.chars().count() + 2);
+            widths.column = widths.column.max(row.place_name().chars().count() + 2);
         }
         widths
     }
@@ -146,7 +146,7 @@ fn list_line(row: &ListRow, widths: RowWidths, color: bool) -> String {
     );
     let column = format!(
         "{:<width$}",
-        format!("[{}]", row.column.name),
+        format!("[{}]", row.place_name()),
         width = widths.column
     );
     let progress = if card.subissues.is_empty() {
@@ -179,6 +179,7 @@ mod tests {
     use super::*;
 
     use headway::event::{CardView, ColumnView};
+    use headway::query::Placement;
     use nostrdb_net::NoteId;
 
     fn card(n: u8, title: &str) -> CardView {
@@ -249,7 +250,7 @@ mod tests {
             .map(|card| ListRow {
                 board: &view,
                 card,
-                column,
+                placement: Placement::Column(column),
             })
             .collect();
         let widths = RowWidths::of(&rows);

@@ -186,6 +186,16 @@ fn list_filters_cards_across_boards() {
     assert_eq!(rows[0]["board"], "headway");
     assert_eq!(rows[0]["priority"], "high");
 
+    // `is:archived` lists the archived card, in an `archived` column, and
+    // nothing live; no other state term reaches it.
+    assert_eq!(list(bin, url, db, &["is:archived"]), [archived.as_str()]);
+    assert!(!list(bin, url, db, &["is:any"]).contains(&archived));
+    let out = headway(bin, url, db, &["--json", "list", "is:archived"]);
+    let rows: Value = serde_json::from_str(&out).expect("list --json");
+    assert_eq!(rows[0]["column"], "archived");
+    let out = headway(bin, url, db, &["list", "is:archived"]);
+    assert!(out.contains("[archived]  Archived card"), "{out:?}");
+
     // The plain rendering: one row per card, its ref and column before the
     // title, uncolored into a pipe; `-n` caps it.
     let out = headway(bin, url, db, &["list", "p:high", "-n", "1"]);

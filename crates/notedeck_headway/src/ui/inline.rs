@@ -23,8 +23,9 @@ pub fn card_inline_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) ->
 /// ([`notedeck::RenderContext::Inline`]) — versus the full [`card_inline_ui`]
 /// card used for block embeds.
 ///
-/// `column` is the card's live [`ColumnPos`] (`None` when archived, drawing a
-/// muted backlog-style icon). `chrome` is the surface's
+/// `status` is where the card sits, which picks its icon: its live column's,
+/// an archive box when archived, or a muted backlog ring for a card on no
+/// folded board. `chrome` is the surface's
 /// [`InlineChrome`](notedeck::InlineChrome) hint: the pill, or the icon and
 /// title alone.
 ///
@@ -35,17 +36,37 @@ pub fn card_chip_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     title: &str,
-    column: Option<ColumnPos>,
+    status: ChipStatus,
     chrome: notedeck::InlineChrome,
 ) -> egui::Response {
-    // Archived cards have no live column: fall back to the unstarted icon.
-    let icon = match column {
-        Some(pos) => StatusIcon::for_column(pos.index, pos.count),
-        None => StatusIcon::Backlog,
+    let icon = match status {
+        ChipStatus::Column(pos) => StatusIcon::for_column(pos.index, pos.count),
+        ChipStatus::Archived => StatusIcon::Archived,
+        // Nothing folded to say where it is: the unstarted icon.
+        ChipStatus::Unplaced => StatusIcon::Backlog,
     };
     notedeck_ui::inline_chip(ui, theme, title, chrome, |ui, size| {
         status_icon_ui(ui, theme, icon, size);
     })
+}
+
+/// Where a [`card_chip_ui`] chip's card sits, which picks its status icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChipStatus {
+    /// In a live column at this position.
+    Column(ColumnPos),
+    /// Archived off its board.
+    Archived,
+    /// On no folded board, so drawn from its creation-time snapshot.
+    Unplaced,
+}
+
+impl ChipStatus {
+    /// The status of a card found on a folded board, from its live column:
+    /// `None` there means archived (see [`event::LocatedCard::column`]).
+    pub fn located(column: Option<ColumnPos>) -> ChipStatus {
+        column.map_or(ChipStatus::Archived, ChipStatus::Column)
+    }
 }
 
 /// Render a single headway issue (kind 1621) from its *creation-time* snapshot:

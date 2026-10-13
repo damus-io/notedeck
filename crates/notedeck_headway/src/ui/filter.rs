@@ -6,7 +6,7 @@
 use super::{BoardEffect, BoardNav, BoardUiState};
 use crate::BoardSummary;
 use crate::event::{self, BoardView, CardView, ColumnView};
-use headway::query::{IssueFilter, ListRow};
+use headway::query::{IssueFilter, ListRow, Placement};
 
 /// The complete "what shows on the board grid" predicate: the board's parsed
 /// header query — a [`headway::query::IssueFilter`], the same parser and
@@ -37,7 +37,7 @@ impl ViewFilter<'_> {
         self.filter.matches(&ListRow {
             board: self.view,
             card,
-            column,
+            placement: Placement::Column(column),
         })
     }
 }
@@ -124,9 +124,47 @@ pub(super) fn filter_ref_jump(view: &BoardView, boards: &[BoardSummary], state: 
     state.filter = rewritten;
 }
 
+/// React to an `is:archived` term in the filter field: the grid draws live
+/// cards only, so the query moves to the archived sheet, which opens with
+/// the rest of its terms in its own filter field, focused to keep typing.
+/// The board filter is left empty. Runs only on an edit of the field.
+pub(super) fn filter_archived_jump(state: &mut BoardUiState) {
+    let archived_term = |term: &str| IssueFilter::parse(term, None).wants_archived();
+    if !IssueFilter::parse(&state.filter, None).wants_archived() {
+        return;
+    }
+    state.archived_query = state
+        .filter
+        .split_whitespace()
+        .filter(|term| !archived_term(term))
+        .collect::<Vec<_>>()
+        .join(" ");
+    state.filter.clear();
+    state.showing_archived = true;
+    state.focus_archived_query = true;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `is:archived` in the board filter opens the archived sheet with the
+    /// query's other terms; any other query stays on the board.
+    #[test]
+    fn is_archived_moves_the_query_to_the_archived_sheet() {
+        let mut state = BoardUiState::default();
+        state.filter = "label:ui is:archived relay".to_string();
+        filter_archived_jump(&mut state);
+        assert!(state.showing_archived);
+        assert_eq!(state.archived_query, "label:ui relay");
+        assert!(state.filter.is_empty());
+
+        let mut state = BoardUiState::default();
+        state.filter = "is:done relay".to_string();
+        filter_archived_jump(&mut state);
+        assert!(!state.showing_archived);
+        assert_eq!(state.filter, "is:done relay");
+    }
     #[test]
     fn cross_board_ref_finds_only_known_foreign_boards() {
         let boards = vec![

@@ -43,7 +43,7 @@ use crate::event::BoardView;
 use crate::store::BoardAction;
 use crate::ui::{
     BoardUiState, CardStep, DetailScroll, QueueNotice, QueueScope, SessionOpen, ViewFilter,
-    filter_field_id, find_card, list_field_id, reason_field_id,
+    filter_field_id, find_card, find_detail_card, list_field_id, reason_field_id,
 };
 use crate::ui_tools::HeadwayUiTool;
 
@@ -451,7 +451,7 @@ fn tool_pane(view: &BoardView, state: &BoardUiState) -> Option<ToolPane> {
     }
     state
         .selected()
-        .filter(|&c| find_card(view, c).is_some())
+        .filter(|&c| find_detail_card(view, c).is_some())
         .map(ToolPane::Detail)
 }
 

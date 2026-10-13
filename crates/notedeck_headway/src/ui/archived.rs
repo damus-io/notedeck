@@ -1,4 +1,6 @@
-//! The archived-cards sheet, listing a board's archived cards for restore.
+//! The archived-cards sheet, listing a board's archived cards for restore,
+//! searchable with the board filter's query language and each one a way into
+//! its (archived) detail.
 
 use notedeck::ColorTheme;
 use notedeck::tokens::{RADIUS_MD, SPACING_LG, SPACING_SM, SPACING_XS};
@@ -7,10 +9,13 @@ use super::BoardUiState;
 use super::detail::{detail_scrim_ui, detail_sheet_frame};
 use crate::event::{ArchivedCard, BoardView};
 use crate::store::BoardAction;
+use headway::query::{IssueFilter, ListRow, Placement};
 
 /// The archived-cards sheet: an overlay listing cards taken off the board, each
-/// with a Restore button that re-places it into the column it came from. Mirrors
-/// the detail sheet's scrim + centered-card presentation.
+/// with a Restore button that re-places it into the column it came from, under a
+/// filter field read as an [`IssueFilter`] (`label:ui relay`), so a long archive
+/// is searchable. A card's title opens its detail. Mirrors the detail sheet's
+/// scrim + centered-card presentation.
 pub(super) fn archived_sheet_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -30,6 +35,9 @@ pub(super) fn archived_sheet_ui(
         460.0
     };
     let max_body_height = screen.height() - 6.0 * pad;
+    // Parsed each frame the sheet is open; an empty query allocates nothing.
+    let filter = IssueFilter::parse(&state.archived_query, Some(&view.id));
+    let mut open: Option<nostrdb_net::NoteId> = None;
 
     // Consume Escape so closing the sheet doesn't also fall through to Chrome's
     // Escape handler, which would toggle the side menu.
@@ -58,6 +66,15 @@ pub(super) fn archived_sheet_ui(
                     });
                 });
                 ui.add_space(SPACING_SM);
+                let field = egui::TextEdit::singleline(&mut state.archived_query)
+                    .id(archived_field_id())
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Filter archived… e.g. label:bug perf");
+                let field = ui.add(field);
+                if std::mem::take(&mut state.focus_archived_query) {
+                    field.request_focus();
+                }
+                ui.add_space(SPACING_SM);
                 egui::ScrollArea::vertical()
                     .max_height(max_body_height)
                     .auto_shrink([false, true])
@@ -67,27 +84,58 @@ pub(super) fn archived_sheet_ui(
                                 egui::RichText::new("No archived cards.").color(theme.text_muted),
                             );
                         }
+                        let mut shown = 0;
                         for entry in &view.archived {
-                            archived_row_ui(ui, theme, view, entry, action);
+                            let row = ListRow {
+                                board: view,
+                                card: &entry.card,
+                                placement: Placement::Archived,
+                            };
+                            if !filter.matches(&row) {
+                                continue;
+                            }
+                            shown += 1;
+                            if archived_row_ui(ui, theme, view, entry, action) {
+                                open = Some(entry.card.id);
+                            }
+                        }
+                        if shown == 0 && !view.archived.is_empty() {
+                            ui.label(
+                                egui::RichText::new("No matching archived cards.")
+                                    .color(theme.text_muted),
+                            );
                         }
                     });
             });
         });
 
+    // A title clicked opens that card's detail, which shows it archived with
+    // its own Restore; the sheet steps aside for it.
+    if let Some(card) = open {
+        state.selected = Some(card);
+        close = true;
+    }
     if close {
         state.showing_archived = false;
     }
 }
 
+/// The archived sheet's filter field's pinned id, so the board filter's
+/// `is:archived` hand-off can focus it.
+fn archived_field_id() -> egui::Id {
+    egui::Id::unique("headway-archived-filter-field")
+}
+
 /// One row in the archived sheet: the card's title, where it came from, and a
-/// Restore button.
+/// Restore button. Returns whether the title was clicked, to open the card.
 fn archived_row_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     view: &BoardView,
     entry: &ArchivedCard,
     action: &mut Option<BoardAction>,
-) {
+) -> bool {
+    let mut open = false;
     egui::Frame::new()
         .fill(theme.surface_elevated)
         .corner_radius(egui::CornerRadius::same(RADIUS_MD as u8))
@@ -101,7 +149,11 @@ fn archived_row_ui(
                     } else {
                         &entry.card.title
                     };
-                    ui.label(egui::RichText::new(title).strong());
+                    let title = egui::Button::new(egui::RichText::new(title).strong()).frame(false);
+                    open = ui
+                        .add(title)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked();
                     // Where it'll be restored to, resolved to the column's name.
                     let from = entry
                         .from
@@ -125,4 +177,5 @@ fn archived_row_ui(
             });
         });
     ui.add_space(SPACING_XS);
+    open
 }

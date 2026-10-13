@@ -42,7 +42,7 @@ mod widgets;
 
 pub use graph::{GRAPH_NODE_SIZE, GraphNodeView, graph_node_ui};
 pub use header::SyncStatus;
-pub use inline::{board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui};
+pub use inline::{ChipStatus, board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui};
 
 pub(crate) use card_actions::{CardStep, DetailScroll, reason_field_id};
 pub(crate) use filter::{ViewFilter, filter_field_id, parse_board_filter};
@@ -53,7 +53,7 @@ pub(crate) use review_comments::DraftComment;
 use archived::archived_sheet_ui;
 use card_actions::{ReasonComposer, reason_bar_ui};
 use detail::card_detail_pane_ui;
-use filter::filter_ref_jump;
+use filter::{filter_archived_jump, filter_ref_jump};
 use graph::{GraphMode, graph_view_ui};
 use grid::{add_column_ui, column_ui, start_move_anims};
 use header::{board_switcher, filtered_badge, sync_indicator, view_options_menu};
@@ -154,6 +154,12 @@ pub struct BoardUiState {
     comment_draft: String,
     /// Whether the archived-cards sheet is open.
     showing_archived: bool,
+    /// The archived sheet's filter field, read as an [`IssueFilter`] over
+    /// the archived cards (see [`archived_sheet_ui`]).
+    archived_query: String,
+    /// Focus the archived sheet's filter field once, when the board filter
+    /// handed it an `is:archived` query ([`filter_archived_jump`]).
+    focus_archived_query: bool,
     /// What this frame asked of the app: a board switch, a cross-board card
     /// move, a session open. The keys and widgets that raise them run without
     /// an [`AppContext`](notedeck::AppContext), so they queue here and the app
@@ -437,17 +443,19 @@ impl BoardUiState {
     /// detail it was opened from. A notice about the queue's card (no
     /// explainer) and an open `X` composer go with it.
     ///
-    /// An epic that left the board while its queue was open (archived, moved
-    /// to another board) has no detail to land on, so its queue leaves as the
-    /// board's does. Its detail entry under the queue went with it, pruned
-    /// when it left (see `nav::SeenCards`), so the back lands on the grid.
+    /// An epic archived while its queue was open lands on its detail all the
+    /// same, which shows it archived. One that left the board otherwise
+    /// (deleted, moved to another board) has no detail to land on, so its
+    /// queue leaves as the board's does. Its detail entry under the queue went
+    /// with it, pruned when it left (see `nav::DepartedCards`), so the back
+    /// lands on the grid.
     ///
     /// Returns the scope of the view it lands on: the epic's, or the board's
     /// for the board's queue and for an epic's whose epic has gone.
     pub(crate) fn close_queue(&mut self, view: &BoardView) -> QueueScope {
         let card = self.queue.close();
         let epic = self.queue.scope().epic();
-        let landed = match epic.filter(|&epic| find_card(view, epic).is_some()) {
+        let landed = match epic.filter(|&epic| find_detail_card(view, epic).is_some()) {
             // The epic is what the queue was opened from, and stays selected
             // underneath it.
             Some(epic) => {
@@ -879,12 +887,13 @@ fn board_pane_ui(
     }
 
     // A selected card takes over the whole view as a full-pane detail screen,
-    // replacing the board grid until dismissed (back / ✕ / Escape). A selection
+    // replacing the board grid until dismissed (back / ✕ / Escape). An archived
+    // card's detail opens too, read-mostly with a Restore banner. A selection
     // pointing at a card that no longer exists is dropped so we fall back to the
     // board rather than render an empty pane.
     if state
         .selected
-        .is_some_and(|id| find_card(view, id).is_some())
+        .is_some_and(|id| find_detail_card(view, id).is_some())
     {
         let mut action: Option<BoardAction> = None;
         reason_bar_ui(ui, theme, state);
@@ -1041,8 +1050,11 @@ fn board_pane_ui(
                         .hint_text("Filter… e.g. label:bug perf");
                     // A pasted reference to a card on another board switches
                     // to that board (see [`filter_ref_jump`]).
+                    // `is:archived` takes the query to the archived sheet
+                    // (see [`filter_archived_jump`]).
                     if ui.add(field).changed() {
                         filter_ref_jump(view, boards, state);
+                        filter_archived_jump(state);
                     }
                     ui.add_space(SPACING_SM);
                     view_options_menu(ui, theme, state);
@@ -1176,7 +1188,16 @@ pub(crate) struct FoundCard<'a> {
     pub card: &'a CardView,
 }
 
-/// Find a card anywhere on the board.
+/// Find a card the detail can open: a live card, with its column, or an
+/// archived one, with none ([`event::ResolvedCard::column`]). The detail's own
+/// lookup; everything that needs a column (moves, steps, the review pane,
+/// the graph) asks [`find_card`], which keeps to live cards.
+pub(crate) fn find_detail_card(view: &BoardView, card: NoteId) -> Option<event::ResolvedCard<'_>> {
+    event::card_with_column_in_board(view, card.bytes())
+}
+
+/// Find a live card on the board's columns. Archived cards aren't found
+/// (see [`find_detail_card`]).
 pub(crate) fn find_card(view: &BoardView, card: NoteId) -> Option<FoundCard<'_>> {
     view.columns.iter().enumerate().find_map(|(col, column)| {
         let card = column.cards.iter().find(|c| c.id == card)?;
@@ -1189,7 +1210,7 @@ pub(crate) fn find_card(view: &BoardView, card: NoteId) -> Option<FoundCard<'_>>
 /// (see [`crate::Headway`]). `None` when the card isn't on the folded view — the
 /// dropdown then falls back to the app label.
 pub(crate) fn card_title(view: &BoardView, card: NoteId) -> Option<String> {
-    find_card(view, card).map(|found| found.card.title.clone())
+    find_detail_card(view, card).map(|found| found.card.title.clone())
 }
 
 #[cfg(test)]

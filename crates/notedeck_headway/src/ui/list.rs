@@ -19,9 +19,9 @@ use super::widgets::{
 use super::{BoardEffect, BoardNav, BoardUiState};
 use crate::cache::BoardRef;
 use crate::cursor::CursorMove;
-use crate::event::{self, BoardView, Priority};
+use crate::event::{self, BoardView, CardView, Priority};
 use crate::keys;
-use headway::query::{IssueFilter, ListRow, StateFilter};
+use headway::query::{IssueFilter, ListRow, Placement, StateFilter};
 
 /// Height of one list row, fixed so the scroll area lays out only the rows on
 /// screen ([`egui::ScrollArea::show_rows`]).
@@ -61,14 +61,49 @@ pub(crate) struct ListState {
 struct ListLine {
     /// Index of the card's board in the sources.
     board: usize,
-    /// Index of its column on that board.
-    col: usize,
-    /// Index of the card in that column.
-    card: usize,
+    /// Where the card sits on that board.
+    slot: LineSlot,
     /// The card's id.
     id: NoteId,
     /// The card's word-id (`maple-river-canyon`).
     word_id: String,
+}
+
+/// Where a [`ListLine`]'s card sits on its board, by index into the board the
+/// rows were computed from.
+#[derive(Clone, Copy)]
+enum LineSlot {
+    /// `columns[col].cards[card]`.
+    Column { col: usize, card: usize },
+    /// `archived[at]`: listed only for an `is:archived` query.
+    Archived(usize),
+}
+
+impl LineSlot {
+    /// The card this slot names on `board`.
+    fn card(self, board: &BoardView) -> &CardView {
+        match self {
+            LineSlot::Column { col, card } => &board.columns[col].cards[card],
+            LineSlot::Archived(at) => &board.archived[at].card,
+        }
+    }
+
+    /// The status icon for where the card sits on `board`.
+    fn icon(self, board: &BoardView) -> StatusIcon {
+        match self {
+            LineSlot::Column { col, .. } => StatusIcon::for_column(col, board.columns.len()),
+            LineSlot::Archived(_) => StatusIcon::Archived,
+        }
+    }
+
+    /// The name of where the card sits on `board`: its column's, or
+    /// "Archived".
+    fn place(self, board: &BoardView) -> &str {
+        match self {
+            LineSlot::Column { col, .. } => &board.columns[col].name,
+            LineSlot::Archived(_) => "Archived",
+        }
+    }
 }
 
 /// The inputs the cached rows were computed from: when any differs, the rows
@@ -130,24 +165,34 @@ impl ListState {
         let filter = self.filter();
         self.rows.clear();
         for (b, board) in sources.iter().enumerate() {
-            for (c, column) in board.columns.iter().enumerate() {
-                for (k, card) in column.cards.iter().enumerate() {
-                    let row = ListRow {
-                        board,
-                        card,
-                        column,
-                    };
-                    if !filter.matches(&row) {
-                        continue;
-                    }
+            let mut keep = |card: &CardView, placement: Placement, slot: LineSlot| {
+                let row = ListRow {
+                    board,
+                    card,
+                    placement,
+                };
+                if filter.matches(&row) {
                     self.rows.push(ListLine {
                         board: b,
-                        col: c,
-                        card: k,
+                        slot,
                         id: card.id,
                         word_id: headway::wordid::encode(card.id.bytes()),
                     });
                 }
+            };
+            for (col, column) in board.columns.iter().enumerate() {
+                for (k, card) in column.cards.iter().enumerate() {
+                    let slot = LineSlot::Column { col, card: k };
+                    keep(card, Placement::Column(column), slot);
+                }
+            }
+            // Archived cards only when the query asks (`is:archived`), as
+            // `headway list` does.
+            if !filter.wants_archived() {
+                continue;
+            }
+            for (at, archived) in board.archived.iter().enumerate() {
+                keep(&archived.card, Placement::Archived, LineSlot::Archived(at));
             }
         }
         self.seen = Some(ListInputs {
@@ -384,8 +429,8 @@ fn list_row_ui(
         egui::Sense::hover(),
     );
     let board: &BoardView = &sources[line.board];
-    let column = &board.columns[line.col];
-    let card = &column.cards[line.card];
+    let card = line.slot.card(board);
+    let place = line.slot.place(board);
 
     let corner = egui::CornerRadius::same(RADIUS_MD as u8);
     if on_cursor {
@@ -403,13 +448,7 @@ fn list_row_ui(
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
             ui.spacing_mut().item_spacing.x = SPACING_SM;
-            status_icon_ui(
-                ui,
-                theme,
-                StatusIcon::for_column(line.col, board.columns.len()),
-                14.0,
-            )
-            .on_hover_text(&column.name);
+            status_icon_ui(ui, theme, line.slot.icon(board), 14.0).on_hover_text(place);
             if card.priority == Priority::None {
                 ui.add_space(14.0);
             } else {
@@ -436,7 +475,7 @@ fn list_row_ui(
                 );
                 ui.add(
                     egui::Label::new(
-                        egui::RichText::new(&column.name)
+                        egui::RichText::new(place)
                             .small()
                             .color(theme.text_secondary),
                     )

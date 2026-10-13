@@ -12,7 +12,7 @@ use notedeck::ColorTheme;
 
 use crate::cache::BoardCache;
 use crate::event;
-use crate::ui::{board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui};
+use crate::ui::{ChipStatus, board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui};
 
 /// Renders a headway issue (kind 1621) referenced inline, e.g. from a notebook
 /// note. Registered into [`notedeck::KindRendererRegistry`] at app startup.
@@ -65,11 +65,15 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
             .and_then(|boards| event::locate_card_in_boards(boards, &author, &issue.id));
         let response = match req.context {
             notedeck::RenderContext::Inline => match located {
-                Some(located) => {
-                    card_chip_ui(ui, &theme, &located.card.title, located.column, req.chrome)
-                }
+                Some(located) => card_chip_ui(
+                    ui,
+                    &theme,
+                    &located.card.title,
+                    ChipStatus::located(located.column),
+                    req.chrome,
+                ),
                 // Card on no folded board: chip from the creation-time snapshot.
-                None => card_chip_ui(ui, &theme, &issue.subject, None, req.chrome),
+                None => card_chip_ui(ui, &theme, &issue.subject, ChipStatus::Unplaced, req.chrome),
             },
             _ => match located {
                 Some(located) => card_inline_ui(ui, &theme, located.card),

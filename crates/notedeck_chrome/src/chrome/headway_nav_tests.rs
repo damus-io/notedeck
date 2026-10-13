@@ -42,6 +42,9 @@ const DETAIL: &str = "± Review diff";
 /// The grid's summary line, with every demo card on the board.
 const GRID: &str = "7 cards · 5 columns";
 
+/// The banner across an archived card's detail.
+const ARCHIVED: &str = "This card is archived.";
+
 /// What a finished review queue says on the view it lands on.
 const QUEUE_DONE: &str = "Review queue done";
 
@@ -419,14 +422,12 @@ async fn a_finished_epic_queue_says_so_after_the_back_slide() {
 
 /// As [`a_finished_epic_queue_says_so_after_the_back_slide`], with the epic
 /// archived while its queue is open: the queue carries on over the epic's
-/// subissues, and `D` on the last card closes it onto the grid, which says
-/// the queue is done. The epic's detail entry under the queue left with the
-/// epic, so the back lands on the grid, not on a detail with nothing to draw.
-/// Before, that entry stayed, and its drop-back fired on every pass drawing
-/// it: one raised in the pass its own back-slide landed in popped Headway's
-/// board too.
+/// subissues, and `D` on the last card closes it onto the epic's detail,
+/// which shows it archived and says the queue is done. An archived card's
+/// detail still opens, so its entry under the queue stays; one back, not
+/// two, so Headway's board is still under it.
 #[tokio::test]
-async fn a_gone_epics_finished_queue_says_so_on_the_grid() {
+async fn an_archived_epics_finished_queue_lands_on_its_archived_detail() {
     let repo = tempfile::tempdir().expect("repo dir");
     let mut harness = headway_in_chrome(repo.path(), &[(SUBISSUE, "src/sync.rs")]).await;
     let board = board_depth(&harness);
@@ -439,10 +440,10 @@ async fn a_gone_epics_finished_queue_says_so_on_the_grid() {
     archive_elsewhere(&mut harness, EPIC).await;
 
     press(&mut harness, egui::Modifiers::SHIFT, egui::Key::D);
-    land_on(&mut harness, board, "6 cards · 5 columns");
+    land_on(&mut harness, board + 1, ARCHIVED);
     assert!(
         harness.query_by_label(QUEUE_DONE).is_some(),
-        "the grid says the queue is done"
+        "the detail says the queue is done"
     );
 }
 
@@ -554,16 +555,15 @@ async fn pane_n_then_q_lands_on_the_next_cards_detail() {
     about(&harness, NEXT_CARD, CARD);
 }
 
-/// A pane's `a` archives its card and ends on the grid, one card lighter,
-/// with none of the card's entries left to go forward to. Opened with grid
-/// `r`, the detail under the pane never drew the card: the case that used to
-/// strand the grid under a stale detail entry. The pane stays until the
-/// archive folds in, and then the pane's entry and the detail's go in one
-/// prune. Before, the pane backed out itself, and that back and the gone
-/// card's drop-back from its detail entry added up to one too many, popping
-/// Headway's board.
+/// A pane's `a` archives its card and ends on the card's detail, which shows
+/// it archived, with the pane's entry gone and nothing to go forward to.
+/// Opened with grid `r`, the detail under the pane never drew the card. The
+/// pane stays until the archive folds in, and then its entry goes in one
+/// prune, while the detail's stays: an archived card's detail still opens.
+/// The pane's drop-back onto the detail is the prune's, not a back, so the
+/// history doesn't lose an entry too many.
 #[tokio::test]
-async fn pane_a_ends_on_the_board() {
+async fn pane_a_ends_on_the_archived_detail() {
     let repo = tempfile::tempdir().expect("repo dir");
     let mut harness = two_in_review(repo.path()).await;
     let board = board_depth(&harness);
@@ -573,23 +573,18 @@ async fn pane_a_ends_on_the_board() {
     land_on(&mut harness, board + 2, "src/a.rs");
 
     press(&mut harness, egui::Modifiers::NONE, egui::Key::A);
-    land_on(&mut harness, board, "6 cards · 5 columns");
-    assert!(
-        harness.query_by_label(DETAIL).is_none(),
-        "no detail left over the grid"
-    );
+    land_on(&mut harness, board + 1, ARCHIVED);
     assert!(
         !history(&harness).can_go_forward(),
         "nothing to go forward to"
     );
 }
 
-/// As [`pane_a_ends_on_the_board`], with the pane opened from the card's
-/// detail ("Review diff"), so the detail did draw the card: `a` still ends
-/// on the grid in one prune, not on the detail the pane was opened from,
-/// which has no card left to show.
+/// As [`pane_a_ends_on_the_archived_detail`], with the pane opened from the
+/// card's detail ("Review diff"), so the detail did draw the card: `a` ends
+/// on that detail, archived, in one prune of the pane's entry.
 #[tokio::test]
-async fn pane_a_from_the_detail_ends_on_the_board() {
+async fn pane_a_from_the_detail_ends_on_the_archived_detail() {
     let repo = tempfile::tempdir().expect("repo dir");
     let mut harness = two_in_review(repo.path()).await;
     let board = board_depth(&harness);
@@ -600,11 +595,7 @@ async fn pane_a_from_the_detail_ends_on_the_board() {
     land_on(&mut harness, board + 2, "src/a.rs");
 
     press(&mut harness, egui::Modifiers::NONE, egui::Key::A);
-    land_on(&mut harness, board, "6 cards · 5 columns");
-    assert!(
-        harness.query_by_label(DETAIL).is_none(),
-        "no detail left over the grid"
-    );
+    land_on(&mut harness, board + 1, ARCHIVED);
     assert!(
         !history(&harness).can_go_forward(),
         "nothing to go forward to"
@@ -612,11 +603,12 @@ async fn pane_a_from_the_detail_ends_on_the_board() {
 }
 
 /// `a` on a card's detail archives it through Headway's data tool, and once
-/// the archive folds in, the card's entry goes and the history ends on the
-/// grid. The key no longer backs the detail out itself: the prune that takes
-/// a card archived elsewhere off the history takes this one too.
+/// the archive folds in the detail stays, showing the card archived (its
+/// Restore is notedeck_headway's
+/// `archived_cards_are_searchable_and_open_their_detail`). A back from it is
+/// an ordinary back onto the grid, one card lighter, not the prune's.
 #[tokio::test]
-async fn detail_a_ends_on_the_board() {
+async fn detail_a_keeps_the_archived_detail() {
     let repo = tempfile::tempdir().expect("repo dir");
     let mut harness = two_in_review(repo.path()).await;
     let board = board_depth(&harness);
@@ -625,24 +617,18 @@ async fn detail_a_ends_on_the_board() {
     land_on(&mut harness, board + 1, DETAIL);
 
     press(&mut harness, egui::Modifiers::NONE, egui::Key::A);
+    land_on(&mut harness, board + 1, ARCHIVED);
+
+    harness.get_by_label("← Back").click();
     land_on(&mut harness, board, "6 cards · 5 columns");
-    assert!(
-        harness.query_by_label(DETAIL).is_none(),
-        "no detail left over the grid"
-    );
-    assert!(
-        !history(&harness).can_go_forward(),
-        "nothing to go forward to"
-    );
 }
 
 /// A card archived on another device while its review pane is open (grid
-/// `r`, no key pressed here) takes the pane's entry and its detail's with
-/// it: the history ends on the grid. Before, the pane closed onto the
-/// detail entry grid `r` pushed under it, which never drew the card, held
-/// it as one not folded in yet, and left the grid drawn under a stale entry.
+/// `r`, no key pressed here) takes the pane's entry with it, and leaves its
+/// detail's, which shows it archived: the history ends there, nothing
+/// forward.
 #[tokio::test]
-async fn a_card_archived_elsewhere_leaves_the_history_from_its_pane() {
+async fn a_card_archived_elsewhere_drops_its_pane_for_its_archived_detail() {
     let repo = tempfile::tempdir().expect("repo dir");
     let mut harness = two_in_review(repo.path()).await;
     let board = board_depth(&harness);
@@ -652,17 +638,17 @@ async fn a_card_archived_elsewhere_leaves_the_history_from_its_pane() {
     land_on(&mut harness, board + 2, "src/a.rs");
 
     archive_elsewhere(&mut harness, CARD).await;
-    land_on(&mut harness, board, "6 cards · 5 columns");
+    land_on(&mut harness, board + 1, ARCHIVED);
     assert!(
         !history(&harness).can_go_forward(),
         "nothing to go forward to"
     );
 }
 
-/// A card archived elsewhere leaves the forward history as well as the
-/// back: after the pane's `q` its review entry waits on the forward stack,
-/// and once the card goes, going forward can't reopen a review of a card
-/// that isn't there.
+/// A card archived elsewhere takes its review entries off the forward
+/// history as well as the back: after the pane's `q` its review entry waits
+/// on the forward stack, and once the card is archived, going forward can't
+/// reopen a review of a card in no column. Its detail stays, archived.
 #[tokio::test]
 async fn a_card_archived_elsewhere_leaves_the_forward_history_too() {
     let repo = tempfile::tempdir().expect("repo dir");
@@ -678,7 +664,7 @@ async fn a_card_archived_elsewhere_leaves_the_forward_history_too() {
     assert!(history(&harness).can_go_forward(), "the review is forward");
 
     archive_elsewhere(&mut harness, CARD).await;
-    land_on(&mut harness, board, "6 cards · 5 columns");
+    land_on(&mut harness, board + 1, ARCHIVED);
     assert!(
         !history(&harness).can_go_forward(),
         "and gone with its card"

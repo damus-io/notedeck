@@ -739,7 +739,7 @@ pub struct GraphNodeView<'a> {
     pub title: &'a str,
     /// The card's live [`ColumnPos`], driving the Linear-style status circle and
     /// the node's done/cleared recede. `None` (archived / off-board) draws the
-    /// unstarted backlog icon, mirroring [`card_chip_ui`](super::card_chip_ui).
+    /// unstarted backlog icon.
     pub column: Option<ColumnPos>,
     /// The card is held back by an unfinished blocker ([`CardView::is_blocked`](crate::event::CardView::is_blocked));
     /// leads the title with a dim ⊘, the same tell as `grid::card_ui`.

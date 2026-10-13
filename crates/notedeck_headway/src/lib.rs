@@ -23,13 +23,13 @@ mod ui_tools;
 use ui_tools::HeadwayUiTool;
 
 use cache::{BoardCache, BoardRef};
+use nav::{DepartedCards, NavReconcile, SeenCards, reconcile_nav};
 pub use nav::{HeadwayRoute, ReviewTarget};
-use nav::{NavReconcile, SeenCards, reconcile_nav};
 pub use renderers::{HeadwayBoardRenderer, HeadwayIssueRenderer, HeadwayRefParser};
 use ui::{BoardEffect, BoardNav, CardBoardMove, CardBoardOp, board_ui, card_title, empty_state};
 pub use ui::{
-    BoardUiState, GRAPH_NODE_SIZE, GraphNodeView, board_inline_ui, card_chip_ui, card_inline_ui,
-    graph_node_ui, issue_inline_ui,
+    BoardUiState, ChipStatus, GRAPH_NODE_SIZE, GraphNodeView, board_inline_ui, card_chip_ui,
+    card_inline_ui, graph_node_ui, issue_inline_ui,
 };
 
 use event::BoardView;
@@ -1080,13 +1080,13 @@ impl Headway {
         // entries to draw, so they all leave the history in one prune: its
         // detail, graph and review, back and forward. Raised here, while
         // Headway renders as the active app, which the chrome tags it with.
+        // An archived card's detail entries stay: its detail still opens.
         let departed = self.seen_cards.departed(&view);
         if !departed.is_empty() {
             self.state.note_departed(&departed);
+            let departed = DepartedCards::new(departed, &view);
             ctx.navigator
-                .remove_active_routes(move |route: &HeadwayRoute| {
-                    route.entry_card().is_some_and(|c| departed.contains(&c))
-                });
+                .remove_active_routes(move |route: &HeadwayRoute| departed.prunes(route));
         }
 
         // The issue list reads every board, so gather them, but only while
@@ -1170,10 +1170,8 @@ impl Headway {
             // not a back's. The frame that draws it drops the gone card, which
             // reads as a back, and so would every other frame drawing it before
             // the prune lands (a slide's). Each back would pop one more entry.
-            Some(NavReconcile::Back)
-                if before
-                    .entry_card()
-                    .is_some_and(|card| view.card(card).is_none()) => {}
+            // An archived card's detail is no such entry: closing it is a back.
+            Some(NavReconcile::Back) if before.lost_card(&view) => {}
             // Leaving a card (close or delete), closing the graph or leaving the
             // queue steps one entry back in the global history.
             Some(NavReconcile::Back) => ctx.navigator.back(),

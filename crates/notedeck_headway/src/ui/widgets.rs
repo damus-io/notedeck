@@ -443,6 +443,9 @@ pub(super) enum StatusIcon {
     /// The final column (or an archived child): a filled indigo disc with a
     /// check.
     Done,
+    /// An archived card, off the board's columns: a muted archive box, so it
+    /// reads as put away rather than as not started.
+    Archived,
 }
 
 impl StatusIcon {
@@ -466,7 +469,7 @@ impl StatusIcon {
     /// green through the middle, indigo for done.
     fn color(self, theme: &ColorTheme) -> egui::Color32 {
         match self {
-            Self::Backlog | Self::Todo => theme.text_muted,
+            Self::Backlog | Self::Todo | Self::Archived => theme.text_muted,
             Self::Started(f) if f <= 0.5 => STATUS_IN_PROGRESS,
             Self::Started(_) => STATUS_IN_REVIEW,
             Self::Done => STATUS_DONE,
@@ -539,6 +542,16 @@ pub(super) fn status_icon_ui(
             let check = egui::Stroke::new(1.5_f32, egui::Color32::WHITE);
             painter.line_segment([p(-0.45, 0.05), p(-0.1, 0.4)], check);
             painter.line_segment([p(-0.1, 0.4), p(0.5, -0.3)], check);
+        }
+        StatusIcon::Archived => {
+            // A lid across the top, the box under it, and a handle slot.
+            let p = |dx: f32, dy: f32| center + r * egui::vec2(dx, dy);
+            let corner = egui::CornerRadius::same(1);
+            let lid = egui::Rect::from_two_pos(p(-0.95, -0.8), p(0.95, -0.35));
+            let body = egui::Rect::from_two_pos(p(-0.8, -0.35), p(0.8, 0.85));
+            painter.rect_stroke(lid, corner, stroke, egui::StrokeKind::Middle);
+            painter.rect_stroke(body, corner, stroke, egui::StrokeKind::Middle);
+            painter.line_segment([p(-0.3, 0.1), p(0.3, 0.1)], stroke);
         }
     }
     resp
