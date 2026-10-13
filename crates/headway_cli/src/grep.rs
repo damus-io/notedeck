@@ -6,7 +6,6 @@
 //! one flat row per hit. The smart-case compilation, highlighting, pager and
 //! `--color`/`--pager` modes are agentium's own, shared through [`cli_term`].
 
-use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 
 use cli_term::{ColorWhen, PagerMode, highlight, paint};
@@ -14,8 +13,9 @@ use nostrdb_net::relay::sync::Result;
 use regex::Regex;
 use serde_json::json;
 
-use headway::event::{self, ActivityKind, BoardView, CardView};
+use headway::event::{ActivityKind, BoardView, CardView};
 use headway::fmt::rel_time;
+use headway::query::subtree_ids;
 
 use crate::output::{PlacedCard, placed_cards, plain_ref};
 
@@ -31,7 +31,8 @@ use crate::output::{PlacedCard, placed_cards, plain_ref};
 /// card to reach its comments — re-syncs the relay once per card.
 ///
 /// `subtree` (`--in <card>`) keeps only that card and its descendants, as one
-/// set computed before the pass (see [`subtree_ids`]). Archived cards are
+/// set computed before the pass (see [`subtree_ids`]; unlike `next --in`, the
+/// container's own text is searched too). Archived cards are
 /// always searched — a search that silently skips them misses exactly the old
 /// discussion it's usually after — and are marked `archived` where a live card
 /// shows its column.
@@ -112,33 +113,7 @@ pub(crate) struct GrepOutput {
 
 /// The variable naming headway's own pager command, consulted before `$PAGER`
 /// by [`cli_term::emit`] — the counterpart of agentium's `$AGENTIUM_PAGER`.
-const PAGER_VAR: &str = "HEADWAY_PAGER";
-
-/// `root` and every card below it on `view`, live or archived — the set
-/// `--in <card>` narrows the search to.
-///
-/// Unlike `next --in`, the container itself is in the set: `next` hands out
-/// the container's *members*, but "search this epic" means the epic's own
-/// text too. Archived descendants are in the set as well; whether they are
-/// searched is still `--archived`'s call. A subissue cycle that slipped past
-/// the write-time guard terminates here, since a card is visited once.
-fn subtree_ids(view: &BoardView, root: [u8; 32]) -> HashSet<[u8; 32]> {
-    let by_id: HashMap<[u8; 32], &CardView> =
-        event::all_cards(view).map(|c| (*c.id.bytes(), c)).collect();
-    let mut seen = HashSet::from([root]);
-    let mut stack = vec![root];
-    while let Some(id) = stack.pop() {
-        let Some(card) = by_id.get(&id) else {
-            continue;
-        };
-        for sub in &card.subissues {
-            if seen.insert(*sub.id.bytes()) {
-                stack.push(*sub.id.bytes());
-            }
-        }
-    }
-    seen
-}
+pub(crate) const PAGER_VAR: &str = "HEADWAY_PAGER";
 
 /// Which part of a card a matching line came from — `grep`'s analogue of
 /// agentium's message role.
@@ -336,17 +311,19 @@ fn grep_match_line(m: &GrepMatch, pattern: &Regex, widths: MatchWidths, color: b
 }
 
 /// Yellow, `git log`'s commit-hash color, for the card ref leading each group.
-const SGR_REF: &str = "33";
+pub(crate) const SGR_REF: &str = "33";
 /// Bold, so the card's title is what the eye lands on in each header.
-const SGR_TITLE: &str = "1";
+pub(crate) const SGR_TITLE: &str = "1";
 /// Dim grey, as `show` dims its refs, for the column after a card's title.
-const SGR_DIM: &str = "90";
+pub(crate) const SGR_DIM: &str = "90";
 /// The field label is dimmed too, so the matched text is what stands out.
 const SGR_FIELD: &str = SGR_DIM;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::collections::HashSet;
 
     use cli_term::{CaseMode, compile_pattern};
     use headway::event::{

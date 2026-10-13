@@ -648,7 +648,8 @@ fn find_card<'a>(view: &'a BoardView, id: &NoteId) -> Option<PlacedCard<'a>> {
     placed_cards(view).find(|p| p.card.id == *id)
 }
 
-fn labels_suffix(labels: &[String]) -> String {
+/// A card's labels as `  [a, b]` after its title, empty when it has none.
+pub(crate) fn labels_suffix(labels: &[String]) -> String {
     if labels.is_empty() {
         String::new()
     } else {
@@ -662,10 +663,21 @@ fn labels_suffix(labels: &[String]) -> String {
 fn priority_prefix(priority: Priority) -> String {
     match priority {
         Priority::None => String::new(),
-        Priority::Low => nostrdb_net::relay::sync::dim("↓ "),
-        Priority::Medium => nostrdb_net::relay::sync::dim("= "),
-        Priority::High => nostrdb_net::relay::sync::dim("↑ "),
-        Priority::Urgent => "! ".to_string(),
+        Priority::Urgent => priority_glyph(priority).to_string(),
+        _ => nostrdb_net::relay::sync::dim(priority_glyph(priority)),
+    }
+}
+
+/// The marker [`priority_prefix`] draws for `priority`, unstyled, trailing
+/// space included: `↓ `, `= `, `↑ `, `! `, or empty for [`Priority::None`].
+/// Shared with `list`, which styles it under `--color` itself.
+pub(crate) fn priority_glyph(priority: Priority) -> &'static str {
+    match priority {
+        Priority::None => "",
+        Priority::Low => "↓ ",
+        Priority::Medium => "= ",
+        Priority::High => "↑ ",
+        Priority::Urgent => "! ",
     }
 }
 
@@ -710,11 +722,14 @@ fn print_related(view: &BoardView, edges: &[headway::event::EdgeRef]) {
     }
 }
 
+/// The marker [`blocked_prefix`] draws for a blocked card, unstyled.
+pub(crate) const BLOCKED_GLYPH: &str = "⊘ ";
+
 /// A dim ⊘ glyph flagging a card as blocked (held back by an unfinished blocker)
 /// on the board listing; empty when the card is free to work on.
 fn blocked_prefix(card: &CardView) -> String {
     if card.is_blocked() {
-        nostrdb_net::relay::sync::dim("⊘ ")
+        nostrdb_net::relay::sync::dim(BLOCKED_GLYPH)
     } else {
         String::new()
     }

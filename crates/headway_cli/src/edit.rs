@@ -160,6 +160,7 @@ pub(crate) fn build_action(view: &BoardView, command: Command) -> Result<BoardAc
         | Command::SeqQuery { .. }
         | Command::Next { .. }
         | Command::Grep { .. }
+        | Command::List { .. }
         | Command::Diff { .. }
         | Command::Seed { .. }
         | Command::DeleteBoard { .. }

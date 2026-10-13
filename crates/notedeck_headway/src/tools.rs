@@ -21,7 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::cursor::{self, MoveTarget, Side, Vertical};
 use crate::teams;
-use crate::ui::{CardFilter, ViewFilter};
+use crate::ui::ViewFilter;
+use headway::query::IssueFilter;
 
 /// Every agent tool the Headway app contributes, ready to register.
 pub fn tools() -> Vec<RegisteredTool> {
@@ -607,10 +608,10 @@ impl MoveStep {
     /// [`cursor::move_within`]), over the whole board: a tool sees no grid
     /// filter, so with one on, `J` hops the next card even if it's hidden.
     fn target(self, view: &BoardView, card: NoteId) -> Result<MoveTarget, String> {
-        let everything = CardFilter::default();
+        let everything = IssueFilter::default();
         let filter = ViewFilter {
+            view,
             filter: &everything,
-            hide_subissues: false,
         };
         let target = match self {
             Self::Left => cursor::move_across(view, &filter, card, Side::Left),

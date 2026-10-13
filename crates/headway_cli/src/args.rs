@@ -158,6 +158,21 @@ pub(crate) enum Command {
         /// board slug (the whole board). Shares `next --in`'s grammar.
         container: Option<String>,
     },
+    /// List the cards a query keeps, one row each, across every board (see
+    /// [`cmd_list`](crate::list::cmd_list)). A read command — it never signs.
+    List {
+        /// The query words, joined: what [`headway::query::IssueFilter::parse`]
+        /// reads (`p:high label:ui relay`).
+        query: String,
+        /// `--in`: list only this card and its subtree. A card ref, or the
+        /// board slug (the whole board). Shares `next --in`'s grammar.
+        container: Option<String>,
+        /// `--all`: done cards too, when the query has no `is:` term. Without
+        /// it the list is the open cards, like Linear's "Active".
+        include_done: bool,
+        /// `-n <k>`: cap the number of rows printed.
+        limit: Option<usize>,
+    },
     /// Comment on a card, or — with `--path`/`--line`/`--record`, or a
     /// `--reply-to` naming a review comment — on one of its review records'
     /// commits (see [`build_action`](crate::edit::build_action)).
@@ -368,9 +383,9 @@ impl Command {
                 selectors.push(card);
                 selectors.extend(container.as_deref());
             }
-            Command::Next { container, .. } | Command::Grep { container, .. } => {
-                selectors.extend(container.as_deref())
-            }
+            Command::Next { container, .. }
+            | Command::Grep { container, .. }
+            | Command::List { container, .. } => selectors.extend(container.as_deref()),
             Command::Move { card, .. }
             | Command::Title { card, .. }
             | Command::Desc { card, .. }
@@ -644,7 +659,7 @@ impl Cli {
             (None, Some(path)) => Some(read_desc_source(&path)?),
             (None, None) => None,
         };
-        let command = parse_command(
+        let mut command = parse_command(
             name,
             rest,
             col,
@@ -725,6 +740,18 @@ impl Cli {
         // `--all` is still accepted, and changes nothing here.
         if let Command::Grep { container, .. } = &command {
             all |= !board_explicit && container.is_none();
+        }
+        // `list` reads every board the same way, and so can't spend `--all` on
+        // that: for it, `--all` means done cards too. Captured before the
+        // cross-board default below overwrites `all`.
+        if let Command::List {
+            container,
+            include_done,
+            ..
+        } = &mut command
+        {
+            *include_done = all;
+            all = !board_explicit && container.is_none();
         }
 
         // `login`/`logout` manage the stored key themselves, so don't parse (and
@@ -902,6 +929,14 @@ fn parse_command(
                 container: seq.container,
             }
         }
+        // Every positional is a query term; `include_done` is filled from
+        // `--all` once the flags are known (see `Cli::parse`).
+        "list" => Command::List {
+            query: rest.join(" "),
+            container: seq.container,
+            include_done: false,
+            limit: count,
+        },
         // `parent <card> <parent>` sets, `parent <card>` detaches — mirrors how
         // `label` with no labels clears.
         "parent" => Command::Parent {
@@ -1652,6 +1687,51 @@ mod tests {
         );
         assert_eq!(parse(&["--pager", "grep", "x"]).pager, PagerMode::Always);
         assert!(parse_err(&["grep", "x", "--color", "loud"]).contains("--color"));
+    }
+
+    /// `list` joins its words into one query, reads every board unless
+    /// `--board`/`--in` narrows it, and spends `--all` on done cards instead.
+    #[test]
+    fn list_parses_query_scope_and_all() {
+        let cli = parse(&["list", "p:high", "label:ui", "-n", "3"]);
+        match cli.command {
+            Command::List {
+                query,
+                container,
+                include_done,
+                limit,
+            } => {
+                assert_eq!(query, "p:high label:ui");
+                assert!(container.is_none() && !include_done);
+                assert_eq!(limit, Some(3));
+            }
+            _ => panic!("expected a List command"),
+        }
+        assert!(cli.all, "cross-board by default");
+
+        let cli = parse(&["list", "--all"]);
+        assert!(cli.all);
+        assert!(matches!(
+            cli.command,
+            Command::List {
+                include_done: true,
+                ..
+            }
+        ));
+        // Naming a board narrows it, and `--all` still means done cards.
+        let cli = parse(&["--board", "notedeck", "list", "--all"]);
+        assert!(!cli.all);
+        assert!(matches!(
+            cli.command,
+            Command::List {
+                include_done: true,
+                ..
+            }
+        ));
+        // `--in <ref>` self-routes to the ref's board.
+        let cli = parse(&["list", "--in", "headway:notedeck/saddle-because-liquid"]);
+        assert_eq!(cli.board, "notedeck");
+        assert!(!cli.all);
     }
 
     /// A missing, unparseable or split pattern fails at parse time, before any

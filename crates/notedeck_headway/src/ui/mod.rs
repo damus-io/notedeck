@@ -43,7 +43,7 @@ pub use header::SyncStatus;
 pub use inline::{board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui};
 
 pub(crate) use card_actions::{CardStep, DetailScroll, reason_field_id};
-pub(crate) use filter::{CardFilter, ViewFilter, filter_field_id};
+pub(crate) use filter::{ViewFilter, filter_field_id, parse_board_filter};
 #[cfg(test)]
 pub(crate) use review_comments::DraftComment;
 
@@ -162,7 +162,7 @@ pub struct BoardUiState {
     /// case-insensitive); a `label:foo` token narrows to cards carrying a
     /// label containing `foo`. Pasting a full card reference filters to that
     /// card, switching boards first if it lives on another known board (see
-    /// [`CardFilter`] and [`filter_ref_jump`]).
+    /// [`headway::query::IssueFilter`] and [`filter_ref_jump`]).
     filter: String,
     /// Hide cards that are someone's sub-issue (they still show as checklist
     /// rows inside their parent's detail). A Linear-style view option, toggled
@@ -879,10 +879,10 @@ fn board_pane_ui(
     // Bundled with the view options into the single grid-visibility predicate
     // the keymap, the header and the columns share. Owned, so it doesn't hold
     // `state` borrowed.
-    let filter = CardFilter::parse(&state.filter, &view.id);
+    let filter = parse_board_filter(&state.filter, view, state.hide_subissues);
     let view_filter = ViewFilter {
+        view,
         filter: &filter,
-        hide_subissues: state.hide_subissues,
     };
 
     // The cursor follows a board edit that folded in since the grid last
@@ -933,9 +933,13 @@ fn board_pane_ui(
             let shown = view
                 .columns
                 .iter()
-                .flat_map(|c| &c.cards)
-                .filter(|c| view_filter.shows(c))
-                .count();
+                .map(|col| {
+                    col.cards
+                        .iter()
+                        .filter(|c| view_filter.shows(col, c))
+                        .count()
+                })
+                .sum::<usize>();
             let here = state.nav_pos();
             ui.horizontal(|ui| {
                 // Sync affordance: is this board reaching a private relay?

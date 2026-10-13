@@ -93,7 +93,7 @@ pub(crate) fn visible<'a>(
         .cards
         .iter()
         .enumerate()
-        .filter(move |(_, card)| filter.shows(card))
+        .filter(move |(_, card)| filter.shows(column, card))
         .map(|(row, card)| VisibleCard { row, card })
 }
 
@@ -236,7 +236,7 @@ fn clamped_visible(column: &ColumnView, filter: &ViewFilter, vis: usize) -> Opti
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::ui::CardFilter;
+    use crate::ui::parse_board_filter;
     use crate::ui::tests::card;
 
     /// A card with a distinct id `n` whose title is `title`. Tests filter on
@@ -282,11 +282,11 @@ pub(crate) mod tests {
     }
 
     /// Run `f` with a [`ViewFilter`] for `query` (empty shows everything).
-    fn with_filter<R>(query: &str, f: impl FnOnce(&ViewFilter) -> R) -> R {
-        let parsed = CardFilter::parse(query, "headway");
+    fn with_filter<R>(view: &BoardView, query: &str, f: impl FnOnce(&ViewFilter) -> R) -> R {
+        let parsed = parse_board_filter(query, view, false);
         f(&ViewFilter {
+            view,
             filter: &parsed,
-            hide_subissues: false,
         })
     }
 
@@ -328,24 +328,23 @@ pub(crate) mod tests {
     #[test]
     fn successor_takes_the_slot_else_the_one_above() {
         let mut view = grid();
-        with_filter("", |f| {
-            let slot = |col, vis| CursorPos { col, row: vis, vis };
-            // 2 left `a` (1, 3 now): 3 has its slot.
-            view.columns[0].cards.remove(1);
-            assert_eq!(successor(&view, f, slot(0, 1)), Some(id(3)));
-            // 3 left too (1 now): nothing in slot 1, so 1 above it.
-            view.columns[0].cards.remove(1);
-            assert_eq!(successor(&view, f, slot(0, 1)), Some(id(1)));
-            // 4 left `b`, its only card: nowhere.
-            view.columns[1].cards.clear();
-            assert_eq!(successor(&view, f, slot(1, 0)), None);
-        });
+        let slot = |col, vis| CursorPos { col, row: vis, vis };
+        let after = |view: &BoardView, at| with_filter(view, "", |f| successor(view, f, at));
+        // 2 left `a` (1, 3 now): 3 has its slot.
+        view.columns[0].cards.remove(1);
+        assert_eq!(after(&view, slot(0, 1)), Some(id(3)));
+        // 3 left too (1 now): nothing in slot 1, so 1 above it.
+        view.columns[0].cards.remove(1);
+        assert_eq!(after(&view, slot(0, 1)), Some(id(1)));
+        // 4 left `b`, its only card: nowhere.
+        view.columns[1].cards.clear();
+        assert_eq!(after(&view, slot(1, 0)), None);
     }
 
     #[test]
     fn down_and_up_clamp_at_the_ends() {
         let view = grid();
-        with_filter("", |f| {
+        with_filter(&view, "", |f| {
             assert_eq!(step(&view, f, Some(id(1)), CursorMove::Down), Some(id(2)));
             assert_eq!(step(&view, f, Some(id(2)), CursorMove::Down), Some(id(3)));
             assert_eq!(step(&view, f, Some(id(3)), CursorMove::Down), Some(id(3)));
@@ -360,7 +359,7 @@ pub(crate) mod tests {
             "a",
             vec![card_n(1, "keep"), card_n(2, "drop"), card_n(3, "keep")],
         )]);
-        with_filter("keep", |f| {
+        with_filter(&view, "keep", |f| {
             assert_eq!(step(&view, f, Some(id(1)), CursorMove::Down), Some(id(3)));
             assert_eq!(step(&view, f, Some(id(3)), CursorMove::Up), Some(id(1)));
             assert_eq!(
@@ -387,7 +386,7 @@ pub(crate) mod tests {
             // Truly empty.
             column("d", vec![]),
         ]);
-        with_filter("keep", |f| {
+        with_filter(&view, "keep", |f| {
             // From the third row of `a`, `b` is skipped and `c`'s single card
             // takes the clamped row.
             assert_eq!(step(&view, f, Some(id(3)), CursorMove::Right), Some(id(5)));
@@ -405,7 +404,7 @@ pub(crate) mod tests {
             column("a", vec![card_n(1, "drop")]),
             column("b", vec![card_n(2, "drop"), card_n(3, "keep")]),
         ]);
-        with_filter("keep", |f| {
+        with_filter(&view, "keep", |f| {
             for mv in [CursorMove::Down, CursorMove::Left, CursorMove::Last] {
                 assert_eq!(step(&view, f, None, mv), Some(id(3)));
                 // Absent from the board entirely.
@@ -422,7 +421,7 @@ pub(crate) mod tests {
             column("a", vec![card_n(1, "drop")]),
             column("b", vec![]),
         ]);
-        with_filter("keep", |f| {
+        with_filter(&view, "keep", |f| {
             assert_eq!(step(&view, f, None, CursorMove::Down), None);
             assert_eq!(step(&view, f, Some(id(1)), CursorMove::Right), None);
         });
@@ -431,7 +430,7 @@ pub(crate) mod tests {
     #[test]
     fn first_and_last_stay_in_the_column() {
         let view = grid();
-        with_filter("", |f| {
+        with_filter(&view, "", |f| {
             assert_eq!(step(&view, f, Some(id(2)), CursorMove::Last), Some(id(3)));
             assert_eq!(step(&view, f, Some(id(2)), CursorMove::First), Some(id(1)));
             assert_eq!(step(&view, f, Some(id(5)), CursorMove::Last), Some(id(6)));
@@ -445,7 +444,7 @@ pub(crate) mod tests {
             column("a", vec![card_n(1, "one"), card_n(2, "two")]),
             column("b", vec![]),
         ]);
-        with_filter("", |f| {
+        with_filter(&view, "", |f| {
             assert_eq!(move_across(&view, f, id(2), Side::Right), at(1, 0));
         });
     }
@@ -464,7 +463,7 @@ pub(crate) mod tests {
             ),
             column("b", vec![card_n(5, "five"), card_n(6, "six")]),
         ]);
-        with_filter("", |f| {
+        with_filter(&view, "", |f| {
             // Row 3 of `a`, but `b` only has two cards: land at its end.
             assert_eq!(move_across(&view, f, id(4), Side::Right), at(1, 2));
             // Row 1 keeps its height: just before `b`'s second card.
@@ -486,7 +485,7 @@ pub(crate) mod tests {
                 ],
             ),
         ]);
-        with_filter("keep", |f| {
+        with_filter(&view, "keep", |f| {
             // Visible row 0 lands before `b`'s first visible card, 4, whose
             // true row is 1.
             assert_eq!(move_across(&view, f, id(1), Side::Right), at(1, 1));
@@ -501,7 +500,7 @@ pub(crate) mod tests {
     #[test]
     fn across_is_a_no_op_at_both_edges() {
         let view = grid();
-        with_filter("", |f| {
+        with_filter(&view, "", |f| {
             assert_eq!(move_across(&view, f, id(1), Side::Left), None);
             assert_eq!(move_across(&view, f, id(5), Side::Right), None);
             // And a card that isn't on the board goes nowhere.
@@ -515,7 +514,7 @@ pub(crate) mod tests {
             "a",
             vec![card_n(1, "keep"), card_n(2, "drop"), card_n(3, "keep")],
         )]);
-        with_filter("keep", |f| {
+        with_filter(&view, "keep", |f| {
             // Past 3 (true row 2), not merely past the hidden 2.
             assert_eq!(move_within(&view, f, id(1), Vertical::Down), at(0, 3));
             // And back up lands on 1's row, just before it.
@@ -528,7 +527,7 @@ pub(crate) mod tests {
     #[test]
     fn within_up_at_the_top_is_a_no_op() {
         let view = grid();
-        with_filter("", |f| {
+        with_filter(&view, "", |f| {
             assert_eq!(move_within(&view, f, id(1), Vertical::Up), None);
             assert_eq!(move_within(&view, f, id(2), Vertical::Up), at(0, 0));
         });

@@ -550,10 +550,11 @@ mod tests {
     use super::*;
     use crate::cursor::tests::{grid, id, square_grid};
     use crate::nav::ReviewTarget;
-    use crate::ui::{BoardEffect, CardFilter, QueueNotice};
+    use crate::ui::{BoardEffect, QueueNotice};
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
     use headway::event::{ReviewFields, ReviewView};
+    use headway::query::IssueFilter;
     use notedeck::ColorTheme;
     use notedeck::test_harness::PressKey;
     use notedeck_chrome::keymap::{KeyDispatch, KeyEngine, Scopes};
@@ -743,11 +744,7 @@ mod tests {
     fn keys_harness(field: Option<egui::Id>) -> Harness<'static, KeysHarness> {
         let mut harness = Harness::new_ui_state(
             |ui, h: &mut KeysHarness| {
-                let parsed = CardFilter::parse("", &h.view.id);
-                let filter = ViewFilter {
-                    filter: &parsed,
-                    hide_subissues: false,
-                };
+                let everything = IssueFilter::default();
                 let pane = |s: &BoardUiState| {
                     s.queue_open() || s.review_card().is_some() || s.selected().is_some()
                 };
@@ -764,6 +761,10 @@ mod tests {
                 let action = if showed_pane || keyed.is_some() {
                     keyed
                 } else {
+                    let filter = ViewFilter {
+                        view: &h.view,
+                        filter: &everything,
+                    };
                     h.state.follow_cursor(&h.view, &filter);
                     let action = grid_tools(ui.ctx(), &h.view, &filter, &mut h.state);
                     h.state.latch_cursor_slot(&h.view, &filter);

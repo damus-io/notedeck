@@ -199,6 +199,57 @@ they are neither. The pager is $HEADWAY_PAGER, else $PAGER, else
         ],
     },
     Command {
+        name: "list",
+        group: Group::Reading,
+        summary: "List the cards a query matches, one row each, across every board",
+        usage: &["list [query...] [--board <b>] [--in <c>] [--all] [-n <k>] [--json]"],
+        details: "\
+Print one row per card the query keeps: its priority, full ref, column
+and title, labels and subissue rollup after it. Rows come in board order
+(board, then column, then rank).
+
+The query is the same one the app's board filter reads: whitespace-
+separated terms, all of which must hold.
+
+  label:x  l:x          a label containing x
+  priority:x  p:x       urgent|high|medium|low|none; p:high,urgent for either
+  is:open|done|progress|any
+  is:blocked|unblocked
+  status:x  col:x       the column, by id or name; col:todo,backlog for either
+  due:any|none|<date>   dated, undated, or due on or before YYYY-MM-DD
+  <ref>                 a pasted headway:<board>/<word-id>: that card
+  anything else         text in the title, description, labels or word-id
+
+With no is: term only open cards are listed (not in a done column);
+--all lists done ones too. Archived cards are never listed.
+
+Lists every board you can read. --board <b> narrows it to that board, and
+--in to a card's subtree (on the board its ref names). A read-only command:
+it never signs or publishes.",
+        options: &[
+            ("--all", "Done cards too, when the query has no is: term"),
+            (
+                "--in <c>",
+                "Only this card and everything under it (a card ref), or the board slug for the whole board",
+            ),
+            ("--board <b>", "List only this board"),
+            ("-n, --count <k>", "Print at most k rows"),
+            ("--color <when>", "auto (default) | always | never"),
+            ("--pager", "Page the rows even when stdout isn't a terminal"),
+            ("--no-pager", "Never page; write straight to stdout"),
+            (
+                "--json",
+                "Machine-readable output: an array of cards as show --json renders them, plus board and column",
+            ),
+        ],
+        examples: &[
+            "headway list p:high label:ui",
+            "headway list is:progress",
+            "headway list is:done --board notedeck -n 10",
+            "headway list --in headway:headway/acoustic-canvas-diesel --all",
+        ],
+    },
+    Command {
         name: "diff",
         group: Group::Reading,
         summary: "Print the commit a card's review record names, fetching it if needed",

@@ -148,7 +148,11 @@ pub(super) fn column_ui(
                         // When narrowed, the badge reflects how many of this
                         // column's cards show rather than the column's total.
                         let count = if filter.is_active() {
-                            column.cards.iter().filter(|c| filter.shows(c)).count()
+                            column
+                                .cards
+                                .iter()
+                                .filter(|c| filter.shows(column, c))
+                                .count()
                         } else {
                             column.cards.len()
                         };
@@ -214,7 +218,7 @@ fn cards_drop_zone(
                 // stays the card's true position in the column, so drag-reorder
                 // targeting against the remaining visible cards still lands
                 // correctly.
-                if !filter.shows(card) {
+                if !filter.shows(column, card) {
                     continue;
                 }
 

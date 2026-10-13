@@ -16,6 +16,7 @@ mod diff;
 mod edit;
 mod grep;
 mod help;
+mod list;
 mod output;
 mod review;
 mod sync;
@@ -96,6 +97,55 @@ fn require_owner(me: &Pubkey, owner: &Pubkey, cmd: &str) -> Result<()> {
     .into())
 }
 
+/// The boards a cross-board read command (`grep`, `list`) reads, and the
+/// `--in` card whose subtree it narrows to.
+struct ReadScope {
+    boards: Vec<event::BoardView>,
+    /// `--in <card>`: that card and its descendants; `None` for a whole board
+    /// (no `--in`, or `--in <board-slug>`).
+    subtree: Option<[u8; 32]>,
+}
+
+/// Gather a [`ReadScope`]: with `all`, every board `author` has (plus those
+/// shared with us, when reading our own); otherwise the one board `board`,
+/// narrowed to `container`'s subtree when `--in` names a card. Each board is
+/// folded once.
+fn read_scope(
+    ndb: &Ndb,
+    roster: &Roster,
+    author: &Pubkey,
+    me: &Pubkey,
+    board: &str,
+    all: bool,
+    container: Option<String>,
+) -> Result<ReadScope> {
+    let boards = if all {
+        if container.is_some() {
+            return Err("--in reads one card's subtree on its own board — drop --all".into());
+        }
+        let mut boards = list_boards(ndb, roster, author);
+        // Only when reading our own: `--author <someone>` asks for theirs.
+        if author == me {
+            boards.extend(list_shared_with_me(ndb, roster, me));
+        }
+        boards
+    } else {
+        vec![
+            load_board(ndb, roster, author, board)
+                .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?,
+        ]
+    };
+    // `--in <board-slug>` is the whole board, the same as no `--in`.
+    let subtree = match (container.as_deref(), boards.first()) {
+        (Some(sel), Some(view)) => match resolve_container(view, sel)? {
+            Container::Card(id) => Some(id),
+            Container::BoardRoot(_) => None,
+        },
+        _ => None,
+    };
+    Ok(ReadScope { boards, subtree })
+}
+
 /// Whether `cmd` addresses a single existing board, and so should find a board
 /// shared with us by its slug alone when there's no `--author` (see
 /// [`shared_owner`]).
@@ -114,7 +164,11 @@ fn resolves_owner_by_slug(cmd: &Command, show_all: bool) -> bool {
             | Command::Migrate
             | Command::DeleteBoard { .. }
             | Command::RestoreBoard { .. }
-    ) && !(show_all && matches!(cmd, Command::Show { .. } | Command::Grep { .. }))
+    ) && !(show_all
+        && matches!(
+            cmd,
+            Command::Show { .. } | Command::Grep { .. } | Command::List { .. }
+        ))
 }
 
 /// The owner of the board `board_id` names when it isn't one of ours: the one
@@ -727,38 +781,32 @@ async fn run() -> Result<()> {
         // readable board, unless `--board`/`--in` narrowed it to one — see the
         // grep default in `args.rs`) and one pass over its cards. Never signs.
         Command::Grep { pattern, container } => {
-            let boards = if show_all {
-                if container.is_some() {
-                    return Err(
-                        "--in searches one card's subtree on its own board — drop --all".into(),
-                    );
-                }
-                let mut boards = list_boards(&ndb, &roster, &author);
-                // Only when searching our own: `--author <someone>` asks for theirs.
-                if author == me {
-                    boards.extend(list_shared_with_me(&ndb, &roster, &me));
-                }
-                boards
-            } else {
-                vec![
-                    load_board(&ndb, &roster, &author, &board)
-                        .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?,
-                ]
-            };
-            // `--in <board-slug>` is the whole board, the same as no `--in`.
-            let subtree = match (container.as_deref(), boards.first()) {
-                (Some(sel), Some(view)) => match resolve_container(view, sel)? {
-                    Container::Card(id) => Some(id),
-                    Container::BoardRoot(_) => None,
-                },
-                _ => None,
-            };
+            let scope = read_scope(&ndb, &roster, &author, &me, &board, show_all, container)?;
             let out = grep::GrepOutput {
                 json: as_json,
                 color: cli.color,
                 pager: cli.pager,
             };
-            grep::cmd_grep(&boards, subtree, &pattern, out)?;
+            grep::cmd_grep(&scope.boards, scope.subtree, &pattern, out)?;
+        }
+
+        // Read command: the cards a query keeps, one row each, over the same
+        // boards `grep` reads (every readable board unless `--board`/`--in`
+        // narrowed it). Never signs.
+        Command::List {
+            query,
+            container,
+            include_done,
+            limit,
+        } => {
+            let scope = read_scope(&ndb, &roster, &author, &me, &board, show_all, container)?;
+            let out = list::ListOutput {
+                json: as_json,
+                color: cli.color,
+                pager: cli.pager,
+                limit,
+            };
+            list::cmd_list(&scope.boards, scope.subtree, &query, include_done, out)?;
         }
 
         // Read command: resolve the card's review record to a commit (fetching
