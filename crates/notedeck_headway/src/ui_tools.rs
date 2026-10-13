@@ -623,8 +623,13 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
         OPEN_REVIEW_QUEUE => grid || at == KeyView::Detail,
         CLEAR => grid && card,
         SCROLL => !grid && !list,
-        // An Esc that only left a detail field mustn't leave the card too.
-        BACK => !grid && !(at == KeyView::Detail && state.detail_field_focused()),
+        // An Esc that only left a detail field mustn't leave the card too,
+        // nor one that closes the list's `+` composer the list.
+        BACK => {
+            !grid
+                && !(at == KeyView::Detail && state.detail_field_focused())
+                && !(list && state.list_composing())
+        }
         STEP_FILE => review,
         COMMENT | SEND_COMMENTS => review && card,
         _ => false,

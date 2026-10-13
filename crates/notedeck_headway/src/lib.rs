@@ -1189,7 +1189,7 @@ impl Headway {
         // a signing key; a watch-only account simply can't edit. `update`'s poll
         // fans the ingested events out to the private relays next frame.
         if let (Some(action), Some(secret)) = (action, &signer) {
-            store::apply(
+            let outcome = store::apply_outcome(
                 ctx.ndb,
                 &self.active().slug,
                 &view,
@@ -1198,6 +1198,9 @@ impl Headway {
                 action,
                 &mut store::NoPublish,
             );
+            // A card the list added to a priority group takes its priority
+            // as the next frame's edit, once it has an id.
+            self.state.card_added(outcome.created);
             self.wake();
         }
 

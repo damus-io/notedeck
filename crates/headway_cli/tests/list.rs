@@ -227,4 +227,43 @@ fn list_filters_cards_across_boards() {
         &["list", "--board", "other", "--show", "status"],
     );
     assert_eq!(out.trim_end(), "[Backlog]  Card on another board");
+
+    // Grouping: `--group status` heads each column, same-named columns of
+    // both boards in one group, and its rows drop the `[column]` the header
+    // already says.
+    let out = headway(bin, url, db, &["list", "--group", "status", "--all"]);
+    let headers: Vec<&str> = out.lines().filter(|l| l.starts_with("## ")).collect();
+    assert_eq!(headers, ["## Backlog (3)", "## Done (1)"], "{out}");
+    assert!(!out.contains("[Backlog]"), "{out:?}");
+    // `--empty` adds the columns no card is in; sub-groups indent.
+    let out = headway(
+        bin,
+        url,
+        db,
+        &["list", "--group", "status", "--empty", "--board", "headway"],
+    );
+    assert!(out.contains("## In Progress (0)"), "{out}");
+    let out = headway(
+        bin,
+        url,
+        db,
+        &["list", "--group", "board", "--sub-group", "priority"],
+    );
+    assert!(out.contains("\n  ## High (1)\n"), "{out}");
+
+    // `--json` grouped: one object per group, its rows and its sub-groups.
+    let out = headway(
+        bin,
+        url,
+        db,
+        &["--json", "list", "--group", "label", "--sub-group", "board"],
+    );
+    let groups: Value = serde_json::from_str(&out).expect("list --json --group");
+    assert_eq!(groups[0]["group"], "ui");
+    assert_eq!(groups[0]["count"], 2);
+    assert_eq!(groups[0]["rows"][0]["ref"], epic.as_str());
+    assert_eq!(groups[0]["subgroups"][1]["group"], "other");
+    assert_eq!(groups[0]["subgroups"][1]["count"], 1);
+    assert_eq!(groups[1]["group"], "No label");
+    assert_eq!(groups[1]["rows"][0]["ref"], child.as_str());
 }

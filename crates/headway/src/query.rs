@@ -14,6 +14,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use nostrdb_net::NoteId;
+
 use crate::event::{self, BoardView, CardView, ColumnView, Date, Priority};
 
 /// Where a [`ListRow`]'s card sits on its board: in a live column, or taken
@@ -558,9 +560,420 @@ impl From<Vec<DisplayProp>> for DisplayProps {
     }
 }
 
-/// What a list shows: the [`IssueFilter`] and where to look.
+/// What a list's rows are gathered under — Linear's "Grouping" and
+/// "Sub-grouping". Written by its [`name`](Self::name) in `headway list
+/// --group` and in a saved view.
 ///
-/// Grouping and ordering land here as the list view grows
+/// Assignee, project and cycle join when cards carry those fields.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum GroupBy {
+    /// No groups: one flat list.
+    #[default]
+    None,
+    /// By column, matched by name across boards, terminal columns last.
+    Status,
+    /// By priority, Urgent first and "No priority" last.
+    Priority,
+    /// By label: a card with several labels is in each of their groups.
+    Label,
+    /// By the board a card is on.
+    Board,
+    /// By the card's parent, top-level cards under "No parent".
+    Parent,
+}
+
+impl GroupBy {
+    /// Every grouping, in the order a menu offers them.
+    pub const ALL: [GroupBy; 6] = [
+        GroupBy::None,
+        GroupBy::Status,
+        GroupBy::Priority,
+        GroupBy::Label,
+        GroupBy::Board,
+        GroupBy::Parent,
+    ];
+
+    /// The grouping's written name: what `--group` and
+    /// [`FromStr`](std::str::FromStr) read, and the serde form.
+    pub fn name(self) -> &'static str {
+        match self {
+            GroupBy::None => "none",
+            GroupBy::Status => "status",
+            GroupBy::Priority => "priority",
+            GroupBy::Label => "label",
+            GroupBy::Board => "board",
+            GroupBy::Parent => "parent",
+        }
+    }
+
+    /// The grouping's name for a person, as a menu shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            GroupBy::None => "No grouping",
+            GroupBy::Status => "Status",
+            GroupBy::Priority => "Priority",
+            GroupBy::Label => "Label",
+            GroupBy::Board => "Board",
+            GroupBy::Parent => "Parent",
+        }
+    }
+
+    /// The display property a group header already says, so a row under it
+    /// needn't: grouped by status, every row in a group has its status.
+    pub fn implied_prop(self) -> Option<DisplayProp> {
+        match self {
+            GroupBy::Status => Some(DisplayProp::Status),
+            GroupBy::Priority => Some(DisplayProp::Priority),
+            GroupBy::Label => Some(DisplayProp::Labels),
+            GroupBy::Board => Some(DisplayProp::Board),
+            GroupBy::None | GroupBy::Parent => None,
+        }
+    }
+}
+
+impl std::fmt::Display for GroupBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// A name that is no [`GroupBy`]'s.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnknownGroupBy(pub String);
+
+impl std::fmt::Display for UnknownGroupBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown grouping `{}` (expected one of ", self.0)?;
+        for (i, by) in GroupBy::ALL.iter().enumerate() {
+            let sep = if i == 0 { "" } else { ", " };
+            write!(f, "{sep}{by}")?;
+        }
+        f.write_str(")")
+    }
+}
+
+impl std::error::Error for UnknownGroupBy {}
+
+impl std::str::FromStr for GroupBy {
+    type Err = UnknownGroupBy;
+
+    /// A grouping by its [`name`](GroupBy::name), ignoring case and
+    /// surrounding space, plus the plurals and synonyms people write
+    /// (`labels`, `column`, `epic`).
+    fn from_str(s: &str) -> Result<GroupBy, UnknownGroupBy> {
+        let name = s.trim().to_ascii_lowercase();
+        let alias = match name.as_str() {
+            "labels" => "label",
+            "column" | "col" => "status",
+            "epic" => "parent",
+            "boards" => "board",
+            "" | "no" => "none",
+            other => other,
+        };
+        GroupBy::ALL
+            .into_iter()
+            .find(|by| by.name() == alias)
+            .ok_or(UnknownGroupBy(s.trim().to_string()))
+    }
+}
+
+/// How a list gathers its rows: under [`by`](Self::by)'s groups, each split
+/// again by [`sub`](Self::sub)'s. The default is no grouping, the flat list.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(default)]
+pub struct Grouping {
+    /// The top-level groups.
+    pub by: GroupBy,
+    /// The groups inside each top-level group. Ignored while
+    /// [`by`](Self::by) is [`GroupBy::None`] or the same as it.
+    pub sub: GroupBy,
+    /// Also draw the groups no row falls in: every column (status), every
+    /// priority, every board. Label and parent groups exist only where a row
+    /// does.
+    pub show_empty: bool,
+}
+
+impl Grouping {
+    /// Whether the list is grouped at all.
+    pub fn is_grouped(self) -> bool {
+        self.by != GroupBy::None
+    }
+
+    /// The sub-grouping that applies: [`sub`](Self::sub), unless the list
+    /// isn't grouped or `sub` repeats [`by`](Self::by).
+    pub fn effective_sub(self) -> GroupBy {
+        if self.is_grouped() && self.sub != self.by {
+            self.sub
+        } else {
+            GroupBy::None
+        }
+    }
+
+    /// `display` less what the group headers already say (see
+    /// [`GroupBy::implied_prop`]), the set a grouped row draws.
+    pub fn row_display(self, mut display: DisplayProps) -> DisplayProps {
+        for by in [self.by, self.effective_sub()] {
+            if let Some(prop) = by.implied_prop() {
+                display.set(prop, false);
+            }
+        }
+        display
+    }
+}
+
+/// Which group a [`ListGroup`] is: the value its rows share. A front end reads
+/// it to make a card that belongs there (a group's `+`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum GroupKey {
+    /// The single group of an ungrouped list.
+    All,
+    /// Cards in a column of this name, lowercased: the same-named columns of
+    /// every board are one group.
+    Status(String),
+    /// Archived cards, in no column (listed only for `is:archived`).
+    Archived,
+    /// Cards of this priority.
+    Priority(Priority),
+    /// Cards with this label, lowercased; `None` for unlabelled cards.
+    Label(Option<String>),
+    /// Cards on this board.
+    Board {
+        /// The board's owner.
+        author: [u8; 32],
+        /// The board's slug.
+        id: String,
+    },
+    /// Subissues of this card; `None` for top-level cards.
+    Parent(Option<NoteId>),
+}
+
+/// One group of a grouped list ([`group`]): which group it is, the header it
+/// draws, and its rows, as indices into the rows that were grouped.
+///
+/// [`rows`](Self::rows) is every row in the group, sub-grouped or not, so its
+/// length is the header's count. [`subgroups`](Self::subgroups) splits them
+/// again when a sub-grouping is set; a row with two labels is in two label
+/// subgroups, so they can hold more than `rows` does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListGroup {
+    /// The value its rows share.
+    pub key: GroupKey,
+    /// The header text: a column's name, `High`, `No label`, a board's
+    /// title, a parent's title.
+    pub label: String,
+    /// Its rows, as indices into the slice [`group`] was handed, in that
+    /// slice's order.
+    pub rows: Vec<usize>,
+    /// Its sub-groups, empty unless a sub-grouping applies.
+    pub subgroups: Vec<ListGroup>,
+}
+
+/// Gather `rows` under `grouping`'s groups, in the order a list draws them.
+/// `boards` are the boards the rows were listed from, which say what empty
+/// groups exist ([`Grouping::show_empty`]) and in what order the columns go.
+///
+/// Orders: status follows the boards' columns, board by board, a name joining
+/// at its first appearance, terminal columns last and archived after them;
+/// priority runs Urgent to No priority; labels go alphabetically, "No label"
+/// last; boards keep `boards`' order; parents go in the order they're first
+/// met, "No parent" last. Ungrouped ([`GroupBy::None`]), it is one
+/// [`GroupKey::All`] group of every row.
+pub fn group(boards: &[&BoardView], rows: &[ListRow], grouping: Grouping) -> Vec<ListGroup> {
+    let all: Vec<usize> = (0..rows.len()).collect();
+    if !grouping.is_grouped() {
+        return vec![ListGroup {
+            key: GroupKey::All,
+            label: "All issues".to_string(),
+            rows: all,
+            subgroups: Vec::new(),
+        }];
+    }
+    let mut groups = group_by(boards, rows, &all, grouping.by, grouping.show_empty);
+    let sub = grouping.effective_sub();
+    if sub != GroupBy::None {
+        for g in &mut groups {
+            g.subgroups = group_by(boards, rows, &g.rows, sub, grouping.show_empty);
+        }
+    }
+    groups
+}
+
+/// The `of` rows (indices into `rows`) gathered under `by`'s groups, in
+/// [`group`]'s order, the empty ones kept when `show_empty`.
+fn group_by(
+    boards: &[&BoardView],
+    rows: &[ListRow],
+    of: &[usize],
+    by: GroupBy,
+    show_empty: bool,
+) -> Vec<ListGroup> {
+    let mut groups = seed_groups(boards, by);
+    for &at in of {
+        for found in row_groups(&rows[at], by) {
+            let slot = match groups.iter().position(|g| g.key == found.key) {
+                Some(slot) => slot,
+                None => {
+                    groups.push(found);
+                    groups.len() - 1
+                }
+            };
+            groups[slot].rows.push(at);
+        }
+    }
+    match by {
+        // Seeded in order; an archived group joined last, after them.
+        GroupBy::Status | GroupBy::Priority | GroupBy::Board | GroupBy::None => {}
+        GroupBy::Label => groups.sort_by(|a, b| match (&a.key, &b.key) {
+            (GroupKey::Label(Some(a)), GroupKey::Label(Some(b))) => a.cmp(b),
+            (GroupKey::Label(None), _) => std::cmp::Ordering::Greater,
+            (_, GroupKey::Label(None)) => std::cmp::Ordering::Less,
+            _ => std::cmp::Ordering::Equal,
+        }),
+        GroupBy::Parent => groups.sort_by_key(|g| g.key == GroupKey::Parent(None)),
+    }
+    if !show_empty {
+        groups.retain(|g| !g.rows.is_empty());
+    }
+    groups
+}
+
+/// The groups `by` has whether or not a row falls in them, empty and in
+/// order: every column name across `boards` (terminal ones last), every
+/// priority, every board. Label and parent groups come only from rows.
+fn seed_groups(boards: &[&BoardView], by: GroupBy) -> Vec<ListGroup> {
+    let empty = |key, label: &str| ListGroup {
+        key,
+        label: label.to_string(),
+        rows: Vec::new(),
+        subgroups: Vec::new(),
+    };
+    match by {
+        GroupBy::Status => {
+            let mut open = Vec::new();
+            let mut terminal = Vec::new();
+            for board in boards {
+                for column in &board.columns {
+                    let key = GroupKey::Status(column.name.to_lowercase());
+                    let seen = |g: &ListGroup| g.key == key;
+                    if open.iter().any(seen) || terminal.iter().any(seen) {
+                        continue;
+                    }
+                    let side = if board.column_is_terminal(&column.id) {
+                        &mut terminal
+                    } else {
+                        &mut open
+                    };
+                    side.push(empty(key, &column.name));
+                }
+            }
+            open.extend(terminal);
+            open
+        }
+        GroupBy::Priority => PRIORITY_ORDER
+            .into_iter()
+            .map(|p| empty(GroupKey::Priority(p), priority_group_label(p)))
+            .collect(),
+        GroupBy::Board => boards
+            .iter()
+            .map(|b| {
+                let key = GroupKey::Board {
+                    author: b.author,
+                    id: b.id.clone(),
+                };
+                empty(key, &b.title)
+            })
+            .collect(),
+        GroupBy::None | GroupBy::Label | GroupBy::Parent => Vec::new(),
+    }
+}
+
+/// Priorities in group order: Linear's, most urgent first.
+const PRIORITY_ORDER: [Priority; 5] = [
+    Priority::Urgent,
+    Priority::High,
+    Priority::Medium,
+    Priority::Low,
+    Priority::None,
+];
+
+/// A priority group's header.
+fn priority_group_label(p: Priority) -> &'static str {
+    match p {
+        Priority::Urgent => "Urgent",
+        Priority::High => "High",
+        Priority::Medium => "Medium",
+        Priority::Low => "Low",
+        Priority::None => "No priority",
+    }
+}
+
+/// The groups `row` falls in under `by`, still empty: one, or for a card
+/// with several labels one per label.
+fn row_groups(row: &ListRow, by: GroupBy) -> Vec<ListGroup> {
+    let card = row.card;
+    let one = |key, label: String| {
+        vec![ListGroup {
+            key,
+            label,
+            rows: Vec::new(),
+            subgroups: Vec::new(),
+        }]
+    };
+    match by {
+        GroupBy::None => one(GroupKey::All, "All issues".to_string()),
+        GroupBy::Status => match row.column() {
+            Some(column) => one(
+                GroupKey::Status(column.name.to_lowercase()),
+                column.name.clone(),
+            ),
+            None => one(GroupKey::Archived, "Archived".to_string()),
+        },
+        GroupBy::Priority => one(
+            GroupKey::Priority(card.priority),
+            priority_group_label(card.priority).to_string(),
+        ),
+        GroupBy::Label => {
+            let mut groups: Vec<ListGroup> = Vec::new();
+            for label in &card.labels {
+                let key = GroupKey::Label(Some(label.to_lowercase()));
+                if !groups.iter().any(|g| g.key == key) {
+                    groups.extend(one(key, label.clone()));
+                }
+            }
+            if groups.is_empty() {
+                return one(GroupKey::Label(None), "No label".to_string());
+            }
+            groups
+        }
+        GroupBy::Board => one(
+            GroupKey::Board {
+                author: row.board.author,
+                id: row.board.id.clone(),
+            },
+            row.board.title.clone(),
+        ),
+        GroupBy::Parent => match card.parent {
+            Some(parent) => {
+                let label = row.board.card(parent).map_or_else(
+                    || crate::wordid::encode(parent.bytes()),
+                    |p| p.title.clone(),
+                );
+                one(GroupKey::Parent(Some(parent)), label)
+            }
+            None => one(GroupKey::Parent(None), "No parent".to_string()),
+        },
+    }
+}
+
+/// What a list shows: the [`IssueFilter`], where to look, and how its rows
+/// are drawn and gathered.
+///
+/// Ordering lands here as the list view grows
 /// (headway:headway/acoustic-canvas-diesel).
 #[derive(Clone, Debug, Default)]
 pub struct ListQuery {
@@ -572,6 +985,9 @@ pub struct ListQuery {
     /// Which properties each row shows beside its title. Rendering only:
     /// [`list`] keeps the same rows whatever it holds.
     pub display: DisplayProps,
+    /// How the rows are gathered under headers ([`group`]). [`list`] keeps
+    /// the same rows whatever it holds.
+    pub grouping: Grouping,
 }
 
 /// Every card on `boards` that `query` keeps, in board order: board by board,
@@ -1062,5 +1478,217 @@ mod tests {
         let json = serde_json::to_string(&set).unwrap();
         assert_eq!(json, r#"["priority","due"]"#);
         assert_eq!(serde_json::from_str::<DisplayProps>(&json).unwrap(), set);
+    }
+
+    /// Each of `groups` as `"<header>: <title> <title>…"`, for comparing.
+    fn group_titles(rows: &[ListRow], groups: &[ListGroup]) -> Vec<String> {
+        groups
+            .iter()
+            .map(|g| {
+                let titles: Vec<&str> = g
+                    .rows
+                    .iter()
+                    .map(|&at| rows[at].card.title.as_str())
+                    .collect();
+                format!("{}: {}", g.label, titles.join(" "))
+            })
+            .collect()
+    }
+
+    /// Two boards whose columns share names: one board's "Todo" and the
+    /// other's are one status group, and the terminal "Done" goes last even
+    /// though the second board lists it before "Doing".
+    #[test]
+    fn group_by_status_merges_columns_by_name() {
+        let one = board(
+            "one",
+            vec![card(1, "a", &[])],
+            vec![],
+            vec![card(2, "b", &[])],
+        );
+        let mut two = board("two", vec![card(3, "c", &[])], vec![], vec![]);
+        two.columns.insert(
+            1,
+            column("review", "Review", false, vec![card(4, "d", &[])]),
+        );
+        let boards = [one, two];
+        let refs: Vec<&BoardView> = boards.iter().collect();
+        let rows = list(&boards, &ListQuery::default());
+        let by = |show_empty| Grouping {
+            by: GroupBy::Status,
+            show_empty,
+            ..Grouping::default()
+        };
+        let groups = group(&refs, &rows, by(false));
+        assert_eq!(
+            group_titles(&rows, &groups),
+            ["Todo: a c", "Review: d", "Done: b",]
+        );
+        assert_eq!(groups[0].key, GroupKey::Status("todo".to_string()));
+        // Empty columns show only when asked, still in column order.
+        let labels: Vec<String> = group(&refs, &rows, by(true))
+            .into_iter()
+            .map(|g| g.label)
+            .collect();
+        assert_eq!(labels, ["Todo", "In Progress", "Review", "Done"]);
+    }
+
+    #[test]
+    fn group_by_priority_runs_urgent_to_none() {
+        let mut low = card(1, "low", &[]);
+        low.priority = Priority::Low;
+        let mut urgent = card(2, "urgent", &[]);
+        urgent.priority = Priority::Urgent;
+        let boards = [board(
+            "b",
+            vec![low, card(3, "none", &[]), urgent],
+            vec![],
+            vec![],
+        )];
+        let refs: Vec<&BoardView> = boards.iter().collect();
+        let rows = list(&boards, &ListQuery::default());
+        let mut grouping = Grouping {
+            by: GroupBy::Priority,
+            ..Grouping::default()
+        };
+        let groups = group(&refs, &rows, grouping);
+        assert_eq!(
+            group_titles(&rows, &groups),
+            ["Urgent: urgent", "Low: low", "No priority: none",]
+        );
+        grouping.show_empty = true;
+        assert_eq!(group(&refs, &rows, grouping).len(), 5);
+    }
+
+    /// A card with two labels is in both groups; unlabelled cards gather
+    /// under "No label", last. Label groups have no empties to show.
+    #[test]
+    fn group_by_label_fans_out() {
+        let boards = [board(
+            "b",
+            vec![
+                card(1, "both", &["UI", "bug"]),
+                card(2, "plain", &[]),
+                card(3, "ui only", &["ui"]),
+            ],
+            vec![],
+            vec![],
+        )];
+        let refs: Vec<&BoardView> = boards.iter().collect();
+        let rows = list(&boards, &ListQuery::default());
+        let grouping = Grouping {
+            by: GroupBy::Label,
+            show_empty: true,
+            ..Grouping::default()
+        };
+        let groups = group(&refs, &rows, grouping);
+        assert_eq!(
+            group_titles(&rows, &groups),
+            ["bug: both", "UI: both ui only", "No label: plain",]
+        );
+        assert_eq!(groups[2].key, GroupKey::Label(None));
+    }
+
+    #[test]
+    fn group_by_board_and_parent() {
+        let mut child = card(2, "child", &[]);
+        child.parent = Some(NoteId::new([1; 32]));
+        let boards = [
+            board("one", vec![card(1, "epic", &[]), child], vec![], vec![]),
+            board("two", vec![], vec![], vec![]),
+        ];
+        let refs: Vec<&BoardView> = boards.iter().collect();
+        let rows = list(&boards, &ListQuery::default());
+        let by = |by, show_empty| Grouping {
+            by,
+            show_empty,
+            ..Grouping::default()
+        };
+        let boards_only: Vec<String> = group(&refs, &rows, by(GroupBy::Board, false))
+            .into_iter()
+            .map(|g| g.label)
+            .collect();
+        assert_eq!(boards_only, ["one"]);
+        assert_eq!(group(&refs, &rows, by(GroupBy::Board, true)).len(), 2);
+
+        let parents = group(&refs, &rows, by(GroupBy::Parent, false));
+        assert_eq!(
+            group_titles(&rows, &parents),
+            ["epic: child", "No parent: epic",]
+        );
+        assert_eq!(parents[0].key, GroupKey::Parent(Some(NoteId::new([1; 32]))));
+    }
+
+    /// Sub-groups split each group again; the same grouping twice, or none
+    /// on top, has no sub-groups. Ungrouped is one group of every row.
+    #[test]
+    fn sub_grouping_splits_each_group() {
+        let mut high = card(1, "high", &[]);
+        high.priority = Priority::High;
+        let boards = [board(
+            "b",
+            vec![high, card(2, "none", &[])],
+            vec![],
+            vec![card(3, "done", &[])],
+        )];
+        let refs: Vec<&BoardView> = boards.iter().collect();
+        let rows = list(&boards, &ListQuery::default());
+        let grouping = Grouping {
+            by: GroupBy::Status,
+            sub: GroupBy::Priority,
+            show_empty: false,
+        };
+        let groups = group(&refs, &rows, grouping);
+        assert_eq!(groups[0].rows.len(), 2);
+        assert_eq!(
+            group_titles(&rows, &groups[0].subgroups),
+            ["High: high", "No priority: none",]
+        );
+        assert_eq!(groups[1].subgroups.len(), 1);
+
+        let same = Grouping {
+            sub: GroupBy::Status,
+            ..grouping
+        };
+        assert!(group(&refs, &rows, same)[0].subgroups.is_empty());
+        let flat = group(&refs, &rows, Grouping::default());
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].key, GroupKey::All);
+        assert_eq!(flat[0].rows, [0, 1, 2]);
+        assert!(flat[0].subgroups.is_empty());
+    }
+
+    /// Names parse with their aliases; a grouped row drops the property its
+    /// header already says.
+    #[test]
+    fn group_by_parses_and_implies_props() {
+        assert_eq!("Labels".parse(), Ok(GroupBy::Label));
+        assert_eq!("column".parse(), Ok(GroupBy::Status));
+        assert_eq!("epic".parse(), Ok(GroupBy::Parent));
+        for by in GroupBy::ALL {
+            assert_eq!(by.name().parse(), Ok(by), "{by} round-trips");
+        }
+        let err = "assignee".parse::<GroupBy>().unwrap_err();
+        assert!(
+            err.to_string().contains("expected one of none, status"),
+            "{err}"
+        );
+
+        let grouping = Grouping {
+            by: GroupBy::Status,
+            sub: GroupBy::Label,
+            show_empty: false,
+        };
+        let shown = grouping.row_display(DisplayProps::default());
+        assert!(!shown.contains(DisplayProp::Status));
+        assert!(!shown.contains(DisplayProp::Labels));
+        assert!(shown.contains(DisplayProp::Priority));
+        assert_eq!(
+            Grouping::default().row_display(DisplayProps::default()),
+            DisplayProps::default()
+        );
+        let json = serde_json::to_string(&grouping).unwrap();
+        assert_eq!(json, r#"{"by":"status","sub":"label","show_empty":false}"#);
+        assert_eq!(serde_json::from_str::<Grouping>(&json).unwrap(), grouping);
     }
 }

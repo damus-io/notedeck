@@ -61,7 +61,7 @@ impl Field {
 /// descends from [`Priority::Urgent`]; [`Priority::None`] (the default, "no
 /// priority") sorts last, matching Linear. Carried as the [`Field::Priority`]
 /// scalar overlay.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Priority {
     /// No priority set — the default when a card has never been prioritised.
     #[default]

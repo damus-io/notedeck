@@ -10,7 +10,7 @@ use nostrdb_net::Pubkey;
 use regex::Regex;
 
 use headway::event::{LineRange, ReviewFields};
-use headway::query::DisplayProps;
+use headway::query::{DisplayProps, GroupBy, Grouping};
 use headway::store;
 
 use nostrdb_net::relay::sync::Result;
@@ -176,6 +176,9 @@ pub(crate) enum Command {
         /// Which properties each text row prints beside its title
         /// (`--show`/`--hide`); `--json` always prints the whole card.
         display: DisplayProps,
+        /// How the rows are gathered under headers (`--group`,
+        /// `--sub-group`, `--empty`). Ungrouped by default.
+        grouping: Grouping,
     },
     /// Comment on a card, or — with `--path`/`--line`/`--record`, or a
     /// `--reply-to` naming a review comment — on one of its review records'
@@ -553,6 +556,8 @@ impl Cli {
         // `--hide` takes from it.
         let mut show: Option<DisplayProps> = None;
         let mut hide = DisplayProps::NONE;
+        // `list`'s grouping: `--group`, `--sub-group`, `--empty`.
+        let mut grouping = Grouping::default();
         let mut review = ReviewFlags::default();
         // `diff --record`: which review record to show. `comment` shares it,
         // with its other review flags.
@@ -599,6 +604,9 @@ impl Cli {
                 "--no-pager" => pager = PagerMode::Never,
                 "--show" => show = Some(DisplayProps::parse_list(&value("--show")?)?),
                 "--hide" => hide = DisplayProps::parse_list(&value("--hide")?)?,
+                "--group" => grouping.by = value("--group")?.parse::<GroupBy>()?,
+                "--sub-group" => grouping.sub = value("--sub-group")?.parse::<GroupBy>()?,
+                "--empty" => grouping.show_empty = true,
                 "--commit" => review.commit = Some(value("--commit")?),
                 "--explainer" => review.explainer = Some(value("--explainer")?),
                 "--deploy" => review.deploy = Some(value("--deploy")?),
@@ -758,10 +766,12 @@ impl Cli {
             container,
             include_done,
             display,
+            grouping: list_grouping,
             ..
         } = &mut command
         {
             *display = DisplayProps::shown_hidden(show, hide);
+            *list_grouping = grouping;
             *include_done = all;
             all = !board_explicit && container.is_none();
         }
@@ -949,6 +959,7 @@ fn parse_command(
             include_done: false,
             limit: count,
             display: DisplayProps::default(),
+            grouping: Grouping::default(),
         },
         // `parent <card> <parent>` sets, `parent <card>` detaches — mirrors how
         // `label` with no labels clears.
@@ -1715,8 +1726,10 @@ mod tests {
                 include_done,
                 limit,
                 display,
+                grouping,
             } => {
                 assert_eq!(query, "p:high label:ui");
+                assert_eq!(grouping, Grouping::default());
                 assert_eq!(display, DisplayProps::default());
                 assert!(container.is_none() && !include_done);
                 assert_eq!(limit, Some(3));
@@ -1767,6 +1780,32 @@ mod tests {
             DisplayProps::of(&[DisplayProp::Id, DisplayProp::Board])
         );
         assert!(parse_err(&["list", "--show", "assignee"]).contains("assignee"));
+    }
+
+    /// `--group`/`--sub-group` name groupings and `--empty` keeps empty
+    /// groups; an unknown grouping is an error before any relay work.
+    #[test]
+    fn list_parses_grouping() {
+        let grouping = |args: &[&str]| match parse(args).command {
+            Command::List { grouping, .. } => grouping,
+            _ => panic!("expected a List command"),
+        };
+        assert_eq!(
+            grouping(&[
+                "list",
+                "--group",
+                "status",
+                "--sub-group",
+                "labels",
+                "--empty"
+            ]),
+            Grouping {
+                by: GroupBy::Status,
+                sub: GroupBy::Label,
+                show_empty: true,
+            }
+        );
+        assert!(parse_err(&["list", "--group", "assignee"]).contains("assignee"));
     }
 
     /// A missing, unparseable or split pattern fails at parse time, before any

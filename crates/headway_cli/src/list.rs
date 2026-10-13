@@ -14,7 +14,8 @@ use serde_json::json;
 use headway::event::{BoardView, Priority, card_json};
 use headway::fmt::rel_time;
 use headway::query::{
-    DisplayProp, DisplayProps, IssueFilter, ListQuery, ListRow, StateFilter, list,
+    DisplayProp, DisplayProps, Grouping, IssueFilter, ListGroup, ListQuery, ListRow, StateFilter,
+    group, list,
 };
 
 use crate::grep::{PAGER_VAR, SGR_DIM, SGR_REF, SGR_TITLE};
@@ -22,7 +23,8 @@ use crate::output::{BLOCKED_GLYPH, labels_suffix, plain_ref, priority_glyph};
 
 /// How `list`'s rows are written: `--json`, or text under the `--color` and
 /// `--pager`/`--no-pager` modes, at most `limit` of them (`-n`), each text
-/// row printing the `display` properties (`--show`/`--hide`).
+/// row printing the `display` properties (`--show`/`--hide`), gathered under
+/// `grouping`'s headers (`--group`/`--sub-group`/`--empty`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ListOutput {
     pub(crate) json: bool,
@@ -30,6 +32,7 @@ pub(crate) struct ListOutput {
     pub(crate) pager: PagerMode,
     pub(crate) limit: Option<usize>,
     pub(crate) display: DisplayProps,
+    pub(crate) grouping: Grouping,
 }
 
 /// `headway list [query...]` — print every live card on `boards` that `query`
@@ -50,31 +53,97 @@ pub(crate) fn cmd_list(
         filter: default_state(IssueFilter::parse(query, None), include_done),
         within: subtree,
         display: out.display,
+        grouping: out.grouping,
     };
     let mut rows = list(boards, &query);
     if let Some(n) = out.limit {
         rows.truncate(n);
     }
+    let groups = query.grouping.is_grouped().then(|| {
+        let boards: Vec<&BoardView> = boards.iter().collect();
+        group(&boards, &rows, query.grouping)
+    });
 
     if out.json {
-        let rows: Vec<serde_json::Value> = rows.iter().map(row_json).collect();
-        println!("{}", serde_json::to_string_pretty(&rows)?);
+        let json = match &groups {
+            Some(groups) => groups_json(&rows, groups),
+            None => rows.iter().map(row_json).collect(),
+        };
+        println!("{}", serde_json::to_string_pretty(&json)?);
         return Ok(());
     }
-    if rows.is_empty() {
+    if groups.as_ref().map_or(rows.is_empty(), Vec::is_empty) {
         println!("no cards");
         return Ok(());
     }
     let stdout_tty = std::io::stdout().is_terminal();
     let use_pager = out.pager.enabled(stdout_tty);
     let color = out.color.enabled(stdout_tty || use_pager);
-    let widths = RowWidths::of(&rows, query.display);
-    let output: String = rows
-        .iter()
-        .map(|row| list_line(row, widths, color))
-        .collect();
+    let widths = RowWidths::of(&rows, query.grouping.row_display(query.display));
+    let output = match &groups {
+        Some(groups) => {
+            let mut output = String::new();
+            for g in groups {
+                group_lines(&mut output, &rows, g, widths, color, "");
+            }
+            output
+        }
+        None => rows
+            .iter()
+            .map(|row| list_line(row, widths, color))
+            .collect(),
+    };
     cli_term::emit(&output, use_pager, PAGER_VAR);
     Ok(())
+}
+
+/// Write group `g` to `output`: a `## <label> (<count>)` header, then its
+/// rows, or its sub-groups' headers and rows indented under it. Groups after
+/// the first open with a blank line, so each reads as a section.
+fn group_lines(
+    output: &mut String,
+    rows: &[ListRow],
+    g: &ListGroup,
+    widths: RowWidths,
+    color: bool,
+    indent: &str,
+) {
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    let header = format!("## {} ({})", g.label, g.rows.len());
+    output.push_str(indent);
+    output.push_str(&paint(color, SGR_TITLE, &header));
+    output.push('\n');
+    if g.subgroups.is_empty() {
+        for &at in &g.rows {
+            output.push_str(indent);
+            output.push_str(&list_line(&rows[at], widths, color));
+        }
+        return;
+    }
+    let inner = format!("{indent}  ");
+    for sub in &g.subgroups {
+        group_lines(output, rows, sub, widths, color, &inner);
+    }
+}
+
+/// The `list --json` shape of a grouped list: one object per group, its
+/// header as `group`, its row count, its rows as [`row_json`] renders them
+/// (every row of the group, sub-grouped or not) and its sub-groups, the same
+/// shape again.
+fn groups_json(rows: &[ListRow], groups: &[ListGroup]) -> serde_json::Value {
+    groups
+        .iter()
+        .map(|g| {
+            json!({
+                "group": g.label,
+                "count": g.rows.len(),
+                "rows": g.rows.iter().map(|&at| row_json(&rows[at])).collect::<Vec<_>>(),
+                "subgroups": groups_json(rows, &g.subgroups),
+            })
+        })
+        .collect()
 }
 
 /// `filter` with the list's default state: open cards, unless the query says

@@ -1238,6 +1238,109 @@ fn issue_list_display_menu_toggles_a_property() {
     wait_for_label(&mut harness, "quest");
 }
 
+/// The labels of the issue list's group headers, top to bottom: each
+/// header's fold control, `Collapse <group>` or `Expand <group>`.
+fn group_headers(harness: &Harness<'static, HeadwayTestState>) -> Vec<String> {
+    harness
+        .query_all(egui_kittest::kittest::By::new().role(egui::accesskit::Role::Button))
+        .filter_map(|n| n.accesskit_node().label())
+        .filter(|l| l.starts_with("Collapse ") || l.starts_with("Expand "))
+        .collect()
+}
+
+/// The issue list groups its rows (headway:headway/office-flower-churn): by
+/// status by default, a header folds its rows away and back, a header's `+`
+/// adds a card that lands in that group, and grouping by priority gives the
+/// card added under a priority's header that priority. Behavioural
+/// (accesskit only), so it runs without lavapipe.
+#[test]
+fn issue_list_groups_rows_folds_and_adds_to_a_group() {
+    const NEW_TODO: &str = "Card added under Todo";
+    const NEW_URGENT: &str = "Card added under the top priority";
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1000.0));
+    seed_side_board(&mut harness);
+
+    harness.press_key(egui::Key::V);
+    wait_for_label(&mut harness, SIDE_CARD);
+    // Grouped by status: the side board's Todo and the demo board's are one
+    // group, and the rows drop the status circle the header already says.
+    let headers = group_headers(&harness);
+    assert!(
+        headers.contains(&"Collapse Todo".to_string()),
+        "{headers:?}"
+    );
+
+    // Folding Todo hides the side card, a Todo card; unfolding brings it back.
+    harness.get_by_label("Collapse Todo").click();
+    wait_for_absent(&mut harness, SIDE_CARD);
+    harness.get_by_label("Expand Todo").click();
+    wait_for_label(&mut harness, SIDE_CARD);
+
+    // Todo's `+` opens a composer for the group; Enter adds the card, and it
+    // lands under Todo (folding Todo hides it).
+    let todo = headers
+        .iter()
+        .position(|h| h == "Collapse Todo")
+        .expect("a Todo header");
+    harness
+        .query_all_by_label("+")
+        .nth(todo)
+        .expect("Todo's +")
+        .click();
+    wait_for_label(&mut harness, "New issue in");
+    focused_text_input(&harness).type_text(NEW_TODO);
+    harness.key_press(egui::Key::Enter);
+    wait_for_label(&mut harness, NEW_TODO);
+    harness.press_key(egui::Key::Escape);
+    wait_for_absent(&mut harness, "New issue in");
+    harness.get_by_label("Issues");
+    harness.get_by_label("Collapse Todo").click();
+    wait_for_absent(&mut harness, NEW_TODO);
+    harness.get_by_label("Expand Todo").click();
+
+    // Grouped by priority, the first header is the most urgent level any
+    // card has; a card added there gets that priority, and so lands there.
+    harness.get_by_label("☰ Display").click();
+    wait_for_label(&mut harness, "Grouping");
+    harness
+        .query_all_by_label("Priority")
+        .next()
+        .expect("the Grouping menu's Priority chip")
+        .click();
+    harness.run_ok();
+    harness.press_key(egui::Key::Escape);
+    wait_for_absent(&mut harness, "Sub-grouping");
+    let headers = group_headers(&harness);
+    assert_eq!(
+        headers.last().map(String::as_str),
+        Some("Collapse No priority")
+    );
+    let top = headers[0].trim_start_matches("Collapse ").to_string();
+    harness
+        .query_all_by_label("+")
+        .next()
+        .expect("the top priority's +")
+        .click();
+    wait_for_label(&mut harness, "New issue in");
+    focused_text_input(&harness).type_text(NEW_URGENT);
+    harness.key_press(egui::Key::Enter);
+    wait_for_label(&mut harness, NEW_URGENT);
+    harness.press_key(egui::Key::Escape);
+    // The priority is the add's follow-up edit; give it frames to fold.
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        harness.get_by_label(&format!("Collapse {top}")).click();
+        harness.run_ok();
+        if harness.query_by_label(NEW_URGENT).is_none() {
+            break;
+        }
+        harness.get_by_label(&format!("Expand {top}")).click();
+        harness.run_ok();
+        assert!(Instant::now() < deadline, "the new card never took {top}");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 /// Archived cards are as reachable as live ones
 /// (headway:headway/album-trouble-treat): `is:archived` in the board filter
 /// opens the archived sheet with the query's other terms narrowing it, a title
@@ -1306,7 +1409,7 @@ fn archived_cards_are_searchable_and_open_their_detail() {
 }
 
 /// The issue list across the demo board and a second one, All toggled on so
-/// the done card shows too.
+/// the done card shows too, grouped by status under its headers.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_headway_list() {

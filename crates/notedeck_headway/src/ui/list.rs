@@ -13,6 +13,12 @@
 //! and status circle, the title, then right-aligned its parent and subissue
 //! rollup, labels, estimate, blockers, due date and when it changed — each a
 //! [`DisplayProp`] the header's Display menu turns on and off.
+//!
+//! The rows are gathered under group headers (headway:headway/office-flower-churn),
+//! by status unless the Display menu says otherwise, each split again by a
+//! sub-grouping if one is set: [`headway::query::group`], the same grouping
+//! `headway list --group` prints. A header folds its rows away, and its `+`
+//! adds a card already in that group (see [`group_add`]).
 
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
@@ -27,7 +33,11 @@ use crate::cache::BoardRef;
 use crate::cursor::CursorMove;
 use crate::event::{self, BoardView, CardView, Priority};
 use crate::keys;
-use headway::query::{DisplayProp, DisplayProps, IssueFilter, ListRow, Placement, StateFilter};
+use crate::store::BoardAction;
+use headway::query::{
+    DisplayProp, DisplayProps, GroupBy, GroupKey, Grouping, IssueFilter, ListGroup, ListRow,
+    Placement, StateFilter,
+};
 
 /// Height of one list row, fixed so the scroll area lays out only the rows on
 /// screen ([`egui::ScrollArea::show_rows`]).
@@ -37,7 +47,6 @@ const ROW_HEIGHT: f32 = 32.0;
 /// and its keyboard cursor. Kept across frames on
 /// [`BoardUiState`](super::BoardUiState), so leaving the list and coming
 /// back (a back off a card opened from it) finds it as it was left.
-#[derive(Default)]
 pub(crate) struct ListState {
     /// Whether the list shows, seeded from the nav route each frame like the
     /// graph's epic (see [`BoardUiState::set_list_open`]).
@@ -63,6 +72,103 @@ pub(crate) struct ListState {
     /// header's Display menu. Kept for the session; saved views will persist
     /// it (headway:headway/brave-project-parade).
     display: DisplayProps,
+    /// How the rows are gathered under headers, set in the Display menu.
+    /// By status unless changed, as Linear's list is.
+    grouping: Grouping,
+    /// The groups [`rows`](Self::rows) fall in, their rows as indices into
+    /// it. One [`GroupKey::All`] group while the list isn't grouped.
+    groups: Vec<ListGroup>,
+    /// The headers folded shut. Kept across refreshes, by group, so a
+    /// folded group stays folded while its rows change.
+    collapsed: std::collections::HashSet<CollapseKey>,
+    /// What the list draws, top to bottom: headers and the rows of the
+    /// groups that are open. Rebuilt from [`groups`](Self::groups) when they
+    /// change or a header folds, never per frame.
+    entries: Vec<ListEntry>,
+    /// The `+` composer, while one is open: a card for a group.
+    compose: Option<GroupCompose>,
+    /// The priority the card the list just asked to add should get, set on
+    /// it once it exists (see [`BoardUiState::card_added`]).
+    pending_priority: Option<Priority>,
+}
+
+impl Default for ListState {
+    fn default() -> ListState {
+        ListState {
+            open: false,
+            query: String::new(),
+            all: false,
+            cursor: None,
+            scroll_to_cursor: false,
+            rows: Vec::new(),
+            seen: None,
+            count: KeyedText::default(),
+            display: DisplayProps::default(),
+            grouping: Grouping {
+                by: GroupBy::Status,
+                ..Grouping::default()
+            },
+            groups: Vec::new(),
+            collapsed: std::collections::HashSet::new(),
+            entries: Vec::new(),
+            compose: None,
+            pending_priority: None,
+        }
+    }
+}
+
+/// Which header a fold or a `+` is for: a group, or a sub-group within one.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct CollapseKey {
+    /// The top-level group.
+    group: GroupKey,
+    /// The sub-group within it, for a sub-group's header.
+    sub: Option<GroupKey>,
+}
+
+/// One line the list draws: a group's header, or a card's row.
+enum ListEntry {
+    /// A group's header.
+    Header(GroupHeader),
+    /// The row at this index into [`ListState::rows`].
+    Row(usize),
+}
+
+/// A group header's text and state, made when the entries are rebuilt so a
+/// frame only draws it.
+struct GroupHeader {
+    /// Which group it heads.
+    key: CollapseKey,
+    /// The group's name.
+    label: String,
+    /// How many rows it holds.
+    count: String,
+    /// Whether it's folded shut.
+    collapsed: bool,
+}
+
+impl GroupHeader {
+    /// The header for group `g`, under `key`.
+    fn of(key: CollapseKey, g: &ListGroup, collapsed: bool) -> GroupHeader {
+        GroupHeader {
+            key,
+            label: g.label.clone(),
+            count: g.rows.len().to_string(),
+            collapsed,
+        }
+    }
+}
+
+/// The `+` composer: the group a new card goes in, and its title so far.
+struct GroupCompose {
+    /// The group, as its header names it.
+    key: CollapseKey,
+    /// The group's name, for the field's hint.
+    label: String,
+    /// The title typed so far.
+    title: String,
+    /// Focus the field on its next draw.
+    focus: bool,
 }
 
 /// One row of the list: where its card sits in the sources it was computed
@@ -167,6 +273,14 @@ impl LineSlot {
         }
     }
 
+    /// Where the card sits on `board`, as [`ListRow`] reads it.
+    fn placement(self, board: &BoardView) -> Placement<'_> {
+        match self {
+            LineSlot::Column { col, .. } => Placement::Column(&board.columns[col]),
+            LineSlot::Archived(_) => Placement::Archived,
+        }
+    }
+
     /// The status icon for where the card sits on `board`: filled in a
     /// terminal column, half in In Progress, and otherwise by position, as
     /// the grid's column headers draw it.
@@ -203,6 +317,8 @@ struct ListInputs {
     query: String,
     /// The All toggle.
     all: bool,
+    /// The grouping.
+    grouping: Grouping,
 }
 
 /// Where a list row opens: its card, and the board it's on.
@@ -235,6 +351,7 @@ impl ListState {
             return true;
         };
         seen.all != self.all
+            || seen.grouping != self.grouping
             || seen.query != self.query
             || seen.sources.len() != sources.len()
             || seen
@@ -244,8 +361,8 @@ impl ListState {
                 .any(|(was, now)| !was.same_fold(now))
     }
 
-    /// Recompute the rows from `sources` if they, the query or the toggle
-    /// changed since the last time.
+    /// Recompute the rows and their groups from `sources` if they, the
+    /// query, the toggle or the grouping changed since the last time.
     fn refresh(&mut self, sources: &[BoardRef]) {
         if !self.stale(sources) {
             return;
@@ -284,11 +401,79 @@ impl ListState {
                 keep(&archived.card, Placement::Archived, LineSlot::Archived(at));
             }
         }
+        // The kept rows as `headway::query` reads them, index for index with
+        // `self.rows`, to group.
+        let kept: Vec<ListRow> = self
+            .rows
+            .iter()
+            .map(|line| {
+                let board: &BoardView = &sources[line.board];
+                ListRow {
+                    board,
+                    card: line.slot.card(board),
+                    placement: line.slot.placement(board),
+                }
+            })
+            .collect();
+        let boards: Vec<&BoardView> = sources.iter().map(|b| &**b).collect();
+        self.groups = headway::query::group(&boards, &kept, self.grouping);
+        self.rebuild_entries();
         self.seen = Some(ListInputs {
             sources: sources.to_vec(),
             query: self.query.clone(),
             all: self.all,
+            grouping: self.grouping,
         });
+    }
+
+    /// Lay [`groups`](Self::groups) out as the lines the list draws: each
+    /// header, then its rows or its sub-groups, skipping what's folded. An
+    /// ungrouped list is its rows alone.
+    fn rebuild_entries(&mut self) {
+        self.entries.clear();
+        if !self.grouping.is_grouped() {
+            self.entries
+                .extend((0..self.rows.len()).map(ListEntry::Row));
+            return;
+        }
+        for g in &self.groups {
+            let key = CollapseKey {
+                group: g.key.clone(),
+                sub: None,
+            };
+            let collapsed = self.collapsed.contains(&key);
+            self.entries
+                .push(ListEntry::Header(GroupHeader::of(key, g, collapsed)));
+            if collapsed {
+                continue;
+            }
+            if g.subgroups.is_empty() {
+                self.entries
+                    .extend(g.rows.iter().copied().map(ListEntry::Row));
+                continue;
+            }
+            for sub in &g.subgroups {
+                let key = CollapseKey {
+                    group: g.key.clone(),
+                    sub: Some(sub.key.clone()),
+                };
+                let collapsed = self.collapsed.contains(&key);
+                self.entries
+                    .push(ListEntry::Header(GroupHeader::of(key, sub, collapsed)));
+                if !collapsed {
+                    self.entries
+                        .extend(sub.rows.iter().copied().map(ListEntry::Row));
+                }
+            }
+        }
+    }
+
+    /// Fold the header `key` shut, or open it again.
+    fn toggle_collapsed(&mut self, key: &CollapseKey) {
+        if !self.collapsed.remove(key) {
+            self.collapsed.insert(key.clone());
+        }
+        self.rebuild_entries();
     }
 
     /// The query as a filter, with Active's `is:open` added when the query
@@ -301,33 +486,50 @@ impl ListState {
         filter
     }
 
-    /// The cursor's row, if the cursor is on a row the list shows.
-    fn cursor_row(&self) -> Option<usize> {
-        let cursor = self.cursor?;
-        self.rows.iter().position(|line| line.id == cursor)
+    /// The row (an index into [`rows`](Self::rows)) entry `at` draws, if
+    /// it's a row rather than a header.
+    fn entry_row(&self, at: usize) -> Option<usize> {
+        match self.entries.get(at)? {
+            ListEntry::Row(row) => Some(*row),
+            ListEntry::Header(_) => None,
+        }
     }
 
-    /// Move the cursor a row down or up, or to the first or last row. With no
-    /// cursor (or one on a card the list no longer shows), any move lands on
-    /// the first row. Left and right mean nothing in one list.
+    /// The entry of the cursor's row, if the cursor is on a row the list
+    /// shows: the first, for a card listed under two labels.
+    fn cursor_entry(&self) -> Option<usize> {
+        let cursor = self.cursor?;
+        (0..self.entries.len()).find(|&at| {
+            self.entry_row(at)
+                .is_some_and(|row| self.rows[row].id == cursor)
+        })
+    }
+
+    /// Move the cursor a row down or up, or to the first or last row,
+    /// stepping over headers. With no cursor (or one on a card the list no
+    /// longer shows), any move lands on the first row. Left and right mean
+    /// nothing in one list.
     pub(crate) fn move_cursor(&mut self, mv: CursorMove) {
-        let Some(last) = self.rows.len().checked_sub(1) else {
-            return;
-        };
-        let to = match (self.cursor_row(), mv) {
-            (None, _) | (_, CursorMove::First) => 0,
-            (_, CursorMove::Last) => last,
-            (Some(at), CursorMove::Down) => (at + 1).min(last),
-            (Some(at), CursorMove::Up) => at.saturating_sub(1),
+        let is_row = |at: &usize| self.entry_row(*at).is_some();
+        let mut entries = 0..self.entries.len();
+        let to = match (self.cursor_entry(), mv) {
+            (None, _) | (_, CursorMove::First) => entries.find(is_row),
+            (_, CursorMove::Last) => entries.rev().find(is_row),
+            (Some(at), CursorMove::Down) => (at + 1..self.entries.len()).find(is_row),
+            (Some(at), CursorMove::Up) => (0..at).rev().find(is_row),
             (Some(_), CursorMove::Left | CursorMove::Right) => return,
         };
-        self.cursor = Some(self.rows[to].id);
+        let Some(row) = to.and_then(|at| self.entry_row(at)) else {
+            return;
+        };
+        self.cursor = Some(self.rows[row].id);
         self.scroll_to_cursor = true;
     }
 
-    /// Where row `at` opens, read from the `sources` the rows came from.
+    /// Where entry `at`'s row opens, read from the `sources` the rows came
+    /// from. `None` for a header.
     fn target(&self, sources: &[BoardRef], at: usize) -> Option<RowTarget> {
-        let line = self.rows.get(at)?;
+        let line = self.rows.get(self.entry_row(at)?)?;
         let board = sources.get(line.board)?;
         Some(RowTarget {
             card: line.id,
@@ -358,12 +560,29 @@ impl BoardUiState {
 
     /// Open the card under the list's cursor, if there is one.
     pub(crate) fn open_list_cursor(&mut self, view: &BoardView, sources: &[BoardRef]) {
-        if let Some(at) = self.list.cursor_row() {
+        if let Some(at) = self.list.cursor_entry() {
             self.open_list_row(view, sources, at);
         }
     }
 
-    /// Open row `at`'s card: its detail, on top of the list, switching to its
+    /// Whether the list's `+` composer is open: Esc closes it rather than
+    /// the list.
+    pub(crate) fn list_composing(&self) -> bool {
+        self.list.is_open() && self.list.compose.is_some()
+    }
+
+    /// The card the frame's edit added, now that it exists: a card the
+    /// list's `+` added to a priority group gets that priority, as the next
+    /// frame's edit (a card is made by one edit and prioritised by another).
+    /// `None` when the edit added no card.
+    pub fn card_added(&mut self, card: Option<NoteId>) {
+        let priority = self.list.pending_priority.take();
+        if let (Some(card), Some(priority)) = (card, priority) {
+            self.follow_up = Some(BoardAction::SetPriority { card, priority });
+        }
+    }
+
+    /// Open entry `at`'s card: its detail, on top of the list, switching to its
     /// board first when that isn't the board showing. The list stays open
     /// beneath, so leaving the card returns to it.
     fn open_list_row(&mut self, view: &BoardView, sources: &[BoardRef], at: usize) {
@@ -386,15 +605,16 @@ pub(crate) fn list_field_id() -> egui::Id {
 
 /// Draw the issue list over every board in `sources`, the boards the switcher
 /// lists. `view` is the board showing, which a row on another board switches
-/// away from when opened. Runs the list's UI tools first, so a key that opens
-/// a card or leaves the list lands this frame.
+/// away from when opened, and which a group's `+` adds its card to. Runs the
+/// list's UI tools first, so a key that opens a card or leaves the list lands
+/// this frame. Returns the card a group's composer adds, if one does.
 pub(super) fn list_view_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     view: &BoardView,
     sources: &[BoardRef],
     state: &mut BoardUiState,
-) {
+) -> Option<BoardAction> {
     state.list.refresh(sources);
     while state.list.is_open() && state.selected.is_none() {
         let Some(tool) = state.next_queued_tool() else {
@@ -403,22 +623,185 @@ pub(super) fn list_view_ui(
         keys::apply_list_tool(ui.ctx(), view, sources, state, &tool);
     }
 
-    let mut clicked: Option<usize> = None;
+    let mut rows = RowsResponse::default();
+    let mut action = None;
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
             list_header_ui(ui, theme, state);
+            action = compose_ui(ui, theme, view, &mut state.list);
             // A query edited this frame narrows the rows this frame.
             state.list.refresh(sources);
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_SM);
-            clicked = list_rows_ui(ui, theme, sources, &mut state.list);
+            rows = list_rows_ui(ui, theme, view, sources, &state.list);
         });
+    state.list.scroll_to_cursor = false;
 
-    if let Some(at) = clicked {
+    if let Some(key) = rows.toggle {
+        state.list.toggle_collapsed(&key);
+    }
+    if let Some(key) = rows.add {
+        state.list.open_compose(key);
+    }
+    if let Some(at) = rows.clicked {
         state.open_list_row(view, sources, at);
     }
+    action
+}
+
+/// What the rows were asked this frame: a row clicked, a header folded, a
+/// header's `+` pressed.
+#[derive(Default)]
+struct RowsResponse {
+    /// The entry whose row was clicked.
+    clicked: Option<usize>,
+    /// The header clicked, to fold or unfold.
+    toggle: Option<CollapseKey>,
+    /// The header whose `+` was pressed.
+    add: Option<CollapseKey>,
+}
+
+/// What a card added under a group's header gets, so it lands in that group:
+/// read from the header's group and sub-group against the board showing.
+struct GroupAdd<'a> {
+    /// The column, on the board showing.
+    col: usize,
+    /// A label (lowercased, as the group's key holds it).
+    label: Option<&'a str>,
+    /// A parent on the board showing.
+    parent: Option<NoteId>,
+    /// A priority, set by a follow-up edit once the card exists.
+    priority: Option<Priority>,
+}
+
+/// What a card added under header `key` needs to land in its group on
+/// `view`, the board it's added to; `None` when no card added there can
+/// (another board's group, an archived group, a column or parent `view`
+/// lacks), and the header draws no `+`. Allocates nothing: it runs for every
+/// header on screen.
+fn group_add<'a>(key: &'a CollapseKey, view: &BoardView) -> Option<GroupAdd<'a>> {
+    let mut add = GroupAdd {
+        col: 0,
+        label: None,
+        parent: None,
+        priority: None,
+    };
+    for group in std::iter::once(&key.group).chain(key.sub.as_ref()) {
+        match group {
+            GroupKey::All | GroupKey::Label(None) | GroupKey::Parent(None) => {}
+            GroupKey::Archived => return None,
+            GroupKey::Status(name) => {
+                add.col = view
+                    .columns
+                    .iter()
+                    .position(|c| c.name.chars().flat_map(char::to_lowercase).eq(name.chars()))?;
+            }
+            GroupKey::Priority(p) => add.priority = Some(*p).filter(|p| *p != Priority::None),
+            GroupKey::Label(Some(label)) => add.label = Some(label),
+            GroupKey::Board { author, id } => {
+                if *author != view.author || *id != view.id {
+                    return None;
+                }
+            }
+            GroupKey::Parent(Some(parent)) => {
+                view.card(*parent)?;
+                add.parent = Some(*parent);
+            }
+        }
+    }
+    Some(add)
+}
+
+impl ListState {
+    /// Open the composer for a card in header `key`'s group.
+    fn open_compose(&mut self, key: CollapseKey) {
+        let label = self
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                ListEntry::Header(h) if h.key == key => Some(h.label.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        self.compose = Some(GroupCompose {
+            key,
+            label,
+            title: String::new(),
+            focus: true,
+        });
+    }
+}
+
+/// The `+` composer, while one is open: a title field for a card in its
+/// group. Enter adds the card to `view` and keeps the field open for the
+/// next; Enter on an empty field, or Esc, closes it. Returns the add.
+fn compose_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    view: &BoardView,
+    list: &mut ListState,
+) -> Option<BoardAction> {
+    let compose = list.compose.as_mut()?;
+    let mut close = false;
+    let mut submit = false;
+    ui.add_space(SPACING_SM);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("New issue in").color(theme.text_muted));
+        ui.label(egui::RichText::new(&compose.label).strong());
+        let field = egui::TextEdit::singleline(&mut compose.title)
+            .hint_text("Issue title…")
+            .desired_width(420.0);
+        let response = ui.add(field);
+        if std::mem::take(&mut compose.focus) {
+            response.request_focus();
+        }
+        let (enter, escape) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::Enter),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        // Any Esc while it's open: the list's Back stands down for it
+        // (`BoardUiState::list_composing`).
+        if escape {
+            close = true;
+        } else if enter && response.lost_focus() {
+            submit = true;
+        }
+        if ui.button("Add").clicked() {
+            submit = true;
+        }
+    });
+    if close {
+        list.compose = None;
+        return None;
+    }
+    if !submit {
+        return None;
+    }
+    let title = compose.title.trim().to_string();
+    if title.is_empty() {
+        list.compose = None;
+        return None;
+    }
+    let Some(add) = group_add(&compose.key, view) else {
+        // The group no longer takes a card here (the board switched).
+        list.compose = None;
+        return None;
+    };
+    let action = BoardAction::AddCard {
+        col: add.col,
+        title,
+        description: String::new(),
+        labels: add.label.map(str::to_string).into_iter().collect(),
+        parent: add.parent,
+    };
+    list.pending_priority = add.priority;
+    compose.title.clear();
+    compose.focus = true;
+    Some(action)
 }
 
 /// The list's header: a way back to the board, the count, the Active/All
@@ -450,7 +833,7 @@ fn list_header_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiStat
             list.all = true;
         }
         ui.add_space(SPACING_SM);
-        menu_open = display_menu_ui(ui, theme, &mut list.display);
+        menu_open = display_menu_ui(ui, theme, &mut list.display, &mut list.grouping);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let field = egui::TextEdit::singleline(&mut list.query)
                 .id(list_field_id())
@@ -466,12 +849,19 @@ fn list_header_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiStat
     }
 }
 
-/// The list's Display menu: one toggle chip per [`DisplayProp`], like
-/// Linear's view options. Stays open while chips are flipped. The trigger
-/// wears the filter's warm tint while the set differs from the default, so a
-/// list showing less than usual says so. Returns whether the menu is open.
-fn display_menu_ui(ui: &mut egui::Ui, theme: &ColorTheme, display: &mut DisplayProps) -> bool {
-    let label = if *display == DisplayProps::default() {
+/// The list's Display menu, like Linear's view options: the grouping and
+/// sub-grouping, whether empty groups show, and one toggle chip per
+/// [`DisplayProp`]. Stays open while chips are flipped. The trigger wears the
+/// filter's warm tint while any of it differs from the default, so a list
+/// laid out other than usual says so. Returns whether the menu is open.
+fn display_menu_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    display: &mut DisplayProps,
+    grouping: &mut Grouping,
+) -> bool {
+    let default_grouping = ListState::default().grouping;
+    let label = if *display == DisplayProps::default() && *grouping == default_grouping {
         egui::RichText::new("☰ Display").color(theme.text_secondary)
     } else {
         egui::RichText::new("☰ Display")
@@ -484,13 +874,25 @@ fn display_menu_ui(ui: &mut egui::Ui, theme: &ColorTheme, display: &mut DisplayP
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
     let menu = egui::containers::menu::MenuButton::new(label).config(config);
     let (_, open) = menu.ui(ui, |ui| {
+        ui.set_max_width(280.0);
+        let heading = |ui: &mut egui::Ui, text: &str| {
+            ui.label(egui::RichText::new(text).small().color(theme.text_muted));
+            ui.add_space(SPACING_XS);
+        };
+        heading(ui, "Grouping");
+        group_chips_ui(ui, &mut grouping.by, "headway-list-grouping");
+        ui.add_space(SPACING_SM);
+        heading(ui, "Sub-grouping");
+        group_chips_ui(ui, &mut grouping.sub, "headway-list-sub-grouping");
+        ui.add_space(SPACING_XS);
+        ui.checkbox(&mut grouping.show_empty, "Show empty groups");
+        ui.add_space(SPACING_SM);
         ui.label(
             egui::RichText::new("Display properties")
                 .small()
                 .color(theme.text_muted),
         );
         ui.add_space(SPACING_XS);
-        ui.set_max_width(280.0);
         ui.horizontal_wrapped(|ui| {
             for prop in DisplayProp::ALL {
                 let on = display.contains(prop);
@@ -502,30 +904,49 @@ fn display_menu_ui(ui: &mut egui::Ui, theme: &ColorTheme, display: &mut DisplayP
         ui.add_space(SPACING_XS);
         if ui.button("Reset to default").clicked() {
             *display = DisplayProps::default();
+            *grouping = default_grouping;
         }
     });
     open.is_some()
 }
 
-/// The list's rows, only those on screen laid out. Returns the row clicked
-/// this frame, if any.
+/// One chip per [`GroupBy`], the one `by` holds selected; a click picks it.
+/// `id` keeps the grouping's chips apart from the sub-grouping's, which carry
+/// the same names.
+fn group_chips_ui(ui: &mut egui::Ui, by: &mut GroupBy, id: &str) {
+    ui.push_id(id, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for choice in GroupBy::ALL {
+                if ui.selectable_label(*by == choice, choice.label()).clicked() {
+                    *by = choice;
+                }
+            }
+        });
+    });
+}
+
+/// The list's headers and rows, only those on screen laid out: every entry
+/// is [`ROW_HEIGHT`] tall, a header as much as a row. Returns what was
+/// clicked this frame. Reads `list` only; the caller acts on the response.
 fn list_rows_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
+    view: &BoardView,
     sources: &[BoardRef],
-    list: &mut ListState,
-) -> Option<usize> {
-    if list.rows.is_empty() {
+    list: &ListState,
+) -> RowsResponse {
+    let mut response = RowsResponse::default();
+    if list.entries.is_empty() {
         ui.label(egui::RichText::new("No matching issues.").color(theme.text_muted));
-        return None;
+        return response;
     }
-    let cursor = list.cursor_row();
-    let scroll = std::mem::take(&mut list.scroll_to_cursor);
-    let mut clicked = None;
+    let cursor = list.cursor_entry();
+    let scroll = list.scroll_to_cursor;
+    let display = list.grouping.row_display(list.display);
     let row_height = ROW_HEIGHT;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .show_rows(ui, row_height, list.rows.len(), |ui, range| {
+        .show_rows(ui, row_height, list.entries.len(), |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;
             // The cursor's row, laid out or not: show_rows starts this ui at
             // the first visible row, so any row's rect is an offset from it.
@@ -538,17 +959,126 @@ fn list_rows_ui(
                 ui.scroll_to_rect(rect, None);
             }
             for at in range {
-                let line = &list.rows[at];
-                let row = list_row_ui(ui, theme, sources, line, list.display, cursor == Some(at));
-                if row.clicked() {
-                    clicked = Some(at);
+                match &list.entries[at] {
+                    ListEntry::Header(header) => {
+                        let add = group_add(&header.key, view).is_some();
+                        let clicked = group_header_ui(ui, theme, header, add);
+                        if clicked.toggle {
+                            response.toggle = Some(header.key.clone());
+                        }
+                        if clicked.add {
+                            response.add = Some(header.key.clone());
+                        }
+                    }
+                    ListEntry::Row(row) => {
+                        let line = &list.rows[*row];
+                        let on_cursor = cursor == Some(at);
+                        if list_row_ui(ui, theme, sources, line, display, on_cursor).clicked() {
+                            response.clicked = Some(at);
+                        }
+                    }
                 }
             }
         });
-    if let Some(at) = clicked {
-        list.cursor = Some(list.rows[at].id);
+    response
+}
+
+/// What a header was clicked for this frame.
+struct HeaderClicks {
+    /// The header itself: fold or unfold it.
+    toggle: bool,
+    /// Its `+`: add a card to its group.
+    add: bool,
+}
+
+/// A group's header, one row tall: a fold arrow, the group's name and its
+/// count, and on the right a `+` when `add` (a card added here can land in
+/// the group). A sub-group's header sits indented under its group's.
+fn group_header_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    header: &GroupHeader,
+    add: bool,
+) -> HeaderClicks {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), ROW_HEIGHT),
+        egui::Sense::hover(),
+    );
+    // Sensed before its contents, so the `+` drawn over it takes its own
+    // clicks and the rest of the header folds.
+    let id = egui::Id::unique(("headway-list-group", &header.key));
+    let fold = ui.interact(rect, id, egui::Sense::click());
+    fold.widget_info(|| {
+        let verb = if header.collapsed {
+            "Expand"
+        } else {
+            "Collapse"
+        };
+        egui::WidgetInfo::labeled(
+            egui::accesskit::Role::Button,
+            true,
+            format!("{verb} {}", header.label),
+        )
+    });
+    let sub = header.key.sub.is_some();
+    if !sub {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(RADIUS_MD as u8),
+            theme.surface_elevated,
+        );
     }
-    clicked
+    let indent = if sub {
+        SPACING_LG + SPACING_SM
+    } else {
+        SPACING_SM
+    };
+    let inner = egui::Rect::from_min_max(
+        rect.min + egui::vec2(indent, 0.0),
+        rect.max - egui::vec2(SPACING_SM, 0.0),
+    );
+    let mut clicks = HeaderClicks {
+        toggle: fold.clicked(),
+        add: false,
+    };
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = SPACING_SM;
+            let arrow = if header.collapsed { "▸" } else { "▾" };
+            let quiet = |text: &str| {
+                egui::Label::new(egui::RichText::new(text).color(theme.text_muted))
+                    .selectable(false)
+            };
+            ui.add(quiet(arrow));
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(&header.label)
+                        .strong()
+                        .color(theme.text_primary),
+                )
+                .selectable(false),
+            );
+            ui.add(quiet(&header.count));
+            if !add {
+                return;
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let plus = egui::Button::new(egui::RichText::new("+").color(theme.text_muted))
+                    .frame(false);
+                if ui
+                    .add(plus)
+                    .on_hover_text("New issue in this group")
+                    .clicked()
+                {
+                    clicks.add = true;
+                }
+            });
+        },
+    );
+    clicks
 }
 
 /// One row, Linear's anatomy left to right: priority, word-id, status

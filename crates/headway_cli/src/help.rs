@@ -203,7 +203,7 @@ they are neither. The pager is $HEADWAY_PAGER, else $PAGER, else
         group: Group::Reading,
         summary: "List the cards a query matches, one row each, across every board",
         usage: &[
-            "list [query...] [--board <b>] [--in <c>] [--all] [--show <props>] [--hide <props>] [-n <k>] [--json]",
+            "list [query...] [--board <b>] [--in <c>] [--all] [--show <props>] [--hide <props>] [--group <by>] [--sub-group <by>] [--empty] [-n <k>] [--json]",
         ],
         details: "\
 Print one row per card the query keeps: its blocked and priority
@@ -216,6 +216,15 @@ prints just these, --hide <props> drops these from the default (or from
 --show's). Each is a comma-separated list of: id, status, priority,
 labels, subissues, blockers, estimate, due, created, updated, board.
 The title is always printed; --json always prints the whole card.
+
+--group <by> gathers the rows under `## <group> (<count>)` headers, and
+--sub-group <by> splits each group again, indented. <by> is one of:
+status (same-named columns across boards are one group, done columns
+last), priority (urgent first), label (a card with two labels is in
+both groups), board, parent, none. --empty also prints the groups no
+card is in: every column, priority or board. A row leaves out what its
+header already says. With --json, a grouped list is an array of
+{group, count, rows, subgroups}.
 
 The query is the same one the app's board filter reads: whitespace-
 separated terms, all of which must hold.
@@ -250,6 +259,18 @@ it never signs or publishes.",
                 "--hide <props>",
                 "Leave these properties out, e.g. labels,updated",
             ),
+            (
+                "--group <by>",
+                "Gather rows under headers: status, priority, label, board, parent",
+            ),
+            (
+                "--sub-group <by>",
+                "Split each group again by another grouping",
+            ),
+            (
+                "--empty",
+                "Print empty groups too (every column, priority, board)",
+            ),
             ("-n, --count <k>", "Print at most k rows"),
             ("--color <when>", "auto (default) | always | never"),
             ("--pager", "Page the rows even when stdout isn't a terminal"),
@@ -264,6 +285,7 @@ it never signs or publishes.",
             "headway list is:progress",
             "headway list is:done --board notedeck -n 10",
             "headway list --in headway:headway/acoustic-canvas-diesel --all",
+            "headway list --group status --sub-group priority",
         ],
     },
     Command {

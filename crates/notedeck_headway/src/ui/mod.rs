@@ -921,8 +921,7 @@ fn board_pane_ui(
     // The issue list takes the grid's place while it's open; a card opened
     // from it drew as the detail above.
     if state.list.is_open() {
-        list_view_ui(ui, theme, view, lists, state);
-        return None;
+        return list_view_ui(ui, theme, view, lists, state);
     }
 
     // Parsed once per frame from the persisted query; reflects the prior
