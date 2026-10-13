@@ -136,8 +136,8 @@ impl SessionDetails {
 
     /// The headway card this session works, as its ref: its
     /// [`title_ref`](Self::title_ref), else its [`issue_url`](Self::issue_url)
-    /// when that is a card ref. The session list nests the sessions sharing
-    /// one under a single card row.
+    /// when that is a card ref. The session list sorts the sessions sharing
+    /// one next to each other, each on its own row.
     pub fn card_ref(&self) -> Option<&str> {
         self.title_ref().or_else(|| {
             let url = self.issue_url.as_deref()?.trim();
@@ -1868,9 +1868,7 @@ impl SessionManager {
 
                 for cwd_group in &mut project.cwd_groups {
                     // By card, then title: sessions on one card sort by its
-                    // ref, so they sit together and the list can nest them
-                    // under one card row without leaving this order (which
-                    // `visual_order` and Ctrl+J / K walk).
+                    // ref, so their rows sit together.
                     let key = |id: &SessionId| {
                         self.sessions
                             .get(id)
