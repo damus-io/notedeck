@@ -552,21 +552,14 @@ fn short_date(date: event::Date) -> String {
     format!("{month} {}", date.day)
 }
 
-/// The status icon for where `slot` sits on `board`: filled in a terminal
-/// column, half in In Progress, and otherwise by position, as the grid's
-/// column headers draw it.
+/// The status icon for where `slot` sits on `board`: by column position,
+/// [`StatusIcon::for_column`], exactly as the grid's column headers and every
+/// other view draw it, so a status looks the same everywhere.
 fn slot_icon(slot: RowSlot, board: &BoardView) -> StatusIcon {
     let RowSlot::Column { col, .. } = slot else {
         return StatusIcon::Archived;
     };
-    let column = &board.columns[col];
-    if board.column_is_terminal(&column.id) {
-        StatusIcon::Done
-    } else if column.is_in_progress() {
-        StatusIcon::Started(0.5)
-    } else {
-        StatusIcon::for_column(col, board.columns.len())
-    }
+    StatusIcon::for_column(col, board.columns.len())
 }
 
 /// The name of where `slot` sits on `board`: its column's, or "Archived".
