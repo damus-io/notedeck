@@ -1,9 +1,15 @@
 //! Where the scene map draws each session: hosts, projects and worktrees as
-//! nested circles placed by circle packing, sessions as points inside them.
+//! nested territories, sessions as points inside them. Territories are
+//! rectangles cut by a squarified treemap ([`SceneLayout::treemap`], the
+//! default) or circles placed by circle packing ([`SceneLayout::pack`]); see
+//! [`SceneLayoutMode`].
 //!
-//! Pure and egui-free apart from [`Pos2`]. [`SceneTree::new`] sorts what it
-//! is given by stable keys, so the same sessions always give the same map;
-//! [`SceneLayout::pack`] lays the tree out bottom-up.
+//! Pure, using egui only for its geometry types. [`SceneTree::new`] sorts
+//! what it is given by stable keys, so the same sessions always give the
+//! same map.
+//!
+//! The treemap is Bruls, Huizing and van Wijk's squarified treemap (2000),
+//! cut in key order rather than by size so siblings keep their places.
 //!
 //! The packing is a port of d3-hierarchy's `packSiblings` (front-chain
 //! placement, Wang et al. 2006) and `packEnclose` (Welzl's smallest enclosing
@@ -15,7 +21,8 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
-use egui::Pos2;
+use egui::{Pos2, Rect, Vec2};
+use serde::{Deserialize, Serialize};
 
 use crate::session::{ChatSession, SessionId, SessionManager, Workspace};
 
@@ -166,6 +173,86 @@ pub enum AreaKind {
     Worktree,
 }
 
+impl AreaKind {
+    /// Height of the strip along a treemap rectangle's top that holds its
+    /// label.
+    pub fn header(self) -> f32 {
+        match self {
+            AreaKind::Host => 22.0,
+            AreaKind::Project => 18.0,
+            AreaKind::Worktree => 15.0,
+        }
+    }
+
+    /// Gap between a treemap rectangle's edge and what it holds, on the
+    /// sides and bottom; the label is inset by it too.
+    pub fn inset(self) -> f32 {
+        match self {
+            AreaKind::Host => 10.0,
+            AreaKind::Project => 8.0,
+            AreaKind::Worktree => 4.0,
+        }
+    }
+}
+
+/// How the map lays out its territories. Persisted, so it is the user's
+/// choice across restarts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SceneLayoutMode {
+    /// Rectangles that fill the panel: a squarified treemap.
+    #[default]
+    Treemap,
+    /// Nested circles, placed by circle packing.
+    Circles,
+}
+
+/// The shape of one territory, as laid out or as drawn mid-ease.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AreaShape {
+    Rect(Rect),
+    Circle { center: Pos2, radius: f32 },
+}
+
+impl AreaShape {
+    /// The smallest rect around the shape.
+    pub fn bounding_rect(&self) -> Rect {
+        match *self {
+            AreaShape::Rect(rect) => rect,
+            AreaShape::Circle { center, radius } => {
+                Rect::from_center_size(center, Vec2::splat(radius * 2.0))
+            }
+        }
+    }
+
+    /// `t` of the way from `self` to `to`, in `to`'s shape: a circle easing
+    /// to a rect starts from its bounding square, a rect easing to a circle
+    /// from the circle that fits inside it.
+    pub fn lerp(&self, to: AreaShape, t: f32) -> AreaShape {
+        match (*self, to) {
+            (
+                AreaShape::Circle {
+                    center: c0,
+                    radius: r0,
+                },
+                AreaShape::Circle {
+                    center: c1,
+                    radius: r1,
+                },
+            ) => AreaShape::Circle {
+                center: c0.lerp(c1, t),
+                radius: egui::lerp(r0..=r1, t),
+            },
+            (from, AreaShape::Rect(to)) => {
+                AreaShape::Rect(from.bounding_rect().lerp_towards(&to, t))
+            }
+            (AreaShape::Rect(from), AreaShape::Circle { center, radius }) => AreaShape::Circle {
+                center: from.center().lerp(center, t),
+                radius: egui::lerp(from.size().min_elem() / 2.0..=radius, t),
+            },
+        }
+    }
+}
+
 /// One territory of the map.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayoutArea {
@@ -175,8 +262,7 @@ pub struct LayoutArea {
     /// Stable across relayouts: the area's path through the tree, one line
     /// per level, so an area can ease from where it was.
     pub key: String,
-    pub center: Pos2,
-    pub radius: f32,
+    pub shape: AreaShape,
 }
 
 /// Where everything on the map goes, in scene coordinates centered on the
@@ -204,39 +290,369 @@ impl SceneLayout {
         layout
     }
 
-    /// The smallest square around every area, for fitting the camera.
-    pub fn bounds(&self) -> Option<egui::Rect> {
+    /// Cut `tree` into a squarified treemap the shape of a `panel` of that
+    /// size, centered on the origin. Each group weighs its sessions plus
+    /// [`HEADER_WEIGHT`] for its header; sessions sit in a grid in their
+    /// leaf, every one in a slot of the same size.
+    ///
+    /// The map is cut at the panel's size scaled up just enough that the
+    /// tightest leaf's slot is at least a session's ([`LEAF_RADIUS`] × 2),
+    /// so nodes, labels and orbits keep the sizes they have in circle
+    /// packing and the camera fitting the panel does the shrinking.
+    #[profiling::function]
+    pub fn treemap(tree: &SceneTree, panel: Vec2) -> Self {
+        let groups: Vec<Group<'_>> = tree.hosts.iter().map(host_group).collect();
+        let panel = panel.max(MIN_PANEL);
+        let cut = |scale: f32| Treemap::cut(&groups, panel * scale);
+
+        let mut best = cut(1.0);
+        if best.slot < SLOT {
+            // Double until the slot fits, then bisect down to the smallest
+            // scale that still fits.
+            let (mut lo, mut hi) = (1.0_f32, 2.0_f32);
+            loop {
+                best = cut(hi);
+                if best.slot >= SLOT || hi >= MAX_SCALE {
+                    break;
+                }
+                lo = hi;
+                hi *= 2.0;
+            }
+            for _ in 0..BISECT_STEPS {
+                let mid = (lo + hi) / 2.0;
+                let tried = cut(mid);
+                if tried.slot >= SLOT {
+                    hi = mid;
+                    best = tried;
+                } else {
+                    lo = mid;
+                }
+            }
+        }
+        best.into_layout()
+    }
+
+    /// The smallest rect around every area, for fitting the camera.
+    pub fn bounds(&self) -> Option<Rect> {
         self.areas
             .iter()
-            .map(|a| egui::Rect::from_center_size(a.center, egui::Vec2::splat(a.radius * 2.0)))
+            .map(|a| a.shape.bounding_rect())
             .reduce(|a, b| a.union(b))
     }
+}
+
+/// A session's slot in the treemap: the room its node and orbit need.
+const SLOT: f32 = LEAF_RADIUS * 2.0;
+/// The largest slot the treemap gives a session when there is room to
+/// spare, so a few sessions don't draw far apart in a big panel.
+const MAX_SLOT: f32 = SLOT * 1.6;
+/// A group header's weight in the treemap, in sessions' worth of area.
+const HEADER_WEIGHT: f32 = 0.6;
+/// Gap between the panel's edge and the hosts.
+const TREEMAP_MARGIN: f32 = 14.0;
+/// How far each rectangle is pulled in from its share, so siblings don't
+/// share an edge.
+const TREEMAP_GAP: f32 = 2.0;
+/// The panel size the treemap lays out for at the least, so a panel not
+/// sized yet still gives a sane map.
+const MIN_PANEL: Vec2 = Vec2::splat(200.0);
+/// The most the treemap scales the panel up looking for room.
+const MAX_SCALE: f32 = 1024.0;
+/// Bisection steps for the treemap's scale: well under a slot's precision.
+const BISECT_STEPS: usize = 12;
+
+/// A group of the tree as the treemap cuts it: an area, and either the
+/// groups inside it or, for a leaf, its sessions.
+struct Group<'a> {
+    area: AreaInfo,
+    children: Vec<Group<'a>>,
+    sessions: &'a [SessionId],
+    /// Its sessions plus a [`HEADER_WEIGHT`] for every header in it.
+    weight: f32,
+}
+
+impl<'a> Group<'a> {
+    fn branch(area: AreaInfo, children: Vec<Group<'a>>) -> Self {
+        let weight = HEADER_WEIGHT + children.iter().map(|c| c.weight).sum::<f32>();
+        Group {
+            area,
+            children,
+            sessions: &[],
+            weight,
+        }
+    }
+
+    fn leaf(area: AreaInfo, sessions: &'a [SessionId]) -> Self {
+        Group {
+            area,
+            children: Vec::new(),
+            weight: HEADER_WEIGHT + sessions.len() as f32,
+            sessions,
+        }
+    }
+}
+
+fn host_group(host: &HostNode) -> Group<'_> {
+    let area = host_info(host);
+    let projects = host
+        .projects
+        .iter()
+        .map(|p| project_group(p, &area.key))
+        .collect();
+    Group::branch(area, projects)
+}
+
+fn project_group<'a>(project: &'a ProjectNode, host_key: &str) -> Group<'a> {
+    let area = project_info(project, host_key);
+    if project.is_flat() {
+        return Group::leaf(area, &project.worktrees[0].sessions);
+    }
+    let worktrees = project
+        .worktrees
+        .iter()
+        .map(|w| Group::leaf(worktree_info(w, &area.key), &w.sessions))
+        .collect();
+    Group::branch(area, worktrees)
+}
+
+/// One cut of the treemap at one scale.
+struct Treemap<'a> {
+    areas: Vec<LayoutArea>,
+    leaves: Vec<Leaf<'a>>,
+    /// The slot every session gets: the tightest leaf's, at most
+    /// [`MAX_SLOT`].
+    slot: f32,
+}
+
+/// Where a leaf's sessions go.
+struct Leaf<'a> {
+    sessions: &'a [SessionId],
+    /// Inside the leaf's header and inset.
+    rect: Rect,
+}
+
+impl<'a> Treemap<'a> {
+    fn cut(groups: &[Group<'a>], size: Vec2) -> Self {
+        let mut map = Treemap {
+            areas: Vec::new(),
+            leaves: Vec::new(),
+            slot: MAX_SLOT,
+        };
+        let root = Rect::from_center_size(Pos2::ZERO, size).shrink(TREEMAP_MARGIN);
+        map.cut_children(groups, root);
+        for leaf in &map.leaves {
+            map.slot = map
+                .slot
+                .min(grid_cell(leaf.sessions.len(), leaf.rect.size()));
+        }
+        map
+    }
+
+    fn cut_children(&mut self, groups: &[Group<'a>], rect: Rect) {
+        let weights: Vec<f32> = groups.iter().map(|g| g.weight).collect();
+        for (group, share) in groups.iter().zip(squarify(&weights, rect)) {
+            self.cut_group(group, share.shrink(TREEMAP_GAP));
+        }
+    }
+
+    fn cut_group(&mut self, group: &Group<'a>, rect: Rect) {
+        let kind = group.area.kind;
+        self.areas.push(LayoutArea {
+            kind,
+            label: group.area.label.clone(),
+            key: group.area.key.clone(),
+            shape: AreaShape::Rect(rect),
+        });
+        let inset = kind.inset();
+        let inner = Rect::from_min_max(
+            Pos2::new(rect.min.x + inset, rect.min.y + kind.header()),
+            Pos2::new(rect.max.x - inset, rect.max.y - inset),
+        );
+        // Too small to hold anything: a degenerate rect at its corner, so
+        // the cut goes on and the slot it gives says this scale is too small.
+        let inner = Rect::from_min_size(inner.min, inner.size().max(Vec2::ZERO));
+        if group.children.is_empty() {
+            self.leaves.push(Leaf {
+                sessions: group.sessions,
+                rect: inner,
+            });
+        } else {
+            self.cut_children(&group.children, inner);
+        }
+    }
+
+    /// Put every leaf's sessions in a grid of [`Self::slot`]-sized cells,
+    /// centered in the leaf.
+    fn into_layout(self) -> SceneLayout {
+        let slot = self.slot;
+        let mut nodes = HashMap::new();
+        for leaf in &self.leaves {
+            let n = leaf.sessions.len();
+            if n == 0 {
+                continue;
+            }
+            let cols = ((leaf.rect.width() / slot + 1e-4).floor() as usize).clamp(1, n);
+            let rows = n.div_ceil(cols);
+            let grid = Vec2::new(cols as f32, rows as f32) * slot;
+            let origin = leaf.rect.min + (leaf.rect.size() - grid) / 2.0;
+            for (i, &id) in leaf.sessions.iter().enumerate() {
+                let cell = Vec2::new((i % cols) as f32 + 0.5, (i / cols) as f32 + 0.5);
+                nodes.insert(id, origin + cell * slot);
+            }
+        }
+        SceneLayout {
+            areas: self.areas,
+            nodes,
+        }
+    }
+}
+
+/// The largest square cell `n` sessions can share in a grid inside `size`.
+fn grid_cell(n: usize, size: Vec2) -> f32 {
+    (1..=n.max(1))
+        .map(|cols| {
+            let rows = n.max(1).div_ceil(cols);
+            (size.x / cols as f32).min(size.y / rows as f32)
+        })
+        .fold(0.0, f32::max)
+}
+
+/// Cut `rect` into one rect per weight, each with its weight's share of the
+/// area, as near square as the order allows: Bruls et al.'s squarify,
+/// without the sort, so the rects come out in `weights`' order.
+///
+/// Each row runs along the free rect's shorter side and takes items while
+/// that keeps its worst aspect ratio from getting worse. A row's last rect
+/// ends on the free rect's edge, and the last row takes all that is left,
+/// so rounding never pushes a rect outside `rect`.
+fn squarify(weights: &[f32], rect: Rect) -> Vec<Rect> {
+    let total: f32 = weights.iter().sum();
+    if total <= 0.0 || rect.area() <= 0.0 {
+        return vec![Rect::from_min_size(rect.min, Vec2::ZERO); weights.len()];
+    }
+    let scale = rect.area() / total;
+    let areas: Vec<f32> = weights.iter().map(|w| w * scale).collect();
+
+    let mut out = Vec::with_capacity(areas.len());
+    let mut free = rect;
+    let mut start = 0;
+    while start < areas.len() {
+        let side = free.width().min(free.height());
+        let mut end = start + 1;
+        while end < areas.len()
+            && worst_ratio(&areas[start..=end], side) <= worst_ratio(&areas[start..end], side)
+        {
+            end += 1;
+        }
+        let row = &areas[start..end];
+        let last_row = end == areas.len();
+        let sum: f32 = row.iter().sum();
+        if free.width() >= free.height() {
+            // A column down the free rect's left.
+            let width = if last_row {
+                free.width()
+            } else {
+                sum / free.height()
+            };
+            let mut y = free.min.y;
+            for (i, a) in row.iter().enumerate() {
+                let bottom = if i + 1 == row.len() {
+                    free.max.y
+                } else {
+                    y + a / width
+                };
+                out.push(Rect::from_min_max(
+                    Pos2::new(free.min.x, y),
+                    Pos2::new(free.min.x + width, bottom),
+                ));
+                y = bottom;
+            }
+            free.min.x += width;
+        } else {
+            // A row across the free rect's top.
+            let height = if last_row {
+                free.height()
+            } else {
+                sum / free.width()
+            };
+            let mut x = free.min.x;
+            for (i, a) in row.iter().enumerate() {
+                let right = if i + 1 == row.len() {
+                    free.max.x
+                } else {
+                    x + a / height
+                };
+                out.push(Rect::from_min_max(
+                    Pos2::new(x, free.min.y),
+                    Pos2::new(right, free.min.y + height),
+                ));
+                x = right;
+            }
+            free.min.y += height;
+        }
+        start = end;
+    }
+    out
+}
+
+/// The worst aspect ratio of a row of areas laid along a side of `side`.
+fn worst_ratio(row: &[f32], side: f32) -> f32 {
+    let sum: f32 = row.iter().sum();
+    let max = row.iter().copied().fold(0.0, f32::max);
+    let min = row.iter().copied().fold(f32::INFINITY, f32::min);
+    let side2 = side * side;
+    let sum2 = sum * sum;
+    (side2 * max / sum2).max(sum2 / (side2 * min))
 }
 
 /// How long nodes and areas take to ease to a new layout, in seconds.
 pub const EASE_SECS: f64 = 0.3;
 
-/// The map's layout, kept across frames: repacked only when
-/// [`membership`] changes, with what is drawn easing from the old layout to
-/// the new one over [`EASE_SECS`].
+/// How much the panel may grow or shrink, as a share of either side, before
+/// the treemap is cut again for it, so dragging the split doesn't reflow
+/// the map every frame.
+const PANEL_RELAYOUT_SHARE: f32 = 0.1;
+
+/// The map's layout, kept across frames: laid out again only when
+/// [`membership`] or the mode changes, or for the treemap when the panel
+/// changes size by more than [`PANEL_RELAYOUT_SHARE`], with what is drawn
+/// easing from the old layout to the new one over [`EASE_SECS`].
 #[derive(Default)]
 pub struct EasedLayout {
-    membership: Option<u64>,
+    /// What the current layout was laid out for.
+    laid_for: Option<LaidFor>,
     layout: SceneLayout,
     /// Where each session was drawn when the current layout landed.
     from_nodes: HashMap<SessionId, Pos2>,
     /// Where each of the layout's areas was drawn then, parallel to
     /// [`SceneLayout::areas`]; `None` for a new area.
-    from_areas: Vec<Option<AreaAt>>,
+    from_areas: Vec<Option<AreaShape>>,
     /// When the current layout landed, in egui seconds.
     landed: f64,
 }
 
-/// Where an area is drawn.
+/// What a layout was laid out for: everything that, changed, lays it out
+/// again.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AreaAt {
-    pub center: Pos2,
-    pub radius: f32,
+struct LaidFor {
+    membership: u64,
+    mode: SceneLayoutMode,
+    /// The panel's size, which only the treemap depends on.
+    panel: Vec2,
+}
+
+impl LaidFor {
+    /// Whether a layout laid out for `self` is still right for `now`.
+    fn still_fits(&self, now: &LaidFor) -> bool {
+        if self.membership != now.membership || self.mode != now.mode {
+            return false;
+        }
+        if self.mode == SceneLayoutMode::Circles {
+            return true;
+        }
+        let change = (now.panel - self.panel).abs() / self.panel.max(Vec2::splat(1.0));
+        change.max_elem() <= PANEL_RELAYOUT_SHARE
+    }
 }
 
 /// What [`EasedLayout::sync`] did.
@@ -251,16 +667,33 @@ pub enum Synced {
 }
 
 impl EasedLayout {
-    /// Repack if the sessions the map holds, or where they run, changed
-    /// since the last call. Cheap when nothing did.
-    pub fn sync(&mut self, sessions: &SessionManager, now: f64) -> Synced {
-        let m = membership(sessions);
-        if self.membership == Some(m) {
+    /// Lay the map out again, in `mode`, if the sessions it holds or where
+    /// they run changed since the last call, or the mode did, or (for the
+    /// treemap) the `panel` size moved past [`PANEL_RELAYOUT_SHARE`]. Cheap
+    /// when nothing did.
+    pub fn sync(
+        &mut self,
+        sessions: &SessionManager,
+        mode: SceneLayoutMode,
+        panel: Vec2,
+        now: f64,
+    ) -> Synced {
+        let wanted = LaidFor {
+            membership: membership(sessions),
+            mode,
+            panel,
+        };
+        if self.laid_for.is_some_and(|laid| laid.still_fits(&wanted)) {
             return Synced::Same;
         }
-        let first = self.membership.is_none();
-        self.membership = Some(m);
-        self.land(SceneLayout::pack(&SceneTree::from_sessions(sessions)), now);
+        let first = self.laid_for.is_none();
+        self.laid_for = Some(wanted);
+        let tree = SceneTree::from_sessions(sessions);
+        let layout = match mode {
+            SceneLayoutMode::Treemap => SceneLayout::treemap(&tree, panel),
+            SceneLayoutMode::Circles => SceneLayout::pack(&tree),
+        };
+        self.land(layout, now);
         if first {
             Synced::First
         } else {
@@ -313,20 +746,12 @@ impl EasedLayout {
     }
 
     /// Where the `i`th of [`target`](Self::target)'s areas is drawn at `now`.
-    pub fn area(&self, i: usize, now: f64) -> AreaAt {
-        let a = &self.layout.areas[i];
-        let target = AreaAt {
-            center: a.center,
-            radius: a.radius,
-        };
+    pub fn area(&self, i: usize, now: f64) -> AreaShape {
+        let target = self.layout.areas[i].shape;
         let Some(Some(from)) = self.from_areas.get(i) else {
             return target;
         };
-        let t = self.progress(now);
-        AreaAt {
-            center: from.center.lerp(target.center, t),
-            radius: egui::lerp(from.radius..=target.radius, t),
-        }
+        from.lerp(target, self.progress(now))
     }
 
     fn progress(&self, now: f64) -> f32 {
@@ -418,8 +843,10 @@ impl PackNode {
                 kind: area.kind,
                 label: area.label,
                 key: area.key,
-                center,
-                radius: self.circle.r as f32,
+                shape: AreaShape::Circle {
+                    center,
+                    radius: self.circle.r as f32,
+                },
             });
         }
         for child in self.children {
@@ -429,66 +856,70 @@ impl PackNode {
 }
 
 fn host_node(host: &HostNode) -> PackNode {
-    let key = format!("h:{}", host.name);
+    let area = host_info(host);
     let projects = host
         .projects
         .iter()
-        .map(|p| project_node(p, &key))
+        .map(|p| project_node(p, &area.key))
         .collect();
-    // Hosts are labelled in capitals, as the map draws them.
-    let label = if host.name.is_empty() {
-        "LOCAL".to_owned()
-    } else {
-        host.name.to_uppercase()
-    };
-    PackNode::branch(
-        Some(AreaInfo {
-            kind: AreaKind::Host,
-            label,
-            key,
-        }),
-        HOST_PADDING,
-        projects,
-    )
+    PackNode::branch(Some(area), HOST_PADDING, projects)
 }
 
 fn project_node(project: &ProjectNode, host_key: &str) -> PackNode {
-    let key = format!("{host_key}\np:{}", project.root.display());
+    let area = project_info(project, host_key);
     let children = if project.is_flat() {
         leaves(&project.worktrees[0].sessions)
     } else {
         project
             .worktrees
             .iter()
-            .map(|w| worktree_node(w, &key))
+            .map(|w| worktree_node(w, &area.key))
             .collect()
     };
-    PackNode::branch(
-        Some(AreaInfo {
-            kind: AreaKind::Project,
-            label: project.slug.clone(),
-            key,
-        }),
-        PROJECT_PADDING,
-        children,
-    )
+    PackNode::branch(Some(area), PROJECT_PADDING, children)
 }
 
 fn worktree_node(worktree: &WorktreeNode, project_key: &str) -> PackNode {
+    PackNode::branch(
+        Some(worktree_info(worktree, project_key)),
+        WORKTREE_PADDING,
+        leaves(&worktree.sessions),
+    )
+}
+
+/// A host's area: labelled in capitals, as the map draws it.
+fn host_info(host: &HostNode) -> AreaInfo {
+    let label = if host.name.is_empty() {
+        "LOCAL".to_owned()
+    } else {
+        host.name.to_uppercase()
+    };
+    AreaInfo {
+        kind: AreaKind::Host,
+        label,
+        key: format!("h:{}", host.name),
+    }
+}
+
+fn project_info(project: &ProjectNode, host_key: &str) -> AreaInfo {
+    AreaInfo {
+        kind: AreaKind::Project,
+        label: project.slug.clone(),
+        key: format!("{host_key}\np:{}", project.root.display()),
+    }
+}
+
+fn worktree_info(worktree: &WorktreeNode, project_key: &str) -> AreaInfo {
     let label = worktree
         .cwd
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| worktree.cwd.display().to_string());
-    PackNode::branch(
-        Some(AreaInfo {
-            kind: AreaKind::Worktree,
-            label,
-            key: format!("{project_key}\nw:{}", worktree.cwd.display()),
-        }),
-        WORKTREE_PADDING,
-        leaves(&worktree.sessions),
-    )
+    AreaInfo {
+        kind: AreaKind::Worktree,
+        label,
+        key: format!("{project_key}\nw:{}", worktree.cwd.display()),
+    }
 }
 
 fn leaves(ids: &[SessionId]) -> Vec<PackNode> {
@@ -866,61 +1297,211 @@ mod tests {
         }
     }
 
+    /// A panel the shape of the scene's half of a laptop window.
+    const PANEL: Vec2 = Vec2::new(792.0, 840.0);
+
+    /// `tree` laid out in both modes, the treemap for [`PANEL`].
+    fn both(tree: &SceneTree) -> [SceneLayout; 2] {
+        [SceneLayout::treemap(tree, PANEL), SceneLayout::pack(tree)]
+    }
+
+    /// Whether `inner` lies inside `outer`, give or take rounding.
+    fn nests(inner: AreaShape, outer: AreaShape) -> bool {
+        match (inner, outer) {
+            (AreaShape::Rect(i), AreaShape::Rect(o)) => o.expand(1e-3).contains_rect(i),
+            (
+                AreaShape::Circle { center, radius },
+                AreaShape::Circle {
+                    center: oc,
+                    radius: or,
+                },
+            ) => dist(center, oc) + radius <= or + 1e-3,
+            _ => false,
+        }
+    }
+
+    /// A session's slot around `p`, in `area`'s shape.
+    fn slot_at(p: Pos2, area: AreaShape) -> AreaShape {
+        match area {
+            AreaShape::Rect(_) => {
+                AreaShape::Rect(Rect::from_center_size(p, Vec2::splat(2.0 * LEAF_RADIUS)))
+            }
+            AreaShape::Circle { .. } => AreaShape::Circle {
+                center: p,
+                radius: LEAF_RADIUS,
+            },
+        }
+    }
+
     #[test]
-    fn sessions_do_not_overlap_and_areas_nest() {
-        let layout = SceneLayout::pack(&tree(&sample()));
-        let nodes: Vec<Pos2> = layout.nodes.values().copied().collect();
-        for (i, a) in nodes.iter().enumerate() {
-            for b in &nodes[i + 1..] {
-                assert!(dist(*a, *b) >= 2.0 * LEAF_RADIUS - 1e-3);
+    fn squarify_tiles_its_rect_in_proportion() {
+        let rect = Rect::from_min_size(Pos2::new(3.0, -7.0), Vec2::new(410.0, 230.0));
+        for n in 1..40 {
+            let weights: Vec<f32> = (0..n).map(|i| 0.6 + (i * 7 % 13) as f32).collect();
+            let total: f32 = weights.iter().sum();
+            let rects = squarify(&weights, rect);
+            assert_eq!(rects.len(), n);
+            for (i, (r, w)) in rects.iter().zip(&weights).enumerate() {
+                assert!(rect.contains_rect(*r), "rect {i} of {n} outside");
+                let share = r.area() / rect.area();
+                assert!((share - w / total).abs() < 1e-3, "rect {i} of {n}: {share}");
+                for other in &rects[i + 1..] {
+                    assert!(r.intersect(*other).area() < 1e-2, "overlap in {n}");
+                }
             }
         }
+    }
 
-        // Every area lies inside the area its key nests under, and every
-        // session inside the innermost area holding it.
-        for area in &layout.areas {
-            let Some((parent_key, _)) = area.key.rsplit_once('\n') else {
-                continue;
-            };
-            let parent = layout.areas.iter().find(|a| a.key == parent_key).unwrap();
-            assert!(dist(area.center, parent.center) + area.radius <= parent.radius + 1e-3);
+    #[test]
+    fn sessions_do_not_overlap_and_areas_nest() {
+        for layout in both(&tree(&sample())) {
+            let nodes: Vec<Pos2> = layout.nodes.values().copied().collect();
+            for (i, a) in nodes.iter().enumerate() {
+                for b in &nodes[i + 1..] {
+                    assert!(dist(*a, *b) >= 2.0 * LEAF_RADIUS - 1e-3);
+                }
+            }
+
+            // Every area lies inside the area its key nests under, and every
+            // session inside the innermost area holding it.
+            for area in &layout.areas {
+                let Some((parent_key, _)) = area.key.rsplit_once('\n') else {
+                    continue;
+                };
+                let parent = layout.areas.iter().find(|a| a.key == parent_key).unwrap();
+                assert!(
+                    nests(area.shape, parent.shape),
+                    "{} in {}",
+                    area.key,
+                    parent_key
+                );
+            }
+            let worktree = layout
+                .areas
+                .iter()
+                .find(|a| a.label == "notedeck-horizon")
+                .unwrap();
+            for id in 10..22 {
+                let slot = slot_at(layout.nodes[&id], worktree.shape);
+                assert!(nests(slot, worktree.shape), "session {id}");
+            }
         }
-        let worktree = layout
+    }
+
+    #[test]
+    fn treemap_fills_the_panel() {
+        let layout = SceneLayout::treemap(&tree(&sample()), PANEL);
+        assert!(layout
             .areas
             .iter()
-            .find(|a| a.label == "notedeck-horizon")
-            .unwrap();
-        for id in 10..22 {
-            let p = layout.nodes[&id];
-            assert!(dist(p, worktree.center) + LEAF_RADIUS <= worktree.radius + 1e-3);
+            .all(|a| matches!(a.shape, AreaShape::Rect(_))));
+        let bounds = layout.bounds().unwrap();
+        let aspect = bounds.width() / bounds.height();
+        assert!(
+            (aspect - PANEL.x / PANEL.y).abs() < 0.05,
+            "{aspect} for a panel of {PANEL:?}"
+        );
+    }
+
+    /// Hundreds of sessions in a small panel: the treemap is cut at a
+    /// bigger scale rather than squeezing sessions together.
+    #[test]
+    fn a_crowded_treemap_scales_up_rather_than_overlap() {
+        let mut specs = sample();
+        for id in 100..400 {
+            let cwd = ["/u/a", "/u/b", "/u/c"][id as usize % 3];
+            specs.push(s(id, "hydra", "/u/notedeck", cwd));
+        }
+        let layout = SceneLayout::treemap(&tree(&specs), Vec2::new(300.0, 200.0));
+        assert_eq!(layout.nodes.len(), specs.len());
+        let mut nodes: Vec<Pos2> = layout.nodes.values().copied().collect();
+        nodes.sort_by(|a, b| a.x.total_cmp(&b.x));
+        for (i, a) in nodes.iter().enumerate() {
+            for b in nodes[i + 1..]
+                .iter()
+                .take_while(|b| b.x - a.x < 2.0 * LEAF_RADIUS)
+            {
+                assert!(dist(*a, *b) >= 2.0 * LEAF_RADIUS - 1e-2);
+            }
         }
     }
 
     #[test]
     fn single_worktree_at_root_flattens() {
-        let layout = SceneLayout::pack(&tree(&sample()));
-        let kinds = |label: &str| {
-            layout
-                .areas
-                .iter()
-                .filter(|a| a.label == label)
-                .map(|a| a.kind)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(kinds("damus"), [AreaKind::Project]);
-        assert_eq!(kinds("notedeck-scene"), [AreaKind::Worktree]);
-        assert_eq!(kinds("LOCAL"), [AreaKind::Host]);
+        for layout in both(&tree(&sample())) {
+            let kinds = |label: &str| {
+                layout
+                    .areas
+                    .iter()
+                    .filter(|a| a.label == label)
+                    .map(|a| a.kind)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(kinds("damus"), [AreaKind::Project]);
+            assert_eq!(kinds("notedeck-scene"), [AreaKind::Worktree]);
+            assert_eq!(kinds("LOCAL"), [AreaKind::Host]);
+        }
     }
 
     #[test]
     fn same_input_same_output_in_any_order() {
-        let a = SceneLayout::pack(&tree(&sample()));
         let mut reversed = sample();
         reversed.reverse();
-        let b = SceneLayout::pack(&tree(&reversed));
-        assert_eq!(a, b);
+        assert_eq!(both(&tree(&sample())), both(&tree(&reversed)));
     }
 
+    /// The treemap is laid out again for a panel that changed size past the
+    /// threshold, the circles never are.
+    #[test]
+    fn only_a_real_resize_relays_the_treemap() {
+        let laid = LaidFor {
+            membership: 1,
+            mode: SceneLayoutMode::Treemap,
+            panel: Vec2::new(800.0, 600.0),
+        };
+        let at = |panel: Vec2, mode: SceneLayoutMode| LaidFor {
+            panel,
+            mode,
+            ..laid
+        };
+        assert!(laid.still_fits(&at(Vec2::new(840.0, 580.0), SceneLayoutMode::Treemap)));
+        assert!(!laid.still_fits(&at(Vec2::new(900.0, 600.0), SceneLayoutMode::Treemap)));
+        assert!(!laid.still_fits(&at(laid.panel, SceneLayoutMode::Circles)));
+        assert!(!laid.still_fits(&LaidFor {
+            membership: 2,
+            ..laid
+        }));
+
+        let circles = at(laid.panel, SceneLayoutMode::Circles);
+        assert!(circles.still_fits(&at(Vec2::new(300.0, 900.0), SceneLayoutMode::Circles)));
+    }
+
+    /// Switching modes eases each circle into its rect.
+    #[test]
+    fn switching_modes_eases_between_shapes() {
+        let t = tree(&sample());
+        let mut eased = EasedLayout::default();
+        let circles = SceneLayout::pack(&t);
+        eased.land(circles.clone(), 0.0);
+        let rects = SceneLayout::treemap(&t, PANEL);
+        eased.land(rects.clone(), 1.0);
+
+        let i = rects.areas.iter().position(|a| a.key == "h:hydra").unwrap();
+        let j = circles
+            .areas
+            .iter()
+            .position(|a| a.key == "h:hydra")
+            .unwrap();
+        assert_eq!(
+            eased.area(i, 1.0),
+            AreaShape::Rect(circles.areas[j].shape.bounding_rect())
+        );
+        assert!(matches!(eased.area(i, 1.1), AreaShape::Rect(_)));
+        assert_eq!(eased.area(i, 1.0 + EASE_SECS), rects.areas[i].shape);
+    }
+
+    /// Circle packing only: the treemap re-cuts every rect after a weight
+    /// that changed, by design.
     #[test]
     fn a_session_elsewhere_does_not_reshape_another_host() {
         let before = SceneLayout::pack(&tree(&sample()));
@@ -930,7 +1511,10 @@ mod tests {
 
         // The host as a whole may shift to make room, but nothing inside it
         // moves relative to it.
-        let host = |l: &SceneLayout| l.areas.iter().find(|a| a.key == "h:hydra").unwrap().center;
+        let host = |l: &SceneLayout| {
+            let area = l.areas.iter().find(|a| a.key == "h:hydra").unwrap();
+            area.shape.bounding_rect().center()
+        };
         let (h0, h1) = (host(&before), host(&after));
         for id in [5, 6, 10, 21] {
             let d0 = before.nodes[&id] - h0;
@@ -944,24 +1528,24 @@ mod tests {
 
     #[test]
     fn relayout_eases_from_where_things_were() {
-        let mut eased = EasedLayout::default();
-        let before = SceneLayout::pack(&tree(&sample()));
-        eased.land(before.clone(), 0.0);
-        assert!(
-            !eased.is_easing(0.0),
-            "the first layout has nothing to ease from"
-        );
-
         let mut more = sample();
         more.push(s(30, "hydra", "/u/notedeck", "/u/notedeck-headway"));
-        let after = SceneLayout::pack(&tree(&more));
-        eased.land(after.clone(), 10.0);
+        for (before, after) in both(&tree(&sample())).into_iter().zip(both(&tree(&more))) {
+            let mut eased = EasedLayout::default();
+            eased.land(before.clone(), 0.0);
+            assert!(
+                !eased.is_easing(0.0),
+                "the first layout has nothing to ease from"
+            );
 
-        assert!(eased.is_easing(10.1));
-        assert_eq!(eased.node(5, 10.0), Some(before.nodes[&5]));
-        assert_eq!(eased.node(5, 10.0 + EASE_SECS), Some(after.nodes[&5]));
-        // A new session appears where it belongs.
-        assert_eq!(eased.node(30, 10.0), Some(after.nodes[&30]));
-        assert!(!eased.is_easing(10.0 + EASE_SECS));
+            eased.land(after.clone(), 10.0);
+
+            assert!(eased.is_easing(10.1));
+            assert_eq!(eased.node(5, 10.0), Some(before.nodes[&5]));
+            assert_eq!(eased.node(5, 10.0 + EASE_SECS), Some(after.nodes[&5]));
+            // A new session appears where it belongs.
+            assert_eq!(eased.node(30, 10.0), Some(after.nodes[&30]));
+            assert!(!eased.is_easing(10.0 + EASE_SECS));
+        }
     }
 }

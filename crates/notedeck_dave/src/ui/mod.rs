@@ -598,11 +598,21 @@ pub struct ListUiResponse {
     pub toggle_scene: bool,
 }
 
+/// The scene map's layout switch: treemap rectangles or packed circles.
+fn scene_layout_toggle(ui: &mut egui::Ui, mode: &mut crate::scene_layout::SceneLayoutMode) {
+    use crate::scene_layout::SceneLayoutMode;
+    ui.selectable_value(mode, SceneLayoutMode::Treemap, "Treemap")
+        .on_hover_text("Lay the map out as rectangles that fill the panel");
+    ui.selectable_value(mode, SceneLayoutMode::Circles, "Circles")
+        .on_hover_text("Lay the map out as nested circles");
+}
+
 /// Render the scene view with RTS-style agent visualization and chat side panel.
 #[allow(clippy::too_many_arguments)]
 pub fn scene_ui(
     session_manager: &mut SessionManager,
     scene: &mut AgentScene,
+    scene_layout: &mut crate::scene_layout::SceneLayoutMode,
     focus_queue: &mut FocusQueue,
     model_config: &ModelConfig,
     auto_steal_focus: bool,
@@ -650,11 +660,14 @@ pub fn scene_ui(
                     if ctrl_held {
                         keybind_hint(ui, "L");
                     }
+                    ui.separator();
+                    scene_layout_toggle(ui, scene_layout);
                 });
                 ui.separator();
                 // The map draws lineage edges from the regrouped state.
                 session_manager.ensure_grouping_cache();
-                scene_response_opt = Some(scene.ui(session_manager, focus_queue, ui, ctrl_held));
+                scene_response_opt =
+                    Some(scene.ui(session_manager, focus_queue, *scene_layout, ui, ctrl_held));
             });
 
             strip.cell(|ui| {

@@ -256,6 +256,7 @@ impl Dave {
         } = ui::scene_ui(
             &mut self.session_manager,
             &mut self.scene,
+            &mut self.scene_layout,
             &mut self.focus_queue,
             &self.model_config,
             self.auto_steal.is_enabled(),
@@ -266,6 +267,9 @@ impl Dave {
             app_ctx,
             ui,
         );
+        // Every frame rather than on the click, so a switch the debounce
+        // turned away is saved on a later frame. A no-op once saved.
+        self.scene_layout_serializer.try_save(self.scene_layout);
 
         // Handle view actions
         match view_action {

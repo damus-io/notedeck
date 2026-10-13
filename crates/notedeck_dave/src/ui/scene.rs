@@ -2,7 +2,7 @@ use crate::agent_status::AgentStatus;
 use crate::card_titles::CardTitles;
 use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::scene_edges::{MessageLine, MessageLines};
-use crate::scene_layout::{AreaKind, EasedLayout, Synced};
+use crate::scene_layout::{AreaKind, AreaShape, EasedLayout, SceneLayoutMode, Synced};
 use crate::scene_orbits::{Orbits, Satellite, SatelliteKind};
 use crate::session::{ChatSession, Edge, EdgeKind, SessionId, SessionManager};
 use crate::ui::dave::FROM_SESSION_VIOLET;
@@ -28,12 +28,27 @@ pub struct AgentScene {
     focus_pending: Option<SessionId>,
     /// Where the map draws every host, project, worktree and session.
     map: EasedLayout,
+    /// The mode the map was last laid out in, to tell a mode switch from a
+    /// membership change.
+    laid_mode: Option<SceneLayoutMode>,
+    /// The camera easing to fit a layout whose bounds changed.
+    camera_fit: Option<CameraFit>,
     /// The hover card last shown, kept while its session's data is unchanged.
     hover_card: Option<HoverCard>,
     /// Which sessions have messaged which, for the map's message lines.
     messages: MessageLines,
     /// The subagents and child sessions orbiting their parents.
     orbits: Orbits,
+}
+
+/// The camera easing from one view of the map to another over
+/// [`EASE_SECS`](crate::scene_layout::EASE_SECS), alongside the layout's own
+/// ease.
+struct CameraFit {
+    from: Rect,
+    to: Rect,
+    /// When it started, in egui seconds.
+    start: f64,
 }
 
 /// State for box/marquee selection
@@ -83,6 +98,8 @@ impl AgentScene {
             animation_progress: 1.0,
             focus_pending: None,
             map: EasedLayout::default(),
+            laid_mode: None,
+            camera_fit: None,
             hover_card: None,
             messages: MessageLines::default(),
             orbits: Orbits::default(),
@@ -128,11 +145,12 @@ impl AgentScene {
         self.focus_pending = Some(id);
     }
 
-    /// Render the scene
+    /// Render the scene, its territories laid out in `mode`.
     pub fn ui(
         &mut self,
         session_manager: &SessionManager,
         focus_queue: &FocusQueue,
+        mode: SceneLayoutMode,
         ui: &mut egui::Ui,
         ctrl_held: bool,
     ) -> SceneResponse {
@@ -140,10 +158,17 @@ impl AgentScene {
 
         let now = ui.input(|i| i.time);
         let wall = wall_clock();
-        let synced = self.map.sync(session_manager, now);
-        if synced == Synced::First {
-            if let Some(bounds) = self.map.target().bounds() {
-                self.scene_rect = bounds.expand(40.0);
+        let synced = self
+            .map
+            .sync(session_manager, mode, ui.available_size(), now);
+        self.fit_camera(synced, mode, now);
+        if let Some(fit) = &self.camera_fit {
+            let t = ((now - fit.start) / crate::scene_layout::EASE_SECS).clamp(0.0, 1.0) as f32;
+            self.scene_rect = fit.from.lerp_towards(&fit.to, ease_out_cubic(t));
+            if t >= 1.0 {
+                self.camera_fit = None;
+            } else {
+                ui.ctx().request_repaint();
             }
         }
         self.messages
@@ -425,11 +450,45 @@ impl AgentScene {
         response
     }
 
+    /// Point the camera at the map after `synced` laid it out: fit it
+    /// straight away the first time, and ease to the new fit when a mode
+    /// switch or a treemap re-cut changed the map's bounds. A circle-packed
+    /// map gaining a session keeps the camera where the user left it.
+    fn fit_camera(&mut self, synced: Synced, mode: SceneLayoutMode, now: f64) {
+        let switched = self.laid_mode.is_some_and(|m| m != mode);
+        self.laid_mode = Some(mode);
+        let Some(bounds) = self.map.target().bounds() else {
+            return;
+        };
+        let to = match mode {
+            // Already the panel's shape, its own margin inside it.
+            SceneLayoutMode::Treemap => bounds,
+            SceneLayoutMode::Circles => bounds.expand(CIRCLES_CAMERA_MARGIN),
+        };
+        match synced {
+            Synced::Same => {}
+            Synced::First => {
+                self.scene_rect = to;
+            }
+            Synced::Relaid => {
+                let refit = switched || mode == SceneLayoutMode::Treemap;
+                let fitted = self.camera_fit.as_ref().map_or(self.scene_rect, |f| f.to);
+                if refit && fitted != to {
+                    self.camera_fit = Some(CameraFit {
+                        from: self.scene_rect,
+                        to,
+                        start: now,
+                    });
+                }
+            }
+        }
+    }
+
     /// Draw the map's hosts, projects and worktrees, outermost first, as
     /// nested territories each a step lighter than the one around it, with
-    /// worktrees on a dashed edge. Labels sit at the top inside each circle,
-    /// on a halo of the panel colour so they read over the lines drawn
-    /// across them.
+    /// worktrees on a dashed edge. A treemap rect's label sits top-left in
+    /// its header strip, a circle's at its top; either on a halo of the
+    /// panel colour so it reads over the lines drawn across it.
     fn draw_areas(ui: &egui::Ui, map: &EasedLayout, now: f64) {
         let painter = ui.painter();
         let visuals = ui.visuals();
@@ -437,17 +496,31 @@ impl AgentScene {
         let edge = visuals.weak_text_color();
         let halo = visuals.panel_fill;
         for (i, area) in map.target().areas.iter().enumerate() {
-            let at = map.area(i, now);
+            let shape = map.area(i, now);
             let look = AreaLook::of(area.kind);
-            painter.circle_filled(at.center, at.radius, tint.gamma_multiply(AREA_FILL));
+            let fill = tint.gamma_multiply(AREA_FILL);
             let stroke = egui::Stroke::new(
                 notedeck::tokens::STROKE_THIN,
                 edge.gamma_multiply(look.edge),
             );
-            if area.kind == AreaKind::Worktree {
-                dashed_circle(painter, at.center, at.radius, WORKTREE_DASH, 0.0, stroke);
-            } else {
-                painter.circle_stroke(at.center, at.radius, stroke);
+            let dashed = area.kind == AreaKind::Worktree;
+            match shape {
+                AreaShape::Circle { center, radius } => {
+                    painter.circle_filled(center, radius, fill);
+                    if dashed {
+                        dashed_circle(painter, center, radius, WORKTREE_DASH, 0.0, stroke);
+                    } else {
+                        painter.circle_stroke(center, radius, stroke);
+                    }
+                }
+                AreaShape::Rect(rect) => {
+                    painter.rect_filled(rect, 0.0, fill);
+                    if dashed {
+                        dashed_rect(painter, rect, WORKTREE_DASH, stroke);
+                    } else {
+                        painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Inside);
+                    }
+                }
             }
 
             let mut job = egui::text::LayoutJob::default();
@@ -462,7 +535,20 @@ impl AgentScene {
                 },
             );
             let galley = painter.layout_job(job);
-            let pos = at.center + Vec2::new(-galley.size().x / 2.0, -at.radius + look.inset);
+            let (pos, clip) = match shape {
+                AreaShape::Circle { center, radius } => (
+                    center + Vec2::new(-galley.size().x / 2.0, -radius + look.inset),
+                    painter.clip_rect(),
+                ),
+                AreaShape::Rect(rect) => {
+                    let header = area.kind.header();
+                    let inset = area.kind.inset();
+                    let pos = rect.min + Vec2::new(inset, (header - galley.size().y) / 2.0);
+                    (pos, rect.intersect(painter.clip_rect()))
+                }
+            };
+            // A label longer than its rect is cut off at the rect's edge.
+            let painter = painter.with_clip_rect(clip);
             for offset in HALO_OFFSETS {
                 painter.galley_with_override_text_color(pos + offset, galley.clone(), halo);
             }
@@ -824,6 +910,25 @@ fn dashed_line(painter: &egui::Painter, from: Pos2, to: Pos2, dash: Dash, stroke
     }
 }
 
+/// Stroke `rect`'s edges as dashes, without allocating a path.
+fn dashed_rect(painter: &egui::Painter, rect: Rect, dash: Dash, stroke: egui::Stroke) {
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+    ];
+    for i in 0..corners.len() {
+        dashed_line(
+            painter,
+            corners[i],
+            corners[(i + 1) % corners.len()],
+            dash,
+            stroke,
+        );
+    }
+}
+
 /// What [`AgentScene::draw_agent`] draws for one session.
 struct MapNode<'a> {
     id: SessionId,
@@ -1084,6 +1189,8 @@ const BLINK_SECS: f64 = 0.5;
 const ANIMATION_FRAME_SECS: f64 = 1.0 / 30.0;
 /// Characters of a title without a code that stand in for one.
 const FALLBACK_CODE_CHARS: usize = 4;
+/// Room left around a circle-packed map when the camera fits it.
+const CIRCLES_CAMERA_MARGIN: f32 = 40.0;
 /// Zoom range of the map. The low end keeps area labels legible.
 const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.3..=2.0;
 
@@ -1142,6 +1249,7 @@ mod tests {
         sessions: SessionManager,
         scene: AgentScene,
         focus_queue: FocusQueue,
+        mode: SceneLayoutMode,
         /// The last action the scene returned.
         action: Option<SceneAction>,
     }
@@ -1299,9 +1407,10 @@ mod tests {
         }
         builder.build_ui_state(
             |ui, state: &mut MapState| {
-                let response = state
-                    .scene
-                    .ui(&state.sessions, &state.focus_queue, ui, false);
+                let response =
+                    state
+                        .scene
+                        .ui(&state.sessions, &state.focus_queue, state.mode, ui, false);
                 if response.action.is_some() {
                     state.action = response.action;
                 }
@@ -1317,6 +1426,7 @@ mod tests {
                     sessions,
                     scene,
                     focus_queue: FocusQueue::new(),
+                    mode: SceneLayoutMode::default(),
                     action: None,
                 }
             },
@@ -1393,13 +1503,52 @@ mod tests {
         sm.rebuild_groups();
     }
 
-    /// Territories, and a node in every status with its code in the ring.
+    /// Territories as the default treemap, and a node in every status with
+    /// its code in the ring.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_scene_map_layout() {
         let mut harness = map_harness(true);
         harness.run_steps(3);
         harness.snapshot("scene_map_layout");
+    }
+
+    /// The same map with the toggle on circles.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_scene_map_circles() {
+        let mut harness = map_harness(true);
+        harness.state_mut().mode = SceneLayoutMode::Circles;
+        harness.run_steps(3);
+        harness.snapshot("scene_map_circles");
+    }
+
+    /// The map starts as a treemap fitted to the panel; switching to
+    /// circles lays it out again and eases the camera to fit the circles.
+    #[test]
+    fn switching_layout_relays_and_refits_the_camera() {
+        let is_rect = |s: &AreaShape| matches!(s, AreaShape::Rect(_));
+        let mut harness = map_harness(false);
+        harness.run_steps(3);
+        let scene = &harness.state().scene;
+        let areas = &scene.map.target().areas;
+        assert!(areas.iter().all(|a| is_rect(&a.shape)));
+        let treemap = scene.map.target().bounds().expect("bounds");
+
+        harness.state_mut().mode = SceneLayoutMode::Circles;
+        harness.run_steps(1);
+        assert!(
+            harness.state().scene.camera_fit.is_some(),
+            "the camera eases"
+        );
+        // kittest steps its clock a quarter second a frame: past the ease.
+        harness.run_steps(3);
+        let scene = &harness.state().scene;
+        let circles = scene.map.target().bounds().expect("bounds");
+        assert!(scene.map.target().areas.iter().all(|a| !is_rect(&a.shape)));
+        assert_ne!(circles, treemap);
+        assert!(scene.camera_fit.is_none(), "the ease landed");
+        assert_eq!(scene.scene_rect, circles.expand(CIRCLES_CAMERA_MARGIN));
     }
 
     /// The hover card beside a hovered node.

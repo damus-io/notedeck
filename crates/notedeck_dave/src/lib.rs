@@ -241,6 +241,9 @@ pub struct Dave {
     /// Tracks which host/cwd folders are collapsed in the session list
     collapse_state: collapse_state::CollapseState,
     collapse_serializer: TimedSerializer<collapse_state::CollapseState>,
+    /// How the scene map lays out its territories, chosen in the scene view.
+    scene_layout: scene_layout::SceneLayoutMode,
+    scene_layout_serializer: TimedSerializer<scene_layout::SceneLayoutMode>,
     /// Auto-steal focus state: Disabled, Idle (enabled, nothing pending),
     /// or Pending (enabled, waiting to fire / retrying).
     auto_steal: focus_queue::AutoStealState,
@@ -451,6 +454,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         );
         let collapse_state = collapse_serializer.get_item().unwrap_or_default();
 
+        let scene_layout_serializer =
+            TimedSerializer::new(path, DataPathType::Setting, "scene_layout.json".to_owned());
+        let scene_layout = scene_layout_serializer.get_item().unwrap_or_default();
+
         // Load saved settings, falling back to env-var-based defaults
         let (model_config, settings) = if let Some(saved_settings) = settings_serializer.get_item()
         {
@@ -563,6 +570,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             focus_queue: FocusQueue::new(),
             collapse_state,
             collapse_serializer,
+            scene_layout,
+            scene_layout_serializer,
             auto_steal: focus_queue::AutoStealState::Disabled,
             home_session: None,
             normal_mode: ui::keybindings::NormalMode::default(),
