@@ -54,6 +54,14 @@ pub const KEYMAP_TEMPLATE: &str = r#"# Your keymap: bindings and macros merged o
 # [macro.session-explainer]
 # label = "card explainer"
 # steps = [ { tool = "dave_open_issue" }, { tool = "headway_open_explainer" } ]
+#
+# A step waits for its tool to be offered, and the run aborts if it never is.
+# This one opens the review queue of the epic above a session's card, and
+# stops on a card with no parent:
+#
+# [macro.session-epic-review]
+# label = "epic review queue"
+# steps = [ { tool = "dave_open_issue" }, { tool = "headway_open_parent" }, { tool = "headway_open_review_queue" } ]
 "#;
 
 /// The keymap editor's tools, for the host's tool registry.

@@ -341,6 +341,7 @@ replays each key in each view).
 | `X`           | ask for a reason, post it as a `review: …` comment, move to In Progress |
 | `C`           | send the line comments drafted on the record, if any; else ask for a line, post it as a comment and send it to the record's session. The card stays put |
 | `n` / `p`     | next / previous card (see below)                                       |
+| `g p`         | open the parent's detail, over whatever shows (another board's parent: switch to it); only on a subissue |
 
 The record is the one a review pane shows, else the card's newest. What differs
 by view: `n`/`p` step the grid's cursor (as `j`/`k`), the queue, or the card's

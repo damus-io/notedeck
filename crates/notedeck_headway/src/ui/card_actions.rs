@@ -11,7 +11,8 @@ use notedeck::ColorTheme;
 use notedeck::tokens::SPACING_LG;
 
 use super::review::{IN_PROGRESS, Notice, QueueNotice, SessionOpen, send_back_open, session_open};
-use super::{BoardEffect, BoardUiState, FoundCard, find_card};
+use super::widgets::issue_nostr_uri;
+use super::{BoardEffect, BoardUiState, FoundCard, find_card, find_detail_card};
 use crate::nav::NavPos;
 use crate::store::BoardAction;
 
@@ -266,6 +267,28 @@ impl BoardUiState {
         self.selected = None;
         self.detail_for = None;
         self.detail_field_focused = false;
+    }
+
+    /// `g p`: open the parent of `card`. One on this board opens its detail
+    /// over whatever shows, leaving the queue or a review pane: a card→card
+    /// push in the history, so Back returns to `card`, and the grid's cursor
+    /// stays on `card`. One placed only on another board opens by its
+    /// `nostr:` ref, as a click on its chip would, which switches boards.
+    pub(crate) fn open_parent(&mut self, view: &BoardView, card: NoteId) {
+        let Some(parent) = find_detail_card(view, card).and_then(|found| found.card.parent) else {
+            return;
+        };
+        if find_detail_card(view, parent).is_none() {
+            if let Some(uri) = issue_nostr_uri(&parent) {
+                self.raise(BoardEffect::Open(notedeck::OpenUri::new(uri)));
+            }
+            return;
+        }
+        if let Some(child) = self.queue.close() {
+            self.cursor = Some(child);
+        }
+        self.review.close();
+        self.selected = Some(parent);
     }
 
     /// Leave the queue for the current card's detail. The queue keeps its

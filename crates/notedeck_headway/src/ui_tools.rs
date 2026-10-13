@@ -41,6 +41,9 @@ use crate::ui::{BoardStep, BoardUiState, CardStep, SessionOpen};
 pub(crate) const OPEN_CARD: &str = "headway_open_card";
 /// `e`: open the explainer of the current card's record.
 pub(crate) const OPEN_EXPLAINER: &str = "headway_open_explainer";
+/// `g p`: open the current card's parent. Offered only on a card that has
+/// one, so a macro step on it waits, then aborts, on a card that hasn't.
+pub(crate) const OPEN_PARENT: &str = "headway_open_parent";
 /// `s`/`S`: open the agentium session of the current card's record.
 pub(crate) const OPEN_SESSION: &str = "headway_open_session";
 /// `r`: open the current card's review pane.
@@ -266,6 +269,12 @@ impl HeadwayUiTool {
                 vec![],
             ),
             card_spec(
+                OPEN_PARENT,
+                "Open the detail of the current card's parent, switching boards when the \
+                 parent is on another. Only offered on a card that has a parent.",
+                vec![],
+            ),
+            card_spec(
                 OPEN_SESSION,
                 "Open the agentium session of the current card's review record.",
                 vec![
@@ -396,6 +405,7 @@ impl HeadwayUiTool {
         Ok(match name {
             OPEN_CARD => card_tool(name, args, CardAction::Open)?,
             OPEN_EXPLAINER => card_tool(name, args, CardAction::Explainer(None))?,
+            OPEN_PARENT => card_tool(name, args, CardAction::Parent)?,
             OPEN_SESSION => {
                 let SessionArgs { card, code_review } = parse_args(name, args)?;
                 let how = if code_review {
@@ -647,6 +657,9 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
         // the key answers rather than falling through. The list's card may
         // be on another board, so these wait for its detail.
         OPEN_EXPLAINER | OPEN_SESSION | OPEN_REVIEW | SEND_BACK | QUICK_COMMENT => card && !list,
+        // Only a subissue has a parent to open: on any other card the key
+        // falls through, and a macro's step waits and aborts.
+        OPEN_PARENT => !list && current_card(state, at).is_some_and(|c| state.has_parent(c)),
         // The grid's step lands a missing cursor on the first card; the
         // queue's steps off a card that has left the board.
         STEP_CARD => (card && !list) || grid || at == KeyView::Queue,
@@ -764,6 +777,76 @@ mod tests {
             parse(STEP_FILE, json!({ "dir": "prev" })),
             HeadwayUiTool::Scroll(PaneScroll::PrevFile)
         );
+    }
+
+    /// `headway_open_parent` is a card tool, on the current card or a named
+    /// one.
+    #[test]
+    fn open_parent_parses_with_and_without_a_card() {
+        let parse = |args| HeadwayUiTool::parse(OPEN_PARENT, &args).unwrap();
+        assert_eq!(
+            parse(json!({})),
+            HeadwayUiTool::Card {
+                action: CardAction::Parent,
+                card: None,
+            }
+        );
+        assert_eq!(
+            parse(json!({ "card": "headway:b/maple-river-canyon" })),
+            HeadwayUiTool::Card {
+                action: CardAction::Parent,
+                card: Some("headway:b/maple-river-canyon".to_owned()),
+            }
+        );
+        assert!(HeadwayUiTool::parse(OPEN_PARENT, &json!({ "card": "maple" })).is_err());
+    }
+
+    /// `headway_open_parent` is offered on a subissue in the grid and the
+    /// detail, as each pass latches it, and not on a card with no parent,
+    /// nor in the issue list.
+    #[test]
+    fn open_parent_is_offered_only_on_a_subissue() {
+        use crate::cursor::tests::{grid, id};
+        use crate::ui::{ViewFilter, parse_board_filter};
+
+        let mut view = grid();
+        // Card 5 is a subissue of card 4; card 6 has no parent.
+        view.columns[2].cards[0].parent = Some(id(4));
+        let everything = parse_board_filter("", &view, false);
+        let filter = ViewFilter {
+            view: &view,
+            filter: &everything,
+        };
+        // As a grid pass ends.
+        let pass = |state: &mut BoardUiState| {
+            state.latch_cursor_slot(&view, &filter);
+            state.latch_current_ref(&view);
+        };
+
+        let mut state = BoardUiState::default();
+        state.set_cursor(id(5));
+        assert!(!available(&state, OPEN_PARENT), "not latched yet");
+        pass(&mut state);
+        assert!(available(&state, OPEN_PARENT), "a subissue on the grid");
+
+        state.set_cursor(id(6));
+        assert!(!available(&state, OPEN_PARENT), "the latch is 5's");
+        pass(&mut state);
+        assert!(!available(&state, OPEN_PARENT), "no parent on the grid");
+
+        state.set_selected(Some(id(5)));
+        pass(&mut state);
+        assert!(available(&state, OPEN_PARENT), "a subissue's detail");
+        state.set_selected(Some(id(6)));
+        pass(&mut state);
+        assert!(!available(&state, OPEN_PARENT), "no parent in the detail");
+
+        state.set_selected(None);
+        state.set_cursor(id(5));
+        pass(&mut state);
+        state.open_list();
+        pass(&mut state);
+        assert!(!available(&state, OPEN_PARENT), "the issue list");
     }
 
     /// No UI tool takes a data tool's name. The tool registry keeps the first

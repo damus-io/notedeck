@@ -158,6 +158,15 @@ jump  = true
 label = "next/prev card"
 group = "card"
 
+# Offered only on a subissue; shares its `g` with `g g` in the grid's and
+# the panes' scopes.
+[[bind]]
+scope = "headway.card"
+keys  = "g p"
+tool  = "headway_open_parent"
+label = "parent"
+group = "card"
+
 # The board grid.
 
 [[bind]]

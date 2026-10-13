@@ -743,6 +743,118 @@ mod session_explainer {
         assert!(!s.dave.borrow().seen.contains(&Key::D), "D was the macro's");
     }
 
+    /// A demo card that's a subissue of the demo board's epic, "Define nostr
+    /// event model for boards".
+    const SUBISSUE: &str = "Sync cards across relays";
+
+    /// The epic's other subissue, which [`epic_review_session`] moves to In
+    /// Review.
+    const EPIC_DONE: &str = "Scaffold the Headway app crate";
+
+    /// jb55's "epic review queue" macro on `R`: the session's card, its
+    /// parent, then the review queue over the parent's In Review subissues.
+    const EPIC_REVIEW: &str = r#"
+        [[bind]]
+        scope = "dave.normal"
+        keys = "R"
+        macro = "session-epic-review"
+
+        [macro.session-epic-review]
+        label = "epic review queue"
+        steps = [
+          { tool = "dave_open_issue" },
+          { tool = "headway_open_parent" },
+          { tool = "headway_open_review_queue" },
+        ]
+    "#;
+
+    impl Session {
+        /// Merge `user` over the shipped keymap, as an account's overrides.
+        fn set_user_keymap(&mut self, user: &str) {
+            let keymap = notedeck_chrome::keymap::parse(&format!(
+                "{}\n{user}",
+                notedeck_chrome::keymap::DEFAULT_KEYMAP
+            ))
+            .expect("the keymap parses");
+            self.chrome.set_keymap(keymap);
+        }
+
+        /// Press Shift+`key`, typing `text`.
+        fn press_shift(&mut self, key: Key, text: &str) {
+            let event = |pressed| Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::SHIFT,
+            };
+            self.frame(vec![
+                event(true),
+                Event::Text(text.to_owned()),
+                event(false),
+            ]);
+        }
+    }
+
+    /// A session on `issue` with [`EPIC_REVIEW`] bound and [`EPIC_DONE`]
+    /// moved to In Review, folded.
+    async fn epic_review_session(issue: &str) -> Session {
+        let mut s = Session::new(Some(issue)).await;
+        s.set_user_keymap(EPIC_REVIEW);
+        let done = {
+            let ctx = s.notedeck.app_context();
+            headway::wordid::card_ref(store::BOARD_ID, card_id(ctx.ndb, EPIC_DONE).bytes())
+        };
+        let moved = s.notedeck.app_context().call_tool(
+            "headway_move_card",
+            &serde_json::json!({ "card": done, "column": "in-review" }),
+        );
+        assert!(matches!(moved, ToolOutcome::Data(_)), "the move applies");
+        for _ in 0..SETTLE_FRAMES {
+            if s.column_of(&done).as_deref() == Some("in-review") {
+                return s;
+            }
+            s.frame(Vec::new());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("{EPIC_DONE} never landed in In Review");
+    }
+
+    /// The macro from a session on a subissue opens its parent, the epic,
+    /// and the review queue over the epic's In Review subissues: one key
+    /// from a session to its epic's review.
+    #[tokio::test]
+    async fn the_epic_review_macro_opens_the_parents_queue() {
+        let mut s = epic_review_session(SUBISSUE).await;
+        s.press_shift(Key::R, "R");
+        assert_eq!(s.chrome.running_macro(), Some("session-epic-review"));
+        s.wait_for("the macro to finish", |s| {
+            s.chrome.running_macro().is_none()
+        });
+        s.wait_for("the epic's review queue", |s| s.drew("1 / 1"));
+        assert!(s.drew(EPIC_DONE), "the queue shows the epic's subissue");
+        assert!(!s.dave.borrow().seen.contains(&Key::R), "R was the macro's");
+    }
+
+    /// On a card with no parent `headway_open_parent` is never offered, so
+    /// the macro waits out its step's timeout and aborts on the session's
+    /// card, opening no queue.
+    #[tokio::test]
+    async fn the_epic_review_macro_stops_on_a_card_with_no_parent() {
+        let mut s = epic_review_session(CARD).await;
+        let pressed = s.time;
+        s.press_shift(Key::R, "R");
+        assert_eq!(s.chrome.running_macro(), Some("session-epic-review"));
+        s.wait_for("the macro to abort", |s| s.chrome.running_macro().is_none());
+        assert!(
+            s.time - pressed >= notedeck_chrome::keymap::macros::MACRO_TIMEOUT_SECS,
+            "the run waited out its step, not finished"
+        );
+        s.frame(Vec::new());
+        assert!(s.drew(CARD), "on the session's card");
+        assert!(!s.drew("1 / 1"), "no queue opened");
+    }
+
     /// A session with no issue has no `dave_open_issue`, so `E` isn't the
     /// macro's: it falls through to Dave.
     #[tokio::test]

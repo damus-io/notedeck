@@ -100,6 +100,9 @@ pub struct BoardUiState {
     /// The current card, as chrome's keymap edits it
     /// ([`latch_current_ref`](Self::latch_current_ref)).
     current_ref: CurrentRef,
+    /// The current card, latched with [`current_ref`](Self::current_ref),
+    /// while it has a parent for `g p` to open ([`has_parent`](Self::has_parent)).
+    parented: Option<NoteId>,
     /// Set when the cursor moves by keyboard and its card should be scrolled
     /// into view. Consumed into [`scroll_this_frame`](Self::scroll_this_frame)
     /// once per grid render.
@@ -607,8 +610,9 @@ impl BoardUiState {
     /// Latch, as the pass ends, the card chrome's keymap edits next pass:
     /// the [view in front](ui_tools::key_view)'s current card, the grid's
     /// cursor only where the grid drew it, and only a card on the board.
+    /// Whether it has a parent is latched with it.
     pub(crate) fn latch_current_ref(&mut self, view: &BoardView) {
-        let card = ui_tools::key_view(self)
+        let found = ui_tools::key_view(self)
             .and_then(|at| match at {
                 KeyView::Grid => self
                     .cursor_slot
@@ -616,13 +620,26 @@ impl BoardUiState {
                     .filter(|&card| self.cursor == Some(card)),
                 at => ui_tools::current_card(self, at),
             })
-            .filter(|&card| find_card(view, card).is_some());
-        self.current_ref.latch(&view.id, card);
+            .and_then(|card| find_card(view, card));
+        self.parented = found
+            .as_ref()
+            .filter(|found| found.card.parent.is_some())
+            .map(|found| found.card.id);
+        self.current_ref
+            .latch(&view.id, found.map(|found| found.card.id));
     }
 
     /// Forget the current card: no board is drawn to edit.
     pub(crate) fn clear_current_ref(&mut self) {
         self.current_ref.latch("", None);
+        self.parented = None;
+    }
+
+    /// Whether `card` is the current card as last latched, and has a parent.
+    /// Asked by [`ui_tools::available`] with the view's current card, so a
+    /// card the view moved to since the latch waits for the next pass.
+    pub(crate) fn has_parent(&self, card: NoteId) -> bool {
+        self.parented == Some(card)
     }
 
     /// The current card's `headway:<board>/<word-id>`, as last latched.

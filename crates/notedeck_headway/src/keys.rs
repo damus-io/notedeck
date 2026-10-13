@@ -84,6 +84,9 @@ pub(crate) enum CardAction {
     /// `n`/`p`: the next/previous card — the grid's cursor, the queue's card,
     /// or the neighbouring card in the column of a detail or review pane.
     Step(CardStep),
+    /// `g p`: open the card's parent's detail, leaving the queue or a review
+    /// pane for it, or its board when it's on another.
+    Parent,
 }
 
 /// The view a [`CardAction`] was pressed in, for the few actions whose effect
@@ -138,6 +141,7 @@ pub(crate) fn apply_card_action(
                 state.open_review(card, record)
             }
         },
+        CardAction::Parent => state.open_parent(view, card),
         CardAction::SendBack => state.start_reject(view, card, now),
         CardAction::Comment => return state.start_comment(view, card, now),
         CardAction::Step(step) => match at {
@@ -1791,6 +1795,129 @@ mod tests {
                 "D in the {name}"
             );
         }
+    }
+
+    /// Make card 5 of [`review_board`] a subissue of `parent`, latched by
+    /// a frame as a pass would.
+    fn parent_card_5(harness: &mut Harness<'static, KeysHarness>, parent: NoteId) {
+        harness.state_mut().view.columns[1].cards[1].parent = Some(parent);
+        harness.run();
+    }
+
+    /// Press the chord `g p`.
+    fn press_g_p(harness: &mut Harness<'static, KeysHarness>) {
+        press(harness, Key::G);
+        press(harness, Key::P);
+    }
+
+    /// `g p` in each of the four views with card 5 current, a subissue of
+    /// card 4, opens card 4's detail, leaving the queue or the review pane
+    /// for it.
+    #[test]
+    fn g_p_opens_the_parent_in_every_view() {
+        let views = [
+            ActionTestView {
+                name: "grid",
+                open: grid_harness,
+            },
+            ActionTestView {
+                name: "queue",
+                open: queue_harness,
+            },
+            ActionTestView {
+                name: "review pane",
+                open: pane_harness,
+            },
+            ActionTestView {
+                name: "detail",
+                open: || detail_harness(None),
+            },
+        ];
+        for ActionTestView { name, open } in &views {
+            let mut harness = open();
+            parent_card_5(&mut harness, id(4));
+            press_g_p(&mut harness);
+            let state = &harness.state().state;
+            assert_eq!(
+                state.last_card_action,
+                Some((CardAction::Parent, id(5))),
+                "g p in the {name}"
+            );
+            assert_eq!(state.selected(), Some(id(4)), "g p in the {name}");
+            assert!(!state.queue_open(), "g p in the {name} leaves the queue");
+            assert_eq!(state.review_card(), None, "g p in the {name}");
+        }
+    }
+
+    /// From the grid, `g p` opens the parent over it with the cursor left on
+    /// the child, so backing out lands on the child; `g g` still runs beside
+    /// it. From the child's detail it swaps the detail to the parent, which
+    /// the history pushes as a new card entry, so Back returns to the child.
+    #[test]
+    fn g_p_and_back_return_to_the_child() {
+        let mut harness = grid_harness();
+        parent_card_5(&mut harness, id(4));
+        press_g_p(&mut harness);
+        assert_eq!(harness.state().state.selected(), Some(id(4)));
+        assert_eq!(harness.state().state.cursor(), Some(id(5)));
+        press(&mut harness, Key::Q);
+        assert_eq!(harness.state().state.selected(), None);
+        assert_eq!(harness.state().state.cursor(), Some(id(5)));
+
+        // `g g` goes to the top of the cursor's column: 4, above 5.
+        press(&mut harness, Key::G);
+        press(&mut harness, Key::G);
+        assert_eq!(
+            harness.state().state.cursor(),
+            Some(id(4)),
+            "g g beside g p"
+        );
+
+        harness.state_mut().state.set_selected(Some(id(5)));
+        harness.run();
+        let before = harness.state().state.nav_pos();
+        press_g_p(&mut harness);
+        assert_eq!(harness.state().state.selected(), Some(id(4)));
+        assert_eq!(
+            crate::nav::reconcile_nav(before, harness.state().state.nav_pos()),
+            Some(crate::nav::NavReconcile::PushCard(id(4))),
+            "the parent's detail is a new history entry over the child's"
+        );
+    }
+
+    /// On a card with no parent `g p` isn't offered, so the chord falls
+    /// through as any of chrome's does: its `p` runs alone, stepping to the
+    /// previous card, and nothing opens.
+    #[test]
+    fn g_p_without_a_parent_falls_through() {
+        let mut harness = grid_harness();
+        press_g_p(&mut harness);
+        let state = &harness.state().state;
+        assert_eq!(
+            state.last_card_action,
+            Some((CardAction::Step(CardStep::Prev), id(5)))
+        );
+        assert_eq!(state.cursor(), Some(id(4)));
+        assert_eq!(state.selected(), None);
+    }
+
+    /// A parent placed only on another board opens by its `nostr:` ref, which
+    /// chrome routes to Headway's open of the card on its own board.
+    #[test]
+    fn g_p_opens_a_parent_on_another_board_by_its_ref() {
+        let mut harness = grid_harness();
+        parent_card_5(&mut harness, id(99));
+        press_g_p(&mut harness);
+        let h = harness.state();
+        assert_eq!(h.state.last_card_action, Some((CardAction::Parent, id(5))));
+        assert_eq!(h.state.selected(), None, "not on this board");
+        let open = h.session.as_ref().expect("the parent's ref opens");
+        assert!(
+            open.reference.starts_with("nostr:nevent1"),
+            "{}",
+            open.reference
+        );
+        assert_eq!(open.msg, None);
     }
 
     /// Everything a key over the grid (the queue's, a review pane's, the
