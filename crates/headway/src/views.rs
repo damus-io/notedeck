@@ -10,7 +10,7 @@
 //! `headway:headway/brave-project-parade`.
 
 use nostrdb::{Ndb, Transaction};
-use nostrdb_net::Pubkey;
+use nostrdb_net::{Pubkey, private_note};
 
 use crate::event::{self, KIND_VIEW, ViewRevision};
 use crate::query::ViewSpec;

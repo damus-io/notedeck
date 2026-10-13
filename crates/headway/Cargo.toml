@@ -6,7 +6,6 @@ version.workspace = true
 [dependencies]
 nostrdb = { workspace = true }
 nostrdb_net = { workspace = true }
-private_note = { workspace = true }
 gethostname = "1"
 hex = { workspace = true }
 serde = { workspace = true }

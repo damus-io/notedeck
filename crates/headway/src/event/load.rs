@@ -4,7 +4,7 @@
 //! preference, raw blocker and related sets).
 
 use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
-use nostrdb_net::{NoteId, Pubkey};
+use nostrdb_net::{NoteId, Pubkey, private_note};
 
 use super::kinds::{
     BOARD_PREF_D, HEADWAY_KINDS, KIND_BLOCKERS, KIND_BOARD, KIND_BOARD_PREF, KIND_COMMENT,

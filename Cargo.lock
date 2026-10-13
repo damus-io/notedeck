@@ -3968,7 +3968,6 @@ dependencies = [
  "nostr 0.37.0",
  "nostrdb",
  "nostrdb_net",
- "private_note",
  "profiling",
  "serde",
  "serde_json",
@@ -5684,7 +5683,7 @@ dependencies = [
 [[package]]
 name = "nostrdb"
 version = "0.10.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=845263970438#845263970438f7eada9a8bea93a026a309a959fe"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=0f77fb5649a7#0f77fb5649a730b93ef1863b9b361e3b566023f2"
 dependencies = [
  "bindgen 0.69.5",
  "cc",
@@ -5700,7 +5699,7 @@ dependencies = [
 [[package]]
 name = "nostrdb_net"
 version = "0.1.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=845263970438#845263970438f7eada9a8bea93a026a309a959fe"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=0f77fb5649a7#0f77fb5649a730b93ef1863b9b361e3b566023f2"
 dependencies = [
  "base64 0.22.1",
  "bech32",
@@ -5805,7 +5804,6 @@ dependencies = [
  "nwc",
  "once_cell",
  "poll-promise",
- "private_note",
  "profiling",
  "puffin",
  "puffin_egui",
@@ -5869,7 +5867,6 @@ dependencies = [
  "notedeck_wasm",
  "objc2 0.5.2",
  "oot_bitset",
- "private_note",
  "profiling",
  "puffin",
  "puffin_egui",
@@ -7450,17 +7447,6 @@ checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "private_note"
-version = "0.11.0-beta.1"
-dependencies = [
- "nostrdb",
- "nostrdb_net",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]

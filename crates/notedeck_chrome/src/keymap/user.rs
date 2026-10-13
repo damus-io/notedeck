@@ -11,7 +11,7 @@
 //! unwrap it and gets the defaults.
 
 use nostrdb::{Filter, Ndb, Transaction};
-use nostrdb_net::Pubkey;
+use nostrdb_net::{private_note, Pubkey};
 
 /// NIP-78 application-specific data: parameterized-replaceable, so the newest
 /// revision of a `d` is the one that counts.

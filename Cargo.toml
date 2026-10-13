@@ -32,7 +32,6 @@ members = [
     "crates/notedeck_wasm",
     "crates/notedeck_release",
     "crates/notedeck_testing",
-    "crates/private_note",
 ]
 
 [workspace.dependencies]
@@ -88,9 +87,9 @@ md5 = "0.7.0"
 nostr = { version = "0.37.0", default-features = false, features = ["std", "nip44", "nip49"] }
 nwc = "0.39.0"
 mio = { version = "1.0.3", features = ["os-poll", "net"] }
-nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "845263970438" }
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "0f77fb5649a7" }
 #nostrdb = "0.6.1"
-nostrdb_net = { git = "https://github.com/damus-io/nostrdb-rs", rev = "845263970438" }
+nostrdb_net = { git = "https://github.com/damus-io/nostrdb-rs", rev = "0f77fb5649a7" }
 notedeck = { path = "crates/notedeck" }
 notedeck_chrome = { path = "crates/notedeck_chrome" }
 notedeck_clndash = { path = "crates/notedeck_clndash" }
@@ -107,7 +106,6 @@ notedeck_headway = { path = "crates/notedeck_headway" }
 notedeck_nostrverse = { path = "crates/notedeck_nostrverse" }
 renderbud = { path = "crates/renderbud", features = ["egui"] }
 notedeck_ui = { path = "crates/notedeck_ui" }
-private_note = { path = "crates/private_note" }
 notedeck_testing = { path = "crates/notedeck_testing" }
 notedeck_wasm = { path = "crates/notedeck_wasm" }
 tokenator = { path = "crates/tokenator" }

@@ -25,7 +25,7 @@ use enostr::{NormRelayUrl, RelayId};
 use hashbrown::HashSet;
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
 use nostrdb_net::relay::sync::Session;
-use nostrdb_net::Pubkey;
+use nostrdb_net::{private_note, Pubkey};
 
 use crate::{
     AppContext, ExplicitPublishApi, FullHistoryConfig, ScopedSubIdentity, SubConfig, SubKey,

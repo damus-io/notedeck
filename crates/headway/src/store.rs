@@ -12,7 +12,7 @@
 use std::collections::HashSet;
 
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder, Transaction};
-use nostrdb_net::{NoteId, Pubkey};
+use nostrdb_net::{NoteId, Pubkey, private_note};
 
 use crate::event::{
     self, BoardView, COL_DELETED, CardView, ColumnDef, Container, Date, Field, Priority,
