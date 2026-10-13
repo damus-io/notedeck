@@ -615,7 +615,7 @@ pub fn scene_ui(
     let ctrl_held = ui.input(|i| i.modifiers.ctrl);
 
     StripBuilder::new(ui)
-        .size(Size::relative(0.25))
+        .size(Size::relative(0.55))
         .size(Size::remainder())
         .clip(true)
         .horizontal(|mut strip| {
@@ -697,13 +697,6 @@ pub fn scene_ui(
                 }
                 SceneAction::DeleteSelected => {
                     view_action = SceneViewAction::DeleteSelected(scene.selected.clone());
-                }
-                SceneAction::AgentMoved { id, position } => {
-                    if let Some(session) = session_manager.get_mut(id) {
-                        if let Some(agentic) = &mut session.agentic {
-                            agentic.scene_position = (position.x, position.y);
-                        }
-                    }
                 }
             }
         }

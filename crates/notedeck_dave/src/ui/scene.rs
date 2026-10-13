@@ -1,7 +1,6 @@
-use std::path::Path;
-
 use crate::agent_status::AgentStatus;
 use crate::focus_queue::{FocusPriority, FocusQueue};
+use crate::scene_layout::{AreaKind, EasedLayout, Synced};
 use crate::session::{SessionId, SessionManager};
 use crate::ui::paint_keybind_hint;
 use egui::{Color32, Pos2, Rect, Response, Sense, Vec2};
@@ -18,6 +17,11 @@ pub struct AgentScene {
     camera_target: Option<Vec2>,
     /// Animation progress (0.0 to 1.0)
     animation_progress: f32,
+    /// A session to center the camera on once the map places it: one just
+    /// created isn't on the map until the next frame's layout.
+    focus_pending: Option<SessionId>,
+    /// Where the map draws every host, project, worktree and session.
+    map: EasedLayout,
 }
 
 /// State for box/marquee selection
@@ -35,8 +39,6 @@ pub enum SceneAction {
     SpawnAgent,
     /// Request to delete selected agents
     DeleteSelected,
-    /// Agent was dragged to new position
-    AgentMoved { id: SessionId, position: Vec2 },
 }
 
 /// Response from scene rendering
@@ -67,6 +69,8 @@ impl AgentScene {
             drag_select: None,
             camera_target: None,
             animation_progress: 1.0,
+            focus_pending: None,
+            map: EasedLayout::default(),
         }
     }
 
@@ -99,9 +103,14 @@ impl AgentScene {
     }
 
     /// Animate camera to focus on a position
-    pub fn focus_on(&mut self, position: Vec2) {
+    fn focus_on(&mut self, position: Vec2) {
         self.camera_target = Some(position);
         self.animation_progress = 0.0;
+    }
+
+    /// Animate the camera to session `id` once the map has placed it.
+    pub fn focus_session(&mut self, id: SessionId) {
+        self.focus_pending = Some(id);
     }
 
     /// Render the scene
@@ -113,6 +122,21 @@ impl AgentScene {
         ctrl_held: bool,
     ) -> SceneResponse {
         let mut response = SceneResponse::default();
+
+        let now = ui.input(|i| i.time);
+        if self.map.sync(session_manager, now) == Synced::First {
+            if let Some(bounds) = self.map.target().bounds() {
+                self.scene_rect = bounds.expand(40.0);
+            }
+        }
+        if self.map.is_easing(now) {
+            ui.ctx().request_repaint();
+        }
+        if let Some(id) = self.focus_pending.take() {
+            if let Some(pos) = self.map.node(id, now) {
+                self.focus_on(pos.to_vec2());
+            }
+        }
 
         // Update camera animation towards target
         if let Some(target) = self.camera_target {
@@ -138,32 +162,37 @@ impl AgentScene {
         }
 
         // Track interactions from inside the scene closure
-        let mut clicked_agent: Option<(SessionId, bool, Vec2)> = None; // (id, shift_held, position)
-        let mut dragged_agent: Option<(SessionId, Vec2)> = None; // (id, new_position)
+        let mut clicked_agent: Option<(SessionId, bool)> = None; // (id, shift_held)
         let mut bg_clicked = false;
         let mut bg_drag_started = false;
 
         // Use a local copy of scene_rect to avoid borrow conflict
         let mut scene_rect = self.scene_rect;
         let selected_ids = &self.selected;
+        let map = &self.map;
 
         let scene_response =
             egui::Scene::new()
                 .zoom_range(0.1..=1.0)
                 .show(ui, &mut scene_rect, |ui| {
+                    Self::draw_areas(ui, map, now);
+
                     // Draw agents and collect interaction responses
                     // Use sessions_ordered() to match keybinding order (Ctrl+1 = first in order, etc.)
                     for (keybind_idx, session) in
                         session_manager.sessions_ordered().into_iter().enumerate()
                     {
-                        // Scene view only makes sense for agentic sessions
-                        let Some(agentic) = &session.agentic else {
-                            continue;
-                        };
-
                         let id = session.id;
                         let keybind_number = keybind_idx + 1; // 1-indexed for display
-                        let position: Vec2 = agentic.scene_position.into();
+                                                              // Only agentic sessions are on the map.
+                        let Some(position) = map.node(id, now) else {
+                            continue;
+                        };
+                        let radius = if session.subagent_of.is_some() {
+                            SATELLITE_RADIUS
+                        } else {
+                            NODE_RADIUS
+                        };
                         let status = session.status();
                         let title = session.details.display_title();
                         let is_selected = selected_ids.contains(&id);
@@ -174,10 +203,9 @@ impl AgentScene {
                             id,
                             keybind_number,
                             position,
+                            radius,
                             status,
                             title,
-                            &agentic.cwd,
-                            &session.details.home_dir,
                             is_selected,
                             ctrl_held,
                             queue_priority,
@@ -185,12 +213,7 @@ impl AgentScene {
 
                         if agent_response.clicked() {
                             let shift = ui.input(|i| i.modifiers.shift);
-                            clicked_agent = Some((id, shift, position));
-                        }
-
-                        if agent_response.dragged() && is_selected {
-                            let delta = agent_response.drag_delta();
-                            dragged_agent = Some((id, position + delta));
+                            clicked_agent = Some((id, shift));
                         }
                     }
 
@@ -216,21 +239,13 @@ impl AgentScene {
         self.scene_rect = scene_rect;
 
         // Process agent click
-        if let Some((id, shift, _position)) = clicked_agent {
+        if let Some((id, shift)) = clicked_agent {
             if shift {
                 self.add_to_selection(id);
             } else {
                 self.select(id);
             }
             response = SceneResponse::new(SceneAction::SelectionChanged(self.selected.clone()));
-        }
-
-        // Process agent drag
-        if let Some((id, new_pos)) = dragged_agent {
-            response = SceneResponse::new(SceneAction::AgentMoved {
-                id,
-                position: new_pos,
-            });
         }
 
         // Process background click
@@ -282,12 +297,11 @@ impl AgentScene {
                 self.selected.clear();
 
                 for session in session_manager.iter() {
-                    if let Some(agentic) = &session.agentic {
-                        let agent_pos =
-                            Pos2::new(agentic.scene_position.0, agentic.scene_position.1);
-                        if selection_rect.contains(agent_pos) {
-                            self.selected.push(session.id);
-                        }
+                    let Some(agent_pos) = self.map.node(session.id, now) else {
+                        continue;
+                    };
+                    if selection_rect.contains(agent_pos) {
+                        self.selected.push(session.id);
                     }
                 }
 
@@ -323,6 +337,33 @@ impl AgentScene {
         response
     }
 
+    /// Draw the map's hosts, projects and worktrees, outermost first, as
+    /// faint circles labelled at the top.
+    fn draw_areas(ui: &egui::Ui, map: &EasedLayout, now: f64) {
+        let painter = ui.painter();
+        let stroke_color = ui.visuals().weak_text_color();
+        for (i, area) in map.target().areas.iter().enumerate() {
+            let at = map.area(i, now);
+            let (alpha, font) = match area.kind {
+                AreaKind::Host => (0.5, 13.0),
+                AreaKind::Project => (0.35, 11.0),
+                AreaKind::Worktree => (0.25, 9.0),
+            };
+            painter.circle_stroke(
+                at.center,
+                at.radius,
+                egui::Stroke::new(1.0, stroke_color.gamma_multiply(alpha)),
+            );
+            painter.text(
+                at.center - Vec2::new(0.0, at.radius - 4.0),
+                egui::Align2::CENTER_TOP,
+                &area.label,
+                egui::FontId::proportional(font),
+                stroke_color,
+            );
+        }
+    }
+
     /// Draw a single agent unit and return the interaction Response
     /// `keybind_number` is the 1-indexed number displayed when Ctrl is held (matches Ctrl+N keybindings)
     #[allow(clippy::too_many_arguments)]
@@ -330,25 +371,24 @@ impl AgentScene {
         ui: &mut egui::Ui,
         id: SessionId,
         keybind_number: usize,
-        position: Vec2,
+        center: Pos2,
+        agent_radius: f32,
         status: AgentStatus,
         title: &str,
-        cwd: &Path,
-        home_dir: &str,
         is_selected: bool,
         show_keybinding: bool,
         queue_priority: Option<FocusPriority>,
     ) -> Response {
-        let agent_radius = 30.0;
-        let center = Pos2::new(position.x, position.y);
         let agent_rect = Rect::from_center_size(center, Vec2::splat(agent_radius * 2.0));
 
         // Interact with the agent
-        let response = ui.interact(
-            agent_rect,
-            ui.scope_id().with(("agent", id)),
-            Sense::click_and_drag(),
-        );
+        let response = ui
+            .interact(
+                agent_rect,
+                ui.scope_id().with(("agent", id)),
+                Sense::click(),
+            )
+            .on_hover_text(title);
 
         let painter = ui.painter();
 
@@ -356,8 +396,8 @@ impl AgentScene {
         if is_selected {
             painter.circle_stroke(
                 center,
-                agent_radius + 4.0,
-                egui::Stroke::new(3.0_f32, Color32::from_rgb(255, 255, 100)),
+                agent_radius + 3.0,
+                egui::Stroke::new(1.5_f32, Color32::from_rgb(255, 255, 100)),
             );
         }
 
@@ -366,7 +406,7 @@ impl AgentScene {
         painter.circle_stroke(
             center,
             agent_radius,
-            egui::Stroke::new(3.0_f32, status_color),
+            egui::Stroke::new(2.0_f32, status_color),
         );
 
         // Fill
@@ -375,70 +415,108 @@ impl AgentScene {
         } else {
             ui.visuals().widgets.inactive.bg_fill
         };
-        painter.circle_filled(center, agent_radius - 2.0, fill_color);
+        painter.circle_filled(center, agent_radius - 1.5, fill_color);
 
         // Focus queue indicator dot (top-right of the agent circle)
         if let Some(priority) = queue_priority {
-            let dot_radius = 6.0;
+            let dot_radius = agent_radius * 0.3;
             let dot_offset = Vec2::new(agent_radius * 0.7, -agent_radius * 0.7);
-            let dot_center = center + dot_offset;
-            painter.circle_filled(dot_center, dot_radius, priority.color());
+            painter.circle_filled(center + dot_offset, dot_radius, priority.color());
         }
 
         // Agent icon in center: show keybind frame when Ctrl held, otherwise first letter
         if show_keybinding {
-            paint_keybind_hint(ui, center, &keybind_number.to_string(), 24.0);
+            paint_keybind_hint(ui, center, &keybind_number.to_string(), agent_radius);
         } else {
-            let icon_text: String = title.chars().next().unwrap_or('?').to_uppercase().collect();
+            let mut buf = [0u8; 4];
+            let icon = title
+                .chars()
+                .next()
+                .unwrap_or('?')
+                .to_ascii_uppercase()
+                .encode_utf8(&mut buf);
             painter.text(
                 center,
                 egui::Align2::CENTER_CENTER,
-                &icon_text,
-                egui::FontId::proportional(20.0),
+                &*icon,
+                egui::FontId::proportional(agent_radius * 0.9),
                 ui.visuals().text_color(),
             );
         }
-
-        // Title below
-        let title_pos = center + Vec2::new(0.0, agent_radius + 10.0);
-        painter.text(
-            title_pos,
-            egui::Align2::CENTER_TOP,
-            title,
-            egui::FontId::proportional(11.0),
-            ui.visuals().text_color().gamma_multiply(0.8),
-        );
-
-        // Status label
-        let status_pos = center + Vec2::new(0.0, agent_radius + 24.0);
-        painter.text(
-            status_pos,
-            egui::Align2::CENTER_TOP,
-            status.label(),
-            egui::FontId::proportional(9.0),
-            status_color.gamma_multiply(0.9),
-        );
-
-        // Cwd label (monospace, weak+small)
-        let cwd_text = if home_dir.is_empty() {
-            crate::path_utils::abbreviate_path(cwd)
-        } else {
-            crate::path_utils::abbreviate_with_home(cwd, home_dir)
-        };
-        let cwd_pos = center + Vec2::new(0.0, agent_radius + 38.0);
-        painter.text(
-            cwd_pos,
-            egui::Align2::CENTER_TOP,
-            &cwd_text,
-            egui::FontId::monospace(8.0),
-            ui.visuals().weak_text_color(),
-        );
 
         response
     }
 }
 
+/// Radius a session's circle is drawn at, inside its
+/// [`LEAF_RADIUS`](crate::scene_layout::LEAF_RADIUS) slot.
+const NODE_RADIUS: f32 = 15.0;
+/// Radius a subagent's circle is drawn at, in orbit around its parent.
+const SATELLITE_RADIUS: f32 = 5.0;
+
 /// Easing function for smooth camera animation
 fn ease_out_cubic(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::BackendType;
+    use crate::config::AiMode;
+    use egui_kittest::Harness;
+    use std::path::PathBuf;
+
+    struct MapState {
+        sessions: SessionManager,
+        scene: AgentScene,
+        focus_queue: FocusQueue,
+    }
+
+    /// Two hosts: one with a three-worktree project and a flat one, the
+    /// other with a single project, so every level of the map shows.
+    fn sample_sessions() -> SessionManager {
+        let mut sm = SessionManager::new();
+        let mut add = |host: &str, root: &str, cwd: &str, title: &str| {
+            let id = sm.new_session(PathBuf::from(cwd), AiMode::Agentic, BackendType::Claude);
+            let s = sm.get_mut(id).expect("session");
+            s.details.hostname = host.to_string();
+            s.details.title = title.to_string();
+            s.details.project_root = Some(PathBuf::from(root));
+            s.details.project_slug = Some(root.rsplit('/').next().unwrap().to_string());
+        };
+        let nd = "/home/dev/notedeck";
+        add("monad", nd, nd, "Fix streaming");
+        add("monad", nd, "/home/dev/notedeck-scene", "Scene layout");
+        add("monad", nd, "/home/dev/notedeck-scene", "Territories");
+        add("monad", nd, "/home/dev/notedeck-scene", "Edges");
+        add("monad", nd, "/home/dev/notedeck-dave", "Inspector");
+        add("monad", "/home/dev/damus", "/home/dev/damus", "Damus build");
+        add("hydra", "/u/hydra", "/u/hydra", "Billing");
+        add("hydra", "/u/hydra", "/u/hydra", "Quota");
+        sm.rebuild_groups();
+        sm
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_scene_map_layout() {
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(640.0, 520.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(
+                |ui, state: &mut MapState| {
+                    state
+                        .scene
+                        .ui(&state.sessions, &state.focus_queue, ui, false);
+                },
+                MapState {
+                    sessions: sample_sessions(),
+                    scene: AgentScene::new(),
+                    focus_queue: FocusQueue::new(),
+                },
+            );
+        harness.run();
+        harness.snapshot("scene_map_layout");
+    }
 }

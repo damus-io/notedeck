@@ -27,6 +27,7 @@ pub mod reference;
 pub mod render;
 mod restore;
 mod run_configs;
+pub mod scene_layout;
 pub mod session;
 pub mod session_cache;
 mod session_commands;
@@ -913,9 +914,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 session.focus_requested = true;
                 if self.show_scene {
                     self.scene.select(id);
-                    if let Some(agentic) = &session.agentic {
-                        self.scene.focus_on(agentic.scene_position.into());
-                    }
+                    self.scene.focus_session(id);
                 }
             }
             self.session_manager.rebuild_groups();

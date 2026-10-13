@@ -814,10 +814,8 @@ impl Dave {
                 // Initialize agentic data if absent (e.g. upgraded placeholder)
                 // so the shared hydrator has something to populate.
                 if session.agentic.is_none() {
-                    session.agentic = Some(session::AgenticSessionData::new(
-                        dave_sid,
-                        PathBuf::from(&state.cwd),
-                    ));
+                    session.agentic =
+                        Some(session::AgenticSessionData::new(PathBuf::from(&state.cwd)));
                 }
 
                 if !loaded.messages.is_empty() {

@@ -675,7 +675,7 @@ pub enum InputFocus {
 
 /// Switch to a session and optionally focus it in the scene.
 ///
-/// Handles the common pattern of: switch_to → scene.select → scene.focus_on → focus_requested.
+/// Handles the common pattern of: switch_to → scene.select → scene.focus_session → focus_requested.
 /// Used by navigation, focus queue, and auto-steal-focus operations.
 pub fn switch_and_focus_session(
     session_manager: &mut SessionManager,
@@ -697,11 +697,7 @@ pub fn switch_session(
     session_manager.switch_to(id);
     if show_scene {
         scene.select(id);
-        if let Some(session) = session_manager.get(id) {
-            if let Some(agentic) = &session.agentic {
-                scene.focus_on(agentic.scene_position.into());
-            }
-        }
+        scene.focus_session(id);
     }
     if focus == InputFocus::Request {
         request_input_focus(session_manager, id);
@@ -1458,9 +1454,7 @@ pub fn create_session_with_cwd(
         session.focus_requested = true;
         if show_scene {
             scene.select(id);
-            if let Some(agentic) = &session.agentic {
-                scene.focus_on(agentic.scene_position.into());
-            }
+            scene.focus_session(id);
         }
         // Remote clients reach this session's live conversation events through
         // the shared per-account subscription; nothing per-session to wire up.
@@ -1492,9 +1486,7 @@ pub fn create_resumed_session_with_cwd(
         session.focus_requested = true;
         if show_scene {
             scene.select(id);
-            if let Some(agentic) = &session.agentic {
-                scene.focus_on(agentic.scene_position.into());
-            }
+            scene.focus_session(id);
         }
     }
     session_manager.rebuild_groups();

@@ -1,6 +1,6 @@
 use agentium_core::session_events::SessionRelation;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -244,10 +244,6 @@ pub use agentium_core::session::PermissionTracker;
 pub struct AgenticSessionData {
     /// Permission state (pending channels, note IDs, responded set)
     pub permissions: PermissionTracker,
-    /// Position in the RTS scene, as plain `(x, y)` scene coordinates.
-    /// Kept egui-free so `AgenticSessionData` stays platform-neutral; the UI
-    /// converts to/from `egui::Vec2` at the rendering boundary.
-    pub scene_position: (f32, f32),
     /// Permission mode for Claude (Default or Plan)
     pub permission_mode: PermissionMode,
     /// State for permission response message (tentative accept/deny)
@@ -379,18 +375,11 @@ impl std::fmt::Display for RuntimeAllow {
 }
 
 impl AgenticSessionData {
-    pub fn new(id: SessionId, cwd: PathBuf) -> Self {
-        // Arrange sessions in a grid pattern
-        let col = (id as i32 - 1) % 4;
-        let row = (id as i32 - 1) / 4;
-        let x = col as f32 * 150.0 - 225.0; // Center around origin
-        let y = row as f32 * 150.0 - 75.0;
-
+    pub fn new(cwd: PathBuf) -> Self {
         let git_status = GitStatusCache::new(cwd.clone());
 
         AgenticSessionData {
             permissions: PermissionTracker::new(),
-            scene_position: (x, y),
             permission_mode: PermissionMode::Auto,
             permission_message_state: PermissionMessageState::None,
             question_answers: HashMap::new(),
@@ -724,7 +713,7 @@ impl ChatSession {
         // Chat sessions have no cwd and no project.
         let project = (ai_mode == AiMode::Agentic).then(|| crate::worktree::project_for(&cwd));
         let agentic = match ai_mode {
-            AiMode::Agentic => Some(AgenticSessionData::new(id, cwd)),
+            AiMode::Agentic => Some(AgenticSessionData::new(cwd)),
             AiMode::Chat => None,
         };
 
@@ -1007,6 +996,31 @@ impl ChatSession {
     /// Get the working directory (agentic only)
     pub fn cwd(&self) -> Option<&PathBuf> {
         self.agentic.as_ref().map(|a| &a.cwd)
+    }
+
+    /// Where the session runs: host, project and worktree, as the session
+    /// list groups it and the scene map places it.
+    pub fn workspace(&self) -> Workspace<'_> {
+        let cwd = self
+            .cwd()
+            .or(self.details.cwd.as_ref())
+            .map_or(Path::new(""), PathBuf::as_path);
+        // Old events and non-git cwds have no project, so the cwd stands in
+        // as a single-workspace project.
+        let project_root = self.details.project_root.as_deref().unwrap_or(cwd);
+        Workspace {
+            host: &self.details.hostname,
+            project_root,
+            cwd,
+        }
+    }
+
+    /// The project's display slug: its persisted slug, or the root's name.
+    pub fn project_slug(&self) -> std::borrow::Cow<'_, str> {
+        match &self.details.project_slug {
+            Some(slug) => slug.into(),
+            None => project_slug_from_root(self.workspace().project_root).into(),
+        }
     }
 
     /// Chat positions of the rows the current turn comes back to (see
@@ -1363,6 +1377,16 @@ pub struct SessionManager {
     /// Each session's `agentium:` ref, to find the session a
     /// `parent-session` names when regrouping.
     session_refs: lineage::SessionRefs,
+}
+
+/// Where a session runs (see [`ChatSession::workspace`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Workspace<'a> {
+    /// Empty for this machine.
+    pub host: &'a str,
+    /// The git repo root shared by the project's worktrees, or the cwd.
+    pub project_root: &'a Path,
+    pub cwd: &'a Path,
 }
 
 /// A group of sessions under a single hostname.
@@ -1945,23 +1969,13 @@ impl SessionManager {
                 continue;
             }
 
-            let hostname = session.details.hostname.clone();
-            let cwd = session.cwd().or(session.details.cwd.as_ref());
-            let raw_cwd = cwd.cloned().unwrap_or_default();
-
             // Project identity: the persisted/computed repo root groups all
-            // worktrees together. Old events / non-git cwds have no project,
-            // so fall back to the cwd itself as a single-workspace project.
-            let project_root = session
-                .details
-                .project_root
-                .clone()
-                .unwrap_or_else(|| raw_cwd.clone());
-            let project_slug = session
-                .details
-                .project_slug
-                .clone()
-                .unwrap_or_else(|| project_slug_from_root(&project_root));
+            // worktrees together.
+            let workspace = session.workspace();
+            let hostname = workspace.host.to_owned();
+            let raw_cwd = workspace.cwd.to_path_buf();
+            let project_root = workspace.project_root.to_path_buf();
+            let project_slug = session.project_slug().into_owned();
 
             // Find or create host group
             let host_group = if let Some(hg) = self
@@ -2401,6 +2415,28 @@ impl ChatSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The scene map repacks when a session joins or moves, never when one
+    /// only changes status or title.
+    #[test]
+    fn scene_membership_ignores_status_and_title() {
+        use crate::scene_layout::membership;
+        let mut mgr = SessionManager::new();
+        let id = mgr.new_session(PathBuf::from("/r/a"), AiMode::Agentic, BackendType::Claude);
+        let m0 = membership(&mgr);
+
+        let session = mgr.get_mut(id).unwrap();
+        session.cached_status = AgentStatus::Working;
+        session.details.title = "renamed".to_string();
+        assert_eq!(membership(&mgr), m0);
+
+        mgr.get_mut(id).unwrap().details.hostname = "hydra".to_string();
+        let m1 = membership(&mgr);
+        assert_ne!(m1, m0);
+
+        mgr.new_session(PathBuf::from("/r/b"), AiMode::Agentic, BackendType::Claude);
+        assert_ne!(membership(&mgr), m1);
+    }
     use crate::backend::BackendType;
     use crate::collapse_state::CollapseState;
     use crate::config::AiMode;
@@ -2425,7 +2461,7 @@ mod tests {
 
     #[test]
     fn runtime_allowlist_grants_persist_per_session() {
-        let mut agentic = AgenticSessionData::new(1, PathBuf::from("/tmp"));
+        let mut agentic = AgenticSessionData::new(PathBuf::from("/tmp"));
 
         // Off: a command not on the allowlist is not auto-accepted.
         let ls = serde_json::json!({ "command": "ls -la" });
@@ -2444,7 +2480,7 @@ mod tests {
     /// leaves the other grants alone.
     #[test]
     fn revoked_runtime_allow_prompts_again() {
-        let mut agentic = AgenticSessionData::new(1, PathBuf::from("/tmp"));
+        let mut agentic = AgenticSessionData::new(PathBuf::from("/tmp"));
         let git = serde_json::json!({ "command": "git status" });
         let edit = serde_json::json!({ "file_path": "/tmp/a" });
 
@@ -2463,7 +2499,7 @@ mod tests {
     /// A tool grant and a Bash binary of the same name are different rules.
     #[test]
     fn tool_grant_does_not_cover_a_bash_binary_of_its_name() {
-        let mut agentic = AgenticSessionData::new(1, PathBuf::from("/tmp"));
+        let mut agentic = AgenticSessionData::new(PathBuf::from("/tmp"));
         agentic.add_runtime_allow("Read", &serde_json::json!({ "file_path": "/a" }));
         assert!(!agentic.should_runtime_allow("Bash", &serde_json::json!({ "command": "Read x" })));
         assert!(agentic.should_runtime_allow("Read", &serde_json::json!({ "file_path": "/b" })));
@@ -2471,7 +2507,7 @@ mod tests {
 
     #[test]
     fn decision_tools_never_auto_accepted() {
-        let mut agentic = AgenticSessionData::new(1, PathBuf::from("/tmp"));
+        let mut agentic = AgenticSessionData::new(PathBuf::from("/tmp"));
 
         let question = serde_json::json!({
             "questions": [{
