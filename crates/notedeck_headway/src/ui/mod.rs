@@ -48,8 +48,8 @@ pub use inline::{ChipStatus, board_inline_ui, card_chip_ui, card_inline_ui, issu
 pub(crate) use card_actions::{CardStep, DetailScroll, DetailSpot, reason_field_id};
 pub(crate) use filter::{ViewFilter, filter_field_id, parse_board_filter};
 pub(crate) use list::{
-    DisplaySwitch, GroupStep, ListCursor, ListFold, ListLayout, ListState, OrderDir, Pick, TabPick,
-    list_field_id, list_view_ui,
+    DisplaySwitch, GroupStep, ListCursor, ListFold, ListLayout, ListScope, ListState, OrderDir,
+    Pick, TabPick, list_field_id, list_view_ui,
 };
 #[cfg(test)]
 pub(crate) use review_comments::DraftComment;
@@ -1235,7 +1235,7 @@ fn board_pane_ui(
                         filter_archived_jump(state);
                     }
                     ui.add_space(SPACING_SM);
-                    view_options_menu(ui, theme, state);
+                    view_options_menu(ui, theme, view, state);
                 });
             });
             ui.add_space(SPACING_SM);

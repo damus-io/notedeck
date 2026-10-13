@@ -4,7 +4,7 @@
 use notedeck::ColorTheme;
 use notedeck::tokens::{RADIUS_PILL, SPACING_SM, SPACING_XS, STROKE_THIN};
 
-use super::{BoardEffect, BoardNav, BoardUiState, InlineEdit};
+use super::{BoardEffect, BoardNav, BoardUiState, InlineEdit, ListScope};
 use crate::BoardSummary;
 use crate::event::{self, BoardView};
 
@@ -154,7 +154,12 @@ pub(super) fn filtered_badge(
 /// lone checkbox, so further view options (grouping, ordering, hidden columns)
 /// can slot in beside it. Mutates [`BoardUiState::hide_subissues`] directly and
 /// stays open on toggle so several options can be flipped in one visit.
-pub(super) fn view_options_menu(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiState) {
+pub(super) fn view_options_menu(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    view: &BoardView,
+    state: &mut BoardUiState,
+) {
     // Tint the trigger when an option is active, so the menu itself signals that
     // the grid is being narrowed even before it's opened. It wears the same warm
     // `warning` hue as the [`filtered_badge`] pill — the two are the same signal
@@ -165,13 +170,14 @@ pub(super) fn view_options_menu(ui: &mut egui::Ui, theme: &ColorTheme, state: &m
         egui::RichText::new("☰ View").color(theme.text_secondary)
     };
     let menu = ui.menu_button(label, |ui| {
-        // The other way to see the cards: every board's, as one list.
+        // The other way to see the cards: this board's, as one list, a chip
+        // away from every board's.
         if ui
             .button("Issue list")
-            .on_hover_text("Every board's cards as one filterable list (g i)")
+            .on_hover_text("This board's cards as one filterable list (g i)")
             .clicked()
         {
-            state.open_list();
+            state.open_list(ListScope::of(view));
             ui.close();
         }
         ui.separator();

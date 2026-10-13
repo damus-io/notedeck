@@ -1,6 +1,9 @@
 //! The issue list: every board's cards as one filterable list, one row per
 //! card — the Linear-style lens across issues that the board grid, being one
 //! board at a time, can't be (headway:headway/acoustic-canvas-diesel).
+//! Opened from a board's grid it starts scoped to that board, as Linear's
+//! team view is, and the header's chip widens it to every board
+//! ([`ListScope`], headway:headway/arm-monster-liquid).
 //!
 //! It reads the same query language as the grid's filter and `headway list`
 //! ([`headway::query::IssueFilter`], unscoped, so a pasted ref names exactly
@@ -82,6 +85,10 @@ pub(crate) struct ListState {
     hide_subissues: bool,
     /// The board slug the tab's view is scoped to; `None` lists every board.
     board_scope: Option<String>,
+    /// Which boards the list reads: the one it was opened from, or every
+    /// board, picked from the header's scope chip. Not part of a saved view,
+    /// so a view applies to whichever scope is showing.
+    scope: ListScope,
     /// The account's saved views, in slug order: the tabs after the
     /// built-ins. Loaded by the app on an account switch
     /// ([`BoardUiState::set_saved_views`]) and kept in step with the edits
@@ -142,6 +149,7 @@ impl Default for ListState {
             base: BuiltinView::Active.query().to_string(),
             hide_subissues: false,
             board_scope: None,
+            scope: ListScope::All,
             saved: Vec::new(),
             naming: None,
             cursor: None,
@@ -161,6 +169,32 @@ impl Default for ListState {
             collapsed: std::collections::HashSet::new(),
             entries: Vec::new(),
             compose: None,
+        }
+    }
+}
+
+/// Which boards the issue list reads (headway:headway/arm-monster-liquid).
+/// Opened from a board's grid it starts as that board's, the way Linear's
+/// team view does; the header's chip widens it to every board.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ListScope {
+    /// Only this board's cards.
+    Board(event::BoardCoord),
+    /// Every board the switcher lists.
+    All,
+}
+
+impl ListScope {
+    /// Scoped to `view`, the board showing.
+    pub(crate) fn of(view: &BoardView) -> ListScope {
+        ListScope::Board(event::BoardCoord::new(view.author, view.id.clone()))
+    }
+
+    /// Whether the list reads `board` under this scope.
+    fn keeps(&self, board: &BoardView) -> bool {
+        match self {
+            ListScope::Board(coord) => coord.owner == board.author && coord.slug == board.id,
+            ListScope::All => true,
         }
     }
 }
@@ -529,6 +563,8 @@ struct ListInputs {
     hide_subissues: bool,
     /// The tab's board scope.
     board_scope: Option<String>,
+    /// The list's scope.
+    scope: ListScope,
     /// The grouping.
     grouping: Grouping,
     /// The ordering.
@@ -626,6 +662,7 @@ impl ListState {
         seen.hide_subissues != self.hide_subissues
             || seen.base != self.base
             || seen.board_scope != self.board_scope
+            || seen.scope != self.scope
             || seen.grouping != self.grouping
             || seen.sorting != self.sorting
             || seen.query != self.query
@@ -651,7 +688,8 @@ impl ListState {
             sorting: self.sorting,
             ..ListQuery::default()
         };
-        let positions = headway::query::list_positions(sources.iter().map(|b| &**b), &query);
+        let mut positions = headway::query::list_positions(sources.iter().map(|b| &**b), &query);
+        positions.retain(|pos| self.scope.keeps(&sources[pos.board]));
         // The kept rows as `headway::query` reads them, index for index with
         // `self.rows`, to mark and group.
         let kept: Vec<ListRow> = positions
@@ -684,6 +722,7 @@ impl ListState {
             base: self.base.clone(),
             hide_subissues: self.hide_subissues,
             board_scope: self.board_scope.clone(),
+            scope: self.scope.clone(),
             grouping: self.grouping,
             sorting: self.sorting,
         });
@@ -1306,8 +1345,10 @@ impl ListState {
 }
 
 impl BoardUiState {
-    /// Open the issue list over the grid.
-    pub(crate) fn open_list(&mut self) {
+    /// Open the issue list over the grid, reading `scope`'s boards: the
+    /// grid's entry points pass the board showing ([`ListScope::of`]).
+    pub(crate) fn open_list(&mut self, scope: ListScope) {
+        self.list.scope = scope;
         self.list.set_open(true);
     }
 
@@ -1433,7 +1474,7 @@ pub(crate) fn list_view_ui(
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
-            list_header_ui(ui, theme, state);
+            list_header_ui(ui, theme, sources, state);
             action = compose_ui(ui, theme, view, &mut state.list);
             // A query edited this frame narrows the rows this frame.
             state.list.refresh(sources);
@@ -1705,10 +1746,16 @@ fn compose_ui(
     Some(action)
 }
 
-/// The list's header: a way back to the board, the count, the view tabs and
-/// their Save, the Display menu and the query field. A tab edit is raised for
-/// the app to persist ([`BoardEffect::View`]).
-fn list_header_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiState) {
+/// The list's header: a way back to the board, the scope chip over
+/// `sources`, the count, the view tabs and their Save, the Display menu and
+/// the query field. A tab edit is raised for the app to persist
+/// ([`BoardEffect::View`]).
+fn list_header_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    sources: &[BoardRef],
+    state: &mut BoardUiState,
+) {
     let list = &mut state.list;
     let mut close = false;
     let mut menu_open = false;
@@ -1722,6 +1769,8 @@ fn list_header_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiStat
         ui.add_space(SPACING_SM);
         ui.heading("Issues");
         ui.add_space(SPACING_SM);
+        menu_open |= scope_chip_ui(ui, theme, sources, &mut list.scope);
+        ui.add_space(SPACING_SM);
         let n = list.rows.len();
         let count = list.count.text(n, |text, n| {
             use std::fmt::Write;
@@ -1731,7 +1780,7 @@ fn list_header_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiStat
         ui.add_space(SPACING_MD);
         edit = view_tabs_ui(ui, theme, list);
         ui.add_space(SPACING_SM);
-        menu_open = display_menu_ui(
+        menu_open |= display_menu_ui(
             ui,
             theme,
             DisplayMenu {
@@ -1757,6 +1806,40 @@ fn list_header_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiStat
     if close {
         state.close_list();
     }
+}
+
+/// The scope chip: the board the list reads, or "All boards", and a menu
+/// that picks either. Returns whether the menu is open this frame.
+fn scope_chip_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    sources: &[BoardRef],
+    scope: &mut ListScope,
+) -> bool {
+    let name = match &*scope {
+        ListScope::All => "All boards",
+        ListScope::Board(coord) => sources
+            .iter()
+            .find(|b| scope.keeps(b))
+            .map_or(coord.slug.as_str(), |b| b.title.as_str()),
+    };
+    let label = egui::RichText::new(format!("{name} ▾")).color(theme.text_secondary);
+    let (_, open) = egui::containers::menu::MenuButton::new(label).ui(ui, |ui| {
+        if ui
+            .selectable_label(*scope == ListScope::All, "All boards")
+            .clicked()
+        {
+            *scope = ListScope::All;
+        }
+        ui.separator();
+        for board in sources {
+            let on = matches!(scope, ListScope::Board(_)) && scope.keeps(board);
+            if ui.selectable_label(on, &board.title).clicked() {
+                *scope = ListScope::of(board);
+            }
+        }
+    });
+    open.is_some()
 }
 
 /// The view tabs: the built-ins, then each saved view (right-click to rename

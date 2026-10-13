@@ -1336,7 +1336,7 @@ mod tests {
         state.set_selected(None);
         state.set_cursor(id(5));
         pass(&mut state);
-        state.open_list();
+        state.open_list(crate::ui::ListScope::All);
         pass(&mut state);
         assert!(!available(&state, OPEN_PARENT), "the issue list");
     }

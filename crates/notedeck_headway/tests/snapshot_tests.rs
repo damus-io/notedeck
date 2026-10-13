@@ -545,6 +545,18 @@ const DEMO_CARDS: usize = 7;
 /// card counts against.
 const DEMO_COLUMNS: usize = 5;
 
+/// Open the issue list from the demo board with `g i`, then widen it from
+/// that board to every board with the header's scope chip
+/// (headway:headway/arm-monster-liquid), for a test about rows across boards.
+fn open_list_all_boards(harness: &mut Harness<'static, HeadwayTestState>) {
+    press_board_keys(harness, &[egui::Key::G, egui::Key::I]);
+    wait_for_label(harness, "Headway ▾");
+    harness.get_by_label("Headway ▾").click();
+    wait_for_label(harness, "All boards");
+    harness.get_by_label("All boards").click();
+    wait_for_label(harness, "All boards ▾");
+}
+
 /// Pump frames (with small sleeps, since ndb ingest is async) until a widget
 /// with `label` appears, or panic after a deadline.
 fn wait_for_label(harness: &mut Harness<'static, HeadwayTestState>, label: &str) {
@@ -1170,11 +1182,13 @@ fn seed_side_board(harness: &mut Harness<'static, HeadwayTestState>) {
 }
 
 /// The issue list (headway:headway/match-belt-quit): `g i` opens it from the
-/// grid as one global-nav entry, it lists open cards from every board, All
-/// adds the done ones, a query narrows it live, and a row on another board
-/// opens that card's detail there, with the list still beneath it.
-/// ("All" is the All issues tab now, headway:headway/brave-project-parade.)
-/// Behavioural (accesskit only), so it runs without lavapipe.
+/// grid as one global-nav entry, it lists the open cards of the board it was
+/// opened from until its scope chip widens it to every board
+/// (headway:headway/arm-monster-liquid), All adds the done ones, a query
+/// narrows it live, and a row on another board opens that card's detail
+/// there, with the list still beneath it. ("All" is the All issues tab now,
+/// headway:headway/brave-project-parade.) `g i` from that other board then
+/// lists only its card. Behavioural (accesskit only), so it runs without lavapipe.
 #[test]
 fn issue_list_spans_boards_filters_and_opens_cards() {
     use notedeck::NavRequest;
@@ -1209,10 +1223,23 @@ fn issue_list_spans_boards_filters_and_opens_cards() {
         .collect();
     assert_eq!(pushed, vec![true], "opening the list pushes one List entry");
 
-    // Active: both boards' open cards, not the demo board's done one.
+    // Scoped to the demo board it was opened from: its open cards only.
+    wait_for_label(&mut harness, "Headway ▾");
+    harness.get_by_label("Define nostr event model for boards");
+    harness.get_by_label("6 issues");
+    assert!(
+        harness.query_by_label(SIDE_CARD).is_none(),
+        "the Side board's card shows in the demo board's list"
+    );
+
+    // All boards, from the chip: both boards' open cards.
+    harness.get_by_label("Headway ▾").click();
+    wait_for_label(&mut harness, "All boards");
+    harness.get_by_label("All boards").click();
     wait_for_label(&mut harness, SIDE_CARD);
     harness.get_by_label("Define nostr event model for boards");
     harness.get_by_label("7 issues");
+    harness.get_by_label("All boards ▾");
     assert!(
         harness
             .query_by_label("Scaffold the Headway app crate")
@@ -1253,6 +1280,21 @@ fn issue_list_spans_boards_filters_and_opens_cards() {
     harness.press_key(egui::Key::Escape);
     wait_for_absent(&mut harness, "Issues");
     wait_for_label(&mut harness, "1 card · 5 columns");
+
+    // `g i` from the Side board scopes the list to it, though the list was
+    // left reading every board. The Active tab clears the `label:quest`
+    // query, so only the scope keeps the demo board's cards out.
+    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
+    wait_for_label(&mut harness, "Side ▾");
+    harness.get_by_label("Active").click();
+    wait_for_label(&mut harness, SIDE_CARD);
+    harness.get_by_label("1 issue");
+    assert!(
+        harness
+            .query_by_label("Define nostr event model for boards")
+            .is_none(),
+        "a demo board card shows in the Side board's list"
+    );
 }
 
 /// A card key on a list row acts on the row's board, not the one showing
@@ -1265,7 +1307,7 @@ fn issue_list_spans_boards_filters_and_opens_cards() {
 fn issue_list_card_keys_act_on_another_boards_row() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1000.0));
     seed_side_board(&mut harness);
-    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
+    open_list_all_boards(&mut harness);
     wait_for_label(&mut harness, SIDE_CARD);
     harness.get_by_label("7 issues");
 
@@ -1302,7 +1344,7 @@ fn issue_list_display_menu_toggles_a_property() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
     seed_side_board(&mut harness);
 
-    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
+    open_list_all_boards(&mut harness);
     wait_for_label(&mut harness, SIDE_CARD);
     harness.get_by_label("quest");
 
@@ -1329,7 +1371,7 @@ fn issue_list_view_tabs_switch_and_save() {
     seed_side_board(&mut harness);
     let author = harness.state_mut().account.pubkey;
 
-    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
+    open_list_all_boards(&mut harness);
     wait_for_label(&mut harness, SIDE_CARD);
     harness.get_by_label("7 issues");
 
@@ -1432,7 +1474,7 @@ fn issue_list_groups_rows_folds_and_adds_to_a_group() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1000.0));
     seed_side_board(&mut harness);
 
-    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
+    open_list_all_boards(&mut harness);
     wait_for_label(&mut harness, SIDE_CARD);
     // Grouped by status: the side board's Todo and the demo board's are one
     // group, and the rows drop the status circle the header already says.
@@ -1523,7 +1565,7 @@ fn issue_list_groups_rows_folds_and_adds_to_a_group() {
 fn issue_list_fold_keys_fold_groups_and_skip_their_rows() {
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1000.0));
     seed_side_board(&mut harness);
-    press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
+    open_list_all_boards(&mut harness);
     wait_for_label(&mut harness, SIDE_CARD);
     let headers = group_headers(&harness);
     assert!(headers.len() >= 2, "{headers:?}");
@@ -1877,13 +1919,36 @@ fn snapshot_headway_list() {
     harness.snapshot("headway_list");
 }
 
-/// Open the issue list from the View menu and wait for the side board's card,
-/// so both boards' rows have folded in.
+/// Open the issue list from the View menu, widen it to every board with the
+/// scope chip, and wait for the side board's card, so both boards' rows have
+/// folded in.
 fn open_issue_list(harness: &mut Harness<'static, HeadwayTestState>) {
     harness.get_by_label("☰ View").click();
     harness.run_ok();
     harness.get_by_label("Issue list").click();
+    wait_for_label(harness, "Headway ▾");
+    harness.get_by_label("Headway ▾").click();
+    wait_for_label(harness, "All boards");
+    harness.get_by_label("All boards").click();
     wait_for_label(harness, SIDE_CARD);
+}
+
+/// The issue list opened from the demo board, scoped to it
+/// (headway:headway/arm-monster-liquid): the header's chip names the board,
+/// and its menu, open here, offers "All boards" and then each board.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_list_scope() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_side_board(&mut harness);
+    harness.get_by_label("☰ View").click();
+    harness.run_ok();
+    harness.get_by_label("Issue list").click();
+    wait_for_label(&mut harness, "6 issues");
+    harness.get_by_label("Headway ▾").click();
+    wait_for_label(&mut harness, "All boards");
+    harness.run_steps(3);
+    harness.snapshot("headway_list_scope");
 }
 
 /// The issue list's Display menu open over the list

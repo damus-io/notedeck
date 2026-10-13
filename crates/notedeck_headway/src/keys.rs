@@ -44,9 +44,9 @@ use crate::cursor::{self, CursorMove};
 use crate::event::BoardView;
 use crate::store::BoardAction;
 use crate::ui::{
-    BoardEffect, BoardNav, BoardUiState, CardStep, DetailScroll, QueueNotice, QueueScope,
-    SessionOpen, ViewFilter, filter_field_id, find_card, find_detail_card, list_field_id,
-    reason_field_id, step_board,
+    BoardEffect, BoardNav, BoardUiState, CardStep, DetailScroll, ListScope, QueueNotice,
+    QueueScope, SessionOpen, ViewFilter, filter_field_id, find_card, find_detail_card,
+    list_field_id, reason_field_id, step_board,
 };
 use crate::ui_tools::HeadwayUiTool;
 
@@ -216,7 +216,7 @@ pub(crate) fn apply_grid_tool(
         HeadwayUiTool::ReviewQueue => {
             state.open_review_queue(view, QueueScope::Board, ctx.input(|i| i.time))
         }
-        HeadwayUiTool::OpenList => state.open_list(),
+        HeadwayUiTool::OpenList => state.open_list(ListScope::of(view)),
         HeadwayUiTool::StepBoard(step) => {
             if let Some(to) = step_board(view, boards, *step) {
                 state.raise(BoardEffect::Nav(BoardNav::Switch(to)));
@@ -1956,7 +1956,7 @@ mod tests {
                     .expect("the board")
             })
             .collect();
-        h.state.open_list();
+        h.state.open_list(crate::ui::ListScope::All);
         harness.run();
         harness.get_by_label("All issues").click();
         harness.run();
