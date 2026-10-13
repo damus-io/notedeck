@@ -2431,6 +2431,41 @@ mod tests {
         assert_eq!(harness.query_all_by_label("Ask").count(), 1);
     }
 
+    /// The scene view with a session selected: the map on the left, and on
+    /// the right the session list's session view — header, `Chat | Details`
+    /// tabs, the chat and its input, and the task panel.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_scene_view() {
+        use crate::messages::{AssistantMessage, UserMessage};
+
+        let mut view = session_view_state();
+        seed_tasks(&mut view);
+        let mut reply = AssistantMessage::new();
+        reply.push_token("The Tasks card is drawn; snapshotting it next.");
+        let session = view.session_manager.get_active_mut().unwrap();
+        session.chat.extend([
+            crate::Message::User(UserMessage::new("Draw the Tasks card", Vec::new())),
+            crate::Message::Assistant(reply),
+        ]);
+        let mut scene = super::AgentScene::new();
+        scene.select(view.session_manager.active_id().unwrap());
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(1600.0, 900.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(
+                render_scene_view,
+                SceneViewState {
+                    view,
+                    scene,
+                    scene_layout: Default::default(),
+                    focus_queue: FocusQueue::new(),
+                },
+            );
+        harness.run_ok();
+        harness.snapshot("scene_view");
+    }
+
     /// Give the active session what a Claude CLI's init would: a model, two
     /// MCP servers (one failed), tools, skills, a plugin that loaded and one
     /// that didn't. Parked on two background tasks with its CLI stopped, so
