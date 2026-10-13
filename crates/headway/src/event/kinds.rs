@@ -74,10 +74,15 @@ pub const KIND_BLOCKERS: u32 = 30624;
 /// point at cards on other boards. See `headway:headway/obscure-demand-actor`.
 pub const KIND_RELATED: u32 = 30625;
 
-/// Headway saved list view: addressable, `d` = the view's slug, content = the
-/// view's [`ViewSpec`](crate::query::ViewSpec) as JSON, or empty for a deleted
-/// view (a tombstone, superseded latest-wins like any other revision). Personal
-/// like [`KIND_BOARD_PREF`]: one account's, written PNS-wrapped
+/// Headway saved list view: addressable, `d` = the view's slug, the view's
+/// [`ViewSpec`](crate::query::ViewSpec) as tags — `["name", ..]`, `["q",
+/// query]`, `["group", by]`, `["subgroup", by]`, `["empty"]`, `["sort", by]`,
+/// `["desc"]`, `["completed-by-recency"]`, `["show", prop...]`,
+/// `["hide-subissues"]`, `["board", slug]` — and empty content. A deleted view
+/// is a tombstone, a bare `["deleted"]` with no other tags, superseded
+/// latest-wins like any other revision. See
+/// [`build_view`](super::build_view) and [`parse_view`](super::parse_view).
+/// Personal like [`KIND_BOARD_PREF`]: one account's, written PNS-wrapped
 /// ([`crate::views::save_view`]) and kept out of [`HEADWAY_KINDS`], so the
 /// plaintext board sync never pushes it. See
 /// `headway:headway/brave-project-parade`.

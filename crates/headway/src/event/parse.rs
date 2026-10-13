@@ -10,6 +10,7 @@ use super::kinds::{
     KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW, KIND_SEQUENCE, NS_SUBJECT, NS_TAG,
 };
 use super::model::{BoardCoord, ColumnDef, Field, LineSide, ReviewFields, ReviewLocation};
+use crate::query::{DisplayProps, ViewSpec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoardEvent {
@@ -267,6 +268,68 @@ pub fn parse(note: &Note) -> Option<HeadwayEvent> {
         KIND_REVIEW => parse_review(note).map(HeadwayEvent::Review),
         _ => None,
     }
+}
+
+/// What one revision of a saved list view (kind 30626) holds: a live view's
+/// spec, or the tombstone a delete wrote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ViewRevision {
+    /// A live view.
+    Live(ViewSpec),
+    /// A deleted view (a `["deleted"]` tag): it shows nothing until a later
+    /// revision revives the slug.
+    Deleted,
+}
+
+/// Read a saved list view's tags (see [`build_view`](super::build_view)) back
+/// into its spec. A missing tag is that field's default — a missing `show`
+/// the default display set — and an unknown tag, grouping, ordering or
+/// property name is skipped, so a newer writer's view still loads.
+pub fn parse_view(note: &Note) -> ViewRevision {
+    let mut spec = ViewSpec::default();
+    let mut show = None;
+
+    for tag in note.tags() {
+        let value = tag.get_str(1);
+        match tag.get_str(0) {
+            Some("deleted") => return ViewRevision::Deleted,
+            Some("name") => spec.name = value.unwrap_or_default().to_owned(),
+            Some("q") => spec.query = value.unwrap_or_default().to_owned(),
+            Some("group") => {
+                if let Some(by) = value.and_then(|v| v.parse().ok()) {
+                    spec.grouping.by = by;
+                }
+            }
+            Some("subgroup") => {
+                if let Some(by) = value.and_then(|v| v.parse().ok()) {
+                    spec.grouping.sub = by;
+                }
+            }
+            Some("empty") => spec.grouping.show_empty = true,
+            Some("sort") => {
+                if let Some(by) = value.and_then(|v| v.parse().ok()) {
+                    spec.sorting.by = by;
+                }
+            }
+            Some("desc") => spec.sorting.descending = true,
+            Some("completed-by-recency") => spec.sorting.completed_by_recency = true,
+            Some("show") => {
+                let mut set = DisplayProps::NONE;
+                for i in 1..tag.count() {
+                    if let Some(prop) = tag.get_str(i).and_then(|v| v.parse().ok()) {
+                        set.set(prop, true);
+                    }
+                }
+                show = Some(set);
+            }
+            Some("hide-subissues") => spec.hide_subissues = true,
+            Some("board") => spec.board = value.map(str::to_owned),
+            _ => {}
+        }
+    }
+
+    spec.display = show.unwrap_or_default();
+    ViewRevision::Live(spec)
 }
 
 fn parse_board(note: &Note) -> Option<BoardEvent> {
@@ -687,9 +750,10 @@ pub(crate) mod tests {
     use crate::event::build::{
         build_blockers, build_board, build_board_def, build_comment, build_cover_note, build_issue,
         build_labels, build_placement, build_related, build_relation, build_review,
-        build_review_comment, build_sequence, build_subject_edit,
+        build_review_comment, build_sequence, build_subject_edit, build_view, build_view_tombstone,
     };
     use crate::event::model::{LineRange, board_address};
+    use crate::query::{DisplayProp, GroupBy, Grouping, SortBy, Sorting};
 
     /// Sign `builder` with `kp` and parse the result back into a [`HeadwayEvent`].
     pub(crate) fn roundtrip(builder: NoteBuilder, kp: &FullKeypair) -> HeadwayEvent {
@@ -698,6 +762,166 @@ pub(crate) mod tests {
             .build()
             .expect("build note");
         parse(&note).expect("parse headway event")
+    }
+
+    /// A saved view as written: its tags, and what [`parse_view`] reads back.
+    struct ViewNote {
+        tags: Vec<Vec<String>>,
+        revision: ViewRevision,
+    }
+
+    /// Sign `builder` and read it back as a saved view.
+    fn view_note(builder: NoteBuilder) -> ViewNote {
+        let kp = FullKeypair::generate();
+        let note = builder
+            .sign(&kp.secret_key.secret_bytes())
+            .build()
+            .expect("build note");
+        assert_eq!(note.kind(), super::super::kinds::KIND_VIEW);
+        assert_eq!(note.content(), "");
+        let tags = note
+            .tags()
+            .iter()
+            .map(|tag| {
+                (0..tag.count())
+                    .map(|i| tag.get_str(i).unwrap_or_default().to_owned())
+                    .collect()
+            })
+            .collect();
+        ViewNote {
+            tags,
+            revision: parse_view(&note),
+        }
+    }
+
+    /// A view with every field off its default.
+    fn every_field_set() -> ViewSpec {
+        ViewSpec {
+            name: "Hot".to_string(),
+            query: "p:high label:ui".to_string(),
+            grouping: Grouping {
+                by: GroupBy::Label,
+                sub: GroupBy::Priority,
+                show_empty: true,
+            },
+            sorting: Sorting {
+                by: SortBy::WorkOrder,
+                descending: true,
+                completed_by_recency: true,
+            },
+            display: DisplayProps::of(&[DisplayProp::Id, DisplayProp::Board]),
+            hide_subissues: true,
+            board: Some("headway".to_string()),
+        }
+    }
+
+    /// Owned tags from string literals, for comparing against a note's.
+    fn tags(want: &[&[&str]]) -> Vec<Vec<String>> {
+        want.iter()
+            .map(|tag| tag.iter().map(|s| s.to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn view_every_field_round_trips_through_tags() {
+        let spec = every_field_set();
+        let view = view_note(build_view("hot", &spec));
+        assert_eq!(
+            view.tags,
+            tags(&[
+                &["d", "hot"],
+                &["name", "Hot"],
+                &["q", "p:high label:ui"],
+                &["group", "label"],
+                &["subgroup", "priority"],
+                &["empty"],
+                &["sort", "work-order"],
+                &["desc"],
+                &["completed-by-recency"],
+                &["show", "id", "board"],
+                &["hide-subissues"],
+                &["board", "headway"],
+            ])
+        );
+        assert_eq!(view.revision, ViewRevision::Live(spec));
+    }
+
+    /// The default spec writes only `d`, `name`, `q` and `show`; an empty
+    /// display set is still written, and reads back empty, not default.
+    #[test]
+    fn view_defaults_write_only_what_they_must() {
+        let default = view_note(build_view("all", &ViewSpec::default()));
+        let shown: Vec<&str> = DisplayProps::default().iter().map(|p| p.name()).collect();
+        let mut show = vec!["show"];
+        show.extend(shown);
+        assert_eq!(
+            default.tags,
+            tags(&[&["d", "all"], &["name", ""], &["q", ""], &show])
+        );
+        assert_eq!(default.revision, ViewRevision::Live(ViewSpec::default()));
+
+        let bare = ViewSpec {
+            display: DisplayProps::NONE,
+            ..ViewSpec::default()
+        };
+        let titles_only = view_note(build_view("bare", &bare));
+        assert_eq!(titles_only.tags[3], ["show"]);
+        assert_eq!(titles_only.revision, ViewRevision::Live(bare));
+    }
+
+    /// Unknown tags and names are skipped; a missing `show` is the default set.
+    #[test]
+    fn view_ignores_what_it_does_not_know() {
+        let builder = NoteBuilder::new()
+            .kind(super::super::kinds::KIND_VIEW)
+            .content("")
+            .start_tag()
+            .tag_str("d")
+            .tag_str("x")
+            .start_tag()
+            .tag_str("name")
+            .tag_str("X")
+            .start_tag()
+            .tag_str("group")
+            .tag_str("assignee")
+            .start_tag()
+            .tag_str("subgroup")
+            .tag_str("status")
+            .start_tag()
+            .tag_str("sort")
+            .tag_str("estimate")
+            .start_tag()
+            .tag_str("color")
+            .tag_str("red");
+        let view = view_note(builder);
+        let want = ViewSpec {
+            name: "X".to_string(),
+            grouping: Grouping {
+                sub: GroupBy::Status,
+                ..Grouping::default()
+            },
+            ..ViewSpec::default()
+        };
+        assert_eq!(view.revision, ViewRevision::Live(want));
+
+        let with_unknown_prop = NoteBuilder::new()
+            .kind(super::super::kinds::KIND_VIEW)
+            .content("")
+            .start_tag()
+            .tag_str("show")
+            .tag_str("assignee")
+            .tag_str("due");
+        let ViewRevision::Live(spec) = view_note(with_unknown_prop).revision else {
+            panic!("a live view");
+        };
+        assert_eq!(spec.display, DisplayProps::of(&[DisplayProp::Due]));
+    }
+
+    #[test]
+    fn view_tombstone_is_a_bare_deleted_tag() {
+        let tombstone = view_note(build_view_tombstone("hot"));
+        assert_eq!(tombstone.tags, tags(&[&["d", "hot"], &["deleted"]]));
+        assert_eq!(tombstone.revision, ViewRevision::Deleted);
     }
 
     pub(crate) fn note_id(kp: &FullKeypair, builder: NoteBuilder) -> NoteId {

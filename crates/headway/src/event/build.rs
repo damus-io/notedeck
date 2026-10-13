@@ -6,10 +6,12 @@ use nostrdb_net::{NoteId, Pubkey};
 
 use super::kinds::{
     KIND_BLOCKERS, KIND_BOARD, KIND_COMMENT, KIND_COVER_NOTE, KIND_ISSUE, KIND_LABEL,
-    KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW, KIND_SEQUENCE, NS_SUBJECT, NS_TAG,
+    KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW, KIND_SEQUENCE, KIND_VIEW, NS_SUBJECT,
+    NS_TAG,
 };
 use super::model::{COL_ARCHIVED, ColumnDef, Field, LineSide, ReviewFields, ReviewLocation};
 use super::parse::Container;
+use crate::query::{GroupBy, SortBy, ViewSpec};
 
 fn base<'a>(kind: u32, content: &'a str) -> NoteBuilder<'a> {
     NoteBuilder::new()
@@ -419,4 +421,74 @@ pub fn build_review_comment<'a>(
         b = b.tag_str("del");
     }
     b
+}
+
+/// Build a saved list view (kind 30626, [`KIND_VIEW`]): `d` = `slug`, the
+/// spec as tags, empty content. `name`, `q` and `show` are always written —
+/// `show` even with no properties, so an empty display set reads back apart
+/// from the default — and every other tag only off its default:
+/// `["group", by]`, `["subgroup", by]`, `["empty"]`, `["sort", by]`,
+/// `["desc"]`, `["completed-by-recency"]`, `["hide-subissues"]`,
+/// `["board", slug]`. Read back by [`parse_view`](super::parse_view).
+pub fn build_view<'a>(slug: &str, spec: &ViewSpec) -> NoteBuilder<'a> {
+    let mut b = base(KIND_VIEW, "")
+        .start_tag()
+        .tag_str("d")
+        .tag_str(slug)
+        .start_tag()
+        .tag_str("name")
+        .tag_str(&spec.name)
+        .start_tag()
+        .tag_str("q")
+        .tag_str(&spec.query);
+
+    let grouping = spec.grouping;
+    if grouping.by != GroupBy::None {
+        b = b.start_tag().tag_str("group").tag_str(grouping.by.name());
+    }
+    if grouping.sub != GroupBy::None {
+        b = b
+            .start_tag()
+            .tag_str("subgroup")
+            .tag_str(grouping.sub.name());
+    }
+    if grouping.show_empty {
+        b = b.start_tag().tag_str("empty");
+    }
+
+    let sorting = spec.sorting;
+    if sorting.by != SortBy::Manual {
+        b = b.start_tag().tag_str("sort").tag_str(sorting.by.name());
+    }
+    if sorting.descending {
+        b = b.start_tag().tag_str("desc");
+    }
+    if sorting.completed_by_recency {
+        b = b.start_tag().tag_str("completed-by-recency");
+    }
+
+    b = b.start_tag().tag_str("show");
+    for prop in spec.display.iter() {
+        b = b.tag_str(prop.name());
+    }
+
+    if spec.hide_subissues {
+        b = b.start_tag().tag_str("hide-subissues");
+    }
+    if let Some(board) = &spec.board {
+        b = b.start_tag().tag_str("board").tag_str(board);
+    }
+    b
+}
+
+/// Build a deleted saved view: `d` = `slug` and a bare `["deleted"]`, no
+/// other tags. It supersedes the view's last revision like any edit, and a
+/// later [`build_view`] under the same slug revives it.
+pub fn build_view_tombstone<'a>(slug: &str) -> NoteBuilder<'a> {
+    base(KIND_VIEW, "")
+        .start_tag()
+        .tag_str("d")
+        .tag_str(slug)
+        .start_tag()
+        .tag_str("deleted")
 }

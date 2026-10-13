@@ -4,13 +4,15 @@
 //! Personal, like the board preference ([`crate::store::save_board_pref`]):
 //! each view is a private latest-wins note ([`private_note`]), signed by the
 //! account key and PNS-wrapped, so only that account can read it. A deleted
-//! view is a tombstone — the slug republished with empty content — so a delete
-//! supersedes like any edit. See `headway:headway/brave-project-parade`.
+//! view is a tombstone — the slug republished with a bare `["deleted"]` tag —
+//! so a delete supersedes like any edit. The spec is stored as tags
+//! ([`event::build_view`]), like every other headway kind. See
+//! `headway:headway/brave-project-parade`.
 
 use nostrdb::{Ndb, Transaction};
 use nostrdb_net::Pubkey;
 
-use crate::event::KIND_VIEW;
+use crate::event::{self, KIND_VIEW, ViewRevision};
 use crate::query::ViewSpec;
 use crate::store::board_slug;
 
@@ -25,26 +27,22 @@ pub struct SavedView {
 }
 
 /// Every view `author` has saved and not deleted, in slug order: the newest
-/// revision of each slug ([`private_note::latest_per_d`]). A note whose content
-/// isn't a [`ViewSpec`] is skipped rather than failing the rest.
+/// revision of each slug ([`private_note::newest_per_d`]), its tags read back
+/// by [`event::parse_view`].
 pub fn load_views(ndb: &Ndb, author: &Pubkey) -> Vec<SavedView> {
     let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
     };
-    private_note::latest_per_d(ndb, &txn, author, KIND_VIEW)
+    private_note::newest_per_d(ndb, &txn, author, KIND_VIEW)
         .into_iter()
-        .filter_map(decode)
+        .filter_map(|slot| match event::parse_view(&slot.note) {
+            ViewRevision::Live(spec) => Some(SavedView {
+                slug: slot.d.to_owned(),
+                spec,
+            }),
+            ViewRevision::Deleted => None,
+        })
         .collect()
-}
-
-/// The live view a stored revision holds, or `None` for a tombstone or content
-/// that doesn't parse.
-fn decode(slot: private_note::SlotRevision) -> Option<SavedView> {
-    if slot.revision.content.is_empty() {
-        return None;
-    }
-    let spec = serde_json::from_str(&slot.revision.content).ok()?;
-    Some(SavedView { slug: slot.d, spec })
 }
 
 /// The view among `views` that `name` names: by its name, ignoring case, or
@@ -62,10 +60,10 @@ pub fn new_slug(views: &[SavedView], name: &str) -> String {
     board_slug(name, |s| views.iter().any(|v| v.slug == s))
 }
 
-/// Save `view` for `author`: its spec as JSON under its slug, signed with
-/// `secret`, PNS-wrapped and ingested, superseding any earlier revision of
-/// that slug (including a tombstone). Returns the stamp to pass as the next
-/// write's `after` (see [`write`]).
+/// Save `view` for `author`: its spec as tags under its slug
+/// ([`event::build_view`]), signed with `secret`, PNS-wrapped and ingested,
+/// superseding any earlier revision of that slug (including a tombstone).
+/// Returns the stamp to pass as the next write's `after` (see [`write`]).
 pub fn save_view(
     ndb: &Ndb,
     author: &Pubkey,
@@ -73,29 +71,35 @@ pub fn save_view(
     view: &SavedView,
     after: u64,
 ) -> u64 {
-    let Ok(content) = serde_json::to_string(&view.spec) else {
-        return after;
-    };
-    write(ndb, author, secret, &view.slug, &content, after)
+    let note = event::build_view(&view.slug, &view.spec);
+    write(ndb, author, secret, &view.slug, note, after)
 }
 
-/// Delete `author`'s view `slug`: a tombstone (empty content) that supersedes
-/// its last revision. Returns the stamp to pass as the next write's `after`.
+/// Delete `author`'s view `slug`: a tombstone ([`event::build_view_tombstone`])
+/// that supersedes its last revision. Returns the stamp to pass as the next
+/// write's `after`.
 pub fn delete_view(ndb: &Ndb, author: &Pubkey, secret: &[u8; 32], slug: &str, after: u64) -> u64 {
-    write(ndb, author, secret, slug, "", after)
+    write(
+        ndb,
+        author,
+        secret,
+        slug,
+        event::build_view_tombstone(slug),
+        after,
+    )
 }
 
-/// Write one revision of view `slug` with [`private_note::write`], stamped
-/// strictly past both its stored revision and `after`, the stamp of the
-/// caller's last view write: two quick edits made before the first is
-/// ingested would otherwise tie in the same second. Returns the new stamp,
-/// or `after` when nothing was stored.
-fn write(
+/// Write `note`, one revision of view `slug`, with
+/// [`private_note::write_note`], stamped strictly past both its stored
+/// revision and `after`, the stamp of the caller's last view write: two quick
+/// edits made before the first is ingested would otherwise tie in the same
+/// second. Returns the new stamp, or `after` when nothing was stored.
+fn write<'a>(
     ndb: &Ndb,
     author: &Pubkey,
-    secret: &[u8; 32],
+    secret: &'a [u8; 32],
     slug: &str,
-    content: &str,
+    note: nostrdb::NoteBuilder<'a>,
     after: u64,
 ) -> u64 {
     let slot = private_note::Slot {
@@ -103,7 +107,7 @@ fn write(
         kind: KIND_VIEW,
         d: slug,
     };
-    private_note::write(ndb, secret, slot, content, after).unwrap_or(after)
+    private_note::write_note(ndb, secret, slot, note, after).unwrap_or(after)
 }
 
 #[cfg(test)]
@@ -138,10 +142,11 @@ mod tests {
         }
     }
 
-    /// The spec survives JSON, its layout spelled by name, and a stored spec
-    /// missing fields loads with their defaults.
+    /// The spec survives serde — what `headway list --views --json` prints —
+    /// its layout spelled by name, and a spec missing fields reads with their
+    /// defaults. The note stores tags instead (see `event::parse`'s tests).
     #[test]
-    fn view_spec_json_round_trip() {
+    fn view_spec_serde_round_trip() {
         let json = serde_json::to_string(&hot()).unwrap();
         assert!(json.contains(r#""query":"p:high label:ui""#), "{json}");
         assert!(json.contains(r#""display":["id","board"]"#), "{json}");

@@ -60,6 +60,15 @@ pub struct SlotRevision {
     pub revision: Revision,
 }
 
+/// The newest note of one `d` among an account's notes of a kind, borrowed
+/// from the transaction it was read in (see [`newest_per_d`]).
+pub struct SlotNote<'a> {
+    /// The `d` tag it is the newest revision of.
+    pub d: &'a str,
+    /// The note itself, for a caller that reads more than its content.
+    pub note: Note<'a>,
+}
+
 /// Why a [`write`] or an [`ingest`] stored nothing.
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
@@ -137,6 +146,23 @@ pub fn latest(ndb: &Ndb, txn: &Transaction, slot: Slot<'_>) -> Option<Revision> 
 /// The newest revision of every `d` among `author`'s notes of `kind`, in `d`
 /// order. For a kind that keeps many slots, such as one note per saved view.
 pub fn latest_per_d(ndb: &Ndb, txn: &Transaction, author: &Pubkey, kind: u32) -> Vec<SlotRevision> {
+    newest_per_d(ndb, txn, author, kind)
+        .into_iter()
+        .map(|slot| SlotRevision {
+            d: slot.d.to_owned(),
+            revision: revision(&slot.note),
+        })
+        .collect()
+}
+
+/// [`latest_per_d`], handing back each winning note itself rather than an
+/// owned copy of its content, for a kind that keeps its data in tags.
+pub fn newest_per_d<'a>(
+    ndb: &Ndb,
+    txn: &'a Transaction,
+    author: &Pubkey,
+    kind: u32,
+) -> Vec<SlotNote<'a>> {
     let newest = ndb.fold(
         txn,
         &[filter(author, kind)],
@@ -154,10 +180,7 @@ pub fn latest_per_d(ndb: &Ndb, txn: &Transaction, author: &Pubkey, kind: u32) ->
     newest
         .unwrap_or_default()
         .into_iter()
-        .map(|(d, note)| SlotRevision {
-            d: d.to_owned(),
-            revision: revision(&note),
-        })
+        .map(|(d, note)| SlotNote { d, note })
         .collect()
 }
 
@@ -170,10 +193,7 @@ pub fn next_stamp(now: u64, stored: u64, after: u64) -> u64 {
 }
 
 /// Write `content` as `slot`'s newest revision, signed with the author's
-/// `secret`, PNS-wrapped and ingested (see [`ingest`]). Returns the
-/// `created_at` it was stamped with, which a caller making rapid writes
-/// passes back as the next write's `after` (see [`next_stamp`]); pass 0 when
-/// there was no earlier write.
+/// `secret`, PNS-wrapped and ingested (see [`write_note`]).
 pub fn write(
     ndb: &Ndb,
     secret: &[u8; 32],
@@ -181,19 +201,37 @@ pub fn write(
     content: &str,
     after: u64,
 ) -> Result<u64, WriteError> {
+    let note = NoteBuilder::new()
+        .kind(slot.kind)
+        .content(content)
+        .start_tag()
+        .tag_str("d")
+        .tag_str(slot.d);
+    write_note(ndb, secret, slot, note, after)
+}
+
+/// Write `note` as `slot`'s newest revision: stamped (see [`next_stamp`]),
+/// signed with the author's `secret`, PNS-wrapped and ingested (see
+/// [`ingest`]). `note` carries everything but the stamp and the signature —
+/// `slot`'s kind and `d` tag among them — so a kind that keeps its data in
+/// tags builds its own. Returns the `created_at` it was stamped with, which a
+/// caller making rapid writes passes back as the next write's `after`; pass 0
+/// when there was no earlier write.
+pub fn write_note<'a>(
+    ndb: &Ndb,
+    secret: &'a [u8; 32],
+    slot: Slot<'_>,
+    note: NoteBuilder<'a>,
+    after: u64,
+) -> Result<u64, WriteError> {
     let stored = Transaction::new(ndb)
         .ok()
         .and_then(|txn| latest(ndb, &txn, slot))
         .map_or(0, |revision| revision.created_at);
     let created_at = next_stamp(unix_time_secs(), stored, after);
-    let note = NoteBuilder::new()
-        .kind(slot.kind)
-        .content(content)
+    let note = note
         .options(NoteBuildOptions::default())
         .created_at(created_at)
-        .start_tag()
-        .tag_str("d")
-        .tag_str(slot.d)
         .sign(secret)
         .build()
         .ok_or(WriteError::Build)?;
