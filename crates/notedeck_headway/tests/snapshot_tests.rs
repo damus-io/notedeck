@@ -1628,14 +1628,169 @@ fn snapshot_headway_list() {
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
     seed_side_board(&mut harness);
 
-    harness.get_by_label("☰ View").click();
-    harness.run_ok();
-    harness.get_by_label("Issue list").click();
-    wait_for_label(&mut harness, SIDE_CARD);
+    open_issue_list(&mut harness);
     harness.get_by_label("All issues").click();
     wait_for_label(&mut harness, "8 issues");
     harness.run_steps(3);
     harness.snapshot("headway_list");
+}
+
+/// Open the issue list from the View menu and wait for the side board's card,
+/// so both boards' rows have folded in.
+fn open_issue_list(harness: &mut Harness<'static, HeadwayTestState>) {
+    harness.get_by_label("☰ View").click();
+    harness.run_ok();
+    harness.get_by_label("Issue list").click();
+    wait_for_label(harness, SIDE_CARD);
+}
+
+/// The issue list's Display menu open over the list
+/// (headway:headway/end-kick-draft, headway:headway/office-flower-churn,
+/// headway:headway/battle-stock-expire): grouping and sub-grouping chips,
+/// "Show empty groups", the ordering chips with their direction toggle and
+/// "Order completed by recency", then the display-property chips.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_list_display_menu() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_side_board(&mut harness);
+    open_issue_list(&mut harness);
+    harness.get_by_label("☰ Display").click();
+    wait_for_label(&mut harness, "Order completed by recency");
+    harness.run_steps(3);
+    harness.snapshot("headway_list_display_menu");
+}
+
+/// The issue list grouped by priority and sub-grouped by status
+/// (headway:headway/office-flower-churn), on All issues so the done card shows:
+/// Urgent to No priority, each split into its columns under indented
+/// headers, the rows dropping the priority and status their headers say.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_list_grouped() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 1000.0));
+    seed_side_board(&mut harness);
+    open_issue_list(&mut harness);
+    harness.get_by_label("All issues").click();
+    wait_for_label(&mut harness, "8 issues");
+    harness.get_by_label("☰ Display").click();
+    wait_for_label(&mut harness, "Sub-grouping");
+    // The chip rows go Grouping, Sub-grouping, then Display properties, so a
+    // name's first chip is the grouping's and its second the sub-grouping's.
+    harness
+        .query_all_by_label("Priority")
+        .next()
+        .expect("the Grouping menu's Priority chip")
+        .click();
+    harness.run_ok();
+    harness
+        .query_all_by_label("Status")
+        .nth(1)
+        .expect("the Sub-grouping menu's Status chip")
+        .click();
+    harness.run_ok();
+    harness.press_key(egui::Key::Escape);
+    wait_for_absent(&mut harness, "Sub-grouping");
+    harness.run_steps(3);
+    harness.snapshot("headway_list_grouped");
+}
+
+/// The issue list in work order (headway:headway/battle-stock-expire),
+/// caught mid-drag: the cards `headway next --ready` would hand out wear the
+/// accent bar, and the row being dragged up shows the insertion line on the
+/// row it would land above.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_list_work_order() {
+    const INLINE: &str = "Inline card creation";
+    const LOW: &str = "Column reordering";
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_side_board(&mut harness);
+    open_issue_list(&mut harness);
+    harness.get_by_label("☰ Display").click();
+    wait_for_label(&mut harness, "Ordering");
+    harness.get_by_label("Work order").click();
+    harness.run_ok();
+    harness.press_key(egui::Key::Escape);
+    wait_for_absent(&mut harness, "Ordering");
+
+    // Whichever of the two Todo cards sits lower, drag it toward the upper
+    // one's top edge and hold it there.
+    let top = |harness: &Harness<'static, HeadwayTestState>, label: &str| {
+        label_top(harness, label).expect("the row is on screen")
+    };
+    let (upper, lower) = if top(&harness, INLINE) < top(&harness, LOW) {
+        (INLINE, LOW)
+    } else {
+        (LOW, INLINE)
+    };
+    let rect = |harness: &Harness<'static, HeadwayTestState>, label: &str| {
+        harness
+            .get_by_label(label)
+            .accesskit_node()
+            .bounding_box()
+            .expect("laid out")
+    };
+    let (a, b) = (rect(&harness, lower), rect(&harness, upper));
+    let start = egui::pos2(((a.x0 + a.x1) / 2.0) as f32, ((a.y0 + a.y1) / 2.0) as f32);
+    let end = egui::pos2(start.x, (b.y0 + 1.0) as f32);
+    harness.event(egui::Event::PointerMoved(start));
+    harness.step();
+    harness.event(egui::Event::PointerButton {
+        pos: start,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+    for step in 1..=8 {
+        let pos = start + (end - start) * (step as f32 / 8.0);
+        harness.event(egui::Event::PointerMoved(pos));
+        harness.step();
+    }
+    harness.run_steps(2);
+    harness.snapshot("headway_list_work_order");
+}
+
+/// The issue list's `is:archived` (headway:headway/album-trouble-treat): two
+/// archived demo cards, listed with the archived status, and nothing live;
+/// then one of them opened, its detail under the archived banner.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_list_archived() {
+    const SHELVED: &str = "Column reordering";
+    const DROPPED: &str = "Sync cards across relays";
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 600.0));
+    let ids = {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let app_ctx = state.notedeck.app_context();
+        [
+            demo_card_id(app_ctx.ndb, &author, SHELVED),
+            demo_card_id(app_ctx.ndb, &author, DROPPED),
+        ]
+    };
+    archive_demo_cards(&mut harness, &ids);
+    wait_for_label(&mut harness, "View archived (2)");
+    harness.get_by_label("☰ View").click();
+    harness.run_ok();
+    harness.get_by_label("Issue list").click();
+    wait_for_label(&mut harness, "Issues");
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text("is:archived");
+    wait_for_label(&mut harness, "2 issues");
+    harness.run_steps(3);
+    harness.snapshot("headway_list_archived");
+
+    // A row there opens the card's detail, archived: the banner, Restore.
+    harness.get_by_label(SHELVED).click();
+    wait_for_label(&mut harness, "This card is archived.");
+    harness.run_steps(3);
+    harness.snapshot("headway_archived_detail");
 }
 
 /// The inline card widget must render its content left-aligned even though the
