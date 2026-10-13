@@ -356,6 +356,7 @@ pub(crate) fn record_user_message(
     session.chat.push(Message::User(UserMessage {
         note_id,
         queued,
+        sent_at: Some(session_events::now_secs()),
         ..UserMessage::new(text, images)
     }));
     session.update_title_from_last_message();

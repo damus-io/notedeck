@@ -1,15 +1,15 @@
-//! Regression: an agentium session chip must be *clickable* in a Dave chat
-//! bubble on both surfaces — a user message and an assistant message.
+//! A Dave chat message, drawn by the functions the chat calls for one —
+//! [`user_message_ui`] and [`assistant_message_ui`] — must keep both its
+//! clicks: a primary click on an inline agentium chip reaches the chip, and a
+//! right-click anywhere on the message opens its menu, with when it was sent
+//! and "Copy".
 //!
-//! `Dave::user_chat` draws the user bubble as a filled `egui::Frame` with a
-//! right-click "Copy" `context_menu`; `assistant_chat` uses a bare `ui.scope`.
-//! `context_menu` forces `Sense::click` onto its response every frame, so if the
-//! menu is attached to the *Frame* (whose rect fully encloses an inline chip)
-//! egui's hit-test tie-break awards a chip click to the bubble, silently
-//! swallowing it. Attaching the menu to an inner `scope` — whose response doesn't
-//! enclose the chip the same way — keeps the chip clickable, matching the
-//! assistant surface. This test clicks the chip on both surfaces and asserts an
-//! app action is raised.
+//! The two pulled against each other once. egui 0.31's `context_menu` gave its
+//! response `Sense::click`, so a menu on the user bubble's `Frame` won the
+//! hit-test over a chip inside it. egui 0.36's opens only on the response's own
+//! secondary click, which a container never senses, so the menu stopped
+//! opening at all. The chat now uses a container menu, which opens over any
+//! child without sensing clicks itself.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -23,19 +23,23 @@ use notedeck::Notedeck;
 use notedeck_dave::reference::AgentiumRefParser;
 use notedeck_dave::render::AgentiumSessionRenderer;
 use notedeck_dave::session_cache::AgentiumSessionCache;
-use notedeck_ui::markdown::render_markdown_with_refs;
+use notedeck_dave::ui::{assistant_message_ui, user_message_ui};
+use notedeck_dave::{AssistantMessage, UserMessage};
 
 use agentium_core::session_events::AI_SESSION_STATE_KIND;
 
-/// The two Dave chat bubble structures the chip is drawn in.
+/// The two kinds of chat message a person sees text in.
 #[derive(Clone, Copy, PartialEq)]
 enum Surface {
-    /// Mirrors `Dave::user_chat`: a filled `Frame` bubble in a `right_to_left`
-    /// layout, with the "Copy" `context_menu` attached to an inner `scope`.
+    /// A message the person typed, drawn by [`user_message_ui`].
     User,
-    /// Mirrors `Dave::assistant_chat`: a bare `ui.scope` with the same menu.
+    /// A reply, drawn by [`assistant_message_ui`].
     Assistant,
 }
+
+/// When every message here was sent: 2023-11-14 22:13:20 UTC, which is in
+/// 2023 in every time zone.
+const SENT_AT: u64 = 1_700_000_000;
 
 struct State {
     notedeck: Notedeck,
@@ -77,15 +81,6 @@ fn seed_session(ndb: &Ndb, secret: &[u8; 32], session_id: &str, title: &str, sta
         .unwrap();
 }
 
-/// Attach the shared "Copy" context menu to `response` (as both Dave bubbles do).
-fn copy_menu(response: &egui::Response) {
-    notedeck_ui::context_menu::context_menu(response, |ui| {
-        if ui.button("Copy").clicked() {
-            ui.close();
-        }
-    });
-}
-
 fn render(ui: &mut egui::Ui, state: &mut State) {
     notedeck::test_harness::full_window(ui, |ui| {
         let ctx = &ui.ctx().clone();
@@ -106,36 +101,21 @@ fn render(ui: &mut egui::Ui, state: &mut State) {
         }
 
         let mut app_ctx = state.notedeck.app_context();
-        let body = state.body.clone();
+        let body = state.body.as_str();
         let surface = state.surface;
         egui::CentralPanel::default().show(ui, |ui| {
             ui.add_space(16.0);
             match surface {
                 Surface::User => {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                        let content = egui::Frame::new()
-                            .inner_margin(10.0)
-                            .corner_radius(10.0)
-                            .fill(ui.visuals().widgets.inactive.weak_bg_fill)
-                            .show(ui, |ui| {
-                                ui.scope(|ui| {
-                                    let mut note_ctx = app_ctx.note_context();
-                                    let txn = Transaction::new(note_ctx.ndb).expect("txn");
-                                    render_markdown_with_refs(ui, &mut note_ctx, &txn, &body);
-                                })
-                                .response
-                            })
-                            .inner;
-                        copy_menu(&content);
-                    });
+                    let msg = UserMessage {
+                        sent_at: Some(SENT_AT),
+                        ..UserMessage::from(body)
+                    };
+                    user_message_ui(&msg, false, &mut app_ctx, ui);
                 }
                 Surface::Assistant => {
-                    let r = ui.scope(|ui| {
-                        let mut note_ctx = app_ctx.note_context();
-                        let txn = Transaction::new(note_ctx.ndb).expect("txn");
-                        render_markdown_with_refs(ui, &mut note_ctx, &txn, &body);
-                    });
-                    copy_menu(&r.response);
+                    let msg = AssistantMessage::from_text(body.to_owned()).with_sent_at(SENT_AT);
+                    assistant_message_ui(&msg, &mut app_ctx, ui);
                 }
             }
         });
@@ -148,11 +128,12 @@ fn render(ui: &mut egui::Ui, state: &mut State) {
     });
 }
 
-/// Primary-click the center of a labelled node via a real positional pointer
-/// event (a plain `Label` exposes no accesskit action, so `.click()` is a no-op).
-fn click_label(harness: &mut Harness<'static, State>, label: &str) {
+/// Click the center of the first node whose label contains `label` with
+/// `button`, via a real positional pointer event (a plain `Label` exposes no
+/// accesskit action, so `.click()` is a no-op).
+fn click_label(harness: &mut Harness<'static, State>, label: &str, button: egui::PointerButton) {
     let bounds = harness
-        .get_by_label(label)
+        .get_by_label_contains(label)
         .accesskit_node()
         .raw_bounds()
         .expect("bounds");
@@ -167,7 +148,7 @@ fn click_label(harness: &mut Harness<'static, State>, label: &str) {
     for pressed in [true, false] {
         harness.input_mut().events.push(egui::Event::PointerButton {
             pos: center,
-            button: egui::PointerButton::Primary,
+            button,
             pressed,
             modifiers: egui::Modifiers::NONE,
         });
@@ -175,9 +156,10 @@ fn click_label(harness: &mut Harness<'static, State>, label: &str) {
     harness.run_ok();
 }
 
-/// Render `surface` with a resolved agentium chip, click it, and return how many
-/// app actions the click raised.
-fn actions_after_chip_click(surface: Surface) -> usize {
+/// A harness drawing a `surface` message, its body still empty, past the
+/// first frame that installs fonts and the account. `renderer` builds it with
+/// lavapipe, for a snapshot; without it the harness only lays out.
+fn build_harness(surface: Surface, renderer: bool) -> Harness<'static, State> {
     let tmpdir = tempfile::TempDir::new().unwrap();
     let ctx = egui::Context::default();
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
@@ -198,11 +180,21 @@ fn actions_after_chip_click(surface: Surface) -> usize {
         setup_done: false,
     };
 
-    let mut harness = Harness::builder()
-        .with_size(egui::Vec2::new(640.0, 380.0))
-        .build_ui_state(render, state);
+    let builder = Harness::builder().with_size(egui::Vec2::new(640.0, 380.0));
+    let builder = if renderer {
+        builder.renderer(notedeck::software_renderer())
+    } else {
+        builder
+    };
+    let mut harness = builder.build_ui_state(render, state);
     harness.run_steps(2);
+    harness
+}
 
+/// Render `surface` with a resolved agentium chip, click it, and return how many
+/// app actions the click raised.
+fn actions_after_chip_click(surface: Surface) -> usize {
+    let mut harness = build_harness(surface, false);
     let secret = harness.state().account.secret_key.secret_bytes();
     let session_id = "claude-session-q3-planning";
     let title = "Refactor the session parser";
@@ -228,7 +220,7 @@ fn actions_after_chip_click(surface: Surface) -> usize {
     }
     harness.run_steps(3);
 
-    click_label(&mut harness, title);
+    click_label(&mut harness, title, egui::PointerButton::Primary);
     harness.run_steps(2);
     harness.state().actions_seen
 }
@@ -248,4 +240,53 @@ fn user_surface_chip_click_raises_action() {
         "clicking a chip in a user bubble should raise an app action \
          (regression: the Copy context_menu must not swallow chip clicks)"
     );
+}
+
+/// Right-click a `surface` message's text, and return the harness with
+/// whatever menu that opened (see [`build_harness`] for `renderer`).
+fn right_click_message(surface: Surface, renderer: bool) -> Harness<'static, State> {
+    let mut harness = build_harness(surface, renderer);
+    harness.state_mut().body = "Hello from the chat".to_owned();
+    harness.run_steps(2);
+    click_label(&mut harness, "Hello from", egui::PointerButton::Secondary);
+    harness.run_steps(2);
+    harness
+}
+
+/// The menu a right-click opens: when the message was sent, then Copy.
+fn assert_message_menu(harness: &Harness<'static, State>, surface: &str) {
+    assert!(
+        harness.query_by_label("Copy").is_some(),
+        "right-clicking a {surface} message should open its menu with Copy"
+    );
+    assert!(
+        harness.query_by_label_contains("2023").is_some(),
+        "the {surface} message's menu should say when it was sent"
+    );
+}
+
+#[test]
+fn user_message_right_click_opens_copy_menu() {
+    assert_message_menu(&right_click_message(Surface::User, false), "user");
+}
+
+#[test]
+fn assistant_message_right_click_opens_copy_menu() {
+    assert_message_menu(&right_click_message(Surface::Assistant, false), "assistant");
+}
+
+/// The menu a right-click on a user message opens: when it was sent, then Copy.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_user_message_menu() {
+    let mut harness = right_click_message(Surface::User, true);
+    harness.snapshot("user_message_menu");
+}
+
+/// The same menu on an assistant reply.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_assistant_message_menu() {
+    let mut harness = right_click_message(Surface::Assistant, true);
+    harness.snapshot("assistant_message_menu");
 }

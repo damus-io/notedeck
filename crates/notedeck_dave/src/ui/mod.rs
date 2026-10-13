@@ -30,8 +30,8 @@ pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
 pub use block_nav::{BlockNav, BlockSpot};
 pub(crate) use dave::input_id;
 pub use dave::{
-    from_session_message_ui, DaveAction, DaveResponse, DaveUi, InputMode, InputboxLayout,
-    InputboxResult, Inspected, RunAction,
+    assistant_message_ui, from_session_message_ui, user_message_ui, DaveAction, DaveResponse,
+    DaveUi, InputMode, InputboxLayout, InputboxResult, Inspected, RunAction,
 };
 pub use directory_picker::{DirectoryPicker, DirectoryPickerAction};
 pub use host_picker::HostPickerAction;

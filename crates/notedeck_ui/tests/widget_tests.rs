@@ -484,3 +484,53 @@ fn monospace_label_sits_on_the_baseline_of_a_centred_row() {
         );
     }
 }
+
+/// Selected text in notedeck's dark and light themes, painted the way egui
+/// paints a selection in a label or text field
+/// ([`egui::text_selection::visuals::paint_text_selection`]): the highlight is
+/// a see-through tint and the selected words stay readable on it. They were
+/// hidden when the highlight and the selected-text color were the same
+/// opaque purple.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_text_selection() {
+    use egui::text::{CCursor, CCursorRange};
+
+    let mut h = Harness::builder()
+        .with_size(egui::Vec2::new(360.0, 96.0))
+        .renderer(notedeck::software_renderer())
+        .build_ui(|ui| {
+            let themes = [
+                notedeck::theme::dark_mode(false),
+                notedeck::theme::light_mode(),
+            ];
+            for (row, visuals) in themes.iter().enumerate() {
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(0.0, row as f32 * 48.0),
+                    egui::vec2(360.0, 48.0),
+                );
+                let painter = ui.painter();
+                painter.rect_filled(rect, 0.0, visuals.panel_fill);
+                let mut galley = painter.layout_no_wrap(
+                    "The quick brown fox jumps over".to_owned(),
+                    egui::FontId::proportional(20.0),
+                    visuals.text_color(),
+                );
+                // "quick brown fox"
+                let selected = CCursorRange::two(CCursor::new(4), CCursor::new(19));
+                egui::text_selection::visuals::paint_text_selection(
+                    &mut galley,
+                    visuals,
+                    &selected,
+                    None,
+                );
+                painter.galley(
+                    rect.min + egui::vec2(16.0, 12.0),
+                    galley,
+                    visuals.text_color(),
+                );
+            }
+        });
+    h.run();
+    h.snapshot("text_selection");
+}

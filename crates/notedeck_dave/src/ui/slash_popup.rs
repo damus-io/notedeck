@@ -2,7 +2,7 @@
 //! [`SlashPopup`], drawn in a floating area as wide as the input.
 //!
 //! It draws only theme visuals (`window_fill`, `window_stroke`,
-//! `popup_shadow`, `selection.bg_fill`), so it follows the dark, light and
+//! `popup_shadow`, the selection hue), so it follows the dark, light and
 //! OLED themes with no colours of its own.
 
 use egui::text::{LayoutJob, TextWrapping};
@@ -303,7 +303,7 @@ fn row_rect(selected: bool, ui: &mut egui::Ui) -> egui::Response {
         ui.painter().rect_filled(
             rect,
             notedeck::tokens::RADIUS_SM,
-            ui.visuals().selection.bg_fill,
+            notedeck::theme::selection_fill(ui.visuals()),
         );
     }
     response

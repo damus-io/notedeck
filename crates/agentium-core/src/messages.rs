@@ -58,9 +58,10 @@ pub struct UserMessage {
     /// than a person typing it. A chat shows such a message as from that
     /// session.
     pub from_session: Option<String>,
-    /// When its note was signed, in unix seconds, for a row that came from a
-    /// note (as [`note_id`](Self::note_id)). Lets a view tell a message just
-    /// sent from one in history.
+    /// When it was sent, in unix seconds: its note's `created_at` for a row
+    /// that came from a note (as [`note_id`](Self::note_id)), or the moment it
+    /// was typed for one sent from this device. Lets a view tell a message just
+    /// sent from one in history, and a chat show when each was sent.
     pub sent_at: Option<u64>,
 }
 
@@ -1045,6 +1046,10 @@ pub struct AssistantMessage {
     parser: Option<StreamParser>,
     /// Cached parsed elements (populated after finalization)
     cached_elements: Option<Vec<MdElement>>,
+    /// When it was written, in unix seconds: when the row was created for a
+    /// live reply, or its note's `created_at` for one loaded from a note (see
+    /// [`Self::with_sent_at`]).
+    sent_at: u64,
 }
 
 impl std::fmt::Debug for AssistantMessage {
@@ -1071,6 +1076,7 @@ impl Clone for AssistantMessage {
                 text: self.text.clone(),
                 parser: None,
                 cached_elements: Some(cached.clone()),
+                sent_at: self.sent_at,
             }
         } else {
             // Active streaming - re-parse from text
@@ -1080,6 +1086,7 @@ impl Clone for AssistantMessage {
                 text: self.text.clone(),
                 parser: Some(parser),
                 cached_elements: None,
+                sent_at: self.sent_at,
             }
         }
     }
@@ -1092,6 +1099,7 @@ impl AssistantMessage {
             text: String::new(),
             parser: Some(StreamParser::new()),
             cached_elements: None,
+            sent_at: crate::session_events::now_secs(),
         }
     }
 
@@ -1105,7 +1113,20 @@ impl AssistantMessage {
             text,
             parser: None,
             cached_elements: Some(cached),
+            sent_at: crate::session_events::now_secs(),
         }
+    }
+
+    /// The same message, written at `sent_at` (unix seconds) rather than now:
+    /// for a row loaded from a note, its `created_at`.
+    pub fn with_sent_at(mut self, sent_at: u64) -> Self {
+        self.sent_at = sent_at;
+        self
+    }
+
+    /// When it was written, in unix seconds (see [`Self::with_sent_at`]).
+    pub fn sent_at(&self) -> u64 {
+        self.sent_at
     }
 
     /// Push a new token and update the parser.

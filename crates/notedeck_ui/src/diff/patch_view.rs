@@ -1226,7 +1226,8 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
                     // Under the diff's own tint and faint, so the picked
                     // lines still read as added or removed.
                     let tint = row.expand2(egui::vec2(0.0, ui.spacing().item_spacing.y / 2.0));
-                    let color = ui.visuals().selection.bg_fill.gamma_multiply(SELECTED_TINT);
+                    let color =
+                        notedeck::theme::selection_fill(ui.visuals()).gamma_multiply(SELECTED_TINT);
                     ui.painter().rect_filled(tint, 0.0, color);
                 }
                 let numbers = diff_line_ui(galleys, ui);

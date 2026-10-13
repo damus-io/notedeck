@@ -278,6 +278,24 @@ pub fn context_menu(response: &egui::Response, add_contents: impl FnOnce(&mut eg
     context_menu_padding(response, MenuPadding::default(), add_contents);
 }
 
+/// [`context_menu`] for a container's response, from [`egui::Ui::scope`], a
+/// `Frame`, or [`egui::Ui::response`]: it opens on a right-click anywhere inside
+/// the container, even over a child widget.
+///
+/// Use it, not [`context_menu`], for anything that isn't a single widget. Since
+/// egui 0.32 `Response::context_menu` opens only on the response's own
+/// `secondary_clicked`, and a container senses hover only, so its menu never
+/// opens. Giving the container `Sense::click` instead would steal clicks from
+/// the widgets inside it, such as an inline chip.
+pub fn container_context_menu(response: &egui::Response, add_contents: impl FnOnce(&mut egui::Ui)) {
+    let padding = MenuPadding::default();
+    response.container_context_menu(|ui| {
+        ui.spacing_mut().button_padding = padding.button_padding;
+        ui.spacing_mut().item_spacing.y = padding.item_spacing_y;
+        add_contents(ui);
+    });
+}
+
 pub fn context_button(ui: &mut egui::Ui, id: egui::Id, put_at: egui::Rect) -> egui::Response {
     let min_radius = 2.0;
     let anim_speed = 0.05;

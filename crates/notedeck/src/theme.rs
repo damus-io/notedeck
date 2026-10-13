@@ -14,6 +14,15 @@ use strum::IntoEnumIterator;
 
 pub const PURPLE: Color32 = Color32::from_rgb(0xCC, 0x43, 0xC5);
 const PURPLE_ALT: Color32 = Color32::from_rgb(0x82, 0x56, 0xDD);
+/// [`PURPLE_ALT`] lifted for a dark background: the selected-text and accent
+/// color of the dark themes (see [`ColorTheme::selection_text_color`]).
+const LAVENDER: Color32 = Color32::from_rgb(0xC4, 0xB0, 0xF5);
+/// [`PURPLE_ALT`] deepened for a light background: the selected-text and accent
+/// color of the light theme (see [`ColorTheme::selection_text_color`]).
+const DEEP_PURPLE: Color32 = Color32::from_rgb(0x4A, 0x2A, 0x9A);
+/// How much of [`ColorTheme::selection_color`] a selection highlight lays over
+/// what's behind it, so the selected text still shows through.
+const SELECTION_TINT: f32 = 0.35;
 //pub const DARK_BG: Color32 = egui::Color32::from_rgb(40, 44, 52);
 pub const GRAY_SECONDARY: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
 const BLACK: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
@@ -41,7 +50,14 @@ pub struct ColorTheme {
     pub err_fg_color: Color32,
     pub warn_fg_color: Color32,
     pub hyperlink_color: Color32,
+    /// The hue of a selection highlight. It is laid down as a see-through tint
+    /// ([`SELECTION_TINT`]), so it never hides the text it highlights.
     pub selection_color: Color32,
+    /// The color of selected text, and of egui's selection stroke: a focused
+    /// field's outline and every accent drawn with `selection.stroke`. egui
+    /// repaints selected glyphs in this color, so it must read on
+    /// [`Self::selection_color`]'s tint over [`Self::panel_fill`].
+    pub selection_text_color: Color32,
 
     // WINDOW
     pub window_fill: Color32,
@@ -117,16 +133,25 @@ impl ColorTheme {
 
 const WIDGET_CORNER_RADIUS: CornerRadius = CornerRadius::same(8);
 
+/// The selection hue at full strength, for a selected row, a status pill or a
+/// tint a caller mixes itself. `visuals.selection.bg_fill` is a see-through
+/// tint for egui's text selection (see [`SELECTION_TINT`]); filling with it
+/// would draw a faint wash, and tinting it again a fainter one.
+pub fn selection_fill(visuals: &Visuals) -> Color32 {
+    let [r, g, b, _] = visuals.selection.bg_fill.to_srgba_unmultiplied();
+    Color32::from_rgb(r, g, b)
+}
+
 pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
     Visuals {
         hyperlink_color: theme.hyperlink_color,
         override_text_color: Some(theme.text_color),
         panel_fill: theme.panel_fill,
         selection: Selection {
-            bg_fill: theme.selection_color,
+            bg_fill: theme.selection_color.gamma_multiply(SELECTION_TINT),
             stroke: Stroke {
                 width: 1.0,
-                color: theme.selection_color,
+                color: theme.selection_text_color,
             },
         },
         warn_fg_color: theme.warn_fg_color,
@@ -183,6 +208,7 @@ pub fn desktop_dark_color_theme() -> ColorTheme {
         warn_fg_color: ORANGE_700,
         hyperlink_color: PURPLE,
         selection_color: PURPLE_ALT,
+        selection_text_color: LAVENDER,
 
         // WINDOW
         window_fill: DARK_ISH_BG,
@@ -243,6 +269,7 @@ pub fn light_color_theme() -> ColorTheme {
         warn_fg_color: ORANGE_700,
         hyperlink_color: PURPLE,
         selection_color: PURPLE_ALT,
+        selection_text_color: DEEP_PURPLE,
 
         // WINDOW
         window_fill: Color32::WHITE,
@@ -348,4 +375,80 @@ pub fn dark_mode(is_oled: bool) -> Visuals {
         },
         Visuals::dark(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WCAG relative luminance of an opaque color.
+    fn luminance(c: Color32) -> f32 {
+        let lin = |v: u8| {
+            let v = v as f32 / 255.0;
+            if v <= 0.040_45 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+    }
+
+    /// WCAG contrast ratio between two opaque colors.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    /// A premultiplied `over` laid on an opaque `under`, as the painter blends it.
+    fn composite(over: Color32, under: Color32) -> Color32 {
+        let keep = 1.0 - over.a() as f32 / 255.0;
+        let mix = |o: u8, u: u8| (o as f32 + u as f32 * keep).round() as u8;
+        Color32::from_rgb(
+            mix(over.r(), under.r()),
+            mix(over.g(), under.g()),
+            mix(over.b(), under.b()),
+        )
+    }
+
+    /// egui ≥ 0.32 repaints selected glyphs in `selection.stroke.color` on top
+    /// of `selection.bg_fill`. When both were the same opaque purple, selecting
+    /// text hid it. In every theme the highlight must be see-through and the
+    /// selected text must read on it.
+    #[test]
+    fn selected_text_reads_on_its_highlight() {
+        let themes = [
+            ("desktop dark", desktop_dark_color_theme()),
+            ("mobile dark", mobile_dark_color_theme()),
+            ("light", light_color_theme()),
+        ];
+        for (name, theme) in themes {
+            let visuals = create_themed_visuals(theme, Visuals::default());
+            let highlight = visuals.selection.bg_fill;
+            assert!(highlight.a() < 255, "{name}: highlight is opaque");
+
+            let behind = composite(highlight, theme.panel_fill);
+            let ratio = contrast(visuals.selection.stroke.color, behind);
+            assert!(
+                ratio >= 4.5,
+                "{name}: selected text has contrast {ratio:.2} on its highlight"
+            );
+        }
+    }
+
+    /// A caller filling a row with the selection color gets the theme's hue
+    /// at full strength, not the see-through text-selection tint.
+    #[test]
+    fn selection_fill_is_the_opaque_hue() {
+        let visuals = create_themed_visuals(desktop_dark_color_theme(), Visuals::default());
+        let fill = selection_fill(&visuals);
+        assert_eq!(fill.a(), 255);
+        let near = |a: u8, b: u8| a.abs_diff(b) <= 2;
+        assert!(
+            near(fill.r(), PURPLE_ALT.r())
+                && near(fill.g(), PURPLE_ALT.g())
+                && near(fill.b(), PURPLE_ALT.b()),
+            "{fill:?} is not PURPLE_ALT"
+        );
+    }
 }

@@ -603,9 +603,10 @@ pub fn render_conversation_note_with_content(
         // rendering as assistant text.
         Some("tool_call") if get_tag_value(note, "source") == Some(LIVE_EVENT_SOURCE) => {
             let Some(tool_use_id) = get_tag_value(note, "tool-id") else {
-                return Some(Message::Assistant(AssistantMessage::from_text(
-                    content.to_string(),
-                )));
+                return Some(Message::Assistant(
+                    AssistantMessage::from_text(content.to_string())
+                        .with_sent_at(note.created_at()),
+                ));
             };
             Some(Message::ToolRunning(RunningTool {
                 tool_use_id: tool_use_id.to_string(),
@@ -616,7 +617,7 @@ pub fn render_conversation_note_with_content(
             }))
         }
         Some("assistant") | Some("tool_call") => Some(Message::Assistant(
-            AssistantMessage::from_text(content.to_string()),
+            AssistantMessage::from_text(content.to_string()).with_sent_at(note.created_at()),
         )),
         Some("tool_result") => {
             let decoded = ToolResultContent::decode(content);
@@ -2502,6 +2503,29 @@ mod tests {
         ingest_all(&ndb, &filter, events).await;
         let txn = Transaction::new(&ndb).unwrap();
         load_session_messages(&ndb, &txn, session_id).messages
+    }
+
+    /// A chat shows when each message was sent, so a row restored from a note
+    /// carries the note's `created_at`, not the moment it was loaded.
+    #[tokio::test]
+    async fn loaded_messages_carry_their_note_time() {
+        let sk = test_secret_key();
+        let sid = "sent-at-session";
+        let events = [
+            build_1988_event_json(&sk, sid, "user", "hi", 1_700_000_000, 0, &[]),
+            build_1988_event_json(&sk, sid, "assistant", "hello", 1_700_000_060, 1, &[]),
+        ];
+        let messages = load_events(sid, &events).await;
+        let user = messages.iter().find_map(|m| match m {
+            Message::User(u) => u.sent_at,
+            _ => None,
+        });
+        let assistant = messages.iter().find_map(|m| match m {
+            Message::Assistant(a) => Some(a.sent_at()),
+            _ => None,
+        });
+        assert_eq!(user, Some(1_700_000_000));
+        assert_eq!(assistant, Some(1_700_000_060));
     }
 
     fn user_replies(messages: &[Message]) -> Vec<String> {

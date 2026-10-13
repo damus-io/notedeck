@@ -34,7 +34,7 @@ pub(super) fn sync_indicator(ui: &mut egui::Ui, theme: &ColorTheme, status: Sync
     let (filled, color, label, tip): (bool, egui::Color32, &str, &str) = match status {
         SyncStatus::Syncing => (
             true,
-            ui.visuals().selection.bg_fill,
+            notedeck::theme::selection_fill(ui.visuals()),
             "Synced",
             "Syncing to your private relay — edits reach your other devices.",
         ),

@@ -482,12 +482,15 @@ fn self_chat_bubble(
     msg_type: MessageType,
     timestamp: u64,
 ) -> egui::Response {
-    let bubble_fill = ui.visuals().selection.bg_fill;
+    let bubble_fill = notedeck::theme::selection_fill(ui.visuals());
     let r = ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
         chat_bubble(ui, msg_type, true, bubble_fill, |ui| {
-            // Override selection highlight so it's visible against the
-            // bubble background (which is itself the default selection color)
-            ui.visuals_mut().selection.bg_fill = bubble_fill.linear_multiply(0.7);
+            // The bubble is itself the selection color, so a selection in it
+            // darkens it instead, and selected text keeps its own color.
+            let text = ui.visuals().text_color();
+            let selection = &mut ui.visuals_mut().selection;
+            selection.bg_fill = egui::Color32::from_black_alpha(90);
+            selection.stroke.color = text;
 
             ui.with_layout(Layout::top_down(Align::Max), |ui| {
                 ui.add(
@@ -508,7 +511,7 @@ fn self_chat_bubble(
         })
         .inner
     });
-    notedeck_ui::context_menu::context_menu(&r.response, |ui| {
+    notedeck_ui::context_menu::container_context_menu(&r.response, |ui| {
         if ui.button("Copy").clicked() {
             ui.ctx().copy_text(message.to_owned());
             ui.close();
@@ -582,7 +585,7 @@ fn other_chat_bubble(
             .response
         })
     });
-    notedeck_ui::context_menu::context_menu(&r.response, |ui| {
+    notedeck_ui::context_menu::container_context_menu(&r.response, |ui| {
         if ui.button("Copy").clicked() {
             ui.ctx().copy_text(message_owned.clone());
             ui.close();

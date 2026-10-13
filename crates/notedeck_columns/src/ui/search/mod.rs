@@ -731,7 +731,7 @@ fn recent_search_item(
 
         if is_selected {
             ui.painter()
-                .rect_filled(rect, 4.0, ui.visuals().selection.bg_fill);
+                .rect_filled(rect, 4.0, notedeck::theme::selection_fill(ui.visuals()));
         }
 
         if resp.hovered() {
@@ -797,7 +797,7 @@ fn search_posts_button(query: &str, is_selected: bool, width: f32) -> impl egui:
 
         if is_selected {
             ui.painter()
-                .rect_filled(rect, 4.0, ui.visuals().selection.bg_fill);
+                .rect_filled(rect, 4.0, notedeck::theme::selection_fill(ui.visuals()));
         }
 
         if resp.hovered() {

@@ -831,10 +831,10 @@ impl<'a> DaveUi<'a> {
                 }
                 Message::User(msg) => {
                     let is_queued = queued_from.is_some_and(|qi| i >= qi);
-                    self.user_chat(msg, is_queued, ctx, ui);
+                    user_message_ui(msg, is_queued, ctx, ui);
                 }
                 Message::Assistant(msg) => {
-                    self.assistant_chat(msg, ctx, ui);
+                    assistant_message_ui(msg, ctx, ui);
                 }
                 Message::ToolRunning(running) => {
                     // In-flight tool rows only appear in agentic mode, matching
@@ -2240,69 +2240,84 @@ impl<'a> DaveUi<'a> {
             DaveResponse::none()
         }
     }
+}
 
-    #[profiling::function]
-    fn user_chat(
-        &self,
-        msg: &crate::messages::UserMessage,
-        is_queued: bool,
-        ctx: &mut AppContext,
-        ui: &mut egui::Ui,
-    ) {
-        if let Some(from) = msg.from_session.as_deref() {
-            from_session_message_ui(msg, from, is_queued, ctx, ui);
-            return;
+/// A `user` message a person typed: a filled bubble on the right, with a
+/// right-click menu that shows when it was sent and copies its text. A message
+/// another session sent draws as [`from_session_message_ui`] instead.
+#[profiling::function]
+pub fn user_message_ui(
+    msg: &crate::messages::UserMessage,
+    is_queued: bool,
+    ctx: &mut AppContext,
+    ui: &mut egui::Ui,
+) {
+    if let Some(from) = msg.from_session.as_deref() {
+        from_session_message_ui(msg, from, is_queued, ctx, ui);
+        return;
+    }
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+        let bubble = egui::Frame::new()
+            .inner_margin(10.0)
+            .corner_radius(10.0)
+            .fill(ui.visuals().widgets.inactive.weak_bg_fill)
+            .show(ui, |ui| user_message_body(msg, is_queued, ctx, ui))
+            .response;
+        message_menu(&bubble, msg.sent_at, &msg.text);
+    });
+}
+
+/// An assistant reply: its streamed markdown, with a right-click menu that
+/// shows when it was written and copies its text.
+#[profiling::function]
+pub fn assistant_message_ui(msg: &AssistantMessage, ctx: &mut AppContext, ui: &mut egui::Ui) {
+    let elements = msg.parsed_elements();
+    let partial = msg.partial();
+    let buffer = msg.buffer();
+    // Chat rendering holds no transaction; open one here and thread it in so
+    // the streamed markdown can resolve inline references.
+    let mut note_ctx = ctx.note_context();
+    let txn = Transaction::new(note_ctx.ndb).expect("markdown txn");
+    let r = ui.scope(|ui| {
+        markdown_ui::render_parsed_markdown(
+            elements,
+            partial,
+            buffer,
+            Some(&mut note_ctx),
+            Some(&txn),
+            ui,
+        );
+    });
+    message_menu(&r.response, Some(msg.sent_at()), msg.text());
+}
+
+/// The right-click menu on a chat message's `content`: when it was sent, if
+/// known, then Copy, which copies `text`.
+///
+/// It is a container menu, so it opens over a chip or link inside the message
+/// without taking their clicks (see
+/// [`container_context_menu`](notedeck_ui::context_menu::container_context_menu)).
+fn message_menu(content: &egui::Response, sent_at: Option<u64>, text: &str) {
+    notedeck_ui::context_menu::container_context_menu(content, |ui| {
+        if let Some(label) = sent_at.and_then(sent_at_label) {
+            ui.label(egui::RichText::new(label).small().weak());
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-            // The bubble's content response, captured from an inner `scope` so the
-            // context menu attaches to *it* rather than the surrounding `Frame`.
-            let content = egui::Frame::new()
-                .inner_margin(10.0)
-                .corner_radius(10.0)
-                .fill(ui.visuals().widgets.inactive.weak_bg_fill)
-                .show(ui, |ui| {
-                    ui.scope(|ui| user_message_body(msg, is_queued, ctx, ui))
-                        .response
-                })
-                .inner;
-            // Attach the context menu to the inner content, NOT the bubble `Frame`.
-            // `context_menu` forces `Sense::click` onto its response every frame, and
-            // the `Frame`'s response fully contains any inline chip drawn inside it —
-            // so egui's hit-test tie-break awards a chip click to the bubble instead
-            // of the chip, silently swallowing it (a chip in an assistant message,
-            // whose bubble is a bare `scope`, stays clickable). The tighter `scope`
-            // response doesn't enclose the chip the same way, so the chip wins.
-            copy_menu(&content, msg);
-        });
-    }
+        if ui.button("Copy").clicked() {
+            ui.ctx().copy_text(text.to_owned());
+            ui.close();
+        }
+    });
+}
 
-    #[profiling::function]
-    fn assistant_chat(&self, msg: &AssistantMessage, ctx: &mut AppContext, ui: &mut egui::Ui) {
-        let elements = msg.parsed_elements();
-        let partial = msg.partial();
-        let buffer = msg.buffer();
-        let text = msg.text().to_owned();
-        // Chat rendering holds no transaction; open one here and thread it in so
-        // the streamed markdown can resolve inline references.
-        let mut note_ctx = ctx.note_context();
-        let txn = Transaction::new(note_ctx.ndb).expect("markdown txn");
-        let r = ui.scope(|ui| {
-            markdown_ui::render_parsed_markdown(
-                elements,
-                partial,
-                buffer,
-                Some(&mut note_ctx),
-                Some(&txn),
-                ui,
-            );
-        });
-        notedeck_ui::context_menu::context_menu(&r.response, |ui| {
-            if ui.button("Copy").clicked() {
-                ui.ctx().copy_text(text.clone());
-                ui.close();
-            }
-        });
-    }
+/// When a message was sent, in local time, for its right-click menu:
+/// "Oct 13, 2026 · 2:04 PM". `None` for a time chrono can't represent.
+fn sent_at_label(sent_at: u64) -> Option<String> {
+    let utc = chrono::DateTime::from_timestamp(i64::try_from(sent_at).ok()?, 0)?;
+    Some(
+        utc.with_timezone(&chrono::Local)
+            .format("%b %-d, %Y · %-I:%M %p")
+            .to_string(),
+    )
 }
 
 /// A `user` message another session sent (`agentium send` from inside a
@@ -2350,13 +2365,10 @@ pub fn from_session_message_ui(
                     ui.label(egui::RichText::new(from).small().color(FROM_SESSION_VIOLET));
                 }
             });
-            // The body's own scope, so the context menu below attaches to
-            // it and not to the header's chip (see `DaveUi::user_chat`).
-            ui.scope(|ui| user_message_body(msg, is_queued, ctx, ui))
-                .response
+            user_message_body(msg, is_queued, ctx, ui);
         })
-        .inner;
-    copy_menu(&content, msg);
+        .response;
+    message_menu(&content, msg.sent_at, &msg.text);
 }
 
 /// The accent of a message another session sent: its card's outline and its
@@ -2395,16 +2407,6 @@ fn user_message_body(
                 .color(ui.visuals().weak_text_color()),
         );
     }
-}
-
-/// The right-click menu on a `user` message's content: copy its text.
-fn copy_menu(content: &egui::Response, msg: &crate::messages::UserMessage) {
-    notedeck_ui::context_menu::context_menu(content, |ui| {
-        if ui.button("Copy").clicked() {
-            ui.ctx().copy_text(msg.text.clone());
-            ui.close();
-        }
-    });
 }
 
 /// Paste text into the current input buffer using Dave's append behavior.
@@ -2795,7 +2797,7 @@ struct Disclosure {
 /// still readable as a row. The session list washes its row the same way while
 /// normal mode walks it.
 pub(crate) fn block_cursor_fill(ui: &egui::Ui) -> egui::Color32 {
-    ui.visuals().selection.bg_fill.gamma_multiply(0.35)
+    notedeck::theme::selection_fill(ui.visuals()).gamma_multiply(0.35)
 }
 
 /// Fill a paint slot reserved *behind* a row, in the rounded, slightly
@@ -4382,7 +4384,7 @@ mod tests {
     /// Visualize the keyboard **block cursor** on each of the three collapsible
     /// row shapes at once — a tool-result header, a subagent's tool list and a
     /// responded permission — since no two of them paint a background the same
-    /// way. The cursor washes the row in a tint of `selection.bg_fill`, through
+    /// way. The cursor washes the row in a tint of the selection hue, through
     /// the same reserved paint slot the tool header's hover highlight uses, and
     /// outranks that hover.
     ///

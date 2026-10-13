@@ -67,7 +67,7 @@ pub fn profile_row_widget<'a>(
         // Selection highlighting
         if options.is_selected {
             ui.painter()
-                .rect_filled(rect, 4.0, ui.visuals().selection.bg_fill);
+                .rect_filled(rect, 4.0, notedeck::theme::selection_fill(ui.visuals()));
         }
 
         // Hover highlighting
