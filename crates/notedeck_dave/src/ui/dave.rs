@@ -819,8 +819,14 @@ impl<'a> DaveUi<'a> {
             self.turn_has_content,
         );
 
+        let mut prev_group = None;
         for (i, message) in self.chat.iter().enumerate() {
             self.nav.enter_row(i);
+            let group = row_group(message, is_agentic);
+            if let (Some(prev), Some(next)) = (prev_group, group) {
+                ui.add_space(row_gap(prev, next));
+            }
+            prev_group = group.or(prev_group);
             match message {
                 Message::Error(err) => {
                     self.error_chat(ctx.i18n, err, ui);
@@ -2260,6 +2266,12 @@ impl<'a> DaveUi<'a> {
     }
 }
 
+/// The share of the chat's width a user's bubble may take.
+const USER_BUBBLE_MAX_FRACTION: f32 = 0.8;
+
+/// Padding between a user's bubble and its text.
+const USER_BUBBLE_MARGIN: f32 = 10.0;
+
 /// A `user` message a person typed: a filled bubble on the right, with a
 /// right-click menu that shows when it was sent and copies its text. A message
 /// another session sent draws as [`from_session_message_ui`] instead.
@@ -2275,14 +2287,67 @@ pub fn user_message_ui(
         return;
     }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+        // The bubble hugs its text up to most of the row, so a short message
+        // reads as a reply on the right rather than a full-width banner.
+        let max_text = ui.available_width() * USER_BUBBLE_MAX_FRACTION - 2.0 * USER_BUBBLE_MARGIN;
+        let text_width = user_text_width(msg, ui).min(max_text);
+        // A paragraph ends in its own gap, which would pad the bubble's
+        // bottom more than its top, so the bottom margin gives that much back.
+        let ends_in_paragraph = !msg.text.is_empty() && !is_queued;
+        let bottom = if ends_in_paragraph {
+            USER_BUBBLE_MARGIN - notedeck::tokens::SPACING_SM
+        } else {
+            USER_BUBBLE_MARGIN
+        };
         let bubble = egui::Frame::new()
-            .inner_margin(10.0)
+            .inner_margin(egui::Margin {
+                left: USER_BUBBLE_MARGIN as i8,
+                right: USER_BUBBLE_MARGIN as i8,
+                top: USER_BUBBLE_MARGIN as i8,
+                bottom: bottom as i8,
+            })
             .corner_radius(10.0)
             .fill(ui.visuals().widgets.inactive.weak_bg_fill)
-            .show(ui, |ui| user_message_body(msg, is_queued, ctx, ui))
+            .show(ui, |ui| {
+                // Markdown paragraphs claim the whole width they are given,
+                // so give them exactly the text's.
+                ui.set_width(text_width);
+                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    user_message_body(msg, is_queued, ctx, ui)
+                })
+            })
             .response;
         message_menu(&bubble, msg.sent_at, &msg.text);
     });
+}
+
+/// How wide a user message's content is unwrapped: its widest line of text
+/// in the body font, or its widest image. Measured once per message text and
+/// kept in egui memory, so a frame costs a lookup rather than a layout.
+fn user_text_width(msg: &crate::messages::UserMessage, ui: &egui::Ui) -> f32 {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let id = egui::Id::new(("user_text_width", msg.text.as_str(), font.size.to_bits()));
+    if let Some(width) = ui.data(|d| d.get_temp::<f32>(id)) {
+        return width;
+    }
+    let color = ui.visuals().text_color();
+    let text = ui.fonts_mut(|f| {
+        msg.text
+            .lines()
+            .map(|line| {
+                f.layout_no_wrap(line.to_owned(), font.clone(), color)
+                    .size()
+                    .x
+            })
+            .fold(0.0, f32::max)
+    });
+    // Images are drawn at most 200pt wide (see `user_message_body`).
+    let images = if msg.images.is_empty() { 0.0 } else { 200.0 };
+    // A little slack: the markdown's chips and inline code run wider than
+    // the raw text they come from.
+    let width = text.max(images).ceil() + 2.0;
+    ui.data_mut(|d| d.insert_temp(id, width));
+    width
 }
 
 /// An assistant reply: its streamed markdown, with a right-click menu that
@@ -2885,6 +2950,53 @@ fn permission_operation_detail(tool_input: &serde_json::Value) -> Option<&str> {
 /// The collapsible state of a tool-result header row: the id its line-level
 /// click senses under, whether its body is showing, and whether the keyboard
 /// block cursor is on it.
+/// What kind of row a chat message draws as, for spacing the transcript.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowGroup {
+    /// Markdown the reader reads: a reply, a notice, an error, notes.
+    Prose,
+    /// A compact one-line row (a tool call, a subagent, a compaction) or a
+    /// permission card. Consecutive ones stack tightly as one run.
+    Tool,
+    /// A message the user sent, drawn as a bubble.
+    User,
+}
+
+/// The group `message` draws as, or `None` when it draws nothing in this
+/// session (`render_chat` skips it), so it can't split a run of rows.
+fn row_group(message: &Message, is_agentic: bool) -> Option<RowGroup> {
+    match message {
+        Message::Error(_) | Message::Assistant(_) | Message::ToolCalls(_) => Some(RowGroup::Prose),
+        Message::System(_) => is_agentic.then_some(RowGroup::Prose),
+        Message::User(_) => Some(RowGroup::User),
+        Message::ToolResponse(response) => (is_agentic
+            && matches!(response.responses(), ToolResponses::ExecutedTool(_)))
+        .then_some(RowGroup::Tool),
+        Message::ToolRunning(_)
+        | Message::PermissionRequest(_)
+        | Message::CompactionComplete(_)
+        | Message::Subagent(_) => is_agentic.then_some(RowGroup::Tool),
+        Message::TodoUpdate(_) => None,
+    }
+}
+
+/// Extra space `render_chat` puts between a `prev` row and the `next` one.
+///
+/// Prose already ends in a paragraph gap, and tool rows stack with only the
+/// item gap, so a run of tool rows would sit flush against the reply after
+/// it while keeping a gap from the one before. This evens that out, and sets
+/// a user's message a step further apart, since it starts a new turn.
+fn row_gap(prev: RowGroup, next: RowGroup) -> f32 {
+    use notedeck::tokens::{SPACING_MD, SPACING_SM, SPACING_XS};
+    match (prev, next) {
+        (RowGroup::User, _) => SPACING_MD,
+        (RowGroup::Prose, RowGroup::User) => SPACING_XS,
+        (RowGroup::Tool, RowGroup::User) => SPACING_MD,
+        (RowGroup::Tool, RowGroup::Prose) => SPACING_SM,
+        (RowGroup::Prose, _) | (RowGroup::Tool, RowGroup::Tool) => 0.0,
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Disclosure {
     click_id: egui::Id,
@@ -4798,6 +4910,45 @@ mod tests {
 
         harness.run();
         harness.snapshot("agentic_tool_summaries");
+    }
+
+    /// A run of tool rows gets the same gap from the reply after it as the
+    /// reply before it gives it, and a user's message starts a new turn.
+    #[test]
+    fn transcript_rows_space_by_group() {
+        use super::{row_gap, RowGroup::*};
+        use notedeck::tokens::{SPACING_MD, SPACING_SM};
+        // Prose ends in its own paragraph gap, so the gap above a tool run
+        // comes from there and the gap below it from here.
+        assert_eq!(row_gap(Prose, Tool), 0.0);
+        assert_eq!(row_gap(Tool, Prose), SPACING_SM);
+        assert_eq!(row_gap(Tool, Tool), 0.0);
+        assert_eq!(row_gap(Prose, User) + SPACING_SM, SPACING_MD);
+        assert_eq!(row_gap(Tool, User), SPACING_MD);
+        assert_eq!(row_gap(User, Tool), SPACING_MD);
+        assert_eq!(row_gap(User, Prose), SPACING_MD);
+    }
+
+    /// Rows a session doesn't draw don't count, so they can't split a run.
+    #[test]
+    fn hidden_rows_have_no_group() {
+        use super::{row_group, RowGroup};
+        use crate::Message;
+        let system = Message::System(SystemMessage::from("Model set to opus"));
+        assert_eq!(row_group(&system, true), Some(RowGroup::Prose));
+        assert_eq!(row_group(&system, false), None);
+        let tool = Message::ToolResponse(agentium_core::tools::ToolResponse::executed_tool(
+            crate::messages::ExecutedTool {
+                tool_name: "Bash".into(),
+                summary: "`ls`".into(),
+                output: None,
+                parent_task_id: None,
+                file_update: None,
+                tool_use_id: None,
+            },
+        ));
+        assert_eq!(row_group(&tool, true), Some(RowGroup::Tool));
+        assert_eq!(row_group(&tool, false), None);
     }
 
     /// The rows jb55 saw glued in the live app: a `Skill` call and a

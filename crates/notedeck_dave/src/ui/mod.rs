@@ -4222,6 +4222,78 @@ mod tests {
         harness.snapshot("session_background_stop");
     }
 
+    /// A long agentic turn, shaped like the one jb55 found messy
+    /// (headway:dave/account-lucky-impose): replies with inline code and a
+    /// list, runs of Bash rows whose commands carry long `cd` prefixes, a
+    /// Skill row and a user message part way down.
+    fn seed_transcript(state: &mut SessionViewState) {
+        use crate::messages::{AssistantMessage, ExecutedTool};
+        use crate::Message;
+
+        let say = |text: &str| Message::Assistant(AssistantMessage::from_text(text.into()));
+        let bash = |command: &str, output: &str| {
+            Message::ToolResponse(agentium_core::tools::ToolResponse::executed_tool(
+                ExecutedTool {
+                    tool_name: "Bash".into(),
+                    summary: format!("`{command}`"),
+                    output: Some(output.into()),
+                    parent_task_id: None,
+                    file_update: None,
+                    tool_use_id: None,
+                },
+            ))
+        };
+        let scratch = "/private/tmp/claude-501/-Users-jb55-dev-notedeck/2c06a45d-120a-4d50-a171-446084ab8f73/scratchpad";
+        let lines = |n: usize| (1..=n).map(|i| format!("line {i}\n")).collect::<String>();
+        let session = state.session_manager.get_active_mut().unwrap();
+        session.replace_chat(vec![
+            say("That points at a gap in what I built. I'll check what the CLI actually sends back for `/mcp`."),
+            bash(&format!("cd {scratch} && cat > probe2.py <<'EOF'…"), &lines(8)),
+            say("The CLI does send a synthetic assistant message for both. Checking what's inside it."),
+            bash(&format!("cd {scratch} && sed -i 's/s\\[:260\\]/s[:260] if m.get(\"type\")/' probe2.py && python3 probe2.py"), &lines(3)),
+            bash("cd /Users/jb55/dev/notedeck/crates/notedeck_dave && grep -n \"Message::System\" src/ui/dave.rs src/session.rs src/conversation.rs", &lines(12)),
+            bash("sed -n 835,870p src/ui/dave.rs", &lines(36)),
+            say("`Message::System` rows are simply never drawn, so every reply and every `/cd`-style notice was invisible. Filing a card, then fixing it."),
+            Message::User("you can just fix it in the notedeck-headway worktree".into()),
+            bash("git worktree list", &lines(10)),
+            Message::ToolResponse(agentium_core::tools::ToolResponse::executed_tool(ExecutedTool {
+                tool_name: "Skill".into(),
+                summary: "handoff autowork fix headway:dave/repeat-garage-liberty — slash command replies are never drawn".into(),
+                output: None,
+                parent_task_id: None,
+                file_update: None,
+                tool_use_id: None,
+            })),
+            say("The user named \"notedeck-headway\", and there is a literal `/Users/jb55/dev/notedeck-headway` worktree (branch `scene-map`). Checking it's free for an autowork handoff."),
+            bash("cd /Users/jb55/dev/notedeck-headway && git status --porcelain | head -5; git worktree list | grep -c autowork", &lines(4)),
+            say("Handed off. What the new session will do:\n\n- Fix: draw `Message::System` rows in agentic sessions as a quiet monospace notice.\n- Chat-mode sessions, where Dave's system prompt is also a `System` row, stay hidden."),
+        ]);
+    }
+
+    /// The transcript from [`seed_transcript`] with every block collapsed,
+    /// as jb55 had it. Render with
+    /// `scripts/snapshot-test -p=notedeck_dave snapshot_chat_transcript`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_chat_transcript() {
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(900.0, 760.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        seed_transcript(harness.state_mut());
+        harness.run_ok();
+        let ctx = harness.ctx.clone();
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .block_nav
+            .collapse_all(&ctx);
+        harness.run_ok();
+        harness.snapshot("chat_transcript");
+    }
+
     /// The Rate limits card near the five-hour cap: the status, a bar per
     /// window with its reset, and the account-wide note.
     #[test]
