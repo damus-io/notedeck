@@ -898,7 +898,7 @@ fn executed(
     Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
         tool_name: tool_name.to_string(),
         summary: summary.to_string(),
-        output: Some("ok".to_string()),
+        output: Some("ok".into()),
         parent_task_id: parent_task_id.map(str::to_string),
         file_update: None,
         tool_use_id: Some(tool_use_id.to_string()),
@@ -944,7 +944,7 @@ async fn unpaired_tool_result() {
         Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
             tool_name: "Read".to_string(),
             summary: "src/lib.rs".to_string(),
-            output: Some("ok".to_string()),
+            output: Some("ok".into()),
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
@@ -1749,7 +1749,7 @@ async fn reconcile_keeps_capped_tool_output() {
         Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
             tool_name: "Bash".to_string(),
             summary: "yes".to_string(),
-            output: Some(output.clone()),
+            output: Some(output.clone().into()),
             parent_task_id: None,
             file_update: None,
             tool_use_id: Some("t1".to_string()),
@@ -1762,7 +1762,7 @@ async fn reconcile_keeps_capped_tool_output() {
         chat.iter()
             .find_map(|message| match message {
                 Message::ToolResponse(resp) => match resp.responses() {
-                    ToolResponses::ExecutedTool(tool) => tool.output.clone(),
+                    ToolResponses::ExecutedTool(tool) => tool.output.as_deref().map(str::to_owned),
                     _ => None,
                 },
                 _ => None,
@@ -2443,7 +2443,7 @@ async fn reconcile_keeps_subagent_tool_output() {
         Step::Backend(DaveApiResponse::ToolResult(ExecutedTool {
             tool_name: "Bash".to_string(),
             summary: "yes".to_string(),
-            output: Some(output.clone()),
+            output: Some(output.clone().into()),
             parent_task_id: Some("s1".to_string()),
             file_update: None,
             tool_use_id: Some("t1".to_string()),
@@ -2459,7 +2459,12 @@ async fn reconcile_keeps_subagent_tool_output() {
     let nested_output = |chat: &[Message]| {
         chat.iter()
             .find_map(|message| match message {
-                Message::Subagent(info) => info.tool_results.first()?.output.clone(),
+                Message::Subagent(info) => info
+                    .tool_results
+                    .first()?
+                    .output
+                    .as_deref()
+                    .map(str::to_owned),
                 _ => None,
             })
             .expect("the subagent's row has its tool, with output")

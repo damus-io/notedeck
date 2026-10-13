@@ -509,7 +509,7 @@ mod tests {
         ExecutedTool {
             tool_name: "Bash".into(),
             summary: summary.into(),
-            output: output.map(str::to_owned),
+            output: output.map(Into::into),
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,

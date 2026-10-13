@@ -35,11 +35,28 @@ use notedeck_ui::{icons::search_icon, NoteOptions};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-/// Display cap for a tool's raw output block, in bytes. The model keeps the full
-/// output; this only bounds how much [`DaveUi::tool_output_ui`] renders so a
-/// long build log can't dominate the transcript. A remote session shows less:
-/// its copy is cut so the whole note fits `MAX_WIRE_EVENT_BYTES`.
-const MAX_TOOL_OUTPUT_DISPLAY_BYTES: usize = 40_000;
+/// Wrapped rows a Bash command echo may take before "show all" reveals the
+/// rest. A heredoc commit message otherwise fills the row.
+const COMMAND_PREVIEW_ROWS: usize = 3;
+
+/// Bytes of a command echo the clamped body lays out each frame. Three rows
+/// never need more, and egui copies whatever it lays out.
+const COMMAND_PREVIEW_BYTES: usize = 1024;
+
+/// Wrapped rows the head, and separately the tail, of a clamped output preview
+/// may take: two per kept line, so one very long line can't undo the clamp.
+const OUTPUT_PREVIEW_ROWS: usize = 2 * crate::tool_output::PREVIEW_HEAD_LINES;
+
+/// How much of the viewport's height the "show all" view may fill. It scrolls
+/// inside that, so a full build log never runs the length of the chat.
+const SHOW_ALL_VIEWPORT_FRACTION: f32 = 0.6;
+
+/// Bytes of a single line the "show all" view lays out. Lines there don't
+/// wrap, so this only bounds the cost of a pathological one (minified JSON).
+const SHOW_ALL_LINE_BYTES: usize = 2000;
+
+/// Font size of a tool result's body text.
+const TOOL_BODY_FONT_SIZE: f32 = 11.0;
 
 bitflags! {
     #[repr(transparent)]
@@ -1396,9 +1413,14 @@ impl<'a> DaveUi<'a> {
     /// chevron) becomes a click target with a pointer cursor and a subtle hover
     /// highlight — the returned response is that line-level click. Pass `None`
     /// for a plain, non-interactive one-liner.
+    ///
+    /// `line_count` is `Some` for a result carrying free-form output: the row
+    /// ends `· 523 lines` so its size shows even while collapsed. The summary
+    /// truncates to leave room for it.
     fn exec_tool_header_ui(
         tool_name: &str,
         summary: &str,
+        line_count: Option<usize>,
         disclosure: Option<Disclosure>,
         ui: &mut egui::Ui,
     ) -> egui::Response {
@@ -1422,16 +1444,41 @@ impl<'a> DaveUi<'a> {
                     .color(ui.visuals().text_color().gamma_multiply(0.6))
                     .monospace(),
             ));
-            if !summary.is_empty() {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(summary)
-                            .size(11.0)
-                            .color(ui.visuals().text_color().gamma_multiply(0.4))
-                            .monospace(),
+            // Lay the size out first so the summary knows how much room to
+            // leave it.
+            let size = line_count.filter(|&n| n > 0).map(|n| {
+                let text = if n == 1 {
+                    "· 1 line".to_owned()
+                } else {
+                    format!("· {n} lines")
+                };
+                ui.fonts_mut(|f| {
+                    f.layout_no_wrap(
+                        text,
+                        egui::FontId::monospace(11.0),
+                        ui.visuals().text_color().gamma_multiply(0.4),
                     )
-                    .truncate(),
-                );
+                })
+            });
+            if !summary.is_empty() {
+                let reserved = size
+                    .as_ref()
+                    .map_or(0.0, |g| g.size().x + ui.spacing().item_spacing.x);
+                ui.scope(|ui| {
+                    ui.set_max_width((ui.available_width() - reserved).max(0.0));
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(summary)
+                                .size(11.0)
+                                .color(ui.visuals().text_color().gamma_multiply(0.4))
+                                .monospace(),
+                        )
+                        .truncate(),
+                    );
+                });
+            }
+            if let Some(size) = size {
+                ui.add(egui::Label::new(size));
             }
         });
 
@@ -1472,73 +1519,203 @@ impl<'a> DaveUi<'a> {
     /// Lay out `text` as a subdued, break-anywhere monospace block bounded to
     /// `max_width`. Break-anywhere so a long line, or an unbreakable token like a
     /// path or hash, can never run off the right edge — plain word-wrap leaves
-    /// those overflowing.
-    fn wrapped_mono_ui(text: &str, color: egui::Color32, max_width: f32, ui: &mut egui::Ui) {
+    /// those overflowing. `max_rows` stops it after that many wrapped rows,
+    /// ending in `…`. Returns whether that cut anything.
+    fn wrapped_mono_ui(
+        text: &str,
+        color: egui::Color32,
+        max_width: f32,
+        max_rows: Option<usize>,
+        ui: &mut egui::Ui,
+    ) -> bool {
         let mut job = egui::text::LayoutJob::single_section(
             text.to_owned(),
             egui::TextFormat {
-                font_id: egui::FontId::monospace(11.0),
+                font_id: egui::FontId::monospace(TOOL_BODY_FONT_SIZE),
                 color,
                 ..Default::default()
             },
         );
         job.wrap = egui::text::TextWrapping {
             max_width,
+            max_rows: max_rows.unwrap_or(usize::MAX),
             break_anywhere: true,
-            ..Default::default()
+            overflow_character: Some('…'),
         };
-        ui.add(egui::Label::new(job));
+        let galley = ui.fonts_mut(|f| f.layout_job(job));
+        let elided = galley.elided;
+        ui.add(egui::Label::new(galley));
+        elided
     }
 
     /// Render the expanded detail for a free-form tool result: an optional
     /// leading `command`/context line, a divider, then the captured `output`.
     /// The header row only shows a truncated one-liner, so this unified body is
-    /// where the reader sees the full detail.
+    /// where the reader sees the detail.
     ///
     /// `command` is `Some` for a tool whose summary *is* the thing that ran and
-    /// deserves echoing in full (Bash's command), and `None` for a tool whose
-    /// summary already fully names the call in the header (WebSearch's query) —
-    /// there, only the result body needs showing, without duplicating the summary.
+    /// deserves echoing (Bash's command), and `None` for a tool whose summary
+    /// already fully names the call in the header (WebSearch's query) — there,
+    /// only the result body needs showing, without duplicating the summary.
     ///
-    /// The model holds the full output, so display is bounded here: a long tail
-    /// is trimmed (the end — the error, the exit — is what a reader wants). Both
-    /// command and output wrap *break-anywhere* within the visible width — not a
-    /// column an adjacent wide element (a diff, a long path) may have stretched
-    /// past the viewport — so nothing overflows horizontally.
-    fn tool_command_output_ui(command: Option<&str>, output: &str, ui: &mut egui::Ui) {
-        let shown = crate::backend::truncate_output(output, MAX_TOOL_OUTPUT_DISPLAY_BYTES);
-        ui.indent("exec_output_body", |ui| {
-            egui::Frame::new()
-                .fill(ui.visuals().extreme_bg_color)
-                .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_SM as i8))
-                .corner_radius(notedeck::tokens::RADIUS_LG)
-                .show(ui, |ui| {
-                    let max_width = ui.available_width().min(ui.clip_rect().width());
-                    // The command reads brighter than its output so the two
-                    // sections stay distinct within the one block.
-                    if let Some(command) = command {
-                        Self::wrapped_mono_ui(
-                            command,
-                            ui.visuals().text_color().gamma_multiply(0.85),
-                            max_width,
-                            ui,
-                        );
-                        if !output.is_empty() {
-                            ui.add_space(notedeck::tokens::SPACING_SM);
-                            ui.separator();
-                            ui.add_space(notedeck::tokens::SPACING_SM);
+    /// The body is clamped so one result can't take over the chat: the command
+    /// to [`COMMAND_PREVIEW_ROWS`] rows, the output to its head and tail with a
+    /// "N lines hidden" gap between (both measured once, in
+    /// [`ToolOutput`](crate::tool_output::ToolOutput)). A "show all" footer
+    /// opens the whole of both, the output in a bounded scroll area that lays
+    /// out only the lines in sight. Everything here slices the stored text;
+    /// nothing copies the whole output in a frame.
+    ///
+    /// Both command and output wrap *break-anywhere* within the visible width —
+    /// not a column an adjacent wide element (a diff, a long path) may have
+    /// stretched past the viewport — so nothing overflows horizontally.
+    fn tool_command_output_ui(
+        command: Option<&str>,
+        output: &crate::tool_output::ToolOutput,
+        show_all_id: egui::Id,
+        ui: &mut egui::Ui,
+    ) {
+        let show_all = ui.data(|d| d.get_temp::<bool>(show_all_id).unwrap_or(false));
+        let toggled = ui
+            .indent("exec_output_body", |ui| {
+                egui::Frame::new()
+                    .fill(ui.visuals().extreme_bg_color)
+                    .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_SM as i8))
+                    .corner_radius(notedeck::tokens::RADIUS_LG)
+                    .show(ui, |ui| {
+                        let max_width = ui.available_width().min(ui.clip_rect().width());
+                        let mut cut = output.clamp().is_some();
+                        // The command reads brighter than its output so the two
+                        // sections stay distinct within the one block.
+                        if let Some(command) = command {
+                            let color = ui.visuals().text_color().gamma_multiply(0.85);
+                            if show_all {
+                                Self::wrapped_mono_ui(command, color, max_width, None, ui);
+                            } else {
+                                let end = notedeck::abbrev::floor_char_boundary(
+                                    command,
+                                    COMMAND_PREVIEW_BYTES,
+                                );
+                                let elided = Self::wrapped_mono_ui(
+                                    &command[..end],
+                                    color,
+                                    max_width,
+                                    Some(COMMAND_PREVIEW_ROWS),
+                                    ui,
+                                );
+                                cut |= elided || end < command.len();
+                            }
+                            if !output.body().is_empty() {
+                                ui.add_space(notedeck::tokens::SPACING_SM);
+                                ui.separator();
+                                ui.add_space(notedeck::tokens::SPACING_SM);
+                            }
                         }
-                    }
-                    if !output.is_empty() {
-                        Self::wrapped_mono_ui(
-                            &shown,
-                            ui.visuals().text_color().gamma_multiply(0.75),
-                            max_width,
-                            ui,
-                        );
-                    }
-                });
-        });
+                        if show_all {
+                            Self::full_output_ui(output, show_all_id, max_width, ui);
+                        } else {
+                            Self::output_preview_ui(output, max_width, ui);
+                        }
+                        (show_all || cut) && Self::show_all_footer_ui(show_all, ui)
+                    })
+                    .inner
+            })
+            .inner;
+
+        if toggled {
+            ui.data_mut(|d| d.insert_temp(show_all_id, !show_all));
+        }
+    }
+
+    /// The clamped output: the whole body when it fits, otherwise its head, a
+    /// dim "┄┄ N lines hidden ┄┄" gap, and its tail.
+    fn output_preview_ui(
+        output: &crate::tool_output::ToolOutput,
+        max_width: f32,
+        ui: &mut egui::Ui,
+    ) {
+        let color = ui.visuals().text_color().gamma_multiply(0.75);
+        let Some(clamp) = output.clamp() else {
+            if !output.body().is_empty() {
+                Self::wrapped_mono_ui(output.body(), color, max_width, None, ui);
+            }
+            return;
+        };
+        let text = output.as_str();
+        Self::wrapped_mono_ui(
+            &text[clamp.head],
+            color,
+            max_width,
+            Some(OUTPUT_PREVIEW_ROWS),
+            ui,
+        );
+        ui.add(egui::Label::new(
+            egui::RichText::new(format!("┄┄ {} lines hidden ┄┄", clamp.hidden_lines))
+                .size(TOOL_BODY_FONT_SIZE)
+                .monospace()
+                .color(ui.visuals().text_color().gamma_multiply(0.4)),
+        ));
+        Self::wrapped_mono_ui(
+            &text[clamp.tail],
+            color,
+            max_width,
+            Some(OUTPUT_PREVIEW_ROWS),
+            ui,
+        );
+    }
+
+    /// The whole output in a scroll area no taller than
+    /// [`SHOW_ALL_VIEWPORT_FRACTION`] of the viewport. Lines don't wrap, so
+    /// every row is the same height and only the rows in sight are laid out;
+    /// a long line scrolls sideways instead.
+    fn full_output_ui(
+        output: &crate::tool_output::ToolOutput,
+        id: egui::Id,
+        max_width: f32,
+        ui: &mut egui::Ui,
+    ) {
+        let font = egui::FontId::monospace(TOOL_BODY_FONT_SIZE);
+        let row_height = ui.fonts_mut(|f| f.row_height(&font));
+        let color = ui.visuals().text_color().gamma_multiply(0.75);
+        let max_height = ui.ctx().content_rect().height() * SHOW_ALL_VIEWPORT_FRACTION;
+        ui.set_max_width(max_width);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        egui::ScrollArea::both()
+            .id_salt(id.with("scroll"))
+            .max_height(max_height)
+            .auto_shrink([false, true])
+            .show_rows(ui, row_height, output.line_count(), |ui, rows| {
+                for i in rows {
+                    let line = output.line(i);
+                    let line =
+                        &line[..notedeck::abbrev::floor_char_boundary(line, SHOW_ALL_LINE_BYTES)];
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(line).font(font.clone()).color(color))
+                            .extend(),
+                    );
+                }
+            });
+    }
+
+    /// The `▸ show all` / `▾ show less` footer under a clamped tool body.
+    /// Returns whether it was clicked.
+    fn show_all_footer_ui(show_all: bool, ui: &mut egui::Ui) -> bool {
+        let text = if show_all {
+            "▾ show less"
+        } else {
+            "▸ show all"
+        };
+        ui.add_space(notedeck::tokens::SPACING_SM);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(text)
+                    .size(TOOL_BODY_FONT_SIZE)
+                    .color(ui.visuals().text_color().gamma_multiply(0.5)),
+            )
+            .sense(egui::Sense::click()),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
     }
 
     /// Render an in-flight tool row: a spinner in place of the disclosure arrow,
@@ -1580,6 +1757,7 @@ impl<'a> DaveUi<'a> {
             let header_resp = Self::exec_tool_header_ui(
                 &result.tool_name,
                 &result.summary,
+                None,
                 Some(Disclosure {
                     click_id: expand_id.with("header_click"),
                     expanded: block.expanded,
@@ -1611,6 +1789,7 @@ impl<'a> DaveUi<'a> {
             let header_resp = Self::exec_tool_header_ui(
                 &result.tool_name,
                 &result.summary,
+                Some(output.line_count()),
                 Some(Disclosure {
                     click_id: expand_id.with("header_click"),
                     expanded: block.expanded,
@@ -1640,11 +1819,11 @@ impl<'a> DaveUi<'a> {
                         .and_then(|s| s.strip_suffix('`'))
                         .unwrap_or(&result.summary)
                 });
-                Self::tool_command_output_ui(command, output, ui);
+                Self::tool_command_output_ui(command, output, expand_id.with("show_all"), ui);
             }
         } else {
             // Compact single-line display with subdued styling
-            Self::exec_tool_header_ui(&result.tool_name, &result.summary, None, ui);
+            Self::exec_tool_header_ui(&result.tool_name, &result.summary, None, None, ui);
         }
     }
 
@@ -3784,7 +3963,7 @@ mod tests {
                 summary: "`ls -la crates`".to_string(),
                 output: Some(
                     "total 24\ndrwxr-xr-x  notedeck\ndrwxr-xr-x  notedeck_dave\n-rw-r--r--  Cargo.toml"
-                        .to_string(),
+                        .into(),
                 ),
                 parent_task_id: None,
                 file_update: None,
@@ -3862,7 +4041,7 @@ mod tests {
         let results = vec![crate::messages::ExecutedTool {
             tool_name: "Bash".to_string(),
             summary: "`ls -la crates`".to_string(),
-            output: Some("total 24\nCargo.toml".to_string()),
+            output: Some("total 24\nCargo.toml".into()),
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
@@ -4040,7 +4219,7 @@ mod tests {
             .map(|i| crate::messages::ExecutedTool {
                 tool_name: "Bash".to_string(),
                 summary: format!("`echo {i}`"),
-                output: Some(format!("{i}")),
+                output: Some(format!("{i}").into()),
                 parent_task_id: None,
                 file_update: None,
                 tool_use_id: None,
@@ -4323,7 +4502,7 @@ mod tests {
         let results = vec![crate::messages::ExecutedTool {
             tool_name: "WebSearch".to_string(),
             summary: summary.to_string(),
-            output: Some(output.to_string()),
+            output: Some(output.into()),
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
@@ -4360,7 +4539,7 @@ mod tests {
         let results = vec![crate::messages::ExecutedTool {
             tool_name: "Bash".to_string(),
             summary: summary.to_string(),
-            output: Some(output.to_string()),
+            output: Some(output.into()),
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
@@ -4402,7 +4581,7 @@ mod tests {
         let results = vec![crate::messages::ExecutedTool {
             tool_name: "Bash".to_string(),
             summary: summary.to_string(),
-            output: Some("ok (1 events)\nexit 0".to_string()),
+            output: Some("ok (1 events)\nexit 0".into()),
             parent_task_id: None,
             file_update: None,
             tool_use_id: None,
@@ -4426,6 +4605,161 @@ mod tests {
 
         harness.run();
         harness.snapshot("collapsed_bash_header_truncates");
+    }
+
+    /// `n` numbered lines, `line 1` to `line n`, as a command's stdout.
+    fn numbered_lines(n: usize) -> String {
+        (1..=n).map(|i| format!("line {i}\n")).collect()
+    }
+
+    /// A one-result harness drawing a Bash row with `summary` and `output`,
+    /// inside a scroll area like the chat's.
+    fn bash_output_harness(
+        summary: &str,
+        output: String,
+        size: egui::Vec2,
+    ) -> egui_kittest::Harness<'static> {
+        let results = vec![crate::messages::ExecutedTool {
+            tool_name: "Bash".to_string(),
+            summary: summary.to_string(),
+            output: Some(output.into()),
+            parent_task_id: None,
+            file_update: None,
+            tool_use_id: None,
+        }];
+        notedeck::test_harness::lenient_builder()
+            .with_size(size)
+            .build_ui(move |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        let mut nav = BlockNav::default();
+                        for result in &results {
+                            DaveUi::executed_tool_ui(result, &mut nav, ui);
+                        }
+                    });
+            })
+    }
+
+    /// A long Bash output opens expanded but clamped (headway:dave/beef-calm-cross):
+    /// its first and last four lines with a gap counting what lies between, a
+    /// "show all" footer, and the line count in the header. Nothing from the
+    /// middle is drawn.
+    #[test]
+    fn long_bash_output_is_clamped_to_head_and_tail() {
+        let mut harness = bash_output_harness(
+            "`sed -n 1,523p big.rs`",
+            numbered_lines(523),
+            egui::Vec2::new(480.0, 400.0),
+        );
+        harness.run();
+
+        harness.get_by_label("· 523 lines");
+        harness.get_by_label("line 1\nline 2\nline 3\nline 4");
+        harness.get_by_label("┄┄ 515 lines hidden ┄┄");
+        harness.get_by_label("line 520\nline 521\nline 522\nline 523");
+        harness.get_by_label("▸ show all");
+        assert!(harness.query_by_label_contains("line 200").is_none());
+    }
+
+    /// Output that fits the clamp is drawn whole, with no gap and no footer.
+    #[test]
+    fn short_bash_output_is_shown_whole() {
+        let mut harness =
+            bash_output_harness("`ls`", numbered_lines(9), egui::Vec2::new(480.0, 400.0));
+        harness.run();
+
+        harness.get_by_label("· 9 lines");
+        harness.get_by_label(numbered_lines(9).trim_end());
+        assert!(harness.query_by_label_contains("lines hidden").is_none());
+        assert!(harness.query_by_label("▸ show all").is_none());
+    }
+
+    /// "Show all" swaps the preview for the whole output in a bounded scroll
+    /// area, which lays out only the lines in sight; "show less" swaps back.
+    #[test]
+    fn show_all_toggles_full_output() {
+        let mut harness = bash_output_harness(
+            "`sed -n 1,523p big.rs`",
+            numbered_lines(523),
+            egui::Vec2::new(480.0, 400.0),
+        );
+        harness.run();
+
+        harness.get_by_label("▸ show all").click();
+        harness.run();
+
+        // Each line is its own row now, and the gap is gone.
+        harness.get_by_label("line 5");
+        assert!(harness.query_by_label_contains("lines hidden").is_none());
+        // Bounded and virtualized: the far end isn't laid out until scrolled to.
+        assert!(harness.query_by_label("line 523").is_none());
+
+        harness.get_by_label("▾ show less").click();
+        harness.run();
+        harness.get_by_label("┄┄ 515 lines hidden ┄┄");
+        harness.get_by_label("▸ show all");
+    }
+
+    /// A command echo past three wrapped rows is clipped too, so even a short
+    /// output gets a "show all" footer, and opening it keeps the whole command.
+    #[test]
+    fn long_command_echo_is_clamped() {
+        let command: String = (0..60).map(|i| format!("arg{i} ")).collect();
+        let command = command.trim_end();
+        let mut harness = bash_output_harness(
+            &format!("`echo {command}`"),
+            "ok".to_string(),
+            egui::Vec2::new(360.0, 400.0),
+        );
+        harness.run();
+
+        // The output fits, so only the clipped command can raise the footer.
+        // (Its label can't show the clip: an elided galley still reports its
+        // whole text to accesskit.)
+        harness.get_by_label("▸ show all").click();
+        harness.run();
+        harness.get_by_label(&format!("echo {command}"));
+        harness.get_by_label("▾ show less");
+    }
+
+    /// The clamped preview of a long `sed` — the case that used to fill the
+    /// chat — and the same row with "show all" open.
+    /// Render with `scripts/snapshot-test snapshot_clamped_bash_output`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_clamped_bash_output() {
+        let summary = "`sed -n 1,120p crates/notedeck_dave/src/ui/dave.rs`";
+        let output: String = (1..=120)
+            .map(|i| format!("{i:>4}  fn line_{i}() -> usize {{ {i} }}\n"))
+            .collect();
+        let results = vec![crate::messages::ExecutedTool {
+            tool_name: "Bash".to_string(),
+            summary: summary.to_string(),
+            output: Some(output.into()),
+            parent_task_id: None,
+            file_update: None,
+            tool_use_id: None,
+        }];
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::Vec2::new(520.0, 360.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        let mut nav = BlockNav::default();
+                        for result in &results {
+                            DaveUi::executed_tool_ui(result, &mut nav, ui);
+                        }
+                    });
+            });
+        harness.run();
+        harness.snapshot("clamped_bash_output");
+
+        harness.get_by_label("▸ show all").click();
+        harness.run();
+        harness.snapshot("clamped_bash_output_show_all");
     }
 
     /// The chat input in each mode, framed the way `DaveUi` frames it, under

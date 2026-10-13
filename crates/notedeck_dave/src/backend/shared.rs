@@ -10,6 +10,7 @@ use crate::messages::{
     PermissionView, UserMessage,
 };
 use crate::Message;
+use agentium_core::tool_output::ToolOutput;
 use claude_agent_sdk_rs::PermissionMode;
 use notedeck::Waker;
 use std::collections::BTreeMap;
@@ -200,12 +201,13 @@ pub fn send_tool_result(
     // WebSearch's returned results. Keep those around to render in the
     // collapsible body. Other tools are covered by their summary (or a file
     // diff); broadening this set further is a follow-up. Kept in full here:
-    // truncation is a display concern the UI applies (see `tool_command_output_ui`),
+    // clamping is a display concern the UI applies (see `tool_command_output_ui`),
     // and the wire keeps only a safety-capped copy (see `ToolResultContent::encode`).
     let output = matches!(tool_name, "Bash" | "WebSearch")
         .then(|| extract_response_content(result_value))
         .flatten()
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(ToolOutput::new);
     // An explicit `parent_tool_use_id` (a subagent-internal result) wins over
     // the foreground nesting stack.
     let parent_task_id = parent_override

@@ -48,7 +48,7 @@ mod view;
 // The async_openai request mapping for these types lives in `backend/openai.rs`.
 pub use agentium_core::{
     file_update, messages, session_converter, session_events, session_jsonl, session_loader,
-    session_reconstructor, tools,
+    session_reconstructor, tool_output, tools,
 };
 pub mod ui;
 pub mod update;

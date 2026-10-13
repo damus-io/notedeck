@@ -24,6 +24,7 @@ use crate::tools::ToolResponses;
 use crate::{ExecutedTool, ImageAttachment, Message};
 use agentium_core::messages::PermissionRequest;
 use agentium_core::session_loader::{view_signature, RowSig};
+use agentium_core::tool_output::ToolOutput;
 use nostrdb::Transaction;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -338,7 +339,7 @@ impl LocalOverlay {
         else {
             return;
         };
-        let len = |output: &Option<String>| output.as_ref().map_or(0, String::len);
+        let len = |output: &Option<ToolOutput>| output.as_deref().map_or(0, str::len);
         if len(&host.output) > len(&tool.output) {
             tool.output = host.output;
         }

@@ -645,9 +645,10 @@ pub struct PermissionDecision {
 pub struct ExecutedTool {
     pub tool_name: String,
     pub summary: String, // e.g., "154 lines", "exit 0", "3 matches"
-    /// Raw textual output to surface inline (e.g. bash stdout/stderr), trimmed
-    /// to a bounded tail. `None` when the tool has no free-form output worth
-    /// showing (a diff-bearing edit, or a result already captured by `summary`).
+    /// Raw textual output to surface inline (e.g. bash stdout/stderr), with its
+    /// head+tail preview measured once at construction. `None` when the tool
+    /// has no free-form output worth showing (a diff-bearing edit, or a result
+    /// already captured by `summary`).
     ///
     /// Skipped by the JSONL serde (this struct is stored in kind-1988 notes as
     /// tags + `content`, not as a serialized blob), but the output is *not*
@@ -656,7 +657,7 @@ pub struct ExecutedTool {
     /// on the live path, and decoded back here when a session is reconstructed
     /// from notes.
     #[serde(skip)]
-    pub output: Option<String>,
+    pub output: Option<crate::tool_output::ToolOutput>,
     /// Which subagent (Task tool_use_id) produced this result, if any
     pub parent_task_id: Option<String>,
     /// Pre-computed file update for diff rendering. Skipped by serde here; it

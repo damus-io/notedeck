@@ -629,7 +629,7 @@ pub fn render_conversation_note_with_content(
                 ExecutedTool {
                     tool_name,
                     summary,
-                    output: decoded.output,
+                    output: decoded.output.map(Into::into),
                     parent_task_id: get_tag_value(note, "parent-task").map(str::to_string),
                     file_update: decoded.file_update.map(FileUpdate::from),
                     tool_use_id: get_tag_value(note, "tool-id").map(str::to_string),

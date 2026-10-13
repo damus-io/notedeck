@@ -28,6 +28,7 @@ pub mod split_message;
 #[cfg(test)]
 mod test_support;
 pub mod tool;
+pub mod tool_output;
 pub mod tools;
 mod util;
 pub mod wordid;
