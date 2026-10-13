@@ -1256,11 +1256,6 @@ impl ChatSession {
         self.cached_status
     }
 
-    /// How many subagents this session has started, running or finished.
-    pub fn subagent_count(&self) -> usize {
-        self.turn_rows.subagent_rows().count()
-    }
-
     /// Update the cached status based on current session state.
     /// Sets `state_dirty` when the status actually changes.
     /// Also sets the focus indicator when transitioning to a notable state.

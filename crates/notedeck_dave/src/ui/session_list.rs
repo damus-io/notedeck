@@ -311,7 +311,6 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                         last_activity: session.last_activity,
                         queue_priority,
                         git_lines: git_lines(session),
-                        subagents: session.subagent_count(),
                     },
                 )
             }
@@ -477,14 +476,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             Some(galley) => galley.size().y,
             None => row_height(ui, &title_font()),
         };
-        let meta = meta_line(
-            ui,
-            MetaLine {
-                age: row.last_activity.map(|t| now_unix().saturating_sub(t)),
-                git_lines: row.git_lines,
-                subagents: row.subagents,
-            },
-        );
+        let meta = meta_line(ui, row.git_lines);
         let cwd_height = row
             .cwd_display
             .map_or(0.0, |_| LINE_GAP + row_height(ui, &cwd_font()));
@@ -795,8 +787,6 @@ struct AgentRow<'s> {
     last_activity: Option<u64>,
     queue_priority: Option<FocusPriority>,
     git_lines: Option<GitLines>,
-    /// Subagents the session has started.
-    subagents: usize,
 }
 
 /// Left padding of a row's text, past the status bar.
@@ -857,65 +847,31 @@ fn paint_clipped(ui: &egui::Ui, pos: Pos2, galley: Arc<egui::Galley>, right: f32
         .galley(pos, galley, color);
 }
 
-/// What a row's meta line says, each part present only when it has
-/// something to say.
-struct MetaLine {
-    /// Seconds since the session's last activity.
-    age: Option<u64>,
-    git_lines: Option<GitLines>,
-    /// Subagents started, shown as `<n> sub`.
-    subagents: usize,
-}
-
-/// Lay out a row's dim meta line, e.g. `12m · +88 -4 · 2 sub`: the time
-/// since the last activity, the worktree's +/- lines against HEAD and how
-/// many subagents it started. The status isn't on it: the row's status bar
-/// already shows it in colour. Empty when there is
-/// nothing to say (see [`meta_height`]).
-fn meta_line(ui: &egui::Ui, meta: MetaLine) -> Arc<egui::Galley> {
+/// Lay out a row's dim meta line: the worktree's +/- lines against HEAD,
+/// e.g. `+88 -4`. Nothing else goes on it: the status bar already shows the
+/// status. Empty when the worktree is clean (see [`meta_height`]).
+fn meta_line(ui: &egui::Ui, git_lines: Option<GitLines>) -> Arc<egui::Galley> {
     use std::fmt::Write;
     let font = cwd_font();
-    let weak = ui.visuals().weak_text_color();
     let mut job = egui::text::LayoutJob::default();
+    let Some(lines) = git_lines else {
+        return ui.painter().layout_job(job);
+    };
+    let mut buf = String::new();
     let part = |job: &mut egui::text::LayoutJob, text: &str, color: Color32| {
         if !job.text.is_empty() {
-            job.append(" · ", 0.0, egui::TextFormat::simple(font.clone(), weak));
+            job.append(" ", 0.0, egui::TextFormat::simple(font.clone(), color));
         }
         job.append(text, 0.0, egui::TextFormat::simple(font.clone(), color));
     };
-    let mut buf = String::new();
-    if let Some(age) = meta.age {
-        buf.clear();
-        age_text(age, &mut buf);
-        part(&mut job, &buf, weak);
+    if lines.added > 0 {
+        let _ = write!(buf, "+{}", lines.added);
+        part(&mut job, &buf, GIT_ADDED_COLOR);
     }
-    if let Some(lines) = meta.git_lines {
-        if lines.added > 0 {
-            buf.clear();
-            let _ = write!(buf, "+{}", lines.added);
-            part(&mut job, &buf, GIT_ADDED_COLOR);
-        }
-        if lines.deleted > 0 {
-            buf.clear();
-            let _ = write!(buf, "-{}", lines.deleted);
-            // `+88 -4` reads as one part, so no dot between the two.
-            let sep = if lines.added > 0 { " " } else { "" };
-            if sep.is_empty() {
-                part(&mut job, &buf, GIT_DELETED_COLOR);
-            } else {
-                job.append(sep, 0.0, egui::TextFormat::simple(font.clone(), weak));
-                job.append(
-                    &buf,
-                    0.0,
-                    egui::TextFormat::simple(font.clone(), GIT_DELETED_COLOR),
-                );
-            }
-        }
-    }
-    if meta.subagents > 0 {
+    if lines.deleted > 0 {
         buf.clear();
-        let _ = write!(buf, "{} sub", meta.subagents);
-        part(&mut job, &buf, weak);
+        let _ = write!(buf, "-{}", lines.deleted);
+        part(&mut job, &buf, GIT_DELETED_COLOR);
     }
     ui.painter().layout_job(job)
 }
@@ -931,7 +887,7 @@ fn meta_height(meta: &egui::Galley) -> f32 {
     }
 }
 
-/// Write `secs` as the meta line's age: `now`, `12m`, `3h`, `2d`.
+/// Write `secs` as a short age: `now`, `12m`, `3h`, `2d`.
 pub(crate) fn age_text(secs: u64, out: &mut String) {
     use std::fmt::Write;
     let _ = match secs {
@@ -2402,7 +2358,6 @@ mod tests {
             last_activity: None,
             queue_priority: None,
             git_lines: None,
-            subagents: 0,
         }
     }
 
@@ -2599,8 +2554,9 @@ mod tests {
         sm
     }
 
-    /// The whole list as card rows: each card's title wrapped to two lines, a meta line under each, and the two QA2
-    /// sessions on a row each.
+    /// The whole list as card rows: each card's title wrapped to two lines,
+    /// the two QA2 sessions on a row each, and no meta line under rows whose
+    /// worktree is clean.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_card_titles() {
