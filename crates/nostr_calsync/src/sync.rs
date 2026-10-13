@@ -123,7 +123,10 @@ mod tests {
                 if pred(&notes) {
                     return notes;
                 }
-                assert!(Instant::now() < deadline, "calendar notes never satisfied");
+                assert!(
+                    Instant::now() < deadline,
+                    "calendar notes never satisfied: {notes:?}"
+                );
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
@@ -137,6 +140,7 @@ mod tests {
                 .into_iter()
                 .filter_map(|key| self.ndb.get_note_by_key(&txn, key).ok())
                 .map(|note| MirroredNote {
+                    created_at: note.created_at(),
                     d: tag(&note, "d"),
                     title: tag(&note, "title"),
                     start: tag(&note, "start"),
@@ -149,6 +153,7 @@ mod tests {
 
     #[derive(Debug)]
     struct MirroredNote {
+        created_at: u64,
         d: Option<String>,
         title: Option<String>,
         start: Option<String>,
@@ -231,6 +236,10 @@ mod tests {
         t.sync(std::slice::from_ref(&ev));
         let notes = t.wait_notes(KIND_TIME_BASED, |n| n.len() == 1);
         assert_eq!(notes[0].title.as_deref(), Some("v1"));
+        assert_eq!(
+            notes[0].created_at, 1_700_000_000,
+            "stamped with the source's last-modified time, not the wall clock"
+        );
 
         // A changed event with a newer last_modified supersedes: still one
         // resolved note per d tag, now carrying the new title.
@@ -240,6 +249,7 @@ mod tests {
             n.len() == 1 && n[0].title.as_deref() == Some("v2")
         });
         assert_eq!(notes.len(), 1, "supersede resolves to a single note");
+        assert_eq!(notes[0].created_at, 1_700_000_100);
     }
 
     #[test]

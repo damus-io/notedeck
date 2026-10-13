@@ -7,7 +7,7 @@
 //! the old note instead of duplicating it.
 
 use chrono::{Local, TimeZone};
-use nostrdb::{NoteBuildOptions, NoteBuilder};
+use nostrdb::NoteBuilder;
 
 use crate::source::ExternalEvent;
 
@@ -50,8 +50,10 @@ pub fn build_calendar_event(ev: &ExternalEvent) -> NoteBuilder<'static> {
     let mut b = NoteBuilder::new()
         .content(&content)
         .kind(kind)
+        // Never follow this with `.options(..)`: a default NoteBuildOptions
+        // turns build-time stamping back on, and `build` would overwrite this
+        // with the wall clock.
         .created_at(created_at(ev))
-        .options(NoteBuildOptions::default())
         .start_tag()
         .tag_str("d")
         .tag_str(&d_tag(&ev.source_id))

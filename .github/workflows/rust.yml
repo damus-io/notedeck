@@ -106,6 +106,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev libasound2-dev mesa-vulkan-drivers
+      - name: Run snapshot tests
+        run: ./scripts/snapshot-test
       # TEMPORARY diagnostic for headway:notedeck/man-eight-damp — the SIGILL
       # that intermittently kills notedeck_headway's snapshot binary, now
       # pinned to snapshot_switcher_same_slug_boards.
