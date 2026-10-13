@@ -22,6 +22,7 @@ use crate::chart::BarChartStyle;
 use crate::chart::Segment;
 use crate::chart::horizontal_bar_chart;
 use crate::chart::palette;
+use crate::storage::{format_bytes, kind_name};
 use crate::top_kind1_authors_over;
 use crate::top_kinds_over;
 use crate::top_new_contact_list_clients_over;
@@ -434,7 +435,93 @@ fn dashboard_ui_inner(
             });
         },
     );
+
+    ui.add_space(tokens::SPACING_SM);
+
+    // --- Storage row: all-time bytes per kind ---
+    let storage_w = (2.0 * list_w + gap.x).min(avail);
+    ui.add_sized([storage_w, list_h], |ui: &mut egui::Ui| {
+        card_ui(ui, list_h, |ui| storage_ui(dashboard, ui))
+    });
+
     action
+}
+
+/// Kinds ranked by the bytes their notes take in nostrdb, all time: count,
+/// mean note size, total, and for replaceable kinds the versions stored per
+/// address (nostrdb keeps every version, not just the newest).
+pub fn storage_ui(dashboard: &Dashboard, ui: &mut egui::Ui) {
+    // Fill the double-width card rather than hugging the table.
+    ui.set_min_width(ui.available_width());
+    let theme = ColorTheme::current(ui.ctx());
+    card_header_ui(ui, "STORAGE BY KIND (ALL TIME)");
+    ui.add_space(tokens::SPACING_SM);
+
+    if dashboard.storage_rows.is_empty() {
+        let text = if dashboard.last_error.is_none() {
+            "…"
+        } else {
+            "No data"
+        };
+        ui.label(
+            RichText::new(text)
+                .font(FontId::proportional(24.0))
+                .color(theme.text_muted),
+        );
+        return;
+    }
+
+    let total = dashboard.storage_total;
+    ui.label(
+        RichText::new(format!(
+            "{} in {} notes",
+            format_bytes(total.bytes),
+            total.count
+        ))
+        .color(theme.text_primary)
+        .strong(),
+    );
+    ui.add_space(tokens::SPACING_SM);
+
+    let limit = 12;
+    egui::Grid::new("dashboard_storage_by_kind")
+        .num_columns(5)
+        .spacing([tokens::SPACING_LG, tokens::SPACING_XS])
+        .striped(true)
+        .show(ui, |ui| {
+            for heading in ["kind", "notes", "avg", "bytes", "versions / address"] {
+                ui.label(RichText::new(heading).small().color(theme.text_muted));
+            }
+            ui.end_row();
+
+            for row in dashboard.storage_rows.iter().take(limit) {
+                let s = row.storage;
+                let label = match kind_name(row.kind) {
+                    Some(name) => format!("{} {name}", row.kind),
+                    None => row.kind.to_string(),
+                };
+                ui.label(RichText::new(label).small());
+                ui.label(RichText::new(s.count.to_string()).small());
+                ui.label(RichText::new(format_bytes(s.avg_bytes())).small());
+                ui.label(RichText::new(format_bytes(s.bytes)).small().strong());
+                match s.versions_per_address() {
+                    Some(v) => ui.label(
+                        RichText::new(format!("{v:.1} ({} addresses)", s.addresses)).small(),
+                    ),
+                    None => ui.label(RichText::new("—").small().color(theme.text_muted)),
+                };
+                ui.end_row();
+            }
+        });
+
+    let hidden = dashboard.storage_rows.len().saturating_sub(limit);
+    if hidden > 0 {
+        ui.label(
+            RichText::new(format!("and {hidden} more kinds"))
+                .small()
+                .color(theme.text_muted),
+        );
+    }
 }
 
 fn client_series(cache: &RollingCache, client: &str) -> Vec<f32> {

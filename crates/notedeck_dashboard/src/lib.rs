@@ -13,7 +13,10 @@ use chrono::{Datelike, TimeZone, Utc};
 
 mod chart;
 mod sparkline;
+mod storage;
 mod ui;
+
+use storage::{AddressKey, KindStorage, StorageRow};
 
 // ----------------------
 // Worker protocol
@@ -193,6 +196,8 @@ struct DashboardState {
     daily: RollingCache,
     weekly: RollingCache,
     monthly: RollingCache,
+    /// All-time bytes, counts and replaceable addresses per kind.
+    storage: FxHashMap<u32, KindStorage>,
 }
 
 #[derive(Debug, Clone)]
@@ -245,6 +250,11 @@ pub struct Dashboard {
     last_error: Option<String>,
 
     state: DashboardState,
+    /// `state.storage` sorted by bytes, rebuilt when a new state arrives so
+    /// the storage card doesn't sort every frame.
+    storage_rows: Vec<StorageRow>,
+    /// Every kind's storage summed, for the card's headline.
+    storage_total: KindStorage,
 }
 
 impl Default for Dashboard {
@@ -268,6 +278,8 @@ impl Default for Dashboard {
             last_error: None,
 
             state: DashboardState::default(),
+            storage_rows: Vec::new(),
+            storage_total: KindStorage::default(),
         }
     }
 }
@@ -319,11 +331,21 @@ impl Dashboard {
         self.last_snapshot = None;
         self.last_finished = None;
         self.last_duration = None;
-        self.state = DashboardState::default();
+        self.set_state(DashboardState::default());
+    }
+
+    /// Take a state from the worker, re-ranking the storage card's rows.
+    fn set_state(&mut self, state: DashboardState) {
+        storage::rank_into(&state.storage, &mut self.storage_rows);
+        self.storage_total = storage::total(&state.storage);
+        self.state = state;
     }
 
     fn process_worker_msgs(&mut self) {
-        let Some(rx) = &self.msg_rx else { return };
+        // A cheap handle clone, so taking a message can borrow `self` mutably.
+        let Some(rx) = self.msg_rx.clone() else {
+            return;
+        };
 
         let mut got_any = false;
 
@@ -336,7 +358,7 @@ impl Dashboard {
                     self.last_snapshot = Some(s.snapshot_at);
                     self.last_error = None;
 
-                    self.state = s.state;
+                    self.set_state(s.state);
                 }
                 WorkerMsg::Finished {
                     started_at,
@@ -350,7 +372,7 @@ impl Dashboard {
                     self.last_duration = Some(finished_at.saturating_duration_since(started_at));
                     self.last_error = None;
 
-                    self.state = state;
+                    self.set_state(state);
                 }
                 WorkerMsg::Failed {
                     started_at,
@@ -376,7 +398,7 @@ impl Dashboard {
         if self.running {
             return;
         }
-        if let Some(tx) = &self.cmd_tx {
+        if let Some(tx) = self.cmd_tx.clone() {
             let now = Instant::now();
             self.running = true;
             self.last_error = None;
@@ -384,7 +406,7 @@ impl Dashboard {
             self.last_snapshot = None;
             self.last_finished = None;
             self.last_duration = None;
-            self.state = DashboardState::default();
+            self.set_state(DashboardState::default());
             let _ = tx.send(WorkerCmd::Refresh);
         }
     }
@@ -408,7 +430,7 @@ impl Dashboard {
             .unwrap_or_else(Instant::now);
 
         if now.saturating_duration_since(last) >= self.refresh_every
-            && let Some(tx) = &self.cmd_tx
+            && let Some(tx) = self.cmd_tx.clone()
         {
             // reset UI fields for progressive load, but keep old values visible until snapshots arrive
             self.running = true;
@@ -417,7 +439,7 @@ impl Dashboard {
             self.last_snapshot = None;
             self.last_finished = None;
             self.last_duration = None;
-            self.state = DashboardState::default();
+            self.set_state(DashboardState::default());
 
             let _ = tx.send(WorkerCmd::Refresh);
         }
@@ -488,6 +510,9 @@ struct FirstKind3 {
 struct Acc {
     last_emit: Instant,
     first_kind3: FxHashMap<Pubkey, FirstKind3>,
+    /// Every replaceable address seen so far. Kept out of `state` so the
+    /// snapshots the worker sends every few ms don't clone it.
+    addresses: FxHashSet<AddressKey>,
 
     state: DashboardState,
 }
@@ -514,11 +539,13 @@ fn materialize_single_pass(
     let mut acc = Acc {
         last_emit: Instant::now(),
         first_kind3: FxHashMap::default(),
+        addresses: FxHashSet::default(),
         state: DashboardState {
             total: Bucket::default(),
             daily: RollingCache::daily(now, days),
             weekly: RollingCache::weekly(now, weeks, week_starts_monday),
             monthly: RollingCache::monthly_30d(now, months),
+            storage: FxHashMap::default(),
         },
     };
 
@@ -529,6 +556,7 @@ fn materialize_single_pass(
         acc.state.daily.bump(&note);
         acc.state.weekly.bump(&note);
         acc.state.monthly.bump(&note);
+        storage::bump(&mut acc.state.storage, &mut acc.addresses, &note);
 
         if note.kind() == 3
             && let Some(client) = note_client_tag(&note)
@@ -686,4 +714,100 @@ pub(crate) fn top_kind1_authors_over(cache: &RollingCache, limit: usize) -> Vec<
     v.sort_unstable_by_key(|author| std::cmp::Reverse(author.count));
     v.truncate(limit);
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nostrdb::{FilterBuilder, NoteBuilder};
+    use nostrdb_net::FullKeypair;
+    use notedeck_testing::fixtures::TempNdb;
+
+    /// Ingest `notes`, signed by one key, into `ndb` and wait until nostrdb
+    /// has stored them all.
+    fn seed(ndb: &Ndb, notes: &[KindAndD]) {
+        let sub = ndb
+            .subscribe(&[FilterBuilder::new().build()])
+            .expect("subscribe");
+        let key = FullKeypair::generate();
+        let now = Utc::now().timestamp() as u64;
+
+        for (i, note) in notes.iter().enumerate() {
+            let mut builder = NoteBuilder::new()
+                .kind(note.kind)
+                .content(&"x".repeat(10 * (i + 1)))
+                .created_at(now - i as u64);
+            if let Some(d) = note.d {
+                builder = builder.start_tag().tag_str("d").tag_str(d);
+            }
+            let note = builder
+                .sign(&key.secret_key.secret_bytes())
+                .build()
+                .expect("build");
+            ndb.process_event(&note.json().expect("json"))
+                .expect("ingest");
+        }
+
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(ndb.wait_for_all_notes(sub, notes.len() as u32))
+            .expect("wait");
+    }
+
+    /// A note to seed: its kind and, for addressable kinds, its `d` tag.
+    struct KindAndD {
+        kind: u32,
+        d: Option<&'static str>,
+    }
+
+    /// The dashboard's fold reports each kind's summed `Note::size()`, and
+    /// counts a replaceable kind's versions against its distinct addresses.
+    #[test]
+    fn fold_reports_bytes_and_addresses_per_kind() {
+        let TempNdb { ndb, dir: _dir } = TempNdb::new();
+        let of = |kind, d| KindAndD { kind, d };
+        seed(
+            &ndb,
+            &[
+                of(1, None),
+                of(1, None),
+                of(1988, None),
+                of(31988, Some("a")),
+                of(31988, Some("a")),
+                of(31988, Some("b")),
+            ],
+        );
+
+        // The oracle: every stored note's size, summed by kind.
+        let txn = Transaction::new(&ndb).unwrap();
+        let expected: FxHashMap<u32, u64> = ndb
+            .fold(
+                &txn,
+                &[Filter::new().build()],
+                FxHashMap::default(),
+                |mut acc, note| {
+                    *acc.entry(note.kind()).or_default() += note.size() as u64;
+                    acc
+                },
+            )
+            .unwrap();
+        drop(txn);
+
+        let (msg_tx, _msg_rx) = chan::unbounded();
+        let state =
+            materialize_single_pass(&notedeck::Waker::noop(), &ndb, &msg_tx, Instant::now())
+                .expect("fold");
+
+        let storage = &state.storage;
+        assert_eq!(storage.len(), 3);
+        for (kind, bytes) in &expected {
+            assert_eq!(storage[kind].bytes, *bytes, "kind {kind}");
+            assert!(*bytes > 0);
+        }
+        assert_eq!(storage[&1].count, 2);
+        assert_eq!(storage[&1].addresses, 0);
+        assert_eq!(storage[&31988].count, 3);
+        assert_eq!(storage[&31988].addresses, 2);
+        assert_eq!(storage[&31988].versions_per_address(), Some(1.5));
+    }
 }
