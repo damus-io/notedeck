@@ -22,7 +22,7 @@ use notedeck_dave::Dave;
 const READ_ONLY_TOOLS: [&str; 1] = ["dave_session_issue"];
 
 /// The scopes Dave reports in normal mode, by pane (`ui_tools::key_scopes`).
-const DAVE_SCOPES: [&str; 3] = ["dave.chat", "dave.sessions", "dave.normal"];
+const DAVE_SCOPES: [&str; 4] = ["dave.chat", "dave.sessions", "dave.normal", "dave.scene"];
 
 /// One Dave `[[bind]]` of the shipped keymap, as written.
 #[derive(Debug)]
