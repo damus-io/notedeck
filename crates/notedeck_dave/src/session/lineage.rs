@@ -30,10 +30,21 @@ pub(crate) struct Node<'a> {
     /// `parent-session` names.
     pub spawner: Option<SessionId>,
     pub relation: SessionRelation,
+    /// Where the session runs. A chain in the list never pulls a session
+    /// out of its own workspace (see [`list_chains_in_place`]).
+    pub workspace: Workspace<'a>,
     /// The card the session works (its title ref, else its issue url).
     pub card: Option<&'a str>,
     /// The card `card` is a subissue of, as last looked up.
     pub card_parent: Option<&'a str>,
+}
+
+/// The host and cwd a session runs in: the workspace folder the list
+/// files it under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Workspace<'a> {
+    pub host: &'a str,
+    pub cwd: Option<&'a std::path::Path>,
 }
 
 /// How a session hangs under the one before it in the list.
@@ -180,6 +191,7 @@ pub(crate) fn walk(nodes: &[Node<'_>]) -> Lineage {
         nodes.iter().map(|n| (n.id, attach(n, &by_id))).collect();
     cut_loops(&mut attached);
     let edges = edges(&attached);
+    list_chains_in_place(&mut attached, &by_id);
 
     let mut kids: HashMap<SessionId, Vec<Kid>> = HashMap::new();
     for (&id, a) in &attached {
@@ -234,6 +246,30 @@ fn edges(attached: &HashMap<SessionId, Attach>) -> Vec<Edge> {
         .collect();
     edges.sort_unstable_by_key(|e| e.to);
     edges
+}
+
+/// Make every chain link spawned from another workspace (host or cwd)
+/// top-level, for the list only: a chain block moved sessions out of the
+/// worktree they run in, which read as if they ran here. The link starts
+/// its own chain, or stands alone, in its own workspace's folder. The map
+/// keeps the edge, since there each workspace is drawn where it is.
+fn list_chains_in_place(
+    attached: &mut HashMap<SessionId, Attach>,
+    nodes: &HashMap<SessionId, Node<'_>>,
+) {
+    let workspace = |id: &SessionId| nodes.get(id).map(|n| n.workspace);
+    for (id, a) in attached.iter_mut() {
+        let Attach::Under {
+            parent,
+            nesting: Nesting::Link { .. },
+        } = *a
+        else {
+            continue;
+        };
+        if workspace(id) != workspace(&parent) {
+            *a = Attach::Top;
+        }
+    }
 }
 
 /// Make every node whose spawner chain leads back to itself top-level.
@@ -397,6 +433,7 @@ mod tests {
             id,
             spawner: None,
             relation: SessionRelation::None,
+            workspace: Workspace::default(),
             card: None,
             card_parent: None,
         }
@@ -572,6 +609,45 @@ mod tests {
                 edge(2, 3, EdgeKind::Chain),
                 edge(3, 5, EdgeKind::Child),
             ]
+        );
+    }
+
+    /// A chain handed to another worktree, then to another host, splits in
+    /// the list: each workspace lists the links that ran in it, so no
+    /// session moves out of its own folder. The map keeps every handoff.
+    #[test]
+    fn a_chain_in_the_list_keeps_each_link_in_its_own_workspace() {
+        use std::path::Path;
+        let at = |n: Node<'static>, host, cwd: &'static str| Node {
+            workspace: Workspace {
+                host,
+                cwd: Some(Path::new(cwd)),
+            },
+            ..n
+        };
+        let succ = |id, by| spawned(node(id), by, SessionRelation::Successor);
+        let n1 = at(node(1), "monad", "/home/dev/notedeck");
+        let n2 = at(succ(2, 1), "monad", "/home/dev/notedeck");
+        let n3 = at(succ(3, 2), "monad", "/home/dev/notedeck-scene");
+        let n4 = at(succ(4, 3), "hydra", "/home/dev/notedeck-scene");
+        let n5 = at(succ(5, 4), "hydra", "/home/dev/notedeck-scene");
+        let walked = walk(&[n5, n4, n3, n2, n1]);
+
+        let ids: Vec<Vec<SessionId>> = walked.entries.iter().map(|e| e.ids.clone()).collect();
+        assert_eq!(ids, vec![vec![1, 2], vec![3], vec![4, 5]]);
+        let chains: Vec<bool> = walked.entries.iter().map(|e| e.chain.is_some()).collect();
+        assert_eq!(chains, vec![true, false, true], "a lone link is no chain");
+
+        let edge = |from, to, kind| Edge { from, to, kind };
+        assert_eq!(
+            walked.edges,
+            vec![
+                edge(1, 2, EdgeKind::Handoff),
+                edge(2, 3, EdgeKind::Chain),
+                edge(3, 4, EdgeKind::Chain),
+                edge(4, 5, EdgeKind::Chain),
+            ],
+            "the map still draws every handoff"
         );
     }
 

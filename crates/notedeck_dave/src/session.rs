@@ -1475,8 +1475,9 @@ pub struct CwdGroup {
 pub struct ListRow {
     pub place: Place,
     /// Where the session runs, `host:cwd` or `cwd`, when that isn't the
-    /// group's own workspace: a child or chain link listed under a session
-    /// in another worktree, or on another host.
+    /// group's own workspace: a child listed under a session in another
+    /// worktree, or on another host. A chain link never is: chains stay in
+    /// their own workspace.
     pub elsewhere: Option<String>,
 }
 
@@ -1957,8 +1958,9 @@ impl SessionManager {
     ///
     /// Sessions are grouped by lineage first (see [`lineage`]): a child
     /// session is listed under the session that spawned it, and a
-    /// successor chain as one run, in the workspace of its last link, even
-    /// when some of them run in another worktree or on another host.
+    /// successor chain as one run. A chain only joins links that run in the
+    /// same workspace (host and cwd), so a handoff into another worktree or
+    /// host starts a new chain there instead of moving the session.
     pub fn rebuild_groups(&mut self) {
         self.host_groups.clear();
         self.chat_ids.clear();
@@ -1990,6 +1992,10 @@ impl SessionManager {
                         .as_deref()
                         .and_then(|r| self.session_refs.find(r)),
                     relation: s.details.relation,
+                    workspace: lineage::Workspace {
+                        host: &s.details.hostname,
+                        cwd: s.cwd().or(s.details.cwd.as_ref()).map(|p| p.as_path()),
+                    },
                     card,
                     card_parent: card.and_then(|c| titles.parent(c)),
                 }

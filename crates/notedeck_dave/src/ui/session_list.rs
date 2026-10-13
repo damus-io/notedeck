@@ -2821,7 +2821,8 @@ mod tests {
     /// One workspace holding a session with a foreground and a background
     /// subagent and a child session, and a four-link successor chain on
     /// [`EPIC`]'s cards: two links spawned with `--successor`, one inferred
-    /// from its sibling card. The first link ran in another worktree.
+    /// from its sibling card. The first link ran in another worktree, so the
+    /// list keeps it there and the chain in this one has three links.
     fn lineage_sessions() -> LineageFixture {
         use agentium_core::session_events::SessionRelation;
         use agentium_core::wordid::session_ref;
@@ -2928,9 +2929,9 @@ mod tests {
 
     /// A child session nests under its parent and the parent's subagents
     /// get no row at all, and the chain's links follow one another in one
-    /// run, listed in the workspace of its last link, the first link saying
-    /// where it ran; Ctrl+J / K walks them in that order. Collapsed, the chain
-    /// keeps only its last link.
+    /// run; Ctrl+J / K walks them in that order. The first link ran in
+    /// another worktree, so it stays in that worktree's folder rather than
+    /// joining the chain. Collapsed, the chain keeps only its last link.
     #[test]
     fn lineage_nests_in_visual_order_and_a_collapsed_chain_keeps_its_last_link() {
         let LineageFixture { mut sm, ids } = lineage_sessions();
@@ -2944,23 +2945,31 @@ mod tests {
             assert!(sm.get(sub).is_some(), "the subagent's session still exists");
         }
 
-        let group = sm.host_groups()[0].project_groups[0].cwd_groups[0].clone();
+        let groups = sm.host_groups()[0].project_groups[0].cwd_groups.clone();
+        assert_eq!(groups[0].display_cwd, "~/notedeck");
+        assert_eq!(
+            groups[0].session_ids,
+            [chain[0]],
+            "the first link stays home"
+        );
+        assert!(groups[0].chains.is_empty());
+        let group = &groups[1];
         assert_eq!(group.display_cwd, "~/notedeck-scene");
         let span = &group.chains[0];
         assert_eq!(span.label, "chain · SM · 3/13");
-        assert_eq!((span.start, span.tail, span.end), (0, 3, 4));
-        assert_eq!(group.rows[0].elsewhere.as_deref(), Some("~/notedeck"));
-        assert_eq!(group.rows[1].elsewhere, None);
+        assert_eq!((span.start, span.tail, span.end), (0, 2, 3));
+        assert!(group.rows.iter().all(|r| r.elsewhere.is_none()));
 
         collapse.toggle_chain("", &span.key);
         let collapsed = sm.visual_order(&collapse);
-        assert_eq!(collapsed[0], chain[3]);
-        assert_eq!(collapsed.len(), expanded.len() - 3);
+        assert_eq!(collapsed[..2], [chain[0], chain[3]]);
+        assert_eq!(collapsed.len(), expanded.len() - 2);
     }
 
     /// The lineage list: a parent with a child session under it (its two
-    /// subagents draw no rows), and a four-link chain headed
-    /// `chain · SM · 3/13`, its handed-on links dimmed.
+    /// subagents draw no rows), and a three-link chain headed
+    /// `chain · SM · 3/13`, its handed-on links dimmed. The chain's first
+    /// link ran in another worktree and is listed in that folder.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_lineage() {
@@ -2985,7 +2994,7 @@ mod tests {
     fn snapshot_lineage_chain_collapsed() {
         let mut sm = lineage_sessions().sm;
         let mut collapse_state = CollapseState::new();
-        let key = sm.host_groups()[0].project_groups[0].cwd_groups[0].chains[0]
+        let key = sm.host_groups()[0].project_groups[0].cwd_groups[1].chains[0]
             .key
             .clone();
         collapse_state.toggle_chain("", &key);
