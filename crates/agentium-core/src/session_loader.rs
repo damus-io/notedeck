@@ -946,6 +946,11 @@ pub struct SessionState {
     pub home_dir: String,
     pub backend: Option<String>,
     pub permission_mode: Option<String>,
+    /// The model the user picked for the session (`/model`, or the new-session
+    /// picker), as the CLI takes it (`sonnet`, `claude-opus-5-5`). Absent
+    /// when the backend's default is used, and on states written before it
+    /// was recorded.
+    pub model: Option<String>,
     pub created_at: u64,
     /// Real CLI session ID when the d-tag is a provisional UUID.
     /// Present only for sessions created via spawn commands.
@@ -1030,6 +1035,7 @@ impl SessionState {
             home_dir: get_tag_value(note, "home_dir").unwrap_or("").to_string(),
             backend: get_tag_value(note, "backend").map(|s| s.to_string()),
             permission_mode: get_tag_value(note, "permission-mode").map(|s| s.to_string()),
+            model: get_tag_value(note, "model").map(|s| s.to_string()),
             created_at: note.created_at(),
             cli_session_id: get_tag_value(note, "cli_session").map(|s| s.to_string()),
             spawn_id: get_tag_value(note, "spawn_id").map(|s| s.to_string()),
@@ -2127,6 +2133,7 @@ mod tests {
     /// looks at (id, cli id, title) are meaningful; the rest are inert defaults.
     fn sess(id: &str, cli: Option<&str>, title: &str) -> SessionState {
         SessionState {
+            model: None,
             claude_session_id: id.to_string(),
             title: title.to_string(),
             custom_title: None,
@@ -3554,6 +3561,7 @@ mod tests {
     #[test]
     fn sort_sessions_orders_a_merged_list() {
         let mk = |id: &str, created_at: u64| SessionState {
+            model: None,
             claude_session_id: id.to_string(),
             title: String::new(),
             custom_title: None,
@@ -3646,6 +3654,7 @@ mod tests {
         let ndb = Ndb::new(dir.path().to_str().unwrap(), &test_config()).unwrap();
 
         let state = SessionState {
+            model: Some("sonnet".to_string()),
             claude_session_id: "round-trip".to_string(),
             title: "derived".to_string(),
             custom_title: Some("custom".to_string()),

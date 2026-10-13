@@ -283,6 +283,9 @@ count__denied_c592 = {$count} denied
 # Dave session inspector subagents: how many subagents failed
 count__failed_ef23 = {$count} failed
 
+# How many more rows Dave's slash-command list has below the visible ones
+count__more_14f7 = +{$count} more
+
 # Dave session inspector outputs: how many more cards or pages there are than the card lists
 count__more_4934 = {$count} more
 
@@ -569,6 +572,9 @@ Lightning_network_address__lud16_ea51 = Lightning network address (lud16)
 
 # Hover text for like button
 Like_this_note_dfb5 = Like this note
+
+# Dave slash-command popup row shown while the list of commands loads
+loading_commands_61d0 = loading commands…
 
 # Login page title
 Login_9eef = Login
@@ -998,6 +1004,12 @@ See_notes_from_your_contacts_ac16 = See notes from your contacts
 
 # Description for universe column
 See_the_whole_nostr_universe_7694 = See the whole nostr universe
+
+# Key hints under Dave's /model list of models
+select___Enter_switch___Esc_back_to_commands_f457 = ↑↓ select · Enter switch · Esc back to commands
+
+# Key hints under Dave's slash-command list
+select___Tab_complete___Enter_run___Esc_close_8daf = ↑↓ select · Tab complete · Enter run · Esc close
 
 # Column title for selecting a people list
 Select_a_People_List_a920 = Select a People List

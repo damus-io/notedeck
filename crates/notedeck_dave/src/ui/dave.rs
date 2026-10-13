@@ -142,6 +142,8 @@ pub struct DaveUi<'a> {
     /// The session's inspector state and which tab it shows. `None` draws the
     /// chat with no tab strip.
     inspector: Option<Inspected<'a>>,
+    /// The input's slash-command popup; `None` draws no popup.
+    slash: Option<&'a mut crate::slash::SlashPopup>,
 }
 
 /// The session the Details tab inspects: its inspector and tab state, plus
@@ -343,11 +345,18 @@ impl<'a> DaveUi<'a> {
             pending_images: None,
             normal_mode: None,
             inspector: None,
+            slash: None,
         }
     }
 
     /// Give the session view its `Chat | Details` tab strip, drawing Details
     /// from `inspected` when its view selects it.
+    /// Draw `popup` over the input when a `/` command is typed.
+    pub fn slash(mut self, popup: &'a mut crate::slash::SlashPopup) -> Self {
+        self.slash = Some(popup);
+        self
+    }
+
     pub fn inspector(mut self, inspected: Inspected<'a>) -> Self {
         self.inspector = Some(inspected);
         self
@@ -2087,8 +2096,10 @@ impl<'a> DaveUi<'a> {
             None => InputMode::Insert,
         };
 
+        let claim_popup_keys = self.slash.as_deref().is_some_and(|p| p.claims_keys());
         let mut layout = InputboxLayout::new(self.input, i18n, mode)
             .show_stop(show_stop)
+            .claim_popup_keys(claim_popup_keys)
             .id(input_id(self.session_id));
         // A subagent's session messages the subagent, not dave.
         if self.flags.contains(DaveUiFlags::IsSubagent) && mode == InputMode::Insert {
@@ -2100,6 +2111,18 @@ impl<'a> DaveUi<'a> {
         }
 
         let result = layout.show(ui);
+
+        if let Some(outcome) = self.slash_popup(&result, i18n, ui) {
+            match outcome {
+                crate::slash::SlashOutcome::Run => return DaveResponse::send(),
+                crate::slash::SlashOutcome::Edited => {
+                    let id = input_id(self.session_id);
+                    crate::slash::cursor_to_end(ui.ctx(), id, self.input);
+                    ui.memory_mut(|m| m.request_focus(id));
+                }
+                crate::slash::SlashOutcome::Moved => {}
+            }
+        }
 
         if let Some(r) = &result.text_response {
             dave_input_context(
@@ -2156,6 +2179,30 @@ impl<'a> DaveUi<'a> {
         }
 
         result.action()
+    }
+
+    /// Draw the slash popup over the input while the input has focus (or
+    /// had it last frame: a click on a row takes it away), reranked for
+    /// whatever was typed this frame.
+    fn slash_popup(
+        &mut self,
+        input: &InputboxResult,
+        i18n: &mut notedeck::Localization,
+        ui: &mut egui::Ui,
+    ) -> Option<crate::slash::SlashOutcome> {
+        let popup = self.slash.as_deref_mut()?;
+        popup.sync(self.input);
+        let id = input_id(self.session_id);
+        let focused = ui.memory(|m| m.has_focus(id) || m.had_focus_last_frame(id));
+        if !focused || self.normal_mode.is_some() {
+            return None;
+        }
+        // The session's pick, or the CLI's own default when it has none.
+        let current_model = self
+            .details
+            .and_then(|d| d.requested_model.as_deref())
+            .unwrap_or("default");
+        super::slash_popup::slash_popup_ui(popup, self.input, current_model, input.rect, i18n, ui)
     }
 
     /// A composer that can't send now, saying why on hover (see
@@ -2372,6 +2419,8 @@ pub struct InputboxResult {
     pub ask_clicked: bool,
     pub stop_clicked: bool,
     pub text_response: Option<egui::Response>,
+    /// The whole input box, buttons included: what the slash popup sits on.
+    pub rect: egui::Rect,
 }
 
 impl InputboxResult {
@@ -2433,6 +2482,9 @@ pub struct InputboxLayout<'a> {
     pub id: Option<egui::Id>,
     /// Normal mode dims whatever is typed, so it reads as not taking keys.
     pub mode: InputMode,
+    /// The slash popup is open over the input and takes Tab, Esc and the
+    /// arrows (see [`claim_popup_keys`](Self::claim_popup_keys)).
+    pub claim_popup_keys: bool,
 }
 
 impl<'a> InputboxLayout<'a> {
@@ -2465,6 +2517,7 @@ impl<'a> InputboxLayout<'a> {
             show_stop: false,
             id: None,
             mode,
+            claim_popup_keys: false,
         }
     }
 
@@ -2477,6 +2530,7 @@ impl<'a> InputboxLayout<'a> {
             show_stop: false,
             id: None,
             mode: InputMode::Insert,
+            claim_popup_keys: false,
         }
     }
 
@@ -2490,6 +2544,15 @@ impl<'a> InputboxLayout<'a> {
         self
     }
 
+    /// Keep focus through Tab and Esc while the slash popup takes them.
+    /// egui reads both at the start of a frame, before any key handler runs:
+    /// Tab would move focus to the next widget and Esc would drop it, unless
+    /// the focused input's event filter says it wants them.
+    pub fn claim_popup_keys(mut self, claim: bool) -> Self {
+        self.claim_popup_keys = claim;
+        self
+    }
+
     pub fn show(self, ui: &mut egui::Ui) -> InputboxResult {
         let line_count = self.input.lines().count().max(1).clamp(1, 8);
         let line_height = 20.0;
@@ -2497,7 +2560,7 @@ impl<'a> InputboxLayout<'a> {
         let input_height = base_height + (line_count as f32 * line_height);
         let button_size = egui::vec2(60.0, notedeck::tokens::BUTTON_LG);
 
-        ui.allocate_ui(egui::vec2(ui.available_width(), input_height), |ui| {
+        let inner = ui.allocate_ui(egui::vec2(ui.available_width(), input_height), |ui| {
             ui.horizontal(|ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let ask_clicked = ui
@@ -2530,8 +2593,19 @@ impl<'a> InputboxLayout<'a> {
                                 edit = edit.text_color(ui.visuals().weak_text_color());
                             }
 
+                            if self.claim_popup_keys {
+                                edit = edit.event_filter(egui::EventFilter {
+                                    horizontal_arrows: true,
+                                    vertical_arrows: true,
+                                    tab: true,
+                                    escape: true,
+                                });
+                            }
+
+                            // The exact id, not a salt, so the slash popup's
+                            // key step can ask whether this input has focus.
                             if let Some(id) = self.id {
-                                edit = edit.id_source(id);
+                                edit = edit.id(id);
                             }
 
                             ui.add(edit)
@@ -2542,13 +2616,17 @@ impl<'a> InputboxLayout<'a> {
                         ask_clicked,
                         stop_clicked,
                         text_response: Some(text_response),
+                        rect: egui::Rect::NOTHING,
                     }
                 })
                 .inner
             })
             .inner
-        })
-        .inner
+        });
+        InputboxResult {
+            rect: inner.response.rect,
+            ..inner.inner
+        }
     }
 }
 

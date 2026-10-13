@@ -1152,6 +1152,8 @@ fn hydrate_session_from_state(
 
     session.details.custom_title = state.custom_title.clone();
     session.details.issue_url = state.issue_url.clone();
+    // The model the user picked, so a restored session starts its CLI on it.
+    session.details.requested_model = state.model.clone();
     session.details.parent_session = state.parent_session.clone();
     session.details.relation = state.relation;
     session.spawn_id = state.spawn_id.clone();
@@ -1284,6 +1286,7 @@ mod tests {
             home_dir: "/home/me".to_string(),
             backend: Some("claude".to_string()),
             permission_mode: None,
+            model: Some("sonnet".to_string()),
             created_at: 1_770_000_123,
             cli_session_id: cli.map(str::to_string),
             spawn_id: Some("spawn-xyz".to_string()),
@@ -1349,6 +1352,8 @@ mod tests {
             Some("agentium:the-parent-ref")
         );
         assert_eq!(details.relation, session_events::SessionRelation::Successor);
+        // And the model picked with `/model`, so its next CLI starts on it.
+        assert_eq!(details.requested_model.as_deref(), Some("sonnet"));
     }
 
     /// An empty `cli_session` means the backend never started: there is nothing

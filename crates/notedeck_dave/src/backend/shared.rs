@@ -26,6 +26,12 @@ pub(crate) enum SessionCommand {
     Query {
         prompt: String,
         images: Vec<crate::messages::ImageAttachment>,
+        /// The session's requested model when this turn was sent (see
+        /// [`SessionDetails::resolve_model`](crate::session::SessionDetails::resolve_model)),
+        /// so a `/model` the user ran reaches the next CLI the backend starts
+        /// rather than the one its actor was spawned with. `None` keeps the
+        /// model the actor already has.
+        model: Option<String>,
         /// UI response channel for this turn.
         ///
         /// `Some` for backends that mint a fresh channel per query (Codex).

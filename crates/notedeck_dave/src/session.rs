@@ -595,6 +595,11 @@ pub struct ChatSession {
     pub input: String,
     /// Images staged for the next message send, cleared after dispatch.
     pub pending_images: Vec<crate::messages::ImageAttachment>,
+    /// The input's slash-command popup.
+    pub slash: crate::slash::SlashPopup,
+    /// The commands and models this session's own CLI reported when it last
+    /// connected. Until then the popup uses its cwd's probed catalog.
+    pub slash_catalog: Option<std::rc::Rc<crate::slash::SlashCatalog>>,
     pub incoming_tokens: Option<Receiver<DaveApiResponse>>,
     /// Handle to the background task processing this session's AI requests.
     /// Aborted on drop to clean up the subprocess.
@@ -722,6 +727,8 @@ impl ChatSession {
             chat: vec![],
             input: String::new(),
             pending_images: vec![],
+            slash: Default::default(),
+            slash_catalog: None,
             incoming_tokens: None,
             task_handle: None,
             wakeup_turn: false,
@@ -840,6 +847,8 @@ impl ChatSession {
             last_activity: None,
             indicator: None,
             pending_images: vec![],
+            slash: Default::default(),
+            slash_catalog: None,
             pending_created_at: Some(Instant::now()),
             spawn_id: Some(spawn_id),
             pending_resume_target: resume_target,

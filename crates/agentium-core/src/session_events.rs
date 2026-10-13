@@ -1573,6 +1573,9 @@ pub fn build_session_state_event(
         .start_tag()
         .tag_str("permission-mode")
         .tag_str(permission_mode);
+    if let Some(model) = state.model.as_deref().filter(|m| !m.is_empty()) {
+        builder = builder.start_tag().tag_str("model").tag_str(model);
+    }
 
     // Real Claude CLI session ID for backend --resume.
     // Empty string means the backend hasn't started yet.

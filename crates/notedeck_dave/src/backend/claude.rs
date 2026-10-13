@@ -466,6 +466,32 @@ fn result_error(result_msg: &ResultMessage, stopped_by_user: bool) -> Option<Str
 /// explicit turn boundary the UI keys off (the session channel stays open).
 /// `stopped_by_user` says the user stopped the turn this message belongs to,
 /// so its closing `Result` is not reported as an error (see [`result_error`]).
+/// The model the CLI names on an assistant message it wrote itself rather
+/// than the model: the output of a slash command it ran in print mode.
+const SYNTHETIC_MODEL: &str = "<synthetic>";
+
+/// Whether `msg` is a slash command's output (see [`SYNTHETIC_MODEL`]). It
+/// arrives whole, with no stream deltas and zero usage, so it is neither the
+/// assistant's reply nor a context-window reading.
+fn is_command_reply(msg: &claude_agent_sdk_rs::AssistantMessage) -> bool {
+    msg.parent_tool_use_id.is_none() && msg.message.model.as_deref() == Some(SYNTHETIC_MODEL)
+}
+
+/// The text blocks of an assistant message, joined by blank lines.
+fn assistant_text(msg: &claude_agent_sdk_rs::AssistantMessage) -> String {
+    let mut text = String::new();
+    for block in &msg.message.content {
+        let ContentBlock::Text(block) = block else {
+            continue;
+        };
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(block.text.trim());
+    }
+    text
+}
+
 fn handle_stream_message(
     message: ClaudeMessage,
     response_tx: &mpsc::Sender<DaveApiResponse>,
@@ -476,6 +502,13 @@ fn handle_stream_message(
     stopped_by_user: bool,
 ) {
     match message {
+        ClaudeMessage::Assistant(assistant_msg) if is_command_reply(&assistant_msg) => {
+            let text = assistant_text(&assistant_msg);
+            if !text.is_empty() {
+                let _ = response_tx.send(DaveApiResponse::CommandReply(text));
+                waker.wake();
+            }
+        }
         ClaudeMessage::Assistant(assistant_msg) => {
             // A subagent's own message (forwarded with its parent's tool_use
             // id): its prose and thinking belong to its transcript, and its
@@ -1109,6 +1142,10 @@ struct ActorState {
     /// The Claude CLI session to `--resume` when (re)connecting: the one the
     /// session was restored from, then whatever the CLI's `init` reports.
     cli_session_id: Option<String>,
+    /// The model the next CLI starts with: the spawn-time model, then the one
+    /// the latest query carried. A `/model` switches the running CLI by
+    /// itself; this keeps the switch when an idle stop restarts the CLI.
+    model: Option<String>,
     /// The CLI process state last sent to the UI, so it is resent only when
     /// it changes.
     cli_state_sent: Option<CliState>,
@@ -1116,7 +1153,12 @@ struct ActorState {
 
 impl ActorState {
     /// A session's state before its first CLI starts.
-    fn new(waker: Waker, permission_mode: PermissionMode, cli_session_id: Option<String>) -> Self {
+    fn new(
+        waker: Waker,
+        permission_mode: PermissionMode,
+        cli_session_id: Option<String>,
+        model: Option<String>,
+    ) -> Self {
         Self {
             waker,
             pending_tools: HashMap::new(),
@@ -1127,7 +1169,18 @@ impl ActorState {
             idle: IdleTracker::new(Instant::now()),
             permission_mode,
             cli_session_id,
+            model,
             cli_state_sent: None,
+        }
+    }
+
+    /// Take the model a query carries as the one the next CLI starts with.
+    fn note_query_model(&mut self, cmd: &SessionCommand) {
+        if let SessionCommand::Query {
+            model: Some(model), ..
+        } = cmd
+        {
+            self.model = Some(model.clone());
         }
     }
 
@@ -1347,12 +1400,11 @@ async fn session_actor(
     // are filled in per connection from `ActorState`.
     let mut base_options = session_base_options(can_use_tool);
     base_options.cwd = cwd;
-    base_options.model = model;
     // Export the session env (the configured `session_env` plus this session's
     // agentium identity; see `shared::session_env`) into the spawned CLI.
     base_options.env.extend(session_env);
 
-    let mut state = ActorState::new(initial_waker, permission_mode, resume_session_id);
+    let mut state = ActorState::new(initial_waker, permission_mode, resume_session_id, model);
 
     serve_session(
         &session_id,
@@ -1382,8 +1434,10 @@ async fn serve_session(
 ) {
     // No CLI runs until there is something for it to do.
     while let Some(wake_cmd) = wait_dormant(command_rx, state).await {
+        state.note_query_model(&wake_cmd);
         let mut options = base_options.clone();
         options.resume = state.cli_session_id.clone();
+        options.model = state.model.clone();
         options.permission_mode = Some(state.permission_mode);
         if let Some(resume_id) = &options.resume {
             tracing::info!(
@@ -1406,6 +1460,11 @@ async fn serve_session(
             continue;
         }
         tracing::debug!("Session {} connected successfully", session_id);
+        // The CLI's command and model lists, for the slash-command popup.
+        if let Some(info) = client.get_server_info() {
+            let _ = response_tx.send(DaveApiResponse::ServerInfo(info));
+            state.waker.wake();
+        }
 
         let exit = run_connected(
             &client,
@@ -1656,6 +1715,7 @@ async fn handle_command(
     response_tx: &mpsc::Sender<DaveApiResponse>,
     state: &mut ActorState,
 ) -> Option<ConnectedExit> {
+    state.note_query_model(&cmd);
     match cmd {
         SessionCommand::Query {
             prompt,
@@ -1824,6 +1884,7 @@ impl AiBackend for ClaudeBackend {
                 .send(SessionCommand::Query {
                     prompt,
                     images,
+                    model,
                     response_tx: None,
                     waker,
                 })
@@ -1909,6 +1970,7 @@ impl AiBackend for ClaudeBackend {
                 .send(SessionCommand::Query {
                     prompt: "/compact".to_string(),
                     images: vec![],
+                    model: None,
                     response_tx: None,
                     waker,
                 })
@@ -2109,6 +2171,7 @@ esac
         SessionCommand::Query {
             prompt: "go".to_string(),
             images: vec![],
+            model: None,
             response_tx: None,
             waker: waker.clone(),
         }
@@ -2146,7 +2209,7 @@ esac
         let (command_tx, mut command_rx) = tokio_mpsc::channel(4);
         let (_perm_tx, mut perm_rx) = tokio_mpsc::channel(4);
         let (response_tx, response_rx) = mpsc::channel();
-        let mut state = ActorState::new(waker.waker().clone(), PermissionMode::Default, None);
+        let mut state = ActorState::new(waker.waker().clone(), PermissionMode::Default, None, None);
         let session = tokio::spawn(async move {
             serve_session(
                 "dave-session",
@@ -2248,7 +2311,7 @@ cat > /dev/null
         let (command_tx, mut command_rx) = tokio_mpsc::channel(4);
         let (_perm_tx, mut perm_rx) = tokio_mpsc::channel(4);
         let (response_tx, response_rx) = mpsc::channel();
-        let mut state = ActorState::new(waker.waker().clone(), PermissionMode::Default, None);
+        let mut state = ActorState::new(waker.waker().clone(), PermissionMode::Default, None, None);
         let session = tokio::spawn(async move {
             serve_session(
                 "dave-session",
@@ -2344,7 +2407,7 @@ cat > /dev/null
         let (command_tx, mut command_rx) = tokio_mpsc::channel(4);
         let (_perm_tx, mut perm_rx) = tokio_mpsc::channel(4);
         let (response_tx, response_rx) = mpsc::channel();
-        let mut state = ActorState::new(waker.waker().clone(), PermissionMode::Default, None);
+        let mut state = ActorState::new(waker.waker().clone(), PermissionMode::Default, None, None);
         let session = tokio::spawn(async move {
             serve_session(
                 "dave-session",
@@ -2447,7 +2510,7 @@ cat > /dev/null
         let (command_tx, mut command_rx) = tokio_mpsc::channel(4);
         let (_perm_tx, mut perm_rx) = tokio_mpsc::channel(4);
         let (response_tx, response_rx) = mpsc::channel();
-        let mut state = ActorState::new(waker.waker().clone(), PermissionMode::Default, None);
+        let mut state = ActorState::new(waker.waker().clone(), PermissionMode::Default, None, None);
         let session = tokio::spawn(async move {
             serve_session(
                 "dave-session",
@@ -3513,7 +3576,7 @@ cat > /dev/null
     #[test]
     fn cli_state_is_reported_when_it_changes() {
         let (tx, rx) = mpsc::channel();
-        let mut state = ActorState::new(Waker::noop().clone(), PermissionMode::Default, None);
+        let mut state = ActorState::new(Waker::noop().clone(), PermissionMode::Default, None, None);
 
         state.report_cli_state(true, &tx);
         state.report_cli_state(true, &tx);

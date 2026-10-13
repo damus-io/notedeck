@@ -333,6 +333,7 @@ pub(crate) mod tests {
     /// card; these exercise the pure rendering/filtering logic.)
     pub(crate) fn session(host: &str, title: &str, status: &str, created_at: u64) -> SessionState {
         SessionState {
+            model: None,
             claude_session_id: format!("{host}-{title}"),
             title: title.to_string(),
             custom_title: None,

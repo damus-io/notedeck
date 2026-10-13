@@ -322,6 +322,7 @@ pub(crate) fn apply_response(
     if !matches!(
         res,
         DaveApiResponse::SessionInfo(_)
+            | DaveApiResponse::ServerInfo(_)
             | DaveApiResponse::CompactionStarted
             | DaveApiResponse::CompactionComplete(_)
             | DaveApiResponse::QueryComplete(_)
@@ -356,6 +357,13 @@ pub(crate) fn apply_response(
         }
         DaveApiResponse::SessionInfo(info) => {
             handle_session_info(session, info);
+        }
+        DaveApiResponse::ServerInfo(info) => {
+            let catalog = crate::slash::SlashCatalog::from_server_info(&info);
+            session.slash_catalog = Some(std::rc::Rc::new(catalog));
+        }
+        DaveApiResponse::CommandReply(text) => {
+            session.insert_turn_content(Message::System(text));
         }
         DaveApiResponse::SubagentSpawned(subagent) => {
             let task_id = match session.resume_subagent(&subagent) {
@@ -459,6 +467,9 @@ fn publish_response(
     match res {
         DaveApiResponse::Failed(err) => {
             ingest_live_event(session, ndb, sk, err, "error", LiveEventTags::default());
+        }
+        DaveApiResponse::CommandReply(text) => {
+            ingest_live_event(session, ndb, sk, text, "system", LiveEventTags::default());
         }
         DaveApiResponse::ToolRunning(running) => {
             let tags = LiveEventTags {
@@ -592,10 +603,12 @@ fn closes_assistant_segment(session: &session::ChatSession, res: &DaveApiRespons
         | DaveApiResponse::SubagentSpawned(_)
         | DaveApiResponse::TodoUpdate(_)
         | DaveApiResponse::Failed(_)
+        | DaveApiResponse::CommandReply(_)
         | DaveApiResponse::CompactionComplete(_) => true,
         DaveApiResponse::ToolResult(result) => session.tool_result_inserts_row(result),
         DaveApiResponse::Token(_)
         | DaveApiResponse::SessionInfo(_)
+        | DaveApiResponse::ServerInfo(_)
         | DaveApiResponse::UsageUpdate(_)
         | DaveApiResponse::SubagentOutput { .. }
         | DaveApiResponse::SubagentText { .. }

@@ -1578,48 +1578,51 @@ pub fn delete_session(
 // Send Action Handling
 // =============================================================================
 
-/// Handle the /cd command if present in input.
-/// Returns Some(Ok(path)) if cd succeeded, Some(Err(())) if cd failed, None if not a cd command.
+/// Record a `/model <value>` the user sends. Returns whether it was handled
+/// here, so it must not be sent.
 ///
-/// The notice it shows is also published (`role=system` on success,
-/// `role=error` on failure) so observers, `agentium log` and a restart show it
-/// too; see [`push_cd_notice`].
-pub fn handle_cd_command(
+/// The Claude CLI runs `/model` itself when it arrives as prompt text, so for
+/// Claude this only keeps the pick as the session's requested model: it is
+/// persisted with the session, and the next CLI the backend starts (after an
+/// idle stop, or a restart) starts on it. Codex has no slash commands, so
+/// Dave takes the value itself, for the next turn's `TurnStartParams.model`,
+/// and says so in a notice. A remote session's pick is its host's to keep.
+pub fn handle_model_command(
     session: &mut ChatSession,
     ndb: &nostrdb::Ndb,
     secret_key: &Option<[u8; 32]>,
-) -> Option<Result<PathBuf, ()>> {
-    let input = session.input.trim().to_string();
-    if !input.starts_with("/cd ") {
-        return None;
+) -> bool {
+    if session.is_remote() || session.agentic.is_none() {
+        return false;
     }
-
-    let path_str = input.strip_prefix("/cd ").unwrap().trim();
-    let path = PathBuf::from(path_str);
-    session.input.clear();
-
-    if path.exists() && path.is_dir() {
-        if let Some(agentic) = &mut session.agentic {
-            agentic.cwd = path.clone();
+    let Some(slash) = crate::slash::SlashInput::parse(session.input.trim()) else {
+        return false;
+    };
+    let value = match slash.argument.map(str::trim) {
+        Some(value) if slash.command == crate::slash::MODEL_COMMAND && !value.is_empty() => {
+            value.to_owned()
         }
-        let notice = Message::System(format!("Working directory set to: {}", path.display()));
-        push_cd_notice(session, notice, ndb, secret_key);
-        Some(Ok(path))
-    } else {
-        let notice = Message::Error(format!("Invalid directory: {}", path_str));
-        push_cd_notice(session, notice, ndb, secret_key);
-        Some(Err(()))
+        _ => return false,
+    };
+    session.details.requested_model = Some(value.clone());
+    session.state_dirty = true;
+    if session.backend_type != BackendType::Codex {
+        return false;
     }
+    session.input.clear();
+    let notice = Message::System(format!("Model set to {value} for the next turn"));
+    push_notice(session, notice, ndb, secret_key);
+    true
 }
 
-/// Show a `/cd` notice (a `System` or `Error` row) and publish it as a live
-/// event with the matching role.
+/// Show a notice (a `System` or `Error` row) and publish it as a live event
+/// with the matching role, so observers, `agentium log` and a restart show
+/// it too.
 ///
-/// Only a session this host runs publishes: a remote session's `/cd` changes
-/// nothing on the host that runs it, so telling its other viewers the
-/// directory changed would be false. Chat-mode sessions publish nothing, as
-/// with every other live event.
-fn push_cd_notice(
+/// Only a session this host runs publishes: a remote session's notice says
+/// what this host did, which its other viewers didn't see happen. Chat-mode
+/// sessions publish nothing, as with every other live event.
+fn push_notice(
     session: &mut ChatSession,
     notice: Message,
     ndb: &nostrdb::Ndb,
@@ -3135,11 +3138,12 @@ mod tests {
         }
     }
 
-    /// A `/cd` on a session this host runs publishes its notice (`system` on
-    /// success, `error` on failure); a remote session's `/cd` publishes
-    /// nothing, since it changes nothing on the host that runs it.
+    /// `/model <value>` on a Claude session keeps the pick and still goes to
+    /// the CLI, which runs it; on a Codex session Dave takes it, says so in a
+    /// published notice, and sends nothing. Other commands, and a remote
+    /// session's `/model`, are left alone.
     #[test]
-    fn cd_notices_publish_for_local_sessions_only() {
+    fn model_command_records_the_pick() {
         let dir = tempfile::TempDir::new().unwrap();
         let ndb =
             nostrdb::Ndb::new(dir.path().to_str().unwrap(), &crate::tests::test_config()).unwrap();
@@ -3147,33 +3151,34 @@ mod tests {
         let cwd = std::env::temp_dir();
         let published = |s: &ChatSession| s.agentic.as_ref().unwrap().seen_note_ids.len();
 
-        let mut local = ChatSession::new(1, cwd.clone(), AiMode::Agentic, BackendType::Claude);
-        local.input = format!("/cd {}", cwd.display());
-        assert!(matches!(
-            handle_cd_command(&mut local, &ndb, &sk),
-            Some(Ok(_))
-        ));
-        assert!(matches!(local.chat.last(), Some(Message::System(_))));
-        local.input = "/cd /no/such/dir".to_string();
-        assert!(matches!(
-            handle_cd_command(&mut local, &ndb, &sk),
-            Some(Err(()))
-        ));
-        assert!(matches!(local.chat.last(), Some(Message::Error(_))));
-        assert_eq!(published(&local), 2, "both notices are published");
+        let mut claude = ChatSession::new(1, cwd.clone(), AiMode::Agentic, BackendType::Claude);
+        claude.input = "/model sonnet".to_string();
+        assert!(!handle_model_command(&mut claude, &ndb, &sk), "sent on");
+        assert_eq!(claude.details.requested_model.as_deref(), Some("sonnet"));
+        assert_eq!(claude.input, "/model sonnet", "the draft is left to send");
+        assert!(claude.state_dirty, "the pick is persisted");
 
-        let mut remote = ChatSession::new(2, cwd.clone(), AiMode::Agentic, BackendType::Claude);
-        remote.source = SessionSource::Remote;
-        remote.input = format!("/cd {}", cwd.display());
-        assert!(matches!(
-            handle_cd_command(&mut remote, &ndb, &sk),
-            Some(Ok(_))
-        ));
-        assert!(matches!(remote.chat.last(), Some(Message::System(_))));
+        claude.input = "/context".to_string();
+        assert!(!handle_model_command(&mut claude, &ndb, &sk));
+        claude.input = "/model ".to_string();
+        assert!(!handle_model_command(&mut claude, &ndb, &sk));
+        assert_eq!(claude.details.requested_model.as_deref(), Some("sonnet"));
+
+        let mut codex = ChatSession::new(2, cwd.clone(), AiMode::Agentic, BackendType::Codex);
+        codex.input = "/model gpt-6-astra".to_string();
+        assert!(handle_model_command(&mut codex, &ndb, &sk), "handled here");
         assert_eq!(
-            published(&remote),
-            0,
-            "a remote session's /cd is not published"
+            codex.details.requested_model.as_deref(),
+            Some("gpt-6-astra")
         );
+        assert!(codex.input.is_empty());
+        assert!(matches!(codex.chat.last(), Some(Message::System(_))));
+        assert_eq!(published(&codex), 1, "the notice is published");
+
+        let mut remote = ChatSession::new(3, cwd, AiMode::Agentic, BackendType::Codex);
+        remote.source = SessionSource::Remote;
+        remote.input = "/model gpt-6-astra".to_string();
+        assert!(!handle_model_command(&mut remote, &ndb, &sk));
+        assert!(remote.details.requested_model.is_none());
     }
 }

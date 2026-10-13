@@ -16,3 +16,4 @@ too, so every card strips that out by hand to keep its commit standalone.
 - headway:dave/shrimp-guide-poet — ~2 min: an eleventh splice (10 keys, 1 dropped) out of a 296-line rewrite, by copying the last session's splice.py again and editing its key list
 - headway:dave/general-tool-lecture — ~3 min: a sixth scratch merge for 5 keys (Stop, Stop?, Yes, No, stopping…); the exporter rewrote ~230 lines of each file around them
 - headway:dave/large-denial-card — ~2 min: a twelfth splice (1 key) out of a ~300-line rewrite of both files, by a fresh scratch script that inserts the entry into HEAD's file in key order
+- headway:dave/among-unusual-hazard — ~2 min: a thirteenth splice (4 keys) out of a ~230-line rewrite of both files, by another scratchpad splice.py

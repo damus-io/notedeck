@@ -35,6 +35,7 @@ pub mod session_cache;
 mod session_commands;
 pub mod session_discovery;
 mod session_restore_loader;
+pub mod slash;
 mod stream_events;
 #[cfg(test)]
 mod test_support;
@@ -260,6 +261,9 @@ pub struct Dave {
     pending_open: Option<restore::PendingOpen>,
     /// Directory picker for selecting working directory when creating sessions
     directory_picker: DirectoryPicker,
+    /// The slash commands and models each cwd's Claude CLI offers, for the
+    /// chat input's popup. Per machine, so it survives an account switch.
+    slash_catalogs: slash::SlashCatalogs,
     /// Session picker for resuming existing Claude sessions
     session_picker: SessionPicker,
     /// Current overlay taking over the UI (if any)
@@ -577,6 +581,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             normal_mode: ui::keybindings::NormalMode::default(),
             pending_open: None,
             directory_picker,
+            slash_catalogs: slash::SlashCatalogs::default(),
             session_picker: SessionPicker::new(),
             active_overlay,
             ipc_listener,
@@ -1171,6 +1176,33 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         true
     }
 
+    /// Run the active session's slash popup key step (see
+    /// [`slash::popup_keys`]), probing its catalog first, and send the draft
+    /// when a key runs a command.
+    fn slash_popup_keys(&mut self, app_ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+        let Some(sid) = self.session_manager.active_id() else {
+            return;
+        };
+        // A subagent's draft goes to the subagent, which runs no commands.
+        if self.session_manager.backing_id(sid) != sid {
+            return;
+        }
+        let Some(session) = self.session_manager.get_mut(sid) else {
+            return;
+        };
+        self.slash_catalogs.poll(session, egui_ctx);
+        session.slash.set_catalog(self.slash_catalogs.view(session));
+        let outcome = slash::popup_keys(
+            &mut session.slash,
+            &mut session.input,
+            egui_ctx,
+            ui::input_id(sid),
+        );
+        if outcome == Some(slash::SlashOutcome::Run) {
+            self.handle_user_send(app_ctx);
+        }
+    }
+
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext) {
         let host = HostCtx::from_app(app_ctx);
@@ -1182,22 +1214,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 return;
             }
         }
-        // Check for /cd command first (agentic only)
-        let cd_result = self
-            .session_manager
-            .get_active_mut()
-            .and_then(|session| update::handle_cd_command(session, host.ndb, &host.secret_key));
-
-        // If /cd command was processed, add to recent directories
-        if let Some(Ok(path)) = cd_result {
-            self.directory_picker.add_recent(path);
-            return;
-        } else if cd_result.is_some() {
-            // Error case - already handled above
-            return;
-        }
-
-        // Handle /clear command: reset session (same as Clear menu action)
+        // `/clear` is Dave's Clear (as Ctrl+Shift+K), never the CLI's: the
+        // CLI's moves it to a new session id, and Dave keys the session's
+        // events, d-tag and restore on the old one.
         if let Some(session) = self.session_manager.get_active() {
             if session.input.trim() == "/clear" {
                 if let Some(id) = self.session_manager.active_id() {
@@ -1208,6 +1227,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 return;
             }
+        }
+
+        // `/model <value>` records the pick; Codex's is handled here, since
+        // its CLI has no slash commands.
+        if self
+            .session_manager
+            .get_active_mut()
+            .is_some_and(|session| {
+                update::handle_model_command(session, host.ndb, &host.secret_key)
+            })
+        {
+            return;
         }
 
         // Normal message handling: the draft becomes a user message. This is the
@@ -1623,6 +1654,10 @@ impl notedeck::App for Dave {
 
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         ui::own_item_spacing(ui);
+        // The slash popup takes its keys first: while it is open, Ctrl+N/P
+        // move its selection rather than the focus queue, and Esc closes it
+        // rather than entering normal mode.
+        self.slash_popup_keys(ctx, ui.ctx());
         let mut app_action: Option<AppAction> = self.process_keybindings(ui.ctx());
 
         // Check if we should send a desktop notification (when unfocused and NeedsInput)

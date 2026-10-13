@@ -214,9 +214,13 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
             SessionCommand::Query {
                 prompt,
                 images,
+                model: turn_model,
                 response_tx,
                 waker,
             } => {
+                // The session's model now (a `/model` may have changed it since
+                // the actor started), else the one the thread started with.
+                let turn_model = turn_model.as_deref().or(model);
                 // Codex mints a fresh UI channel per query, so response_tx is
                 // always present. (Only persistent-stream backends pass None.)
                 let Some(response_tx) = response_tx else {
@@ -266,7 +270,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                     turn_req_id,
                     &thread_id,
                     inputs,
-                    model,
+                    turn_model,
                     permission_mode,
                 )
                 .await
@@ -2050,6 +2054,7 @@ impl AiBackend for CodexBackend {
                 .send(SessionCommand::Query {
                     prompt,
                     images,
+                    model,
                     response_tx: Some(response_tx),
                     waker,
                 })
@@ -3871,6 +3876,7 @@ mod tests {
             .send(SessionCommand::Query {
                 prompt: prompt.to_string(),
                 images: vec![],
+                model: None,
                 response_tx: Some(response_tx),
                 waker: Waker::noop(),
             })
@@ -4586,6 +4592,7 @@ mod tests {
             .send(SessionCommand::Query {
                 prompt: "hello".to_string(),
                 images: vec![],
+                model: None,
                 response_tx: Some(response_tx),
                 waker: Waker::noop(),
             })
@@ -5098,6 +5105,7 @@ mod tests {
                 .send(SessionCommand::Query {
                     prompt: "Say exactly: hello world".to_string(),
                     images: vec![],
+                    model: None,
                     response_tx: Some(response_tx),
                     waker: Waker::noop(),
                 })

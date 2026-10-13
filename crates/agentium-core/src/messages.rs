@@ -1558,6 +1558,14 @@ pub enum DaveApiResponse {
     ToolResult(ExecutedTool),
     /// Session initialization info from Claude Code CLI
     SessionInfo(SessionInfo),
+    /// The CLI's `initialize` response (Claude backend only), sent each time
+    /// a CLI connects: its slash `commands[]` and `models[]` feed the chat
+    /// input's slash-command popup.
+    ServerInfo(serde_json::Value),
+    /// What a slash command the CLI ran itself printed (an assistant message
+    /// with model `<synthetic>`, such as `/context`'s table or `/model`'s
+    /// confirmation). Drawn as a notice, not as the assistant's reply.
+    CommandReply(String),
     /// Subagent spawned by Task tool
     SubagentSpawned(SubagentInfo),
     /// Subagent output update

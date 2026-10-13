@@ -20,6 +20,7 @@ pub mod session_kind_picker;
 pub mod session_list;
 pub mod session_picker;
 mod settings;
+mod slash_popup;
 mod square_loading_spinner;
 pub mod task_list;
 mod top_buttons;
@@ -27,6 +28,7 @@ pub mod worktree_creator;
 
 pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
 pub use block_nav::BlockNav;
+pub(crate) use dave::input_id;
 pub use dave::{
     from_session_message_ui, DaveAction, DaveResponse, DaveUi, InputMode, InputboxLayout,
     InputboxResult, Inspected, RunAction,
@@ -182,6 +184,7 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
     .run_configs(session_run_configs)
     .running_config_ids(running_config_ids)
     .pending_images(&mut session.pending_images)
+    .slash(&mut session.slash)
     .rate_limit(rate_limit)
     .inspector(Inspected {
         inspector: &mut session.inspector,

@@ -283,6 +283,9 @@ count__denied_c592 = {"["}{$count} déñíéd{"]"}
 # Dave session inspector subagents: how many subagents failed
 count__failed_ef23 = {"["}{$count} fàíléd{"]"}
 
+# How many more rows Dave's slash-command list has below the visible ones
+count__more_14f7 = {"["}+{$count} móré{"]"}
+
 # Dave session inspector outputs: how many more cards or pages there are than the card lists
 count__more_4934 = {"["}{$count} móré{"]"}
 
@@ -569,6 +572,9 @@ Lightning_network_address__lud16_ea51 = {"["}Líghtñíñg ñétwórk àddréss 
 
 # Hover text for like button
 Like_this_note_dfb5 = {"["}Líké thís ñóté{"]"}
+
+# Dave slash-command popup row shown while the list of commands loads
+loading_commands_61d0 = {"["}lóàdíñg çómmàñds…{"]"}
 
 # Login page title
 Login_9eef = {"["}Lógíñ{"]"}
@@ -998,6 +1004,12 @@ See_notes_from_your_contacts_ac16 = {"["}Séé ñótés fróm yóúr çóñtàç
 
 # Description for universe column
 See_the_whole_nostr_universe_7694 = {"["}Séé thé whólé ñóstr úñívérsé{"]"}
+
+# Key hints under Dave's /model list of models
+select___Enter_switch___Esc_back_to_commands_f457 = {"["}↑↓ séléçt · Éñtér swítçh · Ésç bàçk tó çómmàñds{"]"}
+
+# Key hints under Dave's slash-command list
+select___Tab_complete___Enter_run___Esc_close_8daf = {"["}↑↓ séléçt · Tàb çómplété · Éñtér rúñ · Ésç çlósé{"]"}
 
 # Column title for selecting a people list
 Select_a_People_List_a920 = {"["}Séléçt à Péóplé Líst{"]"}
