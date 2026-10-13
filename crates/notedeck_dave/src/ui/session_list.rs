@@ -1,8 +1,6 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
-use std::sync::Arc;
-
 use egui::{Align, Color32, Layout, Pos2, Sense};
 use nostrdb::Transaction;
 use notedeck::NoteContext;
@@ -290,32 +288,23 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             response,
             action: dot_action,
         } = match session.ai_mode {
-            AiMode::Agentic => {
-                // A session titled with its card's ref is listed under the
-                // card's current title, once one has been looked up.
-                let card_ref = (!is_renaming)
-                    .then(|| session.details.title_ref())
-                    .flatten();
-                let card_title =
-                    card_ref.and_then(|card_ref| self.session_manager.card_titles.get(card_ref));
-                self.agent_row_ui(
-                    ui,
-                    AgentRow {
-                        session_id: session.id,
-                        title: display_title,
-                        card_ref,
-                        card_title,
-                        cwd_display: place.cwd,
-                        is_active,
-                        shortcut_hint,
-                        cycle_hint,
-                        status: session.status(),
-                        last_activity: session.last_activity,
-                        queue_priority,
-                        git_lines: git_lines(session),
-                    },
-                )
-            }
+            AiMode::Agentic => self.agent_row_ui(
+                ui,
+                AgentRow {
+                    session_id: session.id,
+                    title: display_title,
+                    cwd_display: place.cwd,
+                    is_active,
+                    shortcut_hint,
+                    cycle_hint,
+                    status: session.status(),
+                    last_activity: session.last_activity,
+                    queue_priority,
+                    // Only a row with no folder header above it shows its
+                    // worktree's +/-; under a header, the header does.
+                    git_lines: place.cwd.and_then(|_| git_lines(session)),
+                },
+            ),
             _ => self.chat_row_ui(
                 ui,
                 session.id,
@@ -451,48 +440,23 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
         action
     }
 
-    /// Render an agentic session row: the status bar, the title, a dim meta
-    /// line under it (see [`meta_line`]; left out when it's empty) and the
-    /// focus dot.
+    /// Render an agentic session row: the status bar, the title on one line
+    /// (see [`title_ui`](Self::title_ui); a session titled with its card's
+    /// ref draws the card's inline chip) and the focus dot.
     ///
-    /// A row whose session is titled with its card's ref, with the card's
-    /// title looked up ([`AgentRow::card_title`]), shows the card's status
-    /// glyph and then that title wrapped to at most two lines and cut with an
-    /// ellipsis, the whole of it on hover. Any other title is one line,
-    /// clipped. When `cwd_display` is `Some` (a session alone in its cwd), the
-    /// cwd path goes on a last line.
+    /// When `cwd_display` is `Some` (a session with no folder header above
+    /// it) the row is two lines: the cwd path under the title, the worktree's
+    /// git +/- at its bottom right and the focus dot moved to the top right.
+    /// A row under a folder header draws no git +/-: the header shows its
+    /// worktree's once.
     fn agent_row_ui(&self, ui: &mut egui::Ui, row: AgentRow<'_>) -> RowResponse {
-        let width = ui.available_width();
-        let mut text_start_x = TEXT_LEFT;
-        if row.status == AgentStatus::Pending {
-            text_start_x += PENDING_SPINNER_SLOT + 2.0;
-        }
-        // A card title follows its status glyph, when the list has the refs
-        // to draw one; the meta and cwd lines line up under the title.
-        let glyph = if row.card_title.is_some() && self.title_refs.is_some() {
-            GLYPH_SLOT
+        let height = if row.cwd_display.is_some() {
+            48.0
         } else {
-            0.0
+            32.0
         };
-        let text_x = text_start_x + glyph;
-        // Laid out before the row is allocated, since its height follows the
-        // title's wrap. The focus dot always takes its slot, so the wrap
-        // stays put while ctrl's transient hints come and go.
-        let reserve = right_reserve(row.queue_priority);
-        let wrapped = row
-            .card_title
-            .map(|title| card_title_galley(ui, title, width - text_x - reserve));
-        let title_height = match &wrapped {
-            Some(galley) => galley.size().y,
-            None => row_height(ui, &title_font()),
-        };
-        let meta = meta_line(ui, row.git_lines);
-        let cwd_height = row
-            .cwd_display
-            .map_or(0.0, |_| LINE_GAP + row_height(ui, &cwd_font()));
-        let height = ROW_PAD + title_height + meta_height(&meta) + cwd_height + ROW_PAD;
-
-        let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
+        let desired_size = egui::vec2(ui.available_width(), height);
+        let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
         paint_row_background(ui, rect, row.is_active, self.chord_cursor, &response);
@@ -509,8 +473,8 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             egui::vec2(STATUS_BAR_WIDTH, rect.height() - 8.0),
         );
         paint_status_bar(ui.painter(), status_bar_rect, status_color);
+        let mut text_start_x = TEXT_LEFT;
 
-        let top = rect.top() + ROW_PAD;
         // A pending placeholder (a remote spawn/resume in flight) shows a small
         // loading spinner before its "Connecting…" title so the row reads as
         // in-progress. Reuses SquareLoadingSpinner (interval-based repaint) over
@@ -520,8 +484,8 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
             let spin_size = 12.0;
             let spin_rect = egui::Rect::from_min_size(
                 egui::pos2(
-                    rect.left() + TEXT_LEFT,
-                    top + (title_height - spin_size).max(0.0) / 2.0,
+                    rect.left() + text_start_x,
+                    rect.center().y - spin_size / 2.0,
                 ),
                 egui::vec2(PENDING_SPINNER_SLOT, spin_size),
             );
@@ -531,100 +495,73 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                     .size(spin_size)
                     .color(status_color),
             );
+            text_start_x += PENDING_SPINNER_SLOT + 2.0;
         }
 
         let hints: &[(&str, &str)] = &[("⇧T", "Duplicate"), ("⇧K", "Clear"), ("⇧R", "Rename")];
-        let RightSide {
-            width: right_used,
+        // Standalone (cwd) rows get the worktree treatment: status dot moves to
+        // the top-right and the git +/- line stats sit on the bottom-right next
+        // to the cwd path. Grouped rows keep the centered layout.
+        let AgentRightSide {
+            title_right,
+            cwd_right,
             action: dot_action,
-        } = render_row_right_side(
-            ui,
-            rect,
-            row.session_id,
-            row.is_active,
-            self.ctrl_held,
-            row.shortcut_hint,
-            row.cycle_hint,
-            row.queue_priority,
-            hints,
-        );
-        let text_right = rect.right() - right_used;
-
-        match (&wrapped, row.card_ref) {
-            (Some(galley), Some(card_ref)) => {
-                let line = row_height(ui, &title_font());
-                let glyph_rect = egui::Rect::from_min_size(
-                    egui::pos2(rect.left() + text_start_x, top),
-                    egui::vec2(GLYPH_SLOT - 4.0, line),
-                );
-                self.card_glyph_ui(ui, card_ref, glyph_rect);
-                let pos = egui::pos2(rect.left() + text_x, top);
-                paint_clipped(ui, pos, galley.clone(), text_right);
+        } = if row.cwd_display.is_some() {
+            render_agent_row_right_side(
+                ui,
+                rect,
+                row.session_id,
+                row.is_active,
+                self.ctrl_held,
+                row.shortcut_hint,
+                row.cycle_hint,
+                row.queue_priority,
+                row.git_lines,
+                hints,
+            )
+        } else {
+            let RightSide { width, action } = render_row_right_side(
+                ui,
+                rect,
+                row.session_id,
+                row.is_active,
+                self.ctrl_held,
+                row.shortcut_hint,
+                row.cycle_hint,
+                row.queue_priority,
+                hints,
+            );
+            AgentRightSide {
+                title_right: width,
+                cwd_right: width,
+                action,
             }
-            _ => {
-                self.title_ui(
-                    ui,
-                    row.title,
-                    egui::pos2(rect.left() + text_start_x, top),
-                    text_right - rect.left() - text_start_x,
-                );
-            }
-        }
-
-        let meta_bottom = top + title_height + meta_height(&meta);
-        if !meta.is_empty() {
-            let meta_pos = egui::pos2(rect.left() + text_x, meta_bottom - meta.size().y);
-            paint_clipped(ui, meta_pos, meta, text_right);
-        }
-        if let Some(cwd) = row.cwd_display {
-            let cwd_pos = egui::pos2(rect.left() + text_x, meta_bottom + LINE_GAP);
-            cwd_inline_ui(ui, cwd, cwd_pos, text_right - cwd_pos.x);
-        }
-
-        // What the wrap cut is on hover.
-        let response = match row.card_title {
-            Some(title) => response.on_hover_ui(|ui| {
-                ui.label(title);
-            }),
-            None => response,
         };
+
+        let title_max_width = rect.width() - text_start_x - title_right;
+        let cwd_max_width = rect.width() - text_start_x - cwd_right;
+        let title_height = row_height(ui, &title_font());
+        let title_top = if row.cwd_display.is_some() {
+            rect.top() + ROW_PAD
+        } else {
+            rect.center().y - title_height / 2.0
+        };
+        self.title_ui(
+            ui,
+            row.title,
+            egui::pos2(rect.left() + text_start_x, title_top),
+            title_max_width,
+        );
+
+        if let Some(cwd) = row.cwd_display {
+            let cwd_pos = egui::pos2(rect.left() + text_start_x, title_top + title_height + 1.0);
+            cwd_inline_ui(ui, cwd, cwd_pos, cwd_max_width);
+        }
 
         RowResponse {
             response,
             action: dot_action,
         }
-    }
-
-    /// Draw `card_ref`'s inline chip into `rect`, clipped to it: the chip's
-    /// status glyph — the card's column on the board, as its chip in the chat
-    /// shows it — without the title beside it, which the row wraps itself. A
-    /// list drawn without [`title_refs`](Self::title_refs) draws nothing.
-    fn card_glyph_ui(&self, ui: &mut egui::Ui, card_ref: &str, rect: egui::Rect) {
-        let Some(refs) = &self.title_refs else {
-            return;
-        };
-        let mut refs = refs.borrow_mut();
-        let mut child = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(rect.with_max_x(rect.right() + 200.0))
-                .layout(Layout::left_to_right(Align::Center)),
-        );
-        child.set_clip_rect(rect.intersect(ui.clip_rect()));
-        child
-            .style_mut()
-            .text_styles
-            .insert(egui::TextStyle::Body, title_font());
-        let refs = &mut *refs;
-        notedeck_ui::markdown::reference_ui(
-            &mut child,
-            refs.note,
-            refs.txn,
-            card_ref,
-            notedeck::RenderContext::Inline,
-            notedeck::InlineChrome::Bare,
-            // The row's click switches to its session.
-            notedeck::Interaction::Inert,
-        );
     }
 
     /// Render a chat session row (no status bar, no cwd).
@@ -818,14 +755,8 @@ pub(crate) fn git_lines(session: &ChatSession) -> Option<GitLines> {
 /// What [`SessionListUi::agent_row_ui`] draws.
 struct AgentRow<'s> {
     session_id: SessionId,
-    /// The session's title, drawn when `card` is `None`.
+    /// The session's title: a card's ref draws as the card's inline chip.
     title: &'s str,
-    /// The ref of the card the session is titled by, whose chip's status
-    /// glyph leads `card_title`.
-    card_ref: Option<&'s str>,
-    /// The current title of the card the session is titled by, once it has
-    /// been looked up.
-    card_title: Option<&'s str>,
     /// The cwd path, for a session alone in its cwd.
     cwd_display: Option<&'s str>,
     is_active: bool,
@@ -837,26 +768,23 @@ struct AgentRow<'s> {
     /// Unix time of the session's last activity.
     last_activity: Option<u64>,
     queue_priority: Option<FocusPriority>,
+    /// The worktree's +/- lines, drawn on a row with a `cwd_display` only.
     git_lines: Option<GitLines>,
 }
 
 /// Left padding of a row's text, past the status bar.
 const TEXT_LEFT: f32 = 12.0;
-/// Width of the slot a card title's status glyph takes before it.
-const GLYPH_SLOT: f32 = 18.0;
 /// Width of the "Connecting…" spinner before a pending row's title.
 const PENDING_SPINNER_SLOT: f32 = 22.0;
 /// Space above and below a row's text.
 const ROW_PAD: f32 = 6.0;
-/// Space between a row's lines.
-const LINE_GAP: f32 = 2.0;
 
 /// A row title's font.
 fn title_font() -> egui::FontId {
     egui::FontId::proportional(14.0)
 }
 
-/// The font of a row's meta and cwd lines.
+/// The font of a row's cwd line and of git +/- counts.
 fn cwd_font() -> egui::FontId {
     egui::FontId::monospace(10.0)
 }
@@ -864,80 +792,6 @@ fn cwd_font() -> egui::FontId {
 /// Height of one line of `font`.
 fn row_height(ui: &egui::Ui, font: &egui::FontId) -> f32 {
     ui.fonts_mut(|f| f.row_height(font))
-}
-
-/// Width a row keeps clear on its right for the focus dot, which a card
-/// title wraps short of. Ctrl's hints come and go and only clip it.
-fn right_reserve(queue_priority: Option<FocusPriority>) -> f32 {
-    match queue_priority {
-        Some(_) => 26.0,
-        None => 8.0,
-    }
-}
-
-/// Lay a card's title out `width` wide, wrapped to at most two lines and
-/// cut with an ellipsis.
-fn card_title_galley(ui: &egui::Ui, title: &str, width: f32) -> Arc<egui::Galley> {
-    let mut job = egui::text::LayoutJob::single_section(
-        title.to_owned(),
-        egui::TextFormat::simple(title_font(), ui.visuals().text_color()),
-    );
-    job.wrap = egui::text::TextWrapping {
-        max_width: width.max(0.0),
-        max_rows: 2,
-        break_anywhere: false,
-        overflow_character: Some('…'),
-    };
-    ui.painter().layout_job(job)
-}
-
-/// Paint `galley` at `pos`, clipped at `right`.
-fn paint_clipped(ui: &egui::Ui, pos: Pos2, galley: Arc<egui::Galley>, right: f32) {
-    let clip = egui::Rect::from_min_max(pos, egui::pos2(right, pos.y + galley.size().y));
-    let color = ui.visuals().text_color();
-    ui.painter()
-        .with_clip_rect(clip.intersect(ui.clip_rect()))
-        .galley(pos, galley, color);
-}
-
-/// Lay out a row's dim meta line: the worktree's +/- lines against HEAD,
-/// e.g. `+88 -4`. Nothing else goes on it: the status bar already shows the
-/// status. Empty when the worktree is clean (see [`meta_height`]).
-fn meta_line(ui: &egui::Ui, git_lines: Option<GitLines>) -> Arc<egui::Galley> {
-    use std::fmt::Write;
-    let font = cwd_font();
-    let mut job = egui::text::LayoutJob::default();
-    let Some(lines) = git_lines else {
-        return ui.painter().layout_job(job);
-    };
-    let mut buf = String::new();
-    let part = |job: &mut egui::text::LayoutJob, text: &str, color: Color32| {
-        if !job.text.is_empty() {
-            job.append(" ", 0.0, egui::TextFormat::simple(font.clone(), color));
-        }
-        job.append(text, 0.0, egui::TextFormat::simple(font.clone(), color));
-    };
-    if lines.added > 0 {
-        let _ = write!(buf, "+{}", lines.added);
-        part(&mut job, &buf, GIT_ADDED_COLOR);
-    }
-    if lines.deleted > 0 {
-        buf.clear();
-        let _ = write!(buf, "-{}", lines.deleted);
-        part(&mut job, &buf, GIT_DELETED_COLOR);
-    }
-    ui.painter().layout_job(job)
-}
-
-/// The height a row gives its `meta` line, with the gap above it: none
-/// when the line is empty, so a row with nothing to say under its title
-/// stays one line.
-fn meta_height(meta: &egui::Galley) -> f32 {
-    if meta.is_empty() {
-        0.0
-    } else {
-        LINE_GAP + meta.size().y
-    }
 }
 
 /// Write `secs` as a short age: `now`, `12m`, `3h`, `2d`.
@@ -1300,6 +1154,117 @@ fn render_row_right_side(
     }
 }
 
+/// What a standalone agent row's right side took, as
+/// [`render_agent_row_right_side`] draws it.
+struct AgentRightSide {
+    /// The width to reserve on the title (top) line.
+    title_right: f32,
+    /// The width to reserve on the cwd (bottom) line.
+    cwd_right: f32,
+    /// What clicking its focus dot asks, if it was clicked.
+    action: Option<SessionListAction>,
+}
+
+/// Render the right side of a standalone (cwd) agent row: the shortcut
+/// number and ctrl+shift hints centered, the focus dot in the top-right
+/// corner and the worktree's git +/- in the bottom-right one.
+#[allow(clippy::too_many_arguments)]
+fn render_agent_row_right_side(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    session_id: SessionId,
+    is_active: bool,
+    ctrl_held: bool,
+    shortcut_hint: Option<usize>,
+    cycle_hint: Option<&str>,
+    queue_priority: Option<FocusPriority>,
+    git_lines: Option<GitLines>,
+    hints: &[(&str, &str)],
+) -> AgentRightSide {
+    // The hints, centered, take what a dotless row's right side would.
+    let RightSide {
+        width: center_offset,
+        ..
+    } = render_row_right_side(
+        ui,
+        rect,
+        session_id,
+        is_active,
+        ctrl_held,
+        shortcut_hint,
+        cycle_hint,
+        None,
+        hints,
+    );
+
+    // Status dot, top-right corner.
+    let mut dot_action = None;
+    let mut dot_width = 0.0;
+    if let Some(priority) = queue_priority {
+        let dot_radius = 5.0;
+        let dot_center = egui::pos2(rect.right() - 4.0 - dot_radius, rect.top() + 9.0);
+        ui.painter()
+            .circle_filled(dot_center, dot_radius, priority.color());
+
+        if priority == FocusPriority::Done {
+            let dot_rect = egui::Rect::from_center_size(
+                dot_center,
+                egui::vec2(dot_radius * 4.0, dot_radius * 4.0),
+            );
+            let dot_response = ui.interact(
+                dot_rect,
+                ui.scope_id().with(("dismiss_dot", session_id)),
+                egui::Sense::click(),
+            );
+            if dot_response.clicked() {
+                dot_action = Some(SessionListAction::DismissDone(session_id));
+            }
+            if dot_response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        }
+
+        dot_width = dot_radius * 2.0 + 8.0;
+    }
+
+    // Git +/- line stats, bottom-right corner.
+    let git_width = git_lines.map_or(0.0, |lines| {
+        let right = egui::pos2(rect.right() - 6.0, rect.bottom() - 9.0);
+        paint_git_lines(ui, lines, right) + 10.0
+    });
+
+    AgentRightSide {
+        title_right: center_offset.max(dot_width),
+        cwd_right: center_offset.max(git_width),
+        action: dot_action,
+    }
+}
+
+/// Paint a worktree's +/- lines against HEAD, e.g. `+88 -4`, right-aligned
+/// so they end at `right_center` and centered on its y. Returns the width
+/// they took.
+fn paint_git_lines(ui: &egui::Ui, lines: GitLines, right_center: Pos2) -> f32 {
+    let painter = ui.painter();
+    let mut x = right_center.x;
+    // Laid out right to left, so the deleted count goes first.
+    let mut paint = |text: String, color: Color32| {
+        if x < right_center.x {
+            x -= 5.0;
+        }
+        let galley = painter.layout_no_wrap(text, cwd_font(), color);
+        x -= galley.size().x;
+        let pos = egui::pos2(x, right_center.y - galley.size().y / 2.0);
+        painter.galley(pos, galley, color);
+    };
+    if lines.deleted > 0 {
+        paint(format!("-{}", lines.deleted), GIT_DELETED_COLOR);
+    }
+    if lines.added > 0 {
+        paint(format!("+{}", lines.added), GIT_ADDED_COLOR);
+    }
+    right_center.x - x
+}
+
 /// The colour of a worktree's added-lines count.
 pub(crate) const GIT_ADDED_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 180, 60);
 /// The colour of a worktree's deleted-lines count.
@@ -1370,6 +1335,7 @@ fn host_section_ui(
             icon: HeaderIcon::Host,
             height: 24.0,
             truncate_from_start: false,
+            git_lines: None,
         },
         openness,
     );
@@ -1461,6 +1427,7 @@ fn project_section_ui(
             icon: HeaderIcon::Folder,
             height: 22.0,
             truncate_from_start: false,
+            git_lines: None,
         },
         openness,
     );
@@ -1601,6 +1568,9 @@ struct HeaderParams<'a> {
     /// [`truncate_host_and_path`], as the workspace cwd path does; otherwise
     /// truncate normally from the end with an ellipsis.
     truncate_from_start: bool,
+    /// A worktree's +/- lines, drawn right-aligned before the disclosure
+    /// arrow: a cwd folder's, so its rows needn't each repeat them.
+    git_lines: Option<GitLines>,
 }
 
 /// What [`collapsible_header_ui`] drew.
@@ -1653,10 +1623,16 @@ fn collapsible_header_ui(
     let arrow_center = egui::pos2(rect.right() - 2.0 - arrow_box / 2.0, rect.center().y);
     paint_disclosure_arrow(ui.painter(), arrow_center, openness, color);
 
-    // Header text between the icon and the arrow, as a real accessible widget so
-    // it can be found and right-clicked.
+    // Git +/- just left of the arrow.
+    let mut text_right = arrow_center.x - arrow_box / 2.0 - 4.0;
+    if let Some(lines) = params.git_lines {
+        let right = egui::pos2(text_right, rect.center().y);
+        text_right -= paint_git_lines(ui, lines, right) + 6.0;
+    }
+
+    // Header text between the icon and the git +/- (or the arrow), as a real
+    // accessible widget so it can be found and right-clicked.
     let text_left = icon_rect.right() + 6.0;
-    let text_right = arrow_center.x - arrow_box / 2.0 - 4.0;
     let label_rect = egui::Rect::from_min_max(
         egui::pos2(text_left, rect.top()),
         egui::pos2(text_right, rect.bottom()),
@@ -1817,6 +1793,22 @@ fn cwd_section_ui(
     action
 }
 
+/// The +/- lines of `group`'s worktree, for its folder header. Every session
+/// in the folder runs in that worktree, so any one's git status is its
+/// status; a session running elsewhere ([`ListRow::elsewhere`](crate::session::ListRow::elsewhere))
+/// is in another worktree, and keeps its own +/- on its row.
+fn folder_git_lines(
+    session_manager: &SessionManager,
+    group: &crate::session::CwdGroup,
+) -> Option<GitLines> {
+    group
+        .session_ids
+        .iter()
+        .zip(&group.rows)
+        .filter(|(_, row)| row.elsewhere.is_none())
+        .find_map(|(&id, _)| git_lines(session_manager.get(id)?))
+}
+
 /// Render the collapsible folder for a multi-session cwd: header, body
 /// containing each session row, and the right-click "New Session" menu.
 /// Indentation is the caller's responsibility.
@@ -1855,6 +1847,7 @@ fn cwd_folder_ui(
             icon: HeaderIcon::Worktree,
             height: 20.0,
             truncate_from_start: true,
+            git_lines: folder_git_lines(list_ui.session_manager, cwd_group),
         },
         openness,
     );
@@ -2024,6 +2017,7 @@ fn chain_ui(
             icon: HeaderIcon::Chain,
             height: 20.0,
             truncate_from_start: false,
+            git_lines: None,
         },
         if collapsed { 0.0 } else { 1.0 },
     );
@@ -2104,7 +2098,7 @@ fn paint_worktree_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::C
 /// don't get a surrounding folder header.
 fn cwd_inline_ui(ui: &mut egui::Ui, cwd_display: &str, pos: Pos2, max_width: f32) {
     let text = truncate_host_and_path(ui, "", cwd_display, max_width);
-    let cwd_font = egui::FontId::monospace(10.0);
+    let cwd_font = cwd_font();
     let cwd_color = ui.visuals().weak_text_color();
     ui.painter()
         .text(pos, egui::Align2::LEFT_TOP, &text, cwd_font, cwd_color);
@@ -2146,7 +2140,7 @@ fn delete_worktree_menu_item(
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentRow, GitLines, SessionListAction, SessionListUi};
+    use super::{folder_git_lines, AgentRow, GitLines, SessionListAction, SessionListUi};
     use crate::agent_status::AgentStatus;
     use crate::backend::BackendType;
     use crate::collapse_state::CollapseState;
@@ -2364,6 +2358,40 @@ mod tests {
         );
     }
 
+    /// A cwd folder's header carries its worktree's +/- lines, taken from
+    /// any session in it, and a session running elsewhere doesn't lend its
+    /// own.
+    #[test]
+    fn a_folder_header_shows_its_worktrees_git_lines() {
+        let mut sm = SessionManager::new();
+        let mut add = |cwd: &str, lines: Option<GitLines>| {
+            let id = sm.new_session(PathBuf::from(cwd), AiMode::Agentic, BackendType::Claude);
+            if let Some(l) = lines {
+                let s = sm.get_mut(id).expect("session");
+                let git = &mut s.agentic.as_mut().expect("agentic").git_status;
+                git.set_lines(l.added, l.deleted);
+            }
+            id
+        };
+        let lines = GitLines {
+            added: 9,
+            deleted: 2,
+        };
+        // The first session's status hasn't been fetched yet.
+        add("/tmp/wt", None);
+        add("/tmp/wt", Some(lines));
+        sm.rebuild_groups();
+        let group = sm
+            .host_groups()
+            .iter()
+            .flat_map(|h| &h.project_groups)
+            .flat_map(|p| &p.cwd_groups)
+            .find(|g| g.session_ids.len() == 2)
+            .expect("a two-session folder")
+            .clone();
+        assert!(folder_git_lines(&sm, &group) == Some(lines));
+    }
+
     /// Render a single standalone (cwd) agentic row in isolation so the
     /// worktree layout — status dot top-right, git +/- bottom-right — can be
     /// verified visually via snapshot.
@@ -2372,7 +2400,7 @@ mod tests {
         git_lines: Option<GitLines>,
     ) -> Harness<'static> {
         Harness::builder()
-            .with_size(egui::Vec2::new(260.0, 64.0))
+            .with_size(egui::Vec2::new(260.0, 56.0))
             .renderer(notedeck::software_renderer())
             .build_ui(move |ui| {
                 let mut session_manager = SessionManager::new();
@@ -2402,8 +2430,6 @@ mod tests {
         AgentRow {
             session_id: id,
             title,
-            card_ref: None,
-            card_title: None,
             cwd_display: None,
             is_active: false,
             shortcut_hint: None,
@@ -2510,8 +2536,10 @@ mod tests {
                 );
 
                 // A multi-worktree "notedeck" project: main checkout + two
-                // worktrees, all sharing one repo root.
-                let wt = |sm: &mut SessionManager, cwd: &str, title: &str| {
+                // worktrees, all sharing one repo root. The dave worktree,
+                // which holds two sessions, is dirty: its folder header shows
+                // the +/- once, and its rows show none.
+                let wt = |sm: &mut SessionManager, cwd: &str, title: &str, lines: GitLines| {
                     let id =
                         sm.new_session(PathBuf::from(cwd), AiMode::Agentic, BackendType::Claude);
                     let s = sm.get_mut(id).expect("session");
@@ -2519,12 +2547,36 @@ mod tests {
                     s.details.home_dir = "/home/dev".to_string();
                     s.details.project_root = Some(PathBuf::from("/home/dev/notedeck"));
                     s.details.project_slug = Some("notedeck".to_string());
+                    let git = &mut s.agentic.as_mut().expect("agentic").git_status;
+                    git.set_lines(lines.added, lines.deleted);
                     id
                 };
-                wt(&mut sm, "/home/dev/notedeck", "fix streaming bug");
-                wt(&mut sm, "/home/dev/notedeck-dave", "project grouping");
-                wt(&mut sm, "/home/dev/notedeck-dave", "render tool results");
-                wt(&mut sm, "/home/dev/notedeck-feature", "responsive layout");
+                let clean = GitLines {
+                    added: 0,
+                    deleted: 0,
+                };
+                let dave = GitLines {
+                    added: 142,
+                    deleted: 37,
+                };
+                wt(&mut sm, "/home/dev/notedeck", "fix streaming bug", clean);
+                wt(&mut sm, "/home/dev/notedeck-dave", "project grouping", dave);
+                wt(
+                    &mut sm,
+                    "/home/dev/notedeck-dave",
+                    "render tool results",
+                    dave,
+                );
+                let feature = GitLines {
+                    added: 12,
+                    deleted: 0,
+                };
+                wt(
+                    &mut sm,
+                    "/home/dev/notedeck-feature",
+                    "responsive layout",
+                    feature,
+                );
 
                 if let Some(s) = sm.get_mut(solo) {
                     s.details.title = "one-off".to_string();
@@ -2608,9 +2660,8 @@ mod tests {
         sm
     }
 
-    /// The whole list as card rows: each card's title wrapped to two lines,
-    /// the two QA2 sessions on a row each, and no meta line under rows whose
-    /// worktree is clean.
+    /// The whole list as card-titled rows, the two QA2 sessions on a row
+    /// each. Drawn without title refs, so each row is its card's raw ref.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_card_titles() {
@@ -3172,10 +3223,9 @@ mod tests {
         }
     }
 
-    /// A session titled with its card's ref, once the card's title is looked
-    /// up, still leads its row with the card's chip — clipped to its status
-    /// glyph, the card's live column — and wraps the title after it. The
-    /// regression: the row painted the title as bare text and drew no chip.
+    /// A session titled with its card's ref draws the card's inline chip on
+    /// its row, showing the card's title, not the raw ref. The regression: the
+    /// row painted the title as bare text and drew no chip.
     #[test]
     fn a_card_titled_row_leads_with_the_cards_chip() {
         use std::cell::RefCell;
@@ -3244,8 +3294,8 @@ mod tests {
             .process_event_with(&frame, nostrdb::IngestMetadata::new().client(true))
             .expect("ingest");
 
-        // The row takes the card's title once the lookup finds it, and the
-        // chip draws it (clipped to its glyph) at the head of the row.
+        // The card's title is looked up for the list, and the row's chip
+        // draws it.
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             harness.run_ok();
