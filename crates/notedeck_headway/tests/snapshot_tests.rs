@@ -1341,6 +1341,124 @@ fn issue_list_groups_rows_folds_and_adds_to_a_group() {
     }
 }
 
+/// Drag the list row labelled `from` onto the upper half of the row
+/// labelled `onto` and let go there, a frame per pointer move, the way a
+/// hand drags (egui's drag-and-drop starts only once the pointer has moved).
+fn drag_row_above(harness: &mut Harness<'static, HeadwayTestState>, from: &str, onto: &str) {
+    let rect = |harness: &Harness<'static, HeadwayTestState>, label: &str| {
+        harness
+            .get_by_label(label)
+            .accesskit_node()
+            .bounding_box()
+            .expect("laid out")
+    };
+    let (a, b) = (rect(harness, from), rect(harness, onto));
+    let start = egui::pos2(((a.x0 + a.x1) / 2.0) as f32, ((a.y0 + a.y1) / 2.0) as f32);
+    let end = egui::pos2(start.x, (b.y0 + 1.0) as f32);
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    harness.event(egui::Event::PointerMoved(start));
+    harness.step();
+    harness.event(button(start, true));
+    harness.step();
+    for step in 1..=8 {
+        let pos = start + (end - start) * (step as f32 / 8.0);
+        harness.event(egui::Event::PointerMoved(pos));
+        harness.step();
+    }
+    harness.event(button(end, false));
+    harness.run_ok();
+}
+
+/// The demo board's work order as titles, folded fresh from the database.
+fn demo_work_order(harness: &mut Harness<'static, HeadwayTestState>) -> Vec<String> {
+    let state = harness.state_mut();
+    let author = state.account.pubkey;
+    let app_ctx = state.notedeck.app_context();
+    let txn = Transaction::new(app_ctx.ndb).expect("txn");
+    let boards = event::fold_board(app_ctx.ndb, &txn, &author)
+        .expect("folded")
+        .finalize();
+    let view = event::find_board(&boards, &author, store::BOARD_ID).expect("demo board");
+    let root = event::Container::BoardRoot(view.id.clone());
+    headway::traversal::work_order(view, &root)
+        .iter()
+        .map(|c| c.title.clone())
+        .collect()
+}
+
+/// The issue list orders its rows (headway:headway/battle-stock-expire): by
+/// priority by default, so Todo's low-priority card leads its unprioritised
+/// one; Manual puts them back in board order; and ordered by work order a
+/// row drags to a new place in the board's work order, written as sequence
+/// ranks the board's own walk then follows. Behavioural (accesskit only), so
+/// it runs without lavapipe.
+#[test]
+fn issue_list_orders_rows_and_drags_in_work_order() {
+    const INLINE: &str = "Inline card creation";
+    const LOW: &str = "Column reordering";
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1000.0));
+    let row_top = |harness: &Harness<'static, HeadwayTestState>, title: &str| {
+        label_top(harness, title).expect("the row is on screen")
+    };
+
+    harness.press_key(egui::Key::V);
+    wait_for_label(&mut harness, INLINE);
+    assert!(
+        row_top(&harness, LOW) < row_top(&harness, INLINE),
+        "by priority, low leads none"
+    );
+
+    harness.get_by_label("☰ Display").click();
+    wait_for_label(&mut harness, "Ordering");
+    harness.get_by_label("Manual").click();
+    harness.run_ok();
+    assert!(
+        row_top(&harness, INLINE) < row_top(&harness, LOW),
+        "manual is board order"
+    );
+
+    harness.get_by_label("Work order").click();
+    harness.run_ok();
+    harness.press_key(egui::Key::Escape);
+    wait_for_absent(&mut harness, "Ordering");
+
+    // The two Todo cards, both top-level, in whichever order the walk has
+    // them (they were made in the same second); drag the later one above
+    // the earlier.
+    let walk = demo_work_order(&mut harness);
+    let at = |title: &str| walk.iter().position(|t| t == title).expect("in the walk");
+    let (first, second) = if at(INLINE) < at(LOW) {
+        (INLINE, LOW)
+    } else {
+        (LOW, INLINE)
+    };
+    assert!(row_top(&harness, first) < row_top(&harness, second));
+    drag_row_above(&mut harness, second, first);
+
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        harness.run_ok();
+        let walk = demo_work_order(&mut harness);
+        let at = |title: &str| walk.iter().position(|t| t == title);
+        if at(second) < at(first) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the drop never reordered the work order: {walk:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    // And the list, still in work order, follows it.
+    harness.run_ok();
+    assert!(row_top(&harness, second) < row_top(&harness, first));
+}
+
 /// Archived cards are as reachable as live ones
 /// (headway:headway/album-trouble-treat): `is:archived` in the board filter
 /// opens the archived sheet with the query's other terms narrowing it, a title

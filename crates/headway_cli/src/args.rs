@@ -10,7 +10,7 @@ use nostrdb_net::Pubkey;
 use regex::Regex;
 
 use headway::event::{LineRange, ReviewFields};
-use headway::query::{DisplayProps, GroupBy, Grouping};
+use headway::query::{DisplayProps, GroupBy, Grouping, SortBy, Sorting};
 use headway::store;
 
 use nostrdb_net::relay::sync::Result;
@@ -179,6 +179,9 @@ pub(crate) enum Command {
         /// How the rows are gathered under headers (`--group`,
         /// `--sub-group`, `--empty`). Ungrouped by default.
         grouping: Grouping,
+        /// How the rows are ordered (`--sort`, `--descending`/`--ascending`,
+        /// `--completed-by-recency`). Board order by default.
+        sorting: Sorting,
     },
     /// Comment on a card, or — with `--path`/`--line`/`--record`, or a
     /// `--reply-to` naming a review comment — on one of its review records'
@@ -558,6 +561,11 @@ impl Cli {
         let mut hide = DisplayProps::NONE;
         // `list`'s grouping: `--group`, `--sub-group`, `--empty`.
         let mut grouping = Grouping::default();
+        // `list`'s ordering: `--sort`, then `--descending`/`--ascending` over
+        // its natural direction, and `--completed-by-recency`.
+        let mut sort_by = SortBy::default();
+        let mut descending: Option<bool> = None;
+        let mut completed_by_recency = false;
         let mut review = ReviewFlags::default();
         // `diff --record`: which review record to show. `comment` shares it,
         // with its other review flags.
@@ -607,6 +615,10 @@ impl Cli {
                 "--group" => grouping.by = value("--group")?.parse::<GroupBy>()?,
                 "--sub-group" => grouping.sub = value("--sub-group")?.parse::<GroupBy>()?,
                 "--empty" => grouping.show_empty = true,
+                "--sort" => sort_by = value("--sort")?.parse::<SortBy>()?,
+                "--descending" => descending = Some(true),
+                "--ascending" => descending = Some(false),
+                "--completed-by-recency" => completed_by_recency = true,
                 "--commit" => review.commit = Some(value("--commit")?),
                 "--explainer" => review.explainer = Some(value("--explainer")?),
                 "--deploy" => review.deploy = Some(value("--deploy")?),
@@ -767,11 +779,17 @@ impl Cli {
             include_done,
             display,
             grouping: list_grouping,
+            sorting,
             ..
         } = &mut command
         {
             *display = DisplayProps::shown_hidden(show, hide);
             *list_grouping = grouping;
+            *sorting = Sorting {
+                descending: descending.unwrap_or(sort_by.natural_descending()),
+                completed_by_recency,
+                ..Sorting::by(sort_by)
+            };
             *include_done = all;
             all = !board_explicit && container.is_none();
         }
@@ -960,6 +978,7 @@ fn parse_command(
             limit: count,
             display: DisplayProps::default(),
             grouping: Grouping::default(),
+            sorting: Sorting::default(),
         },
         // `parent <card> <parent>` sets, `parent <card>` detaches — mirrors how
         // `label` with no labels clears.
@@ -1727,9 +1746,11 @@ mod tests {
                 limit,
                 display,
                 grouping,
+                sorting,
             } => {
                 assert_eq!(query, "p:high label:ui");
                 assert_eq!(grouping, Grouping::default());
+                assert_eq!(sorting, Sorting::default());
                 assert_eq!(display, DisplayProps::default());
                 assert!(container.is_none() && !include_done);
                 assert_eq!(limit, Some(3));
@@ -1806,6 +1827,33 @@ mod tests {
             }
         );
         assert!(parse_err(&["list", "--group", "assignee"]).contains("assignee"));
+    }
+
+    /// `--sort` names an ordering run its natural way, `--descending` and
+    /// `--ascending` override the direction, and the default is board order.
+    #[test]
+    fn list_parses_sorting() {
+        let sorting = |args: &[&str]| match parse(args).command {
+            Command::List { sorting, .. } => sorting,
+            _ => panic!("expected a List command"),
+        };
+        assert_eq!(sorting(&["list"]), Sorting::default());
+        assert_eq!(
+            sorting(&["list", "--sort", "priority"]),
+            Sorting::by(SortBy::Priority)
+        );
+        let due = sorting(&[
+            "list",
+            "--sort",
+            "due",
+            "--descending",
+            "--completed-by-recency",
+        ]);
+        assert_eq!(due.by, SortBy::Due);
+        assert!(due.descending);
+        assert!(due.completed_by_recency);
+        assert!(!sorting(&["list", "--sort", "updated", "--ascending"]).descending);
+        assert!(parse_err(&["list", "--sort", "assignee"]).contains("assignee"));
     }
 
     /// A missing, unparseable or split pattern fails at parse time, before any

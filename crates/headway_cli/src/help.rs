@@ -203,13 +203,13 @@ they are neither. The pager is $HEADWAY_PAGER, else $PAGER, else
         group: Group::Reading,
         summary: "List the cards a query matches, one row each, across every board",
         usage: &[
-            "list [query...] [--board <b>] [--in <c>] [--all] [--show <props>] [--hide <props>] [--group <by>] [--sub-group <by>] [--empty] [-n <k>] [--json]",
+            "list [query...] [--board <b>] [--in <c>] [--all] [--show <props>] [--hide <props>] [--group <by>] [--sub-group <by>] [--empty] [--sort <by>] [--descending|--ascending] [--completed-by-recency] [-n <k>] [--json]",
         ],
         details: "\
 Print one row per card the query keeps: its blocked and priority
 markers, full ref, column and title, then its labels, subissue rollup,
 estimate, due date and when it last changed. Rows come in board order
-(board, then column, then rank).
+(board, then column, then rank) unless --sort says otherwise.
 
 Which of those a row prints are its display properties: --show <props>
 prints just these, --hide <props> drops these from the default (or from
@@ -225,6 +225,16 @@ both groups), board, parent, none. --empty also prints the groups no
 card is in: every column, priority or board. A row leaves out what its
 header already says. With --json, a grouped list is an array of
 {group, count, rows, subgroups}.
+
+--sort <by> orders the rows, within each group when grouped: manual
+(board order), priority (urgent first, none last), updated and created
+(newest first), due (soonest first, undated last), or work-order (each
+board's work order, what `next` walks, with the cards `next --ready`
+would hand out marked ▶; --json adds \"ready\"). --descending and
+--ascending flip the natural direction; cards with no priority or due
+date stay last either way. --completed-by-recency puts done cards after
+the open ones, most recently updated first. -n keeps the first rows of
+the sorted list.
 
 The query is the same one the app's board filter reads: whitespace-
 separated terms, all of which must hold.
@@ -270,6 +280,18 @@ it never signs or publishes.",
             (
                 "--empty",
                 "Print empty groups too (every column, priority, board)",
+            ),
+            (
+                "--sort <by>",
+                "Order rows: manual, priority, updated, created, due, work-order",
+            ),
+            (
+                "--descending, --ascending",
+                "Run the ordering high-to-low or low-to-high instead of its natural way",
+            ),
+            (
+                "--completed-by-recency",
+                "Done cards after the open ones, most recently updated first",
             ),
             ("-n, --count <k>", "Print at most k rows"),
             ("--color <when>", "auto (default) | always | never"),

@@ -70,15 +70,19 @@ pub enum BoardAction {
         container: Container,
         rank: String,
     },
-    /// Sequence every subissue of `parent` into the exact work-order `order`
-    /// (top-first). Writes one sequence overlay per child with fresh, evenly
-    /// spaced ranks, promoting a partly- or un-sequenced list to a fully explicit
-    /// order in one step. This is what a drag-reorder emits when the list isn't
+    /// Sequence every member of `container` (a card's subissues, or a board's
+    /// top-level cards) into the exact work-order `order` (top-first). Writes
+    /// one sequence overlay per member with fresh, evenly spaced ranks,
+    /// promoting a partly- or un-sequenced container to a fully explicit order
+    /// in one step. This is what a drag-reorder emits when the container isn't
     /// already fully sequenced: a lone [`Self::SetSequence`] can't land a card
-    /// between two *unsequenced* siblings (they have no rank to insert between,
-    /// and a sequenced child always sorts ahead of an unsequenced one), so the
-    /// whole list is normalised instead.
-    ReorderSubissues { parent: NoteId, order: Vec<NoteId> },
+    /// between two *unsequenced* members (they have no rank to insert between,
+    /// and a sequenced member always sorts ahead of an unsequenced one), so the
+    /// whole container is normalised instead. See [`reorder`].
+    Resequence {
+        container: Container,
+        order: Vec<NoteId>,
+    },
     /// Make `card` a subissue of `parent`, or detach it when `parent` is `None`.
     /// Refused (no events) when it would create a parent cycle.
     SetParent {
@@ -1288,13 +1292,12 @@ fn apply_edit(
                 publisher,
             );
         }
-        BoardAction::ReorderSubissues { parent, order } => {
+        BoardAction::Resequence { container, order } => {
             // Re-rank the whole container in one shot: walk `order` top-first,
-            // appending each child after the previous with the shared
+            // appending each member after the previous with the shared
             // `rank_between` kernel. Fresh, strictly increasing ranks give the
             // container a fully explicit order, so a later single-card drag can
             // insert against sequenced neighbours (see `SetSequence`).
-            let container = Container::Card(*parent.bytes());
             let mut prev: Option<String> = None;
             for card in &order {
                 let rank = rank_between(prev.as_deref(), None);
@@ -2197,6 +2200,62 @@ pub fn seq_rank(
     ))
 }
 
+/// The edit that moves `card` within `container`'s work-order to just above
+/// `before` (another member), or to the end when `before` is `None` — what a
+/// drag-reorder drop emits, from the card detail's subissue list and the
+/// issue list's work-order mode alike. `None` when the drop changes nothing
+/// (`card` isn't a member, or it lands where it already is).
+///
+/// Two paths, because the lazy sort (sequenced members lead by rank, the rest
+/// follow by creation order) means a lone [`BoardAction::SetSequence`] can only
+/// land a card *ahead of every unsequenced member*:
+///
+/// - **Already fully sequenced:** one `SetSequence` insert, its rank from
+///   [`seq_rank`] against `before` (or after the last member).
+/// - **Not fully sequenced:** [`BoardAction::Resequence`] promotes the whole
+///   container to an explicit order with `card` in the drop gap. One drag
+///   makes the container fully sequenced; every later drag takes the cheap
+///   single-insert path above.
+pub fn reorder(
+    view: &BoardView,
+    container: &Container,
+    card: NoteId,
+    before: Option<NoteId>,
+) -> Option<BoardAction> {
+    let members = crate::traversal::members(view, container);
+    if !members.contains(&card) {
+        return None;
+    }
+    let order = reorder_ids(&members, card, before);
+    if order == members {
+        return None;
+    }
+    if sequenced_members(view, container).len() < members.len() {
+        return Some(BoardAction::Resequence {
+            container: container.clone(),
+            order,
+        });
+    }
+    let position = before.map_or(SeqPosition::Last, SeqPosition::Before);
+    let rank = seq_rank(view, container, card, &position).ok()?;
+    Some(BoardAction::SetSequence {
+        card,
+        container: container.clone(),
+        rank,
+    })
+}
+
+/// `members` (in work-order) with `card` lifted out and put back just above
+/// `before`, or at the end when `before` is `None` or not among them.
+fn reorder_ids(members: &[NoteId], card: NoteId, before: Option<NoteId>) -> Vec<NoteId> {
+    let mut order: Vec<NoteId> = members.iter().copied().filter(|&id| id != card).collect();
+    let at = before
+        .and_then(|b| order.iter().position(|&id| id == b))
+        .unwrap_or(order.len());
+    order.insert(at, card);
+    order
+}
+
 /// Slugify `name` into a column id not already present in `existing`.
 fn unique_col_id(existing: &[ColumnDef], name: &str) -> String {
     let mut base: String = name
@@ -2762,8 +2821,8 @@ mod tests {
         // Promote into an order that isn't creation order: c, a, b.
         t.apply(
             &view,
-            BoardAction::ReorderSubissues {
-                parent: epic,
+            BoardAction::Resequence {
+                container: Container::Card(*epic.bytes()),
                 order: vec![c, a, b],
             },
         );
@@ -2784,6 +2843,21 @@ mod tests {
             .map(|s| s.id)
             .collect();
         assert_eq!(order, vec![c, a, b]);
+    }
+
+    #[test]
+    fn reorder_ids_moves_a_card_into_the_drop_gap() {
+        let ids: Vec<NoteId> = (1..=4u8).map(|n| NoteId::new([n; 32])).collect();
+        let (a, b, c, d) = (ids[0], ids[1], ids[2], ids[3]);
+
+        // Drop D above B (gap `before = B`): D lands just before B.
+        assert_eq!(reorder_ids(&ids, d, Some(b)), vec![a, d, b, c]);
+        // Drop D to the very top (gap `before` = the old first card A): D leads.
+        assert_eq!(reorder_ids(&ids, d, Some(a)), vec![d, a, b, c]);
+        // Drop B below C, i.e. above D: reinserted just before D.
+        assert_eq!(reorder_ids(&ids, b, Some(d)), vec![a, c, b, d]);
+        // Dropped past the last row (`before = None`): appended to the end.
+        assert_eq!(reorder_ids(&ids, b, None), vec![a, c, d, b]);
     }
 
     /// Seed the populated demo board for the card-operation tests to act on.

@@ -800,6 +800,7 @@ async fn run() -> Result<()> {
             limit,
             display,
             grouping,
+            sorting,
         } => {
             let scope = read_scope(&ndb, &roster, &author, &me, &board, show_all, container)?;
             let out = list::ListOutput {
@@ -809,6 +810,7 @@ async fn run() -> Result<()> {
                 limit,
                 display,
                 grouping,
+                sorting,
             };
             list::cmd_list(&scope.boards, scope.subtree, &query, include_done, out)?;
         }

@@ -5,6 +5,7 @@
 //! `grep`: paged and colored on a terminal, plain when piped, `--json` for
 //! scripts.
 
+use std::collections::HashSet;
 use std::io::IsTerminal;
 
 use cli_term::{ColorWhen, PagerMode, paint};
@@ -14,8 +15,8 @@ use serde_json::json;
 use headway::event::{BoardView, Priority, card_json};
 use headway::fmt::rel_time;
 use headway::query::{
-    DisplayProp, DisplayProps, Grouping, IssueFilter, ListGroup, ListQuery, ListRow, StateFilter,
-    group, list,
+    DisplayProp, DisplayProps, Grouping, IssueFilter, ListGroup, ListQuery, ListRow, SortBy,
+    Sorting, StateFilter, group, list, ready_set,
 };
 
 use crate::grep::{PAGER_VAR, SGR_DIM, SGR_REF, SGR_TITLE};
@@ -24,7 +25,8 @@ use crate::output::{BLOCKED_GLYPH, labels_suffix, plain_ref, priority_glyph};
 /// How `list`'s rows are written: `--json`, or text under the `--color` and
 /// `--pager`/`--no-pager` modes, at most `limit` of them (`-n`), each text
 /// row printing the `display` properties (`--show`/`--hide`), gathered under
-/// `grouping`'s headers (`--group`/`--sub-group`/`--empty`).
+/// `grouping`'s headers (`--group`/`--sub-group`/`--empty`), in `sorting`'s
+/// order (`--sort`, `--descending`/`--ascending`, `--completed-by-recency`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ListOutput {
     pub(crate) json: bool,
@@ -33,10 +35,14 @@ pub(crate) struct ListOutput {
     pub(crate) limit: Option<usize>,
     pub(crate) display: DisplayProps,
     pub(crate) grouping: Grouping,
+    pub(crate) sorting: Sorting,
 }
 
 /// `headway list [query...]` — print every live card on `boards` that `query`
-/// keeps, in board order (board, then column, then rank), one row per card.
+/// keeps, one row per card, in `out.sorting`'s order: board order (board,
+/// then column, then rank) unless `--sort` says otherwise. `-n` keeps the
+/// first rows of that order. Sorted by work order, the rows `headway next
+/// --ready` would hand out are marked.
 ///
 /// `query` is parsed by [`IssueFilter::parse`] unscoped, so a pasted
 /// `headway:<board>/<word-id>` names exactly that card. With no `is:` term the
@@ -54,11 +60,16 @@ pub(crate) fn cmd_list(
         within: subtree,
         display: out.display,
         grouping: out.grouping,
+        sorting: out.sorting,
     };
     let mut rows = list(boards, &query);
     if let Some(n) = out.limit {
         rows.truncate(n);
     }
+    let ready = (query.sorting.by == SortBy::WorkOrder).then(|| ready_set(&rows));
+    let marks = RowMarks {
+        ready: ready.as_ref(),
+    };
     let groups = query.grouping.is_grouped().then(|| {
         let boards: Vec<&BoardView> = boards.iter().collect();
         group(&boards, &rows, query.grouping)
@@ -66,8 +77,8 @@ pub(crate) fn cmd_list(
 
     if out.json {
         let json = match &groups {
-            Some(groups) => groups_json(&rows, groups),
-            None => rows.iter().map(row_json).collect(),
+            Some(groups) => groups_json(&rows, groups, marks),
+            None => rows.iter().map(|row| row_json(row, marks)).collect(),
         };
         println!("{}", serde_json::to_string_pretty(&json)?);
         return Ok(());
@@ -79,18 +90,18 @@ pub(crate) fn cmd_list(
     let stdout_tty = std::io::stdout().is_terminal();
     let use_pager = out.pager.enabled(stdout_tty);
     let color = out.color.enabled(stdout_tty || use_pager);
-    let widths = RowWidths::of(&rows, query.grouping.row_display(query.display));
+    let widths = RowWidths::of(&rows, query.grouping.row_display(query.display), marks);
     let output = match &groups {
         Some(groups) => {
             let mut output = String::new();
             for g in groups {
-                group_lines(&mut output, &rows, g, widths, color, "");
+                group_lines(&mut output, &rows, g, widths, marks, color, "");
             }
             output
         }
         None => rows
             .iter()
-            .map(|row| list_line(row, widths, color))
+            .map(|row| list_line(row, widths, marks, color))
             .collect(),
     };
     cli_term::emit(&output, use_pager, PAGER_VAR);
@@ -105,6 +116,7 @@ fn group_lines(
     rows: &[ListRow],
     g: &ListGroup,
     widths: RowWidths,
+    marks: RowMarks,
     color: bool,
     indent: &str,
 ) {
@@ -118,13 +130,13 @@ fn group_lines(
     if g.subgroups.is_empty() {
         for &at in &g.rows {
             output.push_str(indent);
-            output.push_str(&list_line(&rows[at], widths, color));
+            output.push_str(&list_line(&rows[at], widths, marks, color));
         }
         return;
     }
     let inner = format!("{indent}  ");
     for sub in &g.subgroups {
-        group_lines(output, rows, sub, widths, color, &inner);
+        group_lines(output, rows, sub, widths, marks, color, &inner);
     }
 }
 
@@ -132,15 +144,15 @@ fn group_lines(
 /// header as `group`, its row count, its rows as [`row_json`] renders them
 /// (every row of the group, sub-grouped or not) and its sub-groups, the same
 /// shape again.
-fn groups_json(rows: &[ListRow], groups: &[ListGroup]) -> serde_json::Value {
+fn groups_json(rows: &[ListRow], groups: &[ListGroup], marks: RowMarks) -> serde_json::Value {
     groups
         .iter()
         .map(|g| {
             json!({
                 "group": g.label,
                 "count": g.rows.len(),
-                "rows": g.rows.iter().map(|&at| row_json(&rows[at])).collect::<Vec<_>>(),
-                "subgroups": groups_json(rows, &g.subgroups),
+                "rows": g.rows.iter().map(|&at| row_json(&rows[at], marks)).collect::<Vec<_>>(),
+                "subgroups": groups_json(rows, &g.subgroups, marks),
             })
         })
         .collect()
@@ -156,12 +168,33 @@ fn default_state(mut filter: IssueFilter, include_done: bool) -> IssueFilter {
 }
 
 /// The `list --json` shape for one row: the card as `show --json` renders it,
-/// plus the board and column it sits in.
-fn row_json(row: &ListRow) -> serde_json::Value {
+/// plus the board and column it sits in, and whether it's ready when the
+/// list marks that.
+fn row_json(row: &ListRow, marks: RowMarks) -> serde_json::Value {
     let mut card = card_json(&row.board.id, row.card);
     card["board"] = json!(row.board.id);
     card["column"] = json!(row.place_name());
+    if let Some(ready) = marks.ready {
+        card["ready"] = json!(ready.contains(row.card.id.bytes()));
+    }
     card
+}
+
+/// What a listing marks on its rows beyond the card itself: the ready
+/// frontier, when sorted by work order.
+#[derive(Clone, Copy, Debug, Default)]
+struct RowMarks<'a> {
+    /// The cards `headway next --ready` would hand out, by id; `None` when
+    /// the listing doesn't mark them.
+    ready: Option<&'a HashSet<[u8; 32]>>,
+}
+
+impl RowMarks<'_> {
+    /// Whether `row` is marked ready.
+    fn is_ready(&self, row: &ListRow) -> bool {
+        self.ready
+            .is_some_and(|ready| ready.contains(row.card.id.bytes()))
+    }
 }
 
 /// The padded widths of a listing's cells, so every ref and every title
@@ -176,6 +209,8 @@ struct RowWidths {
     blocked: bool,
     /// Some row has a priority: every row gets a priority-glyph-wide slot.
     priority: bool,
+    /// Some row is ready: every row gets a [`READY_GLYPH`]-wide slot.
+    ready: bool,
     reference: usize,
     column: usize,
 }
@@ -183,15 +218,17 @@ struct RowWidths {
 impl RowWidths {
     /// The widths `rows` need to print `display`'s properties. A hidden
     /// property takes no width.
-    fn of(rows: &[ListRow], display: DisplayProps) -> RowWidths {
+    fn of(rows: &[ListRow], display: DisplayProps, marks: RowMarks) -> RowWidths {
         let mut widths = RowWidths {
             display,
             blocked: false,
             priority: false,
+            ready: false,
             reference: 0,
             column: 0,
         };
         for row in rows {
+            widths.ready |= marks.is_ready(row);
             widths.blocked |= display.contains(DisplayProp::Blockers) && row.card.is_blocked();
             widths.priority |=
                 display.contains(DisplayProp::Priority) && row.card.priority != Priority::None;
@@ -207,14 +244,19 @@ impl RowWidths {
     }
 }
 
-/// One row: the blocked and priority markers, the card's full ref (yellow,
+/// One row: the ready, blocked and priority markers, the card's full ref (yellow,
 /// pasteable), its `[column]` dimmed, then its title in bold with its labels,
 /// subissue rollup, estimate, dates and board after it — each only when
 /// `widths.display` holds its property. The title is always there.
-fn list_line(row: &ListRow, widths: RowWidths, color: bool) -> String {
+fn list_line(row: &ListRow, widths: RowWidths, marks: RowMarks, color: bool) -> String {
     let card = row.card;
     let shows = |prop| widths.display.contains(prop);
     let mut line = String::new();
+    match (widths.ready, marks.is_ready(row)) {
+        (true, true) => line.push_str(&paint(color, SGR_REF, READY_GLYPH)),
+        (true, false) => line.push_str(MARKER_GAP),
+        (false, _) => {}
+    }
     match (widths.blocked, card.is_blocked()) {
         (true, true) => line.push_str(&paint(color, SGR_DIM, BLOCKED_GLYPH)),
         (true, false) => line.push_str(MARKER_GAP),
@@ -284,6 +326,10 @@ fn list_line(row: &ListRow, widths: RowWidths, color: bool) -> String {
 /// The blank a row without a marker puts in that marker's slot: as wide as
 /// every glyph (one character and a space).
 const MARKER_GAP: &str = "  ";
+
+/// The marker on a row in the ready frontier, in a list sorted by work order:
+/// what `headway next --ready` would hand out.
+const READY_GLYPH: &str = "▶ ";
 
 #[cfg(test)]
 mod tests {
@@ -365,8 +411,8 @@ mod tests {
             })
             .collect();
         headway::fmt::freeze_now(0);
-        let widths = RowWidths::of(&rows, DisplayProps::default());
-        let line = list_line(&rows[0], widths, false);
+        let widths = RowWidths::of(&rows, DisplayProps::default(), RowMarks::default());
+        let line = list_line(&rows[0], widths, RowMarks::default(), false);
         assert!(!line.contains('\x1b'), "{line:?}");
         assert_eq!(
             line,
@@ -378,14 +424,16 @@ mod tests {
         );
         // An unprioritised row keeps the slot blank, so the refs line up.
         assert!(
-            list_line(&rows[1], widths, false).starts_with("  headway:work/"),
+            list_line(&rows[1], widths, RowMarks::default(), false).starts_with("  headway:work/"),
             "{:?}",
-            list_line(&rows[1], widths, false)
+            list_line(&rows[1], widths, RowMarks::default(), false)
         );
         // With no priority anywhere there is no slot at all.
-        let flush = RowWidths::of(&rows[1..], DisplayProps::default());
-        assert!(list_line(&rows[1], flush, false).starts_with("headway:work/"));
-        let json = row_json(&rows[0]);
+        let flush = RowWidths::of(&rows[1..], DisplayProps::default(), RowMarks::default());
+        assert!(
+            list_line(&rows[1], flush, RowMarks::default(), false).starts_with("headway:work/")
+        );
+        let json = row_json(&rows[0], RowMarks::default());
         assert_eq!(json["column"], "Todo");
         assert_eq!(json["board"], "work");
         assert_eq!(json["priority"], "high");
@@ -408,7 +456,8 @@ mod tests {
             card: &column.cards[0],
             placement: Placement::Column(column),
         };
-        let line = |display| list_line(&row, RowWidths::of(&[row], display), false);
+        let marks = RowMarks::default();
+        let line = |display| list_line(&row, RowWidths::of(&[row], display, marks), marks, false);
 
         let full = line(DisplayProps::default());
         assert!(

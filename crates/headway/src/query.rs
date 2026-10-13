@@ -11,6 +11,9 @@
 //! - [`ListRow`] — a card plus the board it's on and its [`Placement`] there
 //!   (a column, or the archive), the unit every predicate and renderer reads.
 //! - [`ListQuery`] + [`list`] — flatten boards into the rows a query keeps.
+//! - [`Grouping`] + [`group`] — gather rows under headers.
+//! - [`Sorting`] + [`sort_order`] — order rows, by work order among others,
+//!   with [`ready_set`] marking what `headway next --ready` hands out.
 
 use std::collections::{HashMap, HashSet};
 
@@ -970,11 +973,304 @@ fn row_groups(row: &ListRow, by: GroupBy) -> Vec<ListGroup> {
     }
 }
 
+/// What a list's rows are ordered by — Linear's "Ordering". Written by its
+/// [`name`](Self::name) in `headway list --sort` and in a saved view.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum SortBy {
+    /// The boards' own order: board by board, column by column, each column
+    /// by rank — the board as drawn.
+    #[default]
+    Manual,
+    /// By priority, cards with none last whichever way it runs; ties go to
+    /// the most recently updated.
+    Priority,
+    /// By when the card's content last changed ([`CardView::updated_at`]).
+    Updated,
+    /// By when the card was made.
+    Created,
+    /// By due date, undated cards last whichever way it runs.
+    Due,
+    /// Each board's work-order ([`crate::traversal::work_order`] over its
+    /// root): what `headway next` walks, sequenced cards first, each followed
+    /// by its subissues. Cards outside it (archived) go last.
+    WorkOrder,
+}
+
+impl SortBy {
+    /// Every ordering, in the order a menu offers them.
+    pub const ALL: [SortBy; 6] = [
+        SortBy::Manual,
+        SortBy::Priority,
+        SortBy::Updated,
+        SortBy::Created,
+        SortBy::Due,
+        SortBy::WorkOrder,
+    ];
+
+    /// The ordering's written name: what `--sort` and
+    /// [`FromStr`](std::str::FromStr) read, and the serde form.
+    pub fn name(self) -> &'static str {
+        match self {
+            SortBy::Manual => "manual",
+            SortBy::Priority => "priority",
+            SortBy::Updated => "updated",
+            SortBy::Created => "created",
+            SortBy::Due => "due",
+            SortBy::WorkOrder => "work-order",
+        }
+    }
+
+    /// The ordering's name for a person, as a menu shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            SortBy::Manual => "Manual",
+            SortBy::Priority => "Priority",
+            SortBy::Updated => "Last updated",
+            SortBy::Created => "Created",
+            SortBy::Due => "Due date",
+            SortBy::WorkOrder => "Work order",
+        }
+    }
+
+    /// The direction the ordering naturally runs: most urgent, newest first;
+    /// soonest due, board and work order top first.
+    pub fn natural_descending(self) -> bool {
+        match self {
+            SortBy::Priority | SortBy::Updated | SortBy::Created => true,
+            SortBy::Manual | SortBy::Due | SortBy::WorkOrder => false,
+        }
+    }
+}
+
+impl std::fmt::Display for SortBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// A name that is no [`SortBy`]'s.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnknownSortBy(pub String);
+
+impl std::fmt::Display for UnknownSortBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown ordering `{}` (expected one of ", self.0)?;
+        for (i, by) in SortBy::ALL.iter().enumerate() {
+            let sep = if i == 0 { "" } else { ", " };
+            write!(f, "{sep}{by}")?;
+        }
+        f.write_str(")")
+    }
+}
+
+impl std::error::Error for UnknownSortBy {}
+
+impl std::str::FromStr for SortBy {
+    type Err = UnknownSortBy;
+
+    /// An ordering by its [`name`](SortBy::name), ignoring case and
+    /// surrounding space, plus the synonyms people write (`board`, `seq`,
+    /// `due-date`).
+    fn from_str(s: &str) -> Result<SortBy, UnknownSortBy> {
+        let name = s.trim().to_ascii_lowercase();
+        let alias = match name.as_str() {
+            "board" | "rank" => "manual",
+            "work" | "workorder" | "work_order" | "seq" | "sequence" | "next" => "work-order",
+            "due-date" | "due_date" => "due",
+            "updated-at" | "modified" => "updated",
+            "created-at" | "new" | "newest" => "created",
+            other => other,
+        };
+        SortBy::ALL
+            .into_iter()
+            .find(|by| by.name() == alias)
+            .ok_or(UnknownSortBy(s.trim().to_string()))
+    }
+}
+
+/// How a list orders its rows: by [`by`](Self::by), which way, and whether
+/// done rows go last by recency. Applied before grouping, so every group's
+/// rows come out in this order ([`group`] keeps the order it's handed). The
+/// default is [`SortBy::Manual`], the boards' own order.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(default)]
+pub struct Sorting {
+    /// What the rows are ordered by.
+    pub by: SortBy,
+    /// Run the ordering high to low: Urgent first, newest first, latest due
+    /// first, the board or work order bottom first. Cards with no priority
+    /// or no due date stay last either way.
+    pub descending: bool,
+    /// Linear's "order completed by recency": done rows go after the open
+    /// ones, most recently updated first, whatever [`by`](Self::by) is.
+    pub completed_by_recency: bool,
+}
+
+impl Sorting {
+    /// Ordering by `by`, run its natural way ([`SortBy::natural_descending`]).
+    pub fn by(by: SortBy) -> Sorting {
+        Sorting {
+            by,
+            descending: by.natural_descending(),
+            completed_by_recency: false,
+        }
+    }
+}
+
+/// The order `sorting` puts `rows` in, as indices into them: `rows[order[0]]`
+/// is first. Stable, so rows the ordering doesn't tell apart keep the order
+/// they came in (the boards' own, from [`list`]).
+pub fn sort_order(rows: &[ListRow], sorting: Sorting) -> Vec<usize> {
+    use std::cmp::Ordering;
+
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    let work = (sorting.by == SortBy::WorkOrder).then(|| WorkPositions::of(rows));
+    // `ord` read the chosen way; `last` puts a missing value at the end
+    // whichever way it runs.
+    let dir = |ord: Ordering| {
+        if sorting.descending {
+            ord.reverse()
+        } else {
+            ord
+        }
+    };
+    order.sort_by(|&a, &b| {
+        let (ra, rb) = (&rows[a], &rows[b]);
+        if sorting.completed_by_recency {
+            match (ra.is_done(), rb.is_done()) {
+                (true, true) => return rb.card.updated_at.cmp(&ra.card.updated_at),
+                (false, true) => return Ordering::Less,
+                (true, false) => return Ordering::Greater,
+                (false, false) => {}
+            }
+        }
+        let (ca, cb) = (ra.card, rb.card);
+        match sorting.by {
+            SortBy::Manual => dir(a.cmp(&b)),
+            SortBy::Priority => last_if_none(
+                Some(ca.priority).filter(|p| *p != Priority::None),
+                Some(cb.priority).filter(|p| *p != Priority::None),
+                dir,
+            )
+            .then_with(|| cb.updated_at.cmp(&ca.updated_at)),
+            SortBy::Updated => dir(ca.updated_at.cmp(&cb.updated_at)),
+            SortBy::Created => dir(ca.created_at.cmp(&cb.created_at)),
+            SortBy::Due => last_if_none(ca.due, cb.due, dir),
+            SortBy::WorkOrder => {
+                let Some(work) = &work else {
+                    return Ordering::Equal;
+                };
+                let (wa, wb) = (work.place(ra), work.place(rb));
+                wa.board
+                    .cmp(&wb.board)
+                    .then_with(|| last_if_none(wa.at, wb.at, dir))
+            }
+        }
+    });
+    order
+}
+
+/// Compare `a` and `b` through `dir`, a missing one last either way.
+fn last_if_none<T: Ord>(
+    a: Option<T>,
+    b: Option<T>,
+    dir: impl Fn(std::cmp::Ordering) -> std::cmp::Ordering,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Some(a), Some(b)) => dir(a.cmp(&b)),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+/// Where each row's card sits in its board's work-order, for
+/// [`SortBy::WorkOrder`]: the boards the rows are on, in the order the rows
+/// first meet them, each with its work-order positions.
+struct WorkPositions<'a> {
+    boards: Vec<BoardOrder<'a>>,
+}
+
+/// One board's work-order, as [`WorkPositions`] keeps it.
+struct BoardOrder<'a> {
+    board: &'a BoardView,
+    /// Each card's place in the walk, by id.
+    at: HashMap<[u8; 32], usize>,
+}
+
+/// A row's place for [`SortBy::WorkOrder`]: its board's turn, and where in
+/// that board's walk its card is (`None` for a card the walk never reaches).
+struct WorkPlace {
+    board: usize,
+    at: Option<usize>,
+}
+
+impl<'a> WorkPositions<'a> {
+    /// The work-orders of every board `rows` are on.
+    fn of(rows: &[ListRow<'a>]) -> WorkPositions<'a> {
+        let mut boards: Vec<BoardOrder<'a>> = Vec::new();
+        for row in rows {
+            if boards.iter().any(|b| std::ptr::eq(b.board, row.board)) {
+                continue;
+            }
+            let root = crate::event::Container::BoardRoot(row.board.id.clone());
+            let at = crate::traversal::work_order(row.board, &root)
+                .into_iter()
+                .enumerate()
+                .map(|(i, card)| (*card.id.bytes(), i))
+                .collect();
+            boards.push(BoardOrder {
+                board: row.board,
+                at,
+            });
+        }
+        WorkPositions { boards }
+    }
+
+    /// Where `row` goes.
+    fn place(&self, row: &ListRow) -> WorkPlace {
+        let board = self
+            .boards
+            .iter()
+            .position(|b| std::ptr::eq(b.board, row.board))
+            .unwrap_or(self.boards.len());
+        let at = self
+            .boards
+            .get(board)
+            .and_then(|b| b.at.get(row.card.id.bytes()).copied());
+        WorkPlace { board, at }
+    }
+}
+
+/// The cards among `rows` that are in their board's ready frontier
+/// ([`crate::traversal::ready`] over its root): what `headway next --ready`
+/// hands out. A list in [`SortBy::WorkOrder`] marks them.
+pub fn ready_set(rows: &[ListRow]) -> HashSet<[u8; 32]> {
+    let mut seen: Vec<&BoardView> = Vec::new();
+    let mut ready = HashSet::new();
+    for row in rows {
+        if seen.iter().any(|b| std::ptr::eq(*b, row.board)) {
+            continue;
+        }
+        seen.push(row.board);
+        let root = crate::event::Container::BoardRoot(row.board.id.clone());
+        ready.extend(
+            crate::traversal::ready(row.board, &root)
+                .into_iter()
+                .map(|card| *card.id.bytes()),
+        );
+    }
+    ready
+}
+
 /// What a list shows: the [`IssueFilter`], where to look, and how its rows
-/// are drawn and gathered.
-///
-/// Ordering lands here as the list view grows
-/// (headway:headway/acoustic-canvas-diesel).
+/// are drawn, ordered and gathered.
 #[derive(Clone, Debug, Default)]
 pub struct ListQuery {
     /// Which cards to keep.
@@ -988,15 +1284,16 @@ pub struct ListQuery {
     /// How the rows are gathered under headers ([`group`]). [`list`] keeps
     /// the same rows whatever it holds.
     pub grouping: Grouping,
+    /// The order [`list`] hands its rows back in.
+    pub sorting: Sorting,
 }
 
-/// Every card on `boards` that `query` keeps, in board order: board by board,
-/// column by column, each column by rank — the board as drawn. Archived cards
-/// are listed only when the filter asks for them ([`IssueFilter::wants_archived`]),
-/// after each board's live ones, so a default list never changes for them.
-///
-/// Sorting and grouping are later cards of the list-view epic; until then the
-/// order is the boards' own.
+/// Every card on `boards` that `query` keeps, in [`query.sorting`](ListQuery::sorting)'s
+/// order. That starts from board order — board by board, column by column,
+/// each column by rank, the board as drawn — which [`SortBy::Manual`] keeps
+/// and every other ordering breaks ties by. Archived cards are listed only
+/// when the filter asks for them ([`IssueFilter::wants_archived`]), after each
+/// board's live ones, so a default list never changes for them.
 pub fn list<'a>(boards: &'a [BoardView], query: &ListQuery) -> Vec<ListRow<'a>> {
     let mut rows = Vec::new();
     for board in boards {
@@ -1029,7 +1326,13 @@ pub fn list<'a>(boards: &'a [BoardView], query: &ListQuery) -> Vec<ListRow<'a>> 
             });
         }
     }
-    rows
+    if query.sorting == Sorting::default() {
+        return rows;
+    }
+    sort_order(&rows, query.sorting)
+        .into_iter()
+        .map(|at| rows[at])
+        .collect()
 }
 
 /// `root` and every card below it on `view`, live or archived — the set an
@@ -1690,5 +1993,216 @@ mod tests {
         let json = serde_json::to_string(&grouping).unwrap();
         assert_eq!(json, r#"{"by":"status","sub":"label","show_empty":false}"#);
         assert_eq!(serde_json::from_str::<Grouping>(&json).unwrap(), grouping);
+    }
+
+    /// The titles of every live card on `boards` (`is:any`), in `sorting`'s
+    /// order.
+    fn sorted(boards: &[BoardView], sorting: Sorting) -> Vec<String> {
+        let query = ListQuery {
+            filter: IssueFilter::parse("is:any", None),
+            sorting,
+            ..ListQuery::default()
+        };
+        list(boards, &query)
+            .iter()
+            .map(|r| r.card.title.clone())
+            .collect()
+    }
+
+    /// Priority runs Urgent first by default and Low first ascending, cards
+    /// with none last both ways; equal priorities go most recently updated
+    /// first.
+    #[test]
+    fn sort_by_priority_keeps_none_last() {
+        let with = |n, title, p, updated| {
+            let mut c = card(n, title, &[]);
+            c.priority = p;
+            c.updated_at = updated;
+            c
+        };
+        let boards = [board(
+            "b",
+            vec![
+                with(1, "none", Priority::None, 9),
+                with(2, "low", Priority::Low, 0),
+                with(3, "old high", Priority::High, 1),
+                with(4, "urgent", Priority::Urgent, 0),
+                with(5, "new high", Priority::High, 5),
+            ],
+            vec![],
+            vec![],
+        )];
+        let by = Sorting::by(SortBy::Priority);
+        assert!(by.descending);
+        assert_eq!(
+            sorted(&boards, by),
+            ["urgent", "new high", "old high", "low", "none"]
+        );
+        let ascending = Sorting {
+            descending: false,
+            ..by
+        };
+        assert_eq!(
+            sorted(&boards, ascending),
+            ["low", "new high", "old high", "urgent", "none"]
+        );
+    }
+
+    /// Due runs soonest first, undated cards last both ways; created and
+    /// updated run newest first; manual is board order, reversed descending.
+    #[test]
+    fn sort_by_dates_and_manual() {
+        let with = |n, title, due: Option<&str>, at| {
+            let mut c = card(n, title, &[]);
+            c.due = due.and_then(Date::parse);
+            c.created_at = at;
+            c.updated_at = 10 - at;
+            c
+        };
+        let boards = [board(
+            "b",
+            vec![
+                with(1, "undated", None, 1),
+                with(2, "late", Some("2026-12-01"), 3),
+            ],
+            vec![with(3, "soon", Some("2026-10-20"), 2)],
+            vec![],
+        )];
+        let due = Sorting::by(SortBy::Due);
+        assert_eq!(sorted(&boards, due), ["soon", "late", "undated"]);
+        let due_desc = Sorting {
+            descending: true,
+            ..due
+        };
+        assert_eq!(sorted(&boards, due_desc), ["late", "soon", "undated"]);
+        assert_eq!(
+            sorted(&boards, Sorting::by(SortBy::Created)),
+            ["late", "soon", "undated"]
+        );
+        assert_eq!(
+            sorted(&boards, Sorting::by(SortBy::Updated)),
+            ["undated", "soon", "late"]
+        );
+        assert_eq!(
+            sorted(&boards, Sorting::default()),
+            ["undated", "late", "soon"]
+        );
+        let reversed = Sorting {
+            descending: true,
+            ..Sorting::default()
+        };
+        assert_eq!(sorted(&boards, reversed), ["soon", "late", "undated"]);
+    }
+
+    /// Completed by recency puts done rows after the open ones, most
+    /// recently updated first, whatever the main ordering says.
+    #[test]
+    fn completed_by_recency_trails_done_rows() {
+        let with = |n, title, p, updated| {
+            let mut c = card(n, title, &[]);
+            c.priority = p;
+            c.updated_at = updated;
+            c
+        };
+        let boards = [board(
+            "b",
+            vec![with(1, "open low", Priority::Low, 0)],
+            vec![],
+            vec![
+                with(2, "done old urgent", Priority::Urgent, 1),
+                with(3, "done new", Priority::None, 7),
+            ],
+        )];
+        let by = Sorting::by(SortBy::Priority);
+        assert_eq!(
+            sorted(&boards, by),
+            ["done old urgent", "open low", "done new"]
+        );
+        let recency = Sorting {
+            completed_by_recency: true,
+            ..by
+        };
+        assert_eq!(
+            sorted(&boards, recency),
+            ["open low", "done new", "done old urgent"]
+        );
+    }
+
+    /// Work order is each board's `traversal::work_order` walk, board by
+    /// board, and the ready set is what `traversal::ready` hands out.
+    #[test]
+    fn sort_by_work_order_matches_traversal() {
+        use crate::event::Container;
+        let sub = |n: u8| SubissueView {
+            id: NoteId::new([n; 32]),
+            title: String::new(),
+            column: Some("todo".to_string()),
+            done: false,
+            archived: false,
+            seq: None,
+        };
+        let mut first = card(1, "made first", &[]);
+        first.created_at = 1;
+        let mut epic = card(2, "epic, sequenced", &[]);
+        epic.seq = Some("a".to_string());
+        epic.created_at = 2;
+        epic.subissues = vec![sub(3)];
+        let mut child = card(3, "child", &[]);
+        child.parent = Some(NoteId::new([2; 32]));
+        child.created_at = 3;
+        let mut doing = card(4, "doing", &[]);
+        doing.created_at = 0;
+        let boards = [
+            board("one", vec![first, epic, child], vec![doing], vec![]),
+            board("two", vec![card(5, "elsewhere", &[])], vec![], vec![]),
+        ];
+        let walk: Vec<String> =
+            crate::traversal::work_order(&boards[0], &Container::BoardRoot("one".to_string()))
+                .iter()
+                .map(|c| c.title.clone())
+                .collect();
+        assert_eq!(walk, ["epic, sequenced", "child", "doing", "made first"]);
+        let mut expected = walk.clone();
+        expected.push("elsewhere".to_string());
+        assert_eq!(sorted(&boards, Sorting::by(SortBy::WorkOrder)), expected);
+
+        let rows = list(&boards, &ListQuery::default());
+        let ready = ready_set(&rows);
+        let mut frontier: Vec<[u8; 32]> =
+            crate::traversal::ready(&boards[0], &Container::BoardRoot("one".to_string()))
+                .iter()
+                .map(|c| *c.id.bytes())
+                .collect();
+        frontier.push([5; 32]);
+        assert_eq!(ready, frontier.into_iter().collect::<HashSet<_>>());
+        // The epic waits on its child, and In Progress is taken.
+        assert!(!ready.contains(&[2; 32]));
+        assert!(!ready.contains(&[4; 32]));
+        assert!(ready.contains(&[3; 32]));
+    }
+
+    #[test]
+    fn sort_by_parses_names_and_aliases() {
+        assert_eq!("work-order".parse(), Ok(SortBy::WorkOrder));
+        assert_eq!("seq".parse(), Ok(SortBy::WorkOrder));
+        assert_eq!("Board".parse(), Ok(SortBy::Manual));
+        for by in SortBy::ALL {
+            assert_eq!(by.name().parse(), Ok(by), "{by} round-trips");
+        }
+        let err = "assignee".parse::<SortBy>().unwrap_err();
+        assert!(
+            err.to_string().contains("expected one of manual, priority"),
+            "{err}"
+        );
+        let sorting = Sorting {
+            completed_by_recency: true,
+            ..Sorting::by(SortBy::WorkOrder)
+        };
+        let json = serde_json::to_string(&sorting).unwrap();
+        assert_eq!(
+            json,
+            r#"{"by":"work-order","descending":false,"completed_by_recency":true}"#
+        );
+        assert_eq!(serde_json::from_str::<Sorting>(&json).unwrap(), sorting);
     }
 }

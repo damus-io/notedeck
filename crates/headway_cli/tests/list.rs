@@ -266,4 +266,60 @@ fn list_filters_cards_across_boards() {
     assert_eq!(groups[0]["subgroups"][1]["count"], 1);
     assert_eq!(groups[1]["group"], "No label");
     assert_eq!(groups[1]["rows"][0]["ref"], child.as_str());
+
+    // Ordering: by priority the unprioritised epic goes last; by due date
+    // the one dated card leads and the undated keep board order after it,
+    // and `-n` keeps the first rows of the sorted list.
+    let by_priority = list(bin, url, db, &["--sort", "priority"]);
+    assert_eq!(by_priority.last(), Some(&epic), "{by_priority:?}");
+    headway(bin, url, db, &["due", &epic, "2026-11-01"]);
+    let by_due = list_until(bin, url, db, &["due:any"], 1);
+    assert_eq!(by_due, [epic.as_str()]);
+    assert_eq!(
+        list(bin, url, db, &["--sort", "due", "--descending"]),
+        [epic.as_str(), child.as_str(), elsewhere.as_str()]
+    );
+    assert_eq!(
+        list(
+            bin,
+            url,
+            db,
+            &["--sort", "priority", "--ascending", "-n", "2"]
+        )
+        .len(),
+        2
+    );
+    assert_eq!(
+        list(bin, url, db, &["--sort", "due", "-n", "1"]),
+        [epic.as_str()]
+    );
+
+    // Work order marks the ready frontier, the rows `next --ready` hands
+    // out: the child is ready, its epic waits on it.
+    let out = headway(
+        bin,
+        url,
+        db,
+        &["list", "--board", "headway", "--sort", "work-order"],
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    // The ready and priority slots, both blank for the epic.
+    assert!(lines[0].starts_with(&format!("    {epic}")), "{out:?}");
+    assert!(lines[1].starts_with(&format!("▶ ↑ {child}")), "{out:?}");
+    let out = headway(
+        bin,
+        url,
+        db,
+        &[
+            "--json",
+            "list",
+            "--board",
+            "headway",
+            "--sort",
+            "work-order",
+        ],
+    );
+    let rows: Value = serde_json::from_str(&out).expect("list --json --sort");
+    assert_eq!(rows[0]["ready"], false);
+    assert_eq!(rows[1]["ready"], true);
 }

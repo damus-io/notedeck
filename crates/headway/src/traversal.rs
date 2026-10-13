@@ -186,7 +186,7 @@ fn walk<'v>(
     visited: &mut HashSet<[u8; 32]>,
     out: &mut Vec<&'v CardView>,
 ) {
-    for id in member_order(view, container) {
+    for id in members(view, container) {
         if !visited.insert(*id.bytes()) {
             continue;
         }
@@ -205,7 +205,7 @@ fn walk<'v>(
 /// reused verbatim. The board root's members are its top-level (non-subissue)
 /// cards, which the reducer sorts spatially by column, so this applies the
 /// `(seq else created_at)` fallback here, the one place it must.
-fn member_order(view: &BoardView, container: &Container) -> Vec<NoteId> {
+pub fn members(view: &BoardView, container: &Container) -> Vec<NoteId> {
     match container {
         Container::Card(parent) => view
             .card(NoteId::new(*parent))

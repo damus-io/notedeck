@@ -19,6 +19,13 @@
 //! sub-grouping if one is set: [`headway::query::group`], the same grouping
 //! `headway list --group` prints. A header folds its rows away, and its `+`
 //! adds a card already in that group (see [`group_add`]).
+//!
+//! The rows are ordered before they're grouped
+//! (headway:headway/battle-stock-expire), by priority unless the Display menu
+//! says otherwise: [`headway::query::sort_order`], what `headway list --sort`
+//! prints. Ordered by work order, the rows `headway next --ready` would hand
+//! out wear an accent bar, and a row on the board showing drags into a new
+//! place in that order (see [`work_order_drop`]).
 
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
@@ -33,10 +40,10 @@ use crate::cache::BoardRef;
 use crate::cursor::CursorMove;
 use crate::event::{self, BoardView, CardView, Priority};
 use crate::keys;
-use crate::store::BoardAction;
+use crate::store::{self, BoardAction};
 use headway::query::{
     DisplayProp, DisplayProps, GroupBy, GroupKey, Grouping, IssueFilter, ListGroup, ListRow,
-    Placement, StateFilter,
+    Placement, SortBy, Sorting, StateFilter,
 };
 
 /// Height of one list row, fixed so the scroll area lays out only the rows on
@@ -75,6 +82,9 @@ pub(crate) struct ListState {
     /// How the rows are gathered under headers, set in the Display menu.
     /// By status unless changed, as Linear's list is.
     grouping: Grouping,
+    /// How the rows are ordered, set in the Display menu. By priority unless
+    /// changed, as Linear's list is.
+    sorting: Sorting,
     /// The groups [`rows`](Self::rows) fall in, their rows as indices into
     /// it. One [`GroupKey::All`] group while the list isn't grouped.
     groups: Vec<ListGroup>,
@@ -108,6 +118,7 @@ impl Default for ListState {
                 by: GroupBy::Status,
                 ..Grouping::default()
             },
+            sorting: Sorting::by(SortBy::Priority),
             groups: Vec::new(),
             collapsed: std::collections::HashSet::new(),
             entries: Vec::new(),
@@ -183,6 +194,9 @@ struct ListLine {
     id: NoteId,
     /// The card's word-id (`maple-river-canyon`).
     word_id: String,
+    /// The card is in its board's ready frontier and the list is ordered by
+    /// work order: the row wears the accent bar.
+    ready: bool,
     /// The text of the row's properties, formatted once when the rows are
     /// computed rather than every frame.
     text: LineText,
@@ -319,6 +333,8 @@ struct ListInputs {
     all: bool,
     /// The grouping.
     grouping: Grouping,
+    /// The ordering.
+    sorting: Sorting,
 }
 
 /// Where a list row opens: its card, and the board it's on.
@@ -352,6 +368,7 @@ impl ListState {
         };
         seen.all != self.all
             || seen.grouping != self.grouping
+            || seen.sorting != self.sorting
             || seen.query != self.query
             || seen.sources.len() != sources.len()
             || seen
@@ -361,8 +378,9 @@ impl ListState {
                 .any(|(was, now)| !was.same_fold(now))
     }
 
-    /// Recompute the rows and their groups from `sources` if they, the
-    /// query, the toggle or the grouping changed since the last time.
+    /// Recompute the rows, their order and their groups from `sources` if
+    /// they, the query, the toggle, the grouping or the ordering changed since
+    /// the last time.
     fn refresh(&mut self, sources: &[BoardRef]) {
         if !self.stale(sources) {
             return;
@@ -382,6 +400,7 @@ impl ListState {
                         slot,
                         id: card.id,
                         word_id: headway::wordid::encode(card.id.bytes()),
+                        ready: false,
                         text: LineText::of(board, card),
                     });
                 }
@@ -402,8 +421,8 @@ impl ListState {
             }
         }
         // The kept rows as `headway::query` reads them, index for index with
-        // `self.rows`, to group.
-        let kept: Vec<ListRow> = self
+        // `self.rows`, to order and group.
+        let mut kept: Vec<ListRow> = self
             .rows
             .iter()
             .map(|line| {
@@ -415,6 +434,16 @@ impl ListState {
                 }
             })
             .collect();
+        let order = headway::query::sort_order(&kept, self.sorting);
+        let mut lines: Vec<Option<ListLine>> = self.rows.drain(..).map(Some).collect();
+        self.rows = order.iter().filter_map(|&at| lines[at].take()).collect();
+        kept = order.iter().map(|&at| kept[at]).collect();
+        if self.sorting.by == SortBy::WorkOrder {
+            let ready = headway::query::ready_set(&kept);
+            for line in &mut self.rows {
+                line.ready = ready.contains(line.id.bytes());
+            }
+        }
         let boards: Vec<&BoardView> = sources.iter().map(|b| &**b).collect();
         self.groups = headway::query::group(&boards, &kept, self.grouping);
         self.rebuild_entries();
@@ -423,7 +452,21 @@ impl ListState {
             query: self.query.clone(),
             all: self.all,
             grouping: self.grouping,
+            sorting: self.sorting,
         });
+    }
+
+    /// Whether a row can be dragged to a new place in its board's work
+    /// order: the list runs in work order, top first, and the row's card is
+    /// live on `view`, the board an edit applies to.
+    fn can_drag(&self, sources: &[BoardRef], line: &ListLine, view: &BoardView) -> bool {
+        if self.sorting.by != SortBy::WorkOrder || self.sorting.descending {
+            return false;
+        }
+        let board: &BoardView = &sources[line.board];
+        matches!(line.slot, LineSlot::Column { .. })
+            && board.author == view.author
+            && board.id == view.id
     }
 
     /// Lay [`groups`](Self::groups) out as the lines the list draws: each
@@ -648,8 +691,68 @@ pub(super) fn list_view_ui(
     if let Some(at) = rows.clicked {
         state.open_list_row(view, sources, at);
     }
+    if let Some(drop) = rows.dropped {
+        action = action.or_else(|| work_order_drop(view, drop));
+    }
     action
 }
+
+/// A row let go over another in work-order mode: the card dragged, the card
+/// it was dropped on, and on which half.
+#[derive(Clone, Copy, Debug)]
+struct RowDrop {
+    /// The card dragged.
+    card: NoteId,
+    /// The card under the pointer when it was let go.
+    onto: NoteId,
+    /// Let go on the lower half of that row: the card goes after it.
+    below: bool,
+}
+
+/// The work-order edit a [`RowDrop`] asks for on `view`, or `None` when it
+/// asks for none (dropped on itself or its own subtree, or where it already
+/// sits).
+///
+/// A card moves among the members of its own container: the board's
+/// top-level cards, or its parent's subissues. So the drop lands beside
+/// whichever of `onto`'s ancestors (or `onto` itself) is its sibling there —
+/// a top-level card dropped on a subissue goes beside that subissue's epic.
+/// The edit is the shared [`store::reorder`], the same the card detail's
+/// subissue drag makes.
+fn work_order_drop(view: &BoardView, drop: RowDrop) -> Option<BoardAction> {
+    let parent = view.card(drop.card)?.parent;
+    let mut sibling = view.card(drop.onto)?;
+    // Bounded, so a parent cycle that slipped past the write-time guard
+    // can't spin here.
+    for _ in 0..64 {
+        if sibling.parent == parent {
+            break;
+        }
+        sibling = view.card(sibling.parent?)?;
+    }
+    if sibling.parent != parent || sibling.id == drop.card {
+        return None;
+    }
+    let container = match parent {
+        Some(parent) => event::Container::Card(*parent.bytes()),
+        None => event::Container::BoardRoot(view.id.clone()),
+    };
+    let before = if drop.below {
+        let members = headway::traversal::members(view, &container);
+        let at = members.iter().position(|&id| id == sibling.id)?;
+        members[at + 1..]
+            .iter()
+            .copied()
+            .find(|&id| id != drop.card)
+    } else {
+        Some(sibling.id)
+    };
+    store::reorder(view, &container, drop.card, before)
+}
+
+/// The payload a work-order row drag carries: the dragged card.
+#[derive(Clone, Copy, Debug)]
+struct DragRow(NoteId);
 
 /// What the rows were asked this frame: a row clicked, a header folded, a
 /// header's `+` pressed.
@@ -661,6 +764,8 @@ struct RowsResponse {
     toggle: Option<CollapseKey>,
     /// The header whose `+` was pressed.
     add: Option<CollapseKey>,
+    /// A work-order drag let go over a row.
+    dropped: Option<RowDrop>,
 }
 
 /// What a card added under a group's header gets, so it lands in that group:
@@ -833,7 +938,13 @@ fn list_header_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiStat
             list.all = true;
         }
         ui.add_space(SPACING_SM);
-        menu_open = display_menu_ui(ui, theme, &mut list.display, &mut list.grouping);
+        menu_open = display_menu_ui(
+            ui,
+            theme,
+            &mut list.display,
+            &mut list.grouping,
+            &mut list.sorting,
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let field = egui::TextEdit::singleline(&mut list.query)
                 .id(list_field_id())
@@ -850,7 +961,8 @@ fn list_header_ui(ui: &mut egui::Ui, theme: &ColorTheme, state: &mut BoardUiStat
 }
 
 /// The list's Display menu, like Linear's view options: the grouping and
-/// sub-grouping, whether empty groups show, and one toggle chip per
+/// sub-grouping, whether empty groups show, the ordering, its direction and
+/// whether done rows trail by recency, and one toggle chip per
 /// [`DisplayProp`]. Stays open while chips are flipped. The trigger wears the
 /// filter's warm tint while any of it differs from the default, so a list
 /// laid out other than usual says so. Returns whether the menu is open.
@@ -859,9 +971,13 @@ fn display_menu_ui(
     theme: &ColorTheme,
     display: &mut DisplayProps,
     grouping: &mut Grouping,
+    sorting: &mut Sorting,
 ) -> bool {
-    let default_grouping = ListState::default().grouping;
-    let label = if *display == DisplayProps::default() && *grouping == default_grouping {
+    let defaults = ListState::default();
+    let label = if *display == DisplayProps::default()
+        && *grouping == defaults.grouping
+        && *sorting == defaults.sorting
+    {
         egui::RichText::new("☰ Display").color(theme.text_secondary)
     } else {
         egui::RichText::new("☰ Display")
@@ -887,6 +1003,14 @@ fn display_menu_ui(
         ui.add_space(SPACING_XS);
         ui.checkbox(&mut grouping.show_empty, "Show empty groups");
         ui.add_space(SPACING_SM);
+        heading(ui, "Ordering");
+        sort_chips_ui(ui, sorting);
+        ui.add_space(SPACING_XS);
+        ui.checkbox(
+            &mut sorting.completed_by_recency,
+            "Order completed by recency",
+        );
+        ui.add_space(SPACING_SM);
         ui.label(
             egui::RichText::new("Display properties")
                 .small()
@@ -904,7 +1028,8 @@ fn display_menu_ui(
         ui.add_space(SPACING_XS);
         if ui.button("Reset to default").clicked() {
             *display = DisplayProps::default();
-            *grouping = default_grouping;
+            *grouping = defaults.grouping;
+            *sorting = defaults.sorting;
         }
     });
     open.is_some()
@@ -920,6 +1045,36 @@ fn group_chips_ui(ui: &mut egui::Ui, by: &mut GroupBy, id: &str) {
                 if ui.selectable_label(*by == choice, choice.label()).clicked() {
                     *by = choice;
                 }
+            }
+        });
+    });
+}
+
+/// One chip per [`SortBy`], the one `sorting` holds selected, then a
+/// direction toggle. Picking an ordering runs it its natural way
+/// ([`Sorting::by`]); the toggle flips that.
+fn sort_chips_ui(ui: &mut egui::Ui, sorting: &mut Sorting) {
+    ui.push_id("headway-list-ordering", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for choice in SortBy::ALL {
+                if ui
+                    .selectable_label(sorting.by == choice, choice.label())
+                    .clicked()
+                    && sorting.by != choice
+                {
+                    *sorting = Sorting {
+                        completed_by_recency: sorting.completed_by_recency,
+                        ..Sorting::by(choice)
+                    };
+                }
+            }
+            let (arrow, hint) = if sorting.descending {
+                ("↓", "Descending")
+            } else {
+                ("↑", "Ascending")
+            };
+            if ui.button(arrow).on_hover_text(hint).clicked() {
+                sorting.descending = !sorting.descending;
             }
         });
     });
@@ -972,9 +1127,17 @@ fn list_rows_ui(
                     }
                     ListEntry::Row(row) => {
                         let line = &list.rows[*row];
-                        let on_cursor = cursor == Some(at);
-                        if list_row_ui(ui, theme, sources, line, display, on_cursor).clicked() {
+                        let row = RowLook {
+                            display,
+                            on_cursor: cursor == Some(at),
+                            draggable: list.can_drag(sources, line, view),
+                        };
+                        let drawn = list_row_ui(ui, theme, sources, line, row);
+                        if drawn.response.clicked() {
                             response.clicked = Some(at);
+                        }
+                        if drawn.dropped.is_some() {
+                            response.dropped = drawn.dropped;
                         }
                     }
                 }
@@ -1081,19 +1244,41 @@ fn group_header_ui(
     clicks
 }
 
+/// How a row draws this frame, beyond its card.
+#[derive(Clone, Copy)]
+struct RowLook {
+    /// The properties it shows.
+    display: DisplayProps,
+    /// It's the keyboard cursor's row: ringed.
+    on_cursor: bool,
+    /// It drags to a new place in work order ([`ListState::can_drag`]).
+    draggable: bool,
+}
+
+/// What a row did this frame: its response, and a work-order drag let go
+/// over it.
+struct RowDrawn {
+    response: egui::Response,
+    dropped: Option<RowDrop>,
+}
+
 /// One row, Linear's anatomy left to right: priority, word-id, status
 /// circle, the title (cut short to fit), then right-aligned the parent
 /// breadcrumb and subissue rollup, labels, estimate, blockers, due date, when
 /// it was created and changed, and its board — each drawn only while
-/// `display` holds it. `on_cursor` rings it as the keyboard cursor's row.
+/// `look.display` holds it. A cursor row is ringed, a ready row wears an
+/// accent bar on its left edge, and while a work-order drag hovers it a line
+/// marks the half it would land on.
 fn list_row_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     sources: &[BoardRef],
     line: &ListLine,
-    display: DisplayProps,
-    on_cursor: bool,
-) -> egui::Response {
+    look: RowLook,
+) -> RowDrawn {
+    let RowLook {
+        display, on_cursor, ..
+    } = look;
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ROW_HEIGHT),
         egui::Sense::hover(),
@@ -1140,7 +1325,12 @@ fn list_row_ui(
     // Sensed after its contents, so a click anywhere on the row is the
     // row's rather than a label's.
     let id = egui::Id::unique(("headway-list-row", line.id));
-    let response = ui.interact(rect, id, egui::Sense::click());
+    let sense = if look.draggable {
+        egui::Sense::click_and_drag()
+    } else {
+        egui::Sense::click()
+    };
+    let response = ui.interact(rect, id, sense);
     if on_cursor {
         ui.painter().rect_stroke(
             rect,
@@ -1149,7 +1339,42 @@ fn list_row_ui(
             egui::StrokeKind::Inside,
         );
     }
-    response
+    if line.ready {
+        let bar = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
+        ui.painter()
+            .rect_filled(bar, egui::CornerRadius::same(1), theme.accent);
+    }
+    if look.draggable {
+        response.dnd_set_drag_payload(DragRow(line.id));
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+    }
+    let dropped = row_drop_ui(ui, theme, &response, line.id);
+    RowDrawn { response, dropped }
+}
+
+/// While a work-order drag hovers `row` (card `onto`), mark the edge it would
+/// land at; when it's let go there, the drop.
+fn row_drop_ui(
+    ui: &egui::Ui,
+    theme: &ColorTheme,
+    row: &egui::Response,
+    onto: NoteId,
+) -> Option<RowDrop> {
+    let pointer = ui.input(|i| i.pointer.interact_pos())?;
+    let below = pointer.y >= row.rect.center().y;
+    if row.dnd_hover_payload::<DragRow>().is_some() {
+        let y = if below {
+            row.rect.bottom()
+        } else {
+            row.rect.top()
+        };
+        ui.painter()
+            .hline(row.rect.x_range(), y, egui::Stroke::new(2.0, theme.accent));
+    }
+    let card = row.dnd_release_payload::<DragRow>()?.0;
+    Some(RowDrop { card, onto, below })
 }
 
 /// A row's leading properties, before its title: priority, word-id and
