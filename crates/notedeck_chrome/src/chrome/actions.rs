@@ -441,6 +441,12 @@ pub(super) fn chrome_handle_app_action(
         AppAction::RecordJump(from) => chrome.record_jump_from(from),
 
         AppAction::Open(open) => {
+            // A profile or hashtag names no note to resolve: it opens in
+            // Columns as a click on it would.
+            if let Some(click) = notedeck::reference_note_action(&open.reference) {
+                chrome_handle_app_action(chrome, ctx, AppAction::Note(click), ui);
+                return;
+            }
             let Some(note_id) = resolve_reference(ctx, &open.reference) else {
                 // Often just not resolvable *yet* (see `PendingOpen`): hold it
                 // and retry on the next frames rather than dropping it.
@@ -582,16 +588,87 @@ fn columns_route_to_profile(
     }
 }
 
+// A chrome built the way the app builds one (`new_headless`), and egui frames
+// to drive it in, for the tests below that route through the real apps.
+#[cfg(test)]
+mod chrome_fixture {
+    use super::*;
+    use nostrdb_net::FullKeypair;
+    use notedeck::Notedeck;
+
+    /// Run one egui frame at `time` (egui seconds) with a `ui` under a
+    /// central panel, as the chrome's app route has one.
+    pub(super) fn frame_at(egui_ctx: &egui::Context, time: f64, f: impl FnMut(&mut egui::Ui)) {
+        frame_with(egui_ctx, time, Vec::new(), f);
+    }
+
+    /// [`frame_at`], with `events` as the frame's input.
+    pub(super) fn frame_with(
+        egui_ctx: &egui::Context,
+        time: f64,
+        events: Vec<egui::Event>,
+        mut f: impl FnMut(&mut egui::Ui),
+    ) {
+        let input = egui::RawInput {
+            time: Some(time),
+            events,
+            ..Default::default()
+        };
+        egui_ctx
+            .run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| f(ui));
+            })
+            .drop_without_applying_deltas();
+    }
+
+    /// A chrome built the way the app builds one, with a fresh account.
+    pub(super) struct OpenFixture {
+        pub(super) _dir: tempfile::TempDir,
+        pub(super) kp: FullKeypair,
+        pub(super) egui_ctx: egui::Context,
+        pub(super) notedeck: Notedeck,
+        pub(super) chrome: Chrome,
+    }
+
+    impl OpenFixture {
+        pub(super) fn new() -> Self {
+            let dir = tempfile::TempDir::new().expect("tmp dir");
+            let kp = FullKeypair::generate();
+            let args: Vec<String> = [
+                "notedeck-test",
+                "--testrunner",
+                "--nsec",
+                &kp.secret_key.to_secret_hex(),
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+            let egui_ctx = egui::Context::default();
+            let mut notedeck = Notedeck::init(&egui_ctx, dir.path(), &args);
+            let chrome = Chrome::new_headless(&args, &mut notedeck).expect("chrome");
+            Self {
+                _dir: dir,
+                kp,
+                egui_ctx,
+                notedeck,
+                chrome,
+            }
+        }
+    }
+}
+
 // Cross-app routing of an open by reference, through a chrome built the way
 // the app builds one (`new_headless`), so the apps that claim a reference are
 // the real ones. Needs the apps compiled in: CI's main workspace test run
 // turns every app feature on, so it runs there.
 #[cfg(all(test, feature = "dave", feature = "headway"))]
 mod open_tests {
+    use super::chrome_fixture::{frame_at, frame_with, OpenFixture};
     use super::*;
     use nostrdb::{Filter, IngestMetadata, NoteBuilder};
     use nostrdb_net::FullKeypair;
-    use notedeck::{AppId, Notedeck, OpenUri};
+    use notedeck::{AppId, OpenUri};
     use notedeck_dave::session_events::AI_SESSION_STATE_KIND;
 
     /// The session the open names: its kind-31988 d-tag.
@@ -634,67 +711,6 @@ mod open_tests {
             .expect("ingest");
         ndb.wait_for_notes(sub, 1).await.expect("committed");
         nostrdb_net::NoteId::new(*note.id())
-    }
-
-    /// Run one egui frame at `time` (egui seconds) with a `ui` under a
-    /// central panel, as the chrome's app route has one.
-    fn frame_at(egui_ctx: &egui::Context, time: f64, f: impl FnMut(&mut egui::Ui)) {
-        frame_with(egui_ctx, time, Vec::new(), f);
-    }
-
-    /// [`frame_at`], with `events` as the frame's input.
-    fn frame_with(
-        egui_ctx: &egui::Context,
-        time: f64,
-        events: Vec<egui::Event>,
-        mut f: impl FnMut(&mut egui::Ui),
-    ) {
-        let input = egui::RawInput {
-            time: Some(time),
-            events,
-            ..Default::default()
-        };
-        egui_ctx
-            .run_ui(input, |ui| {
-                egui::CentralPanel::default().show(ui, |ui| f(ui));
-            })
-            .drop_without_applying_deltas();
-    }
-
-    /// A chrome built the way the app builds one, with a fresh account.
-    struct OpenFixture {
-        _dir: tempfile::TempDir,
-        kp: FullKeypair,
-        egui_ctx: egui::Context,
-        notedeck: Notedeck,
-        chrome: Chrome,
-    }
-
-    impl OpenFixture {
-        fn new() -> Self {
-            let dir = tempfile::TempDir::new().expect("tmp dir");
-            let kp = FullKeypair::generate();
-            let args: Vec<String> = [
-                "notedeck-test",
-                "--testrunner",
-                "--nsec",
-                &kp.secret_key.to_secret_hex(),
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-
-            let egui_ctx = egui::Context::default();
-            let mut notedeck = Notedeck::init(&egui_ctx, dir.path(), &args);
-            let chrome = Chrome::new_headless(&args, &mut notedeck).expect("chrome");
-            Self {
-                _dir: dir,
-                kp,
-                egui_ctx,
-                notedeck,
-                chrome,
-            }
-        }
     }
 
     /// An `AppAction::Open` of an `agentium:` reference with a message, raised
@@ -937,6 +953,194 @@ mod open_tests {
             .expect("Dave holds the open");
         assert_eq!(pending.note, state_note);
         assert_eq!(pending.msg, None);
+    }
+}
+
+// Columns' answer to the Cmd-K bar's search (headway:notedeck/jump-bike-wife),
+// through the real chrome: Columns is in every roster, so this needs no app
+// feature (and so builds no Dave, whose IPC socket a test would take).
+#[cfg(test)]
+mod columns_search_tests {
+    use super::chrome_fixture::{frame_at, frame_with, OpenFixture};
+    use super::*;
+    use nostrdb::{Filter, IngestMetadata, NoteBuilder};
+    use nostrdb_net::FullKeypair;
+    use notedeck_columns::Route;
+
+    /// Ingest `notes`, signed by `kp` as `(kind, content)`, and wait until
+    /// every one is committed. Returns their ids, in order.
+    async fn ingest(
+        ndb: &nostrdb::Ndb,
+        kp: &FullKeypair,
+        notes: &[SeedNote<'_>],
+    ) -> Vec<nostrdb_net::NoteId> {
+        let filter = Filter::new().kinds([0, 1]).build();
+        let sub = ndb.subscribe(&[filter]).expect("subscribe");
+        let mut ids = Vec::new();
+        for (at, seed) in notes.iter().enumerate() {
+            let note = NoteBuilder::new()
+                .kind(seed.kind)
+                .content(seed.content)
+                .created_at(1_000 + at as u64)
+                .sign(&kp.secret_key.secret_bytes())
+                .build()
+                .expect("note");
+            let frame = nostrdb_net::ClientMessage::event(&note)
+                .expect("event")
+                .to_json()
+                .expect("json");
+            ndb.process_event_with(&frame, IngestMetadata::new().client(true))
+                .expect("ingest");
+            ids.push(nostrdb_net::NoteId::new(*note.id()));
+        }
+        ndb.wait_for_notes(sub, notes.len() as u32)
+            .await
+            .expect("committed");
+        ids
+    }
+
+    /// A note to seed: its kind and content.
+    struct SeedNote<'a> {
+        kind: u32,
+        content: &'a str,
+    }
+
+    /// Open the bar on `query`, ask until its selected row is titled
+    /// `title` (the full-text half answers pending first), press Enter, and
+    /// return the selected row's subtitle.
+    async fn choose(
+        chrome: &mut Chrome,
+        ctx: &mut AppContext<'_>,
+        egui_ctx: &egui::Context,
+        query: &str,
+        title: &str,
+    ) -> Option<String> {
+        chrome.toggle_command_bar(ctx, egui_ctx);
+        chrome.command_bar_mut().set_query(query);
+        let step = notedeck::search::REFINE_INTERVAL.as_secs_f64() + 0.01;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut t = 0.0;
+        loop {
+            frame_at(egui_ctx, t, |_ui| chrome.search_if_due(ctx, egui_ctx));
+            let found = chrome
+                .command_bar_mut()
+                .selected()
+                .is_some_and(|item| item.title == title);
+            if found {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{query:?} never selected {title:?}: {:?}",
+                chrome
+                    .command_bar_mut()
+                    .matches()
+                    .map(|item| item.title.clone())
+                    .collect::<Vec<_>>()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            t += step;
+        }
+        let subtitle = chrome
+            .command_bar_mut()
+            .selected()
+            .and_then(|i| i.subtitle.clone());
+        let enter = egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame_with(egui_ctx, t + step, vec![enter], |ui| {
+            chrome.command_bar_keys(ctx, ui);
+        });
+        assert!(!chrome.command_bar().is_open(), "Enter closes the bar");
+        subtitle
+    }
+
+    /// The top route of Columns' selected column.
+    fn columns_top(chrome: &mut Chrome, ctx: &mut AppContext) -> Route {
+        let columns = chrome.get_columns_app().expect("columns");
+        let cols = columns
+            .decks_cache
+            .active_columns_mut(ctx.i18n, ctx.accounts)
+            .expect("columns");
+        cols.get_selected_router().top().clone()
+    }
+
+    /// With Columns in front, a profile's name lists it under Columns and
+    /// Enter opens the profile; a word of a note's text lists the note and
+    /// Enter opens its thread; `#tag` opens the hashtag's timeline. Each
+    /// lands in Columns' selected column.
+    #[tokio::test]
+    async fn the_command_bar_finds_profiles_and_notes_and_enter_opens_them_in_columns() {
+        let OpenFixture {
+            _dir,
+            kp,
+            egui_ctx,
+            mut notedeck,
+            mut chrome,
+        } = OpenFixture::new();
+        let mut ctx = notedeck.app_context();
+        let ids = ingest(
+            ctx.ndb,
+            &kp,
+            &[
+                SeedNote {
+                    kind: 0,
+                    content: r#"{"name":"quokka","display_name":"Quentin Quokka"}"#,
+                },
+                SeedNote {
+                    kind: 1,
+                    content: "the zebra crossing is open",
+                },
+            ],
+        )
+        .await;
+        let columns = chrome
+            .apps
+            .iter()
+            .position(|app| matches!(app, crate::app::NotedeckApp::Columns(_)))
+            .expect("columns in the roster");
+        chrome.set_active(columns as i32);
+
+        let subtitle = choose(
+            &mut chrome,
+            &mut ctx,
+            &egui_ctx,
+            "quentin quokka",
+            "Quentin Quokka",
+        )
+        .await;
+        assert_eq!(subtitle.as_deref(), Some("Profile · @quokka"));
+        assert_eq!(chrome.active, columns as i32);
+        assert!(
+            matches!(columns_top(&mut chrome, &mut ctx), Route::Timeline(TimelineKind::Profile(pk)) if pk == kp.pubkey),
+            "the profile opens"
+        );
+
+        let subtitle = choose(
+            &mut chrome,
+            &mut ctx,
+            &egui_ctx,
+            "zebra crossing",
+            "the zebra crossing is open",
+        )
+        .await;
+        assert_eq!(subtitle.as_deref(), Some("Note · Quentin Quokka"));
+        assert!(chrome.pending_open.is_none(), "the note resolved at once");
+        assert!(
+            matches!(columns_top(&mut chrome, &mut ctx), Route::Thread(sel) if sel.root_id.bytes() == ids[1].bytes()),
+            "the note's thread opens"
+        );
+
+        let subtitle = choose(&mut chrome, &mut ctx, &egui_ctx, "#zebra", "#zebra").await;
+        assert_eq!(subtitle.as_deref(), Some("Hashtag · Open timeline"));
+        assert!(
+            matches!(columns_top(&mut chrome, &mut ctx), Route::Timeline(TimelineKind::Hashtag(tags)) if tags == ["zebra"]),
+            "the hashtag's timeline opens"
+        );
     }
 }
 

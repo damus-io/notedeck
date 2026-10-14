@@ -264,6 +264,33 @@ impl ReferenceParser for NostrRefParser {
     }
 }
 
+/// What a reference that names no note opens, as the click a reader would
+/// make on it: a `nostr:npub1…` or `nostr:nprofile1…` opens that profile, and
+/// a `#tag` (one word after the `#`) that hashtag's timeline. `None` for
+/// anything else, including a reference to a note, which
+/// [`ReferenceParserRegistry::resolve_exact`] resolves instead.
+///
+/// These are the references an [`AppAction::Open`](crate::AppAction::Open)
+/// can carry without a note behind them, such as a profile or hashtag hit in
+/// the chrome's universal search: a profile opens whether or not its kind-0
+/// is in the database yet.
+pub fn reference_note_action(reference: &str) -> Option<crate::NoteAction> {
+    if let Some(bech) = reference.strip_prefix(NostrRefParser::PREFIX) {
+        let pubkey = if bech.starts_with("npub1") {
+            Pubkey::try_from_bech32_string(bech, false).ok()
+        } else if bech.starts_with("nprofile1") {
+            Pubkey::from_nprofile_bech(bech)
+        } else {
+            None
+        };
+        return pubkey.map(crate::NoteAction::Profile);
+    }
+
+    let tag = reference.strip_prefix('#')?;
+    let is_word = !tag.is_empty() && !tag.contains(|c: char| c.is_whitespace() || c == '#');
+    is_word.then(|| crate::NoteAction::Hashtag(tag.to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +312,35 @@ mod tests {
         }
         fn resolve(&self, _matched: &str, _ctx: &ReferenceResolveCtx) -> Option<ResolvedRef> {
             None
+        }
+    }
+
+    /// A profile reference opens the profile and a `#word` its hashtag
+    /// timeline; a note reference, a bare word or a `#` with no word or two
+    /// words opens neither.
+    #[test]
+    fn reference_note_action_opens_profiles_and_hashtags() {
+        let pk = Pubkey::new([7; 32]);
+        let npub = format!("nostr:{}", pk.npub().unwrap());
+        assert!(matches!(
+            reference_note_action(&npub),
+            Some(crate::NoteAction::Profile(p)) if p == pk
+        ));
+        assert!(matches!(
+            reference_note_action("#nostr"),
+            Some(crate::NoteAction::Hashtag(t)) if t == "nostr"
+        ));
+
+        let note = format!("nostr:{}", NoteId::new([7; 32]).to_bech().unwrap());
+        for none in [
+            note.as_str(),
+            "nostr",
+            "#",
+            "#two words",
+            "##",
+            "nostr:npub1bad",
+        ] {
+            assert!(reference_note_action(none).is_none(), "{none}");
         }
     }
 

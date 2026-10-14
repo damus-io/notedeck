@@ -143,8 +143,8 @@ pub use profile::*;
 pub use publish::{AccountsPublishApi, ExplicitPublishApi, PublishApi};
 pub use realtime_cache::{PollResponse, RealtimeCache, RealtimeCacheStats, Reducer};
 pub use reference::{
-    NostrRefParser, ReferenceMatch, ReferenceParser, ReferenceParserRegistry, ReferenceResolveCtx,
-    ResolvedRef,
+    reference_note_action, NostrRefParser, ReferenceMatch, ReferenceParser,
+    ReferenceParserRegistry, ReferenceResolveCtx, ResolvedRef,
 };
 pub use registries::AppRegistries;
 pub use relay_resolver::RelaySetResolver;

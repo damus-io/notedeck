@@ -81,6 +81,10 @@ pub struct Damus {
     /// [`ThreadOwnerId`](crate::scoped_sub_owner_keys::ThreadOwnerId) and
     /// deep-link-specific egui IDs keep them distinct from deck columns.
     next_deeplink_id: u64,
+
+    /// The Cmd-K bar's search over profiles and notes, kept between its asks
+    /// for the full-text half that runs on the job pool.
+    bar_search: crate::bar_search::BarSearch,
 }
 
 #[profiling::function]
@@ -624,6 +628,7 @@ impl Damus {
             hovered_column: None,
             next_deeplink_id: 0,
             timeline_loader: TimelineLoader::default(),
+            bar_search: Default::default(),
         }
     }
 
@@ -668,6 +673,7 @@ impl Damus {
             hovered_column: None,
             next_deeplink_id: 0,
             timeline_loader: TimelineLoader::default(),
+            bar_search: Default::default(),
         }
     }
 
@@ -1186,6 +1192,30 @@ impl notedeck::App for Damus {
 
     fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
         vec![Box::new(crate::note_renderer::NoteKindRenderer)]
+    }
+
+    /// Profiles, notes and a `#tag`'s timeline for the chrome's Cmd-K bar
+    /// (see [`crate::bar_search`]); notes come from a full-text query on the
+    /// job pool, so the first answers are pending.
+    fn search(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        query: &notedeck::SearchQuery<'_>,
+        out: &mut notedeck::SearchHits,
+    ) {
+        let search_ctx = crate::bar_search::BarSearchCtx {
+            ndb: ctx.ndb,
+            jobs: ctx.job_pool,
+            contacts: ctx
+                .accounts
+                .get_selected_account()
+                .data
+                .contacts
+                .get_state(),
+            i18n: ctx.i18n,
+        };
+        self.bar_search
+            .search(search_ctx, query, Instant::now(), out);
     }
 }
 

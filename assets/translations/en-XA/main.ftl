@@ -798,6 +798,9 @@ Open_e932 = {"["}Ópéñ{"]"}
 # Button label to open email client
 Open_Email_25e9 = {"["}Ópéñ Émàíl{"]"}
 
+# Universal search: subtitle of the row opening a hashtag's timeline
+Open_timeline_287c = {"["}Ópéñ tímélíñé{"]"}
+
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = {"["}Ópéñ yóúr défàúlt émàíl çlíéñt tó gét hélp fróm thé Dàmús téàm{"]"}
 

@@ -798,6 +798,9 @@ Open_e932 = Open
 # Button label to open email client
 Open_Email_25e9 = Open Email
 
+# Universal search: subtitle of the row opening a hashtag's timeline
+Open_timeline_287c = Open timeline
+
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = Open your default email client to get help from the Damus team
 
