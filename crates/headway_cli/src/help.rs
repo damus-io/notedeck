@@ -11,7 +11,7 @@
 //! up here before dispatching, so a command with no entry is rejected rather
 //! than shipping undocumented.
 
-use cli_term::help::{Cli, CommandHelp};
+use cli_term::help::{Cli, CommandHelp, GlobalOption};
 
 // The sections a command is listed under in `headway --help`, printed in the
 // order [`CLI`] lists them.
@@ -117,7 +117,7 @@ persisted current board between commands.",
     CommandHelp {
         name: "grep",
         group: READING,
-        summary: "Search card text (titles, descriptions, comments) across every board",
+        summary: "Search card text across every board",
         usage: &["grep <pattern> [--board <b>] [--in <c>] [-i|-s] [--color <when>] [--[no-]pager]"],
         details: "\
 Print every line of card text that matches <pattern>, grouped under the
@@ -181,7 +181,7 @@ they are neither. The pager is $HEADWAY_PAGER, else $PAGER, else
     CommandHelp {
         name: "list",
         group: READING,
-        summary: "List the cards a query matches, one row each, across every board",
+        summary: "List the cards a query matches, across every board",
         usage: &[
             "list [query...] [--board <b>] [--in <c>] [--all] [--show <props>] [--hide <props>] [--group <by>] [--sub-group <by>] [--empty] [--sort <by>] [--descending|--ascending] [--completed-by-recency] [--view <name>] [--save-view <name>] [-n <k>] [--json]",
             "list --views [--json]",
@@ -317,7 +317,7 @@ publishes.",
     CommandHelp {
         name: "diff",
         group: READING,
-        summary: "Print the commit a card's review record names, fetching it if needed",
+        summary: "Print the commit a card's review record names",
         usage: &["diff <card> [--record <sha-prefix>]"],
         details: "\
 Resolve the card's newest review record (see `review`) to a commit on
@@ -525,7 +525,7 @@ this is refused there.",
     CommandHelp {
         name: "review",
         group: CARDS,
-        summary: "Record a commit for review on a card (host, path, session, explainer, deploy)",
+        summary: "Record a commit for review on a card",
         usage: &[
             "review <card> [--commit <rev>] [--explainer <url>] [--deploy <url>] [--agentium <ref>]",
         ],
@@ -926,38 +926,52 @@ pub fn lookup(name: &str) -> Option<&'static CommandHelp> {
     CLI.lookup(name)
 }
 
-/// Hand `f` the options every command takes, as the overview prints them.
-/// Built in one place so the overview and [`check_flags`] read the same list:
-/// a global the overview documents is one every command accepts.
+/// Hand `f` the options every command takes, as the overview and `headway
+/// help options` print them. Built in one place so the pages and
+/// [`check_flags`] read the same list: a global the help documents is one
+/// every command accepts. (`-h` is the printer's own, [`cli_term::help::HELP`].)
 fn with_globals<R>(
     default_relay: &str,
     default_board: &str,
-    f: impl FnOnce(&[(&str, &str)]) -> R,
+    f: impl FnOnce(&[GlobalOption]) -> R,
 ) -> R {
+    let board_summary = format!("Board for this run [default: {default_board}]");
     let board = format!(
         "Board for this run (or $HEADWAY_BOARD). Normally unnecessary — a headway:<board>/<word-id> card ref routes itself, and `headway board <id>` sets it persistently [default: {default_board}]"
     );
+    let relay_summary = format!("Relay URL [default: {default_relay}]");
     let relay = format!("Relay URL (or $HEADWAY_RELAY) [default: {default_relay}]");
     f(&[
-        ("--board <id>", &board),
-        (
-            "--nsec <key>",
-            "Signing key for this run, as nsec1… or a 64-char hex secret. Normally unnecessary — run `headway login` once and it's reused. $HEADWAY_NSEC, if set, takes precedence over the stored key",
-        ),
-        (
-            "--comment-nsec <key>",
-            "A second key (nsec1… or hex) that signs `comment` and nothing else, so an agent running as you has its comments attributed to itself. $HEADWAY_COMMENT_NSEC works too, and so does $HEADWAY_COMMENT_NSEC_FILE naming a file that holds it (read only when neither is set; an unreadable file is an error). The comment still seals into the board's channel with your key's access, and only sealed boards show it",
-        ),
-        (
-            "--author <pk>",
-            "Board owner whose board to read and edit (defaults to the signer, or to whoever shared a board under --board's slug with you when you have none by that name). The signer may be a member of it rather than its owner",
-        ),
-        ("--relay <url>", &relay),
-        (
-            "--db <path>",
-            "nostrdb cache dir [default: <data-dir>/headway-cli]",
-        ),
-        ("-h, --help", "Print this help, or a command's own"),
+        GlobalOption {
+            flag: "--board <id>",
+            summary: &board_summary,
+            details: &board,
+        },
+        GlobalOption {
+            flag: "--nsec <key>",
+            summary: "Signing key for this run [default: `headway login`]",
+            details: "Signing key for this run, as nsec1… or a 64-char hex secret. Normally unnecessary — run `headway login` once and it's reused. $HEADWAY_NSEC, if set, takes precedence over the stored key",
+        },
+        GlobalOption {
+            flag: "--comment-nsec <key>",
+            summary: "A second key that signs only `comment`",
+            details: "A second key (nsec1… or hex) that signs `comment` and nothing else, so an agent running as you has its comments attributed to itself. $HEADWAY_COMMENT_NSEC works too, and so does $HEADWAY_COMMENT_NSEC_FILE naming a file that holds it (read only when neither is set; an unreadable file is an error). The comment still seals into the board's channel with your key's access, and only sealed boards show it",
+        },
+        GlobalOption {
+            flag: "--author <pk>",
+            summary: "Board owner to read and edit [default: the signer]",
+            details: "Board owner whose board to read and edit (defaults to the signer, or to whoever shared a board under --board's slug with you when you have none by that name). The signer may be a member of it rather than its owner",
+        },
+        GlobalOption {
+            flag: "--relay <url>",
+            summary: &relay_summary,
+            details: &relay,
+        },
+        GlobalOption {
+            flag: "--db <path>",
+            summary: "nostrdb cache dir [default: <data-dir>/headway-cli]",
+            details: "nostrdb cache dir [default: <data-dir>/headway-cli]",
+        },
     ])
 }
 
@@ -971,10 +985,18 @@ pub fn check_flags(cmd: &CommandHelp, passed: &[String]) -> Result<(), String> {
     )
 }
 
-/// Print the grouped command list: `headway --help`.
-pub fn print_usage(default_relay: &str, default_board: &str) {
-    let overview = with_globals(default_relay, default_board, |globals| {
-        CLI.overview(
+/// The grouped command list, `headway --help`, as printed.
+fn overview(default_relay: &str, default_board: &str) -> String {
+    with_globals(default_relay, default_board, |globals| {
+        CLI.overview(globals)
+    })
+}
+
+/// The global options in full, `headway help options`, as printed: they and
+/// how a `<card>` or `<col>` argument is read, which every command shares.
+fn options_page(default_relay: &str, default_board: &str) -> String {
+    with_globals(default_relay, default_board, |globals| {
+        CLI.options_page(
             globals,
             "\
 CARD AND COLUMN ARGUMENTS:
@@ -983,8 +1005,17 @@ CARD AND COLUMN ARGUMENTS:
     so no --board is needed. <col> is a column id or name (case-insensitive).
 ",
         )
-    });
-    eprint!("{overview}");
+    })
+}
+
+/// Print the grouped command list: `headway --help`.
+pub fn print_usage(default_relay: &str, default_board: &str) {
+    eprint!("{}", overview(default_relay, default_board));
+}
+
+/// Print the global options in full: `headway help options`.
+pub fn print_options(default_relay: &str, default_board: &str) {
+    eprint!("{}", options_page(default_relay, default_board));
 }
 
 /// Print one command's page: `headway <cmd> --help`.
@@ -1000,5 +1031,38 @@ mod tests {
     #[test]
     fn help_table_is_consistent() {
         CLI.check().unwrap();
+    }
+
+    /// `headway --help` fits one screen: at most 60 lines, none past 80
+    /// columns. A command added past that has to make room — tighter
+    /// summaries, or a regrouping — rather than push the list off the top.
+    #[test]
+    fn overview_fits_one_screen() {
+        let out = overview(
+            nostrdb_net::relay::sync::DEFAULT_RELAY,
+            headway::store::BOARD_ID,
+        );
+        let lines = out.lines().count();
+        assert!(lines <= 60, "`headway --help` is {lines} lines:\n{out}");
+        for line in out.lines() {
+            let width = line.chars().count();
+            assert!(width <= 80, "{width} columns: {line:?}");
+        }
+    }
+
+    /// `headway help options` carries every global's full text, word for
+    /// word, plus how card and column arguments are read.
+    #[test]
+    fn options_page_has_every_global_in_full() {
+        let relay = nostrdb_net::relay::sync::DEFAULT_RELAY;
+        let board = headway::store::BOARD_ID;
+        let out = options_page(relay, board);
+        let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+        with_globals(relay, board, |globals| {
+            for global in globals {
+                assert!(flat.contains(global.details), "{}", global.flag);
+            }
+        });
+        assert!(out.contains("CARD AND COLUMN ARGUMENTS:"));
     }
 }

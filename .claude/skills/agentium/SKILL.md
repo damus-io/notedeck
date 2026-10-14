@@ -33,7 +33,9 @@ cargo run -q -p agentium_cli -- <command>
 In examples below, `agentium` means whichever form you're using.
 
 `agentium --help` lists the commands; `agentium <command> --help` (or
-`agentium help <command>`) prints that command's own flags and examples.
+`agentium help <command>`) prints that command's own flags and examples, and
+`agentium help options` the every-run flags in full — including that `--relay`
+and `--db` are remembered for later runs.
 
 ## Logging in
 

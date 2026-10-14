@@ -528,13 +528,15 @@ pub(crate) struct Cli {
     pub(crate) command: Command,
 }
 
-/// What a command line asks for: a run, or one of the two help pages.
+/// What a command line asks for: a run, or one of the help pages.
 pub(crate) enum Invocation {
     Run(Box<Cli>),
     /// `headway` with no command, or `headway --help`: the grouped overview.
     Usage,
     /// `headway <cmd> --help` or `headway help <cmd>`: one command's own page.
     CommandHelp(&'static cli_term::help::CommandHelp),
+    /// `headway help options`: the options every command takes, in full.
+    Options,
 }
 
 /// Everything [`Cli::parse`] reads from outside its arguments: the `HEADWAY_*`
@@ -784,15 +786,20 @@ impl Cli {
         // `headway help [cmd]` is the same two pages spelled as a command, so
         // fold it into the `--help` path rather than giving it its own dispatch.
         let mut positionals = positionals.as_slice();
-        if let Some(first) = positionals.first()
-            && first == "help"
-        {
+        let help_command = positionals.first().is_some_and(|first| first == "help");
+        if help_command {
             want_help = true;
             positionals = &positionals[1..];
         }
         let Some((name, rest)) = positionals.split_first() else {
             return Ok(Invocation::Usage);
         };
+        // `help options` names a page, not a command, so only that spelling
+        // reaches it: `headway options --help` falls through to the unknown
+        // command below.
+        if help_command && name == cli_term::help::OPTIONS_PAGE {
+            return Ok(Invocation::Options);
+        }
         // The help table is the CLI's list of commands: an unknown name is
         // rejected here, so `parse_command` never sees one and a command added
         // without a help entry can't ship undocumented.
@@ -1334,6 +1341,8 @@ mod tests {
             Invocation::Run(_) => None,
             Invocation::Usage => Some(None),
             Invocation::CommandHelp(cmd) => Some(Some(cmd.name)),
+            // Named by what follows `help`, as a command's page is.
+            Invocation::Options => Some(Some(cli_term::help::OPTIONS_PAGE)),
         }
     }
 
@@ -1380,6 +1389,25 @@ mod tests {
         assert_eq!(parse_lines("42").unwrap(), LineRange { start: 42, end: 42 });
         for bad in ["0", "5-3", "a", "3-", "-3", ""] {
             assert!(parse_lines(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// `help options` prints the global options page, past the flag check
+    /// (no command is running to hold flags to), while `options` is no
+    /// command: `options --help` and a bare `options` are unknown.
+    #[test]
+    fn help_options_is_a_page_not_a_command() {
+        let page = Some(Some(cli_term::help::OPTIONS_PAGE));
+        assert_eq!(help_of(&["help", "options"]), page);
+        assert_eq!(help_of(&["--board", "b", "help", "options"]), page);
+        assert_eq!(help_of(&["help", "options", "--ready"]), page);
+        for args in [
+            &["options"][..],
+            &["options", "--help"][..],
+            &["--help", "options"][..],
+        ] {
+            let err = parse_err(args);
+            assert!(err.contains("unknown command 'options'"), "{err}");
         }
     }
 

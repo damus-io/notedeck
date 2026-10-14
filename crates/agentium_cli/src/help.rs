@@ -11,7 +11,7 @@
 //! up here before dispatching, so a command with no entry is rejected rather
 //! than shipping undocumented.
 
-use cli_term::help::{Cli, CommandHelp};
+use cli_term::help::{Cli, CommandHelp, GlobalOption};
 
 // The sections a command is listed under in `agentium --help`, printed in the
 // order [`CLI`] lists them.
@@ -558,28 +558,35 @@ pub fn lookup(name: &str) -> Option<&'static CommandHelp> {
     CLI.lookup(name)
 }
 
-/// Hand `f` the options every command takes, as the overview prints them.
-/// Built in one place so the overview and [`check_flags`] read the same list:
-/// a global the overview documents is one every command accepts.
-fn with_globals<R>(default_relay: &str, f: impl FnOnce(&[(&str, &str)]) -> R) -> R {
+/// Hand `f` the options every command takes, as the overview and `agentium
+/// help options` print them. Built in one place so the pages and
+/// [`check_flags`] read the same list: a global the help documents is one
+/// every command accepts. (`-h` is the printer's own, [`cli_term::help::HELP`].)
+fn with_globals<R>(default_relay: &str, f: impl FnOnce(&[GlobalOption]) -> R) -> R {
     let relay = format!(
         "Relay URL. Passing it also remembers it as the default for later runs (--relay > $AGENTIUM_RELAY > stored > {default_relay})"
     );
     f(&[
-        (
-            "--nsec <nsec>",
-            "Signing key for this run. Normally unnecessary — run `agentium login` once and it's reused. $AGENTIUM_NSEC, if set, takes precedence over the stored key",
-        ),
-        (
-            "--author <pk>",
-            "Identity whose sessions to read (defaults to the signer). Sessions are PNS-encrypted to their owner, so a pubkey other than yours lists nothing decryptable",
-        ),
-        ("--relay <url>", &relay),
-        (
-            "--db <path>",
-            "nostrdb cache dir, remembered like --relay [default: <data-dir>/agentium-cli]",
-        ),
-        ("-h, --help", "Print this help, or a command's own"),
+        GlobalOption {
+            flag: "--nsec <nsec>",
+            summary: "Signing key for this run [default: `agentium login`]",
+            details: "Signing key for this run. Normally unnecessary — run `agentium login` once and it's reused. $AGENTIUM_NSEC, if set, takes precedence over the stored key",
+        },
+        GlobalOption {
+            flag: "--author <pk>",
+            summary: "Identity whose sessions to read [default: the signer]",
+            details: "Identity whose sessions to read (defaults to the signer). Sessions are PNS-encrypted to their owner, so a pubkey other than yours lists nothing decryptable",
+        },
+        GlobalOption {
+            flag: "--relay <url>",
+            summary: "Relay URL — also remembered for every later run",
+            details: &relay,
+        },
+        GlobalOption {
+            flag: "--db <path>",
+            summary: "nostrdb cache dir, remembered like --relay",
+            details: "nostrdb cache dir, remembered like --relay [default: <data-dir>/agentium-cli]",
+        },
     ])
 }
 
@@ -591,10 +598,16 @@ pub fn check_flags(cmd: &CommandHelp, passed: &[String]) -> Result<(), String> {
     })
 }
 
-/// Print the grouped command list: `agentium --help`.
-pub fn print_usage(default_relay: &str) {
-    let overview = with_globals(default_relay, |globals| {
-        CLI.overview(
+/// The grouped command list, `agentium --help`, as printed.
+fn overview(default_relay: &str) -> String {
+    with_globals(default_relay, |globals| CLI.overview(globals))
+}
+
+/// The global options in full, `agentium help options`, as printed: they and
+/// how a `<session>` argument is read, which every session command shares.
+fn options_page(default_relay: &str) -> String {
+    with_globals(default_relay, |globals| {
+        CLI.options_page(
             globals,
             "\
 SESSION ARGUMENTS:
@@ -602,8 +615,17 @@ SESSION ARGUMENTS:
     cli-session id, or an agentium:<word-id> ref.
 ",
         )
-    });
-    eprint!("{overview}");
+    })
+}
+
+/// Print the grouped command list: `agentium --help`.
+pub fn print_usage(default_relay: &str) {
+    eprint!("{}", overview(default_relay));
+}
+
+/// Print the global options in full: `agentium help options`.
+pub fn print_options(default_relay: &str) {
+    eprint!("{}", options_page(default_relay));
 }
 
 /// Print one command's page: `agentium <cmd> --help`.
@@ -619,5 +641,34 @@ mod tests {
     #[test]
     fn help_table_is_consistent() {
         CLI.check().unwrap();
+    }
+
+    /// `agentium --help` fits one screen: at most 45 lines, none past 80
+    /// columns. A command added past that has to make room rather than push
+    /// the list off the top.
+    #[test]
+    fn overview_fits_one_screen() {
+        let out = overview(nostrdb_net::relay::sync::DEFAULT_RELAY);
+        let lines = out.lines().count();
+        assert!(lines <= 45, "`agentium --help` is {lines} lines:\n{out}");
+        for line in out.lines() {
+            let width = line.chars().count();
+            assert!(width <= 80, "{width} columns: {line:?}");
+        }
+    }
+
+    /// `agentium help options` carries every global's full text, word for
+    /// word, plus how session arguments are read.
+    #[test]
+    fn options_page_has_every_global_in_full() {
+        let relay = nostrdb_net::relay::sync::DEFAULT_RELAY;
+        let out = options_page(relay);
+        let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+        with_globals(relay, |globals| {
+            for global in globals {
+                assert!(flat.contains(global.details), "{}", global.flag);
+            }
+        });
+        assert!(out.contains("SESSION ARGUMENTS:"));
     }
 }

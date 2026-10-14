@@ -2,9 +2,11 @@
 //!
 //! `<bin> --help` prints the command list grouped under section headings — a
 //! name and a one-line summary each — plus the options that apply to every
-//! run. Everything command-specific lives on that command's own page, printed
-//! by `<bin> <cmd> --help`, so a reader looking up one command isn't reading
-//! past thirty unrelated flags to find its two.
+//! run, one line each, so the whole map fits a screen. Everything
+//! command-specific lives on that command's own page, printed by `<bin> <cmd>
+//! --help`, so a reader looking up one command isn't reading past thirty
+//! unrelated flags to find its two; the full text of the every-run options
+//! lives on one more page, `<bin> help options`.
 //!
 //! Each CLI keeps its own table of [`CommandHelp`] entries and wraps it in a
 //! [`Cli`]; this module owns only the layout, so `headway` and `agentium` pages
@@ -28,7 +30,7 @@ pub struct CommandHelp {
     /// help column. Empty for a command the summary already covers.
     pub details: &'static str,
     /// The `(flag, description)` pairs this command reads — only its own; the
-    /// global ones stay on the overview.
+    /// global ones are [`GlobalOption`]s, on the overview and `help options`.
     pub options: &'static [(&'static str, &'static str)],
     /// Full command lines, printed verbatim.
     pub examples: &'static [&'static str],
@@ -46,10 +48,41 @@ pub struct Cli {
     /// [`Cli::lookup`], so a command missing its entry is rejected rather than
     /// shipping with no help.
     pub commands: &'static [CommandHelp],
-    /// A few of the global flags, named in each page's closing pointer to the
-    /// overview, e.g. `"--board, --relay, ..."`.
+    /// A few of the global flags, named in each page's closing pointer to
+    /// `<bin> help options`, e.g. `"--board, --relay, ..."`.
     pub global_hint: &'static str,
 }
+
+/// An option every command takes. It prints twice: as one line on the
+/// overview, and in full on `<bin> help options`.
+pub struct GlobalOption<'a> {
+    /// The key, e.g. `--relay <url>`. The flags a run may pass are read off it
+    /// (see [`option_names`]), so it must spell every one.
+    pub flag: &'a str,
+    /// The overview's line, short enough to sit beside the flag within 80
+    /// columns: what the option is, and its default when that fits.
+    pub summary: &'a str,
+    /// The full explanation for `<bin> help options`, wrapped there: env
+    /// fallbacks, precedence, and why you'd rarely need it.
+    pub details: &'a str,
+}
+
+/// `-h, --help`, which every CLI takes the same way, so the printer owns it:
+/// [`Cli::check_flags`] accepts it, `help options` documents it, and the
+/// overview's last line says what it does instead of spending a row on it.
+/// Its `summary` is therefore never printed; it is kept so `HELP` is a
+/// global like any other.
+pub const HELP: GlobalOption<'static> = GlobalOption {
+    flag: "-h, --help",
+    summary: "Print the command list, or a command's own page",
+    details: "Print the command list, or with a command named, that command's own page. `help <command>` and `help options` are the same pages spelled as a command",
+};
+
+/// The name `<bin> help <name>` takes for the [global options page](Cli::options_page).
+/// It is a page, not a command: only the `help` spelling reaches it, so
+/// `<bin> options --help` is an unknown command, and [`Cli::check`] keeps any
+/// command from taking the name.
+pub const OPTIONS_PAGE: &str = "options";
 
 /// The column command names and option flags are padded to, in both help
 /// layouts. Wide enough for the longest of each (`move-board`, `-n, --count <k>`).
@@ -68,20 +101,15 @@ impl Cli {
 
     /// The grouped command list: `<bin> --help`.
     ///
-    /// `globals` are the options every command takes, as `(flag, description)`
-    /// pairs; `footer` is CLI-specific prose printed a blank line after them (a
-    /// section with its own heading, newline-terminated), or empty for none.
-    pub fn overview(&self, globals: &[(&str, &str)], footer: &str) -> String {
+    /// `globals` are the options every command takes; each prints as its flag
+    /// and [`summary`](GlobalOption::summary) on one line, their
+    /// [`details`](GlobalOption::details) left to
+    /// [`options_page`](Cli::options_page). The last line points at both kinds
+    /// of page, so the overview stays a map rather than a manual.
+    pub fn overview(&self, globals: &[GlobalOption]) -> String {
         let bin = self.bin;
         let mut out = format!(
-            "\
-{bin} — {about}
-
-USAGE:
-    {bin} [OPTIONS] <COMMAND> [ARGS...]
-    {bin} <COMMAND> --help      Options and examples for one command
-
-",
+            "{bin} — {about}\n\nUSAGE: {bin} [OPTIONS] <COMMAND> [ARGS...]\n\n",
             about = self.about,
         );
 
@@ -99,15 +127,43 @@ USAGE:
             out.push('\n');
         }
 
+        // One line per option, so a flag wider than the usual column widens
+        // the column for the whole block rather than wrapping onto two lines.
+        let width = globals
+            .iter()
+            .map(|g| g.flag.chars().count() + 2)
+            .fold(NAME_COL, usize::max);
         out.push_str("OPTIONS (every command):\n");
-        out.push_str(&options_block(globals));
+        for global in globals {
+            out.push_str(&format!("    {:<width$}{}\n", global.flag, global.summary));
+        }
+        out.push_str(&format!(
+            "\nPer command: `{bin} <cmd> --help`. Options in full: `{bin} help options`.\n"
+        ));
+        out
+    }
+
+    /// The global options in full: `<bin> help options`.
+    ///
+    /// Each of `globals`, then [`HELP`], with its whole
+    /// [`details`](GlobalOption::details) wrapped under it. `footer` is
+    /// CLI-specific prose printed a blank line after them — how arguments
+    /// such as `<card>` are read, say: a section with its own heading,
+    /// newline-terminated — or empty for none.
+    pub fn options_page(&self, globals: &[GlobalOption], footer: &str) -> String {
+        let bin = self.bin;
+        let mut out = format!(
+            "{bin} help {OPTIONS_PAGE} — the options every command takes\n\n\
+             USAGE:\n    {bin} [OPTIONS] <COMMAND> [ARGS...]\n\nOPTIONS:\n"
+        );
+        for global in globals.iter().chain([&HELP]) {
+            push_option(&mut out, global.flag, global.details);
+        }
         if !footer.is_empty() {
             out.push('\n');
             out.push_str(footer);
         }
-        out.push_str(&format!(
-            "\nRun `{bin} <command> --help` for that command's own options and examples.\n"
-        ));
+        out.push_str(&format!("\nCommands: {bin} --help\n"));
         out
     }
 
@@ -142,14 +198,14 @@ USAGE:
         }
 
         out.push_str(&format!(
-            "\nOptions every command takes ({}): {bin} --help\n",
+            "\nOptions every command takes ({}): {bin} help {OPTIONS_PAGE}\n",
             self.global_hint
         ));
         out
     }
 
     /// Hold a run to the flags `cmd` documents: `Err` naming the first of
-    /// `passed` that is neither one of `globals` nor among `cmd`'s own
+    /// `passed` that is neither one of `globals` (or [`HELP`]) nor among `cmd`'s own
     /// [`options`](CommandHelp::options), e.g. `` `list` doesn't take --prompt
     /// (see `agentium list --help`) ``.
     ///
@@ -160,14 +216,15 @@ USAGE:
     pub fn check_flags<S: AsRef<str>>(
         &self,
         cmd: &CommandHelp,
-        globals: &[(&str, &str)],
+        globals: &[GlobalOption],
         passed: &[S],
     ) -> Result<(), String> {
         let takes = |flag: &str| {
-            globals
-                .iter()
-                .chain(cmd.options)
-                .any(|(key, _)| option_names(key).any(|name| name == flag))
+            let global_keys = globals.iter().chain([&HELP]).map(|g| g.flag);
+            let own_keys = cmd.options.iter().map(|(key, _)| *key);
+            global_keys
+                .chain(own_keys)
+                .any(|key| option_names(key).any(|name| name == flag))
         };
         let Some(flag) = passed.iter().map(AsRef::as_ref).find(|f| !takes(f)) else {
             return Ok(());
@@ -183,9 +240,16 @@ USAGE:
     /// command names are unique (a duplicate would shadow its twin in
     /// [`lookup`](Cli::lookup) and print twice), and every command's group is
     /// one the overview prints (or the entry would silently go missing from
-    /// it).
+    /// it), and none is named [`OPTIONS_PAGE`] (`help options` would print
+    /// the options page in place of its own).
     pub fn check(&self) -> Result<(), String> {
         for (i, cmd) in self.commands.iter().enumerate() {
+            if cmd.name == OPTIONS_PAGE {
+                return Err(format!(
+                    "'{OPTIONS_PAGE}' is the name of `{} help {OPTIONS_PAGE}`, not a command",
+                    self.bin
+                ));
+            }
             if self.commands[..i].iter().any(|c| c.name == cmd.name) {
                 return Err(format!("duplicate help entry for '{}'", cmd.name));
             }
@@ -215,19 +279,25 @@ pub fn option_names(key: &str) -> impl Iterator<Item = &str> {
 pub fn options_block(options: &[(&str, &str)]) -> String {
     let mut out = String::new();
     for (flag, description) in options {
-        // A flag wider than the column gets its description on the next line
-        // rather than pushing the whole block out of alignment.
-        let body = wrapped(description, NAME_COL + 4);
-        if flag.len() >= NAME_COL || body.is_empty() {
-            out.push_str(&format!("    {flag}\n"));
-            out.push_str(&body);
-        } else {
-            // The first line's indent is replaced by the padded flag; the
-            // continuation lines keep theirs, so they hang under the text.
-            out.push_str(&format!("    {flag:<NAME_COL$}{}", body.trim_start()));
-        }
+        push_option(&mut out, flag, description);
     }
     out
+}
+
+/// Append one option of an [`options_block`]: the flag, and its description
+/// wrapped to hang under the description column.
+fn push_option(out: &mut String, flag: &str, description: &str) {
+    // A flag wider than the column gets its description on the next line
+    // rather than pushing the whole block out of alignment.
+    let body = wrapped(description, NAME_COL + 4);
+    if flag.len() >= NAME_COL || body.is_empty() {
+        out.push_str(&format!("    {flag}\n"));
+        out.push_str(&body);
+    } else {
+        // The first line's indent is replaced by the padded flag; the
+        // continuation lines keep theirs, so they hang under the text.
+        out.push_str(&format!("    {flag:<NAME_COL$}{}", body.trim_start()));
+    }
 }
 
 /// Wrap `text` to [`WIDTH`] columns, indenting every line by `indent` spaces.
@@ -302,7 +372,7 @@ mod tests {
         assert!(show.contains("\nShows things.\n"));
         assert!(show.contains("\nOPTIONS:\n    --all             Every thing\n"));
         assert!(show.contains("\nEXAMPLES:\n    demo show --all\n"));
-        assert!(show.ends_with("\nOptions every command takes (--db, ...): demo --help\n"));
+        assert!(show.ends_with("\nOptions every command takes (--db, ...): demo help options\n"));
 
         let put = FIXTURE.page(FIXTURE.lookup("put").unwrap());
         assert!(!put.contains("OPTIONS:"));
@@ -310,17 +380,54 @@ mod tests {
         assert!(FIXTURE.lookup("nope").is_none());
     }
 
-    /// The overview lists every command under its group, in group order.
+    /// The globals the fixture's overview and options page print: one whose
+    /// flag fits the column, and one wide enough to widen it.
+    const GLOBALS: &[GlobalOption] = &[
+        GlobalOption {
+            flag: "-d, --db <path>",
+            summary: "Where",
+            details: "Where the cache lives, remembered for later runs so a one-off --db sticks",
+        },
+        GlobalOption {
+            flag: "--a-wide-global <key>",
+            summary: "Wide",
+            details: "A flag too wide for the usual column",
+        },
+    ];
+
+    /// The overview lists every command under its group, in group order, then
+    /// each global on one line — a wide flag widening the column instead of
+    /// wrapping — and ends pointing at both kinds of page.
     #[test]
     fn overview_groups_commands() {
-        let out = FIXTURE.overview(&[("--db <path>", "Where")], "");
+        let out = FIXTURE.overview(GLOBALS);
+        assert!(out.contains("\nUSAGE: demo [OPTIONS] <COMMAND> [ARGS...]\n"));
         let reading = out.find("READING\n    show").unwrap();
         let writing = out.find("WRITING\n    put").unwrap();
         assert!(reading < writing);
-        assert!(out.contains("OPTIONS (every command):\n    --db <path>"));
-        assert!(out.ends_with(
-            "Run `demo <command> --help` for that command's own options and examples.\n"
+        assert!(out.contains(
+            "OPTIONS (every command):\n    \
+             -d, --db <path>        Where\n    \
+             --a-wide-global <key>  Wide\n"
         ));
+        assert!(!out.contains("remembered"), "details stay off the overview");
+        assert!(out.ends_with(
+            "\nPer command: `demo <cmd> --help`. Options in full: `demo help options`.\n"
+        ));
+    }
+
+    /// `help options` prints every global's full text, then `-h`'s, then the
+    /// CLI's footer.
+    #[test]
+    fn options_page_has_the_full_text() {
+        let out = FIXTURE.options_page(GLOBALS, "ARGS:\n    <x> is a thing.\n");
+        assert!(out.starts_with("demo help options — the options every command takes\n"));
+        let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+        for global in GLOBALS.iter().chain([&HELP]) {
+            assert!(out.contains(global.flag), "{}", global.flag);
+            assert!(flat.contains(global.details), "{}", global.details);
+        }
+        assert!(out.ends_with("\nARGS:\n    <x> is a thing.\n\nCommands: demo --help\n"));
     }
 
     /// `check` catches a duplicate name and a command filed under no printed
@@ -359,6 +466,20 @@ mod tests {
             ..FIXTURE
         };
         assert!(STRAY.check().unwrap_err().contains("'put'"));
+
+        const SHADOW: Cli = Cli {
+            commands: &[CommandHelp {
+                name: OPTIONS_PAGE,
+                group: "READING",
+                summary: "",
+                usage: &[],
+                details: "",
+                options: &[],
+                examples: &[],
+            }],
+            ..FIXTURE
+        };
+        assert!(SHADOW.check().unwrap_err().contains("not a command"));
     }
 
     /// Option keys yield each flag they spell, whatever placeholder follows,
@@ -381,20 +502,21 @@ mod tests {
     fn check_flags_names_the_first_stray_flag() {
         let show = FIXTURE.lookup("show").unwrap();
         let put = FIXTURE.lookup("put").unwrap();
-        let globals = [("-d, --db <path>", "Where")];
         let none: [&str; 0] = [];
 
-        assert_eq!(FIXTURE.check_flags(show, &globals, &none), Ok(()));
+        assert_eq!(FIXTURE.check_flags(show, GLOBALS, &none), Ok(()));
         assert_eq!(
-            FIXTURE.check_flags(show, &globals, &["--all", "-d", "--db"]),
+            FIXTURE.check_flags(show, GLOBALS, &["--all", "-d", "--db"]),
             Ok(())
         );
         assert_eq!(
-            FIXTURE.check_flags(put, &globals, &["--db", "--all", "--x"]),
+            FIXTURE.check_flags(put, GLOBALS, &["--db", "--all", "--x"]),
             Err("`put` doesn't take --all (see `demo put --help`)".to_string())
         );
+        // `-h` is every command's without any CLI listing it.
+        assert_eq!(FIXTURE.check_flags(put, &[], &["-h", "--help"]), Ok(()));
         // A global's placeholder isn't a flag of its own.
-        assert!(FIXTURE.check_flags(put, &globals, &["<path>"]).is_err());
+        assert!(FIXTURE.check_flags(put, GLOBALS, &["<path>"]).is_err());
     }
 
     /// Wrapping breaks at the help width and indents continuation lines.

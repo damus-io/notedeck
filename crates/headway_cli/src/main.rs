@@ -220,6 +220,10 @@ async fn run() -> Result<()> {
             help::print_command(cmd);
             return Ok(());
         }
+        Invocation::Options => {
+            help::print_options(nostrdb_net::relay::sync::DEFAULT_RELAY, store::BOARD_ID);
+            return Ok(());
+        }
     };
 
     // `login`/`logout` manage the stored key and touch neither the cache nor a

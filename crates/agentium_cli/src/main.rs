@@ -324,6 +324,10 @@ async fn run() -> Result<()> {
             help::print_command(cmd);
             return Ok(());
         }
+        Invocation::Options => {
+            help::print_options(nostrdb_net::relay::sync::DEFAULT_RELAY);
+            return Ok(());
+        }
     };
 
     // `login`/`logout` manage the stored key and `id` is pure computation;
@@ -555,13 +559,15 @@ struct Cli {
     command: Command,
 }
 
-/// What a command line asks for: a run, or one of the two help pages.
+/// What a command line asks for: a run, or one of the help pages.
 enum Invocation {
     Run(Box<Cli>),
     /// `agentium` with no command, or `agentium --help`: the grouped overview.
     Usage,
     /// `agentium <cmd> --help` or `agentium help <cmd>`: one command's own page.
     CommandHelp(&'static cli_term::help::CommandHelp),
+    /// `agentium help options`: the options every command takes, in full.
+    Options,
 }
 
 impl Cli {
@@ -727,15 +733,20 @@ impl Cli {
         // `agentium help [cmd]` is the same two pages spelled as a command, so
         // fold it into the `--help` path rather than giving it its own dispatch.
         let mut positionals = positionals.as_slice();
-        if let Some(first) = positionals.first()
-            && first == "help"
-        {
+        let help_command = positionals.first().is_some_and(|first| first == "help");
+        if help_command {
             want_help = true;
             positionals = &positionals[1..];
         }
         let Some((name, rest)) = positionals.split_first() else {
             return Ok(Invocation::Usage);
         };
+        // `help options` names a page, not a command, so only that spelling
+        // reaches it: `agentium options --help` falls through to the unknown
+        // command below.
+        if help_command && name == cli_term::help::OPTIONS_PAGE {
+            return Ok(Invocation::Options);
+        }
         // The help table is the CLI's list of commands: an unknown name is
         // rejected here, so nothing below dispatches one and a command added
         // without a help entry can't ship undocumented.
@@ -1371,6 +1382,25 @@ mod tests {
         assert!(help_of(&["--nsec", TEST_NSEC, "list"]).is_none());
     }
 
+    /// `help options` prints the global options page, past the flag check
+    /// (no command is running to hold flags to), while `options` is no
+    /// command: `options --help` and a bare `options` are unknown.
+    #[test]
+    fn help_options_is_a_page_not_a_command() {
+        let page = Some(Some(cli_term::help::OPTIONS_PAGE));
+        assert_eq!(help_of(&["help", "options"]), page);
+        assert_eq!(help_of(&["--nsec", TEST_NSEC, "help", "options"]), page);
+        assert_eq!(help_of(&["help", "options", "--wait"]), page);
+        for args in [
+            &["options"][..],
+            &["options", "--help"][..],
+            &["--help", "options"][..],
+        ] {
+            let err = parse_err(args);
+            assert!(err.contains("unknown command 'options'"), "{err}");
+        }
+    }
+
     /// An unrecognised command is rejected by name, whether or not help was
     /// asked for — `agentium frobnicate --help` has no page to print.
     #[test]
@@ -1796,11 +1826,11 @@ mod tests {
     const TEST_NSEC: &str = "nsec1qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qursl6edet";
 
     /// Parse a full arg vector (without the program name) through
-    /// [`Cli::parse`]: `Some` for a run, `None` for either help page.
+    /// [`Cli::parse`]: `Some` for a run, `None` for any help page.
     fn parse_cli(args: &[&str]) -> Result<Option<Cli>> {
         Ok(match Cli::parse(args.iter().map(|s| s.to_string()))? {
             Invocation::Run(cli) => Some(*cli),
-            Invocation::Usage | Invocation::CommandHelp(_) => None,
+            Invocation::Usage | Invocation::CommandHelp(_) | Invocation::Options => None,
         })
     }
 
@@ -1811,6 +1841,8 @@ mod tests {
             Invocation::Run(_) => None,
             Invocation::Usage => Some(None),
             Invocation::CommandHelp(cmd) => Some(Some(cmd.name)),
+            // Named by what follows `help`, as a command's page is.
+            Invocation::Options => Some(Some(cli_term::help::OPTIONS_PAGE)),
         }
     }
 

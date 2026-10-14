@@ -26,8 +26,10 @@ cargo run -q -p headway_cli -- <command>
 In examples below, `headway` means whichever form you're using.
 
 `headway --help` lists the commands grouped by what they act on, plus the flags
-every run takes. Each command then has its own page — `headway <command> --help`
-(or `headway help <command>`) — with just that command's flags and examples.
+every run takes, one line each. Each command then has its own page — `headway
+<command> --help` (or `headway help <command>`) — with just that command's flags
+and examples; `headway help options` has the every-run flags in full (env
+fallbacks, defaults) and how `<card>`/`<col>` arguments are read.
 
 ## Logging in
 
@@ -268,7 +270,8 @@ Outside a session, name the card or conversation it came from instead (e.g.
 
 Other flags: `--board <id>` (target another board for one run; see Multiple
 boards), `--db <path>` (cache dir),
-`--author <pk>` (read someone else's board), `-h`/`--help`. `--on <card>` names
+`--author <pk>` (read someone else's board), `-h`/`--help`; `headway help
+options` has them in full. `--on <card>` names
 the blocker for `block`/`unblock`; `--to` is the target board for
 `link`/`move-board` and the partner card for `relate`/`unrelate`; `--in <c>` is
 the container for `seq`/`next`. `headway <command> --help` lists a command's own
