@@ -240,7 +240,10 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                         session,
                         visual_index,
                         active_id,
-                        RowPlace { cwd: None },
+                        RowPlace {
+                            cwd: None,
+                            own_bar: true,
+                        },
                         cycle,
                     ) {
                         action = Some(a);
@@ -297,6 +300,7 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
                     // Only a row with no folder header above it shows its
                     // worktree's +/-; under a header, the header does.
                     git_lines: place.cwd.and_then(|_| git_lines(session)),
+                    own_bar: place.own_bar,
                 },
             ),
             _ => self.chat_row_ui(
@@ -442,18 +446,15 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
 
         paint_row_background(ui, rect, row.is_active, self.chord_cursor, &response);
 
-        // Status color indicator (left edge vertical bar), faded toward a
-        // desaturated version of itself as the session goes stale (no activity).
-        let age = row
-            .last_activity
-            .map(|t| now_unix().saturating_sub(t))
-            .unwrap_or(0);
-        let status_color = stale_color(row.status.color(), age);
-        let status_bar_rect = egui::Rect::from_min_size(
-            rect.left_top() + egui::vec2(2.0, 4.0),
-            egui::vec2(STATUS_BAR_WIDTH, rect.height() - 8.0),
-        );
-        paint_status_bar(ui.painter(), status_bar_rect, status_color);
+        // Status color indicator (left edge vertical bar).
+        let status_color = row_status_color(row.status, row.last_activity);
+        if row.own_bar {
+            let status_bar_rect = egui::Rect::from_min_size(
+                rect.left_top() + egui::vec2(BAR_LEFT, BAR_INSET),
+                egui::vec2(STATUS_BAR_WIDTH, rect.height() - 2.0 * BAR_INSET),
+            );
+            paint_status_bar(ui.painter(), status_bar_rect, status_color);
+        }
         let mut text_start_x = TEXT_LEFT;
 
         // A pending placeholder (a remote spawn/resume in flight) shows a small
@@ -718,6 +719,9 @@ struct RowPlace<'a> {
     /// The path shown in the row when the session is alone in its cwd, with
     /// no folder header above it.
     cwd: Option<&'a str>,
+    /// Whether the row paints its own status bar. A chain link doesn't:
+    /// [`chain_ui`] paints one bar down the whole chain.
+    own_bar: bool,
 }
 
 /// Lines a session's worktree has added and deleted against HEAD.
@@ -761,10 +765,26 @@ struct AgentRow<'s> {
     queue_priority: Option<FocusPriority>,
     /// The worktree's +/- lines, drawn on a row with a `cwd_display` only.
     git_lines: Option<GitLines>,
+    /// Whether to paint the row's status bar (see [`RowPlace::own_bar`]).
+    own_bar: bool,
 }
 
 /// Left padding of a row's text, past the status bar.
 const TEXT_LEFT: f32 = 12.0;
+/// The status bar's offset from a row's left edge.
+const BAR_LEFT: f32 = 2.0;
+/// How far a row's status bar stops short of its top and bottom.
+const BAR_INSET: f32 = 4.0;
+
+/// A row's status colour, faded toward a desaturated version of itself as
+/// the session goes stale (no activity since `last_activity`).
+fn row_status_color(status: AgentStatus, last_activity: Option<u64>) -> egui::Color32 {
+    let age = last_activity
+        .map(|t| now_unix().saturating_sub(t))
+        .unwrap_or(0);
+    stale_color(status.color(), age)
+}
+
 /// Width of the "Connecting…" spinner before a pending row's title.
 const PENDING_SPINNER_SLOT: f32 = 22.0;
 /// Space above and below a row's text.
@@ -1784,6 +1804,7 @@ fn cwd_section_ui(
                 active_id,
                 RowPlace {
                     cwd: Some(cwd_group.display_cwd.as_str()),
+                    own_bar: true,
                 },
                 cycle,
             ) {
@@ -1965,21 +1986,6 @@ fn workspace_rows_ui(
     action
 }
 
-/// Draw `ids` with their [`ListRow`](crate::session::ListRow)s `rows`.
-fn lineage_rows_ui(
-    ui: &mut egui::Ui,
-    list_ui: &SessionListUi<'_, '_>,
-    ids: &[SessionId],
-    rows: &[crate::session::ListRow],
-    walk: &mut RowWalk<'_>,
-) -> Option<SessionListAction> {
-    let mut action = None;
-    for (&id, row) in ids.iter().zip(rows) {
-        action = lineage_row_ui(ui, list_ui, id, row, walk).or(action);
-    }
-    action
-}
-
 /// Draw session `id` where `row` places it: a child indented under the
 /// session that spawned it, and a chain link that has handed its work on dimmed. A
 /// session running outside the folder's workspace says where on its row.
@@ -1993,6 +1999,7 @@ fn lineage_row_ui(
     let session = list_ui.session_manager.get(id)?;
     let place = RowPlace {
         cwd: row.elsewhere.as_deref(),
+        own_bar: !matches!(row.place.nesting, Nesting::Link { .. }),
     };
     let indent = NEST_INDENT * f32::from(row.place.depth);
     let dim = row.place.nesting == (Nesting::Link { handed_on: true });
@@ -2021,7 +2028,8 @@ fn lineage_row_ui(
 
 /// Draw a successor chain: a collapsible header reading
 /// [`ChainSpan::label`](crate::session::ChainSpan::label), then its links in
-/// order behind a rail, each with what nests under it. Links that handed
+/// order, flush with the rows around them and sharing one status bar (see
+/// [`ChainBar`]), each with what nests under it. Links that handed
 /// their work on are dimmed. Collapsed, only the last link shows, so the live
 /// one stays a click away.
 fn chain_ui(
@@ -2053,33 +2061,159 @@ fn chain_ui(
         .then(|| SessionListAction::ToggleChainCollapse(hostname.to_owned(), chain.key.clone()));
 
     let from = if collapsed { chain.tail } else { chain.start };
-    let body_top = ui.cursor().top();
-    let rail_x = ui.cursor().left() + 8.0;
-    let a = egui::Frame::new()
-        .inner_margin(egui::Margin {
-            left: 12,
-            ..Default::default()
-        })
-        .show(ui, |ui| {
-            lineage_rows_ui(
-                ui,
-                list_ui,
-                &group.session_ids[from..chain.end],
-                &group.rows[from..chain.end],
-                walk,
-            )
-        })
-        .inner;
-    action = a.or(action);
-
-    let rail = egui::Stroke::new(1.0, ui.visuals().weak_text_color().gamma_multiply(0.5));
-    ui.painter().vline(
-        rail_x,
-        egui::Rangef::new(body_top + 2.0, ui.cursor().top() - 4.0),
-        rail,
-    );
+    let x = ui.cursor().left() + BAR_LEFT;
+    let gap = ui.spacing().item_spacing.y;
+    let mut bar = ChainBar {
+        x,
+        open: None,
+        pending: None,
+    };
+    for (&id, row) in group.session_ids[from..chain.end]
+        .iter()
+        .zip(&group.rows[from..chain.end])
+    {
+        let top = ui.cursor().top();
+        if let Nesting::Link { handed_on } = row.place.nesting {
+            if let Some(session) = list_ui.session_manager.get(id) {
+                let color = row_status_color(session.status(), session.last_activity);
+                let color = if handed_on {
+                    color.gamma_multiply(0.55)
+                } else {
+                    color
+                };
+                bar.link(ui.painter(), top - gap / 2.0, color);
+            }
+        }
+        if let Some(a) = lineage_row_ui(ui, list_ui, id, row, walk) {
+            action = Some(a);
+        }
+    }
+    bar.close(ui.painter(), ui.cursor().top() - gap);
     ui.add_space(2.0);
     action
+}
+
+/// How tall the blend between two links' colours is on a chain's merged
+/// status bar, centred on the boundary between their rows.
+const CHAIN_BAR_BLEND: f32 = 10.0;
+
+/// A chain's links' status bars, painted as one bar at `x` while the links
+/// are drawn: each link's colour along its own stretch, with a
+/// [`CHAIN_BAR_BLEND`]-tall blend where one link's stretch meets the next.
+///
+/// Each boundary is painted one link late, once the row under it has been
+/// drawn, so that row's hover or active background can't cover the blend.
+struct ChainBar {
+    /// The bar's left edge.
+    x: f32,
+    /// The stretch still being drawn: where it starts and its link's colour.
+    open: Option<BarStretch>,
+    /// The latest link's start, painted when the next link starts or the
+    /// bar closes.
+    pending: Option<BarStretch>,
+}
+
+/// One link's stretch of a [`ChainBar`], from `top` in `color`.
+#[derive(Clone, Copy)]
+struct BarStretch {
+    top: f32,
+    color: egui::Color32,
+}
+
+impl ChainBar {
+    /// Start the next link's stretch at `edge`, the boundary between its row
+    /// and the one above. Call it before drawing the link's row.
+    fn link(&mut self, painter: &egui::Painter, edge: f32, color: egui::Color32) {
+        self.flush(painter);
+        self.pending = Some(BarStretch { top: edge, color });
+    }
+
+    /// Paint up to the pending link's start, now that its row is drawn: the
+    /// first link opens the bar with a rounded end, a later one ends the
+    /// stretch above it in a blend.
+    fn flush(&mut self, painter: &egui::Painter) {
+        let Some(BarStretch { top: edge, color }) = self.pending.take() else {
+            return;
+        };
+        let Some(open) = self.open else {
+            let top = edge + BAR_INSET;
+            self.cap(painter, top, color, CapEnd::Top);
+            self.open = Some(BarStretch {
+                top: top + STATUS_BAR_WIDTH / 2.0,
+                color,
+            });
+            return;
+        };
+        let half = CHAIN_BAR_BLEND / 2.0;
+        self.band(painter, open.top, open.color, edge - half, open.color);
+        self.band(painter, edge - half, open.color, edge + half, color);
+        self.open = Some(BarStretch {
+            top: edge + half,
+            color,
+        });
+    }
+
+    /// End the bar at `bottom`, the last row's bottom edge.
+    fn close(&mut self, painter: &egui::Painter, bottom: f32) {
+        self.flush(painter);
+        let Some(open) = self.open.take() else {
+            return;
+        };
+        let end = bottom - BAR_INSET - STATUS_BAR_WIDTH / 2.0;
+        self.band(painter, open.top, open.color, end, open.color);
+        self.cap(painter, end, open.color, CapEnd::Bottom);
+    }
+
+    /// Paint the bar from `y0` in `c0` to `y1` in `c1`, blending between.
+    fn band(
+        &self,
+        painter: &egui::Painter,
+        y0: f32,
+        c0: egui::Color32,
+        y1: f32,
+        c1: egui::Color32,
+    ) {
+        if y1 <= y0 {
+            return;
+        }
+        let right = self.x + STATUS_BAR_WIDTH;
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(egui::pos2(self.x, y0), c0);
+        mesh.colored_vertex(egui::pos2(right, y0), c0);
+        mesh.colored_vertex(egui::pos2(self.x, y1), c1);
+        mesh.colored_vertex(egui::pos2(right, y1), c1);
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(1, 3, 2);
+        painter.add(mesh);
+    }
+
+    /// Paint the bar's rounded `end`, half a bar width tall, from `y`.
+    fn cap(&self, painter: &egui::Painter, y: f32, color: egui::Color32, end: CapEnd) {
+        let r = STATUS_BAR_WIDTH / 2.0;
+        let round = (r.round() as u8).max(1);
+        let corners = match end {
+            CapEnd::Top => egui::CornerRadius {
+                nw: round,
+                ne: round,
+                ..Default::default()
+            },
+            CapEnd::Bottom => egui::CornerRadius {
+                sw: round,
+                se: round,
+                ..Default::default()
+            },
+        };
+        let rect =
+            egui::Rect::from_min_size(egui::pos2(self.x, y), egui::vec2(STATUS_BAR_WIDTH, r));
+        painter.rect_filled(rect, corners, color);
+    }
+}
+
+/// Which end of a [`ChainBar`] a cap rounds.
+#[derive(Clone, Copy)]
+enum CapEnd {
+    Top,
+    Bottom,
 }
 
 /// Paint two links of a chain inside `rect`: two rounded outlines, the
@@ -2465,6 +2599,7 @@ mod tests {
             last_activity: None,
             queue_priority: None,
             git_lines: None,
+            own_bar: true,
         }
     }
 
@@ -2968,7 +3103,8 @@ mod tests {
 
     /// The lineage list: a parent with a child session under it (its two
     /// subagents draw no rows), and a three-link chain headed
-    /// `chain · SM · 3/13`, its handed-on links dimmed. The chain's first
+    /// `chain · SM · 3/13`, its handed-on links dimmed and flush with the
+    /// rows around them on one status bar that changes colour link to link. The chain's first
     /// link ran in another worktree and is listed in that folder.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
