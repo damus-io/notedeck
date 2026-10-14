@@ -26,6 +26,7 @@ mod square_loading_spinner;
 pub mod task_list;
 mod tool_fold;
 mod top_buttons;
+pub mod walltime;
 pub mod worktree_creator;
 
 pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
@@ -34,7 +35,7 @@ pub(crate) use dave::input_id;
 pub(crate) use dave::subagent_block_id;
 pub use dave::{
     assistant_message_ui, from_session_message_ui, user_message_ui, DaveAction, DaveResponse,
-    DaveUi, InputMode, InputboxLayout, InputboxResult, Inspected, RunAction,
+    DaveUi, HeaderWalltimeSource, InputMode, InputboxLayout, InputboxResult, Inspected, RunAction,
 };
 pub use directory_picker::{DirectoryPicker, DirectoryPickerAction};
 pub use host_picker::HostPickerAction;
@@ -156,7 +157,8 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
         session.inspector.set_session_id(agentic.event_session_id());
     }
 
-    let working_since = session.walltime().working_since;
+    let walltime = session.walltime();
+    let working_since = walltime.working_since;
     let mut ui_builder = DaveUi::new(
         model_config.trial,
         session.id,
@@ -191,6 +193,11 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
     .slash(&mut session.slash)
     .chat_times(&mut session.chat_times, session.turns.spans())
     .working_since(working_since)
+    .walltime(HeaderWalltimeSource {
+        label: &mut session.walltime_label,
+        walltime,
+        finished_turns: session.turns.spans().len(),
+    })
     .rate_limit(rate_limit)
     // The inspector's session info is the one a host's snapshot restores, so
     // a remote session's meter fills against its model's window too.
@@ -4795,6 +4802,80 @@ mod tests {
         assert_eq!(
             count_labels(&harness, "Yesterday 4:13 PM · worked \u{2068}1m\u{2069}"),
             1
+        );
+    }
+
+    /// The header's walltime is the finished turns plus the running one so
+    /// far ("· 12m": 70s yesterday, then 11m since 9:41), tinted while it
+    /// runs; its hover names the turns it was worked over.
+    #[test]
+    fn the_header_shows_the_time_spent_working() {
+        let state = chat_times_state(chat_time(13, 9, 52, 0), seed_running_turn);
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(760.0, 600.0))
+            .build_ui_state(render_session_view, state);
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "· 12m"), 1);
+        let hover = "worked \u{2068}12m\u{2069} over \u{2068}2\u{2069} turns";
+        assert_eq!(count_labels(&harness, hover), 0, "only on hover");
+        {
+            use egui_kittest::kittest::Queryable;
+            harness.get_by_label("· 12m").hover();
+        }
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, hover), 1);
+    }
+
+    /// A finished session's walltime is its turns' total, and a fresh one
+    /// shows none.
+    #[test]
+    fn the_header_walltime_is_the_turns_total_and_hidden_when_none() {
+        // 70s + 12m 5s + 32s.
+        let state = chat_times_state(chat_time(13, 10, 1, 10), seed_chat_times);
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(760.0, 600.0))
+            .build_ui_state(render_session_view, state);
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "· 13m"), 1);
+
+        let state = chat_times_state(chat_time(13, 10, 1, 10), |_| {});
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(760.0, 600.0))
+            .build_ui_state(render_session_view, state);
+        harness.run_ok();
+        use egui_kittest::kittest::{By, Queryable};
+        assert_eq!(harness.query_all(By::new().label_contains("· ")).count(), 0);
+    }
+
+    /// The session header, cropped from a session view of the chat `seed`
+    /// leaves at `now`.
+    fn snapshot_header_walltime(name: &str, now: u64, seed: fn(&mut crate::session::ChatSession)) {
+        let state = chat_times_state(now, seed);
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(640.0, 360.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, state);
+        harness.run_ok();
+        harness.snapshot(name);
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_header_walltime_running() {
+        snapshot_header_walltime(
+            "header_walltime_running",
+            chat_time(13, 9, 52, 0),
+            seed_running_turn,
+        );
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_header_walltime_idle() {
+        snapshot_header_walltime(
+            "header_walltime_idle",
+            chat_time(13, 10, 1, 10),
+            seed_chat_times,
         );
     }
 

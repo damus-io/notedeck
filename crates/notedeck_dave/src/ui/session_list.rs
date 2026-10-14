@@ -3101,6 +3101,7 @@ mod tests {
                 BackendType::Claude,
                 false,
                 Some(&mut refs),
+                None,
             );
             state.app_actions += app_ctx.app_actions.take().len();
             return;

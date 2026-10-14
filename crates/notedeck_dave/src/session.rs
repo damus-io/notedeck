@@ -688,6 +688,9 @@ pub struct ChatSession {
     /// The chat's turn headers and footers, as text: reseeded when the rows,
     /// the turns or the local day change, read by the chat view every frame.
     pub chat_times: crate::ui::chat_times::ChatTimes,
+    /// The header's walltime, as text: rebuilt when the value it shows, the
+    /// turn count or the locale change, read by the header every frame.
+    pub walltime_label: crate::ui::walltime::WalltimeLabel,
     /// What the backend says will resume the session once its foreground turn
     /// ends ([`DaveApiResponse::WaitingOn`]); drives [`AgentStatus::Waiting`].
     pub waiting_on: crate::messages::WaitingOn,
@@ -814,6 +817,7 @@ impl ChatSession {
             turn_started_at: None,
             turns: Turns::default(),
             chat_times: Default::default(),
+            walltime_label: Default::default(),
             waiting_on: Default::default(),
             inspector: Default::default(),
             inspector_view: Default::default(),
@@ -899,6 +903,7 @@ impl ChatSession {
             turn_started_at: None,
             turns: Turns::default(),
             chat_times: Default::default(),
+            walltime_label: Default::default(),
             waiting_on: Default::default(),
             inspector: Default::default(),
             inspector_view: Default::default(),

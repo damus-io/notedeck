@@ -1293,6 +1293,13 @@ Welcome_to_Notedeck_e2e7 = Welcome to Notedeck
 # Dave chat: how long a turn ran, in its footer, as in 'worked 12m'
 worked__duration_81bb = worked {$duration}
 
+# Dave session header: hover over the session's walltime, as in 'worked 1h 12m over 9 turns'
+worked__duration__over__count__turns_a58e =
+    { $count ->
+        [one] worked {$duration} over {$count} turn
+       *[other] worked {$duration} over {$count} turns
+    }
+
 # Dave session inspector background: badge for a background workflow
 workflow_dd36 = workflow
 

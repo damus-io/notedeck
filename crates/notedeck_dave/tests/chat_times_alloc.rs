@@ -1,4 +1,5 @@
-//! A chat's turn headers and footers format nothing per frame.
+//! A chat's turn headers and footers, and the session header's walltime,
+//! format nothing per frame.
 //!
 //! Their text is worked out when the chat's rows, turns, day or locale change
 //! (`ChatTimes::refresh`) and handed to egui by `Arc`, so a steady-state frame
@@ -11,6 +12,7 @@
 use agentium_core::session_loader::TurnSpan;
 use egui_kittest::Harness;
 use notedeck::Notedeck;
+use notedeck_dave::ui::HeaderWalltimeSource;
 use notedeck_dave::{
     AiMode, AssistantMessage, ChatSession, DaveUi, Message, SessionId, UserMessage,
 };
@@ -33,6 +35,15 @@ const WARM_UP: usize = 30;
 /// that centres a header. None is in `chat_times`. Measured, not chosen; if it
 /// moves, measure it again and write the new figure down.
 const MEASURED_TIMES_ALLOCS: u64 = 87;
+
+/// What drawing the session header's walltime ("· 23m", while a turn runs)
+/// adds to a steady-state frame that already draws the header. The label is
+/// built once per minute (`WalltimeLabel::refresh`) and handed to egui by
+/// `Arc`, so these are egui's, by attribution: the label's accesskit node and
+/// text, and the row and scope that keep it beside the truncated subtitle.
+/// Through `spacing_mut` the row cost two more (a `Style` clone). Measured,
+/// not chosen; if it moves, measure it again and write the new figure down.
+const MEASURED_WALLTIME_ALLOCS: u64 = 12;
 
 /// Unix seconds for 2026-10-`day` `h`:`m` UTC.
 fn at(day: u32, h: u32, m: u32) -> u64 {
@@ -88,11 +99,21 @@ fn chat() -> Chat {
     Chat { rows, turns }
 }
 
+/// What a measured frame draws.
+#[derive(Clone, Copy)]
+struct Draw {
+    /// The chat's turn headers and footers.
+    times: bool,
+    /// The session header.
+    header: bool,
+    /// The header's walltime.
+    walltime: bool,
+}
+
 struct ChatState {
     notedeck: Notedeck,
     session: ChatSession,
-    /// Draw the headers and footers.
-    timed: bool,
+    draw: Draw,
     set_up: bool,
     _tmpdir: tempfile::TempDir,
 }
@@ -105,6 +126,7 @@ fn render(ui: &mut egui::Ui, state: &mut ChatState) {
         }
         let mut app_ctx = state.notedeck.app_context();
         let session = &mut state.session;
+        let walltime = session.walltime();
         let mut dave_ui = DaveUi::new(
             false,
             session.id,
@@ -116,16 +138,26 @@ fn render(ui: &mut egui::Ui, state: &mut ChatState) {
         )
         .now_unix(now())
         .time_zone(chrono::FixedOffset::east_opt(0).unwrap());
-        if state.timed {
+        if state.draw.times {
             dave_ui = dave_ui.chat_times(&mut session.chat_times, session.turns.spans());
+        }
+        if state.draw.header {
+            dave_ui = dave_ui.details(&session.details);
+        }
+        if state.draw.walltime {
+            dave_ui = dave_ui.walltime(HeaderWalltimeSource {
+                label: &mut session.walltime_label,
+                walltime,
+                finished_turns: session.turns.spans().len(),
+            });
         }
         dave_ui.ui(&mut app_ctx, ui);
     });
 }
 
-/// Allocations on the UI thread for one steady-state frame of [`chat`], with
-/// its headers and footers drawn if `timed`.
-fn frame_allocs(timed: bool) -> u64 {
+/// Allocations on the UI thread for one steady-state frame of [`chat`],
+/// drawing what `draw` says, with a fourth turn running since 9:58.
+fn frame_allocs(draw: Draw) -> u64 {
     let tmpdir = tempfile::TempDir::new().unwrap();
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
     let notedeck = Notedeck::init(&egui::Context::default(), tmpdir.path(), &args);
@@ -138,10 +170,11 @@ fn frame_allocs(timed: bool) -> u64 {
     let Chat { rows, turns } = chat();
     session.replace_chat(rows);
     session.set_turns(turns);
+    session.turn_started_at = Some(at(13, 9, 58));
     let state = ChatState {
         notedeck,
         session,
-        timed,
+        draw,
         set_up: false,
         _tmpdir: tmpdir,
     };
@@ -152,20 +185,54 @@ fn frame_allocs(timed: bool) -> u64 {
         harness.step();
     }
     let counts = measure(|| harness.step()).counts;
-    println!("timed {timed}: {counts}");
+    println!(
+        "times {} header {} walltime {}: {counts}",
+        draw.times, draw.header, draw.walltime
+    );
     counts.thread.allocs
 }
 
 /// The headers and footers add exactly what egui charges for their labels.
 #[test]
 fn chat_times_format_nothing_per_frame() {
-    let plain = frame_allocs(false);
-    let timed = frame_allocs(true);
+    let draw = Draw {
+        times: false,
+        header: false,
+        walltime: false,
+    };
+    let plain = frame_allocs(draw);
+    let timed = frame_allocs(Draw {
+        times: true,
+        ..draw
+    });
     let added = timed.saturating_sub(plain);
     assert_eq!(
         added, MEASURED_TIMES_ALLOCS,
         "drawing the turn headers and footers costs {added} allocations a frame \
          ({timed} timed, {plain} plain), measured at {MEASURED_TIMES_ALLOCS}: \
          a frame must not format or reseed them"
+    );
+}
+
+/// The walltime adds exactly what egui charges for its label, though the
+/// running turn moves it every second.
+#[test]
+fn the_header_walltime_formats_nothing_per_frame() {
+    let header = Draw {
+        times: false,
+        header: true,
+        walltime: false,
+    };
+    let plain = frame_allocs(header);
+    let with = frame_allocs(Draw {
+        walltime: true,
+        ..header
+    });
+    let added = with.saturating_sub(plain);
+    assert_eq!(
+        added, MEASURED_WALLTIME_ALLOCS,
+        "drawing the header's walltime costs {added} allocations a frame \
+         ({with} with, {plain} without), measured at {MEASURED_WALLTIME_ALLOCS}: \
+         a frame must not format it"
     );
 }

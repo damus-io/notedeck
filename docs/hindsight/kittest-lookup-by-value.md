@@ -11,3 +11,4 @@ was on screen, so value-bearing widgets cost an inline query and a guess.
 - headway:dave/illness-morning-auto — ~4 min: the Subagents card's meta and summary needles missed with the U+2068/U+2069 spelled in (this time they weren't there), so added a temporary tree dump to see the real values
 - headway:dave/tape-swim-army — ~5 min: a Label's text sits in the accesskit `value`, not `label`, so `.accesskit_node().label()` came back None for "2/5 done"; went through NodeT imports and a debug eprintln before seeing it
 - headway:dave/celery-wink-else — ~3 min: dumped `label()` on every node to see why a chip query missed and got a wall of None; the text was in `value`, and only a second dump with role + value showed the refs were drawn as raw text
+- headway:dave/shallow-upgrade-pet — ~3 min: a tooltip assert missed; a debug dump showed `label()` None (the text is in `value`) and no U+2068/U+2069 until the FTL entry was exported, so the needle changed twice

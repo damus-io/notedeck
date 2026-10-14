@@ -154,6 +154,16 @@ pub struct DaveUi<'a> {
     /// When the running turn started, in unix seconds, for the "· 3m" on the
     /// status line; `None` when no turn runs.
     working_since: Option<u64>,
+    /// The header's walltime and what it is built from; `None` draws none.
+    walltime: Option<HeaderWalltimeSource<'a>>,
+}
+
+/// What the header's walltime is drawn from: the session's cached label, and
+/// the session's walltime and finished turns it is refreshed with.
+pub struct HeaderWalltimeSource<'a> {
+    pub label: &'a mut super::walltime::WalltimeLabel,
+    pub walltime: crate::session::Walltime,
+    pub finished_turns: usize,
 }
 
 /// The session the Details tab inspects: its inspector and tab state, plus
@@ -356,6 +366,7 @@ impl<'a> DaveUi<'a> {
             chat_times: None,
             turns: &[],
             working_since: None,
+            walltime: None,
         }
     }
 
@@ -375,6 +386,13 @@ impl<'a> DaveUi<'a> {
     /// status line.
     pub fn working_since(mut self, since: Option<u64>) -> Self {
         self.working_since = since;
+        self
+    }
+
+    /// Draw the session's walltime in the header, "· 1h 12m" after its model
+    /// and cwd.
+    pub fn walltime(mut self, source: HeaderWalltimeSource<'a>) -> Self {
+        self.walltime = Some(source);
         self
     }
 
@@ -410,6 +428,30 @@ impl<'a> DaveUi<'a> {
             inspected.permissions = facts;
         }
         self
+    }
+
+    /// Bring the header's walltime up to date as of this frame, ask for a
+    /// repaint when its number next ticks, and hand back the label to draw.
+    fn refresh_walltime(
+        &mut self,
+        i18n: &mut notedeck::Localization,
+        ui: &egui::Ui,
+    ) -> Option<super::walltime::HeaderWalltime> {
+        let source = self.walltime.as_mut()?;
+        let now = self.now_unix.unwrap_or_else(crate::session::now_unix);
+        let input = super::walltime::WalltimeInput {
+            walltime: source.walltime,
+            finished_turns: source.finished_turns,
+            now,
+            weak: ui.visuals().weak_text_color(),
+            live: crate::agent_status::AgentStatus::Working.color(),
+        };
+        source.label.refresh(input, i18n);
+        if let Some(secs) = super::walltime::WalltimeLabel::next_change(source.walltime, now) {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs(secs));
+        }
+        source.label.label()
     }
 
     /// Whether the session view draws its tab strip: whenever it has an
@@ -627,6 +669,7 @@ impl<'a> DaveUi<'a> {
         let result = top_buttons_ui(app_ctx, ui, self.status_dot_color);
 
         // Render session details inline, to the right of the buttons
+        let walltime = self.refresh_walltime(app_ctx.i18n, ui);
         if let Some(details) = self.details {
             let max_width = ui.max_rect().right() - result.right_edge_x;
             if max_width > 50.0 {
@@ -652,16 +695,26 @@ impl<'a> DaveUi<'a> {
                             self.backend_type,
                             self.flags.contains(DaveUiFlags::IsSubagent),
                             refs.as_mut(),
+                            walltime.as_ref().map(|w| w.text.clone()),
                         )
                     })
                     .inner;
 
-                if let Some(cwd) = &truncation.full {
-                    let hover_resp = ui.interact(
-                        details_rect,
-                        egui::Id::unique("session_header_hover"),
-                        egui::Sense::hover(),
-                    );
+                // One hover over the whole header, so the title's chip keeps
+                // its own: the walltime's where the pointer is over it, else
+                // the full cwd.
+                let hover_resp = ui.interact(
+                    details_rect,
+                    egui::Id::unique("session_header_hover"),
+                    egui::Sense::hover(),
+                );
+                let over_walltime = truncation
+                    .walltime_rect
+                    .zip(hover_resp.hover_pos())
+                    .is_some_and(|(rect, pos)| rect.contains(pos));
+                if let (true, Some(walltime)) = (over_walltime, walltime) {
+                    hover_resp.on_hover_text_at_pointer(walltime.hover);
+                } else if let Some(cwd) = &truncation.full {
                     hover_resp.on_hover_text_at_pointer(cwd);
                 }
             }
@@ -3869,9 +3922,11 @@ fn toggle_badges_ui(
     action
 }
 
-/// Full CWD string from the session header, for tooltip display on hover.
+/// What the session header drew that its hover reads: the full cwd, and
+/// where the walltime is.
 pub(crate) struct HeaderCwd {
     full: Option<String>,
+    walltime_rect: Option<egui::Rect>,
 }
 
 /// What a subagent's header adds to its subtitle: the model, cwd and mode
@@ -3895,8 +3950,12 @@ pub(crate) fn session_header_ui(
     backend_type: BackendType,
     is_subagent: bool,
     refs: Option<&mut TitleRefs<'_, '_>>,
+    walltime: Option<egui::WidgetText>,
 ) -> HeaderCwd {
-    let mut header_cwd = HeaderCwd { full: None };
+    let mut header_cwd = HeaderCwd {
+        full: None,
+        walltime_rect: None,
+    };
 
     ui.horizontal(|ui| {
         // Backend icon
@@ -3938,17 +3997,46 @@ pub(crate) fn session_header_ui(
             };
 
             if let Some(text) = subtitle {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(text).monospace().size(10.0).weak())
-                        .wrap_mode(egui::TextWrapMode::Truncate),
-                );
-
+                header_cwd.walltime_rect = subtitle_ui(ui, text, walltime);
                 header_cwd.full = cwd_text;
             }
         });
     });
 
     header_cwd
+}
+
+/// The header's subtitle: `text`, end-truncated to leave room for the
+/// `walltime` after it, which is never cut. Returns where the walltime went.
+fn subtitle_ui(
+    ui: &mut egui::Ui,
+    text: String,
+    walltime: Option<egui::WidgetText>,
+) -> Option<egui::Rect> {
+    let subtitle = egui::RichText::new(text).monospace().size(10.0).weak();
+    let Some(walltime) = walltime else {
+        ui.add(egui::Label::new(subtitle).wrap_mode(egui::TextWrapMode::Truncate));
+        return None;
+    };
+    let walltime = walltime.into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Monospace,
+    );
+    ui.horizontal(|ui| {
+        // The row's own item spacing stands for the space before the "·",
+        // rather than a `spacing_mut` that would clone the style each frame.
+        let gap = ui.spacing().item_spacing.x;
+        let room = (ui.available_width() - walltime.size().x - gap).max(0.0);
+        ui.scope(|ui| {
+            ui.set_max_width(room);
+            ui.add(egui::Label::new(subtitle).wrap_mode(egui::TextWrapMode::Truncate));
+        });
+        ui.add(egui::Label::new(walltime).selectable(false)).rect
+    })
+    .inner
+    .into()
 }
 
 /// The header's title line: `title` with its references drawn as their
