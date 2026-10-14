@@ -600,9 +600,14 @@ mod open_tests {
     /// What the open asks the session, as Headway's `S` does.
     const MSG: &str = "launch a /code-review for the work done in this session";
 
-    /// Write `SESSION_ID`'s kind-31988 state note, signed by `kp`, and wait
-    /// until it's committed so its `agentium:` reference resolves.
-    async fn ingest_session(ndb: &nostrdb::Ndb, kp: &FullKeypair) -> nostrdb_net::NoteId {
+    /// Write `SESSION_ID`'s kind-31988 state note, titled `title` and signed
+    /// by `kp`, and wait until it's committed so its `agentium:` reference
+    /// resolves.
+    async fn ingest_session(
+        ndb: &nostrdb::Ndb,
+        kp: &FullKeypair,
+        title: &str,
+    ) -> nostrdb_net::NoteId {
         let filter = Filter::new().kinds([AI_SESSION_STATE_KIND as u64]).build();
         let sub = ndb.subscribe(&[filter]).expect("subscribe");
         let note = NoteBuilder::new()
@@ -614,7 +619,7 @@ mod open_tests {
             .tag_str(SESSION_ID)
             .start_tag()
             .tag_str("title")
-            .tag_str("Open test")
+            .tag_str(title)
             .start_tag()
             .tag_str("status")
             .tag_str("working")
@@ -633,9 +638,20 @@ mod open_tests {
 
     /// Run one egui frame at `time` (egui seconds) with a `ui` under a
     /// central panel, as the chrome's app route has one.
-    fn frame_at(egui_ctx: &egui::Context, time: f64, mut f: impl FnMut(&mut egui::Ui)) {
+    fn frame_at(egui_ctx: &egui::Context, time: f64, f: impl FnMut(&mut egui::Ui)) {
+        frame_with(egui_ctx, time, Vec::new(), f);
+    }
+
+    /// [`frame_at`], with `events` as the frame's input.
+    fn frame_with(
+        egui_ctx: &egui::Context,
+        time: f64,
+        events: Vec<egui::Event>,
+        mut f: impl FnMut(&mut egui::Ui),
+    ) {
         let input = egui::RawInput {
             time: Some(time),
+            events,
             ..Default::default()
         };
         egui_ctx
@@ -703,7 +719,7 @@ mod open_tests {
         } = OpenFixture::new();
         let mut ctx = notedeck.app_context();
         assert_eq!(*ctx.accounts.selected_account_pubkey(), kp.pubkey);
-        let state_note = ingest_session(ctx.ndb, &kp).await;
+        let state_note = ingest_session(ctx.ndb, &kp, "Open test").await;
 
         let headway = chrome.headway_slot().expect("headway in the roster");
         chrome.set_active(headway as i32);
@@ -823,6 +839,104 @@ mod open_tests {
         assert!(chrome.pending_open.is_none(), "given up");
         assert_eq!(depth(&chrome), before);
         assert_eq!(chrome.active, headway as i32);
+    }
+
+    /// Dave answers the Cmd-K bar's search (headway:notedeck/label-weekend-expire):
+    /// with Headway in front, a word of a session's title lists the session
+    /// under Dave, marked as a session, and Enter on it lands in Dave holding
+    /// the open of that session's state note, as a click on its chip would.
+    ///
+    /// Dave's session fold seeds on a worker, so the first answers may be
+    /// pending; the bar asks again every `REFINE_INTERVAL` until the seed lands.
+    #[tokio::test]
+    async fn the_command_bar_finds_a_dave_session_and_enter_opens_it() {
+        const TITLE: &str = "Zebra quokka migration";
+        let OpenFixture {
+            _dir,
+            kp,
+            egui_ctx,
+            mut notedeck,
+            mut chrome,
+        } = OpenFixture::new();
+        let mut ctx = notedeck.app_context();
+        let state_note = ingest_session(ctx.ndb, &kp, TITLE).await;
+
+        let dave = chrome
+            .apps
+            .iter()
+            .position(|app| matches!(app, crate::app::NotedeckApp::Dave(_)))
+            .expect("dave in the roster");
+        let headway = chrome.headway_slot().expect("headway in the roster");
+        chrome.set_opened(dave);
+        chrome.set_active(headway as i32);
+
+        chrome.toggle_command_bar(&mut ctx, &egui_ctx);
+        chrome.command_bar_mut().set_query("zebra quokka");
+
+        // Ask until Dave's answer stops pending and lists the session, in
+        // steps past the refine interval, for at most a few seconds.
+        let step = notedeck::search::REFINE_INTERVAL.as_secs_f64() + 0.01;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut t = 0.0;
+        loop {
+            frame_at(&egui_ctx, t, |_ui| {
+                chrome.search_if_due(&mut ctx, &egui_ctx)
+            });
+            let found = chrome
+                .command_bar_mut()
+                .selected()
+                .is_some_and(|item| item.title == TITLE);
+            if found {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the session never listed: {:?}",
+                chrome
+                    .command_bar()
+                    .hits()
+                    .iter()
+                    .map(|item| item.title.clone())
+                    .collect::<Vec<_>>()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            t += step;
+        }
+        let row = chrome
+            .command_bar_mut()
+            .selected()
+            .expect("selected")
+            .clone();
+        let subtitle = row.subtitle.as_deref().unwrap_or_default();
+        assert!(subtitle.starts_with("Session · "), "{subtitle}");
+        assert!(subtitle.ends_with(" · working"), "{subtitle}");
+
+        let enter = egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        t += step;
+        frame_with(&egui_ctx, t, vec![enter], |ui| {
+            chrome.command_bar_keys(&mut ctx, ui);
+        });
+        // An open whose resolve missed is held for the next frame's retry.
+        t += step;
+        frame_at(&egui_ctx, t, |ui| {
+            retry_pending_open(&mut chrome, &mut ctx, ui)
+        });
+
+        assert!(!chrome.command_bar().is_open(), "Enter closes the bar");
+        assert!(chrome.pending_open.is_none(), "the open resolved");
+        assert_eq!(chrome.active, dave as i32, "the open lands in Dave");
+        let pending = chrome
+            .get_dave_app()
+            .and_then(|dave| dave.pending_open())
+            .expect("Dave holds the open");
+        assert_eq!(pending.note, state_note);
+        assert_eq!(pending.msg, None);
     }
 }
 
