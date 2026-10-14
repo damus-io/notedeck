@@ -1809,27 +1809,18 @@ fn cwd_section_ui(
         return action;
     }
 
-    // Multi-session cwd: indent the folder under its host header so the
-    // visual hierarchy is obvious. Single-session rows above stay flush with
-    // the host since they're conceptually loose siblings, not a sub-group.
-    egui::Frame::new()
-        .inner_margin(egui::Margin {
-            left: 12,
-            ..Default::default()
-        })
-        .show(ui, |ui| {
-            if let Some(a) = cwd_folder_ui(
-                ui,
-                list_ui,
-                hostname,
-                cwd_group,
-                visual_index,
-                active_id,
-                cycle,
-            ) {
-                action = Some(a);
-            }
-        });
+    // Multi-session cwd: the folder sits flush with the rows around it, like
+    // a successor chain; only a spawned child's row is nested
+    // (`NEST_INDENT`).
+    action = cwd_folder_ui(
+        ui,
+        list_ui,
+        hostname,
+        cwd_group,
+        visual_index,
+        active_id,
+        cycle,
+    );
 
     ui.add_space(2.0);
     action
@@ -1853,7 +1844,6 @@ fn folder_git_lines(
 
 /// Render the collapsible folder for a multi-session cwd: header, body
 /// containing each session row, and the right-click "New Session" menu.
-/// Indentation is the caller's responsibility.
 ///
 /// Like `project_section_ui`, the header is built by hand rather than via
 /// `CollapsingState::show_header` so the disclosure arrow can sit on the
