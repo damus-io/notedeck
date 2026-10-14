@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{Fixture, DATA_TOOL, NAME_TOOL, PICK_TOOL};
+use common::{bar_key, Fixture, DATA_TOOL, NAME_TOOL, PICK_TOOL};
 use egui::{Event, Key, Modifiers, PointerButton};
 use notedeck::{CommandAction, CommandItem, ToolInvocation};
 use notedeck_chrome::OPEN_COMMAND_BAR;
@@ -51,10 +51,11 @@ fn rows() -> Vec<CommandItem> {
     ]
 }
 
-/// Press Cmd-K the way this platform's keyboard reports it: Ctrl sets
-/// `command` too off macOS.
+/// Press the bar's key, Cmd-K on macOS and Ctrl-Space elsewhere, the way
+/// this platform's keyboard reports it.
 fn cmd_k(f: &mut Fixture) {
-    f.press(Modifiers::COMMAND | Modifiers::CTRL, Key::K, None);
+    let open = bar_key(&f.egui_ctx);
+    f.press(open.modifiers, open.logical_key, None);
 }
 
 /// Type `text` into whatever has focus, one frame.
@@ -114,14 +115,25 @@ fn cmd_k_again_closes_it() {
 }
 
 #[test]
-fn cmd_shift_k_does_not_open_it() {
+fn the_key_with_shift_does_not_open_it() {
     let mut f = Fixture::new(KEYMAP);
-    f.press(
-        Modifiers::COMMAND | Modifiers::CTRL | Modifiers::SHIFT,
-        Key::K,
-        None,
-    );
+    let open = bar_key(&f.egui_ctx);
+    f.press(open.modifiers | Modifiers::SHIFT, open.logical_key, None);
     assert!(!f.chrome.command_bar().is_open());
+}
+
+/// Off macOS the bar's key is Ctrl-Space, not Ctrl-K: there Cmd is Ctrl,
+/// and the chrome takes its key before any app, so Ctrl-K would never reach
+/// an app that binds it, like Dave's previous agent.
+#[test]
+fn ctrl_k_off_macos_reaches_the_app() {
+    let mut f = Fixture::new(KEYMAP);
+    if f.egui_ctx.os() == egui::os::OperatingSystem::Mac {
+        return;
+    }
+    f.press(Modifiers::COMMAND | Modifiers::CTRL, Key::K, None);
+    assert!(!f.chrome.command_bar().is_open());
+    assert!(f.seen().contains(&Key::K), "the app saw it: {:?}", f.seen());
 }
 
 #[test]
@@ -285,7 +297,7 @@ fn the_bars_keys_never_reach_the_app() {
         Key::ArrowDown,
         Key::ArrowUp,
         Key::Enter,
-        Key::K,
+        bar_key(&f.egui_ctx).logical_key,
         Key::Escape,
     ] {
         assert!(!seen.contains(&key), "{key:?} reached the app: {seen:?}");
@@ -410,7 +422,8 @@ fn themed_snapshot_harness(
     theme: egui::Theme,
 ) -> egui_kittest::Harness<'static, Snapshot> {
     let mut harness = themed_backdrop_harness(theme);
-    harness.key_press_modifiers(Modifiers::COMMAND, Key::K);
+    let open = bar_key(&harness.ctx);
+    harness.key_press_modifiers(open.modifiers, open.logical_key);
     harness.run_steps(2);
     let bar = harness.state_mut().chrome.command_bar_mut();
     bar.set_items(snapshot_rows());
@@ -667,7 +680,8 @@ fn the_tools_run_lately_come_first() {
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_command_bar_tools() {
     let mut harness = backdrop_harness();
-    harness.key_press_modifiers(Modifiers::COMMAND, Key::K);
+    let open = bar_key(&harness.ctx);
+    harness.key_press_modifiers(open.modifiers, open.logical_key);
     let _ = harness.run_ok();
     assert!(harness.state().chrome.command_bar().is_open());
     harness.snapshot("command_bar_tools");
@@ -677,7 +691,8 @@ fn snapshot_command_bar_tools() {
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_command_bar_arg_step() {
     let mut harness = backdrop_harness();
-    harness.key_press_modifiers(Modifiers::COMMAND, Key::K);
+    let open = bar_key(&harness.ctx);
+    harness.key_press_modifiers(open.modifiers, open.logical_key);
     harness.run_steps(2);
     harness
         .state_mut()
@@ -1026,7 +1041,8 @@ async fn snapshot_command_bar_rich_rows() {
         .renderer(notedeck::software_renderer())
         .build_ui_state(rich_frame, state);
     let _ = harness.run_ok();
-    harness.key_press_modifiers(Modifiers::COMMAND, Key::K);
+    let open = bar_key(&harness.ctx);
+    harness.key_press_modifiers(open.modifiers, open.logical_key);
     let _ = harness.run_ok();
     harness.event(Event::Text("rich".to_owned()));
     let _ = harness.run_ok();

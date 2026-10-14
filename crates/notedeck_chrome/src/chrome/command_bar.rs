@@ -1,8 +1,9 @@
 //! The Cmd-K command bar: a query field over a filtered list of
 //! [`CommandItem`]s, floating over every app.
 //!
-//! Cmd-K (Ctrl-K off macOS) opens it whatever has focus, and Cmd-K again or
-//! Esc closes it, as does a click outside it. Typing filters the rows with
+//! Cmd-K on macOS, Ctrl-Space elsewhere ([`open_shortcut`]), opens it
+//! whatever has focus, and the same key again or Esc closes it, as does a
+//! click outside it. Typing filters the rows with
 //! [`fuzzy_match`]; ↑/↓ or Ctrl-P/Ctrl-N move the selection and Enter runs
 //! it, as a click on a row does. While it is open the keymap stands down, so
 //! a key typed into the query never runs a binding.
@@ -51,9 +52,24 @@ use super::command_search::SearchState;
 use super::key_dispatch::tool_action;
 use super::Chrome;
 
-/// Opens the command bar. Bound to Cmd-K by the chrome itself, so it works
-/// with a text field focused; the tool is for the keymap and for agents.
+/// Opens the command bar. Bound to [`open_shortcut`] by the chrome itself,
+/// so it works with a text field focused; the tool is for the keymap and for
+/// agents.
 pub const OPEN_COMMAND_BAR: &str = "chrome_open_command_bar";
+
+/// The key that opens and closes the command bar on `os`: Cmd-K on macOS,
+/// Ctrl-Space elsewhere.
+///
+/// Not Ctrl-K off macOS: there Cmd is Ctrl, and the chrome takes its key
+/// before any app sees it, so Ctrl-K would be lost to apps that use it,
+/// like Dave's previous agent. Not Ctrl-Space on macOS: there it is the
+/// system's switch between input sources.
+pub fn open_shortcut(os: egui::os::OperatingSystem) -> egui::KeyboardShortcut {
+    match os {
+        egui::os::OperatingSystem::Mac => egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::K),
+        _ => egui::KeyboardShortcut::new(Modifiers::CTRL, Key::Space),
+    }
+}
 
 /// The command bar's UI tools, for the host's tool registry.
 pub(super) fn command_bar_tools() -> [ToolSpec; 1] {
@@ -1092,7 +1108,8 @@ impl Chrome {
         self.pending_open.as_ref().map(|pending| pending.open())
     }
 
-    /// Open the command bar, or close it if it is open. Bound to Cmd-K.
+    /// Open the command bar, or close it if it is open. Bound to
+    /// [`open_shortcut`].
     pub(super) fn toggle_command_bar(&mut self, app_ctx: &mut AppContext, ctx: &egui::Context) {
         if self.command_bar.open {
             self.command_bar.close(ctx);
@@ -1213,7 +1230,7 @@ impl Chrome {
 
 /// Consume a press of `key` with exactly `modifiers` held: unlike
 /// [`egui::InputState::consume_key`], an extra Shift or Alt doesn't match,
-/// so Cmd-K leaves Cmd-Shift-K alone.
+/// so the bar's key leaves the same key with Shift alone.
 pub(super) fn consume_exact(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> bool {
     let before = input.events.len();
     input.events.retain(|event| {

@@ -460,10 +460,16 @@ async fn a_focused_field_keeps_its_keys() {
     f.wait_to_draw("jk");
 }
 
-/// Press Cmd-K the way this platform's keyboard reports it: Ctrl sets
-/// `command` too off macOS.
+/// Press the bar's key, Cmd-K on macOS and Ctrl-Space elsewhere
+/// ([`notedeck_chrome::open_shortcut`]), the way this platform's keyboard
+/// reports it: off macOS, Ctrl sets `command` too.
 fn cmd_k(f: &mut Fixture) {
-    f.press(Modifiers::COMMAND | Modifiers::CTRL, Key::K, None);
+    let open = notedeck_chrome::open_shortcut(f.egui_ctx.os());
+    let modifiers = match open.modifiers.ctrl {
+        true => open.modifiers | Modifiers::COMMAND,
+        false => open.modifiers,
+    };
+    f.press(modifiers, open.logical_key, None);
 }
 
 /// The command bar's selected row's title.

@@ -39,6 +39,18 @@ pub const PICK_TOOL: &str = "fake_pick";
 /// `target` filled from the current ref.
 pub const NAME_TOOL: &str = "fake_name";
 
+/// The key that opens the command bar on the platform `ctx` runs on
+/// ([`notedeck_chrome::open_shortcut`]), as its keyboard reports it: off
+/// macOS, Ctrl sets `command` too.
+pub fn bar_key(ctx: &egui::Context) -> egui::KeyboardShortcut {
+    let open = notedeck_chrome::open_shortcut(ctx.os());
+    let modifiers = match open.modifiers.ctrl {
+        true => open.modifiers | Modifiers::COMMAND,
+        false => open.modifiers,
+    };
+    egui::KeyboardShortcut::new(modifiers, open.logical_key)
+}
+
 /// The id of the text field [`FakeApp`] draws when asked to.
 pub fn field_id() -> egui::Id {
     egui::Id::unique("keymap_engine_field")

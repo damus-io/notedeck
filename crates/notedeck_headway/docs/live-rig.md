@@ -68,7 +68,7 @@ Cmd-K bar yet: it panics (headway:headway/fetch-mind-series).
 
 The same flags work on any notedeck, without the rig, for any app:
 
-    notedeck --datapath <d> --wait 1 --key '<C-k>' --wait 0.3 --shot out.png
+    notedeck --datapath <d> --wait 1 --key '<C-Space>' --wait 0.3 --shot out.png
 
 The shot runs the same `Notedeck` and chrome as the window, through egui's
 wgpu renderer with eframe's options, into an offscreen texture. Against the

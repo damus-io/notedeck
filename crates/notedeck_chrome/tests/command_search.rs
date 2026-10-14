@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use common::Fixture;
+use common::{bar_key, Fixture};
 use egui::{Event, Key, Modifiers};
 use nostrdb::{Filter, IngestMetadata, NoteBuilder};
 use notedeck::{App, AppContext, AppResponse, OpenUri, SearchHit};
@@ -19,10 +19,11 @@ use notedeck_chrome::NotedeckApp;
 /// No bindings: these tests only type into the bar.
 const KEYMAP: &str = "";
 
-/// Press Cmd-K the way this platform's keyboard reports it: Ctrl sets
-/// `command` too off macOS.
+/// Press the bar's key, Cmd-K on macOS and Ctrl-Space elsewhere, the way
+/// this platform's keyboard reports it.
 fn cmd_k(f: &mut Fixture) {
-    f.press(Modifiers::COMMAND | Modifiers::CTRL, Key::K, None);
+    let open = bar_key(&f.egui_ctx);
+    f.press(open.modifiers, open.logical_key, None);
 }
 
 /// Type `text` into whatever has focus, one frame.

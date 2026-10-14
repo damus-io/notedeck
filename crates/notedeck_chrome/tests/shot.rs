@@ -25,7 +25,12 @@ async fn a_shot_films_the_app_and_its_scripted_input() {
         "--shot",
         before.to_str().unwrap(),
         "--key",
-        "<C-k>",
+        // The command bar's key (`notedeck_chrome::open_shortcut`).
+        if cfg!(target_os = "macos") {
+            "<D-k>"
+        } else {
+            "<C-Space>"
+        },
         "--frames",
         "3",
         "--shot",
@@ -59,6 +64,6 @@ async fn a_shot_films_the_app_and_its_scripted_input() {
     );
     assert_ne!(
         before, after,
-        "Ctrl-K opens the command bar, so the second shot differs"
+        "the bar's key opens the command bar, so the second shot differs"
     );
 }

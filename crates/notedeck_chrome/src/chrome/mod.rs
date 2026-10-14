@@ -60,7 +60,7 @@ mod user_keymap;
 
 pub use actions::ChromePanelAction;
 use actions::PendingOpen;
-pub use command_bar::{CommandBar, OPEN_COMMAND_BAR};
+pub use command_bar::{open_shortcut, CommandBar, OPEN_COMMAND_BAR};
 use focus::AppFocus;
 pub use jumps::{JumpList, JUMP_BACK, JUMP_FORWARD, JUMP_LIST_CAP};
 pub use key_hints::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
@@ -431,9 +431,10 @@ impl Chrome {
             self.toggle();
         }
 
-        // Cmd+K (Ctrl+K off macOS) opens or closes the command bar.
-        if ctx.input_mut(|i| command_bar::consume_exact(i, egui::Modifiers::COMMAND, egui::Key::K))
-        {
+        // Cmd-K on macOS, Ctrl-Space elsewhere, opens or closes the
+        // command bar.
+        let open = command_bar::open_shortcut(ctx.os());
+        if ctx.input_mut(|i| command_bar::consume_exact(i, open.modifiers, open.logical_key)) {
             self.toggle_command_bar(app_ctx, ctx);
         }
 

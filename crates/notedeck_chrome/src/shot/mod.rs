@@ -12,7 +12,7 @@
 //! with no Xvfb and no xdotool:
 //!
 //! ```text
-//! notedeck --datapath d --wait 1 --key '<C-k>' --wait 0.3 --shot out.png
+//! notedeck --datapath d --wait 1 --key '<C-Space>' --wait 0.3 --shot out.png
 //! ```
 
 mod offscreen;
