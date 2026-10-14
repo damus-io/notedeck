@@ -21,22 +21,32 @@ pub enum AgentStatus {
 }
 
 impl AgentStatus {
-    /// Get the color associated with this status. Statuses that share a
-    /// meaning with a Headway column use that column's color from
-    /// [`notedeck::tokens`], so one meaning reads as one color in both apps:
-    /// working is in-progress yellow, done (a finished turn awaiting the user)
-    /// is in-review green, and needs-input is urgent amber.
+    /// Get the color associated with this status: Linear's status palette,
+    /// with rose for needs-input. Statuses that share a meaning with a Headway
+    /// column use that column's color from [`notedeck::tokens`], so one meaning
+    /// reads as one color in both apps: working is in-progress yellow and done
+    /// (a finished turn awaiting the user) is in-review green. Needs-input is
+    /// rose rather than Headway's urgent amber, which sat too close to
+    /// working's yellow to tell apart on a status bar.
     pub fn color(&self) -> egui::Color32 {
-        use notedeck::tokens::{STATUS_IN_PROGRESS, STATUS_IN_REVIEW, STATUS_URGENT};
+        use notedeck::tokens::{STATUS_IN_PROGRESS, STATUS_IN_REVIEW};
         match self {
-            AgentStatus::Idle => egui::Color32::from_rgb(128, 128, 128), // Gray
+            AgentStatus::Idle => egui::Color32::from_rgb(0x95, 0xA2, 0xB3), // Slate gray
             AgentStatus::Working => STATUS_IN_PROGRESS,
-            AgentStatus::NeedsInput => STATUS_URGENT,
-            AgentStatus::Error => egui::Color32::from_rgb(220, 60, 60), // Red
+            AgentStatus::NeedsInput => egui::Color32::from_rgb(0xF2, 0x54, 0x7A), // Rose
+            AgentStatus::Error => egui::Color32::from_rgb(0xEB, 0x57, 0x57),      // Red
             AgentStatus::Done => STATUS_IN_REVIEW,
-            AgentStatus::Pending => egui::Color32::from_rgb(100, 160, 180), // Muted cyan
-            AgentStatus::Waiting => egui::Color32::from_rgb(150, 120, 210), // Violet
+            AgentStatus::Pending => egui::Color32::from_rgb(0x5E, 0x6A, 0xD2), // Indigo
+            AgentStatus::Waiting => egui::Color32::from_rgb(0xBB, 0x87, 0xFC), // Violet
         }
+    }
+
+    /// Whether a session in this status asks nothing of the user: it finished
+    /// or sits idle. A chain link that handed its work on dims its stretch of
+    /// the chain's status bar only when it is quiet; one that needs input or
+    /// errored keeps its full color, since it still wants attention.
+    pub fn is_quiet(&self) -> bool {
+        matches!(self, AgentStatus::Done | AgentStatus::Idle)
     }
 
     /// Get a human-readable label for this status
@@ -187,10 +197,9 @@ mod tests {
     /// column's color.
     #[test]
     fn shared_meanings_use_headway_status_colors() {
-        use notedeck::tokens::{STATUS_IN_PROGRESS, STATUS_IN_REVIEW, STATUS_URGENT};
+        use notedeck::tokens::{STATUS_IN_PROGRESS, STATUS_IN_REVIEW};
         assert_eq!(AgentStatus::Working.color(), STATUS_IN_PROGRESS);
         assert_eq!(AgentStatus::Done.color(), STATUS_IN_REVIEW);
-        assert_eq!(AgentStatus::NeedsInput.color(), STATUS_URGENT);
     }
 
     /// A fresh session's color is returned byte-identical (no fade, no round-trip

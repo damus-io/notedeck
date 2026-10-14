@@ -2021,7 +2021,8 @@ fn lineage_row_ui(
 /// Draw a successor chain: its links in order, flush with the rows around
 /// them and sharing one status bar (see [`ChainBar`]), which marks them as
 /// one block, each with what nests under it. Links that handed their work on
-/// are dimmed.
+/// are dimmed; their stretch of the bar too, unless the link still wants
+/// attention (see [`AgentStatus::is_quiet`]).
 fn chain_ui(
     ui: &mut egui::Ui,
     list_ui: &SessionListUi<'_, '_>,
@@ -2044,8 +2045,10 @@ fn chain_ui(
         let top = ui.cursor().top();
         if let Nesting::Link { handed_on } = row.place.nesting {
             if let Some(session) = list_ui.session_manager.get(id) {
-                let color = row_status_color(session.status(), session.last_activity);
-                let color = if handed_on {
+                let status = session.status();
+                let color = row_status_color(status, session.last_activity);
+                // A handed-on link still asking for attention keeps its color.
+                let color = if handed_on && status.is_quiet() {
                     color.gamma_multiply(0.55)
                 } else {
                     color
