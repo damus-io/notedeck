@@ -53,6 +53,7 @@ dirs = "5.0.1"
 eframe = { version = "0.36.2", default-features = false, features = [ "wgpu", "wayland", "x11", "android-game-activity", "system_fonts" ] }
 egui = { version = "0.36.2", features = ["serde"] }
 egui-wgpu = "0.36.2"
+egui_system_fonts = "0.36.2"
 egui_extras = { version = "0.36.2", features = ["all_loaders"] }
 epaint = { version = "0.36.2", features = ["color_fonts"] }
 egui-winit = { version = "0.36.2", features = ["android-game-activity", "clipboard"] }
@@ -190,6 +191,7 @@ egui = { git = "https://github.com/damus-io/egui", rev = "c2c8f34fd3679475226ea6
 eframe = { git = "https://github.com/damus-io/egui", rev = "c2c8f34fd3679475226ea67ab060f3324d3f2357" }
 egui-winit = { git = "https://github.com/damus-io/egui", rev = "c2c8f34fd3679475226ea67ab060f3324d3f2357" }
 egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "c2c8f34fd3679475226ea67ab060f3324d3f2357" }
+egui_system_fonts = { git = "https://github.com/damus-io/egui", rev = "c2c8f34fd3679475226ea67ab060f3324d3f2357" }
 egui_extras = { git = "https://github.com/damus-io/egui", rev = "c2c8f34fd3679475226ea67ab060f3324d3f2357" }
 epaint = { git = "https://github.com/damus-io/egui", rev = "c2c8f34fd3679475226ea67ab060f3324d3f2357" }
 egui_kittest = { git = "https://github.com/damus-io/egui", rev = "c2c8f34fd3679475226ea67ab060f3324d3f2357" }

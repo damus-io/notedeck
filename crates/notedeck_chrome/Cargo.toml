@@ -15,6 +15,10 @@ egui_tabs = { workspace = true }
 egui_extras = { workspace = true }
 egui_nav = { workspace = true }
 egui = { workspace = true }
+# eframe's fallback fonts, which a shot's offscreen window installs as a
+# real window does
+egui_system_fonts = { workspace = true }
+image = { workspace = true }
 notedeck_columns = { workspace = true }
 notedeck_ui = { workspace = true }
 notedeck_dave = { workspace = true, optional = true }
