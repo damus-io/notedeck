@@ -1,6 +1,7 @@
-//! The CLI's help surface: one entry per command, printed two ways.
+//! The CLI's help table: one entry per command, laid out by
+//! [`cli_term::help`].
 //!
-//! `headway --help` prints the command list grouped by [`Group`] — a name and a
+//! `headway --help` prints the command list grouped by section — a name and a
 //! one-line summary each — plus the options that apply to every run. Everything
 //! command-specific lives on that command's own page, printed by `headway <cmd>
 //! --help` (or `headway help <cmd>`), so a reader looking up one command isn't
@@ -10,66 +11,33 @@
 //! up here before dispatching, so a command with no entry is rejected rather
 //! than shipping undocumented.
 
-/// The section a command is listed under in `headway --help`. Commands are
-/// printed in the order the groups are declared here.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Group {
-    Reading,
-    Cards,
-    Structure,
-    Boards,
-    Keys,
-}
+use cli_term::help::{Cli, CommandHelp};
 
-impl Group {
-    /// The groups in the order `headway --help` prints them.
-    const ALL: [Group; 5] = [
-        Group::Reading,
-        Group::Cards,
-        Group::Structure,
-        Group::Boards,
-        Group::Keys,
-    ];
+// The sections a command is listed under in `headway --help`, printed in the
+// order [`CLI`] lists them.
+const READING: &str = "READING";
+const CARDS: &str = "CARDS";
+const STRUCTURE: &str = "STRUCTURE & DEPENDENCIES";
+const BOARDS: &str = "BOARDS";
+const KEYS: &str = "KEYS";
 
-    /// The section heading.
-    fn title(self) -> &'static str {
-        match self {
-            Group::Reading => "READING",
-            Group::Cards => "CARDS",
-            Group::Structure => "STRUCTURE & DEPENDENCIES",
-            Group::Boards => "BOARDS",
-            Group::Keys => "KEYS",
-        }
-    }
-}
-
-/// One command's help: its line in the grouped list, and its own page.
-pub struct Command {
-    /// The name as typed, e.g. `move-board`.
-    pub name: &'static str,
-    pub group: Group,
-    /// One line for the command list. No trailing period.
-    pub summary: &'static str,
-    /// The usage line(s) on the command's page, without the leading `headway`.
-    pub usage: &'static [&'static str],
-    /// The body of the command's page: what it does and why, pre-wrapped to the
-    /// help column. Empty for a command the summary already covers.
-    pub details: &'static str,
-    /// The flags this command reads — only its own; the global ones stay on
-    /// `headway --help`.
-    pub options: &'static [(&'static str, &'static str)],
-    /// Full command lines, printed verbatim.
-    pub examples: &'static [&'static str],
-}
+/// The whole help surface: the table plus how the overview frames it.
+const CLI: Cli = Cli {
+    bin: "headway",
+    about: "interact with a Headway board over a running notedeck's relay",
+    groups: &[READING, CARDS, STRUCTURE, BOARDS, KEYS],
+    commands: COMMANDS,
+    global_hint: "--board, --relay, ...",
+};
 
 /// Every command the CLI accepts. Parsing rejects a name that isn't here, so an
 /// added command that's missing its entry fails loudly instead of silently
 /// shipping with no help.
-pub const COMMANDS: &[Command] = &[
+pub const COMMANDS: &[CommandHelp] = &[
     // -- reading ----------------------------------------------------------
-    Command {
+    CommandHelp {
         name: "show",
-        group: Group::Reading,
+        group: READING,
         summary: "Print the board, or given cards in full detail",
         usage: &["show [cards...]"],
         details: "\
@@ -87,9 +55,9 @@ title, description, metadata, relationships and comment thread.",
             "headway show headway:headway/report-raven-expand",
         ],
     },
-    Command {
+    CommandHelp {
         name: "next",
-        group: Group::Reading,
+        group: READING,
         summary: "Print what to work on next (the ready frontier)",
         usage: &["next [--in <container>] [--ready] [-n <k>] [-l <label>...]"],
         details: "\
@@ -138,9 +106,9 @@ persisted current board between commands.",
             "headway next --in <milestone> --label role:model -n 1",
         ],
     },
-    Command {
+    CommandHelp {
         name: "grep",
-        group: Group::Reading,
+        group: READING,
         summary: "Search card text (titles, descriptions, comments) across every board",
         usage: &["grep <pattern> [--board <b>] [--in <c>] [-i|-s] [--color <when>] [--[no-]pager]"],
         details: "\
@@ -198,9 +166,9 @@ they are neither. The pager is $HEADWAY_PAGER, else $PAGER, else
             "headway grep sealed --in headway:notedeck/saddle-because-liquid",
         ],
     },
-    Command {
+    CommandHelp {
         name: "list",
-        group: Group::Reading,
+        group: READING,
         summary: "List the cards a query matches, one row each, across every board",
         usage: &[
             "list [query...] [--board <b>] [--in <c>] [--all] [--show <props>] [--hide <props>] [--group <by>] [--sub-group <by>] [--empty] [--sort <by>] [--descending|--ascending] [--completed-by-recency] [--view <name>] [--save-view <name>] [-n <k>] [--json]",
@@ -334,9 +302,9 @@ publishes.",
             "headway list --group status --sub-group priority",
         ],
     },
-    Command {
+    CommandHelp {
         name: "diff",
-        group: Group::Reading,
+        group: READING,
         summary: "Print the commit a card's review record names, fetching it if needed",
         usage: &["diff <card> [--record <sha-prefix>]"],
         details: "\
@@ -362,9 +330,9 @@ to stdout, so the output pipes into `git apply`.",
         ],
     },
     // -- cards ------------------------------------------------------------
-    Command {
+    CommandHelp {
         name: "add",
-        group: Group::Cards,
+        group: CARDS,
         summary: "Add a card",
         usage: &["add <title...>"],
         details: "\
@@ -406,9 +374,9 @@ omitted).",
             "headway add write up the spike --desc-file - <<'EOF'\n    ## Context\n    ...\n    EOF",
         ],
     },
-    Command {
+    CommandHelp {
         name: "move",
-        group: Group::Cards,
+        group: CARDS,
         summary: "Move a card to a column",
         usage: &["move <card> --col <column>"],
         details: "",
@@ -418,18 +386,18 @@ omitted).",
         ],
         examples: &["headway move headway:headway/report-raven-expand --col in-review"],
     },
-    Command {
+    CommandHelp {
         name: "title",
-        group: Group::Cards,
+        group: CARDS,
         summary: "Edit a card's title",
         usage: &["title <card> <title...>"],
         details: "The new title is every remaining positional joined with spaces.",
         options: &[],
         examples: &["headway title headway:headway/report-raven-expand a clearer title"],
     },
-    Command {
+    CommandHelp {
         name: "desc",
-        group: Group::Cards,
+        group: CARDS,
         summary: "Edit a card's description",
         usage: &["desc <card> <text...>"],
         details: "\
@@ -439,9 +407,9 @@ time with no shell-escaping.",
         options: &[],
         examples: &["headway desc headway:headway/report-raven-expand the details"],
     },
-    Command {
+    CommandHelp {
         name: "label",
-        group: Group::Cards,
+        group: CARDS,
         summary: "Set a card's labels",
         usage: &["label <card> [labels...]"],
         details: "\
@@ -458,36 +426,36 @@ three spellings are equivalent.",
             "headway label headway:headway/report-raven-expand",
         ],
     },
-    Command {
+    CommandHelp {
         name: "priority",
-        group: Group::Cards,
+        group: CARDS,
         summary: "Set a card's priority",
         usage: &["priority <card> <none|low|medium|high|urgent>"],
         details: "",
         options: &[],
         examples: &["headway priority headway:headway/report-raven-expand high"],
     },
-    Command {
+    CommandHelp {
         name: "due",
-        group: Group::Cards,
+        group: CARDS,
         summary: "Set a card's due date",
         usage: &["due <card> <YYYY-MM-DD|none>"],
         details: "`none` clears the date.",
         options: &[],
         examples: &["headway due headway:headway/report-raven-expand 2026-10-01"],
     },
-    Command {
+    CommandHelp {
         name: "estimate",
-        group: Group::Cards,
+        group: CARDS,
         summary: "Set a card's estimate",
         usage: &["estimate <card> <points|none>"],
         details: "`none` clears the estimate.",
         options: &[],
         examples: &["headway estimate headway:headway/report-raven-expand 3"],
     },
-    Command {
+    CommandHelp {
         name: "comment",
-        group: Group::Cards,
+        group: CARDS,
         summary: "Comment on a card",
         usage: &[
             "comment <card> <text...>",
@@ -536,9 +504,9 @@ this is refused there.",
             "headway comment headway:headway/report-raven-expand --reply-to <word-id> fixed in def456",
         ],
     },
-    Command {
+    CommandHelp {
         name: "review",
-        group: Group::Cards,
+        group: CARDS,
         summary: "Record a commit for review on a card (host, path, session, explainer, deploy)",
         usage: &[
             "review <card> [--commit <rev>] [--explainer <url>] [--deploy <url>] [--agentium <ref>]",
@@ -582,27 +550,27 @@ reviewer can go straight to it. Prints the recorded fields.",
             "headway review headway:gamedev/blur-affair-manage --deploy https://example.com/builds/2866273e28a5/",
         ],
     },
-    Command {
+    CommandHelp {
         name: "delete",
-        group: Group::Cards,
+        group: CARDS,
         summary: "Remove a card (a reversible tombstone)",
         usage: &["delete <card>"],
         details: "",
         options: &[],
         examples: &["headway delete headway:headway/report-raven-expand"],
     },
-    Command {
+    CommandHelp {
         name: "archive",
-        group: Group::Cards,
+        group: CARDS,
         summary: "Archive a card off the board",
         usage: &["archive <card>"],
         details: "`show --archived` lists what's been archived; `restore` puts one back.",
         options: &[],
         examples: &["headway archive headway:headway/report-raven-expand"],
     },
-    Command {
+    CommandHelp {
         name: "restore",
-        group: Group::Cards,
+        group: CARDS,
         summary: "Restore an archived card",
         usage: &["restore <card>"],
         details: "",
@@ -610,9 +578,9 @@ reviewer can go straight to it. Prints the recorded fields.",
         examples: &["headway restore headway:headway/report-raven-expand"],
     },
     // -- structure --------------------------------------------------------
-    Command {
+    CommandHelp {
         name: "parent",
-        group: Group::Structure,
+        group: STRUCTURE,
         summary: "Make a card a subissue of another, or detach it",
         usage: &["parent <card> [parent]"],
         details: "\
@@ -624,9 +592,9 @@ With a parent, <card> becomes its subissue; with the parent omitted,
             "headway parent headway:headway/report-raven-expand",
         ],
     },
-    Command {
+    CommandHelp {
         name: "block",
-        group: Group::Structure,
+        group: STRUCTURE,
         summary: "Mark a card as blocked by another",
         usage: &["block <card> --on <blocker>", "block <card> <blocker>"],
         details: "\
@@ -642,9 +610,9 @@ The edge may cross boards. Cycles are refused.",
             "headway block headway:headway/report-raven-expand --on headway:headway/fatal-girl-note",
         ],
     },
-    Command {
+    CommandHelp {
         name: "unblock",
-        group: Group::Structure,
+        group: STRUCTURE,
         summary: "Remove a blocked-by edge",
         usage: &["unblock <card> --on <blocker>", "unblock <card> <blocker>"],
         details: "",
@@ -656,9 +624,9 @@ The edge may cross boards. Cycles are refused.",
             "headway unblock headway:headway/report-raven-expand --on headway:headway/fatal-girl-note",
         ],
     },
-    Command {
+    CommandHelp {
         name: "relate",
-        group: Group::Structure,
+        group: STRUCTURE,
         summary: "Relate two cards (an undirected \"see also\")",
         usage: &["relate <card> --to <other>", "relate <card> <other>"],
         details: "\
@@ -672,9 +640,9 @@ meaning and never affects `next`. May cross boards.",
             "headway relate headway:headway/report-raven-expand --to headway:headway/fatal-girl-note",
         ],
     },
-    Command {
+    CommandHelp {
         name: "unrelate",
-        group: Group::Structure,
+        group: STRUCTURE,
         summary: "Remove a relates edge",
         usage: &["unrelate <card> --to <other>", "unrelate <card> <other>"],
         details: "The edge is symmetric, so either endpoint can remove it.",
@@ -686,9 +654,9 @@ meaning and never affects `next`. May cross boards.",
             "headway unrelate headway:headway/report-raven-expand --to headway:headway/fatal-girl-note",
         ],
     },
-    Command {
+    CommandHelp {
         name: "seq",
-        group: Group::Structure,
+        group: STRUCTURE,
         summary: "Show or set where a card sits in a container's work-order",
         usage: &[
             "seq <card> [--in <container>]",
@@ -721,9 +689,9 @@ With one position flag, seq moves the card instead.",
         ],
     },
     // -- boards -----------------------------------------------------------
-    Command {
+    CommandHelp {
         name: "board",
-        group: Group::Boards,
+        group: BOARDS,
         summary: "List boards, or switch the persisted current board",
         usage: &["board [id]"],
         details: "\
@@ -744,9 +712,9 @@ edit.",
         options: &[],
         examples: &["headway board", "headway board dave"],
     },
-    Command {
+    CommandHelp {
         name: "seed",
-        group: Group::Boards,
+        group: BOARDS,
         summary: "Create the target board (born sealed)",
         usage: &["seed --board <slug> [--title <t>]", "seed --title <t>"],
         details: "\
@@ -768,18 +736,18 @@ than seed whichever board happens to be current.",
             "headway seed -t \"Tune Assistant\"    # seeds tune-assistant",
         ],
     },
-    Command {
+    CommandHelp {
         name: "rename",
-        group: Group::Boards,
+        group: BOARDS,
         summary: "Rename the current board's display title",
         usage: &["rename <title...>"],
         details: "The board's slug is unchanged, so existing card refs keep working.",
         options: &[],
         examples: &["headway rename --board ios-port iOS Port"],
     },
-    Command {
+    CommandHelp {
         name: "delete-board",
-        group: Group::Boards,
+        group: BOARDS,
         summary: "Delete a board you own (a reversible tombstone)",
         usage: &["delete-board <board>"],
         details: "\
@@ -792,9 +760,9 @@ current one, so a stale selection can't delete the wrong board.",
         options: &[],
         examples: &["headway delete-board scratch"],
     },
-    Command {
+    CommandHelp {
         name: "restore-board",
-        group: Group::Boards,
+        group: BOARDS,
         summary: "Bring back a deleted board",
         usage: &["restore-board <board>"],
         details: "\
@@ -803,9 +771,9 @@ board` lists deleted boards at the end so their slugs can be found.",
         options: &[],
         examples: &["headway restore-board scratch"],
     },
-    Command {
+    CommandHelp {
         name: "terminal",
-        group: Group::Boards,
+        group: BOARDS,
         summary: "Mark a column \"done\", or clear the flag",
         usage: &["terminal <col> [on|off]"],
         details: "\
@@ -818,9 +786,9 @@ definition.",
             "headway terminal in-review off --board headway",
         ],
     },
-    Command {
+    CommandHelp {
         name: "link",
-        group: Group::Boards,
+        group: BOARDS,
         summary: "Also place a card on another board (keep both)",
         usage: &["link <card> --to <board>"],
         details: "\
@@ -829,18 +797,18 @@ it isn't copied, and edits from either side are the same card's.",
         options: &[("--to <board>", "The board to place it on too. Required")],
         examples: &["headway link headway:headway/report-raven-expand --to dave"],
     },
-    Command {
+    CommandHelp {
         name: "move-board",
-        group: Group::Boards,
+        group: BOARDS,
         summary: "Move a card to another board",
         usage: &["move-board <card> --to <board>"],
         details: "Links the card onto <board> and removes it from the current one.",
         options: &[("--to <board>", "The destination board. Required")],
         examples: &["headway move-board headway:headway/report-raven-expand --to dave"],
     },
-    Command {
+    CommandHelp {
         name: "migrate",
-        group: Group::Boards,
+        group: BOARDS,
         summary: "Seal an existing board under a fresh per-board key",
         usage: &["migrate --board <id> [--dry-run]"],
         details: "\
@@ -863,9 +831,9 @@ is how you look first.",
             "headway migrate --board ios-port",
         ],
     },
-    Command {
+    CommandHelp {
         name: "share",
-        group: Group::Boards,
+        group: BOARDS,
         summary: "Make someone a member of a sealed board you own",
         usage: &["share <npub|hex> --board <id>"],
         details: "\
@@ -891,18 +859,18 @@ harmless, since the member's roster dedups by channel and board.",
         ],
     },
     // -- keys -------------------------------------------------------------
-    Command {
+    CommandHelp {
         name: "login",
-        group: Group::Keys,
+        group: KEYS,
         summary: "Store a signing key for later runs",
         usage: &["login <nsec>"],
         details: "Touches neither the cache nor a relay.",
         options: &[],
         examples: &["headway login nsec1..."],
     },
-    Command {
+    CommandHelp {
         name: "logout",
-        group: Group::Keys,
+        group: KEYS,
         summary: "Forget the stored signing key",
         usage: &["logout"],
         details: "",
@@ -913,241 +881,67 @@ harmless, since the member's roster dedups by channel and board.",
 
 /// The help entry for a command name, or `None` when the CLI has no such
 /// command.
-pub fn lookup(name: &str) -> Option<&'static Command> {
-    COMMANDS.iter().find(|c| c.name == name)
+pub fn lookup(name: &str) -> Option<&'static CommandHelp> {
+    CLI.lookup(name)
 }
-
-/// The column command names and option flags are padded to, in both help
-/// layouts. Wide enough for the longest of each (`move-board`, `-n, --count <k>`).
-const NAME_COL: usize = 18;
-
-/// The width help text wraps to, so an option's description hangs under itself
-/// rather than running off an 80-column terminal.
-const WIDTH: usize = 78;
 
 /// Print the grouped command list: `headway --help`.
 pub fn print_usage(default_relay: &str, default_board: &str) {
-    eprintln!(
-        "\
-headway — interact with a Headway board over a running notedeck's relay
-
-USAGE:
-    headway [OPTIONS] <COMMAND> [ARGS...]
-    headway <COMMAND> --help      Options and examples for one command
-"
-    );
-
-    for group in Group::ALL {
-        eprintln!("{}", group.title());
-        for cmd in COMMANDS.iter().filter(|c| c.group == group) {
-            eprintln!("    {:<width$}{}", cmd.name, cmd.summary, width = NAME_COL);
-        }
-        eprintln!();
-    }
-
-    eprintln!(
-        "\
-OPTIONS (every command):
-{opts}
+    let globals: &[(&str, &str)] = &[
+        (
+            "--board <id>",
+            &format!(
+                "Board for this run (or $HEADWAY_BOARD). Normally unnecessary — a headway:<board>/<word-id> card ref routes itself, and `headway board <id>` sets it persistently [default: {default_board}]"
+            ),
+        ),
+        (
+            "--nsec <key>",
+            "Signing key for this run, as nsec1… or a 64-char hex secret. Normally unnecessary — run `headway login` once and it's reused. $HEADWAY_NSEC, if set, takes precedence over the stored key",
+        ),
+        (
+            "--comment-nsec <key>",
+            "A second key (nsec1… or hex) that signs `comment` and nothing else, so an agent running as you has its comments attributed to itself. $HEADWAY_COMMENT_NSEC works too, and so does $HEADWAY_COMMENT_NSEC_FILE naming a file that holds it (read only when neither is set; an unreadable file is an error). The comment still seals into the board's channel with your key's access, and only sealed boards show it",
+        ),
+        (
+            "--author <pk>",
+            "Board owner whose board to read and edit (defaults to the signer, or to whoever shared a board under --board's slug with you when you have none by that name). The signer may be a member of it rather than its owner",
+        ),
+        (
+            "--relay <url>",
+            &format!("Relay URL (or $HEADWAY_RELAY) [default: {default_relay}]"),
+        ),
+        (
+            "--db <path>",
+            "nostrdb cache dir [default: <data-dir>/headway-cli]",
+        ),
+        ("-h, --help", "Print this help, or a command's own"),
+    ];
+    eprint!(
+        "{}",
+        CLI.overview(
+            globals,
+            "\
 CARD AND COLUMN ARGUMENTS:
     <card> is a word-id, a card id, or a unique short prefix (see `show`). A
     full headway:<board>/<word-id> ref also routes the command to that board,
     so no --board is needed. <col> is a column id or name (case-insensitive).
-
-Run `headway <command> --help` for that command's own options and examples.",
-        opts = options_block(&[
-            (
-                "--board <id>",
-                &format!(
-                    "Board for this run (or $HEADWAY_BOARD). Normally unnecessary — a headway:<board>/<word-id> card ref routes itself, and `headway board <id>` sets it persistently [default: {default_board}]"
-                ),
-            ),
-            (
-                "--nsec <key>",
-                "Signing key for this run, as nsec1… or a 64-char hex secret. Normally unnecessary — run `headway login` once and it's reused. $HEADWAY_NSEC, if set, takes precedence over the stored key",
-            ),
-            (
-                "--comment-nsec <key>",
-                "A second key (nsec1… or hex) that signs `comment` and nothing else, so an agent running as you has its comments attributed to itself. $HEADWAY_COMMENT_NSEC works too, and so does $HEADWAY_COMMENT_NSEC_FILE naming a file that holds it (read only when neither is set; an unreadable file is an error). The comment still seals into the board's channel with your key's access, and only sealed boards show it",
-            ),
-            (
-                "--author <pk>",
-                "Board owner whose board to read and edit (defaults to the signer, or to whoever shared a board under --board's slug with you when you have none by that name). The signer may be a member of it rather than its owner",
-            ),
-            (
-                "--relay <url>",
-                &format!("Relay URL (or $HEADWAY_RELAY) [default: {default_relay}]"),
-            ),
-            (
-                "--db <path>",
-                "nostrdb cache dir [default: <data-dir>/headway-cli]"
-            ),
-            ("-h, --help", "Print this help, or a command's own"),
-        ]),
+",
+        )
     );
 }
 
 /// Print one command's page: `headway <cmd> --help`.
-pub fn print_command(cmd: &Command) {
-    eprintln!("headway {} — {}\n", cmd.name, cmd.summary);
-
-    eprintln!("USAGE:");
-    for usage in cmd.usage {
-        eprintln!("    headway {usage}");
-    }
-
-    if !cmd.details.is_empty() {
-        eprintln!();
-        for line in cmd.details.lines() {
-            eprintln!("{line}");
-        }
-    }
-
-    if !cmd.options.is_empty() {
-        eprintln!("\nOPTIONS:");
-        eprint!("{}", options_block(cmd.options));
-    }
-
-    if !cmd.examples.is_empty() {
-        eprintln!("\nEXAMPLES:");
-        for example in cmd.examples {
-            eprintln!("    {example}");
-        }
-    }
-
-    eprintln!("\nOptions every command takes (--board, --relay, ...): headway --help");
-}
-
-/// Render `(flag, description)` pairs as an aligned, wrapped block — each line
-/// already indented and newline-terminated, so a caller can `eprint!` it as-is.
-fn options_block(options: &[(&str, &str)]) -> String {
-    let mut out = String::new();
-    for (flag, description) in options {
-        // A flag wider than the column gets its description on the next line
-        // rather than pushing the whole block out of alignment.
-        let body = wrapped(description, NAME_COL + 4);
-        if flag.len() >= NAME_COL || body.is_empty() {
-            out.push_str(&format!("    {flag}\n"));
-            out.push_str(&body);
-        } else {
-            // The first line's indent is replaced by the padded flag; the
-            // continuation lines keep theirs, so they hang under the text.
-            out.push_str(&format!("    {flag:<NAME_COL$}{}", body.trim_start()));
-        }
-    }
-    out
-}
-
-/// Wrap `text` to [`WIDTH`] columns, indenting every line by `indent` spaces.
-/// Words longer than the remaining width simply overflow — a URL is more useful
-/// unbroken than wrapped. Width is counted in characters, not bytes: the help
-/// text is full of em dashes, and measuring those as three columns each would
-/// wrap every line that holds one short.
-fn wrapped(text: &str, indent: usize) -> String {
-    let mut out = String::new();
-    let mut line = String::new();
-    let mut width = 0;
-    for word in text.split_whitespace() {
-        let word_width = word.chars().count();
-        if !line.is_empty() && indent + width + 1 + word_width > WIDTH {
-            out.push_str(&format!("{:indent$}{line}\n", ""));
-            line.clear();
-            width = 0;
-        }
-        if !line.is_empty() {
-            line.push(' ');
-            width += 1;
-        }
-        line.push_str(word);
-        width += word_width;
-    }
-    if !line.is_empty() {
-        out.push_str(&format!("{:indent$}{line}\n", ""));
-    }
-    out
+pub fn print_command(cmd: &CommandHelp) {
+    eprint!("{}", CLI.page(cmd));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Command names are unique — a duplicate would shadow its twin in
-    /// [`lookup`] and print twice in the command list.
+    /// Names are unique and every command is filed under a printed section.
     #[test]
-    fn command_names_are_unique() {
-        for (i, cmd) in COMMANDS.iter().enumerate() {
-            assert!(
-                COMMANDS[..i].iter().all(|c| c.name != cmd.name),
-                "duplicate help entry for '{}'",
-                cmd.name
-            );
-        }
-    }
-
-    /// Every command belongs to a group that's actually printed, so no entry can
-    /// go missing from `headway --help` by being filed under a section the list
-    /// doesn't walk.
-    #[test]
-    fn every_command_is_printed() {
-        let listed: usize = Group::ALL
-            .iter()
-            .map(|g| COMMANDS.iter().filter(|c| c.group == *g).count())
-            .sum();
-        assert_eq!(listed, COMMANDS.len());
-    }
-
-    /// Wrapping breaks at the help width and indents continuation lines.
-    #[test]
-    fn wrapping_indents_and_fits() {
-        let text = "one two three four five six seven eight nine ten eleven twelve \
-                    thirteen fourteen fifteen sixteen";
-        let out = wrapped(text, 8);
-        for line in out.lines() {
-            assert!(line.starts_with("        "), "not indented: {line:?}");
-            let width = line.chars().count();
-            assert!(width <= WIDTH, "too wide ({width}): {line:?}");
-        }
-        // Em dashes are one column each, not three: a line full of them must
-        // still fill out to the wrap width rather than breaking early.
-        let dashes = "— ".repeat(40);
-        let dashed = wrapped(dashes.trim(), 4);
-        let first = dashed.lines().next().unwrap();
-        assert!(
-            first.chars().count() > WIDTH - 2,
-            "wrapped short on em dashes: {first:?}"
-        );
-
-        // No word is lost or duplicated.
-        assert_eq!(
-            out.split_whitespace().collect::<Vec<_>>(),
-            text.split_whitespace().collect::<Vec<_>>()
-        );
-    }
-
-    /// An option block lines descriptions up under the same column, and a flag
-    /// too wide for it drops its description to the next line instead.
-    #[test]
-    fn option_block_alignment() {
-        let out = options_block(&[("--col <c>", "a column"), ("-n, --count <k>", "a cap")]);
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 2);
-        for (line, (flag, text)) in lines
-            .iter()
-            .zip([("--col <c>", "a column"), ("-n, --count <k>", "a cap")])
-        {
-            assert!(line.starts_with(&format!("    {flag}")), "{line:?}");
-            assert_eq!(
-                &line[NAME_COL + 4..],
-                text,
-                "description off column: {line:?}"
-            );
-        }
-
-        // A flag wider than the column keeps the block aligned by dropping its
-        // description to the next line.
-        let wide = options_block(&[("--a-very-long-flag-name <value>", "a description")]);
-        let lines: Vec<&str> = wide.lines().collect();
-        assert_eq!(lines[0], "    --a-very-long-flag-name <value>");
-        assert_eq!(lines[1], format!("{:NAME_COL$}    a description", ""));
+    fn help_table_is_consistent() {
+        CLI.check().unwrap();
     }
 }

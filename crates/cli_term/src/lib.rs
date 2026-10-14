@@ -4,10 +4,14 @@
 //! `agentium grep` rather than carrying a drifting copy: the `--color` and
 //! `--pager`/`--no-pager` modes and how they resolve against a terminal, the
 //! pager itself ([`emit`]), SGR painting ([`paint`]), and the smart-case
-//! pattern compilation and match highlighting behind `grep`.
+//! pattern compilation and match highlighting behind `grep`. The [`help`]
+//! module holds the per-command help table and its printer, so each CLI's
+//! `--help` pages share one layout.
 //!
 //! Std plus `regex` only, so a CLI can depend on it without pulling in any of
 //! the other's machinery.
+
+pub mod help;
 
 use regex::Regex;
 
