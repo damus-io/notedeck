@@ -375,9 +375,6 @@ impl Dave {
                 SessionListAction::ToggleCwdCollapse(hostname, cwd) => {
                     self.toggle_cwd_collapse(&hostname, &cwd);
                 }
-                SessionListAction::ToggleChainCollapse(hostname, key) => {
-                    self.toggle_chain_collapse(&hostname, &key);
-                }
                 SessionListAction::NewSessionInCwd(hostname, cwd) => {
                     let target_host = if hostname.is_empty() {
                         None
@@ -479,9 +476,6 @@ impl Dave {
                 }
                 SessionListAction::ToggleCwdCollapse(hostname, cwd) => {
                     self.toggle_cwd_collapse(&hostname, &cwd);
-                }
-                SessionListAction::ToggleChainCollapse(hostname, key) => {
-                    self.toggle_chain_collapse(&hostname, &key);
                 }
                 SessionListAction::NewSessionInCwd(hostname, cwd) => {
                     let target_host = if hostname.is_empty() {

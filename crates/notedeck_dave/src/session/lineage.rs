@@ -70,11 +70,6 @@ pub struct Place {
 /// A chain's part of an [`Entry`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChainShape {
-    /// How many links the chain has.
-    pub links: usize,
-    /// Where in [`Entry::ids`] the last link starts. It and what nests under
-    /// it stay visible while the chain is collapsed.
-    pub tail: usize,
     /// The card every link's card is a subissue of, when one is known.
     pub epic: Option<String>,
 }
@@ -315,16 +310,10 @@ fn entry(
     }
 
     // A chain: walk its links depth-first, oldest successor first.
-    let mut chain = ChainShape {
-        links: 0,
-        tail: 0,
-        epic: None,
-    };
+    let mut chain = ChainShape { epic: None };
     let mut stack = vec![root];
     while let Some(link) = stack.pop() {
         let handed_on = links_of(link).next().is_some();
-        chain.links += 1;
-        chain.tail = out.ids.len();
         out.anchor = link;
         if chain.epic.is_none() {
             chain.epic = nodes
@@ -568,9 +557,7 @@ mod tests {
         let e = entries(&[n4, n3, sub, n2, n1]);
         assert_eq!(e.len(), 1);
         let chain = e[0].chain.as_ref().expect("a chain");
-        assert_eq!(chain.links, 4);
         assert_eq!(chain.epic.as_deref(), Some(EPIC));
-        assert_eq!(chain.tail, 4);
         assert_eq!(e[0].anchor, 4);
         let done = Nesting::Link { handed_on: true };
         assert_eq!(

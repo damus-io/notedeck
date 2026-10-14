@@ -9,12 +9,11 @@
 //! [`REFRESH_SECS`] and draws from the text kept here.
 //!
 //! Each lookup also keeps the card's [`Outline`]: its parent card, which
-//! groups a successor chain under its epic, and how many of its subissues
-//! are done, which the chain's header counts.
+//! groups a successor chain under its epic.
 
 use std::collections::HashMap;
 
-use notedeck::{Outline, Progress};
+use notedeck::Outline;
 
 /// How long a looked-up title is drawn before it is looked up again, so a
 /// card renamed on its board shows in the list within this many seconds.
@@ -60,16 +59,9 @@ impl CardTitles {
             .as_deref()
     }
 
-    /// How many of `card_ref`'s subissues were done, of how many, as last
-    /// looked up; `None` for a card with none.
-    pub fn parts(&self, card_ref: &str) -> Option<Progress> {
-        self.by_ref.get(card_ref)?.outline.as_ref()?.parts
-    }
-
     /// Record a lookup of `card_ref` made at `now`. Returns whether it found
     /// anything other than what was kept, so the caller regroups: a card's
-    /// parent links successor chains, and an epic's title and progress head
-    /// them (see
+    /// parent links successor chains (see
     /// [`SessionManager::lineage_changed`](crate::session::SessionManager::lineage_changed)).
     pub fn store(&mut self, card_ref: &str, lookup: CardLookup, now: f64) -> bool {
         let CardLookup { title, outline } = lookup;

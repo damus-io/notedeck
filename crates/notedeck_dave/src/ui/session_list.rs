@@ -30,9 +30,6 @@ pub enum SessionListAction {
     ToggleHostCollapse(String),
     ToggleProjectCollapse(String, PathBuf),
     ToggleCwdCollapse(String, PathBuf),
-    /// Collapse or expand a successor chain: its host and
-    /// [`ChainSpan::key`](crate::session::ChainSpan::key).
-    ToggleChainCollapse(String, String),
     NewSessionInCwd(String, PathBuf),
 }
 
@@ -1535,8 +1532,6 @@ enum HeaderIcon {
     Folder,
     /// A git-branch glyph for a workspace (worktree/cwd) section.
     Worktree,
-    /// Two links of a chain, for a successor chain's block.
-    Chain,
 }
 
 impl HeaderIcon {
@@ -1558,7 +1553,7 @@ impl HeaderIcon {
                     egui::vec2(s, s * 0.8),
                 )
             }
-            HeaderIcon::Worktree | HeaderIcon::Chain => {
+            HeaderIcon::Worktree => {
                 let s = 12.0;
                 egui::Rect::from_min_size(
                     egui::pos2(left, rect.center().y - s / 2.0),
@@ -1574,7 +1569,6 @@ impl HeaderIcon {
             HeaderIcon::Host => paint_host_icon(painter, rect, color),
             HeaderIcon::Folder => paint_folder_icon(painter, rect, color),
             HeaderIcon::Worktree => paint_worktree_icon(painter, rect, color),
-            HeaderIcon::Chain => paint_chain_icon(painter, rect, color),
         }
     }
 }
@@ -1905,7 +1899,6 @@ fn cwd_folder_ui(
         if let Some(a) = workspace_rows_ui(
             ui,
             list_ui,
-            hostname,
             cwd_group,
             &mut RowWalk {
                 visual_index,
@@ -1960,7 +1953,6 @@ const NEST_INDENT: f32 = 14.0;
 fn workspace_rows_ui(
     ui: &mut egui::Ui,
     list_ui: &SessionListUi<'_, '_>,
-    hostname: &str,
     group: &crate::session::CwdGroup,
     walk: &mut RowWalk<'_>,
 ) -> Option<SessionListAction> {
@@ -1968,7 +1960,7 @@ fn workspace_rows_ui(
     let mut start = 0;
     while start < group.session_ids.len() {
         if let Some(chain) = group.chain_at(start) {
-            let a = chain_ui(ui, list_ui, hostname, group, chain, walk);
+            let a = chain_ui(ui, list_ui, group, chain, walk);
             action = a.or(action);
             start = chain.end;
             continue;
@@ -2026,41 +2018,18 @@ fn lineage_row_ui(
         .inner
 }
 
-/// Draw a successor chain: a collapsible header reading
-/// [`ChainSpan::label`](crate::session::ChainSpan::label), then its links in
-/// order, flush with the rows around them and sharing one status bar (see
-/// [`ChainBar`]), each with what nests under it. Links that handed
-/// their work on are dimmed. Collapsed, only the last link shows, so the live
-/// one stays a click away.
+/// Draw a successor chain: its links in order, flush with the rows around
+/// them and sharing one status bar (see [`ChainBar`]), which marks them as
+/// one block, each with what nests under it. Links that handed their work on
+/// are dimmed.
 fn chain_ui(
     ui: &mut egui::Ui,
     list_ui: &SessionListUi<'_, '_>,
-    hostname: &str,
     group: &crate::session::CwdGroup,
     chain: &crate::session::ChainSpan,
     walk: &mut RowWalk<'_>,
 ) -> Option<SessionListAction> {
-    let collapsed = list_ui
-        .collapse_state
-        .is_chain_collapsed(hostname, &chain.key);
-    let header = collapsible_header_ui(
-        ui,
-        HeaderParams {
-            text: &chain.label,
-            font: egui::FontId::monospace(10.0),
-            color: HeaderColor::Weak,
-            icon: HeaderIcon::Chain,
-            height: 20.0,
-            truncate_from_start: false,
-            git_lines: None,
-        },
-        if collapsed { 0.0 } else { 1.0 },
-    );
-    let mut action = header
-        .clicked()
-        .then(|| SessionListAction::ToggleChainCollapse(hostname.to_owned(), chain.key.clone()));
-
-    let from = if collapsed { chain.tail } else { chain.start };
+    let mut action = None;
     let x = ui.cursor().left() + BAR_LEFT;
     let gap = ui.spacing().item_spacing.y;
     let mut bar = ChainBar {
@@ -2068,9 +2037,9 @@ fn chain_ui(
         open: None,
         pending: None,
     };
-    for (&id, row) in group.session_ids[from..chain.end]
+    for (&id, row) in group.session_ids[chain.start..chain.end]
         .iter()
-        .zip(&group.rows[from..chain.end])
+        .zip(&group.rows[chain.start..chain.end])
     {
         let top = ui.cursor().top();
         if let Nesting::Link { handed_on } = row.place.nesting {
@@ -2214,21 +2183,6 @@ impl ChainBar {
 enum CapEnd {
     Top,
     Bottom,
-}
-
-/// Paint two links of a chain inside `rect`: two rounded outlines, the
-/// second overlapping the first diagonally.
-fn paint_chain_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
-    let stroke = egui::Stroke::new(1.3, color);
-    let link = egui::vec2(rect.width() * 0.62, rect.height() * 0.38);
-    let first = egui::Rect::from_min_size(rect.left_top() + egui::vec2(0.0, 1.0), link);
-    let second = egui::Rect::from_min_size(
-        egui::pos2(rect.right() - link.x, rect.bottom() - link.y - 1.0),
-        link,
-    );
-    for r in [first, second] {
-        painter.rect_stroke(r, link.y / 2.0, stroke, egui::StrokeKind::Middle);
-    }
 }
 
 /// Paint a small git-branch (worktree) glyph inside `rect`: a trunk with two
@@ -2920,10 +2874,7 @@ mod tests {
     }
 
     /// The epic a [`lineage_sessions`] chain's cards are subissues of.
-    const EPIC: (&str, &str) = (
-        "headway:dave/subway-unusual-any",
-        "SM: scene map — hosts, projects and worktrees, with session lineage",
-    );
+    const EPIC: &str = "headway:dave/subway-unusual-any";
 
     /// The chain's four cards, all subissues of [`EPIC`].
     const CHAIN: [(&str, &str); 4] = [
@@ -3028,24 +2979,16 @@ mod tests {
         spawn(&mut sm, links[2], links[1], SessionRelation::None);
         spawn(&mut sm, links[3], links[2], SessionRelation::Successor);
 
-        let outline = |parent: Option<&str>, parts| {
-            Some(notedeck::Outline {
-                parent: parent.map(str::to_owned),
-                parts,
-            })
-        };
         for (card_ref, title) in CHAIN {
             let lookup = crate::card_titles::CardLookup {
                 title: Some(title.to_owned()),
-                outline: outline(Some(EPIC.0), None),
+                outline: Some(notedeck::Outline {
+                    parent: Some(EPIC.to_owned()),
+                    parts: None,
+                }),
             };
             sm.card_titles.store(card_ref, lookup, 0.0);
         }
-        let epic = crate::card_titles::CardLookup {
-            title: Some(EPIC.1.to_owned()),
-            outline: outline(None, Some(notedeck::Progress { done: 3, total: 13 })),
-        };
-        sm.card_titles.store(EPIC.0, epic, 0.0);
         sm.rebuild_groups();
         let ids = Lineage {
             parent,
@@ -3066,11 +3009,11 @@ mod tests {
     /// get no row at all, and the chain's links follow one another in one
     /// run; Ctrl+J / K walks them in that order. The first link ran in
     /// another worktree, so it stays in that worktree's folder rather than
-    /// joining the chain. Collapsed, the chain keeps only its last link.
+    /// joining the chain.
     #[test]
-    fn lineage_nests_in_visual_order_and_a_collapsed_chain_keeps_its_last_link() {
+    fn lineage_nests_in_visual_order() {
         let LineageFixture { mut sm, ids } = lineage_sessions();
-        let mut collapse = CollapseState::new();
+        let collapse = CollapseState::new();
         let chain = &ids.links;
         let expanded = [
             chain[0], chain[1], chain[2], chain[3], ids.parent, ids.child,
@@ -3091,20 +3034,14 @@ mod tests {
         let group = &groups[1];
         assert_eq!(group.display_cwd, "~/notedeck-scene");
         let span = &group.chains[0];
-        assert_eq!(span.label, "chain · SM · 3/13");
-        assert_eq!((span.start, span.tail, span.end), (0, 2, 3));
+        assert_eq!((span.start, span.end), (0, 3));
         assert!(group.rows.iter().all(|r| r.elsewhere.is_none()));
-
-        collapse.toggle_chain("", &span.key);
-        let collapsed = sm.visual_order(&collapse);
-        assert_eq!(collapsed[..2], [chain[0], chain[3]]);
-        assert_eq!(collapsed.len(), expanded.len() - 2);
     }
 
     /// The lineage list: a parent with a child session under it (its two
-    /// subagents draw no rows), and a three-link chain headed
-    /// `chain · SM · 3/13`, its handed-on links dimmed and flush with the
-    /// rows around them on one status bar that changes colour link to link. The chain's first
+    /// subagents draw no rows), and a three-link chain, its handed-on links
+    /// dimmed and flush with the rows around them on one status bar that
+    /// changes colour link to link. The chain's first
     /// link ran in another worktree and is listed in that folder.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
@@ -3122,30 +3059,6 @@ mod tests {
             );
         harness.run();
         harness.snapshot("session_list_lineage");
-    }
-
-    /// The chain collapsed to its live link.
-    #[test]
-    #[ignore] // requires lavapipe — run via scripts/snapshot-test
-    fn snapshot_lineage_chain_collapsed() {
-        let mut sm = lineage_sessions().sm;
-        let mut collapse_state = CollapseState::new();
-        let key = sm.host_groups()[0].project_groups[0].cwd_groups[1].chains[0]
-            .key
-            .clone();
-        collapse_state.toggle_chain("", &key);
-        let mut harness = Harness::builder()
-            .with_size(egui::Vec2::new(300.0, 400.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui_state(
-                move |ui, sm: &mut SessionManager| {
-                    let focus_queue = FocusQueue::new();
-                    SessionListUi::new(sm, &focus_queue, &collapse_state, false).ui(ui);
-                },
-                sm,
-            );
-        harness.run();
-        harness.snapshot("session_list_lineage_chain_collapsed");
     }
 
     /// State for [`a_ref_title_draws_its_chip_and_a_chip_click_switches_to_the_row`]: a

@@ -1577,17 +1577,8 @@ pub struct ListRow {
 pub struct ChainSpan {
     /// Index of the first link in [`CwdGroup::session_ids`].
     pub start: usize,
-    /// Index of the last link, which stays visible while the chain is
-    /// collapsed, along with what nests under it.
-    pub tail: usize,
     /// One past the chain's last row.
     pub end: usize,
-    /// `chain · <epic code> · <done>/<total>`, or with the link count when
-    /// the epic's progress isn't known.
-    pub label: String,
-    /// Stable across restarts: the first link's event id. Collapse state is
-    /// kept under it.
-    pub key: String,
 }
 
 impl CwdGroup {
@@ -1626,16 +1617,7 @@ fn push_visible_cwd(
     if collapsible && collapse.is_cwd_collapsed(hostname, &cwd_group.cwd) {
         return;
     }
-    // A collapsed chain keeps only its last link (and what nests under it).
-    let mut from = 0;
-    for chain in &cwd_group.chains {
-        if !collapse.is_chain_collapsed(hostname, &chain.key) {
-            continue;
-        }
-        ids.extend_from_slice(&cwd_group.session_ids[from..chain.start]);
-        from = chain.tail;
-    }
-    ids.extend_from_slice(&cwd_group.session_ids[from..]);
+    ids.extend_from_slice(&cwd_group.session_ids);
 }
 
 /// How a session's cwd reads in the list: home-abbreviated, or
@@ -1662,7 +1644,6 @@ fn expand_entry(
     hostname: &str,
     entry: lineage::Entry,
     sessions: &HashMap<SessionId, ChatSession>,
-    titles: &crate::card_titles::CardTitles,
 ) {
     let start = group.session_ids.len();
     for (&id, &place) in entry.ids.iter().zip(&entry.places) {
@@ -1683,52 +1664,13 @@ fn expand_entry(
         group.session_ids.push(id);
         group.rows.push(ListRow { place, elsewhere });
     }
-    let Some(chain) = entry.chain else {
+    if entry.chain.is_none() {
         return;
-    };
-    let first = sessions.get(&entry.ids[0]);
+    }
     group.chains.push(ChainSpan {
         start,
-        tail: start + chain.tail,
         end: group.session_ids.len(),
-        label: chain_label(&chain, first, titles),
-        key: first.and_then(|s| s.agentic.as_ref()).map_or_else(
-            || entry.ids[0].to_string(),
-            |a| a.event_session_id().to_owned(),
-        ),
     });
-}
-
-/// A chain's header text (see [`ChainSpan::label`]): its epic's code, else
-/// its first link's card code, then the epic's done/total subissues, else
-/// how many links it has.
-fn chain_label(
-    chain: &lineage::ChainShape,
-    first: Option<&ChatSession>,
-    titles: &crate::card_titles::CardTitles,
-) -> String {
-    use std::fmt::Write;
-    let code_of = |card: &str| {
-        let title = titles.get(card)?;
-        headway::title::TitleParts::split(title).code
-    };
-    let epic = chain.epic.as_deref();
-    let code = epic
-        .and_then(code_of)
-        .or_else(|| first.and_then(|s| s.details.card_ref()).and_then(code_of));
-    let mut label = String::from("chain");
-    if let Some(code) = code {
-        let _ = write!(label, " · {code}");
-    }
-    match epic.and_then(|e| titles.parts(e)) {
-        Some(parts) => {
-            let _ = write!(label, " · {}/{}", parts.done, parts.total);
-        }
-        None => {
-            let _ = write!(label, " · {} links", chain.links);
-        }
-    }
-    label
 }
 
 impl Default for SessionManager {
@@ -2217,13 +2159,7 @@ impl SessionManager {
                         let Some(entry) = entries.remove(&anchor) else {
                             continue;
                         };
-                        expand_entry(
-                            cwd_group,
-                            &host_group.hostname,
-                            entry,
-                            &self.sessions,
-                            titles,
-                        );
+                        expand_entry(cwd_group, &host_group.hostname, entry, &self.sessions);
                     }
                 }
             }
