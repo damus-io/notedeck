@@ -107,6 +107,17 @@ impl BlockNav {
         self.row_armed = self.seek_row_this_frame == Some(row);
     }
 
+    /// Tell the registry the transcript is about to draw a fold standing for
+    /// chat `rows`, and return whether a [`seek_row`](Self::seek_row) names
+    /// one of them. The fold's own header never takes such a seek: the fold
+    /// opens instead, and the row's own block takes it as it draws, from its
+    /// [`enter_row`](Self::enter_row).
+    pub fn enter_fold(&mut self, rows: std::ops::Range<usize>) -> bool {
+        self.row_armed = false;
+        self.seek_row_this_frame
+            .is_some_and(|row| rows.contains(&row))
+    }
+
     /// Record a collapsible block at its position in the transcript and hand
     /// back everything the row needs to draw itself: its expanded state, and
     /// whether it is the cursor (and so highlights, and maybe scrolls in).

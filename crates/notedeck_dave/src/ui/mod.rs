@@ -23,6 +23,7 @@ mod settings;
 mod slash_popup;
 mod square_loading_spinner;
 pub mod task_list;
+mod tool_fold;
 mod top_buttons;
 pub mod worktree_creator;
 
@@ -4233,6 +4234,135 @@ mod tests {
         harness.snapshot("session_background_stop");
     }
 
+    /// Click the middle of the row labelled `label`, far to its right, where
+    /// only a whole-line hit target would catch it.
+    fn click_row(harness: &mut Harness<'static, SessionViewState>, label: &str) {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let bounds = harness
+            .get_by_label(label)
+            .accesskit_node()
+            .raw_bounds()
+            .expect("row label bounds");
+        let pos = egui::pos2(
+            bounds.x1 as f32 + 40.0,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            harness.input_mut().events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        harness.step();
+        harness.run_ok();
+    }
+
+    /// Two calls, a failed one and a third, between two replies.
+    fn seed_tool_run(state: &mut SessionViewState) {
+        use crate::messages::{AssistantMessage, ExecutedTool};
+        use crate::Message;
+        let say = |text: &str| Message::Assistant(AssistantMessage::from_text(text.into()));
+        let bash = |command: &str, description: &str, is_error: bool| {
+            Message::ToolResponse(agentium_core::tools::ToolResponse::executed_tool(
+                ExecutedTool {
+                    tool_name: "Bash".into(),
+                    summary: format!("`{command}`"),
+                    output: Some("ok\n".into()),
+                    parent_task_id: None,
+                    file_update: None,
+                    tool_use_id: None,
+                    description: Some(description.into()),
+                    is_error,
+                },
+            ))
+        };
+        let session = state.session_manager.get_active_mut().unwrap();
+        session.replace_chat(vec![
+            say("Looking around."),
+            bash("ls crates", "List the crates", false),
+            bash("cat Cargo.toml", "Read the manifest", false),
+            bash("cargo check", "Check the build", true),
+            bash("git status", "Show the tree", false),
+            say("Done."),
+        ]);
+    }
+
+    /// A run of calls draws as one folded line counting and naming them; a
+    /// failed call breaks out of it, splitting the run; a click on the line
+    /// unfolds it into the calls' own rows.
+    #[test]
+    fn a_run_of_tool_calls_folds_into_one_line() {
+        let mut harness = session_view_harness(egui::vec2(900.0, 600.0));
+        seed_tool_run(harness.state_mut());
+        harness.run_ok();
+
+        assert_eq!(count_labels(&harness, "2 tools"), 1);
+        assert_eq!(
+            count_labels(&harness, "· List the crates, Read the manifest"),
+            1
+        );
+        assert_eq!(count_labels(&harness, "1 tool"), 1);
+        // Only the failed call draws a row of its own.
+        assert_eq!(count_labels(&harness, "Bash"), 1);
+        assert_eq!(count_labels(&harness, "`cargo check`"), 1);
+
+        click_row(&mut harness, "2 tools");
+        assert_eq!(count_labels(&harness, "Bash"), 3);
+        assert_eq!(count_labels(&harness, "`cat Cargo.toml`"), 1);
+    }
+
+    /// [`seed_tool_run`] with its first fold open: the folded line, the two
+    /// calls' own rows under it, then the failed call broken out in the error
+    /// colour and the last call folded on its own. Render with
+    /// `scripts/snapshot-test -p=notedeck_dave snapshot_tool_fold_open`.
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_tool_fold_open() {
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(700.0, 900.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(render_session_view, session_view_state());
+        seed_tool_run(harness.state_mut());
+        harness.run_ok();
+        click_row(&mut harness, "2 tools");
+        harness.snapshot("tool_fold_open");
+    }
+
+    /// A jump to a call hidden in a fold (the Outputs card's) opens the fold,
+    /// so the call's row draws and takes the cursor.
+    #[test]
+    fn a_jump_into_a_fold_opens_it() {
+        let mut harness = session_view_harness(egui::vec2(900.0, 600.0));
+        seed_tool_run(harness.state_mut());
+        harness.run_ok();
+        assert_eq!(count_labels(&harness, "`cat Cargo.toml`"), 0);
+
+        let session = harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap();
+        session.block_nav.seek_row(2);
+        harness.run_ok();
+
+        assert_eq!(count_labels(&harness, "`cat Cargo.toml`"), 1);
+        let nav = &harness
+            .state()
+            .session_manager
+            .get_active()
+            .unwrap()
+            .block_nav;
+        // The fold is block 0 and the first call block 1: the cursor is on
+        // the second call, not the fold.
+        assert_eq!(nav.cursor(), Some(2));
+    }
+
     /// A long agentic turn, shaped like the one jb55 found messy
     /// (headway:dave/account-lucky-impose): replies with inline code and a
     /// list, runs of Bash rows whose commands carry long `cd` prefixes, a
@@ -4242,7 +4372,7 @@ mod tests {
         use crate::Message;
 
         let say = |text: &str| Message::Assistant(AssistantMessage::from_text(text.into()));
-        let bash = |command: &str, output: &str| {
+        let described = |command: &str, description: Option<&str>, output: &str| {
             Message::ToolResponse(agentium_core::tools::ToolResponse::executed_tool(
                 ExecutedTool {
                     tool_name: "Bash".into(),
@@ -4251,11 +4381,13 @@ mod tests {
                     parent_task_id: None,
                     file_update: None,
                     tool_use_id: None,
-                    description: None,
+                    description: description.map(Into::into),
                     is_error: false,
                 },
             ))
         };
+        // Recorded before descriptions were: the fold falls back to the command.
+        let bash = |command: &str, output: &str| described(command, None, output);
         let scratch = "/private/tmp/claude-501/-Users-jb55-dev-notedeck/2c06a45d-120a-4d50-a171-446084ab8f73/scratchpad";
         let lines = |n: usize| (1..=n).map(|i| format!("line {i}\n")).collect::<String>();
         let session = state.session_manager.get_active_mut().unwrap();
@@ -4264,11 +4396,11 @@ mod tests {
             bash(&format!("cd {scratch} && cat > probe2.py <<'EOF'…"), &lines(8)),
             say("The CLI does send a synthetic assistant message for both. Checking what's inside it."),
             bash(&format!("cd {scratch} && sed -i 's/s\\[:260\\]/s[:260] if m.get(\"type\")/' probe2.py && python3 probe2.py"), &lines(3)),
-            bash("cd /Users/jb55/dev/notedeck/crates/notedeck_dave && grep -n \"Message::System\" src/ui/dave.rs src/session.rs src/conversation.rs", &lines(12)),
-            bash("sed -n 835,870p src/ui/dave.rs", &lines(36)),
+            described("cd /Users/jb55/dev/notedeck/crates/notedeck_dave && grep -n \"Message::System\" src/ui/dave.rs src/session.rs src/conversation.rs", Some("Find where System rows render"), &lines(12)),
+            described("sed -n 835,870p src/ui/dave.rs", Some("Read the chat loop"), &lines(36)),
             say("`Message::System` rows are simply never drawn, so every reply and every `/cd`-style notice was invisible. Filing a card, then fixing it."),
             Message::User("you can just fix it in the notedeck-headway worktree".into()),
-            bash("git worktree list", &lines(10)),
+            described("git worktree list", Some("List worktrees"), &lines(10)),
             Message::ToolResponse(agentium_core::tools::ToolResponse::executed_tool(ExecutedTool {
                 tool_name: "Skill".into(),
                 summary: "handoff autowork fix headway:dave/repeat-garage-liberty — slash command replies are never drawn".into(),

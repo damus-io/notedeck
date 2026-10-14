@@ -11,6 +11,7 @@ use super::query_ui::query_call_ui;
 use super::run_ui;
 use super::session_list::{title_with_refs_ui, TitleRefs};
 use super::square_loading_spinner::SquareLoadingSpinner;
+use super::tool_fold;
 use super::top_buttons::top_buttons_ui;
 use crate::{
     backend::BackendType,
@@ -819,14 +820,31 @@ impl<'a> DaveUi<'a> {
             self.turn_has_content,
         );
 
+        let live = self.flags.contains(DaveUiFlags::IsWorking);
         let mut prev_group = None;
+        // Rows before this were drawn by a fold that stands for them.
+        let mut folded_until = 0;
         for (i, message) in self.chat.iter().enumerate() {
-            self.nav.enter_row(i);
-            let group = row_group(message, is_agentic);
+            if i < folded_until {
+                continue;
+            }
+            let run = is_agentic
+                .then(|| tool_fold::tool_run(self.chat, i, live))
+                .flatten();
+            let group = match run {
+                Some(_) => Some(RowGroup::Tool),
+                None => row_group(message, is_agentic),
+            };
             if let (Some(prev), Some(next)) = (prev_group, group) {
                 ui.add_space(row_gap(prev, next));
             }
             prev_group = group.or(prev_group);
+            if let Some(run) = run {
+                folded_until = run.rows.end;
+                Self::tool_fold_ui(self.chat, run, self.nav, ui);
+                continue;
+            }
+            self.nav.enter_row(i);
             match message {
                 Message::Error(err) => {
                     self.error_chat(ctx.i18n, err, ui);
@@ -1425,10 +1443,14 @@ impl<'a> DaveUi<'a> {
     /// `line_count` is `Some` for a result carrying free-form output: the row
     /// ends `· 523 lines` so its size shows even while collapsed. The summary
     /// truncates to leave room for it.
+    ///
+    /// `failed` draws the tool's name in the error colour: a call that failed
+    /// breaks out of its run's fold, and this is what says why.
     fn exec_tool_header_ui(
         tool_name: &str,
         summary: &str,
         line_count: Option<usize>,
+        failed: bool,
         disclosure: Option<Disclosure>,
         ui: &mut egui::Ui,
     ) -> egui::Response {
@@ -1446,10 +1468,15 @@ impl<'a> DaveUi<'a> {
                         .color(ui.visuals().text_color().gamma_multiply(0.5)),
                 ));
             }
+            let name_color = if failed {
+                ui.visuals().error_fg_color
+            } else {
+                ui.visuals().text_color().gamma_multiply(0.6)
+            };
             ui.add(egui::Label::new(
                 egui::RichText::new(tool_name)
                     .size(11.0)
-                    .color(ui.visuals().text_color().gamma_multiply(0.6))
+                    .color(name_color)
                     .monospace(),
             ));
             // Lay the size out first so the summary knows how much room to
@@ -1753,6 +1780,60 @@ impl<'a> DaveUi<'a> {
         });
     }
 
+    /// Draw a [`tool_fold::ToolRun`]: one quiet line counting and naming its
+    /// calls, a block the cursor can land on, folded by default. Unfolded,
+    /// it shows each call's own row beneath it.
+    fn tool_fold_ui(
+        chat: &[Message],
+        run: tool_fold::ToolRun,
+        nav: &mut BlockNav,
+        ui: &mut egui::Ui,
+    ) {
+        let expand_id = ui.scope_id().with("tool_fold").with(run.rows.start);
+        // A jump to a call inside the fold opens it, so the call's own row
+        // draws and takes the cursor.
+        if nav.enter_fold(run.rows.clone()) {
+            ui.data_mut(|d| d.insert_temp(expand_id, true));
+        }
+        let block = nav.register(expand_id, false, ui);
+
+        let mut label = String::from("· ");
+        tool_fold::label(tool_fold::members(chat, run.rows.clone()), &mut label);
+        let header_resp = Self::exec_tool_header_ui(
+            &tool_fold::count_text(run.calls),
+            &label,
+            None,
+            false,
+            Some(Disclosure {
+                click_id: expand_id.with("header_click"),
+                expanded: block.expanded,
+                is_cursor: block.is_cursor,
+            }),
+            ui,
+        );
+        if block.scroll_into_view {
+            header_resp.scroll_to_me(Some(egui::Align::Center));
+        }
+        if header_resp.clicked() {
+            ui.data_mut(|d| d.insert_temp(expand_id, !block.expanded));
+        }
+        if !block.expanded {
+            return;
+        }
+        ui.indent(expand_id.with("rows"), |ui| {
+            for row in run.rows {
+                let Message::ToolResponse(response) = &chat[row] else {
+                    continue;
+                };
+                let ToolResponses::ExecutedTool(result) = response.responses() else {
+                    continue;
+                };
+                nav.enter_row(row);
+                Self::executed_tool_ui(result, nav, ui);
+            }
+        });
+    }
+
     fn executed_tool_ui(result: &ExecutedTool, nav: &mut BlockNav, ui: &mut egui::Ui) {
         if let Some(file_update) = &result.file_update {
             // File edit with diff — expanded by default regardless of size. In
@@ -1766,6 +1847,7 @@ impl<'a> DaveUi<'a> {
                 &result.tool_name,
                 &result.summary,
                 None,
+                result.is_error,
                 Some(Disclosure {
                     click_id: expand_id.with("header_click"),
                     expanded: block.expanded,
@@ -1798,6 +1880,7 @@ impl<'a> DaveUi<'a> {
                 &result.tool_name,
                 &result.summary,
                 Some(output.line_count()),
+                result.is_error,
                 Some(Disclosure {
                     click_id: expand_id.with("header_click"),
                     expanded: block.expanded,
@@ -1831,7 +1914,14 @@ impl<'a> DaveUi<'a> {
             }
         } else {
             // Compact single-line display with subdued styling
-            Self::exec_tool_header_ui(&result.tool_name, &result.summary, None, None, ui);
+            Self::exec_tool_header_ui(
+                &result.tool_name,
+                &result.summary,
+                None,
+                result.is_error,
+                None,
+                ui,
+            );
         }
     }
 
