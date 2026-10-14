@@ -1,5 +1,6 @@
 # Headway's UI tools are one enum, as Dave's are
 
+Card: headway:notedeck/dawn-sniff-unknown
 a Headway UI tool is a name const, an inline spec and a `parse` arm, so a new
 per-tool fact is one edit per tool; Dave's `DaveUiTool` takes it as one match.
 
