@@ -2938,6 +2938,7 @@ mod tests {
                     in_tentative_state: false,
                     overlay_open: false,
                     renaming: false,
+                    has_range: false,
                 };
                 if let Some(a) = check_keybindings(ui.ctx(), mode, keys) {
                     *action = Some(a);

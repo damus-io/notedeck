@@ -151,6 +151,8 @@ pub struct DaveUi<'a> {
     chat_times: Option<&'a mut super::chat_times::ChatTimes>,
     /// The chat's finished turns, which the footers go under.
     turns: &'a [crate::session::TurnSpan],
+    /// The message range picked in the chat; `None` picks none.
+    chat_range: Option<&'a mut super::chat_range::ChatRange>,
     /// When the running turn started, in unix seconds, for the "· 3m" on the
     /// status line; `None` when no turn runs.
     working_since: Option<u64>,
@@ -365,6 +367,7 @@ impl<'a> DaveUi<'a> {
             time_zone: None,
             chat_times: None,
             turns: &[],
+            chat_range: None,
             working_since: None,
             walltime: None,
         }
@@ -379,6 +382,13 @@ impl<'a> DaveUi<'a> {
     ) -> Self {
         self.chat_times = Some(times);
         self.turns = turns;
+        self
+    }
+
+    /// Let a Shift+click pick a range of messages in `range`, washed and
+    /// summed up in a pill under its last row.
+    pub fn chat_range(mut self, range: &'a mut super::chat_range::ChatRange) -> Self {
+        self.chat_range = Some(range);
         self
     }
 
@@ -917,30 +927,31 @@ impl<'a> DaveUi<'a> {
         let weak = ui.visuals().weak_text_color();
         // Taken for the loop, which also borrows `self` mutably; put back below.
         let mut times = self.chat_times.take();
-        if let Some(times) = times.as_deref_mut() {
-            let chat = self.chat;
-            let turns = self.turns;
-            match &self.time_zone {
-                Some(tz) => {
-                    let input = super::chat_times::TimesInput {
-                        chat,
-                        turns,
-                        now,
-                        tz,
-                    };
-                    times.refresh(input, ctx.i18n);
-                }
-                None => {
-                    let input = super::chat_times::TimesInput {
-                        chat,
-                        turns,
-                        now,
-                        tz: &chrono::Local,
-                    };
-                    times.refresh(input, ctx.i18n);
-                }
-            }
+        let mut range = self.chat_range.take();
+        let labels = TimeLabels {
+            times: times.as_deref_mut(),
+            range: range.as_deref_mut(),
+        };
+        let visuals = ui.visuals();
+        match &self.time_zone {
+            Some(tz) => labels.refresh(self.labels_input(now, tz, visuals), ctx.i18n),
+            None => labels.refresh(self.labels_input(now, &chrono::Local, visuals), ctx.i18n),
         }
+        let mut wash = range
+            .as_deref()
+            .and_then(super::chat_range::ChatRange::span)
+            .map(RangeWash::new);
+        let click = range.is_some().then(|| row_click(ui)).flatten();
+        // A Shift+press picks a range here, so it mustn't also stretch a
+        // text selection from the last click: drop that before rows draw,
+        // and the fresh one the press starts in them after.
+        let shift_pressed = range.is_some() && shift_pressed_over(ui);
+        if shift_pressed {
+            clear_text_selection(ui.ctx());
+        }
+        // The message the click landed on, and what the pill asked for.
+        let mut message_click = None;
+        let mut pill_action = None;
 
         let mut prev_group = None;
         // Rows before this were drawn by a fold that stands for them.
@@ -963,7 +974,11 @@ impl<'a> DaveUi<'a> {
             if let Some(run) = run {
                 folded_until = run.rows.end;
                 let rows = run.rows.clone();
+                if let Some(wash) = &mut wash {
+                    wash.begin(rows.clone(), ui);
+                }
                 Self::tool_fold_ui(self.chat, run, self.nav, ui);
+                let ends_range = wash.as_mut().is_some_and(|wash| wash.end(rows.clone(), ui));
                 // A turn can end inside the folded run: its footer goes under it.
                 for row in rows {
                     let footer = times
@@ -973,12 +988,19 @@ impl<'a> DaveUi<'a> {
                         super::chat_times::footer_ui(ui, footer);
                     }
                 }
+                if ends_range {
+                    pill_action = pill_action.or(Self::range_pill_ui(range.as_deref(), ui));
+                }
                 continue;
             }
             self.nav.enter_row(i);
             if let Some(header) = times.as_deref_mut().and_then(|t| t.header(i, weak)) {
                 super::chat_times::header_ui(ui, header);
             }
+            if let Some(wash) = &mut wash {
+                wash.begin(i..i + 1, ui);
+            }
+            let row_top = ui.cursor().top();
             match message {
                 Message::Error(err) => {
                     self.error_chat(ctx.i18n, err, ui);
@@ -1035,13 +1057,31 @@ impl<'a> DaveUi<'a> {
                     // TodoUpdate is displayed in the task list sidebar, not in chat
                 }
             };
+            let is_message = matches!(message, Message::User(_) | Message::Assistant(_));
+            if let Some(click) = click.filter(|_| is_message && row_has_pointer(row_top, ui)) {
+                message_click = Some(MessageClick {
+                    row: i,
+                    shift: click.shift,
+                });
+            }
+            let ends_range = wash.as_mut().is_some_and(|wash| wash.end(i..i + 1, ui));
             let footer = times
                 .as_deref_mut()
                 .and_then(|t| t.footer(i, now, weak, ctx.time_cache, ctx.i18n));
             if let Some(footer) = footer {
                 super::chat_times::footer_ui(ui, footer);
             }
+            if ends_range {
+                pill_action = pill_action.or(Self::range_pill_ui(range.as_deref(), ui));
+            }
         }
+        if shift_pressed {
+            clear_text_selection(ui.ctx());
+        }
+        if let Some(range) = range.as_deref_mut() {
+            self.apply_range_input(range, message_click, pill_action, ui);
+        }
+        self.chat_range = range;
         if let Some(secs) = times
             .as_deref()
             .and_then(|t| t.next_change(now, self.working_since))
@@ -1092,6 +1132,68 @@ impl<'a> DaveUi<'a> {
         }
 
         response
+    }
+
+    /// What this chat's time labels refresh from, in `tz` at `now`.
+    fn labels_input<'b, Tz>(
+        &self,
+        now: u64,
+        tz: &'b Tz,
+        visuals: &egui::Visuals,
+    ) -> LabelsInput<'b, Tz>
+    where
+        'a: 'b,
+    {
+        LabelsInput {
+            chat: self.chat,
+            turns: self.turns,
+            now,
+            tz,
+            pill_color: visuals.text_color(),
+            pill_weak: visuals.weak_text_color(),
+        }
+    }
+
+    /// Draw the pill under a picked range, if it has text, and return what
+    /// it was asked to do.
+    fn range_pill_ui(
+        range: Option<&super::chat_range::ChatRange>,
+        ui: &mut egui::Ui,
+    ) -> Option<super::chat_range::PillAction> {
+        let labels = range?.pill()?;
+        super::chat_range::pill_ui(ui, labels)
+    }
+
+    /// Act on what this frame did to the range: a click on message `row`
+    /// (Shift stretches the range to it, a plain click anchors the next
+    /// one), then the pill's Copy or ×.
+    fn apply_range_input(
+        &self,
+        range: &mut super::chat_range::ChatRange,
+        click: Option<MessageClick>,
+        pill: Option<super::chat_range::PillAction>,
+        ui: &egui::Ui,
+    ) {
+        let before = range.span();
+        match click {
+            Some(MessageClick { row, shift: true }) => range.extend_to(row, self.nav.cursor_row()),
+            Some(MessageClick { row, shift: false }) => range.click(row),
+            None => {}
+        }
+        match pill {
+            Some(super::chat_range::PillAction::Copy) => {
+                if let Some(span) = range.span() {
+                    let text = super::chat_range::copy_text(self.chat, span.rows());
+                    ui.ctx().copy_text(text);
+                }
+            }
+            Some(super::chat_range::PillAction::Clear) => range.clear(),
+            None => {}
+        }
+        // The wash and pill drew from the old range: draw the new one.
+        if range.span() != before {
+            ui.ctx().request_repaint();
+        }
     }
 
     fn tool_response_ui(
@@ -3227,6 +3329,12 @@ fn row_group(message: &Message, is_agentic: bool) -> Option<RowGroup> {
     }
 }
 
+/// Whether `message` draws anything in a chat of this mode, so a range
+/// stepped by keyboard passes over rows that don't.
+pub(crate) fn row_drawn(message: &Message, is_agentic: bool) -> bool {
+    row_group(message, is_agentic).is_some()
+}
+
 /// Extra space `render_chat` puts between a `prev` row and the `next` one.
 ///
 /// Prose already ends in a paragraph gap, and tool rows stack with only the
@@ -3277,6 +3385,191 @@ fn paint_row_highlight(
             fill,
         ),
     );
+}
+
+/// A primary click that finished this frame, and whether Shift was held as
+/// it was let go.
+#[derive(Clone, Copy, Debug)]
+struct RowClick {
+    shift: bool,
+}
+
+/// The primary click that finished this frame, if one did: a press and
+/// release, not a drag. Where it landed is read row by row
+/// ([`row_has_pointer`]).
+fn row_click(ui: &egui::Ui) -> Option<RowClick> {
+    ui.input(|i| {
+        if !i.pointer.primary_clicked() {
+            return None;
+        }
+        i.events.iter().rev().find_map(|event| match event {
+            egui::Event::PointerButton {
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers,
+                ..
+            } => Some(RowClick {
+                shift: modifiers.shift,
+            }),
+            _ => None,
+        })
+    })
+}
+
+/// A click that landed on chat message `row`.
+#[derive(Clone, Copy, Debug)]
+struct MessageClick {
+    row: usize,
+    shift: bool,
+}
+
+/// Whether a primary button went down with Shift held this frame, over the
+/// chat.
+fn shift_pressed_over(ui: &egui::Ui) -> bool {
+    let pressed = ui.input(|i| {
+        i.events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::PointerButton {
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.shift
+            )
+        })
+    });
+    pressed && ui.rect_contains_pointer(ui.max_rect())
+}
+
+/// Drop any text selection in the labels, so a Shift+click that picks a
+/// message range doesn't also select text.
+fn clear_text_selection(ctx: &egui::Context) {
+    ctx.plugin::<egui::text_selection::LabelSelectionState>()
+        .lock()
+        .clear_selection();
+}
+
+/// Whether the pointer is over the row drawn from `top` down to what `ui`
+/// holds now, across the chat's width, and nothing (a popup, the view's
+/// clip) is in front of it.
+fn row_has_pointer(top: f32, ui: &egui::Ui) -> bool {
+    let bottom = ui.min_rect().bottom();
+    if bottom <= top {
+        return false;
+    }
+    ui.rect_contains_pointer(egui::Rect::from_x_y_ranges(
+        ui.max_rect().x_range(),
+        top..=bottom,
+    ))
+}
+
+/// The selection wash behind a picked range of chat rows: one rounded fill
+/// from the top of the first drawn item it covers to the bottom of the one
+/// holding its last row, laid behind them in a slot reserved before they
+/// draw.
+struct RangeWash {
+    rows: std::ops::RangeInclusive<usize>,
+    /// The reserved slot and where the wash starts, once its first item drew.
+    open: Option<WashStart>,
+}
+
+/// Where a [`RangeWash`] starts.
+struct WashStart {
+    slot: egui::layers::ShapeIdx,
+    top: f32,
+}
+
+impl RangeWash {
+    fn new(span: super::chat_range::Span) -> Self {
+        RangeWash {
+            rows: span.rows(),
+            open: None,
+        }
+    }
+
+    /// An item standing for chat `item` rows (one row, or a fold's) is about
+    /// to draw: start the wash here if it is the range's first.
+    fn begin(&mut self, item: std::ops::Range<usize>, ui: &egui::Ui) {
+        let overlaps = item.start <= *self.rows.end() && item.end > *self.rows.start();
+        if self.open.is_some() || !overlaps {
+            return;
+        }
+        self.open = Some(WashStart {
+            slot: ui.painter().add(egui::Shape::Noop),
+            top: ui.cursor().top(),
+        });
+    }
+
+    /// That item drew: if it holds the range's last row, lay the wash down
+    /// and return `true`, so the range's pill goes under it.
+    fn end(&mut self, item: std::ops::Range<usize>, ui: &egui::Ui) -> bool {
+        if !item.contains(self.rows.end()) {
+            return false;
+        }
+        let Some(start) = self.open.take() else {
+            return false;
+        };
+        let rect = egui::Rect::from_x_y_ranges(
+            ui.max_rect().x_range(),
+            start.top..=ui.min_rect().bottom().max(start.top),
+        );
+        paint_row_highlight(start.slot, rect, block_cursor_fill(ui), ui);
+        true
+    }
+}
+
+/// What feeds the chat's time labels' refresh: its rows and turns, the
+/// clock and zone, and the range pill's colours.
+struct LabelsInput<'b, Tz> {
+    chat: &'b [Message],
+    turns: &'b [crate::session::TurnSpan],
+    now: u64,
+    tz: &'b Tz,
+    pill_color: egui::Color32,
+    pill_weak: egui::Color32,
+}
+
+/// The chat's time labels a frame brings up to date before it draws: its
+/// turn headers and footers, and its range pill.
+struct TimeLabels<'b> {
+    times: Option<&'b mut super::chat_times::ChatTimes>,
+    range: Option<&'b mut super::chat_range::ChatRange>,
+}
+
+impl TimeLabels<'_> {
+    fn refresh<Tz: chrono::TimeZone>(self, input: LabelsInput<'_, Tz>, i18n: &mut Localization)
+    where
+        Tz::Offset: std::fmt::Display,
+    {
+        let LabelsInput {
+            chat,
+            turns,
+            now,
+            tz,
+            pill_color,
+            pill_weak,
+        } = input;
+        if let Some(times) = self.times {
+            let input = super::chat_times::TimesInput {
+                chat,
+                turns,
+                now,
+                tz,
+            };
+            times.refresh(input, i18n);
+        }
+        if let Some(range) = self.range {
+            let input = super::chat_range::RangeInput {
+                chat,
+                now,
+                tz,
+                color: pill_color,
+                weak: pill_weak,
+            };
+            range.refresh(input, i18n);
+        }
+    }
 }
 
 /// Render a responded (Allowed/Denied) permission request as a collapsible

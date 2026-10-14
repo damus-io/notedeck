@@ -739,6 +739,26 @@ args  = { to = "up" }
 label = "next/prev block"
 group = "blocks"
 
+# `J`/`K` stretch a range of messages a row down or up from the block
+# cursor's row (or the range a Shift+click picked), and its pill says how long
+# they took. Esc drops the range, ahead of normal mode's own Esc.
+
+[[bind]]
+scope = "dave.chat"
+keys  = "J"
+tool  = "dave_chat_range"
+args  = { to = "down" }
+label = "stretch range"
+group = "blocks"
+
+[[bind]]
+scope = "dave.chat"
+keys  = "K"
+tool  = "dave_chat_range"
+args  = { to = "up" }
+label = "stretch range"
+group = "blocks"
+
 [[bind]]
 scope = "dave.chat"
 keys  = "g g"

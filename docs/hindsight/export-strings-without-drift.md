@@ -24,3 +24,4 @@ too, so every card strips that out by hand to keep its commit standalone.
 - headway:dave/job-torch-blush — ~2 min: a 238-line rewrite of both files for 5 keys; spliced them into HEAD's files by a fresh scratchpad splice.py keyed on the new comments
 - headway:notedeck/jump-bike-wife — ~4 min: the export rewrote ~230 lines of each FTL for 1 key, twice (the string changed mid-card); spliced it into HEAD's files by script both times
 - headway:dave/shallow-upgrade-pet — ~2 min: a 233-line rewrite of both files for 1 plural key; spliced it into HEAD's by another scratch block-merge, whose first cut left a stray blank line
+- headway:dave/decide-drip-huge — ~3 min: a 244-line rewrite of both files for 1 plural key; spliced it into HEAD's by another scratch block-merge

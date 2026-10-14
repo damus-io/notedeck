@@ -688,6 +688,9 @@ pub struct ChatSession {
     /// The chat's turn headers and footers, as text: reseeded when the rows,
     /// the turns or the local day change, read by the chat view every frame.
     pub chat_times: crate::ui::chat_times::ChatTimes,
+    /// The message range picked in the chat (Shift+click) and its pill's
+    /// text, to see how long a stretch of the chat took.
+    pub chat_range: crate::ui::chat_range::ChatRange,
     /// The header's walltime, as text: rebuilt when the value it shows, the
     /// turn count or the locale change, read by the header every frame.
     pub walltime_label: crate::ui::walltime::WalltimeLabel,
@@ -817,6 +820,7 @@ impl ChatSession {
             turn_started_at: None,
             turns: Turns::default(),
             chat_times: Default::default(),
+            chat_range: Default::default(),
             walltime_label: Default::default(),
             waiting_on: Default::default(),
             inspector: Default::default(),
@@ -903,6 +907,7 @@ impl ChatSession {
             turn_started_at: None,
             turns: Turns::default(),
             chat_times: Default::default(),
+            chat_range: Default::default(),
             walltime_label: Default::default(),
             waiting_on: Default::default(),
             inspector: Default::default(),

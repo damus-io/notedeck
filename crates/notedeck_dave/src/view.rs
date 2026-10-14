@@ -591,6 +591,10 @@ impl Dave {
                 let id = ui::session_list::rename_edit_id();
                 m.has_focus(id) || m.had_focus_last_frame(id)
             }),
+            has_range: self
+                .session_manager
+                .get_active()
+                .is_some_and(|s| s.chat_range.span().is_some()),
         };
         match check_keybindings(egui_ctx, &mut self.normal_mode, keys) {
             Some(action) => self.dispatch_with_jump(action, egui_ctx),

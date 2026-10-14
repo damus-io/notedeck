@@ -81,6 +81,13 @@ pub enum KeyAction {
     BlockCollapseAll,
     /// Drop the block cursor, so the transcript follows new output again (normal q)
     BlockCursorClear,
+    /// Stretch the chat's message range a row down (normal J), from the
+    /// block cursor's row when there is no range yet
+    ChatRangeDown,
+    /// Stretch the chat's message range a row up (normal K)
+    ChatRangeUp,
+    /// Drop the chat's message range (Esc while there is one)
+    ChatRangeClear,
     /// Point normal mode's motions at the session list (normal h)
     FocusSessionsPane,
     /// Point normal mode's motions back at the chat (normal l, or Enter from the session list)
@@ -424,6 +431,9 @@ pub struct KeyContext {
     /// The inline session rename field has, or just lost, focus: its Esc
     /// cancels the rename rather than entering normal mode.
     pub renaming: bool,
+    /// The active chat has a message range picked: Esc drops it first, in
+    /// either mode.
+    pub has_range: bool,
 }
 
 /// Check for keybinding actions.
@@ -448,6 +458,7 @@ pub fn check_keybindings(
         in_tentative_state,
         overlay_open,
         renaming,
+        has_range,
         ..
     } = keys;
     let is_agentic = ai_mode == AiMode::Agentic;
@@ -455,6 +466,17 @@ pub fn check_keybindings(
     // An overlay is modal: normal mode's keys are the chat's.
     if overlay_open && mode.is_normal() {
         mode.release();
+    }
+
+    // A picked message range takes Esc before anything else would (normal
+    // mode's side menu, insert mode entering normal mode), unless something
+    // modal owns Esc.
+    let esc_is_free = !overlay_open && !renaming && !(is_agentic && in_tentative_state);
+    if has_range
+        && esc_is_free
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape))
+    {
+        return Some(KeyAction::ChatRangeClear);
     }
 
     // Normal mode swallows the bare keys the keymap left, and leaves its Esc
@@ -714,6 +736,7 @@ mod tests {
             in_tentative_state: false,
             overlay_open: false,
             renaming: false,
+            has_range: false,
         },
         offers: ActiveOffers {
             ai_mode: AiMode::Agentic,
@@ -1123,6 +1146,37 @@ mod tests {
             normal_after(&[ESC, press(SHIFT, Key::S)]),
             "S keeps normal mode on, like the other session keys",
         );
+    }
+
+    /// `J` / `K` in the chat stretch the message range a row.
+    #[test]
+    fn normal_shift_j_k_stretch_the_message_range() {
+        assert_eq!(
+            detect_sequence(&[ESC, press(SHIFT, Key::J)]),
+            Some(KeyAction::ChatRangeDown),
+        );
+        assert_eq!(
+            detect_sequence(&[ESC, press(SHIFT, Key::K)]),
+            Some(KeyAction::ChatRangeUp),
+        );
+        assert!(normal_after(&[ESC, press(SHIFT, Key::J)]));
+    }
+
+    /// While a message range is picked, Esc drops it rather than entering
+    /// normal mode, unless the rename field or an overlay owns Esc.
+    #[test]
+    fn esc_drops_a_picked_range_first() {
+        let picked = FRAME.keys(|k| k.has_range = true);
+        assert_eq!(
+            detect_sequence_in(picked, &[ESC]),
+            Some(KeyAction::ChatRangeClear),
+        );
+        assert!(!normal_after_in(picked, &[ESC]), "Esc went to the range");
+
+        let renaming = picked.keys(|k| k.renaming = true);
+        assert_eq!(detect_sequence_in(renaming, &[ESC]), None);
+        let overlay = picked.keys(|k| k.overlay_open = true);
+        assert_eq!(detect_sequence_in(overlay, &[ESC]), None);
     }
 
     #[test]

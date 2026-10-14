@@ -1,5 +1,5 @@
-//! A chat's turn headers and footers, and the session header's walltime,
-//! format nothing per frame.
+//! A chat's turn headers and footers, the session header's walltime, and a
+//! picked message range's pill, format nothing per frame.
 //!
 //! Their text is worked out when the chat's rows, turns, day or locale change
 //! (`ChatTimes::refresh`) and handed to egui by `Arc`, so a steady-state frame
@@ -44,6 +44,15 @@ const MEASURED_TIMES_ALLOCS: u64 = 87;
 /// Through `spacing_mut` the row cost two more (a `Style` clone). Measured,
 /// not chosen; if it moves, measure it again and write the new figure down.
 const MEASURED_WALLTIME_ALLOCS: u64 = 12;
+
+/// What a picked message range over the last two turns adds to a frame,
+/// its wash and its pill. The pill's labels are worked out when the range
+/// changes (`ChatRange::refresh`) and handed to egui by `Arc`, so by
+/// attribution these are egui's: the pill's frame and row, its three labels
+/// (two of them buttons) with their layout jobs and accesskit nodes. None
+/// is in `chat_range`. Measured, not chosen; if it moves, measure it again
+/// and write the new figure down.
+const MEASURED_RANGE_ALLOCS: u64 = 39;
 
 /// Unix seconds for 2026-10-`day` `h`:`m` UTC.
 fn at(day: u32, h: u32, m: u32) -> u64 {
@@ -108,6 +117,10 @@ struct Draw {
     header: bool,
     /// The header's walltime.
     walltime: bool,
+    /// Let a click pick a message range (a frame with none picked).
+    range: bool,
+    /// And pick one, from the third row to the last.
+    picked: bool,
 }
 
 struct ChatState {
@@ -144,6 +157,9 @@ fn render(ui: &mut egui::Ui, state: &mut ChatState) {
         if state.draw.header {
             dave_ui = dave_ui.details(&session.details);
         }
+        if state.draw.range {
+            dave_ui = dave_ui.chat_range(&mut session.chat_range);
+        }
         if state.draw.walltime {
             dave_ui = dave_ui.walltime(HeaderWalltimeSource {
                 label: &mut session.walltime_label,
@@ -171,6 +187,10 @@ fn frame_allocs(draw: Draw) -> u64 {
     session.replace_chat(rows);
     session.set_turns(turns);
     session.turn_started_at = Some(at(13, 9, 58));
+    if draw.picked {
+        session.chat_range.click(2);
+        session.chat_range.extend_to(5, None);
+    }
     let state = ChatState {
         notedeck,
         session,
@@ -186,8 +206,8 @@ fn frame_allocs(draw: Draw) -> u64 {
     }
     let counts = measure(|| harness.step()).counts;
     println!(
-        "times {} header {} walltime {}: {counts}",
-        draw.times, draw.header, draw.walltime
+        "times {} header {} walltime {} range {} picked {}: {counts}",
+        draw.times, draw.header, draw.walltime, draw.range, draw.picked
     );
     counts.thread.allocs
 }
@@ -199,6 +219,8 @@ fn chat_times_format_nothing_per_frame() {
         times: false,
         header: false,
         walltime: false,
+        range: false,
+        picked: false,
     };
     let plain = frame_allocs(draw);
     let timed = frame_allocs(Draw {
@@ -222,6 +244,8 @@ fn the_header_walltime_formats_nothing_per_frame() {
         times: false,
         header: true,
         walltime: false,
+        range: false,
+        picked: false,
     };
     let plain = frame_allocs(header);
     let with = frame_allocs(Draw {
@@ -234,5 +258,39 @@ fn the_header_walltime_formats_nothing_per_frame() {
         "drawing the header's walltime costs {added} allocations a frame \
          ({with} with, {plain} without), measured at {MEASURED_WALLTIME_ALLOCS}: \
          a frame must not format it"
+    );
+}
+
+/// Letting a click pick a range costs a frame nothing while none is picked,
+/// and a picked one adds exactly what egui charges for its wash and pill.
+#[test]
+fn a_message_range_formats_nothing_per_frame() {
+    let draw = Draw {
+        times: true,
+        header: false,
+        walltime: false,
+        range: false,
+        picked: false,
+    };
+    let plain = frame_allocs(draw);
+    let idle = frame_allocs(Draw {
+        range: true,
+        ..draw
+    });
+    assert_eq!(
+        idle, plain,
+        "a chat with no range picked must cost what one that can't pick does"
+    );
+    let picked = frame_allocs(Draw {
+        range: true,
+        picked: true,
+        ..draw
+    });
+    let added = picked.saturating_sub(plain);
+    assert_eq!(
+        added, MEASURED_RANGE_ALLOCS,
+        "drawing a picked range costs {added} allocations a frame \
+         ({picked} picked, {plain} plain), measured at {MEASURED_RANGE_ALLOCS}: \
+         a frame must not format its pill"
     );
 }

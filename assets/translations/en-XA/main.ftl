@@ -1408,6 +1408,14 @@ count__messages_28b1 =
     }
 
 
+# Dave chat: how many messages a picked range holds, in its pill, as in '6 messages'
+count__messages_8b9d =
+    { $count ->
+        [one] {"["}{$count} méssàgé{"]"}
+       *[other] {"["}{$count} méssàgés{"]"}
+    }
+
+
 # Dave session inspector: count chip of the agent's plugins
 count__plugins_6b9e =
     { $count ->

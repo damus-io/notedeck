@@ -25,6 +25,8 @@ use crate::ui::SceneDir;
 
 /// `j`/`k`/`gg`/`G`/`q` in the chat: move or drop the block cursor.
 pub(crate) const BLOCK_CURSOR: &str = "dave_block_cursor";
+/// `J` / `K`: stretch the chat's message range a row; `clear` drops it.
+pub(crate) const CHAT_RANGE: &str = "dave_chat_range";
 /// `za`/`o`, `zo`, `zc`, `zr`, `zm`: fold the chat's blocks.
 pub(crate) const BLOCK: &str = "dave_block";
 /// `h` / `l`: point the motions at the session list or the chat.
@@ -87,6 +89,7 @@ pub(crate) fn session_issue_spec() -> ToolSpec {
 pub(crate) enum DaveUiTool {
     BlockCursor,
     Block,
+    ChatRange,
     FocusPane,
     SessionCursor,
     SceneCursor,
@@ -117,6 +120,18 @@ enum BlockTo {
 
 /// The values of [`BlockTo`], as the spec advertises them.
 const BLOCK_TOS: &[&str] = &["down", "up", "first", "last", "clear"];
+
+/// Where `dave_chat_range` takes the chat's message range.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum RangeTo {
+    Down,
+    Up,
+    Clear,
+}
+
+/// The values of [`RangeTo`].
+const RANGE_TOS: &[&str] = &["down", "up", "clear"];
 
 /// What `dave_block` does to the chat's blocks.
 #[derive(Deserialize, Clone, Copy)]
@@ -212,6 +227,13 @@ struct BlockCursorArgs {
     to: BlockTo,
 }
 
+/// `dave_chat_range`'s arguments.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatRangeArgs {
+    to: RangeTo,
+}
+
 /// `dave_block`'s arguments.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -273,9 +295,10 @@ fn enum_arg(name: &'static str, values: &'static [&'static str], doc: &'static s
 
 impl DaveUiTool {
     /// Every tool, in the order [`specs`](Self::specs) lists them.
-    pub(crate) const ALL: [Self; 17] = [
+    pub(crate) const ALL: [Self; 18] = [
         Self::BlockCursor,
         Self::Block,
+        Self::ChatRange,
         Self::FocusPane,
         Self::SessionCursor,
         Self::SceneCursor,
@@ -298,6 +321,7 @@ impl DaveUiTool {
         match self {
             Self::BlockCursor => BLOCK_CURSOR,
             Self::Block => BLOCK,
+            Self::ChatRange => CHAT_RANGE,
             Self::FocusPane => FOCUS_PANE,
             Self::SessionCursor => SESSION_CURSOR,
             Self::SceneCursor => SCENE_CURSOR,
@@ -321,6 +345,7 @@ impl DaveUiTool {
         match self {
             Self::BlockCursor => "Move block cursor",
             Self::Block => "Fold blocks",
+            Self::ChatRange => "Stretch message range",
             Self::FocusPane => "Focus session list or chat",
             Self::SessionCursor => "Switch session",
             Self::SceneCursor => "Step through scene",
@@ -361,6 +386,12 @@ impl DaveUiTool {
                 "Fold the chat's blocks: toggle, open or close the one under the block \
                  cursor, or expand or collapse them all.",
                 vec![enum_arg("op", BLOCK_OPS, "What to do.")],
+            ),
+            Self::ChatRange => (
+                "Stretch the chat's picked message range a row down or up, from the block \
+                 cursor's row when there is none yet, or drop it (clear). The range's pill \
+                 shows how long its messages took.",
+                vec![enum_arg("to", RANGE_TOS, "Which way to stretch it.")],
             ),
             Self::FocusPane => (
                 "Point normal mode's motions at the session list or the chat.",
@@ -454,6 +485,14 @@ impl DaveUiTool {
                     BlockOp::CollapseAll => A::BlockCollapseAll,
                 }
             }
+            Self::ChatRange => {
+                let ChatRangeArgs { to } = parse_args(name, args)?;
+                match to {
+                    RangeTo::Down => A::ChatRangeDown,
+                    RangeTo::Up => A::ChatRangeUp,
+                    RangeTo::Clear => A::ChatRangeClear,
+                }
+            }
             Self::FocusPane => {
                 let PaneArgs { pane } = parse_args(name, args)?;
                 match pane {
@@ -543,7 +582,9 @@ pub(crate) fn available(tool: DaveUiTool, normal: Option<NormalView>) -> bool {
         return false;
     };
     match tool {
-        DaveUiTool::BlockCursor | DaveUiTool::Block => view.pane == Pane::Chat,
+        DaveUiTool::BlockCursor | DaveUiTool::Block | DaveUiTool::ChatRange => {
+            view.pane == Pane::Chat
+        }
         DaveUiTool::SessionCursor => view.pane == Pane::Sessions,
         DaveUiTool::SceneCursor => view.pane == Pane::Sessions && view.scene,
         DaveUiTool::OpenIssue => view.has_issue,
@@ -649,6 +690,9 @@ mod tests {
             (BLOCK_CURSOR, json!({"to": "first"}), A::BlockCursorFirst),
             (BLOCK_CURSOR, json!({"to": "last"}), A::BlockCursorLast),
             (BLOCK_CURSOR, json!({"to": "clear"}), A::BlockCursorClear),
+            (CHAT_RANGE, json!({"to": "down"}), A::ChatRangeDown),
+            (CHAT_RANGE, json!({"to": "up"}), A::ChatRangeUp),
+            (CHAT_RANGE, json!({"to": "clear"}), A::ChatRangeClear),
             (BLOCK, json!({"op": "toggle"}), A::BlockToggle),
             (BLOCK, json!({"op": "open"}), A::BlockOpen),
             (BLOCK, json!({"op": "close"}), A::BlockClose),
@@ -751,7 +795,7 @@ mod tests {
             let in_chat = available(tool, Some(view(Pane::Chat)));
             let in_sessions = available(tool, Some(view(Pane::Sessions)));
             match tool {
-                DaveUiTool::BlockCursor | DaveUiTool::Block => {
+                DaveUiTool::BlockCursor | DaveUiTool::Block | DaveUiTool::ChatRange => {
                     assert!(in_chat && !in_sessions, "{tool:?}")
                 }
                 DaveUiTool::SessionCursor => assert!(!in_chat && in_sessions, "{tool:?}"),

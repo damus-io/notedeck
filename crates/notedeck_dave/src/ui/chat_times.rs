@@ -433,7 +433,7 @@ fn secs_to_next_bucket(age: u64) -> u64 {
 /// When the local day holding `now` ends, in unix seconds. An hour on if
 /// local midnight doesn't exist (a DST jump), so a missing one costs a
 /// reseed, not a stale "Today".
-fn day_end<Tz: TimeZone>(now: u64, tz: &Tz) -> u64 {
+pub(crate) fn day_end<Tz: TimeZone>(now: u64, tz: &Tz) -> u64 {
     local_date(now, tz)
         .and_then(|today| today.succ_opt())
         .and_then(|tomorrow| tomorrow.and_hms_opt(0, 0, 0))

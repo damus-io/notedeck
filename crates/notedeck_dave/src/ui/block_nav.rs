@@ -19,6 +19,9 @@ struct BlockRef {
     id: egui::Id,
     /// What this site defaults to when nothing is stored yet.
     default_open: bool,
+    /// The chat row it draws in, as [`enter_row`](BlockNav::enter_row) or
+    /// [`enter_fold`](BlockNav::enter_fold) last named it.
+    row: Option<usize>,
 }
 
 /// Where the block cursor is, kept for the jump list (vim's Ctrl-O): its
@@ -83,6 +86,8 @@ pub struct BlockNav {
     /// next block to register takes the cursor. Set by
     /// [`enter_row`](BlockNav::enter_row).
     row_armed: bool,
+    /// The chat row being drawn, for the blocks it registers to remember.
+    current_row: Option<usize>,
 }
 
 impl BlockNav {
@@ -97,6 +102,7 @@ impl BlockNav {
         self.seek_this_frame = self.seek.take();
         self.seek_row_this_frame = self.seek_row.take();
         self.row_armed = false;
+        self.current_row = None;
     }
 
     /// Tell the registry the transcript is about to draw chat row `row`, so
@@ -105,6 +111,7 @@ impl BlockNav {
     /// the pass.
     pub fn enter_row(&mut self, row: usize) {
         self.row_armed = self.seek_row_this_frame == Some(row);
+        self.current_row = Some(row);
     }
 
     /// Tell the registry the transcript is about to draw a fold standing for
@@ -114,6 +121,7 @@ impl BlockNav {
     /// [`enter_row`](Self::enter_row).
     pub fn enter_fold(&mut self, rows: std::ops::Range<usize>) -> bool {
         self.row_armed = false;
+        self.current_row = Some(rows.start);
         self.seek_row_this_frame
             .is_some_and(|row| rows.contains(&row))
     }
@@ -127,7 +135,11 @@ impl BlockNav {
     /// site's own `default_open`.
     pub fn register(&mut self, id: egui::Id, default_open: bool, ui: &egui::Ui) -> RegisteredBlock {
         let idx = self.blocks.len();
-        self.blocks.push(BlockRef { id, default_open });
+        self.blocks.push(BlockRef {
+            id,
+            default_open,
+            row: self.current_row,
+        });
         if self.seek_this_frame == Some(id) || self.row_armed {
             self.seek_this_frame = None;
             self.seek_row_this_frame = None;
@@ -169,6 +181,13 @@ impl BlockNav {
     /// The cursor's position in registration order, if any.
     pub fn cursor(&self) -> Option<usize> {
         self.cursor
+    }
+
+    /// The chat row the cursor's block draws in, as of the last frame that
+    /// drew it: a fold's first row for a fold's header. `None` with no
+    /// cursor.
+    pub fn cursor_row(&self) -> Option<usize> {
+        self.cursor_block().and_then(|block| block.row)
     }
 
     /// Where the cursor is, for the jump list; `None` with no cursor.
@@ -329,6 +348,7 @@ impl BlockNav {
             self.blocks.push(BlockRef {
                 id: egui::Id::unique(("seeded block", i)),
                 default_open: false,
+                row: None,
             });
         }
     }
@@ -355,6 +375,7 @@ mod tests {
             nav.blocks.push(BlockRef {
                 id: egui::Id::unique(("block", i)),
                 default_open: false,
+                row: None,
             });
         }
     }
@@ -497,6 +518,8 @@ mod tests {
         output.textures_delta.clear();
         assert_eq!(cursor_rows, ["r2a"]);
         assert_eq!(nav.cursor(), Some(1));
+        // And remembers the row it sits in, for a range to start from.
+        assert_eq!(nav.cursor_row(), Some(2));
 
         // Consumed: the next pass leaves the cursor where it landed.
         nav.begin_frame();

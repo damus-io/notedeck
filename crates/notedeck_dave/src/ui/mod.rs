@@ -1,6 +1,7 @@
 mod ask_question;
 pub mod badge;
 pub mod block_nav;
+pub mod chat_range;
 pub mod chat_times;
 mod dave;
 pub mod diff;
@@ -192,6 +193,7 @@ fn build_dave_ui<'a>(session: &'a mut ChatSession, chat: &ChatViewContext<'a>) -
     .pending_images(&mut session.pending_images)
     .slash(&mut session.slash)
     .chat_times(&mut session.chat_times, session.turns.spans())
+    .chat_range(&mut session.chat_range)
     .working_since(working_since)
     .walltime(HeaderWalltimeSource {
         label: &mut session.walltime_label,
@@ -1112,6 +1114,25 @@ fn with_block_nav(
     KeyActionResult::None
 }
 
+/// Stretch the active chat's message range a row `step` (normal `J` /
+/// `K`), from its block cursor's row when it has no range yet.
+fn step_chat_range(
+    session_manager: &mut SessionManager,
+    step: chat_range::Step,
+) -> KeyActionResult {
+    let Some(session) = session_manager.get_active_mut() else {
+        return KeyActionResult::None;
+    };
+    let is_agentic = session.ai_mode == AiMode::Agentic;
+    session.chat_range.step(
+        step,
+        session.block_nav.cursor_row(),
+        &session.chat,
+        |message| dave::row_drawn(message, is_agentic),
+    );
+    KeyActionResult::None
+}
+
 /// Handle a keybinding action.
 #[allow(clippy::too_many_arguments)]
 pub fn handle_key_action(
@@ -1354,6 +1375,14 @@ pub fn handle_key_action(
         KeyAction::BlockClose => with_block_nav(session_manager, |nav| nav.close_cursor(ctx)),
         KeyAction::BlockExpandAll => with_block_nav(session_manager, |nav| nav.expand_all(ctx)),
         KeyAction::BlockCollapseAll => with_block_nav(session_manager, |nav| nav.collapse_all(ctx)),
+        KeyAction::ChatRangeDown => step_chat_range(session_manager, chat_range::Step::Down),
+        KeyAction::ChatRangeUp => step_chat_range(session_manager, chat_range::Step::Up),
+        KeyAction::ChatRangeClear => {
+            if let Some(session) = session_manager.get_active_mut() {
+                session.chat_range.clear();
+            }
+            KeyActionResult::None
+        }
         KeyAction::RenameAgent => {
             if let Some(session) = session_manager.get_active() {
                 session_list::start_rename(ctx, session.id, session.details.display_title());
@@ -1898,6 +1927,10 @@ mod tests {
             in_tentative_state,
             overlay_open: false,
             renaming: false,
+            has_range: d
+                .session_manager
+                .get_active()
+                .is_some_and(|s| s.chat_range.span().is_some()),
         };
         if let Some(action) = check_keybindings(ui.ctx(), &mut d.normal_mode, keys) {
             d.dispatch(action, ui.ctx());
@@ -1947,6 +1980,7 @@ mod tests {
                 let id = super::session_list::rename_edit_id();
                 m.has_focus(id) || m.had_focus_last_frame(id)
             }),
+            has_range: false,
         };
         if let Some(action) = check_keybindings(ui.ctx(), &mut d.normal_mode, keys) {
             d.dispatch(action, ui.ctx());
@@ -2055,6 +2089,45 @@ mod tests {
         assert!(
             tentative(harness.state(), PermissionMessageState::None),
             "Esc cancels the answer rather than toggling the side menu"
+        );
+    }
+
+    /// Through the real key engine: `J` stretches a picked message range a
+    /// row (over the todo row, which draws nothing), and Esc drops it while
+    /// normal mode stays on.
+    #[test]
+    fn shift_j_stretches_the_message_range_and_esc_drops_it() {
+        use crate::messages::{AssistantMessage, Message, UserMessage};
+        let mut harness = Harness::new_ui_state(normal_mode_frame, Dispatch::new());
+        let [first, _] = harness.state().sessions;
+        harness.ctx.memory_mut(|m| m.request_focus(input_id(first)));
+        harness.run();
+        harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
+
+        let session = harness.state_mut().session_manager.get_mut(first).unwrap();
+        session.replace_chat(vec![
+            Message::User(UserMessage::from("go")),
+            Message::Assistant(AssistantMessage::from_text("on it".to_owned())),
+            Message::TodoUpdate(serde_json::Value::Null),
+            Message::Assistant(AssistantMessage::from_text("done".to_owned())),
+        ]);
+        session.chat_range.click(0);
+        session.chat_range.extend_to(1, None);
+        let span = |h: &Harness<'_, Dispatch>| {
+            let session = h.state().session_manager.get(first).unwrap();
+            session.chat_range.span().map(|span| span.rows())
+        };
+
+        harness.press_key_modifiers(Modifiers::SHIFT, Key::J);
+        assert_eq!(span(&harness), Some(0..=3));
+        harness.press_key_modifiers(Modifiers::SHIFT, Key::K);
+        assert_eq!(span(&harness), Some(0..=1));
+
+        harness.press_key_modifiers(Modifiers::NONE, Key::Escape);
+        assert_eq!(span(&harness), None);
+        assert!(
+            harness.state().normal_mode.is_normal(),
+            "Esc went to the range"
         );
     }
 
@@ -4847,6 +4920,65 @@ mod tests {
         assert_eq!(harness.query_all(By::new().label_contains("· ")).count(), 0);
     }
 
+    /// Click a chat message by a run of its text, Shift held or not.
+    fn click_message(harness: &mut Harness<'static, SessionViewState>, text: &str, shift: bool) {
+        use egui_kittest::kittest::{By, Queryable};
+        let modifiers = if shift {
+            egui::Modifiers::SHIFT
+        } else {
+            egui::Modifiers::NONE
+        };
+        harness
+            .query_all(By::new().label_contains(text))
+            .next()
+            .unwrap_or_else(|| panic!("no message reading {text:?}"))
+            .click_modifiers(modifiers);
+        harness.run_ok();
+    }
+
+    /// The range's pill over this morning's long turn: from its prompt at
+    /// 9:41 to its last reply at 9:53, four messages.
+    const RANGE_PILL: &str = "9:41 AM → 9:53 AM · 12m · \u{2068}4\u{2069} messages";
+
+    /// A plain click anchors, a Shift+click stretches a range to it and pins
+    /// its pill under the last message, and × drops it.
+    #[test]
+    fn shift_click_picks_a_range_and_its_pill_says_how_long() {
+        let state = chat_times_state(chat_time(13, 10, 1, 10), seed_chat_times);
+        let mut harness = notedeck::test_harness::lenient_builder()
+            .with_size(egui::vec2(760.0, 1400.0))
+            .build_ui_state(render_session_view, state);
+        harness.run_ok();
+
+        click_message(&mut harness, "add exponential backoff", false);
+        assert_eq!(count_labels(&harness, RANGE_PILL), 0, "a click alone");
+        click_message(&mut harness, "capped at 5 minutes", true);
+        assert_eq!(count_labels(&harness, RANGE_PILL), 1);
+        let range = |h: &Harness<'_, SessionViewState>| {
+            let session = h.state().session_manager.get_active().unwrap();
+            session.chat_range.span().map(|span| span.rows())
+        };
+        assert_eq!(range(&harness), Some(2..=9));
+        // A Shift+press here mustn't also drag out a text selection.
+        assert!(!harness
+            .ctx
+            .plugin::<egui::text_selection::LabelSelectionState>()
+            .lock()
+            .has_selection());
+
+        // Stretching back past the anchor keeps it.
+        click_message(&mut harness, "relay pool reconnect", true);
+        assert_eq!(range(&harness), Some(0..=2));
+
+        {
+            use egui_kittest::kittest::Queryable;
+            harness.get_by_label("×").click();
+        }
+        harness.run_ok();
+        assert_eq!(range(&harness), None);
+        assert_eq!(count_labels_containing(&harness, " messages"), 0, "no pill");
+    }
+
     /// The session header, cropped from a session view of the chat `seed`
     /// leaves at `now`.
     fn snapshot_header_walltime(name: &str, now: u64, seed: fn(&mut crate::session::ChatSession)) {
@@ -4916,6 +5048,36 @@ mod tests {
             notedeck::theme::light_mode(),
             now,
             seed_chat_times,
+        );
+    }
+
+    /// The spike's chat with this morning's long turn picked as a range,
+    /// prompt to last reply.
+    fn seed_chat_range(session: &mut crate::session::ChatSession) {
+        seed_chat_times(session);
+        session.chat_range.click(2);
+        session.chat_range.extend_to(9, None);
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_chat_range_dark() {
+        snapshot_chat_times(
+            "chat_range_dark",
+            notedeck::theme::dark_mode(false),
+            chat_time(13, 10, 1, 10),
+            seed_chat_range,
+        );
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_chat_range_light() {
+        snapshot_chat_times(
+            "chat_range_light",
+            notedeck::theme::light_mode(),
+            chat_time(13, 10, 1, 10),
+            seed_chat_range,
         );
     }
 
