@@ -10,14 +10,25 @@
 //!
 //! Each lookup also keeps the card's [`Outline`]: its parent card, which
 //! groups a successor chain under its epic.
+//!
+//! The Cmd-K search reads the same titles, so a session is found by its
+//! card's title (see [`search`](crate::search)). It refreshes them only when
+//! older than [`SEARCH_REFRESH_SECS`]: it asks about every session on every
+//! host, not just the list's.
 
 use std::collections::HashMap;
 
-use notedeck::Outline;
+use notedeck::{AppRegistries, Outline, ReferenceResolveCtx};
 
 /// How long a looked-up title is drawn before it is looked up again, so a
 /// card renamed on its board shows in the list within this many seconds.
 pub const REFRESH_SECS: f64 = 2.0;
+
+/// How long a looked-up title answers the Cmd-K search before the search
+/// looks it up again. Longer than [`REFRESH_SECS`]: the search looks up the
+/// refs of every session in the fold, and resolving a card ref walks its
+/// board, so a refresh per keystroke would stall typing.
+pub const SEARCH_REFRESH_SECS: f64 = 30.0;
 
 /// Card titles by card ref, as last looked up.
 #[derive(Default)]
@@ -44,9 +55,31 @@ impl CardTitles {
 
     /// Whether `card_ref` was looked up within [`REFRESH_SECS`] of `now`.
     pub fn is_fresh(&self, card_ref: &str, now: f64) -> bool {
+        self.is_fresh_within(card_ref, now, REFRESH_SECS)
+    }
+
+    /// Whether `card_ref` was looked up within `window` seconds of `now`. A
+    /// lookup "after" `now` (a fresh egui context restarts its clock) isn't.
+    pub fn is_fresh_within(&self, card_ref: &str, now: f64, window: f64) -> bool {
         self.by_ref
             .get(card_ref)
-            .is_some_and(|t| (0.0..REFRESH_SECS).contains(&(now - t.checked_at)))
+            .is_some_and(|t| (0.0..window).contains(&(now - t.checked_at)))
+    }
+
+    /// Look `card_ref` up with `lookup` and [`store`](Self::store) it, unless
+    /// it was looked up within `window` seconds of `now`. Returns whether
+    /// what it found changed, as `store` does.
+    pub fn refresh_within(
+        &mut self,
+        card_ref: &str,
+        now: f64,
+        window: f64,
+        lookup: impl FnOnce() -> CardLookup,
+    ) -> bool {
+        if self.is_fresh_within(card_ref, now, window) {
+            return false;
+        }
+        self.store(card_ref, lookup(), now)
     }
 
     /// The ref of the card `card_ref`'s card is a subissue of, as last looked up.
@@ -98,6 +131,22 @@ pub struct CardLookup {
 }
 
 impl CardLookup {
+    /// The current title and outline of what `card_ref` names, through the
+    /// registered reference parsers and the kind renderer of the note it
+    /// resolves to (see [`AppRegistries::referenced_note`] and
+    /// [`KindRendererRegistry::title`](notedeck::KindRendererRegistry::title)).
+    /// Empty when it doesn't resolve.
+    pub fn of(registries: &AppRegistries, ctx: &ReferenceResolveCtx, card_ref: &str) -> Self {
+        let Some(card) = registries.referenced_note(card_ref, ctx) else {
+            return CardLookup::default();
+        };
+        let renderers = &registries.kind_renderers;
+        CardLookup {
+            title: renderers.title(ctx.ndb, ctx.txn, &card, None),
+            outline: renderers.outline(ctx.ndb, ctx.txn, &card, None),
+        }
+    }
+
     /// A lookup that found `title` and nothing else.
     pub fn titled(title: &str) -> Self {
         CardLookup {
@@ -122,6 +171,25 @@ mod tests {
         assert!(!titles.is_fresh(r, 10.0 + REFRESH_SECS));
         // A clock that went backwards (a fresh egui context) looks it up again.
         assert!(!titles.is_fresh(r, 9.0));
+    }
+
+    #[test]
+    fn a_refresh_looks_up_only_what_is_older_than_its_window() {
+        let mut titles = CardTitles::default();
+        let r = "headway:dave/tone-grief-hour";
+        assert!(titles.refresh_within(r, 10.0, SEARCH_REFRESH_SECS, || {
+            CardLookup::titled("first")
+        }));
+        assert!(!titles.refresh_within(r, 30.0, SEARCH_REFRESH_SECS, || {
+            panic!("looked up again inside its window")
+        }));
+        assert_eq!(titles.get(r), Some("first"));
+        assert!(
+            titles.refresh_within(r, 10.0 + SEARCH_REFRESH_SECS, SEARCH_REFRESH_SECS, || {
+                CardLookup::titled("renamed")
+            })
+        );
+        assert_eq!(titles.get(r), Some("renamed"));
     }
 
     #[test]

@@ -14,7 +14,18 @@
 //!   (`--issue-url`), whole, without its scheme, or just the card's word-id,
 //!   so a card finds the sessions that worked it. Not a part of it: a board's
 //!   name would list every session spawned for that board's cards;
-//! - **by title**: the shared [`fuzzy_match`] on its display title.
+//! - **by title**: the shared [`fuzzy_match`] on its display title, and on
+//!   the current title of what its title or issue references (the card a
+//!   `headway:<board>/<word-id>` names), so a session titled with its card's
+//!   ref is found by the card's words. A hit titled with a ref that resolved
+//!   shows the card's title, with the ref before its subtitle.
+//!
+//! Those titles are the ones the session list keeps
+//! ([`CardTitles`]), looked up through the registered reference parsers and
+//! kind renderers, so Dave never learns what a `headway:` ref is. The search
+//! refreshes them first, in two steps: [`stale_refs`] while the session fold
+//! is borrowed, then [`refresh_titles`] once it isn't, since resolving an
+//! `agentium:` ref reads that same fold.
 //!
 //! Hits rank by that score, then by last activity, newest first. Each opens
 //! through its `agentium:<word-id>` reference, which the app's
@@ -27,10 +38,15 @@
 
 use agentium_core::session_loader::SessionState;
 use agentium_core::wordid;
-use nostrdb_net::NoteId;
+use nostrdb::Transaction;
+use nostrdb_net::{NoteId, Pubkey};
 use notedeck::fuzzy::fuzzy_match;
-use notedeck::{OpenUri, SearchHit, SearchHits, SearchQuery};
+use notedeck::{
+    AppContext, AppRegistries, OpenUri, ReferenceParserRegistry, ReferenceResolveCtx, SearchHit,
+    SearchHits, SearchQuery,
+};
 
+use crate::card_titles::{CardLookup, CardTitles, SEARCH_REFRESH_SECS};
 use crate::path_utils::abbreviate_with_home;
 use crate::session_cache::SessionView;
 
@@ -61,14 +77,106 @@ struct Ranked {
     last_activity: u64,
 }
 
+impl crate::Dave {
+    /// Bring the kept titles of what the account's sessions reference up to
+    /// date for a search (see the module docs), regrouping the session list
+    /// when one changed. Skipped without a window to read the time from: the
+    /// search then answers from the titles already kept.
+    pub(crate) fn refresh_search_titles(
+        &mut self,
+        ctx: &AppContext<'_>,
+        txn: &Transaction,
+        author: Pubkey,
+    ) {
+        let Some(now) = ctx.egui.map(|egui| egui.input(|i| i.time)) else {
+            return;
+        };
+        let parsers = &ctx.registries.reference_parsers;
+        let titles = &mut self.session_manager.card_titles;
+        // Collected under the fold's borrow, resolved after it drops.
+        let stale = self
+            .session_cache
+            .borrow_mut()
+            .with_sessions(ctx.ndb, txn, &author, |sessions| {
+                stale_refs(sessions, parsers, titles, now)
+            })
+            .unwrap_or_default();
+        if stale.is_empty() {
+            return;
+        }
+        let resolve = ReferenceResolveCtx {
+            ndb: ctx.ndb,
+            txn,
+            selected_account: Some(author),
+        };
+        if refresh_titles(&stale, ctx.registries, &resolve, titles, now) {
+            self.session_manager.lineage_changed();
+        }
+    }
+}
+
+/// The references among `sessions`' titles and issues (each whole, trimmed)
+/// that `titles` holds no lookup of from within [`SEARCH_REFRESH_SECS`] of
+/// `now`: the ones [`refresh_titles`] looks up. Only strings that are
+/// exactly one reference a registered parser recognizes, so a plain title
+/// is never looked up.
+#[profiling::function]
+pub(crate) fn stale_refs(
+    sessions: &[SessionView],
+    parsers: &ReferenceParserRegistry,
+    titles: &CardTitles,
+    now: f64,
+) -> Vec<String> {
+    let mut stale = Vec::new();
+    for view in sessions {
+        let state = &view.state;
+        if state.is_deleted() {
+            continue;
+        }
+        let issue = state.issue_url.as_deref();
+        for text in std::iter::once(state.display_title()).chain(issue) {
+            let text = text.trim();
+            if parsers.is_reference(text) && !titles.is_fresh_within(text, now, SEARCH_REFRESH_SECS)
+            {
+                stale.push(text.to_owned());
+            }
+        }
+    }
+    stale
+}
+
+/// Look up each of `refs` into `titles` through `registries`, at `now`,
+/// skipping one already looked up within [`SEARCH_REFRESH_SECS`] (a ref two
+/// sessions share is listed twice). Returns whether what any lookup found
+/// changed, so the caller regroups the session list (see
+/// [`CardTitles::store`]).
+#[profiling::function]
+pub(crate) fn refresh_titles(
+    refs: &[String],
+    registries: &AppRegistries,
+    ctx: &ReferenceResolveCtx,
+    titles: &mut CardTitles,
+    now: f64,
+) -> bool {
+    let mut changed = false;
+    for r in refs {
+        changed |= titles.refresh_within(r, now, SEARCH_REFRESH_SECS, || {
+            CardLookup::of(registries, ctx, r)
+        });
+    }
+    changed
+}
+
 /// Answer `query` from `sessions`, the account's live session views, into
 /// `out`, best first, up to its cap. `by_word_id` is the state note of the
 /// session whose word-id the query is, if any, from the fold's index.
+/// `titles` holds the titles of what sessions' titles and issues reference.
 #[profiling::function]
 pub(crate) fn search(
     sessions: &[SessionView],
     query: &SearchQuery,
     by_word_id: Option<NoteId>,
+    titles: &CardTitles,
     out: &mut SearchHits,
 ) {
     let text = query.text;
@@ -80,7 +188,7 @@ pub(crate) fn search(
             continue;
         }
         let named = by_word_id == Some(view.note_id);
-        let Some(score) = score(state, named, text, &mut positions) else {
+        let Some(score) = score(state, named, text, titles, &mut positions) else {
             continue;
         };
         ranked.push(Ranked {
@@ -99,14 +207,20 @@ pub(crate) fn search(
         if out.is_full() {
             break;
         }
-        out.push(hit(&sessions[r.at].state, r.score));
+        out.push(hit(&sessions[r.at].state, titles, r.score));
     }
 }
 
 /// How well `text` matches `state`, the best of its ways to match (see the
 /// module docs), or `None` when it doesn't. `named` is whether the query is
 /// the session's word-id.
-fn score(state: &SessionState, named: bool, text: &str, positions: &mut Vec<usize>) -> Option<i32> {
+fn score(
+    state: &SessionState,
+    named: bool,
+    text: &str,
+    titles: &CardTitles,
+    positions: &mut Vec<usize>,
+) -> Option<i32> {
     let cli = state.cli_session_id.as_deref();
     if named || state.claude_session_id == text || cli == Some(text) {
         return Some(EXACT);
@@ -123,7 +237,18 @@ fn score(state: &SessionState, named: bool, text: &str, positions: &mut Vec<usiz
     {
         return Some(ISSUE);
     }
-    fuzzy_match(text, state.display_title(), positions)
+    let title = state.display_title();
+    let by_title = fuzzy_match(text, title, positions);
+    let mut by_ref = |r: &str| fuzzy_match(text, ref_title(titles, r)?, positions);
+    let by_title_ref = by_ref(title);
+    let by_issue = state.issue_url.as_deref().and_then(by_ref);
+    by_title.max(by_title_ref).max(by_issue)
+}
+
+/// The title kept for what `text` references, when the whole of it is a
+/// reference that resolved.
+fn ref_title<'a>(titles: &'a CardTitles, text: &str) -> Option<&'a str> {
+    titles.get(text.trim())
 }
 
 /// Whether `text` names `issue`, a `headway:<board>/<word-id>` reference:
@@ -134,19 +259,34 @@ fn names_issue(issue: &str, text: &str) -> bool {
 }
 
 /// The bar's row for `state`: its title, marked as a session, with where and
-/// how it runs, opening its `agentium:` reference.
-fn hit(state: &SessionState, score: i32) -> SearchHit {
+/// how it runs, opening its `agentium:` reference. A title that is a
+/// reference shows what it references, by its title in `titles`, with the
+/// reference itself leading the subtitle.
+fn hit(state: &SessionState, titles: &CardTitles, score: i32) -> SearchHit {
     let uri = OpenUri::new(wordid::session_ref(&state.claude_session_id));
     let cwd = abbreviate_with_home(std::path::Path::new(&state.cwd), &state.home_dir);
-    SearchHit::new(state.display_title(), uri, score)
+    let place = format!("{} · {} · {}", state.hostname, cwd, state.status);
+    let title = state.display_title();
+    let Some(referenced) = ref_title(titles, title) else {
+        return SearchHit::new(title, uri, score)
+            .kind(KIND_SESSION)
+            .subtitled(place);
+    };
+    SearchHit::new(referenced, uri, score)
         .kind(KIND_SESSION)
-        .subtitled(format!("{} · {} · {}", state.hostname, cwd, state.status))
+        .subtitled(format!("{} · {place}", title.trim()))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
     use super::*;
+    use crate::test_refs::{ingest_card, StubCardParser, StubCardRenderer};
     use notedeck::search::HITS_PER_PROVIDER;
+    use notedeck_testing::fixtures::TempNdb;
 
     /// A live session `id` titled `title`, last active at `last_activity`.
     fn view(id: &str, title: &str, last_activity: u64) -> SessionView {
@@ -172,8 +312,25 @@ mod tests {
 
     /// The titles `query` finds in `sessions`, best first.
     fn found(sessions: &[SessionView], query: &str, by_word_id: Option<NoteId>) -> Vec<String> {
+        found_titled(sessions, query, by_word_id, &CardTitles::default())
+    }
+
+    /// The titles `query` finds in `sessions`, with `titles` kept for what
+    /// they reference, best first.
+    fn found_titled(
+        sessions: &[SessionView],
+        query: &str,
+        by_word_id: Option<NoteId>,
+        titles: &CardTitles,
+    ) -> Vec<String> {
         let mut out = SearchHits::new(HITS_PER_PROVIDER);
-        search(sessions, &SearchQuery { text: query }, by_word_id, &mut out);
+        search(
+            sessions,
+            &SearchQuery { text: query },
+            by_word_id,
+            titles,
+            &mut out,
+        );
         out.hits().iter().map(|h| h.title.clone()).collect()
     }
 
@@ -193,6 +350,7 @@ mod tests {
                 text: "relay reconnect",
             },
             None,
+            &CardTitles::default(),
             &mut out,
         );
         let [hit] = out.hits() else {
@@ -287,9 +445,175 @@ mod tests {
             .map(|i| view(&format!("session-{i}"), "Review pass", i))
             .collect();
         let mut out = SearchHits::new(HITS_PER_PROVIDER);
-        search(&sessions, &SearchQuery { text: "review" }, None, &mut out);
+        search(
+            &sessions,
+            &SearchQuery { text: "review" },
+            None,
+            &CardTitles::default(),
+            &mut out,
+        );
         assert_eq!(out.hits().len(), HITS_PER_PROVIDER);
         let newest = wordid::session_ref(&format!("session-{}", HITS_PER_PROVIDER + 2));
         assert_eq!(out.hits()[0].uri.reference, newest);
+    }
+
+    /// A session titled with a card's ref is found by the card's title words,
+    /// shown under the card's title with the ref leading its subtitle, and is
+    /// still found by its ref.
+    #[test]
+    fn a_ref_titled_session_is_found_and_shown_by_its_cards_title() {
+        let card_ref = "headway:notedeck/field-fever-follow";
+        let sessions = [
+            view("session-card", card_ref, 1),
+            view("session-other", "Something else", 2),
+        ];
+        let mut titles = CardTitles::default();
+        titles.store(
+            card_ref,
+            CardLookup::titled("Find sessions by card title"),
+            0.0,
+        );
+
+        let mut out = SearchHits::new(HITS_PER_PROVIDER);
+        let query = SearchQuery {
+            text: "sessions card title",
+        };
+        search(&sessions, &query, None, &titles, &mut out);
+        let [hit] = out.hits() else {
+            panic!("one hit: {:?}", out.hits());
+        };
+        assert_eq!(hit.title, "Find sessions by card title");
+        assert_eq!(
+            hit.subtitle.as_deref(),
+            Some("headway:notedeck/field-fever-follow · monad · ~/dev/notedeck · working")
+        );
+        assert_eq!(hit.uri.reference, wordid::session_ref("session-card"));
+
+        assert_eq!(
+            found_titled(&sessions, "field-fever", None, &titles),
+            ["Find sessions by card title"],
+            "the ref stays matchable"
+        );
+        assert!(
+            found(&sessions, "sessions card title", None).is_empty(),
+            "nothing finds it by a title not looked up"
+        );
+    }
+
+    /// A session spawned for a card is found by the card's title words too,
+    /// and keeps its own title.
+    #[test]
+    fn the_issues_card_title_finds_a_session() {
+        let card_ref = "headway:notedeck/label-weekend-expire";
+        let mut worked = view("session-card", "Dave sessions in Cmd-K", 1);
+        worked.state.issue_url = Some(card_ref.to_owned());
+        let mut titles = CardTitles::default();
+        titles.store(
+            card_ref,
+            CardLookup::titled("Search provider for agents"),
+            0.0,
+        );
+        assert_eq!(
+            found_titled(&[worked], "provider agents", None, &titles),
+            ["Dave sessions in Cmd-K"]
+        );
+    }
+
+    /// The refs a search looks up are the sessions' titles and issues that
+    /// are references, once each per refresh window: not a plain title, not
+    /// one looked up within the window, not a deleted session's.
+    #[test]
+    fn stale_refs_are_the_references_not_looked_up_lately() {
+        let mut parsers = ReferenceParserRegistry::default();
+        parsers.register(Box::new(StubCardParser {
+            card: Default::default(),
+        }));
+        let mut titled = view("session-a", "headway:notedeck/field-fever-follow", 1);
+        titled.state.issue_url = Some("headway:notedeck/label-weekend-expire".to_owned());
+        let plain = view("session-b", "A plain title", 2);
+        let mut gone = view("session-c", "headway:notedeck/gone-gone-gone", 3);
+        gone.state.status = agentium_core::session_loader::DELETED_STATUS.to_owned();
+        let sessions = [titled, plain, gone];
+
+        let mut titles = CardTitles::default();
+        assert_eq!(
+            stale_refs(&sessions, &parsers, &titles, 100.0),
+            [
+                "headway:notedeck/field-fever-follow",
+                "headway:notedeck/label-weekend-expire"
+            ]
+        );
+        titles.store(
+            "headway:notedeck/field-fever-follow",
+            CardLookup::default(),
+            90.0,
+        );
+        assert_eq!(
+            stale_refs(&sessions, &parsers, &titles, 100.0),
+            ["headway:notedeck/label-weekend-expire"],
+            "a ref looked up within the window, even a miss, isn't again"
+        );
+        assert_eq!(
+            stale_refs(&sessions, &parsers, &titles, 90.0 + SEARCH_REFRESH_SECS).len(),
+            2,
+            "until the window passes"
+        );
+    }
+
+    /// The whole path: a session titled with a card's ref, and the card's
+    /// note in the db, resolved through the registered parser and renderer
+    /// (stand-ins for headway's). A query of the card's title words finds the
+    /// session.
+    #[tokio::test]
+    async fn a_query_of_its_cards_title_finds_a_ref_titled_session() {
+        let card_ref = "headway:notedeck/field-fever-follow";
+        let card_title = "Find Dave sessions by the title of the card they reference";
+        let TempNdb { ndb, dir: _dir } = TempNdb::new();
+        let card = Rc::new(RefCell::new(None));
+        let mut registries = AppRegistries::default();
+        registries
+            .reference_parsers
+            .register(Box::new(StubCardParser { card: card.clone() }));
+        registries
+            .kind_renderers
+            .register(Box::new(StubCardRenderer));
+
+        let kp = nostrdb_net::FullKeypair::generate();
+        let sub = ndb
+            .subscribe(&[nostrdb::Filter::new().kinds([1621]).build()])
+            .expect("subscribe");
+        *card.borrow_mut() = Some(ingest_card(
+            &ndb,
+            &kp.secret_key.secret_bytes(),
+            card_ref,
+            card_title,
+        ));
+        tokio::time::timeout(Duration::from_secs(5), ndb.wait_for_notes(sub, 1))
+            .await
+            .expect("ingested within 5s")
+            .expect("ingest notified the subscription");
+
+        let sessions = [
+            view("session-card", card_ref, 1),
+            view("session-other", "Fix relay reconnect", 2),
+        ];
+        let mut titles = CardTitles::default();
+        let stale = stale_refs(&sessions, &registries.reference_parsers, &titles, 0.0);
+        let txn = nostrdb::Transaction::new(&ndb).expect("txn");
+        let ctx = ReferenceResolveCtx {
+            ndb: &ndb,
+            txn: &txn,
+            selected_account: None,
+        };
+        assert!(refresh_titles(&stale, &registries, &ctx, &mut titles, 0.0));
+        assert!(
+            !refresh_titles(&stale, &registries, &ctx, &mut titles, 1.0),
+            "nothing is looked up again inside the window"
+        );
+
+        assert_eq!(
+            found_titled(&sessions, "title of the card", None, &titles),
+            [card_title]
+        );
     }
 }

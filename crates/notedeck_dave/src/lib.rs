@@ -41,6 +41,8 @@ mod session_restore_loader;
 pub mod slash;
 mod stream_events;
 #[cfg(test)]
+mod test_refs;
+#[cfg(test)]
 mod test_support;
 mod turn_rows;
 mod ui_tools;
@@ -1753,9 +1755,10 @@ impl notedeck::App for Dave {
     }
 
     /// The account's sessions for the chrome's Cmd-K bar (see [`search`]): by
-    /// title, reference and spawning issue, on every host, read off the shared
-    /// session fold the inline chips read. While that fold is still seeding on
-    /// its worker the answer is pending, so the bar asks again.
+    /// title, reference and spawning issue, and by the title of what a title
+    /// or issue references, on every host, read off the shared session fold
+    /// the inline chips read. While that fold is still seeding on its worker
+    /// the answer is pending, so the bar asks again.
     fn search(
         &mut self,
         ctx: &mut AppContext<'_>,
@@ -1766,13 +1769,20 @@ impl notedeck::App for Dave {
         let Ok(txn) = Transaction::new(ctx.ndb) else {
             return;
         };
+        self.refresh_search_titles(ctx, &txn, author);
         let mut cache = self.session_cache.borrow_mut();
         // A pasted `agentium:<word-id>` or bare word-id names one session; the
         // fold's word-id index finds it without hashing every session's id.
         let words = agentium_core::wordid::parse_ref(query.text).unwrap_or(query.text);
         let by_word_id = cache.resolve_wordid(ctx.ndb, &txn, &author, words);
         let answered = cache.with_sessions(ctx.ndb, &txn, &author, |sessions| {
-            search::search(sessions, query, by_word_id, out)
+            search::search(
+                sessions,
+                query,
+                by_word_id,
+                &self.session_manager.card_titles,
+                out,
+            )
         });
         if answered.is_none() {
             out.set_pending();

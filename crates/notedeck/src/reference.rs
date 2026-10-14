@@ -195,11 +195,22 @@ impl ReferenceParserRegistry {
     /// local db yet).
     pub fn resolve_exact(&self, reference: &str, ctx: &ReferenceResolveCtx) -> Option<ResolvedRef> {
         let reference = reference.trim();
-        let m = self.find_next(reference)?;
-        if m.range != (0..reference.len()) {
-            return None;
-        }
+        let m = self.exact_match(reference)?;
         self.get(m.parser)?.resolve(reference, ctx)
+    }
+
+    /// Whether `text` is *exactly one* reference some registered parser
+    /// recognizes, by the same rule as [`resolve_exact`](Self::resolve_exact)
+    /// but without resolving it. Allocation-free, so a caller can sift many
+    /// strings for the few worth resolving.
+    pub fn is_reference(&self, text: &str) -> bool {
+        self.exact_match(text.trim()).is_some()
+    }
+
+    /// The match spanning the whole of `reference`, already trimmed, if any.
+    fn exact_match(&self, reference: &str) -> Option<ReferenceMatch> {
+        self.find_next(reference)
+            .filter(|m| m.range == (0..reference.len()))
     }
 }
 
@@ -451,6 +462,12 @@ mod tests {
         // Nothing recognizable, or a recognized reference that doesn't resolve.
         assert_eq!(parsers.resolve_exact("", &ctx), None);
         assert_eq!(parsers.resolve_exact("nostr:note1nope", &ctx), None);
+
+        // `is_reference` holds to the same whole-span rule, resolving nothing.
+        assert!(parsers.is_reference("  @alice\n"));
+        assert!(parsers.is_reference("nostr:note1nope"));
+        assert!(!parsers.is_reference("ping @alice"));
+        assert!(!parsers.is_reference(""));
     }
 
     #[test]

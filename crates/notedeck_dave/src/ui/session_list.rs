@@ -681,11 +681,8 @@ pub fn refresh_card_titles(
     }
 }
 
-/// The current title and outline of the card `card_ref` names, through the
-/// registered reference parsers and the kind renderer of the note it resolves
-/// to (see [`KindRendererRegistry::title`](notedeck::KindRendererRegistry::title)
-/// and [`outline`](notedeck::KindRendererRegistry::outline)). Empty when it
-/// doesn't resolve.
+/// The current title and outline of the card `card_ref` names (see
+/// [`CardLookup::of`]), relative to the selected account.
 fn lookup_card(refs: &TitleRefs<'_, '_>, card_ref: &str) -> CardLookup {
     let note = &*refs.note;
     let ctx = notedeck::ReferenceResolveCtx {
@@ -693,21 +690,7 @@ fn lookup_card(refs: &TitleRefs<'_, '_>, card_ref: &str) -> CardLookup {
         txn: refs.txn,
         selected_account: Some(*note.accounts.selected_account_pubkey()),
     };
-    let Some(resolved) = note
-        .registries
-        .reference_parsers
-        .resolve_exact(card_ref, &ctx)
-    else {
-        return CardLookup::default();
-    };
-    let Ok(card) = note.ndb.get_note_by_id(refs.txn, resolved.note_id.bytes()) else {
-        return CardLookup::default();
-    };
-    let renderers = &note.registries.kind_renderers;
-    CardLookup {
-        title: renderers.title(note.ndb, refs.txn, &card, None),
-        outline: renderers.outline(note.ndb, refs.txn, &card, None),
-    }
+    CardLookup::of(note.registries, &ctx, card_ref)
 }
 
 /// Where a session's row sits in the list. Every row is one session.
@@ -2256,6 +2239,7 @@ mod tests {
     use crate::focus_queue::{FocusPriority, FocusQueue};
     use crate::session::SessionId;
     use crate::session::SessionManager;
+    use crate::test_refs::{ingest_card, StubCardParser, StubCardRenderer};
     use egui::Event;
     use egui_kittest::{
         kittest::{NodeT, Queryable},
@@ -3311,79 +3295,6 @@ mod tests {
         );
     }
 
-    /// Stands in for headway's `headway:` parser, which Dave doesn't load:
-    /// the one card ref it knows resolves to its seeded kind-1621 note.
-    struct StubCardParser {
-        card: std::rc::Rc<std::cell::RefCell<Option<CardNote>>>,
-    }
-
-    /// The card [`StubCardParser`] resolves: its ref and its note.
-    struct CardNote {
-        card_ref: String,
-        note: nostrdb_net::NoteId,
-    }
-
-    impl notedeck::ReferenceParser for StubCardParser {
-        fn id(&self) -> &'static str {
-            "headway"
-        }
-
-        fn find(&self, text: &str) -> Option<std::ops::Range<usize>> {
-            headway::wordid::find_ref(text)
-        }
-
-        fn resolve(
-            &self,
-            matched: &str,
-            _ctx: &notedeck::ReferenceResolveCtx,
-        ) -> Option<notedeck::ResolvedRef> {
-            let card = self.card.borrow();
-            let card = card.as_ref().filter(|c| c.card_ref == matched)?;
-            Some(notedeck::ResolvedRef::note(card.note))
-        }
-    }
-
-    /// Stands in for headway's card renderer: the note's content is the
-    /// card's title, which its chip shows beside a status glyph.
-    struct StubCardRenderer;
-
-    impl notedeck::KindRenderer for StubCardRenderer {
-        fn id(&self) -> &'static str {
-            "test.card"
-        }
-
-        fn name(&self) -> &'static str {
-            "Test card"
-        }
-
-        fn kinds(&self) -> &'static [u32] {
-            &[1621]
-        }
-
-        fn render(
-            &self,
-            ui: &mut egui::Ui,
-            _note_context: &mut notedeck::NoteContext,
-            req: &notedeck::KindRenderRequest,
-        ) -> notedeck::KindRenderResponse {
-            let theme = notedeck::ColorTheme::current(ui.ctx());
-            let response =
-                notedeck_ui::inline_chip(ui, &theme, req.note.content(), req.chrome, |ui, size| {
-                    ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-                });
-            notedeck::open_on_click(ui, response, req)
-        }
-
-        fn title(
-            &self,
-            _ndb: &nostrdb::Ndb,
-            _txn: &nostrdb::Transaction,
-            note: &nostrdb::Note,
-        ) -> Option<String> {
-            Some(note.content().to_owned())
-        }
-    }
-
     /// A session titled with its card's ref draws the card's inline chip on
     /// its row, showing the card's title, not the raw ref. The regression: the
     /// row painted the title as bare text and drew no chip.
@@ -3433,28 +3344,25 @@ mod tests {
         harness.run_steps(2);
 
         let secret = harness.state().account.secret_key.secret_bytes();
-        let note = nostrdb::NoteBuilder::new()
-            .kind(1621)
-            .content(title)
-            .created_at(1_700_000_000)
-            .sign(&secret)
-            .build()
-            .expect("note");
-        *card.borrow_mut() = Some(CardNote {
-            card_ref: card_ref.to_string(),
-            note: nostrdb_net::NoteId::new(*note.id()),
-        });
-        let frame = nostrdb_net::ClientMessage::event(&note)
-            .expect("event")
-            .to_json()
-            .expect("json");
-        harness
-            .state_mut()
-            .notedeck
-            .app_context()
-            .ndb
-            .process_event_with(&frame, nostrdb::IngestMetadata::new().client(true))
-            .expect("ingest");
+        {
+            // Committed before the next frame looks it up, so that lookup
+            // finds it rather than keeping a miss for a refresh window.
+            let ctx = harness.state_mut().notedeck.app_context();
+            let sub = ctx
+                .ndb
+                .subscribe(&[nostrdb::Filter::new().kinds([1621]).build()])
+                .expect("subscribe");
+            *card.borrow_mut() = Some(ingest_card(ctx.ndb, &secret, card_ref, title));
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .expect("runtime")
+                .block_on(
+                    ctx.ndb
+                        .wait_for_all_notes_within(sub, 1, Duration::from_secs(5)),
+                )
+                .expect("the card's note is ingested");
+        }
 
         // The card's title is looked up for the list, and the row's chip
         // draws it.
