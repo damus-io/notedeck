@@ -629,6 +629,10 @@ impl Cli {
         let mut config_name = None;
         let mut config_command = None;
         let mut positionals: Vec<String> = Vec::new();
+        // Every flag the run passed, as typed and in order, so the command can
+        // be held to the ones it documents once its name is known (the name
+        // can come after its flags, so it can't be checked as they're read).
+        let mut flags: Vec<String> = Vec::new();
         // `-h`/`--help` is answered after the loop, once the positionals say
         // *which* help — the overview, or one command's page.
         let mut want_help = false;
@@ -712,8 +716,12 @@ impl Cli {
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
-                _ => positionals.push(arg),
+                _ => {
+                    positionals.push(arg);
+                    continue;
+                }
             }
+            flags.push(arg);
         }
 
         // `agentium help [cmd]` is the same two pages spelled as a command, so
@@ -740,6 +748,10 @@ impl Cli {
         if want_help {
             return Ok(Invocation::CommandHelp(spec));
         }
+        // Every flag lands in one bag above, so hold the command to the flags
+        // its help page lists: a misplaced or typo'd one (`list --prompt`)
+        // fails here rather than being silently dropped.
+        help::check_flags(spec, &flags)?;
         let view = MessageView {
             roles,
             last,
@@ -775,9 +787,6 @@ impl Cli {
             } else {
                 Decision::Deny
             };
-            if interrupt && decision == Decision::Approve {
-                return Err("--interrupt only applies to `deny` (deny and stop the turn)".into());
-            }
             Command::Respond {
                 session: arg(rest, 0, name)?,
                 opts: ResponseOpts {
@@ -1431,6 +1440,108 @@ mod tests {
                 assert!(wait);
             }
             _ => panic!("expected Spawn"),
+        }
+    }
+
+    /// A flag the command doesn't document fails, naming the command and its
+    /// help page, rather than parsing and being silently dropped.
+    #[test]
+    fn a_command_rejects_flags_it_doesnt_take() {
+        let err = parse_err(&["--nsec", TEST_NSEC, "list", "--prompt", "x"]);
+        assert_eq!(
+            err,
+            "`list` doesn't take --prompt (see `agentium list --help`)"
+        );
+        let err = parse_err(&[
+            "--nsec",
+            TEST_NSEC,
+            "send",
+            "agentium:a-b-c",
+            "hi",
+            "--wait",
+        ]);
+        assert!(err.contains("`send` doesn't take --wait"), "{err}");
+        // A flag before the command name is held to it just the same.
+        let err = parse_err(&["--nsec", TEST_NSEC, "--json", "resume", "agentium:a-b-c"]);
+        assert!(err.contains("`resume` doesn't take --json"), "{err}");
+
+        // --interrupt is deny's alone: stopping the turn is a deny.
+        assert!(parse_cli(&["--nsec", TEST_NSEC, "deny", "agentium:a-b-c", "--interrupt"]).is_ok());
+        let err = parse_err(&[
+            "--nsec",
+            TEST_NSEC,
+            "approve",
+            "agentium:a-b-c",
+            "--interrupt",
+        ]);
+        assert!(err.contains("`approve` doesn't take --interrupt"), "{err}");
+
+        // Help still wins: the stray flag doesn't stop list's page printing.
+        assert_eq!(
+            help_of(&["list", "--prompt", "x", "--help"]),
+            Some(Some("list"))
+        );
+    }
+
+    /// The global flags are taken by every command, before or after its name.
+    #[test]
+    fn every_command_takes_the_global_flags() {
+        let hex = "ab".repeat(32);
+        for cmd in help::COMMANDS {
+            for (before, after) in [(true, false), (false, true)] {
+                let globals = [
+                    "--nsec", TEST_NSEC, "--relay", "ws://x", "--db", "/x", "--author", &hex,
+                ];
+                let mut argv: Vec<&str> = Vec::new();
+                if before {
+                    argv.extend(globals);
+                }
+                argv.extend([cmd.name, "agentium:a-b-c", "plan"]);
+                if after {
+                    argv.extend(globals);
+                }
+                if let Err(e) = parse_cli(&argv) {
+                    assert!(!e.to_string().contains("doesn't take"), "{argv:?}: {e}");
+                }
+            }
+        }
+    }
+
+    /// A value the parser accepts for a documented flag, so the run gets past
+    /// the flag's own validation and reaches the check under test.
+    fn dummy_value(flag: &str) -> &'static str {
+        match flag {
+            "--color" => "auto",
+            "--permission-mode" => "plan",
+            "--model" => "sonnet",
+            "--issue-url" => "headway:notedeck/x",
+            "--role" => "user",
+            _ => "1",
+        }
+    }
+
+    /// Every flag a command's help page lists is one its parser takes: the
+    /// page can't advertise a flag the check would then refuse. Other errors
+    /// (a bad session, a conflicting combination) are fine here — only
+    /// "doesn't take" fails.
+    #[test]
+    fn every_documented_flag_is_accepted() {
+        for cmd in help::COMMANDS {
+            for (key, _) in cmd.options {
+                let takes_value = key.contains('<');
+                for flag in cli_term::help::option_names(key) {
+                    let mut argv = vec!["--nsec", TEST_NSEC, cmd.name, "agentium:a-b-c", "plan"];
+                    argv.push(flag);
+                    if takes_value {
+                        argv.push(dummy_value(flag));
+                    }
+                    if let Err(e) = parse_cli(&argv) {
+                        let e = e.to_string();
+                        assert!(!e.contains("doesn't take"), "{argv:?}: {e}");
+                        assert!(!e.contains("unknown flag"), "{argv:?}: {e}");
+                    }
+                }
+            }
         }
     }
 

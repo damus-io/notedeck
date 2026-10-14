@@ -558,9 +558,14 @@ pub fn lookup(name: &str) -> Option<&'static CommandHelp> {
     CLI.lookup(name)
 }
 
-/// Print the grouped command list: `agentium --help`.
-pub fn print_usage(default_relay: &str) {
-    let globals: &[(&str, &str)] = &[
+/// Hand `f` the options every command takes, as the overview prints them.
+/// Built in one place so the overview and [`check_flags`] read the same list:
+/// a global the overview documents is one every command accepts.
+fn with_globals<R>(default_relay: &str, f: impl FnOnce(&[(&str, &str)]) -> R) -> R {
+    let relay = format!(
+        "Relay URL. Passing it also remembers it as the default for later runs (--relay > $AGENTIUM_RELAY > stored > {default_relay})"
+    );
+    f(&[
         (
             "--nsec <nsec>",
             "Signing key for this run. Normally unnecessary — run `agentium login` once and it's reused. $AGENTIUM_NSEC, if set, takes precedence over the stored key",
@@ -569,20 +574,26 @@ pub fn print_usage(default_relay: &str) {
             "--author <pk>",
             "Identity whose sessions to read (defaults to the signer). Sessions are PNS-encrypted to their owner, so a pubkey other than yours lists nothing decryptable",
         ),
-        (
-            "--relay <url>",
-            &format!(
-                "Relay URL. Passing it also remembers it as the default for later runs (--relay > $AGENTIUM_RELAY > stored > {default_relay})"
-            ),
-        ),
+        ("--relay <url>", &relay),
         (
             "--db <path>",
             "nostrdb cache dir, remembered like --relay [default: <data-dir>/agentium-cli]",
         ),
         ("-h, --help", "Print this help, or a command's own"),
-    ];
-    eprint!(
-        "{}",
+    ])
+}
+
+/// Hold a run of `cmd` to the flags its page documents plus the global ones:
+/// `Err` naming the first flag in `passed` (each as typed) it doesn't take.
+pub fn check_flags(cmd: &CommandHelp, passed: &[String]) -> Result<(), String> {
+    with_globals(nostrdb_net::relay::sync::DEFAULT_RELAY, |globals| {
+        CLI.check_flags(cmd, globals, passed)
+    })
+}
+
+/// Print the grouped command list: `agentium --help`.
+pub fn print_usage(default_relay: &str) {
+    let overview = with_globals(default_relay, |globals| {
         CLI.overview(
             globals,
             "\
@@ -591,7 +602,8 @@ SESSION ARGUMENTS:
     cli-session id, or an agentium:<word-id> ref.
 ",
         )
-    );
+    });
+    eprint!("{overview}");
 }
 
 /// Print one command's page: `agentium <cmd> --help`.

@@ -148,6 +148,37 @@ USAGE:
         out
     }
 
+    /// Hold a run to the flags `cmd` documents: `Err` naming the first of
+    /// `passed` that is neither one of `globals` nor among `cmd`'s own
+    /// [`options`](CommandHelp::options), e.g. `` `list` doesn't take --prompt
+    /// (see `agentium list --help`) ``.
+    ///
+    /// `passed` is every flag the run gave, spelled as typed, in the order
+    /// seen. Reading the accepted set off the help table is what keeps a
+    /// command's page and its parser from drifting: a flag the parser reads but
+    /// the page leaves out is rejected the first time anyone passes it.
+    pub fn check_flags<S: AsRef<str>>(
+        &self,
+        cmd: &CommandHelp,
+        globals: &[(&str, &str)],
+        passed: &[S],
+    ) -> Result<(), String> {
+        let takes = |flag: &str| {
+            globals
+                .iter()
+                .chain(cmd.options)
+                .any(|(key, _)| option_names(key).any(|name| name == flag))
+        };
+        let Some(flag) = passed.iter().map(AsRef::as_ref).find(|f| !takes(f)) else {
+            return Ok(());
+        };
+        Err(format!(
+            "`{name}` doesn't take {flag} (see `{bin} {name} --help`)",
+            name = cmd.name,
+            bin = self.bin,
+        ))
+    }
+
     /// The table's invariants, for each CLI to assert from its own tests:
     /// command names are unique (a duplicate would shadow its twin in
     /// [`lookup`](Cli::lookup) and print twice), and every command's group is
@@ -167,6 +198,16 @@ USAGE:
         }
         Ok(())
     }
+}
+
+/// The flag names an option key spells: `"-n, --last <n>"` gives `-n` and
+/// `--last`. Each comma-separated part contributes its first word, and only a
+/// word that starts with `-` counts, so a comma inside a value placeholder
+/// (`"--role <r[,r…]>"`) adds nothing.
+pub fn option_names(key: &str) -> impl Iterator<Item = &str> {
+    key.split(',')
+        .filter_map(|part| part.split_whitespace().next())
+        .filter(|word| word.starts_with('-'))
 }
 
 /// Render `(flag, description)` pairs as an aligned, wrapped block — each line
@@ -318,6 +359,42 @@ mod tests {
             ..FIXTURE
         };
         assert!(STRAY.check().unwrap_err().contains("'put'"));
+    }
+
+    /// Option keys yield each flag they spell, whatever placeholder follows,
+    /// and a comma inside a placeholder isn't read as a second flag. The keys
+    /// are real ones from the agentium and headway tables.
+    #[test]
+    fn option_names_reads_every_spelling() {
+        let names = |key| option_names(key).collect::<Vec<_>>();
+        assert_eq!(names("--json"), ["--json"]);
+        assert_eq!(names("--prompt-file <p>"), ["--prompt-file"]);
+        assert_eq!(names("-i, --ignore-case"), ["-i", "--ignore-case"]);
+        assert_eq!(names("-n, --last <n>"), ["-n", "--last"]);
+        assert_eq!(names("--role <r[,r…]>"), ["--role"]);
+        assert_eq!(names("-n, --count <k>"), ["-n", "--count"]);
+    }
+
+    /// A run passes when every flag is global or the command's own, and
+    /// otherwise names the first stray flag, the command, and its help page.
+    #[test]
+    fn check_flags_names_the_first_stray_flag() {
+        let show = FIXTURE.lookup("show").unwrap();
+        let put = FIXTURE.lookup("put").unwrap();
+        let globals = [("-d, --db <path>", "Where")];
+        let none: [&str; 0] = [];
+
+        assert_eq!(FIXTURE.check_flags(show, &globals, &none), Ok(()));
+        assert_eq!(
+            FIXTURE.check_flags(show, &globals, &["--all", "-d", "--db"]),
+            Ok(())
+        );
+        assert_eq!(
+            FIXTURE.check_flags(put, &globals, &["--db", "--all", "--x"]),
+            Err("`put` doesn't take --all (see `demo put --help`)".to_string())
+        );
+        // A global's placeholder isn't a flag of its own.
+        assert!(FIXTURE.check_flags(put, &globals, &["<path>"]).is_err());
     }
 
     /// Wrapping breaks at the help width and indents continuation lines.
