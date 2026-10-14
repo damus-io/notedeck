@@ -13,6 +13,15 @@
 //! search found for the query after them (see [`super::command_search`]). Each row's text is laid out once per
 //! filter, so a frame with the bar open only draws.
 //!
+//! A search hit that stands for a note or a profile
+//! ([`preview`](CommandItem::preview)) draws as that thing: a profile with
+//! its picture before its title, a note through the
+//! [`KindRenderer`](notedeck::KindRenderer) registered for its kind, in
+//! [`RenderContext::Row`] (a card's chip with its live status, a note's
+//! author and text), its kind and subtitle at the row's right. Each frame
+//! looks the thing up again, so a profile or note that lands after the query
+//! still draws; one not in the db draws as text, like any other row.
+//!
 //! A chosen row can ask for more before it runs: a tool's argument (see
 //! [`super::command_tools`]). The bar then steps into a new level, its prompt
 //! drawn before the query: another list to pick from, or the query itself as
@@ -22,14 +31,20 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use egui::text::{LayoutJob, TextFormat};
-use egui::{Color32, FontFamily, FontId, Galley, Key, Modifiers, Sense, Shadow, Stroke, Vec2};
+use egui::{
+    Align, Color32, FontFamily, FontId, Galley, Key, Layout, Modifiers, Rect, Sense, Shadow, Shape,
+    Stroke, Vec2,
+};
+use nostrdb::Transaction;
 use notedeck::fuzzy::{contains_words, fuzzy_match};
 use notedeck::tokens::{RADIUS_LG, RADIUS_MD, SPACING_LG, SPACING_MD, SPACING_SM, STROKE_THIN};
 use notedeck::{
-    tr, AppAction, AppContext, ColorTheme, CommandAction, CommandItem, Localization,
-    NamedFontFamily, ToolInvocation, ToolOutcome, ToolSpec,
+    get_profile_url, tr, AppAction, AppContext, ColorTheme, CommandAction, CommandItem, HitPreview,
+    InlineChrome, Interaction, KindRenderRequest, Localization, NamedFontFamily, RenderContext,
+    ToolInvocation, ToolOutcome, ToolSpec,
 };
 use notedeck_ui::keybind_hint::{keycap_width, KeybindHint, KEYCAP};
+use notedeck_ui::ProfilePic;
 
 use super::actions::chrome_handle_app_action;
 use super::command_search::SearchState;
@@ -57,8 +72,19 @@ const PANEL_WIDTH: f32 = 640.0;
 /// The tallest the result list gets before it scrolls.
 const LIST_HEIGHT: f32 = 420.0;
 
-/// The height of one result row.
+/// The height of one result row; a row drawing a note taller than it grows.
 const ROW_HEIGHT: f32 = 36.0;
+
+/// The space above and below what a row draws, when that is taller than
+/// [`ROW_HEIGHT`] leaves room for.
+const ROW_PAD: f32 = 6.0;
+
+/// The size of a profile hit's picture.
+const AVATAR_SIZE: f32 = 24.0;
+
+/// The most of a row's width its subtitle takes when the row draws a note:
+/// the note gets the rest.
+const PREVIEW_SUBTITLE_SHARE: f32 = 0.4;
 
 /// The height of a section heading.
 const HEADING_HEIGHT: f32 = 28.0;
@@ -128,8 +154,11 @@ struct RowText {
     /// The section heading drawn above it, when it is its section's first
     /// row.
     heading: Option<Arc<Galley>>,
-    /// Its title, matched characters highlighted, then its subtitle.
+    /// Its title, matched characters highlighted, then its subtitle. A row
+    /// drawing a note draws this only when the note doesn't resolve.
     line: Arc<Galley>,
+    /// For a row drawing a note: its kind and subtitle, drawn at its right.
+    side: Option<Arc<Galley>>,
 }
 
 /// What a level of the bar asks for.
@@ -559,21 +588,42 @@ impl CommandBar {
                 .keycap
                 .as_deref()
                 .map_or(0.0, |k| keycap_width(k) + SPACING_MD);
+            let avatar = match item.preview {
+                Some(HitPreview::Profile(_)) => AVATAR_SIZE + SPACING_SM,
+                _ => 0.0,
+            };
             let job = row_job(
                 item,
                 &self.positions[row.matched.clone()],
                 theme,
-                key.width - keycap,
+                key.width - keycap - avatar,
             );
             let line = ctx.fonts_mut(|f| f.layout_job(job));
-            self.texts.push(RowText { heading, line });
+            let side = match (item.preview, &item.subtitle) {
+                (Some(HitPreview::Note(_)), Some(subtitle)) => {
+                    let mut job = LayoutJob::single_section(
+                        subtitle.clone(),
+                        TextFormat::simple(FontId::proportional(SMALL_SIZE), theme.text_muted),
+                    );
+                    job.wrap.max_width = key.width * PREVIEW_SUBTITLE_SHARE;
+                    job.wrap.max_rows = 1;
+                    job.wrap.break_anywhere = true;
+                    Some(ctx.fonts_mut(|f| f.layout_job(job)))
+                }
+                _ => None,
+            };
+            self.texts.push(RowText {
+                heading,
+                line,
+                side,
+            });
         }
     }
 
     /// Draw it over everything, if it is open, handing back what a clicked
     /// row does. A click outside it closes it.
     #[profiling::function]
-    fn show(&mut self, ctx: &egui::Context) -> Option<CommandAction> {
+    fn show(&mut self, app: &mut AppContext, ctx: &egui::Context) -> Option<CommandAction> {
         if !self.open {
             return None;
         }
@@ -633,7 +683,7 @@ impl CommandBar {
                                     y,
                                     Stroke::new(STROKE_THIN, theme.border_default),
                                 );
-                                clicked = self.results_ui(ui, &theme, row_width, layout);
+                                clicked = self.results_ui(ui, app, &theme, row_width, layout);
                             })
                     })
                     .inner
@@ -741,6 +791,7 @@ impl CommandBar {
     fn results_ui(
         &mut self,
         ui: &mut egui::Ui,
+        app: &mut AppContext,
         theme: &ColorTheme,
         row_width: f32,
         layout: LayoutKey,
@@ -768,8 +819,16 @@ impl CommandBar {
             texts,
             selected,
             reveal_selected,
+            hits_from,
             ..
         } = self;
+        // One transaction for every row that looks its note or profile up,
+        // opened only when one does.
+        let txn = items[*hits_from..]
+            .iter()
+            .any(|item| item.preview.is_some())
+            .then(|| Transaction::new(app.ndb).ok())
+            .flatten();
         let pointer_moved = ui.input(|i| i.pointer.delta() != Vec2::ZERO);
         let selected_fill = selected_fill(theme);
         let max_height = (ui.max_rect().bottom() - ui.cursor().top()).min(LIST_HEIGHT);
@@ -783,6 +842,13 @@ impl CommandBar {
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
+                        // A renderer sizes a row's chip to the prose it
+                        // takes itself to sit in, `Body`; here that is a
+                        // row's title. Set on the one style this list
+                        // already made its own above, not per row.
+                        ui.style_mut()
+                            .text_styles
+                            .insert(egui::TextStyle::Body, FontId::proportional(TITLE_SIZE));
                         for (i, (row, text)) in rows.iter().zip(texts.iter()).enumerate() {
                             if let Some(heading) = &text.heading {
                                 let (rect, _) = ui.allocate_exact_size(
@@ -796,26 +862,38 @@ impl CommandBar {
                                 ui.painter().galley(pos, heading.clone(), theme.text_muted);
                             }
 
-                            let (rect, response) = ui.allocate_exact_size(
-                                egui::vec2(row_width, ROW_HEIGHT),
-                                Sense::click(),
+                            let item = &items[row.item];
+                            // The fill goes under what the row draws, but its
+                            // height is known only once that is drawn.
+                            let fill = ui.painter().add(Shape::Noop);
+                            let top = ui.cursor().min;
+                            let content = Rect::from_min_size(
+                                top + egui::vec2(SPACING_MD, ROW_PAD),
+                                egui::vec2(
+                                    row_width - 2.0 * SPACING_MD,
+                                    ROW_HEIGHT - 2.0 * ROW_PAD,
+                                ),
                             );
+                            let drawn = RowContent {
+                                item,
+                                text,
+                                rect: content,
+                            }
+                            .ui(ui, app, txn.as_ref(), theme);
+                            let height = ROW_HEIGHT.max(drawn + 2.0 * ROW_PAD);
+                            let (rect, response) = ui
+                                .allocate_exact_size(egui::vec2(row_width, height), Sense::click());
                             if response.hovered() && pointer_moved {
                                 *selected = i;
                             }
                             if i == *selected {
-                                ui.painter().rect_filled(rect, RADIUS_MD, selected_fill);
+                                ui.painter()
+                                    .set(fill, Shape::rect_filled(rect, RADIUS_MD, selected_fill));
                                 if std::mem::take(reveal_selected) {
                                     response.scroll_to_me(None);
                                 }
                             }
-                            let pos = egui::pos2(
-                                rect.left() + SPACING_MD,
-                                rect.center().y - text.line.size().y / 2.0,
-                            );
-                            ui.painter()
-                                .galley(pos, text.line.clone(), theme.text_primary);
-                            if let Some(keycap) = items[row.item].keycap.as_deref() {
+                            if let Some(keycap) = item.keycap.as_deref() {
                                 let w = keycap_width(keycap);
                                 KeybindHint::new(keycap)
                                     .size(KEYCAP)
@@ -825,7 +903,7 @@ impl CommandBar {
                                         ui,
                                         egui::pos2(
                                             rect.right() - SPACING_MD - w / 2.0,
-                                            rect.center().y,
+                                            rect.top() + ROW_HEIGHT / 2.0,
                                         ),
                                     );
                             }
@@ -836,6 +914,123 @@ impl CommandBar {
                     });
             });
         clicked
+    }
+}
+
+/// What one row draws inside its padding: the thing its search hit stands
+/// for, or its laid-out line.
+struct RowContent<'r> {
+    /// The row.
+    item: &'r CommandItem,
+    /// Its laid-out text.
+    text: &'r RowText,
+    /// Where it draws: the row's first [`ROW_HEIGHT`] less its padding. A
+    /// note drawn taller runs on below it.
+    rect: Rect,
+}
+
+impl RowContent<'_> {
+    /// Draw it, returning how tall it drew. A note or profile is looked up
+    /// in `txn`; without one, or when it isn't in the db or nothing renders
+    /// its kind, the row draws its line.
+    fn ui(
+        &self,
+        ui: &mut egui::Ui,
+        app: &mut AppContext,
+        txn: Option<&Transaction>,
+        theme: &ColorTheme,
+    ) -> f32 {
+        let drawn = match (self.item.preview, txn) {
+            (Some(HitPreview::Note(id)), Some(txn)) => self.note_ui(ui, app, txn, id, theme),
+            (Some(HitPreview::Profile(pubkey)), Some(txn)) => {
+                self.profile_ui(ui, app, txn, &pubkey, theme);
+                Some(self.rect.height())
+            }
+            _ => None,
+        };
+        drawn.unwrap_or_else(|| {
+            self.line_ui(ui, self.rect.left(), theme);
+            self.rect.height()
+        })
+    }
+
+    /// Paint the row's line from `left`, centred in its first line.
+    fn line_ui(&self, ui: &egui::Ui, left: f32, theme: &ColorTheme) {
+        let line = &self.text.line;
+        let pos = egui::pos2(left, self.rect.center().y - line.size().y / 2.0);
+        ui.painter().galley(pos, line.clone(), theme.text_primary);
+    }
+
+    /// The profile's picture, then the row's line.
+    fn profile_ui(
+        &self,
+        ui: &mut egui::Ui,
+        app: &mut AppContext,
+        txn: &Transaction,
+        pubkey: &nostrdb_net::Pubkey,
+        theme: &ColorTheme,
+    ) {
+        let profile = app.ndb.get_profile_by_pubkey(txn, pubkey.bytes()).ok();
+        let url = get_profile_url(profile.as_ref());
+        let avatar = Rect::from_min_size(
+            egui::pos2(self.rect.left(), self.rect.center().y - AVATAR_SIZE / 2.0),
+            egui::vec2(AVATAR_SIZE, AVATAR_SIZE),
+        );
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(avatar));
+        child.add(
+            &mut ProfilePic::new(app.img_cache, app.media_jobs.sender(), url).size(AVATAR_SIZE),
+        );
+        self.line_ui(ui, avatar.right() + SPACING_SM, theme);
+    }
+
+    /// The note `id` as its kind's renderer draws a list row, its kind and
+    /// subtitle at the right; `None`, drawing nothing, when it isn't in the
+    /// db or nothing renders its kind.
+    fn note_ui(
+        &self,
+        ui: &mut egui::Ui,
+        app: &mut AppContext,
+        txn: &Transaction,
+        id: nostrdb_net::NoteId,
+        theme: &ColorTheme,
+    ) -> Option<f32> {
+        let note = app.ndb.get_note_by_id(txn, id.bytes()).ok()?;
+        // Copied out, a shared borrow, before the note context's `&mut`
+        // reborrow of the rest.
+        let registries = app.registries;
+        let renderer = registries.kind_renderers.default_for(note.kind(), None)?;
+
+        let side = self.text.side.as_ref();
+        let side_width = side.map_or(0.0, |side| side.size().x + SPACING_MD);
+        if let Some(side) = side {
+            let pos = egui::pos2(
+                self.rect.right() - side.size().x,
+                self.rect.center().y - side.size().y / 2.0,
+            );
+            ui.painter().galley(pos, side.clone(), theme.text_muted);
+        }
+
+        let rect = Rect::from_min_max(
+            self.rect.min,
+            egui::pos2(self.rect.right() - side_width, self.rect.bottom()),
+        );
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        // Clip sideways only: a note runs on below the row's first line.
+        let clip = ui.clip_rect();
+        child.set_clip_rect(Rect::from_x_y_ranges(rect.x_range(), clip.y_range()));
+        let req = KindRenderRequest {
+            txn,
+            note: &note,
+            context: RenderContext::Row,
+            chrome: InlineChrome::Bare,
+            interaction: Interaction::Inert,
+        };
+        renderer.render(&mut child, &mut app.note_context(), &req);
+        Some(child.min_rect().height())
     }
 }
 
@@ -956,7 +1151,7 @@ impl Chrome {
     /// Draw the command bar over everything, if it is open, run a row
     /// clicked in it, and search for its query if that changed.
     pub(super) fn command_bar_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) {
-        if let Some(action) = self.command_bar.show(ui.ctx()) {
+        if let Some(action) = self.command_bar.show(app_ctx, ui.ctx()) {
             self.run_command(app_ctx, action, ui);
         }
         self.search_if_due(app_ctx, ui.ctx());

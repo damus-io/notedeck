@@ -23,6 +23,8 @@
 
 use std::time::Duration;
 
+use nostrdb_net::{NoteId, Pubkey};
+
 use crate::OpenUri;
 
 /// How many hits one provider may give for a query.
@@ -58,6 +60,26 @@ pub struct SearchHit {
     /// hit whose title the query fuzzy-matches by that match, like any
     /// other row, and one matched some other way (by its body) by this.
     pub score: i32,
+    /// What the hit is in nostr terms, for the bar to draw it as that thing
+    /// rather than as text alone (see [`HitPreview`]). `None` draws the
+    /// title and subtitle as one line.
+    pub preview: Option<HitPreview>,
+}
+
+/// What a [`SearchHit`] stands for, so the bar can draw it richly. Typed
+/// rather than drawn by the provider: the bar resolves it itself and draws
+/// it with what every surface uses, so an app gets a rich row by having a
+/// [`KindRenderer`](crate::KindRenderer) for its kind, with no search-only
+/// renderer to write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitPreview {
+    /// A note, drawn by the [`KindRenderer`](crate::KindRenderer) registered
+    /// for its kind in [`RenderContext::Row`](crate::RenderContext::Row): a
+    /// card's live status chip, a note's author and text. A note not in the
+    /// local db, or of a kind nothing renders, draws as text.
+    Note(NoteId),
+    /// A profile, drawn as its picture before the title.
+    Profile(Pubkey),
 }
 
 impl SearchHit {
@@ -69,7 +91,14 @@ impl SearchHit {
             kind: None,
             uri,
             score,
+            preview: None,
         }
+    }
+
+    /// This hit drawn as the thing `preview` names (see [`HitPreview`]).
+    pub fn previewed(mut self, preview: HitPreview) -> Self {
+        self.preview = Some(preview);
+        self
     }
 
     /// This hit with `subtitle` drawn after its title.

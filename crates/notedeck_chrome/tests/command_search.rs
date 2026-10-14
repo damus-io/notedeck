@@ -6,6 +6,8 @@
 
 mod common;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use common::Fixture;
@@ -250,4 +252,162 @@ fn asking_a_pending_provider_again_keeps_the_selection() {
         Some("Second hit"),
         "the same answer leaves the selection where the key moved it"
     );
+}
+
+/// How a [`StubRenderer`] was last asked to draw, and where it drew.
+#[derive(Clone, Copy)]
+struct StubDrawn {
+    context: notedeck::RenderContext,
+    chrome: notedeck::InlineChrome,
+    interaction: notedeck::Interaction,
+    rect: egui::Rect,
+}
+
+/// Draws a kind-1 note as a button, a widget that takes clicks whatever it
+/// is asked, and records how it was asked.
+struct StubRenderer {
+    drawn: Rc<RefCell<Option<StubDrawn>>>,
+}
+
+impl notedeck::KindRenderer for StubRenderer {
+    fn id(&self) -> &'static str {
+        "test.stub"
+    }
+
+    fn name(&self) -> &'static str {
+        "Stub"
+    }
+
+    fn kinds(&self) -> &'static [u32] {
+        &[1]
+    }
+
+    fn render(
+        &self,
+        ui: &mut egui::Ui,
+        _note_context: &mut notedeck::NoteContext,
+        req: &notedeck::KindRenderRequest,
+    ) -> notedeck::KindRenderResponse {
+        let response = ui.button("stub row");
+        *self.drawn.borrow_mut() = Some(StubDrawn {
+            context: req.context,
+            chrome: req.chrome,
+            interaction: req.interaction,
+            rect: response.rect,
+        });
+        notedeck::KindRenderResponse::new(response)
+    }
+}
+
+/// An app whose only hit is `hit`, and which draws kind-1 notes with a
+/// [`StubRenderer`] sharing `drawn`.
+struct Renders {
+    hit: SearchHit,
+    drawn: Rc<RefCell<Option<StubDrawn>>>,
+}
+
+impl App for Renders {
+    fn render(&mut self, _ctx: &mut AppContext<'_>, _ui: &mut egui::Ui) -> AppResponse {
+        AppResponse::none()
+    }
+
+    fn search(
+        &mut self,
+        _ctx: &mut AppContext<'_>,
+        _query: &notedeck::SearchQuery<'_>,
+        out: &mut notedeck::SearchHits,
+    ) {
+        out.push(self.hit.clone());
+    }
+
+    fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
+        vec![Box::new(StubRenderer {
+            drawn: Rc::clone(&self.drawn),
+        })]
+    }
+}
+
+#[tokio::test]
+async fn a_hit_standing_for_a_note_is_drawn_by_its_renderer_and_its_click_opens_the_hit() {
+    let note = NoteBuilder::new()
+        .kind(1)
+        .content("a note drawn in the bar")
+        .created_at(1_000)
+        .sign(&[9u8; 32])
+        .build()
+        .expect("note");
+    let id = nostrdb_net::NoteId::new(*note.id());
+    let drawn = Rc::new(RefCell::new(None));
+    let renders = Renders {
+        hit: hit("A rendered note", "rendered")
+            .kind("Note")
+            .previewed(notedeck::HitPreview::Note(id)),
+        drawn: Rc::clone(&drawn),
+    };
+    let mut f = Fixture::behind(
+        KEYMAP,
+        [NotedeckApp::Other("Renders".to_owned(), Box::new(renders))],
+    );
+    {
+        let ndb = f.notedeck.app_context().ndb.clone();
+        let sub = ndb
+            .subscribe(&[Filter::new().ids([id.bytes()]).build()])
+            .expect("sub");
+        let frame = nostrdb_net::ClientMessage::event(&note)
+            .expect("event")
+            .to_json()
+            .expect("json");
+        ndb.process_event_with(&frame, IngestMetadata::new().client(true))
+            .expect("ingest");
+        ndb.wait_for_all_notes_within(sub, 1, Duration::from_secs(5))
+            .await
+            .expect("committed");
+    }
+
+    cmd_k(&mut f);
+    type_text(&mut f, "rendered");
+    f.frame(Vec::new());
+    let seen = drawn.borrow().expect("the renderer drew the hit");
+    assert_eq!(seen.context, notedeck::RenderContext::Row);
+    assert_eq!(seen.chrome, notedeck::InlineChrome::Bare);
+    assert_eq!(seen.interaction, notedeck::Interaction::Inert);
+    assert!(f.drew("stub row"));
+    assert!(
+        !drew_in(&f, "A rendered note"),
+        "the renderer draws the note, not the hit's title"
+    );
+    assert!(drew_in(&f, "Note"), "its kind is drawn beside it");
+
+    // Clicked on the button the renderer drew, the row still takes it.
+    let at = seen.rect.center();
+    f.frame(vec![Event::PointerMoved(at)]);
+    let click = |pressed| Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    f.frame(vec![click(true)]);
+    f.frame(vec![click(false)]);
+    assert!(!f.chrome.command_bar().is_open(), "the click chose the row");
+    assert_eq!(
+        f.chrome.pending_open(),
+        Some(&OpenUri::new("fake:rendered")),
+        "and opened the hit"
+    );
+}
+
+#[test]
+fn a_hit_standing_for_a_note_the_db_lacks_is_drawn_as_text() {
+    let mut f = Fixture::new(KEYMAP);
+    f.state.borrow_mut().results =
+        vec![hit("A missing note", "missing")
+            .kind("Note")
+            .previewed(notedeck::HitPreview::Note(nostrdb_net::NoteId::new(
+                [3; 32],
+            )))];
+    cmd_k(&mut f);
+    type_text(&mut f, "missing");
+    f.frame(Vec::new());
+    assert!(drew_in(&f, "A missing note"), "its title, as any row's");
 }

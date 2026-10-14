@@ -204,7 +204,7 @@ impl KindRenderer for AgentiumSessionRenderer {
         let live = live_session(&self.cache, note_context.ndb, req.txn, note, &snapshot);
 
         let response = match req.context {
-            RenderContext::Inline => self.chip_ui(
+            RenderContext::Inline | RenderContext::Row => self.chip_ui(
                 ui,
                 note_context,
                 req,

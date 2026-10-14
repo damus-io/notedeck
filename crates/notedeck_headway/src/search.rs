@@ -16,11 +16,13 @@
 //! event (an `nevent` for a card, an `naddr` for a board), which the built-in
 //! nostr parser resolves for a shared board's card as readily as an own one's;
 //! the chrome then routes the note to Headway the way a click on its inline
-//! chip is routed.
+//! chip is routed. A card hit carries its issue note as a
+//! [`HitPreview::Note`], so the bar draws it with the card's own chip, live
+//! status and all.
 
 use headway::query::{self, IssueFilter, ListQuery};
 use notedeck::fuzzy::fuzzy_match;
-use notedeck::{OpenUri, SearchHit, SearchHits, SearchQuery};
+use notedeck::{HitPreview, OpenUri, SearchHit, SearchHits, SearchQuery};
 
 use crate::cache::BoardRef;
 use crate::ui::{board_nostr_uri, issue_nostr_uri};
@@ -123,6 +125,7 @@ fn hit(boards: &[BoardRef], r: Ranked) -> Option<SearchHit> {
             Some(
                 SearchHit::new(row.card.title.clone(), OpenUri::new(uri), r.score)
                     .kind(KIND_CARD)
+                    .previewed(HitPreview::Note(row.card.id))
                     .subtitled(format!("{} · {}", row.board.title, row.place_name())),
             )
         }

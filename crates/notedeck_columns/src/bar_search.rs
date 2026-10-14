@@ -14,6 +14,10 @@
 //! - **`#tag`** is offered as that hashtag's timeline, ahead of the rest:
 //!   a row titled `#tag` whose subtitle says it opens the timeline.
 //!
+//! A profile hit carries its pubkey and a note hit its id as a
+//! [`HitPreview`], so the bar draws the profile's picture and the note as the
+//! note it is.
+//!
 //! A profile opens through its `nostr:npub…` and a hashtag through its
 //! `#tag`, both of which the chrome opens in Columns as a click on them
 //! would (see [`notedeck::reference_note_action`]); a note opens through its
@@ -26,7 +30,8 @@ use nostrdb_net::{NoteId, Pubkey};
 use notedeck::fuzzy::fuzzy_match;
 use notedeck::name::get_display_name;
 use notedeck::{
-    tr, ContactState, JobPool, Localization, OpenUri, SearchHit, SearchHits, SearchQuery,
+    tr, ContactState, HitPreview, JobPool, Localization, OpenUri, SearchHit, SearchHits,
+    SearchQuery,
 };
 use notedeck_ui::contacts_list::search_profiles;
 use tokio::sync::oneshot;
@@ -275,8 +280,9 @@ fn push_profiles(
         let score = fuzzy_match(text, &title, &mut positions)
             .or_else(|| fuzzy_match(text, name.username?, &mut positions))
             .unwrap_or(0);
-        let mut hit =
-            SearchHit::new(title, OpenUri::new(format!("nostr:{npub}")), score).kind(KIND_PROFILE);
+        let mut hit = SearchHit::new(title, OpenUri::new(format!("nostr:{npub}")), score)
+            .kind(KIND_PROFILE)
+            .previewed(HitPreview::Profile(pubkey));
         if let Some(subtitle) = profile_subtitle(name.username, name.display_name, name.nip05) {
             hit = hit.subtitled(subtitle);
         }
@@ -309,12 +315,14 @@ fn push_notes(ndb: &Ndb, txn: &Transaction, keys: &[NoteKey], out: &mut SearchHi
         let Ok(note) = ndb.get_note_by_key(txn, *key) else {
             continue;
         };
-        let Some(bech) = NoteId::new(*note.id()).to_bech() else {
+        let id = NoteId::new(*note.id());
+        let Some(bech) = id.to_bech() else {
             continue;
         };
         let title = note_title(note.content());
-        let mut hit =
-            SearchHit::new(title, OpenUri::new(format!("nostr:{bech}")), 0).kind(KIND_NOTE);
+        let mut hit = SearchHit::new(title, OpenUri::new(format!("nostr:{bech}")), 0)
+            .kind(KIND_NOTE)
+            .previewed(HitPreview::Note(id));
         let record = ndb.get_profile_by_pubkey(txn, note.pubkey()).ok();
         let author = get_display_name(record.as_ref());
         if let Some(author) = author.display_name.or(author.username) {
@@ -450,6 +458,7 @@ mod tests {
         assert_eq!(found.title, "Quentin Quokka");
         assert_eq!(found.subtitle.as_deref(), Some("@quokka · q@example.com"));
         assert_eq!(found.uri.reference, format!("nostr:{npub}"));
+        assert_eq!(found.preview, Some(HitPreview::Profile(kp.pubkey)));
         assert!(hits
             .iter()
             .all(|hit| hit.kind.as_deref() != Some(KIND_NOTE)));
@@ -461,6 +470,7 @@ mod tests {
         assert_eq!(hits[0].kind.as_deref(), Some(KIND_NOTE));
         assert_eq!(hits[0].subtitle.as_deref(), Some("Quentin Quokka"));
         assert_eq!(hits[0].uri.reference, format!("nostr:{bech}"));
+        assert_eq!(hits[0].preview, Some(HitPreview::Note(note_id)));
     }
 
     /// Notes wait for the query to settle: a first ask is pending with the

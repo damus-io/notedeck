@@ -1333,6 +1333,7 @@ fn search_finds_boards_and_cards_and_opens_a_card_on_its_board() {
         .unwrap_or_else(|| panic!("no Side board in {:?}", titles(&hits)));
     assert_eq!(board.kind.as_deref(), Some("Board"));
     assert_eq!(board.subtitle.as_deref(), Some("side"));
+    assert_eq!(board.preview, None, "a board draws as text");
     let card = hits
         .iter()
         .find(|h| h.title == SIDE_CARD)
@@ -1389,6 +1390,9 @@ fn search_finds_boards_and_cards_and_opens_a_card_on_its_board() {
             .expect("the card's hit resolves")
             .note_id;
         drop(txn);
+        // The bar draws the hit as the card's chip: the note it stands for is
+        // the one its reference opens.
+        assert_eq!(card.preview, Some(notedeck::HitPreview::Note(note_id)));
         state
             .headway
             .open_note_route(&mut app_ctx, note_id)

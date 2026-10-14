@@ -64,7 +64,8 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
             .as_deref()
             .and_then(|boards| event::locate_card_in_boards(boards, &author, &issue.id));
         let response = match req.context {
-            notedeck::RenderContext::Inline => match located {
+            // A list row is the chip too: the card's live status and title.
+            notedeck::RenderContext::Inline | notedeck::RenderContext::Row => match located {
                 Some(located) => card_chip_ui(
                     ui,
                     &theme,

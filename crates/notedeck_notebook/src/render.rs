@@ -62,7 +62,9 @@ impl KindRenderer for LongformKindRenderer {
     ) -> KindRenderResponse {
         let theme = ColorTheme::current(ui.ctx());
         let response = match req.context {
-            notedeck::RenderContext::Inline => longform_chip_ui(ui, &theme, req.note, req.chrome),
+            notedeck::RenderContext::Inline | notedeck::RenderContext::Row => {
+                longform_chip_ui(ui, &theme, req.note, req.chrome)
+            }
             // A surface dedicated to this one note (a canvas note-embed node) wants
             // the whole document, not the block's summary/head preview.
             notedeck::RenderContext::Full => longform_full_ui(ui, note_context, req),
@@ -245,7 +247,9 @@ impl KindRenderer for NotebookNodeRenderer {
             .unwrap_or(&node.content.text);
 
         let response = match req.context {
-            RenderContext::Inline => node_chip_ui(ui, &theme, node_title(text), req.chrome),
+            RenderContext::Inline | RenderContext::Row => {
+                node_chip_ui(ui, &theme, node_title(text), req.chrome)
+            }
             _ => node_embed_ui(ui, &theme, text, live.as_ref()),
         };
         // Clicking the chip/card opens the node in Notebook (shared helper).

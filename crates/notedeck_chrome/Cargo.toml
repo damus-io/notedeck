@@ -54,6 +54,9 @@ agentium-core = { workspace = true }
 # notedeck's own fonts fall back to egui's, as they did before 0.36.
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 headway = { workspace = true }
+# The rich-row snapshot draws cards with Headway's real kind renderers, on
+# its seeded demo board, without building the chrome with Headway in it.
+notedeck_headway = { workspace = true }
 tempfile = { workspace = true }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 notedeck = { workspace = true, features = ["snapshot-testing", "auto-update"] }

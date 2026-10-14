@@ -45,6 +45,7 @@ pub mod storage;
 pub use app::Damus;
 pub use deeplink::{ColumnsNavToken, DeepLink};
 pub use error::Error;
+pub use note_renderer::NoteKindRenderer;
 pub use route::Route;
 
 pub type Result<T> = std::result::Result<T, error::Error>;

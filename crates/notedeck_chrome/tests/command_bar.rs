@@ -693,3 +693,353 @@ fn snapshot_command_bar_arg_step() {
     );
     harness.snapshot("command_bar_arg_step");
 }
+
+// ---------------------------------------------------------------------------
+// Rich rows: hits that stand for a profile or a note
+// ---------------------------------------------------------------------------
+
+/// Where the profile's picture is said to live. Nothing answers there: the
+/// picture is put in the disk cache under this url first, so it loads the
+/// same on every machine and the snapshot never waits on the network.
+const RICH_PFP_URL: &str = "http://127.0.0.1:9/quokka.png";
+
+/// An app that answers the query `rich` with `hits`, and draws notes with
+/// the real renderers: Columns' for a kind-1 note, Headway's for a card.
+struct Rich {
+    /// What it answers `rich` with.
+    hits: Vec<notedeck::SearchHit>,
+    /// Where Headway's renderers come from.
+    headway: notedeck_headway::Headway,
+}
+
+impl notedeck::App for Rich {
+    fn render(
+        &mut self,
+        _ctx: &mut notedeck::AppContext,
+        _ui: &mut egui::Ui,
+    ) -> notedeck::AppResponse {
+        notedeck::AppResponse::none()
+    }
+
+    fn search(
+        &mut self,
+        _ctx: &mut notedeck::AppContext<'_>,
+        query: &notedeck::SearchQuery<'_>,
+        out: &mut notedeck::SearchHits,
+    ) {
+        if query.text != "rich" {
+            return;
+        }
+        for hit in &self.hits {
+            out.push(hit.clone());
+        }
+    }
+
+    fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
+        let mut renderers: Vec<Box<dyn notedeck::KindRenderer>> =
+            vec![Box::new(notedeck_columns::NoteKindRenderer)];
+        renderers.extend(notedeck::App::kind_renderers(&self.headway));
+        renderers
+    }
+}
+
+/// The host, with the chrome in front of [`Rich`] set as its app, drawn
+/// through [`notedeck::Notedeck::tick`] so media jobs deliver the picture.
+struct RichState {
+    notedeck: notedeck::Notedeck,
+    /// Whether the first frame, which installs the fonts, has run.
+    set_up: bool,
+    _dir: tempfile::TempDir,
+}
+
+/// Sign a note of `kind` with `content` by `kp` at `created_at`.
+fn signed(
+    kp: &nostrdb_net::FullKeypair,
+    kind: u32,
+    content: &str,
+    created_at: u64,
+) -> nostrdb::Note<'static> {
+    nostrdb::NoteBuilder::new()
+        .kind(kind)
+        .content(content)
+        .created_at(created_at)
+        .sign(&kp.secret_key.secret_bytes())
+        .build()
+        .expect("note")
+}
+
+/// A profile with [`RICH_PFP_URL`] as its picture and a note by it, the
+/// demo board seeded as its own, and the picture in the disk cache.
+/// Returns the note's id.
+async fn seed_rich(
+    notedeck: &mut notedeck::Notedeck,
+    kp: &nostrdb_net::FullKeypair,
+) -> nostrdb_net::NoteId {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_secs();
+    let profile = signed(
+        kp,
+        0,
+        &format!(
+            r#"{{"name":"quokka","display_name":"Quentin Quokka","picture":"{RICH_PFP_URL}"}}"#
+        ),
+        now - 86_400,
+    );
+    // Two hours old, so it reads "2h" whenever the snapshot is made.
+    let note = signed(
+        kp,
+        1,
+        "Cmd-K draws what it finds now: a profile with its picture, a note as \
+         the note it is, and a card with the status it has on its board, \
+         live, the way every other surface draws them.",
+        now - 2 * 3_600,
+    );
+    let note_id = nostrdb_net::NoteId::new(*note.id());
+
+    let app_ctx = notedeck.app_context();
+    let ndb = &*app_ctx.ndb;
+    let sub = ndb
+        .subscribe(&[nostrdb::Filter::new().authors([kp.pubkey.bytes()]).build()])
+        .expect("subscribe");
+    let mut written = 0;
+    for event in [&profile, &note] {
+        let frame = nostrdb_net::ClientMessage::event(event)
+            .expect("event")
+            .to_json()
+            .expect("json");
+        ndb.process_event_with(&frame, nostrdb::IngestMetadata::new().client(true))
+            .expect("ingest");
+        written += 1;
+    }
+    written += notedeck_headway::store::seed_demo_board(
+        ndb,
+        &kp.pubkey,
+        &kp.secret_key.secret_bytes(),
+        notedeck_headway::store::BOARD_ID,
+        1_700_000_000,
+        &mut notedeck_headway::store::NoPublish,
+    );
+    let written = u32::try_from(written).expect("a demo board's worth of notes");
+    ndb.wait_for_all_notes_within(sub, written, Duration::from_secs(10))
+        .await
+        .expect("the seed lands");
+
+    // A quokka-ish brown disc on a warm ground, so a picture that loads is
+    // told from the grey circle drawn while one doesn't.
+    let size = 128;
+    let mut pixels = Vec::with_capacity(size * size);
+    for y in 0..size {
+        for x in 0..size {
+            let (dx, dy) = (x as f32 - 64.0, y as f32 - 70.0);
+            let face = dx * dx / 1.4 + dy * dy < 46.0 * 46.0;
+            pixels.push(if face {
+                egui::Color32::from_rgb(158, 112, 72)
+            } else {
+                egui::Color32::from_rgb(246, 196, 120)
+            });
+        }
+    }
+    let image = egui::ColorImage::new([size, size], pixels);
+    notedeck::MediaCache::write(
+        &app_ctx.img_cache.static_imgs.cache_dir,
+        RICH_PFP_URL,
+        image,
+    )
+    .expect("the picture goes in the disk cache");
+    note_id
+}
+
+/// A card of the demo board: the issue note it was made by and its title.
+struct DemoCard {
+    id: nostrdb_net::NoteId,
+    title: String,
+}
+
+/// The demo board's cards titled `titles`, in that order, each titled as
+/// `renderers` (Headway's) read it now.
+fn demo_cards(
+    notedeck: &mut notedeck::Notedeck,
+    renderers: &notedeck::KindRendererRegistry,
+    titles: &[&str],
+) -> Vec<DemoCard> {
+    let app_ctx = notedeck.app_context();
+    let ndb = &*app_ctx.ndb;
+    let txn = nostrdb::Transaction::new(ndb).expect("txn");
+    let filter = nostrdb::Filter::new()
+        .kinds([notedeck_headway::event::KIND_ISSUE as u64])
+        .build();
+    let mut cards: Vec<DemoCard> = ndb
+        .query(&txn, &[filter], 64)
+        .expect("query")
+        .into_iter()
+        .filter_map(|result| {
+            Some(DemoCard {
+                id: nostrdb_net::NoteId::new(*result.note.id()),
+                title: renderers.title(ndb, &txn, &result.note, None)?,
+            })
+        })
+        .collect();
+    cards.retain(|card| titles.contains(&card.title.as_str()));
+    cards.sort_by_key(|card| titles.iter().position(|t| *t == card.title));
+    cards
+}
+
+/// What [`Rich`] answers `rich` with: the profile, its note, `cards`, and a
+/// note the db doesn't have, which draws as text. Scored in that order, so
+/// the bar lists them so.
+fn rich_hits(
+    kp: &nostrdb_net::FullKeypair,
+    note: nostrdb_net::NoteId,
+    cards: &[DemoCard],
+) -> Vec<notedeck::SearchHit> {
+    use notedeck::{HitPreview, OpenUri, SearchHit};
+    let npub = kp.pubkey.npub().expect("npub");
+    let mut hits = vec![
+        SearchHit::new("Quentin Quokka", OpenUri::new(format!("nostr:{npub}")), 100)
+            .kind("Profile")
+            .subtitled("@quokka")
+            .previewed(HitPreview::Profile(kp.pubkey)),
+        SearchHit::new(
+            "Cmd-K draws what it finds now",
+            OpenUri::new(format!("nostr:{}", note.to_bech().expect("bech"))),
+            90,
+        )
+        .kind("Note")
+        .subtitled("Quentin Quokka")
+        .previewed(HitPreview::Note(note)),
+    ];
+    for (rank, card) in cards.iter().enumerate() {
+        hits.push(
+            SearchHit::new(
+                card.title.clone(),
+                OpenUri::new(format!("headway:demo/card-{rank}")),
+                80 - rank as i32,
+            )
+            .kind("Card")
+            .subtitled("Demo")
+            .previewed(HitPreview::Note(card.id)),
+        );
+    }
+    hits.push(
+        SearchHit::new(
+            "a note this db has never seen",
+            OpenUri::new("nostr:note1missing"),
+            0,
+        )
+        .kind("Note")
+        .subtitled("drawn as text")
+        .previewed(HitPreview::Note(nostrdb_net::NoteId::new([7; 32]))),
+    );
+    hits
+}
+
+/// One frame of [`RichState`]: the first installs the fonts, as
+/// `Notedeck::setup` does for the app; the rest tick the host.
+fn rich_frame(ui: &mut egui::Ui, state: &mut RichState) {
+    notedeck::test_harness::full_window(ui, |ui| {
+        if !state.set_up {
+            let ctx = ui.ctx().clone();
+            state.notedeck.setup(&ctx);
+            ctx.global_style_mut(|s| s.animation_time = 0.0);
+            state.set_up = true;
+            return;
+        }
+        state.notedeck.tick(ui);
+    });
+}
+
+/// Whether the profile's picture has loaded from the disk cache.
+fn rich_pfp_loaded(harness: &mut egui_kittest::Harness<'static, RichState>) -> bool {
+    let ctx = harness.ctx.clone();
+    let app_ctx = harness.state_mut().notedeck.app_context();
+    let state = app_ctx.img_cache.textures.static_image.get_or_request(
+        app_ctx.media_jobs.sender(),
+        &ctx,
+        RICH_PFP_URL,
+        notedeck::media::images::ImageType::Profile(128),
+    );
+    matches!(state, notedeck::TextureState::Loaded(_))
+}
+
+/// The bar on a query whose hits stand for things: a profile draws with its
+/// picture, a note through Columns' renderer as its author and text in a
+/// taller row, cards through Headway's with their live status, each with
+/// its kind and subtitle at the right, and a note not in the db as the
+/// plain line every row was before.
+#[tokio::test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+async fn snapshot_command_bar_rich_rows() {
+    let dir = tempfile::TempDir::new().expect("tmp dir");
+    let kp = nostrdb_net::FullKeypair::generate();
+    let args: Vec<String> = vec![
+        "notedeck-test".into(),
+        "--testrunner".into(),
+        "--nsec".into(),
+        kp.secret_key.to_secret_hex(),
+    ];
+    let mut notedeck = notedeck::Notedeck::init(&egui::Context::default(), dir.path(), &args);
+    {
+        let app_ctx = notedeck.app_context();
+        app_ctx.settings.complete_welcome();
+        app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
+    }
+    let note = seed_rich(&mut notedeck, &kp).await;
+
+    let headway = notedeck_headway::Headway::new();
+    let mut headway_renderers = notedeck::KindRendererRegistry::default();
+    for renderer in notedeck::App::kind_renderers(&headway) {
+        headway_renderers.register(renderer);
+    }
+    // One from each of three columns, so each draws its own status.
+    let titles = [
+        "Drag-and-drop between columns",
+        "Card detail / comments view",
+        "Scaffold the Headway app crate",
+    ];
+    let cards = demo_cards(&mut notedeck, &headway_renderers, &titles);
+    assert_eq!(cards.len(), titles.len(), "the demo board's cards fold");
+    let rich = Rich {
+        hits: rich_hits(&kp, note, &cards),
+        headway,
+    };
+    let chrome = notedeck_chrome::Chrome::new_headless_with_apps(
+        &mut notedeck,
+        [notedeck_chrome::NotedeckApp::Other(
+            "Rich".to_owned(),
+            Box::new(rich),
+        )],
+    );
+    notedeck.set_app(chrome);
+
+    let state = RichState {
+        notedeck,
+        set_up: false,
+        _dir: dir,
+    };
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(900.0, 640.0))
+        .with_theme(egui::Theme::Dark)
+        .renderer(notedeck::software_renderer())
+        .build_ui_state(rich_frame, state);
+    let _ = harness.run_ok();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::K);
+    let _ = harness.run_ok();
+    harness.event(Event::Text("rich".to_owned()));
+    let _ = harness.run_ok();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !rich_pfp_loaded(&mut harness) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the profile's picture never loaded from the disk cache"
+        );
+        harness.step();
+        std::thread::yield_now();
+    }
+    let _ = harness.run_ok();
+    harness.snapshot("command_bar_rich_rows");
+}

@@ -245,7 +245,8 @@ fn hit_row(hit: &SearchHit, section: Cow<'static, str>) -> CommandItem {
         hit.title.as_str(),
         CommandAction::Open(hit.uri.clone()),
     )
-    .found(hit.score);
+    .found(hit.score)
+    .previewed(hit.preview);
     let subtitle = match (&hit.kind, &hit.subtitle) {
         (Some(kind), Some(subtitle)) => Some(format!("{kind} · {subtitle}")),
         (Some(kind), None) => Some(kind.clone()),
@@ -334,5 +335,13 @@ mod tests {
             Some("Card")
         );
         assert_eq!(hit_row(&hit, "".into()).subtitle, None);
+        assert_eq!(hit_row(&hit, "".into()).preview, None);
+        let pubkey = nostrdb_net::Pubkey::new([1; 32]);
+        let profile = hit.previewed(notedeck::HitPreview::Profile(pubkey));
+        assert_eq!(
+            hit_row(&profile, "".into()).preview,
+            Some(notedeck::HitPreview::Profile(pubkey)),
+            "what it stands for rides along"
+        );
     }
 }

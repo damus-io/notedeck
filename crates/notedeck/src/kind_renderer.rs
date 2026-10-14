@@ -120,8 +120,8 @@ pub fn open_on_click(
 /// card as a block embed.
 ///
 /// Advisory: a renderer that doesn't specialize a given context just draws its
-/// default shape. `#[non_exhaustive]` so new contexts (a dense list row, a
-/// hover tooltip, …) can be added without breaking existing impls.
+/// default shape. `#[non_exhaustive]` so new contexts (a hover tooltip, …)
+/// can be added without breaking existing impls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum RenderContext {
@@ -139,6 +139,14 @@ pub enum RenderContext {
     /// document's flow — here the reference *is* the whole surface (a canvas
     /// note-embed node, say), so there is nothing to truncate for.
     Full,
+    /// One row of a list of entities, like the Cmd-K bar's search hits: the
+    /// entity's compact shape, a line or two tall, never a full card. The
+    /// list frames the row and takes its click, so it is drawn with
+    /// [`InlineChrome::Bare`] and [`Interaction::Inert`]. A renderer whose
+    /// [`Inline`](Self::Inline) shape is already one line draws that; one
+    /// whose inline shape is a whole preview (a kind-1 note) draws a
+    /// smaller one here.
+    Row,
 }
 
 /// How much framing an inline widget draws around itself — a render hint the

@@ -7,7 +7,7 @@
 
 use std::borrow::Cow;
 
-use crate::{AppId, OpenUri, ToolInvocation};
+use crate::{AppId, HitPreview, OpenUri, ToolInvocation};
 
 /// One row of a command bar.
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +32,9 @@ pub struct CommandItem {
     /// row whatever its title matches, ranked by its title's match when the
     /// query matches it and by this when it doesn't.
     pub found: Option<i32>,
+    /// Set on a search hit that stands for a note or a profile: the bar
+    /// draws the thing itself, not just its title (see [`HitPreview`]).
+    pub preview: Option<HitPreview>,
     /// What choosing it does.
     pub action: CommandAction,
 }
@@ -51,6 +54,7 @@ impl CommandItem {
             keywords: None,
             keycap: None,
             found: None,
+            preview: None,
             action,
         }
     }
@@ -71,6 +75,13 @@ impl CommandItem {
     /// [`CommandItem::found`]).
     pub fn found(mut self, score: i32) -> Self {
         self.found = Some(score);
+        self
+    }
+
+    /// This row drawn as the thing `preview` names (see
+    /// [`CommandItem::preview`]).
+    pub fn previewed(mut self, preview: Option<HitPreview>) -> Self {
+        self.preview = preview;
         self
     }
 
