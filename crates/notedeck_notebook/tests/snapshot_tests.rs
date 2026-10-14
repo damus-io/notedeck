@@ -1867,6 +1867,125 @@ fn open_canvas_swaps_active_surface() {
     );
 }
 
+/// The Notebook's answer to the Cmd-K bar's search
+/// (headway:notedeck/lizard-advice-alert), opened the way the chrome opens it.
+/// Seed two canvases, the newer ("Ideas") active, and a node far offscreen on the
+/// other ("Roadmap") whose body alone holds the word searched for. The word finds
+/// that node, titled by its first line and subtitled with its canvas; its
+/// `notebook:` reference resolves through the host's registered parsers to the
+/// node's creation note; and opening that note swaps to Roadmap, selects the
+/// node and pans it to the centre of the view.
+#[test]
+fn search_finds_a_node_and_opening_it_centres_it_on_its_canvas() {
+    let canvases = vec![
+        SeedCanvas {
+            d: "cv-ideas".to_string(),
+            title: "Ideas".to_string(),
+            created_at: 1_700_000_050,
+            nodes: vec![SeedNode {
+                text: "Idea one".to_string(),
+                x: 320,
+                y: 80,
+            }],
+        },
+        SeedCanvas {
+            d: "cv-roadmap".to_string(),
+            title: "Roadmap".to_string(),
+            created_at: 1_700_000_030,
+            nodes: vec![
+                SeedNode {
+                    text: "Ship v1\nafter the zebra audit".to_string(),
+                    x: 3000,
+                    y: 2000,
+                },
+                SeedNode {
+                    text: "Hire".to_string(),
+                    x: 320,
+                    y: 80,
+                },
+            ],
+        },
+    ];
+    let mut harness = build_harness_canvases(egui::Vec2::new(1000.0, 700.0), false, canvases);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    while harness.state().notebook.active_canvas() != Some("cv-ideas") {
+        harness.run_ok();
+        assert!(Instant::now() < deadline, "Ideas never became active");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    // Ask as the bar does, again while the answer is pending.
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    let hit = loop {
+        let mut out = notedeck::SearchHits::new(notedeck::search::HITS_PER_PROVIDER);
+        {
+            let state = harness.state_mut();
+            let mut app_ctx = state.notedeck.app_context();
+            let query = notedeck::SearchQuery { text: "zebra" };
+            state.notebook.search(&mut app_ctx, &query, &mut out);
+        }
+        if !out.is_pending() {
+            let [hit] = out.hits() else {
+                panic!("one hit: {:?}", out.hits());
+            };
+            break hit.clone();
+        }
+        assert!(Instant::now() < deadline, "the search never answered");
+        harness.run_ok();
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    assert_eq!(hit.title, "Ship v1");
+    assert_eq!(hit.subtitle.as_deref(), Some("Roadmap"));
+    assert_eq!(hit.kind.as_deref(), Some("Node"));
+
+    // Resolve its reference as the chrome's Open does, then open the note.
+    let node_note = {
+        let state = harness.state_mut();
+        let app_ctx = state.notedeck.app_context();
+        let txn = Transaction::new(app_ctx.ndb).expect("txn");
+        let resolve_ctx = notedeck::ReferenceResolveCtx {
+            ndb: app_ctx.ndb,
+            txn: &txn,
+            selected_account: Some(*app_ctx.accounts.selected_account_pubkey()),
+        };
+        app_ctx
+            .registries
+            .reference_parsers
+            .resolve_exact(&hit.uri.reference, &resolve_ctx)
+            .expect("the hit's reference resolves")
+            .note_id
+    };
+    assert_eq!(hit.uri.reference, wordid::node_ref(node_note.bytes()));
+    let jc_id: jsoncanvas::NodeId = node_note.hex().parse().expect("node id");
+    harness.state_mut().notebook.open(node_note);
+
+    // The pan is animated: pump until it settles with the node centred.
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        harness.run_ok();
+        let nb = &harness.state().notebook;
+        let centred = nb.active_canvas() == Some("cv-roadmap")
+            && nb.selected() == Some(&jc_id)
+            && nb.node_position(&jc_id).is_some_and(|pos| {
+                // The node is 200 wide: its centre is 100 right of its corner.
+                let scene = nb.scene_rect();
+                (scene.center().x - (pos.x + 100.0)).abs() < 1.0 && scene.contains(pos)
+            });
+        if centred {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the node was never centred on Roadmap (active {:?}, selected {:?}, scene {:?}, node {:?})",
+            nb.active_canvas(),
+            nb.selected(),
+            nb.scene_rect(),
+            nb.node_position(&jc_id)
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 /// End-to-end canvas rename from the sidebar: seed two canvases, right-click the
 /// top row (the newer "Ideas"), choose Rename, type into the inline field, commit
 /// with Enter, and verify the canvas document is superseded with the new title in

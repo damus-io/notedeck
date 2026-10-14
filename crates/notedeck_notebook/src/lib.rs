@@ -3,6 +3,7 @@ mod editor;
 mod keymap_editor;
 mod reference;
 pub mod render;
+mod search;
 mod ui;
 
 // The nostr-backed model, persistence, and word-id refs live in the `notebook`
@@ -431,8 +432,10 @@ impl Notebook {
     /// it — select it *and* pan the canvas to it — once that canvas has folded in.
     /// Runs early each render.
     ///
-    /// The notebook is single-canvas for now, so a node on a different canvas is a
-    /// no-op (multi-canvas switching isn't built yet). A node on the open canvas is
+    /// A node on another of the account's canvases swaps the foreground to that
+    /// canvas first, as opening it from the sidebar would (see
+    /// [`open_canvas`](Self::open_canvas)); the Cmd-K bar finds nodes on every
+    /// canvas. A node on the open canvas is
     /// revealed as soon as it folds *and* the scene has been laid out; until then
     /// the request stays pending and [`open`](Self::open)'s repaint burst keeps us
     /// ticking. The scene wait matters on the very first render after switching to
@@ -440,7 +443,7 @@ impl Notebook {
     /// from the viewport (clearing `loaded`), and it runs *after* this — so panning
     /// before that first layout would just be overwritten.
     #[profiling::function]
-    fn process_pending_open(&mut self, ndb: &Ndb, ctx: &egui::Context) {
+    fn process_pending_open(&mut self, ndb: &Ndb, author: &Pubkey, ctx: &egui::Context) {
         let Some(note_id) = self.pending_open else {
             return;
         };
@@ -450,10 +453,9 @@ impl Notebook {
             return;
         };
         if Some(&target.canvas_id) != self.active_canvas.as_ref() {
-            // A node on a canvas that isn't the active one. TODO: multi-canvas
-            // switching — for now there's nowhere to focus it, so drop the request.
-            self.pending_open = None;
-            return;
+            // A node on another canvas: swap to it. That clears `loaded`, so the
+            // reveal below waits for the incoming canvas's first layout.
+            self.open_canvas(ndb, author, &target.canvas_id);
         }
         // The node's rect this frame, or `None` if the canvas hasn't folded it in
         // yet — retry on the next repaint. Computed before any `&mut self` so the
@@ -1168,6 +1170,31 @@ impl notedeck::App for Notebook {
         ))]
     }
 
+    /// The nodes on every one of the account's canvases for the chrome's Cmd-K
+    /// bar (see [`search`]): by title, body and word-id, read off the shared
+    /// canvas fold the open canvas and the inline chips read. Before that fold
+    /// has seeded the answer is pending, so the bar asks again.
+    fn search(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        query: &notedeck::SearchQuery<'_>,
+        out: &mut notedeck::SearchHits,
+    ) {
+        let author = *ctx.accounts.selected_account_pubkey();
+        let Ok(txn) = Transaction::new(ctx.ndb) else {
+            return;
+        };
+        let answered = self
+            .cache
+            .borrow_mut()
+            .with_canvases(ctx.ndb, &txn, &author, |canvases| {
+                search::search(canvases, query, out)
+            });
+        if answered.is_none() {
+            out.set_pending();
+        }
+    }
+
     /// Background sync, run every frame for all *opened* apps (not just the
     /// foreground one). Registers the vault's SNS workspace root with the notedeck
     /// host (which syncs the sealed channel both directions off-foreground), pumps
@@ -1306,7 +1333,7 @@ impl notedeck::App for Notebook {
 
         // Focus a node a click elsewhere asked us to open (see `open`). Runs after
         // `update`, so `self.canvas` already reflects this frame's fold.
-        self.process_pending_open(ctx.ndb, ui.ctx());
+        self.process_pending_open(ctx.ndb, &author, ui.ctx());
 
         // The keymap editor takes over the whole area, over the longform
         // editor too: the chrome opened it on purpose, from anywhere.

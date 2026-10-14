@@ -168,7 +168,7 @@ fn tag_value<'a>(note: &'a Note, name: &str) -> Option<&'a str> {
 }
 
 /// Title shown for a node with no text (a freshly-created, still-empty box).
-const UNTITLED_NODE: &str = "Untitled node";
+pub(crate) const UNTITLED_NODE: &str = "Untitled node";
 
 /// A node's *current* content, folded live from the shared canvas cache — what the
 /// chip/embed shows instead of the kind-1606 creation snapshot (which never carries
@@ -284,7 +284,7 @@ fn live_node(
 /// The chip/heading title for a node: the first non-blank line of its text, or
 /// [`UNTITLED_NODE`] for an empty node. Borrows `text` (or a `'static` fallback), so
 /// the per-frame render path stays allocation-free.
-fn node_title(text: &str) -> &str {
+pub(crate) fn node_title(text: &str) -> &str {
     let line = text
         .lines()
         .map(str::trim)
