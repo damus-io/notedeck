@@ -246,14 +246,38 @@ fn keyshare_filter() -> Filter {
         .build()
 }
 
-/// Filter for a shared channel's kind-1081 envelopes, authored by `team_pubkey`
-/// (the team keypair whose pubkey *is* the channel). Every sealed edit is one such
-/// envelope, so this is the inbound sync stream for that channel.
+/// How many stored envelopes a channel's *live* `REQ` asks a relay to replay
+/// before it streams. Only the live leg is capped: the history backfill
+/// ([`team_envelope_history_filter`]) fetches everything we lack.
+const LIVE_ENVELOPE_REPLAY: u64 = 5000;
+
+/// Live filter for a shared channel's kind-1081 envelopes, authored by
+/// `team_pubkey` (the team keypair whose pubkey *is* the channel). Every sealed
+/// edit is one such envelope, so this is the inbound stream for that channel. The
+/// replay is capped at [`LIVE_ENVELOPE_REPLAY`] because the live `REQ` is re-sent
+/// on every reconnect, and the backfill already covers history.
 fn team_envelope_filter(team_pubkey: &Pubkey) -> Filter {
     Filter::new()
         .kinds([nostrdb_net::sns::SNS_ENVELOPE_KIND as u64])
         .authors([team_pubkey.bytes()])
-        .limit(5000)
+        .limit(LIVE_ENVELOPE_REPLAY)
+        .build()
+}
+
+/// History (backfill) filter for a shared channel's kind-1081 envelopes:
+/// [`team_envelope_filter`] without the replay cap.
+///
+/// It must be unbounded. The negentropy backfill builds both its windows and
+/// its local set from this filter, so a `limit` here meant a fresh device only
+/// ever synced a channel's newest 5000 envelopes. `gamedev` has 15085, and its
+/// board definition is older than the newest 5000, so it never folded on a newly
+/// opened laptop (headway:headway/primary-knife-eyebrow). The windowed
+/// backfill already bisects `created_at` to stay under a relay's per-sync cap,
+/// so a large channel costs more windows, not a failed sync.
+fn team_envelope_history_filter(team_pubkey: &Pubkey) -> Filter {
+    Filter::new()
+        .kinds([nostrdb_net::sns::SNS_ENVELOPE_KIND as u64])
+        .authors([team_pubkey.bytes()])
         .build()
 }
 
@@ -736,22 +760,27 @@ impl HostPrivateSync {
         }
 
         // One logical subscription (same id + filter set) fanned across the relay
-        // set; the same filters drive the live `REQ` and the history backfill.
-        let mut filters = vec![pns_envelope_filter(pns_pubkey)];
+        // set. The live `REQ` and the history backfill cover the same streams, but
+        // only the live leg caps a channel's replay (see
+        // `team_envelope_history_filter`).
+        let mut live = vec![pns_envelope_filter(pns_pubkey)];
+        let mut history = vec![pns_envelope_filter(pns_pubkey)];
         for root in roots {
             if let Some(team_pk) = team_pubkey(root) {
-                filters.push(team_envelope_filter(&team_pk));
+                live.push(team_envelope_filter(&team_pk));
+                history.push(team_envelope_history_filter(&team_pk));
             }
         }
         // The 1082 key-share stream: a join accepted on another of the account's
         // devices arrives here and (via the roster poll) grows the roster.
-        filters.push(keyshare_filter());
+        live.push(keyshare_filter());
+        history.push(keyshare_filter());
         for url in urls {
             session.set_subscription(
                 HOST_PRIVATE_SUB_ID,
                 url.to_string(),
-                filters.clone(),
-                filters.clone(),
+                live.clone(),
+                history.clone(),
             );
         }
 
@@ -1691,6 +1720,85 @@ mod tests {
             delivered,
             "an app-registered channel's 1081 envelope should fan from A's host and \
              auto-unwrap on B's"
+        );
+
+        relay.shutdown();
+    }
+
+    /// A channel with more envelopes than the live replay cap still backfills its
+    /// oldest one on a fresh device (headway:headway/primary-knife-eyebrow).
+    ///
+    /// The relay holds [`LIVE_ENVELOPE_REPLAY`]` + 1` envelopes, and the oldest is
+    /// the one that matters: for a board it is the definition the fold needs.
+    /// When the backfill shared the live filter's `limit`, device B synced only the
+    /// newest 5000 and never saw it, which is how `gamedev` (15085 envelopes)
+    /// went missing on a newly opened laptop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backfill_pulls_a_channel_past_the_live_replay_cap() {
+        use nostrdb_net::relay::server;
+        use std::time::Duration;
+
+        let root = test_root(0x5a);
+        let sns_keys = nostrdb_net::sns::derive_sns_keys(&root).expect("sns keys");
+        let app_roots = std::slice::from_ref(&root);
+        let account = FullKeypair::generate();
+        let secret = account.secret_key.secret_bytes();
+
+        let TempNdb {
+            dir: _relay_dir,
+            ndb: relay_ndb,
+        } = TempNdb::new();
+        let total = LIVE_ENVELOPE_REPLAY + 1;
+        let mut oldest_id = None;
+        for i in 0..total {
+            let rumor = NoteBuilder::new()
+                .kind(1)
+                .content(&format!("edit {i}"))
+                .created_at(HOST_TEST_TS + i)
+                .sign(&secret)
+                .build()
+                .expect("rumor");
+            oldest_id.get_or_insert(*rumor.id());
+            let envelope = nostrdb_net::sns::wrap_rumor(
+                &sns_keys,
+                &account,
+                &rumor.json().expect("json"),
+                HOST_TEST_TS + i,
+            )
+            .expect("sns envelope");
+            relay_ndb
+                .process_event(&format!(
+                    "[\"EVENT\",\"_seed\",{}]",
+                    envelope.json().expect("envelope json")
+                ))
+                .expect("seed envelope");
+        }
+        let oldest_id = oldest_id.expect("an envelope");
+
+        let relay = server::spawn(relay_ndb.clone(), "127.0.0.1:0".parse().expect("addr"))
+            .expect("spawn relay");
+        let url = NormRelayUrl::new(&relay.url()).expect("relay url");
+        let relays = std::slice::from_ref(&url);
+
+        let TempNdb {
+            dir: _b_dir,
+            ndb: mut ndb_b,
+        } = TempNdb::new();
+        ndb_b.add_key(&secret);
+        let mut host_b = HostPrivateSync::new();
+
+        let mut delivered = false;
+        for _ in 0..1500 {
+            host_b.update(&mut ndb_b, &account.pubkey, &secret, relays, app_roots);
+            if ndb_has(&ndb_b, &oldest_id) {
+                delivered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            delivered,
+            "the backfill must reach a channel's oldest envelope even past {LIVE_ENVELOPE_REPLAY}"
         );
 
         relay.shutdown();
