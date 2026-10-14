@@ -1,5 +1,6 @@
 # Seed a Dave with sessions and normal mode from outside its crate
 
+Card: headway:notedeck/wire-snack-open
 Dave's sessions, overlay and normal mode are crate-private, so a chrome-level
 test can host a real Dave but can't put it anywhere a key means something.
 
