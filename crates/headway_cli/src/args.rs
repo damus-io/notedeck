@@ -653,6 +653,10 @@ impl Cli {
         let mut record = None;
         let mut review_comment = ReviewCommentFlags::default();
         let mut positionals: Vec<String> = Vec::new();
+        // Every flag the run passed, as typed and in order, so the command can
+        // be held to the ones it documents once its name is known (the name
+        // can come after its flags, so it can't be checked as they're read).
+        let mut flags: Vec<String> = Vec::new();
         // `-h`/`--help` is answered after the loop, once the positionals say
         // *which* help — the overview, or one command's page.
         let mut want_help = false;
@@ -763,8 +767,18 @@ impl Cli {
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
-                _ => positionals.push(arg),
+                _ => {
+                    positionals.push(arg);
+                    continue;
+                }
             }
+            // `--labels` is an undocumented alias of `--label`, so it's held
+            // to whatever `--label` is.
+            flags.push(if arg == "--labels" {
+                "--label".to_string()
+            } else {
+                arg
+            });
         }
 
         // `headway help [cmd]` is the same two pages spelled as a command, so
@@ -788,6 +802,10 @@ impl Cli {
         if want_help {
             return Ok(Invocation::CommandHelp(spec));
         }
+        // Every flag lands in one bag above, so hold the command to the flags
+        // its help page lists: a misplaced or typo'd one (`move --ready`)
+        // fails here rather than being silently dropped.
+        help::check_flags(spec, &flags)?;
         // Fold `--desc`/`--desc-file` into one description: they name the same
         // thing (the new card's cover note), so passing both is a contradiction. A
         // file value of `-` means stdin, which lets a heredoc pipe a long markdown
@@ -2234,5 +2252,177 @@ mod tests {
         assert_eq!(ref_board("/a-b-c"), None);
         assert_eq!(ref_board("commerce/"), None);
         assert_eq!(ref_board("not a slug/a-b-c"), None);
+    }
+
+    /// A flag the command doesn't document fails, naming the command and its
+    /// help page, rather than parsing and being silently dropped.
+    #[test]
+    fn a_command_rejects_flags_it_doesnt_take() {
+        let err = parse_err(&["move", "x", "--col", "done", "--ready"]);
+        assert_eq!(
+            err,
+            "`move` doesn't take --ready (see `headway move --help`)"
+        );
+        let err = parse_err(&["show", "--col", "done"]);
+        assert_eq!(err, "`show` doesn't take --col (see `headway show --help`)");
+        let err = parse_err(&["comment", "x", "--explainer", "u", "hi"]);
+        assert!(err.contains("`comment` doesn't take --explainer"), "{err}");
+        // A flag before the command name is held to it just the same.
+        let err = parse_err(&["--ready", "move", "x", "--col", "done"]);
+        assert!(err.contains("`move` doesn't take --ready"), "{err}");
+        // `--labels` is held to `--label`'s place, and named that way.
+        let err = parse_err(&["move", "x", "--col", "done", "--labels", "a"]);
+        assert!(err.contains("`move` doesn't take --label "), "{err}");
+        assert_eq!(labels_of(parse(&["label", "x", "--labels", "a"])), ["a"]);
+
+        // Help still wins: the stray flag doesn't stop move's page printing.
+        assert_eq!(help_of(&["move", "--ready", "--help"]), Some(Some("move")));
+    }
+
+    /// The global flags are taken by every command, before or after its name.
+    #[test]
+    fn every_command_takes_the_global_flags() {
+        let hex = "ab".repeat(32);
+        let nsec = test_nsec();
+        let globals = [
+            "--board",
+            "b",
+            "--nsec",
+            &nsec,
+            "--comment-nsec",
+            &nsec,
+            "--author",
+            &hex,
+            "--relay",
+            "ws://x",
+            "--db",
+            "/x",
+        ];
+        for cmd in help::COMMANDS {
+            for before in [true, false] {
+                let mut argv: Vec<&str> = Vec::new();
+                if before {
+                    argv.extend(globals);
+                }
+                argv.extend([cmd.name, "a", "b"]);
+                if !before {
+                    argv.extend(globals);
+                }
+                if let Err(e) = Cli::parse(argv.iter().map(|s| s.to_string()), &CliEnv::default()) {
+                    assert!(!e.to_string().contains("doesn't take"), "{argv:?}: {e}");
+                }
+            }
+        }
+    }
+
+    /// A value the parser accepts for a documented flag, so the run gets past
+    /// the flag's own validation and reaches the check under test.
+    fn dummy_value(flag: &str) -> &'static str {
+        match flag {
+            "--color" => "auto",
+            "--show" | "--hide" => "id",
+            "--group" | "--sub-group" => "status",
+            "--sort" => "manual",
+            _ => "1",
+        }
+    }
+
+    /// Every flag a command's help page lists is one its parser takes: the
+    /// page can't advertise a flag the check would then refuse. Other errors
+    /// (a missing argument, a file that isn't there) are fine here — only
+    /// "doesn't take" fails.
+    #[test]
+    fn every_documented_flag_is_accepted() {
+        for cmd in help::COMMANDS {
+            for (key, _) in cmd.options {
+                let takes_value = key.contains('<');
+                for flag in cli_term::help::option_names(key) {
+                    let mut argv = vec![cmd.name, "a", "b", flag];
+                    if takes_value {
+                        argv.push(dummy_value(flag));
+                    }
+                    if let Err(e) =
+                        Cli::parse(argv.iter().map(|s| s.to_string()), &CliEnv::default())
+                    {
+                        let e = e.to_string();
+                        assert!(!e.contains("doesn't take"), "{argv:?}: {e}");
+                        assert!(!e.contains("unknown flag"), "{argv:?}: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The command lines the autowork and handoff skills and CLAUDE.md tell
+    /// agents to type all still parse. `--desc-file` reads a real file here
+    /// rather than `-`, which would wait on the test's stdin.
+    #[test]
+    fn the_prescribed_command_lines_parse() {
+        let desc = tempfile::NamedTempFile::new().unwrap();
+        let desc = desc.path().to_str().unwrap();
+        let lines: &[&[&str]] = &[
+            &["move", "headway:b/a-b-c", "--col", "in-review"],
+            &["move", "headway:b/a-b-c", "--col", "in-progress"],
+            &["comment", "headway:b/a-b-c", "--reply-to", "d-e-f", "fixed"],
+            &["comment", "headway:b/a-b-c", "committed abc (\"t\"): ..."],
+            &[
+                "comment",
+                "headway:b/a-b-c",
+                "--path",
+                "src/lib.rs",
+                "--line",
+                "40-44",
+                "why",
+            ],
+            &[
+                "review",
+                "headway:b/a-b-c",
+                "--explainer",
+                "https://x",
+                "--deploy",
+                "https://y",
+            ],
+            &["next", "--in", "headway:b/a-b-c", "-n", "1"],
+            &[
+                "add",
+                "a title",
+                "--parent",
+                "headway:b/a-b-c",
+                "--col",
+                "todo",
+                "--label",
+                "a,b",
+                "--desc-file",
+                desc,
+            ],
+            &["add", "a title", "--col", "todo", "-l", "bug,p1"],
+            &["block", "headway:b/a-b-c", "--on", "headway:b/d-e-f"],
+            &["unblock", "headway:b/a-b-c", "--on", "headway:b/d-e-f"],
+            &["show", "--board", "b", "--json"],
+            &["show", "headway:b/a-b-c", "--json"],
+            &["show", "--all"],
+            &["show", "--archived"],
+            &["grep", "--board", "b", "^Lane:"],
+            &["grep", "-i", "nostrdb"],
+            &["terminal", "in-review", "on", "--board", "b"],
+            &[
+                "seq",
+                "headway:b/a-b-c",
+                "--after",
+                "headway:b/d-e-f",
+                "--in",
+                "headway:b/g-h-i",
+            ],
+            &["seq", "headway:b/a-b-c", "--first", "--in", "b"],
+            &["label", "headway:b/a-b-c", "-l", "bug,p1"],
+            &["migrate", "--board", "b"],
+            &["seed", "--title", "Live rig"],
+            &["seed", "-t", "Tune"],
+        ];
+        for line in lines {
+            if let Err(e) = Cli::parse(line.iter().map(|s| s.to_string()), &CliEnv::default()) {
+                panic!("{line:?}: {e}");
+            }
+        }
     }
 }

@@ -30,6 +30,14 @@ const CLI: Cli = Cli {
     global_hint: "--board, --relay, ...",
 };
 
+/// `--json` on a command that edits the board: the edit's result as an object
+/// instead of the `ok (n events)` line. Every such command prints it the same
+/// way, so they share one description.
+const EDIT_JSON: (&str, &str) = (
+    "--json",
+    "Machine-readable result: {ok, events}, plus {card, ref} for a card add creates, or {noop} when nothing needed doing",
+);
+
 /// Every command the CLI accepts. Parsing rejects a name that isn't here, so an
 /// added command that's missing its entry fails loudly instead of silently
 /// shipping with no help.
@@ -158,6 +166,10 @@ they are neither. The pager is $HEADWAY_PAGER, else $PAGER, else
             (
                 "--json",
                 "Machine-readable output: one object per card, its matches grouped under it, each with a unix created_at",
+            ),
+            (
+                "--all, --archived",
+                "Accepted for older scripts, and change nothing: grep already searches every board, archived cards included",
             ),
         ],
         examples: &[
@@ -366,6 +378,7 @@ omitted).",
                 "--due <date>",
                 "Starting due date (YYYY-MM-DD), as `due` takes it",
             ),
+            EDIT_JSON,
         ],
         examples: &[
             "headway add fix the flaky selfshare test --col todo -l test,flake",
@@ -383,6 +396,7 @@ omitted).",
         options: &[
             ("--col <c>", "Destination column (id or name). Required"),
             ("--row <n>", "Position within the column (0 is the top)"),
+            EDIT_JSON,
         ],
         examples: &["headway move headway:headway/report-raven-expand --col in-review"],
     },
@@ -392,7 +406,7 @@ omitted).",
         summary: "Edit a card's title",
         usage: &["title <card> <title...>"],
         details: "The new title is every remaining positional joined with spaces.",
-        options: &[],
+        options: &[EDIT_JSON],
         examples: &["headway title headway:headway/report-raven-expand a clearer title"],
     },
     CommandHelp {
@@ -404,7 +418,7 @@ omitted).",
 Replaces the card's description with every remaining positional joined
 with spaces. For long markdown, `add --desc-file` sets it at creation
 time with no shell-escaping.",
-        options: &[],
+        options: &[EDIT_JSON],
         examples: &["headway desc headway:headway/report-raven-expand the details"],
     },
     CommandHelp {
@@ -417,10 +431,13 @@ Sets the card's labels to exactly those given — this replaces the label
 set rather than adding to it, and naming none clears them. Labels may be
 separate positionals, one comma-separated positional, or `-l` flags; the
 three spellings are equivalent.",
-        options: &[(
-            "-l, --label <l>",
-            "Label(s), as an alternative to the positionals",
-        )],
+        options: &[
+            (
+                "-l, --label <l>",
+                "Label(s), as an alternative to the positionals",
+            ),
+            EDIT_JSON,
+        ],
         examples: &[
             "headway label headway:headway/report-raven-expand cli,ux",
             "headway label headway:headway/report-raven-expand",
@@ -432,7 +449,7 @@ three spellings are equivalent.",
         summary: "Set a card's priority",
         usage: &["priority <card> <none|low|medium|high|urgent>"],
         details: "",
-        options: &[],
+        options: &[EDIT_JSON],
         examples: &["headway priority headway:headway/report-raven-expand high"],
     },
     CommandHelp {
@@ -441,7 +458,7 @@ three spellings are equivalent.",
         summary: "Set a card's due date",
         usage: &["due <card> <YYYY-MM-DD|none>"],
         details: "`none` clears the date.",
-        options: &[],
+        options: &[EDIT_JSON],
         examples: &["headway due headway:headway/report-raven-expand 2026-10-01"],
     },
     CommandHelp {
@@ -450,7 +467,7 @@ three spellings are equivalent.",
         summary: "Set a card's estimate",
         usage: &["estimate <card> <points|none>"],
         details: "`none` clears the estimate.",
-        options: &[],
+        options: &[EDIT_JSON],
         examples: &["headway estimate headway:headway/report-raven-expand 3"],
     },
     CommandHelp {
@@ -497,6 +514,7 @@ this is refused there.",
                 "--record <sha>",
                 "The review record whose commit starts with this [default: the newest]",
             ),
+            EDIT_JSON,
         ],
         examples: &[
             "headway comment headway:headway/report-raven-expand committed abc123 (\"...\")",
@@ -543,6 +561,7 @@ reviewer can go straight to it. Prints the recorded fields.",
                 "--repo-dir <dir>",
                 "Where to run git [default: the current directory]",
             ),
+            EDIT_JSON,
         ],
         examples: &[
             "headway review headway:headway/report-raven-expand --explainer https://claude.ai/artifact/...",
@@ -556,7 +575,7 @@ reviewer can go straight to it. Prints the recorded fields.",
         summary: "Remove a card (a reversible tombstone)",
         usage: &["delete <card>"],
         details: "",
-        options: &[],
+        options: &[EDIT_JSON],
         examples: &["headway delete headway:headway/report-raven-expand"],
     },
     CommandHelp {
@@ -565,7 +584,7 @@ reviewer can go straight to it. Prints the recorded fields.",
         summary: "Archive a card off the board",
         usage: &["archive <card>"],
         details: "`show --archived` lists what's been archived; `restore` puts one back.",
-        options: &[],
+        options: &[EDIT_JSON],
         examples: &["headway archive headway:headway/report-raven-expand"],
     },
     CommandHelp {
@@ -574,7 +593,7 @@ reviewer can go straight to it. Prints the recorded fields.",
         summary: "Restore an archived card",
         usage: &["restore <card>"],
         details: "",
-        options: &[],
+        options: &[EDIT_JSON],
         examples: &["headway restore headway:headway/report-raven-expand"],
     },
     // -- structure --------------------------------------------------------
@@ -586,7 +605,7 @@ reviewer can go straight to it. Prints the recorded fields.",
         details: "\
 With a parent, <card> becomes its subissue; with the parent omitted,
 <card> is detached back to the board root. Cycles are refused.",
-        options: &[],
+        options: &[EDIT_JSON],
         examples: &[
             "headway parent headway:headway/report-raven-expand headway:headway/layer-ticket-vintage",
             "headway parent headway:headway/report-raven-expand",
@@ -602,10 +621,13 @@ A dependency edge, independent of the parent axis: a blocked card drops
 out of the `next` frontier until its blocker is done — in a terminal
 column, or an epic whose live subissues are all done.
 The edge may cross boards. Cycles are refused.",
-        options: &[(
-            "--on <card>",
-            "The blocker. May also be given as a second positional",
-        )],
+        options: &[
+            (
+                "--on <card>",
+                "The blocker. May also be given as a second positional",
+            ),
+            EDIT_JSON,
+        ],
         examples: &[
             "headway block headway:headway/report-raven-expand --on headway:headway/fatal-girl-note",
         ],
@@ -616,10 +638,13 @@ The edge may cross boards. Cycles are refused.",
         summary: "Remove a blocked-by edge",
         usage: &["unblock <card> --on <blocker>", "unblock <card> <blocker>"],
         details: "",
-        options: &[(
-            "--on <card>",
-            "The blocker to detach. May also be given as a second positional",
-        )],
+        options: &[
+            (
+                "--on <card>",
+                "The blocker to detach. May also be given as a second positional",
+            ),
+            EDIT_JSON,
+        ],
         examples: &[
             "headway unblock headway:headway/report-raven-expand --on headway:headway/fatal-girl-note",
         ],
@@ -632,10 +657,13 @@ The edge may cross boards. Cycles are refused.",
         details: "\
 Symmetric and shown on both cards: it carries no ordering or readiness
 meaning and never affects `next`. May cross boards.",
-        options: &[(
-            "--to <card>",
-            "The other card. May also be given as a second positional",
-        )],
+        options: &[
+            (
+                "--to <card>",
+                "The other card. May also be given as a second positional",
+            ),
+            EDIT_JSON,
+        ],
         examples: &[
             "headway relate headway:headway/report-raven-expand --to headway:headway/fatal-girl-note",
         ],
@@ -646,10 +674,13 @@ meaning and never affects `next`. May cross boards.",
         summary: "Remove a relates edge",
         usage: &["unrelate <card> --to <other>", "unrelate <card> <other>"],
         details: "The edge is symmetric, so either endpoint can remove it.",
-        options: &[(
-            "--to <card>",
-            "The other card. May also be given as a second positional",
-        )],
+        options: &[
+            (
+                "--to <card>",
+                "The other card. May also be given as a second positional",
+            ),
+            EDIT_JSON,
+        ],
         examples: &[
             "headway unrelate headway:headway/report-raven-expand --to headway:headway/fatal-girl-note",
         ],
@@ -679,6 +710,10 @@ With one position flag, seq moves the card instead.",
             (
                 "--in <c>",
                 "The container: a card ref (its subissues) or the board slug (the board root). Default: the board root",
+            ),
+            (
+                "--json",
+                "Machine-readable output: the card's place as an object, or a move's {ok, events}",
             ),
         ],
         examples: &[
@@ -742,7 +777,7 @@ than seed whichever board happens to be current.",
         summary: "Rename the current board's display title",
         usage: &["rename <title...>"],
         details: "The board's slug is unchanged, so existing card refs keep working.",
-        options: &[],
+        options: &[EDIT_JSON],
         examples: &["headway rename --board ios-port iOS Port"],
     },
     CommandHelp {
@@ -757,7 +792,10 @@ further edits, but nothing else is touched: its cards, columns and title
 stay, card refs into it still resolve, and `restore-board` brings it back
 exactly as it was. Takes the board as an argument rather than using the
 current one, so a stale selection can't delete the wrong board.",
-        options: &[],
+        options: &[(
+            "--json",
+            "Machine-readable result: {ok, events, board}, or {noop} when it already was",
+        )],
         examples: &["headway delete-board scratch"],
     },
     CommandHelp {
@@ -768,7 +806,10 @@ current one, so a stale selection can't delete the wrong board.",
         details: "\
 Republishes the board's definition without the deletion mark. `headway
 board` lists deleted boards at the end so their slugs can be found.",
-        options: &[],
+        options: &[(
+            "--json",
+            "Machine-readable result: {ok, events, board}, or {noop} when it already was",
+        )],
         examples: &["headway restore-board scratch"],
     },
     CommandHelp {
@@ -780,7 +821,7 @@ board` lists deleted boards at the end so their slugs can be found.",
 A card in a terminal column clears its dependents and drops out of the
 `next` frontier. The state defaults to `on`. Republishes the board
 definition.",
-        options: &[],
+        options: &[EDIT_JSON],
         examples: &[
             "headway terminal in-review --board headway",
             "headway terminal in-review off --board headway",
@@ -885,15 +926,20 @@ pub fn lookup(name: &str) -> Option<&'static CommandHelp> {
     CLI.lookup(name)
 }
 
-/// Print the grouped command list: `headway --help`.
-pub fn print_usage(default_relay: &str, default_board: &str) {
-    let globals: &[(&str, &str)] = &[
-        (
-            "--board <id>",
-            &format!(
-                "Board for this run (or $HEADWAY_BOARD). Normally unnecessary — a headway:<board>/<word-id> card ref routes itself, and `headway board <id>` sets it persistently [default: {default_board}]"
-            ),
-        ),
+/// Hand `f` the options every command takes, as the overview prints them.
+/// Built in one place so the overview and [`check_flags`] read the same list:
+/// a global the overview documents is one every command accepts.
+fn with_globals<R>(
+    default_relay: &str,
+    default_board: &str,
+    f: impl FnOnce(&[(&str, &str)]) -> R,
+) -> R {
+    let board = format!(
+        "Board for this run (or $HEADWAY_BOARD). Normally unnecessary — a headway:<board>/<word-id> card ref routes itself, and `headway board <id>` sets it persistently [default: {default_board}]"
+    );
+    let relay = format!("Relay URL (or $HEADWAY_RELAY) [default: {default_relay}]");
+    f(&[
+        ("--board <id>", &board),
         (
             "--nsec <key>",
             "Signing key for this run, as nsec1… or a 64-char hex secret. Normally unnecessary — run `headway login` once and it's reused. $HEADWAY_NSEC, if set, takes precedence over the stored key",
@@ -906,18 +952,28 @@ pub fn print_usage(default_relay: &str, default_board: &str) {
             "--author <pk>",
             "Board owner whose board to read and edit (defaults to the signer, or to whoever shared a board under --board's slug with you when you have none by that name). The signer may be a member of it rather than its owner",
         ),
-        (
-            "--relay <url>",
-            &format!("Relay URL (or $HEADWAY_RELAY) [default: {default_relay}]"),
-        ),
+        ("--relay <url>", &relay),
         (
             "--db <path>",
             "nostrdb cache dir [default: <data-dir>/headway-cli]",
         ),
         ("-h, --help", "Print this help, or a command's own"),
-    ];
-    eprint!(
-        "{}",
+    ])
+}
+
+/// Hold a run of `cmd` to the flags its page documents plus the global ones:
+/// `Err` naming the first flag in `passed` (each as typed) it doesn't take.
+pub fn check_flags(cmd: &CommandHelp, passed: &[String]) -> Result<(), String> {
+    with_globals(
+        nostrdb_net::relay::sync::DEFAULT_RELAY,
+        headway::store::BOARD_ID,
+        |globals| CLI.check_flags(cmd, globals, passed),
+    )
+}
+
+/// Print the grouped command list: `headway --help`.
+pub fn print_usage(default_relay: &str, default_board: &str) {
+    let overview = with_globals(default_relay, default_board, |globals| {
         CLI.overview(
             globals,
             "\
@@ -927,7 +983,8 @@ CARD AND COLUMN ARGUMENTS:
     so no --board is needed. <col> is a column id or name (case-insensitive).
 ",
         )
-    );
+    });
+    eprint!("{overview}");
 }
 
 /// Print one command's page: `headway <cmd> --help`.
