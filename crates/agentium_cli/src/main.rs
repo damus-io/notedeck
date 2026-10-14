@@ -86,6 +86,25 @@ fn parse_mode_flag(value: &str) -> Result<String> {
 /// `scheme:rest` with an RFC 3986 scheme. That rejects a bare headway word-id
 /// (or `board/word-id`), which looks plausible but names no board and so can't
 /// be opened from the session; the error points at the routable form instead.
+/// Validate a `--model` value: trimmed, non-empty, and a single word.
+///
+/// Which models exist is the backend's business (Claude takes `opus`/`sonnet`
+/// aliases or full ids, Codex its own ids), so the name itself is passed
+/// through. What is caught here is a value no backend could take — empty, or
+/// with whitespace inside, which is usually a stray word swallowed as the
+/// flag's value — so it fails before anything is published.
+fn parse_model_flag(value: &str) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty() || value.contains(char::is_whitespace) {
+        return Err(format!(
+            "--model '{value}' is not a model name — pass an alias the backend \
+             knows (e.g. opus, sonnet) or a full model id"
+        )
+        .into());
+    }
+    Ok(value.to_string())
+}
+
 fn parse_issue_url(value: &str, what: &str) -> Result<String> {
     let value = value.trim();
     let has_scheme = value.split_once(':').is_some_and(|(scheme, rest)| {
@@ -187,7 +206,8 @@ enum Command {
     /// same worktree on the same host. `--title` gives the session an explicit,
     /// sticky title; `--prompt` (which implies `--wait`) delivers a first `user`
     /// message once the session exists; `--permission-mode` picks the mode the
-    /// session's agent starts in; `--issue-url` links the session to the issue
+    /// session's agent starts in; `--model` picks the model it starts on;
+    /// `--issue-url` links the session to the issue
     /// (e.g. headway card) it works. `--allow-duplicate` opts out of both
     /// duplicate defences (the pre-publish guard and the host's idempotency key).
     Spawn {
@@ -199,6 +219,8 @@ enum Command {
         /// Already normalized to a canonical wire spelling by
         /// [`parse_mode_flag`], so an alias can never reach the command event.
         permission_mode: Option<String>,
+        /// Already checked to be a single non-empty word by [`parse_model_flag`].
+        model: Option<String>,
         /// Already checked to be a URI by [`parse_issue_url`].
         issue_url: Option<String>,
         /// `--child` / `--successor`, already checked not to be both.
@@ -407,6 +429,7 @@ async fn run() -> Result<()> {
             title,
             prompt,
             permission_mode,
+            model,
             issue_url,
             relation,
             idempotency_key,
@@ -421,6 +444,7 @@ async fn run() -> Result<()> {
                 title,
                 prompt,
                 permission_mode,
+                model,
                 issue_url,
                 relation,
                 idempotency_key,
@@ -572,6 +596,7 @@ impl Cli {
         let mut prompt = None;
         let mut prompt_file = None;
         let mut permission_mode = None;
+        let mut model = None;
         let mut issue_url = None;
         let mut child = false;
         let mut successor = false;
@@ -645,6 +670,7 @@ impl Cli {
                 "--permission-mode" => {
                     permission_mode = Some(parse_mode_flag(&value("--permission-mode")?)?)
                 }
+                "--model" => model = Some(parse_model_flag(&value("--model")?)?),
                 "--issue-url" => {
                     issue_url = Some(parse_issue_url(&value("--issue-url")?, "--issue-url")?)
                 }
@@ -752,6 +778,7 @@ impl Cli {
                 title,
                 prompt,
                 permission_mode,
+                model,
                 issue_url,
                 relation,
                 idempotency_key,
@@ -984,6 +1011,7 @@ COMMANDS:
                       the session's first message (delivery no longer depends on
                       --wait, so a slow host still gets the prompt);
                       --permission-mode picks the mode its agent starts in;
+                      --model the model it starts on;
                       --issue-url links it to the card it works; --child or
                       --successor says how it relates to the spawning session
                       (recorded with that session's ref). --json emits
@@ -1120,6 +1148,12 @@ OPTIONS:
                       auto | bypass. Asking for it in --prompt does NOT work — the
                       backend has already started by the time it reads that
                       message. bypass does no safety checking at all.
+    --model <name>    The model the new session's agent starts on, rather than
+                      the backend's default: an alias the backend knows (opus,
+                      sonnet, haiku) or a full model id (claude-opus-5-5,
+                      gpt-5.3-codex). Passed through as-is, the way /model in
+                      Dave is; a backend that doesn't know it says so when it
+                      starts.
     --issue-url <uri> The issue the session works, e.g. headway:<board>/<word-id>.
                       Recorded on the session's state (`show` prints it) so
                       pressing s on the session in Dave opens the card.
@@ -2006,6 +2040,33 @@ mod tests {
         );
         // ...and say what the valid ones are.
         assert!(msg.contains("plan"), "error should list the modes: {msg}");
+    }
+
+    /// `--model` is captured trimmed and otherwise verbatim (the backend owns the
+    /// names), absent leaves it `None`, and a value no backend could take is
+    /// refused before anything is published.
+    #[test]
+    fn spawn_model_is_passed_through_and_blank_is_refused() {
+        let model_of = |args: &[&str]| match parse_cli(args).unwrap().unwrap().command {
+            Command::Spawn { model, .. } => model,
+            _ => panic!("expected Spawn"),
+        };
+        assert_eq!(
+            model_of(&["--nsec", TEST_NSEC, "--model", " claude-opus-5-5 ", "spawn"]).as_deref(),
+            Some("claude-opus-5-5")
+        );
+        assert_eq!(
+            model_of(&["--nsec", TEST_NSEC, "spawn", "--model", "sonnet"]).as_deref(),
+            Some("sonnet")
+        );
+        assert_eq!(model_of(&["--nsec", TEST_NSEC, "spawn"]), None);
+
+        for bad in ["", "  ", "opus please"] {
+            let Err(err) = parse_cli(&["--nsec", TEST_NSEC, "--model", bad, "spawn"]) else {
+                panic!("--model '{bad}' must be refused");
+            };
+            assert!(err.to_string().contains("--model"), "error: {err}");
+        }
     }
 
     #[test]

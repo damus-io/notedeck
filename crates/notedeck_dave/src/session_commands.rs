@@ -81,6 +81,11 @@ struct SpawnRequest {
     /// naming a mode this build doesn't know — leaves the new session on the
     /// host's own default rather than guessing.
     permission_mode: Option<PermissionMode>,
+    /// The model the spawner asked the session to start on, from the command's
+    /// `model` tag, verbatim (an alias like `sonnet` or a full id). It becomes
+    /// the session's `requested_model`, as a `/model` would. `None` leaves the
+    /// backend's default.
+    model: Option<String>,
     /// The request's identity, from the command's `idempotency_key` tag.
     /// Two commands carrying the same key are one spawn asked for twice, so
     /// the second is answered with the session the first produced rather
@@ -221,6 +226,10 @@ fn decode_session_command(
                     parsed
                 })
                 .map(crate::session::permission_mode_from_str);
+            let model = session_events::get_tag_value(note, "model")
+                .map(str::trim)
+                .filter(|m| !m.is_empty())
+                .map(|s| s.to_string());
             let idempotency_key = session_events::get_tag_value(note, "idempotency_key")
                 .filter(|k| !k.is_empty())
                 .map(|s| s.to_string());
@@ -236,6 +245,7 @@ fn decode_session_command(
                     relation,
                     prompt,
                     permission_mode,
+                    model,
                     idempotency_key,
                 },
             })
@@ -284,6 +294,7 @@ impl Dave {
             relation,
             prompt,
             permission_mode,
+            model,
             idempotency_key,
         } = request;
 
@@ -324,7 +335,9 @@ impl Dave {
             PathBuf::from(cwd),
             &self.hostname,
             backend,
-            Model::Default,
+            // Verbatim, so an alias reaches the backend as the spawner typed it
+            // rather than pinned to whatever id this build maps it to.
+            model.map_or(Model::Default, Model::Custom),
         );
 
         // Store spawn_id so it's echoed in kind-31988 state events, letting the
@@ -627,6 +640,7 @@ mod tests {
             &session_events::SpawnOptions {
                 title: Some("Wire the widget"),
                 permission_mode: Some("plan"),
+                model: Some("claude-opus-5-5"),
                 idempotency_key: Some("key-abc"),
                 issue_url: Some("headway:dave/wire-the-widget"),
                 parent_session: Some("agentium:the-spawner-ref"),
@@ -689,6 +703,7 @@ mod tests {
         assert_eq!(request.spawn_id.as_deref(), Some("spawn-2"));
         assert_eq!(request.custom_title.as_deref(), Some("Wire the widget"));
         assert_eq!(request.permission_mode, Some(PermissionMode::Plan));
+        assert_eq!(request.model.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(
             request.issue_url.as_deref(),
             Some("headway:dave/wire-the-widget")
@@ -715,6 +730,7 @@ mod tests {
             panic!("expected a Spawn command for this host");
         };
         assert_eq!(request.permission_mode, None);
+        assert_eq!(request.model, None, "no tag leaves the backend's default");
         assert_eq!(request.idempotency_key, None);
         assert_eq!(request.issue_url, None);
         assert_eq!(request.parent_session, None);
@@ -819,6 +835,7 @@ mod tests {
             relation: SessionRelation::None,
             prompt: Some("read crates/foo and fix it".to_string()),
             permission_mode: None,
+            model: None,
             idempotency_key: key.map(str::to_string),
         }
     }
@@ -931,6 +948,44 @@ mod tests {
             "without a key there is nothing to dedupe on — this is the old behaviour, \
              and its presence here proves the assertions above are measuring the key",
         );
+    }
+
+    /// A spawn naming a model starts the session on it: verbatim as its
+    /// `requested_model` (what the backend launches with), and in the kind-31988
+    /// state it publishes, so `agentium show` names it. One without leaves both
+    /// empty for the backend's default.
+    #[test]
+    fn a_spawned_session_starts_on_the_requested_model() {
+        let mut test = TestDave::new();
+        let dave = &mut test.dave;
+
+        let request = SpawnRequest {
+            model: Some("claude-opus-5-5".to_string()),
+            ..retryable_spawn_request("spawn-1", None)
+        };
+        let created = dave
+            .apply_spawn_command(request, 1_800_000_000)
+            .expect("a prompted spawn delivers its first message")
+            .session_id;
+        let spawned = dave.session_manager.get(created).expect("materialized");
+        assert_eq!(
+            spawned.details.requested_model.as_deref(),
+            Some("claude-opus-5-5")
+        );
+        assert_eq!(
+            crate::publish::session_state_snapshot(spawned, "idle".into(), "h".into(), 1)
+                .expect("agentic session")
+                .model
+                .as_deref(),
+            Some("claude-opus-5-5"),
+        );
+
+        let created = dave
+            .apply_spawn_command(retryable_spawn_request("spawn-2", None), 1_800_000_001)
+            .expect("a prompted spawn delivers its first message")
+            .session_id;
+        let spawned = dave.session_manager.get(created).expect("materialized");
+        assert_eq!(spawned.details.requested_model, None);
     }
 
     /// `duplicate_spawn_target` decides, from the key alone, whether an arriving

@@ -70,6 +70,10 @@ pub(crate) struct SpawnOpts {
     /// in, already normalized to a canonical wire spelling. `None` leaves the
     /// host's own default in place.
     pub(crate) permission_mode: Option<String>,
+    /// `--model`: the model the new session's agent starts on, as the backend
+    /// names it (an alias or a full id). Rides the command as a `model` tag;
+    /// `None` leaves the backend's default.
+    pub(crate) model: Option<String>,
     /// `--issue-url`: the issue the new session works (e.g. a
     /// `headway:<board>/<word-id>` card), already checked to be a URI. It rides
     /// the command and the host copies it onto the session's state. `None`
@@ -352,6 +356,7 @@ pub(crate) async fn cmd_spawn(
         title: opts.title.as_deref(),
         prompt: opts.prompt.as_deref(),
         permission_mode: opts.permission_mode.as_deref(),
+        model: opts.model.as_deref(),
         issue_url: opts.issue_url.as_deref(),
         idempotency_key: None,
         parent_session: target.parent_session.as_deref(),
@@ -378,9 +383,9 @@ pub(crate) async fn cmd_spawn(
 
     // The first message rides the command as a `prompt` tag: the host delivers it
     // when it materializes the session, so it lands even if this CLI stops waiting
-    // before the host answers. The permission mode rides it for a sharper reason —
-    // the host has to know it *before* it starts the session's backend, which it
-    // does the moment it delivers that first message.
+    // before the host answers. The permission mode and model ride it for a sharper
+    // reason — the host has to know them *before* it starts the session's backend,
+    // which it does the moment it delivers that first message.
     let spawn_id = engine.spawn_session(
         &target.host,
         &target.cwd,
@@ -530,6 +535,7 @@ mod tests {
             title: None,
             prompt: None,
             permission_mode: None,
+            model: None,
             issue_url: None,
             relation: SessionRelation::None,
             idempotency_key: None,

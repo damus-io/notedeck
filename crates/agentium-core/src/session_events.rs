@@ -1785,6 +1785,12 @@ pub struct SpawnOptions<'a> {
     /// [`PERMISSION_MODES`]: crate::permission_mode::PERMISSION_MODES
     /// [`parse_permission_mode`]: crate::permission_mode::parse_permission_mode
     pub permission_mode: Option<&'a str>,
+    /// The model the session's agent starts on (`model` tag), as the backend
+    /// names it: an alias the backend resolves (`opus`, `sonnet`) or a full
+    /// model id (`claude-opus-5-5`, `gpt-5.3-codex`). Carried verbatim — the
+    /// host hands it to the backend the way a `/model` would, so nothing is
+    /// validated here. `None`/empty leaves the backend's own default model.
+    pub model: Option<&'a str>,
     /// A key identifying this *request* rather than this transmission of it
     /// (`idempotency_key` tag). Two commands carrying the same key are the same
     /// spawn asked for twice, so a host that already materialized one answers
@@ -1837,7 +1843,7 @@ pub const SPAWN_DEDUPE_WINDOW_SECS: u64 = 600;
 ///
 /// The digest covers exactly the fields that decide *what session you get*: the
 /// target host, the cwd it runs in, the backend, and each of `opts`' spawn
-/// extras (title, first prompt, permission mode, issue). Two spawns differing
+/// extras (title, first prompt, permission mode, model, issue). Two spawns differing
 /// in any of them are different requests and get different keys.
 ///
 /// [`SpawnOptions::idempotency_key`] itself is excluded — it names the request,
@@ -1863,7 +1869,7 @@ pub fn spawn_idempotency_key(
     use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
-    hasher.update(b"agentium-spawn-idempotency-v1");
+    hasher.update(b"agentium-spawn-idempotency-v2");
     for field in [
         target_host,
         cwd,
@@ -1871,6 +1877,7 @@ pub fn spawn_idempotency_key(
         opts.title.unwrap_or(""),
         opts.prompt.unwrap_or(""),
         opts.permission_mode.unwrap_or(""),
+        opts.model.unwrap_or(""),
         opts.issue_url.unwrap_or(""),
     ] {
         hasher.update((field.len() as u64).to_le_bytes());
@@ -1899,7 +1906,8 @@ pub fn spawn_idempotency_key(
 /// session, so delivery never depends on the spawner still waiting — a slow host
 /// that answers after the CLI has given up still starts the session with its
 /// prompt; a non-empty `permission_mode` stamps a `permission_mode` tag naming
-/// the mode the host should start the session in; a non-empty `idempotency_key`
+/// the mode the host should start the session in; a non-empty `model` stamps a
+/// `model` tag naming the model its backend should start on; a non-empty `idempotency_key`
 /// stamps an `idempotency_key` tag naming the *request*, so a host that already
 /// materialized a session for that key answers with it rather than creating a
 /// second (see [`SpawnOptions::idempotency_key`] and
@@ -1958,6 +1966,12 @@ pub fn build_spawn_command_event(
         // kind-31988 state's hyphenated `permission-mode`.
         if let Some(mode) = opts.permission_mode.filter(|m| !m.is_empty()) {
             builder = builder.start_tag().tag_str("permission_mode").tag_str(mode);
+        }
+        // The model the session starts on. Like the mode, the host has to know it
+        // before the backend launches, so it rides the command rather than a
+        // `/model` sent after the session comes up.
+        if let Some(model) = opts.model.filter(|m| !m.is_empty()) {
+            builder = builder.start_tag().tag_str("model").tag_str(model);
         }
         // The request's identity, so a host can tell a retry of *this* spawn from
         // a deliberate second one. A resume already names the session it revives,
@@ -3588,6 +3602,18 @@ mod tests {
                 ),
             ),
             (
+                "model",
+                spawn_idempotency_key(
+                    "host-a",
+                    "/tmp/proj",
+                    "claude",
+                    &SpawnOptions {
+                        model: Some("sonnet"),
+                        ..base_opts
+                    },
+                ),
+            ),
+            (
                 "issue_url",
                 spawn_idempotency_key(
                     "host-a",
@@ -3845,6 +3871,46 @@ mod tests {
             "json: {}",
             resumed.note_json
         );
+    }
+
+    /// A model rides a new spawn verbatim as a `model` tag; an empty one, or one
+    /// passed on a resume (which keeps the model its saved state names), puts no
+    /// tag on the wire.
+    #[test]
+    fn spawn_command_carries_model_on_new_spawns_only() {
+        let sk = test_secret_key();
+        let build = |model: &str, resume: Option<&ResumeSpawn<'_>>| {
+            build_spawn_command_event(
+                "host-a",
+                "/tmp/proj",
+                "claude",
+                &SpawnOptions {
+                    model: Some(model),
+                    ..Default::default()
+                },
+                "spawn-1",
+                resume,
+                &sk,
+            )
+            .unwrap()
+            .note_json
+        };
+
+        let json = build("claude-opus-5-5", None);
+        assert!(
+            json.contains(r#"["model","claude-opus-5-5"]"#),
+            "json: {json}"
+        );
+
+        let json = build("", None);
+        assert!(!json.contains(r#"["model""#), "json: {json}");
+
+        let resume = ResumeSpawn {
+            target_session_id: "dead-session",
+            cli_session_id: "cli-uuid",
+        };
+        let json = build("sonnet", Some(&resume));
+        assert!(!json.contains(r#"["model""#), "json: {json}");
     }
 
     /// Every mode the vocabulary declares is stampable on a spawn command, so the
