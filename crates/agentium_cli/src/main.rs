@@ -12,6 +12,7 @@
 
 mod config_cmd;
 mod grep;
+mod help;
 mod interrupt;
 mod link;
 mod list;
@@ -314,9 +315,13 @@ impl Command {
 
 async fn run() -> Result<()> {
     let cli = match Cli::parse(env::args().skip(1))? {
-        Some(cli) => cli,
-        None => {
-            print_usage();
+        Invocation::Run(cli) => *cli,
+        Invocation::Usage => {
+            help::print_usage(nostrdb_net::relay::sync::DEFAULT_RELAY);
+            return Ok(());
+        }
+        Invocation::CommandHelp(cmd) => {
+            help::print_command(cmd);
             return Ok(());
         }
     };
@@ -550,10 +555,19 @@ struct Cli {
     command: Command,
 }
 
+/// What a command line asks for: a run, or one of the two help pages.
+enum Invocation {
+    Run(Box<Cli>),
+    /// `agentium` with no command, or `agentium --help`: the grouped overview.
+    Usage,
+    /// `agentium <cmd> --help` or `agentium help <cmd>`: one command's own page.
+    CommandHelp(&'static cli_term::help::CommandHelp),
+}
+
 impl Cli {
-    /// Parse args (without the program name). Returns `Ok(None)` when usage
-    /// should be printed (no command, `-h`/`--help`).
-    fn parse(args: impl Iterator<Item = String>) -> Result<Option<Self>> {
+    /// Parse args (without the program name), deciding between a run and a help
+    /// page (see [`Invocation`]).
+    fn parse(args: impl Iterator<Item = String>) -> Result<Invocation> {
         // Precedence: `--nsec` overrides the `AGENTIUM_NSEC` env var, which
         // overrides the key stored by `login`. `--relay`/`--db` are captured raw
         // here and resolved against env/stored config in `run` (see
@@ -615,6 +629,9 @@ impl Cli {
         let mut config_name = None;
         let mut config_command = None;
         let mut positionals: Vec<String> = Vec::new();
+        // `-h`/`--help` is answered after the loop, once the positionals say
+        // *which* help — the overview, or one command's page.
+        let mut want_help = false;
 
         let mut args = args;
         while let Some(arg) = args.next() {
@@ -624,7 +641,7 @@ impl Cli {
                     as Result<String>
             };
             match arg.as_str() {
-                "-h" | "--help" => return Ok(None),
+                "-h" | "--help" => want_help = true,
                 "--nsec" => nsec = Some(value("--nsec")?),
                 "--relay" => relay = Some(value("--relay")?),
                 "--db" => db = Some(value("--db")?),
@@ -699,9 +716,30 @@ impl Cli {
             }
         }
 
+        // `agentium help [cmd]` is the same two pages spelled as a command, so
+        // fold it into the `--help` path rather than giving it its own dispatch.
+        let mut positionals = positionals.as_slice();
+        if let Some(first) = positionals.first()
+            && first == "help"
+        {
+            want_help = true;
+            positionals = &positionals[1..];
+        }
         let Some((name, rest)) = positionals.split_first() else {
-            return Ok(None);
+            return Ok(Invocation::Usage);
         };
+        // The help table is the CLI's list of commands: an unknown name is
+        // rejected here, so nothing below dispatches one and a command added
+        // without a help entry can't ship undocumented.
+        let Some(spec) = help::lookup(name) else {
+            return Err(format!("unknown command '{name}' (try `agentium --help`)").into());
+        };
+        // Help wins over the command's own argument checks (and over reading
+        // a `--prompt-file`), so `agentium send --help` prints send's page
+        // rather than erroring about the missing session.
+        if want_help {
+            return Ok(Invocation::CommandHelp(spec));
+        }
         let view = MessageView {
             roles,
             last,
@@ -833,7 +871,7 @@ impl Cli {
         };
         let sync = !no_sync;
 
-        Ok(Some(Cli {
+        Ok(Invocation::Run(Box::new(Cli {
             secret,
             author,
             relay,
@@ -846,7 +884,7 @@ impl Cli {
             list_scope,
             sync,
             command,
-        }))
+        })))
     }
 }
 
@@ -899,7 +937,9 @@ fn parse_command(
                 d_tags: rest.to_vec(),
             }
         }
-        other => return Err(format!("unknown command '{other}' (try `agentium --help`)").into()),
+        // Unreachable in practice: `Cli::parse` rejects a name the help table
+        // doesn't list, so only a documented command with no arm lands here.
+        other => return Err(format!("`{other}` is documented but has no parser").into()),
     })
 }
 
@@ -930,264 +970,6 @@ fn join_message(words: &[String]) -> Result<String> {
         return Err("`send` needs a non-empty message".into());
     }
     Ok(text)
-}
-
-fn print_usage() {
-    eprintln!(
-        "\
-agentium — query and control Dave agentic sessions over a running notedeck's relay
-
-USAGE:
-    agentium [OPTIONS] <COMMAND>
-
-COMMANDS:
-    list              List this identity's sessions, newest first, grouped by
-                      host. Filter with --host/--status/--cwd/--backend; --json
-                      emits the raw session set. Deleted sessions are hidden
-                      unless --deleted/--all is passed.
-    watch             A live dashboard of every session: status, title, host,
-                      cwd, backend, mode and last activity (which counts
-                      streamed messages, not just status changes), sessions
-                      waiting on you first. Redraws in place on a terminal until
-                      Ctrl-C; into a pipe, prints each changed frame. Takes the
-                      list filters and --color; --once prints one frame and
-                      exits. Lines clip to $COLUMNS, else the terminal width;
-                      piped frames are never clipped.
-    show [session]    Show one session's detail: its state, the run-configs on
-                      its host+cwd, its latest usage, and a conversation summary
-                      (message count + each pending permission request, with
-                      the id approve/deny --request takes), and a subagent
-                      rollup (counts by status + one line each; sessions
-                      recorded before subagents were published show none).
-                      Takes any selector `list` accepts; defaults to
-                      $AGENTIUM_SESSION so a running Dave session can just run
-                      `agentium show`. --json emits the structured detail
-                      object.
-    log [session]     Print one session's full conversation, one entry per
-                      message, in order (millisecond wall-clock, not seq). Takes
-                      any selector `list` accepts; defaults to $AGENTIUM_SESSION.
-                      Tool call/result noise is folded away by default; pass
-                      --tools to include it. Filter/shape with --role/--last;
-                      --json
-                      emits structured message objects, --jsonl the reconstructed
-                      claude-code JSONL from the source archive. --follow/-f keeps
-                      streaming new messages (and status changes) until Ctrl-C.
-    grep <pattern>    Search message text across every session, deleted ones
-                      included, that the list filters select
-                      (--host/--cwd/--status/--backend; --deleted for only the
-                      deleted ones), printing each matching line under its
-                      session's agentium: ref and status. <pattern> is a regex;
-                      -i folds case. One sync and one
-                      cache read covers every session, so it is flat in session
-                      count where a per-session `log | grep` loop is not. The
-                      log filters --role/--tools/--last narrow what is
-                      searched (tool noise is folded away by default); --json
-                      groups matches under each session.
-    resume <session>  Reopen a closed (even soft-deleted) session on its host so
-                      a new message drives its backend again. Takes any selector
-                      `list` accepts (d-tag, cli-session id, or agentium: ref);
-                      revives the session's agentium: reference in place.
-    send [--immediate] <session> <text…>
-                      Send a user message to a live session so its running agent
-                      (local or remote) picks it up over relay sync, then report
-                      the resulting event id. The selector is required (no
-                      $AGENTIUM_SESSION default — it would be ambiguous against
-                      the text); the message is the remaining words joined with
-                      spaces (quote to preserve exact spacing). Reopen a deleted
-                      session with `resume` first. Sent from inside a session
-                      ($AGENTIUM_SESSION set), it names that session as its
-                      sender. --json emits the event id. --immediate then
-                      interrupts the session's running turn, so the agent
-                      stops and reads the message now instead of when the turn
-                      ends; an idle session isn't interrupted, since the
-                      message starts its turn (--json adds `interrupted`).
-    spawn             Tell a (local or remote) Dave host to create a fresh
-                      session, then print its new agentium: ref. --host/--cwd/
-                      --backend pick the target; omitted, they default to the
-                      current session ($AGENTIUM_SESSION) so a bare `spawn`
-                      starts a sibling in the same worktree. --title sets a
-                      sticky session title; --wait blocks until the host answers;
-                      --prompt <text> rides the command so the host delivers it as
-                      the session's first message (delivery no longer depends on
-                      --wait, so a slow host still gets the prompt);
-                      --permission-mode picks the mode its agent starts in;
-                      --model the model it starts on;
-                      --issue-url links it to the card it works; --child or
-                      --successor says how it relates to the spawning session
-                      (recorded with that session's ref). --json emits
-                      {{ spawn_id, host, session }} on one line. A spawn that looks
-                      like a retry of a recent one (same host+cwd+title) is refused,
-                      naming the session it would have duplicated; the host also
-                      answers a retried spawn with the session it already made, so
-                      re-running after a timeout is safe. --allow-duplicate opts out.
-    interrupt <session>
-                      Abort a live session's in-flight turn on its host — the CLI
-                      companion to pressing Esc in Dave. Takes any selector `list`
-                      accepts; a deleted session has nothing running to interrupt.
-    approve <session> / deny <session>
-                      Answer a live session's pending permission request — by
-                      default the newest; --request picks another. `show` lists
-                      what is pending. An AskUserQuestion request can be denied
-                      but not approved (it needs answers; use Dave). --json emits
-                      {{ session, event_id, perm_id, … }} on one line. The host
-                      matches the answer to the request it holds in memory: if it
-                      restarted since, the answer is ignored and the request stays
-                      pending, with no error.
-    mode <session> <mode>
-                      Change a live session's permission mode — the CLI companion
-                      to Ctrl+M in Dave: default (aka manual) | plan |
-                      accept_edits | auto | bypass. --json emits {{ session,
-                      event_id, mode }}.
-    link <session> <issue-url>
-                      Link a live session to the issue it works, after the fact
-                      — `spawn --issue-url` for a session spawned without it, so
-                      `show` names the card and `s` in Dave opens it. For a
-                      headway card the URL is headway:<board>/<word-id>. The
-                      session's host applies it and republishes the session;
-                      link waits up to 10s for that and fails if it doesn't
-                      come (a host built before `link` ignores the command).
-                      --json emits {{ session, issue_url, event_id, unchanged }}.
-    unlink <session>  Clear a live session's issue link, the same way.
-    config [list]     List run configs — the named shell commands Dave's run
-                      bar launches in a host+cwd — on every host, grouped host →
-                      cwd. --host/--cwd narrow it (substring, like list); --json
-                      emits the flat array.
-    config show <config>
-                      Show one run config. <config> is an id prefix (the 8-char
-                      ids `config list` prints) or an exact name; --host/--cwd
-                      narrow what it resolves against.
-    config add --name <n> --command <cmd>
-                      Register a run config. It lands on --host/--cwd (exact
-                      values here), which default to the current session's
-                      ($AGENTIUM_SESSION). --json emits {{ action, event_id,
-                      config }} on one line, as do edit and rm.
-    config edit <config> [--name <n>] [--command <cmd>]
-                      Rename a run config or change its command; its id stays.
-    config rm <config>
-                      Delete a run config (Dave kills it if it is running).
-    id <d-tag…>       Print the agentium: ref of each session d-tag (its
-                      kind-31988 d-tag, e.g. from `ndb query --kind 31988`).
-                      Offline: needs no key, cache or relay.
-    login <nsec>      Store a signing key for later runs
-    logout            Forget the stored signing key
-
-OPTIONS:
-    --nsec <nsec>     Signing key for this run. Normally unnecessary — run
-                      `agentium login` once and it's reused. ($AGENTIUM_NSEC,
-                      if set, takes precedence over the stored key.)
-    --author <pk>     Identity whose sessions to read (defaults to the signer).
-                      Note: sessions are PNS-encrypted to their owner, so a
-                      pubkey other than yours lists nothing decryptable.
-    --relay <url>     Relay URL. Passing it also remembers it as the default for
-                      later runs. (Precedence: --relay > $AGENTIUM_RELAY > stored
-                      > {DEFAULT_RELAY})
-    --db <path>       nostrdb cache dir (remembered like --relay)
-                      [default: <data-dir>/agentium-cli]
-    --json            Machine-readable output
-    --no-sync         Skip the relay reconcile and read the local cache as it
-                      stands — the fast path for repeated reads (list/show/log/
-                      grep/watch --once). Rejected for commands that publish or
-                      stream.
-
-  list filters (case-insensitive):
-    --host <h>        Only sessions whose host contains <h>
-    --status <s>      Only sessions with exactly this status
-                      (idle|working|needs_input|error|done|pending)
-    --cwd <c>         Only sessions whose working dir contains <c>
-    --backend <b>     Only sessions whose backend contains <b>
-    --deleted         Show only soft-deleted (tombstoned) sessions
-    --all             Show live and deleted sessions together
-    --once            (watch) Print one frame and exit instead of following
-
-  grep options (also uses the list filters above to pick sessions, and the log
-  options below to pick which messages are searched):
-                      Case is smart by default: an all-lowercase pattern matches
-                      case-insensitively, one carrying an uppercase letter
-                      matches exactly.
-    -i, --ignore-case Force a case-insensitive match
-    -s, --case-sensitive
-                      Force a case-sensitive match
-
-  log options:
-    --role <r[,r…]>   Only messages with these roles, comma-separated and/or
-                      repeatable (user|assistant|tool_call|tool_result|
-                      permission_request|subagent|system|error|compaction|todo)
-    -n, --last <n>    Only the last <n> messages (after other filters)
-    --tools           Also show tool_call/tool_result messages
-    --no-tools        Fold away tool_call/tool_result noise (default)
-    --jsonl           Emit reconstructed claude-code JSONL (source archive)
-    --color <when>    auto (default) | always | never. `always` keeps color
-                      when piping into your own pager (e.g. `less -SR`).
-    --pager           Force paging even when stdout isn't a terminal
-    --no-pager        Never page; write straight to stdout
-                      (pager command: $AGENTIUM_PAGER, $PAGER, else `less -R`)
-    -f, --follow      After the tail, stream new messages as they land (like
-                      `tail -f`) until Ctrl-C. Also surfaces status changes.
-                      Conflicts with --pager/--jsonl (can't page/reconstruct a
-                      live stream); with --json, streams newline-delimited objects.
-
-  spawn options (also uses --host/--cwd/--backend above as the target):
-    --title <text>    Explicit, sticky session title (else it derives from — and
-                      churns with — the first message)
-    --wait            Block (bounded) until the host answers with the new
-                      session's state, then print its agentium: ref
-    --wait-timeout <secs>
-                      Override the --wait bound for this run (default 30s, else
-                      $AGENTIUM_SPAWN_WAIT). A still-waiting note hits stderr
-                      after 8s so a slow host doesn't look like a hang.
-    --prompt <text>   The session's first user message. It rides the spawn command
-                      and the host delivers it when the session comes up, so it
-                      lands even if a slow host outlasts --wait (which --prompt
-                      still implies, only to report the ref)
-    --prompt-file <p> Like --prompt, but read the message from file <p> (or stdin
-                      when <p> is `-`) — pass a long/multi-line prompt with no
-                      shell-escaping. Mutually exclusive with --prompt.
-    --permission-mode <m>
-                      The mode the new session's agent starts in, rather than the
-                      host's default: default (aka manual) | plan | accept_edits |
-                      auto | bypass. Asking for it in --prompt does NOT work — the
-                      backend has already started by the time it reads that
-                      message. bypass does no safety checking at all.
-    --model <name>    The model the new session's agent starts on, rather than
-                      the backend's default: an alias the backend knows (opus,
-                      sonnet, haiku) or a full model id (claude-opus-5-5,
-                      gpt-5.3-codex). Passed through as-is, the way /model in
-                      Dave is; a backend that doesn't know it says so when it
-                      starts.
-    --issue-url <uri> The issue the session works, e.g. headway:<board>/<word-id>.
-                      Recorded on the session's state (`show` prints it) so
-                      pressing s on the session in Dave opens the card.
-    --child           The new session works for this one and reports its result
-                      back: each turn it finishes at rest sends its final text
-                      here as a message from it, which wakes this session.
-                      Recorded as `relation child` beside `parent-session`,
-                      this session's ref ($AGENTIUM_SESSION), on the new session's
-                      state; `show` prints both.
-    --successor       The new session carries this one's work on (a handoff).
-                      Recorded as `relation successor`. Exclusive with --child.
-                      With neither, a spawn from inside a session still records
-                      its `parent-session`, with no relation.
-    --idempotency-key <k>
-                      Name this *request*, so a retry of it is recognized as the
-                      same spawn. Defaults to a digest of the request itself
-                      (host+cwd+backend+title+prompt+mode+model+issue), which
-                      already makes an identical re-run safe; pass your own when
-                      you have a better notion of identity (a job id, say).
-    --allow-duplicate Really spawn a second session the duplicate guard would
-                      refuse. Also drops the idempotency key, so the host doesn't
-                      re-impose the dedupe.
-
-  approve/deny options:
-    --request <id>    The pending request to answer, by perm-id prefix (the
-                      8-digit ids `show` prints). Default: the newest.
-    --message <text>  Reply text sent with the decision — a deny reason, or a
-                      note with an approve — which the agent sees
-    --interrupt       (deny only) Deny and stop the turn, rather than letting
-                      the agent carry on without the tool
-
-    -h, --help        Print this help",
-        DEFAULT_RELAY = nostrdb_net::relay::sync::DEFAULT_RELAY,
-    );
 }
 
 #[cfg(test)]
@@ -1552,13 +1334,104 @@ mod tests {
         assert!(err.contains("--host needs a value"), "{err}");
     }
 
+    /// `--help` picks the overview or one command's page depending on whether a
+    /// command was named, in either spelling and either order — and `--help`
+    /// wins over the command's own argument checking, so `agentium send
+    /// --help` prints send's page rather than erroring about the missing
+    /// session.
     #[test]
-    fn no_command_or_help_prints_usage() {
-        // `Ok(None)` is the "print usage" signal, not an error.
-        assert!(parse_cli(&[]).expect("parses").is_none());
-        assert!(parse_cli(&["--nsec", TEST_NSEC]).expect("parses").is_none());
-        assert!(parse_cli(&["list", "--help"]).expect("parses").is_none());
-        assert!(parse_cli(&["-h"]).expect("parses").is_none());
+    fn help_resolves_to_a_page() {
+        assert_eq!(help_of(&[]), Some(None));
+        assert_eq!(help_of(&["--nsec", TEST_NSEC]), Some(None));
+        assert_eq!(help_of(&["--help"]), Some(None));
+        assert_eq!(help_of(&["-h"]), Some(None));
+        assert_eq!(help_of(&["help"]), Some(None));
+        assert_eq!(help_of(&["spawn", "--help"]), Some(Some("spawn")));
+        assert_eq!(help_of(&["--help", "spawn"]), Some(Some("spawn")));
+        assert_eq!(help_of(&["help", "spawn"]), Some(Some("spawn")));
+        assert_eq!(help_of(&["send", "--help"]), Some(Some("send")));
+        assert_eq!(help_of(&["deny", "-h"]), Some(Some("deny")));
+        assert_eq!(help_of(&["config", "add", "--help"]), Some(Some("config")));
+        // Help is answered before `--prompt-file` is read, so this neither
+        // blocks on stdin nor fails on a missing file.
+        assert_eq!(
+            help_of(&["spawn", "--prompt-file", "/nonexistent/prompt", "--help"]),
+            Some(Some("spawn"))
+        );
+        // Without it, the same line runs.
+        assert!(help_of(&["--nsec", TEST_NSEC, "list"]).is_none());
+    }
+
+    /// An unrecognised command is rejected by name, whether or not help was
+    /// asked for — `agentium frobnicate --help` has no page to print.
+    #[test]
+    fn unknown_commands_are_rejected_even_with_help() {
+        for args in [&["frobnicate"][..], &["frobnicate", "--help"][..]] {
+            let err = parse_err(args);
+            assert!(err.contains("unknown command 'frobnicate'"), "{err}");
+        }
+    }
+
+    /// Every command the help documents is one the parser builds, so a help
+    /// entry can't drift off a command that was renamed or removed. The
+    /// converse — a command with no help entry — can't happen: `Cli::parse`
+    /// resolves the name through the help table before dispatching.
+    #[test]
+    fn every_documented_command_parses() {
+        for cmd in help::COMMANDS {
+            // Two positionals cover every command's required arguments; a
+            // command that rejects them errors about *that*, and only the
+            // fallback arm means the name has no parser at all.
+            let res = parse_cli(&["--nsec", TEST_NSEC, cmd.name, "agentium:a-b-c", "plan"]);
+            if let Err(e) = res {
+                assert!(
+                    !e.to_string().contains("has no parser"),
+                    "`{}` is documented but has no parser",
+                    cmd.name
+                );
+            }
+        }
+    }
+
+    /// The autowork chain hands off with exactly this line, through the
+    /// installed binary: if it stopped parsing, the chain would die at its
+    /// next handoff.
+    #[test]
+    fn the_autowork_handoff_line_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prompt");
+        std::fs::write(&path, "/autowork\n\nContinue the chain.\n").unwrap();
+        let cli = parse_cli(&[
+            "--nsec",
+            TEST_NSEC,
+            "spawn",
+            "--title",
+            "headway:notedeck/x",
+            "--issue-url",
+            "headway:notedeck/x",
+            "--wait",
+            "--json",
+            "--prompt-file",
+            path.to_str().unwrap(),
+        ])
+        .expect("parses")
+        .expect("a command");
+        assert!(cli.json);
+        match cli.command {
+            Command::Spawn {
+                title,
+                issue_url,
+                prompt,
+                wait,
+                ..
+            } => {
+                assert_eq!(title.as_deref(), Some("headway:notedeck/x"));
+                assert_eq!(issue_url.as_deref(), Some("headway:notedeck/x"));
+                assert_eq!(prompt.as_deref(), Some("/autowork\n\nContinue the chain."));
+                assert!(wait);
+            }
+            _ => panic!("expected Spawn"),
+        }
     }
 
     #[test]
@@ -1811,9 +1684,23 @@ mod tests {
     /// deterministic (overrides any stored/env key on the test machine).
     const TEST_NSEC: &str = "nsec1qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qursl6edet";
 
-    /// Parse a full arg vector (without the program name) through [`Cli::parse`].
+    /// Parse a full arg vector (without the program name) through
+    /// [`Cli::parse`]: `Some` for a run, `None` for either help page.
     fn parse_cli(args: &[&str]) -> Result<Option<Cli>> {
-        Cli::parse(args.iter().map(|s| s.to_string()))
+        Ok(match Cli::parse(args.iter().map(|s| s.to_string()))? {
+            Invocation::Run(cli) => Some(*cli),
+            Invocation::Usage | Invocation::CommandHelp(_) => None,
+        })
+    }
+
+    /// The help page a command line asks for — `Some(None)` for the overview,
+    /// `Some(Some(name))` for a command's page — or `None` when it asks to run.
+    fn help_of(args: &[&str]) -> Option<Option<&'static str>> {
+        match Cli::parse(args.iter().map(|s| s.to_string())).expect("parses") {
+            Invocation::Run(_) => None,
+            Invocation::Usage => Some(None),
+            Invocation::CommandHelp(cmd) => Some(Some(cmd.name)),
+        }
     }
 
     #[test]

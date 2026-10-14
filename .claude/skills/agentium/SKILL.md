@@ -32,6 +32,9 @@ cargo run -q -p agentium_cli -- <command>
 
 In examples below, `agentium` means whichever form you're using.
 
+`agentium --help` lists the commands; `agentium <command> --help` (or
+`agentium help <command>`) prints that command's own flags and examples.
+
 ## Logging in
 
 Everything operates on your own sessions once you're logged in. Relay defaults
@@ -588,7 +591,6 @@ agentium config rm build
 
 ## Command surface
 
-Implemented: `list`, `show`, `log` (incl. `log --follow`, the live `tail -f`),
-`resume`, `send`, `spawn`, `interrupt`, `approve`/`deny`, `mode`,
-`link`/`unlink`, `config` (plus `login`/`logout`). A watch dashboard is planned but **not yet
-implemented** — don't invoke it until it lands.
+`list`, `watch`, `show`, `log` (incl. `log --follow`), `grep`, `spawn`, `send`,
+`resume`, `interrupt`, `approve`/`deny`, `mode`, `link`/`unlink`, `config`,
+`id`, `login`/`logout`. `agentium <command> --help` is the reference for each.
