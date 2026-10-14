@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
-# Stand up a live notedeck (headway + dave) on a private Xvfb display, with a
-# throwaway key and a seeded demo board, for a visual pass of the real app.
-# Snapshot tests render apps outside the chrome; this is the real window.
+# Stand up a live notedeck (headway + dave) with a throwaway key and a seeded
+# demo board, for a visual pass of the real app. Snapshot tests render apps
+# outside the chrome; this is the real app. It runs headless (no display) and
+# `shot` films it offscreen, so no Xvfb is needed; `up --xvfb` runs it in a
+# window on a private Xvfb display instead, for driving by hand with xdotool.
 #
 # Usage:
 #   scripts/headway-live-rig [up] [options]   build, launch, seed; print the rig
@@ -11,8 +13,11 @@
 #                                             agentium: refs; --attach adds a
 #                                             record naming the newest to every
 #                                             seeded review (same commit)
-#   scripts/headway-live-rig shot [dir] [out.png]
-#                                             screenshot the rig's display
+#   scripts/headway-live-rig shot [dir] [out.png] [steps...]
+#                                             film the rig's app: open Headway
+#                                             (or run `steps`, notedeck's shot
+#                                             flags: --key '<C-k>' --wait 1 …)
+#                                             and write a PNG
 #   scripts/headway-live-rig down [dir]       stop the rig's processes
 #
 # `dir` defaults to the last rig `up` started (its path is kept in
@@ -21,21 +26,30 @@
 # up options:
 #   --dir <dir>        Scratch dir for the binary, data, logs and rig.env
 #                      [default: a fresh mktemp dir]
-#   --size <WxH>       Screen and window size [default: 1600x1000]
+#   --size <WxH>       Window size, and screen size with --xvfb [default: 1600x1000]
+#   --xvfb             Run in a window on a private Xvfb display, not headless
 #   --bin <path>       Use this notedeck binary instead of building one
 #   --no-build         Reuse <dir>/notedeck from an earlier `up --dir <dir>`
 #   --commits <n>      In Review cards to seed, one per commit HEAD~0.. [default: 4]
 #   --no-seed          Leave the board empty
 #
-# Needs: cargo, Xvfb, xdotool, nak, jq, and for `session` the `ndb` CLI and
-# agentium; for `shot`, ImageMagick's `import`. Everything the rig starts is
-# stopped by pid (never by name, so other sessions' displays survive).
+# Needs: cargo, nak, jq, headway, and for `session` the `ndb` CLI and agentium;
+# with --xvfb also Xvfb, xdotool and (for `shot`) ImageMagick's `import`.
+# Everything the rig starts is stopped by pid (never by name, so other
+# sessions' processes survive).
 
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 last_file="${TMPDIR:-/tmp}/headway-live-rig.last"
 board=headway
+
+# What a headless `shot` does when given no steps: let the app settle, open the
+# app drawer, wait for it to finish sliding in (a click while it slides lands
+# on the Columns sidebar under it), click Headway (its last item), and let the
+# board load. The click is where Headway sits in the drawer (from the top, so
+# it holds at any window height).
+default_steps=(--wait 2 --key '<F11>' --wait 1.5 --click '97,539' --wait 2)
 
 die() {
     echo "headway-live-rig: $*" >&2
@@ -126,12 +140,40 @@ added_card() {
     grep -o "headway:$board/[a-z]*-[a-z]*-[a-z]*" | head -n1
 }
 
+# notedeck's own arguments for the rig: its data, its key, and no real relay
+# (`-r ws://127.0.0.1:9` is a closed port).
+rig_notedeck_args() {
+    rig_args=(--datapath "$RIG_DIR/data" --sec "$RIG_SEC" -r ws://127.0.0.1:9)
+}
+
+# Start the rig's headless notedeck, its embedded relay on $RIG_PORT, and
+# record its pid in rig.env.
+start_headless() {
+    local rig_args
+    rig_notedeck_args
+    # setsid so a Ctrl-C in this terminal doesn't reach it; as a background
+    # job it isn't a group leader, so setsid execs in place and $! is notedeck.
+    env -u DISPLAY -u WAYLAND_DISPLAY setsid "$RIG_DIR/notedeck" --headless \
+        "${rig_args[@]}" --relay-bind "127.0.0.1:$RIG_PORT" \
+        >>"$RIG_DIR/notedeck.log" 2>&1 &
+    RIG_NOTEDECK_PID=$!
+    sed -i "s/^RIG_NOTEDECK_PID=.*/RIG_NOTEDECK_PID=$RIG_NOTEDECK_PID/" "$RIG_DIR/rig.env"
+    wait_for 30 "the embedded relay on :$RIG_PORT" port_open "$RIG_PORT"
+}
+
+# Stop the rig's notedeck and wait for it to go, so its database is closed.
+stop_notedeck() {
+    kill "$RIG_NOTEDECK_PID" 2>/dev/null || return 0
+    wait_for 10 "pid $RIG_NOTEDECK_PID to exit" bash -c "! kill -0 $RIG_NOTEDECK_PID 2>/dev/null"
+}
+
 cmd_up() {
-    local dir="" size=1600x1000 bin="" build=1 commits=4 seed=1
+    local dir="" size=1600x1000 bin="" build=1 commits=4 seed=1 xvfb=0
     while (($#)); do
         case $1 in
         --dir) dir=$2; shift ;;
         --size) size=$2; shift ;;
+        --xvfb) xvfb=1 ;;
         --bin) bin=$2; shift ;;
         --no-build) build=0 ;;
         --commits) commits=$2; shift ;;
@@ -142,7 +184,8 @@ cmd_up() {
     done
     [[ $size =~ ^([0-9]+)x([0-9]+)$ ]] || die "--size wants WxH, got '$size'"
     local width=${BASH_REMATCH[1]} height=${BASH_REMATCH[2]}
-    need Xvfb xdotool nak jq headway
+    need nak jq headway
+    ((xvfb)) && need Xvfb xdotool
 
     if [[ -z $dir ]]; then
         dir=$(mktemp -d "${TMPDIR:-/tmp}/headway-live-rig.XXXXXX")
@@ -173,12 +216,49 @@ cmd_up() {
     sec=$(nak key generate </dev/null)
     nsec=$(nak encode nsec "$sec" </dev/null)
 
-    # 3. A private display, then notedeck on it with its embedded relay on a
-    #    free port. `-r ws://127.0.0.1:9` keeps it off every real relay; the
-    #    embedded relay ingests what the CLIs publish into the app's ndb.
-    local display port
-    display=$(free_display)
+    # 3. notedeck with its embedded relay on a free port, headless or in a
+    #    window on a private display. `-r ws://127.0.0.1:9` keeps it off every
+    #    real relay; the embedded relay ingests what the CLIs publish into the
+    #    app's ndb.
+    local port
     port=$(free_port)
+    cat >"$dir/rig.env" <<EOF
+RIG_DIR=$dir
+RIG_PORT=$port
+RIG_SEC=$sec
+RIG_NSEC=$nsec
+RIG_SIZE=$size
+RIG_NOTEDECK_PID=
+EOF
+    echo "$dir" >"$last_file"
+    # shellcheck source=/dev/null
+    source "$dir/rig.env"
+
+    if ((xvfb)); then
+        up_xvfb "$width" "$height"
+    else
+        echo "RIG_MODE=headless" >>"$dir/rig.env"
+        start_headless
+    fi
+
+    # 5. The demo board: one card per column state, and <commits> In Review
+    #    cards each carrying a review record of a real commit of this repo.
+    if ((seed)); then
+        seed_board "$commits"
+    fi
+
+    if ((xvfb)); then
+        print_xvfb_rig
+    else
+        print_headless_rig
+    fi
+}
+
+# Start notedeck in a window on a private Xvfb display, sized to the screen
+# and focused.
+up_xvfb() {
+    local width=$1 height=$2 dir=$RIG_DIR port=$RIG_PORT sec=$RIG_SEC display
+    display=$(free_display)
 
     Xvfb ":$display" -screen 0 "${width}x${height}x24" -nolisten tcp \
         >"$dir/xvfb.log" 2>&1 &
@@ -192,16 +272,12 @@ cmd_up() {
         --relay-bind "127.0.0.1:$port" >"$dir/notedeck.log" 2>&1 &
     local notedeck_pid=$!
 
-    cat >"$dir/rig.env" <<EOF
-RIG_DIR=$dir
+    sed -i "s/^RIG_NOTEDECK_PID=.*/RIG_NOTEDECK_PID=$notedeck_pid/" "$dir/rig.env"
+    cat >>"$dir/rig.env" <<EOF
+RIG_MODE=xvfb
 RIG_DISPLAY=:$display
-RIG_PORT=$port
-RIG_SEC=$sec
-RIG_NSEC=$nsec
 RIG_XVFB_PID=$xvfb_pid
-RIG_NOTEDECK_PID=$notedeck_pid
 EOF
-    echo "$dir" >"$last_file"
     # shellcheck source=/dev/null
     source "$dir/rig.env"
 
@@ -221,38 +297,60 @@ EOF
     DISPLAY=":$display" xdotool windowmove "$win" 0 0 windowsize "$win" "$width" "$height"
     DISPLAY=":$display" xdotool windowfocus --sync "$win"
     echo "RIG_WINDOW=$win" >>"$dir/rig.env"
+    RIG_WINDOW=$win
 
     wait_for 30 "the embedded relay on :$port" port_open "$port"
+}
 
-    # 5. The demo board: one card per column state, and <commits> In Review
-    #    cards each carrying a review record of a real commit of this repo.
-    if ((seed)); then
-        seed_board "$commits"
-    fi
+print_headless_rig() {
+    cat <<EOF
 
+rig up in $RIG_DIR (headless)
+  relay     ws://127.0.0.1:$RIG_PORT
+  pid       notedeck $RIG_NOTEDECK_PID
+  log       $RIG_DIR/notedeck.log
+
+Shoot the board (opens Headway from the app drawer):
+  $0 shot $RIG_DIR out.png
+or script it with notedeck's shot steps, e.g. the review queue:
+  $0 shot $RIG_DIR out.png $(printf '%q ' "${default_steps[@]}")--key R --wait 1
+Each shot stops the app, films it offscreen, and starts it again.
+Dave refs:   $0 session $RIG_DIR [--attach]
+Headway CLI: source $RIG_DIR/rig.env, then
+  headway --board $board --relay ws://127.0.0.1:$RIG_PORT --db $RIG_DIR/headway-db --nsec \$RIG_NSEC show
+Teardown:    $0 down $RIG_DIR     (kills pid $RIG_NOTEDECK_PID)
+EOF
+}
+
+print_xvfb_rig() {
+    local dir=$RIG_DIR win=$RIG_WINDOW
     cat <<EOF
 
 rig up in $dir
-  display   :$display (${width}x${height})    window $win
-  relay     ws://127.0.0.1:$port
-  pids      Xvfb $xvfb_pid, notedeck $notedeck_pid
+  display   $RIG_DISPLAY ($RIG_SIZE)    window $win
+  relay     ws://127.0.0.1:$RIG_PORT
+  pids      Xvfb $RIG_XVFB_PID, notedeck $RIG_NOTEDECK_PID
   log       $dir/notedeck.log
 
 Open the board: F11 opens the app drawer; wait ~1.5s, then click Headway (its
 last item). R on the board opens the review queue. Drive it with
-  DISPLAY=:$display xdotool key --window $win <key>
+  DISPLAY=$RIG_DISPLAY xdotool key --window $win <key>
 Screenshot:  $0 shot $dir out.png
 Dave refs:   start a session in Dave, then  $0 session $dir [--attach]
 Headway CLI: source $dir/rig.env, then
-  headway --board $board --relay ws://127.0.0.1:$port --db $dir/headway-db --nsec \$RIG_NSEC show
-Teardown:    $0 down $dir     (kills pids $notedeck_pid $xvfb_pid)
+  headway --board $board --relay ws://127.0.0.1:$RIG_PORT --db $dir/headway-db --nsec \$RIG_NSEC show
+Teardown:    $0 down $dir     (kills pids $RIG_NOTEDECK_PID $RIG_XVFB_PID)
 EOF
 }
 
 seed_board() {
     local commits=$1
     echo "seeding the demo board..." >&2
-    rig_headway seed --title "Live rig" >/dev/null
+    # A headless app runs every app's update, so Headway has usually made its
+    # default board already; then the CLI only titles it.
+    if ! rig_headway seed --title "Live rig" >/dev/null 2>&1; then
+        rig_headway rename "Live rig" >/dev/null
+    fi
     rig_headway add "Backlog idea for later" --col backlog >/dev/null
     rig_headway add "Next up in Todo" --col todo -l ui >/dev/null
     rig_headway add "Work in progress" --col in-progress -l ui \
@@ -314,13 +412,43 @@ cmd_session() {
 }
 
 cmd_shot() {
-    local dir out
-    dir=$(rig_dir "${1:-}")
-    out=${2:-$dir/shot-$(date +%H%M%S).png}
-    need import
+    local dir="" out=""
+    # [dir] [out.png], then the steps: everything from the first flag on.
+    while (($#)) && [[ $1 != -* ]]; do
+        if [[ -z $dir && $1 != *.png ]]; then
+            dir=$1
+        else
+            out=$1
+        fi
+        shift
+    done
+    dir=$(rig_dir "$dir")
+    out=${out:-$dir/shot-$(date +%H%M%S).png}
     # shellcheck source=/dev/null
     source "$dir/rig.env"
-    import -display "$RIG_DISPLAY" -window root "$out"
+
+    if [[ ${RIG_MODE:-xvfb} == xvfb ]]; then
+        (($# == 0)) || die "shot steps need a headless rig (up without --xvfb); drive this one with xdotool"
+        need import
+        import -display "$RIG_DISPLAY" -window root "$out"
+        echo "$out"
+        return
+    fi
+
+    local steps=("$@")
+    ((${#steps[@]})) || steps=("${default_steps[@]}")
+    local rig_args
+    rig_notedeck_args
+    # One process at a time on the database: stop the live app, film a fresh
+    # one from the same data, then bring the live one back. The shot keeps
+    # the embedded relay off, so the port stays free for the restart.
+    stop_notedeck
+    local ok=1
+    env -u DISPLAY -u WAYLAND_DISPLAY "$RIG_DIR/notedeck" "${rig_args[@]}" \
+        --no-local-relay --size "$RIG_SIZE" "${steps[@]}" --shot "$out" \
+        >>"$RIG_DIR/shot.log" 2>&1 || ok=0
+    start_headless
+    ((ok)) || die "the shot failed; see $RIG_DIR/shot.log"
     echo "$out"
 }
 
@@ -330,7 +458,8 @@ cmd_down() {
     # shellcheck source=/dev/null
     source "$dir/rig.env"
     local pid
-    for pid in "$RIG_NOTEDECK_PID" "$RIG_XVFB_PID"; do
+    for pid in "$RIG_NOTEDECK_PID" "${RIG_XVFB_PID:-}"; do
+        [[ -n $pid ]] || continue
         kill "$pid" 2>/dev/null || continue
         wait_for 10 "pid $pid to exit" bash -c "! kill -0 $pid 2>/dev/null"
     done

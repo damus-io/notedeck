@@ -5847,6 +5847,7 @@ dependencies = [
  "egui_extras",
  "egui_kittest",
  "egui_nav",
+ "egui_system_fonts",
  "egui_tabs",
  "headway",
  "image",

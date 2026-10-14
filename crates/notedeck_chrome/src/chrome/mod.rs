@@ -217,10 +217,11 @@ impl Chrome {
         Self::new_with_render_state(None, app_args, notedeck)
     }
 
-    /// Shared constructor backing [`new_with_apps`](Self::new_with_apps) and
-    /// [`new_headless`](Self::new_headless). `render_state` is `None` in the
-    /// headless case, which is exactly what the GPU-backed apps already tolerate.
-    fn new_with_render_state(
+    /// Shared constructor backing [`new_with_apps`](Self::new_with_apps),
+    /// [`new_headless`](Self::new_headless) and a [`shot`](crate::shot)'s
+    /// offscreen window. `render_state` is `None` in the headless case, which
+    /// is exactly what the GPU-backed apps already tolerate.
+    pub(crate) fn new_with_render_state(
         render_state: Option<&eframe::egui_wgpu::RenderState>,
         app_args: &[String],
         notedeck: &mut Notedeck,

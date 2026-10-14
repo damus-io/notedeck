@@ -1,5 +1,6 @@
 pub mod keymap;
 pub mod setup;
+pub mod shot;
 
 #[cfg(target_os = "android")]
 mod android;

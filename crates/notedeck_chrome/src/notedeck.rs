@@ -10,6 +10,7 @@ static GLOBAL: AccountingAllocator<std::alloc::System> =
     AccountingAllocator::new(std::alloc::System);
 
 use notedeck::{Args, DataPath, DataPathType, Notedeck, NotedeckOptions, RuntimeThreadBudget};
+use notedeck_chrome::shot::{self, ShotPlan};
 use notedeck_chrome::{setup::generate_native_options, Chrome};
 use std::time::Duration;
 use tracing::{error, info};
@@ -117,6 +118,24 @@ async fn async_main() {
     // Pre-scan for --title so we can set the window title and show the
     // titlebar before eframe creates the window.
     let args_raw: Vec<String> = std::env::args().collect();
+
+    // A shot: the real app, filmed into an offscreen texture with scripted
+    // input, with no window and no display.
+    match ShotPlan::from_args(&args_raw) {
+        Ok(Some(plan)) => {
+            if let Err(err) = shot::run(base_path, plan).await {
+                error!("shot: {err}");
+                eprintln!("notedeck: shot: {err}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Ok(None) => {}
+        Err(err) => {
+            eprintln!("notedeck: {err}");
+            std::process::exit(2);
+        }
+    }
 
     // Headless runtime mode: skip eframe/winit entirely and drive every app's
     // background update() loop from an owned run loop on this Tokio runtime.
