@@ -7266,6 +7266,104 @@ fn own_board_note_id(ndb: &Ndb, author: &Pubkey, slug: &str) -> NoteId {
         .unwrap_or_else(|| panic!("no board note for {slug:?}"))
 }
 
+/// headway:headway/glow-lock-soda: a back onto a card's entry lands on that
+/// card's board, whichever board is active. The issue list opens a card on
+/// another board; a chip from another app then opens a card on the first
+/// board, switching back to it; `q` backs onto the list's card. Its route
+/// names the card by id alone, so Headway used to look for it on the chip's
+/// board, hold the selection forever over a grid, and send every key to a
+/// detail that never drew: `g i` did nothing.
+#[test]
+fn chrome_nav_loop_back_onto_a_card_on_another_board_switches_to_it() {
+    use notedeck_headway::HeadwayRoute;
+
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_side_board(&mut harness);
+    let mut stack = root_stack();
+    chrome_frame(&mut harness, &mut stack);
+
+    // The list, over every board, then the Side board's card from it.
+    for key in [egui::Key::G, egui::Key::I] {
+        harness.press_key(key);
+        chrome_frame(&mut harness, &mut stack);
+    }
+    wait_on_stack(&mut harness, &mut stack, "Headway ▾");
+    harness.get_by_label("Headway ▾").click();
+    wait_on_stack(&mut harness, &mut stack, "All boards");
+    harness.get_by_label("All boards").click();
+    wait_on_stack(&mut harness, &mut stack, SIDE_CARD);
+    harness.get_by_label(SIDE_CARD).click();
+    wait_on_stack(&mut harness, &mut stack, "← Back");
+    assert_eq!(
+        stack
+            .top()
+            .downcast_ref::<HeadwayRoute>()
+            .and_then(HeadwayRoute::title),
+        Some(SIDE_CARD),
+        "a card opened on another board is titled off the list's row"
+    );
+
+    // A chip in another app opens a demo-board card: the active board
+    // switches back to the demo board.
+    let demo = {
+        let state = harness.state_mut();
+        let author = state.account.pubkey;
+        let app_ctx = state.notedeck.app_context();
+        demo_card_id(app_ctx.ndb, &author, "Define nostr event model for boards")
+    };
+    let token = {
+        let state = harness.state_mut();
+        let mut app_ctx = state.notedeck.app_context();
+        state
+            .headway
+            .open_note_route(&mut app_ctx, demo)
+            .expect("a card note mints a route")
+    };
+    stack.route_to(token);
+    wait_on_stack(
+        &mut harness,
+        &mut stack,
+        "Define nostr event model for boards",
+    );
+
+    // `q` backs onto the Side card's entry: its detail shows, on its board.
+    harness.press_key(egui::Key::Q);
+    chrome_frame(&mut harness, &mut stack);
+    wait_on_stack(&mut harness, &mut stack, SIDE_CARD);
+    wait_on_stack(&mut harness, &mut stack, "← Back");
+
+    // And the keys still work: `q` again lands on the list.
+    harness.press_key(egui::Key::Q);
+    chrome_frame(&mut harness, &mut stack);
+    wait_on_stack(&mut harness, &mut stack, "Issues");
+    assert!(
+        stack
+            .top()
+            .downcast_ref::<HeadwayRoute>()
+            .is_some_and(HeadwayRoute::is_list),
+        "the second back lands on the list's entry"
+    );
+}
+
+/// Drive [`chrome_frame`] until a widget labelled `label` shows, or panic
+/// after a deadline: [`wait_for_label`] for a test that runs the nav loop,
+/// whose pushes and backs only land as each frame's requests drain.
+fn wait_on_stack(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    stack: &mut ChromeStack,
+    label: &str,
+) {
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        chrome_frame(harness, stack);
+        if harness.query_by_label(label).is_some() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {label:?}");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 /// The headline cross-app deep-link invariant (behavioural, no lavapipe): opening a
 /// Headway card from *another* app lands exactly **one** entry on Headway's stack,
 /// which the chrome's opener return pops to land back in the app the click came

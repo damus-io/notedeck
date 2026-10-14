@@ -30,6 +30,7 @@ pub use nav::{HeadwayRoute, ReviewTarget};
 pub use renderers::{HeadwayBoardRenderer, HeadwayIssueRenderer, HeadwayRefParser};
 use ui::{
     BoardEffect, BoardNav, CardBoardMove, CardBoardOp, ViewEdit, board_ui, card_title, empty_state,
+    find_detail_card,
 };
 pub use ui::{
     BoardUiState, ChipStatus, GRAPH_NODE_SIZE, GraphNodeView, board_inline_ui, card_chip_ui,
@@ -326,6 +327,32 @@ impl Headway {
             })
             .filter(|board| !board.deleted)
             .collect()
+    }
+
+    /// The board to switch to when the card the open history entry names (its
+    /// detail, graph or review) isn't on `view`, the active board, but is on
+    /// another folded board. `None` when it's on `view`, when nothing is
+    /// open, or when no board holds it: a card that hasn't folded in yet,
+    /// which the pane waits for (see `board_pane_ui`).
+    ///
+    /// Searches every board only on the frame a stray card is open, so a
+    /// steady frame costs one lookup on the active board.
+    fn home_of_stray_card(
+        &self,
+        ctx: &AppContext,
+        own: Option<&Rc<[BoardView]>>,
+        boards: &[BoardSummary],
+        view: &BoardView,
+    ) -> Option<event::BoardCoord> {
+        let card = self.state.nav_pos().entry_card()?;
+        if find_detail_card(view, card).is_some() {
+            return None;
+        }
+        self.list_sources(ctx, own, boards)
+            .iter()
+            .find(|board| find_detail_card(board, card).is_some())
+            .map(|board| event::BoardCoord::new(board.author, board.id.clone()))
+            .filter(|home| home != self.active())
     }
 
     /// Rebuild the joined-boards roster from nostrdb, preserving boards created
@@ -1129,6 +1156,22 @@ impl Headway {
             return AppResponse::default();
         };
 
+        // A history entry names a card by id alone, and draws it on whichever
+        // board is active. Landing on one whose card is on another board (a
+        // back onto a card the issue list opened there, after a chip switched
+        // boards) would hold its selection forever over a grid whose keys go
+        // nowhere, so switch to the board that holds it. The detail draws
+        // next frame.
+        if let Some(home) = self.home_of_stray_card(ctx, own_boards.as_ref(), &boards, &view) {
+            self.apply_board_nav(
+                ctx,
+                &author,
+                signer.as_ref(),
+                &boards,
+                BoardNav::Switch(home),
+            );
+        }
+
         // A card that has left the board since last frame (archived, deleted,
         // moved to another board, here or elsewhere) has nothing for its
         // entries to draw, so they all leave the history in one prune: its
@@ -1179,9 +1222,14 @@ impl Headway {
             // prior app so a global-back had nothing to return to. Pushing keeps a
             // browser-style trail — back walks from a subissue up to its parent and
             // on to the board.
-            Some(NavReconcile::PushCard(card)) => ctx
-                .navigator
-                .push_route(HeadwayRoute::card(card, card_title(&view, card))),
+            // A card the issue list opened on another board isn't on `view`
+            // yet (the switch lands next frame), so its title comes from the
+            // list's boards.
+            Some(NavReconcile::PushCard(card)) => {
+                let title = card_title(&view, card)
+                    .or_else(|| lists.iter().find_map(|board| card_title(board, card)));
+                ctx.navigator.push_route(HeadwayRoute::card(card, title))
+            }
             // Opening an epic's dependency graph from its detail pushes a graph
             // entry on top of the card — a sibling one level deeper — so a single
             // global-back returns to the epic's detail.
