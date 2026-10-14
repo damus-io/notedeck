@@ -1170,9 +1170,9 @@ OPTIONS:
     --idempotency-key <k>
                       Name this *request*, so a retry of it is recognized as the
                       same spawn. Defaults to a digest of the request itself
-                      (host+cwd+backend+title+prompt+mode+issue), which already makes an
-                      identical re-run safe; pass your own when you have a better
-                      notion of identity (a job id, say).
+                      (host+cwd+backend+title+prompt+mode+model+issue), which
+                      already makes an identical re-run safe; pass your own when
+                      you have a better notion of identity (a job id, say).
     --allow-duplicate Really spawn a second session the duplicate guard would
                       refuse. Also drops the idempotency key, so the host doesn't
                       re-impose the dedupe.
