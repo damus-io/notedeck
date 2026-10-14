@@ -22,13 +22,12 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use egui::text::{LayoutJob, TextFormat};
-use egui::{Color32, FontId, Galley, Key, Modifiers, Sense, Stroke, Vec2};
+use egui::{Color32, FontFamily, FontId, Galley, Key, Modifiers, Sense, Shadow, Stroke, Vec2};
 use notedeck::fuzzy::{contains_words, fuzzy_match};
-use notedeck::theme::selection_fill;
 use notedeck::tokens::{RADIUS_LG, RADIUS_MD, SPACING_LG, SPACING_MD, SPACING_SM, STROKE_THIN};
 use notedeck::{
     tr, AppAction, AppContext, ColorTheme, CommandAction, CommandItem, Localization,
-    ToolInvocation, ToolOutcome, ToolSpec,
+    NamedFontFamily, ToolInvocation, ToolOutcome, ToolSpec,
 };
 use notedeck_ui::keybind_hint::{keycap_width, KeybindHint, KEYCAP};
 
@@ -73,12 +72,34 @@ const TITLE_SIZE: f32 = 14.0;
 /// The size of a row's subtitle and a section heading.
 const SMALL_SIZE: f32 = 12.0;
 
-/// How dark the backdrop dims the window behind the bar.
-const BACKDROP_ALPHA: u8 = 128;
+/// How dark the backdrop dims the window behind the bar in dark mode:
+/// enough that the panel, barely lighter than the app, still stands off it.
+const BACKDROP_DARK: u8 = 150;
 
-/// How strongly the selected row is tinted with the selection colour: a
-/// full-strength fill would drown the title's highlighted matches.
-const SELECTED_TINT: f32 = 0.35;
+/// How dark the backdrop dims the window behind the bar in light mode: a
+/// light app dimmed as hard as a dark one turns a muddy grey.
+const BACKDROP_LIGHT: u8 = 32;
+
+/// How much of the primary text colour washes the selected row and the
+/// prompt chip: a neutral lift, light on dark and dark on light, quiet
+/// enough that the row's text stays the brightest thing on it.
+const SELECTED_WASH: f32 = 0.07;
+
+/// The panel's shadow: wide and soft, straight down, so it lifts the panel
+/// without a hard edge. Darker in dark mode, where a light one wouldn't show.
+fn panel_shadow(dark_mode: bool) -> Shadow {
+    Shadow {
+        offset: [0, 12],
+        blur: 40,
+        spread: 0,
+        color: Color32::from_black_alpha(if dark_mode { 160 } else { 40 }),
+    }
+}
+
+/// The fill of the selected row and the prompt chip (see [`SELECTED_WASH`]).
+fn selected_fill(theme: &ColorTheme) -> Color32 {
+    theme.text_primary.gamma_multiply(SELECTED_WASH)
+}
 
 /// The score of a row matched only by its [keywords](CommandItem::keywords):
 /// below every row whose title matched.
@@ -588,16 +609,21 @@ impl CommandBar {
             .constrain(false)
             .show(ctx, |ui| {
                 let backdrop = ui.allocate_rect(screen, Sense::click());
+                let dim = if layout.dark_mode {
+                    BACKDROP_DARK
+                } else {
+                    BACKDROP_LIGHT
+                };
                 ui.painter()
-                    .rect_filled(screen, 0.0, Color32::from_black_alpha(BACKDROP_ALPHA));
+                    .rect_filled(screen, 0.0, Color32::from_black_alpha(dim));
 
                 let drawn = ui
                     .scope_builder(egui::UiBuilder::new().max_rect(panel), |ui| {
                         egui::Frame::new()
-                            .fill(theme.surface_elevated)
+                            .fill(theme.window_fill)
                             .stroke(Stroke::new(STROKE_THIN, theme.border_default))
                             .corner_radius(RADIUS_LG)
-                            .shadow(ui.visuals().popup_shadow)
+                            .shadow(panel_shadow(layout.dark_mode))
                             .show(ui, |ui| {
                                 ui.set_width(width);
                                 self.query_ui(ui, &theme, layout);
@@ -653,11 +679,8 @@ impl CommandBar {
                 egui::pos2(slot.left(), slot.center().y - chip.y / 2.0),
                 chip,
             );
-            ui.painter().rect_filled(
-                rect,
-                RADIUS_MD,
-                selection_fill(ui.visuals()).gamma_multiply(SELECTED_TINT),
-            );
+            ui.painter()
+                .rect_filled(rect, RADIUS_MD, selected_fill(theme));
             ui.painter()
                 .galley(rect.min + padding, prompt, theme.text_primary);
             self.query_field_ui(ui);
@@ -748,7 +771,7 @@ impl CommandBar {
             ..
         } = self;
         let pointer_moved = ui.input(|i| i.pointer.delta() != Vec2::ZERO);
-        let selected_fill = selection_fill(ui.visuals()).gamma_multiply(SELECTED_TINT);
+        let selected_fill = selected_fill(theme);
         let max_height = (ui.max_rect().bottom() - ui.cursor().top()).min(LIST_HEIGHT);
         let mut clicked = None;
         egui::Frame::new()
@@ -794,13 +817,17 @@ impl CommandBar {
                                 .galley(pos, text.line.clone(), theme.text_primary);
                             if let Some(keycap) = items[row.item].keycap.as_deref() {
                                 let w = keycap_width(keycap);
-                                KeybindHint::new(keycap).size(KEYCAP).width(w).paint_at(
-                                    ui,
-                                    egui::pos2(
-                                        rect.right() - SPACING_MD - w / 2.0,
-                                        rect.center().y,
-                                    ),
-                                );
+                                KeybindHint::new(keycap)
+                                    .size(KEYCAP)
+                                    .width(w)
+                                    .color(theme.text_muted)
+                                    .paint_at(
+                                        ui,
+                                        egui::pos2(
+                                            rect.right() - SPACING_MD - w / 2.0,
+                                            rect.center().y,
+                                        ),
+                                    );
                             }
                             if response.clicked() {
                                 clicked = Some(i);
@@ -812,11 +839,13 @@ impl CommandBar {
     }
 }
 
-/// A row's line: its title, the `matched` byte offsets in the accent colour,
-/// then its subtitle, small and muted, all cut off with `…` at `width`.
+/// A row's line: its title, the `matched` byte offsets in bold, then its
+/// subtitle, small and muted, all cut off with `…` at `width`. Matches are
+/// marked by weight, not hue, so a list of them stays calm.
 fn row_job(item: &CommandItem, matched: &[usize], theme: &ColorTheme, width: f32) -> LayoutJob {
     let title = TextFormat::simple(FontId::proportional(TITLE_SIZE), theme.text_primary);
-    let hit = TextFormat::simple(FontId::proportional(TITLE_SIZE), theme.accent);
+    let bold = FontFamily::Name(NamedFontFamily::Bold.as_str().into());
+    let hit = TextFormat::simple(FontId::new(TITLE_SIZE, bold), theme.text_primary);
     let mut job = LayoutJob::default();
     let mut at = 0;
     let mut matched = matched.iter().copied().peekable();

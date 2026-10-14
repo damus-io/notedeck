@@ -399,9 +399,17 @@ fn snapshot_rows() -> Vec<CommandItem> {
 }
 
 /// A harness on a [`Snapshot`] with the bar open on [`snapshot_rows`] and
-/// `query` typed.
+/// `query` typed, in dark mode.
 fn snapshot_harness(query: &str) -> egui_kittest::Harness<'static, Snapshot> {
-    let mut harness = backdrop_harness();
+    themed_snapshot_harness(query, egui::Theme::Dark)
+}
+
+/// [`snapshot_harness`] in `theme`.
+fn themed_snapshot_harness(
+    query: &str,
+    theme: egui::Theme,
+) -> egui_kittest::Harness<'static, Snapshot> {
+    let mut harness = themed_backdrop_harness(theme);
     harness.key_press_modifiers(Modifiers::COMMAND, Key::K);
     harness.run_steps(2);
     let bar = harness.state_mut().chrome.command_bar_mut();
@@ -411,8 +419,14 @@ fn snapshot_harness(query: &str) -> egui_kittest::Harness<'static, Snapshot> {
     harness
 }
 
-/// A harness on a [`Snapshot`], its tools registered, the bar closed.
+/// A harness on a [`Snapshot`], its tools registered, the bar closed, in
+/// dark mode.
 fn backdrop_harness() -> egui_kittest::Harness<'static, Snapshot> {
+    themed_backdrop_harness(egui::Theme::Dark)
+}
+
+/// [`backdrop_harness`] in `theme`.
+fn themed_backdrop_harness(theme: egui::Theme) -> egui_kittest::Harness<'static, Snapshot> {
     let dir = tempfile::TempDir::new().expect("tmp dir");
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
     let mut notedeck = notedeck::Notedeck::init(&egui::Context::default(), dir.path(), &args);
@@ -437,6 +451,7 @@ fn backdrop_harness() -> egui_kittest::Harness<'static, Snapshot> {
     };
     egui_kittest::Harness::builder()
         .with_size(egui::vec2(900.0, 600.0))
+        .with_theme(theme)
         .renderer(notedeck::software_renderer())
         .build_ui_state(
             |ui, state: &mut Snapshot| {
@@ -464,6 +479,14 @@ fn snapshot_command_bar_filtered() {
     let mut harness = snapshot_harness("bo");
     assert!(harness.state().chrome.command_bar().is_open());
     harness.snapshot("command_bar_filtered");
+}
+
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_command_bar_filtered_light() {
+    let mut harness = themed_snapshot_harness("bo", egui::Theme::Light);
+    assert!(harness.state().chrome.command_bar().is_open());
+    harness.snapshot("command_bar_filtered_light");
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! Keycap widget: a small framed box showing a keyboard shortcut.
 
-use egui::{Pos2, Rect, Response, Sense, Ui, Vec2};
+use egui::{Color32, Pos2, Rect, Response, Sense, Ui, Vec2};
 
 /// A visual keybinding hint - a small framed box with a letter or number inside.
 /// Used to indicate keyboard shortcuts in the UI.
@@ -8,6 +8,7 @@ pub struct KeybindHint<'a> {
     text: &'a str,
     size: f32,
     width: Option<f32>,
+    color: Option<Color32>,
 }
 
 impl<'a> KeybindHint<'a> {
@@ -17,6 +18,7 @@ impl<'a> KeybindHint<'a> {
             text,
             size: 18.0,
             width: None,
+            color: None,
         }
     }
 
@@ -29,6 +31,13 @@ impl<'a> KeybindHint<'a> {
     /// Override the width (default: same as size, i.e. square)
     pub fn width(mut self, width: f32) -> Self {
         self.width = Some(width);
+        self
+    }
+
+    /// Override the text colour (default: the visuals' text colour), for a
+    /// keycap that should sit back from the text beside it.
+    pub fn color(mut self, color: Color32) -> Self {
+        self.color = Some(color);
         self
     }
 
@@ -78,7 +87,7 @@ impl<'a> KeybindHint<'a> {
             egui::Align2::CENTER_CENTER,
             self.text,
             egui::FontId::monospace(font_size),
-            visuals.text_color(),
+            self.color.unwrap_or_else(|| visuals.text_color()),
         );
     }
 }
