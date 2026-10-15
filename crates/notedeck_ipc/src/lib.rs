@@ -251,7 +251,7 @@ mod tests {
         let requests = [
             Request::ListTools,
             Request::CallTool {
-                name: "chrome_open".to_owned(),
+                name: "open".to_owned(),
                 args: json!({"reference": "headway:notedeck/hill-measure-accuse"}),
             },
         ];

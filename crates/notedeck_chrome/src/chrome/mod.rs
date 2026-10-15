@@ -70,7 +70,7 @@ use keyboard::AnimState;
 pub use keymap_editor::{EDIT_KEYMAP, KEYMAP_TEMPLATE};
 use nav::AppNav;
 pub use nav::{NAV_BACK, NAV_FORWARD};
-pub use open_tool::CHROME_OPEN;
+pub use open_tool::OPEN;
 pub use runnable::{RunnableTool, ToolPlace};
 #[cfg(feature = "auto-update")]
 use update::poll_updater;

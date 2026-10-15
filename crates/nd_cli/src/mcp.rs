@@ -289,7 +289,7 @@ mod tests {
         vec![
             tool("read_board", ToolKind::Data, true),
             tool("move_card", ToolKind::Data, false),
-            tool("chrome_open", ToolKind::Ui, false),
+            tool("open", ToolKind::Ui, false),
         ]
     }
 
@@ -384,10 +384,7 @@ mod tests {
             ui: true,
             read_only: false,
         };
-        assert_eq!(
-            listed_names(all),
-            ["read_board", "move_card", "chrome_open"]
-        );
+        assert_eq!(listed_names(all), ["read_board", "move_card", "open"]);
         let read_only = Exposure {
             ui: true,
             read_only: true,
@@ -436,7 +433,7 @@ mod tests {
         let reply = Ok(Reply::Intent {
             intent: IntentStatus::Applied,
         });
-        let line = call_line("chrome_open", json!({}));
+        let line = call_line("open", json!({}));
         let result = run(all, &line, reply).response.unwrap()["result"].clone();
         assert_eq!(result["isError"], false);
         assert!(
@@ -459,7 +456,7 @@ mod tests {
 
     #[test]
     fn a_hidden_tool_is_refused_without_calling_it() {
-        let line = call_line("chrome_open", json!({}));
+        let line = call_line("open", json!({}));
         let Ran { response, seen } = run(DATA, &line, Err("unused".to_owned()));
         let result = &response.unwrap()["result"];
         assert_eq!(result["isError"], true);

@@ -1,6 +1,6 @@
-//! [`CHROME_OPEN`]: open any reference — `headway:`, `agentium:`, `notebook:`,
+//! [`OPEN`]: open any reference — `headway:`, `agentium:`, `notebook:`,
 //! `nostr:` — by name, from a key, the Cmd-K bar or the socket (`nd call
-//! chrome_open reference=…`), and bring notedeck to the front so a call from
+//! open reference=…`), and bring notedeck to the front so a call from
 //! a terminal is seen.
 //!
 //! It raises [`AppAction::Open`], so the open takes the same path a click on
@@ -14,12 +14,12 @@ use notedeck::{
 };
 
 /// Open a reference in the app that owns it, and raise the window.
-pub const CHROME_OPEN: &str = "chrome_open";
+pub const OPEN: &str = "open";
 
 /// The open tool, for the host's tool registry.
 pub(super) fn open_tools() -> [ToolSpec; 1] {
     [ToolSpec::new(
-        CHROME_OPEN,
+        OPEN,
         "Open a reference (headway:<board>/<word-id>, agentium:<word-id>, \
          notebook:…, nostr:…) in the app that owns it, as a click on its chip \
          would, and bring notedeck to the front.",
@@ -41,7 +41,7 @@ pub(super) fn open_tools() -> [ToolSpec; 1] {
 }
 
 impl Chrome {
-    /// Run [`CHROME_OPEN`], or `None` for another tool. An argument that
+    /// Run [`OPEN`], or `None` for another tool. An argument that
     /// names no reference a registered parser (or the profile / hashtag
     /// opener) recognizes is an [`Error`](ToolOutcome::Error); otherwise the
     /// window is raised and the open comes back as an
@@ -51,20 +51,20 @@ impl Chrome {
         ctx: &mut AppContext,
         invocation: &ToolInvocation,
     ) -> Option<ToolOutcome> {
-        if invocation.name != CHROME_OPEN {
+        if invocation.name != OPEN {
             return None;
         }
         Some(open_outcome(ctx, &invocation.args))
     }
 }
 
-/// What a [`CHROME_OPEN`] call with `args` comes to.
+/// What an [`OPEN`] call with `args` comes to.
 fn open_outcome(ctx: &mut AppContext, args: &serde_json::Value) -> ToolOutcome {
     let Some(reference) = args["reference"].as_str() else {
-        return ToolOutcome::Error("chrome_open needs a 'reference' string".to_owned());
+        return ToolOutcome::Error("open needs a 'reference' string".to_owned());
     };
     let Some(mut open) = OpenUri::parse(reference) else {
-        return ToolOutcome::Error("chrome_open: the reference is empty".to_owned());
+        return ToolOutcome::Error("open: the reference is empty".to_owned());
     };
     let recognized = ctx
         .registries
@@ -73,7 +73,7 @@ fn open_outcome(ctx: &mut AppContext, args: &serde_json::Value) -> ToolOutcome {
         || notedeck::reference_note_action(&open.reference).is_some();
     if !recognized {
         return ToolOutcome::Error(format!(
-            "chrome_open: '{}' is not a reference notedeck can open",
+            "open: '{}' is not a reference notedeck can open",
             open.reference
         ));
     }

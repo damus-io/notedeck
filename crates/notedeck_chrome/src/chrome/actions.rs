@@ -792,12 +792,12 @@ mod open_tests {
         assert_eq!(depth(&chrome, headway), before);
     }
 
-    /// `chrome_open` with an `agentium:` reference and a `msg` lands in Dave
+    /// `open` with an `agentium:` reference and a `msg` lands in Dave
     /// holding the session and the message, as a click on the session's chip
     /// would: the tool's intent takes the `AppAction::Open` path, retry and
     /// all.
     #[tokio::test]
-    async fn chrome_open_lands_an_agentium_ref_in_dave() {
+    async fn open_lands_an_agentium_ref_in_dave() {
         let OpenFixture {
             _dir,
             kp,
@@ -809,7 +809,7 @@ mod open_tests {
         let state_note = ingest_session(ctx.ndb, &kp, "Open tool test").await;
 
         let call = ToolInvocation::new(
-            super::super::CHROME_OPEN,
+            super::super::OPEN,
             serde_json::json!({
                 "reference": agentium_core::wordid::session_ref(SESSION_ID),
                 "msg": MSG,
@@ -849,10 +849,10 @@ mod open_tests {
         assert_eq!(pending.msg.as_deref(), Some(MSG));
     }
 
-    /// `chrome_open` with no reference, or one no parser recognizes, answers
+    /// `open` with no reference, or one no parser recognizes, answers
     /// with an error and opens nothing.
     #[tokio::test]
-    async fn chrome_open_refuses_what_is_not_a_reference() {
+    async fn open_refuses_what_is_not_a_reference() {
         let OpenFixture {
             _dir,
             mut notedeck,
@@ -868,7 +868,7 @@ mod open_tests {
             serde_json::json!({ "reference": "not a reference" }),
             serde_json::json!({ "reference": "headway:notedeck" }),
         ] {
-            let call = ToolInvocation::new(super::super::CHROME_OPEN, args.clone());
+            let call = ToolInvocation::new(super::super::OPEN, args.clone());
             let outcome = chrome.call_ui_tool(&mut ctx, &call);
             assert!(matches!(outcome, ToolOutcome::Error(_)), "{args}");
         }

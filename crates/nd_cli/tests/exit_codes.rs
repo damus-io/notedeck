@@ -36,7 +36,7 @@ fn socket_dir() -> TempDir {
 /// The tools the fake notedeck lists.
 fn tools() -> Vec<ToolInfo> {
     vec![ToolInfo {
-        name: "chrome_open".to_owned(),
+        name: "open".to_owned(),
         title: "Open reference".to_owned(),
         description: "Open a reference.".to_owned(),
         category: Some("Chrome".to_owned()),
@@ -128,12 +128,7 @@ fn an_applied_intent_prints_nothing_and_exits_0() {
     let Fake { socket, server } = serve(&dir, vec![list(), applied]);
     let out = nd(
         &socket,
-        &[
-            "call",
-            "chrome_open",
-            "reference=headway:notedeck/a-b",
-            "limit=3",
-        ],
+        &["call", "open", "reference=headway:notedeck/a-b", "limit=3"],
     );
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(stdout(&out), "");
@@ -141,7 +136,7 @@ fn an_applied_intent_prints_nothing_and_exits_0() {
     assert_eq!(
         seen[1],
         Request::CallTool {
-            name: "chrome_open".to_owned(),
+            name: "open".to_owned(),
             args: json!({"reference": "headway:notedeck/a-b", "limit": 3}),
         }
     );
@@ -154,10 +149,7 @@ fn data_prints_as_json_and_exits_0() {
         result: json!({"cards": [1, 2]}),
     });
     let Fake { socket, server } = serve(&dir, vec![list(), result]);
-    let out = nd(
-        &socket,
-        &["call", "chrome_open", "--json", r#"{"reference":"x"}"#],
-    );
+    let out = nd(&socket, &["call", "open", "--json", r#"{"reference":"x"}"#]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let printed: Value = serde_json::from_str(&stdout(&out)).expect("JSON on stdout");
     assert_eq!(printed, json!({"cards": [1, 2]}));
@@ -167,9 +159,9 @@ fn data_prints_as_json_and_exits_0() {
 #[test]
 fn a_tool_error_goes_to_stderr_with_exit_1() {
     let dir = socket_dir();
-    let error = Response::error("chrome_open: 'x' is not a reference notedeck can open");
+    let error = Response::error("open: 'x' is not a reference notedeck can open");
     let Fake { socket, server } = serve(&dir, vec![list(), error]);
-    let out = nd(&socket, &["call", "chrome_open", "reference=x"]);
+    let out = nd(&socket, &["call", "open", "reference=x"]);
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(stdout(&out), "");
     assert!(
@@ -185,10 +177,10 @@ fn a_wrong_key_fails_before_the_call_is_sent() {
     let dir = socket_dir();
     // Only the tool list is served: a second connection would hang the test.
     let Fake { socket, server } = serve(&dir, vec![list()]);
-    let out = nd(&socket, &["call", "chrome_open", "refrence=x"]);
+    let out = nd(&socket, &["call", "open", "refrence=x"]);
     assert_eq!(out.status.code(), Some(1));
     let err = stderr(&out);
-    assert!(err.contains("chrome_open doesn't take 'refrence'"), "{err}");
+    assert!(err.contains("open doesn't take 'refrence'"), "{err}");
     assert!(err.contains("reference  string, required"), "{err}");
     assert_eq!(server.join().unwrap(), [Request::ListTools]);
 }
@@ -214,11 +206,11 @@ fn tools_lists_and_shows_from_the_socket() {
     let out = nd(&socket, &["tools"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert!(
-        stdout(&out).starts_with("Chrome\n    chrome_open  ui       Open reference"),
+        stdout(&out).starts_with("Chrome\n    open  ui       Open reference"),
         "{}",
         stdout(&out)
     );
-    let out = nd(&socket, &["tools", "chrome_open"]);
+    let out = nd(&socket, &["tools", "open"]);
     assert!(stdout(&out).contains("ARGS:\n"), "{}", stdout(&out));
     server.join().unwrap();
 }
@@ -280,19 +272,19 @@ fn mcp_serves_a_session_over_stdio() {
             json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
             json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
             json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                   "params": {"name": "chrome_open", "arguments": {"reference": "x"}}}),
+                   "params": {"name": "open", "arguments": {"reference": "x"}}}),
         ],
     );
     assert_eq!(replies.len(), 3, "{replies:?}");
     assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(replies[1]["result"]["tools"][0]["name"], "chrome_open");
+    assert_eq!(replies[1]["result"]["tools"][0]["name"], "open");
     assert_eq!(replies[2]["id"], 2);
     assert_eq!(replies[2]["result"]["isError"], false);
     let seen = server.join().unwrap();
     assert_eq!(
         seen[2],
         Request::CallTool {
-            name: "chrome_open".to_owned(),
+            name: "open".to_owned(),
             args: json!({"reference": "x"}),
         }
     );
@@ -308,7 +300,7 @@ fn mcp_without_notedeck_keeps_serving() {
         &[
             json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
             json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                   "params": {"name": "chrome_open"}}),
+                   "params": {"name": "open"}}),
             json!({"jsonrpc": "2.0", "id": 3, "method": "ping"}),
         ],
     );

@@ -760,11 +760,11 @@ async fn a_card_opened_from_another_app_is_one_chrome_back_from_it() {
     assert_eq!(harness.state().chrome.active, columns, "one back returns");
 }
 
-/// `chrome_open` with a card's `headway:` reference, raised from Columns as
-/// `nd call chrome_open` raises it, lands on the card's detail one chrome
+/// `open` with a card's `headway:` reference, raised from Columns as
+/// `nd call open` raises it, lands on the card's detail one chrome
 /// back from Columns, as a click on the card's chip does.
 #[tokio::test]
-async fn chrome_open_lands_a_headway_ref_on_the_cards_detail() {
+async fn open_lands_a_headway_ref_on_the_cards_detail() {
     let repo = tempfile::tempdir().expect("repo dir");
     let mut harness = two_in_review(repo.path()).await;
     harness.state_mut().chrome.switch_to_columns();
@@ -780,7 +780,7 @@ async fn chrome_open_lands_a_headway_ref_on_the_cards_detail() {
         let card = card_id(&demo_board(app_ctx.ndb, &state.kp.pubkey), CARD);
         let reference = headway::wordid::card_ref(store::BOARD_ID, card.bytes());
         let call = notedeck::ToolInvocation::new(
-            super::CHROME_OPEN,
+            super::OPEN,
             serde_json::json!({ "reference": reference }),
         );
         app_ctx

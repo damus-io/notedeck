@@ -139,7 +139,7 @@ mod tests {
     fn a_pattern_matches_name_title_or_description() {
         let tools = [
             tool("headway_open", None, ToolKind::Ui, false),
-            tool("chrome_open", None, ToolKind::Ui, false),
+            tool("open", None, ToolKind::Ui, false),
         ];
         let pattern = cli_term::compile_pattern("Headway", cli_term::CaseMode::Smart).unwrap();
         let hits = matching(&tools, Some(&pattern));
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn a_page_shows_marks_description_and_args() {
-        let mut open = tool("chrome_open", Some("Chrome"), ToolKind::Ui, false);
+        let mut open = tool("open", Some("Chrome"), ToolKind::Ui, false);
         open.input_schema = json!({
             "type": "object",
             "properties": {"reference": {"type": "string", "description": "What to open"}},
@@ -174,8 +174,8 @@ mod tests {
         });
         assert_eq!(
             page(&open),
-            "chrome_open — chrome_open title\nui, in Chrome\n\n\
-             Does chrome_open. More detail.\n\n\
+            "open — open title\nui, in Chrome\n\n\
+             Does open. More detail.\n\n\
              ARGS:\n    reference  string, required  What to open\n"
         );
     }

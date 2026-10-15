@@ -54,7 +54,7 @@ title. A <pattern> keeps the tools whose name, title or description matches
 it (a smart-case regex). A <name> that is exactly a tool's prints that tool's
 whole description and its arguments.",
         options: &[("--json", "The tool list (or the one tool) as JSON")],
-        examples: &["nd tools", "nd tools headway", "nd tools chrome_open"],
+        examples: &["nd tools", "nd tools headway", "nd tools open"],
     },
     CommandHelp {
         name: "call",
@@ -80,8 +80,8 @@ stderr and exits 1.",
         ],
         examples: &[
             "nd call headway_open_review_queue",
-            "nd call chrome_open reference=headway:notedeck/balcony-warm-action",
-            "nd call chrome_open --json '{\"reference\":\"agentium:evolve-rule-carry\"}'",
+            "nd call open reference=headway:notedeck/balcony-warm-action",
+            "nd call open --json '{\"reference\":\"agentium:evolve-rule-carry\"}'",
         ],
     },
     CommandHelp {

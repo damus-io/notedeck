@@ -100,7 +100,7 @@ impl Chrome {
         }
         match name {
             // Any time: whether the reference opens is the call's to say.
-            super::CHROME_OPEN => Some(true),
+            super::OPEN => Some(true),
             TOGGLE_KEY_HINTS => Some(
                 self.apps
                     .get(self.active as usize)

@@ -1,6 +1,6 @@
 ---
 name: nd
-description: Drive the running notedeck from the command line via the `nd` CLI (crates/nd_cli) — list its tools and call any of them over its local socket, or spawn a Dave session, e.g. open a headway card or agentium session in the window, open the review queue, or read board data. Use when the user wants to open something in notedeck from a shell, script the app, or see which tools the running notedeck offers — e.g. "open this card in notedeck", "what tools does notedeck have", "call chrome_open".
+description: Drive the running notedeck from the command line via the `nd` CLI (crates/nd_cli) — list its tools and call any of them over its local socket, or spawn a Dave session, e.g. open a headway card or agentium session in the window, open the review queue, or read board data. Use when the user wants to open something in notedeck from a shell, script the app, or see which tools the running notedeck offers — e.g. "open this card in notedeck", "what tools does notedeck have", "call open".
 ---
 
 # nd: notedeck's tools from a shell
@@ -43,8 +43,8 @@ cargo run -q -p nd_cli -- tools          # or the built target/debug/nd
 ## Examples
 
 ```bash
-nd call chrome_open reference=headway:notedeck/balcony-warm-action
-nd call chrome_open reference=agentium:evolve-rule-carry
+nd call open reference=headway:notedeck/balcony-warm-action
+nd call open reference=agentium:evolve-rule-carry
 nd call headway_open_review_queue
 nd call headway_show_card --json '{"card":"headway:notedeck/balcony-warm-action"}'
 ```
