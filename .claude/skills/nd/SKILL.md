@@ -27,6 +27,11 @@ cargo run -q -p nd_cli -- tools          # or the built target/debug/nd
   missing key fails before anything is sent, listing the arguments.
   `--json '<object>'` or `--json-file <path|->` passes the arguments as one
   object instead.
+- `nd mcp [--ui] [--read-only]` — a stdio MCP server: `tools/list` and
+  `tools/call` go to the socket, one connection each, so it can start before
+  notedeck. Only data tools are exposed unless `--ui`; `--read-only` keeps only
+  tools that change nothing. A hidden tool can't be called by name. Register
+  it with `claude mcp add notedeck -- nd mcp`.
 - `nd --version` — nd's version, and the running notedeck's.
 - `nd <cmd> --help`, `nd help options` — per-command pages, exit codes.
 

@@ -237,3 +237,86 @@ fn version_names_the_running_notedeck() {
     assert!(text.contains("\nnotedeck "), "{text}");
     server.join().unwrap();
 }
+
+/// Run `nd mcp` with `args`, feed it `lines` on stdin, and return its
+/// stdout parsed one JSON-RPC message per line.
+fn mcp(socket: &Path, args: &[&str], lines: &[Value]) -> Vec<Value> {
+    use std::process::Stdio;
+
+    let mut child = Command::new(nd_bin())
+        .arg("mcp")
+        .args(args)
+        .env("NOTEDECK_SOCKET", socket)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("run nd mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    for line in lines {
+        writeln!(stdin, "{line}").unwrap();
+    }
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    stdout(&out)
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("only JSON-RPC on stdout"))
+        .collect()
+}
+
+#[test]
+fn mcp_serves_a_session_over_stdio() {
+    let dir = socket_dir();
+    let applied = Response::ok(Reply::Intent {
+        intent: IntentStatus::Applied,
+    });
+    let Fake { socket, server } = serve(&dir, vec![list(), list(), applied]);
+    let replies = mcp(
+        &socket,
+        &["--ui"],
+        &[
+            json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+                   "params": {"protocolVersion": "2025-06-18"}}),
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                   "params": {"name": "chrome_open", "arguments": {"reference": "x"}}}),
+        ],
+    );
+    assert_eq!(replies.len(), 3, "{replies:?}");
+    assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
+    assert_eq!(replies[1]["result"]["tools"][0]["name"], "chrome_open");
+    assert_eq!(replies[2]["id"], 2);
+    assert_eq!(replies[2]["result"]["isError"], false);
+    let seen = server.join().unwrap();
+    assert_eq!(
+        seen[2],
+        Request::CallTool {
+            name: "chrome_open".to_owned(),
+            args: json!({"reference": "x"}),
+        }
+    );
+}
+
+#[test]
+fn mcp_without_notedeck_keeps_serving() {
+    let dir = socket_dir();
+    let missing = dir.path().join("absent.sock");
+    let replies = mcp(
+        &missing,
+        &[],
+        &[
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                   "params": {"name": "chrome_open"}}),
+            json!({"jsonrpc": "2.0", "id": 3, "method": "ping"}),
+        ],
+    );
+    let list_error = replies[0]["error"]["message"].as_str().unwrap();
+    assert!(
+        list_error.contains("notedeck isn't running"),
+        "{list_error}"
+    );
+    assert_eq!(replies[1]["result"]["isError"], true);
+    assert_eq!(replies[2]["result"], json!({}));
+}

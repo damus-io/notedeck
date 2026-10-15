@@ -12,6 +12,7 @@
 
 mod help;
 mod listing;
+mod mcp;
 mod schema;
 
 use cli_term::help::{CommandHelp, OPTIONS_PAGE, option_names};
@@ -44,6 +45,8 @@ enum Command {
         pairs: Vec<String>,
         base: Option<JsonSource>,
     },
+    /// `nd mcp [--ui] [--read-only]`.
+    Mcp { exposure: mcp::Exposure },
 }
 
 /// Where `nd call`'s argument object comes from, besides the pairs.
@@ -211,6 +214,17 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, String> {
                 base,
             }
         }
+        "mcp" => {
+            if !positionals.is_empty() {
+                return Err("`mcp` takes no arguments".to_owned());
+            }
+            Command::Mcp {
+                exposure: mcp::Exposure {
+                    ui: has("--ui"),
+                    read_only: has("--read-only"),
+                },
+            }
+        }
         other => unreachable!("'{other}' is in the help table but not dispatched"),
     };
     Ok(Invocation::Run(command))
@@ -228,6 +242,7 @@ fn run(command: Command) -> Result<(), Failure> {
     match command {
         Command::Tools { json, query } => tools(json, query.as_deref()),
         Command::Call { name, pairs, base } => call(&name, &pairs, base),
+        Command::Mcp { exposure } => mcp::serve(exposure, &mut answer),
     }
 }
 
@@ -478,6 +493,30 @@ mod tests {
                 base: Some(JsonSource::File("-".to_owned())),
             }
         );
+    }
+
+    #[test]
+    fn mcp_reads_its_exposure_flags() {
+        assert_eq!(
+            command_of(&["mcp"]),
+            Command::Mcp {
+                exposure: mcp::Exposure {
+                    ui: false,
+                    read_only: false
+                }
+            }
+        );
+        assert_eq!(
+            command_of(&["mcp", "--ui", "--read-only"]),
+            Command::Mcp {
+                exposure: mcp::Exposure {
+                    ui: true,
+                    read_only: true
+                }
+            }
+        );
+        let err = err_of(&["mcp", "extra"]);
+        assert!(err.contains("takes no arguments"), "{err}");
     }
 
     #[test]

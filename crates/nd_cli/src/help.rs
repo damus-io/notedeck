@@ -8,12 +8,13 @@
 use cli_term::help::{Cli, CommandHelp, GlobalOption};
 
 const TOOLS: &str = "TOOLS";
+const SERVE: &str = "SERVE";
 
 /// The whole help surface.
 pub const CLI: Cli = Cli {
     bin: "nd",
     about: "list and call the running notedeck's tools over its local socket",
-    groups: &[TOOLS],
+    groups: &[TOOLS, SERVE],
     commands: COMMANDS,
     global_hint: "--version",
 };
@@ -80,6 +81,30 @@ stderr and exits 1.",
             "nd call headway_open_review_queue",
             "nd call chrome_open reference=headway:notedeck/balcony-warm-action",
             "nd call chrome_open --json '{\"reference\":\"agentium:evolve-rule-carry\"}'",
+        ],
+    },
+    CommandHelp {
+        name: "mcp",
+        group: SERVE,
+        summary: "Serve the running notedeck's tools to an MCP client on stdio",
+        usage: &["mcp [--ui] [--read-only]"],
+        details: "\
+Speaks MCP (newline-delimited JSON-RPC) on stdin and stdout until stdin
+closes. tools/list is the socket's tool list and tools/call calls the tool,
+each over a fresh connection, so the server can start before notedeck does.
+A tool's data comes back as JSON text (and structuredContent for an object),
+a window action as a short \"done\", and a tool error as an isError result.
+
+Only data tools are exposed unless --ui is passed, so an agent can't drive
+the window by default; a hidden tool can't be called by name either.",
+        options: &[
+            ("--ui", "Also expose the tools that act on the window"),
+            ("--read-only", "Expose only the tools that change nothing"),
+        ],
+        examples: &[
+            "claude mcp add notedeck -- nd mcp",
+            "claude mcp add notedeck-ui -- nd mcp --ui",
+            "nd mcp --read-only",
         ],
     },
 ];
