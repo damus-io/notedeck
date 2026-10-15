@@ -1,5 +1,6 @@
 # A revision counter on RealtimeCache
 
+Card: headway:notedeck/suspect-typical-exotic
 RealtimeCache refolds without a counter, so text derived off its views (a card
 title for a list row) has no key to cache on and is re-resolved every frame.
 

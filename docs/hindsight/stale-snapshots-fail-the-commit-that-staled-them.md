@@ -1,5 +1,6 @@
 # A commit that changes a snapshot's render fails until it re-records the png
 
+Card: headway:notedeck/balcony-what-club
 Snapshot tests skip off lavapipe, so a commit can change a png's render unrecorded;
 the next card to run `--update` has to sort those pngs from its own.
 
