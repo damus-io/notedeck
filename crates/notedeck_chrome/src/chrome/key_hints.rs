@@ -61,6 +61,9 @@ impl Chrome {
         if let Some(outcome) = self.call_command_bar_tool(ctx, invocation) {
             return Some(outcome);
         }
+        if let Some(outcome) = self.call_open_tool(ctx, invocation) {
+            return Some(outcome);
+        }
         let pinned = self.key_hints_pinned();
         let pin = match invocation.name.as_str() {
             TOGGLE_KEY_HINTS => !pinned,
@@ -96,6 +99,8 @@ impl Chrome {
             return Some(available);
         }
         match name {
+            // Any time: whether the reference opens is the call's to say.
+            super::CHROME_OPEN => Some(true),
             TOGGLE_KEY_HINTS => Some(
                 self.apps
                     .get(self.active as usize)

@@ -51,6 +51,7 @@ mod keymap_editor;
 mod nav;
 #[cfg(all(test, not(feature = "auto-update")))]
 mod nav_scenarios;
+mod open_tool;
 mod roster;
 mod runnable;
 mod sidebar;
@@ -69,6 +70,7 @@ use keyboard::AnimState;
 pub use keymap_editor::{EDIT_KEYMAP, KEYMAP_TEMPLATE};
 use nav::AppNav;
 pub use nav::{NAV_BACK, NAV_FORWARD};
+pub use open_tool::CHROME_OPEN;
 pub use runnable::{RunnableTool, ToolPlace};
 #[cfg(feature = "auto-update")]
 use update::poll_updater;
@@ -491,6 +493,7 @@ impl notedeck::App for Chrome {
             .chain(jumps::jump_tools())
             .chain(nav::nav_tools())
             .chain(command_bar::command_bar_tools())
+            .chain(open_tool::open_tools())
             .map(|spec| notedeck::UiToolEntry::shell(spec.filed_under(TOOL_CATEGORY)));
         Some(notedeck::ToolUpdate {
             tools: running_apps()

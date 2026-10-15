@@ -1,3 +1,4 @@
+pub mod activate;
 pub mod anim;
 pub mod app_images;
 pub mod chord;
@@ -22,6 +23,7 @@ pub mod profile;
 mod username;
 pub mod widgets;
 
+pub use activate::activate_app;
 pub use anim::{rolling_number, AnimationHelper, PulseAlpha};
 pub use contacts_list::{
     parse_pubkey_query, profile_row, profile_row_widget, search_profiles, ContactsListAction,

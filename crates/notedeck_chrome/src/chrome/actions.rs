@@ -792,6 +792,90 @@ mod open_tests {
         assert_eq!(depth(&chrome, headway), before);
     }
 
+    /// `chrome_open` with an `agentium:` reference and a `msg` lands in Dave
+    /// holding the session and the message, as a click on the session's chip
+    /// would: the tool's intent takes the `AppAction::Open` path, retry and
+    /// all.
+    #[tokio::test]
+    async fn chrome_open_lands_an_agentium_ref_in_dave() {
+        let OpenFixture {
+            _dir,
+            kp,
+            egui_ctx,
+            mut notedeck,
+            mut chrome,
+        } = OpenFixture::new();
+        let mut ctx = notedeck.app_context();
+        let state_note = ingest_session(ctx.ndb, &kp, "Open tool test").await;
+
+        let call = ToolInvocation::new(
+            super::super::CHROME_OPEN,
+            serde_json::json!({
+                "reference": agentium_core::wordid::session_ref(SESSION_ID),
+                "msg": MSG,
+            }),
+        );
+        frame_at(&egui_ctx, 0.0, |ui| {
+            chrome_handle_app_action(&mut chrome, &mut ctx, AppAction::CallTool(call.clone()), ui);
+        });
+        // Dave's session cache subscribes on the cold resolve and may take a
+        // few frames to see the note when tests run in parallel, so retry
+        // until it lands rather than for exactly one frame.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut t = 0.0;
+        while chrome.pending_open.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the open never resolved"
+            );
+            t += 1.0 / 60.0;
+            frame_at(&egui_ctx, t, |ui| {
+                retry_pending_open(&mut chrome, &mut ctx, ui);
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let dave = chrome
+            .apps
+            .iter()
+            .position(|app| matches!(app, crate::app::NotedeckApp::Dave(_)))
+            .expect("dave in the roster");
+        assert_eq!(chrome.active, dave as i32, "the open lands in Dave");
+        let pending = chrome
+            .get_dave_app()
+            .and_then(|dave| dave.pending_open())
+            .expect("Dave holds the open");
+        assert_eq!(pending.note, state_note);
+        assert_eq!(pending.msg.as_deref(), Some(MSG));
+    }
+
+    /// `chrome_open` with no reference, or one no parser recognizes, answers
+    /// with an error and opens nothing.
+    #[tokio::test]
+    async fn chrome_open_refuses_what_is_not_a_reference() {
+        let OpenFixture {
+            _dir,
+            mut notedeck,
+            mut chrome,
+            ..
+        } = OpenFixture::new();
+        let mut ctx = notedeck.app_context();
+        let active = chrome.active;
+
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({ "reference": "  " }),
+            serde_json::json!({ "reference": "not a reference" }),
+            serde_json::json!({ "reference": "headway:notedeck" }),
+        ] {
+            let call = ToolInvocation::new(super::super::CHROME_OPEN, args.clone());
+            let outcome = chrome.call_ui_tool(&mut ctx, &call);
+            assert!(matches!(outcome, ToolOutcome::Error(_)), "{args}");
+        }
+        assert!(chrome.pending_open.is_none(), "nothing is held");
+        assert_eq!(chrome.active, active, "nothing is opened");
+    }
+
     /// An open whose reference never resolves is retried through its window
     /// and then given up: nothing is pushed, the active app doesn't change.
     /// Both halves of the bound hold — neither the minimum tries alone nor

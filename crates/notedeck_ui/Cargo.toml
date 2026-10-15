@@ -23,6 +23,10 @@ nostrdb_net = { workspace = true }
 hashbrown = { workspace = true }
 md-stream = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.1"
+objc2-app-kit = { version = "0.3.1", features = ["NSApplication", "NSResponder", "NSRunningApplication", "NSWindow"] }
+
 [dev-dependencies]
 # egui no longer bundles fonts by default; harnesses that don't install
 # notedeck's own fonts fall back to egui's, as they did before 0.36.
