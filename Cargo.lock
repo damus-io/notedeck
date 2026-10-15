@@ -5385,6 +5385,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "308d96db8debc727c3fd9744aac51751243420e46edf401010908da7f8d5e57c"
 
 [[package]]
+name = "nd_cli"
+version = "0.11.0-beta.1"
+dependencies = [
+ "bin_testing",
+ "cli_term",
+ "notedeck_ipc",
+ "regex",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "ndk"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,19 @@
+[package]
+name = "nd_cli"
+edition = "2024"
+version.workspace = true
+description = "nd: list and call the running notedeck's tools over its local socket"
+
+[[bin]]
+name = "nd"
+path = "src/main.rs"
+
+[dependencies]
+cli_term = { workspace = true }
+notedeck_ipc = { workspace = true }
+regex = "1"
+serde_json = { workspace = true }
+
+[dev-dependencies]
+bin_testing = { workspace = true }
+tempfile = { workspace = true }

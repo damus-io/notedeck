@@ -11,6 +11,7 @@ members = [
     "crates/notedeck_columns",
     "crates/notedeck_dave",
     "crates/notedeck_ipc",
+    "crates/nd_cli",
     "crates/notedeck_messages",
     "crates/notebook",
     "crates/notedeck_notebook",
