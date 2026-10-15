@@ -42,6 +42,7 @@ mod frame;
 mod header;
 #[cfg(all(test, feature = "headway", not(debug_assertions)))]
 mod headway_nav_tests;
+mod ipc;
 mod jumps;
 mod key_dispatch;
 mod key_hints;
@@ -148,6 +149,9 @@ pub struct Chrome {
     /// into `keys` (see [`Chrome::poll_user_keymap`]).
     user_keymap: UserKeymap,
 
+    /// notedeck's socket, once [`Chrome::serve_ipc`] opens it (see [`ipc`]).
+    ipc: ipc::IpcServer,
+
     #[cfg(feature = "auto-update")]
     updater: notedeck::updater::Updater,
 }
@@ -210,9 +214,8 @@ impl Chrome {
     /// avatars/renderers fall back to their non-GPU paths (e.g. Dave's
     /// `dave_button`).
     ///
-    /// Needs no `egui::Context`: the one thing construction used one for was to
-    /// hand Dave's IPC listener something to wake, and that takes the host's
-    /// [`Waker`](notedeck::Waker) now.
+    /// Needs no `egui::Context`. Serves no socket: the caller opts in with
+    /// [`serve_ipc`](Self::serve_ipc).
     pub fn new_headless(app_args: &[String], notedeck: &mut Notedeck) -> Result<Self, Error> {
         Self::new_with_render_state(None, app_args, notedeck)
     }
@@ -361,6 +364,7 @@ impl Chrome {
             macro_run: None,
             command_bar: CommandBar::default(),
             user_keymap: UserKeymap::default(),
+            ipc: ipc::IpcServer::default(),
             #[cfg(feature = "auto-update")]
             updater: notedeck::updater::Updater::new(
                 ctx.path,
@@ -514,6 +518,10 @@ impl notedeck::App for Chrome {
 
         self.poll_user_keymap(ctx);
 
+        // Before the apps update, so an app a request starts runs this tick.
+        #[cfg(unix)]
+        self.poll_ipc(ctx);
+
         // Update opened apps every frame so background processing
         // (relay pools, subscriptions, etc.) stays alive.
         // Apps that haven't been opened yet are skipped unless
@@ -536,6 +544,10 @@ impl notedeck::App for Chrome {
         // so apps can never intercept them.
         self.handle_chrome_keybindings(ctx, ui.ctx());
         self.command_bar_keys(ctx, ui);
+
+        // Intents socket requests raised in `update`.
+        #[cfg(unix)]
+        self.apply_ipc_intents(ctx, ui);
 
         if let Some(action) = self.show(ctx, ui) {
             action.process(ctx, self, ui);

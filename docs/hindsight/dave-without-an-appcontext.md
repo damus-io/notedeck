@@ -2,7 +2,7 @@
 
 Card: headway:notedeck/when-exercise-arch
 HostCtx and TestDave are in, but pns_outbox_e2e, chip_click and ui/mod.rs still
-hand-roll a Notedeck host, and their Dave::new rebinds the real IPC spawn socket.
+hand-roll a Notedeck host.
 
 - headway:dave/antenna-resource-edit — the end-of-turn reconcile had to be extracted and the deliver test swaps SessionManager in and out of a test_dave; wanted a SessionsCtx { sessions, ndb, sk, author }
 - headway:dave/ethics-code-bread — invented DispatchCtx beside ApplyCtx where one HostCtx { ndb, secret_key, waker } would do; update.rs's dispatch_turn test helper still hand-copies stream_request

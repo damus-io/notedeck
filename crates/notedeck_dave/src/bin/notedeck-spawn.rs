@@ -6,8 +6,6 @@
 
 #[cfg(unix)]
 fn main() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
 
     // Parse arguments
@@ -31,11 +29,13 @@ fn main() {
         std::process::exit(1);
     }
 
-    let socket_path = notedeck_dave::ipc::socket_path();
+    use notedeck_ipc::{Client, Outcome, Reply, Request};
+
+    let socket_path = notedeck_ipc::socket_path();
 
     // Connect to the running notedeck instance
-    let mut stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
+    let mut client = match Client::connect(&socket_path) {
+        Ok(client) => client,
         Err(e) => {
             eprintln!("Could not connect to notedeck at {}", socket_path.display());
             eprintln!("Error: {}", e);
@@ -45,45 +45,24 @@ fn main() {
         }
     };
 
-    // Send spawn request
-    let request = serde_json::json!({
-        "type": "spawn_agent",
-        "cwd": cwd
-    });
-
-    if let Err(e) = writeln!(stream, "{}", request) {
-        eprintln!("Failed to send request: {}", e);
-        std::process::exit(1);
-    }
-
-    // Read response
-    let mut reader = BufReader::new(&stream);
-    let mut response = String::new();
-    if let Err(e) = reader.read_line(&mut response) {
-        eprintln!("Failed to read response: {}", e);
-        std::process::exit(1);
-    }
-
-    // Parse and display response
-    match serde_json::from_str::<serde_json::Value>(&response) {
-        Ok(json) => {
-            if json.get("status").and_then(|s| s.as_str()) == Some("ok") {
-                if let Some(id) = json.get("session_id") {
-                    println!("Agent spawned (session {})", id);
-                } else {
-                    println!("Agent spawned");
-                }
-            } else if let Some(msg) = json.get("message").and_then(|m| m.as_str()) {
-                eprintln!("Error: {}", msg);
-                std::process::exit(1);
-            } else {
-                eprintln!("Unknown response: {}", response);
-                std::process::exit(1);
-            }
-        }
+    let response = match client.request(&Request::SpawnAgent { cwd }) {
+        Ok(response) => response,
         Err(e) => {
-            eprintln!("Invalid response: {}", e);
-            eprintln!("Raw: {}", response);
+            eprintln!("Failed to spawn: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    match response.outcome {
+        Outcome::Ok(Reply::Spawned { session_id }) => {
+            println!("Agent spawned (session {})", session_id);
+        }
+        Outcome::Ok(other) => {
+            eprintln!("Unexpected response: {:?}", other);
+            std::process::exit(1);
+        }
+        Outcome::Error { message } => {
+            eprintln!("Error: {}", message);
             std::process::exit(1);
         }
     }

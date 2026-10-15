@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 agentium-core = { workspace = true }
 headway = { workspace = true }
+notedeck_ipc = { workspace = true }
 async-openai = { version = "0.28.0", default-features = false, features = ["rustls-webpki-roots"] }
 claude-agent-sdk-rs = { git = "https://github.com/jb55/claude-agent-sdk-rs", rev = "a0e4b81f157e" }
 bitflags = { workspace = true }

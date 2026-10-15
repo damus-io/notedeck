@@ -14,7 +14,6 @@ mod focus_queue;
 pub(crate) mod git_status;
 pub mod inspector;
 mod inspector_sync;
-pub mod ipc;
 mod jump;
 pub(crate) mod mesh;
 mod nav;
@@ -46,6 +45,7 @@ mod test_refs;
 mod test_support;
 mod turn_rows;
 mod ui_tools;
+pub use ui_tools::SPAWN_SESSION;
 mod view;
 
 // The pure, egui-free engine modules live in the platform-neutral
@@ -275,8 +275,6 @@ pub struct Dave {
     session_picker: SessionPicker,
     /// Current overlay taking over the UI (if any)
     active_overlay: DaveOverlay,
-    /// IPC listener for external spawn-agent commands
-    ipc_listener: Option<ipc::IpcListener>,
     /// Notification state for desktop notifications when unfocused
     notification_state: notifications::NotificationState,
     /// Pending archive conversion: (jsonl_path, dave_session_id, claude_session_id).
@@ -431,29 +429,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         ).into())
     }
 
-    /// Build Dave over the host's store, serving the `agentium` CLI on the
-    /// IPC spawn socket.
+    /// Build Dave over the host's store. The chrome's socket reaches it
+    /// through its UI tools (see [`ui_tools::SPAWN_SESSION`]); Dave listens
+    /// on nothing itself.
     pub fn new(
         render_state: Option<&RenderState>,
         ndb: nostrdb::Ndb,
         waker: Waker,
         path: &DataPath,
-    ) -> Self {
-        Self::new_inner(render_state, ndb, waker, path, true)
-    }
-
-    /// [`Dave::new`], choosing whether to listen on the IPC spawn socket.
-    ///
-    /// Listening is not free to do twice: [`ipc::create_listener`] deletes
-    /// and rebinds the one `$XDG_RUNTIME_DIR/notedeck/spawn.sock`, so a Dave
-    /// built in a test with `ipc` on steals the socket from the notedeck
-    /// running on the same machine.
-    pub(crate) fn new_inner(
-        render_state: Option<&RenderState>,
-        ndb: nostrdb::Ndb,
-        waker: Waker,
-        path: &DataPath,
-        ipc: bool,
     ) -> Self {
         let settings_serializer =
             TimedSerializer::new(path, DataPathType::Setting, "dave_settings.json".to_owned());
@@ -536,13 +519,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let session_cache =
             session_cache::AgentiumSessionCache::with_background_seed(waker.clone());
 
-        // Create IPC listener for external spawn-agent commands
-        let ipc_listener = if ipc {
-            ipc::create_listener(waker)
-        } else {
-            None
-        };
-
         let hostname = gethostname::gethostname().to_string_lossy().into_owned();
 
         // In Chat mode, create a default session immediately and skip directory picker
@@ -594,7 +570,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             slash_catalogs: slash::SlashCatalogs::default(),
             session_picker: SessionPicker::new(),
             active_overlay,
-            ipc_listener,
             notification_state: notifications::NotificationState::new(),
             pending_archive_convert: None,
             pending_message_load: None,
@@ -904,57 +879,41 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Poll for IPC spawn-agent commands from external tools
-    fn poll_ipc_commands(&mut self) {
-        let Some(listener) = self.ipc_listener.as_ref() else {
-            return;
-        };
+    /// Open a new session in `cwd` and focus it, as `notedeck-spawn` and the
+    /// [`dave_spawn_session`](ui_tools::SPAWN_SESSION) tool do. Refuses a
+    /// `cwd` that isn't an existing directory.
+    pub fn spawn_session(&mut self, cwd: PathBuf) -> Result<SessionId, String> {
+        if !cwd.exists() {
+            return Err(format!("Path does not exist: {}", cwd.display()));
+        }
+        if !cwd.is_dir() {
+            return Err(format!("Path is not a directory: {}", cwd.display()));
+        }
 
-        // Drain all pending connections (non-blocking). Track the last session
-        // created so we can anchor auto-steal focus to it after the loop — we
-        // can't call `anchor_focus` (a `&mut self` method) inside, since the
-        // `listener` borrow of `self.ipc_listener` is live across the loop.
-        let mut last_created: Option<SessionId> = None;
-        while let Some(mut pending) = listener.try_recv() {
-            // Create the session and get its ID
-            let id = self.session_manager.new_session(
-                pending.cwd.clone(),
-                self.ai_mode,
-                self.model_config.backend,
-            );
-            self.directory_picker.add_recent(pending.cwd);
+        let id =
+            self.session_manager
+                .new_session(cwd.clone(), self.ai_mode, self.model_config.backend);
+        self.directory_picker.add_recent(cwd);
 
-            // Focus on new session
-            if let Some(session) = self.session_manager.get_mut(id) {
-                session.details.hostname = self.hostname.clone();
-                session.focus_requested = true;
-                if self.show_scene {
-                    self.scene.select(id);
-                    self.scene.focus_session(id);
-                }
+        if let Some(session) = self.session_manager.get_mut(id) {
+            session.details.hostname = self.hostname.clone();
+            session.focus_requested = true;
+            if self.show_scene {
+                self.scene.select(id);
+                self.scene.focus_session(id);
             }
-            self.session_manager.rebuild_groups();
-            last_created = Some(id);
+        }
+        self.session_manager.rebuild_groups();
 
-            // Close directory picker if open
-            if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {
-                self.active_overlay = DaveOverlay::None;
-            }
-
-            // Send success response back to the client
-            #[cfg(unix)]
-            {
-                let response = ipc::SpawnResponse::ok(id);
-                let _ = ipc::send_response(&mut pending.stream, &response);
-            }
-
-            tracing::info!("Spawned agent via IPC (session {})", id);
+        // A picker left open would cover the session just asked for.
+        if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {
+            self.active_overlay = DaveOverlay::None;
         }
 
         // The newest session is the active one; anchor focus to it.
-        if let Some(id) = last_created {
-            self.anchor_focus(id);
-        }
+        self.anchor_focus(id);
+        tracing::info!("Spawned agent session {id}");
+        Ok(id)
     }
 
     fn poll_pending_worktree_removal(&mut self) {
@@ -1346,9 +1305,6 @@ impl notedeck::App for Dave {
         // off-foreground for every app. Dave keeps only its own outbound publish
         // (below) and its local session-state fold.
 
-        // Poll for external spawn-agent commands via IPC
-        self.poll_ipc_commands();
-
         // Process pending thread summary requests
         let pending = std::mem::take(&mut self.pending_summaries);
         for note_id in pending {
@@ -1699,6 +1655,7 @@ impl notedeck::App for Dave {
     fn ui_tools(&self) -> Vec<notedeck::ToolSpec> {
         let mut specs = ui_tools::DaveUiTool::specs();
         specs.push(ui_tools::session_issue_spec());
+        specs.push(ui_tools::spawn_session_spec());
         specs
     }
 
@@ -1718,6 +1675,13 @@ impl notedeck::App for Dave {
                 None => notedeck::ToolOutcome::Error("the active session has no issue".to_owned()),
             };
         }
+        // Spawning needs no window either: `--headless` serves it.
+        if name == ui_tools::SPAWN_SESSION {
+            return match ui_tools::spawn_session_cwd(args).and_then(|cwd| self.spawn_session(cwd)) {
+                Ok(id) => notedeck::ToolOutcome::Data(serde_json::json!({ "session_id": id })),
+                Err(err) => notedeck::ToolOutcome::Error(err),
+            };
+        }
         let Some(egui_ctx) = ctx.egui else {
             return notedeck::ToolOutcome::Error(format!("'{name}' needs a window"));
         };
@@ -1729,6 +1693,9 @@ impl notedeck::App for Dave {
     fn ui_tool_available(&self, name: &str) -> bool {
         if name == ui_tools::SESSION_ISSUE {
             return self.active_issue().is_some();
+        }
+        if name == ui_tools::SPAWN_SESSION {
+            return true;
         }
         ui_tools::DaveUiTool::from_name(name)
             .is_some_and(|tool| ui_tools::available(tool, self.normal_view()))

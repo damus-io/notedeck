@@ -5860,6 +5860,7 @@ dependencies = [
  "notedeck_dave",
  "notedeck_headway",
  "notedeck_horizon",
+ "notedeck_ipc",
  "notedeck_messages",
  "notedeck_nostrverse",
  "notedeck_notebook",
@@ -6021,6 +6022,7 @@ dependencies = [
  "nostrdb_net",
  "notedeck",
  "notedeck_chrome",
+ "notedeck_ipc",
  "notedeck_testing",
  "notedeck_ui",
  "notify-rust",
@@ -6084,6 +6086,16 @@ dependencies = [
  "notedeck_ui",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "notedeck_ipc"
+version = "0.11.0-beta.1"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

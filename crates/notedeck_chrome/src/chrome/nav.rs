@@ -551,6 +551,7 @@ impl Chrome {
             macro_run: None,
             command_bar: Default::default(),
             user_keymap: Default::default(),
+            ipc: Default::default(),
         }
     }
 }

@@ -10,6 +10,7 @@ members = [
     "crates/notedeck_chrome",
     "crates/notedeck_columns",
     "crates/notedeck_dave",
+    "crates/notedeck_ipc",
     "crates/notedeck_messages",
     "crates/notebook",
     "crates/notedeck_notebook",
@@ -99,6 +100,7 @@ notedeck_horizon = { path = "crates/notedeck_horizon" }
 nostr_calsync = { path = "crates/nostr_calsync" }
 notedeck_columns = { path = "crates/notedeck_columns" }
 notedeck_dave = { path = "crates/notedeck_dave" }
+notedeck_ipc = { path = "crates/notedeck_ipc" }
 notedeck_messages = { path = "crates/notedeck_messages" }
 notebook = { path = "crates/notebook" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }

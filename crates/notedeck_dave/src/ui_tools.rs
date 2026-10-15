@@ -83,6 +83,37 @@ pub(crate) fn session_issue_spec() -> ToolSpec {
     .filed_under(TOOL_CATEGORY)
 }
 
+/// Open a session in a directory, as `notedeck-spawn` does: `{"cwd": "<dir>"}`,
+/// answered with `{"session_id": <id>}`. No key does this; the chrome's socket
+/// does, so it runs without a window and in any mode.
+pub const SPAWN_SESSION: &str = "dave_spawn_session";
+
+/// The spec of [`SPAWN_SESSION`].
+pub(crate) fn spawn_session_spec() -> ToolSpec {
+    ToolSpec::new(
+        SPAWN_SESSION,
+        "Open a new agent session working in a directory and focus it. \
+         Answers {\"session_id\": <id>}.",
+        vec![ToolArg::new(
+            "cwd",
+            ToolArgType::String,
+            "The absolute path of an existing directory to work in.",
+        )
+        .required(true)],
+    )
+    .ui()
+    .titled("Spawn session in directory")
+    .filed_under(TOOL_CATEGORY)
+}
+
+/// The `cwd` a [`SPAWN_SESSION`] call names.
+pub(crate) fn spawn_session_cwd(args: &Value) -> Result<std::path::PathBuf, String> {
+    args.get("cwd")
+        .and_then(Value::as_str)
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| format!("'{SPAWN_SESSION}' needs a \"cwd\" string"))
+}
+
 /// One of Dave's UI tools, by name. Its arguments pick the [`KeyAction`]
 /// ([`parse`](Self::parse)); availability takes none ([`available`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

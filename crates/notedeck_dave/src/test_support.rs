@@ -2,8 +2,8 @@
 //!
 //! [`TestDave`] owns a Dave beside the store, key and waker a
 //! [`HostCtx`] lends, so a test drives Dave the way the app's update loop
-//! does without an `AppContext`. Built through [`Dave::new_inner`] with IPC
-//! off, so running the tests never touches the spawn socket of the notedeck
+//! does without an `AppContext`. Dave listens on no socket (the chrome owns
+//! notedeck's), so running the tests never touches the one of the notedeck
 //! running on the same machine.
 
 use crate::backend::BackendType;
@@ -133,7 +133,7 @@ impl TestDave {
             .unwrap()
             .pubkey;
         let waker = Waker::noop();
-        let mut dave = Dave::new_inner(None, ndb.clone(), waker.clone(), data_path, false);
+        let mut dave = Dave::new(None, ndb.clone(), waker.clone(), data_path);
         // An empty agentic Dave opens on the directory picker; a test picks
         // its sessions itself.
         dave.active_overlay = DaveOverlay::None;
@@ -229,35 +229,16 @@ mod tests {
     use super::*;
 
     /// A fresh fixture is the Dave tests expect: nothing open, no sessions,
-    /// the account known — and it never listened on the spawn socket.
+    /// the account known.
     #[test]
-    fn test_dave_starts_settled_without_ipc() {
+    fn test_dave_starts_settled() {
         let test = TestDave::new();
         assert!(matches!(test.dave.active_overlay, DaveOverlay::None));
         assert_eq!(test.dave.session_manager.iter().count(), 0);
-        assert!(test.dave.ipc_listener.is_none(), "IPC is off");
         assert_eq!(
             test.dave.pns_local_state.as_ref().map(|s| s.account),
             Some(test.account)
         );
-    }
-
-    /// `ipc::create_listener` deletes whatever sits at the socket path and
-    /// binds a new one, so a test Dave that listened would cut off the
-    /// notedeck running on this machine. Whatever is at the path before —
-    /// a live notedeck's socket, or nothing — is still there after.
-    #[cfg(unix)]
-    #[test]
-    fn test_dave_leaves_the_spawn_socket_alone() {
-        use std::os::unix::fs::MetadataExt;
-        let inode = || {
-            std::fs::symlink_metadata(crate::ipc::socket_path())
-                .ok()
-                .map(|meta| (meta.dev(), meta.ino()))
-        };
-        let before = inode();
-        let _test = TestDave::new();
-        assert_eq!(inode(), before, "the spawn socket was not rebound");
     }
 
     /// The sessions come back in order, the first active, none grabbing the

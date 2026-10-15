@@ -48,6 +48,12 @@ enum ControllableDaveCommand {
         session_id: notedeck_dave::session::SessionId,
         text: String,
     },
+    /// Open a session in `cwd`, as `notedeck-spawn` does through the chrome's
+    /// socket, and send back its id.
+    Spawn {
+        cwd: std::path::PathBuf,
+        reply: Sender<notedeck_dave::session::SessionId>,
+    },
 }
 
 fn agentic_dave_settings() -> DaveSettings {
@@ -83,6 +89,10 @@ impl ControllableDave {
                         self.dave
                             .add_user_message_for_session(session_id, &host, text, Vec::new());
                 }
+                ControllableDaveCommand::Spawn { cwd, reply } => {
+                    let id = self.dave.spawn_session(cwd).expect("spawn session");
+                    let _ = reply.send(id);
+                }
             }
         }
     }
@@ -105,20 +115,6 @@ fn dave_app_factory() -> AppFactory {
         app_ctx.settings.complete_welcome();
         let settings = agentic_dave_settings();
         write_dave_settings(app_ctx.path, &settings);
-        let ndb = app_ctx.ndb.clone();
-        let dave = Dave::new(None, ndb, app_ctx.waker.clone(), app_ctx.path);
-        drop(app_ctx);
-
-        notedeck.set_app(dave);
-    })
-}
-fn dave_agentic_app_factory() -> AppFactory {
-    Box::new(move |notedeck, _egui_ctx| {
-        let app_ctx = notedeck.app_context();
-        app_ctx.settings.complete_welcome();
-        let settings = agentic_dave_settings();
-        write_dave_settings(app_ctx.path, &settings);
-
         let ndb = app_ctx.ndb.clone();
         let dave = Dave::new(None, ndb, app_ctx.waker.clone(), app_ctx.path);
         drop(app_ctx);
@@ -299,10 +295,23 @@ fn build_pns_device(relay: &NegentropyRelay, account: &FullKeypair) -> DeviceHar
     set_private_relay(&mut device, relay.url());
     device
 }
-fn build_agentic_pns_device(relay: &NegentropyRelay, account: &FullKeypair) -> DeviceHarness {
-    let mut device = build_dave_device(&[relay.url()], account, dave_agentic_app_factory());
+/// An agentic Dave device and the channel that drives it.
+struct AgenticDevice {
+    device: DeviceHarness,
+    commands: Sender<ControllableDaveCommand>,
+}
+
+fn build_agentic_pns_device(relay: &NegentropyRelay, account: &FullKeypair) -> AgenticDevice {
+    let ControllableApp {
+        app_factory,
+        command_tx,
+    } = controllable_dave_app_factory();
+    let mut device = build_dave_device(&[relay.url()], account, app_factory);
     set_private_relay(&mut device, relay.url());
-    device
+    AgenticDevice {
+        device,
+        commands: command_tx,
+    }
 }
 fn session_state_query() -> LocalQuery {
     LocalQuery::new(
@@ -506,61 +515,28 @@ fn wait_for_neg_close(
     });
 }
 
-#[cfg(unix)]
-fn send_spawn_agent_request(
+/// Open a session in `cwd` on `device`'s Dave, the way the chrome serves
+/// `notedeck-spawn`, and wait for its id.
+fn spawn_session(
     device: &mut DeviceHarness,
+    commands: &Sender<ControllableDaveCommand>,
     cwd: &Path,
 ) -> notedeck_dave::session::SessionId {
-    use std::io::{ErrorKind, Read, Write};
-    use std::os::unix::net::UnixStream;
-
-    let mut stream = UnixStream::connect(notedeck_dave::ipc::socket_path())
-        .expect("connect Dave spawn-agent socket");
-    stream
-        .set_nonblocking(true)
-        .expect("set spawn-agent socket nonblocking");
-    let request = serde_json::json!({
-        "type": "spawn_agent",
-        "cwd": cwd,
-    });
-    writeln!(stream, "{request}").expect("write spawn-agent request");
-
-    let mut response = Vec::new();
+    let (reply, replies) = mpsc::channel();
+    commands
+        .send(ControllableDaveCommand::Spawn {
+            cwd: cwd.to_owned(),
+            reply,
+        })
+        .expect("queue spawn");
     let mut session_id = None;
-    wait_for_device_condition(
-        device,
-        Duration::from_secs(5),
-        "spawn-agent response",
-        |_| {
-            let mut buf = [0; 1024];
-            match stream.read(&mut buf) {
-                Ok(0) => {}
-                Ok(read) => {
-                    response.extend_from_slice(&buf[..read]);
-                    if response.contains(&b'\n') {
-                        let line =
-                            std::str::from_utf8(&response).expect("spawn-agent UTF-8 response");
-                        let value: serde_json::Value =
-                            serde_json::from_str(line.trim()).expect("parse spawn-agent response");
-                        assert_eq!(
-                            value.get("status").and_then(|status| status.as_str()),
-                            Some("ok")
-                        );
-                        session_id = value
-                            .get("session_id")
-                            .and_then(|session_id| session_id.as_u64())
-                            .and_then(|session_id| session_id.try_into().ok());
-                        return Ok(());
-                    }
-                }
-                Err(err) if err.kind() == ErrorKind::WouldBlock => {}
-                Err(err) => panic!("read spawn-agent response: {err}"),
-            }
-
-            Err("no response yet".to_owned())
-        },
-    );
-    session_id.expect("spawn-agent session id")
+    wait_for_device_condition(device, Duration::from_secs(5), "spawned session", |_| {
+        session_id = replies.try_recv().ok();
+        session_id
+            .map(|_| ())
+            .ok_or_else(|| "not spawned yet".to_owned())
+    });
+    session_id.expect("spawned session id")
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
@@ -1066,9 +1042,12 @@ async fn dave_pns_cross_device_outbound_import_e2e() {
     let MemoryNegentropyRelay { relay, .. } = setup_relay().await;
 
     let cwd = std::env::current_dir().expect("current dir");
-    let mut publisher = build_agentic_pns_device(&relay, &account);
+    let AgenticDevice {
+        device: mut publisher,
+        commands,
+    } = build_agentic_pns_device(&relay, &account);
 
-    send_spawn_agent_request(&mut publisher, &cwd);
+    spawn_session(&mut publisher, &commands, &cwd);
     wait_for_event_publish(
         &mut publisher,
         &relay,
@@ -1099,12 +1078,13 @@ async fn dave_pns_two_live_devices_receive_outbound_publish_e2e() {
     step_device_for(&mut receiver, Duration::from_millis(100));
     assert_eq!(session_state_query().count(&mut receiver), 0);
 
-    // Dave IPC uses ipc::socket_path(); build publisher second so spawn-agent
-    // goes to the publisher while both devices stay live.
     let cwd = std::env::current_dir().expect("current dir");
-    let mut publisher = build_agentic_pns_device(&relay, &account);
+    let AgenticDevice {
+        device: mut publisher,
+        commands,
+    } = build_agentic_pns_device(&relay, &account);
 
-    send_spawn_agent_request(&mut publisher, &cwd);
+    spawn_session(&mut publisher, &commands, &cwd);
     wait_for_event_publish(
         &mut publisher,
         &relay,
@@ -1197,7 +1177,7 @@ async fn dave_pns_no_private_relay_does_not_publish_to_account_relays_e2e() {
     } = controllable_dave_app_factory();
     let mut device = build_dave_device(&[account_relay.url()], &account, app_factory);
 
-    let session_id = send_spawn_agent_request(&mut device, &cwd);
+    let session_id = spawn_session(&mut device, &command_tx, &cwd);
     command_tx
         .send(ControllableDaveCommand::AddUserMessage {
             session_id,
@@ -1267,7 +1247,7 @@ async fn dave_pns_no_private_relay_keeps_backlog_local_until_relay_marked_e2e() 
     } = controllable_dave_app_factory();
     let mut device = build_dave_device(&[relay.url()], &account, app_factory);
 
-    let session_id = send_spawn_agent_request(&mut device, &cwd);
+    let session_id = spawn_session(&mut device, &pns_relay_tx, &cwd);
     pns_relay_tx
         .send(ControllableDaveCommand::AddUserMessage {
             session_id,
@@ -1323,11 +1303,14 @@ async fn dave_pns_outbound_publish_uses_configured_relay_only_e2e() {
     } = setup_relay().await;
 
     let cwd = std::env::current_dir().expect("current dir");
-    let mut device =
-        build_dave_device(&[account_relay.url()], &account, dave_agentic_app_factory());
+    let ControllableApp {
+        app_factory,
+        command_tx,
+    } = controllable_dave_app_factory();
+    let mut device = build_dave_device(&[account_relay.url()], &account, app_factory);
     set_private_relay(&mut device, configured_relay.url());
 
-    send_spawn_agent_request(&mut device, &cwd);
+    spawn_session(&mut device, &command_tx, &cwd);
     wait_for_event_publish(
         &mut device,
         &configured_relay,

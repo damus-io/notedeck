@@ -1,0 +1,13 @@
+[package]
+name = "notedeck_ipc"
+edition = "2021"
+version.workspace = true
+description = "The wire protocol of the running notedeck's local socket: list and call its tools"
+
+[dependencies]
+dirs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

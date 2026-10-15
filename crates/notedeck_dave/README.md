@@ -138,7 +138,7 @@ doesn't have focus.
 
 ### External Integration
 
-- **IPC Spawn** - Create agents from external tools via Unix domain socket
+- **IPC Spawn** - Create agents from external tools over notedeck's Unix domain socket (owned by the chrome; Dave answers its `dave_spawn_session` tool)
 - **`notedeck-spawn` CLI** - Spawn agents from terminal: `notedeck-spawn /path/to/project`
 
 ## Technical Details
@@ -164,7 +164,7 @@ Dave is structured around several key components:
 5. **AI Backend** - Pluggable backends (Claude, OpenAI, Ollama)
 6. **Tools System** - Provides structured ways for the AI to interact with Nostr data
 7. **Auto-Accept Rules** - Configurable permission auto-approval
-8. **IPC Listener** - External spawn requests via Unix socket
+8. **Spawn Tool** - `dave_spawn_session`, which the chrome calls for external spawn requests on notedeck's socket
 9. **Session Discovery** - Finds resumable Claude sessions from `~/.claude/projects/`
 
 ## Getting Started
@@ -197,9 +197,9 @@ Dave can be configured to use different AI backends:
 
 ## File Locations
 
-- IPC Socket:
-  - Linux: `$XDG_RUNTIME_DIR/notedeck/spawn.sock`
-  - macOS: `~/Library/Application Support/notedeck/spawn.sock`
+- IPC Socket (`$NOTEDECK_SOCKET` overrides it; see `crates/notedeck_ipc`):
+  - Linux: `$XDG_RUNTIME_DIR/notedeck/notedeck.sock`
+  - macOS: `~/Library/Application Support/notedeck/notedeck.sock`
 - Claude Sessions: `~/.claude/projects/<project-path>/`
 
 ## Usage as a Reference

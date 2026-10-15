@@ -156,7 +156,8 @@ async fn async_main() {
 
             let mut notedeck = Notedeck::init(ctx, base_path, &args);
             notedeck.setup(ctx);
-            let chrome = Chrome::new_with_apps(cc, &args, &mut notedeck)?;
+            let mut chrome = Chrome::new_with_apps(cc, &args, &mut notedeck)?;
+            chrome.serve_ipc(notedeck.app_context().waker.clone());
             notedeck.set_app(chrome);
 
             Ok(Box::new(notedeck))
@@ -185,13 +186,15 @@ async fn run_headless(base_path: std::path::PathBuf, args: Vec<String>) {
     // No egui::Context anywhere: nothing renders, nothing reads input, and wakes
     // reach this loop through the waker below rather than through a repaint.
     let mut notedeck = Notedeck::init_headless(base_path, &args);
-    let chrome = match Chrome::new_headless(&args, &mut notedeck) {
+    let mut chrome = match Chrome::new_headless(&args, &mut notedeck) {
         Ok(chrome) => chrome,
         Err(err) => {
             error!("headless: failed to build chrome: {err}");
             return;
         }
     };
+    // `agentium spawn` and `nd` reach a headless notedeck here too.
+    chrome.serve_ipc(notedeck.app_context().waker.clone());
     notedeck.set_app(chrome);
 
     // Fired by every wake; present because we booted headless. Held for the life
