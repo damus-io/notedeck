@@ -1,6 +1,6 @@
 ---
 name: nd
-description: Drive the running notedeck from the command line via the `nd` CLI (crates/nd_cli) — list its tools and call any of them over its local socket, e.g. open a headway card or agentium session in the window, open the review queue, or read board data. Use when the user wants to open something in notedeck from a shell, script the app, or see which tools the running notedeck offers — e.g. "open this card in notedeck", "what tools does notedeck have", "call chrome_open".
+description: Drive the running notedeck from the command line via the `nd` CLI (crates/nd_cli) — list its tools and call any of them over its local socket, or spawn a Dave session, e.g. open a headway card or agentium session in the window, open the review queue, or read board data. Use when the user wants to open something in notedeck from a shell, script the app, or see which tools the running notedeck offers — e.g. "open this card in notedeck", "what tools does notedeck have", "call chrome_open".
 ---
 
 # nd: notedeck's tools from a shell
@@ -32,6 +32,11 @@ cargo run -q -p nd_cli -- tools          # or the built target/debug/nd
   notedeck. Only data tools are exposed unless `--ui`; `--read-only` keeps only
   tools that change nothing. A hidden tool can't be called by name. Register
   it with `claude mcp add notedeck -- nd mcp`.
+- `nd spawn [--json] [<dir>]` — open a Dave session in `<dir>` (default the
+  current directory, resolved and checked locally) and focus it, starting Dave
+  if it isn't open. Prints `Spawned session <id>`, or the bare id with
+  `--json`. It calls `dave_spawn_session`; `agentium spawn` is the relay one
+  for other hosts.
 - `nd --version` — nd's version, and the running notedeck's.
 - `nd <cmd> --help`, `nd help options` — per-command pages, exit codes.
 

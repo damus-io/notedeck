@@ -227,7 +227,6 @@ fn tools_call(
     Ok(match ask(request) {
         Ok(Reply::Result { result }) => data(result),
         Ok(Reply::Intent { .. }) => text(format!("done: {name} acted on the window"), false),
-        Ok(Reply::Spawned { session_id }) => data(json!({ "session_id": session_id })),
         Ok(Reply::Tools { .. }) => tool_error("notedeck answered a call with a tool list"),
         Err(failure) => tool_error(failure.message),
     })

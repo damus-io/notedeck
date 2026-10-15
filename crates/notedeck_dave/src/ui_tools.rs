@@ -83,7 +83,7 @@ pub(crate) fn session_issue_spec() -> ToolSpec {
     .filed_under(TOOL_CATEGORY)
 }
 
-/// Open a session in a directory, as `notedeck-spawn` does: `{"cwd": "<dir>"}`,
+/// Open a session in a directory, as `nd spawn` does: `{"cwd": "<dir>"}`,
 /// answered with `{"session_id": <id>}`. No key does this; the chrome's socket
 /// does, so it runs without a window and in any mode.
 pub const SPAWN_SESSION: &str = "dave_spawn_session";

@@ -48,7 +48,7 @@ enum ControllableDaveCommand {
         session_id: notedeck_dave::session::SessionId,
         text: String,
     },
-    /// Open a session in `cwd`, as `notedeck-spawn` does through the chrome's
+    /// Open a session in `cwd`, as `nd spawn` does through the chrome's
     /// socket, and send back its id.
     Spawn {
         cwd: std::path::PathBuf,
@@ -516,7 +516,7 @@ fn wait_for_neg_close(
 }
 
 /// Open a session in `cwd` on `device`'s Dave, the way the chrome serves
-/// `notedeck-spawn`, and wait for its id.
+/// `nd spawn`, and wait for its id.
 fn spawn_session(
     device: &mut DeviceHarness,
     commands: &Sender<ControllableDaveCommand>,

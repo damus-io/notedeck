@@ -72,7 +72,3 @@ notedeck_testing = { workspace = true }
 nostr = { workspace = true }
 nostr-relay-builder = "0.37"
 serial_test = "3"
-
-[[bin]]
-name = "notedeck-spawn"
-path = "src/bin/notedeck-spawn.rs"

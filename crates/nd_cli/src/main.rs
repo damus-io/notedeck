@@ -47,6 +47,8 @@ enum Command {
     },
     /// `nd mcp [--ui] [--read-only]`.
     Mcp { exposure: mcp::Exposure },
+    /// `nd spawn [--json] [<dir>]`.
+    Spawn { json: bool, dir: Option<String> },
 }
 
 /// Where `nd call`'s argument object comes from, besides the pairs.
@@ -225,6 +227,15 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, String> {
                 },
             }
         }
+        "spawn" => {
+            if positionals.len() > 1 {
+                return Err("`spawn` takes one directory".to_owned());
+            }
+            Command::Spawn {
+                json: has("--json"),
+                dir: positionals.pop(),
+            }
+        }
         other => unreachable!("'{other}' is in the help table but not dispatched"),
     };
     Ok(Invocation::Run(command))
@@ -243,6 +254,7 @@ fn run(command: Command) -> Result<(), Failure> {
         Command::Tools { json, query } => tools(json, query.as_deref()),
         Command::Call { name, pairs, base } => call(&name, &pairs, base),
         Command::Mcp { exposure } => mcp::serve(exposure, &mut answer),
+        Command::Spawn { json, dir } => spawn(json, dir.as_deref()),
     }
 }
 
@@ -293,14 +305,70 @@ fn call(name: &str, pairs: &[String], base: Option<JsonSource>) -> Result<(), Fa
     match answer(request)? {
         Reply::Result { result } => print_json(&result),
         Reply::Intent { .. } => {}
-        Reply::Spawned { session_id } => {
-            print_json(&serde_json::json!({ "session_id": session_id }))
-        }
         Reply::Tools { .. } => {
             return Err(Failure::new("notedeck answered a call with a tool list"));
         }
     }
     Ok(())
+}
+
+/// Dave's tool that opens a session in a directory, which `nd spawn` calls.
+const SPAWN_SESSION: &str = "dave_spawn_session";
+
+/// `nd spawn`: open a Dave session in `dir` (the working directory when
+/// absent) and print its id. The chrome starts Dave for this call if it isn't
+/// running, so unlike `nd call` this doesn't look the tool up first.
+fn spawn(json: bool, dir: Option<&str>) -> Result<(), Failure> {
+    let cwd = spawn_dir(dir)?;
+    let request = Request::CallTool {
+        name: SPAWN_SESSION.to_owned(),
+        args: serde_json::json!({ "cwd": cwd }),
+    };
+    let reply = answer(request).map_err(|failure| match failure.code {
+        NOT_RUNNING => failure,
+        _ if failure.message.starts_with("unknown tool") => Failure::new(
+            "the running notedeck has no Dave to spawn a session in (built without it?)",
+        ),
+        _ => Failure::new(format!(
+            "spawning in {}: {}",
+            cwd.display(),
+            failure.message
+        )),
+    })?;
+    let Reply::Result { result } = reply else {
+        return Err(Failure::new("notedeck answered a spawn without data"));
+    };
+    let Some(session_id) = result["session_id"].as_u64() else {
+        return Err(Failure::new(format!(
+            "notedeck answered a spawn without a session id: {result}"
+        )));
+    };
+    if json {
+        println!("{session_id}");
+    } else {
+        println!("Spawned session {session_id}");
+    }
+    Ok(())
+}
+
+/// The directory `nd spawn` names, made absolute and checked here, so a typo
+/// fails in the shell rather than in the app.
+fn spawn_dir(dir: Option<&str>) -> Result<std::path::PathBuf, Failure> {
+    let dir = match dir {
+        Some(dir) => std::path::PathBuf::from(dir),
+        None => std::env::current_dir()
+            .map_err(|e| Failure::new(format!("reading the working directory: {e}")))?,
+    };
+    let cwd = dir
+        .canonicalize()
+        .map_err(|e| Failure::new(format!("{}: {e}", dir.display())))?;
+    if !cwd.is_dir() {
+        return Err(Failure::new(format!(
+            "{} is not a directory",
+            cwd.display()
+        )));
+    }
+    Ok(cwd)
 }
 
 /// The argument object a `--json` or `--json-file` names.
@@ -517,6 +585,44 @@ mod tests {
         );
         let err = err_of(&["mcp", "extra"]);
         assert!(err.contains("takes no arguments"), "{err}");
+    }
+
+    #[test]
+    fn spawn_takes_an_optional_dir() {
+        assert_eq!(
+            command_of(&["spawn"]),
+            Command::Spawn {
+                json: false,
+                dir: None
+            }
+        );
+        assert_eq!(
+            command_of(&["spawn", "--json", "/tmp"]),
+            Command::Spawn {
+                json: true,
+                dir: Some("/tmp".to_owned())
+            }
+        );
+        let err = err_of(&["spawn", "a", "b"]);
+        assert!(err.contains("one directory"), "{err}");
+    }
+
+    #[test]
+    fn spawn_checks_its_dir_before_sending() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("f");
+        std::fs::write(&file, "").unwrap();
+
+        let cwd = spawn_dir(Some(dir.path().to_str().unwrap())).ok().unwrap();
+        assert_eq!(cwd, dir.path().canonicalize().unwrap());
+        let err = spawn_dir(Some(file.to_str().unwrap())).err().unwrap();
+        assert!(
+            err.message.contains("is not a directory"),
+            "{}",
+            err.message
+        );
+        let missing = dir.path().join("missing");
+        assert!(spawn_dir(Some(missing.to_str().unwrap())).is_err());
     }
 
     #[test]

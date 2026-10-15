@@ -9,12 +9,13 @@ use cli_term::help::{Cli, CommandHelp, GlobalOption};
 
 const TOOLS: &str = "TOOLS";
 const SERVE: &str = "SERVE";
+const AGENTS: &str = "AGENTS";
 
 /// The whole help surface.
 pub const CLI: Cli = Cli {
     bin: "nd",
     about: "list and call the running notedeck's tools over its local socket",
-    groups: &[TOOLS, SERVE],
+    groups: &[TOOLS, AGENTS, SERVE],
     commands: COMMANDS,
     global_hint: "--version",
 };
@@ -82,6 +83,20 @@ stderr and exits 1.",
             "nd call chrome_open reference=headway:notedeck/balcony-warm-action",
             "nd call chrome_open --json '{\"reference\":\"agentium:evolve-rule-carry\"}'",
         ],
+    },
+    CommandHelp {
+        name: "spawn",
+        group: AGENTS,
+        summary: "Open a Dave session in a directory and focus it",
+        usage: &["spawn [--json] [<dir>]"],
+        details: "\
+Opens a new Dave agent session working in <dir> (the current directory when
+left out) in the running notedeck, starting Dave if it isn't open, and prints
+its id. The directory is resolved and checked here first, so a typo fails
+before anything is sent. This calls Dave's dave_spawn_session tool; `agentium
+spawn` is the one that reaches another host over the relay.",
+        options: &[("--json", "Print the bare session id")],
+        examples: &["nd spawn", "nd spawn ~/dev/notedeck", "nd spawn --json ."],
     },
     CommandHelp {
         name: "mcp",

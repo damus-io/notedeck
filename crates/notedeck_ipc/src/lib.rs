@@ -2,8 +2,8 @@
 //!
 //! One notedeck per user listens on [`socket_path`]. A client connects, writes
 //! one JSON [`Request`] line, reads one JSON [`Response`] line, and hangs up.
-//! The chrome owns the listening end ([`Listener`]); `nd` and `notedeck-spawn`
-//! are clients ([`Client`]).
+//! The chrome owns the listening end ([`Listener`]); `nd` is the client
+//! ([`Client`]).
 //!
 //! This crate depends on serde alone, so a client builds without notedeck.
 //!
@@ -29,8 +29,7 @@ pub use client::Client;
 pub use server::{Connection, Incoming, Listener};
 
 /// The protocol version this crate speaks, sent as `v` on every request and
-/// response. A request carrying any other `v` is refused; one carrying none is
-/// the pre-versioned `spawn_agent` of `notedeck-spawn`, and is served.
+/// response. A request carrying any other `v`, or none, is refused.
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Overrides [`socket_path`] when set, so tests and a second notedeck can
@@ -93,16 +92,13 @@ pub enum Request {
         #[serde(default)]
         args: Value,
     },
-    /// Open a Dave session in `cwd`, answered with [`Reply::Spawned`]. The
-    /// request `notedeck-spawn` has always sent, kept until `nd spawn`
-    /// replaces it.
-    SpawnAgent { cwd: PathBuf },
 }
 
 /// A [`Request`] as it goes over the wire: `v` beside the tagged fields.
 #[derive(Debug, Serialize, Deserialize)]
 struct RequestLine {
-    /// Absent only on a legacy `spawn_agent`.
+    /// Absent only on a client older than the versioned protocol, which is
+    /// refused rather than misread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     v: Option<u32>,
     #[serde(flatten)]
@@ -119,8 +115,8 @@ impl Request {
         serde_json::to_string(&line).expect("a request always serializes")
     }
 
-    /// Parse one wire line. Refuses a `v` other than [`PROTOCOL_VERSION`], and
-    /// a missing `v` on anything but `spawn_agent`.
+    /// Parse one wire line. Refuses a `v` other than [`PROTOCOL_VERSION`], or
+    /// a missing one.
     pub fn from_line(line: &str) -> Result<Self, String> {
         let RequestLine { v, request } =
             serde_json::from_str(line.trim()).map_err(|e| format!("invalid request: {e}"))?;
@@ -129,7 +125,6 @@ impl Request {
             Some(v) => Err(format!(
                 "protocol version {v} is not supported; this notedeck speaks {PROTOCOL_VERSION}"
             )),
-            None if matches!(request, Request::SpawnAgent { .. }) => Ok(request),
             None => Err(format!("missing protocol version \"v\":{PROTOCOL_VERSION}")),
         }
     }
@@ -165,8 +160,6 @@ pub enum Reply {
     Result { result: Value },
     /// The tool asked the window to act, and it did.
     Intent { intent: IntentStatus },
-    /// To [`Request::SpawnAgent`]: the new Dave session.
-    Spawned { session_id: u32 },
 }
 
 /// What became of a tool's request that the window act.
@@ -261,9 +254,6 @@ mod tests {
                 name: "chrome_open".to_owned(),
                 args: json!({"reference": "headway:notedeck/hill-measure-accuse"}),
             },
-            Request::SpawnAgent {
-                cwd: PathBuf::from("/tmp"),
-            },
         ];
         for request in requests {
             let line = request.to_line();
@@ -289,12 +279,11 @@ mod tests {
     }
 
     #[test]
-    fn a_legacy_spawn_needs_no_version() {
-        assert_eq!(
-            Request::from_line(r#"{"type":"spawn_agent","cwd":"/tmp"}"#),
-            Ok(Request::SpawnAgent {
-                cwd: PathBuf::from("/tmp")
-            })
+    fn a_request_needs_a_version() {
+        let err = Request::from_line(r#"{"type":"spawn_agent","cwd":"/tmp"}"#).unwrap_err();
+        assert!(
+            err.contains("invalid request"),
+            "the legacy spawn is gone: {err}"
         );
         let err = Request::from_line(r#"{"type":"list_tools"}"#).unwrap_err();
         assert!(err.contains("missing protocol version"), "{err}");
@@ -325,7 +314,6 @@ mod tests {
             Reply::Intent {
                 intent: IntentStatus::Applied,
             },
-            Reply::Spawned { session_id: 7 },
         ];
         for reply in replies {
             let response = Response::ok(reply);
@@ -347,13 +335,6 @@ mod tests {
         assert_eq!(value["status"], json!("ok"));
         assert_eq!(value["intent"], json!("applied"));
         assert_eq!(value["notedeck"], json!(env!("CARGO_PKG_VERSION")));
-
-        // notedeck-spawn reads exactly these two fields.
-        let value: Value =
-            serde_json::from_str(&Response::ok(Reply::Spawned { session_id: 4 }).to_line())
-                .unwrap();
-        assert_eq!(value["status"], json!("ok"));
-        assert_eq!(value["session_id"], json!(4));
 
         let value: Value = serde_json::from_str(&Response::error("bad").to_line()).unwrap();
         assert_eq!(value["status"], json!("error"));

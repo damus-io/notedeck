@@ -320,3 +320,55 @@ fn mcp_without_notedeck_keeps_serving() {
     assert_eq!(replies[1]["result"]["isError"], true);
     assert_eq!(replies[2]["result"], json!({}));
 }
+
+#[test]
+fn spawn_sends_the_resolved_dir_and_prints_the_session() {
+    let dir = socket_dir();
+    let work = TempDir::new().unwrap();
+    let spawned = || {
+        Response::ok(Reply::Result {
+            result: json!({"session_id": 7}),
+        })
+    };
+    // No tool list first: the chrome starts Dave for a spawn, so nd doesn't
+    // look the tool up.
+    let Fake { socket, server } = serve(&dir, vec![spawned(), spawned()]);
+    let out = nd(&socket, &["spawn", work.path().to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "Spawned session 7\n");
+    let out = nd(&socket, &["spawn", "--json", work.path().to_str().unwrap()]);
+    assert_eq!(stdout(&out), "7\n");
+    let seen = server.join().unwrap();
+    assert_eq!(
+        seen[0],
+        Request::CallTool {
+            name: "dave_spawn_session".to_owned(),
+            args: json!({"cwd": work.path().canonicalize().unwrap()}),
+        }
+    );
+}
+
+#[test]
+fn spawn_without_dave_says_so() {
+    let dir = socket_dir();
+    let work = TempDir::new().unwrap();
+    let unknown = Response::error("unknown tool 'dave_spawn_session'");
+    let Fake { socket, server } = serve(&dir, vec![unknown]);
+    let out = nd(&socket, &["spawn", work.path().to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("no Dave"), "{}", stderr(&out));
+    server.join().unwrap();
+}
+
+#[test]
+fn spawn_rejects_a_missing_dir_without_connecting() {
+    let dir = socket_dir();
+    let missing = dir.path().join("absent.sock");
+    let out = nd(&missing, &["spawn", "/no/such/dir/here"]);
+    assert_eq!(out.status.code(), Some(1), "not 2: nothing was sent");
+    assert!(
+        stderr(&out).contains("/no/such/dir/here"),
+        "{}",
+        stderr(&out)
+    );
+}

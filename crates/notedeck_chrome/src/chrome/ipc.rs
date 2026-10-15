@@ -1,6 +1,5 @@
 //! The chrome's end of notedeck's socket (see [`notedeck_ipc`]): `nd` lists
-//! the running apps' tools and calls them, and `notedeck-spawn` opens Dave
-//! sessions.
+//! the running apps' tools and calls them.
 //!
 //! The chrome owns the socket, not an app, because only the chrome can both
 //! dispatch a tool to the app that owns it and carry out the intent a tool
@@ -131,7 +130,6 @@ pub(super) fn serve(chrome: &mut Chrome, ctx: &mut AppContext, request: Request)
             tools: ctx.tool_specs().iter().map(tool_info).collect(),
         })),
         Request::CallTool { name, args } => call_tool(chrome, ctx, &name, &args),
-        Request::SpawnAgent { cwd } => Served::Reply(spawn_agent(chrome, ctx, cwd)),
     }
 }
 
@@ -143,6 +141,10 @@ fn call_tool(
     name: &str,
     args: &serde_json::Value,
 ) -> Served {
+    #[cfg(feature = "dave")]
+    if name == notedeck_dave::SPAWN_SESSION {
+        return Served::Reply(spawn_session(chrome, ctx, args));
+    }
     let outcome = match ctx.call_tool(name, args) {
         ToolOutcome::Intent(AppAction::CallTool(invocation)) => {
             match chrome.call_ui_tool(ctx, &invocation) {
@@ -163,10 +165,12 @@ fn call_tool(
     }
 }
 
-/// Serve `notedeck-spawn`: start Dave if it isn't running and call its
-/// [`SPAWN_SESSION`](notedeck_dave::SPAWN_SESSION) tool.
+/// Serve `nd spawn`'s call of Dave's
+/// [`SPAWN_SESSION`](notedeck_dave::SPAWN_SESSION): start Dave if it isn't
+/// running, then call it. Every other tool must already be running to be
+/// called, but a spawn is how a terminal starts Dave, so this one opens it.
 #[cfg(feature = "dave")]
-fn spawn_agent(chrome: &mut Chrome, ctx: &mut AppContext, cwd: std::path::PathBuf) -> Response {
+fn spawn_session(chrome: &mut Chrome, ctx: &mut AppContext, args: &serde_json::Value) -> Response {
     let Some(slot) = chrome
         .apps
         .iter()
@@ -178,23 +182,11 @@ fn spawn_agent(chrome: &mut Chrome, ctx: &mut AppContext, cwd: std::path::PathBu
     // frame, so call Dave by its slot.
     chrome.set_opened(slot);
     use notedeck::App;
-    let args = serde_json::json!({ "cwd": cwd });
-    match chrome.apps[slot].call_ui_tool(ctx, notedeck_dave::SPAWN_SESSION, &args) {
-        ToolOutcome::Data(data) => match data["session_id"].as_u64() {
-            Some(session_id) => Response::ok(Reply::Spawned {
-                session_id: session_id as u32,
-            }),
-            None => Response::error(format!("Dave answered without a session id: {data}")),
-        },
+    match chrome.apps[slot].call_ui_tool(ctx, notedeck_dave::SPAWN_SESSION, args) {
+        ToolOutcome::Data(result) => Response::ok(Reply::Result { result }),
         ToolOutcome::Error(err) => Response::error(err),
         ToolOutcome::Intent(_) => Response::error("Dave answered a spawn with an intent"),
     }
-}
-
-/// Without Dave there is nothing to spawn.
-#[cfg(not(feature = "dave"))]
-fn spawn_agent(_chrome: &mut Chrome, _ctx: &mut AppContext, _cwd: std::path::PathBuf) -> Response {
-    Response::error("this notedeck was built without Dave")
 }
 
 /// `spec` as `list_tools` lists it.
@@ -414,11 +406,11 @@ mod tests {
         assert!(f.calls.borrow().is_empty());
     }
 
-    /// `notedeck-spawn`'s request starts Dave, unopened until now, and opens
-    /// a session in the directory it names.
+    /// A call of `dave_spawn_session`, as `nd spawn` sends it, starts Dave,
+    /// unopened until now, and opens a session in the directory it names.
     #[cfg(feature = "dave")]
     #[tokio::test]
-    async fn spawn_agent_starts_dave_and_opens_a_session() {
+    async fn spawn_session_starts_dave_and_opens_a_session() {
         let dir = tempfile::TempDir::new().expect("tmp dir");
         let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
         let mut notedeck = Notedeck::init(&egui::Context::default(), dir.path(), &args);
@@ -432,12 +424,18 @@ mod tests {
 
         let mut ctx = notedeck.app_context();
         let spawn = |chrome: &mut Chrome, ctx: &mut AppContext, cwd: std::path::PathBuf| {
-            reply(serve(chrome, ctx, Request::SpawnAgent { cwd }))
+            let request = Request::CallTool {
+                name: notedeck_dave::SPAWN_SESSION.to_owned(),
+                args: serde_json::json!({ "cwd": cwd }),
+            };
+            reply(serve(chrome, ctx, request))
         };
-        assert!(matches!(
-            spawn(&mut chrome, &mut ctx, dir.path().to_owned()),
-            Outcome::Ok(Reply::Spawned { .. })
-        ));
+        let Outcome::Ok(Reply::Result { result }) =
+            spawn(&mut chrome, &mut ctx, dir.path().to_owned())
+        else {
+            panic!("the spawn answers with data");
+        };
+        assert!(result["session_id"].is_u64(), "{result}");
         assert!(chrome.is_running(dave), "the spawn started Dave");
 
         let Outcome::Error { message } = spawn(&mut chrome, &mut ctx, dir.path().join("missing"))

@@ -1,4 +1,4 @@
-//! The calling end: a small blocking client for `nd` and `notedeck-spawn`.
+//! The calling end: a small blocking client for `nd`.
 
 use crate::{Request, Response};
 use std::io::{self, BufRead, BufReader, Write};

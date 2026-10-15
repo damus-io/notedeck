@@ -139,7 +139,7 @@ doesn't have focus.
 ### External Integration
 
 - **IPC Spawn** - Create agents from external tools over notedeck's Unix domain socket (owned by the chrome; Dave answers its `dave_spawn_session` tool)
-- **`notedeck-spawn` CLI** - Spawn agents from terminal: `notedeck-spawn /path/to/project`
+- **`nd spawn`** - Spawn agents from a terminal: `nd spawn /path/to/project` (see `crates/nd_cli`)
 
 ## Technical Details
 

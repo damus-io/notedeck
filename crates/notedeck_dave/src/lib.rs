@@ -879,7 +879,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Open a new session in `cwd` and focus it, as `notedeck-spawn` and the
+    /// Open a new session in `cwd` and focus it, as `nd spawn` and the
     /// [`dave_spawn_session`](ui_tools::SPAWN_SESSION) tool do. Refuses a
     /// `cwd` that isn't an existing directory.
     pub fn spawn_session(&mut self, cwd: PathBuf) -> Result<SessionId, String> {
