@@ -5,9 +5,10 @@
 //! work, so a bad rev or a directory outside a repo fails fast rather than after
 //! a full sync.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
-use headway::event::ReviewFields;
+use headway::event::{ReviewFields, ReviewSource, ReviewSourceError, ReviewSourceRole};
 use headway::git;
 
 use nostrdb_net::relay::sync::Result;
@@ -28,6 +29,52 @@ pub(crate) struct ReviewFlags {
     pub(crate) remote: Option<String>,
     /// `--repo-dir`: where to run git. Defaults to the current directory.
     pub(crate) repo_dir: Option<String>,
+    /// `--explainer-source` / `--code-source`: files to store on the record,
+    /// in the order given.
+    pub(crate) sources: Vec<SourceFlag>,
+}
+
+/// One `--explainer-source` or `--code-source` as typed: the file to read
+/// and the role the flag gives it.
+pub(crate) struct SourceFlag {
+    /// Which flag named it.
+    pub(crate) role: ReviewSourceRole,
+    /// The path as typed, relative to the current directory.
+    pub(crate) path: String,
+}
+
+/// Read each `--explainer-source` / `--code-source` file into the
+/// [`ReviewSource`] `review` stores on its record, named by its basename.
+///
+/// Errors before any relay work when a file can't be read or isn't UTF-8, when
+/// two files share a basename (the second would replace the first), or when a
+/// file is over [`headway::event::MAX_REVIEW_SOURCE_BYTES`] — the store would
+/// refuse it silently, so it is refused here with the file's name and size.
+pub(crate) fn read_sources(flags: &[SourceFlag]) -> Result<Vec<ReviewSource>> {
+    let mut names = HashSet::new();
+    flags
+        .iter()
+        .map(|flag| {
+            let name = Path::new(&flag.path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| format!("{}: not a file name", flag.path))?
+                .to_string();
+            if !names.insert(name.clone()) {
+                return Err(
+                    format!("two sources named '{name}': each is stored by its file name").into(),
+                );
+            }
+            let text =
+                std::fs::read_to_string(&flag.path).map_err(|e| format!("{}: {e}", flag.path))?;
+            ReviewSourceError::check(&name, &text).map_err(|e| format!("{}: {e}", flag.path))?;
+            Ok(ReviewSource {
+                role: flag.role,
+                name,
+                text,
+            })
+        })
+        .collect()
 }
 
 /// Resolve `flags` into the record `review` writes: the commit and its subject,
@@ -79,16 +126,86 @@ fn agentium_ref(value: &str) -> Option<String> {
 
 /// Print what a `review` recorded, one field per line, so the transcript of the
 /// agent that ran it shows exactly what was captured.
-pub(crate) fn print_recorded(review: &ReviewFields) {
+pub(crate) fn print_recorded(review: &ReviewFields, sources: &[ReviewSource]) {
     for tag in review.tags() {
         let Some(value) = tag.value else { continue };
         println!("  {:<11}{value}", tag.name);
+    }
+    for source in sources {
+        println!(
+            "  {:<11}{} ({}, {} bytes)",
+            "source",
+            source.name,
+            source.role.as_str(),
+            source.text.len()
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sources are read by basename with their flag's role; a shared basename
+    /// or a file over the cap is refused naming the file.
+    #[test]
+    fn read_sources_names_by_basename_and_refuses_clashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |rel: &str, text: &str| {
+            let path = dir.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            path.to_string_lossy().into_owned()
+        };
+        let flag = |role, path: &str| SourceFlag {
+            role,
+            path: path.to_string(),
+        };
+        let md = write("book/a-b-c.md", "# A");
+        let code = write("book/a-b-c.code.md", "walk");
+
+        let sources = read_sources(&[
+            flag(ReviewSourceRole::Explainer, &md),
+            flag(ReviewSourceRole::Code, &code),
+        ])
+        .unwrap();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(
+            (
+                sources[0].role,
+                sources[0].name.as_str(),
+                sources[0].text.as_str()
+            ),
+            (ReviewSourceRole::Explainer, "a-b-c.md", "# A")
+        );
+        assert_eq!(
+            (sources[1].role, sources[1].name.as_str()),
+            (ReviewSourceRole::Code, "a-b-c.code.md")
+        );
+
+        let clash = write("other/a-b-c.md", "# B");
+        let err = read_sources(&[
+            flag(ReviewSourceRole::Explainer, &md),
+            flag(ReviewSourceRole::Explainer, &clash),
+        ])
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(err.contains("two sources named 'a-b-c.md'"), "{err}");
+
+        let big = write(
+            "big.md",
+            &"x".repeat(headway::event::MAX_REVIEW_SOURCE_BYTES + 1),
+        );
+        let err = read_sources(&[flag(ReviewSourceRole::Explainer, &big)])
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("big.md"), "{err}");
+
+        let missing = dir.path().join("nope.md").to_string_lossy().into_owned();
+        assert!(read_sources(&[flag(ReviewSourceRole::Explainer, &missing)]).is_err());
+    }
 
     /// Only a well-formed `agentium:<word-id>` is taken from the environment.
     #[test]

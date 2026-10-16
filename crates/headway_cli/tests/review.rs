@@ -38,11 +38,15 @@ fn headway_bin() -> PathBuf {
     )
 }
 
-/// A current build lists `review` in its no-arg usage (printed to stderr).
+/// A current build's `review` page lists `--explainer-source`.
 fn knows_review(bin: &Path) -> bool {
     Command::new(bin)
+        .args(["help", "review"])
         .output()
-        .is_ok_and(|out| String::from_utf8_lossy(&out.stderr).contains("review"))
+        .is_ok_and(|out| {
+            let text = [out.stdout, out.stderr].concat();
+            String::from_utf8_lossy(&text).contains("--explainer-source")
+        })
 }
 
 /// Run `headway` against `url`/`db` with `extra`, with the board pinned and a
@@ -362,6 +366,130 @@ fn review_comments_post_show_and_reply() {
     // None of it went into the card's own thread.
     let v: Value = serde_json::from_str(&ok(&bin, &url, db, &["show", &card, "--json"])).unwrap();
     assert_eq!(v[0]["comments"].as_array().map(Vec::len), Some(0), "{v:#}");
+}
+
+/// `review --explainer-source/--code-source` stores the files on the new
+/// record in the same call; `show <card> --json` lists them with their text,
+/// the board's JSON lists them without it, and `show --source` prints one
+/// byte for byte.
+#[test]
+fn review_sources_record_and_read_back() {
+    let bin = headway_bin();
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &test_config().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let _guard = rt.enter();
+    let relay =
+        nostrdb_net::relay::server::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    ok(&bin, &url, db, &["--board", "headway", "seed"]);
+    let added: Value =
+        serde_json::from_str(&ok(&bin, &url, db, &["add", "Explain me", "--json"])).unwrap();
+    let card = added["ref"].as_str().expect("new card ref").to_string();
+
+    let repo = one_commit_repo("the explained commit");
+    let book = tempfile::tempdir().expect("book dir");
+    let explainer_text = "# What\n\n\"quoted\" and trailing newline\n";
+    let code_text = "Walk:\n\n```diff\n+x\n```";
+    let md = book.path().join("explain-me.md");
+    let code = book.path().join("explain-me.code.md");
+    std::fs::write(&md, explainer_text).unwrap();
+    std::fs::write(&code, code_text).unwrap();
+
+    let out = ok(
+        &bin,
+        &url,
+        db,
+        &[
+            "review",
+            &card,
+            "--repo-dir",
+            repo.path().to_str().unwrap(),
+            "--explainer",
+            "https://example.com/x",
+            "--explainer-source",
+            md.to_str().unwrap(),
+            "--code-source",
+            code.to_str().unwrap(),
+        ],
+    );
+    assert!(out.contains("explain-me.code.md (code,"), "{out}");
+    assert_eq!(out.matches("ok (3 events)").count(), 1, "{out}");
+
+    let mut sources = Vec::new();
+    for _ in 0..50 {
+        let v: Value =
+            serde_json::from_str(&ok(&bin, &url, db, &["show", &card, "--json"])).unwrap();
+        if let Some(s) = v[0]["reviews"][0]["sources"].as_array()
+            && s.len() == 2
+        {
+            sources = s.clone();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(sources.len(), 2, "the record never carried both sources");
+    // Sorted by name.
+    assert_eq!(sources[0]["name"], "explain-me.code.md");
+    assert_eq!(sources[0]["role"], "code");
+    assert_eq!(sources[0]["text"], code_text);
+    assert_eq!(sources[1]["name"], "explain-me.md");
+    assert_eq!(sources[1]["role"], "explainer");
+    assert_eq!(sources[1]["bytes"], explainer_text.len());
+    assert_eq!(sources[1]["text"], explainer_text);
+
+    // The board's JSON names them but leaves the text out.
+    let board: Value = serde_json::from_str(&ok(&bin, &url, db, &["show", "--json"])).unwrap();
+    let listed = board["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|c| c["cards"].as_array().unwrap())
+        .find(|c| c["ref"] == card.as_str())
+        .expect("card on the board")["reviews"][0]["sources"][1]
+        .clone();
+    assert_eq!(listed["name"], "explain-me.md");
+    assert!(listed.get("text").is_none(), "{listed:#}");
+
+    let printed = ok(
+        &bin,
+        &url,
+        db,
+        &["show", &card, "--source", "explain-me.md"],
+    );
+    assert_eq!(printed, explainer_text, "printed exactly as stored");
+    let missing = headway(&bin, &url, db, &["show", &card, "--source", "nope.md"]);
+    assert!(!missing.status.success());
+
+    // A clash is refused before anything is written.
+    let other = tempfile::tempdir().expect("other dir");
+    let clash = other.path().join("explain-me.md");
+    std::fs::write(&clash, "other").unwrap();
+    let refused = headway(
+        &bin,
+        &url,
+        db,
+        &[
+            "review",
+            &card,
+            "--repo-dir",
+            repo.path().to_str().unwrap(),
+            "--explainer-source",
+            md.to_str().unwrap(),
+            "--explainer-source",
+            clash.to_str().unwrap(),
+        ],
+    );
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("two sources named"), "{stderr}");
 }
 
 /// Outside a git repo `review` refuses with git's own message, before touching

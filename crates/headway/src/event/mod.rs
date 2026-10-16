@@ -54,7 +54,8 @@ pub use build::{
     build_subject_edit, build_view, build_view_tombstone,
 };
 pub use json::{
-    activity_json, board_json, card_json, comment_json, review_comment_json, review_json,
+    activity_json, board_json, card_detail_json, card_json, comment_json, review_comment_json,
+    review_json, review_source_json,
 };
 pub use kinds::{
     HEADWAY_KINDS, KIND_BLOCKERS, KIND_BOARD, KIND_BOARD_PREF, KIND_COMMENT, KIND_COVER_NOTE,

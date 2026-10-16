@@ -3122,6 +3122,7 @@ fn review_diff_opens_the_review_pane_with_the_commit() {
                     path: Some(dir.to_string_lossy().into_owned()),
                     ..Default::default()
                 },
+                sources: Vec::new(),
             },
             &mut store::NoPublish,
         );
@@ -3238,6 +3239,7 @@ fn review_route_opens_the_record_it_names() {
                         path: Some(dir.to_string_lossy().into_owned()),
                         ..Default::default()
                     },
+                    sources: Vec::new(),
                 },
                 &mut store::NoPublish,
             );
@@ -3427,6 +3429,7 @@ fn seed_in_review_with(
                     path: Some(dir.to_string_lossy().into_owned()),
                     ..Default::default()
                 },
+                sources: Vec::new(),
             },
         );
     }
@@ -4020,6 +4023,7 @@ fn add_fixture_record(
                 explainer: explainer.map(str::to_string),
                 ..Default::default()
             },
+            sources: Vec::new(),
         },
     );
 }
@@ -4046,6 +4050,7 @@ fn record_local_checkout(
                 repo: Some(fixture.root.clone()),
                 ..Default::default()
             },
+            sources: Vec::new(),
         },
     );
 }
@@ -5065,6 +5070,7 @@ fn the_detail_takes_the_card_actions() {
                 agentium: Some(QUEUE_SESSION.to_string()),
                 ..Default::default()
             },
+            sources: Vec::new(),
         },
     );
     harness.get_by_label(FIRST).click();
@@ -5429,6 +5435,7 @@ fn seed_records(
                     explainer: explainer.map(str::to_string),
                     ..Default::default()
                 },
+                sources: Vec::new(),
             },
         );
         let deadline = Instant::now() + SETTLE_TIMEOUT;
@@ -5600,6 +5607,7 @@ fn a_review_records_deploy_links_open_the_live_build() {
                 deploy: Some(DEPLOY_URL.to_string()),
                 ..Default::default()
             },
+            sources: Vec::new(),
         },
     );
     harness.get_by_label(DETAIL_REVIEW_CARD).click();

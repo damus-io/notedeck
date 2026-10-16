@@ -374,7 +374,16 @@ async fn run() -> Result<()> {
             print_all_boards(&boards, &me, as_json, show_archived)
         }
 
-        Command::Show { cards } => match load_board(&ndb, &roster, &author, &board) {
+        Command::Show {
+            cards,
+            source: Some(name),
+        } => {
+            let view = load_board(&ndb, &roster, &author, &board)
+                .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
+            output::print_review_source(&view, &cards[0], &name)?;
+        }
+
+        Command::Show { cards, .. } => match load_board(&ndb, &roster, &author, &board) {
             Some(view) if cards.is_empty() => print_board(&view, as_json, show_archived),
             Some(view) => print_cards(&view, &cards, as_json)?,
             None if as_json => println!("null"),
@@ -889,7 +898,9 @@ async fn run() -> Result<()> {
             // `review` echoes what it recorded (below), so keep a copy before
             // `build_action` consumes the command.
             let recorded = match &edit {
-                Command::Review { review, .. } => Some(review.clone()),
+                Command::Review {
+                    review, sources, ..
+                } => Some((review.clone(), sources.clone())),
                 _ => None,
             };
             let action = build_action(&view, edit)?;
@@ -954,8 +965,8 @@ async fn run() -> Result<()> {
                     "ok ({n} events){ref_suffix}{}",
                     nostrdb_net::relay::sync::offline_note(&relay)
                 );
-                if let Some(review) = &recorded {
-                    review::print_recorded(review);
+                if let Some((review, sources)) = &recorded {
+                    review::print_recorded(review, sources);
                 }
             }
         }

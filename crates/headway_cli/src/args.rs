@@ -9,13 +9,13 @@ use cli_term::{CaseMode, ColorWhen, PagerMode, compile_pattern};
 use nostrdb_net::Pubkey;
 use regex::Regex;
 
-use headway::event::{LineRange, ReviewFields};
+use headway::event::{LineRange, ReviewFields, ReviewSource, ReviewSourceRole};
 use headway::query::{DisplayProps, GroupBy, Grouping, SortBy, Sorting};
 use headway::store;
 
 use nostrdb_net::relay::sync::Result;
 
-use crate::review::{self, ReviewFlags};
+use crate::review::{self, ReviewFlags, SourceFlag};
 use crate::{APP, help};
 
 /// `list`'s saved-view flags (see [`crate::list::run_list`]). At most one of
@@ -54,6 +54,10 @@ pub(crate) enum Command {
         /// Optional card selectors. When non-empty, `show` prints these cards
         /// in full `git show`-style detail rather than the whole board.
         cards: Vec<String>,
+        /// `--source <name>`: print the text of the review source with this
+        /// file name on the one card named, from its newest record carrying it,
+        /// instead of the card.
+        source: Option<String>,
     },
     /// Create the target board as a born team-of-one SNS channel (sealed from note
     /// #1). Optional `--title` sets its display name; when unset it defaults to the
@@ -234,6 +238,9 @@ pub(crate) enum Command {
     Review {
         card: String,
         review: ReviewFields,
+        /// `--explainer-source` / `--code-source` files, already read (see
+        /// [`review::read_sources`]), stored on the new record.
+        sources: Vec<ReviewSource>,
     },
     /// Print the commit a card's review record names, fetching it from the
     /// recording host if this one lacks it. A read command — it never signs.
@@ -397,7 +404,7 @@ impl Command {
     fn selector_board(&self) -> Result<Option<String>> {
         let mut selectors: Vec<&str> = Vec::new();
         match self {
-            Command::Show { cards } => selectors.extend(cards.iter().map(String::as_str)),
+            Command::Show { cards, .. } => selectors.extend(cards.iter().map(String::as_str)),
             Command::Add { parent, .. } => selectors.extend(parent.as_deref()),
             Command::Parent { card, parent } => {
                 selectors.push(card);
@@ -654,6 +661,8 @@ impl Cli {
         // with its other review flags.
         let mut record = None;
         let mut review_comment = ReviewCommentFlags::default();
+        // `show --source`: print one review source's text.
+        let mut source = None;
         let mut positionals: Vec<String> = Vec::new();
         // Every flag the run passed, as typed and in order, so the command can
         // be held to the ones it documents once its name is known (the name
@@ -742,6 +751,15 @@ impl Cli {
                 "--agentium" => review.agentium = Some(value("--agentium")?),
                 "--remote" => review.remote = Some(value("--remote")?),
                 "--repo-dir" => review.repo_dir = Some(value("--repo-dir")?),
+                "--explainer-source" => review.sources.push(SourceFlag {
+                    role: ReviewSourceRole::Explainer,
+                    path: value("--explainer-source")?,
+                }),
+                "--code-source" => review.sources.push(SourceFlag {
+                    role: ReviewSourceRole::Code,
+                    path: value("--code-source")?,
+                }),
+                "--source" => source = Some(value("--source")?),
                 "--record" => record = Some(value("--record")?),
                 "--path" => review_comment.path = Some(value("--path")?),
                 "--line" => review_comment.lines = Some(parse_lines(&value("--line")?)?),
@@ -846,6 +864,17 @@ impl Cli {
             record,
             review_comment,
         )?;
+
+        if let Command::Show {
+            cards,
+            source: wanted,
+        } = &mut command
+        {
+            if source.is_some() && cards.len() != 1 {
+                return Err("show --source wants exactly one card".into());
+            }
+            *wanted = source;
+        }
 
         // A card selector like `headway:commerce/purse-metal-toilet` already names
         // its board, so the command self-routes there — the display id `show`
@@ -1023,6 +1052,7 @@ fn parse_command(
     Ok(match name {
         "show" => Command::Show {
             cards: rest.to_vec(),
+            source: None,
         },
         "seed" => {
             // Seed takes no positionals. A stray word used to be dropped
@@ -1175,9 +1205,11 @@ fn parse_command(
             }
         }
         // Gathered here, before any relay work, so a bad rev or a directory
-        // outside a repo fails fast (see `review::gather`).
+        // outside a repo fails fast (see `review::gather`), and so does a
+        // source file that can't be read or won't fit.
         "review" => Command::Review {
             card: card()?,
+            sources: review::read_sources(&review.sources)?,
             review: review::gather(review)?,
         },
         "diff" => Command::Diff {

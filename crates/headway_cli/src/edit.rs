@@ -146,9 +146,14 @@ pub(crate) fn build_action(view: &BoardView, command: Command) -> Result<BoardAc
             reply_to.as_deref(),
             &review,
         )?,
-        Command::Review { card, review } => BoardAction::AddReview {
+        Command::Review {
+            card,
+            review,
+            sources,
+        } => BoardAction::AddReview {
             card: resolve_card(view, &card)?,
             review,
+            sources,
         },
         Command::Delete { card } => BoardAction::DeleteCard {
             card: resolve_card(view, &card)?,

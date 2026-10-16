@@ -103,9 +103,16 @@ pub enum BoardAction {
     },
     /// Record review metadata on `card` — the commit that finished it and where
     /// to find it (a kind-1626 review record). Append-only: each call adds a
-    /// record, so a card collects one per commit and per host. Unknown card ->
-    /// no-op.
-    AddReview { card: NoteId, review: ReviewFields },
+    /// record, so a card collects one per commit and per host. `sources` are
+    /// stored on the new record in the same apply (see
+    /// [`BoardAction::AddReviewSources`]), so a caller needn't re-fold to learn
+    /// the record's id; they're checked before anything is written, and a bad
+    /// one writes neither the record nor any source. Unknown card -> no-op.
+    AddReview {
+        card: NoteId,
+        review: ReviewFields,
+        sources: Vec<ReviewSource>,
+    },
     /// Post inline review comments on `card`'s review `record` (kind 1111
     /// rooted on the kind-1626 record, see [`event::build_review_comment`]), one
     /// event per comment, in order. Unknown card or record -> no-op, and so is
@@ -1437,18 +1444,35 @@ fn apply_edit(
                 publisher,
             );
         }
-        BoardAction::AddReview { card, review } => {
+        BoardAction::AddReview {
+            card,
+            review,
+            sources,
+        } => {
             let c = find_card_any(view, card)?;
+            // Every source must build before the record is written, so a bad
+            // one leaves no half-recorded review behind.
+            if sources
+                .iter()
+                .any(|s| event::ReviewSourceError::check(&s.name, &s.text).is_err())
+            {
+                return None;
+            }
             // Records sort newest-first by `created_at` (id as tiebreaker), so
             // two recorded in the same second would order at random. Stamp
             // strictly past the card's newest record, like `AddComment`.
             let latest = c.reviews.first().map_or(0, |r| r.created_at);
-            ingest_signed(
+            let at = next_after(latest);
+            let record = ingest_signed(
                 ndb,
-                build_review(&card, &review).created_at(next_after(latest)),
+                build_review(&card, &review).created_at(at),
                 signer,
                 publisher,
-            );
+            )?;
+            for source in &sources {
+                let builder = build_review_source(&card, &record, source).ok()?;
+                ingest_signed(ndb, builder.created_at(at), signer, publisher);
+            }
         }
         BoardAction::AddReviewComments {
             card,
@@ -4185,6 +4209,7 @@ mod tests {
                         host: Some(host.to_string()),
                         ..Default::default()
                     },
+                    sources: Vec::new(),
                 },
                 &mut NoPublish,
             );
@@ -4249,6 +4274,7 @@ mod tests {
                     commit: Some("aaaa".to_string()),
                     ..Default::default()
                 },
+                sources: Vec::new(),
             },
             &mut sink,
         );
@@ -4352,6 +4378,7 @@ mod tests {
             BoardAction::AddReview {
                 card,
                 review: ReviewFields::default(),
+                sources: Vec::new(),
             },
             &mut sink,
         );
@@ -4380,6 +4407,92 @@ mod tests {
             &mut sink,
         );
         assert_eq!(sink.0, before, "nothing published");
+    }
+
+    /// `AddReview` with sources writes the record and its files in one apply,
+    /// the files folding onto the record it just signed. A source over the cap
+    /// refuses the whole action: no record, no files.
+    #[tokio::test]
+    async fn add_review_with_sources_stores_them_on_the_new_record() {
+        let t = TestNdb::new();
+        seed_via(&t, "src", None);
+        let view = poll_board_via(&t, "src", None, |v| v.columns.len() == 5).await;
+        let secret = t.secret();
+        let signer = Signer::new(&secret, None);
+        let mut sink = CountPublish::default();
+        let apply = |view: &BoardView, action, sink: &mut CountPublish| {
+            super::apply(&t.ndb, "src", view, &t.kp.pubkey, &signer, action, sink)
+        };
+        let source = |role, name: &str, text: String| ReviewSource {
+            role,
+            name: name.to_string(),
+            text,
+        };
+
+        apply(
+            &view,
+            BoardAction::AddCard(NewCard {
+                col: 0,
+                title: "Explained".to_string(),
+                ..NewCard::default()
+            }),
+            &mut sink,
+        );
+        let view = poll_board_via(&t, "src", None, |v| v.columns[0].cards.len() == 1).await;
+        let card = view.columns[0].cards[0].id;
+
+        let before = sink.0;
+        apply(
+            &view,
+            BoardAction::AddReview {
+                card,
+                review: ReviewFields::default(),
+                sources: vec![
+                    source(event::ReviewSourceRole::Explainer, "ok.md", "fits".into()),
+                    source(
+                        event::ReviewSourceRole::Code,
+                        "big.code.md",
+                        "x".repeat(event::MAX_REVIEW_SOURCE_BYTES),
+                    ),
+                ],
+            },
+            &mut sink,
+        );
+        assert_eq!(sink.0, before, "a bad source writes no record either");
+
+        apply(
+            &view,
+            BoardAction::AddReview {
+                card,
+                review: ReviewFields {
+                    commit: Some("aaaa".to_string()),
+                    ..Default::default()
+                },
+                sources: vec![
+                    source(event::ReviewSourceRole::Explainer, "a.md", "# A".into()),
+                    source(event::ReviewSourceRole::Code, "a.code.md", "walk".into()),
+                ],
+            },
+            &mut sink,
+        );
+        assert_eq!(sink.0, before + 3, "the record and both files");
+        let view = poll_board_via(&t, "src", None, |v| {
+            v.card(card)
+                .is_some_and(|c| c.reviews.first().is_some_and(|r| r.sources.len() == 2))
+        })
+        .await;
+        let record = &view.card(card).unwrap().reviews[0];
+        assert_eq!(record.fields.commit.as_deref(), Some("aaaa"));
+        let explainer = record.source(event::ReviewSourceRole::Explainer).unwrap();
+        assert_eq!(
+            (explainer.name.as_str(), explainer.text.as_str()),
+            ("a.md", "# A")
+        );
+        let code = record.source(event::ReviewSourceRole::Code).unwrap();
+        assert_eq!(
+            (code.name.as_str(), code.text.as_str()),
+            ("a.code.md", "walk")
+        );
     }
 
     /// Inline review comments written through [`apply`] on a *sealed* board
@@ -4424,6 +4537,7 @@ mod tests {
                     commit: Some("aaaa".to_string()),
                     ..Default::default()
                 },
+                sources: Vec::new(),
             },
         );
         let view = poll_board_via(&t, "src", Some(&ch), |v| {

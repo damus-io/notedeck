@@ -221,7 +221,7 @@ pub(crate) fn print_cards(view: &BoardView, sels: &[String], as_json: bool) -> R
         let out: Vec<_> = cards
             .iter()
             .map(|p| {
-                let mut j = event::card_json(&view.id, p.card);
+                let mut j = event::card_detail_json(&view.id, p.card);
                 j["column"] = json!(p.column);
                 j
             })
@@ -238,6 +238,24 @@ pub(crate) fn print_cards(view: &BoardView, sels: &[String], as_json: bool) -> R
             print_card_detail(view, p.card, p.column);
         }
     }
+    Ok(())
+}
+
+/// Print the text of the review source named `name` on card `sel`, exactly
+/// as stored, so a script can `> book/<word-id>.md`. The newest record that
+/// carries a file of that name wins, so a later record without sources doesn't
+/// hide the explainer an earlier one stored.
+pub(crate) fn print_review_source(view: &BoardView, sel: &str, name: &str) -> Result<()> {
+    use std::io::Write;
+    let id = resolve_card(view, sel)?;
+    let card = find_card(view, &id).ok_or_else(|| format!("no card matching '{sel}'"))?;
+    let source = card
+        .card
+        .reviews
+        .iter()
+        .find_map(|r| r.sources.iter().find(|s| s.name == name))
+        .ok_or_else(|| format!("no review source named '{name}' on {sel}"))?;
+    std::io::stdout().write_all(source.text.as_bytes())?;
     Ok(())
 }
 

@@ -4,7 +4,7 @@ use nostrdb_net::Pubkey;
 
 use super::view::{
     ActivityKind, ActivityView, BoardView, CardView, CommentView, EdgeRef, ReviewCommentView,
-    ReviewView,
+    ReviewSourceView, ReviewView,
 };
 
 /// Render `view` as a stable, machine-readable JSON value: a curated schema for
@@ -70,6 +70,26 @@ pub fn card_json(board: &str, card: &CardView) -> serde_json::Value {
     })
 }
 
+/// [`card_json`] plus each review source's `text`, for a reader that asked
+/// for this card by name (`headway show <card> --json`). [`card_json`] leaves
+/// the text out: a source runs to [`MAX_REVIEW_SOURCE_BYTES`](super::MAX_REVIEW_SOURCE_BYTES)
+/// and a whole board's JSON would carry every one of them.
+pub fn card_detail_json(board: &str, card: &CardView) -> serde_json::Value {
+    let mut v = card_json(board, card);
+    let Some(reviews) = v["reviews"].as_array_mut() else {
+        return v;
+    };
+    for (json, review) in reviews.iter_mut().zip(&card.reviews) {
+        let Some(sources) = json["sources"].as_array_mut() else {
+            continue;
+        };
+        for (json, source) in sources.iter_mut().zip(&review.sources) {
+            json["text"] = serde_json::json!(source.text);
+        }
+    }
+    v
+}
+
 /// Render a dependency edge (`blocked_by` / `blocks`) on `board` as JSON: the
 /// referenced card's id, ref, resolved title, and cleared state. The `ref` shares
 /// `board` — like `parent_ref`, cross-board edges aren't re-homed. See [`EdgeRef`].
@@ -130,7 +150,8 @@ pub fn comment_json(board: &str, comment: &CommentView) -> serde_json::Value {
 
 /// Render a single review record as JSON: its id, author and timestamp plus one
 /// key per [`ReviewFields`](super::ReviewFields) tag (`null` when absent), so the
-/// schema is stable whichever fields a record carried. See [`card_json`].
+/// schema is stable whichever fields a record carried, then its inline
+/// `comments` and its `sources` (see [`review_source_json`]). See [`card_json`].
 pub fn review_json(review: &ReviewView) -> serde_json::Value {
     let mut v = serde_json::json!({
         "id": review.id.hex(),
@@ -146,7 +167,27 @@ pub fn review_json(review: &ReviewView) -> serde_json::Value {
         .map(review_comment_json)
         .collect::<Vec<_>>()
         .into();
+    v["sources"] = review
+        .sources
+        .iter()
+        .map(review_source_json)
+        .collect::<Vec<_>>()
+        .into();
     v
+}
+
+/// Render one review source's metadata as JSON: its id, `role` (`"explainer"`
+/// or `"code"`), file `name`, size in `bytes` and timestamp. The text itself
+/// is left out (see [`card_detail_json`]); `headway show <card> --source
+/// <name>` prints it.
+pub fn review_source_json(source: &ReviewSourceView) -> serde_json::Value {
+    serde_json::json!({
+        "id": source.id.hex(),
+        "role": source.role.as_str(),
+        "name": source.name,
+        "bytes": source.text.len(),
+        "created_at": source.created_at,
+    })
 }
 
 /// Render one inline review comment as JSON: its id, author, parent, body and

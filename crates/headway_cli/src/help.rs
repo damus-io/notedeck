@@ -47,12 +47,23 @@ pub const COMMANDS: &[CommandHelp] = &[
         name: "show",
         group: READING,
         summary: "Print the board, or given cards in full detail",
-        usage: &["show [cards...]"],
+        usage: &["show [cards...]", "show <card> --source <name>"],
         details: "\
 With no arguments, print the whole board: every column and the cards on
 it. With card selectors, print those cards `git show`-style instead —
-title, description, metadata, relationships and comment thread.",
+title, description, metadata, relationships and comment thread.
+
+Each review record in --json lists its sources (the files `review
+--explainer-source`/`--code-source` stored) as {id, role, name, bytes,
+created_at}. Only a card asked for by name also carries each source's
+`text`: a board's JSON would otherwise hold every explainer on it.
+--source prints one file's text exactly as stored, from the newest record
+that has a file of that name, so a script can redirect it to disk.",
         options: &[
+            (
+                "--source <name>",
+                "Print the named review source of the one card given",
+            ),
             ("--archived", "List archived cards in full"),
             ("--all", "Print every board in the cache, not just this one"),
             ("--json", "Machine-readable output"),
@@ -61,6 +72,7 @@ title, description, metadata, relationships and comment thread.",
             "headway show",
             "headway show --board dave",
             "headway show headway:headway/report-raven-expand",
+            "headway show headway:headway/report-raven-expand --source report-raven-expand.md > book/report-raven-expand.md",
         ],
     },
     CommandHelp {
@@ -528,6 +540,7 @@ this is refused there.",
         summary: "Record a commit for review on a card",
         usage: &[
             "review <card> [--commit <rev>] [--explainer <url>] [--deploy <url>] [--agentium <ref>]",
+            "review <card> [--explainer-source <file>...] [--code-source <file>...]",
         ],
         details: "\
 Appends a review record to the card: the commit's full sha and subject,
@@ -538,7 +551,11 @@ can hold several records, one per commit and host. Refuses outside a
 git repo or when the rev doesn't resolve; a dirty tree is fine, since
 the commit is what's recorded. When the commit's build was deployed
 somewhere it can be opened and tried, --deploy records that URL so a
-reviewer can go straight to it. Prints the recorded fields.",
+reviewer can go straight to it. --explainer-source and --code-source
+store files on the record (the explainer's Markdown and its walk through
+the code), each under its file name and read relative to the current
+directory; repeatable, and refused whole when a file is unreadable, over
+32 KiB, or shares a name with another. Prints the recorded fields.",
         options: &[
             ("--commit <rev>", "The commit to record [default: HEAD]"),
             (
@@ -548,6 +565,14 @@ reviewer can go straight to it. Prints the recorded fields.",
             (
                 "--deploy <url>",
                 "URL where this commit's build is live, to open and try it",
+            ),
+            (
+                "--explainer-source <file>",
+                "Store the explainer page's source on the record (repeatable)",
+            ),
+            (
+                "--code-source <file>",
+                "Store a walk through the commit's code on the record (repeatable)",
             ),
             (
                 "--agentium <ref>",
@@ -567,6 +592,7 @@ reviewer can go straight to it. Prints the recorded fields.",
             "headway review headway:headway/report-raven-expand --explainer https://claude.ai/artifact/...",
             "headway review headway:headway/report-raven-expand --commit abc123 --repo-dir ~/src/notedeck",
             "headway review headway:gamedev/blur-affair-manage --deploy https://example.com/builds/2866273e28a5/",
+            "headway review headway:headway/report-raven-expand --explainer https://claude.ai/artifact/... --explainer-source book/report-raven-expand.md --code-source book/report-raven-expand.code.md",
         ],
     },
     CommandHelp {

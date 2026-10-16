@@ -294,7 +294,11 @@ async fn seed(ndb: &Ndb, kp: &FullKeypair, repo: &Path, in_review: &[(&str, &str
             ..Default::default()
         };
         let reviewed = |v: &event::BoardView| v.card(card).is_some_and(|c| !c.reviews.is_empty());
-        let action = store::BoardAction::AddReview { card, review };
+        let action = store::BoardAction::AddReview {
+            card,
+            review,
+            sources: Vec::new(),
+        };
         apply_until(ndb, kp, action, &format!("{title}'s record"), reviewed).await;
     }
 }
