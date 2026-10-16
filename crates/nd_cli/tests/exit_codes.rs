@@ -143,6 +143,28 @@ fn an_applied_intent_prints_nothing_and_exits_0() {
 }
 
 #[test]
+fn a_bare_value_fills_the_one_required_string() {
+    let dir = socket_dir();
+    let applied = Response::ok(Reply::Intent {
+        intent: IntentStatus::Applied,
+    });
+    let Fake { socket, server } = serve(&dir, vec![list(), applied]);
+    let out = nd(
+        &socket,
+        &["call", "open", "agentium:possible-video-science"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let seen = server.join().unwrap();
+    assert_eq!(
+        seen[1],
+        Request::CallTool {
+            name: "open".to_owned(),
+            args: json!({"reference": "agentium:possible-video-science"}),
+        }
+    );
+}
+
+#[test]
 fn data_prints_as_json_and_exits_0() {
     let dir = socket_dir();
     let result = Response::ok(Reply::Result {

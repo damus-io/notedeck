@@ -78,9 +78,12 @@ fn type_label(arg: &Arg) -> String {
 
 /// The `args` object for calling tool `tool` with `schema`: `base` (from
 /// `--json`, or none) with each `key=value` of `pairs` set on top, coerced to
-/// the type the schema gives `key`.
+/// the type the schema gives `key`. A tool whose only required argument is a
+/// string also takes that argument as one bare word, so `nd call open
+/// agentium:<id>` needs no `reference=`.
 ///
-/// Fails, naming the tool and listing its arguments, on a pair without `=`, a
+/// Fails, naming the tool and listing its arguments, on a bare word the tool
+/// has no place for, a second bare word, a
 /// key the schema doesn't have, a value that isn't its key's type, or a
 /// required key that ends up unset. Checking here is what fetching the schema
 /// first buys: a typo fails in the terminal with the right spelling beside it,
@@ -100,9 +103,22 @@ pub fn build(
         Some(other) => return fail(format!("--json must be an object, not {other}")),
     };
 
+    let bare = bare_arg(&args);
+    let mut bare_seen = false;
     for pair in pairs {
-        let Some((key, raw)) = pair.split_once('=') else {
-            return fail(format!("expected key=value, got '{pair}'"));
+        let (key, raw) = match word(pair) {
+            Word::Pair { key, raw } => (key, raw),
+            Word::Bare(raw) => {
+                let Some(arg) = bare else {
+                    return fail(format!("expected key=value, got '{pair}'"));
+                };
+                if std::mem::replace(&mut bare_seen, true) {
+                    return fail(format!(
+                        "{tool} takes one bare value, got a second: '{pair}'"
+                    ));
+                }
+                (arg.name, raw)
+            }
         };
         let Some(arg) = args.iter().find(|a| a.name == key) else {
             return fail(format!("{tool} doesn't take '{key}'"));
@@ -125,6 +141,41 @@ pub fn build(
         return fail(format!("{tool} needs '{}'", arg.name));
     }
     Ok(Value::Object(object))
+}
+
+/// One word of a `call`'s arguments.
+enum Word<'w> {
+    /// `key=value`.
+    Pair { key: &'w str, raw: &'w str },
+    /// A value with no key, for the tool's [`bare_arg`].
+    Bare(&'w str),
+}
+
+/// Whether `word` is a `key=value` pair or a bare value. It is a pair only
+/// when the text before its first `=` could be an argument's name, so a bare
+/// reference with a `?msg=…` query stays bare, while a misspelled key still
+/// fails as one.
+fn word(word: &str) -> Word<'_> {
+    let Some((key, raw)) = word.split_once('=') else {
+        return Word::Bare(word);
+    };
+    let is_name = !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if is_name {
+        Word::Pair { key, raw }
+    } else {
+        Word::Bare(word)
+    }
+}
+
+/// The argument a bare word fills: the tool's required argument, when it is
+/// the only one and a string.
+fn bare_arg<'s, 'a>(args: &'s [Arg<'a>]) -> Option<&'s Arg<'a>> {
+    let mut required = args.iter().filter(|a| a.required);
+    let arg = required.next()?;
+    if required.next().is_some() || arg.kind != Some("string") {
+        return None;
+    }
+    Some(arg)
 }
 
 /// `raw` as the JSON value `arg`'s type calls for.
@@ -282,12 +333,46 @@ mod tests {
 
         let err = call(&["limit=1"]).unwrap_err();
         assert!(err.starts_with("t needs 'reference'"), "{err}");
+    }
 
-        let err = call(&["reference"]).unwrap_err();
+    #[test]
+    fn the_one_required_string_can_be_passed_bare() {
+        let args = call(&["agentium:possible-video-science", "limit=1"]).unwrap();
+        assert_eq!(
+            args,
+            json!({"reference": "agentium:possible-video-science", "limit": 1})
+        );
+
+        // An `=` inside the value doesn't make it a pair.
+        let args = call(&["agentium:x?msg=hi"]).unwrap();
+        assert_eq!(args, json!({"reference": "agentium:x?msg=hi"}));
+
+        let err = call(&["a", "b"]).unwrap_err();
         assert!(
-            err.starts_with("expected key=value, got 'reference'"),
+            err.starts_with("t takes one bare value, got a second: 'b'"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn a_bare_word_fails_without_one_required_string() {
+        let two = json!({
+            "type": "object",
+            "properties": {
+                "card": {"type": "string", "description": "A card"},
+                "col": {"type": "string", "description": "A column"}
+            },
+            "required": ["card", "col"]
+        });
+        let number = json!({
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "description": "How many"}},
+            "required": ["limit"]
+        });
+        for schema in [two, number] {
+            let err = build("t", &schema, None, &["x".to_owned()]).unwrap_err();
+            assert!(err.starts_with("expected key=value, got 'x'"), "{err}");
+        }
     }
 
     #[test]

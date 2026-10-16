@@ -60,13 +60,16 @@ whole description and its arguments.",
         name: "call",
         group: TOOLS,
         summary: "Call one of the running notedeck's tools",
-        usage: &["call <name> [<key>=<value>...] [--json <object> | --json-file <path|->]"],
+        usage: &[
+            "call <name> [<value>] [<key>=<value>...] [--json <object> | --json-file <path|->]",
+        ],
         details: "\
 Each <key>=<value> is read as the type the tool's schema gives <key>: text for
 a string, a number, true/false, or JSON for an object or array. A key the tool
 doesn't take, or a required one left out, fails before anything is sent, with
 the tool's arguments listed. --json (or --json-file) gives the arguments as
-one object instead; pairs passed beside it override its keys.
+one object instead; pairs passed beside it override its keys. A tool whose
+only required argument is a string takes it bare, without its <key>=.
 
 A tool's data prints as JSON (indented on a terminal) and exits 0. A tool
 that acts on the window prints nothing and exits 0. A tool error goes to
@@ -80,6 +83,7 @@ stderr and exits 1.",
         ],
         examples: &[
             "nd call headway_open_review_queue",
+            "nd call open headway:notedeck/balcony-warm-action",
             "nd call open reference=headway:notedeck/balcony-warm-action",
             "nd call open --json '{\"reference\":\"agentium:evolve-rule-carry\"}'",
         ],

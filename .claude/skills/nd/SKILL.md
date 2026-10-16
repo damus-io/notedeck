@@ -24,7 +24,9 @@ cargo run -q -p nd_cli -- tools          # or the built target/debug/nd
 - `nd tools <name>` — one tool's description and its arguments.
 - `nd call <name> [key=value…]` — call a tool. Values are coerced by the
   tool's schema (string, number, true/false, JSON for object/array). A wrong or
-  missing key fails before anything is sent, listing the arguments.
+  missing key fails before anything is sent, listing the arguments. A tool
+  whose only required argument is a string takes it bare:
+  `nd call open agentium:<word-id>`.
   `--json '<object>'` or `--json-file <path|->` passes the arguments as one
   object instead.
 - `nd mcp [--ui] [--read-only]` — a stdio MCP server: `tools/list` and
@@ -43,8 +45,9 @@ cargo run -q -p nd_cli -- tools          # or the built target/debug/nd
 ## Examples
 
 ```bash
-nd call open reference=headway:notedeck/balcony-warm-action
-nd call open reference=agentium:evolve-rule-carry
+nd call open headway:notedeck/balcony-warm-action
+nd call open agentium:evolve-rule-carry
+nd call open reference=agentium:evolve-rule-carry msg="rebase onto master"
 nd call headway_open_review_queue
 nd call headway_show_card --json '{"card":"headway:notedeck/balcony-warm-action"}'
 ```
