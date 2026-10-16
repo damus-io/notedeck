@@ -92,11 +92,26 @@ pub enum PatchNoteKind {
     Draft,
     /// Sent: marked in the selection's colour.
     Posted,
+    /// The author's own note on the change, such as a code walk's prose:
+    /// marked in the link colour.
+    Walk,
 }
 
-/// A note the caller asks for under a file's lines — a review comment, say —
+/// Where a [`PatchNote`] sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotePlace {
+    /// Under the last of its lines, which get a bar in their gutter: a
+    /// comment on them.
+    Under,
+    /// Just above the header of the hunk its first line is in, with no bar
+    /// on any line: a note introducing the hunk as a whole.
+    AboveHunk,
+}
+
+/// A note the caller asks for on a file's lines — a review comment, say —
 /// set with [`GitPatchState::set_notes`]. It sits under the last of its
-/// `lines`, which get a bar in their gutter.
+/// `lines`, which get a bar in their gutter, or with
+/// [`NotePlace::AboveHunk`] above the hunk they're in.
 ///
 /// By default it takes one row and shows the first line of `text`. With
 /// `caller_draws`, [`git_patch_ui_with`] hands its space to the caller's
@@ -113,12 +128,28 @@ pub struct PatchNote {
     pub text: String,
     /// How its bar is coloured.
     pub kind: PatchNoteKind,
+    /// Where it sits.
+    pub place: NotePlace,
     /// The caller draws it (see [`git_patch_ui_with`]); `false` for the
     /// built-in one-line row.
     pub caller_draws: bool,
     /// The caller's own handle for it — an index into its comments, say —
     /// so its drawer knows what to draw. The widget never reads it.
     pub key: usize,
+}
+
+impl PatchNote {
+    /// The line it sits before, counting a file's lines across its hunks:
+    /// the line after its last for a note under its lines, its first for one
+    /// above its hunk (which [`GitPatchState::set_notes`] moves to the
+    /// hunk's first line). Notes at the same slot sit under-notes first,
+    /// since those belong to the line above.
+    fn slot(&self) -> usize {
+        match self.place {
+            NotePlace::Under => self.lines.end,
+            NotePlace::AboveHunk => self.lines.start,
+        }
+    }
 }
 
 /// The pick being made: where it started and where it stretches to, both
@@ -582,7 +613,9 @@ impl GitPatchState {
     /// whatever the caller built them from, handed back by
     /// [`notes_stamp`](Self::notes_stamp), so it can tell when they're stale
     /// without rebuilding them every frame. A note on a file the patch
-    /// doesn't have, on no lines, or on a file without hunks is dropped.
+    /// doesn't have, on no lines, or on a file without hunks is dropped. A
+    /// note [above its hunk](NotePlace::AboveHunk) is taken to be on the
+    /// whole hunk its first line is in.
     pub fn set_notes(&mut self, patch: &GitPatch, mut notes: Vec<PatchNote>, stamp: u64) {
         let files = patch.files();
         notes.retain(|n| {
@@ -590,8 +623,14 @@ impl GitPatchState {
                 !f.hunks.is_empty() && !n.lines.is_empty() && n.lines.end <= f.lines.len()
             })
         });
-        // Stable, so notes on the same line keep the caller's order.
-        notes.sort_by_key(|n| (n.file, n.lines.end));
+        for note in &mut notes {
+            if note.place == NotePlace::AboveHunk {
+                let file = &files[note.file];
+                note.lines = file.hunks[hunk_of(file, note.lines.start)].lines.clone();
+            }
+        }
+        // Stable, so notes at the same place keep the caller's order.
+        notes.sort_by_key(|n| (n.file, n.slot(), n.place == NotePlace::AboveHunk));
         self.note_spans.clear();
         for f in 0..files.len() {
             let start = notes.partition_point(|n| n.file < f);
@@ -674,9 +713,9 @@ impl GitPatchState {
     }
 
     /// How many of file `f`'s notes sit above line `i`: those under a line
-    /// before it.
+    /// before it, and those above its hunk when it's the hunk's first.
     fn notes_before(&self, f: usize, i: usize) -> usize {
-        self.file_notes(f).partition_point(|n| n.lines.end <= i)
+        self.file_notes(f).partition_point(|n| n.slot() <= i)
     }
 
     /// Rows the notes of file `f` above line `i` take (`i` past the end for
@@ -747,9 +786,17 @@ impl GitPatchState {
         if b == at {
             return Row::Line(f, i);
         }
-        // Row `k` of the notes under line `i`: find the note it falls in.
-        let k = b - at - 1;
-        let first = self.note_spans[f].start + self.notes_before(f, i);
+        // Under line `i` sit its own notes, then those above the next hunk
+        // when `i` is its hunk's last.
+        self.note_row(
+            self.note_spans[f].start + self.notes_before(f, i),
+            b - at - 1,
+        )
+    }
+
+    /// Row `k` of the run of notes starting at note `first`: the note it
+    /// falls in, and which of that note's rows.
+    fn note_row(&self, first: usize, k: usize) -> Row {
         let base = self.note_prefix[first];
         let past = self.note_prefix[first..].partition_point(|&p| p - base <= k);
         let note = first + past - 1;
@@ -825,6 +872,10 @@ impl GitPatchState {
             return Row::Note(f);
         }
         let b = body - 1;
+        if b < self.hunk_row(f, file, 0) {
+            // A note above the first hunk.
+            return self.note_row(self.note_spans[f].start, b);
+        }
         let h = self.hunk_at(f, file, b);
         if b == self.hunk_row(f, file, h) {
             Row::HunkHeader(f, h)
@@ -1235,7 +1286,7 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
                 let noted = state
                     .file_notes(f)
                     .iter()
-                    .find(|n| n.lines.contains(&i))
+                    .find(|n| n.place == NotePlace::Under && n.lines.contains(&i))
                     .map(|n| n.kind);
                 if let Some(kind) = noted {
                     let bar = Rect::from_min_size(row.min, egui::vec2(NOTE_BAR, height));
@@ -1370,6 +1421,7 @@ fn note_color(kind: PatchNoteKind, visuals: &egui::Visuals) -> Color32 {
     match kind {
         PatchNoteKind::Draft => visuals.warn_fg_color,
         PatchNoteKind::Posted => visuals.selection.stroke.color,
+        PatchNoteKind::Walk => visuals.hyperlink_color,
     }
 }
 
@@ -1863,6 +1915,7 @@ mod tests {
             lines,
             text: text.to_string(),
             kind: PatchNoteKind::Posted,
+            place: NotePlace::Under,
             caller_draws: false,
             key: 0,
         };
@@ -1913,6 +1966,64 @@ mod tests {
         assert_eq!(state.locate(&patch, long + 14), Row::Comment(1, 0));
     }
 
+    /// A note above its hunk sits between the hunk before's last line (and
+    /// that line's own notes) and the hunk's header — for the first hunk,
+    /// right under the file header — and bars none of the hunk's lines.
+    #[test]
+    fn above_hunk_notes_sit_over_the_hunk_header() {
+        let patch = GitPatch::parse(MULTI);
+        let mut state = GitPatchState::new(&patch, &mut Localization::default());
+        let plain = state.layout(&patch);
+        let note = |lines: Range<usize>, place: NotePlace, text: &str| PatchNote {
+            file: 4,
+            lines,
+            text: text.to_string(),
+            kind: PatchNoteKind::Walk,
+            place,
+            caller_draws: false,
+            key: 0,
+        };
+        // long.txt: hunk 0 is lines 0..7, hunk 1 lines 7..15. "over 1" is
+        // given on a line inside hunk 1 and moves to the hunk.
+        let notes = vec![
+            note(9..10, NotePlace::AboveHunk, "over 1"),
+            note(6..7, NotePlace::Under, "under 6"),
+            note(0..1, NotePlace::AboveHunk, "over 0"),
+        ];
+        state.set_notes(&patch, notes, 1);
+        let total = state.layout(&patch);
+        assert_eq!(total, plain + 3);
+
+        let long = state.file_rows[4];
+        let rows: Vec<_> = (0..total).map(|r| state.locate(&patch, r)).collect();
+        let texts = |r: Row| match r {
+            Row::Comment(n, _) => state.line_notes[n].text.as_str(),
+            _ => "",
+        };
+        assert_eq!(rows[long], Row::FileHeader(4));
+        assert_eq!(texts(rows[long + 1]), "over 0");
+        assert_eq!(rows[long + 2], Row::HunkHeader(4, 0));
+        assert_eq!(rows[long + 3], Row::Line(4, 0));
+        assert_eq!(rows[long + 9], Row::Line(4, 6));
+        assert_eq!(texts(rows[long + 10]), "under 6");
+        assert_eq!(texts(rows[long + 11]), "over 1");
+        assert_eq!(rows[long + 12], Row::HunkHeader(4, 1));
+        assert_eq!(rows[long + 13], Row::Line(4, 7));
+        assert_eq!(*rows.last().unwrap(), Row::Line(7, 3));
+
+        let over_1 = state
+            .line_notes
+            .iter()
+            .find(|n| n.text == "over 1")
+            .unwrap();
+        assert_eq!(over_1.lines, 7..15);
+
+        // A grown note above the first hunk still pushes the header down.
+        state.set_note_rows(0, 2);
+        assert_eq!(state.locate(&patch, long + 2), Row::Comment(0, 1));
+        assert_eq!(state.locate(&patch, long + 3), Row::HunkHeader(4, 0));
+    }
+
     /// A drawn note that turns out shorter than the rows it had (a note
     /// whose content got shorter, say) is resized after the pass, not in the
     /// middle of it: the rows below it in the same pass were placed against
@@ -1927,6 +2038,7 @@ mod tests {
             lines: 0..1,
             text: "drawn".to_string(),
             kind: PatchNoteKind::Posted,
+            place: NotePlace::Under,
             caller_draws: true,
             key: 0,
         };
@@ -1964,6 +2076,7 @@ mod tests {
             lines: 0..1,
             text: "drawn".to_string(),
             kind: PatchNoteKind::Posted,
+            place: NotePlace::Under,
             caller_draws: true,
             key: 0,
         };

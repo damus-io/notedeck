@@ -32,6 +32,7 @@ use notedeck_ui::diff::{GitPatch, GitPatchState};
 
 use crate::review_images::{self, FetchedImages};
 use crate::review_models::{self, FetchedModels, ReviewModels};
+use crate::review_walk::CodeWalk;
 
 /// The patch size the pane loads before cutting it off (as `headway diff`).
 const MAX_PATCH_BYTES: usize = 4 << 20;
@@ -183,6 +184,10 @@ pub(crate) struct LoadedReview {
     /// patch view reports; `None` when it changes none (or there's no
     /// renderer).
     pub models: Option<ReviewModels>,
+    /// The record's code walk, threaded into this diff; resolved when the
+    /// pane first draws the record's comments, and again when its source
+    /// changes (see `sync_notes`). `None` when the record has no walk.
+    pub walk: Option<CodeWalk>,
 }
 
 /// A commit's author line, formatted once when its load lands rather than
@@ -450,6 +455,7 @@ fn loaded(
         models,
         commit,
         patch,
+        walk: None,
     }
 }
 

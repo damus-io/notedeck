@@ -15,12 +15,12 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
-use headway::event::{BoardView, LineSide, ReviewLocation, ReviewView};
+use headway::event::{BoardView, LineSide, ReviewLocation, ReviewSourceRole, ReviewView};
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_SM, SPACING_XS};
 use notedeck_ui::diff::{
-    DiffSide, GitPatch, LineKind, LineSpan, PatchNote, PatchNoteKind, PatchSelection,
+    DiffSide, GitPatch, LineKind, LineSpan, NotePlace, PatchNote, PatchNoteKind, PatchSelection,
 };
 
 use super::detail::comment_view_ui;
@@ -28,6 +28,7 @@ use super::review::{QueueNotice, review_comments_open};
 use super::widgets::secondary_action_button;
 use super::{BoardEffect, BoardUiState, FoundCard, find_card};
 use crate::review::LoadedReview;
+use crate::review_walk::CodeWalk;
 use crate::store::{BoardAction, NewReviewComment};
 
 /// A comment written on a record's commit and not sent yet: on picked lines
@@ -249,12 +250,18 @@ pub(crate) fn composer_field_id() -> egui::Id {
 }
 
 /// Hand the diff its rows for `record`'s comments — posted ones and drafts —
-/// when they changed since the last pass: a posted comment lands under its
-/// lines when it's on this commit and they're in this diff. Only builds on a
-/// change, so a steady frame allocates nothing here.
+/// and its code walk's notes, when they changed since the last pass: a posted
+/// comment lands under its lines when it's on this commit and they're in this
+/// diff, a walk note above the hunk it introduces. Only builds on a change,
+/// so a steady frame allocates nothing here.
 fn sync_notes(loaded: &mut LoadedReview, record: &ReviewView, drafts: &ReviewDrafts) {
+    let code = record.source(ReviewSourceRole::Code);
+    let walk_id = code.map(|s| s.id);
+    if loaded.walk.as_ref().map(|w| w.source) != walk_id {
+        loaded.walk = code.map(|s| CodeWalk::resolve(s, &loaded.patch));
+    }
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (record.id, drafts.rev, record.comments.len()).hash(&mut hasher);
+    (record.id, drafts.rev, record.comments.len(), walk_id).hash(&mut hasher);
     let stamp = hasher.finish();
     if loaded.patch_state.notes_stamp() == Some(stamp) {
         return;
@@ -276,6 +283,7 @@ fn sync_notes(loaded: &mut LoadedReview, record: &ReviewView, drafts: &ReviewDra
             lines: patch.files()[file].lines_in(span)?,
             text: c.body.clone(),
             kind: PatchNoteKind::Posted,
+            place: NotePlace::Under,
             // Drawn whole, author and all, by `posted_comment_ui`.
             caller_draws: true,
             key,
@@ -293,11 +301,28 @@ fn sync_notes(loaded: &mut LoadedReview, record: &ReviewView, drafts: &ReviewDra
                 lines: at.lines.clone(),
                 text: format!("Draft: {}", d.body),
                 kind: PatchNoteKind::Draft,
+                place: NotePlace::Under,
                 caller_draws: false,
                 key,
             })
         });
-    let notes = posted.chain(unsent).collect();
+    // Drawn whole, as Markdown, by `walk_note_ui`; one on no hunk is drawn
+    // above the diff instead.
+    let walk = loaded.walk.iter().flat_map(|walk| {
+        walk.notes.iter().enumerate().filter_map(|(key, note)| {
+            let at = note.at?;
+            Some(PatchNote {
+                file: at.file,
+                lines: patch.files()[at.file].hunks[at.hunk].lines.clone(),
+                text: note.prose.clone(),
+                kind: PatchNoteKind::Walk,
+                place: NotePlace::AboveHunk,
+                caller_draws: true,
+                key,
+            })
+        })
+    });
+    let notes = walk.chain(posted).chain(unsent).collect();
     loaded.patch_state.set_notes(patch, notes, stamp);
 }
 

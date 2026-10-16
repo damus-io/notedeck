@@ -14,12 +14,15 @@ use headway::git;
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
-use notedeck_ui::diff::PatchScroll;
+use notedeck_ui::diff::{PatchNoteKind, PatchScroll};
 use std::time::Instant;
 
 use super::card_actions::CardStep;
 use super::review_comments::{
     DraftComment, ReviewDrafts, comments_ui, location_place, posted_comment_ui,
+};
+use super::review_sources::{
+    ExplainerCache, ReviewTab, explainer_ui, review_tabs_ui, walk_note_ui, walk_top_ui,
 };
 use super::widgets::{
     ChevronDir, ControlSize, ICON_BUTTON, ICON_BUTTON_SM, IconFace, MiddleElided, StatusIcon,
@@ -69,6 +72,11 @@ pub(crate) struct ReviewUi {
     loader: ReviewLoader,
     /// Inline comments written on the diff and not sent yet, per record.
     pub(super) drafts: ReviewDrafts,
+    /// Whether the diff or the record's explainer is showing; kept across
+    /// cards, so a reviewer reading explainers down the queue stays on them.
+    tab: ReviewTab,
+    /// The shown record's explainer, parsed once per source.
+    explainer: ExplainerCache,
 }
 
 impl ReviewUi {
@@ -884,6 +892,11 @@ pub(super) fn review_pane_ui(
                 record_summary_ui(ui, theme, &r.fields, &card.title, &mut review.location);
             }
             ui.add_space(SPACING_XS);
+            let tab = review_tabs_ui(ui, record, &mut review.tab);
+            if let (ReviewTab::Explainer, Some(r)) = (tab, record) {
+                explainer_ui(ui, theme, app_ctx, &mut review.explainer, r);
+                return clicked;
+            }
             let session = record.and_then(|r| r.fields.agentium.as_deref());
             let comments = Comments {
                 record,
@@ -1496,6 +1509,9 @@ fn load_ui(
             });
             ui.add_space(SPACING_MD);
             comments_ui(ui, theme, app_ctx, loaded, comments.record, comments.drafts);
+            if let Some(walk) = &loaded.walk {
+                walk_top_ui(ui, theme, app_ctx, walk);
+            }
             patch_ui(ui, theme, app_ctx, loaded, comments.record);
         }
     }
@@ -1507,8 +1523,9 @@ fn load_ui(
 
 /// The loaded diff, with `record`'s posted comments drawn whole under their
 /// lines — author and all, from their events in the db
-/// ([`posted_comment_ui`]). A pane with no record has none to draw. A drag
-/// on one of its 3D models turns that model's view.
+/// ([`posted_comment_ui`]) — and its code walk's notes above their hunks
+/// ([`walk_note_ui`]). A pane with no record has none to draw. A drag on one
+/// of its 3D models turns that model's view.
 fn patch_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1536,11 +1553,17 @@ fn diff_ui(
         notedeck_ui::diff::git_patch_ui(&loaded.patch, &mut loaded.patch_state, ui);
         return;
     };
-    let txn = (!record.comments.is_empty())
+    let walk = loaded.walk.as_ref();
+    let txn = (!record.comments.is_empty() || walk.is_some())
         .then(|| nostrdb::Transaction::new(app_ctx.ndb).ok())
         .flatten();
-    let mut draw = |ui: &mut egui::Ui, note: &notedeck_ui::diff::PatchNote| {
-        posted_comment_ui(ui, theme, app_ctx, txn.as_ref(), record, note.key);
+    let mut draw = |ui: &mut egui::Ui, note: &notedeck_ui::diff::PatchNote| match (note.kind, walk)
+    {
+        (PatchNoteKind::Walk, Some(walk)) => {
+            walk_note_ui(ui, app_ctx, txn.as_ref(), walk, note.key)
+        }
+        (PatchNoteKind::Walk, None) => {}
+        _ => posted_comment_ui(ui, theme, app_ctx, txn.as_ref(), record, note.key),
     };
     notedeck_ui::diff::git_patch_ui_with(
         &loaded.patch,

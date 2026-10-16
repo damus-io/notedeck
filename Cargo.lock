@@ -6064,6 +6064,7 @@ dependencies = [
  "headway",
  "hex",
  "image",
+ "md-stream",
  "nostr 0.37.0",
  "nostrdb",
  "nostrdb_net",

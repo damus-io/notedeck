@@ -17,6 +17,7 @@ mod renderers;
 mod review;
 mod review_images;
 mod review_models;
+mod review_walk;
 mod search;
 mod tools;
 mod ui;

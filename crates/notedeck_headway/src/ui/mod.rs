@@ -39,6 +39,7 @@ mod inline;
 mod list;
 mod review;
 mod review_comments;
+mod review_sources;
 mod widgets;
 
 pub use graph::{GRAPH_NODE_SIZE, GraphNodeView, graph_node_ui};

@@ -4818,6 +4818,194 @@ fn snapshot_headway_review_comments() {
     harness.snapshot("headway_review_comments");
 }
 
+/// The queue card's explainer source: front matter for the header, then
+/// Markdown with an explain fence that renders as code for now.
+const QUEUE_EXPLAINER_SOURCE: &str = "\
+---
+title: A queue you can walk
+src: notedeck · src/queue.rs
+facts:
+  - 2 keys
+  - 1 queue
+---
+
+The review queue walks In Review cards one at a time.
+
+## Why a queue
+
+Reviewing card by card from the board loses your place.
+
+```wrong
+Nothing here was verified on a phone.
+```
+";
+
+/// The queue card's code walk: an intro, a note on `src/queue.rs` cited by a
+/// header a rebase moved (found again by its `match:`), one on the lone
+/// `src/keys.rs` hunk, one citing a file the diff hasn't got, and closing
+/// words.
+const QUEUE_WALK_SOURCE: &str = "\
+Start with the queue.
+
+The step stops at the last card.
+
+```hunk src/queue.rs @@ -1,3 +1,15 @@
+match: self.index = (self.index + 1)
+```
+
+Keys come next.
+
+```hunk src/keys.rs
+```
+
+A file that was dropped.
+
+```hunk src/gone.rs @@ -1 +1 @@
+```
+
+That is the whole change.
+";
+
+/// Record [`QUEUE_EXPLAINER_SOURCE`] and [`QUEUE_WALK_SOURCE`] on the queue
+/// card's review record.
+fn add_queue_sources(harness: &mut Harness<'static, HeadwayTestState>) {
+    let card = harness_card_id(harness, QUEUE_CARDS[0]);
+    let record = std::cell::Cell::new(None);
+    wait_for_demo(harness, "the queue card's review record", |view| {
+        record.set(
+            view.card(card)
+                .and_then(|c| c.reviews.first())
+                .map(|r| r.id),
+        );
+        record.get().is_some()
+    });
+    let record = record.get().expect("folded record");
+    let source = |role, name: &str, text: &str| event::ReviewSource {
+        role,
+        name: name.to_string(),
+        text: text.to_string(),
+    };
+    apply_demo_action(
+        harness,
+        store::BoardAction::AddReviewSources {
+            card,
+            record,
+            sources: vec![
+                source(
+                    event::ReviewSourceRole::Explainer,
+                    "queue.md",
+                    QUEUE_EXPLAINER_SOURCE,
+                ),
+                source(
+                    event::ReviewSourceRole::Code,
+                    "queue.code.md",
+                    QUEUE_WALK_SOURCE,
+                ),
+            ],
+        },
+    );
+}
+
+/// A record's code walk threads into its diff: each note sits just above
+/// the hunk it introduces (the queue.rs one found by its `match:` though its
+/// header is stale), prose before the first fence and after the last sits at
+/// the top, and a fence citing a hunk the diff hasn't got puts its note
+/// there too, saying so. The fences' own text never shows. The Explainer tab
+/// renders the explainer source: the front matter's title and facts as a
+/// header, the rest as Markdown.
+#[test]
+fn review_sources_thread_the_walk_and_render_the_explainer() {
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1400.0));
+    seed_review_queue(&mut harness, &fixture);
+    add_queue_sources(&mut harness);
+    open_review_queue(&mut harness);
+    wait_for_label(&mut harness, "Keys come next.");
+
+    for top in [
+        "Start with the queue.",
+        "That is the whole change.",
+        "A file that was dropped.",
+        "hunk not found: src/gone.rs @@ -1 +1 @@",
+    ] {
+        assert!(harness.query_by_label(top).is_some(), "{top}");
+    }
+    assert!(harness.query_by_label_contains("match:").is_none());
+
+    // Each threaded note is just above its hunk's header.
+    let rect = |harness: &Harness<'static, HeadwayTestState>, label: &str| {
+        harness.get_by_label(label).rect()
+    };
+    let keys_note = rect(&harness, "Keys come next.");
+    let keys_header = keys_hunk(&harness).rect();
+    assert!(
+        keys_note.bottom() <= keys_header.top(),
+        "{keys_note:?} {keys_header:?}"
+    );
+    assert!(keys_header.top() - keys_note.bottom() < 40.0);
+    let queue_note = rect(&harness, "The step stops at the last card.");
+    let queue_header = harness
+        .get(
+            egui_kittest::kittest::By::new()
+                .role(egui::accesskit::Role::Button)
+                .label_contains("@@ -3,3 +3,15 @@"),
+        )
+        .rect();
+    assert!(queue_note.bottom() <= queue_header.top());
+    assert!(queue_header.top() - queue_note.bottom() < 40.0);
+    // The intro is above the whole diff.
+    let intro = rect(&harness, "Start with the queue.");
+    assert!(intro.bottom() < keys_note.top(), "{intro:?} {keys_note:?}");
+
+    harness.get_by_label("Explainer source").click_accesskit();
+    wait_for_label(&mut harness, "A queue you can walk");
+    for shown in [
+        "notedeck · src/queue.rs",
+        "2 keys",
+        "Why a queue",
+        "The review queue walks In Review cards one at a time.",
+    ] {
+        assert!(harness.query_by_label(shown).is_some(), "{shown}");
+    }
+    assert!(harness.query_by_label("Keys come next.").is_none());
+
+    harness.get_by_label("Diff").click_accesskit();
+    wait_for_label(&mut harness, "Keys come next.");
+}
+
+/// Snapshot: the review queue's diff with the record's code walk threaded
+/// in — its intro, closing words and a not-found note at the top, and each
+/// hunk's note just above its header.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_code_walk() {
+    let fixture = review_fixture();
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 1000.0));
+    seed_review_queue(&mut harness, &fixture);
+    add_queue_sources(&mut harness);
+    open_review_queue(&mut harness);
+    wait_for_label(&mut harness, "Keys come next.");
+    harness.run_steps(3);
+    harness.snapshot("headway_review_code_walk");
+}
+
+/// Snapshot: the review queue's Explainer tab, the record's explainer source
+/// rendered with its front matter as a header.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer() {
+    let fixture = review_fixture();
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    add_queue_sources(&mut harness);
+    open_review_queue(&mut harness);
+    wait_for_label(&mut harness, "Keys come next.");
+    harness.get_by_label("Explainer source").click_accesskit();
+    wait_for_label(&mut harness, "A queue you can walk");
+    harness.run_steps(3);
+    harness.snapshot("headway_review_explainer");
+}
+
 /// A review pane opened from a card's detail ("Review diff"), not the queue,
 /// reads with the queue's keys: `G` scrolls the diff, `?` pins a strip that
 /// says `q` goes back to the card, `n` steps to the next In Review card's
