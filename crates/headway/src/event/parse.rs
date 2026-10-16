@@ -7,9 +7,12 @@ use nostrdb_net::NoteId;
 
 use super::kinds::{
     KIND_BLOCKERS, KIND_BOARD, KIND_COMMENT, KIND_COVER_NOTE, KIND_ISSUE, KIND_LABEL,
-    KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW, KIND_SEQUENCE, NS_SUBJECT, NS_TAG,
+    KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW, KIND_REVIEW_SOURCE, KIND_SEQUENCE,
+    NS_SUBJECT, NS_TAG,
 };
-use super::model::{BoardCoord, ColumnDef, Field, LineSide, ReviewFields, ReviewLocation};
+use super::model::{
+    BoardCoord, ColumnDef, Field, LineSide, ReviewFields, ReviewLocation, ReviewSourceRole,
+};
 use crate::query::{DisplayProps, ViewSpec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -232,6 +235,26 @@ pub struct ReviewEvent {
     pub created_at: u64,
 }
 
+/// A review source (kind 1627): one named text file belonging to a review
+/// record — an explainer's Markdown source or its code walk. See
+/// [`build_review_source`](super::build_review_source).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewSourceEvent {
+    pub id: [u8; 32],
+    pub author: [u8; 32],
+    /// The card (issue, kind 1621) — the `e` tag.
+    pub issue_id: [u8; 32],
+    /// The review record (kind 1626) this file belongs to — the `review` tag.
+    pub record_id: [u8; 32],
+    /// What the file is for — the `role` tag.
+    pub role: ReviewSourceRole,
+    /// The file name, e.g. `juice-road-castle.md`.
+    pub name: String,
+    /// The file's text — the event content.
+    pub text: String,
+    pub created_at: u64,
+}
+
 /// A parsed headway event of any of the recognised kinds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HeadwayEvent {
@@ -249,6 +272,7 @@ pub enum HeadwayEvent {
     Blockers(BlockerSet),
     Related(RelatedSet),
     Review(ReviewEvent),
+    ReviewSource(ReviewSourceEvent),
 }
 
 /// Parse a note into a [`HeadwayEvent`], or `None` if it isn't a recognised /
@@ -266,6 +290,7 @@ pub fn parse(note: &Note) -> Option<HeadwayEvent> {
         KIND_BLOCKERS => parse_blockers(note).map(HeadwayEvent::Blockers),
         KIND_RELATED => parse_related(note).map(HeadwayEvent::Related),
         KIND_REVIEW => parse_review(note).map(HeadwayEvent::Review),
+        KIND_REVIEW_SOURCE => parse_review_source(note).map(HeadwayEvent::ReviewSource),
         _ => None,
     }
 }
@@ -628,6 +653,40 @@ fn parse_review(note: &Note) -> Option<ReviewEvent> {
     })
 }
 
+/// Parse a review source (kind 1627). The card (`e`), the record (`review`),
+/// a known `role` and a non-empty `name` are all required; a source missing
+/// any of them can't be placed and is dropped — including one whose role a
+/// newer writer added, which this version has no way to show. See
+/// [`build_review_source`](super::build_review_source).
+fn parse_review_source(note: &Note) -> Option<ReviewSourceEvent> {
+    let mut issue_id = None;
+    let mut record_id = None;
+    let mut role = None;
+    let mut name = None;
+
+    for tag in note.tags() {
+        match tag.get_str(0) {
+            Some("e") => issue_id = tag.get_id(1).copied(),
+            Some("review") => record_id = tag.get_id(1).copied(),
+            Some("role") => role = tag.get_str(1).and_then(ReviewSourceRole::parse),
+            // Copied here: the borrow is the tag's, which ends with the loop.
+            Some("name") => name = tag.get_str(1).filter(|n| !n.is_empty()).map(str::to_owned),
+            _ => {}
+        }
+    }
+
+    Some(ReviewSourceEvent {
+        id: *note.id(),
+        author: *note.pubkey(),
+        issue_id: issue_id?,
+        record_id: record_id?,
+        role: role?,
+        name: name?,
+        text: note.content().to_owned(),
+        created_at: note.created_at(),
+    })
+}
+
 /// Parse a relation (kind 30621). The child is the `e` tag; a missing `parent`
 /// tag is a detach, not a malformed event. See [`build_relation`](super::build_relation).
 fn parse_relation(note: &Note) -> Option<RelationEvent> {
@@ -750,9 +809,12 @@ pub(crate) mod tests {
     use crate::event::build::{
         build_blockers, build_board, build_board_def, build_comment, build_cover_note, build_issue,
         build_labels, build_placement, build_related, build_relation, build_review,
-        build_review_comment, build_sequence, build_subject_edit, build_view, build_view_tombstone,
+        build_review_comment, build_review_source, build_sequence, build_subject_edit, build_view,
+        build_view_tombstone,
     };
-    use crate::event::model::{LineRange, board_address};
+    use crate::event::model::{
+        LineRange, MAX_REVIEW_SOURCE_BYTES, ReviewSource, ReviewSourceError, board_address,
+    };
     use crate::query::{DisplayProp, GroupBy, Grouping, SortBy, Sorting};
 
     /// Sign `builder` with `kp` and parse the result back into a [`HeadwayEvent`].
@@ -1133,6 +1195,88 @@ pub(crate) mod tests {
         assert_eq!(ReviewLocation::parse_lines("0"), None);
         assert_eq!(ReviewLocation::parse_lines("a-b"), None);
         assert_eq!(ReviewLocation::parse_lines(""), None);
+    }
+
+    /// A review source round-trips its card, record, role, name and text — the
+    /// Markdown's quotes and newlines intact — and a source without a role this
+    /// version knows can't be placed, so it parses to nothing.
+    #[test]
+    fn review_source_roundtrips_and_needs_a_known_role() {
+        let kp = FullKeypair::generate();
+        let issue = note_id(&kp, build_issue("30619:x:b1", "s", "b"));
+        let record = note_id(&kp, build_review(&issue, &full_review()));
+        let source = ReviewSource {
+            role: ReviewSourceRole::Code,
+            name: "juice-road-castle.code.md".into(),
+            text: "# Code\n\n```hunk src/a.rs @@ -1,2 +1,3 @@\nmatch: \"x\"\n```\n".into(),
+        };
+
+        let HeadwayEvent::ReviewSource(got) =
+            roundtrip(build_review_source(&issue, &record, &source).unwrap(), &kp)
+        else {
+            panic!("review source");
+        };
+        assert_eq!(got.issue_id, *issue.bytes());
+        assert_eq!(got.record_id, *record.bytes());
+        assert_eq!(got.role, ReviewSourceRole::Code);
+        assert_eq!(got.name, source.name);
+        assert_eq!(got.text, source.text);
+
+        let unknown_role = NoteBuilder::new()
+            .kind(KIND_REVIEW_SOURCE)
+            .content("x")
+            .start_tag()
+            .tag_str("e")
+            .tag_id(issue.bytes())
+            .start_tag()
+            .tag_str("review")
+            .tag_id(record.bytes())
+            .start_tag()
+            .tag_str("role")
+            .tag_str("sidecar")
+            .start_tag()
+            .tag_str("name")
+            .tag_str("a.json")
+            .sign(&kp.secret_key.secret_bytes())
+            .build()
+            .unwrap();
+        assert_eq!(parse(&unknown_role), None);
+    }
+
+    /// The cap is on the wire form: text that fits raw but doubles when
+    /// JSON-escaped is refused, as are names that are paths, and the error says
+    /// which file. Nothing is ever truncated.
+    #[test]
+    fn review_source_refuses_paths_and_text_over_the_cap() {
+        let issue = NoteId::new([1; 32]);
+        let record = NoteId::new([2; 32]);
+        let source = |name: &str, text: String| ReviewSource {
+            role: ReviewSourceRole::Explainer,
+            name: name.into(),
+            text,
+        };
+
+        // Exactly at the cap, counting the two quotes the escaped form adds.
+        let fits = source("a.md", "x".repeat(MAX_REVIEW_SOURCE_BYTES - 2));
+        assert!(build_review_source(&issue, &record, &fits).is_ok());
+
+        // Half the cap of quotes is the full cap once each is escaped.
+        let quotes = source("a.md", "\"".repeat(MAX_REVIEW_SOURCE_BYTES / 2));
+        assert_eq!(
+            build_review_source(&issue, &record, &quotes).err(),
+            Some(ReviewSourceError::TooLarge {
+                name: "a.md".into(),
+                bytes: MAX_REVIEW_SOURCE_BYTES + 2,
+            })
+        );
+
+        for bad in ["", ".", "..", "docs/a.md", "a\\b.md"] {
+            assert_eq!(
+                build_review_source(&issue, &record, &source(bad, "x".into())).err(),
+                Some(ReviewSourceError::BadName { name: bad.into() }),
+                "{bad:?}"
+            );
+        }
     }
 
     /// A review record carrying every field, as `headway review` would write it.

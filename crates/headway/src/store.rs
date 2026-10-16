@@ -16,10 +16,10 @@ use nostrdb_net::{NoteId, Pubkey, private_note};
 
 use crate::event::{
     self, BoardView, COL_DELETED, CardView, ColumnDef, Container, Date, Field, Priority,
-    ReviewFields, board_address, build_archive_placement, build_blockers, build_board,
-    build_board_def, build_comment, build_cover_note, build_field, build_issue, build_labels,
-    build_placement, build_related, build_relation, build_review, build_review_comment,
-    build_sequence, build_subject_edit, rank_between,
+    ReviewFields, ReviewSource, board_address, build_archive_placement, build_blockers,
+    build_board, build_board_def, build_comment, build_cover_note, build_field, build_issue,
+    build_labels, build_placement, build_related, build_relation, build_review,
+    build_review_comment, build_review_source, build_sequence, build_subject_edit, rank_between,
 };
 use crate::teams;
 
@@ -114,6 +114,18 @@ pub enum BoardAction {
         card: NoteId,
         record: NoteId,
         comments: Vec<NewReviewComment>,
+    },
+    /// Store named text files on `card`'s review `record` — its explainer
+    /// source and code walk (kind 1627, see [`event::build_review_source`]),
+    /// one event per file, sealed like every other edit on a sealed board.
+    /// Unknown card or record -> no-op. The batch is checked whole before any
+    /// of it is written, so one bad name or one file over
+    /// [`event::MAX_REVIEW_SOURCE_BYTES`] writes nothing; callers that want to
+    /// say why run [`event::ReviewSourceError::check`] first.
+    AddReviewSources {
+        card: NoteId,
+        record: NoteId,
+        sources: Vec<ReviewSource>,
     },
     /// Remove a card from the board (tombstone placement).
     DeleteCard { card: NoteId },
@@ -1478,6 +1490,25 @@ fn apply_edit(
                     signer,
                     publisher,
                 );
+            }
+        }
+        BoardAction::AddReviewSources {
+            card,
+            record,
+            sources,
+        } => {
+            let c = find_card_any(view, card)?;
+            let r = c.reviews.iter().find(|r| r.id == record)?;
+            let builders = sources
+                .iter()
+                .map(|source| build_review_source(&card, &record, source).ok())
+                .collect::<Option<Vec<_>>>()?;
+            // Newest per name wins at reduce time, so a re-recorded file must
+            // stamp past the copy it replaces even within the same second.
+            let latest = r.sources.iter().map(|s| s.created_at).max();
+            let at = next_after(latest.unwrap_or(r.created_at));
+            for builder in builders {
+                ingest_signed(ndb, builder.created_at(at), signer, publisher);
             }
         }
         BoardAction::DeleteCard { card } => {
@@ -4171,6 +4202,184 @@ mod tests {
         let reviews = &view.card(card).unwrap().reviews;
         let commits: Vec<_> = reviews.iter().map(|r| r.fields.commit.as_deref()).collect();
         assert_eq!(commits, vec![Some("bbbb"), Some("aaaa")]);
+    }
+
+    /// Review sources written through [`apply`] on a *sealed* board go out as
+    /// SNS envelopes — the Markdown never reaches the publisher in the clear —
+    /// and fold back onto their record through phase B's card fan-out, one at
+    /// [`event::MAX_REVIEW_SOURCE_BYTES`] included. A re-recorded name in the
+    /// same second still supersedes the older copy.
+    #[tokio::test]
+    async fn add_review_sources_on_a_sealed_board_are_sealed_and_fold_back() {
+        #[derive(Default)]
+        struct Collect(Vec<String>);
+        impl Publisher for Collect {
+            fn publish(&mut self, frame: &str) {
+                self.0.push(frame.to_string());
+            }
+        }
+
+        let t = TestNdb::new();
+        let ch = test_channel("src", &t.secret());
+        seed_via(&t, "src", Some(&ch));
+        let view = poll_board_via(&t, "src", Some(&ch), |v| v.columns.len() == 5).await;
+        let secret = t.secret();
+        let signer = Signer::new(&secret, Some(&ch.channel));
+        let apply = |view: &BoardView, action, sink: &mut Collect| {
+            super::apply(&t.ndb, "src", view, &t.kp.pubkey, &signer, action, sink)
+        };
+        let mut sink = Collect::default();
+
+        apply(
+            &view,
+            BoardAction::AddCard(NewCard {
+                col: 0,
+                title: "Explained".to_string(),
+                ..NewCard::default()
+            }),
+            &mut sink,
+        );
+        let view = poll_board_via(&t, "src", Some(&ch), |v| v.columns[0].cards.len() == 1).await;
+        let card = view.columns[0].cards[0].id;
+        apply(
+            &view,
+            BoardAction::AddReview {
+                card,
+                review: ReviewFields {
+                    commit: Some("aaaa".to_string()),
+                    ..Default::default()
+                },
+            },
+            &mut sink,
+        );
+        let view = poll_board_via(&t, "src", Some(&ch), |v| {
+            v.card(card).is_some_and(|c| !c.reviews.is_empty())
+        })
+        .await;
+        let record = view.card(card).unwrap().reviews[0].id;
+
+        let source = |role, name: &str, text: &str| ReviewSource {
+            role,
+            name: name.to_string(),
+            text: text.to_string(),
+        };
+        sink.0.clear();
+        apply(
+            &view,
+            BoardAction::AddReviewSources {
+                card,
+                record,
+                sources: vec![
+                    source(event::ReviewSourceRole::Explainer, "c.md", "secret-one"),
+                    source(event::ReviewSourceRole::Code, "c.code.md", "secret-walk"),
+                    // At the cap, so it must still fit through both seal layers.
+                    source(
+                        event::ReviewSourceRole::Code,
+                        "full.md",
+                        &"x".repeat(event::MAX_REVIEW_SOURCE_BYTES - 2),
+                    ),
+                ],
+            },
+            &mut sink,
+        );
+        assert_eq!(sink.0.len(), 3, "one event per source");
+        for frame in &sink.0 {
+            assert!(!frame.contains("secret-"), "source text leaked: {frame}");
+            assert!(
+                frame.contains("\"kind\":1081"),
+                "not an SNS envelope: {frame}"
+            );
+        }
+
+        let view = poll_board_via(&t, "src", Some(&ch), |v| {
+            v.card(card)
+                .is_some_and(|c| c.reviews.first().is_some_and(|r| r.sources.len() == 3))
+        })
+        .await;
+        apply(
+            &view,
+            BoardAction::AddReviewSources {
+                card,
+                record,
+                sources: vec![source(
+                    event::ReviewSourceRole::Explainer,
+                    "c.md",
+                    "secret-two",
+                )],
+            },
+            &mut sink,
+        );
+        let view = poll_board_via(&t, "src", Some(&ch), |v| {
+            v.card(card).is_some_and(|c| {
+                c.reviews[0]
+                    .source(event::ReviewSourceRole::Explainer)
+                    .is_some_and(|s| s.text == "secret-two")
+            })
+        })
+        .await;
+        let review = &view.card(card).unwrap().reviews[0];
+        let names: Vec<&str> = review.sources.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["c.code.md", "c.md", "full.md"]);
+    }
+
+    /// One source over the cap refuses the whole batch: nothing is written,
+    /// not even the files that fit.
+    #[tokio::test]
+    async fn add_review_sources_writes_nothing_when_one_is_over_the_cap() {
+        let t = TestNdb::new();
+        seed_via(&t, "src", None);
+        let view = poll_board_via(&t, "src", None, |v| v.columns.len() == 5).await;
+        let secret = t.secret();
+        let signer = Signer::new(&secret, None);
+        let mut sink = CountPublish::default();
+        let apply = |view: &BoardView, action, sink: &mut CountPublish| {
+            super::apply(&t.ndb, "src", view, &t.kp.pubkey, &signer, action, sink)
+        };
+
+        apply(
+            &view,
+            BoardAction::AddCard(NewCard {
+                col: 0,
+                title: "Too big".to_string(),
+                ..NewCard::default()
+            }),
+            &mut sink,
+        );
+        let view = poll_board_via(&t, "src", None, |v| v.columns[0].cards.len() == 1).await;
+        let card = view.columns[0].cards[0].id;
+        apply(
+            &view,
+            BoardAction::AddReview {
+                card,
+                review: ReviewFields::default(),
+            },
+            &mut sink,
+        );
+        let view = poll_board_via(&t, "src", None, |v| {
+            v.card(card).is_some_and(|c| !c.reviews.is_empty())
+        })
+        .await;
+        let record = view.card(card).unwrap().reviews[0].id;
+
+        let before = sink.0;
+        let source = |name: &str, text: String| ReviewSource {
+            role: event::ReviewSourceRole::Explainer,
+            name: name.to_string(),
+            text,
+        };
+        apply(
+            &view,
+            BoardAction::AddReviewSources {
+                card,
+                record,
+                sources: vec![
+                    source("small.md", "fits".to_string()),
+                    source("big.md", "x".repeat(event::MAX_REVIEW_SOURCE_BYTES)),
+                ],
+            },
+            &mut sink,
+        );
+        assert_eq!(sink.0, before, "nothing published");
     }
 
     /// Inline review comments written through [`apply`] on a *sealed* board

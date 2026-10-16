@@ -9,7 +9,7 @@ use nostrdb_net::{NoteId, Pubkey, private_note};
 use super::kinds::{
     BOARD_PREF_D, HEADWAY_KINDS, KIND_BLOCKERS, KIND_BOARD, KIND_BOARD_PREF, KIND_COMMENT,
     KIND_COVER_NOTE, KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION,
-    KIND_REVIEW, KIND_SEQUENCE,
+    KIND_REVIEW, KIND_REVIEW_SOURCE, KIND_SEQUENCE,
 };
 use super::model::BoardCoord;
 use super::parse::{BlockerSet, RelatedSet, parse, parse_blockers, parse_related};
@@ -209,6 +209,7 @@ pub fn card_meta_filter(card_ids: &[[u8; 32]]) -> Filter {
             KIND_BLOCKERS as u64,
             KIND_RELATED as u64,
             KIND_REVIEW as u64,
+            KIND_REVIEW_SOURCE as u64,
         ])
         .events(card_ids.iter())
         .limit(5000)

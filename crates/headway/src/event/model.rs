@@ -365,6 +365,111 @@ impl ReviewFields {
     }
 }
 
+/// The most a review source's text may weigh **as it goes on the wire**: its
+/// JSON-escaped length, not its raw length, so a file dense with quotes or
+/// control characters can't slip past the cap and then fail to seal.
+///
+/// The bound comes from sealing. A sealed board wraps the event twice, and each
+/// layer is NIP-44 v2, whose plaintext limit is 65535 bytes: the outer layer
+/// carries the inner one base64-encoded (4/3) and padded (up to ~1/8 more), so
+/// the rumor itself must stay near 42 KiB. 32 KiB of content leaves the tags and
+/// signature room under that, and is several times a typical explainer source.
+pub const MAX_REVIEW_SOURCE_BYTES: usize = 32 * 1024;
+
+/// What a review source is for, carried as its `role` tag so a reader picks the
+/// file it wants without parsing names: the explainer page's source, or the
+/// literate walk through the commit's code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ReviewSourceRole {
+    /// The explainer's Markdown source (`<word-id>.md`): what, why, how.
+    Explainer,
+    /// The code walk (`<word-id>.code.md`): prose citing the commit's hunks.
+    Code,
+}
+
+impl ReviewSourceRole {
+    /// The `role` tag value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Explainer => "explainer",
+            Self::Code => "code",
+        }
+    }
+
+    /// Read a `role` tag value; `None` for one this version doesn't know.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "explainer" => Some(Self::Explainer),
+            "code" => Some(Self::Code),
+            _ => None,
+        }
+    }
+}
+
+/// One review source to write: what it is for, its file name and its text.
+/// The input to [`build_review_source`](super::build_review_source) and
+/// `store::BoardAction::AddReviewSources`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewSource {
+    pub role: ReviewSourceRole,
+    /// The file name, e.g. `juice-road-castle.code.md`.
+    pub name: String,
+    pub text: String,
+}
+
+/// Why a review source can't be built
+/// ([`build_review_source`](super::build_review_source)). Nothing is truncated:
+/// a source over the cap is refused whole, so the writer can say which file and
+/// by how much.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReviewSourceError {
+    /// The name is empty or isn't a bare file name (it holds a `/` or `\\`, or
+    /// is `.`/`..`). A source is named for the file a book binds, not a path.
+    BadName { name: String },
+    /// The text, JSON-escaped, is `bytes` long, over
+    /// [`MAX_REVIEW_SOURCE_BYTES`].
+    TooLarge { name: String, bytes: usize },
+}
+
+impl std::fmt::Display for ReviewSourceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadName { name } => {
+                write!(f, "review source name {name:?} is not a bare file name")
+            }
+            Self::TooLarge { name, bytes } => write!(
+                f,
+                "review source {name} is {bytes} bytes on the wire, over the \
+                 {MAX_REVIEW_SOURCE_BYTES}-byte cap"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ReviewSourceError {}
+
+impl ReviewSourceError {
+    /// Check that `name` is a bare file name and `text` fits
+    /// [`MAX_REVIEW_SOURCE_BYTES`] once JSON-escaped.
+    pub fn check(name: &str, text: &str) -> Result<(), Self> {
+        let bare = !name.is_empty() && !name.contains(['/', '\\']) && name != "." && name != "..";
+        if !bare {
+            return Err(Self::BadName {
+                name: name.to_owned(),
+            });
+        }
+        // The escaped string's quotes are part of the wire form too.
+        let bytes = serde_json::to_string(text).map_or(usize::MAX, |s| s.len());
+        if bytes > MAX_REVIEW_SOURCE_BYTES {
+            return Err(Self::TooLarge {
+                name: name.to_owned(),
+                bytes,
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Which side of a diff a review comment's line numbers count: the new file
 /// (added and context lines) or the old one (deleted lines). gitworkshop's
 /// inline comments spell the old side as a third `del` element on the `line`

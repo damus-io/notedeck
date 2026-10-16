@@ -18,6 +18,7 @@
 //! | blockers          | `30624` | addressable; `d` = blocked, `blocked-by` tags |
 //! | related           | `30625` | addressable; `d` = a card, `related` tags |
 //! | review record     | `1626`  | append-only; `e` → card, commit/host/path |
+//! | review source     | `1627`  | append-only; `e` → card, `review` → record, `name` |
 //!
 //! Effective state is resolved as **latest-authorised-wins** for every overlay
 //! (placement, subject, cover note, and labels — each label event carries the
@@ -49,8 +50,8 @@ mod view;
 pub use build::{
     build_archive_placement, build_blockers, build_board, build_board_def, build_comment,
     build_cover_note, build_field, build_issue, build_labels, build_placement, build_related,
-    build_relation, build_review, build_review_comment, build_sequence, build_subject_edit,
-    build_view, build_view_tombstone,
+    build_relation, build_review, build_review_comment, build_review_source, build_sequence,
+    build_subject_edit, build_view, build_view_tombstone,
 };
 pub use json::{
     activity_json, board_json, card_json, comment_json, review_comment_json, review_json,
@@ -58,7 +59,7 @@ pub use json::{
 pub use kinds::{
     HEADWAY_KINDS, KIND_BLOCKERS, KIND_BOARD, KIND_BOARD_PREF, KIND_COMMENT, KIND_COVER_NOTE,
     KIND_ISSUE, KIND_LABEL, KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW,
-    KIND_SEQUENCE, KIND_VIEW, is_addressable,
+    KIND_REVIEW_SOURCE, KIND_SEQUENCE, KIND_VIEW, is_addressable,
 };
 pub(crate) use load::shared_fold_admits;
 pub use load::{
@@ -67,13 +68,14 @@ pub use load::{
     load_shared_board, reduce_delta,
 };
 pub use model::{
-    BoardCoord, COL_ARCHIVED, COL_DELETED, ColumnDef, Date, Field, LineRange, LineSide, Priority,
-    ReviewFields, ReviewLocation, ReviewTag, board_address, column_is_terminal,
+    BoardCoord, COL_ARCHIVED, COL_DELETED, ColumnDef, Date, Field, LineRange, LineSide,
+    MAX_REVIEW_SOURCE_BYTES, Priority, ReviewFields, ReviewLocation, ReviewSource,
+    ReviewSourceError, ReviewSourceRole, ReviewTag, board_address, column_is_terminal,
 };
 pub use parse::{
     BlockerSet, BoardEvent, CommentEvent, Container, CoverNote, FieldEdit, HeadwayEvent,
     IssueEvent, LabelSet, PlacementEvent, RelatedSet, RelationEvent, ReviewCommentEvent,
-    ReviewEvent, SequenceEvent, SubjectEdit, ViewRevision, parse, parse_view,
+    ReviewEvent, ReviewSourceEvent, SequenceEvent, SubjectEdit, ViewRevision, parse, parse_view,
 };
 pub use rank::rank_between;
 pub use reduce::{BoardReducer, reduce};
@@ -83,5 +85,5 @@ pub use resolve::{
 };
 pub use view::{
     ActivityKind, ActivityView, ArchivedCard, BoardView, CardView, ColumnView, CommentView,
-    EdgeRef, ReviewCommentView, ReviewView, SubissueView, subissues_all_done,
+    EdgeRef, ReviewCommentView, ReviewSourceView, ReviewView, SubissueView, subissues_all_done,
 };

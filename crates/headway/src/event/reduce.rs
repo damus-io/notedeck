@@ -11,11 +11,11 @@ use super::model::{
 use super::parse::{
     BlockerSet, BoardEvent, CommentEvent, Container, CoverNote, FieldEdit, HeadwayEvent,
     IssueEvent, LabelSet, PlacementEvent, RelatedSet, RelationEvent, ReviewCommentEvent,
-    ReviewEvent, SequenceEvent, SubjectEdit,
+    ReviewEvent, ReviewSourceEvent, SequenceEvent, SubjectEdit,
 };
 use super::view::{
     ActivityKind, ActivityView, ArchivedCard, BoardView, CardView, ColumnView, CommentView,
-    EdgeRef, ReviewCommentView, ReviewView, SubissueView, subissues_all_done,
+    EdgeRef, ReviewCommentView, ReviewSourceView, ReviewView, SubissueView, subissues_all_done,
 };
 
 /// Accumulates headway events into the maps needed to resolve effective board
@@ -153,6 +153,10 @@ pub struct BoardReducer {
     /// card) at finalize, so one that arrives before its record just waits in
     /// here until the record does.
     review_comments: HashMap<[u8; 32], ReviewCommentEvent>,
+    /// Review sources by event id, append-only like
+    /// [`review_comments`](Self::review_comments) and grouped onto their
+    /// record the same way at finalize, where the newest per name wins.
+    review_sources: HashMap<[u8; 32], ReviewSourceEvent>,
     /// Latest relation per *child* issue — the child's one parent slot.
     /// Latest-authorised-wins like every other overlay; authority needs the
     /// issue maps so it's checked at resolve time, not here.
@@ -279,6 +283,9 @@ impl BoardReducer {
             }
             HeadwayEvent::ReviewComment(c) => {
                 self.review_comments.entry(c.id).or_insert(c);
+            }
+            HeadwayEvent::ReviewSource(src) => {
+                self.review_sources.entry(src.id).or_insert(src);
             }
             HeadwayEvent::Review(r) => {
                 // Append-only and immutable, deduped by id like a comment; also
@@ -876,6 +883,7 @@ impl BoardReducer {
                     created_at: r.created_at,
                     fields: r.fields.clone(),
                     comments: Vec::new(),
+                    sources: Vec::new(),
                 });
                 reviews.len() - 1
             });
@@ -894,9 +902,38 @@ impl BoardReducer {
                 created_at: c.created_at,
             });
         }
+        // Sources follow their record onto the survivor like its comments, and
+        // are authorised like the record itself. One per name: a re-recorded
+        // file (a retried done step, a fixed typo) supersedes the older copy,
+        // the newest by time then id, as the explainer URL does across records.
+        for src in self.review_sources.values() {
+            let Some(&at) = owner_of.get(&src.record_id) else {
+                continue;
+            };
+            if src.issue_id != issue.id || !authorised(&src.author) {
+                continue;
+            }
+            let sources = &mut reviews[at].sources;
+            let view = ReviewSourceView {
+                id: NoteId::new(src.id),
+                author: src.author,
+                role: src.role,
+                name: src.name.clone(),
+                text: src.text.clone(),
+                created_at: src.created_at,
+            };
+            match sources.iter_mut().find(|s| s.name == src.name) {
+                None => sources.push(view),
+                Some(cur) if (src.created_at, &src.id) > (cur.created_at, cur.id.bytes()) => {
+                    *cur = view
+                }
+                Some(_) => {}
+            }
+        }
         for r in &mut reviews {
             r.comments
                 .sort_by(|a, b| (a.created_at, a.id.bytes()).cmp(&(b.created_at, b.id.bytes())));
+            r.sources.sort_by(|a, b| a.name.cmp(&b.name));
         }
 
         // The newest touch wins: creation, the winning amendments, the last
@@ -1230,9 +1267,13 @@ mod tests {
     use crate::event::build::{
         build_archive_placement, build_blockers, build_board, build_comment, build_cover_note,
         build_field, build_issue, build_labels, build_placement, build_related, build_relation,
-        build_review, build_review_comment, build_sequence, build_subject_edit,
+        build_review, build_review_comment, build_review_source, build_sequence,
+        build_subject_edit,
     };
-    use crate::event::model::{ColumnDef, LineSide, ReviewFields, ReviewLocation, board_address};
+    use crate::event::model::{
+        ColumnDef, LineSide, ReviewFields, ReviewLocation, ReviewSource, ReviewSourceRole,
+        board_address,
+    };
     use crate::event::parse::parse;
 
     /// Build a full board (board + two issues + placements) and reduce it,
@@ -1966,6 +2007,70 @@ mod tests {
         let card_bodies: Vec<&str> = card.comments.iter().map(|c| c.body.as_str()).collect();
         assert_eq!(card_bodies, vec!["on the card"]);
         assert_eq!(card.updated_at, 5_000);
+    }
+
+    /// A record's sources fold onto it, one per name with the newest winning,
+    /// sorted by name and found by role. They follow a collapsed duplicate onto
+    /// the surviving record like its comments, wait for a record that arrives
+    /// after them, and a stranger's source is dropped like a stranger's record.
+    #[test]
+    fn reduce_attaches_review_sources_newest_per_name() {
+        let owner = FullKeypair::generate();
+        let stranger = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+        let sign = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            (NoteId::new(*note.id()), parse(&note).unwrap())
+        };
+        let src = |role, name: &str, text: &str| ReviewSource {
+            role,
+            name: name.into(),
+            text: text.into(),
+        };
+        let explainer_v1 = src(ReviewSourceRole::Explainer, "c.md", "v1");
+        let explainer_v2 = src(ReviewSourceRole::Explainer, "c.md", "v2");
+        let walk = src(ReviewSourceRole::Code, "c.code.md", "walk");
+        let forged = src(ReviewSourceRole::Explainer, "c.md", "forged");
+
+        let (i1, issue) = sign(build_issue(&addr, "Card", "").created_at(1_000), &owner);
+        let fields = review_on("aaaa", "jex0");
+        let (r_old, record_old) = sign(build_review(&i1, &fields).created_at(2_000), &owner);
+        let (_, record_new) = sign(build_review(&i1, &fields).created_at(3_000), &owner);
+        let on_old = |s: &ReviewSource, at: u64, kp: &FullKeypair| {
+            sign(
+                build_review_source(&i1, &r_old, s).unwrap().created_at(at),
+                kp,
+            )
+            .1
+        };
+
+        // The sources come first: nothing to attach to until the records land.
+        let events = vec![
+            on_old(&explainer_v2, 4_500, &owner),
+            on_old(&walk, 4_000, &owner),
+            on_old(&explainer_v1, 4_000, &owner),
+            on_old(&forged, 9_000, &stranger),
+            parse_owned_board(&owner, &cols),
+            issue,
+            sign(build_placement("b1", &addr, &i1, "todo", "m"), &owner).1,
+            record_old,
+            record_new,
+        ];
+        let views = reduce(&events);
+        let card = &views[0].columns[0].cards[0];
+
+        assert_eq!(card.reviews.len(), 1, "identical records collapse");
+        let review = &card.reviews[0];
+        let got: Vec<(&str, &str)> = review
+            .sources
+            .iter()
+            .map(|s| (s.name.as_str(), s.text.as_str()))
+            .collect();
+        assert_eq!(got, vec![("c.code.md", "walk"), ("c.md", "v2")]);
+        let by_role = |role| review.source(role).map(|s| s.text.as_str());
+        assert_eq!(by_role(ReviewSourceRole::Explainer), Some("v2"));
+        assert_eq!(by_role(ReviewSourceRole::Code), Some("walk"));
     }
 
     /// The board definition `owner` signs for a one-board test.

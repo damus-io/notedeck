@@ -114,6 +114,7 @@ mod tests {
                 ..Default::default()
             },
             comments: Vec::new(),
+            sources: Vec::new(),
         }
     }
 

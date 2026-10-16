@@ -104,12 +104,27 @@ pub const KIND_VIEW: u32 = 30626;
 /// of them (patch 1617, PR 1618/1619, issue 1621, cover 1624, status 1630–1633).
 pub const KIND_REVIEW: u32 = 1626;
 
+/// Headway review source: a **regular** (append-only) event carrying one named
+/// text file that belongs to a [`KIND_REVIEW`] record — the explainer's Markdown
+/// source (`<word-id>.md`) or its code walk (`<word-id>.code.md`), so a book can
+/// rebuild the page from the card alone. One event per file: content = the file
+/// text, `e` = the card's issue id (so the card-anchored fan-out
+/// [`card_meta_filter`](super::card_meta_filter) reaches it with no extra
+/// phase), `review` = the record's event id, `name` = the file name. A source
+/// re-recorded under the same name on the same record supersedes the older one
+/// at reduce time. Bounded by
+/// [`MAX_REVIEW_SOURCE_BYTES`](super::MAX_REVIEW_SOURCE_BYTES); see
+/// [`build_review_source`](super::build_review_source).
+///
+/// 1627 follows the review record, still clear of every NIP-34 kind.
+pub const KIND_REVIEW_SOURCE: u32 = 1627;
+
 pub(super) const NS_SUBJECT: &str = "#subject";
 
 pub(super) const NS_TAG: &str = "#t";
 
 /// Every kind headway cares about, for querying / subscribing.
-pub const HEADWAY_KINDS: [u32; 11] = [
+pub const HEADWAY_KINDS: [u32; 12] = [
     KIND_BOARD,
     KIND_ISSUE,
     KIND_PLACEMENT,
@@ -121,12 +136,14 @@ pub const HEADWAY_KINDS: [u32; 11] = [
     KIND_BLOCKERS,
     KIND_RELATED,
     KIND_REVIEW,
+    KIND_REVIEW_SOURCE,
 ];
 
 /// Whether `kind` is one of headway's addressable (latest-wins, keyed per
 /// `(kind, d-tag)`) kinds — every 30000-range kind headway publishes (board,
 /// placement, relation, sequence, blockers, related), as opposed to the
-/// immutable regular events (issue, label, cover, comment, review).
+/// immutable regular events (issue, label, cover, comment, review, review
+/// source).
 ///
 /// Used by the CLI's relay sync to push only the *winning* revision of each
 /// addressable coordinate rather than every stale one the append-only cache
@@ -185,6 +202,7 @@ mod tests {
             KIND_COVER_NOTE,
             KIND_COMMENT,
             KIND_REVIEW,
+            KIND_REVIEW_SOURCE,
         ] {
             assert!(!is_addressable(immutable), "{immutable} is immutable");
         }

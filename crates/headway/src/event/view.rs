@@ -3,7 +3,9 @@
 
 use nostrdb_net::NoteId;
 
-use super::model::{Date, Field, Priority, ReviewFields, ReviewLocation, column_is_terminal};
+use super::model::{
+    Date, Field, Priority, ReviewFields, ReviewLocation, ReviewSourceRole, column_is_terminal,
+};
 
 /// A comment on a card, resolved off its issue. Comments are append-only (no
 /// latest-wins overlay), so this is simply the parsed event in render form.
@@ -31,6 +33,35 @@ pub struct ReviewView {
     /// thread under the record, so they never show in the card's
     /// [`comments`](CardView::comments).
     pub comments: Vec<ReviewCommentView>,
+    /// The named text files recorded with this record (its explainer source
+    /// and code walk), one per name — the newest wins — sorted by name.
+    pub sources: Vec<ReviewSourceView>,
+}
+
+impl ReviewView {
+    /// The record's source playing `role` — its explainer source or its code
+    /// walk. Should two names share a role, the newest wins.
+    pub fn source(&self, role: ReviewSourceRole) -> Option<&ReviewSourceView> {
+        self.sources
+            .iter()
+            .filter(|s| s.role == role)
+            .max_by_key(|s| (s.created_at, *s.id.bytes()))
+    }
+}
+
+/// One named text file on a review record
+/// ([`ReviewSourceEvent`](super::ReviewSourceEvent) in render form): the
+/// newest source recorded under its name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewSourceView {
+    pub id: NoteId,
+    pub author: [u8; 32],
+    /// What the file is for.
+    pub role: ReviewSourceRole,
+    /// The file name, e.g. `juice-road-castle.code.md`.
+    pub name: String,
+    pub text: String,
+    pub created_at: u64,
 }
 
 /// An inline review comment on a record's commit

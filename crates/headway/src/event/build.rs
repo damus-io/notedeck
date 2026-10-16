@@ -6,10 +6,13 @@ use nostrdb_net::{NoteId, Pubkey};
 
 use super::kinds::{
     KIND_BLOCKERS, KIND_BOARD, KIND_COMMENT, KIND_COVER_NOTE, KIND_ISSUE, KIND_LABEL,
-    KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW, KIND_SEQUENCE, KIND_VIEW, NS_SUBJECT,
-    NS_TAG,
+    KIND_PLACEMENT, KIND_RELATED, KIND_RELATION, KIND_REVIEW, KIND_REVIEW_SOURCE, KIND_SEQUENCE,
+    KIND_VIEW, NS_SUBJECT, NS_TAG,
 };
-use super::model::{COL_ARCHIVED, ColumnDef, Field, LineSide, ReviewFields, ReviewLocation};
+use super::model::{
+    COL_ARCHIVED, ColumnDef, Field, LineSide, ReviewFields, ReviewLocation, ReviewSource,
+    ReviewSourceError,
+};
 use super::parse::Container;
 use crate::query::{GroupBy, SortBy, ViewSpec};
 
@@ -305,6 +308,37 @@ pub fn build_review<'a>(issue: &NoteId, review: &ReviewFields) -> NoteBuilder<'a
     }
 
     b
+}
+
+/// Build a review source (kind 1627): `source`'s text as content, belonging to
+/// the review `record` on card `issue`. `e` names the card so the
+/// card-anchored fan-out reaches it, `review` the record it belongs to, `role`
+/// what it is for and `name` its file name. Append-only like the record —
+/// re-recording the same name on the same record is a new event, and the
+/// reducer keeps the newest.
+///
+/// Refused, never truncated, when the name isn't a bare file name or the text
+/// is over [`MAX_REVIEW_SOURCE_BYTES`](super::MAX_REVIEW_SOURCE_BYTES) on the
+/// wire (see [`ReviewSourceError::check`]).
+pub fn build_review_source<'a>(
+    issue: &NoteId,
+    record: &NoteId,
+    source: &'a ReviewSource,
+) -> Result<NoteBuilder<'a>, ReviewSourceError> {
+    ReviewSourceError::check(&source.name, &source.text)?;
+    Ok(base(KIND_REVIEW_SOURCE, &source.text)
+        .start_tag()
+        .tag_str("e")
+        .tag_id(issue.bytes())
+        .start_tag()
+        .tag_str("review")
+        .tag_id(record.bytes())
+        .start_tag()
+        .tag_str("role")
+        .tag_str(source.role.as_str())
+        .start_tag()
+        .tag_str("name")
+        .tag_str(&source.name))
 }
 
 /// Build a NIP-22 comment (kind 1111) on `issue` (authored by `issue_author`).
