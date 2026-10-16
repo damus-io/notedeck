@@ -283,9 +283,12 @@ the commit's build was deployed somewhere it can be opened and tried) before the
 done comment. The record is the machine-readable twin of that comment: headway
 reads it to show the commit's diff, and the app's review pane links the
 explainer and the deployed build beside it. When the explainer was written as
-explain Markdown, pass its source too: `--explainer-source rec/<word-id>.md`
-(the `explain inline` output) and, for a change with a code walk,
-`--code-source <word-id>.code.md`. Each is stored on the record under its file
+explain Markdown, pass its source too:
+`--explainer-source ~/explainers/<word-id>/rec/<word-id>.md` (the `explain
+inline` output) and, for a change with a code walk,
+`--code-source ~/explainers/<word-id>/<word-id>.code.md`. Give the paths in
+full: they are read from the current directory, the checkout, and one that
+won't read refuses the whole record. Each is stored on the record under its file
 name, sealed with the board like any card content, and `show --json` returns it
 in the review's `sources`, which is where `explain book` builds the card's
 chapter from. The `visual-explainer` skill says how to write both. `show <card>` lists a card's records under **review**, and
