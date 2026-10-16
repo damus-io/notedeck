@@ -196,7 +196,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `grep <pattern> [--board <b>] [--in <c>] [-i\|-s] [--color <when>] [--[no-]pager] [--json]` | Search card text (title, description, comments, review comments) and print each matching line under its card's ref (see Searching cards) |
 | `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment or a review comment |
 | `comment <card> --path <f> --line <a[-b]> [--old] [--record <sha>] <text...>` | Inline review comment on a review record's commit (newest record by default); `--record` alone comments on the whole commit |
-| `review <card> [--explainer <url>] [--deploy <url>] [--commit <rev>]` | Record a commit for review on the card: sha, title, branch, host, repo path and `agentium:` ref, read from git in `--repo-dir` (default cwd) and `$AGENTIUM_SESSION`; `--deploy` is the URL where this commit's build is live |
+| `review <card> [--explainer <url>] [--explainer-source <f>] [--code-source <f>] [--deploy <url>] [--commit <rev>]` | Record a commit for review on the card: sha, title, branch, host, repo path and `agentium:` ref, read from git in `--repo-dir` (default cwd) and `$AGENTIUM_SESSION`; `--deploy` is the URL where this commit's build is live; the source flags store the explainer's Markdown and its code walk on the record (repeatable, text, 32 KiB a file) |
 | `diff <card> [--record <sha>]` | Print the commit the card's newest review record names (`git show`-style), fetching it from the recording host if this one lacks it; falls back to the card's `Headway:` trailer |
 | `delete <card>` | Remove a card (reversible tombstone) |
 | `archive <card>` | Archive a card off the board |
@@ -282,7 +282,13 @@ checkout (plus `--explainer <url>` when there is one, and `--deploy <url>` when
 the commit's build was deployed somewhere it can be opened and tried) before the
 done comment. The record is the machine-readable twin of that comment: headway
 reads it to show the commit's diff, and the app's review pane links the
-explainer and the deployed build beside it. `show <card>` lists a card's records under **review**, and
+explainer and the deployed build beside it. When the explainer was written as
+explain Markdown, pass its source too: `--explainer-source rec/<word-id>.md`
+(the `explain inline` output) and, for a change with a code walk,
+`--code-source <word-id>.code.md`. Each is stored on the record under its file
+name, sealed with the board like any card content, and `show --json` returns it
+in the review's `sources`, which is where `explain book` builds the card's
+chapter from. The `visual-explainer` skill says how to write both. `show <card>` lists a card's records under **review**, and
 `headway diff <card>` prints the commit itself: it looks in the recorded
 checkout, then any checkout of the same repo (matched by root commit), then a
 bare cache under the headway-cli data dir, and fetches over ssh from the
