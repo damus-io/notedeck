@@ -1,6 +1,9 @@
 //! A parsed journal: one file's transactions, prices and comments, with the
 //! tables their ids point into.
 
+use std::fmt;
+
+use crate::amount::write_styled;
 use crate::{Accounts, Commodities, CommodityId, Date, Meta, Posting, StrId, StrPool, Txn, TxnId};
 
 /// An exact decimal number at its own scale: `mantissa / 10^scale`.
@@ -15,6 +18,40 @@ pub struct Decimal {
     pub mantissa: i64,
     /// How many of the digits are after the decimal point.
     pub scale: u8,
+}
+
+impl Decimal {
+    /// The number written at its own scale beside `commodity`, in that
+    /// commodity's style, so that parsing the result gives the same decimal
+    /// back.
+    pub fn display(self, commodity: CommodityId, commodities: &Commodities) -> DecimalDisplay<'_> {
+        DecimalDisplay {
+            value: self,
+            commodity,
+            commodities,
+        }
+    }
+}
+
+/// A [`Decimal`] ready to format, from [`Decimal::display`].
+pub struct DecimalDisplay<'a> {
+    value: Decimal,
+    commodity: CommodityId,
+    commodities: &'a Commodities,
+}
+
+/// Writes `61234.56789 CAD`: every digit of the scale, in the commodity's
+/// style.
+impl fmt::Display for DecimalDisplay<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_styled(
+            f,
+            self.value.mantissa,
+            self.value.scale,
+            self.commodities.name(self.commodity),
+            self.commodities.style(self.commodity),
+        )
+    }
 }
 
 /// One `P DATE COMMODITY AMOUNT` directive: on `date`, one unit of

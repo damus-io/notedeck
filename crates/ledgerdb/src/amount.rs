@@ -212,34 +212,50 @@ pub struct AmountDisplay<'a> {
 impl fmt::Display for AmountDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let id = self.amount.commodity;
-        let name = self.commodities.name(id);
-        let style = self.commodities.style(id);
-        let precision = self.commodities.precision(id);
-        let sign = if self.amount.qty < 0 { "-" } else { "" };
-        let sep = if style.spaced && !name.is_empty() {
-            " "
-        } else {
-            ""
-        };
-        let quote = if needs_quotes(name) { "\"" } else { "" };
-
-        let magnitude = self.amount.qty.unsigned_abs();
-        let scale = 10u64.pow(u32::from(precision));
-        let whole = magnitude / scale;
-        let part = magnitude % scale;
-
-        if style.side == Side::Prefix {
-            write!(f, "{quote}{name}{quote}{sep}")?;
-        }
-        write!(f, "{sign}{whole}")?;
-        if precision > 0 {
-            write!(f, ".{part:0width$}", width = usize::from(precision))?;
-        }
-        if style.side == Side::Suffix {
-            write!(f, "{sep}{quote}{name}{quote}")?;
-        }
-        Ok(())
+        write_styled(
+            f,
+            self.amount.qty,
+            self.commodities.precision(id),
+            self.commodities.name(id),
+            self.commodities.style(id),
+        )
     }
+}
+
+/// Write `qty / 10^scale` beside commodity `name` in `style`, with exactly
+/// `scale` decimal places and the commodity quoted when it has to be, so
+/// that parsing the text gives the same number back.
+pub(crate) fn write_styled(
+    f: &mut fmt::Formatter<'_>,
+    qty: i64,
+    scale: u8,
+    name: &str,
+    style: Style,
+) -> fmt::Result {
+    let sign = if qty < 0 { "-" } else { "" };
+    let sep = if style.spaced && !name.is_empty() {
+        " "
+    } else {
+        ""
+    };
+    let quote = if needs_quotes(name) { "\"" } else { "" };
+
+    let magnitude = qty.unsigned_abs();
+    let unit = 10u64.pow(u32::from(scale));
+    let whole = magnitude / unit;
+    let part = magnitude % unit;
+
+    if style.side == Side::Prefix {
+        write!(f, "{quote}{name}{quote}{sep}")?;
+    }
+    write!(f, "{sign}{whole}")?;
+    if scale > 0 {
+        write!(f, ".{part:0width$}", width = usize::from(scale))?;
+    }
+    if style.side == Side::Suffix {
+        write!(f, "{sep}{quote}{name}{quote}")?;
+    }
+    Ok(())
 }
 
 /// A commodity read off the front of the text.
@@ -257,7 +273,7 @@ fn is_symbol_char(c: char) -> bool {
 }
 
 /// Whether `name` must be quoted to parse back as one commodity.
-fn needs_quotes(name: &str) -> bool {
+pub(crate) fn needs_quotes(name: &str) -> bool {
     name.chars().any(|c| !is_symbol_char(c))
 }
 

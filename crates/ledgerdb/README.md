@@ -30,3 +30,10 @@ and is meant to move to its own repository unchanged.
   amount is converted before it is known) and returns the journal together
   with every `ParseError`, each with its line and column. A transaction with
   any error, including one that does not balance, is left out whole.
+- **One canonical text form.** `Journal::write_ledger` (and `to_ledger`,
+  `write_txns` for a subset) writes the journal back as ledger-cli text that
+  parses to the same journal. The layout is fixed, not configurable: tab
+  indentation, a tab between account and amount, every comment on its own
+  line, one blank line between sections, amounts in each commodity's learned
+  style. Identical journal contents always produce identical bytes, which is
+  what lets journal segments be named by the hash of their text.
