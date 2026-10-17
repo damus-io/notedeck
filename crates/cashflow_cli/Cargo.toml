@@ -1,0 +1,22 @@
+[package]
+name = "cashflow_cli"
+edition = "2024"
+version.workspace = true
+description = "cashflow: import, inspect and export a personal finance ledger"
+
+[[bin]]
+name = "cashflow"
+path = "src/main.rs"
+
+[dependencies]
+cashflow = { workspace = true }
+cli_term = { workspace = true }
+enostr = { workspace = true }
+nostrdb_net = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+bin_testing = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }

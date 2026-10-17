@@ -1554,6 +1554,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "cashflow"
+version = "0.11.0-beta.1"
+dependencies = [
+ "dirs",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml",
+]
+
+[[package]]
+name = "cashflow_cli"
+version = "0.11.0-beta.1"
+dependencies = [
+ "bin_testing",
+ "cashflow",
+ "cli_term",
+ "enostr",
+ "nostrdb_net",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "cbc"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

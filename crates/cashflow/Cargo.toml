@@ -1,0 +1,14 @@
+[package]
+name = "cashflow"
+edition = "2024"
+version.workspace = true
+description = "cashflow's non-UI core: the $CASHFLOW_DIR layout, config and secrets"
+
+[dependencies]
+dirs = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true, features = ["display"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
