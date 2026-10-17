@@ -13,6 +13,7 @@ mod amount;
 mod commodity;
 mod date;
 mod journal;
+mod ledger;
 mod parse;
 mod segment;
 mod store;
@@ -25,6 +26,9 @@ pub use amount::{Amount, AmountDisplay, AmountError, AmountText};
 pub use commodity::{Commodities, CommodityId, MAX_PRECISION, Side, Style};
 pub use date::{Date, DateError, Ymd};
 pub use journal::{Comment, Cost, CostKind, Decimal, DecimalDisplay, FileComment, Journal, Price};
+pub use ledger::{
+    Added, DamagedSegment, LayerFilter, Ledger, LoadReport, Loaded, MergeError, Origin, SegmentInfo,
+};
 pub use parse::{ParseError, ParseErrorKind, Parsed};
 pub use segment::{
     BadSegmentHash, EncodeError, HeaderError, SEGMENT_VERSION, Segment, SegmentHash, SegmentHeader,

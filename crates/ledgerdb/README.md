@@ -60,3 +60,38 @@ Anything fetched from another machine comes in through
 header before writing it the same way a local import is written, and reports
 the files it refused without touching them. A transport fetches into staging
 and never writes into the journal directory itself.
+
+## The in-memory ledger
+
+`Ledger::load(&store, filter)` reads every segment and merges the ones whose
+layer the `LayerFilter` includes (`All`, `Only([...])`, `Except([...])`, the
+equivalent of choosing which files to pass `ledger -f`) into one `Journal`
+with shared account, commodity and string tables. Nothing is written back:
+the ledger is rebuilt from the store at startup, off the UI thread.
+
+- **Sorted arrays.** Transactions are sorted by date, then segment hash,
+  then position in the segment, and postings follow them, so the posting
+  array is sorted by `(date, txn)`. A per-account index lists each account's
+  postings in that order. The order depends only on which segments are
+  loaded, not on the order they arrived in.
+- **One transaction per record id.** When two segments carry the same
+  `; id:`, the later `imported` header wins (then the larger segment hash,
+  then the later position), and the loser is left out. A re-export that
+  turns a pending row into a posted one supersedes it without losing the
+  edits keyed on its id.
+- **Exact precision.** A commodity takes the finest precision any loaded
+  segment wrote it with, and coarser quantities are multiplied up to it; a
+  rescale that would overflow refuses the segment and leaves the ledger as
+  it was.
+- **Incremental.** `Ledger::refresh(&store)` merges only the segments the
+  ledger has not seen, loaded or excluded, and `Ledger::add_segment` merges
+  one already read. Either re-sorts the arrays in memory without reading
+  other segments again, and the result equals a full load of the same
+  segments.
+- **Never aborts.** A segment that cannot be read or merged is reported in
+  the `LoadReport` and tried again on the next refresh; a segment with
+  transactions that did not parse loads without them and is reported as
+  damaged.
+
+The `Ledger` exposes the arrays read-only; `ledger.journal()` is the merged
+journal, so its writer exports the whole ledger as ledger-cli text.

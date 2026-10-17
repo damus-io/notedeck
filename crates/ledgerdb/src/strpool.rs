@@ -104,6 +104,11 @@ impl StrPool {
         self.spans.is_empty()
     }
 
+    /// Every id in the pool, in the order the strings were first interned.
+    pub fn ids(&self) -> impl Iterator<Item = StrId> + use<> {
+        (0..self.spans.len() as u32).map(StrId)
+    }
+
     /// The total bytes of interned text, not counting bookkeeping.
     pub fn text_bytes(&self) -> usize {
         self.buf.len()

@@ -180,6 +180,21 @@ impl Commodities {
         Ok(crate::Amount { qty, commodity: id })
     }
 
+    /// Set the commodity's precision whether or not it is frozen, freezing
+    /// it. The caller rescales every amount already stored at the old
+    /// precision; the ledger does this when a segment brings a finer one.
+    pub(crate) fn set_precision(&mut self, id: CommodityId, precision: u8) {
+        debug_assert!(precision <= MAX_PRECISION);
+        let entry = &mut self.list[id.index()];
+        entry.precision = precision;
+        entry.frozen = true;
+    }
+
+    /// Set the commodity's display style.
+    pub(crate) fn set_style(&mut self, id: CommodityId, style: Style) {
+        self.list[id.index()].style = style;
+    }
+
     /// The id of commodity `name`, if the table has it.
     pub fn get(&self, name: &str) -> Option<CommodityId> {
         self.by_name.get(name).copied()
