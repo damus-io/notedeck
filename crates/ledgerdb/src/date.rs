@@ -100,6 +100,23 @@ impl Date {
     pub fn ymd(self) -> Ymd {
         civil_from_days(self.0)
     }
+
+    /// Months since year 0: `year * 12 + month - 1`. Consecutive months
+    /// have consecutive indices, so a month range is an integer range.
+    pub fn month_index(self) -> u32 {
+        let Ymd { year, month, .. } = self.ymd();
+        u32::from(year) * 12 + u32::from(month) - 1
+    }
+
+    /// The first day of the month with [`Self::month_index`] `index`. Not
+    /// range-checked, so the month after 9999-12 is still a date.
+    pub fn first_of_month(index: u32) -> Date {
+        Date(days_from_civil(Ymd {
+            year: (index / 12) as u16,
+            month: (index % 12) as u8 + 1,
+            day: 1,
+        }))
+    }
 }
 
 /// Formats as `YYYY-MM-DD`.

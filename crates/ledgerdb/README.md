@@ -156,3 +156,38 @@ business.
   it contains. A full derive of 350k transactions (700k postings) with 200
   rules and 1000 overrides takes about 100 ms in release, so a changed
   edit re-derives everything rather than tracking what it touched.
+
+## Querying
+
+`Rollups::new(&ledger, &prices, Some(home))` indexes a ledger, usually the
+derived one, once per load or derive: the account tree laid out so each
+subtree is one contiguous run, every posting converted to the home
+commodity at its own date, and those summed per account, month and
+commodity. `rollups.query(&ledger, &prices)` pairs it with the ledger and
+answers:
+
+- `balance(account, at, in)`: the subtree's balance at the end of a day,
+  natively per commodity or as one converted total.
+- `flows(account, range, bucket, in)` / `flows_into(.., &mut Series)`: the
+  subtree's per-day, -week (Monday), -month or -year sums over a range, for
+  a cashflow-over-time chart.
+- `top_n(parent, depth, range, n, in)`: the largest accounts at a tree
+  depth, each covering its subtree, with their shares of the total.
+- `register(Filter { .. })`: a lazy iterator over the transactions matching
+  an account subtree, a date range, a payee substring, a metadata key, a
+  record id and "posts to one of these (default) accounts", all optional.
+
+Whole months in the home commodity come from the cells; partial months at
+a range's ends, and day or week buckets, read the postings in range. The
+answers are exact either way, to the unit, because a cell is the sum of
+its postings each converted and rounded at its own date. A posting with
+no rate at its date is left out of the converted total and reported in an
+`Unconverted`, natively. Converting to anything other than the home
+commodity converts as it scans, and is several times slower.
+
+Over 350k transactions (700k msat postings, 4300 accounts, a daily rate)
+building the index takes about 90 ms, and balances, monthly flows over
+all time and top-N over 4000 accounts each take a few milliseconds or
+less in release (`tests/bench_query.rs`). Rebuilding after every change
+keeps it simple; the index is checked against the ledger it is queried
+with and panics on a mismatch rather than answering wrongly.

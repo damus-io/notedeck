@@ -17,6 +17,7 @@ mod journal;
 mod ledger;
 mod parse;
 mod price;
+mod query;
 mod segment;
 mod store;
 mod strpool;
@@ -37,6 +38,10 @@ pub use ledger::{
 };
 pub use parse::{ParseError, ParseErrorKind, Parsed};
 pub use price::{PriceDb, PriceGap, Rate, Unpriced};
+pub use query::{
+    Amounts, Bucket, DateRange, Filter, Point, Query, Ranked, Register, Rollups, Series, TopN,
+    Total, TxnRef, Unconverted,
+};
 pub use segment::{
     BadSegmentHash, EncodeError, HeaderError, SEGMENT_VERSION, Segment, SegmentHash, SegmentHeader,
 };

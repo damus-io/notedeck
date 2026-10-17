@@ -304,6 +304,12 @@ impl PriceDb {
     /// `None` when there is no rate or the result does not fit.
     pub fn convert(&self, amount: Amount, to: CommodityId, date: Date) -> Option<Amount> {
         let rate = self.rate(amount.commodity, to, date)?;
+        self.convert_at(amount, to, rate)
+    }
+
+    /// [`Self::convert`] at a rate already looked up with [`Self::rate`],
+    /// for a caller converting many amounts on the same day.
+    pub(crate) fn convert_at(&self, amount: Amount, to: CommodityId, rate: Rate) -> Option<Amount> {
         let from_precision = *self.precisions.get(amount.commodity.index())?;
         let to_precision = *self.precisions.get(to.index())?;
 
