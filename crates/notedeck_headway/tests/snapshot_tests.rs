@@ -10,6 +10,7 @@ use notedeck::{App, AppContext, InlineChrome, Notedeck};
 use notedeck_chrome::keymap::{KeyDispatch, KeyEngine, Scopes};
 use notedeck_chrome::{HIDE_KEY_HINTS, JUMP_BACK, JUMP_FORWARD, JumpList, TOGGLE_KEY_HINTS};
 use notedeck_headway::{Headway, event, store, views};
+use notedeck_testing::ui::{get_by_text, strip_isolates, text_eq, tree_text};
 
 /// The two-party suite's SNS helpers; here we reuse only its gift-wrap key-share
 /// builder so the shared-board flows below don't hand-roll a kind-1059 envelope.
@@ -566,7 +567,11 @@ fn wait_for_label(harness: &mut Harness<'static, HeadwayTestState>, label: &str)
         if harness.query_by_label(label).is_some() {
             return;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {label:?}");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {label:?}; on screen:\n{}",
+            tree_text(harness)
+        );
         std::thread::sleep(Duration::from_millis(25));
     }
 }
@@ -581,7 +586,8 @@ fn wait_for_absent(harness: &mut Harness<'static, HeadwayTestState>, label: &str
         }
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for {label:?} to vanish"
+            "timed out waiting for {label:?} to vanish; on screen:\n{}",
+            tree_text(harness)
         );
         std::thread::sleep(Duration::from_millis(25));
     }
@@ -3049,7 +3055,11 @@ fn wait_for_any_label(harness: &mut Harness<'static, HeadwayTestState>, label: &
         if harness.query_all_by_label(label).next().is_some() {
             return;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {label:?}");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {label:?}; on screen:\n{}",
+            tree_text(harness)
+        );
         std::thread::sleep(Duration::from_millis(25));
     }
 }
@@ -4103,11 +4113,7 @@ fn image_labels(harness: &Harness<'static, HeadwayTestState>) -> Vec<String> {
         .query_all(egui_kittest::kittest::By::new().role(egui::accesskit::Role::Image))
         .map(|node| {
             let at = node.accesskit_node().bounding_box().expect("laid out");
-            let label = node.accesskit_node().label().unwrap_or_default();
-            let label: String = label
-                .chars()
-                .filter(|c| !matches!(c, '\u{2068}' | '\u{2069}'))
-                .collect();
+            let label = strip_isolates(&node.accesskit_node().label().unwrap_or_default());
             ((at.y0 as i64, at.x0 as i64), label)
         })
         .collect();
@@ -4230,11 +4236,10 @@ fn snapshot_headway_review_model_diff() {
     let after = harness
         .query_all(egui_kittest::kittest::By::new().role(egui::accesskit::Role::Image))
         .find(|n| {
-            let label = n.accesskit_node().label().unwrap_or_default();
-            label
-                .chars()
-                .filter(|c| !matches!(c, '\u{2068}' | '\u{2069}'))
-                .eq(after_caption.chars())
+            text_eq(
+                &n.accesskit_node().label().unwrap_or_default(),
+                after_caption,
+            )
         })
         .expect("after model drawn")
         .rect();
@@ -4767,10 +4772,7 @@ fn review_comment_on_the_whole_commit() {
     // note renderer, which carries its author and puts the text in a label's
     // value rather than its name.
     wait_for_label(&mut harness, "nostrich");
-    let posted = harness
-        .query_all(egui_kittest::kittest::By::new())
-        .any(|n| n.accesskit_node().value().as_deref() == Some(BODY));
-    assert!(posted, "the posted comment draws over the diff");
+    get_by_text(&harness, BODY);
 }
 
 /// Snapshot: the review queue with nothing picked, a draft on the commit as
@@ -7559,7 +7561,11 @@ fn wait_on_stack(
         if harness.query_by_label(label).is_some() {
             return;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {label:?}");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {label:?}; on screen:\n{}",
+            tree_text(harness)
+        );
         std::thread::sleep(Duration::from_millis(25));
     }
 }

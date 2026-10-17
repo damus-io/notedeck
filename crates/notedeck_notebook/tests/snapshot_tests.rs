@@ -490,7 +490,11 @@ fn wait_for_label(harness: &mut Harness<'static, NotebookTestState>, label: &str
         if harness.query_by_label(label).is_some() {
             return;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {label:?}");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {label:?}; on screen:\n{}",
+            notedeck_testing::ui::tree_text(harness)
+        );
         std::thread::sleep(Duration::from_millis(25));
     }
 }
