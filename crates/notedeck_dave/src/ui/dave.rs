@@ -5951,23 +5951,30 @@ mod tests {
             .build_ui_state(
                 move |ui, i18n: &mut Localization| {
                     ui.columns(themes.len(), |columns| {
-                        for (ui, visuals) in columns.iter_mut().zip(&themes) {
+                        for (col, (ui, visuals)) in columns.iter_mut().zip(&themes).enumerate() {
                             ui.style_mut().visuals = visuals.clone();
                             ui.painter()
                                 .rect_filled(ui.max_rect(), 0.0, visuals.panel_fill);
-                            for (text, mode) in rows {
+                            for (row, (text, mode)) in rows.into_iter().enumerate() {
                                 let mut text = text.to_string();
-                                egui::Frame::new()
-                                    .inner_margin(egui::Margin::same(
-                                        notedeck::tokens::SPACING_SM as i8,
-                                    ))
-                                    .fill(input_fill(ui.visuals(), mode != InputMode::Insert))
-                                    .corner_radius(notedeck::tokens::RADIUS_LG)
-                                    .show(ui, |ui| {
-                                        InputboxLayout::new(&mut text, i18n, mode)
-                                            .show_stop(mode == InputMode::Normal { can_stop: true })
-                                            .show(ui);
-                                    });
+                                // Eight inputs in one ui would share one
+                                // ScrollArea id, which a debug build paints
+                                // over the render as an id-clash warning.
+                                ui.push_id((col, row), |ui| {
+                                    egui::Frame::new()
+                                        .inner_margin(egui::Margin::same(
+                                            notedeck::tokens::SPACING_SM as i8,
+                                        ))
+                                        .fill(input_fill(ui.visuals(), mode != InputMode::Insert))
+                                        .corner_radius(notedeck::tokens::RADIUS_LG)
+                                        .show(ui, |ui| {
+                                            InputboxLayout::new(&mut text, i18n, mode)
+                                                .show_stop(
+                                                    mode == InputMode::Normal { can_stop: true },
+                                                )
+                                                .show(ui);
+                                        });
+                                });
                                 ui.add_space(notedeck::tokens::SPACING_SM);
                             }
                         }

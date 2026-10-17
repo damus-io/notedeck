@@ -7,6 +7,12 @@
 #   scripts/snapshot-test --update              # update snapshot images
 #   scripts/snapshot-test <test_name>           # run a specific snapshot test
 #   scripts/snapshot-test -p=notedeck_headway   # run only one crate's suite
+#   scripts/snapshot-test --debug ...           # render from the debug build
+#
+# --debug renders from the debug build a session usually already has, instead
+# of a cold release build of the crate's whole dependency tree (minutes, and
+# OOM kills when two build at once). See the note above the `suites` loop for
+# what it renders differently.
 #
 # On NixOS, LAVAPIPE_ICD is set by shell.nix. On standard Linux distros,
 # lavapipe is found at /usr/share/vulkan/icd.d/lvp_icd.<arch>.json.
@@ -73,10 +79,12 @@ update=""
 # tests.
 filter=""
 only=""
+release="--release"
 
 for arg in "$@"; do
     case "$arg" in
         --update) update="1" ;;
+        --debug) release="" ;;
         -p=*|--package=*) only="${arg#*=}" ;;
         *) filter="$arg" ;;
     esac
@@ -88,7 +96,8 @@ ${update:+export UPDATE_SNAPSHOTS=1}
 # single crate only re-codegens what changed instead of the whole crate.
 export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
 
-# Each crate's snapshot suite: "<crate>|<extra cargo args>|<extra harness args>".
+# Each crate's snapshot suite:
+#   "<crate>|<extra cargo args>|<extra harness args>|<release-only>"
 # Running only the crate you're working on (scripts/snapshot-test
 # -p=notedeck_headway) skips the four unrelated release builds, which dominate
 # wall-clock time.
@@ -98,8 +107,11 @@ export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
 # ignored test in the listed binaries, and a test that skips itself at runtime
 # is still reported as a pass — so anything ignored for a reason other than
 # lavapipe has to be excluded here or CI claims to have run it.
+#
+# A non-empty release-only field keeps the suite in release under --debug: its
+# tests hit an egui debug_assert (see the loop below) and abort.
 suites=(
-    "notedeck_chrome|--features auto-update,snapshot-testing --test ui_tests --test command_bar --test shot|"
+    "notedeck_chrome|--features auto-update,snapshot-testing --test ui_tests --test command_bar --test shot||release-only"
     "notedeck_ui|--test widget_tests --test chart_tests|"
     # test_real_codex_*: live-backend tests gated on CODEX_LIVE_TEST, which CI
     # never sets. Swept in they returned early and counted as passes.
@@ -136,12 +148,31 @@ suites=(
 
 # Snapshot tests are #[ignore]d by default so they don't run during
 # normal `cargo test`. The --ignored flag runs only those tests.
-# Run in release mode to avoid egui debug_assert panics when widget
-# layer_ids change between frames (tooltips: Background → Foreground).
+#
+# Release is the default because CI renders and compares in release. A debug
+# build differs in two ways:
+#
+# - egui panics with "Widget ... changed layer_id during the frame" when a
+#   widget moves between layers (tooltips: Background → Foreground). Chrome's
+#   ui_tests and shot do, so chrome stays in release.
+# - egui paints a red warning over any id clash. A test that clashes renders
+#   differently in debug, and the fix is a ui.push_id in the test.
+#
+# Otherwise the pixels match. Measured on lavapipe (headway:notedeck/song-suggest-decorate):
+# every png outside chrome rendered bit-identical in debug and release except
+# those from tests that wait on the wall clock (a spinner, a clock, a popup still
+# settling): a slower build draws them at a different frame, and some differ
+# between two release runs too.
+# CI is the check: a debug-recorded png it rejects is re-recorded without --debug.
 for suite in "${suites[@]}"; do
-    IFS='|' read -r crate cargo_args harness_args <<< "$suite"
+    IFS='|' read -r crate cargo_args harness_args release_only <<< "$suite"
     if [[ -n "$only" && "$only" != "$crate" ]]; then
         continue
     fi
-    cargo test --release -p "$crate" $cargo_args -- --ignored $harness_args ${filter:+"$filter"}
+    profile="$release"
+    if [[ -z "$profile" && -n "$release_only" ]]; then
+        echo "note: $crate renders in release even under --debug (egui debug_assert)" >&2
+        profile="--release"
+    fi
+    cargo test $profile -p "$crate" $cargo_args -- --ignored $harness_args ${filter:+"$filter"}
 done
