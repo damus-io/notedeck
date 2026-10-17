@@ -1,0 +1,9 @@
+[package]
+name = "ledgerdb"
+edition = "2024"
+version.workspace = true
+description = "A generic, in-memory, plain-old-data ledger engine for ledger-cli style journals"
+
+[dependencies]
+hashbrown = { workspace = true }
+thiserror = { workspace = true }

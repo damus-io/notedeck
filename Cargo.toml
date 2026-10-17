@@ -17,6 +17,7 @@ members = [
     "crates/notedeck_notebook",
     "crates/headway",
     "crates/headway_cli",
+    "crates/ledgerdb",
     "crates/notebook_cli",
     "crates/notedeck_headway",
     "crates/notedeck_nostrverse",
@@ -107,6 +108,7 @@ notebook = { path = "crates/notebook" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
 headway = { path = "crates/headway" }
 notedeck_headway = { path = "crates/notedeck_headway" }
+ledgerdb = { path = "crates/ledgerdb" }
 notedeck_nostrverse = { path = "crates/notedeck_nostrverse" }
 renderbud = { path = "crates/renderbud", features = ["egui"] }
 notedeck_ui = { path = "crates/notedeck_ui" }
