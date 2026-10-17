@@ -1,12 +1,14 @@
 //! The HUD widget kit (`notedeck_cashflow::ui::hud`), drawn as one gallery:
 //! a tooltip panel, an XP bar, a row of skill tiles (one locked), a time-series
 //! chart with the HUD tooltip on hover, a character sheet of slim XP bars, and
-//! a level-up toast.
+//! a level-up toast, settled and mid-burst.
 //!
 //! The behavioural tests run under a plain `cargo test`. The snapshots — the
 //! gallery at rest and with each hoverable widget hovered, in the dark and
 //! light themes — are `#[ignore]`d and run via `scripts/snapshot-test`
 //! (lavapipe).
+
+use std::time::Duration;
 
 use egui::{Rect, Vec2, pos2};
 use egui_kittest::Harness;
@@ -366,6 +368,45 @@ fn toasts_show_one_after_another() {
     harness.get_by_label("Inbox zero");
 }
 
+/// A settled gallery in `theme` with a level-up toast pushed onto it and
+/// stepped (1/4 s a step) to `elapsed_steps` steps after the frame it first
+/// shows on: building a harness runs it until it settles, which is past any
+/// burst, so the toast comes after.
+fn level_up_at(
+    theme: egui::Theme,
+    renderer: bool,
+    elapsed_steps: usize,
+) -> Harness<'static, GalleryState> {
+    let mut harness = gallery(theme, Toasts::new(), renderer);
+    harness
+        .state_mut()
+        .toasts
+        .push(Toast::level_up("Saving", 42));
+    harness.step();
+    assert!(harness.state().toast_rect.is_some(), "the toast shows");
+    harness.run_steps(elapsed_steps);
+    harness
+}
+
+/// How long the next repaint waits, as the last frame asked.
+fn repaint_delay(harness: &Harness<'static, GalleryState>) -> Duration {
+    harness.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay
+}
+
+/// A level-up bursts as it lands, repainting every frame, and once the
+/// burst is over it sleeps through the rest of its hold.
+#[test]
+fn level_up_bursts_then_sleeps() {
+    // 0.5 s in: landed at 0.3 s, bursting since.
+    let mut harness = level_up_at(egui::Theme::Dark, false, 2);
+    assert_eq!(repaint_delay(&harness), Duration::ZERO);
+
+    // 1.5 s in: the burst ended at 1.2 s; the hold runs to 4.3 s.
+    harness.run_steps(4);
+    assert!(repaint_delay(&harness) > Duration::from_secs(2));
+    harness.get_by_label("Saving is now level 42");
+}
+
 /// Snapshot `name` of a gallery in `theme` showing the level-up toast, after
 /// `prepare`.
 fn snapshot(
@@ -471,6 +512,21 @@ fn snapshot_hud_locked_tile_hover_dark() {
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_hud_slim_bar_hover_dark() {
     snapshot(egui::Theme::Dark, "hud_slim_bar_hover_dark", hover_slim_bar);
+}
+
+/// The level-up toast mid-burst (0.2 s after it lands): the glow, both
+/// rings, the rays and the sparks around its medallion.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_hud_toast_level_up_burst_dark() {
+    level_up_at(egui::Theme::Dark, true, 2).snapshot("hud_toast_level_up_burst_dark");
+}
+
+/// [`snapshot_hud_toast_level_up_burst_dark`] in the light theme.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_hud_toast_level_up_burst_light() {
+    level_up_at(egui::Theme::Light, true, 2).snapshot("hud_toast_level_up_burst_light");
 }
 
 /// The achievement toast: the points on a legendary diamond badge.

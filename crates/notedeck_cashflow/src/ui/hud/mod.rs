@@ -17,12 +17,14 @@
 //! [`HudPalette`]: crate::ui::palette::HudPalette
 //! [`Faces`]: crate::ui::palette::Faces
 
+mod burst;
 mod paint;
 mod skill_tile;
 mod toast;
 mod tooltip;
 mod xp_bar;
 
+pub use burst::{BURST, BurstPhase, paint_burst};
 pub use skill_tile::{SKILL_TILE_SIZE, locked_skill_tile, skill_tile};
 pub use toast::{Toast, ToastKind, ToastPhase, Toasts};
 pub use tooltip::{HudTooltip, TOOLTIP_MAX_WIDTH, show_tooltip, tooltip_frame, tooltip_ui};

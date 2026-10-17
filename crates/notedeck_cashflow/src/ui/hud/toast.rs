@@ -4,10 +4,11 @@
 //! achievement's points), beside a small spaced gold caption and the news.
 //!
 //! [`Toasts`] is a queue the app keeps in its state and draws every frame;
-//! one toast shows at a time. Animation is frame-aware (CLAUDE.md rule 17):
-//! it repaints every frame only while a toast is sliding or fading, and
-//! during the hold it asks for one repaint when the hold ends, so a toast on
-//! screen costs no frames while it sits still.
+//! one toast shows at a time. A level-up bursts around its medallion as it
+//! lands ([`super::burst`]). Animation is frame-aware (CLAUDE.md rule 17):
+//! it repaints every frame only while a toast is sliding, bursting or
+//! fading, and for the rest of the hold it asks for one repaint when the
+//! hold ends, so a toast on screen costs no frames while it sits still.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -16,7 +17,8 @@ use egui::{
     Align2, FontId, Frame, Order, Painter, Pos2, Rect, RichText, Stroke, StrokeKind, Ui, vec2,
 };
 
-use super::paint::{diamond, shadowed_text};
+use super::burst::{BurstPhase, paint_burst};
+use super::paint::{diamond, ease_out, shadowed_text};
 use crate::ui::palette::{HudPalette, Palette};
 
 /// How long a toast takes to slide in.
@@ -129,11 +131,6 @@ impl ToastPhase {
     }
 }
 
-/// Cubic ease-out: fast at first, settling into place.
-fn ease_out(t: f32) -> f32 {
-    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
-}
-
 /// The queue of toasts waiting to show, oldest first, and when the front one
 /// started showing.
 #[derive(Debug, Default)]
@@ -174,10 +171,12 @@ impl Toasts {
         loop {
             self.queue.front()?;
             let since = *self.shown_since.get_or_insert(now);
-            if let Some(phase) = ToastPhase::at(now - since) {
-                ui.ctx().request_repaint_after(phase.repaint_after);
+            let elapsed = now - since;
+            if let Some(phase) = ToastPhase::at(elapsed) {
                 let toast = self.queue.front()?;
-                return Some(paint(ui, palette, toast, phase));
+                let burst = burst_at(toast.kind, elapsed);
+                ui.ctx().request_repaint_after(repaint_after(phase, burst));
+                return Some(paint(ui, palette, toast, phase, burst));
             }
             self.queue.pop_front();
             self.shown_since = None;
@@ -185,8 +184,33 @@ impl Toasts {
     }
 }
 
-/// Draws `toast` at `phase`, centered at the top of the window.
-fn paint(ui: &Ui, palette: &Palette, toast: &Toast, phase: ToastPhase) -> Rect {
+/// The burst around `kind`'s medallion `elapsed` seconds into the toast:
+/// a level-up's starts as it lands, at the end of the slide. An achievement
+/// doesn't burst.
+fn burst_at(kind: ToastKind, elapsed: f64) -> Option<BurstPhase> {
+    match kind {
+        ToastKind::LevelUp if elapsed >= ENTER => BurstPhase::at(elapsed - ENTER),
+        ToastKind::LevelUp | ToastKind::Achievement { .. } => None,
+    }
+}
+
+/// When the next repaint is needed for a toast at `phase` with `burst`
+/// running: the sooner of the two.
+fn repaint_after(phase: ToastPhase, burst: Option<BurstPhase>) -> Duration {
+    burst.map_or(phase.repaint_after, |burst| {
+        phase.repaint_after.min(burst.repaint_after)
+    })
+}
+
+/// Draws `toast` at `phase`, with `burst` around its medallion, centered at
+/// the top of the window.
+fn paint(
+    ui: &Ui,
+    palette: &Palette,
+    toast: &Toast,
+    phase: ToastPhase,
+    burst: Option<BurstPhase>,
+) -> Rect {
     let hud = &palette.hud;
     let frame = Frame::new()
         .fill(hud.panel)
@@ -216,7 +240,7 @@ fn paint(ui: &Ui, palette: &Palette, toast: &Toast, phase: ToastPhase) -> Rect {
             ui.multiply_opacity(phase.alpha);
             let shown = frame.show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    medallion(ui, palette, toast);
+                    medallion(ui, palette, toast, burst);
                     ui.add_space(12.0);
                     ui.vertical(|ui| text_lines(ui, palette, toast));
                 });
@@ -243,13 +267,17 @@ fn text_lines(ui: &mut Ui, palette: &Palette, toast: &Toast) {
 }
 
 /// The medallion: a gold ring with the new level for a level-up, a
-/// legendary diamond with the points for an achievement.
-fn medallion(ui: &mut Ui, palette: &Palette, toast: &Toast) {
+/// legendary diamond with the points for an achievement. `burst`, if any,
+/// is drawn behind it.
+fn medallion(ui: &mut Ui, palette: &Palette, toast: &Toast, burst: Option<BurstPhase>) {
     let hud = &palette.hud;
     let size = vec2(MEDALLION * 2.0, MEDALLION * 2.0);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter();
     let center = rect.center();
+    if let Some(burst) = burst {
+        paint_burst(painter, hud, center, MEDALLION, burst);
+    }
     let (color, font_size) = match toast.kind {
         ToastKind::LevelUp => {
             painter.circle(
@@ -306,6 +334,7 @@ fn ornaments(painter: &Painter, hud: &HudPalette, rect: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::hud::BURST;
 
     #[test]
     fn a_toast_slides_in_holds_then_fades_out() {
@@ -332,6 +361,31 @@ mod tests {
         let holding = ToastPhase::at(ENTER + 1.0).unwrap();
         let expected = Duration::from_secs_f64(HOLD - 1.0);
         assert!(holding.repaint_after.abs_diff(expected) < Duration::from_micros(1));
+    }
+
+    /// A level-up bursts once it has landed, repainting every frame while
+    /// it does, then sleeps until the hold ends as any toast does. An
+    /// achievement never bursts.
+    #[test]
+    fn a_level_up_bursts_as_it_lands_then_sleeps() {
+        assert_eq!(burst_at(ToastKind::LevelUp, ENTER / 2.0), None);
+
+        let landed = ENTER + 0.1;
+        let burst = burst_at(ToastKind::LevelUp, landed);
+        assert!(burst.is_some());
+        let phase = ToastPhase::at(landed).unwrap();
+        assert_eq!(repaint_after(phase, burst), Duration::ZERO);
+
+        let settled = ENTER + BURST + 0.1;
+        assert!(settled < ENTER + HOLD);
+        let burst = burst_at(ToastKind::LevelUp, settled);
+        assert_eq!(burst, None);
+        let phase = ToastPhase::at(settled).unwrap();
+        let expected = Duration::from_secs_f64(ENTER + HOLD - settled);
+        assert!(repaint_after(phase, burst).abs_diff(expected) < Duration::from_micros(1));
+
+        let achievement = ToastKind::Achievement { points: 10 };
+        assert_eq!(burst_at(achievement, landed), None);
     }
 
     #[test]

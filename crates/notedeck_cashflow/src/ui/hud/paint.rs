@@ -1,10 +1,12 @@
 //! Painting the HUD widgets share: a rule that fades out, text with a drop
-//! shadow, and a diamond.
+//! shadow, a diamond, and the easing curve the animations use.
 //!
 //! None of it allocates beyond the one `String` egui lays a text run out
 //! from. Gradients are drawn as a few flat rects rather than a mesh, and a
-//! diamond is a rotated rect rather than a polygon, because a mesh or a
-//! polygon each carry a `Vec` of their own.
+//! diamond is a rotated rect rather than a polygon: a polygon takes a fresh
+//! `Vec` of points every frame, and a mesh built per frame does too. (A mesh
+//! built once and kept in an `Arc` would cost nothing at rest, but fading or
+//! moving it copies it, and these all fade with their widget.)
 
 use std::fmt::Display;
 
@@ -64,4 +66,9 @@ pub(super) fn diamond(painter: &Painter, center: Pos2, radius: f32, fill: Color3
     let shape = RectShape::new(rect, 0.0, fill, stroke, StrokeKind::Inside)
         .with_angle(std::f32::consts::FRAC_PI_4);
     painter.add(shape);
+}
+
+/// Cubic ease-out: fast at first, settling into place.
+pub(super) fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
 }
