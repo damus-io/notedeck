@@ -959,7 +959,13 @@ fn rich_frame(ui: &mut egui::Ui, state: &mut RichState) {
         if !state.set_up {
             let ctx = ui.ctx().clone();
             state.notedeck.setup(&ctx);
-            ctx.global_style_mut(|s| s.animation_time = 0.0);
+            ctx.global_style_mut(|s| {
+                s.animation_time = 0.0;
+                // A steady caret: the query field is focused, and the wait
+                // for the picture steps on the wall clock, so a blinking
+                // caret was drawn or not by how long the load took.
+                s.visuals.text_cursor.blink = false;
+            });
             state.set_up = true;
             return;
         }

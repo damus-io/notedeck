@@ -1174,15 +1174,27 @@ fn seed_side_board(harness: &mut Harness<'static, HeadwayTestState>) {
         &secret,
         &mut store::NoPublish,
     );
+    // Wait for all three notes, not just the card: a card with no placement
+    // folds into Backlog, so returning on the card alone let the list draw it
+    // under Backlog on the runs where the placement landed a frame late.
     let deadline = Instant::now() + SETTLE_TIMEOUT;
     loop {
         let txn = Transaction::new(app_ctx.ndb).expect("txn");
-        let cards = event::load_board(app_ctx.ndb, &txn, &author, "side")
-            .map(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>());
-        if cards == Some(1) {
+        let settled = event::load_board(app_ctx.ndb, &txn, &author, "side").is_some_and(|v| {
+            v.columns.iter().any(|c| {
+                c.id == "todo"
+                    && c.cards
+                        .iter()
+                        .any(|card| card.id == id && card.labels.iter().any(|l| l == "quest"))
+            })
+        });
+        if settled {
             return;
         }
-        assert!(Instant::now() < deadline, "side card never folded");
+        assert!(
+            Instant::now() < deadline,
+            "side card never folded into Todo"
+        );
         std::thread::sleep(Duration::from_millis(25));
     }
 }

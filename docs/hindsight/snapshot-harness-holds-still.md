@@ -1,0 +1,6 @@
+# Every snapshot harness holds the style still
+
+Suites stop animation by hand (14 copies) and two stop the caret blink, so a
+focused field anywhere else draws by how much time a wait loop stepped.
+
+- headway:notedeck/toilet-cause-wood — ~3 min: command_bar_rich_rows's 50 px flake was the query field's caret; its frame copied `animation_time = 0.0` but not notebook's `text_cursor.blink = false`, which one steady-style setup in `notedeck::test_harness` would have carried

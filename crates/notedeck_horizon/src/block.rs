@@ -78,6 +78,22 @@ impl Block {
     }
 }
 
+/// Sort `blocks` into the order [`crate::Horizon`] keeps them in: by start,
+/// then end (the shorter first, as [`layout`] takes them), then `d` tag. Two
+/// events can share a start (the all-day row nearly always does), and nostrdb
+/// hands them back in ingest order, which its writer threads don't fix — so a
+/// sort on start alone drew the row in either order. The last tie goes to the
+/// `d` tag rather than the note id because an edit mints a new id and would
+/// reshuffle the row.
+pub(crate) fn sort_blocks(blocks: &mut [Block]) {
+    blocks.sort_by(|a, b| {
+        a.start
+            .cmp(&b.start)
+            .then(a.end.cmp(&b.end))
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+}
+
 /// Where a block sits within its overlap cluster.
 ///
 /// A renderer sizes each block to `width / columns` and offsets it by
@@ -277,6 +293,29 @@ mod tests {
     fn lanes(blocks: &[Block]) -> Vec<Lane> {
         let refs: Vec<&Block> = blocks.iter().collect();
         layout(&refs)
+    }
+
+    /// Blocks sharing a start sort the same whatever order nostrdb handed
+    /// them back in: shorter first, then by `d` tag.
+    #[test]
+    fn sort_blocks_is_total_on_a_shared_start() {
+        let with_uid = |uid: &str, mut b: Block| {
+            b.uid = uid.to_owned();
+            b
+        };
+        let expected = ["short", "a-long", "b-long"];
+        let mut forward = vec![
+            with_uid("short", blk(9, 0, 10, 0)),
+            with_uid("a-long", blk(9, 0, 11, 0)),
+            with_uid("b-long", blk(9, 0, 11, 0)),
+        ];
+        let mut backward: Vec<Block> = forward.iter().rev().cloned().collect();
+        sort_blocks(&mut forward);
+        sort_blocks(&mut backward);
+        for sorted in [&forward, &backward] {
+            let uids: Vec<&str> = sorted.iter().map(|b| b.uid.as_str()).collect();
+            assert_eq!(uids, expected);
+        }
     }
 
     #[test]

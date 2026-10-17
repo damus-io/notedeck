@@ -367,7 +367,7 @@ impl Horizon {
             .filter_map(|note| block::from_note(&note))
             .filter(|b| !self.deleted.contains(&b.id))
             .collect();
-        self.blocks.sort_by_key(|b| b.start);
+        block::sort_blocks(&mut self.blocks);
         self.invalidate_layout();
         // A reload can invalidate the old index. Re-find a just-created event by
         // its id to keep it selected; otherwise clear the now-stale selection.
@@ -1132,7 +1132,7 @@ impl Horizon {
         // back through the subscription; `pending_select` keeps it selected once
         // the reload replaces this optimistic copy with the stored one.
         self.blocks.push(Block::timed(id, &d, title, start, end));
-        self.blocks.sort_by_key(|b| b.start);
+        block::sort_blocks(&mut self.blocks);
         self.invalidate_layout();
         self.cursor = start;
         self.selected = self.blocks.iter().position(|b| b.id == id);
@@ -1227,7 +1227,7 @@ impl Horizon {
         let Some(new_id) = self.republish_block(ctx, i, start, end) else {
             return;
         };
-        self.blocks.sort_by_key(|b| b.start);
+        block::sort_blocks(&mut self.blocks);
         self.cursor = start;
         self.selected = self.blocks.iter().position(|b| b.id == new_id);
         self.pending_select = Some(new_id);
@@ -1573,7 +1573,7 @@ impl Horizon {
                 self.republish_block(ctx, i, span.start, span.end);
             }
         }
-        self.blocks.sort_by_key(|b| b.start);
+        block::sort_blocks(&mut self.blocks);
         self.selected = self.blocks.iter().position(|b| b.uid == sel_uid);
         if let Some(i) = self.selected {
             self.cursor = self.blocks[i].start;
@@ -1867,7 +1867,7 @@ mod tests {
     /// A `Horizon` seeded with `blocks` (sorted by start, as [`reload`] leaves
     /// them) so the cascade planners can be exercised without a db or account.
     fn horizon_with(mut blocks: Vec<Block>) -> Horizon {
-        blocks.sort_by_key(|b| b.start);
+        block::sort_blocks(&mut blocks);
         Horizon {
             blocks,
             ..Default::default()

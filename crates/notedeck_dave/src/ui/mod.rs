@@ -4139,6 +4139,18 @@ mod tests {
             git.poll();
             harness.step();
         }
+        // `open` scrolls the grid to the card once, against whatever the
+        // grid held that frame, and the filled card overflows the viewport
+        // by a few px where an unfilled one doesn't: the offset came out 0
+        // or the overflow by when the commits landed. Asked again now that
+        // the card is full, it lands on the same offset every run.
+        harness
+            .state_mut()
+            .session_manager
+            .get_active_mut()
+            .unwrap()
+            .inspector_view
+            .open(crate::inspector::InspectorSection::Outputs);
         harness.run_ok();
         harness.snapshot("session_outputs");
         let _ = std::fs::remove_dir_all(&repo);
