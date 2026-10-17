@@ -15,6 +15,7 @@ mod date;
 mod journal;
 mod ledger;
 mod parse;
+mod price;
 mod segment;
 mod store;
 mod strpool;
@@ -30,6 +31,7 @@ pub use ledger::{
     Added, DamagedSegment, LayerFilter, Ledger, LoadReport, Loaded, MergeError, Origin, SegmentInfo,
 };
 pub use parse::{ParseError, ParseErrorKind, Parsed};
+pub use price::{PriceDb, PriceGap, Rate, Unpriced};
 pub use segment::{
     BadSegmentHash, EncodeError, HeaderError, SEGMENT_VERSION, Segment, SegmentHash, SegmentHeader,
 };

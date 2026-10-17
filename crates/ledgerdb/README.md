@@ -95,3 +95,25 @@ the ledger is rebuilt from the store at startup, off the UI thread.
 
 The `Ledger` exposes the arrays read-only; `ledger.journal()` is the merged
 journal, so its writer exports the whole ledger as ledger-cli text.
+
+## Prices and conversion
+
+`PriceDb::from_ledger(&ledger)` turns the ledger's `P` directives into a
+graph of commodities, each edge holding one pair's rates in date order, and
+converts an amount at the date it happened:
+
+- **No future prices.** Each hop uses its most recent rate on or before the
+  date, so a 2019 posting is never valued at a 2024 rate.
+- **Chained.** `rate(from, to, date)` takes the fewest-hop path
+  (`msat → sat → BTC → USD → CAD`), found by breadth-first search over the
+  edges that exist by the date and memoized per pair. Every price also
+  prices the other way, as its inverse.
+- **Exact.** A `Rate` is a reduced `i128` fraction and a chain multiplies
+  fractions. `convert(amount, to, date)` rounds once, to the nearest unit of
+  the target's precision with halves away from zero.
+- **Never guessed.** A missing rate is `None`; `convert_counting` tallies
+  misses per pair with their date range in an `Unpriced`, so a view can mark
+  what it could not price instead of showing a wrong total.
+
+On a date with several prices for one pair the one from the segment with
+the largest hash wins, so the result does not depend on load order.
