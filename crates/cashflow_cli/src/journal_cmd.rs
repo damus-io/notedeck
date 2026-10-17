@@ -1,9 +1,9 @@
 //! The commands that read or write the journal itself: `journal ls`,
 //! `journal verify`, `journal rm` and `import`.
 
-use cashflow::CashflowDir;
 use cashflow::import::{self, ImportInput, Rows};
 use cashflow::journal::{self, SegmentSummary};
+use cashflow::{CashflowDir, Config};
 use ledgerdb::Date;
 use serde_json::{Value, json};
 
@@ -114,7 +114,8 @@ const SKIPPED_SHOWN: usize = 20;
 
 /// `cashflow import <importer> [<path>...]`.
 pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
-    let importer = import::importer(&args.importer).ok_or_else(|| {
+    let config = Config::load(dir).map_err(|e| e.to_string())?;
+    let importer = import::importer(&args.importer, &config).ok_or_else(|| {
         format!(
             "no importer named '{}' (importers: {})",
             args.importer,

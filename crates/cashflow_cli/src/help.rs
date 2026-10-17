@@ -179,6 +179,15 @@ replaces the earlier one, keyed by its `; id:`.
 
 Importers:
 
+  amex <path>...  Amex activity CSV exports; a directory reads its *.csv
+                  files in name order. Each row posts to the card
+                  (liabilities:amex) and expenses:unknown, with its
+                  merchant, city and description as raw-* metadata. Its id
+                  is amex:<date>:<cents>:<merchant>:<n>, n counting the
+                  identical rows in one export, so overlapping exports
+                  keep each charge once. [amex] in config.toml sets
+                  `card`, `currency` (CAD) and `title_case` (payees in
+                  Title Case).
   ledger <file>   a ledger-cli file, such as books kept by hand or a script.
                   A transaction with no `; id:` is given a legacy one,
                   <source>:<hash of its text>, plus :2, :3, … for identical
@@ -203,6 +212,7 @@ importer's), which `export` and `report` can include or leave out.",
             ("--json", "Machine-readable output"),
         ],
         examples: &[
+            "cashflow import amex ~/Downloads/activity.csv",
             "cashflow import ledger books.ledger",
             "cashflow import ledger old.ledger --source bank --layer cards",
         ],

@@ -285,6 +285,55 @@ fn import_refusals_write_nothing() {
     assert_eq!(cf.ok(&["journal", "ls"]), "");
 }
 
+/// `import amex` over a directory of overlapping exports, with `[amex]` in
+/// `config.toml` naming the card: each charge lands once, posted to that
+/// card, and the same exports again write nothing.
+#[test]
+fn amex_import_reads_a_directory_once() {
+    let cf = cashflow();
+    std::fs::write(
+        cf.dir().join("config.toml"),
+        "[amex]\ncard = \"liabilities:card\"\n",
+    )
+    .unwrap();
+    let exports = cf.dir().join("exports");
+    std::fs::create_dir(&exports).unwrap();
+    let header = "Date,Date Processed,Description,Amount,Flexible\n";
+    let rows = [
+        "1 Jan 2026,1 Jan 2026,CORNER GROCER           Springfield,45.50,\n",
+        "2 Jan 2026,2 Jan 2026,RIDE CO,13.83,\n",
+        "2 Jan 2026,2 Jan 2026,RIDE CO,13.83,\n",
+        "3 Jan 2026,3 Jan 2026,PAYMENT RECEIVED - THANK YOU,\"-1,000.00\",\n",
+    ];
+    std::fs::write(
+        exports.join("a.csv"),
+        format!("{header}{}", rows[..3].concat()),
+    )
+    .unwrap();
+    std::fs::write(
+        exports.join("b.csv"),
+        format!("{header}{}", rows[1..].concat()),
+    )
+    .unwrap();
+
+    let first: Value =
+        serde_json::from_str(&cf.ok(&["import", "amex", s(&exports), "--json"])).unwrap();
+    assert_eq!(first["txns"], 4);
+    assert_eq!(first["source"], "amex");
+    assert_eq!(first["layer"], "amex");
+
+    let again = cf.ok(&["import", "amex", s(&exports)]);
+    assert!(again.starts_with("nothing new"), "{again}");
+    assert!(
+        again.contains("txns 0 new/0 changed/4 unchanged"),
+        "{again}"
+    );
+
+    let bal = cf.ok(&["report", "bal", "liabilities", "--native"]);
+    assert!(bal.contains("liabilities:card"), "{bal}");
+    assert!(bal.contains("926.84 CAD"), "{bal}");
+}
+
 /// A legacy ledger file with no ids, a raw line before its first
 /// transaction and an elided payroll-style posting: the bad line is reported
 /// by number, the rest imports with legacy ids, and `journal rm` retires the

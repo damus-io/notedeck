@@ -11,8 +11,10 @@
 //!
 //! The registry is a plain match on the name ([`importer`]); there is no
 //! plugin system. A new importer is a module here, an arm in [`importer`] and
-//! a name in [`NAMES`].
+//! a name in [`NAMES`]. One with settings reads its own table of
+//! [`Config`].
 
+mod amex;
 mod batch;
 mod ledger;
 
@@ -24,11 +26,14 @@ use ledgerdb::{
     SegmentHeader, StoreError, TxnId, WriteOptions,
 };
 
+pub use amex::AmexImporter;
 pub use batch::{Batch, BatchError, RawAmount, RawMeta, RawPosting, RawPrice, RawTxn};
 pub use ledger::LedgerImporter;
 
+use crate::Config;
+
 /// Every importer's name, as `cashflow import <name>` takes it.
-pub const NAMES: &[&str] = &["ledger"];
+pub const NAMES: &[&str] = &["amex", "ledger"];
 
 /// Reads one kind of source into a batch.
 pub trait Importer {
@@ -55,9 +60,11 @@ pub struct ImportInput {
     pub paths: Vec<PathBuf>,
 }
 
-/// The importer named `name`, if there is one.
-pub fn importer(name: &str) -> Option<Box<dyn Importer>> {
+/// The importer named `name`, if there is one, set up by its table in
+/// `config`.
+pub fn importer(name: &str, config: &Config) -> Option<Box<dyn Importer>> {
     match name {
+        "amex" => Some(Box::new(AmexImporter::new(config.amex.as_ref()))),
         "ledger" => Some(Box::new(LedgerImporter)),
         _ => None,
     }
@@ -74,6 +81,14 @@ pub enum ImportError {
     Read {
         path: PathBuf,
         source: std::io::Error,
+    },
+    /// A row of a CSV export could not be read. `row` counts from 1, the
+    /// header being row 1.
+    #[error("{}: row {row}: {message}", path.display())]
+    Csv {
+        path: PathBuf,
+        row: usize,
+        message: String,
     },
     /// The importer's raw records didn't make a batch.
     #[error(transparent)]
@@ -279,9 +294,9 @@ mod tests {
     #[test]
     fn every_name_resolves() {
         for name in NAMES {
-            assert_eq!(importer(name).unwrap().name(), *name);
+            assert_eq!(importer(name, &Config::default()).unwrap().name(), *name);
         }
-        assert!(importer("frob").is_none());
+        assert!(importer("frob", &Config::default()).is_none());
     }
 
     /// Import `text` as a ledger file from source `bank` into `layer`,
@@ -289,7 +304,7 @@ mod tests {
     fn import_text(store: &JournalStore, text: &str, layer: &str, imported: u64) -> Written {
         let file = store.dir().with_extension(format!("{imported}.ledger"));
         std::fs::write(&file, text).unwrap();
-        let ledger = importer("ledger").unwrap();
+        let ledger = importer("ledger", &Config::default()).unwrap();
         write(
             store,
             &*ledger,
@@ -474,7 +489,7 @@ mod tests {
     fn ledger_import_refuses_what_it_cannot_take() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
-        let ledger = importer("ledger").unwrap();
+        let ledger = importer("ledger", &Config::default()).unwrap();
         let empty = tmp.path().join("c");
         std::fs::write(&empty, "; nothing\nnot a transaction\n").unwrap();
         let run = |paths| write(&store, &*ledger, &input("x", paths), None, None);
@@ -503,7 +518,7 @@ mod tests {
         )
         .unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
-        let ledger = importer("ledger").unwrap();
+        let ledger = importer("ledger", &Config::default()).unwrap();
         let written = write(&store, &*ledger, &input("x", vec![file]), None, None).unwrap();
 
         assert_eq!(written.txns, 1);

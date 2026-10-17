@@ -316,11 +316,30 @@ fn restrict_to_owner(_path: &Path) -> Result<(), ConfigError> {
 /// `config.toml`. Unknown keys are an error, and a missing file is all
 /// defaults.
 ///
-/// Empty for now: each source adds its own table (`[cln]`, `[btc]`, ...) in the
-/// card that imports it. Secrets never go here (see [`CashflowDir::secret`]).
+/// Each source adds its own table (`[amex]`, `[cln]`, `[btc]`, ...) in the
+/// card that imports it; a table left out is that source's defaults. Secrets
+/// never go here (see [`CashflowDir::secret`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Config {}
+pub struct Config {
+    /// `[amex]`: the Amex importer's settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amex: Option<AmexConfig>,
+}
+
+/// `[amex]` in `config.toml`. Every key is optional.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AmexConfig {
+    /// The card's liability account [default: `liabilities:amex`].
+    pub card: Option<String>,
+    /// The commodity amounts are in [default: `CAD`].
+    pub currency: Option<String>,
+    /// Write SHOUTING merchant names as Title Case in the payee. The id and
+    /// the `raw-*` metadata keep the export's spelling either way.
+    #[serde(default)]
+    pub title_case: bool,
+}
 
 impl Config {
     /// Read `dir`'s `config.toml`, or the defaults when there is none.
@@ -440,6 +459,19 @@ mod tests {
     fn config_toml_round_trips() {
         let config = Config::default();
         assert_eq!(Config::parse(&config.to_toml()).unwrap(), config);
+
+        let amex =
+            Config::parse("[amex]\ncard = \"liabilities:card\"\ntitle_case = true\n").unwrap();
+        assert_eq!(
+            amex.amex,
+            Some(AmexConfig {
+                card: Some("liabilities:card".to_owned()),
+                currency: None,
+                title_case: true,
+            })
+        );
+        assert_eq!(Config::parse(&amex.to_toml()).unwrap(), amex);
+        assert!(Config::parse("[amex]\ncards = \"x\"\n").is_err());
     }
 
     /// `create` makes the subdirectories, `secrets/` owner-only, and is
