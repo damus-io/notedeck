@@ -22,6 +22,11 @@ use notedeck_testing::TestHost;
 /// no key is bound to them.
 const READ_ONLY_TOOLS: [&str; 1] = ["dave_session_issue"];
 
+/// Dave's UI tools that act but take arguments a key can't supply, so the
+/// chrome's socket calls them (`nd spawn` sends `dave_spawn_session` a `cwd`);
+/// no key is bound to them.
+const SOCKET_TOOLS: [&str; 1] = [notedeck_dave::SPAWN_SESSION];
+
 /// The scopes Dave reports in normal mode, by pane (`ui_tools::key_scopes`).
 const DAVE_SCOPES: [&str; 4] = ["dave.chat", "dave.sessions", "dave.normal", "dave.scene"];
 
@@ -54,7 +59,7 @@ fn dave_bindings() -> Vec<Binding> {
 
 /// Every Dave binding is in a scope Dave reports, and names a UI tool the
 /// host's registry gives to Dave; between them they bind every tool Dave
-/// advertises.
+/// advertises, except the read-only and socket-only ones.
 #[test]
 fn every_dave_binding_names_a_dave_tool() {
     let mut host = TestHost::new();
@@ -68,6 +73,7 @@ fn every_dave_binding_names_a_dave_tool() {
         .iter()
         .map(|spec| spec.name().to_owned())
         .filter(|name| !READ_ONLY_TOOLS.contains(&name.as_str()))
+        .filter(|name| !SOCKET_TOOLS.contains(&name.as_str()))
         .collect();
     let mut chrome = Chrome::new_headless_with_apps(
         notedeck,
