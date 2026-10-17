@@ -34,7 +34,7 @@ use std::borrow::Cow;
 use std::fmt::{self, Write};
 
 use crate::amount::needs_quotes;
-use crate::{CostKind, FileComment, Journal, PostingFlags, Txn, TxnFlag, TxnId};
+use crate::{CostKind, Date, FileComment, Journal, PostingFlags, Price, Txn, TxnFlag, TxnId};
 
 /// How to write a journal.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -89,6 +89,22 @@ impl Journal {
         let mut writer = Writer::new(self, out, options);
         for id in txns {
             writer.txn(self.txn(id))?;
+        }
+        Ok(())
+    }
+
+    /// Write only the `P` directives dated before `end` (every one when
+    /// `None`), in the canonical form [`Self::write_ledger`] uses, with no
+    /// blank line before or after. With [`Self::write_txns`] this exports a
+    /// date range that still converts: a rate from before the range prices
+    /// the postings in it.
+    pub fn write_prices<W: Write>(&self, end: Option<Date>, out: &mut W) -> fmt::Result {
+        let mut writer = Writer::new(self, out, WriteOptions::default());
+        for price in &self.prices {
+            if end.is_some_and(|end| price.date >= end) {
+                continue;
+            }
+            writer.price(price)?;
         }
         Ok(())
     }
@@ -158,16 +174,22 @@ impl<'a, W: Write> Writer<'a, W> {
         }
         self.section()?;
         for price in &journal.prices {
-            let name = journal.commodities.name(price.commodity);
-            let quote = if needs_quotes(name) { "\"" } else { "" };
-            writeln!(
-                self.out,
-                "P {} {quote}{name}{quote} {}",
-                price.date,
-                price.value.display(price.quote, &journal.commodities)
-            )?;
+            self.price(price)?;
         }
         Ok(())
+    }
+
+    /// `P DATE COMMODITY PRICE`.
+    fn price(&mut self, price: &Price) -> fmt::Result {
+        let journal = self.journal;
+        let name = journal.commodities.name(price.commodity);
+        let quote = if needs_quotes(name) { "\"" } else { "" };
+        writeln!(
+            self.out,
+            "P {} {quote}{name}{quote} {}",
+            price.date,
+            price.value.display(price.quote, &journal.commodities)
+        )
     }
 
     /// Write one transaction as a section: its header, its own notes, then

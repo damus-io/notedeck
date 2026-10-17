@@ -13,6 +13,14 @@ cashflow --dir /tmp/cf config show --json
 cashflow login < ~/keys/me.nsec # store the vault key as secrets/nsec
 cashflow settings set home CAD  # a setting every machine shares
 cashflow settings               # each setting, defaults marked
+
+cashflow import ledger books.ledger --source bank --layer cards
+cashflow journal ls             # each segment: hash, date, layer, source, counts
+cashflow journal verify         # every file still hashes to its name
+cashflow export --rules rules.toml --except btc > books.ledger
+cashflow report bal             # balances in CAD (--in, --native)
+cashflow report top expenses --begin 2025-01-01
+cashflow report reg expenses:food --payee coffee
 ```
 
 The vault commands keep their own nostrdb (`--db`, default
@@ -21,8 +29,11 @@ The vault commands keep their own nostrdb (`--db`, default
 before reading, then publish what they write. An unreachable relay leaves
 them working offline.
 
-The journal, importers, export and reports come in later cards; the design is
-on the root Headway epic, `headway:cashflow/flame-vault-near`.
+`import`, `journal`, `export` and `report` need no key or relay: they read
+and write `journal/` and build the books in memory each run (see
+`cashflow::Books`). Only the `ledger` importer ships so far; the real ones
+(Amex, CLN, on-chain, payroll, prices) are later cards on the root Headway
+epic, `headway:cashflow/flame-vault-near`, which also has the design.
 
 ## Layout
 
@@ -30,6 +41,9 @@ on the root Headway epic, `headway:cashflow/flame-vault-near`.
   flags, so a command can't ship without a help page.
 - `src/args.rs`: parsing into a `Command`.
 - `src/config_cmd.rs`: `config path` / `config show`.
+- `src/journal_cmd.rs`: `journal ls`, `journal verify`, `import`.
+- `src/books_cmd.rs`: `export` and `report bal|reg|top`, each loading the
+  derived books once.
 - `src/vault_cmd.rs`: `login`, `logout`, `settings`, and the `Session` every
   vault command opens (key, cache, root, relay sync). A later vault command
   opens one the same way.
@@ -38,5 +52,7 @@ on the root Headway epic, `headway:cashflow/flame-vault-near`.
   with the developer's own `CASHFLOW_*` variables removed, a dead relay and a
   temp `$XDG_DATA_HOME`. Add a command's cases with
   `Cashflow::knowing("<command>")`.
+- `tests/journal.rs`: import, ls, verify, export round-trip, rules, layers,
+  ranges and reports, over synthetic books.
 - `tests/vault.rs`: login, settings across processes, and through a real
   relay that only ever sees envelopes.

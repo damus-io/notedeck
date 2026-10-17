@@ -361,6 +361,31 @@ fn a_subset_is_written_in_the_order_given() {
     );
 }
 
+/// `write_prices` writes the `P` lines dated before its end, canonically.
+#[test]
+fn write_prices_stops_at_the_end_date() {
+    let journal = parse_ok(
+        "P 2024-01-01 BTC 61234.5 CAD\n\
+         P 2024-02-01 \"AB 1\" 2 CAD\n\
+         P 2024-03-01 BTC 70000 CAD\n",
+    );
+    let mut all = String::new();
+    journal.write_prices(None, &mut all).unwrap();
+    assert_eq!(
+        all,
+        "P 2024-01-01 BTC 61234.5 CAD\n\
+         P 2024-02-01 \"AB 1\" 2 CAD\n\
+         P 2024-03-01 BTC 70000 CAD\n"
+    );
+    let mut before = String::new();
+    let end = ledgerdb::Date::parse("2024-03-01").unwrap();
+    journal.write_prices(Some(end), &mut before).unwrap();
+    assert_eq!(
+        before,
+        "P 2024-01-01 BTC 61234.5 CAD\nP 2024-02-01 \"AB 1\" 2 CAD\n"
+    );
+}
+
 #[test]
 fn an_empty_journal_writes_nothing() {
     assert_eq!(Journal::new().to_ledger(ELIDED), "");

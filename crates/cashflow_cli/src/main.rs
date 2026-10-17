@@ -1,17 +1,20 @@
 //! `cashflow` — import, inspect and export a personal finance ledger.
 //!
 //! So far: the data directory ([`cashflow::CashflowDir`]) and its config, the
-//! signing key (`login`/`logout`), the vault's synced settings, and the help
-//! surface. The journal, importers, export and the vault's other records are
-//! later cards on headway:cashflow/flame-vault-near and
+//! journal (`journal ls`/`verify`, `import`), the categorized books (`export`,
+//! `report`), the signing key (`login`/`logout`), the vault's synced
+//! settings, and the help surface. The real importers and the vault's other
+//! records are later cards on headway:cashflow/flame-vault-near and
 //! headway:cashflow/luggage-insane-limit.
 //!
 //! Parsing is [`args`], the help table [`help`], and each command its own
 //! module; this file is the entry point and the dispatch.
 
 mod args;
+mod books_cmd;
 mod config_cmd;
 mod help;
+mod journal_cmd;
 mod vault_cmd;
 
 use std::process::ExitCode;
@@ -53,7 +56,7 @@ async fn main() -> ExitCode {
             );
             Ok(())
         }
-        Invocation::Run(run) => execute(run).await,
+        Invocation::Run(run) => execute(*run).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -82,5 +85,10 @@ async fn execute(run: Run) -> Result<(), String> {
             let mut session = Session::open(&dir, &run).await?;
             vault_cmd::set(&mut session, name, value).await
         }
+        Command::JournalLs { json } => journal_cmd::ls(&dir, *json),
+        Command::JournalVerify { json } => journal_cmd::verify(&dir, *json),
+        Command::Import(args) => journal_cmd::import(&dir, args),
+        Command::Export { books, range } => books_cmd::export(&dir, books, *range),
+        Command::Report { books, report } => books_cmd::report(&dir, books, report),
     }
 }

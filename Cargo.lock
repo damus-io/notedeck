@@ -1558,8 +1558,10 @@ name = "cashflow"
 version = "0.11.0-beta.1"
 dependencies = [
  "dirs",
+ "ledgerdb",
  "nostrdb",
  "nostrdb_net",
+ "profiling",
  "serde",
  "tempfile",
  "thiserror 2.0.18",
@@ -1575,6 +1577,7 @@ dependencies = [
  "cashflow",
  "cli_term",
  "enostr",
+ "ledgerdb",
  "nostrdb",
  "nostrdb_net",
  "serde_json",

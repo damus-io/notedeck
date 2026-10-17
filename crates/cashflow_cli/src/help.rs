@@ -9,12 +9,26 @@ use cli_term::help::{Cli, CommandHelp, GlobalOption};
 
 const SETUP: &str = "SETUP";
 const VAULT: &str = "VAULT";
+const JOURNAL: &str = "JOURNAL";
+const REPORTS: &str = "REPORTS";
+
+/// The layer, rules and home-commodity options every reading command takes.
+macro_rules! books_options {
+    ($($extra:expr),* $(,)?) => {
+        &[
+            $($extra,)*
+            ("--layer <name>", "Only segments in this layer; repeat for more"),
+            ("--except <name>", "Every layer but this one; repeat for more"),
+            ("--rules <toml>", "Categorize with this local rules file"),
+        ]
+    };
+}
 
 /// The whole help surface.
 pub const CLI: Cli = Cli {
     bin: "cashflow",
     about: "import, inspect and export a personal finance ledger",
-    groups: &[SETUP, VAULT],
+    groups: &[SETUP, JOURNAL, REPORTS, VAULT],
     commands: COMMANDS,
     global_hint: "--dir",
 };
@@ -47,6 +61,28 @@ SECRETS:
     config.toml, and no command prints one. The vault's signing key is the
     secret `nsec` ($CASHFLOW_NSEC), which `cashflow login` stores.
 ";
+
+/// How `--rules` files read, shared by the pages that take one (a macro so
+/// `concat!` can append it to a page's details).
+macro_rules! rules_details {
+    () => {
+        "\
+A rules file is TOML, a superset of amex2ledger's amex.toml. Each [[rule]]
+moves a transaction's counter leg (its posting to a default account such as
+expenses:unknown) to `account`; the first matching rule wins:
+
+  defaults = [\"expenses:unknown\", \"income:unknown\"]  # counter legs
+  [[rule]]
+  account = \"expenses:food\"
+  match = [\"grocer\", \"market\"]      # any one, payee substring
+  meta = { raw-city = \"montreal\" }    # all, metadata substring
+  amount = { min = 100, max = 5000 }  # smallest units, unsigned
+  source = \"amex\"                     # segment source
+  layer = \"cards\"                     # segment layer
+
+Matching ignores case."
+    };
+}
 
 const COMMANDS: &[CommandHelp] = &[
     CommandHelp {
@@ -95,6 +131,138 @@ Delete secrets/nsec. The local vault cache is kept, and a set $CASHFLOW_NSEC is
 untouched.",
         options: &[],
         examples: &["cashflow logout"],
+    },
+    CommandHelp {
+        name: "journal",
+        group: JOURNAL,
+        summary: "List the journal's segments, or check every one",
+        usage: &["journal ls [--json]", "journal verify [--json]"],
+        details: "\
+The journal is journal/ under the data dir: one write-once segment per import,
+named by the sha256 of its bytes, the synced truth everything else is derived
+from.
+
+`ls` prints each segment, oldest import first: its hash, import date (UTC),
+layer, source, and how many transactions and prices it holds.
+
+`verify` reads every segment, checking its bytes still hash to its name and
+that it parses, and prints each one that doesn't. It exits non-zero when any
+fails.",
+        options: &[("--json", "Machine-readable output")],
+        examples: &["cashflow journal ls", "cashflow journal verify"],
+    },
+    CommandHelp {
+        name: "import",
+        group: JOURNAL,
+        summary: "Read a source into the journal as one new segment",
+        usage: &["import <importer> [<path>...] [--source <name>] [--layer <name>] [--json]"],
+        details: "\
+Run <importer> over its input and write what it read to the journal as one
+segment. Importing the same input again writes nothing: the segment is named
+by its bytes and is already there. A record imported again by a later run
+replaces the earlier one, keyed by its `; id:`.
+
+Importers:
+
+  ledger <file>   a ledger-cli file whose transactions all carry `; id:`
+
+--source names the segment's source (default: the importer's name), the
+prefix of the record ids it makes. --layer files it in a layer (default: the
+importer's), which `export` and `report` can include or leave out.",
+        options: &[
+            (
+                "--source <name>",
+                "The segment's source [default: the importer]",
+            ),
+            (
+                "--layer <name>",
+                "The segment's layer [default: the importer's]",
+            ),
+            ("--json", "Machine-readable output"),
+        ],
+        examples: &[
+            "cashflow import ledger books.ledger",
+            "cashflow import ledger old.ledger --source bank --layer cards",
+        ],
+    },
+    CommandHelp {
+        name: "export",
+        group: JOURNAL,
+        summary: "Print the categorized ledger as ledger-cli text",
+        usage: &[
+            "export [--layer <name>]... [--except <name>]... [--rules <toml>]",
+            "export [--begin <date>] [--end <date>] [...]",
+        ],
+        details: concat!(
+            "\
+Load the journal, categorize it with --rules (none: as imported), and print
+it to stdout in ledgerdb's canonical ledger-cli form, readable by ledger-cli
+and by `cashflow import ledger`.
+
+With --begin or --end only the transactions in the range are printed
+(--begin inclusive, --end exclusive, both YYYY-MM-DD), after every price
+dated before the end so the range still converts.
+
+Segments that don't load and rules that don't apply are reported on stderr.
+
+",
+            rules_details!()
+        ),
+        options: books_options![
+            ("--begin <date>", "First day to print"),
+            ("--end <date>", "Day after the last to print"),
+        ],
+        examples: &[
+            "cashflow export > all.ledger",
+            "cashflow export --except btc --rules amex.toml --begin 2025-01-01",
+        ],
+    },
+    CommandHelp {
+        name: "report",
+        group: REPORTS,
+        summary: "Balances, a register or the top accounts, for a quick look",
+        usage: &[
+            "report bal [<account>] [--depth <n>] [--end <date>] [--native]",
+            "report reg [<account>] [--begin/--end <date>] [--payee <text>]",
+            "report top [<parent>] [--depth <n>] [--limit <n>] [--begin/--end <date>]",
+        ],
+        details: "\
+Quick terminal checks over the categorized ledger, in --in's commodity
+[default: CAD], each posting converted at its own date. A posting with no
+rate is left out of a total and counted on stderr.
+
+`bal` prints each account's balance at the end of the day before --end
+(default: all time), from <account> (default: every top-level account) down
+to --depth (default: one level below it). --native prints each commodity as
+held instead of converting.
+
+`reg` prints each posting under <account> (default: all), in date order and
+in its own commodity, with --payee keeping transactions whose payee contains
+the text (ignoring case).
+
+`top` ranks the accounts at --depth (default: one below <parent>, which
+defaults to expenses) by their total over the range, with each one's share.
+
+Dates are YYYY-MM-DD; --begin is inclusive, --end exclusive. --layer,
+--except and --rules choose the books as for `export`.",
+        options: books_options![
+            (
+                "--in <commodity>",
+                "Convert into this commodity [default: CAD]"
+            ),
+            ("--depth <n>", "Account depth to list (bal, top)"),
+            ("--begin <date>", "First day (reg, top)"),
+            ("--end <date>", "Day after the last"),
+            ("--native", "Each commodity as held (bal)"),
+            ("--payee <text>", "Payee contains this (reg)"),
+            ("--limit <n>", "How many accounts [default: 10] (top)"),
+        ],
+        examples: &[
+            "cashflow report bal",
+            "cashflow report bal assets --native",
+            "cashflow report reg expenses:food --begin 2025-01-01",
+            "cashflow report top expenses --except btc --limit 5",
+        ],
     },
     CommandHelp {
         name: "settings",
