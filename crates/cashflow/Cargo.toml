@@ -2,13 +2,17 @@
 name = "cashflow"
 edition = "2024"
 version.workspace = true
-description = "cashflow's non-UI core: the $CASHFLOW_DIR layout, config and secrets"
+description = "cashflow's non-UI core: the $CASHFLOW_DIR layout, config, secrets and the nostr vault"
 
 [dependencies]
 dirs = { workspace = true }
+nostrdb = { workspace = true }
+nostrdb_net = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true, features = ["display"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

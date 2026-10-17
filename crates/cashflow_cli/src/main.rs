@@ -1,8 +1,9 @@
 //! `cashflow` — import, inspect and export a personal finance ledger.
 //!
-//! Only the skeleton so far: the data directory ([`cashflow::CashflowDir`]),
-//! its config, and the help surface. The journal, importers, export and the
-//! nostr vault are later cards on headway:cashflow/flame-vault-near and
+//! So far: the data directory ([`cashflow::CashflowDir`]) and its config, the
+//! signing key (`login`/`logout`), the vault's synced settings, and the help
+//! surface. The journal, importers, export and the vault's other records are
+//! later cards on headway:cashflow/flame-vault-near and
 //! headway:cashflow/luggage-insane-limit.
 //!
 //! Parsing is [`args`], the help table [`help`], and each command its own
@@ -11,12 +12,14 @@
 mod args;
 mod config_cmd;
 mod help;
+mod vault_cmd;
 
 use std::process::ExitCode;
 
 use cashflow::CashflowDir;
 
 use crate::args::{Command, Invocation, Run};
+use crate::vault_cmd::Session;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -50,7 +53,7 @@ async fn main() -> ExitCode {
             );
             Ok(())
         }
-        Invocation::Run(run) => execute(run),
+        Invocation::Run(run) => execute(run).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -62,14 +65,22 @@ async fn main() -> ExitCode {
 }
 
 /// Run one command against the data dir: `--dir`, else `$CASHFLOW_DIR`, else
-/// the platform default.
-fn execute(run: Run) -> Result<(), String> {
-    let dir = match run.dir {
+/// the platform default. A vault command opens a [`Session`] first.
+async fn execute(run: Run) -> Result<(), String> {
+    let dir = match &run.dir {
         Some(dir) => CashflowDir::new(dir),
         None => CashflowDir::from_env().map_err(|e| e.to_string())?,
     };
-    match run.command {
-        Command::ConfigPath { name, json } => config_cmd::path(&dir, name.as_deref(), json),
-        Command::ConfigShow { json } => config_cmd::show(&dir, json),
+    match &run.command {
+        Command::ConfigPath { name, json } => config_cmd::path(&dir, name.as_deref(), *json),
+        Command::ConfigShow { json } => config_cmd::show(&dir, *json),
+        Command::Login { nsec } => vault_cmd::login(&dir, nsec.clone()),
+        Command::Logout => vault_cmd::logout(&dir),
+        Command::SettingsShow { json } => vault_cmd::show(&Session::open(&dir, &run).await?, *json),
+        Command::SettingsGet { name } => vault_cmd::get(&Session::open(&dir, &run).await?, name),
+        Command::SettingsSet { name, value } => {
+            let mut session = Session::open(&dir, &run).await?;
+            vault_cmd::set(&mut session, name, value).await
+        }
     }
 }

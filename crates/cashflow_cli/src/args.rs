@@ -28,6 +28,11 @@ pub enum Invocation {
 pub struct Run {
     /// `--dir <path>`: overrides `$CASHFLOW_DIR` for this run.
     pub dir: Option<PathBuf>,
+    /// `--relay <url>`: the relay the vault syncs with, overriding
+    /// `$CASHFLOW_RELAY` for this run.
+    pub relay: Option<String>,
+    /// `--db <path>`: the CLI's own nostrdb for this run.
+    pub db: Option<PathBuf>,
     pub command: Command,
 }
 
@@ -38,6 +43,42 @@ pub enum Command {
     ConfigPath { name: Option<String>, json: bool },
     /// `cashflow config show [--json]`.
     ConfigShow { json: bool },
+    /// `cashflow login [<nsec>]`: `None` reads it from stdin.
+    Login { nsec: Option<String> },
+    /// `cashflow logout`.
+    Logout,
+    /// `cashflow settings [show] [--json]`.
+    SettingsShow { json: bool },
+    /// `cashflow settings get <name>`.
+    SettingsGet { name: String },
+    /// `cashflow settings set <name> <value>`.
+    SettingsSet { name: String, value: String },
+}
+
+/// The global flags, each taking a value, read before or after the command.
+#[derive(Default)]
+struct Globals {
+    dir: Option<PathBuf>,
+    relay: Option<String>,
+    db: Option<PathBuf>,
+}
+
+impl Globals {
+    /// Read `flag`'s value from `args` if it is a global flag. `Ok(false)`
+    /// when it isn't one.
+    fn take(
+        &mut self,
+        flag: &str,
+        args: &mut impl Iterator<Item = String>,
+    ) -> Result<bool, String> {
+        match flag {
+            "--dir" => self.dir = Some(value_of(flag, args.next())?.into()),
+            "--relay" => self.relay = Some(value_of(flag, args.next())?),
+            "--db" => self.db = Some(value_of(flag, args.next())?.into()),
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
 }
 
 /// Parse the arguments after the program name.
@@ -49,7 +90,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
     let mut args = args.into_iter();
     let mut want_help = false;
     let mut help_command = false;
-    let mut dir: Option<PathBuf> = None;
+    let mut globals = Globals::default();
 
     let name = loop {
         let Some(arg) = args.next() else {
@@ -61,7 +102,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
                 help_command = true;
                 want_help = true;
             }
-            "--dir" => dir = Some(value_of(&arg, args.next())?.into()),
+            flag if globals.take(flag, &mut args)? => {}
             flag if flag.starts_with('-') => {
                 return Err(format!("unknown flag '{flag}' (try `cashflow --help`)"));
             }
@@ -89,9 +130,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
         }
         // No command flag takes a value yet. The first that does reads it
         // here, keyed off its page the way `nd_cli`'s `takes_value` does.
-        if arg == "--dir" {
-            dir = Some(value_of(&arg, args.next())?.into());
-        }
+        globals.take(&arg, &mut args)?;
         flags.push(arg);
     }
 
@@ -103,9 +142,60 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
 
     let command = match cmd.name {
         "config" => config_command(positionals, json)?,
+        "login" => login_command(positionals)?,
+        "logout" => no_positionals(positionals, Command::Logout, "logout")?,
+        "settings" => settings_command(positionals, json)?,
         other => unreachable!("'{other}' has a help entry but no parser arm"),
     };
-    Ok(Invocation::Run(Run { dir, command }))
+    Ok(Invocation::Run(Run {
+        dir: globals.dir,
+        relay: globals.relay,
+        db: globals.db,
+        command,
+    }))
+}
+
+/// `login [<nsec>]`.
+fn login_command(positionals: Vec<String>) -> Result<Command, String> {
+    let mut positionals = positionals.into_iter();
+    let nsec = positionals.next();
+    if positionals.next().is_some() {
+        return Err("`login` takes at most one <nsec> (see `cashflow login --help`)".to_owned());
+    }
+    Ok(Command::Login { nsec })
+}
+
+/// `command` when there are no positionals, else an error naming `name`.
+fn no_positionals(
+    positionals: Vec<String>,
+    command: Command,
+    name: &str,
+) -> Result<Command, String> {
+    if let Some(extra) = positionals.first() {
+        return Err(format!("`{name}` takes no arguments, got '{extra}'"));
+    }
+    Ok(command)
+}
+
+/// `settings`'s subcommand, from its positional arguments.
+fn settings_command(positionals: Vec<String>, json: bool) -> Result<Command, String> {
+    let usage = "`settings` takes `show`, `get <name>` or `set <name> <value>` (see `cashflow settings --help`)";
+    let mut positionals = positionals.into_iter();
+    let command = match positionals.next().as_deref() {
+        None | Some("show") => Command::SettingsShow { json },
+        Some("get") => Command::SettingsGet {
+            name: positionals.next().ok_or(usage)?,
+        },
+        Some("set") => Command::SettingsSet {
+            name: positionals.next().ok_or(usage)?,
+            value: positionals.next().ok_or(usage)?,
+        },
+        Some(_) => return Err(usage.to_owned()),
+    };
+    if positionals.next().is_some() {
+        return Err(usage.to_owned());
+    }
+    Ok(command)
 }
 
 /// `config`'s subcommand, from its positional arguments.
@@ -211,6 +301,55 @@ mod tests {
         assert_eq!(after.dir, Some(PathBuf::from("/b")));
         assert_eq!(run_of(&["config", "show"]).dir, None);
         assert!(err_of(&["--dir"]).contains("needs a value"));
+    }
+
+    #[test]
+    fn relay_and_db_are_global() {
+        let run = run_of(&["--relay", "ws://r", "settings", "--db", "/db"]);
+        assert_eq!(run.relay.as_deref(), Some("ws://r"));
+        assert_eq!(run.db, Some(PathBuf::from("/db")));
+        let bare = run_of(&["settings"]);
+        assert_eq!((bare.relay, bare.db), (None, None));
+        assert!(err_of(&["settings", "--relay"]).contains("needs a value"));
+    }
+
+    #[test]
+    fn login_logout_and_settings() {
+        assert_eq!(run_of(&["login"]).command, Command::Login { nsec: None });
+        assert_eq!(
+            run_of(&["login", "nsec1x"]).command,
+            Command::Login {
+                nsec: Some("nsec1x".to_owned())
+            }
+        );
+        assert!(err_of(&["login", "a", "b"]).contains("at most one"));
+        assert_eq!(run_of(&["logout"]).command, Command::Logout);
+        assert!(err_of(&["logout", "x"]).contains("no arguments"));
+
+        assert_eq!(
+            run_of(&["settings"]).command,
+            Command::SettingsShow { json: false }
+        );
+        assert_eq!(
+            run_of(&["settings", "show", "--json"]).command,
+            Command::SettingsShow { json: true }
+        );
+        assert_eq!(
+            run_of(&["settings", "get", "home"]).command,
+            Command::SettingsGet {
+                name: "home".to_owned()
+            }
+        );
+        assert_eq!(
+            run_of(&["settings", "set", "home", "CAD"]).command,
+            Command::SettingsSet {
+                name: "home".to_owned(),
+                value: "CAD".to_owned()
+            }
+        );
+        assert!(err_of(&["settings", "set", "home"]).contains("set <name> <value>"));
+        assert!(err_of(&["settings", "frob"]).contains("set <name> <value>"));
+        assert!(err_of(&["settings", "get", "home", "x"]).contains("get <name>"));
     }
 
     #[test]

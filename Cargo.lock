@@ -1558,9 +1558,13 @@ name = "cashflow"
 version = "0.11.0-beta.1"
 dependencies = [
  "dirs",
+ "nostrdb",
+ "nostrdb_net",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "toml",
 ]
 
@@ -1572,6 +1576,7 @@ dependencies = [
  "cashflow",
  "cli_term",
  "enostr",
+ "nostrdb",
  "nostrdb_net",
  "serde_json",
  "tempfile",

@@ -10,3 +10,4 @@ headway and agentium-core sit below both and still write their own helper.
 - headway:notedeck/reopen-budget-accident — headway teams.rs tests' `-> (TempDir, Ndb)` became a fourth local copy of TempNdb, since headway sits below both crates that hold one
 - headway:notedeck/cigar-matrix-useless — agentium-core's test_support `temp_ndb() -> (TempDir, Ndb)` became a fifth local TempNdb; it depends on neither notedeck nor notedeck_testing
 - headway:dave/name-tree-bulk — the lineage round trip (spawn command → session → state → from_note) in dave's session_commands tests built its own TempDir + Ndb + subscribe/process/wait twice per case; no shared fixture reaches notedeck_dave's lib tests
+- headway:cashflow/practice-expose-vast — cashflow's vault and settings tests needed a temp ndb with the Windows mapsize; cashflow sits below notedeck and notedeck_testing, so it got a sixth TempNdb in src/test_util.rs

@@ -28,6 +28,10 @@ use serde::{Deserialize, Serialize};
 /// The environment variable that overrides the data directory.
 pub const DIR_ENV: &str = "CASHFLOW_DIR";
 
+/// The environment variable naming the relay the CLI syncs the vault with,
+/// when `--relay` doesn't.
+pub const RELAY_ENV: &str = "CASHFLOW_RELAY";
+
 /// The prefix of every cashflow environment variable. Any variable with it
 /// that isn't in [`NOT_SECRET_ENV`] is a secret (see [`secret_env_var`]).
 pub const ENV_PREFIX: &str = "CASHFLOW_";
@@ -35,7 +39,7 @@ pub const ENV_PREFIX: &str = "CASHFLOW_";
 /// The `CASHFLOW_*` variables that are settings rather than secrets. A card
 /// adding a non-secret variable lists it here, or `config show` reports it as
 /// a (redacted) secret — the safe way round.
-pub const NOT_SECRET_ENV: &[&str] = &[DIR_ENV];
+pub const NOT_SECRET_ENV: &[&str] = &[DIR_ENV, RELAY_ENV];
 
 /// The data directory's name under the platform data dir.
 const APP: &str = "cashflow";
@@ -58,6 +62,9 @@ pub enum ConfigError {
     /// A directory under `$CASHFLOW_DIR` couldn't be created.
     #[error("creating {path}: {source}")]
     Create { path: PathBuf, source: io::Error },
+    /// A secret file couldn't be written or removed.
+    #[error("writing {path}: {source}")]
+    Write { path: PathBuf, source: io::Error },
 }
 
 /// The data directory and the fixed layout under it.
@@ -180,6 +187,41 @@ impl CashflowDir {
             Ok(text) => Ok(Some(Secret(text.trim_end_matches(['\n', '\r']).to_owned()))),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(source) => Err(ConfigError::Read { path, source }),
+        }
+    }
+
+    /// Store secret `name` as the file `secrets/<name>`, owner-only (0600 on
+    /// unix) from the moment it exists, creating the data dir if need be.
+    /// Returns the file's path. A `$CASHFLOW_<NAME>` variable still wins over
+    /// it on read (see [`Self::secret`]).
+    pub fn write_secret(&self, name: &str, value: &str) -> Result<PathBuf, ConfigError> {
+        self.create()?;
+        let path = self.secrets().join(name);
+        let write = |path: &Path| -> io::Result<()> {
+            use std::io::Write;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            options
+                .open(path)?
+                .write_all(format!("{value}\n").as_bytes())
+        };
+        write(&path).map_err(|source| ConfigError::Write {
+            path: path.clone(),
+            source,
+        })?;
+        Ok(path)
+    }
+
+    /// Delete the file `secrets/<name>`. `Ok(None)` when there was none,
+    /// else its path.
+    pub fn remove_secret(&self, name: &str) -> Result<Option<PathBuf>, ConfigError> {
+        let path = self.secrets().join(name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(Some(path)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(ConfigError::Write { path, source }),
         }
     }
 
@@ -444,8 +486,30 @@ mod tests {
         assert!(dir.secret("test-only-absent").unwrap().is_none());
     }
 
+    /// A written secret reads back, is owner-only on unix, and removing it
+    /// twice reports it gone the second time.
+    #[test]
+    fn write_secret_round_trips_and_removes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = CashflowDir::new(tmp.path().join("fresh"));
+        let path = dir.write_secret("test-only-key", "s3cret").unwrap();
+        assert_eq!(
+            dir.secret("test-only-key").unwrap().unwrap().expose(),
+            "s3cret"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        assert_eq!(dir.remove_secret("test-only-key").unwrap(), Some(path));
+        assert_eq!(dir.remove_secret("test-only-key").unwrap(), None);
+        assert!(dir.secret("test-only-key").unwrap().is_none());
+    }
+
     /// Entries list secret files then `CASHFLOW_*` variables, each sorted,
-    /// leaving out `CASHFLOW_DIR` and unrelated variables.
+    /// leaving out `CASHFLOW_DIR`, `CASHFLOW_RELAY` and unrelated variables.
     #[test]
     fn secret_entries_lists_files_then_env() {
         let tmp = tempfile::tempdir().unwrap();
@@ -458,6 +522,7 @@ mod tests {
         let env = [
             ("CASHFLOW_ZED", "v"),
             ("CASHFLOW_DIR", "/somewhere"),
+            ("CASHFLOW_RELAY", "ws://127.0.0.1:6677"),
             ("HOME", "/home/x"),
             ("CASHFLOW_ALPHA", "v"),
         ]
