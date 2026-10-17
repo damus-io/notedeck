@@ -1,4 +1,5 @@
-//! Cashflow's semantic colors, derived from the host's [`ColorTheme`].
+//! Cashflow's semantic colors, derived from the host's [`ColorTheme`], and
+//! the faces its HUD sets text in.
 //!
 //! Views never name a raw color: they ask the [`Palette`] for what a color
 //! *means* — money in, money out, a muted caption — so a theme can be swapped
@@ -6,11 +7,12 @@
 //! lives in [`crate::CashflowApp`]'s state and reaches views through
 //! [`crate::views::ViewCx`]; there is no global (CLAUDE.md rule 6).
 
-use egui::Color32;
-use notedeck::ColorTheme;
+use egui::{Color32, FontFamily};
+use notedeck::{ColorTheme, NamedFontFamily};
 
-/// The colors every Cashflow view draws with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The colors every Cashflow view draws with, and the faces its HUD sets
+/// text in.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Palette {
     /// Behind every pane.
     pub background: Color32,
@@ -34,10 +36,45 @@ pub struct Palette {
     pub warning: Color32,
     /// The Adventure view's game HUD (see [`crate::ui::hud`]).
     pub hud: HudPalette,
+    /// The bold and medium faces, built once (see [`Faces`]).
+    pub faces: Faces,
 }
 
-/// The game HUD's colors: dark glass panels with a gold title and colored
-/// "rarity" lines, read by every widget in [`crate::ui::hud`].
+/// notedeck's bold and medium font families, built once and handed out by
+/// reference.
+///
+/// egui names a family with an `Arc<str>`, so writing
+/// `FontFamily::Name("bold".into())` in a widget would allocate every frame.
+/// These are built when the [`Palette`] is, and [`Palette::refresh`] keeps
+/// them, so a widget only clones an `Arc`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Faces {
+    /// A title or a level: notedeck's bold face.
+    pub bold: FontFamily,
+    /// A value: notedeck's medium face, a step heavier than body text.
+    pub medium: FontFamily,
+}
+
+impl Faces {
+    /// Stands in while [`Palette::refresh`] moves the real faces across.
+    /// Proportional is a plain variant, so this allocates nothing.
+    const PLACEHOLDER: Self = Self {
+        bold: FontFamily::Proportional,
+        medium: FontFamily::Proportional,
+    };
+}
+
+impl Default for Faces {
+    fn default() -> Self {
+        Self {
+            bold: FontFamily::Name(NamedFontFamily::Bold.as_str().into()),
+            medium: FontFamily::Name(NamedFontFamily::Medium.as_str().into()),
+        }
+    }
+}
+
+/// The game HUD's colors: dark glass panels in a gilt hairline, a gold title
+/// and colored "rarity" lines, read by every widget in [`crate::ui::hud`].
 ///
 /// The panel stays dark in the light theme too. A HUD floats over the page
 /// like a game overlay, and its gold and rarity text only reads on a dark
@@ -47,9 +84,13 @@ pub struct Palette {
 pub struct HudPalette {
     /// Behind a tooltip, toast or skill tile: translucent near-black.
     pub panel: Color32,
-    /// The thin bright edge around a panel.
+    /// The gilt hairline around a panel, a bar or an icon slot.
     pub border: Color32,
-    /// A tooltip's title line and a skill tile's level.
+    /// A sheen catching the top edge of a bar or a panel.
+    pub highlight: Color32,
+    /// Darkness let into a panel: an icon slot, a bar's notches, a medallion.
+    pub shade: Color32,
+    /// A tooltip's title line, a skill tile's level and a toast's frame.
     pub title: Color32,
     /// Body text on a panel.
     pub text: Color32,
@@ -77,18 +118,16 @@ impl HudPalette {
     /// The standard HUD, with its XP colors taken from the theme's accent.
     pub fn from_theme(theme: &ColorTheme) -> Self {
         let light = is_light(theme);
-        let (panel_alpha, border) = if light {
-            (242, Color32::from_rgb(112, 120, 140))
-        } else {
-            (228, Color32::from_rgb(150, 158, 178))
-        };
+        let panel_alpha = if light { 245 } else { 238 };
         Self {
-            panel: Color32::from_rgba_unmultiplied(12, 14, 26, panel_alpha),
-            border,
+            panel: Color32::from_rgba_unmultiplied(12, 14, 24, panel_alpha),
+            border: Color32::from_rgb(150, 122, 64),
+            highlight: Color32::from_white_alpha(70),
+            shade: Color32::from_black_alpha(140),
             title: Color32::from_rgb(255, 206, 60),
             text: Color32::from_rgb(238, 238, 238),
             text_muted: Color32::from_rgb(160, 162, 176),
-            track: Color32::from_rgba_unmultiplied(12, 14, 26, 210),
+            track: Color32::from_rgba_unmultiplied(6, 7, 14, 230),
             xp_fill: theme.accent,
             xp_rested: theme.accent.lerp_to_gamma(Color32::WHITE, 0.5),
             uncommon: Color32::from_rgb(72, 222, 72),
@@ -110,6 +149,11 @@ fn is_light(theme: &ColorTheme) -> bool {
 impl Palette {
     /// The standard palette: the host theme's semantic colors, read as money.
     pub fn from_theme(theme: &ColorTheme) -> Self {
+        Self::with_faces(theme, Faces::default())
+    }
+
+    /// [`Self::from_theme`] with `faces` already built.
+    fn with_faces(theme: &ColorTheme, faces: Faces) -> Self {
         Self {
             background: theme.surface_primary,
             surface: theme.surface_secondary,
@@ -122,6 +166,7 @@ impl Palette {
             transfer: theme.text_secondary,
             warning: theme.warning,
             hud: HudPalette::from_theme(theme),
+            faces,
         }
     }
 
@@ -130,8 +175,10 @@ impl Palette {
     /// Called at the top of every frame. It is a lookup in egui's temp data
     /// and a copy of a few colors, and it follows every theme change the host
     /// makes (light/dark, OLED) without the app tracking which one happened.
+    /// The [`Faces`] carry over rather than being built again.
     pub fn refresh(&mut self, ctx: &egui::Context) {
-        *self = Self::from_theme(&ColorTheme::current(ctx));
+        let faces = std::mem::replace(&mut self.faces, Faces::PLACEHOLDER);
+        *self = Self::with_faces(&ColorTheme::current(ctx), faces);
     }
 }
 

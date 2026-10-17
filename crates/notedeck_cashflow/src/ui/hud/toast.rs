@@ -1,5 +1,7 @@
-//! Toasts: a banner centered at the top of the window for a level-up or an
-//! achievement, sliding down and fading in, holding, then fading out.
+//! Toasts: a gilded banner centered at the top of the window for a level-up
+//! or an achievement, sliding down and fading in, holding, then fading out.
+//! A medallion on its left carries the new level (or a diamond badge the
+//! achievement's points), beside a small spaced gold caption and the news.
 //!
 //! [`Toasts`] is a queue the app keeps in its state and draws every frame;
 //! one toast shows at a time. Animation is frame-aware (CLAUDE.md rule 17):
@@ -10,8 +12,11 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use egui::{Align2, Color32, Frame, Order, Rect, RichText, Stroke, Ui, vec2};
+use egui::{
+    Align2, FontId, Frame, Order, Painter, Pos2, Rect, RichText, Stroke, StrokeKind, Ui, vec2,
+};
 
+use super::paint::{diamond, shadowed_text};
 use crate::ui::palette::{HudPalette, Palette};
 
 /// How long a toast takes to slide in.
@@ -28,6 +33,9 @@ const SLIDE: f32 = 24.0;
 
 /// The gap between the top of the window and a resting toast.
 const TOP_MARGIN: f32 = 24.0;
+
+/// The medallion's radius.
+const MEDALLION: f32 = 22.0;
 
 /// What a toast announces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,31 +54,32 @@ pub enum ToastKind {
 pub struct Toast {
     /// What it announces.
     pub kind: ToastKind,
-    /// The gold first line.
+    /// The small spaced gold caption: what kind of news it is.
     pub title: String,
-    /// The line under it.
+    /// The news itself, large, under the caption.
     pub body: String,
-    /// The achievement points badge (`+10`), empty for a level-up.
+    /// What the medallion says: the new level, or the points (`+10`).
     badge: String,
 }
 
 impl Toast {
-    /// "You've advanced a `skill` level! You are now level `level`."
+    /// "LEVEL UP — `skill` is now level `level`", with `level` on the
+    /// medallion.
     pub fn level_up(skill: &str, level: u8) -> Self {
         Self {
             kind: ToastKind::LevelUp,
-            title: "Level up!".to_owned(),
-            body: format!("You've advanced a {skill} level! You are now level {level}."),
-            badge: String::new(),
+            title: "LEVEL UP".to_owned(),
+            body: format!("{skill} is now level {level}"),
+            badge: level.to_string(),
         }
     }
 
-    /// "Achievement earned: `name`", with a badge for its `points`.
+    /// "ACHIEVEMENT EARNED — `name`", with its `points` on the badge.
     pub fn achievement(name: &str, points: u32) -> Self {
         Self {
             kind: ToastKind::Achievement { points },
-            title: format!("Achievement earned: {name}"),
-            body: format!("{points} achievement points"),
+            title: "ACHIEVEMENT EARNED".to_owned(),
+            body: name.to_owned(),
             badge: format!("+{points}"),
         }
     }
@@ -168,7 +177,7 @@ impl Toasts {
             if let Some(phase) = ToastPhase::at(now - since) {
                 ui.ctx().request_repaint_after(phase.repaint_after);
                 let toast = self.queue.front()?;
-                return Some(paint(ui, &palette.hud, toast, phase));
+                return Some(paint(ui, palette, toast, phase));
             }
             self.queue.pop_front();
             self.shown_since = None;
@@ -177,20 +186,26 @@ impl Toasts {
 }
 
 /// Draws `toast` at `phase`, centered at the top of the window.
-fn paint(ui: &Ui, hud: &HudPalette, toast: &Toast, phase: ToastPhase) -> Rect {
+fn paint(ui: &Ui, palette: &Palette, toast: &Toast, phase: ToastPhase) -> Rect {
+    let hud = &palette.hud;
     let frame = Frame::new()
         .fill(hud.panel)
         .stroke(Stroke::new(
-            notedeck::tokens::STROKE_THIN,
-            hud.title.gamma_multiply(0.7),
+            notedeck::tokens::STROKE_MEDIUM,
+            hud.title.gamma_multiply(0.85),
         ))
-        .corner_radius(notedeck::tokens::RADIUS_MD)
-        .inner_margin(egui::Margin::symmetric(18, 10))
+        .corner_radius(3)
+        .inner_margin(egui::Margin {
+            left: 12,
+            right: 22,
+            top: 10,
+            bottom: 10,
+        })
         .shadow(egui::Shadow {
             offset: [0, 4],
             blur: 16,
             spread: 0,
-            color: Color32::from_black_alpha(120),
+            color: hud.shade,
         });
 
     egui::Area::new(egui::Id::unique("cashflow_hud_toast"))
@@ -199,50 +214,93 @@ fn paint(ui: &Ui, hud: &HudPalette, toast: &Toast, phase: ToastPhase) -> Rect {
         .anchor(Align2::CENTER_TOP, vec2(0.0, TOP_MARGIN - phase.lift))
         .show(ui.ctx(), |ui| {
             ui.multiply_opacity(phase.alpha);
-            frame.show(ui, |ui| match toast.kind {
-                ToastKind::LevelUp => text_lines(ui, hud, toast),
-                ToastKind::Achievement { .. } => {
-                    ui.horizontal(|ui| {
-                        badge(ui, hud, &toast.badge);
-                        ui.add_space(6.0);
-                        ui.vertical(|ui| text_lines(ui, hud, toast));
-                    });
-                }
+            let shown = frame.show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    medallion(ui, palette, toast);
+                    ui.add_space(12.0);
+                    ui.vertical(|ui| text_lines(ui, palette, toast));
+                });
             });
+            ornaments(ui.painter(), hud, shown.response.rect);
         })
         .response
         .rect
 }
 
-/// The toast's gold title over its body.
-fn text_lines(ui: &mut Ui, hud: &HudPalette, toast: &Toast) {
+/// The spaced gold caption over the news.
+fn text_lines(ui: &mut Ui, palette: &Palette, toast: &Toast) {
+    let hud = &palette.hud;
     ui.spacing_mut().item_spacing.y = 2.0;
     let title = RichText::new(toast.title.as_str())
-        .strong()
-        .size(17.0)
+        .font(FontId::new(12.0, palette.faces.bold.clone()))
+        .extra_letter_spacing(1.6)
         .color(hud.title);
     ui.label(title);
-    ui.label(RichText::new(toast.body.as_str()).color(hud.text));
+    let body = RichText::new(toast.body.as_str())
+        .font(FontId::new(16.0, palette.faces.medium.clone()))
+        .color(hud.text);
+    ui.label(body);
 }
 
-/// A round points badge, like a medal.
-fn badge(ui: &mut Ui, hud: &HudPalette, text: &str) {
-    let diameter = 38.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(diameter, diameter), egui::Sense::hover());
+/// The medallion: a gold ring with the new level for a level-up, a
+/// legendary diamond with the points for an achievement.
+fn medallion(ui: &mut Ui, palette: &Palette, toast: &Toast) {
+    let hud = &palette.hud;
+    let size = vec2(MEDALLION * 2.0, MEDALLION * 2.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter();
-    painter.circle(
-        rect.center(),
-        diameter / 2.0,
-        hud.legendary.gamma_multiply(0.25),
-        Stroke::new(notedeck::tokens::STROKE_MEDIUM, hud.legendary),
-    );
-    painter.text(
-        rect.center(),
+    let center = rect.center();
+    let (color, font_size) = match toast.kind {
+        ToastKind::LevelUp => {
+            painter.circle(
+                center,
+                MEDALLION,
+                hud.shade,
+                Stroke::new(notedeck::tokens::STROKE_THICK, hud.title),
+            );
+            painter.circle_stroke(
+                center,
+                MEDALLION - 4.5,
+                Stroke::new(1.0, hud.title.gamma_multiply(0.45)),
+            );
+            (hud.title, 18.0)
+        }
+        ToastKind::Achievement { .. } => {
+            let stroke = Stroke::new(notedeck::tokens::STROKE_THICK, hud.legendary);
+            diamond(painter, center, MEDALLION + 2.0, hud.shade, stroke);
+            let inner = Stroke::new(1.0, hud.legendary.gamma_multiply(0.45));
+            diamond(
+                painter,
+                center,
+                MEDALLION - 3.0,
+                egui::Color32::TRANSPARENT,
+                inner,
+            );
+            (hud.legendary, 14.0)
+        }
+    };
+    shadowed_text(
+        painter,
+        center,
         Align2::CENTER_CENTER,
-        text,
-        egui::FontId::proportional(14.0),
-        hud.legendary,
+        toast.badge.as_str(),
+        FontId::new(font_size, palette.faces.bold.clone()),
+        color,
+        hud.shade,
     );
+}
+
+/// The banner's inner gilt rule and the diamond finials on its ends.
+fn ornaments(painter: &Painter, hud: &HudPalette, rect: Rect) {
+    painter.rect_stroke(
+        rect.shrink(4.0),
+        1.0,
+        Stroke::new(1.0, hud.border.gamma_multiply(0.55)),
+        StrokeKind::Inside,
+    );
+    let finial = |at: Pos2| diamond(painter, at, 5.0, hud.title, Stroke::NONE);
+    finial(rect.left_center());
+    finial(rect.right_center());
 }
 
 #[cfg(test)]
@@ -279,12 +337,11 @@ mod tests {
     #[test]
     fn level_up_text_names_the_skill_and_level() {
         let toast = Toast::level_up("Saving", 42);
-        assert_eq!(
-            toast.body,
-            "You've advanced a Saving level! You are now level 42."
-        );
+        assert_eq!(toast.body, "Saving is now level 42");
+        assert_eq!(toast.badge, "42");
         let toast = Toast::achievement("Inbox zero", 10);
-        assert_eq!(toast.title, "Achievement earned: Inbox zero");
+        assert_eq!(toast.title, "ACHIEVEMENT EARNED");
+        assert_eq!(toast.body, "Inbox zero");
         assert_eq!(toast.badge, "+10");
     }
 }

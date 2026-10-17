@@ -1,10 +1,12 @@
 //! The Adventure view's game HUD: tooltips, XP bars, skill tiles and toasts.
 //!
-//! Style-inspired by MMO HUDs (dark translucent panels, gold titles, colored
-//! "rarity" lines, a segmented XP bar, a skills-tab tile), but every shape is
+//! Style-inspired by MMO HUDs (dark glass panels in gilt hairlines, bold
+//! gold titles, colored "rarity" lines, a notched XP bar, a skills-tab tile
+//! with its level on a diagonal, a gilded banner toast), but every shape is
 //! painter-drawn and every color comes from [`HudPalette`]: no game's assets,
 //! fonts or names. A second theme reskins the HUD by building a different
-//! palette.
+//! palette. Titles and levels are set in notedeck's own bold and medium faces
+//! ([`Faces`]).
 //!
 //! The widgets take what they show as borrowed `&str`s and plain numbers, and
 //! hold no state of their own except [`Toasts`], which owns its queue. Numbers
@@ -13,16 +15,18 @@
 //! buffer, so a widget adds no allocation beyond egui's own per text run.
 //!
 //! [`HudPalette`]: crate::ui::palette::HudPalette
+//! [`Faces`]: crate::ui::palette::Faces
 
+mod paint;
 mod skill_tile;
 mod toast;
 mod tooltip;
 mod xp_bar;
 
-pub use skill_tile::{SKILL_TILE_SIZE, skill_tile};
+pub use skill_tile::{SKILL_TILE_SIZE, locked_skill_tile, skill_tile};
 pub use toast::{Toast, ToastKind, ToastPhase, Toasts};
 pub use tooltip::{HudTooltip, TOOLTIP_MAX_WIDTH, show_tooltip, tooltip_frame, tooltip_ui};
-pub use xp_bar::{XP_BAR_HEIGHT, XP_BAR_SEGMENTS, xp_bar};
+pub use xp_bar::{XP_BAR_HEIGHT, XP_BAR_SEGMENTS, XP_BAR_SLIM_HEIGHT, xp_bar, xp_bar_slim};
 
 use std::fmt;
 

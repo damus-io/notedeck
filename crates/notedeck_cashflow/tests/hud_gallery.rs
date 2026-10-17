@@ -1,6 +1,7 @@
 //! The HUD widget kit (`notedeck_cashflow::ui::hud`), drawn as one gallery:
-//! a tooltip panel, an XP bar, a row of skill tiles, a time-series chart with
-//! the HUD tooltip on hover, and a level-up toast.
+//! a tooltip panel, an XP bar, a row of skill tiles (one locked), a time-series
+//! chart with the HUD tooltip on hover, a character sheet of slim XP bars, and
+//! a level-up toast.
 //!
 //! The behavioural tests run under a plain `cargo test`. The snapshots — the
 //! gallery at rest and with each hoverable widget hovered, in the dark and
@@ -21,15 +22,56 @@ const SIZE: Vec2 = Vec2::new(760.0, 640.0);
 /// unique in the accessibility tree.
 const BAR_SKILL: &str = "Damus";
 
-/// The skills on the tiles: icon, name, level.
-const TILES: [(&str, &str, u8); 6] = [
-    ("💰", "Earning", 61),
-    ("🐷", "Saving", 42),
-    ("✂", "Frugality", 27),
-    ("🪙", "Stacking", 55),
-    ("📒", "Bookkeeping", 33),
-    ("🛠", "Projects", 99),
+/// One skill tile in the gallery.
+struct Tile {
+    /// Its glyph.
+    icon: &'static str,
+    /// The skill's name, which is also the tile's accessible label.
+    name: &'static str,
+    /// Its level, or `None` for a skill not unlocked yet.
+    level: Option<u8>,
+}
+
+/// The skills on the tiles.
+const TILES: [Tile; 6] = [
+    Tile {
+        icon: "💰",
+        name: "Earning",
+        level: Some(61),
+    },
+    Tile {
+        icon: "🐷",
+        name: "Saving",
+        level: Some(42),
+    },
+    Tile {
+        icon: "✂",
+        name: "Frugality",
+        level: Some(27),
+    },
+    Tile {
+        icon: "🪙",
+        name: "Stacking",
+        level: Some(55),
+    },
+    Tile {
+        icon: "📒",
+        name: "Bookkeeping",
+        level: None,
+    },
+    Tile {
+        icon: "🛠",
+        name: "Projects",
+        level: Some(99),
+    },
 ];
+
+/// What a locked tile's tooltip says.
+const UNLOCK: &str = "Import a year of statements to unlock";
+
+/// The character sheet's rows: a skill and its level, each drawn as a slim
+/// XP bar. Project skills no tile shares, so the bars' labels are unique.
+const SHEET: [(&str, u8); 3] = [("Notedeck", 64), ("nostrdb", 37), ("Headway", 88)];
 
 /// A year of net cashflow, in dollars, with one bad month.
 const NET: [f64; 12] = [
@@ -52,10 +94,13 @@ struct GalleryState {
     plot_rect: Option<Rect>,
     /// Where the toast was drawn last frame, if it was.
     toast_rect: Option<Rect>,
+    /// Where the character sheet's first slim bar was drawn last frame.
+    slim_rect: Option<Rect>,
 }
 
-/// Progress for a skill at `level`, on a made-up curve: the HUD draws the
-/// numbers it is handed, so any monotonic curve will do here.
+/// Progress for a skill at `level`, on a made-up curve and a made-up way
+/// through the level: the HUD draws the numbers it is handed, so any
+/// monotonic curve will do here.
 fn progress(level: u8) -> XpProgress {
     let at = |level: u64| level * level * 1_300;
     let level_xp = at(level as u64);
@@ -66,7 +111,7 @@ fn progress(level: u8) -> XpProgress {
     };
     XpProgress {
         level,
-        xp: level_xp + (next_level_xp - level_xp) * 3 / 5,
+        xp: level_xp + (next_level_xp - level_xp) * (20 + level as u64 * 7 % 70) / 100,
         level_xp,
         next_level_xp,
         month_xp: 4_210,
@@ -138,19 +183,35 @@ fn render_gallery(ui: &mut egui::Ui, state: &mut GalleryState) {
 
                 ui.add_space(16.0);
                 ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                    for (icon, name, level) in TILES {
-                        hud::skill_tile(ui, palette, icon, name, &progress(level));
+                    ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                    for tile in &TILES {
+                        match tile.level {
+                            Some(level) => {
+                                hud::skill_tile(ui, palette, tile.icon, tile.name, &progress(level))
+                            }
+                            None => {
+                                hud::locked_skill_tile(ui, palette, tile.icon, tile.name, UNLOCK)
+                            }
+                        };
                     }
                 });
                 ui.add_space(8.0);
+                let total: u64 = TILES.iter().filter_map(|t| t.level).map(u64::from).sum();
                 ui.label(
-                    egui::RichText::new(format!(
-                        "Total level {}",
-                        Grouped(TILES.iter().map(|t| t.2 as u64).sum())
-                    ))
-                    .color(palette.text_muted),
+                    egui::RichText::new(format!("Total level {}", Grouped(total)))
+                        .color(palette.text_muted),
                 );
+
+                ui.add_space(16.0);
+                state.slim_rect = None;
+                for (name, level) in SHEET {
+                    ui.horizontal(|ui| {
+                        let label = ui.label(egui::RichText::new(name).color(palette.text));
+                        ui.add_space(104.0 - label.rect.width());
+                        let bar = hud::xp_bar_slim(ui, palette, name, &progress(level));
+                        state.slim_rect.get_or_insert(bar.rect);
+                    });
+                }
 
                 state.toast_rect = state.toasts.show(ui, palette);
             });
@@ -164,6 +225,7 @@ fn gallery(theme: egui::Theme, toasts: Toasts, renderer: bool) -> Harness<'stati
         toasts,
         plot_rect: None,
         toast_rect: None,
+        slim_rect: None,
     };
     let mut builder = notedeck::test_harness::app_builder()
         .with_size(SIZE)
@@ -186,6 +248,13 @@ fn level_up() -> Toasts {
 /// Hover the middle of `skill`'s tile or the XP bar and let its tooltip open.
 fn hover_label(harness: &mut Harness<'static, GalleryState>, label: &str) {
     harness.get_by_label(label).hover();
+    harness.run_steps(4);
+}
+
+/// Hover the character sheet's first slim bar and let its tooltip open.
+fn hover_slim_bar(harness: &mut Harness<'static, GalleryState>) {
+    let bar = harness.state().slim_rect.expect("slim bar drawn");
+    harness.hover_at(bar.center());
     harness.run_steps(4);
 }
 
@@ -233,6 +302,30 @@ fn max_level_tile_has_no_next_level() {
     assert!(harness.query_by_label("To next level").is_none());
 }
 
+/// A locked tile's tooltip says it is locked and how to unlock it, with no
+/// level or XP.
+#[test]
+fn locked_tile_tooltip_says_how_to_unlock() {
+    let mut harness = gallery(egui::Theme::Dark, Toasts::new(), false);
+
+    hover_label(&mut harness, "Bookkeeping");
+
+    harness.get_by_label("Locked");
+    harness.get_by_label(UNLOCK);
+    assert!(harness.query_by_label("This month").is_none());
+}
+
+/// A slim character-sheet bar opens the same tooltip as the full bar.
+#[test]
+fn slim_bar_tooltip_opens_on_hover() {
+    let mut harness = gallery(egui::Theme::Dark, Toasts::new(), false);
+
+    hover_slim_bar(&mut harness);
+
+    harness.get_by_label("Notedeck — level 64");
+    harness.get_by_label("To next level");
+}
+
 /// The chart takes the HUD tooltip's frame and contents: hovering a month
 /// shows its title and value.
 #[test]
@@ -252,7 +345,7 @@ fn chart_hover_shows_the_hud_tooltip() {
 fn toast_holds_without_spinning() {
     let harness = gallery(egui::Theme::Dark, level_up(), false);
 
-    harness.get_by_label("You've advanced a Saving level! You are now level 42.");
+    harness.get_by_label("Saving is now level 42");
     assert!(harness.state().toast_rect.is_some());
 }
 
@@ -263,22 +356,35 @@ fn toasts_show_one_after_another() {
     let mut toasts = level_up();
     toasts.push(Toast::achievement("Inbox zero", 10));
     let mut harness = gallery(egui::Theme::Dark, toasts, false);
-    harness.get_by_label("Level up!");
+    harness.get_by_label("LEVEL UP");
 
     // Each step advances the clock by the harness's step_dt (1/4 s).
     harness.run_steps(24);
 
-    assert!(harness.query_by_label("Level up!").is_none());
-    harness.get_by_label("Achievement earned: Inbox zero");
+    assert!(harness.query_by_label("LEVEL UP").is_none());
+    harness.get_by_label("ACHIEVEMENT EARNED");
+    harness.get_by_label("Inbox zero");
 }
 
-/// Snapshot `name` of a gallery in `theme`, after `prepare`.
+/// Snapshot `name` of a gallery in `theme` showing the level-up toast, after
+/// `prepare`.
 fn snapshot(
     theme: egui::Theme,
     name: &str,
     prepare: impl FnOnce(&mut Harness<'static, GalleryState>),
 ) {
-    let mut harness = gallery(theme, level_up(), true);
+    snapshot_with(theme, name, level_up(), prepare);
+}
+
+/// Snapshot `name` of a gallery in `theme` with `toasts` queued, after
+/// `prepare`.
+fn snapshot_with(
+    theme: egui::Theme,
+    name: &str,
+    toasts: Toasts,
+    prepare: impl FnOnce(&mut Harness<'static, GalleryState>),
+) {
+    let mut harness = gallery(theme, toasts, true);
     prepare(&mut harness);
     harness.snapshot(name);
 }
@@ -349,4 +455,34 @@ fn snapshot_hud_chart_hover_light() {
     snapshot(egui::Theme::Light, "hud_chart_hover_light", |h| {
         hover_chart(h, 11)
     });
+}
+
+/// A locked tile hovered: its tooltip says how to unlock it.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_hud_locked_tile_hover_dark() {
+    snapshot(egui::Theme::Dark, "hud_locked_tile_hover_dark", |h| {
+        hover_label(h, "Bookkeeping")
+    });
+}
+
+/// A slim character-sheet bar hovered: the full bar's tooltip.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_hud_slim_bar_hover_dark() {
+    snapshot(egui::Theme::Dark, "hud_slim_bar_hover_dark", hover_slim_bar);
+}
+
+/// The achievement toast: the points on a legendary diamond badge.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_hud_toast_achievement_dark() {
+    let mut toasts = Toasts::new();
+    toasts.push(Toast::achievement("Inbox zero", 10));
+    snapshot_with(
+        egui::Theme::Dark,
+        "hud_toast_achievement_dark",
+        toasts,
+        |_| {},
+    );
 }
