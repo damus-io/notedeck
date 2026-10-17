@@ -4124,6 +4124,21 @@ mod tests {
             .inspector_view
             .open(crate::inspector::InspectorSection::Outputs);
         step_until_label(&mut harness, "dave: fill the Outputs card");
+        // Dave's update polls the status bar's git read, and this harness
+        // doesn't run it: without the poll here the read never lands and its
+        // spinner turns with the frames stepped, so no two runs match.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while count_labels(&harness, "checking git...") > 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "git status never landed"
+            );
+            let session = harness.state_mut().session_manager.get_active_mut();
+            let git = &mut session.unwrap().agentic.as_mut().unwrap().git_status;
+            git.maybe_auto_refresh();
+            git.poll();
+            harness.step();
+        }
         harness.run_ok();
         harness.snapshot("session_outputs");
         let _ = std::fs::remove_dir_all(&repo);

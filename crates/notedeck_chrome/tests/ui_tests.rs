@@ -350,10 +350,11 @@ impl notedeck::App for DummyApp {
     }
 }
 
-/// Snapshot the browser-style global-nav header: the history clock dropdown and
-/// the back/forward chevrons in the chrome tab strip. Two apps have been visited,
-/// so the stack can go back (back chevron enabled) but not forward (forward
-/// chevron greyed) — exercising both control states in one image.
+/// Snapshot the global-nav header: the history clock dropdown and the
+/// back/forward chevrons in the chrome tab strip. Two other apps have been
+/// switched to, but since 79fab1324e70 an app switch is not a nav entry (see
+/// `chrome/nav.rs`), so both chevrons are greyed: the enabled back state has
+/// no snapshot here.
 #[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
 #[tokio::test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
@@ -374,8 +375,8 @@ async fn snapshot_global_nav_header() {
     chrome.add_app(NotedeckApp::Other("Notebook".into(), Box::new(DummyApp)));
     chrome.add_app(NotedeckApp::Other("Headway".into(), Box::new(DummyApp)));
 
-    // Visit app 1 then app 2: the global stack is now [Columns, Notebook,
-    // Headway], so back is available and forward is not.
+    // Visit app 1 then app 2. Each lands on its own empty stack, so there is
+    // nothing to go back to.
     chrome.set_active(1);
     chrome.set_active(2);
 
