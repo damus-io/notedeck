@@ -86,6 +86,9 @@ pub struct TimeSeriesStyle {
     pub min_x_label_spacing: f32,
     /// Color for values below zero. `None` takes the theme's `destructive`.
     pub negative_color: Option<Color32>,
+    /// The panel the hover tooltip is drawn in. `None` takes egui's popup
+    /// frame; a themed tooltip (a game HUD's, say) brings its own.
+    pub tooltip_frame: Option<Frame>,
 }
 
 impl Default for TimeSeriesStyle {
@@ -96,6 +99,7 @@ impl Default for TimeSeriesStyle {
             y_ticks: 4,
             min_x_label_spacing: 64.0,
             negative_color: None,
+            tooltip_frame: None,
         }
     }
 }
@@ -329,7 +333,15 @@ fn time_series_chart(
 
     let tooltip_rect = hovered.map(|bucket| {
         paint_crosshair(&painter, &plot, data, bucket, style, negative, ui.visuals());
-        show_tooltip(ui, &response, &plot, data, bucket, tooltip)
+        show_tooltip(
+            ui,
+            &response,
+            &plot,
+            data,
+            bucket,
+            style.tooltip_frame,
+            tooltip,
+        )
     });
 
     TimeSeriesResponse {
@@ -588,6 +600,7 @@ fn show_tooltip(
     plot: &Plot,
     data: &TimeSeries<'_>,
     bucket: usize,
+    frame: Option<Frame>,
     tooltip: impl FnOnce(&mut Ui, &HoverPoint<'_>),
 ) -> Rect {
     let x = plot.x(bucket);
@@ -604,7 +617,8 @@ fn show_tooltip(
         .pivot(pivot)
         .fixed_pos(pos2(anchor_x, plot.rect.top()))
         .show(ui.ctx(), |ui| {
-            Frame::popup(ui.style()).show(ui, |ui| {
+            let frame = frame.unwrap_or_else(|| Frame::popup(ui.style()));
+            frame.show(ui, |ui| {
                 tooltip(ui, &HoverPoint { bucket, data });
             });
         })

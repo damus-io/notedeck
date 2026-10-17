@@ -32,6 +32,79 @@ pub struct Palette {
     pub transfer: Color32,
     /// Needs attention: stale sources, missing segments, uncategorized rows.
     pub warning: Color32,
+    /// The Adventure view's game HUD (see [`crate::ui::hud`]).
+    pub hud: HudPalette,
+}
+
+/// The game HUD's colors: dark glass panels with a gold title and colored
+/// "rarity" lines, read by every widget in [`crate::ui::hud`].
+///
+/// The panel stays dark in the light theme too. A HUD floats over the page
+/// like a game overlay, and its gold and rarity text only reads on a dark
+/// backing; the light theme makes the glass a little less see-through, since
+/// what shows through it is bright. The XP colors follow the theme's accent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HudPalette {
+    /// Behind a tooltip, toast or skill tile: translucent near-black.
+    pub panel: Color32,
+    /// The thin bright edge around a panel.
+    pub border: Color32,
+    /// A tooltip's title line and a skill tile's level.
+    pub title: Color32,
+    /// Body text on a panel.
+    pub text: Color32,
+    /// Captions on a panel.
+    pub text_muted: Color32,
+    /// An XP bar's empty track.
+    pub track: Color32,
+    /// An XP bar's earned XP.
+    pub xp_fill: Color32,
+    /// The rested-XP bonus drawn past the earned XP, lighter than
+    /// [`Self::xp_fill`].
+    pub xp_rested: Color32,
+    /// Magnitude tiers, smallest to largest (see
+    /// [`crate::ui::hud::Rarity`]): green, blue, purple, orange.
+    pub uncommon: Color32,
+    /// See [`Self::uncommon`].
+    pub rare: Color32,
+    /// See [`Self::uncommon`].
+    pub epic: Color32,
+    /// See [`Self::uncommon`].
+    pub legendary: Color32,
+}
+
+impl HudPalette {
+    /// The standard HUD, with its XP colors taken from the theme's accent.
+    pub fn from_theme(theme: &ColorTheme) -> Self {
+        let light = is_light(theme);
+        let (panel_alpha, border) = if light {
+            (242, Color32::from_rgb(112, 120, 140))
+        } else {
+            (228, Color32::from_rgb(150, 158, 178))
+        };
+        Self {
+            panel: Color32::from_rgba_unmultiplied(12, 14, 26, panel_alpha),
+            border,
+            title: Color32::from_rgb(255, 206, 60),
+            text: Color32::from_rgb(238, 238, 238),
+            text_muted: Color32::from_rgb(160, 162, 176),
+            track: Color32::from_rgba_unmultiplied(12, 14, 26, 210),
+            xp_fill: theme.accent,
+            xp_rested: theme.accent.lerp_to_gamma(Color32::WHITE, 0.5),
+            uncommon: Color32::from_rgb(72, 222, 72),
+            rare: Color32::from_rgb(72, 148, 255),
+            epic: Color32::from_rgb(184, 108, 255),
+            legendary: Color32::from_rgb(255, 144, 36),
+        }
+    }
+}
+
+/// Whether `theme` is a light theme: its page background is brighter than
+/// mid-grey.
+fn is_light(theme: &ColorTheme) -> bool {
+    let bg = theme.surface_primary;
+    let luma = 0.299 * bg.r() as f32 + 0.587 * bg.g() as f32 + 0.114 * bg.b() as f32;
+    luma > 127.0
 }
 
 impl Palette {
@@ -48,6 +121,7 @@ impl Palette {
             expense: theme.destructive,
             transfer: theme.text_secondary,
             warning: theme.warning,
+            hud: HudPalette::from_theme(theme),
         }
     }
 
@@ -81,6 +155,21 @@ mod tests {
             let palette = Palette::from_theme(&theme);
             assert_ne!(palette.income, palette.expense);
             assert_ne!(palette.text, palette.background);
+        }
+    }
+
+    /// The HUD's rarity tiers are four distinct colors, none of them the
+    /// panel's body text, in either theme.
+    #[test]
+    fn hud_rarity_tiers_are_distinct() {
+        for theme in [desktop_dark_color_theme(), light_color_theme()] {
+            let hud = Palette::from_theme(&theme).hud;
+            let tiers = [hud.text, hud.uncommon, hud.rare, hud.epic, hud.legendary];
+            for (i, a) in tiers.iter().enumerate() {
+                for b in &tiers[i + 1..] {
+                    assert_ne!(a, b);
+                }
+            }
         }
     }
 
