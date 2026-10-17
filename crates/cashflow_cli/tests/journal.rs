@@ -334,6 +334,45 @@ fn amex_import_reads_a_directory_once() {
     assert!(bal.contains("926.84 CAD"), "{bal}");
 }
 
+/// `import rbc` over a download holding two accounts, mapped by their last
+/// four digits in `config.toml`: each lands in its own account, and an
+/// account with no mapping fails the import with nothing written.
+#[test]
+fn rbc_import_maps_accounts_by_last_four() {
+    let cf = cashflow();
+    std::fs::write(
+        cf.dir().join("config.toml"),
+        "[rbc.accounts]\n\"1234\" = \"assets:rbc:chequing\"\n\"5678\" = \"assets:rbc:savings\"\n",
+    )
+    .unwrap();
+    let header = "Account Type,\"Account Number\",\"Transaction Date\",\"Cheque Number\",\
+                  \"Description 1\",\"Description 2\",\"CAD$\",\"USD$\"\n";
+    let rows = "Chequing,00000-0001234,8/3/2026,,\"WWW TRF DDA - 1111\",,-500.00,,\n\
+                Savings,00000-0005678,8/3/2026,,\"Transfer\",\"WWW TRANSFER - 1111 \",500.00,,\n\
+                Chequing,00000-0001234,8/5/2026,,\"MONTHLY FEE\",,-12.00,,\n";
+    let download = cf.dir().join("download.csv");
+    std::fs::write(&download, format!("{header}{rows}")).unwrap();
+
+    let first: Value =
+        serde_json::from_str(&cf.ok(&["import", "rbc", s(&download), "--json"])).unwrap();
+    assert_eq!(first["txns"], 3);
+    assert_eq!(first["layer"], "rbc");
+    let bal = cf.ok(&["report", "bal", "assets:rbc", "--native"]);
+    assert!(bal.contains("-512.00 CAD  assets:rbc:chequing"), "{bal}");
+    assert!(bal.contains("500.00 CAD  assets:rbc:savings"), "{bal}");
+
+    let card = cf.dir().join("card.csv");
+    std::fs::write(
+        &card,
+        format!("{header}Visa,4500000000009999,8/4/2026,,\"SHOP\",,-5.00,,\n"),
+    )
+    .unwrap();
+    let err = expect_failure(cf.run(&["import", "rbc", s(&card)]));
+    assert!(err.contains("the account ending 9999"), "{err}");
+    assert!(!err.contains("4500000000009999"), "{err}");
+    assert_eq!(cf.ok(&["journal", "ls"]).lines().count(), 1);
+}
+
 /// A legacy ledger file with no ids, a raw line before its first
 /// transaction and an elided payroll-style posting: the bad line is reported
 /// by number, the rest imports with legacy ids, and `journal rm` retires the

@@ -18,6 +18,7 @@
 //! `CASHFLOW_*` environment variable, and are held as a [`Secret`], whose
 //! `Debug` is redacted, so a config dump or a log line can't leak one.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::io;
@@ -325,6 +326,9 @@ pub struct Config {
     /// `[amex]`: the Amex importer's settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amex: Option<AmexConfig>,
+    /// `[rbc]`: the RBC importer's settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rbc: Option<RbcConfig>,
 }
 
 /// `[amex]` in `config.toml`. Every key is optional.
@@ -339,6 +343,18 @@ pub struct AmexConfig {
     /// the `raw-*` metadata keep the export's spelling either way.
     #[serde(default)]
     pub title_case: bool,
+}
+
+/// `[rbc]` in `config.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RbcConfig {
+    /// `[rbc.accounts]`: the ledger account for each RBC account, keyed by
+    /// the last four digits of its number, as in `"1234" =
+    /// "assets:rbc:chequing"`. Only the last four go here, never the whole
+    /// number.
+    #[serde(default)]
+    pub accounts: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -472,6 +488,13 @@ mod tests {
         );
         assert_eq!(Config::parse(&amex.to_toml()).unwrap(), amex);
         assert!(Config::parse("[amex]\ncards = \"x\"\n").is_err());
+
+        let rbc = Config::parse("[rbc.accounts]\n\"1234\" = \"assets:rbc:chequing\"\n").unwrap();
+        assert_eq!(
+            rbc.rbc.as_ref().unwrap().accounts["1234"],
+            "assets:rbc:chequing"
+        );
+        assert_eq!(Config::parse(&rbc.to_toml()).unwrap(), rbc);
     }
 
     /// `create` makes the subdirectories, `secrets/` owner-only, and is

@@ -16,7 +16,9 @@
 
 mod amex;
 mod batch;
+mod csv_rows;
 mod ledger;
+mod rbc;
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,11 +31,12 @@ use ledgerdb::{
 pub use amex::AmexImporter;
 pub use batch::{Batch, BatchError, RawAmount, RawMeta, RawPosting, RawPrice, RawTxn};
 pub use ledger::LedgerImporter;
+pub use rbc::RbcImporter;
 
 use crate::Config;
 
 /// Every importer's name, as `cashflow import <name>` takes it.
-pub const NAMES: &[&str] = &["amex", "ledger"];
+pub const NAMES: &[&str] = &["amex", "ledger", "rbc"];
 
 /// Reads one kind of source into a batch.
 pub trait Importer {
@@ -66,6 +69,7 @@ pub fn importer(name: &str, config: &Config) -> Option<Box<dyn Importer>> {
     match name {
         "amex" => Some(Box::new(AmexImporter::new(config.amex.as_ref()))),
         "ledger" => Some(Box::new(LedgerImporter)),
+        "rbc" => Some(Box::new(RbcImporter::new(config.rbc.as_ref()))),
         _ => None,
     }
 }

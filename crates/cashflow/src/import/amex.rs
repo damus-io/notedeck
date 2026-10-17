@@ -18,18 +18,13 @@
 //! whole as `; raw-description:`; the merchant is the payee.
 //!
 //! **Record ids.** The export has no reference column, so a row's id is
-//! `<source>:<date>:<cents>:<merchant>:<n>`, the merchant normalized by
-//! [`merchant_key`] and `n` counting the rows of one export that share the
-//! rest of it, from 1. Five identical rides on one day are five real charges
-//! with five ids, while the same five in the next, overlapping export get the
-//! same five ids again. So for each (date, merchant, cents) the journal keeps
-//! the most rows any one export had, never the sum: amex2ledger's dedup,
-//! done by the record ids rather than a pass over the files.
-//!
-//! The ids are given after sorting each export's rows (see [`give_ids`]), so
-//! they don't depend on the order the export lists identical rows in, and
-//! the batch is sorted by id, so a re-pull of the same rows makes the same
-//! batch and [`super::write`] finds nothing changed.
+//! the occurrence id `<source>:<date>:<cents>:<merchant>:<n>` (see
+//! [`super::csv_rows`]), the merchant normalized by [`id_key`]. So for each
+//! (date, merchant, cents) the journal keeps the most rows any one export
+//! had, never the sum: amex2ledger's dedup, done by the record ids rather
+//! than a pass over the files. The batch is sorted by id, so a re-pull of
+//! the same rows makes the same batch and [`super::write`] finds nothing
+//! changed.
 //!
 //! An Amex activity export only lists posted charges, and every row has a
 //! processed date, which marks it cleared. A row without one would be
@@ -38,10 +33,12 @@
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::path::{Path, PathBuf};
 
 use ledgerdb::{Date, Ymd};
 
+use super::csv_rows::{
+    Header, Identified, RowError, csv_files, id_key, number, parse_cents, read, squeeze,
+};
 use super::{Batch, ImportError, ImportInput, Importer, RawAmount, RawMeta, RawPosting, RawTxn};
 use crate::config::AmexConfig;
 use crate::csv;
@@ -106,15 +103,7 @@ impl Importer for AmexImporter {
         }
         let mut rows: BTreeMap<String, Row> = BTreeMap::new();
         for path in csv_files(&input.paths)? {
-            let text = std::fs::read_to_string(&path).map_err(|source| ImportError::Read {
-                path: path.clone(),
-                source,
-            })?;
-            let file = read_export(&text).map_err(|error| ImportError::Csv {
-                path: path.clone(),
-                row: error.row,
-                message: error.message,
-            })?;
+            let file = read_export(&read(&path)?).map_err(|error| error.in_file(&path))?;
             for Identified { id, row } in give_ids(&input.source, file) {
                 keep(&mut rows, id, row);
             }
@@ -188,7 +177,7 @@ struct Row {
     date: Date,
     /// Signed cents: positive is a charge on the card.
     cents: i64,
-    /// [`merchant_key`] of the merchant, the id's merchant part. It sorts
+    /// [`id_key`] of the merchant, the id's merchant part. It sorts
     /// before the merchant itself, so rows sharing an id key sort together.
     key: String,
     /// The description's first [`MERCHANT_WIDTH`] characters, or all of it,
@@ -202,13 +191,6 @@ struct Row {
     processed: Option<Date>,
 }
 
-/// Why an export could not be read, at `row` (from 1, the header being 1).
-#[derive(Debug)]
-struct RowError {
-    row: usize,
-    message: String,
-}
-
 /// Where each column the importer reads sits in a row.
 struct Columns {
     date: usize,
@@ -219,26 +201,12 @@ struct Columns {
 
 impl Columns {
     /// Find the columns by name in the `header` row.
-    fn find(header: &[String]) -> Result<Self, RowError> {
-        let at = |name: &str| {
-            header
-                .iter()
-                .position(|h| h.trim().eq_ignore_ascii_case(name))
-        };
-        let need = |name: &str| {
-            at(name).ok_or_else(|| RowError {
-                row: 1,
-                message: format!(
-                    "no {name:?} column; the header is {:?}, expected Date, Date Processed, Description, Amount",
-                    header.join(",")
-                ),
-            })
-        };
+    fn find(header: &Header) -> Result<Self, RowError> {
         Ok(Self {
-            date: need("Date")?,
-            processed: at("Date Processed"),
-            description: need("Description")?,
-            amount: need("Amount")?,
+            date: header.need("Date")?,
+            processed: header.at("Date Processed"),
+            description: header.need("Description")?,
+            amount: header.need("Amount")?,
         })
     }
 }
@@ -250,7 +218,10 @@ fn read_export(text: &str) -> Result<Vec<Row>, RowError> {
     let Some(header) = records.next() else {
         return Ok(Vec::new());
     };
-    let header: Vec<String> = header.map(|field| field.into_owned()).collect();
+    let header = Header::new(
+        header.map(|field| field.into_owned()).collect(),
+        "Date, Date Processed, Description, Amount",
+    );
     let columns = Columns::find(&header)?;
 
     let mut rows = Vec::new();
@@ -278,7 +249,7 @@ fn read_export(text: &str) -> Result<Vec<Row>, RowError> {
         rows.push(Row {
             date,
             cents,
-            key: merchant_key(&merchant),
+            key: id_key(&merchant),
             merchant,
             city,
             description: squeeze(raw),
@@ -288,28 +259,12 @@ fn read_export(text: &str) -> Result<Vec<Row>, RowError> {
     Ok(rows)
 }
 
-/// Give each row of one export its record id under `source` (see the module
-/// docs). The rows are sorted first, so identical rows number the same
-/// whatever order the export lists them in.
-fn give_ids(source: &str, mut rows: Vec<Row>) -> Vec<Identified> {
-    rows.sort();
-    let mut out: Vec<Identified> = Vec::with_capacity(rows.len());
-    let mut nth = 0u32;
-    for row in rows {
-        let same_key = out.last().is_some_and(|Identified { row: prev, .. }| {
-            prev.date == row.date && prev.cents == row.cents && prev.key == row.key
-        });
-        nth = if same_key { nth + 1 } else { 1 };
-        let id = format!("{source}:{}:{}:{}:{nth}", row.date, row.cents, row.key);
-        out.push(Identified { id, row });
-    }
-    out
-}
-
-/// A row and the record id [`give_ids`] gave it.
-struct Identified {
-    id: String,
-    row: Row,
+/// Give each row of one export its occurrence id under `source`, the stem
+/// being (date, cents, merchant key), which [`Row`] sorts by first.
+fn give_ids(source: &str, rows: Vec<Row>) -> Vec<Identified<Row>> {
+    number(rows, |row| {
+        format!("{source}:{}:{}:{}", row.date, row.cents, row.key)
+    })
 }
 
 /// Keep `row` under `id` unless an earlier export already gave one: the
@@ -325,40 +280,6 @@ fn keep(rows: &mut BTreeMap<String, Row>, id: String, row: Row) {
             }
         }
     }
-}
-
-/// The CSV files `paths` name: a file as it is, a directory as its `*.csv`
-/// files in name order.
-fn csv_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, ImportError> {
-    let mut files = Vec::new();
-    for path in paths {
-        if !path.is_dir() {
-            files.push(path.clone());
-            continue;
-        }
-        let read_err = |source| ImportError::Read {
-            path: path.clone(),
-            source,
-        };
-        let mut found = Vec::new();
-        for entry in std::fs::read_dir(path).map_err(read_err)? {
-            let file = entry.map_err(read_err)?.path();
-            if is_csv(&file) {
-                found.push(file);
-            }
-        }
-        found.sort();
-        files.extend(found);
-    }
-    Ok(files)
-}
-
-/// Whether `path` is a file ending in `.csv`, in any case.
-fn is_csv(path: &Path) -> bool {
-    path.is_file()
-        && path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("csv"))
 }
 
 /// `"CORNER BISTRO           Springfield"` to `("CORNER BISTRO",
@@ -392,29 +313,6 @@ struct Description {
     city: String,
 }
 
-/// `text` trimmed, with each run of whitespace one space.
-fn squeeze(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// The merchant as it goes in a record id: lower case, each run of
-/// characters other than letters and digits one `-`, none at either end.
-/// `"STORE*Order 7"` is `store-order-7`.
-fn merchant_key(merchant: &str) -> String {
-    let mut key = String::with_capacity(merchant.len());
-    for c in merchant.chars() {
-        if c.is_alphanumeric() {
-            key.extend(c.to_lowercase());
-        } else if !key.is_empty() && !key.ends_with('-') {
-            key.push('-');
-        }
-    }
-    if key.ends_with('-') {
-        key.pop();
-    }
-    key
-}
-
 /// `"15 Apr 2026"` (or `"15 April 2026"`) to 2026-04-15.
 fn parse_date(text: &str) -> Option<Date> {
     let mut parts = text.split_whitespace();
@@ -426,34 +324,6 @@ fn parse_date(text: &str) -> Option<Date> {
     }
     let month = MONTHS.iter().position(|m| month.starts_with(m))? as u8 + 1;
     Date::from_ymd(Ymd { year, month, day }).ok()
-}
-
-/// `"-8,803.95"` to `-880395`: cents keep the arithmetic exact.
-fn parse_cents(text: &str) -> Option<i64> {
-    let text: String = text
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != ',')
-        .collect();
-    let (negative, digits) = match text.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, text.strip_prefix('+').unwrap_or(&text)),
-    };
-    let (whole, frac) = digits.split_once('.').unwrap_or((digits, ""));
-    let all_digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
-    if (whole.is_empty() && frac.is_empty()) || frac.len() > 2 {
-        return None;
-    }
-    if !all_digits(whole) || !all_digits(frac) {
-        return None;
-    }
-    let whole: i64 = if whole.is_empty() {
-        0
-    } else {
-        whole.parse().ok()?
-    };
-    let frac: i64 = format!("{frac:0<2}").parse().ok()?;
-    let cents = whole.checked_mul(100)?.checked_add(frac)?;
-    Some(if negative { -cents } else { cents })
 }
 
 /// `"CORNER BISTRO"` to `"Corner Bistro"`, leaving words that carry digits
@@ -483,6 +353,7 @@ mod tests {
     use super::*;
     use crate::import::{Rows, write};
     use ledgerdb::{JournalStore, LayerFilter, Ledger, TxnId, WriteOptions};
+    use std::path::{Path, PathBuf};
 
     const HEADER: &str = "Date,Date Processed,Description,Amount,Flexible\n";
 
@@ -544,18 +415,6 @@ mod tests {
     }
 
     #[test]
-    fn amounts() {
-        assert_eq!(parse_cents("123.16"), Some(12316));
-        assert_eq!(parse_cents("-8,803.95"), Some(-880395));
-        assert_eq!(parse_cents("+170.0"), Some(17000));
-        assert_eq!(parse_cents("5"), Some(500));
-        assert_eq!(parse_cents(".5"), Some(50));
-        for bad in ["", "-", "abc", "1.234", "1.-5", "1.2.3"] {
-            assert_eq!(parse_cents(bad), None, "{bad:?}");
-        }
-    }
-
-    #[test]
     fn description_splitting() {
         let split = |text| {
             let Description { merchant, city } = split_description(text);
@@ -599,14 +458,6 @@ mod tests {
         assert_eq!(title_case("CORNER BISTRO"), "Corner Bistro");
         assert_eq!(title_case("SHOP MKTP CA*AB12CD"), "Shop Mktp CA*AB12CD");
         assert_eq!(title_case("JOE'S DINER"), "Joe's Diner");
-    }
-
-    #[test]
-    fn merchant_keys() {
-        assert_eq!(merchant_key("CORNER BISTRO"), "corner-bistro");
-        assert_eq!(merchant_key("SHOP*Order 7"), "shop-order-7");
-        assert_eq!(merchant_key("  --A  B--  "), "a-b");
-        assert_eq!(merchant_key("CAFÉ"), "café");
     }
 
     #[test]
@@ -751,12 +602,6 @@ mod tests {
         std::fs::create_dir(&dir).unwrap();
         file(&dir, "b.CSV", &format!("{HEADER}2 Jan 2026,,TWO,2.00,\n"));
         file(&dir, "a.csv", &format!("{HEADER}1 Jan 2026,,ONE,1.00,\n"));
-        file(&dir, "notes.txt", "not a csv");
-        std::fs::create_dir(dir.join("old.csv")).unwrap();
-        assert_eq!(
-            csv_files(std::slice::from_ref(&dir)).unwrap(),
-            [dir.join("a.csv"), dir.join("b.CSV")]
-        );
         let batch = amex().import(&input(vec![dir])).unwrap();
         assert_eq!(batch.txn_count(), 2);
     }

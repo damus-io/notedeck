@@ -9,7 +9,9 @@
 //! data dir is [`journal`]; [`import`] reads sources into it (the CSV ones
 //! with [`csv`]), [`rules`] reads
 //! a local rules file into derive edits, [`prices`] fetches daily exchange
-//! rates into it, and [`books`] loads, derives and indexes it for queries. The game derive lands here in a later card; the
+//! rates into it, and [`books`] loads, derives and indexes it for queries.
+//! [`transfers`] finds the moves between the owner's own accounts that two
+//! sources each recorded. The game derive lands here in a later card; the
 //! design all of this follows is on the root epic,
 //! headway:cashflow/flame-vault-near.
 //!
@@ -24,6 +26,7 @@ pub mod kinds;
 pub mod prices;
 pub mod rules;
 pub mod settings;
+pub mod transfers;
 pub mod vault;
 
 #[cfg(test)]
@@ -31,7 +34,7 @@ mod test_util;
 
 pub use books::Books;
 pub use config::{
-    AmexConfig, CashflowDir, Config, ConfigError, DIR_ENV, NamedPath, RELAY_ENV, Secret,
+    AmexConfig, CashflowDir, Config, ConfigError, DIR_ENV, NamedPath, RELAY_ENV, RbcConfig, Secret,
     SecretEntry, SecretSource,
 };
 pub use settings::{Setting, Settings};

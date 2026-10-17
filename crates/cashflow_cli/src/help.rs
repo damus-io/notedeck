@@ -196,6 +196,16 @@ Importers:
                   that. Lines that don't parse are reported with their line
                   numbers and their transaction is left out; the rest is
                   imported.
+  rbc <path>...   RBC online banking \"Download Transactions\" CSVs, any
+                  mix of chequing, savings and card accounts; a directory
+                  reads its *.csv files in name order. [rbc.accounts] in
+                  config.toml maps each account's last four digits to its
+                  ledger account (\"1234\" = \"assets:rbc:chequing\"); an
+                  unmapped account is an error. Each row posts to that
+                  account and expenses:unknown or income:unknown by sign,
+                  in USD for a USD$ amount. Its id is
+                  rbc:<last4>:<date>:<cents>:<description>:<n>, so
+                  overlapping downloads keep each row once.
 
 --source names the segment's source (default: the importer's name), the
 prefix of the record ids it makes. --layer files it in a layer (default: the
@@ -214,6 +224,7 @@ importer's), which `export` and `report` can include or leave out.",
         examples: &[
             "cashflow import amex ~/Downloads/activity.csv",
             "cashflow import ledger books.ledger",
+            "cashflow import rbc ~/Downloads/csv*.csv",
             "cashflow import ledger old.ledger --source bank --layer cards",
         ],
     },
