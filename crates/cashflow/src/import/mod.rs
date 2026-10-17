@@ -18,7 +18,7 @@ mod ledger;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ledgerdb::{Date, JournalStore, ParseError, SegmentHash, SegmentHeader, StoreError};
+use ledgerdb::{JournalStore, ParseError, SegmentHash, SegmentHeader, StoreError};
 
 pub use batch::{Batch, BatchError, RawAmount, RawMeta, RawPosting, RawPrice, RawTxn};
 pub use ledger::LedgerImporter;
@@ -71,25 +71,13 @@ pub enum ImportError {
         path: PathBuf,
         source: std::io::Error,
     },
-    /// An input ledger file did not parse cleanly.
-    #[error("{}: {} parse error(s), first {}", path.display(), errors.len(), errors[0])]
-    Parse {
-        path: PathBuf,
-        errors: Vec<ParseError>,
-    },
-    /// A transaction has no `; id:`.
-    #[error("{}: the transaction on {date} ({payee:?}) has no `; id:`", path.display())]
-    MissingId {
-        path: PathBuf,
-        date: Date,
-        payee: String,
-    },
     /// The importer's raw records didn't make a batch.
     #[error(transparent)]
     Batch(#[from] BatchError),
-    /// The batch has no transactions or prices.
-    #[error("nothing to import")]
-    Empty,
+    /// The batch has no transactions or prices. `skipped` is what the
+    /// importer read but left out, so a file where nothing parsed says why.
+    #[error("nothing to import{}", first_skip(skipped))]
+    Empty { skipped: Vec<ParseError> },
     /// The segment could not be written.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -106,6 +94,8 @@ pub struct Written {
     pub new: bool,
     pub txns: usize,
     pub prices: usize,
+    /// What the importer read but left out, from [`Batch::skipped`].
+    pub skipped: Vec<ParseError>,
 }
 
 /// Run `importer` over `input` and file the batch in `store` as one segment
@@ -118,9 +108,11 @@ pub fn write(
     layer: Option<&str>,
     imported: Option<u64>,
 ) -> Result<Written, ImportError> {
-    let batch = importer.import(input)?;
+    let mut batch = importer.import(input)?;
     if batch.is_empty() {
-        return Err(ImportError::Empty);
+        return Err(ImportError::Empty {
+            skipped: batch.skipped,
+        });
     }
     let header = SegmentHeader {
         source: input.source.clone(),
@@ -136,7 +128,17 @@ pub fn write(
         new,
         txns: batch.txn_count(),
         prices: batch.price_count(),
+        skipped: std::mem::take(&mut batch.skipped),
     })
+}
+
+/// `: 3 lines skipped, first 1:1: …` for [`ImportError::Empty`], or
+/// nothing when none were.
+fn first_skip(skipped: &[ParseError]) -> String {
+    match skipped.first() {
+        Some(first) => format!(": {} skipped, first {first}", skipped.len()),
+        None => String::new(),
+    }
 }
 
 /// The current unix time in seconds.
@@ -201,26 +203,41 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         let ledger = importer("ledger").unwrap();
-        let file = |name: &str, text: &str| {
-            let path = tmp.path().join(name);
-            std::fs::write(&path, text).unwrap();
-            path
-        };
+        let empty = tmp.path().join("c");
+        std::fs::write(&empty, "; nothing\nnot a transaction\n").unwrap();
         let run = |paths| write(&store, &*ledger, &input("x", paths), None, None);
 
         assert!(matches!(run(vec![]), Err(ImportError::Usage(_))));
-        let no_id = file("a", "2024-01-02 Shop\n  a  1 CAD\n  b\n");
         assert!(matches!(
-            run(vec![no_id]),
-            Err(ImportError::MissingId { .. })
+            run(vec![tmp.path().join("missing")]),
+            Err(ImportError::Read { .. })
         ));
-        let bad = file(
-            "b",
-            "2024-01-02 Shop\n  ; id: x:1\n  a  1 CAD\n  b  2 CAD\n",
+        let err = run(vec![empty]).unwrap_err();
+        assert!(matches!(&err, ImportError::Empty { skipped } if skipped.len() == 1));
+        assert_eq!(
+            err.to_string(),
+            "nothing to import: 1 skipped, first 2:1: unsupported directive"
         );
-        assert!(matches!(run(vec![bad]), Err(ImportError::Parse { .. })));
-        let empty = file("c", "; nothing\n");
-        assert!(matches!(run(vec![empty]), Err(ImportError::Empty)));
         assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ledger_import_reports_lines_it_skips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("in.ledger");
+        std::fs::write(
+            &file,
+            "raw\tline\n\n2024-01-02 Shop\n  a  1 CAD\n  b  2 CAD\n\n2024-01-03 Ok\n  a  1 CAD\n  b\n",
+        )
+        .unwrap();
+        let store = JournalStore::new(tmp.path().join("journal"));
+        let ledger = importer("ledger").unwrap();
+        let written = write(&store, &*ledger, &input("x", vec![file]), None, None).unwrap();
+
+        assert_eq!(written.txns, 1);
+        let lines: Vec<_> = written.skipped.iter().map(|e| e.line).collect();
+        assert_eq!(lines, [1, 3], "{:?}", written.skipped);
+        let segment = store.read(written.hash).unwrap();
+        assert!(segment.errors.is_empty(), "the segment itself is clean");
     }
 }

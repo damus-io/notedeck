@@ -77,12 +77,19 @@ pub struct Batch {
     /// The batch, in a journal of its own: amounts are written at its own
     /// commodity table's precision, which a segment's hash depends on.
     pub journal: Journal,
+    /// What the source had that is not in `journal`: an importer that reads
+    /// ledger text keeps going past a line that doesn't parse, leaving the
+    /// transaction out, and says so here. Line numbers are the source's.
+    pub skipped: Vec<ParseError>,
 }
 
 impl Batch {
-    /// A batch holding `journal` as it is.
+    /// A batch holding `journal` as it is, with nothing skipped.
     pub fn new(journal: Journal) -> Self {
-        Self { journal }
+        Self {
+            journal,
+            skipped: Vec::new(),
+        }
     }
 
     /// The transactions in the batch.
@@ -130,7 +137,7 @@ impl Batch {
             };
             return Err(BatchError::Invalid { id, error });
         }
-        Ok(Batch { journal })
+        Ok(Batch::new(journal))
     }
 }
 

@@ -694,3 +694,35 @@ fn local_file_round_trips() {
         "not idempotent"
     );
 }
+
+#[test]
+fn fill_missing_ids_writes_an_id_first_and_round_trips() {
+    let mut journal = parse_ok(
+        "2024-01-02 * Shop\n  ; note: kept\n  ; a comment\n  a  1 CAD\n  b\n\n\
+         2024-01-03 Has one\n  ; id: x:7\n  a  2 CAD\n  b\n\n\
+         2024-01-04 Bare\n  a  3 CAD\n  ; on posting: yes\n  b\n",
+    );
+    let mut seen = Vec::new();
+    let filled = journal.fill_missing_ids(|journal, id| {
+        seen.push(journal.strings.get(journal.txn(id).payee).to_owned());
+        format!("gen:{}", seen.len())
+    });
+    assert_eq!(filled, 2);
+    assert_eq!(seen, ["Shop", "Bare"]);
+
+    let text = journal.to_ledger(ELIDED);
+    assert_eq!(
+        text,
+        "2024-01-02 * Shop\n\t; id: gen:1\n\t; note: kept\n\t; a comment\n\ta\t1 CAD\n\tb\n\n\
+         2024-01-03 Has one\n\t; id: x:7\n\ta\t2 CAD\n\tb\n\n\
+         2024-01-04 Bare\n\t; id: gen:2\n\ta\t3 CAD\n\t; on posting: yes\n\tb\n"
+    );
+    let reread = parse_ok(&text);
+    let ids: Vec<_> = reread
+        .txns
+        .iter()
+        .map(|txn| reread.strings.get(txn.id.unwrap()))
+        .collect();
+    assert_eq!(ids, ["gen:1", "x:7", "gen:2"]);
+    assert_eq!(journal.fill_missing_ids(|_, _| unreachable!()), 0);
+}

@@ -4,7 +4,9 @@
 use std::fmt;
 
 use crate::amount::write_styled;
-use crate::{Accounts, Commodities, CommodityId, Date, Meta, Posting, StrId, StrPool, Txn, TxnId};
+use crate::{
+    Accounts, Commodities, CommodityId, Date, Meta, Posting, Span, StrId, StrPool, Txn, TxnId,
+};
 
 /// An exact decimal number at its own scale: `mantissa / 10^scale`.
 ///
@@ -178,6 +180,48 @@ impl Journal {
             .binary_search_by_key(&index, |cost| cost.posting)
             .ok()
             .map(|at| &self.costs[at])
+    }
+
+    /// Give every transaction that has no [`Txn::id`] the id `id_for`
+    /// returns, written as a transaction-level `; id:` metadata entry ahead
+    /// of its other metadata, and return how many were given one.
+    ///
+    /// `id_for` sees the journal as it was before any id was added, in file
+    /// order, so it can name a transaction by its own written text. The
+    /// metadata table is rebuilt once, so this is linear in the journal.
+    pub fn fill_missing_ids(&mut self, mut id_for: impl FnMut(&Journal, TxnId) -> String) -> usize {
+        let ids: Vec<Option<String>> = self
+            .txns
+            .iter()
+            .enumerate()
+            .map(|(index, txn)| txn.id.is_none().then(|| id_for(self, TxnId(index as u32))))
+            .collect();
+        let filled = ids.iter().flatten().count();
+        if filled == 0 {
+            return 0;
+        }
+
+        let key = self.strings.intern("id");
+        let mut meta = Vec::with_capacity(self.meta.len() + filled);
+        for (txn, id) in self.txns.iter_mut().zip(ids) {
+            let start = meta.len() as u32;
+            if let Some(id) = id {
+                let value = self.strings.intern(&id);
+                txn.id = Some(value);
+                meta.push(Meta {
+                    key,
+                    value,
+                    posting: None,
+                });
+            }
+            meta.extend_from_slice(&self.meta[txn.meta.range()]);
+            txn.meta = Span {
+                start,
+                len: meta.len() as u32 - start,
+            };
+        }
+        self.meta = meta;
+        filled
     }
 
     /// The value of the transaction-level metadata entry `key`, if any.

@@ -1,4 +1,4 @@
-//! End-to-end: `import`, `journal ls`/`verify`, `export` and `report`
+//! End-to-end: `import`, `journal ls`/`verify`/`rm`, `export` and `report`
 //! against a temp `$CASHFLOW_DIR`, with synthetic books only.
 
 mod harness;
@@ -274,16 +274,63 @@ fn reports_read_the_derived_books() {
 #[test]
 fn import_refusals_write_nothing() {
     let cf = cashflow();
-    let no_id = write(
-        &cf,
-        "no-id.ledger",
-        "2024-01-02 Shop\n  a:b  1 CAD\n  c:d\n",
-    );
     let err = expect_failure(cf.run(&["import", "frob"]));
     assert!(err.contains("no importer named 'frob'"), "{err}");
-    let err = expect_failure(cf.run(&["import", "ledger", s(&no_id)]));
-    assert!(err.contains("has no `; id:`"), "{err}");
     let err = expect_failure(cf.run(&["import", "ledger"]));
     assert!(err.contains("exactly one <file>"), "{err}");
     assert_eq!(cf.ok(&["journal", "ls"]), "");
+}
+
+/// A legacy ledger file with no ids, a raw line before its first
+/// transaction and an elided payroll-style posting: the bad line is reported
+/// by number, the rest imports with legacy ids, and `journal rm` retires the
+/// segment again.
+#[test]
+fn legacy_import_reports_skips_and_rm_retires_it() {
+    let cf = cashflow();
+    let legacy = write(
+        &cf,
+        "legacy.ledger",
+        "2024-01-01\tdeadbeef\t5000\n\
+         2024-01-02\tundefined\n\trouted:in\t-90 msat\n\tassets:cln\t90 msat\n\n\
+         2024-01-02\tundefined\n\trouted:in\t-90 msat\n\tassets:cln\t90 msat\n\n\
+         2024-01-15 Payroll\n    assets:bank  1000.00 CAD ; net\n    income:salary\n",
+    );
+
+    let out = cf.run(&["import", "ledger", s(&legacy), "--source", "old"]);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("3 txns  0 prices"), "{stdout}");
+    assert!(stdout.contains("1 skipped"), "{stdout}");
+    assert!(
+        stderr.contains(&format!("skipped {}:1:", legacy.display())),
+        "{stderr}"
+    );
+
+    let exported = cf.ok(&["export"]);
+    let ids: Vec<&str> = exported
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("; id: "))
+        .collect();
+    assert_eq!(ids.len(), 3, "{exported}");
+    assert!(ids.iter().all(|id| id.starts_with("old:")), "{ids:?}");
+    assert_eq!(ids[1], format!("{}:2", ids[0]), "identical txns numbered");
+
+    let ls: Value = serde_json::from_str(&cf.ok(&["journal", "ls", "--json"])).unwrap();
+    let hash = ls[0]["hash"].as_str().unwrap().to_owned();
+    let err = expect_failure(cf.run(&["journal", "rm", "zz"]));
+    assert!(err.contains("not a segment hash"), "{err}");
+    let removed = cf.ok(&["journal", "rm", &hash[..10]]);
+    assert!(removed.starts_with(&format!("removed {hash}")), "{removed}");
+    assert!(
+        cf.dir()
+            .join("journal/.trash")
+            .join(format!("{hash}.ledger"))
+            .is_file()
+    );
+    assert_eq!(cf.ok(&["journal", "ls"]), "");
+    assert_eq!(cf.ok(&["journal", "verify"]).trim(), "ok: 0 segments");
+    let err = expect_failure(cf.run(&["journal", "rm", &hash]));
+    assert!(err.contains("no segment"), "{err}");
 }

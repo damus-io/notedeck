@@ -15,8 +15,8 @@
 //! names it rather than wrong numbers.
 //!
 //! Files that are not named `<64 hex>.ledger` inside the matching two-digit
-//! shard, such as temporary files, rsync partials or a `.git` directory, are
-//! ignored.
+//! shard, such as temporary files, rsync partials, a `.git` directory or the
+//! `.trash/` that [`JournalStore::trash`] retires segments into, are ignored.
 
 use std::fs;
 use std::io::{self, Write};
@@ -26,6 +26,10 @@ use crate::{EncodeError, HeaderError, Journal, Segment, SegmentHash, SegmentHead
 
 /// The extension every segment file has.
 const EXTENSION: &str = ".ledger";
+
+/// The directory under the store that [`JournalStore::trash`] moves
+/// segments into. It is not a shard, so nothing in it is listed or read.
+const TRASH: &str = ".trash";
 
 /// A directory of content-addressed journal segments.
 #[derive(Clone, Debug)]
@@ -163,6 +167,24 @@ impl JournalStore {
     #[profiling::function]
     pub fn read(&self, hash: SegmentHash) -> Result<Segment, StoreError> {
         read_checked(hash, &self.path_of(hash))
+    }
+
+    /// Move the segment `hash` out of the store into `<dir>/.trash/`, where
+    /// [`Self::list`] no longer sees it, and return where it went.
+    ///
+    /// This is the one exception to segments being write-once, for retiring
+    /// an import that a better one replaces. It is local: a sync transport
+    /// unions files, so a copy of the segment anywhere else comes back on
+    /// the next sync.
+    pub fn trash(&self, hash: SegmentHash) -> Result<PathBuf, StoreError> {
+        let path = self.path_of(hash);
+        let trash = self.dir.join(TRASH);
+        fs::create_dir_all(&trash).map_err(|source| io_error(&trash, source))?;
+        let to = trash.join(hash.to_string() + EXTENSION);
+        fs::rename(&path, &to).map_err(|source| io_error(&path, source))?;
+        sync_dir(path.parent().expect("a segment path has a shard"))?;
+        sync_dir(&trash)?;
+        Ok(to)
     }
 
     /// Read every segment, reporting the ones that are corrupt or unreadable

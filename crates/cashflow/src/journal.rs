@@ -2,8 +2,10 @@
 //! every file is still what its name says.
 //!
 //! The store itself is ledgerdb's [`JournalStore`]; this module is the
-//! cashflow-shaped view of it the CLI's `journal ls`/`journal verify` and the
-//! app's journal status print.
+//! cashflow-shaped view of it the CLI's `journal ls`/`journal verify`/
+//! `journal rm` and the app's journal status print.
+
+use std::path::PathBuf;
 
 use ledgerdb::{DamagedSegment, JournalStore, SegmentHash, SegmentHeader, StoreError};
 
@@ -94,6 +96,60 @@ pub fn verify(store: &JournalStore) -> Result<Verified, StoreError> {
     Ok(verified)
 }
 
+/// Why [`remove`] removed nothing.
+#[derive(Debug, thiserror::Error)]
+pub enum RemoveError {
+    /// The prefix is empty or not lowercase hex.
+    #[error("{0:?} is not a segment hash or a prefix of one")]
+    NotHex(String),
+    /// No segment's hash starts with the prefix.
+    #[error("no segment {0}…")]
+    NoMatch(String),
+    /// More than one segment's hash starts with the prefix.
+    #[error("{prefix}… names {count} segments; give more of the hash")]
+    Ambiguous { prefix: String, count: usize },
+    /// The store could not be listed or the file moved.
+    #[error(transparent)]
+    Store(#[from] StoreError),
+}
+
+/// What [`remove`] did.
+#[derive(Debug)]
+pub struct Removed {
+    pub hash: SegmentHash,
+    /// Where the file is now, under `journal/.trash/`.
+    pub to: PathBuf,
+}
+
+/// Retire the one segment whose hash starts with `prefix` (the whole hash,
+/// or as much of it as `journal ls` makes unique) by moving it to the
+/// store's `.trash/`. Its records drop out of every later load.
+///
+/// The move is local only: sync is a union of files, so the segment comes
+/// back from any other copy of the journal that still has it.
+pub fn remove(store: &JournalStore, prefix: &str) -> Result<Removed, RemoveError> {
+    let is_hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+    if prefix.is_empty() || !prefix.bytes().all(is_hex) {
+        return Err(RemoveError::NotHex(prefix.to_owned()));
+    }
+    let mut matches = store
+        .list()?
+        .into_iter()
+        .filter(|hash| hash.to_string().starts_with(prefix));
+    let Some(hash) = matches.next() else {
+        return Err(RemoveError::NoMatch(prefix.to_owned()));
+    };
+    let others = matches.count();
+    if others > 0 {
+        return Err(RemoveError::Ambiguous {
+            prefix: prefix.to_owned(),
+            count: others + 1,
+        });
+    }
+    let to = store.trash(hash)?;
+    Ok(Removed { hash, to })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +198,42 @@ mod tests {
             [StoreError::HashMismatch { .. }]
         ));
         assert_eq!(list(&store).unwrap().bad.len(), 1);
+    }
+
+    #[test]
+    fn remove_takes_a_unique_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(&CashflowDir::new(tmp.path()));
+        let hashes: Vec<_> = (0..40)
+            .map(|i| {
+                store
+                    .write_segment(&header("a", i), &batch(&format!("a:{i}")))
+                    .unwrap()
+            })
+            .collect();
+        let hex = hashes[0].to_string();
+        // Forty hashes share some one-digit prefix.
+        let shared = (0..16u8)
+            .map(|d| format!("{d:x}"))
+            .find(|d| {
+                hashes
+                    .iter()
+                    .filter(|h| h.to_string().starts_with(d))
+                    .count()
+                    > 1
+            })
+            .unwrap();
+
+        assert!(matches!(remove(&store, ""), Err(RemoveError::NotHex(_))));
+        assert!(matches!(remove(&store, "XY"), Err(RemoveError::NotHex(_))));
+        assert!(matches!(
+            remove(&store, &shared),
+            Err(RemoveError::Ambiguous { count, .. }) if count > 1
+        ));
+        let removed = remove(&store, &hex[..12]).unwrap();
+        assert_eq!(removed.hash, hashes[0]);
+        assert!(removed.to.starts_with(store.dir().join(".trash")));
+        assert_eq!(list(&store).unwrap().segments.len(), 39);
+        assert!(matches!(remove(&store, &hex), Err(RemoveError::NoMatch(_))));
     }
 }

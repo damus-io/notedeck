@@ -4,3 +4,4 @@
 the journal" encodes the batch a second time just to hash it first.
 
 - headway:cashflow/afford-nuclear-grass — ~3 min, and a double encode per import: `cashflow::import::write` runs `Segment::encode` to learn the hash for `store.contains`, then `write_segment` encodes again; ledgerdb's private `Put::{Written, Present}` already knows
+- headway:cashflow/travel-size-carpet — no minutes, but the first real run pays it on a 46 MB segment: importing cln.ledger encodes 334k transactions twice (1.3 s for the whole import)

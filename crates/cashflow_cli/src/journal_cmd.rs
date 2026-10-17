@@ -1,5 +1,5 @@
 //! The commands that read or write the journal itself: `journal ls`,
-//! `journal verify` and `import`.
+//! `journal verify`, `journal rm` and `import`.
 
 use cashflow::CashflowDir;
 use cashflow::import::{self, ImportInput};
@@ -95,6 +95,23 @@ pub fn verify(dir: &CashflowDir, json: bool) -> Result<(), String> {
     ))
 }
 
+/// `cashflow journal rm <hash>`: retire one segment to `journal/.trash/`.
+pub fn rm(dir: &CashflowDir, prefix: &str, json: bool) -> Result<(), String> {
+    let removed = journal::remove(&journal::store(dir), prefix).map_err(|e| e.to_string())?;
+    if json {
+        println!(
+            "{}",
+            json!({ "hash": removed.hash.to_string(), "to": removed.to })
+        );
+    } else {
+        println!("removed {} -> {}", removed.hash, removed.to.display());
+    }
+    Ok(())
+}
+
+/// How many skipped lines `import` prints before summing up the rest.
+const SKIPPED_SHOWN: usize = 20;
+
 /// `cashflow import <importer> [<path>...]`.
 pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
     let importer = import::importer(&args.importer).ok_or_else(|| {
@@ -119,6 +136,12 @@ pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
         None,
     )
     .map_err(|e| e.to_string())?;
+    // A skipped line's number is in the one input file the importers that
+    // skip (`ledger`) take.
+    let file = args
+        .paths
+        .first()
+        .map_or_else(String::new, |p| format!("{}:", p.display()));
     if args.json {
         println!(
             "{}",
@@ -130,13 +153,30 @@ pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
                 "imported": written.header.imported,
                 "txns": written.txns,
                 "prices": written.prices,
+                "skipped": written.skipped.iter().map(|e| json!({
+                    "line": e.line,
+                    "col": e.col,
+                    "error": e.kind.to_string(),
+                })).collect::<Vec<_>>(),
             })
         );
         return Ok(());
     }
+    for error in written.skipped.iter().take(SKIPPED_SHOWN) {
+        eprintln!("cashflow: skipped {file}{error}");
+    }
+    if let Some(more) = written.skipped.len().checked_sub(SKIPPED_SHOWN)
+        && more > 0
+    {
+        eprintln!("cashflow: … and {more} more (see --json)");
+    }
     let verb = if written.new { "imported" } else { "unchanged" };
+    let skipped = match written.skipped.len() {
+        0 => String::new(),
+        n => format!("  {n} skipped"),
+    };
     println!(
-        "{verb} {}  {} txns  {} prices  source {}  layer {}",
+        "{verb} {}  {} txns  {} prices  source {}  layer {}{skipped}",
         written.hash, written.txns, written.prices, written.header.source, written.header.layer
     );
     Ok(())

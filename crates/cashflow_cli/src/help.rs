@@ -135,8 +135,12 @@ untouched.",
     CommandHelp {
         name: "journal",
         group: JOURNAL,
-        summary: "List the journal's segments, or check every one",
-        usage: &["journal ls [--json]", "journal verify [--json]"],
+        summary: "List, check or retire the journal's segments",
+        usage: &[
+            "journal ls [--json]",
+            "journal verify [--json]",
+            "journal rm <hash> [--json]",
+        ],
         details: "\
 The journal is journal/ under the data dir: one write-once segment per import,
 named by the sha256 of its bytes, the synced truth everything else is derived
@@ -147,9 +151,20 @@ layer, source, and how many transactions and prices it holds.
 
 `verify` reads every segment, checking its bytes still hash to its name and
 that it parses, and prints each one that doesn't. It exits non-zero when any
-fails.",
+fails.
+
+`rm` retires one segment, named by its hash or a prefix of it unique in `ls`,
+by moving the file to journal/.trash/; its records drop out of every later
+export and report. Use it to retire a legacy `import ledger` segment once a
+real importer covers the same source. A delete does not sync: sync is a
+union of files, so the segment comes back from any other copy of the journal
+that still has it. Remove it there too, or delete it before it is synced.",
         options: &[("--json", "Machine-readable output")],
-        examples: &["cashflow journal ls", "cashflow journal verify"],
+        examples: &[
+            "cashflow journal ls",
+            "cashflow journal verify",
+            "cashflow journal rm 3fa9c2",
+        ],
     },
     CommandHelp {
         name: "import",
@@ -164,7 +179,14 @@ replaces the earlier one, keyed by its `; id:`.
 
 Importers:
 
-  ledger <file>   a ledger-cli file whose transactions all carry `; id:`
+  ledger <file>   a ledger-cli file, such as books kept by hand or a script.
+                  A transaction with no `; id:` is given a legacy one,
+                  <source>:<hash of its text>, plus :2, :3, … for identical
+                  transactions in the file. A legacy id changes when its
+                  transaction is edited, so edits keyed on it don't survive
+                  that. Lines that don't parse are reported with their line
+                  numbers and their transaction is left out; the rest is
+                  imported.
 
 --source names the segment's source (default: the importer's name), the
 prefix of the record ids it makes. --layer files it in a layer (default: the

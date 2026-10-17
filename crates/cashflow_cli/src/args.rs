@@ -58,6 +58,9 @@ pub enum Command {
     JournalLs { json: bool },
     /// `cashflow journal verify [--json]`.
     JournalVerify { json: bool },
+    /// `cashflow journal rm <hash> [--json]`: `hash` is the whole hash or a
+    /// unique prefix.
+    JournalRm { hash: String, json: bool },
     /// `cashflow import <importer> [<path>...]`.
     Import(ImportArgs),
     /// `cashflow export`.
@@ -352,11 +355,15 @@ fn settings_command(positionals: Vec<String>, json: bool) -> Result<Command, Str
 
 /// `journal`'s subcommand.
 fn journal_command(positionals: Vec<String>, json: bool) -> Result<Command, String> {
-    let usage = "`journal` takes `ls` or `verify` (see `cashflow journal --help`)";
+    let usage = "`journal` takes `ls`, `verify` or `rm <hash>` (see `cashflow journal --help`)";
     let mut positionals = positionals.into_iter();
     let command = match positionals.next().as_deref() {
         Some("ls") => Command::JournalLs { json },
         Some("verify") => Command::JournalVerify { json },
+        Some("rm") => Command::JournalRm {
+            hash: positionals.next().ok_or(usage)?,
+            json,
+        },
         _ => return Err(usage.to_owned()),
     };
     if positionals.next().is_some() {
@@ -634,8 +641,18 @@ mod tests {
             run_of(&["journal", "verify"]).command,
             Command::JournalVerify { json: false }
         );
-        assert!(err_of(&["journal"]).contains("`ls` or `verify`"));
-        assert!(err_of(&["journal", "ls", "x"]).contains("`ls` or `verify`"));
+        assert_eq!(
+            run_of(&["journal", "rm", "3fa9", "--json"]).command,
+            Command::JournalRm {
+                hash: "3fa9".to_owned(),
+                json: true
+            }
+        );
+        let usage = "`ls`, `verify` or `rm <hash>`";
+        assert!(err_of(&["journal"]).contains(usage));
+        assert!(err_of(&["journal", "ls", "x"]).contains(usage));
+        assert!(err_of(&["journal", "rm"]).contains(usage));
+        assert!(err_of(&["journal", "rm", "a", "b"]).contains(usage));
 
         assert_eq!(
             run_of(&[

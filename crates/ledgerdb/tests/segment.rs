@@ -351,3 +351,35 @@ fn concurrent_duplicate_writes_are_safe() {
     assert_eq!(names.len(), 1, "no temp files left behind: {names:?}");
     assert_eq!(store.read(expected).unwrap().journal.txns.len(), 50);
 }
+
+#[test]
+fn trash_retires_a_segment_out_of_the_listing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store_in(tmp.path());
+    let keep = store.write_segment(&header("a", 1), &batch(1, 2)).unwrap();
+    let gone = store.write_segment(&header("b", 2), &batch(10, 2)).unwrap();
+    let bytes = fs::read(store.path_of(gone)).unwrap();
+
+    let moved = store.trash(gone).unwrap();
+    assert_eq!(
+        moved,
+        tmp.path()
+            .join("journal/.trash")
+            .join(format!("{gone}.ledger"))
+    );
+    assert_eq!(fs::read(&moved).unwrap(), bytes, "moved, not rewritten");
+    assert!(!store.contains(gone));
+    assert_eq!(store.list().unwrap(), vec![keep]);
+    assert!(store.verify_all().unwrap().bad.is_empty());
+
+    assert!(
+        matches!(store.trash(gone), Err(StoreError::Io { .. })),
+        "trashing a segment the store lacks fails"
+    );
+    // Writing it again brings it back; the trashed copy stays where it is.
+    assert_eq!(
+        store.write_segment(&header("b", 2), &batch(10, 2)).unwrap(),
+        gone
+    );
+    assert!(store.contains(gone) && moved.is_file());
+}
