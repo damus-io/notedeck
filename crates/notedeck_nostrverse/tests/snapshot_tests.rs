@@ -52,10 +52,16 @@ fn snapshots_dir() -> PathBuf {
 
 /// Compare a rendered image against a saved snapshot.
 /// Creates/updates the snapshot when UPDATE_SNAPSHOTS is set.
+///
+/// On a mismatch the render is saved beside it as `{name}.new.png`, as
+/// egui_kittest does, which is how `scripts/snapshot-test` names the pngs
+/// that no longer match.
 fn check_snapshot(name: &str, img: &image::RgbaImage) {
     let dir = snapshots_dir();
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}.png"));
+    let new_path = dir.join(format!("{name}.new.png"));
+    std::fs::remove_file(&new_path).ok();
 
     if std::env::var("UPDATE_SNAPSHOTS").is_ok() {
         img.save(&path).unwrap();
@@ -73,11 +79,16 @@ fn check_snapshot(name: &str, img: &image::RgbaImage) {
         .unwrap_or_else(|e| panic!("Failed to open snapshot {}: {e}", path.display()))
         .to_rgba8();
 
-    assert_eq!(
-        (img.width(), img.height()),
-        (reference.width(), reference.height()),
-        "Snapshot {name} size mismatch"
-    );
+    if (img.width(), img.height()) != (reference.width(), reference.height()) {
+        img.save(&new_path).unwrap();
+        panic!(
+            "Snapshot {name} size mismatch: {}x{} rendered, {}x{} recorded",
+            img.width(),
+            img.height(),
+            reference.width(),
+            reference.height()
+        );
+    }
 
     // Allow small per-pixel differences for software rendering variance
     let total_pixels = (img.width() * img.height()) as usize;
@@ -95,12 +106,15 @@ fn check_snapshot(name: &str, img: &image::RgbaImage) {
     }
 
     let diff_ratio = diff_pixels as f64 / total_pixels as f64;
-    assert!(
-        diff_ratio < 0.01,
-        "Snapshot {name} differs: {:.2}% pixels changed ({diff_pixels}/{total_pixels}). \
-         Run `scripts/snapshot-test --update` to accept.",
-        diff_ratio * 100.0
-    );
+    if diff_ratio >= 0.01 {
+        img.save(&new_path).unwrap();
+        panic!(
+            "Snapshot {name} differs: {:.2}% pixels changed ({diff_pixels}/{total_pixels}), \
+             render saved to {}. Run `scripts/snapshot-test --update` to accept.",
+            diff_ratio * 100.0,
+            new_path.display()
+        );
+    }
 }
 
 /// Parse the demo space and load all models into a renderer, exercising

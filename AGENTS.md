@@ -173,6 +173,7 @@ done-comment described under Work Tracking above.
 ## Coding Conventions & Practices
 
 - Run `cargo fmt --all && cargo clippy` when you're done your work, ensure that all lints are fixed before committing.
+- If your change can reach a render, run `scripts/snapshot-test --changed --debug` before committing. It runs only the snapshot suites your uncommitted work can affect (the crates it touches and their dependents) and names each png that no longer matches. Re-record the ones you restyled on purpose in the same commit (`scripts/snapshot-test --update -p=<crate> <test name>`); any other is a regression. A png left stale is one the next card's `--update` rewrites and has to prove isn't its own. A png that fails only under `--debug` is drawn on a wall-clock frame: confirm it without `--debug` before re-recording.
 - Rust 2021, edition-lints are strict; clippy `disallowed_methods` is denied at crate root to enforce API hygiene (`crates/notedeck/src/lib.rs`).
 - Prefer module-level organization over monolithic files; each feature (accounts, decks, timelines, media) lives in its own module tree.
 - Use `tracing` macros for structured logging and `profiling` scopes where hot paths exist (Columns' relay/event loop).

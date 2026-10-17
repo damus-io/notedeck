@@ -8,6 +8,18 @@
 #   scripts/snapshot-test <test_name>           # run a specific snapshot test
 #   scripts/snapshot-test -p=notedeck_headway   # run only one crate's suite
 #   scripts/snapshot-test --debug ...           # render from the debug build
+#   scripts/snapshot-test --changed --debug     # only suites the working tree can affect
+#   scripts/snapshot-test --changed=master      # ... or everything since master
+#
+# Without --update it is the check: it runs every selected suite to the end and
+# then names each png that no longer matches its render (the `.new.png` kittest
+# left beside it), exiting 1 if any suite failed. A commit that changes a render
+# re-records those pngs in the same commit, so the next card's `--update`
+# rewrites only its own.
+#
+# --changed picks the suites through scripts/changed-crates: the crates the diff
+# touches and every crate that depends on them. With no base it is the
+# uncommitted work, which is what to run before committing.
 #
 # --debug renders from the debug build a session usually already has, instead
 # of a cold release build of the crate's whole dependency tree (minutes, and
@@ -17,7 +29,7 @@
 # On NixOS, LAVAPIPE_ICD is set by shell.nix. On standard Linux distros,
 # lavapipe is found at /usr/share/vulkan/icd.d/lvp_icd.<arch>.json.
 #
-# On macOS there is no lavapipe, so `--update` runs delegate to a per-checkout
+# On macOS there is no lavapipe, so every run delegates to a per-checkout
 # docker container built from scripts/lavapipe.Dockerfile (which mirrors the
 # CI snapshot job, so the pngs it generates match CI pixel-exactly).
 
@@ -29,14 +41,66 @@ set -euo pipefail
 # a non-UTC zone differs from CI by exactly that offset label.
 export TZ=UTC
 
-# macOS can't render snapshots natively; when *updating* them, re-exec this
-# script inside a lavapipe container bound to this checkout.
-if [[ "$(uname -s)" == "Darwin" && " $* " == *" --update "* ]]; then
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+update=""
+# Empty filter runs every #[ignore]d test in the targeted binaries, minus each
+# suite's `--skip`s (see `suites` below). Pass a name to narrow to specific
+# tests.
+filter=""
+# Space-separated crates to run; empty runs every suite.
+only=""
+changed=""
+release="--release"
+# The args a docker re-exec gets: --changed resolved to -p=, since the
+# container can't read a worktree's git dir. Expanded as ${args[@]+...}
+# because macOS's bash 3.2 calls an empty array unbound under set -u.
+args=()
+
+for arg in "$@"; do
+    case "$arg" in
+        --update) update="1"; args+=("$arg") ;;
+        --debug) release=""; args+=("$arg") ;;
+        -p=*|--package=*) only="$only ${arg#*=}"; args+=("$arg") ;;
+        --changed) changed="HEAD" ;;
+        --changed=*) changed="${arg#*=}" ;;
+        *) filter="$arg"; args+=("$arg") ;;
+    esac
+done
+
+if [[ -n "$changed" ]]; then
+    base=""
+    [[ "$changed" != "HEAD" ]] && base="$changed"
+    affected="$("$repo/scripts/changed-crates" $base | tr '\n' ' ')"
+    if [[ -z "$affected" ]]; then
+        echo "no crate changed (against $changed): no snapshot suite to run" >&2
+        exit 0
+    fi
+    # intersect with any -p= the caller gave
+    if [[ -n "$only" ]]; then
+        keep=""
+        for crate in $affected; do
+            [[ " $only " == *" $crate "* ]] && keep="$keep $crate"
+        done
+        affected="$keep"
+    fi
+    only="$affected"
+    if [[ -z "${only// /}" ]]; then
+        echo "no selected crate changed (against $changed): no snapshot suite to run" >&2
+        exit 0
+    fi
+    for crate in $only; do
+        args+=("-p=$crate")
+    done
+fi
+
+# macOS can't render snapshots natively: re-exec this script inside a lavapipe
+# container bound to this checkout.
+if [[ "$(uname -s)" == "Darwin" ]]; then
     if ! command -v docker >/dev/null; then
-        echo "error: updating snapshots on macOS runs lavapipe in docker, but docker was not found." >&2
+        echo "error: snapshots on macOS render with lavapipe in docker, but docker was not found." >&2
         exit 1
     fi
-    repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     # One container per checkout so parallel checkouts never share a mount.
     suffix="$(printf %s "$repo" | shasum | cut -c1-8)"
     name="notedeck-snap-$suffix"
@@ -56,7 +120,7 @@ if [[ "$(uname -s)" == "Darwin" && " $* " == *" --update "* ]]; then
     # restart, not just start: the macOS bind mount can serve stale file
     # content to a long-running container, and a restart flushes it
     docker restart "$name" >/dev/null
-    exec docker exec "$name" /repo/scripts/snapshot-test "$@"
+    exec docker exec "$name" /repo/scripts/snapshot-test ${args[@]+"${args[@]}"}
 fi
 
 # Resolve lavapipe ICD path
@@ -69,26 +133,8 @@ else
     echo "  NixOS: enter the nix shell (LAVAPIPE_ICD is set by shell.nix)" >&2
     echo "  Debian/Ubuntu: sudo apt install mesa-vulkan-drivers" >&2
     echo "  Fedora: sudo dnf install mesa-vulkan-drivers" >&2
-    echo "  macOS: pass --update to run inside the lavapipe docker container" >&2
     exit 1
 fi
-
-update=""
-# Empty filter runs every #[ignore]d test in the targeted binaries, minus each
-# suite's `--skip`s (see `suites` below). Pass a name to narrow to specific
-# tests.
-filter=""
-only=""
-release="--release"
-
-for arg in "$@"; do
-    case "$arg" in
-        --update) update="1" ;;
-        --debug) release="" ;;
-        -p=*|--package=*) only="${arg#*=}" ;;
-        *) filter="$arg" ;;
-    esac
-done
 
 export VK_ICD_FILENAMES="$icd"
 ${update:+export UPDATE_SNAPSHOTS=1}
@@ -164,9 +210,11 @@ suites=(
 # settling): a slower build draws them at a different frame, and some differ
 # between two release runs too.
 # CI is the check: a debug-recorded png it rejects is re-recorded without --debug.
+failed=()
+stale=()
 for suite in "${suites[@]}"; do
     IFS='|' read -r crate cargo_args harness_args release_only <<< "$suite"
-    if [[ -n "$only" && "$only" != "$crate" ]]; then
+    if [[ -n "${only// /}" && " $only " != *" $crate "* ]]; then
         continue
     fi
     profile="$release"
@@ -174,5 +222,34 @@ for suite in "${suites[@]}"; do
         echo "note: $crate renders in release even under --debug (egui debug_assert)" >&2
         profile="--release"
     fi
-    cargo test $profile -p "$crate" $cargo_args -- --ignored $harness_args ${filter:+"$filter"}
+    dir="$repo/crates/$crate"
+    # kittest clears a test's .new/.diff pngs only when that test runs again, so
+    # clear the suite's up front: what is left afterwards is this run's.
+    find "$dir" -path '*/snapshots/*' \( -name '*.new.png' -o -name '*.diff.png' \) -delete
+    # --no-fail-fast: a failing binary would otherwise skip the suite's later
+    # binaries, and their stale pngs with it.
+    if ! cargo test --no-fail-fast $profile -p "$crate" $cargo_args -- --ignored $harness_args ${filter:+"$filter"}; then
+        failed+=("$crate")
+    fi
+    # a png that differs from its render, or a snapshot never recorded
+    while IFS= read -r new; do
+        stale+=("${new#"$repo"/}")
+    done < <(find "$dir" -path '*/snapshots/*' -name '*.new.png' | sort)
 done
+
+if [[ ${#failed[@]} -eq 0 ]]; then
+    exit 0
+fi
+
+echo >&2
+echo "snapshot suites failed: ${failed[*]}" >&2
+if [[ ${#stale[@]} -gt 0 && -z "$update" ]]; then
+    echo "these pngs no longer match their render (each .new.png is the render, .diff.png the difference):" >&2
+    for new in ${stale[@]+"${stale[@]}"}; do
+        echo "  ${new%.new.png}.png" >&2
+    done
+    echo "If your change restyled them on purpose, re-record them in this commit:" >&2
+    echo "  scripts/snapshot-test --update -p=<crate> <test name>" >&2
+    echo "If it didn't, the render has regressed." >&2
+fi
+exit 1
