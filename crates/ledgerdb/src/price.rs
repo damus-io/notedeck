@@ -25,7 +25,9 @@
 //!
 //! When several prices for one pair share a date, the one that comes last in
 //! the slice the db was built from wins; in a [`Ledger`] that is the one from
-//! the segment with the largest hash, so it does not depend on load order.
+//! the segment with the latest `imported` header, then the largest hash, so a
+//! re-fetched rate replaces the one it revises and the winner never depends
+//! on load order.
 //! A price of zero or less cannot be inverted or chained and is ignored.
 
 use std::cell::RefCell;

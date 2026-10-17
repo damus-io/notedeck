@@ -63,6 +63,8 @@ pub enum Command {
     JournalRm { hash: String, json: bool },
     /// `cashflow import <importer> [<path>...]`.
     Import(ImportArgs),
+    /// `cashflow prices fetch`.
+    PricesFetch(PricesArgs),
     /// `cashflow export`.
     Export { books: BooksArgs, range: Range },
     /// `cashflow report bal|reg|top`.
@@ -80,6 +82,17 @@ pub struct ImportArgs {
     pub source: Option<String>,
     /// `--layer`: the segment's layer, else the importer's.
     pub layer: Option<String>,
+    pub json: bool,
+}
+
+/// `cashflow prices fetch`'s arguments.
+#[derive(Debug, PartialEq)]
+pub struct PricesArgs {
+    /// `--since <date>`: the first day to fetch, else each source resumes
+    /// after the newest rate the journal has from it.
+    pub since: Option<Date>,
+    /// `--source <name>`, repeatable: only these; empty is every source.
+    pub sources: Vec<cashflow::prices::Source>,
     pub json: bool,
 }
 
@@ -291,6 +304,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
         "settings" => settings_command(positionals, json)?,
         "journal" => journal_command(positionals, json)?,
         "import" => import_command(positionals, &flags, json)?,
+        "prices" => prices_command(positionals, &flags, json)?,
         "export" => no_positionals(
             positionals,
             Command::Export {
@@ -386,6 +400,29 @@ fn import_command(positionals: Vec<String>, flags: &Flags, json: bool) -> Result
         paths: positionals.map(PathBuf::from).collect(),
         source: flags.value("--source").map(str::to_owned),
         layer: flags.value("--layer").map(str::to_owned),
+        json,
+    }))
+}
+
+/// `prices fetch [--since <date>] [--source <name>]...`.
+fn prices_command(positionals: Vec<String>, flags: &Flags, json: bool) -> Result<Command, String> {
+    let usage = "`prices` takes `fetch` (see `cashflow prices --help`)";
+    let mut positionals = positionals.into_iter();
+    if positionals.next().as_deref() != Some("fetch") || positionals.next().is_some() {
+        return Err(usage.to_owned());
+    }
+    let sources = flags
+        .values("--source")
+        .map(|name| {
+            cashflow::prices::Source::from_name(name).ok_or_else(|| {
+                let names: Vec<_> = cashflow::prices::SOURCES.iter().map(|s| s.name()).collect();
+                format!("no price source '{name}' (sources: {})", names.join(", "))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(Command::PricesFetch(PricesArgs {
+        since: flags.date("--since")?,
+        sources,
         json,
     }))
 }
@@ -669,6 +706,43 @@ mod tests {
         );
         assert!(err_of(&["import"]).contains("needs an importer: ledger"));
         assert!(err_of(&["import", "ledger", "--source"]).contains("--source needs a value"));
+    }
+
+    #[test]
+    fn prices_fetch() {
+        use cashflow::prices::Source;
+        assert_eq!(
+            run_of(&["prices", "fetch"]).command,
+            Command::PricesFetch(PricesArgs {
+                since: None,
+                sources: vec![],
+                json: false,
+            })
+        );
+        assert_eq!(
+            run_of(&[
+                "prices",
+                "fetch",
+                "--since",
+                "2016-01-01",
+                "--source",
+                "boc",
+                "--source",
+                "bitstamp",
+                "--json"
+            ])
+            .command,
+            Command::PricesFetch(PricesArgs {
+                since: date("2016-01-01"),
+                sources: vec![Source::Boc, Source::Bitstamp],
+                json: true,
+            })
+        );
+        let usage = "`prices` takes `fetch`";
+        assert!(err_of(&["prices"]).contains(usage));
+        assert!(err_of(&["prices", "fetch", "x"]).contains(usage));
+        assert!(err_of(&["prices", "fetch", "--source", "x"]).contains("no price source 'x'"));
+        assert!(err_of(&["prices", "fetch", "--since", "soon"]).contains("--since soon"));
     }
 
     #[test]

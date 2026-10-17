@@ -10,6 +10,12 @@
 //!   the posting array is sorted by `(date, txn)` and a date range is a
 //!   contiguous run. The order depends only on which segments are loaded,
 //!   never on the order they were loaded in.
+//! - **Prices** sort by date, then by their segment's `imported` header,
+//!   then by segment hash and position, so among prices on one date the last
+//!   is the latest import's. [`crate::PriceDb`] keeps the last price of a
+//!   date for a pair, which makes a re-fetched rate replace the one it
+//!   revises, the way a re-imported transaction replaces its record id. A
+//!   `P` directive carries no `; id:`; its date and pair are its identity.
 //! - **Record ids.** When two transactions carry the same `; id:`, the one
 //!   from the segment with the later `imported` header wins and the other is
 //!   left out; equal imports fall back to the larger segment hash, then the
@@ -166,7 +172,8 @@ pub struct Loaded {
 #[derive(Debug, Default)]
 pub struct Ledger {
     /// Transactions sorted by `(date, segment hash, position)`, postings in
-    /// the same order, prices sorted the same way, and the shared tables.
+    /// the same order, prices sorted by `(date, imported, segment hash,
+    /// position)`, and the shared tables.
     /// No file comments.
     journal: Journal,
     /// Where each transaction came from, parallel to `journal.txns`.
@@ -210,6 +217,18 @@ struct Rank {
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct OrderKey {
     date: crate::Date,
+    /// Index into the hash-sorted segments, so it orders like the hash.
+    segment: u32,
+    index: u32,
+}
+
+/// The sort key of a price in the rebuilt arrays: [`OrderKey`] with the
+/// segment's import time before its hash, so the latest import of a date
+/// comes last. Field order is the comparison order.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PriceKey {
+    date: crate::Date,
+    imported: u64,
     /// Index into the hash-sorted segments, so it orders like the hash.
     segment: u32,
     index: u32,
@@ -313,7 +332,8 @@ impl Ledger {
         &self.journal.postings
     }
 
-    /// Prices, sorted by date.
+    /// Prices, sorted by date, then by import so that on one date the
+    /// latest import's comes last.
     pub fn prices(&self) -> &[Price] {
         &self.journal.prices
     }
@@ -719,7 +739,13 @@ impl Ledger {
         let mut prices: Vec<u32> = (0..old.prices.len() as u32).collect();
         prices.sort_unstable_by_key(|&at| {
             let at = at as usize;
-            key(self.price_origins[at], old.prices[at].date)
+            let origin = self.price_origins[at];
+            PriceKey {
+                date: old.prices[at].date,
+                imported: self.segments[origin.segment as usize].header.imported,
+                segment: origin.segment,
+                index: origin.index,
+            }
         });
         journal
             .prices

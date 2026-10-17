@@ -1,9 +1,9 @@
 //! `cashflow` — import, inspect and export a personal finance ledger.
 //!
 //! So far: the data directory ([`cashflow::CashflowDir`]) and its config, the
-//! journal (`journal ls`/`verify`/`rm`, `import`), the categorized books (`export`,
-//! `report`), the signing key (`login`/`logout`), the vault's synced
-//! settings, and the help surface. The real importers and the vault's other
+//! journal (`journal ls`/`verify`/`rm`, `import`, `prices fetch`), the
+//! categorized books (`export`, `report`), the signing key
+//! (`login`/`logout`), the vault's synced settings, and the help surface. The real importers and the vault's other
 //! records are later cards on headway:cashflow/flame-vault-near and
 //! headway:cashflow/luggage-insane-limit.
 //!
@@ -15,6 +15,7 @@ mod books_cmd;
 mod config_cmd;
 mod help;
 mod journal_cmd;
+mod prices_cmd;
 mod vault_cmd;
 
 use std::process::ExitCode;
@@ -89,6 +90,7 @@ async fn execute(run: Run) -> Result<(), String> {
         Command::JournalVerify { json } => journal_cmd::verify(&dir, *json),
         Command::JournalRm { hash, json } => journal_cmd::rm(&dir, hash, *json),
         Command::Import(args) => journal_cmd::import(&dir, args),
+        Command::PricesFetch(args) => prices_cmd::fetch(&dir, args),
         Command::Export { books, range } => books_cmd::export(&dir, books, *range),
         Command::Report { books, report } => books_cmd::report(&dir, books, report),
     }

@@ -208,6 +208,42 @@ importer's), which `export` and `report` can include or leave out.",
         ],
     },
     CommandHelp {
+        name: "prices",
+        group: JOURNAL,
+        summary: "Fetch daily exchange rates into the journal",
+        usage: &["prices fetch [--since <date>] [--source <name>]... [--json]"],
+        details: "\
+Fetch daily rates from public sources (no keys) and write them to the journal
+as `P` directives in the `prices` layer, one segment per source and year:
+
+  units      msat → sat → btc, exact, dated 1970-01-01
+  boc        Bank of Canada USD/CAD, business days (before 2017-01-03, its
+             legacy noon rate)
+  bitstamp   Bitstamp BTC/USD daily close, finished days only
+
+Together they price msat in CAD, chaining msat → sat → btc → USD → CAD at
+each transaction's date, the nearest earlier rate covering weekends.
+
+Without --since each source resumes the day after its newest rate in the
+journal, or from the oldest transaction when it has none. A segment is
+stamped with the day after its last rate rather than the clock, so fetching
+a range again writes nothing, and a later fetch that revises a rate
+replaces it. A source that fails is reported and the others still run.",
+        options: &[
+            ("--since <date>", "First day to fetch [default: resume]"),
+            (
+                "--source <name>",
+                "Only this source; repeat for more [default: all]",
+            ),
+            ("--json", "Machine-readable output"),
+        ],
+        examples: &[
+            "cashflow prices fetch",
+            "cashflow prices fetch --since 2016-01-01",
+            "cashflow prices fetch --source boc",
+        ],
+    },
+    CommandHelp {
         name: "export",
         group: JOURNAL,
         summary: "Print the categorized ledger as ledger-cli text",

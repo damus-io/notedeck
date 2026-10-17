@@ -277,45 +277,60 @@ fn zero_prices_are_ignored_and_same_day_duplicates_take_the_last() {
     assert_eq!(db.rate(usd, cad, date("2024-01-02")), rate(5, 4));
 }
 
+/// A one-price segment: `P 2024-01-01 USD <value> CAD`, imported at
+/// `imported`.
+fn usd_segment(imported: u64, value: &str) -> Segment {
+    let header = SegmentHeader {
+        source: "prices".to_owned(),
+        imported,
+        layer: "prices".to_owned(),
+    };
+    let text = format!("P 2024-01-01 USD {value} CAD\n");
+    let bytes = Segment::encode(&header, &parse_ok(&text)).unwrap();
+    Segment::parse(SegmentHash::of(bytes.as_bytes()), &bytes).unwrap()
+}
+
+/// The USD/CAD rate on 2024-01-01 of a ledger loading `order`'s segments in
+/// that order.
+fn usd_rate_loading(order: [(u64, &str); 2]) -> Option<Rate> {
+    let mut ledger = Ledger::new(LayerFilter::All);
+    for (imported, value) in order {
+        assert_eq!(
+            ledger.add_segment(usd_segment(imported, value)),
+            Ok(Added::Loaded)
+        );
+    }
+    let commodities = &ledger.journal().commodities;
+    let (usd, cad) = (
+        commodities.get("USD").unwrap(),
+        commodities.get("CAD").unwrap(),
+    );
+    PriceDb::from_ledger(&ledger).rate(usd, cad, date("2024-01-01"))
+}
+
 #[test]
-fn from_ledger_settles_duplicates_by_segment_not_load_order() {
-    let segment = |imported: u64, value: &str| {
-        let header = SegmentHeader {
-            source: "prices".to_owned(),
-            imported,
-            layer: "prices".to_owned(),
-        };
-        let text = format!("P 2024-01-01 USD {value} CAD\n");
-        let bytes = Segment::encode(&header, &parse_ok(&text)).unwrap();
-        Segment::parse(SegmentHash::of(bytes.as_bytes()), &bytes).unwrap()
-    };
-    let ledger_of = |order: [(u64, &str); 2]| {
-        let mut ledger = Ledger::new(LayerFilter::All);
-        for (imported, value) in order {
-            assert_eq!(
-                ledger.add_segment(segment(imported, value)),
-                Ok(Added::Loaded)
-            );
-        }
-        ledger
-    };
-    let (x, y) = ((1, "1.30"), (2, "1.40"));
-    let winner = if segment(x.0, x.1).hash > segment(y.0, y.1).hash {
+fn from_ledger_takes_the_latest_import_of_a_date() {
+    // Both ways round, so in one of them the later import has the smaller
+    // hash: the import time decides, never the hash or the load order.
+    for (old, new) in [("1.30", "1.40"), ("1.40", "1.30")] {
+        let (x, y) = ((1, old), (2, new));
+        let expected =
+            Rate::from_decimal(parse_ok(&format!("P 2024-01-01 USD {new} CAD\n")).prices[0].value);
+        assert_eq!(usd_rate_loading([x, y]), expected, "{old} then {new}");
+        assert_eq!(usd_rate_loading([y, x]), expected, "{new} then {old}");
+    }
+}
+
+#[test]
+fn from_ledger_breaks_an_import_tie_by_hash_not_load_order() {
+    let (x, y) = ((5, "1.30"), (5, "1.40"));
+    let winner = if usd_segment(x.0, x.1).hash > usd_segment(y.0, y.1).hash {
         x.1
     } else {
         y.1
     };
     let expected =
         Rate::from_decimal(parse_ok(&format!("P 2024-01-01 USD {winner} CAD\n")).prices[0].value);
-
-    for order in [[x, y], [y, x]] {
-        let ledger = ledger_of(order);
-        let commodities = &ledger.journal().commodities;
-        let (usd, cad) = (
-            commodities.get("USD").unwrap(),
-            commodities.get("CAD").unwrap(),
-        );
-        let db = PriceDb::from_ledger(&ledger);
-        assert_eq!(db.rate(usd, cad, date("2024-01-01")), expected);
-    }
+    assert_eq!(usd_rate_loading([x, y]), expected);
+    assert_eq!(usd_rate_loading([y, x]), expected);
 }
