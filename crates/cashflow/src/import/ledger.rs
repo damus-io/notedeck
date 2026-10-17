@@ -68,8 +68,8 @@ fn import_file(path: &Path, source: &str) -> Result<Batch, ImportError> {
     } = Journal::parse(&text);
     give_legacy_ids(&mut journal, source);
     Ok(Batch {
-        journal,
         skipped: errors,
+        ..Batch::new(journal)
     })
 }
 

@@ -188,6 +188,21 @@ Importers:
                   keep each charge once. [amex] in config.toml sets
                   `card`, `currency` (CAD) and `title_case` (payees in
                   Title Case).
+  btc [<file>...] on-chain bitcoin wallets, from bitcoind's JSON-RPC: every
+                  wallet `listwallets` names (or [btc] wallets), each
+                  read whole. Amounts are exact msat in assets:btc:<wallet>,
+                  layer btc-onchain. A txid any wallet sent is one
+                  transaction, btc:<txid>: an output another read wallet
+                  received is a transfer between them, any other goes to
+                  expenses:unknown, and the fee to expenses:fees:btc. A
+                  payment in or a mined coin is btc:<txid>:<vout> against
+                  income:unknown. A transaction not yet in a block is left
+                  out until it is. [btc] in config.toml sets `url`
+                  (http://127.0.0.1:8332), `user` (whose password is the
+                  bitcoind-rpc-password secret) or `cookie`
+                  (~/.bitcoin/.cookie), and `external_wallets` (watch-only
+                  wallets read too). Given files, it reads the old
+                  btc-txs-raw TSV listings instead.
   ledger <file>   a ledger-cli file, such as books kept by hand or a script.
                   A transaction with no `; id:` is given a legacy one,
                   <source>:<hash of its text>, plus :2, :3, … for identical
@@ -223,6 +238,7 @@ importer's), which `export` and `report` can include or leave out.",
         ],
         examples: &[
             "cashflow import amex ~/Downloads/activity.csv",
+            "cashflow import btc",
             "cashflow import ledger books.ledger",
             "cashflow import rbc ~/Downloads/csv*.csv",
             "cashflow import ledger old.ledger --source bank --layer cards",

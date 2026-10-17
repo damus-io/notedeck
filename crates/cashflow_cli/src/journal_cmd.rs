@@ -115,7 +115,7 @@ const SKIPPED_SHOWN: usize = 20;
 /// `cashflow import <importer> [<path>...]`.
 pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
     let config = Config::load(dir).map_err(|e| e.to_string())?;
-    let importer = import::importer(&args.importer, &config).ok_or_else(|| {
+    let importer = import::importer(&args.importer, &config, dir).ok_or_else(|| {
         format!(
             "no importer named '{}' (importers: {})",
             args.importer,
@@ -161,6 +161,10 @@ pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
                     "col": e.col,
                     "error": e.kind.to_string(),
                 })).collect::<Vec<_>>(),
+                "left_out": written.left_out.iter().map(|l| json!({
+                    "id": l.id,
+                    "why": l.why,
+                })).collect::<Vec<_>>(),
             })
         );
         return Ok(());
@@ -173,10 +177,21 @@ pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
     {
         eprintln!("cashflow: … and {more} more (see --json)");
     }
-    let skipped = match written.skipped.len() {
+    for left in written.left_out.iter().take(SKIPPED_SHOWN) {
+        eprintln!("cashflow: left out {} ({})", left.id, left.why);
+    }
+    if let Some(more) = written.left_out.len().checked_sub(SKIPPED_SHOWN)
+        && more > 0
+    {
+        eprintln!("cashflow: … and {more} more left out (see --json)");
+    }
+    let mut skipped = match written.skipped.len() {
         0 => String::new(),
         n => format!("  {n} skipped"),
     };
+    if !written.left_out.is_empty() {
+        skipped.push_str(&format!("  {} left out", written.left_out.len()));
+    }
     let rows = format!(
         "txns {}  prices {}",
         rows_text(written.txn_rows),

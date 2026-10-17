@@ -329,6 +329,9 @@ pub struct Config {
     /// `[rbc]`: the RBC importer's settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rbc: Option<RbcConfig>,
+    /// `[btc]`: the on-chain bitcoin importer's settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub btc: Option<BtcConfig>,
 }
 
 /// `[amex]` in `config.toml`. Every key is optional.
@@ -355,6 +358,32 @@ pub struct RbcConfig {
     /// number.
     #[serde(default)]
     pub accounts: BTreeMap<String, String>,
+}
+
+/// `[btc]` in `config.toml`: how to reach bitcoind and which wallets to
+/// read. Every key is optional.
+///
+/// The RPC password is a secret, `bitcoind-rpc-password` (see
+/// [`CashflowDir::secret`]), used with `user`. With no `user` the importer
+/// reads bitcoind's cookie file instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BtcConfig {
+    /// bitcoind's JSON-RPC endpoint [default: `http://127.0.0.1:8332`].
+    pub url: Option<String>,
+    /// `rpcuser`, whose password is the `bitcoind-rpc-password` secret.
+    pub user: Option<String>,
+    /// bitcoind's `.cookie` file, used when there is no `user`
+    /// [default: `~/.bitcoin/.cookie`].
+    pub cookie: Option<PathBuf>,
+    /// The wallets to read [default: every wallet bitcoind has loaded, from
+    /// `listwallets`].
+    pub wallets: Option<Vec<String>>,
+    /// Watch-only wallets (a descriptor or an xpub bitcoind tracks) read as
+    /// well, with their watch-only addresses included. Their funds are yours,
+    /// so a move between one of them and another wallet is a transfer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_wallets: Vec<String>,
 }
 
 impl Config {
@@ -495,6 +524,17 @@ mod tests {
             "assets:rbc:chequing"
         );
         assert_eq!(Config::parse(&rbc.to_toml()).unwrap(), rbc);
+
+        let btc = Config::parse(
+            "[btc]\nuser = \"rpc\"\nwallets = [\"hot\"]\nexternal_wallets = [\"cold\"]\n",
+        )
+        .unwrap();
+        let table = btc.btc.as_ref().unwrap();
+        assert_eq!(table.user.as_deref(), Some("rpc"));
+        assert_eq!(table.wallets.as_deref(), Some(&["hot".to_owned()][..]));
+        assert_eq!(table.external_wallets, ["cold"]);
+        assert_eq!(Config::parse(&btc.to_toml()).unwrap(), btc);
+        assert!(Config::parse("[btc]\nwallet = [\"x\"]\n").is_err());
     }
 
     /// `create` makes the subdirectories, `secrets/` owner-only, and is

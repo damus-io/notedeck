@@ -81,6 +81,20 @@ pub struct Batch {
     /// ledger text keeps going past a line that doesn't parse, leaving the
     /// transaction out, and says so here. Line numbers are the source's.
     pub skipped: Vec<ParseError>,
+    /// Records the source had that the importer deliberately left out, such
+    /// as a bitcoin transaction not yet in a block, which has no date to file
+    /// it under. Unlike [`skipped`](Self::skipped) nothing is wrong with
+    /// them; a later import takes them once they settle.
+    pub left_out: Vec<LeftOut>,
+}
+
+/// One record an importer read and deliberately left out of its batch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeftOut {
+    /// The id the record would have had.
+    pub id: String,
+    /// Why it was left out, such as `unconfirmed`.
+    pub why: &'static str,
 }
 
 impl Batch {
@@ -89,6 +103,7 @@ impl Batch {
         Self {
             journal,
             skipped: Vec::new(),
+            left_out: Vec::new(),
         }
     }
 

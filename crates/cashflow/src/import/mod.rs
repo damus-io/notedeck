@@ -16,6 +16,7 @@
 
 mod amex;
 mod batch;
+mod btc;
 mod csv_rows;
 mod ledger;
 mod rbc;
@@ -29,14 +30,15 @@ use ledgerdb::{
 };
 
 pub use amex::AmexImporter;
-pub use batch::{Batch, BatchError, RawAmount, RawMeta, RawPosting, RawPrice, RawTxn};
+pub use batch::{Batch, BatchError, LeftOut, RawAmount, RawMeta, RawPosting, RawPrice, RawTxn};
+pub use btc::{BitcoindHttp, BtcImporter, Rpc};
 pub use ledger::LedgerImporter;
 pub use rbc::RbcImporter;
 
-use crate::Config;
+use crate::{CashflowDir, Config};
 
 /// Every importer's name, as `cashflow import <name>` takes it.
-pub const NAMES: &[&str] = &["amex", "ledger", "rbc"];
+pub const NAMES: &[&str] = &["amex", "btc", "ledger", "rbc"];
 
 /// Reads one kind of source into a batch.
 pub trait Importer {
@@ -64,10 +66,12 @@ pub struct ImportInput {
 }
 
 /// The importer named `name`, if there is one, set up by its table in
-/// `config`.
-pub fn importer(name: &str, config: &Config) -> Option<Box<dyn Importer>> {
+/// `config`. One that signs in to its source reads its secrets from `dir`
+/// when it runs.
+pub fn importer(name: &str, config: &Config, dir: &CashflowDir) -> Option<Box<dyn Importer>> {
     match name {
         "amex" => Some(Box::new(AmexImporter::new(config.amex.as_ref()))),
+        "btc" => Some(Box::new(BtcImporter::new(config.btc.as_ref(), dir))),
         "ledger" => Some(Box::new(LedgerImporter)),
         "rbc" => Some(Box::new(RbcImporter::new(config.rbc.as_ref()))),
         _ => None,
@@ -104,6 +108,11 @@ pub enum ImportError {
     /// The segment could not be written, or the journal not read.
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// A source read over the network failed or answered with something the
+    /// importer can't read. `from` names the call, such as `bitcoind
+    /// listwallets`.
+    #[error("{from}: {error}")]
+    Fetch { from: String, error: String },
     /// The batch's new and changed rows, written out without the unchanged
     /// ones, did not read back. The writer's output always should,
     /// so this is a bug in ledgerdb.
@@ -133,6 +142,8 @@ pub struct Written {
     pub price_rows: Rows,
     /// What the importer read but left out, from [`Batch::skipped`].
     pub skipped: Vec<ParseError>,
+    /// What the importer deliberately left out, from [`Batch::left_out`].
+    pub left_out: Vec<LeftOut>,
 }
 
 /// How a batch's transactions or prices compared with the journal they were
@@ -192,6 +203,7 @@ pub fn write(
         txn_rows,
         price_rows,
         skipped: batch.skipped,
+        left_out: batch.left_out,
     };
     if journal.txns.is_empty() && journal.prices.is_empty() {
         return Ok(written);
@@ -298,9 +310,14 @@ mod tests {
     #[test]
     fn every_name_resolves() {
         for name in NAMES {
-            assert_eq!(importer(name, &Config::default()).unwrap().name(), *name);
+            assert_eq!(
+                importer(name, &Config::default(), &CashflowDir::new("unused"))
+                    .unwrap()
+                    .name(),
+                *name
+            );
         }
-        assert!(importer("frob", &Config::default()).is_none());
+        assert!(importer("frob", &Config::default(), &CashflowDir::new("unused")).is_none());
     }
 
     /// Import `text` as a ledger file from source `bank` into `layer`,
@@ -308,7 +325,7 @@ mod tests {
     fn import_text(store: &JournalStore, text: &str, layer: &str, imported: u64) -> Written {
         let file = store.dir().with_extension(format!("{imported}.ledger"));
         std::fs::write(&file, text).unwrap();
-        let ledger = importer("ledger", &Config::default()).unwrap();
+        let ledger = importer("ledger", &Config::default(), &CashflowDir::new("unused")).unwrap();
         write(
             store,
             &*ledger,
@@ -493,7 +510,7 @@ mod tests {
     fn ledger_import_refuses_what_it_cannot_take() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
-        let ledger = importer("ledger", &Config::default()).unwrap();
+        let ledger = importer("ledger", &Config::default(), &CashflowDir::new("unused")).unwrap();
         let empty = tmp.path().join("c");
         std::fs::write(&empty, "; nothing\nnot a transaction\n").unwrap();
         let run = |paths| write(&store, &*ledger, &input("x", paths), None, None);
@@ -522,7 +539,7 @@ mod tests {
         )
         .unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
-        let ledger = importer("ledger", &Config::default()).unwrap();
+        let ledger = importer("ledger", &Config::default(), &CashflowDir::new("unused")).unwrap();
         let written = write(&store, &*ledger, &input("x", vec![file]), None, None).unwrap();
 
         assert_eq!(written.txns, 1);
