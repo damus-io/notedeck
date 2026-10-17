@@ -31,7 +31,7 @@ struct StrSpan {
 }
 
 /// An append-only string interner backed by one contiguous buffer.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct StrPool {
     /// Every interned string, back to back.
     buf: String,

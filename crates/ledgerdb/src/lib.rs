@@ -12,6 +12,7 @@ mod account;
 mod amount;
 mod commodity;
 mod date;
+mod derive;
 mod journal;
 mod ledger;
 mod parse;
@@ -26,6 +27,10 @@ pub use account::{AccountError, AccountId, Accounts};
 pub use amount::{Amount, AmountDisplay, AmountError, AmountText};
 pub use commodity::{Commodities, CommodityId, MAX_PRECISION, Side, Style};
 pub use date::{Date, DateError, Ymd};
+pub use derive::{
+    Cond, DeriveReport, Derived, EditRef, Edits, Field, Leg, Override, Problem, Rejected, Rule,
+    Split, TransferLink, Why, derive,
+};
 pub use journal::{Comment, Cost, CostKind, Decimal, DecimalDisplay, FileComment, Journal, Price};
 pub use ledger::{
     Added, DamagedSegment, LayerFilter, Ledger, LoadReport, Loaded, MergeError, Origin, SegmentInfo,

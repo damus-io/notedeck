@@ -377,6 +377,31 @@ impl Ledger {
         &self.filter
     }
 
+    /// A ledger with this one's segments, origins and record ids but
+    /// `journal`'s rows, for [`crate::derive`]. `journal` must hold this
+    /// ledger's transactions in the same order with the same string table;
+    /// its postings may differ, and the account index is rebuilt for them.
+    pub(crate) fn with_journal(&self, journal: Journal) -> Ledger {
+        debug_assert_eq!(journal.txns.len(), self.journal.txns.len());
+        let mut ledger = Ledger {
+            journal,
+            origins: self.origins.clone(),
+            price_origins: self.price_origins.clone(),
+            segments: self.segments.clone(),
+            excluded: self.excluded.clone(),
+            seen: self.seen.clone(),
+            filter: self.filter.clone(),
+            by_id: self.by_id.clone(),
+            account_starts: Vec::new(),
+            account_postings: Vec::new(),
+            style_from: self.style_from.clone(),
+            dead: Vec::new(),
+            dirty: false,
+        };
+        ledger.index_accounts();
+        ledger
+    }
+
     /// Append `segment`'s rows to the unsorted tail of the arrays. Nothing
     /// is changed until every check has passed, apart from interning names
     /// that end up unused.

@@ -47,7 +47,7 @@ struct Node {
 /// `expenses:food`, so every account's parent exists and rollups can walk up
 /// the tree. Full names live in a [`StrPool`] whose ids line up with the
 /// account ids.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Accounts {
     names: StrPool,
     nodes: Vec<Node>,

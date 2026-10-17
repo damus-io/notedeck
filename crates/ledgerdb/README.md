@@ -117,3 +117,42 @@ converts an amount at the date it happened:
 
 On a date with several prices for one pair the one from the segment with
 the largest hash wins, so the result does not depend on load order.
+
+## Deriving the categorized ledger
+
+Importers write raw facts: the leg they are sure of, plus a **counter leg**
+to a structural default such as `expenses:unknown`, with what they read as
+`; raw-*` metadata. `derive(&raw, &edits)` moves each counter leg to its
+real account and returns a `Derived`: the categorized `Ledger`, which
+transaction decided what, and a report of the edits it could not apply.
+The edits are plain input data; storing and syncing them is the caller's
+business.
+
+- **The counter leg** is a transaction's one posting to an account in
+  `Edits::defaults`. A transaction with none, or several, passes through
+  untouched, so hand-entered, fully categorized ones are left alone.
+- **Priority.** A `Split` or `Override` of the transaction's record id,
+  then a `TransferLink`, then the first `Rule` whose conditions all hold,
+  then the importer's default. A rule's conditions are a case-insensitive
+  substring of the payee or a metadata value, an exact payee or metadata
+  value, the counter leg's magnitude in an inclusive range of smallest
+  units, and the segment's source; a rule can also be limited to a layer.
+- **First wins, nothing silently.** Rules are tried in order. Two edits
+  claiming one transaction resolve the same way (a split beats an
+  override, otherwise the earlier one wins) and the loser is reported. A
+  split whose legs do not sum to the counter leg, a link whose two legs do
+  not net to zero, or an invalid account name is rejected whole and the
+  transaction falls through to the next tier. A link takes both its
+  transactions or neither, so a transfer never half-nets.
+- **Same positions.** The derived ledger has the raw one's transactions at
+  the same `TxnId`s; `Derived::explain(record_id)` names the override,
+  split, link or rule that decided one, for a tooltip.
+- **Deterministic.** Edits are keyed by account names and record-id
+  strings, never interned ids, so every machine with the same segments and
+  edits derives byte-identical exports.
+- **Fast enough to re-run.** `Contains` needles are found with one
+  Aho-Corasick pass per field, and rules are indexed by their first
+  `Contains` condition, so a transaction only tries the rules whose needle
+  it contains. A full derive of 350k transactions (700k postings) with 200
+  rules and 1000 overrides takes about 100 ms in release, so a changed
+  edit re-derives everything rather than tracking what it touched.

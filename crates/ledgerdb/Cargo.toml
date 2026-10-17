@@ -5,6 +5,7 @@ version.workspace = true
 description = "A generic, in-memory, plain-old-data ledger engine for ledger-cli style journals"
 
 [dependencies]
+aho-corasick = "1.1.4"
 hashbrown = { workspace = true }
 profiling = { workspace = true }
 sha2 = { workspace = true }
