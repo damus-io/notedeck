@@ -65,12 +65,6 @@ test -p bin_testing --test hindsight`.
 
 ## Committing
 
-Before committing, run the local CI checks:
-
-    ./scripts/ci-local
-
-This runs changelog trailer checks, lint (fmt + clippy), tests, and the android build — all parsed directly from the GitHub workflow YAML. You can also run individual jobs via `./scripts/ci.py`, e.g. `./scripts/ci.py lint`.
-
 After a change lands, move its Headway card to In Review
 (`headway move <card> --col in-review`); move it to Done once it's verified.
 
