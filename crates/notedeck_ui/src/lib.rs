@@ -1,6 +1,7 @@
 pub mod activate;
 pub mod anim;
 pub mod app_images;
+pub mod charts;
 pub mod chord;
 pub mod colors;
 pub mod constants;

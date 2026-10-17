@@ -100,7 +100,7 @@ export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
 # lavapipe has to be excluded here or CI claims to have run it.
 suites=(
     "notedeck_chrome|--features auto-update,snapshot-testing --test ui_tests --test command_bar --test shot|"
-    "notedeck_ui|--test widget_tests|"
+    "notedeck_ui|--test widget_tests --test chart_tests|"
     # test_real_codex_*: live-backend tests gated on CODEX_LIVE_TEST, which CI
     # never sets. Swept in they returned early and counted as passes.
     "notedeck_dave|--lib --test dave_button_tests --test ask_question_wrap_tests --test markdown_table_tests --test reference_chip_tests --test diff_view_tests --test chip_click_tests|--skip test_real_codex"

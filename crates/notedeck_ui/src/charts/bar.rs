@@ -1,26 +1,34 @@
 use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2};
 
+/// The `i`th categorical chart color, cycling through
+/// [`notedeck::tokens::PALETTE`].
 pub fn palette(i: usize) -> Color32 {
     notedeck::tokens::PALETTE[i % notedeck::tokens::PALETTE.len()]
 }
 
-// ----------------------
-// Bar chart (unchanged)
-// ----------------------
-
+/// One row of a [`horizontal_bar_chart`].
 #[derive(Debug, Clone)]
 pub struct Bar {
+    /// Drawn in the label column, left of the bar.
     pub label: String,
+    /// The bar's length, scaled against the largest value; negatives draw empty.
     pub value: f32,
+    /// Fill color of the bar.
     pub color: Color32,
 }
 
+/// Layout knobs for [`horizontal_bar_chart`].
 #[derive(Clone, Copy)]
 pub struct BarChartStyle {
+    /// Height of each row.
     pub row_height: f32,
+    /// Vertical space between rows.
     pub gap: f32,
+    /// Corner radius of the track and the fill.
     pub rounding: f32,
+    /// Print each bar's value at the right end of its track.
     pub show_values: bool,
+    /// Decimal places of the printed value.
     pub value_precision: usize,
 }
 
@@ -188,7 +196,9 @@ pub fn horizontal_bar_chart(
 
 /// One coloured slice of a stacked bar.
 pub struct Segment {
+    /// Fill color of the slice.
     pub color: Color32,
+    /// The slice's height, in the same units as every other segment.
     pub value: f32,
 }
 

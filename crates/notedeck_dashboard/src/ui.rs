@@ -17,15 +17,15 @@ use crate::FxHashMap;
 use crate::Period;
 use crate::RollingCache;
 use crate::Tally;
-use crate::chart::Bar;
-use crate::chart::BarChartStyle;
-use crate::chart::Segment;
-use crate::chart::horizontal_bar_chart;
-use crate::chart::palette;
 use crate::storage::{format_bytes, kind_name};
 use crate::top_kind1_authors_over;
 use crate::top_kinds_over;
 use crate::top_new_contact_list_clients_over;
+use notedeck_ui::charts::Bar;
+use notedeck_ui::charts::BarChartStyle;
+use notedeck_ui::charts::Segment;
+use notedeck_ui::charts::horizontal_bar_chart;
+use notedeck_ui::charts::palette;
 
 pub fn period_picker_ui(ui: &mut egui::Ui, period: &mut Period) {
     let theme = ColorTheme::current(ui.ctx());
@@ -574,12 +574,12 @@ pub fn clients_trends_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
 
             let series = client_series(cache, &cs.name);
 
-            let resp = crate::sparkline::sparkline(
+            let resp = notedeck_ui::charts::sparkline(
                 ui,
                 egui::vec2(spark_w, tokens::SPARKLINE_HEIGHT),
                 &series,
                 palette(row_i),
-                crate::sparkline::SparkStyle::default(),
+                notedeck_ui::charts::SparkStyle::default(),
             );
 
             if resp.hovered() {
@@ -645,7 +645,7 @@ pub fn clients_stack_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
         let w = ui.available_width().max(120.0);
         let h = 70.0;
 
-        let resp = crate::chart::stacked_bars(ui, egui::vec2(w, h), &buckets);
+        let resp = notedeck_ui::charts::stacked_bars(ui, egui::vec2(w, h), &buckets);
 
         // legend
         ui.add_space(tokens::SPACING_SM);
@@ -753,12 +753,12 @@ pub fn new_contact_lists_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
             ui.add_space(tokens::SPACING_SM);
 
             let series = new_contact_list_series(cache, client);
-            let resp = crate::sparkline::sparkline(
+            let resp = notedeck_ui::charts::sparkline(
                 ui,
                 egui::vec2(spark_w, tokens::SPARKLINE_HEIGHT),
                 &series,
                 palette(row_i),
-                crate::sparkline::SparkStyle::default(),
+                notedeck_ui::charts::SparkStyle::default(),
             );
 
             if resp.hovered() {

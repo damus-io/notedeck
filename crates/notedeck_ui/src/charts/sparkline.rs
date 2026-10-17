@@ -1,7 +1,9 @@
 use egui::{Color32, Pos2, Response, Sense, Stroke, Ui, Vec2};
 
+/// Styling for [`sparkline`].
 #[derive(Clone, Copy)]
 pub struct SparkStyle {
+    /// Line width; the color comes from the `color` argument.
     pub stroke: Stroke,
     //pub fill_alpha: u8,
     //pub rounding: f32,
@@ -15,7 +17,10 @@ impl Default for SparkStyle {
     }
 }
 
-/// values are samples over time (left=oldest, right=newest)
+/// A small unlabelled trend line filling `size`.
+///
+/// `values` are samples over time (left=oldest, right=newest), clamped at
+/// zero and scaled between their own min and max.
 pub fn sparkline(
     ui: &mut Ui,
     size: Vec2,

@@ -11,8 +11,6 @@ use notedeck::{AppAction, AppContext, AppResponse};
 
 use chrono::{Datelike, TimeZone, Utc};
 
-mod chart;
-mod sparkline;
 mod storage;
 mod ui;
 
