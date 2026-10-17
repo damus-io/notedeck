@@ -289,10 +289,63 @@ pub struct BoardUiState {
     /// pass ended: what tells the detail's Esc that it only unfocused a field
     /// ([`BoardUiState::detail_field_focused`]). Dropped with the card.
     detail_field_focused: bool,
+    /// Which view this pass draws, as [`settle_view`](Self::settle_view)
+    /// last decided it: what the keys, the UI tools, their availability and
+    /// the overlays read, so none of them repeats the precedence or meets a
+    /// view the pane is about to drop.
+    settled: Settled,
     /// The last card action a tool applied, and to which card: what the
     /// `card_actions_mean_the_same_in_every_view` test compares across views.
     #[cfg(test)]
     pub(crate) last_card_action: Option<(keys::CardAction, NoteId)>,
+}
+
+/// Which view a pass draws, once [`BoardUiState::settle_view`] has dropped
+/// what left the board: the graph, then the queue, then a review pane, then
+/// the detail, then the issue list, else the grid, in [`NavPos::of`]'s
+/// precedence. Every card it names is on the board, bar
+/// [`DetailPending`](Self::DetailPending)'s and the queue's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Settled {
+    /// The board grid.
+    #[default]
+    Grid,
+    /// The cross-board issue list, in the grid's place.
+    List,
+    /// An epic's dependency graph.
+    Graph(NoteId),
+    /// The review queue over `scope`, showing `card`. The queue's cards are
+    /// a snapshot, so `card` may have left the board since.
+    Queue {
+        /// The card the queue shows.
+        card: NoteId,
+        /// What the queue walks.
+        scope: QueueScope,
+    },
+    /// A card's review pane, opened from its detail.
+    Review(NoteId),
+    /// A card's detail.
+    Detail(NoteId),
+    /// A card whose detail is open but which hasn't folded in yet: a fresh
+    /// deep link, or a card still in flight. The grid (or the list) draws
+    /// underneath, and no view takes keys or tools until the card lands.
+    DetailPending(NoteId),
+}
+
+impl Settled {
+    /// The view position this is, as the nav diff and the overlays (a
+    /// notice, the `X`/`C` composer) name it. A pending detail is its card's
+    /// position, so the nav diff doesn't read its hold as a close.
+    pub(crate) fn pos(self) -> NavPos {
+        match self {
+            Settled::Grid => NavPos::Board,
+            Settled::List => NavPos::List,
+            Settled::Graph(epic) => NavPos::Graph(epic),
+            Settled::Queue { scope, .. } => NavPos::Queue(scope),
+            Settled::Review(card) => NavPos::Review(card),
+            Settled::Detail(card) | Settled::DetailPending(card) => NavPos::Card(card),
+        }
+    }
 }
 
 impl BoardUiState {
@@ -384,6 +437,101 @@ impl BoardUiState {
             return NavPos::List;
         }
         pos
+    }
+
+    /// Decide which view this pass draws, before the keys, the UI tools,
+    /// their availability and the overlays read it, and drop what has left
+    /// the board on the way. In order: the queue retakes a snapshot a route
+    /// asked for and follows a verdict that folded in; a graph, a review pane
+    /// or a detail whose card has left is dropped; then the [`Settled`] view
+    /// is stored, and an `X`/`C` composer or a notice whose view has gone is
+    /// retired. Idempotent: [`run_view_keys`] runs it again after the tools,
+    /// which can change the view. `now` is egui time, `pass` egui's
+    /// [`cumulative_pass_nr`](egui::Context::cumulative_pass_nr).
+    pub(crate) fn settle_view(&mut self, view: &BoardView, now: f64, pass: u64) -> Settled {
+        self.refresh_queue(view, now);
+        self.follow_queue(view, now);
+        // An epic that has left the board drops its graph back to the grid
+        // rather than rendering an empty pane. Dropped unconditionally, unlike
+        // the card selection below: a graph is only ever entered from an epic
+        // already on this board, never minted by a deep link, so there is no
+        // not-yet-folded-in case to wait for.
+        if self
+            .graph_epic
+            .is_some_and(|epic| find_card(view, epic).is_none())
+        {
+            self.graph_epic = None;
+            self.graph_scene_rect = None;
+            self.graph_connecting = None;
+        }
+        // A card's review pane whose card has left falls back to its detail,
+        // which the selection drop below drops in turn. The queue's card is a
+        // snapshot, shown even once it has left.
+        if self.queue.current().is_none()
+            && self
+                .review
+                .card()
+                .is_some_and(|card| find_card(view, card).is_none())
+        {
+            self.review.close();
+        }
+        // Only drop a selection whose card has actually *left* the board.
+        // `detail_for` is set the first time the detail pane renders a card
+        // and cleared when it closes, so `detail_for == selected` means we
+        // have already seen this card here — it went away. A selection the
+        // detail has never rendered is instead a card that hasn't folded in
+        // *yet*: a fresh cross-app deep link, or a remote card still in
+        // flight. Clearing that one would make the app's post-render nav diff
+        // read Card→Board and emit a `Back` that pops a real global-history
+        // entry (see `reconcile_nav`), snapping a just-opened deep link back to
+        // the board. Holding it costs nothing — the grid draws underneath, and
+        // the detail opens the frame the card lands. Either way the history
+        // entry that named a card which left is the app's prune to remove, not
+        // this drop's (see `nav::SeenCards`).
+        if self
+            .selected
+            .is_some_and(|card| find_detail_card(view, card).is_none())
+            && self.detail_for == self.selected
+        {
+            self.selected = None;
+            self.detail_for = None;
+        }
+        self.settled = self.settled_of(view);
+        self.retire_stale_reason();
+        self.retire_stale_notice(pass);
+        self.settled
+    }
+
+    /// The view the state names now, in [`Settled`]'s precedence, without
+    /// dropping anything: what the tool loops ask between tools, since a
+    /// tool can change the view but never takes a card off the board.
+    pub(crate) fn settled_of(&self, view: &BoardView) -> Settled {
+        if let Some(epic) = self.graph_epic {
+            return Settled::Graph(epic);
+        }
+        if let Some(card) = self.queue.current() {
+            let scope = self.queue.scope();
+            return Settled::Queue { card, scope };
+        }
+        if let Some(card) = self.review.card() {
+            return Settled::Review(card);
+        }
+        if let Some(card) = self.selected {
+            if find_detail_card(view, card).is_some() {
+                return Settled::Detail(card);
+            }
+            return Settled::DetailPending(card);
+        }
+        if self.list.is_open() {
+            return Settled::List;
+        }
+        Settled::Grid
+    }
+
+    /// The view the last [`settle_view`](Self::settle_view) or
+    /// [`end_view_pass`] decided on.
+    pub(crate) fn settled(&self) -> Settled {
+        self.settled
     }
 
     /// Whether the cross-board issue list shows.
@@ -523,7 +671,7 @@ impl BoardUiState {
     /// with), and it's worded for that view: an epic that has left the board
     /// lands its queue on the grid, where "Nothing in review under this card"
     /// would be about a card that isn't there. Runs before the frame's keys.
-    pub(crate) fn refresh_queue(&mut self, view: &BoardView, now: f64) {
+    fn refresh_queue(&mut self, view: &BoardView, now: f64) {
         if !self.queue.needs_snapshot() {
             return;
         }
@@ -583,6 +731,7 @@ impl BoardUiState {
     }
 
     /// Whether the review queue is showing.
+    #[cfg(test)]
     pub(crate) fn queue_open(&self) -> bool {
         self.queue.is_open()
     }
@@ -679,7 +828,7 @@ impl BoardUiState {
     /// it showed in In Review last pass has left the column (`D`, `a`, from
     /// here or anywhere), step the queue on, as a verdict always has. Runs
     /// before the queue's tools; `X` steps the queue on itself.
-    pub(crate) fn follow_queue(&mut self, view: &BoardView, now: f64) {
+    fn follow_queue(&mut self, view: &BoardView, now: f64) {
         let current = self.queue.current();
         let left = current.is_some_and(|card| !review::in_review(view, card));
         if left && current == self.queue_in_review {
@@ -739,10 +888,12 @@ impl BoardUiState {
         Some(arrival)
     }
 
-    /// Forget the current card: no board is drawn to edit.
+    /// Forget the current card: no board is drawn to edit, and nothing
+    /// settled over the grid for the keys to read.
     pub(crate) fn clear_current_ref(&mut self) {
         self.current_ref.latch("", None);
         self.parented = None;
+        self.settled = Settled::Grid;
     }
 
     /// Whether `card` is the current card as last latched, and has a parent.
@@ -983,36 +1134,56 @@ pub(crate) fn board_ui(
     sync: SyncStatus,
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
-    // The grid's menus re-latch as they draw this pass.
-    state.reset_grid_menu_open();
-    // The UI tools chrome's keymap called for the queue, a review pane or the
-    // detail, and the `X` composer's keys, run before anything lays out, so
-    // one that leaves its view (`q`, a verdict on the queue's last card,
-    // Enter onto the card) has the view it lands on draw this same frame
-    // rather than a blank one. (The grid's run as it lays out, in
-    // `board_pane_ui`.)
-    state.refresh_queue(view, ui.ctx().input(|i| i.time));
-    state.follow_queue(view, ui.ctx().input(|i| i.time));
-    // A route reseed or last frame's click may have left the `X` composer's
-    // view; it closes before its keys could take this frame's Enter.
-    state.retire_stale_reason();
-    let keyed = keys::reason_keys(ui.ctx(), view, state);
     // While the composer is open no view takes tools, so at most one of them
     // edits.
     let ran_tools = state.has_queued_tools();
-    let keyed = keyed.or(keys::pane_tools(ui.ctx(), view, state));
-    state.retire_stale_notice(ui.ctx().cumulative_pass_nr());
+    let keyed = run_view_keys(ui.ctx(), view, state);
     if keyed.is_some() || ran_tools {
         // The next card, and an `X`'s follow-up move, want a frame.
         ui.ctx().request_repaint();
     }
     let action = board_pane_ui(ui, theme, app_ctx, view, boards, lists, sync, state);
-    state.drop_queued_tools();
-    state.latch_current_ref(view);
+    end_view_pass(view, state);
     // A key swallowed the frame's keys, so the pane's edit could only be a
     // drop landing in the same frame; the key wins, as it does over a drop in
     // the grid.
     keyed.or(action).or_else(|| state.take_follow_up())
+}
+
+/// What [`board_ui`] runs before the pane lays out: the grid's menus reset to
+/// re-latch as they draw, the view [settled](BoardUiState::settle_view), the
+/// `X`/`C` composer's keys, then the UI tools chrome's keymap called for the
+/// queue, a review pane or the detail ([`keys::pane_tools`]), and the view
+/// settled again, since a tool can leave its view. Running before anything
+/// lays out means one that leaves its view (`q`, a verdict on the queue's
+/// last card, Enter onto the card) has the view it lands on draw this same
+/// frame rather than a blank one. (The grid's and the list's tools run as they
+/// lay out, in the pane.) Returns the first edit they made.
+pub(crate) fn run_view_keys(
+    ctx: &egui::Context,
+    view: &BoardView,
+    state: &mut BoardUiState,
+) -> Option<BoardAction> {
+    let now = ctx.input(|i| i.time);
+    let pass = ctx.cumulative_pass_nr();
+    state.reset_grid_menu_open();
+    state.settle_view(view, now, pass);
+    let keyed = keys::reason_keys(ctx, view, state);
+    let keyed = keyed.or(keys::pane_tools(ctx, view, state));
+    state.settle_view(view, now, pass);
+    keyed
+}
+
+/// What [`board_ui`] runs as the pane finishes: the tools no view ran are
+/// dropped, and the view the pane left (a click may have opened a card, a
+/// list row a card on another board) and its current card are latched for
+/// the keys chrome asks about before the next pass. Nothing is dropped here:
+/// a card the pane opened that isn't on this board is the next pass's to
+/// hold or drop, once the board it asked for has switched in.
+pub(crate) fn end_view_pass(view: &BoardView, state: &mut BoardUiState) {
+    state.drop_queued_tools();
+    state.settled = state.settled_of(view);
+    state.latch_current_ref(view);
 }
 
 /// [`board_ui`]'s body: whichever pane the state names, and its edit.
@@ -1027,80 +1198,46 @@ fn board_pane_ui(
     sync: SyncStatus,
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
-    // A dependency-graph view takes over the whole pane like the detail screen,
-    // and wins over it while open (an epic's graph is entered from that epic's
-    // detail, which stays selected underneath). An epic that has left the board
-    // drops back to the grid rather than rendering an empty pane.
-    if let Some(epic) = state.graph_epic {
-        if find_card(view, epic).is_some() {
-            return graph_view_ui(ui, theme, view, state);
-        }
-        // Dropped unconditionally, unlike the card selection below: a graph is only
-        // ever entered from an epic already on this board, never minted by a deep
-        // link, so there is no not-yet-folded-in case to wait for.
-        state.graph_epic = None;
-        state.graph_scene_rect = None;
-        state.graph_connecting = None;
-    }
-
     // Each view draws an open `X` composer's bar across its top: here, after
     // the pane keys that may have opened it; the grid's after its own keys.
     // (A composer only stays open in the view it was asked in.)
-
-    // The review queue draws the review pane over its current card (its keys
-    // ran in `board_ui`, as the plain pane's and the detail's did).
-    if let Some(card) = state.queue.current() {
-        reason_bar_ui(ui, theme, state);
-        return review_queue_ui(ui, theme, app_ctx, view, card, state);
-    }
-
-    // A card's review pane takes over the pane the same way, entered from (and
-    // drawn over) that card's detail. A card that has left the board drops back
-    // to its detail branch below, which drops it in turn.
-    if let Some(card) = state.review.card() {
-        if let Some(FoundCard { col, card }) = find_card(view, card) {
+    match state.settled {
+        // A dependency-graph view takes over the whole pane like the detail
+        // screen, and wins over it while open (an epic's graph is entered from
+        // that epic's detail, which stays selected underneath).
+        Settled::Graph(_) => return graph_view_ui(ui, theme, view, state),
+        // The review queue draws the review pane over its current card (its
+        // keys ran in `run_view_keys`, as the plain pane's and the detail's
+        // did).
+        Settled::Queue { card, .. } => {
+            reason_bar_ui(ui, theme, state);
+            return review_queue_ui(ui, theme, app_ctx, view, card, state);
+        }
+        // A card's review pane takes over the pane the same way, entered from
+        // (and drawn over) that card's detail.
+        Settled::Review(card) => {
+            let FoundCard { col, card } = find_card(view, card)?;
             reason_bar_ui(ui, theme, state);
             return review_pane_ui(ui, theme, app_ctx, view, col, card, state);
         }
-        state.review.close();
-    }
-
-    // A selected card takes over the whole view as a full-pane detail screen,
-    // replacing the board grid until dismissed (back / ✕ / Escape). An archived
-    // card's detail opens too, read-mostly with a Restore banner. A selection
-    // pointing at a card that no longer exists is dropped so we fall back to the
-    // board rather than render an empty pane.
-    if state
-        .selected
-        .is_some_and(|id| find_detail_card(view, id).is_some())
-    {
-        let mut action: Option<BoardAction> = None;
-        reason_bar_ui(ui, theme, state);
-        card_detail_pane_ui(ui, theme, app_ctx, view, state, &mut action);
-        return action;
-    }
-    // Only drop a selection whose card has actually *left* the board. `detail_for`
-    // is set the first time the detail pane renders a card and cleared when it
-    // closes, so `detail_for == selected` means we have already seen this card
-    // here — it went away. A selection the detail has never rendered is instead a
-    // card that hasn't folded in *yet*: a fresh cross-app deep link, or a remote
-    // card still in flight. Clearing that one would make the app's post-render nav
-    // diff read Card→Board and emit a `Back` that pops a real global-history entry
-    // (see `reconcile_nav`), snapping a just-opened deep link back to the board.
-    // Holding it costs nothing — the grid draws underneath, and the detail opens
-    // the frame the card lands. Either way the history entry that named a card
-    // which left is the app's prune to remove, not this drop's (see
-    // `nav::SeenCards`).
-    let gone = state.detail_for == state.selected;
-    if state.selected.is_some() && gone {
-        state.selected = None;
-        state.detail_for = None;
-    }
-
-    // The issue list takes the grid's place while it's open; a card opened
-    // from it drew as the detail above.
-    if state.list.is_open() {
-        return list_view_ui(ui, theme, view, lists, state);
+        // A selected card takes over the whole view as a full-pane detail
+        // screen, replacing the board grid until dismissed (back / ✕ /
+        // Escape). An archived card's detail opens too, read-mostly with a
+        // Restore banner.
+        Settled::Detail(_) => {
+            let mut action: Option<BoardAction> = None;
+            reason_bar_ui(ui, theme, state);
+            card_detail_pane_ui(ui, theme, app_ctx, view, state, &mut action);
+            return action;
+        }
+        // The issue list takes the grid's place while it's open, and draws
+        // under a card opened from it that hasn't folded in yet.
+        Settled::List => return list_view_ui(ui, theme, view, lists, state),
+        Settled::DetailPending(_) if state.list.is_open() => {
+            return list_view_ui(ui, theme, view, lists, state);
+        }
+        // The grid draws under a pending card too, its tools held off.
+        Settled::DetailPending(_) | Settled::Grid => {}
     }
 
     // Parsed once per frame from the persisted query; reflects the prior
@@ -1119,7 +1256,8 @@ fn board_pane_ui(
     state.follow_cursor(view, &view_filter);
     // The grid's UI tools (j/k/h/l, gg/G, c, /, Esc and the card actions,
     // through chrome's keymap). Only the grid reaches here — the graph, the
-    // review panes and the detail returned above — and they run before any
+    // review panes and the detail returned above, and under a pending card
+    // the tools hold off — and they run before any
     // grid widget lays out, so a field that `c` or `/` focuses lays out
     // focused this frame (chrome swallowed the key, so it types nothing).
     // Chrome's keymap stands down during a drag, but should a tool and a drop
@@ -1171,7 +1309,7 @@ fn board_pane_ui(
                         .count()
                 })
                 .sum::<usize>();
-            let here = state.nav_pos();
+            let here = state.settled.pos();
             ui.horizontal(|ui| {
                 // Sync affordance: is this board reaching a private relay?
                 sync_indicator(ui, theme, sync);
@@ -1334,13 +1472,6 @@ pub fn empty_state(ui: &mut egui::Ui, theme: &ColorTheme, message: &str) {
 /// when it's about `here`, the view drawing. Another view leaves it alone: a
 /// nav slide draws two views in one pass, and the notice belongs to one of
 /// them. Schedules the frame that takes it down.
-///
-/// Drawing it counts its pass as one its view was seen in
-/// ([`BoardUiState::retire_stale_notice`]). The retire's own look runs before
-/// the pane, which can still leave the view it saw: a gone epic's queue
-/// closes onto the grid, but the back lands on the epic's detail entry first,
-/// and only the pane drops that selection. The grid is the notice's view, and
-/// without this that pass wouldn't count, so the next would take it down.
 fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<Notice>, here: NavPos) {
     let Some(up) = notice else {
         return;
@@ -1353,7 +1484,6 @@ fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<Notice>,
         *notice = None;
         return;
     }
-    up.seen = Some(ui.ctx().cumulative_pass_nr());
     let shown = up.what;
     ui.add_space(SPACING_SM);
     ui.label(egui::RichText::new(shown.text()).color(theme.warning));
@@ -1449,4 +1579,102 @@ pub(crate) mod tests {
 
     /// Board slug used by tests that don't care about reference parsing.
     pub(crate) const BOARD: &str = "headway";
+
+    use crate::cursor::tests::{grid, id};
+
+    /// Take `card` off `view`'s columns, as an archive or a delete folding in
+    /// does to [`find_card`].
+    fn remove(view: &mut BoardView, card: NoteId) {
+        for column in &mut view.columns {
+            column.cards.retain(|c| c.id != card);
+        }
+    }
+
+    /// A graph whose epic has left settles back to the grid, its pan and
+    /// zoom dropped, before any key reads the view.
+    #[test]
+    fn settle_view_drops_a_gone_graph_epic() {
+        let mut view = grid();
+        let mut state = BoardUiState::default();
+        state.open_graph(id(5));
+        assert_eq!(state.settle_view(&view, 0.0, 1), Settled::Graph(id(5)));
+        state.graph_scene_rect = Some(egui::Rect::EVERYTHING);
+
+        remove(&mut view, id(5));
+        assert_eq!(state.settle_view(&view, 0.0, 2), Settled::Grid);
+        assert_eq!(state.graph_epic(), None);
+        assert_eq!(state.graph_scene_rect, None);
+        assert_eq!(ui_tools::key_view(&state), Some(KeyView::Grid));
+    }
+
+    /// A review pane whose card has left falls back to the detail beneath,
+    /// and the detail, having drawn the card, drops it in turn: the grid.
+    #[test]
+    fn settle_view_drops_a_gone_review_card_and_its_drawn_detail() {
+        let mut view = grid();
+        let mut state = BoardUiState::default();
+        state.set_selected(Some(id(5)));
+        // As the detail draws it.
+        state.detail_for = Some(id(5));
+        state.set_review(Some(ReviewTarget {
+            card: id(5),
+            record: None,
+        }));
+        assert_eq!(state.settle_view(&view, 0.0, 1), Settled::Review(id(5)));
+
+        remove(&mut view, id(5));
+        assert_eq!(state.settle_view(&view, 0.0, 2), Settled::Grid);
+        assert_eq!(state.review_card(), None);
+        assert_eq!(state.selected(), None);
+        assert_eq!(state.detail_for, None);
+    }
+
+    /// A selection the detail never drew is a card still folding in (a fresh
+    /// deep link): it holds, the grid draws under it, and no key or tool
+    /// reaches it until it lands. Today's `e` would say it's available and
+    /// then drop the tool.
+    #[test]
+    fn settle_view_holds_an_unfolded_selection_without_keys() {
+        let mut view = grid();
+        let landed = view.columns[2].cards.pop().expect("card 6");
+        let mut state = BoardUiState::default();
+        state.set_selected(Some(id(6)));
+
+        assert_eq!(
+            state.settle_view(&view, 0.0, 1),
+            Settled::DetailPending(id(6))
+        );
+        assert_eq!(state.selected(), Some(id(6)), "held");
+        assert_eq!(state.settled().pos(), NavPos::Card(id(6)));
+        assert_eq!(state.nav_pos(), state.settled().pos(), "no nav diff");
+        assert_eq!(ui_tools::key_view(&state), None);
+        assert!(ui_tools::key_scopes(&state).is_empty());
+        assert!(!ui_tools::available(&state, ui_tools::OPEN_EXPLAINER));
+
+        view.columns[2].cards.push(landed);
+        assert_eq!(state.settle_view(&view, 0.0, 2), Settled::Detail(id(6)));
+        assert!(ui_tools::available(&state, ui_tools::OPEN_EXPLAINER));
+    }
+
+    /// A notice on the grid survives a back that lands, for a pass, on the
+    /// detail entry of a card that has left: the retire looks at the view
+    /// settled after the drop, the grid, not at the gone card's detail.
+    /// (Before `settle_view`, the grid's `notice_ui` counted the pass itself.)
+    #[test]
+    fn a_notice_survives_a_pass_on_a_gone_cards_entry() {
+        let mut view = grid();
+        let mut state = BoardUiState::default();
+        state.settle_view(&view, 0.0, 1);
+        state.set_notice(QueueNotice::QueueDone, 0.0);
+        assert_eq!(state.notice(), Some(QueueNotice::QueueDone));
+
+        // The epic the queue was over has left; the route seeds its detail
+        // entry, drawn before, for one pass.
+        remove(&mut view, id(5));
+        state.set_selected(Some(id(5)));
+        state.detail_for = Some(id(5));
+        assert_eq!(state.settle_view(&view, 0.0, 2), Settled::Grid);
+        assert_eq!(state.settle_view(&view, 0.0, 3), Settled::Grid);
+        assert_eq!(state.notice(), Some(QueueNotice::QueueDone));
+    }
 }

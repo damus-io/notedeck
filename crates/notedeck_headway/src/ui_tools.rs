@@ -37,7 +37,7 @@ use crate::cursor::{CursorMove, Vertical};
 use crate::keys::{CardAction, PaneScroll};
 use crate::ui::{
     BoardStep, BoardUiState, CardStep, DisplaySwitch, GroupStep, ListFold, ListLayout, OrderDir,
-    Pick, SessionOpen, TabPick,
+    Pick, SessionOpen, Settled, TabPick,
 };
 use headway::query::{BuiltinView, DisplayProp, GroupBy, SortBy};
 
@@ -910,31 +910,25 @@ pub(crate) enum KeyView {
     List,
 }
 
-/// The view whose keys and tools are live: nothing while the `X`/`C`
-/// composer is open (its Enter/Esc are its field's) or the dependency graph
-/// is; else the queue, a review pane, the detail; else the grid, unless an
-/// inline editor, the archived sheet or one of the grid's menus has the
-/// keyboard.
+/// The view whose keys and tools are live, read off the view the last pass
+/// [settled](BoardUiState::settle_view) on: nothing while the `X`/`C` composer
+/// is open (its Enter/Esc are its field's), the dependency graph shows, or the
+/// detail's card hasn't folded in yet (a fresh deep link); else the queue, a
+/// review pane, the detail, the issue list; else the grid, unless an inline
+/// editor, the archived sheet or one of the grid's menus has the keyboard.
 pub(crate) fn key_view(state: &BoardUiState) -> Option<KeyView> {
-    if state.rejecting() || state.graph_epic().is_some() {
+    if state.rejecting() {
         return None;
     }
-    if state.queue_open() {
-        return Some(KeyView::Queue);
+    match state.settled() {
+        Settled::Graph(_) | Settled::DetailPending(_) => None,
+        Settled::Queue { .. } => Some(KeyView::Queue),
+        Settled::Review(_) => Some(KeyView::Pane),
+        Settled::Detail(_) => Some(KeyView::Detail),
+        Settled::List => Some(KeyView::List),
+        Settled::Grid if state.keys_blocked() || state.grid_menu_open() => None,
+        Settled::Grid => Some(KeyView::Grid),
     }
-    if state.review_card().is_some() {
-        return Some(KeyView::Pane);
-    }
-    if state.selected().is_some() {
-        return Some(KeyView::Detail);
-    }
-    if state.list_open() {
-        return Some(KeyView::List);
-    }
-    if state.keys_blocked() || state.grid_menu_open() {
-        return None;
-    }
-    Some(KeyView::Grid)
 }
 
 /// The queue's key scopes. Bound in chrome's `default_keymap.toml`. No two
@@ -1312,7 +1306,7 @@ mod tests {
         // As a grid pass ends.
         let pass = |state: &mut BoardUiState| {
             state.latch_cursor_slot(&view, &filter);
-            state.latch_current_ref(&view);
+            crate::ui::end_view_pass(&view, state);
         };
 
         let mut state = BoardUiState::default();

@@ -45,8 +45,8 @@ use crate::event::BoardView;
 use crate::store::BoardAction;
 use crate::ui::{
     BoardEffect, BoardNav, BoardUiState, CardStep, DetailScroll, ListScope, QueueNotice,
-    QueueScope, SessionOpen, ViewFilter, filter_field_id, find_card, find_detail_card,
-    list_field_id, reason_field_id, step_board,
+    QueueScope, SessionOpen, Settled, ViewFilter, filter_field_id, find_card, list_field_id,
+    reason_field_id, step_board,
 };
 use crate::ui_tools::HeadwayUiTool;
 
@@ -289,7 +289,7 @@ pub(crate) fn list_tools(
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
     let mut action = None;
-    while state.list_open() && state.selected().is_none() {
+    while state.settled_of(view) == Settled::List {
         let Some(tool) = state.next_queued_tool() else {
             break;
         };
@@ -326,7 +326,7 @@ pub(crate) fn grid_tools(
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
     let mut action = None;
-    while !state.keys_blocked() && state.selected().is_none() && state.graph_epic().is_none() {
+    while !state.keys_blocked() && state.settled_of(view) == Settled::Grid {
         let Some(tool) = state.next_queued_tool() else {
             break;
         };
@@ -504,22 +504,18 @@ enum ToolPane {
 }
 
 /// The pane a queued tool runs in, if one shows over the grid: nothing while
-/// the `X` composer is open or the graph shows (see
-/// [`crate::ui_tools::key_view`]).
+/// the `X` composer is open, the graph shows or the detail's card hasn't
+/// folded in yet (see [`crate::ui_tools::key_view`]).
 fn tool_pane(view: &BoardView, state: &BoardUiState) -> Option<ToolPane> {
-    if state.rejecting() || state.graph_epic().is_some() {
+    if state.rejecting() {
         return None;
     }
-    if state.queue_open() {
-        return Some(ToolPane::Review(PaneMode::Queue));
+    match state.settled_of(view) {
+        Settled::Queue { .. } => Some(ToolPane::Review(PaneMode::Queue)),
+        Settled::Review(_) => Some(ToolPane::Review(PaneMode::Plain)),
+        Settled::Detail(card) => Some(ToolPane::Detail(card)),
+        Settled::Grid | Settled::List | Settled::Graph(_) | Settled::DetailPending(_) => None,
     }
-    if state.review_card().is_some() {
-        return Some(ToolPane::Review(PaneMode::Plain));
-    }
-    state
-        .selected()
-        .filter(|&c| find_detail_card(view, c).is_some())
-        .map(ToolPane::Detail)
 }
 
 /// Run the UI tools queued on `state` against whatever shows over the grid
@@ -854,37 +850,29 @@ mod tests {
     }
 
     /// A harness that runs Headway's keys over [`grid`] each frame,
-    /// unfiltered: chrome's keymap first ([`chrome_keys`]), then as
-    /// [`crate::ui::board_ui`] does, a queue route's re-snapshot, the queue
-    /// following a verdict that folded in, [`reason_keys`] and
-    /// [`pane_tools`], then, when no pane shows over the grid, the cursor
-    /// following an edit and [`grid_tools`]; the current card latched as the
-    /// pass ends, and chrome's strip last.
+    /// unfiltered: chrome's keymap first ([`chrome_keys`]), then what
+    /// [`crate::ui::board_ui`] runs before its pane
+    /// ([`crate::ui::run_view_keys`]), then, where the view settled on the
+    /// grid (or a card still folding in over it), the cursor following an
+    /// edit and [`grid_tools`], or the issue list where it shows; then
+    /// [`crate::ui::end_view_pass`], and chrome's strip last.
     fn keys_harness(field: Option<egui::Id>) -> Harness<'static, KeysHarness> {
         let mut harness = Harness::new_ui_state(
             |ui, h: &mut KeysHarness| {
                 let everything = IssueFilter::default();
-                let pane = |s: &BoardUiState| {
-                    s.queue_open() || s.review_card().is_some() || s.selected().is_some()
-                };
                 chrome_keys(ui.ctx(), h);
-                h.state.reset_grid_menu_open();
-                let now = ui.ctx().input(|i| i.time);
-                h.state.refresh_queue(&h.view, now);
-                h.state.follow_queue(&h.view, now);
-                let showed_pane = pane(&h.state);
-                h.state.retire_stale_reason();
-                let keyed = reason_keys(ui.ctx(), &h.view, &mut h.state);
-                let keyed = keyed.or(pane_tools(ui.ctx(), &h.view, &mut h.state));
-                h.state.retire_stale_notice(ui.ctx().cumulative_pass_nr());
+                let keyed = crate::ui::run_view_keys(ui.ctx(), &h.view, &mut h.state);
                 let list = h.state.list_open() && !h.list_sources.is_empty();
-                let action = if showed_pane || keyed.is_some() {
-                    keyed
-                } else if list {
+                let grid = match h.state.settled() {
+                    Settled::Grid => true,
+                    Settled::DetailPending(_) => !list,
+                    _ => false,
+                };
+                let action = if list && !grid {
                     let theme = ColorTheme::current(ui.ctx());
                     let sources = &h.list_sources;
                     crate::ui::list_view_ui(ui, &theme, &sources[0], sources, &mut h.state)
-                } else {
+                } else if grid {
                     let filter = ViewFilter {
                         view: &h.view,
                         filter: &everything,
@@ -894,9 +882,11 @@ mod tests {
                     let action = grid_tools(ui.ctx(), &h.view, &filter, &h.boards, &mut h.state);
                     h.state.latch_cursor_slot(&h.view, &filter);
                     action
+                } else {
+                    None
                 };
-                h.state.drop_queued_tools();
-                h.state.latch_current_ref(&h.view);
+                let action = keyed.or(action);
+                crate::ui::end_view_pass(&h.view, &mut h.state);
                 for effect in h.state.take_effects() {
                     match effect {
                         BoardEffect::Open(open) => h.session = Some(open),
@@ -3315,6 +3305,67 @@ diff --git a/b.txt b/b.txt
         }
     }
 
+    /// A composer open on a review pane whose card leaves the board closes
+    /// before Enter: the view settles off the gone card first, so the line
+    /// is never sent about it.
+    #[test]
+    fn the_reason_composer_closes_when_its_review_card_leaves() {
+        let mut harness = pane_harness();
+        press_with(&mut harness, Modifiers::SHIFT, Key::X);
+        harness.run();
+        assert!(harness.state().state.rejecting());
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text("flaky".to_string()));
+        harness.step();
+
+        take_card(&mut harness.state_mut().view, id(5));
+        press(&mut harness, Key::Enter);
+        assert!(!harness.state().state.rejecting());
+        assert_eq!(harness.state().state.review_card(), None);
+        assert_eq!(harness.state().commented, None);
+        harness.step();
+        assert_eq!(harness.state().moved, None);
+    }
+
+    /// A card opened before it has folded in (a deep link) takes no keys:
+    /// `e` isn't offered, and the grid's keys don't reach the grid drawn
+    /// under it. Once it lands, its detail's keys are live.
+    #[test]
+    fn a_card_still_folding_in_takes_no_keys() {
+        let mut harness = keys_harness(None);
+        let landed = harness.state_mut().view.columns[2]
+            .cards
+            .pop()
+            .expect("card 6");
+        harness.state_mut().state.set_selected(Some(id(6)));
+        harness.run();
+        assert_eq!(
+            harness.state().state.settled(),
+            crate::ui::Settled::DetailPending(id(6))
+        );
+        assert!(key_scopes(&harness.state().state).is_empty());
+        assert!(!available(
+            &harness.state().state,
+            crate::ui_tools::OPEN_EXPLAINER
+        ));
+        press(&mut harness, Key::J);
+        assert_eq!(harness.state().state.cursor(), None, "no grid key");
+
+        harness.state_mut().view.columns[2].cards.push(landed);
+        harness.run();
+        assert_eq!(
+            harness.state().state.settled(),
+            crate::ui::Settled::Detail(id(6))
+        );
+        assert!(available(
+            &harness.state().state,
+            crate::ui_tools::OPEN_EXPLAINER
+        ));
+        assert!(harness.state().state.current_ref().is_some());
+    }
+
     /// While another field has the keyboard, the composer leaves Enter and
     /// Esc to it; once nothing does, they're the composer's again.
     #[test]
@@ -3537,14 +3588,22 @@ diff --git a/b.txt b/b.txt
     /// `a` in a plain review pane archives its card and stays put: the app
     /// prunes the pane's entry and its detail's once the archive folds in
     /// (notedeck_chrome's `pane_a_ends_on_the_board`), so a back from here
-    /// would only land on a detail about to go.
+    /// would only land on a detail about to go. The harness folds the archive
+    /// in before the view settles, so the pane, whose card has left, drops
+    /// back to the detail beneath; the detail never drew that card, so its
+    /// selection holds, as a card folding in would, and no key reaches it.
     #[test]
     fn a_in_a_plain_pane_archives_and_stays() {
         let mut harness = pane_harness();
         press(&mut harness, Key::A);
         assert_eq!(harness.state().archived, Some(id(5)));
-        assert_eq!(harness.state().state.review_card(), Some(id(5)));
+        assert_eq!(harness.state().state.review_card(), None);
         assert_eq!(harness.state().state.selected(), Some(id(5)));
+        assert_eq!(
+            harness.state().state.settled(),
+            crate::ui::Settled::DetailPending(id(5))
+        );
+        assert!(key_scopes(&harness.state().state).is_empty());
     }
 
     /// `a` on the detail archives its card. The detail stays until the app
@@ -3982,6 +4041,8 @@ diff --git a/b.txt b/b.txt
 
         let mut graph = grid_harness();
         graph.state_mut().state.set_graph_epic(Some(id(5)));
+        // Read off the view a pass settled on, as chrome reads it.
+        graph.run();
         assert!(scopes(&graph).is_empty());
         assert!(!available(&graph, BACK));
     }

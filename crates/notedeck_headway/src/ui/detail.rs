@@ -70,14 +70,12 @@ pub(super) fn card_detail_pane_ui(
     state: &mut BoardUiState,
     action: &mut Option<BoardAction>,
 ) {
-    // board_ui only calls us when the selection resolves; re-resolve here to get
-    // the card and its column, dropping a now-stale selection defensively.
+    // board_ui only calls us when the view settled on this card's detail;
+    // re-resolve here to get the card and its column.
     let Some(card_id) = state.selected else {
         return;
     };
     let Some(found) = find_detail_card(view, card_id) else {
-        state.selected = None;
-        state.detail_for = None;
         return;
     };
     let card = found.card;
@@ -174,7 +172,7 @@ pub(super) fn card_detail_pane_ui(
     };
 
     let mut outcome = DetailOutcome::None;
-    let here = state.nav_pos();
+    let here = state.settled().pos();
 
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))

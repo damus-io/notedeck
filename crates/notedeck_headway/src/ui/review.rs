@@ -817,7 +817,7 @@ pub(super) fn review_pane_ui(
     } else {
         ActionView::Pane
     };
-    let here = state.nav_pos();
+    let here = state.settled().pos();
     let notice = &mut state.notice;
     let review = &mut state.review;
     if review.ref_for != Some(card.id) {

@@ -104,8 +104,9 @@ impl BoardUiState {
 
     /// Take down a notice whose view has been left — by a key, a click, or a
     /// global back/forward the route seeded — so it isn't still up when that
-    /// view comes back. [`super::board_ui`] runs it after the frame's pane
-    /// keys, once per view it draws; `pass` is egui's
+    /// view comes back. Run by [`settle_view`](BoardUiState::settle_view),
+    /// against the view it settled, so a view the pane would have dropped
+    /// never counts; `pass` is egui's
     /// [`cumulative_pass_nr`](egui::Context::cumulative_pass_nr).
     ///
     /// A view other than the notice's isn't enough to take it down: during a
@@ -115,11 +116,9 @@ impl BoardUiState {
     /// lands on, and for the length of that back the outgoing queue entry is
     /// the top, drawing too. So the notice goes only once a whole pass has
     /// gone by without its view, and meanwhile it draws only in its own
-    /// ([`super::notice_ui`]). A pass is counted here when the view is the
-    /// notice's before the pane draws, and by `notice_ui` when it draws the
-    /// notice, which catches a pane that leaves its view as it draws.
-    pub(crate) fn retire_stale_notice(&mut self, pass: u64) {
-        let here = self.nav_pos();
+    /// ([`super::notice_ui`]).
+    pub(super) fn retire_stale_notice(&mut self, pass: u64) {
+        let here = self.settled.pos();
         let Some(notice) = &mut self.notice else {
             return;
         };
@@ -138,7 +137,7 @@ impl BoardUiState {
     /// The notice showing in the current view, if any.
     #[cfg(test)]
     pub(crate) fn notice(&self) -> Option<QueueNotice> {
-        let here = self.nav_pos();
+        let here = self.settled.pos();
         self.notice.filter(|n| n.pos == here).map(|n| n.what)
     }
 
@@ -416,11 +415,13 @@ impl BoardUiState {
     }
 
     /// Close an `X` composer whose view has gone: a click onto another card,
-    /// the detail's ✕, the graph, or a global back/forward the route seeded.
-    /// [`super::board_ui`] runs it before the frame's pane keys, so a stale
-    /// composer never takes their Enter.
-    pub(crate) fn retire_stale_reason(&mut self) {
-        let pos = self.nav_pos();
+    /// the detail's ✕, the graph, a global back/forward the route seeded, or
+    /// its card leaving the board. Run by
+    /// [`settle_view`](BoardUiState::settle_view), against the view it
+    /// settled, before the frame's pane keys, so a stale composer never takes
+    /// their Enter.
+    pub(super) fn retire_stale_reason(&mut self) {
+        let pos = self.settled.pos();
         if self.reason.as_ref().is_some_and(|r| r.pos != pos) {
             self.reason = None;
         }
