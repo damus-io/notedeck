@@ -25,3 +25,8 @@ and is meant to move to its own repository unchanged.
   `StrPool` arena addressed by `StrId`.
 - **Built in memory.** There is no database and no on-disk snapshot; the
   ledger is rebuilt from its journal at startup.
+- **Reading never aborts.** `Journal::parse` reads the ledger-cli subset in
+  two zero-copy passes (the first learns every commodity's precision, so no
+  amount is converted before it is known) and returns the journal together
+  with every `ParseError`, each with its line and column. A transaction with
+  any error, including one that does not balance, is left out whole.

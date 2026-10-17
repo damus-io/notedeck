@@ -153,6 +153,20 @@ impl Commodities {
         Ok(id)
     }
 
+    /// Learn only the style of a written amount: intern its commodity and take
+    /// its style if the commodity is new, leaving the precision alone. For
+    /// amounts kept at their own scale rather than the commodity's, such as
+    /// prices and costs, which ledger-cli does not let change a commodity's
+    /// display precision either.
+    pub fn observe_style(&mut self, text: &AmountText<'_>) -> Result<CommodityId, AmountError> {
+        let fresh = self.get(text.commodity).is_none();
+        let id = self.intern(text.commodity)?;
+        if fresh {
+            self.list[id.index()].style = text.style;
+        }
+        Ok(id)
+    }
+
     /// Convert a written amount to an integer at its commodity's precision,
     /// freezing that precision. The commodity must already be in the table
     /// (see [`observe`](Self::observe)).

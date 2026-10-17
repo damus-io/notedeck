@@ -6,4 +6,5 @@ description = "A generic, in-memory, plain-old-data ledger engine for ledger-cli
 
 [dependencies]
 hashbrown = { workspace = true }
+profiling = { workspace = true }
 thiserror = { workspace = true }

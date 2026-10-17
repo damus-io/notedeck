@@ -140,6 +140,9 @@ pub struct Txn {
     /// The transaction's metadata, its own and its postings', in the order
     /// written.
     pub meta: Span,
+    /// The transaction's plain comments, its own and its postings', in the
+    /// order written.
+    pub comments: Span,
     /// The source's record id, from its `; id:` metadata, which identifies
     /// the same record across re-imports.
     pub id: Option<StrId>,

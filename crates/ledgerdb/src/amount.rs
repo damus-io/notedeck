@@ -284,7 +284,7 @@ fn take_digits<'a>(rest: &mut &'a str) -> &'a str {
 }
 
 /// Consume a commodity: `"quoted name"` or a run of symbol characters.
-fn take_commodity<'a>(rest: &mut &'a str) -> Result<&'a str, AmountError> {
+pub(crate) fn take_commodity<'a>(rest: &mut &'a str) -> Result<&'a str, AmountError> {
     if let Some(quoted) = rest.strip_prefix('"') {
         let close = quoted.find('"').ok_or(AmountError::BadCommodity)?;
         if close == 0 {

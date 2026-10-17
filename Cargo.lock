@@ -4840,6 +4840,7 @@ name = "ledgerdb"
 version = "0.11.0-beta.1"
 dependencies = [
  "hashbrown 0.15.5",
+ "profiling",
  "thiserror 2.0.18",
 ]
 
