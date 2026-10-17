@@ -5,13 +5,12 @@
 //! against the app's relay with NIP-77 negentropy, and the stored signing key —
 //! lives in `nostrdb_net`'s `relay::sync` module (see [`notebook_cli`] for the
 //! other consumer). This crate is just the board's command surface: parsing
-//! ([`args`]), folding boards ([`boards`]) after the extra relay legs
+//! ([`args`]), folding boards ([`headway::boards`]) after the extra relay legs
 //! ([`sync`]), resolving card/column arguments against the folded board
 //! ([`edit`]), and rendering ([`output`]). This file is the entry point and the
 //! per-command dispatch.
 
 mod args;
-mod boards;
 mod diff;
 mod edit;
 mod grep;
@@ -26,6 +25,7 @@ use std::process::ExitCode;
 
 use serde_json::json;
 
+use headway::boards::{Roster, list_all_boards, list_boards, list_shared_with_me, load_board};
 use headway::event::{self, Container, resolve_card};
 use headway::query::{ListQuery, ViewSpec};
 use headway::store;
@@ -36,7 +36,6 @@ use nostrdb_net::Pubkey;
 use nostrdb_net::relay::sync::Result;
 
 use crate::args::{Cli, CliEnv, Command, Invocation};
-use crate::boards::{Roster, list_all_boards, list_boards, list_shared_with_me, load_board};
 use crate::edit::{Collect, build_action, resolve_container};
 use crate::output::{
     card_count, declined_message, deleted_board_error, plain_ref, print_all_boards, print_board,

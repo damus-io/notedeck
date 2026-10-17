@@ -23,7 +23,11 @@
 //!   PNS-wrapped in nostrdb, behind the list's tabs and `headway list --view`.
 //! - [`teams`] — the joined-shared-board roster: which SNS channels this account
 //!   holds keys for, so both front ends fold and seal the same shared boards.
+//! - [`boards`] — the [`boards::Roster`] built from [`teams`], and loading one
+//!   board (or all of them) by whichever transport it uses, for consumers that
+//!   read boards outside the egui app.
 
+pub mod boards;
 pub mod event;
 pub mod fmt;
 pub mod git;

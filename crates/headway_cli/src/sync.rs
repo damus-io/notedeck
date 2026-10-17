@@ -7,12 +7,12 @@ use nostrdb::{Ndb, Transaction};
 use nostrdb_net::Pubkey;
 use serde_json::json;
 
+use headway::boards::Roster;
 use headway::event;
 use headway::store;
 use headway::teams;
 
 use crate::APP;
-use crate::boards::Roster;
 use crate::edit::Collect;
 
 /// Upper bound for a windowed reconcile's `created_at` search: `u32::MAX` (unix
@@ -76,7 +76,7 @@ pub(crate) async fn sync_envelopes(
     // Every distinct channel pubkey across all joined boards — a board can span
     // several channels, and one channel can back several boards, so dedup.
     let mut pubkeys: Vec<Pubkey> = Vec::new();
-    for team in &roster.teams {
+    for team in roster.teams() {
         let Some(pk) = team.sns_keys().map(|keys| keys.team_keypair.pubkey) else {
             continue;
         };
@@ -246,7 +246,7 @@ pub(crate) async fn flush_own_selfshares(
     let mut sink = Collect::default();
     let mut newly: Vec<String> = Vec::new();
     let mut newly_pns: Vec<String> = Vec::new();
-    for team in &roster.teams {
+    for team in roster.teams() {
         let wrap_due = !flushed.contains(&team.team_root);
         let pns_due = !flushed_pns.contains(&team.team_root);
         if !team.board_addr.starts_with(&owner_prefix) || !(wrap_due || pns_due) {

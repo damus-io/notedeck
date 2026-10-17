@@ -1,12 +1,16 @@
 //! Board loading: the [`Roster`] of shared boards this account holds keys for,
 //! and folding one board (or all of them) by whichever transport it uses.
+//!
+//! Lives in the core crate so any consumer that reads boards outside the egui
+//! app — the `headway` CLI, `cashflow`'s goal reader — folds a shared board the
+//! same way, instead of each re-deriving which transport a board uses.
 
 use nostrdb::{Ndb, Transaction};
 use nostrdb_net::Pubkey;
 
-use headway::event::{self, BoardCoord, BoardView};
-use headway::store;
-use headway::teams;
+use crate::event::{self, BoardCoord, BoardView};
+use crate::store;
+use crate::teams;
 
 /// The shared boards this account holds keys for, resolved once per run.
 ///
@@ -19,10 +23,11 @@ use headway::teams;
 /// plaintext way omits every co-member's edit, and writing plaintext to one
 /// produces events no other front end will ever fold.
 ///
-/// The roster also drives the envelope sync leg ([`sync_envelopes`](crate::sync::sync_envelopes)): a sealed
-/// board's edits reach the relay only as kind-1081 envelopes signed by the team
-/// keypair, which the account-scoped plaintext reconcile can't see, so the CLI
-/// reconciles each channel's envelopes by its team pubkey. This is the one-shot
+/// The roster also drives the CLI's envelope sync leg (`sync_envelopes` in
+/// `headway_cli`, which walks [`Self::teams`]): a sealed board's edits reach the
+/// relay only as kind-1081 envelopes signed by the team keypair, which the
+/// account-scoped plaintext reconcile can't see, so the CLI reconciles each
+/// channel's envelopes by its team pubkey. This is the one-shot
 /// counterpart of the long-lived `relay::sync::Session` envelope pipe
 /// (headway:notedeck/clap-matrix-machine): the CLI reconciles once per run and
 /// exits rather than holding a live subscription, but both move the same
@@ -31,14 +36,14 @@ use headway::teams;
 /// were enough to piggyback a sealed board onto the plaintext leg. They are not:
 /// a fresh cache has no envelope to peel until this leg pulls it, and pushing a
 /// rumor on the plaintext leg would leak it in the clear (see
-/// [`plaintext_sync_filter`](crate::sync::plaintext_sync_filter)).
-pub(crate) struct Roster {
+/// `plaintext_sync_filter` in `headway_cli`).
+pub struct Roster {
     /// The channels *we* (the signer) hold keys for, each naming the board
     /// coordinate its key unlocks. Our membership, not the owner's: a member's
     /// roster lists the owner's boards it was shared, keyed to the owner.
-    pub(crate) teams: Vec<teams::Team>,
+    teams: Vec<teams::Team>,
     /// Whose boards we address — the owner half of a board coordinate
-    /// (`--author`, else the signing key). One suffices because a run works one
+    /// (the CLI's `--author`, else the signing key). One suffices because a run works one
     /// owner's boards; it differs from the signer when we are a member.
     author: Pubkey,
 }
@@ -55,7 +60,7 @@ impl Roster {
     /// is the board owner whose coordinates [`Self::channel`] and friends look up.
     /// They are the same key on an own board and differ for a member, whose
     /// key-shares are addressed to it but name the owner's board.
-    pub(crate) fn load(
+    pub fn load(
         ndb: &Ndb,
         me: &Pubkey,
         author: &Pubkey,
@@ -72,7 +77,7 @@ impl Roster {
     /// The channel new edits to `board_id` seal into — its *primary* channel (see
     /// [`teams::board_channels`]) — or `None` for a private board. Reads gather
     /// every channel instead; see [`Self::channel_pubkeys`].
-    pub(crate) fn channel(&self, board_id: &str) -> Option<store::SnsChannel> {
+    pub fn channel(&self, board_id: &str) -> Option<store::SnsChannel> {
         let addr = event::board_address(&self.author, board_id);
         let team = *teams::board_channels(&self.teams, &addr).first()?;
         Some(store::SnsChannel {
@@ -83,16 +88,23 @@ impl Roster {
     /// Every channel `board_id`'s content may be sealed into, primary first — what
     /// a read folds the union of, because a board's history can be split across
     /// channels that cannot be merged back together.
-    fn channel_pubkeys(&self, board_id: &str) -> Vec<Pubkey> {
+    pub fn channel_pubkeys(&self, board_id: &str) -> Vec<Pubkey> {
         let addr = event::board_address(&self.author, board_id);
         teams::board_channel_pubkeys(&self.teams, &addr)
+    }
+
+    /// The channels this account holds keys for — every [`teams::Team`] the
+    /// roster was loaded from, in [`teams::teams_from_ndb`]'s order. The CLI's
+    /// envelope sync walks these to reconcile each channel by its team pubkey.
+    pub fn teams(&self) -> &[teams::Team] {
+        &self.teams
     }
 
     /// The same roster, addressing `author`'s boards instead — for when the
     /// owner is only known once the roster itself has been read (see
     /// [`Self::owners_of`]). The channels don't change: they are *our*
     /// membership, whoever's board we then look up in it.
-    pub(crate) fn for_author(self, author: Pubkey) -> Self {
+    pub fn for_author(self, author: Pubkey) -> Self {
         Self { author, ..self }
     }
 
@@ -102,7 +114,7 @@ impl Roster {
     /// A board can back several channels (one per key-share generation), so the
     /// coordinates are deduplicated; our own boards are left out because the
     /// author fold in [`list_boards`] already lists them.
-    pub(crate) fn foreign_boards(&self, me: &Pubkey) -> Vec<BoardCoord> {
+    pub fn foreign_boards(&self, me: &Pubkey) -> Vec<BoardCoord> {
         let mut coords: Vec<BoardCoord> = self
             .teams
             .iter()
@@ -120,7 +132,7 @@ impl Roster {
     /// this is what lets a member say `--board shared` instead of carrying the
     /// owner's hex around: exactly one owner resolves it, several make it
     /// ambiguous. Slugs are only unique per owner, so more than one is possible.
-    pub(crate) fn owners_of(&self, me: &Pubkey, board_id: &str) -> Vec<Pubkey> {
+    pub fn owners_of(&self, me: &Pubkey, board_id: &str) -> Vec<Pubkey> {
         self.foreign_boards(me)
             .into_iter()
             .filter(|c| c.slug == board_id)
@@ -131,7 +143,7 @@ impl Roster {
     /// The raw `team_root` behind `board_id`'s primary channel — what a re-seal
     /// needs in order to keep sealing a shared board into the channel it already
     /// has, rather than minting a second one (see the `migrate` command).
-    pub(crate) fn team_root(&self, board_id: &str) -> Option<[u8; 32]> {
+    pub fn team_root(&self, board_id: &str) -> Option<[u8; 32]> {
         let addr = event::board_address(&self.author, board_id);
         teams::board_channels(&self.teams, &addr)
             .first()?
@@ -142,7 +154,7 @@ impl Roster {
 /// Fold one board, by whichever transport it uses: a joined shared board folds
 /// by *coordinate* (gathering every member's sealed edits), a private one folds
 /// from `author`'s own plaintext events.
-pub(crate) fn load_board(
+pub fn load_board(
     ndb: &Ndb,
     roster: &Roster,
     author: &Pubkey,
@@ -163,7 +175,7 @@ pub(crate) fn load_board(
 
 /// `author`'s live boards in the cache — [`list_all_boards`] without the deleted
 /// ones, which only `headway board` lists (apart, so they can be restored).
-pub(crate) fn list_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Vec<BoardView> {
+pub fn list_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Vec<BoardView> {
     let mut boards = list_all_boards(ndb, roster, author);
     boards.retain(|v| !v.deleted);
     boards
@@ -173,7 +185,7 @@ pub(crate) fn list_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Vec<Bo
 /// for a stable listing. Each shared board is re-folded by coordinate so its
 /// card counts match what the app draws, rather than the plaintext-only subset
 /// the author fold sees.
-pub(crate) fn list_all_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Vec<BoardView> {
+pub fn list_all_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Vec<BoardView> {
     let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
     };
@@ -201,7 +213,7 @@ pub(crate) fn list_all_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Ve
 /// board's card count includes every member's edits. A board we hold a key for
 /// but whose envelopes haven't arrived yet doesn't fold, and is left out rather
 /// than listed empty; so is one its owner deleted.
-pub(crate) fn list_shared_with_me(ndb: &Ndb, roster: &Roster, me: &Pubkey) -> Vec<BoardView> {
+pub fn list_shared_with_me(ndb: &Ndb, roster: &Roster, me: &Pubkey) -> Vec<BoardView> {
     let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
     };
