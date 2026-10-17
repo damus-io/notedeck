@@ -21,8 +21,8 @@ use std::ops::RangeInclusive;
 /// The range cashflow owns.
 pub const RANGE: RangeInclusive<u32> = 30700..=30709;
 
-/// One app setting per note, `d = set:<name>`, content `{"v":1,"value":…}`
-/// (see [`crate::settings`]).
+/// One app setting per note, `d = set:<name>`, its value the tag
+/// `["value", …]` (see [`crate::settings`]).
 pub const SETTING: u32 = 30700;
 
 /// A categorization rule, `d = rule:<id>`

@@ -9,12 +9,11 @@
 //! that one is per machine and never synced. A setting that should be the
 //! same everywhere, like the home currency, belongs here.
 
-use nostrdb::{Ndb, Transaction};
+use nostrdb::{Ndb, Tags, Transaction};
 use nostrdb_net::Pubkey;
-use serde::{Deserialize, Serialize};
 
 use crate::kinds;
-use crate::vault::{self, Record, Stored, Vault, VaultError, Written};
+use crate::vault::{self, Record, Stored, TagWriter, Vault, VaultError, Written, tag_value};
 
 /// The home commodity when none is set: CAD, per the root epic.
 pub const DEFAULT_HOME_COMMODITY: &str = "CAD";
@@ -62,16 +61,27 @@ fn is_commodity(value: &str) -> bool {
         && value.chars().all(|c| c.is_alphabetic() || c == '$')
 }
 
-/// One setting's value: the body of its vault note.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SettingNote {
+/// One setting's value: the body of its vault note, the tag
+/// `["value", <value>]`, borrowed from the note when read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettingNote<'a> {
     /// The value, as `cashflow settings set` took it.
-    pub value: String,
+    pub value: &'a str,
 }
 
-impl Record for SettingNote {
+impl<'a> Record<'a> for SettingNote<'a> {
     const KIND: u32 = kinds::SETTING;
     const PREFIX: &'static str = "set";
+
+    fn write_tags<'b>(&self, tags: TagWriter<'b>) -> TagWriter<'b> {
+        tags.tag("value", &[self.value])
+    }
+
+    fn from_tags(tags: &Tags<'a>) -> Option<Self> {
+        Some(SettingNote {
+            value: tag_value(tags, "value")?,
+        })
+    }
 }
 
 /// Why a setting wasn't written.
@@ -89,20 +99,21 @@ pub enum SettingsError {
     Vault(#[from] VaultError),
 }
 
-/// Every setting, as the vault holds them. A field is `None` when the
-/// setting was never set; its accessor then gives the default.
+/// Every setting, as the vault holds them, borrowed from the transaction
+/// they were read in. A field is `None` when the setting was never set; its
+/// accessor then gives the default.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Settings {
+pub struct Settings<'a> {
     /// [`Setting::Home`]'s note.
-    pub home_commodity: Option<Stored<SettingNote>>,
+    pub home_commodity: Option<Stored<'a, SettingNote<'a>>>,
 }
 
-impl Settings {
+impl<'a> Settings<'a> {
     /// Fold `author`'s setting notes.
-    pub fn load(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Self {
+    pub fn load(ndb: &Ndb, txn: &'a Transaction, author: &Pubkey) -> Self {
         let mut settings = Settings::default();
         for stored in vault::latest_all::<SettingNote>(ndb, txn, author) {
-            match Setting::from_name(&stored.id) {
+            match Setting::from_name(stored.id) {
                 Some(Setting::Home) => settings.home_commodity = Some(stored),
                 // A setting a newer cashflow wrote; nothing here reads it.
                 None => {}
@@ -112,20 +123,20 @@ impl Settings {
     }
 
     /// The home commodity, or [`DEFAULT_HOME_COMMODITY`].
-    pub fn home_commodity(&self) -> &str {
+    pub fn home_commodity(&self) -> &'a str {
         self.value(Setting::Home).unwrap_or(DEFAULT_HOME_COMMODITY)
     }
 
     /// `setting`'s stored value, or `None` when it was never set.
-    pub fn value(&self, setting: Setting) -> Option<&str> {
+    pub fn value(&self, setting: Setting) -> Option<&'a str> {
         let stored = match setting {
             Setting::Home => self.home_commodity.as_ref(),
         };
-        stored.map(|s| s.body.value.as_str())
+        stored.map(|s| s.body.value)
     }
 
     /// `setting`'s value, falling back to its default.
-    pub fn effective(&self, setting: Setting) -> &str {
+    pub fn effective(&self, setting: Setting) -> &'a str {
         match setting {
             Setting::Home => self.home_commodity(),
         }
@@ -140,10 +151,7 @@ pub fn set(
     value: &str,
 ) -> Result<Written, SettingsError> {
     setting.validate(value)?;
-    let note = SettingNote {
-        value: value.to_owned(),
-    };
-    Ok(vault.write(ndb, setting.name(), &note, 0)?)
+    Ok(vault.write(ndb, setting.name(), &SettingNote { value }, 0)?)
 }
 
 #[cfg(test)]

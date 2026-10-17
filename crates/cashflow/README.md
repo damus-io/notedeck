@@ -22,9 +22,10 @@ $CASHFLOW_DIR/              default: <data-local-dir>/cashflow
   `Secret`, whose `Debug` is redacted. Secrets never go in `config.toml`.
 - `vault` is the team-of-one SNS vault: a root derived from the account
   secret (`vault_root`), and typed `Record`s, each one replaceable note
-  `d = <prefix>:<id>` with JSON content `{"v": 1, ...}`, sealed into kind-1081
-  envelopes. `Vault::write` seals and ingests one; `vault::latest` and
-  `vault::latest_all` read the newest revisions back.
+  `d = <prefix>:<id>` whose fields are tags (plus `["v", "1"]`, content
+  empty), sealed into kind-1081 envelopes. `Vault::write` seals and ingests
+  one; `vault::latest` and `vault::latest_all` read the newest revisions back
+  borrowed from the transaction, zero-copy.
 - `kinds` allocates cashflow's nostr kinds, 30700–30709.
 - `settings` is the first record type: settings every machine shares, such as
   the home commodity (default CAD).

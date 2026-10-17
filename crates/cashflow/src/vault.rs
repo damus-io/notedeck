@@ -3,8 +3,22 @@
 //! Everything cashflow *decides* — settings now; rules, overrides, splits,
 //! transfer links, segment manifests and account metadata in later cards — is
 //! one [`Record`] each: a parameterized-replaceable note of a kind from
-//! [`crate::kinds`], `d = <prefix>:<id>`, JSON content with a schema version.
-//! Bulk transaction data never goes here; it lives in journal segments.
+//! [`crate::kinds`], `d = <prefix>:<id>`, its fields as tags and its content
+//! empty. Bulk transaction data never goes here; it lives in journal segments.
+//!
+//! ## Tags, read in place
+//!
+//! A record's fields are tags (`["value", "CAD"]`), not JSON content, so a
+//! read borrows each field straight out of the note in the transaction:
+//! [`latest`] and [`latest_all`] hand back records whose `&str`s point into
+//! nostrdb, with nothing parsed or copied. Every record also carries
+//! `["v", "1"]` ([`SCHEMA_VERSION`]); a reader looks up the tags it knows, so
+//! one a newer writer added is simply never asked for.
+//!
+//! nostrdb stores a 64-hex tag value as a 32-byte id, which a string read then
+//! misses. So ids live behind a `d` prefix ([`Record::PREFIX`]), and a field
+//! value that is 64 hex characters is refused at write ([`VaultError::HexValue`])
+//! rather than stored where its own reader can't see it.
 //!
 //! ## Sealing
 //!
@@ -22,26 +36,29 @@
 //!
 //! ## Newest wins
 //!
-//! Reads and the write stamp are [`nostrdb_net::private_note`]'s: the newest
-//! revision of a `d` by `(created_at, id)`, and a write stamped strictly past
-//! both the stored revision and the caller's own last write. Only the wrapping
-//! differs (SNS here, PNS there), so the read helpers are shared and the write
-//! is ours.
+//! Reads go straight through nostrdb_net's [`query_replaceable`] fold, which
+//! keeps the newest revision of each `d` by `(created_at, id)`, so every
+//! device and run settles a same-second tie the same way. A write is stamped
+//! strictly past both the stored revision and the caller's own last write
+//! ([`nostrdb_net::private_note::next_stamp`], the one stamp rule notedeck's
+//! private notes share), so a quick re-save still supersedes.
 
-use nostrdb::{IngestMetadata, Ndb, NoteBuildOptions, NoteBuilder, Transaction};
-use nostrdb_net::private_note::{self, Slot};
+use nostrdb::{
+    Filter, IngestMetadata, Ndb, Note, NoteBuildOptions, NoteBuilder, Tags, Transaction,
+};
+use nostrdb_net::private_note::next_stamp;
 use nostrdb_net::sns::{self, SnsKeys};
-use nostrdb_net::{ClientMessage, FullKeypair, Pubkey};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
+use nostrdb_net::{
+    ClientMessage, FullKeypair, Pubkey, query_replaceable, query_replaceable_filtered,
+};
 
 /// The label the vault root is derived under: one vault per account.
 const VAULT_LABEL: &str = "cashflow";
 
-/// The schema version every record is written with, as the content's `v`.
-/// Readers ignore fields they don't know, so adding a field doesn't bump it;
+/// The schema version every record is written with, as its `v` tag. Adding
+/// a field doesn't bump it, since readers never ask for tags they don't know;
 /// changing what an existing field means does.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: &str = "1";
 
 /// The account's vault `team_root`, derived from its `secret`. The same on
 /// every device that holds the secret.
@@ -49,13 +66,11 @@ pub fn vault_root(secret: &[u8; 32]) -> [u8; 32] {
     sns::derive_board_root(secret, VAULT_LABEL)
 }
 
-/// A typed vault record: the body of one note, and where it is stored.
+/// A typed vault record: its fields as tags, and where it is stored.
 ///
-/// The body is a struct serialized as the note's JSON content, with
-/// `"v": SCHEMA_VERSION` added beside its fields. Don't use
-/// `#[serde(deny_unknown_fields)]`: a newer writer's extra fields must read
-/// as nothing on an older reader, not as an unreadable record.
-pub trait Record: Serialize + DeserializeOwned {
+/// `'a` is the transaction a read borrows from: a record type holds `&'a str`
+/// fields, so reading one copies nothing.
+pub trait Record<'a>: Sized {
     /// The addressable kind it is stored under, from [`crate::kinds`].
     const KIND: u32;
 
@@ -65,14 +80,57 @@ pub trait Record: Serialize + DeserializeOwned {
     /// a bare `d` tag: nostrdb stores a 64-hex tag value as a 32-byte id, and
     /// a string `d` lookup then never finds it.
     const PREFIX: &'static str;
+
+    /// Add the record's fields to `tags`, one [`TagWriter::tag`] each. The
+    /// `d` and `v` tags are the vault's; don't write them.
+    fn write_tags<'b>(&self, tags: TagWriter<'b>) -> TagWriter<'b>;
+
+    /// Read the record back from its note's tags, borrowing them, or `None`
+    /// when a field it needs is missing. Ignore tags it doesn't know.
+    fn from_tags(tags: &Tags<'a>) -> Option<Self>;
 }
 
-/// One record as read back: its id (the `d` without the prefix), when it was
-/// written, and its body.
+/// Builds a record's field tags for [`Record::write_tags`], and remembers the
+/// first field whose value nostrdb would store as an id instead of a string.
+pub struct TagWriter<'b> {
+    note: NoteBuilder<'b>,
+    hex_field: Option<&'static str>,
+}
+
+impl<'b> TagWriter<'b> {
+    /// Add the tag `[name, values...]`.
+    pub fn tag(mut self, name: &'static str, values: &[&str]) -> Self {
+        if self.hex_field.is_none() && values.iter().any(|value| is_hex_id(value)) {
+            self.hex_field = Some(name);
+        }
+        let mut note = self.note.start_tag().tag_str(name);
+        for value in values {
+            note = note.tag_str(value);
+        }
+        self.note = note;
+        self
+    }
+}
+
+/// The string value of the first `[name, value, ...]` tag in `tags`, borrowed
+/// from the note. A record's [`Record::from_tags`] reads its fields with it.
+pub fn tag_value<'a>(tags: &Tags<'a>, name: &str) -> Option<&'a str> {
+    tags.iter()
+        .find(|tag| tag.count() >= 2 && tag.get_str(0) == Some(name))
+        .and_then(|tag| tag.get_str(1))
+}
+
+/// Whether nostrdb would store `value` as a 32-byte id: 64 hex characters.
+fn is_hex_id(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// One record as read back, borrowing from the transaction: its id (the `d`
+/// without the prefix), when it was written, and its body.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Stored<T> {
+pub struct Stored<'a, T> {
     /// The record's id, the `d` tag with `<prefix>:` taken off.
-    pub id: String,
+    pub id: &'a str,
     /// The revision's `created_at`, which the next write to it stamps past.
     pub created_at: u64,
     /// The record itself.
@@ -96,9 +154,10 @@ pub enum VaultError {
     /// A record id is empty or has whitespace in it.
     #[error("invalid record id {0:?}: it must be non-empty with no whitespace")]
     BadId(String),
-    /// The body didn't serialize to a JSON object.
-    #[error("record body must serialize to a JSON object: {0}")]
-    Body(String),
+    /// A field's value is 64 hex characters, which nostrdb would store as an
+    /// id that the record's own string read never finds.
+    #[error("field '{0}' holds a 64-hex value, which nostrdb stores as an id; prefix it")]
+    HexValue(&'static str),
     /// Signing the record failed.
     #[error("couldn't build the record note")]
     Build,
@@ -143,8 +202,8 @@ impl Vault {
 
     /// The nostrdb filter for the vault's envelopes, which is all a relay
     /// sync of the vault moves.
-    pub fn sync_filter(&self) -> nostrdb::Filter {
-        nostrdb::Filter::new()
+    pub fn sync_filter(&self) -> Filter {
+        Filter::new()
             .kinds([sns::SNS_ENVELOPE_KIND as u64])
             .authors([self.team_pubkey().bytes()])
             .build()
@@ -171,33 +230,40 @@ impl Vault {
     ///
     /// nostrdb ingests on its own thread, so the record is readable once that
     /// lands, not necessarily on return.
-    pub fn write<T: Record>(
+    pub fn write<'r, T: Record<'r>>(
         &self,
         ndb: &Ndb,
         id: &str,
         body: &T,
         after: u64,
     ) -> Result<Written, VaultError> {
-        let d = d_tag::<T>(id)?;
-        let content = content_json(body)?;
-        let slot = Slot {
-            author: self.author(),
-            kind: T::KIND,
-            d: &d,
-        };
+        let d = d_tag(T::PREFIX, id)?;
+        // Any stored revision counts, even one this `T` can't read.
         let stored = Transaction::new(ndb)
             .ok()
-            .and_then(|txn| private_note::latest(ndb, &txn, slot))
-            .map_or(0, |revision| revision.created_at);
-        let created_at = private_note::next_stamp(unix_now(), stored, after);
+            .and_then(|txn| Some(newest(ndb, &txn, self.author(), T::KIND, &d)?.created_at()))
+            .unwrap_or(0);
+        let created_at = next_stamp(unix_now(), stored, after);
 
-        let secret = self.member.secret_key.secret_bytes();
-        let rumor = NoteBuilder::new()
+        let note = NoteBuilder::new()
             .kind(T::KIND)
-            .content(&content)
+            .content("")
             .start_tag()
             .tag_str("d")
             .tag_str(&d)
+            .start_tag()
+            .tag_str("v")
+            .tag_str(SCHEMA_VERSION);
+        let fields = body.write_tags(TagWriter {
+            note,
+            hex_field: None,
+        });
+        if let Some(field) = fields.hex_field {
+            return Err(VaultError::HexValue(field));
+        }
+        let secret = self.member.secret_key.secret_bytes();
+        let rumor = fields
+            .note
             .options(NoteBuildOptions::default())
             .created_at(created_at)
             .sign(&secret)
@@ -217,61 +283,86 @@ impl Vault {
     }
 }
 
-/// The newest revision of record `id` of type `T` that `author` wrote, or
-/// `None` when there is none or its content doesn't read as a `T`.
-pub fn latest<T: Record>(
+/// The newest revision of record `id` of type `T` that `author` wrote,
+/// borrowed from `txn`, or `None` when there is none or it lacks a field `T`
+/// needs.
+pub fn latest<'a, T: Record<'a>>(
     ndb: &Ndb,
-    txn: &Transaction,
+    txn: &'a Transaction,
     author: &Pubkey,
     id: &str,
-) -> Option<Stored<T>> {
-    let d = d_tag::<T>(id).ok()?;
-    let slot = Slot {
-        author,
-        kind: T::KIND,
-        d: &d,
-    };
-    let revision = private_note::latest(ndb, txn, slot)?;
+) -> Option<Stored<'a, T>> {
+    let d = d_tag(T::PREFIX, id).ok()?;
+    stored(newest(ndb, txn, author, T::KIND, &d)?)
+}
+
+/// The newest revision of every record of type `T` that `author` wrote,
+/// borrowed from `txn`, in id order. A note of `T`'s kind without `T`'s
+/// prefix, or lacking a field `T` needs, is skipped.
+pub fn latest_all<'a, T: Record<'a>>(
+    ndb: &Ndb,
+    txn: &'a Transaction,
+    author: &Pubkey,
+) -> Vec<Stored<'a, T>> {
+    let mut all: Vec<Stored<'a, T>> =
+        query_replaceable(ndb, txn, &[author_filter(author, T::KIND)])
+            .into_iter()
+            .filter_map(|key| stored(ndb.get_note_by_key(txn, key).ok()?))
+            .collect();
+    // query_replaceable hands its winners back in `HashMap` drain order.
+    all.sort_unstable_by(|a, b| a.id.cmp(b.id));
+    all
+}
+
+/// The newest revision of `author`'s note of `kind` at `d`, borrowed from
+/// `txn`.
+fn newest<'a>(
+    ndb: &Ndb,
+    txn: &'a Transaction,
+    author: &Pubkey,
+    kind: u32,
+    d: &str,
+) -> Option<Note<'a>> {
+    // The predicate sees only each `d`'s newest revision, so it picks this
+    // one's out of the author's notes of the kind.
+    let key = query_replaceable_filtered(ndb, txn, &[author_filter(author, kind)], |note| {
+        note_d(note) == Some(d)
+    })
+    .into_iter()
+    .next()?;
+    ndb.get_note_by_key(txn, key).ok()
+}
+
+/// `note` as a stored `T`, when its `d` has `T`'s prefix and its tags read.
+fn stored<'a, T: Record<'a>>(note: Note<'a>) -> Option<Stored<'a, T>> {
+    let id = note_d(&note)?.strip_prefix(T::PREFIX)?.strip_prefix(':')?;
     Some(Stored {
-        id: id.to_owned(),
-        created_at: revision.created_at,
-        body: serde_json::from_str(&revision.content).ok()?,
+        id,
+        created_at: note.created_at(),
+        body: T::from_tags(&note.tags())?,
     })
 }
 
-/// The newest revision of every record of type `T` that `author` wrote, in
-/// id order. A note of `T`'s kind without `T`'s prefix, or whose content
-/// doesn't read as a `T`, is skipped.
-pub fn latest_all<T: Record>(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Vec<Stored<T>> {
-    private_note::latest_per_d(ndb, txn, author, T::KIND)
-        .into_iter()
-        .filter_map(|slot| {
-            let id = slot.d.strip_prefix(T::PREFIX)?.strip_prefix(':')?;
-            Some(Stored {
-                id: id.to_owned(),
-                created_at: slot.revision.created_at,
-                body: serde_json::from_str(&slot.revision.content).ok()?,
-            })
-        })
-        .collect()
+/// Every note of `kind` that `author` signed. The `d` is checked in Rust: an
+/// authors + kinds + tags filter scans the author's notes of the kind anyway.
+fn author_filter(author: &Pubkey, kind: u32) -> Filter {
+    Filter::new()
+        .authors([author.bytes()])
+        .kinds([kind as u64])
+        .build()
 }
 
-/// `T`'s `d` tag for record `id`: `<prefix>:<id>`.
-fn d_tag<T: Record>(id: &str) -> Result<String, VaultError> {
+/// `note`'s `d` tag, when it is a string.
+fn note_d<'a>(note: &Note<'a>) -> Option<&'a str> {
+    tag_value(&note.tags(), "d")
+}
+
+/// The `d` tag for record `id` under `prefix`: `<prefix>:<id>`.
+fn d_tag(prefix: &str, id: &str) -> Result<String, VaultError> {
     if id.is_empty() || id.chars().any(char::is_whitespace) {
         return Err(VaultError::BadId(id.to_owned()));
     }
-    Ok(format!("{}:{id}", T::PREFIX))
-}
-
-/// `body` as note content: its JSON object with `"v"` added.
-fn content_json<T: Serialize>(body: &T) -> Result<String, VaultError> {
-    let value = serde_json::to_value(body).map_err(|err| VaultError::Body(err.to_string()))?;
-    let serde_json::Value::Object(mut fields) = value else {
-        return Err(VaultError::Body(format!("got {value}")));
-    };
-    fields.insert("v".to_owned(), SCHEMA_VERSION.into());
-    Ok(serde_json::Value::Object(fields).to_string())
+    Ok(format!("{prefix}:{id}"))
 }
 
 /// The wall clock in whole seconds, nostr's `created_at` unit.
@@ -285,38 +376,43 @@ fn unix_now() -> u64 {
 mod tests {
     use super::*;
 
-    use nostrdb::Filter;
-    use serde::Deserialize;
-
     use crate::kinds;
     use crate::test_util::{INGEST_TIMEOUT as WAIT, TempNdb};
 
     /// A record shaped like the segment manifest the hex-trap test needs:
     /// its ids are 64-hex sha256s.
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    struct Probe {
-        note: String,
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct Probe<'a> {
+        note: &'a str,
     }
 
-    impl Record for Probe {
+    impl<'a> Record<'a> for Probe<'a> {
         const KIND: u32 = kinds::SEGMENT;
         const PREFIX: &'static str = "seg";
+
+        fn write_tags<'b>(&self, tags: TagWriter<'b>) -> TagWriter<'b> {
+            tags.tag("note", &[self.note])
+        }
+
+        fn from_tags(tags: &Tags<'a>) -> Option<Self> {
+            Some(Probe {
+                note: tag_value(tags, "note")?,
+            })
+        }
     }
 
     const SECRET: [u8; 32] = [3u8; 32];
     const OTHER_SECRET: [u8; 32] = [4u8; 32];
     const HEX: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
 
-    fn probe(note: &str) -> Probe {
-        Probe {
-            note: note.to_owned(),
-        }
+    fn probe(note: &str) -> Probe<'_> {
+        Probe { note }
     }
 
-    /// Subscribe to the vault's records of `T`'s kind, before anything that
+    /// Subscribe to the vault's [`Probe`] records, before anything that
     /// should land is ingested.
-    fn subscribe<T: Record>(ndb: &Ndb) -> nostrdb::Subscription {
-        ndb.subscribe(&[Filter::new().kinds([T::KIND as u64]).build()])
+    fn subscribe(ndb: &Ndb) -> nostrdb::Subscription {
+        ndb.subscribe(&[Filter::new().kinds([kinds::SEGMENT as u64]).build()])
             .unwrap()
     }
 
@@ -326,7 +422,7 @@ mod tests {
         let ndb = &db.ndb;
         let vault = Vault::new(&SECRET).unwrap();
         vault.register(ndb);
-        let sub = subscribe::<Probe>(ndb);
+        let sub = subscribe(ndb);
 
         let first = vault.write(ndb, "a", &probe("one"), 0).unwrap();
         // Same record again before the first has landed: `after` keeps the
@@ -344,26 +440,91 @@ mod tests {
         assert_eq!(a.created_at, second.created_at);
 
         let all = latest_all::<Probe>(ndb, &txn, vault.author());
-        let ids: Vec<&str> = all.iter().map(|s| s.id.as_str()).collect();
+        let ids: Vec<&str> = all.iter().map(|s| s.id).collect();
         assert_eq!(ids, ["a", "b"]);
         assert_eq!(all[0].body, probe("two"));
 
         assert!(latest::<Probe>(ndb, &txn, vault.author(), "c").is_none());
+
+        // The rumor's content is empty: the record is its tags.
+        let key = query_replaceable_filtered(
+            ndb,
+            &txn,
+            &[author_filter(vault.author(), kinds::SEGMENT)],
+            |note| note_d(note) == Some("seg:a"),
+        )[0];
+        let note = ndb.get_note_by_key(&txn, key).unwrap();
+        assert_eq!(note.content(), "");
+        assert_eq!(tag_value(&note.tags(), "v"), Some(SCHEMA_VERSION));
         let stranger = Vault::new(&OTHER_SECRET).unwrap();
         assert!(latest_all::<Probe>(ndb, &txn, stranger.author()).is_empty());
     }
 
-    /// The content carries `"v"`, and a field the reader doesn't know is
-    /// ignored rather than making the record unreadable.
+    /// A record is its tags: empty content, `v` beside the fields, and a
+    /// tag the reader doesn't know (a newer writer's) is ignored.
     #[test]
-    fn content_is_versioned_and_extra_fields_are_ignored() {
-        let content = content_json(&probe("x")).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(value["v"], SCHEMA_VERSION);
-        assert_eq!(value["note"], "x");
+    fn records_are_tags_and_unknown_tags_are_ignored() {
+        let newer = NoteBuilder::new()
+            .kind(kinds::SEGMENT)
+            .content("")
+            .start_tag()
+            .tag_str("d")
+            .tag_str("seg:x")
+            .start_tag()
+            .tag_str("v")
+            .tag_str("2")
+            .start_tag()
+            .tag_str("note")
+            .tag_str("hi")
+            .start_tag()
+            .tag_str("added_later")
+            .tag_str("1")
+            .sign(&SECRET)
+            .build()
+            .unwrap();
+        let read = stored::<Probe>(newer).unwrap();
+        assert_eq!(read.id, "x");
+        assert_eq!(read.body, probe("hi"));
 
-        let newer = r#"{"v":2,"note":"x","added_later":[1,2]}"#;
-        assert_eq!(serde_json::from_str::<Probe>(newer).unwrap(), probe("x"));
+        let missing_field = NoteBuilder::new()
+            .kind(kinds::SEGMENT)
+            .content("")
+            .start_tag()
+            .tag_str("d")
+            .tag_str("seg:y")
+            .sign(&SECRET)
+            .build()
+            .unwrap();
+        assert!(stored::<Probe>(missing_field).is_none());
+
+        let other_prefix = NoteBuilder::new()
+            .kind(kinds::SEGMENT)
+            .content("")
+            .start_tag()
+            .tag_str("d")
+            .tag_str("ov:x")
+            .start_tag()
+            .tag_str("note")
+            .tag_str("hi")
+            .sign(&SECRET)
+            .build()
+            .unwrap();
+        assert!(stored::<Probe>(other_prefix).is_none());
+    }
+
+    /// A 64-hex field value would be stored as an id its own string read
+    /// misses, so the write refuses it instead.
+    #[test]
+    fn hex_field_values_are_refused() {
+        let db = TempNdb::new();
+        let vault = Vault::new(&SECRET).unwrap();
+        assert!(matches!(
+            vault.write(&db.ndb, "a", &probe(HEX), 0),
+            Err(VaultError::HexValue("note"))
+        ));
+        assert!(is_hex_id(HEX));
+        assert!(!is_hex_id(&HEX[1..]));
+        assert!(!is_hex_id(&format!("seg:{HEX}")));
     }
 
     /// A `seg:<64hex>` record round-trips. The prefix is what keeps nostrdb
@@ -374,7 +535,7 @@ mod tests {
         let ndb = &db.ndb;
         let vault = Vault::new(&SECRET).unwrap();
         vault.register(ndb);
-        let sub = subscribe::<Probe>(ndb);
+        let sub = subscribe(ndb);
 
         vault.write(ndb, HEX, &probe("segment"), 0).unwrap();
         ndb.wait_for_all_notes_within(sub, 1, WAIT).await.unwrap();
@@ -403,7 +564,7 @@ mod tests {
         let envelopes = reader
             .subscribe(&[Filter::new().kinds([sns::SNS_ENVELOPE_KIND as u64]).build()])
             .unwrap();
-        let records = subscribe::<Probe>(reader);
+        let records = subscribe(reader);
         // The frame is client-form (`["EVENT", {…}]`), as a publish sends it.
         reader
             .process_event_with(&written.frame, IngestMetadata::new().client(true))

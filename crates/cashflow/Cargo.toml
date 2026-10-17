@@ -9,7 +9,6 @@ dirs = { workspace = true }
 nostrdb = { workspace = true }
 nostrdb_net = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true, features = ["display"] }
 
