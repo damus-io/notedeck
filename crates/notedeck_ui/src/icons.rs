@@ -492,6 +492,42 @@ fn draw_horizon(painter: &egui::Painter, center: Pos2, s: f32, color: Color32, s
     );
 }
 
+/// Painter-drawn cashflow icon: a stack of three emerald coins, each a
+/// flattened disc with a lighter face, under a rising arrow in the theme color.
+fn draw_cashflow(painter: &egui::Painter, center: Pos2, s: f32, color: Color32, stroke_width: f32) {
+    let face = Color32::from_rgb(0x6E, 0xE7, 0xB7); // emerald-300
+    let edge = Color32::from_rgb(0x05, 0x96, 0x69); // emerald-600
+
+    let radius = vec2(s * 0.26, s * 0.1);
+    let thickness = s * 0.1;
+    let cx = center.x - s * 0.12;
+    let bottom = center.y + s * 0.3;
+    // Bottom coin first, so each one above overlaps the one below.
+    for i in 0..3 {
+        let face_center = pos2(cx, bottom - thickness - i as f32 * thickness * 1.15);
+        let edge_center = face_center + vec2(0.0, thickness);
+        painter.add(egui::Shape::ellipse_filled(edge_center, radius, edge));
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                pos2(cx - radius.x, face_center.y),
+                pos2(cx + radius.x, edge_center.y),
+            ),
+            0.0,
+            edge,
+        );
+        painter.add(egui::Shape::ellipse_filled(face_center, radius, face));
+    }
+
+    // A rising arrow beside the stack: money flowing in.
+    let stroke = Stroke::new(stroke_width, color);
+    let foot = pos2(center.x + s * 0.3, center.y + s * 0.18);
+    let tip = pos2(center.x + s * 0.3, center.y - s * 0.38);
+    painter.line_segment([foot, tip], stroke);
+    let head = s * 0.13;
+    painter.line_segment([tip, tip + vec2(-head, head)], stroke);
+    painter.line_segment([tip, tip + vec2(head, head)], stroke);
+}
+
 /// Painter-drawn dashboard icon: an asymmetric grid of gradient widget panels.
 fn draw_dashboard(
     painter: &egui::Painter,
@@ -595,6 +631,11 @@ pub fn notebook_icon(ui: &mut egui::Ui, size: f32) {
 /// Fixed-size Headway app icon (sidebar drawer and chrome tab strip).
 pub fn headway_icon(ui: &mut egui::Ui, size: f32) {
     draw_app_icon(ui, size, draw_headway);
+}
+
+/// Fixed-size Cashflow app icon (sidebar drawer and chrome tab strip).
+pub fn cashflow_icon(ui: &mut egui::Ui, size: f32) {
+    draw_app_icon(ui, size, draw_cashflow);
 }
 
 /// Fixed-size Horizon app icon (sidebar drawer and chrome tab strip).

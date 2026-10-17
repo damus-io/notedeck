@@ -25,6 +25,9 @@ use notedeck_dashboard::Dashboard;
 #[cfg(feature = "horizon")]
 use notedeck_horizon::Horizon;
 
+#[cfg(feature = "cashflow")]
+use notedeck_cashflow::CashflowApp;
+
 #[cfg(feature = "clndash")]
 use notedeck_ui::expanding_button;
 
@@ -277,6 +280,9 @@ impl Chrome {
 
         #[cfg(feature = "horizon")]
         chrome.add_app(NotedeckApp::Horizon(Box::new(Horizon::default())));
+
+        #[cfg(feature = "cashflow")]
+        chrome.add_app(NotedeckApp::Cashflow(Box::new(CashflowApp::new())));
 
         #[cfg(feature = "notebook")]
         chrome.add_app(NotedeckApp::Notebook(Box::default()));

@@ -7,3 +7,4 @@ new test file's snapshots are silently skipped and the run still exits 0.
 - headway:dave/student-local-solution — the new message-menu snapshots in `chip_click_tests` were silently skipped through a 25-minute full update; found only because their pngs never appeared
 - headway:notedeck/fury-excuse-accident — the new `tests/command_bar.rs` snapshots ran 0 tests with exit 0; had to add `--test command_bar` to the chrome suite line by hand
 - headway:notedeck/zebra-illness-salute — the new `tests/shot.rs` GPU test would have run 0 tests in CI; added `--test shot` to the chrome suite line by hand
+- headway:cashflow/answer-vibrant-crush — a new crate's `tests/snapshot_tests.rs` ran nowhere until a `notedeck_cashflow` suite line was added to the script by hand

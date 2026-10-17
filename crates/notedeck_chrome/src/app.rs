@@ -20,6 +20,9 @@ use notedeck_dashboard::Dashboard;
 #[cfg(feature = "horizon")]
 use notedeck_horizon::Horizon;
 
+#[cfg(feature = "cashflow")]
+use notedeck_cashflow::CashflowApp;
+
 #[cfg(feature = "notebook")]
 use notedeck_notebook::Notebook;
 
@@ -53,6 +56,9 @@ pub enum NotedeckApp {
     #[cfg(feature = "horizon")]
     Horizon(Box<Horizon>),
 
+    #[cfg(feature = "cashflow")]
+    Cashflow(Box<CashflowApp>),
+
     #[cfg(feature = "nostrverse")]
     Nostrverse(Box<NostrverseApp>),
     Other(String, Box<dyn notedeck::App>),
@@ -83,6 +89,9 @@ impl notedeck::App for NotedeckApp {
 
             #[cfg(feature = "horizon")]
             NotedeckApp::Horizon(horizon) => horizon.update(ctx),
+
+            #[cfg(feature = "cashflow")]
+            NotedeckApp::Cashflow(cashflow) => cashflow.update(ctx),
 
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.update(ctx),
@@ -115,6 +124,9 @@ impl notedeck::App for NotedeckApp {
 
             #[cfg(feature = "horizon")]
             NotedeckApp::Horizon(horizon) => horizon.render(ctx, ui),
+
+            #[cfg(feature = "cashflow")]
+            NotedeckApp::Cashflow(cashflow) => cashflow.render(ctx, ui),
 
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.render(ctx, ui),
@@ -158,6 +170,9 @@ impl notedeck::App for NotedeckApp {
             #[cfg(feature = "horizon")]
             NotedeckApp::Horizon(horizon) => horizon.render_nav(ctx, ui, token),
 
+            #[cfg(feature = "cashflow")]
+            NotedeckApp::Cashflow(cashflow) => cashflow.render_nav(ctx, ui, token),
+
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.render_nav(ctx, ui, token),
 
@@ -193,6 +208,9 @@ impl notedeck::App for NotedeckApp {
             #[cfg(feature = "horizon")]
             NotedeckApp::Horizon(horizon) => horizon.nav_title(token),
 
+            #[cfg(feature = "cashflow")]
+            NotedeckApp::Cashflow(cashflow) => cashflow.nav_title(token),
+
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.nav_title(token),
 
@@ -227,6 +245,9 @@ impl notedeck::App for NotedeckApp {
 
             #[cfg(feature = "horizon")]
             NotedeckApp::Horizon(horizon) => horizon.cleanup_nav(ctx, token),
+
+            #[cfg(feature = "cashflow")]
+            NotedeckApp::Cashflow(cashflow) => cashflow.cleanup_nav(ctx, token),
 
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.cleanup_nav(ctx, token),
@@ -267,6 +288,9 @@ impl notedeck::App for NotedeckApp {
             #[cfg(feature = "horizon")]
             NotedeckApp::Horizon(horizon) => horizon.open_note_route(ctx, note_id),
 
+            #[cfg(feature = "cashflow")]
+            NotedeckApp::Cashflow(cashflow) => cashflow.open_note_route(ctx, note_id),
+
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.open_note_route(ctx, note_id),
 
@@ -297,6 +321,9 @@ impl notedeck::App for NotedeckApp {
 
             #[cfg(feature = "horizon")]
             NotedeckApp::Horizon(horizon) => horizon.kind_renderers(),
+
+            #[cfg(feature = "cashflow")]
+            NotedeckApp::Cashflow(cashflow) => cashflow.kind_renderers(),
 
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.kind_renderers(),
@@ -329,6 +356,9 @@ impl notedeck::App for NotedeckApp {
             #[cfg(feature = "horizon")]
             NotedeckApp::Horizon(horizon) => horizon.reference_parsers(),
 
+            #[cfg(feature = "cashflow")]
+            NotedeckApp::Cashflow(cashflow) => cashflow.reference_parsers(),
+
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.reference_parsers(),
 
@@ -360,6 +390,9 @@ impl notedeck::App for NotedeckApp {
             #[cfg(feature = "horizon")]
             NotedeckApp::Horizon(horizon) => horizon.tools(),
 
+            #[cfg(feature = "cashflow")]
+            NotedeckApp::Cashflow(cashflow) => cashflow.tools(),
+
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.tools(),
 
@@ -390,6 +423,9 @@ impl notedeck::App for NotedeckApp {
 
             #[cfg(feature = "horizon")]
             NotedeckApp::Horizon(horizon) => horizon.tab_notifications(ctx),
+
+            #[cfg(feature = "cashflow")]
+            NotedeckApp::Cashflow(cashflow) => cashflow.tab_notifications(ctx),
 
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.tab_notifications(ctx),
@@ -468,6 +504,9 @@ impl NotedeckApp {
             #[cfg(feature = "horizon")]
             NotedeckApp::Horizon(horizon) => &**horizon,
 
+            #[cfg(feature = "cashflow")]
+            NotedeckApp::Cashflow(cashflow) => &**cashflow,
+
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => &**nostrverse,
 
@@ -500,6 +539,9 @@ impl NotedeckApp {
 
             #[cfg(feature = "horizon")]
             NotedeckApp::Horizon(horizon) => &mut **horizon,
+
+            #[cfg(feature = "cashflow")]
+            NotedeckApp::Cashflow(cashflow) => &mut **cashflow,
 
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => &mut **nostrverse,

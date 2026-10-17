@@ -30,7 +30,7 @@ jobs:
       # tooling features (tracy, puffin, memory, auto-update, snapshot-testing)
       # stay off: they change how the binary is instrumented, not what it does.
       - name: Run Tests (Native Only)
-        run: cargo test --workspace --exclude notedeck_columns --exclude notedeck_dave --exclude notedeck_messages --exclude notedeck_notebook --features dave,messages,notebook,headway,nostrverse,clndash,dashboard,horizon,wasm
+        run: cargo test --workspace --exclude notedeck_columns --exclude notedeck_dave --exclude notedeck_messages --exclude notedeck_notebook --features dave,messages,notebook,headway,nostrverse,clndash,dashboard,horizon,cashflow,wasm
         env:
           CI: true
 

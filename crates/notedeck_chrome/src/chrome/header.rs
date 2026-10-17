@@ -36,6 +36,11 @@ fn tab_app_icon(ui: &mut egui::Ui, app: &mut NotedeckApp, size: f32) {
             notedeck_ui::icons::horizon_icon(ui, size);
         }
 
+        #[cfg(feature = "cashflow")]
+        NotedeckApp::Cashflow(_) => {
+            notedeck_ui::icons::cashflow_icon(ui, size);
+        }
+
         #[cfg(feature = "messages")]
         NotedeckApp::Messages(_) => {
             notedeck_ui::icons::messages_icon(ui, size);

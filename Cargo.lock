@@ -5883,6 +5883,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "notedeck_cashflow"
+version = "0.11.0-beta.1"
+dependencies = [
+ "egui",
+ "egui_kittest",
+ "notedeck",
+ "profiling",
+ "tempfile",
+]
+
+[[package]]
 name = "notedeck_chrome"
 version = "0.11.0-beta.1"
 dependencies = [
@@ -5902,6 +5913,7 @@ dependencies = [
  "nostrdb",
  "nostrdb_net",
  "notedeck",
+ "notedeck_cashflow",
  "notedeck_clndash",
  "notedeck_columns",
  "notedeck_dashboard",

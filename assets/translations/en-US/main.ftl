@@ -175,6 +175,9 @@ Cancel_fd8b = Cancel
 # Dave session inspector outputs: heading over the headway cards the transcript mentions
 Cards____count_f31a = Cards · {$count}
 
+# Button to go to the Cashflow app
+Cashflow_70bd = Cashflow
+
 # Dave session tab: the chat transcript
 Chat_32a7 = Chat
 

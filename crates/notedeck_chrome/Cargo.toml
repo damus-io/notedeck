@@ -29,6 +29,7 @@ notedeck_nostrverse = { workspace = true, optional = true }
 notedeck_clndash = { workspace = true, optional = true }
 notedeck_dashboard = { workspace = true, optional = true }
 notedeck_horizon = { workspace = true, optional = true }
+notedeck_cashflow = { workspace = true, optional = true }
 notedeck_wasm = { workspace = true, optional = true }
 notedeck = { workspace = true, features = ["sound"] }
 nostrdb = { workspace = true }
@@ -90,6 +91,7 @@ nostrverse = ["notedeck_nostrverse"]
 clndash = ["notedeck_clndash"]
 dashboard = ["notedeck_dashboard"]
 horizon = ["notedeck_horizon"]
+cashflow = ["notedeck_cashflow"]
 wasm = ["notedeck_wasm"]
 
 [target.'cfg(target_os = "android")'.dependencies]

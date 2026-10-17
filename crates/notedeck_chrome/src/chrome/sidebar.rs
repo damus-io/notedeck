@@ -112,6 +112,9 @@ pub(super) fn app_label(loc: &mut Localization, app: &NotedeckApp) -> String {
         #[cfg(feature = "horizon")]
         NotedeckApp::Horizon(_) => tr!(loc, "Horizon", "Button to go to the Horizon app"),
 
+        #[cfg(feature = "cashflow")]
+        NotedeckApp::Cashflow(_) => tr!(loc, "Cashflow", "Button to go to the Cashflow app"),
+
         #[cfg(feature = "notebook")]
         NotedeckApp::Notebook(_) => tr!(loc, "Notebook", "Button to go to the Notebook app"),
 
@@ -419,6 +422,11 @@ pub(super) fn topdown_sidebar(
                                     #[cfg(feature = "horizon")]
                                     NotedeckApp::Horizon(_horizon) => {
                                         notedeck_ui::icons::horizon_icon(ui, 24.0);
+                                    }
+
+                                    #[cfg(feature = "cashflow")]
+                                    NotedeckApp::Cashflow(_cashflow) => {
+                                        notedeck_ui::icons::cashflow_icon(ui, 24.0);
                                     }
 
                                     #[cfg(feature = "messages")]

@@ -11,6 +11,7 @@ members = [
     "crates/notedeck",
     "crates/notedeck_chrome",
     "crates/notedeck_columns",
+    "crates/notedeck_cashflow",
     "crates/notedeck_dave",
     "crates/notedeck_ipc",
     "crates/nd_cli",
@@ -97,6 +98,7 @@ nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "989191590088"
 #nostrdb = "0.6.1"
 nostrdb_net = { git = "https://github.com/damus-io/nostrdb-rs", rev = "989191590088" }
 notedeck = { path = "crates/notedeck" }
+notedeck_cashflow = { path = "crates/notedeck_cashflow" }
 notedeck_chrome = { path = "crates/notedeck_chrome" }
 notedeck_clndash = { path = "crates/notedeck_clndash" }
 notedeck_dashboard = { path = "crates/notedeck_dashboard" }

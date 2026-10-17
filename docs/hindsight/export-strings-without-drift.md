@@ -25,3 +25,4 @@ too, so every card strips that out by hand to keep its commit standalone.
 - headway:notedeck/jump-bike-wife — ~4 min: the export rewrote ~230 lines of each FTL for 1 key, twice (the string changed mid-card); spliced it into HEAD's files by script both times
 - headway:dave/shallow-upgrade-pet — ~2 min: a 233-line rewrite of both files for 1 plural key; spliced it into HEAD's by another scratch block-merge, whose first cut left a stray blank line
 - headway:dave/decide-drip-huge — ~3 min: a 244-line rewrite of both files for 1 plural key; spliced it into HEAD's by another scratch block-merge
+- headway:cashflow/answer-vibrant-crush — ~2 min: the export rewrote ~250 lines of each FTL for 1 key (the Cashflow sidebar label); reverted and spliced the one entry in by script
