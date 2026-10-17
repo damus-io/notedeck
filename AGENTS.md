@@ -245,6 +245,17 @@ done-comment described under Work Tracking above.
     (`Split { rows, cols }`), not `FooArgs`. `crates/bin_testing/tests/signatures.rs`
     fails on one in any crate of the workspace
     (`cargo test -p bin_testing --test signatures`).
+20. **A new note kind keeps its data in tags, not JSON in `content`.** Write each
+    field as its own tag (`["value", "CAD"]`) with nostrdb's `NoteBuilder`, and read
+    it back with `tag.get_str(1)`. The `&str` borrows straight from the note in the
+    transaction, so a read parses and copies nothing, and the fields stay visible to
+    nostrdb's tag filters. JSON content has to be parsed into owned values on every
+    read. `content` is for text a person wrote: a note body, a comment, an article.
+    Two traps come with tags. A 64-hex tag value is stored as a 32-byte id, which
+    `get_str` and string filters silently miss, so prefix it (`seg:<sha256>`) or read
+    it with `get_id`. And read the newest revision of a replaceable kind through
+    nostrdb_net's `query_replaceable`, not a hand-rolled fold. `crates/cashflow/src/vault.rs`
+    (`Record`, `TagWriter`, `tag_value`) is a worked example.
 
 
 
