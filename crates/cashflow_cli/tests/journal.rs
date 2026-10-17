@@ -109,7 +109,11 @@ fn import_then_ls_lists_one_segment() {
         "--layer",
         "cards",
     ]);
-    assert!(again.starts_with(&format!("unchanged {hash}")), "{again}");
+    assert!(again.starts_with("nothing new"), "{again}");
+    assert!(
+        again.contains("txns 0 new/0 changed/3 unchanged  prices 0 new/0 changed/1 unchanged"),
+        "{again}"
+    );
 
     let ls = cf.ok(&["journal", "ls"]);
     let lines: Vec<&str> = ls.lines().collect();

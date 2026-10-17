@@ -2,10 +2,10 @@
 //! `journal verify`, `journal rm` and `import`.
 
 use cashflow::CashflowDir;
-use cashflow::import::{self, ImportInput};
+use cashflow::import::{self, ImportInput, Rows};
 use cashflow::journal::{self, SegmentSummary};
 use ledgerdb::Date;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::args::ImportArgs;
 
@@ -146,8 +146,10 @@ pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
         println!(
             "{}",
             json!({
-                "hash": written.hash.to_string(),
+                "hash": written.hash.map(|h| h.to_string()),
                 "new": written.new,
+                "txn_rows": rows_json(written.txn_rows),
+                "price_rows": rows_json(written.price_rows),
                 "source": written.header.source,
                 "layer": written.header.layer,
                 "imported": written.header.imported,
@@ -170,16 +172,41 @@ pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
     {
         eprintln!("cashflow: … and {more} more (see --json)");
     }
-    let verb = if written.new { "imported" } else { "unchanged" };
     let skipped = match written.skipped.len() {
         0 => String::new(),
         n => format!("  {n} skipped"),
     };
+    let rows = format!(
+        "txns {}  prices {}",
+        rows_text(written.txn_rows),
+        rows_text(written.price_rows)
+    );
+    let Some(hash) = written.hash else {
+        println!(
+            "nothing new  {rows}  source {}  layer {}{skipped}",
+            written.header.source, written.header.layer
+        );
+        return Ok(());
+    };
+    let verb = if written.new { "imported" } else { "unchanged" };
     println!(
-        "{verb} {}  {} txns  {} prices  source {}  layer {}{skipped}",
-        written.hash, written.txns, written.prices, written.header.source, written.header.layer
+        "{verb} {hash}  {} txns  {} prices  ({rows})  source {}  layer {}{skipped}",
+        written.txns, written.prices, written.header.source, written.header.layer
     );
     Ok(())
+}
+
+/// `{"new": 1, "changed": 0, "unchanged": 89}`.
+fn rows_json(rows: Rows) -> Value {
+    json!({ "new": rows.new, "changed": rows.changed, "unchanged": rows.unchanged })
+}
+
+/// `1 new/0 changed/89 unchanged`.
+fn rows_text(rows: Rows) -> String {
+    format!(
+        "{} new/{} changed/{} unchanged",
+        rows.new, rows.changed, rows.unchanged
+    )
 }
 
 /// The UTC day of unix time `secs`.

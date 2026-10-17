@@ -15,6 +15,7 @@ mod date;
 mod derive;
 mod journal;
 mod ledger;
+mod novel;
 mod parse;
 mod price;
 mod query;
@@ -36,6 +37,7 @@ pub use journal::{Comment, Cost, CostKind, Decimal, DecimalDisplay, FileComment,
 pub use ledger::{
     Added, DamagedSegment, LayerFilter, Ledger, LoadReport, Loaded, MergeError, Origin, SegmentInfo,
 };
+pub use novel::Novelty;
 pub use parse::{ParseError, ParseErrorKind, Parsed};
 pub use price::{PriceDb, PriceGap, Rate, Unpriced};
 pub use query::{
@@ -45,7 +47,7 @@ pub use query::{
 pub use segment::{
     BadSegmentHash, EncodeError, HeaderError, SEGMENT_VERSION, Segment, SegmentHash, SegmentHeader,
 };
-pub use store::{AdmitReport, JournalStore, StoreError, VerifyReport};
+pub use store::{AdmitReport, JournalStore, PutSegment, StoreError, VerifyReport};
 pub use strpool::{StrId, StrPool};
 pub use txn::{Meta, Posting, PostingFlags, Span, Txn, TxnFlag, TxnId};
 pub use write::WriteOptions;

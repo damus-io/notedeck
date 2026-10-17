@@ -97,6 +97,16 @@ pub struct AdmitReport {
     pub rejected: Vec<StoreError>,
 }
 
+/// What [`JournalStore::put_segment`] did.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct PutSegment {
+    /// The segment's hash, its name in the store.
+    pub hash: SegmentHash,
+    /// False when the store already had these exact bytes, so nothing was
+    /// written.
+    pub new: bool,
+}
+
 /// Whether [`JournalStore::put`] wrote a file.
 enum Put {
     /// The segment was new and is now written.
@@ -139,16 +149,27 @@ impl JournalStore {
     /// processes.
     ///
     /// See [`Segment::encode`] for what the batch must satisfy.
-    #[profiling::function]
     pub fn write_segment(
         &self,
         header: &SegmentHeader,
         journal: &Journal,
     ) -> Result<SegmentHash, StoreError> {
+        Ok(self.put_segment(header, journal)?.hash)
+    }
+
+    /// [`Self::write_segment`], also saying whether the segment was new to
+    /// the store, so a caller can report "already in the journal" without
+    /// encoding the batch a second time to hash it.
+    #[profiling::function]
+    pub fn put_segment(
+        &self,
+        header: &SegmentHeader,
+        journal: &Journal,
+    ) -> Result<PutSegment, StoreError> {
         let bytes = Segment::encode(header, journal)?;
         let hash = SegmentHash::of(bytes.as_bytes());
-        self.put(hash, bytes.as_bytes())?;
-        Ok(hash)
+        let new = matches!(self.put(hash, bytes.as_bytes())?, Put::Written);
+        Ok(PutSegment { hash, new })
     }
 
     /// Every segment in the store, sorted by hash. An empty or missing

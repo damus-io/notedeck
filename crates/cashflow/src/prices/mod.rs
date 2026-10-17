@@ -32,7 +32,7 @@ pub mod boc;
 
 use std::fmt;
 
-use ledgerdb::{Date, JournalStore, Ledger, SegmentHash, SegmentHeader, StoreError};
+use ledgerdb::{Date, JournalStore, Ledger, PutSegment, SegmentHash, SegmentHeader, StoreError};
 
 use crate::import::{Batch, BatchError, RawAmount, RawPrice};
 
@@ -306,10 +306,8 @@ pub fn fetch_into(
     let prices = source.fetch(http, since, now)?;
     let mut filed = Vec::new();
     for segment in year_segments(source, prices)? {
-        let encoded = ledgerdb::Segment::encode(&segment.header, &segment.batch.journal)
-            .map_err(StoreError::from)?;
-        let new = !store.contains(SegmentHash::of(encoded.as_bytes()));
-        let hash = store.write_segment(&segment.header, &segment.batch.journal)?;
+        let PutSegment { hash, new } =
+            store.put_segment(&segment.header, &segment.batch.journal)?;
         filed.push(Filed {
             hash,
             new,
