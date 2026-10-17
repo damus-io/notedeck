@@ -37,3 +37,26 @@ and is meant to move to its own repository unchanged.
   line, one blank line between sections, amounts in each commodity's learned
   style. Identical journal contents always produce identical bytes, which is
   what lets journal segments be named by the hash of their text.
+
+## Journal segments
+
+A journal on disk is a directory of **segments**, one per import batch,
+managed by `JournalStore`. A segment is a four-line header (`; ledgerdb-segment:
+1`, `; source:`, `; imported:` unix seconds, `; layer:`), a blank line, and
+the batch in the canonical form above, every transaction carrying an `; id:`.
+It is filed at `<dir>/<first two hex>/<sha256 of its bytes>.ledger`.
+
+**The layout is write-once and named by hash.** A segment is written to a
+temporary file beside its final name, synced and renamed into place, and
+never changed afterwards; every read checks the bytes against the name, so a
+corrupt or hand-edited file is an error naming it. Because a name always
+means the same bytes, any number of copies of a journal union without
+conflicts: copying files in any direction, by rsync, git or anything else,
+can only add segments, never clash. Files that are not hash-named (temporary
+files, rsync partials, `.git`) are ignored.
+
+Anything fetched from another machine comes in through
+`JournalStore::admit_from(staging)`, which checks each staged file's hash and
+header before writing it the same way a local import is written, and reports
+the files it refused without touching them. A transport fetches into staging
+and never writes into the journal directory itself.

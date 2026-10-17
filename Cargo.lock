@@ -4841,6 +4841,8 @@ version = "0.11.0-beta.1"
 dependencies = [
  "hashbrown 0.15.5",
  "profiling",
+ "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

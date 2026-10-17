@@ -14,6 +14,8 @@ mod commodity;
 mod date;
 mod journal;
 mod parse;
+mod segment;
+mod store;
 mod strpool;
 mod txn;
 mod write;
@@ -24,6 +26,10 @@ pub use commodity::{Commodities, CommodityId, MAX_PRECISION, Side, Style};
 pub use date::{Date, DateError, Ymd};
 pub use journal::{Comment, Cost, CostKind, Decimal, DecimalDisplay, FileComment, Journal, Price};
 pub use parse::{ParseError, ParseErrorKind, Parsed};
+pub use segment::{
+    BadSegmentHash, EncodeError, HeaderError, SEGMENT_VERSION, Segment, SegmentHash, SegmentHeader,
+};
+pub use store::{AdmitReport, JournalStore, StoreError, VerifyReport};
 pub use strpool::{StrId, StrPool};
 pub use txn::{Meta, Posting, PostingFlags, Span, Txn, TxnFlag, TxnId};
 pub use write::WriteOptions;
