@@ -180,7 +180,7 @@ done-comment described under Work Tracking above.
 - Mark performance-critical functions with `#[profiling::function]` for visibility in the puffin profiler.
 - UI code embraces egui idioms: builder chains, closures returning `Response`, `ui.vertical`/`horizontal` for layout.
 - Tests live alongside modules (e.g., `JobPool`), often using `#[tokio::test]` when async behavior is involved.
-- Localization updates: run `python3 scripts/export_source_strings.py` after changing user-facing strings; translators rely on the generated Fluent files.
+- Localization updates: run `python3 scripts/export_source_strings.py` after changing user-facing strings and commit the FTL diff it makes; translators rely on the generated Fluent files. CI's lint job runs it with `--check`, so the committed files always match the source and the diff is only your own strings.
 
 ## Integrating New Agents
 

@@ -10,6 +10,9 @@ About_00c0 = {"["}Àbóút{"]"}
 # Button to accept TOS and continue using the app
 Accept_and_Continue_2e5c = {"["}Àççépt àñd Çóñtíñúé{"]"}
 
+# Dave session inspector rate limits: note that the limits are per account, not per session
+Account-wide__every_session_on_this_Claude_account_shares_these_windows_7a32 = {"["}Àççóúñt-wídé: évéry séssíóñ óñ thís Çlàúdé àççóúñt shàrés thésé wíñdóws.{"]"}
+
 # Button to go to the accounts view
 Accounts_03a0 = {"["}Àççóúñts{"]"}
 
@@ -313,6 +316,27 @@ count__tool_uses_5ec5 = {"["}{$count} tóól úsés{"]"}
 # Dave session inspector permissions: prompts nobody has answered
 count__unanswered_e41c = {"["}{$count} úñàñswéréd{"]"}
 
+# Relative time in days
+count_d_b9be = {"["}{$count}d{"]"}
+
+# Relative time in hours
+count_h_3ecb = {"["}{$count}h{"]"}
+
+# Relative time in minutes
+count_m_b41e = {"["}{$count}m{"]"}
+
+# Relative time in months
+count_mo_7aba = {"["}{$count}mó{"]"}
+
+# Relative time in seconds
+count_s_aa26 = {"["}{$count}s{"]"}
+
+# Relative time in weeks
+count_w_7468 = {"["}{$count}w{"]"}
+
+# Relative time in years
+count_y_9408 = {"["}{$count}y{"]"}
+
 # Button to create a new account
 Create_Account_6994 = {"["}Çréàté Àççóúñt{"]"}
 
@@ -382,6 +406,12 @@ Delete_this_column_8d5a = {"["}Délété thís çólúmñ{"]"}
 # Button label to delete a wallet
 Delete_Wallet_d1d4 = {"["}Délété Wàllét{"]"}
 
+# Dave session tab: the session inspector (usage, background work, files, …)
+Details_cd6b = {"["}Détàíls{"]"}
+
+# Dave session inspector overview row
+Directory_7dd2 = {"["}Díréçtóry{"]"}
+
 # Profile display name field label
 Display_name_f9d9 = {"["}Dísplày ñàmé{"]"}
 
@@ -421,12 +451,6 @@ edited_ee63 = {"["}édítéd{"]"}
 # Dave session inspector files: a temp-dir folder with nothing in it
 empty_dd99 = {"["}émpty{"]"}
 
-# Dave session tab: the session inspector (usage, background work, files, …)
-Details_cd6b = {"["}Détàíls{"]"}
-
-# Dave session inspector overview row
-Directory_7dd2 = {"["}Díréçtóry{"]"}
-
 # Placeholder for hashtag input field
 Enter_the_desired_hashtags_here__for_multiple_space-separated_7a69 = {"["}Éñtér thé désíréd hàshtàgs héré (fór múltíplé spàçé-sépàràtéd){"]"}
 
@@ -451,6 +475,9 @@ failed_a404 = {"["}fàíléd{"]"}
 # Diff placeholder for a file moved with identical content
 File_renamed_without_changes_dd4e = {"["}Fílé réñàméd wíthóút çhàñgés{"]"}
 
+# Dave session inspector section: scratchpad, task output and edited files
+Files_0f4a = {"["}Fílés{"]"}
+
 # Column title for followers
 Followed_by_e8c2 = {"["}Fóllówéd by{"]"}
 
@@ -468,9 +495,6 @@ Hashtag_filter_disabled_a136 = {"["}Hàshtàg fíltér dísàbléd{"]"}
 
 # Title for hashtags column
 Hashtags_f8e0 = {"["}Hàshtàgs{"]"}
-
-# Dave session inspector section: scratchpad, task output and edited files
-Files_0f4a = {"["}Fílés{"]"}
 
 # Button to go to the Headway app
 Headway_b5c8 = {"["}Héàdwày{"]"}
@@ -544,11 +568,26 @@ k_10K_f7e6 = {"["}10K{"]"}
 # Zap amount button for 20000 sats. Abbreviated because the button is too small to display the full amount.
 k_20K_4977 = {"["}20K{"]"}
 
+# Dave session inspector rate limits: the five-hour session window
+k_5-hour_336c = {"["}5-hóúr{"]"}
+
 # Zap amount button for 50000 sats. Abbreviated because the button is too small to display the full amount.
 k_50K_c2dc = {"["}50K{"]"}
 
 # Zap amount button for 5000 sats. Abbreviated because the button is too small to display the full amount.
 k_5K_f7e6 = {"["}5K{"]"}
+
+# Dave session inspector rate limits: the weekly window
+k_7-day_9ea2 = {"["}7-dày{"]"}
+
+# Dave session inspector rate limits: the weekly window for Opus
+k_7-day_Opus_c6c0 = {"["}7-dày Ópús{"]"}
+
+# Dave session inspector rate limits: the weekly window for Sonnet
+k_7-day_Sonnet_e2c8 = {"["}7-dày Sóññét{"]"}
+
+# Dave session inspector rate limits: the weekly window including paid overage
+k_7-day_with_overage_a766 = {"["}7-dày wíth óvéràgé{"]"}
 
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = {"["}Kéép tràçk óf yóúr ñótés & réplíés{"]"}
@@ -559,8 +598,6 @@ Keeps_all_profiles_and_your_notes__The_smaller_database_will_be_used_on_next_res
 # Dave session inspector overview row: where the CLI got its API credentials
 Key_source_512a = {"["}Kéy sóúrçé{"]"}
 
-# desc
-key_1dee = {"["}kéy{"]"}
 # Button to edit the user's key bindings
 Keymap_2dd7 = {"["}Kéymàp{"]"}
 
@@ -587,6 +624,12 @@ Lightning_network_address__lud16_ea51 = {"["}Líghtñíñg ñétwórk àddréss 
 
 # Hover text for like button
 Like_this_note_dfb5 = {"["}Líké thís ñóté{"]"}
+
+# Dave status bar pill: the Claude account is near a rate limit, with how much of it is used
+Limit__percent_f751 = {"["}Límít {$percent}%{"]"}
+
+# Dave session inspector rate limits status: over a limit, requests refused until it resets
+Limited_until_reset_7e0e = {"["}Límítéd úñtíl rését{"]"}
 
 # Dave slash-command popup row shown while the list of commands loads
 loading_commands_61d0 = {"["}lóàdíñg çómmàñds…{"]"}
@@ -678,6 +721,9 @@ name_as_str_c366 = {"["}ñàmé.às_str(){"]"}
 # Session environment row whose variable name is invalid
 Names_can_t_contain_spaces_or____This_row_won_t_be_saved_09bc = {"["}Ñàmés çàñ't çóñtàíñ spàçés ór =. Thís rów wóñ't bé sàvéd.{"]"}
 
+# Dave session inspector rate limits status: close to a rate limit
+Near_a_limit_fe96 = {"["}Ñéàr à límít{"]"}
+
 # Session environment row with a value but no variable name
 Needs_a_name__This_row_won_t_be_saved_e7b0 = {"["}Ñééds à ñàmé. Thís rów wóñ't bé sàvéd.{"]"}
 
@@ -725,6 +771,24 @@ No_pages_published_8268 = {"["}Ñó pàgés públíshéd{"]"}
 
 # Shown when profile search returns no results
 No_profiles_found_3130 = {"["}Ñó prófílés fóúñd{"]"}
+
+# Dave session inspector rate limits: shown before the CLI reports the account's windows
+No_rate-limit_report_yet_c1f0 = {"["}Ñó ràté-límít répórt yét{"]"}
+
+# Dave session inspector outputs: the session has no working directory or agentium ref to find commits by
+No_repository_for_this_session_1a37 = {"["}Ñó répósítóry fór thís séssíóñ{"]"}
+
+# Shown in the command bar when nothing matches the query
+No_results_dd32 = {"["}Ñó résúlts{"]"}
+
+# Dave session inspector permissions: the session has no always-allow rules
+No_rules_yet__Allow_Always_on_a_prompt_adds_one_e188 = {"["}Ñó rúlés yét. Àllów Àlwàys óñ à prómpt àdds óñé.{"]"}
+
+# Dave session inspector subagents: the session has spawned no subagents
+No_subagents_yet_3ccd = {"["}Ñó súbàgéñts yét{"]"}
+
+# Dave session inspector tasks: the agent has made no task list
+No_tasks_yet_6cb8 = {"["}Ñó tàsks yét{"]"}
 
 # Dave session inspector usage: shown before the agent's first request finishes
 No_usage_reported_yet_84dc = {"["}Ñó úsàgé répórtéd yét{"]"}
@@ -822,6 +886,15 @@ output__count_0a95 = {"["}óútpút {$count}{"]"}
 # Dave session inspector overview: label before the CLI's output style name
 output_style_f766 = {"["}óútpút stylé{"]"}
 
+# Dave session inspector section: commits, cards and pages the session produced
+Outputs_da08 = {"["}Óútpúts{"]"}
+
+# Dave session inspector rate limits: paid usage past the subscription limits
+Overage_777a = {"["}Óvéràgé{"]"}
+
+# Dave session inspector section: model, versions, MCP servers, skills
+Overview_d736 = {"["}Óvérvíéw{"]"}
+
 # Dave session inspector outputs: heading over the pages the session published
 Pages____count_e8e5 = {"["}Pàgés · {$count}{"]"}
 
@@ -830,6 +903,12 @@ Paste_your_NWC_URI_here_b471 = {"["}Pàsté yóúr ÑWÇ ÚRÍ héré...{"]"}
 
 # Title for people list column
 People_List_42bf = {"["}Péóplé Líst{"]"}
+
+# Dave session inspector rate limits: how much of a window is used and when it resets
+percent_____resets__time_7c1d = {"["}{$percent}% · réséts {$time}{"]"}
+
+# Dave session inspector section: permission mode, answered prompts, always-allow rules
+Permissions_d50b = {"["}Pérmíssíóñs{"]"}
 
 # Error message for missing deck name
 Please_create_a_name_for_the_deck_38e7 = {"["}Pléàsé çréàté à ñàmé fór thé déçk.{"]"}
@@ -843,12 +922,6 @@ Please_read_and_accept_the_following_terms_to_continue_37de = {"["}Pléàsé ré
 # Error message for missing deck icon
 Please_select_an_icon_655b = {"["}Pléàsé séléçt àñ íçóñ.{"]"}
 
-# Dave session inspector section: commits, cards and pages the session produced
-Outputs_da08 = {"["}Óútpúts{"]"}
-
-# Dave session inspector section: model, versions, MCP servers, skills
-Overview_d736 = {"["}Óvérvíéw{"]"}
-
 # Button label to post a note
 Post_now_8a49 = {"["}Póst ñów{"]"}
 
@@ -857,9 +930,6 @@ Press_Enter_to_run_it_6829 = {"["}Préss Éñtér tó rúñ ít{"]"}
 
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = {"["}Préss thé búttóñ bélów tó çópy yóúr móst réçéñt lógs tó yóúr systém's çlípbóàrd. Théñ pàsté ít íñtó yóúr émàíl.{"]"}
-
-# Dave session inspector section: permission mode, answered prompts, always-allow rules
-Permissions_d50b = {"["}Pérmíssíóñs{"]"}
 
 # Section header for private sync relays
 Private_sync_560b = {"["}Prívàté syñç{"]"}
@@ -894,6 +964,12 @@ Quote_475c = {"["}Qúóté{"]"}
 # Error message when quote note cannot be found
 Quote_of_unknown_note_e4f0 = {"["}Qúóté óf úñkñówñ ñóté{"]"}
 
+# Dave status bar pill: the Claude account is over a rate limit
+Rate_limited_5dff = {"["}Ràté límítéd{"]"}
+
+# Dave session inspector section: the account's rate-limit windows
+Rate_limits_8fef = {"["}Ràté límíts{"]"}
+
 # Column title for note reactions list
 Reactions_68e3 = {"["}Réàçtíóñs{"]"}
 
@@ -917,9 +993,6 @@ Relays_ab62 = {"["}Rélàys{"]"}
 
 # Tooltip on the button that removes a session environment variable
 Remove_variable_625d = {"["}Rémóvé vàríàblé{"]"}
-
-# Dave session inspector section: the account's rate-limit windows
-Rate_limits_8fef = {"["}Ràté límíts{"]"}
 
 # Column title for reply composition
 Reply_3bf1 = {"["}Réply{"]"}
@@ -971,6 +1044,9 @@ Reset_4998 = {"["}Rését{"]"}
 
 # Label for reset zoom level, Appearance settings section
 Reset_62d4 = {"["}Rését{"]"}
+
+# Dave session inspector rate limits: a window whose reset time has passed
+reset_at__time_2d3d = {"["}rését àt {$time}{"]"}
 
 # Instruction to restart after pruning
 Restart_to_apply_f761 = {"["}Réstàrt tó àpply.{"]"}
@@ -1071,8 +1147,14 @@ Settings_7a4f = {"["}Séttíñgs{"]"}
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = {"["}Shów thé làst ñóté fór éàçh úsér fróm à líst{"]"}
 
+# Caption for a version of a changed 3D model that failed to load in a diff
+side___not_a_3D_model_that_could_be_read_d28f = {"["}{$side}: ñót à 3D módél thàt çóúld bé réàd{"]"}
+
 # Caption for a version of a changed image that failed to decode in a diff
 side___not_an_image_that_could_be_read_e19e = {"["}{$side}: ñót àñ ímàgé thàt çóúld bé réàd{"]"}
+
+# Caption for a version of a changed 3D model skipped because the commit has too many models
+side___not_shown__the_commit_changes_too_many_3D_models_955c = {"["}{$side}: ñót shówñ, thé çómmít çhàñgés tóó màñy 3D módéls{"]"}
 
 # Caption for a version of a changed image skipped because the commit has too many images
 side___not_shown__the_commit_changes_too_many_images_6798 = {"["}{$side}: ñót shówñ, thé çómmít çhàñgés tóó màñy ímàgés{"]"}
@@ -1100,6 +1182,9 @@ Source_the_last_note_for_each_user_in_your_contact_list_e157 = {"["}Sóúrçé t
 
 # Dave session inspector overview row
 Status_7dd2 = {"["}Stàtús{"]"}
+
+# Dave session inspector rate limits row
+Status_c3bb = {"["}Stàtús{"]"}
 
 # Description for hashtags column
 Stay_up_to_date_with_a_certain_hashtag_88e3 = {"["}Stày úp tó dàté wíth à çértàíñ hàshtàg{"]"}
@@ -1143,6 +1228,9 @@ stopping_6240 = {"["}stóppíñg…{"]"}
 # Label for storage settings section
 Storage_ed65 = {"["}Stóràgé{"]"}
 
+# Dave session inspector section: subagents the session spawned
+Subagents_5251 = {"["}Súbàgéñts{"]"}
+
 # Column title for subscribing to external user
 Subscribe_to_someone_else_s_notes_d1e9 = {"["}Súbsçríbé tó sóméóñé élsé's ñótés{"]"}
 
@@ -1173,14 +1261,14 @@ task__id_4fa1 = {"["}tàsk {$id}{"]"}
 # Dave session inspector background: badge for a background task of an unknown kind
 task_e7a3 = {"["}tàsk{"]"}
 
+# Dave session inspector section: the agent's task list
+Tasks_2037 = {"["}Tàsks{"]"}
+
 # Column title for TOS acceptance screen
 Terms_of_Service_8a6e = {"["}Térms óf Sérvíçé{"]"}
 
 # TOS acceptance screen title
 Terms_of_Service_e074 = {"["}Térms óf Sérvíçé{"]"}
-
-# Dave session inspector section: subagents the session spawned
-Subagents_5251 = {"["}Súbàgéñts{"]"}
 
 # Message shown when Dave trial period has ended
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = {"["}Thé Dàvé Ñóstr ÀÍ àssístàñt tríàl hàs éñdéd :(. Thàñks fór téstíñg! Zàp-éñàbléd Dàvé çómíñg sóóñ!{"]"}
@@ -1205,9 +1293,6 @@ time__ago_1f6d = {"["}{$time} àgó{"]"}
 
 # Label shown between chat messages for the current day
 Today_bd04 = {"["}Tódày{"]"}
-
-# Dave session inspector section: the agent's task list
-Tasks_2037 = {"["}Tàsks{"]"}
 
 # Dave chat: the day a turn header names, for today
 Today_f170 = {"["}Tódày{"]"}
@@ -1242,6 +1327,9 @@ Unmute_User_5d5a = {"["}Úñmúté Úsér{"]"}
 # Unmute this user's content
 Unmute_User_bf35 = {"["}Úñmúté Úsér{"]"}
 
+# Dave session inspector section: context, tokens and cost
+Usage_4257 = {"["}Úsàgé{"]"}
+
 # Label for toggling explicit outbox relay routing in Columns settings
 Use_outbox_relays_9e4d = {"["}Úsé óútbóx rélàys:{"]"}
 
@@ -1275,9 +1363,6 @@ wake-up_be9a = {"["}wàké-úp{"]"}
 # Column title for wallet management
 Wallet_5e50 = {"["}Wàllét{"]"}
 
-# Dave session inspector section: context, tokens and cost
-Usage_4257 = {"["}Úsàgé{"]"}
-
 # Button to go to the wallet view
 Wallet_899d = {"["}Wàllét{"]"}
 
@@ -1293,15 +1378,11 @@ Welcome_5cce = {"["}Wélçómé{"]"}
 # Welcome screen title
 Welcome_to_Notedeck_e2e7 = {"["}Wélçómé tó Ñótédéçk{"]"}
 
+# Dave session inspector rate limits status: under every limit
+Within_limits_9850 = {"["}Wíthíñ límíts{"]"}
+
 # Dave chat: how long a turn ran, in its footer, as in 'worked 12m'
 worked__duration_81bb = {"["}wórkéd {$duration}{"]"}
-
-# Dave session header: hover over the session's walltime, as in 'worked 1h 12m over 9 turns'
-worked__duration__over__count__turns_a58e =
-    { $count ->
-        [one] {"["}wórkéd {$duration} óvér {$count} túrñ{"]"}
-       *[other] {"["}wórkéd {$duration} óvér {$count} túrñs{"]"}
-    }
 
 # Dave session inspector background: badge for a background workflow
 workflow_dd36 = {"["}wórkflów{"]"}
@@ -1352,6 +1433,14 @@ Got__count__results_for___query_85fb =
     { $count ->
         [one] {"["}Gót {$count} résúlt fór '{$query}'{"]"}
        *[other] {"["}Gót {$count} résúlts fór '{$query}'{"]"}
+    }
+
+
+# Dave session header: hover over the session's walltime, as in 'worked 1h 12m over 9 turns'
+worked__duration__over__count__turns_a58e =
+    { $count ->
+        [one] {"["}wórkéd {$duration} óvér {$count} túrñ{"]"}
+       *[other] {"["}wórkéd {$duration} óvér {$count} túrñs{"]"}
     }
 
 
@@ -1433,6 +1522,7 @@ count__prompts_81e6 =
         [one] {"["}{$count} prómpt{"]"}
        *[other] {"["}{$count} prómpts{"]"}
     }
+
 
 # Dave session inspector usage: model requests across the session's turns
 count__requests_cfa1 =
@@ -1544,72 +1634,3 @@ side__3D_model____count__triangles____size_f232 =
         [one] {"["}{$side} 3D módél · {$count} tríàñglé · {$size}{"]"}
        *[other] {"["}{$side} 3D módél · {$count} tríàñglés · {$size}{"]"}
     }
-
-# Caption for a version of a changed 3D model that failed to load in a diff
-side___not_a_3D_model_that_could_be_read_d28f = {"["}{$side}: ñót à 3D módél thàt çóúld bé réàd{"]"}
-
-# Caption for a version of a changed 3D model skipped because the commit has too many models
-side___not_shown__the_commit_changes_too_many_3D_models_955c = {"["}{$side}: ñót shówñ, thé çómmít çhàñgés tóó màñy 3D módéls{"]"}
-
-# Dave session inspector rate limits: note that the limits are per account, not per session
-Account-wide__every_session_on_this_Claude_account_shares_these_windows_7a32 = {"["}Àççóúñt-wídé: évéry séssíóñ óñ thís Çlàúdé àççóúñt shàrés thésé wíñdóws.{"]"}
-
-# Dave session inspector rate limits: the five-hour session window
-k_5-hour_336c = {"["}5-hóúr{"]"}
-
-# Dave session inspector rate limits: the weekly window
-k_7-day_9ea2 = {"["}7-dày{"]"}
-
-# Dave session inspector rate limits: the weekly window for Opus
-k_7-day_Opus_c6c0 = {"["}7-dày Ópús{"]"}
-
-# Dave session inspector rate limits: the weekly window for Sonnet
-k_7-day_Sonnet_e2c8 = {"["}7-dày Sóññét{"]"}
-
-# Dave session inspector rate limits: the weekly window including paid overage
-k_7-day_with_overage_a766 = {"["}7-dày wíth óvéràgé{"]"}
-
-# Dave status bar pill: the Claude account is near a rate limit, with how much of it is used
-Limit__percent_f751 = {"["}Límít {$percent}%{"]"}
-
-# Dave session inspector rate limits status: over a limit, requests refused until it resets
-Limited_until_reset_7e0e = {"["}Límítéd úñtíl rését{"]"}
-
-# Dave session inspector rate limits status: close to a rate limit
-Near_a_limit_fe96 = {"["}Ñéàr à límít{"]"}
-
-# Dave session inspector rate limits: shown before the CLI reports the account's windows
-No_rate-limit_report_yet_c1f0 = {"["}Ñó ràté-límít répórt yét{"]"}
-
-# Dave session inspector outputs: the session has no working directory or agentium ref to find commits by
-No_repository_for_this_session_1a37 = {"["}Ñó répósítóry fór thís séssíóñ{"]"}
-
-# Shown in the command bar when nothing matches the query
-No_results_dd32 = {"["}Ñó résúlts{"]"}
-
-# Dave session inspector permissions: the session has no always-allow rules
-No_rules_yet__Allow_Always_on_a_prompt_adds_one_e188 = {"["}Ñó rúlés yét. Àllów Àlwàys óñ à prómpt àdds óñé.{"]"}
-
-# Dave session inspector subagents: the session has spawned no subagents
-No_subagents_yet_3ccd = {"["}Ñó súbàgéñts yét{"]"}
-
-# Dave session inspector rate limits: paid usage past the subscription limits
-Overage_777a = {"["}Óvéràgé{"]"}
-
-# Dave session inspector rate limits: how much of a window is used and when it resets
-percent_____resets__time_7c1d = {"["}{$percent}% · réséts {$time}{"]"}
-
-# Dave status bar pill: the Claude account is over a rate limit
-Rate_limited_5dff = {"["}Ràté límítéd{"]"}
-
-# Dave session inspector rate limits: a window whose reset time has passed
-reset_at__time_2d3d = {"["}rését àt {$time}{"]"}
-
-# Dave session inspector rate limits row
-Status_c3bb = {"["}Stàtús{"]"}
-
-# Dave session inspector rate limits status: under every limit
-Within_limits_9850 = {"["}Wíthíñ límíts{"]"}
-
-# Dave session inspector tasks: the agent has made no task list
-No_tasks_yet_6cb8 = {"["}Ñó tàsks yét{"]"}

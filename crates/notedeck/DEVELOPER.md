@@ -306,7 +306,7 @@ let message = tr_plural!(
 
 Translation files use the [Fluent](https://projectfluent.org/) format (`.ftl`).
 
-Developers should never create their own `.ftl` files. Whenever user-facing strings are changed in code, run `python3 scripts/export_source_strings.py`. This script will generate `assets/translations/en-US/main.ftl` and `assets/translations/en-XA/main.ftl`. The format of the files look like the following:
+Developers should never create their own `.ftl` files. Whenever user-facing strings are changed in code, run `python3 scripts/export_source_strings.py`. This script will generate `assets/translations/en-US/main.ftl` and `assets/translations/en-XA/main.ftl`. Its output is deterministic and the lint job runs it with `--check` (exit 1 and name the keys that differ), so the committed files stay in sync with the source. Strings used only under `#[cfg(test)]` or `#[test]` are not exported, nor are messages that are a path, URL or email address. The format of the files look like the following:
 
 ```ftl
 # Simple string

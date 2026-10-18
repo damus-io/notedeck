@@ -58,6 +58,7 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy
           ./scripts/check-patches
+          python3 scripts/export_source_strings.py --check
 
   android:
     name: Check (android)

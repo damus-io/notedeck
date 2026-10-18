@@ -10,6 +10,7 @@ actual translations for a non-English language instead.
 
 import os
 import re
+import subprocess
 import argparse
 from pathlib import Path
 from typing import Set, Dict, List, Tuple
@@ -18,7 +19,24 @@ import collections
 import hashlib
 
 def find_rust_files(project_root: Path) -> List[Path]:
-    """Find all Rust files in the project."""
+    """Find the project's Rust files, in a stable sorted order.
+
+    Inside a git checkout this is every tracked or untracked-but-not-ignored
+    `.rs` file, so ignored trees (target/, nested worktrees under .claude/)
+    never contribute strings. Outside git it falls back to a directory walk.
+    The order is sorted either way: a later file wins a key collision, so a
+    filesystem-ordered walk would make two machines disagree.
+    """
+    try:
+        out = subprocess.run(
+            ['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', '*.rs'],
+            cwd=project_root, capture_output=True, check=True,
+        ).stdout.decode('utf-8')
+        rust_files = {project_root / f for f in out.split('\0') if f}
+        return sorted(f for f in rust_files if f.is_file())
+    except (OSError, subprocess.CalledProcessError):
+        pass
+
     rust_files = []
     for root, dirs, files in os.walk(project_root):
         # Skip irrelevant directories
@@ -29,24 +47,152 @@ def find_rust_files(project_root: Path) -> List[Path]:
             if file.endswith('.rs'):
                 rust_files.append(Path(root) / file)
 
-    return rust_files
+    return sorted(rust_files)
+
+def lex_rust(code: str) -> Tuple[str, str]:
+    """Strip comments from Rust code, string-aware.
+
+    Returns `(code, skeleton)`, two strings of equal length: `code` is the
+    source with every comment removed (newlines kept, so line numbers hold),
+    and `skeleton` is the same text with the inside of every string and char
+    literal blanked to spaces. Searching and brace-matching on the skeleton
+    can't be fooled by a `{` or `#[cfg(test)]` inside a string, and a `//`
+    inside a string (a URL) is not mistaken for a comment.
+    """
+    out = []
+    skel = []
+    i = 0
+    n = len(code)
+
+    def emit(text: str, blank: bool = False):
+        out.append(text)
+        skel.append(re.sub(r'[^\n]', ' ', text) if blank else text)
+
+    while i < n:
+        c = code[i]
+        nxt = code[i + 1] if i + 1 < n else ''
+        if c == '/' and nxt == '/':
+            end = code.find('\n', i)
+            i = n if end == -1 else end
+            continue
+        if c == '/' and nxt == '*':
+            depth = 1
+            j = i + 2
+            while j < n and depth:
+                if code.startswith('/*', j):
+                    depth += 1
+                    j += 2
+                elif code.startswith('*/', j):
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
+            emit('\n' * code.count('\n', i, j))
+            i = j
+            continue
+        prev = code[i - 1] if i else ''
+        raw = re.match(r'b?r(#*)"', code[i:]) if c in 'br' and not (prev.isalnum() or prev == '_') else None
+        if raw:
+            close = '"' + raw.group(1)
+            start = i + raw.end()
+            end = code.find(close, start)
+            end = n if end == -1 else end
+            emit(code[i:start])
+            emit(code[start:end], blank=True)
+            emit(code[end:end + len(close)])
+            i = end + len(close)
+            continue
+        if c == '"':
+            j = i + 1
+            while j < n and code[j] != '"':
+                j += 2 if code[j] == '\\' else 1
+            emit('"')
+            emit(code[i + 1:j], blank=True)
+            emit('"')
+            i = j + 1
+            continue
+        if c == "'":
+            # A char literal ('{', '\'', '\u{7d}'), not a lifetime ('a).
+            lit = re.match(r"'(\\(u\{[0-9a-fA-F]+\}|x[0-9a-fA-F]{2}|.)|[^\\'])'", code[i:])
+            if lit:
+                emit("'")
+                emit(lit.group(0)[1:-1], blank=True)
+                emit("'")
+                i += lit.end()
+                continue
+        emit(c)
+        i += 1
+    return ''.join(out), ''.join(skel)
 
 def strip_rust_comments(code: str) -> str:
-    """Remove // line comments, /* ... */ block comments, and doc comments (///, //!, //! ...) from Rust code."""
-    # Remove block comments first
-    code = re.sub(r'/\*.*?\*/', '', code, flags=re.DOTALL)
-    # Remove line comments
-    code = re.sub(r'//.*', '', code)
-    # Remove doc comments (/// and //! at start of line)
-    code = re.sub(r'^\s*///.*$', '', code, flags=re.MULTILINE)
-    code = re.sub(r'^\s*//!.*$', '', code, flags=re.MULTILINE)
+    """Remove line, block and doc comments from Rust code, leaving strings intact."""
+    return lex_rust(code)[0]
+
+def strip_test_code(code: str) -> str:
+    """Remove comments and every `#[cfg(test)]` / `#[test]` item from Rust code.
+
+    A string that only a test uses is not a string the app shows, and some
+    tests assert the *absence* of an FTL entry (the i18n fallback tests), so
+    exporting it would break them.
+    """
+    code, skel = lex_rust(code)
+    cuts = []
+    for m in re.finditer(r'#\[\s*(cfg\s*\(\s*test\s*\)|test)\s*\]', skel):
+        if cuts and m.start() < cuts[-1][1]:
+            continue  # inside an item already cut
+        # The item ends at its first top-level `;` or its body's matching `}`.
+        depth = 0
+        end = None
+        for j in range(m.end(), len(skel)):
+            ch = skel[j]
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    end = j + 1
+                    break
+            elif ch == ';' and depth == 0:
+                end = j + 1
+                break
+        if end is not None:
+            cuts.append((m.start(), end))
+    for start, end in reversed(cuts):
+        code = code[:start] + '\n' * code.count('\n', start, end) + code[end:]
     return code
 
+def looks_like_path_or_url(message: str) -> bool:
+    """True for a message that is a path, URL or email address, not UI text.
+
+    Only these are skipped. A `/` alone is not enough: `{used} / {window}`
+    and `{done}/{total} done` are UI strings, while `src/lib.rs`, `~/.config`
+    and `https://damus.io` are not.
+    """
+    if re.search(r'[a-z][a-z0-9+.-]*://', message, re.IGNORECASE):
+        return True
+    if re.search(r'\bwww\.', message, re.IGNORECASE):
+        return True
+    if re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', message):
+        return True
+    if re.fullmatch(r'[\w.-]+\.(rs|ftl|toml|json|md)', message):
+        return True
+    for token in message.split():
+        if '/' not in token and '\\' not in token.replace('\\"', ''):
+            continue
+        if re.match(r'(~|\.{1,2})?/[\w.-]', token):
+            return True
+        if re.match(r'(crates|src|target|assets)/', token):
+            return True
+        if re.search(r'\.[A-Za-z0-9]{1,5}$', token):
+            return True
+    return False
+
 def extract_tr_macros_with_lines(content: str, file_path: str) -> dict:
-    """Extract tr! macro calls from Rust code with comments and line numbers. Handles multi-line macros."""
+    """Extract tr! macro calls from Rust code with comments and line numbers. Handles multi-line macros.
+
+    `content` is code already passed through `strip_test_code`.
+    """
     matches = []
-    # Strip comments before processing
-    content = strip_rust_comments(content)
     # Search the entire content for tr! macro calls (multi-line aware)
     for macro_content in extract_macro_calls(content, 'tr!'):
         args = parse_macro_arguments(macro_content)
@@ -56,9 +202,7 @@ def extract_tr_macros_with_lines(content: str, file_path: str) -> dict:
             # Validate placeholders
             if not validate_placeholders(message, file_path):
                 continue
-            if not any(skip in message.lower() for skip in [
-                '/', '\\', '.ftl', '.rs', 'http', 'https', 'www', '@',
-                'crates/', 'src/', 'target/', 'build.rs']):
+            if not looks_like_path_or_url(message):
                 # Find the line number where this macro starts
                 macro_start = f'tr!({macro_content}'
                 idx = content.find(macro_start)
@@ -79,14 +223,12 @@ def extract_tr_plural_macros_with_lines(content: str, file_path: str) -> dict:
             other = args[2].strip()
             comment = args[3].strip()
             key = other
-            if key and not key.startswith('//') and not key.startswith('$'):
+            if key and not key.startswith('$') and not looks_like_path_or_url(key):
                 matches.append((key, comment, idx + 1, file_path))
     return matches
 
 def parse_macro_arguments(content: str) -> List[str]:
     """Parse macro arguments, handling quoted strings, param = value pairs, commas, and inline comments."""
-    # Remove all // comments
-    content = re.sub(r'//.*', '', content)
     # Collapse all whitespace/newlines to a single space
     content = re.sub(r'\s+', ' ', content.strip())
     args = []
@@ -148,6 +290,11 @@ def extract_macro_calls(content: str, macro_name: str):
         start = content.find(macro_start, idx)
         if start == -1:
             break
+        prev = content[start - 1] if start else ''
+        if prev.isalnum() or prev == '_':
+            # `include_str!(` is not `tr!(`
+            idx = start + len(macro_start)
+            continue
         i = start + len(macro_start)
         paren_count = 1  # Start after the initial '('
         in_quote = False
@@ -205,63 +352,46 @@ def validate_placeholders(message: str, file_path: str = "") -> bool:
         print(f"[VALIDATE] Message rejected: '{message}'")
     return valid
 
-def extract_tr_macros(content: str) -> List[Tuple[str, str]]:
-    """Extract tr! macro calls from Rust code with comments."""
+def extract_tr_macros(content: str, verbose: bool = False) -> List[Tuple[str, str]]:
+    """Extract tr! macro calls from Rust code with comments.
+
+    `content` is code already passed through `strip_test_code`.
+    """
     filtered_matches = []
-    # Strip comments before processing
-    content = strip_rust_comments(content)
     # Process the entire content instead of line by line to handle multi-line macros
     for macro_content in extract_macro_calls(content, 'tr!'):
         args = parse_macro_arguments(macro_content)
         if len(args) >= 3:  # Must have at least message and comment
             message = args[1].strip()
             comment = args[2].strip()  # Second argument is always the comment
-            # Debug output for identification strings
-            if "identification" in comment.lower():
-                print(f"[DEBUG] Found identification tr! macro: message='{message}', comment='{comment}', args={args}")
-                norm_key = normalize_key(message, comment)
-                print(f"[DEBUG] Normalized key: '{norm_key}'")
             # Validate placeholders
             if not validate_placeholders(message):
                 continue
-            # More specific filtering logic
-            should_skip = False
-            for skip in ['/', '.ftl', '.rs', 'http', 'https', 'www', 'crates/', 'src/', 'target/', 'build.rs']:
-                if skip in message.lower():
-                    should_skip = True
-                    break
-            # Special handling for @ - only skip if it looks like an actual email address
-            if '@' in message and (
-                # Skip if it's a short string that looks like an email
-                len(message) < 50 or
-                # Skip if it contains common email patterns
-                any(pattern in message.lower() for pattern in ['@gmail.com', '@yahoo.com', '@hotmail.com', '@outlook.com'])
-            ):
-                should_skip = True
-            if not should_skip:
+            if not looks_like_path_or_url(message):
                 # Store as (message, comment) tuple to preserve all combinations
                 filtered_matches.append((message, comment))
     return filtered_matches
 
 def extract_tr_plural_macros(content: str, file_path: str = "") -> Dict[str, dict]:
-    """Extract tr_plural! macro calls from Rust code with new signature, skipping macro definitions and doc comments."""
+    """Extract tr_plural! macro calls from Rust code with new signature, skipping macro definitions.
+
+    `content` is code already passed through `strip_test_code`. The result is
+    keyed by the FTL key (the `other` message plus a hash of its comment), so
+    two calls with the same text and different comments both survive.
+    """
     filtered_matches = {}
     # Skip macro definitions
     if 'macro_rules! tr_plural' in content or file_path.endswith('i18n/mod.rs'):
-        print(f"[DEBUG] Skipping macro definitions in {file_path}")
         return filtered_matches
     for macro_content in extract_macro_calls(content, 'tr_plural!'):
-        print(f"[DEBUG] Found tr_plural! macro in {file_path}: {macro_content}")
         args = parse_macro_arguments(macro_content)
-        print(f"[DEBUG] Parsed args: {args}")
         if len(args) >= 5:
             one = args[1].strip()
             other = args[2].strip()
             comment = args[3].strip()
             key = other
-            if key and not key.startswith('//') and not key.startswith('$'):
-                print(f"[DEBUG] Adding plural key '{key}' from {file_path}")
-                filtered_matches[key] = {
+            if key and not key.startswith('$') and not looks_like_path_or_url(key):
+                filtered_matches[normalize_key(key, comment)] = {
                     'one': one,
                     'other': other,
                     'comment': comment
@@ -356,9 +486,12 @@ def generate_ftl_content(tr_strings: Dict[str, str],
         "",
     ]
 
-    # Sort strings for consistent output
-    sorted_tr = sorted(tr_strings.items(), key=lambda item: item[0].lower())
-    sorted_plural = sorted(plural_strings.items(), key=lambda item: item[0].lower())
+    # Sort strings for consistent output. The exact key breaks a tie between
+    # keys that differ only in case, so the order never depends on which file
+    # was read first.
+    sorted_tr = sorted(tr_strings.items(), key=lambda item: (item[0].lower(), item[0]))
+    sorted_plural = sorted(plural_strings.items(),
+                           key=lambda item: (item[1]['other'].lower(), item[0]))
 
     # Add regular tr! strings
     if sorted_tr:
@@ -377,7 +510,7 @@ def generate_ftl_content(tr_strings: Dict[str, str],
     # Add pluralized strings
     if sorted_plural:
         lines.append("# Pluralized strings")
-        for key, data in sorted_plural:
+        for norm_key, data in sorted_plural:
             lines.append("")
 
             one = data['one']
@@ -386,7 +519,6 @@ def generate_ftl_content(tr_strings: Dict[str, str],
             # Write comment
             if comment:
                 lines.append(f"# {comment}")
-            norm_key = normalize_key(key, comment)
             one_val = escape_rust_placeholders(one)
             other_val = escape_rust_placeholders(other)
             if pseudolocalize_content:
@@ -425,6 +557,37 @@ def read_existing_ftl(ftl_path: Path) -> Dict[str, str]:
 
     return existing_translations
 
+def ftl_entries(content: str) -> Dict[str, str]:
+    """Map each message key in FTL `content` to its whole entry text (comment, value, variants)."""
+    entries = {}
+    key = None
+    lines = []
+    for line in content.split('\n'):
+        match = re.match(r'^([A-Za-z][A-Za-z0-9_-]*) =', line)
+        if match:
+            key = match.group(1)
+            lines = [line]
+            entries[key] = lines
+        elif key and line.startswith(' '):
+            lines.append(line)
+        else:
+            key = None
+    return {k: '\n'.join(v) for k, v in entries.items()}
+
+def report_ftl_drift(path: Path, on_disk: str, generated: str):
+    """Print the keys that regenerating `path` would add, remove or change."""
+    old = ftl_entries(on_disk)
+    new = ftl_entries(generated)
+    added = sorted(new.keys() - old.keys())
+    removed = sorted(old.keys() - new.keys())
+    changed = sorted(k for k in old.keys() & new.keys() if old[k] != new[k])
+    print(f"\n{path} is out of date:")
+    for label, keys in (('added', added), ('removed', removed), ('changed', changed)):
+        for k in keys:
+            print(f"  {label}: {k}")
+    if not (added or removed or changed):
+        print("  same keys, different order or comments")
+
 def main():
     parser = argparse.ArgumentParser(description='Extract i18n macros and generate FTL file')
     parser.add_argument('--project-root', type=str, default='.',
@@ -433,6 +596,11 @@ def main():
                        help='Show what would be generated without writing to file')
     parser.add_argument('--fail-on-collisions', action='store_true',
                        help='Exit with error if key collisions are detected')
+    parser.add_argument('--check', action='store_true',
+                       help='Write nothing; exit 1 and name the keys that differ if the '
+                            'FTL files on disk are out of date with the source')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                       help='Print per-file counts and every extracted key')
 
     args = parser.parse_args()
 
@@ -465,25 +633,28 @@ def main():
             with open(rust_file, 'r', encoding='utf-8') as f:
                 content = f.read()
 
+            code = strip_test_code(content)
+
             # For intra-file collision detection
-            tr_lines = extract_tr_macros_with_lines(content, str(rust_file))
+            tr_lines = extract_tr_macros_with_lines(code, str(rust_file))
             for key, comment, line, file_path in tr_lines:
                 tr_occurrences[(file_path, key)].append((comment, line))
-            plural_lines = extract_tr_plural_macros_with_lines(content, str(rust_file))
+            plural_lines = extract_tr_plural_macros_with_lines(code, str(rust_file))
             for key, comment, line, file_path in plural_lines:
                 plural_occurrences[(file_path, key)].append((comment, line))
 
-            tr_strings = extract_tr_macros(content)
-            plural_strings = extract_tr_plural_macros(content, str(rust_file))
+            tr_strings = extract_tr_macros(code)
+            plural_strings = extract_tr_plural_macros(code, str(rust_file))
 
-            if tr_strings or plural_strings:
+            if (tr_strings or plural_strings) and args.verbose:
                 print(f"  {rust_file}: {len(tr_strings)} tr!, {len(plural_strings)} tr_plural!")
 
             # Check for collisions in tr! strings using normalized keys
             for message, comment in tr_strings:
                 norm_key = normalize_key(message, comment)
-                if norm_key in all_tr_normalized_keys:
-                    # This is a real key collision (same normalized key)
+                if norm_key in all_tr_normalized_keys and all_tr_strings[norm_key] != (message, comment):
+                    # A real key collision: two different messages normalize to one key.
+                    # The same message and comment used twice is just reuse.
                     if norm_key not in tr_collisions:
                         tr_collisions[norm_key] = []
                     tr_collisions[norm_key].append((rust_file, all_tr_normalized_keys[norm_key]))
@@ -493,27 +664,28 @@ def main():
                 all_tr_normalized_keys[norm_key] = comment
 
             # Check for collisions in plural strings using normalized keys
-            for key, data in plural_strings.items():
-                comment = data['comment']
-                norm_key = normalize_key(key, comment)
-                if norm_key in all_plural_normalized_keys:
-                    # This is a real key collision (same normalized key)
+            for norm_key, data in plural_strings.items():
+                if norm_key in all_plural_normalized_keys and all_plural_strings[norm_key] != data:
+                    # A real key collision: two different messages normalize to one key.
                     if norm_key not in plural_collisions:
                         plural_collisions[norm_key] = []
                     plural_collisions[norm_key].append((rust_file, all_plural_normalized_keys[norm_key]))
                     plural_collisions[norm_key].append((rust_file, data))
-                all_plural_strings[key] = data
+                all_plural_strings[norm_key] = data
                 all_plural_normalized_keys[norm_key] = data
 
         except Exception as e:
             print(f"Error reading {rust_file}: {e}")
 
-    # Intra-file collision detection
+    # Intra-file collision detection. One message with two comments gets two
+    # keys, so this is only worth printing when asked for.
     has_intra_file_collisions = False
     for (file_path, key), occurrences in tr_occurrences.items():
         comments = set(c for c, _ in occurrences)
         if len(occurrences) > 1 and len(comments) > 1:
             has_intra_file_collisions = True
+            if not (args.verbose or args.fail_on_collisions):
+                continue
             print(f"\n⚠️  Intra-file key collision in {file_path} for '{key}':")
             for comment, line in occurrences:
                 comment_text = f" (comment: '{comment}')" if comment else " (no comment)"
@@ -522,6 +694,8 @@ def main():
         comments = set(c for c, _ in occurrences)
         if len(occurrences) > 1 and len(comments) > 1:
             has_intra_file_collisions = True
+            if not (args.verbose or args.fail_on_collisions):
+                continue
             print(f"\n⚠️  Intra-file key collision in {file_path} for '{key}':")
             for comment, line in occurrences:
                 comment_text = f" (comment: '{comment}')" if comment else " (no comment)"
@@ -561,20 +735,26 @@ def main():
     print(f"  Regular strings: {len(all_tr_strings)}")
     print(f"  Plural strings: {len(all_plural_strings)}")
 
-    # Debug: print all keys in all_tr_strings
-    print("[DEBUG] All tr! keys:")
-    for k in all_tr_strings.keys():
-        print(f"  {k}")
+    if args.verbose:
+        print("All tr! keys:")
+        for k in sorted(all_tr_strings.keys()):
+            print(f"  {k}")
 
     # Generate FTL content for both locales
     locales = ['en-US', 'en-XA']
 
+    stale = []
     for locale in locales:
         pseudolocalize_content = (locale == 'en-XA')
         ftl_content = generate_ftl_content(all_tr_strings, all_plural_strings, tr_occurrences, plural_occurrences, pseudolocalize_content)
-        output_path = Path(f'assets/translations/{locale}/main.ftl')
+        output_path = project_root / 'assets' / 'translations' / locale / 'main.ftl'
 
-        if args.dry_run:
+        if args.check:
+            on_disk = output_path.read_text(encoding='utf-8') if output_path.exists() else ''
+            if on_disk != ftl_content:
+                stale.append(output_path)
+                report_ftl_drift(output_path, on_disk, ftl_content)
+        elif args.dry_run:
             print(f"\n--- Generated FTL content for {locale} ---")
             print(ftl_content)
             print(f"--- End of content for {locale} ---")
@@ -588,7 +768,12 @@ def main():
 
             print(f"\nGenerated FTL file: {output_path}")
 
-    if not args.dry_run:
+    if args.check:
+        if stale:
+            print("\n❌ FTL files are out of date. Run: python3 scripts/export_source_strings.py")
+            exit(1)
+        print("\n✅ FTL files are up to date")
+    elif not args.dry_run:
         print(f"\nTotal strings: {len(all_tr_strings) + len(all_plural_strings)}")
 
 if __name__ == '__main__':

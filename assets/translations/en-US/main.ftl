@@ -10,6 +10,9 @@ About_00c0 = About
 # Button to accept TOS and continue using the app
 Accept_and_Continue_2e5c = Accept and Continue
 
+# Dave session inspector rate limits: note that the limits are per account, not per session
+Account-wide__every_session_on_this_Claude_account_shares_these_windows_7a32 = Account-wide: every session on this Claude account shares these windows.
+
 # Button to go to the accounts view
 Accounts_03a0 = Accounts
 
@@ -313,6 +316,27 @@ count__tool_uses_5ec5 = {$count} tool uses
 # Dave session inspector permissions: prompts nobody has answered
 count__unanswered_e41c = {$count} unanswered
 
+# Relative time in days
+count_d_b9be = {$count}d
+
+# Relative time in hours
+count_h_3ecb = {$count}h
+
+# Relative time in minutes
+count_m_b41e = {$count}m
+
+# Relative time in months
+count_mo_7aba = {$count}mo
+
+# Relative time in seconds
+count_s_aa26 = {$count}s
+
+# Relative time in weeks
+count_w_7468 = {$count}w
+
+# Relative time in years
+count_y_9408 = {$count}y
+
 # Button to create a new account
 Create_Account_6994 = Create Account
 
@@ -382,6 +406,12 @@ Delete_this_column_8d5a = Delete this column
 # Button label to delete a wallet
 Delete_Wallet_d1d4 = Delete Wallet
 
+# Dave session tab: the session inspector (usage, background work, files, …)
+Details_cd6b = Details
+
+# Dave session inspector overview row
+Directory_7dd2 = Directory
+
 # Profile display name field label
 Display_name_f9d9 = Display name
 
@@ -421,12 +451,6 @@ edited_ee63 = edited
 # Dave session inspector files: a temp-dir folder with nothing in it
 empty_dd99 = empty
 
-# Dave session tab: the session inspector (usage, background work, files, …)
-Details_cd6b = Details
-
-# Dave session inspector overview row
-Directory_7dd2 = Directory
-
 # Placeholder for hashtag input field
 Enter_the_desired_hashtags_here__for_multiple_space-separated_7a69 = Enter the desired hashtags here (for multiple space-separated)
 
@@ -451,6 +475,9 @@ failed_a404 = failed
 # Diff placeholder for a file moved with identical content
 File_renamed_without_changes_dd4e = File renamed without changes
 
+# Dave session inspector section: scratchpad, task output and edited files
+Files_0f4a = Files
+
 # Column title for followers
 Followed_by_e8c2 = Followed by
 
@@ -468,9 +495,6 @@ Hashtag_filter_disabled_a136 = Hashtag filter disabled
 
 # Title for hashtags column
 Hashtags_f8e0 = Hashtags
-
-# Dave session inspector section: scratchpad, task output and edited files
-Files_0f4a = Files
 
 # Button to go to the Headway app
 Headway_b5c8 = Headway
@@ -544,11 +568,26 @@ k_10K_f7e6 = 10K
 # Zap amount button for 20000 sats. Abbreviated because the button is too small to display the full amount.
 k_20K_4977 = 20K
 
+# Dave session inspector rate limits: the five-hour session window
+k_5-hour_336c = 5-hour
+
 # Zap amount button for 50000 sats. Abbreviated because the button is too small to display the full amount.
 k_50K_c2dc = 50K
 
 # Zap amount button for 5000 sats. Abbreviated because the button is too small to display the full amount.
 k_5K_f7e6 = 5K
+
+# Dave session inspector rate limits: the weekly window
+k_7-day_9ea2 = 7-day
+
+# Dave session inspector rate limits: the weekly window for Opus
+k_7-day_Opus_c6c0 = 7-day Opus
+
+# Dave session inspector rate limits: the weekly window for Sonnet
+k_7-day_Sonnet_e2c8 = 7-day Sonnet
+
+# Dave session inspector rate limits: the weekly window including paid overage
+k_7-day_with_overage_a766 = 7-day with overage
 
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = Keep track of your notes & replies
@@ -559,8 +598,6 @@ Keeps_all_profiles_and_your_notes__The_smaller_database_will_be_used_on_next_res
 # Dave session inspector overview row: where the CLI got its API credentials
 Key_source_512a = Key source
 
-# desc
-key_1dee = key
 # Button to edit the user's key bindings
 Keymap_2dd7 = Keymap
 
@@ -587,6 +624,12 @@ Lightning_network_address__lud16_ea51 = Lightning network address (lud16)
 
 # Hover text for like button
 Like_this_note_dfb5 = Like this note
+
+# Dave status bar pill: the Claude account is near a rate limit, with how much of it is used
+Limit__percent_f751 = Limit {$percent}%
+
+# Dave session inspector rate limits status: over a limit, requests refused until it resets
+Limited_until_reset_7e0e = Limited until reset
 
 # Dave slash-command popup row shown while the list of commands loads
 loading_commands_61d0 = loading commands…
@@ -678,6 +721,9 @@ name_as_str_c366 = name.as_str()
 # Session environment row whose variable name is invalid
 Names_can_t_contain_spaces_or____This_row_won_t_be_saved_09bc = Names can't contain spaces or =. This row won't be saved.
 
+# Dave session inspector rate limits status: close to a rate limit
+Near_a_limit_fe96 = Near a limit
+
 # Session environment row with a value but no variable name
 Needs_a_name__This_row_won_t_be_saved_e7b0 = Needs a name. This row won't be saved.
 
@@ -725,6 +771,24 @@ No_pages_published_8268 = No pages published
 
 # Shown when profile search returns no results
 No_profiles_found_3130 = No profiles found
+
+# Dave session inspector rate limits: shown before the CLI reports the account's windows
+No_rate-limit_report_yet_c1f0 = No rate-limit report yet
+
+# Dave session inspector outputs: the session has no working directory or agentium ref to find commits by
+No_repository_for_this_session_1a37 = No repository for this session
+
+# Shown in the command bar when nothing matches the query
+No_results_dd32 = No results
+
+# Dave session inspector permissions: the session has no always-allow rules
+No_rules_yet__Allow_Always_on_a_prompt_adds_one_e188 = No rules yet. Allow Always on a prompt adds one.
+
+# Dave session inspector subagents: the session has spawned no subagents
+No_subagents_yet_3ccd = No subagents yet
+
+# Dave session inspector tasks: the agent has made no task list
+No_tasks_yet_6cb8 = No tasks yet
 
 # Dave session inspector usage: shown before the agent's first request finishes
 No_usage_reported_yet_84dc = No usage reported yet
@@ -822,6 +886,15 @@ output__count_0a95 = output {$count}
 # Dave session inspector overview: label before the CLI's output style name
 output_style_f766 = output style
 
+# Dave session inspector section: commits, cards and pages the session produced
+Outputs_da08 = Outputs
+
+# Dave session inspector rate limits: paid usage past the subscription limits
+Overage_777a = Overage
+
+# Dave session inspector section: model, versions, MCP servers, skills
+Overview_d736 = Overview
+
 # Dave session inspector outputs: heading over the pages the session published
 Pages____count_e8e5 = Pages · {$count}
 
@@ -830,6 +903,12 @@ Paste_your_NWC_URI_here_b471 = Paste your NWC URI here...
 
 # Title for people list column
 People_List_42bf = People List
+
+# Dave session inspector rate limits: how much of a window is used and when it resets
+percent_____resets__time_7c1d = {$percent}% · resets {$time}
+
+# Dave session inspector section: permission mode, answered prompts, always-allow rules
+Permissions_d50b = Permissions
 
 # Error message for missing deck name
 Please_create_a_name_for_the_deck_38e7 = Please create a name for the deck.
@@ -843,12 +922,6 @@ Please_read_and_accept_the_following_terms_to_continue_37de = Please read and ac
 # Error message for missing deck icon
 Please_select_an_icon_655b = Please select an icon.
 
-# Dave session inspector section: commits, cards and pages the session produced
-Outputs_da08 = Outputs
-
-# Dave session inspector section: model, versions, MCP servers, skills
-Overview_d736 = Overview
-
 # Button label to post a note
 Post_now_8a49 = Post now
 
@@ -857,9 +930,6 @@ Press_Enter_to_run_it_6829 = Press Enter to run it
 
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = Press the button below to copy your most recent logs to your system's clipboard. Then paste it into your email.
-
-# Dave session inspector section: permission mode, answered prompts, always-allow rules
-Permissions_d50b = Permissions
 
 # Section header for private sync relays
 Private_sync_560b = Private sync
@@ -894,6 +964,12 @@ Quote_475c = Quote
 # Error message when quote note cannot be found
 Quote_of_unknown_note_e4f0 = Quote of unknown note
 
+# Dave status bar pill: the Claude account is over a rate limit
+Rate_limited_5dff = Rate limited
+
+# Dave session inspector section: the account's rate-limit windows
+Rate_limits_8fef = Rate limits
+
 # Column title for note reactions list
 Reactions_68e3 = Reactions
 
@@ -917,9 +993,6 @@ Relays_ab62 = Relays
 
 # Tooltip on the button that removes a session environment variable
 Remove_variable_625d = Remove variable
-
-# Dave session inspector section: the account's rate-limit windows
-Rate_limits_8fef = Rate limits
 
 # Column title for reply composition
 Reply_3bf1 = Reply
@@ -971,6 +1044,9 @@ Reset_4998 = Reset
 
 # Label for reset zoom level, Appearance settings section
 Reset_62d4 = Reset
+
+# Dave session inspector rate limits: a window whose reset time has passed
+reset_at__time_2d3d = reset at {$time}
 
 # Instruction to restart after pruning
 Restart_to_apply_f761 = Restart to apply.
@@ -1071,8 +1147,14 @@ Settings_7a4f = Settings
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = Show the last note for each user from a list
 
+# Caption for a version of a changed 3D model that failed to load in a diff
+side___not_a_3D_model_that_could_be_read_d28f = {$side}: not a 3D model that could be read
+
 # Caption for a version of a changed image that failed to decode in a diff
 side___not_an_image_that_could_be_read_e19e = {$side}: not an image that could be read
+
+# Caption for a version of a changed 3D model skipped because the commit has too many models
+side___not_shown__the_commit_changes_too_many_3D_models_955c = {$side}: not shown, the commit changes too many 3D models
 
 # Caption for a version of a changed image skipped because the commit has too many images
 side___not_shown__the_commit_changes_too_many_images_6798 = {$side}: not shown, the commit changes too many images
@@ -1100,6 +1182,9 @@ Source_the_last_note_for_each_user_in_your_contact_list_e157 = Source the last n
 
 # Dave session inspector overview row
 Status_7dd2 = Status
+
+# Dave session inspector rate limits row
+Status_c3bb = Status
 
 # Description for hashtags column
 Stay_up_to_date_with_a_certain_hashtag_88e3 = Stay up to date with a certain hashtag
@@ -1143,6 +1228,9 @@ stopping_6240 = stopping…
 # Label for storage settings section
 Storage_ed65 = Storage
 
+# Dave session inspector section: subagents the session spawned
+Subagents_5251 = Subagents
+
 # Column title for subscribing to external user
 Subscribe_to_someone_else_s_notes_d1e9 = Subscribe to someone else's notes
 
@@ -1173,14 +1261,14 @@ task__id_4fa1 = task {$id}
 # Dave session inspector background: badge for a background task of an unknown kind
 task_e7a3 = task
 
+# Dave session inspector section: the agent's task list
+Tasks_2037 = Tasks
+
 # Column title for TOS acceptance screen
 Terms_of_Service_8a6e = Terms of Service
 
 # TOS acceptance screen title
 Terms_of_Service_e074 = Terms of Service
-
-# Dave session inspector section: subagents the session spawned
-Subagents_5251 = Subagents
 
 # Message shown when Dave trial period has ended
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = The Dave Nostr AI assistant trial has ended :(. Thanks for testing! Zap-enabled Dave coming soon!
@@ -1205,9 +1293,6 @@ time__ago_1f6d = {$time} ago
 
 # Label shown between chat messages for the current day
 Today_bd04 = Today
-
-# Dave session inspector section: the agent's task list
-Tasks_2037 = Tasks
 
 # Dave chat: the day a turn header names, for today
 Today_f170 = Today
@@ -1242,6 +1327,9 @@ Unmute_User_5d5a = Unmute User
 # Unmute this user's content
 Unmute_User_bf35 = Unmute User
 
+# Dave session inspector section: context, tokens and cost
+Usage_4257 = Usage
+
 # Label for toggling explicit outbox relay routing in Columns settings
 Use_outbox_relays_9e4d = Use outbox relays:
 
@@ -1275,9 +1363,6 @@ wake-up_be9a = wake-up
 # Column title for wallet management
 Wallet_5e50 = Wallet
 
-# Dave session inspector section: context, tokens and cost
-Usage_4257 = Usage
-
 # Button to go to the wallet view
 Wallet_899d = Wallet
 
@@ -1293,15 +1378,11 @@ Welcome_5cce = Welcome
 # Welcome screen title
 Welcome_to_Notedeck_e2e7 = Welcome to Notedeck
 
+# Dave session inspector rate limits status: under every limit
+Within_limits_9850 = Within limits
+
 # Dave chat: how long a turn ran, in its footer, as in 'worked 12m'
 worked__duration_81bb = worked {$duration}
-
-# Dave session header: hover over the session's walltime, as in 'worked 1h 12m over 9 turns'
-worked__duration__over__count__turns_a58e =
-    { $count ->
-        [one] worked {$duration} over {$count} turn
-       *[other] worked {$duration} over {$count} turns
-    }
 
 # Dave session inspector background: badge for a background workflow
 workflow_dd36 = workflow
@@ -1352,6 +1433,14 @@ Got__count__results_for___query_85fb =
     { $count ->
         [one] Got {$count} result for '{$query}'
        *[other] Got {$count} results for '{$query}'
+    }
+
+
+# Dave session header: hover over the session's walltime, as in 'worked 1h 12m over 9 turns'
+worked__duration__over__count__turns_a58e =
+    { $count ->
+        [one] worked {$duration} over {$count} turn
+       *[other] worked {$duration} over {$count} turns
     }
 
 
@@ -1433,6 +1522,7 @@ count__prompts_81e6 =
         [one] {$count} prompt
        *[other] {$count} prompts
     }
+
 
 # Dave session inspector usage: model requests across the session's turns
 count__requests_cfa1 =
@@ -1544,72 +1634,3 @@ side__3D_model____count__triangles____size_f232 =
         [one] {$side} 3D model · {$count} triangle · {$size}
        *[other] {$side} 3D model · {$count} triangles · {$size}
     }
-
-# Caption for a version of a changed 3D model that failed to load in a diff
-side___not_a_3D_model_that_could_be_read_d28f = {$side}: not a 3D model that could be read
-
-# Caption for a version of a changed 3D model skipped because the commit has too many models
-side___not_shown__the_commit_changes_too_many_3D_models_955c = {$side}: not shown, the commit changes too many 3D models
-
-# Dave session inspector rate limits: note that the limits are per account, not per session
-Account-wide__every_session_on_this_Claude_account_shares_these_windows_7a32 = Account-wide: every session on this Claude account shares these windows.
-
-# Dave session inspector rate limits: the five-hour session window
-k_5-hour_336c = 5-hour
-
-# Dave session inspector rate limits: the weekly window
-k_7-day_9ea2 = 7-day
-
-# Dave session inspector rate limits: the weekly window for Opus
-k_7-day_Opus_c6c0 = 7-day Opus
-
-# Dave session inspector rate limits: the weekly window for Sonnet
-k_7-day_Sonnet_e2c8 = 7-day Sonnet
-
-# Dave session inspector rate limits: the weekly window including paid overage
-k_7-day_with_overage_a766 = 7-day with overage
-
-# Dave status bar pill: the Claude account is near a rate limit, with how much of it is used
-Limit__percent_f751 = Limit {$percent}%
-
-# Dave session inspector rate limits status: over a limit, requests refused until it resets
-Limited_until_reset_7e0e = Limited until reset
-
-# Dave session inspector rate limits status: close to a rate limit
-Near_a_limit_fe96 = Near a limit
-
-# Dave session inspector rate limits: shown before the CLI reports the account's windows
-No_rate-limit_report_yet_c1f0 = No rate-limit report yet
-
-# Dave session inspector outputs: the session has no working directory or agentium ref to find commits by
-No_repository_for_this_session_1a37 = No repository for this session
-
-# Shown in the command bar when nothing matches the query
-No_results_dd32 = No results
-
-# Dave session inspector permissions: the session has no always-allow rules
-No_rules_yet__Allow_Always_on_a_prompt_adds_one_e188 = No rules yet. Allow Always on a prompt adds one.
-
-# Dave session inspector subagents: the session has spawned no subagents
-No_subagents_yet_3ccd = No subagents yet
-
-# Dave session inspector rate limits: paid usage past the subscription limits
-Overage_777a = Overage
-
-# Dave session inspector rate limits: how much of a window is used and when it resets
-percent_____resets__time_7c1d = {$percent}% · resets {$time}
-
-# Dave status bar pill: the Claude account is over a rate limit
-Rate_limited_5dff = Rate limited
-
-# Dave session inspector rate limits: a window whose reset time has passed
-reset_at__time_2d3d = reset at {$time}
-
-# Dave session inspector rate limits row
-Status_c3bb = Status
-
-# Dave session inspector rate limits status: under every limit
-Within_limits_9850 = Within limits
-
-# Dave session inspector tasks: the agent has made no task list
-No_tasks_yet_6cb8 = No tasks yet
