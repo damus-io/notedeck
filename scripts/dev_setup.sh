@@ -17,4 +17,14 @@ chmod +x "$GIT_HOOKS_DIR/pre-commit"
 cp -p "$HOOK_SCRIPTS_DIR/commit_msg_hook.sh" "$GIT_HOOKS_DIR/commit-msg"
 chmod +x "$GIT_HOOKS_DIR/commit-msg"
 
+# The pre-push hook uploads Git LFS objects (snapshot pngs). Don't clobber a
+# pre-push hook of your own: chain ours into it instead.
+if [ -e "$GIT_HOOKS_DIR/pre-push" ] && ! cmp -s "$HOOK_SCRIPTS_DIR/pre_push_hook.sh" "$GIT_HOOKS_DIR/pre-push"; then
+  echo "Note: $GIT_HOOKS_DIR/pre-push already exists, so it was left alone."
+  echo "  Add this line to it so pushes upload Git LFS objects: git lfs pre-push \"\$@\""
+else
+  cp -p "$HOOK_SCRIPTS_DIR/pre_push_hook.sh" "$GIT_HOOKS_DIR/pre-push"
+  chmod +x "$GIT_HOOKS_DIR/pre-push"
+fi
+
 echo "Git hooks have been set up successfully."

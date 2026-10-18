@@ -111,6 +111,29 @@ if [[ -n "$preview" && -n "$update" ]]; then
     exit 1
 fi
 
+# Snapshot pngs are Git LFS objects. A checkout that never smudged them (no
+# git-lfs, or GIT_LFS_SKIP_SMUDGE) holds a ~130-byte pointer at each path:
+# kittest can't decode one, so the check would call every png stale, and
+# --update would silently overwrite every pointer with a fresh render. Stop
+# before either, in every mode and before the docker re-exec. `find`, not
+# `git ls-files`: inside the container a worktree's git dir isn't readable.
+# The trailing /dev/null keeps grep off stdin when nothing is found.
+pointer_dirs=()
+for crate in ${only:-$(ls "$repo/crates")}; do
+    [[ -d "$repo/crates/$crate/tests/snapshots" ]] && pointer_dirs+=("$repo/crates/$crate/tests/snapshots")
+done
+if [[ ${#pointer_dirs[@]} -gt 0 ]]; then
+    pointers="$(find "${pointer_dirs[@]}" -name '*.png' -size -2k -print0 |
+        xargs -0 grep -l -x 'version https://git-lfs.github.com/spec/v1' /dev/null || true)"
+    if [[ -n "$pointers" ]]; then
+        first="${pointers%%$'\n'*}"
+        echo "error: snapshot pngs are unsmudged git-lfs pointers, not images" >&2
+        echo "  $(wc -l <<< "$pointers" | tr -d ' ') of them, e.g. ${first#"$repo"/}" >&2
+        echo "  install git-lfs, then run: git lfs install && git lfs pull" >&2
+        exit 1
+    fi
+fi
+
 # macOS can't render snapshots natively: re-exec this script inside a lavapipe
 # container bound to this checkout. A preview renders natively instead.
 if [[ -z "$preview" && "$(uname -s)" == "Darwin" ]]; then

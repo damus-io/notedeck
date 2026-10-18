@@ -14,6 +14,8 @@ mkShell ({
     #cargo-edit
     #cargo-watch
     rustup
+    # snapshot pngs live in Git LFS
+    git-lfs
     gdb
     libiconv
     (python3.withPackages (ps: [ ps.pyyaml ps.mako ps.requests ]))

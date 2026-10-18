@@ -38,3 +38,5 @@ keystore.properties
 **/snapshots/*.old.png
 # scripts/snapshot-test --preview: a host-GPU render, never a baseline
 **/snapshots/**/*.preview.png
+# the snapshot-test CI job's LFS cache key (.github/workflows/rust.yml)
+.lfs-assets-id

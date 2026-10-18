@@ -100,7 +100,26 @@ jobs:
     name: Snapshot Tests
     runs-on: ubuntu-22.04
     steps:
+      # Snapshot pngs are Git LFS objects, and this is the only job that opens
+      # them; every other job keeps checkout's default `lfs: false` and sees
+      # harmless pointers. They come through a cache of .git/lfs rather than
+      # `lfs: true`, which would download every png on every run. Any snapshot
+      # change misses the exact key, so `restore-keys` restores the newest
+      # older cache and `git lfs pull` fetches only what changed.
       - uses: actions/checkout@v4
+      - name: List LFS objects
+        run: git lfs ls-files --long | cut -d' ' -f1 | sort > .lfs-assets-id
+      - uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+          restore-keys: lfs-
+      # fsck --pointers: a png committed raw into an LFS path, a second line
+      # behind bin_testing's lfs_snapshots check.
+      - name: Pull LFS objects
+        run: |
+          git lfs pull
+          git lfs fsck --pointers
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install dependencies
