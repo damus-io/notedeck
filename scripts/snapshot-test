@@ -185,7 +185,7 @@ ${update:+export UPDATE_SNAPSHOTS=1}
 export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
 
 # Each crate's snapshot suite:
-#   "<crate>|<extra cargo args>|<extra harness args>|<release-only>"
+#   "<crate>|<extra cargo args>|<extra harness args>"
 # Running only the crate you're working on (scripts/snapshot-test
 # -p=notedeck_headway) skips the four unrelated release builds, which dominate
 # wall-clock time.
@@ -195,11 +195,8 @@ export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
 # ignored test in the listed binaries, and a test that skips itself at runtime
 # is still reported as a pass — so anything ignored for a reason other than
 # lavapipe has to be excluded here or CI claims to have run it.
-#
-# A non-empty release-only field keeps the suite in release under --debug: its
-# tests hit an egui debug_assert (see the loop below) and abort.
 suites=(
-    "notedeck_chrome|--features auto-update,snapshot-testing --test ui_tests --test command_bar --test shot||release-only"
+    "notedeck_chrome|--features auto-update,snapshot-testing --test ui_tests --test command_bar --test shot|"
     "notedeck_ui|--test widget_tests --test chart_tests|"
     # test_real_codex_*: live-backend tests gated on CODEX_LIVE_TEST, which CI
     # never sets. Swept in they returned early and counted as passes.
@@ -238,13 +235,9 @@ suites=(
 # normal `cargo test`. The --ignored flag runs only those tests.
 #
 # Release is the default because CI renders and compares in release. A debug
-# build differs in two ways:
-#
-# - egui panics with "Widget ... changed layer_id during the frame" when a
-#   widget moves between layers (tooltips: Background → Foreground). Chrome's
-#   ui_tests and shot do, so chrome stays in release.
-# - egui paints a red warning over any id clash. A test that clashes renders
-#   differently in debug, and the fix is a ui.push_id in the test.
+# build differs in one way: egui paints a red warning over any id clash. A
+# test that clashes renders differently in debug, and the fix is a ui.push_id
+# in the test.
 #
 # Otherwise the pixels match. Measured on lavapipe (headway:notedeck/song-suggest-decorate):
 # every png outside chrome rendered bit-identical in debug and release except
@@ -296,18 +289,13 @@ failed=()
 stale=()
 previews=()
 for suite in "${suites[@]}"; do
-    IFS='|' read -r crate cargo_args harness_args release_only <<< "$suite"
+    IFS='|' read -r crate cargo_args harness_args <<< "$suite"
     if [[ -n "${only// /}" && " $only " != *" $crate "* ]]; then
         continue
     fi
-    profile="$release"
-    if [[ -z "$profile" && -n "$release_only" ]]; then
-        echo "note: $crate renders in release even under --debug (egui debug_assert)" >&2
-        profile="--release"
-    fi
     dir="$repo/crates/$crate"
     if [[ -n "$preview" ]]; then
-        preview_suite "$crate" "$profile" "$cargo_args" "$harness_args" "$dir" || failed+=("$crate")
+        preview_suite "$crate" "$release" "$cargo_args" "$harness_args" "$dir" || failed+=("$crate")
         continue
     fi
     # kittest clears a test's .new/.diff pngs only when that test runs again, so
@@ -315,7 +303,7 @@ for suite in "${suites[@]}"; do
     find "$dir" -path '*/snapshots/*' \( -name '*.new.png' -o -name '*.diff.png' \) -delete
     # --no-fail-fast: a failing binary would otherwise skip the suite's later
     # binaries, and their stale pngs with it.
-    if ! cargo test --no-fail-fast $profile -p "$crate" $cargo_args -- --ignored $harness_args ${filter:+"$filter"}; then
+    if ! cargo test --no-fail-fast $release -p "$crate" $cargo_args -- --ignored $harness_args ${filter:+"$filter"}; then
         failed+=("$crate")
     fi
     # a png that differs from its render, or a snapshot never recorded

@@ -21,7 +21,9 @@ pub mod script;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use egui::{Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawInput, ViewportId};
+use egui::{
+    Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawInput, TexturesDelta, ViewportId,
+};
 use notedeck::Notedeck;
 
 use crate::keymap::{KeyStroke, Mods};
@@ -211,10 +213,17 @@ impl Camera {
         output
     }
 
+    /// Free a frame's released textures and mark its delta applied: epaint
+    /// debug-asserts that no delta is dropped with work still in it.
+    fn free_textures(&mut self, mut delta: TexturesDelta) {
+        self.offscreen.free_textures(&delta);
+        delta.clear();
+    }
+
     /// A frame nobody looks at, then the gap to the next.
     async fn idle_frame(&mut self, events: Vec<Event>) {
         let output = self.frame(events);
-        self.offscreen.free_textures(&output.textures_delta);
+        self.free_textures(output.textures_delta);
         tokio::time::sleep(FRAME).await;
     }
 
@@ -230,7 +239,7 @@ impl Camera {
             [self.size.width, self.size.height],
             clear_color,
         );
-        self.offscreen.free_textures(&output.textures_delta);
+        self.free_textures(output.textures_delta);
         image
             .map_err(ShotError::Render)?
             .save(path)
