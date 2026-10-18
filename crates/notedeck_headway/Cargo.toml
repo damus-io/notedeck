@@ -28,8 +28,12 @@ egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 notedeck = { workspace = true, features = ["snapshot-testing"] }
 # Chrome owns Headway's keymap; the test harnesses resolve keys through its
-# engine and shipped `default_keymap.toml`, as the app does.
-notedeck_chrome = { workspace = true }
+# engine and shipped `default_keymap.toml`, as the app does. The `headway`
+# feature is chrome's routing into Headway (an open by note or reference), so
+# the nav tests can run the real Headway inside the real chrome. Cargo allows
+# this dev-dependency cycle: the tests link the one `notedeck_headway` chrome
+# does, so a `HeadwayRoute` token downcasts on both sides.
+notedeck_chrome = { workspace = true, features = ["headway"] }
 notedeck_testing = { workspace = true }
 renderbud = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }

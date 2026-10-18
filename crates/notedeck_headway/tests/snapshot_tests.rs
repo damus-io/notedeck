@@ -18,6 +18,8 @@ mod common;
 
 struct HeadwayTestState {
     notedeck: Notedeck,
+    /// The Headway the harness draws, unless [`chrome`](Self::chrome) is set:
+    /// a chrome owns the Headway it runs, and this one then never runs.
     headway: Headway,
     /// Signing account injected on first frame so Headway can seed + edit its
     /// event-backed board.
@@ -38,6 +40,10 @@ struct HeadwayTestState {
     nav_token: Option<std::rc::Rc<dyn std::any::Any>>,
     /// Chrome's part of the keyboard: Headway reads no keys of its own.
     keys: ChromeKeys,
+    /// When set, every frame is a real chrome frame running its own Headway
+    /// ([`chrome_harness`]): the chrome's keymap, history, routing and
+    /// `cleanup_nav` instead of [`ChromeKeys`] and [`nav_token`](Self::nav_token).
+    chrome: Option<notedeck_chrome::Chrome>,
 }
 
 /// The data tools the shipped keymap binds Headway's board edits to (`a`,
@@ -195,6 +201,11 @@ fn render_headway(ui: &mut egui::Ui, state: &mut HeadwayTestState) {
             return;
         }
 
+        if let Some(chrome) = &mut state.chrome {
+            notedeck_chrome::testing::chrome_frame(&mut state.notedeck, chrome, ui);
+            return;
+        }
+
         let mut app_ctx = state.notedeck.app_context();
         // Mirror production: chrome runs `update` (sync poll + fan-out + seed) for
         // every opened app each frame, then `render` for the foreground one.
@@ -313,6 +324,41 @@ fn fixed_keypair(fill: u8) -> FullKeypair {
 /// the pixel-snapshot [`headway_harness`] adds the wgpu software renderer, the
 /// behavioural [`behavioral_harness`] omits it so it needs no GPU.
 fn headway_state() -> HeadwayTestState {
+    let mut state = bare_state();
+    // Chrome registers every app's inline-reference contributions at startup
+    // (`setup_app_registries`); mirror that here, off *this* Headway instance,
+    // so the parser and renderers share its board cache and a
+    // `headway:board/word-word-word` reference in a card description resolves.
+    for renderer in state.headway.kind_renderers() {
+        state.notedeck.register_kind_renderer(renderer);
+    }
+    for parser in state.headway.reference_parsers() {
+        state.notedeck.register_reference_parser(parser);
+    }
+    state
+}
+
+/// A [`HeadwayTestState`] whose frames are real chrome frames ([`chrome_frame`](notedeck_chrome::testing::chrome_frame)):
+/// a headless chrome running a Headway of its own in front, then `others`,
+/// with nav settled so a push and a back land under a debug build. The
+/// chrome registers its Headway's reference parser and renderers itself.
+fn chrome_state(
+    others: impl IntoIterator<Item = notedeck_chrome::NotedeckApp>,
+) -> HeadwayTestState {
+    use notedeck_chrome::{Chrome, NotedeckApp};
+
+    let mut state = bare_state();
+    let apps = std::iter::once(NotedeckApp::Headway(Box::new(Headway::new()))).chain(others);
+    let mut chrome = Chrome::new_headless_with_apps(&mut state.notedeck, apps);
+    chrome.settle_nav(true);
+    state.notedeck.app_context().settings.complete_welcome();
+    state.chrome = Some(chrome);
+    state
+}
+
+/// The parts of [`headway_state`] and [`chrome_state`] both share: the host,
+/// its frozen clocks, the account to inject, and nothing registered.
+fn bare_state() -> HeadwayTestState {
     let tmpdir = tempfile::TempDir::new().unwrap();
     let ctx = egui::Context::default();
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
@@ -329,27 +375,16 @@ fn headway_state() -> HeadwayTestState {
     // records how long ago SEED_AT was on the day it ran.
     notedeck.app_context().time_cache.freeze_now(SEED_AT);
 
-    // Chrome registers every app's inline-reference contributions at startup
-    // (`setup_app_registries`); mirror that here, off *this* Headway instance,
-    // so the parser and renderers share its board cache and a
-    // `headway:board/word-word-word` reference in a card description resolves.
-    let headway = Headway::new();
-    for renderer in headway.kind_renderers() {
-        notedeck.register_kind_renderer(renderer);
-    }
-    for parser in headway.reference_parsers() {
-        notedeck.register_reference_parser(parser);
-    }
-
     HeadwayTestState {
         notedeck,
-        headway,
+        headway: Headway::new(),
         account: test_keypair(),
         _tmpdir: tmpdir,
         fonts_installed: false,
         ref_note: None,
         nav_token: None,
         keys: ChromeKeys::new(),
+        chrome: None,
     }
 }
 
@@ -383,6 +418,24 @@ fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
 /// through the renderer, which is exactly what needs lavapipe).
 fn behavioral_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
     let mut harness = harness_builder(size).build_ui_state(render_headway, headway_state());
+
+    wait_for_board(&mut harness);
+    harness
+}
+
+/// Like [`behavioral_harness`], with every frame a real chrome frame running
+/// Headway alone ([`chrome_state`]).
+fn chrome_harness() -> Harness<'static, HeadwayTestState> {
+    chrome_harness_with([])
+}
+
+/// [`chrome_harness`] with `others` in the chrome's roster after Headway,
+/// which starts in front.
+fn chrome_harness_with(
+    others: impl IntoIterator<Item = notedeck_chrome::NotedeckApp>,
+) -> Harness<'static, HeadwayTestState> {
+    let mut harness = harness_builder(egui::Vec2::new(1200.0, 800.0))
+        .build_ui_state(render_headway, chrome_state(others));
 
     wait_for_board(&mut harness);
     harness
@@ -6586,46 +6639,88 @@ fn deleting_the_open_card_still_backs_out_to_the_board() {
     );
 }
 
-/// Headway's chrome-owned nav stack, as the tests drive it by hand.
+/// The history the chrome keeps for its app in front.
 type ChromeStack = notedeck::NavStack<std::rc::Rc<dyn std::any::Any>>;
 
-/// A [`ChromeStack`] at Headway's root, the `()` token Headway draws as its
-/// board grid.
-fn root_stack() -> ChromeStack {
-    notedeck::NavStack::new(vec![std::rc::Rc::new(()) as std::rc::Rc<dyn std::any::Any>])
+/// The chrome of a [`chrome_harness`].
+fn chrome_of<'h>(harness: &'h Harness<'static, HeadwayTestState>) -> &'h notedeck_chrome::Chrome {
+    harness.state().chrome.as_ref().expect("a chrome harness")
 }
 
-/// One chrome frame of Headway's nav loop: draw the stack top through
-/// `render_nav` (its token), pump the harness, then drain the app's queued nav
-/// requests into the stack the way `Chrome::apply_nav_requests` does —
-/// `Push`, `Remove` (a card that left the board) and `Back` are the only
-/// kinds Headway raises. A back lands at once, as the chrome's does when its
-/// slide ends (the frames in between redraw the outgoing entry). Shared by
-/// the `chrome_nav_loop_*` tests.
-fn chrome_frame(harness: &mut Harness<'static, HeadwayTestState>, stack: &mut ChromeStack) {
-    use notedeck::NavRequest;
+/// The history the chrome of a [`chrome_harness`] keeps for its app in front.
+fn history<'h>(harness: &'h Harness<'static, HeadwayTestState>) -> &'h ChromeStack {
+    chrome_of(harness).history().expect("an app in front")
+}
 
-    harness.state_mut().nav_token = Some(stack.top().clone());
+/// The Headway route on top of a [`chrome_harness`]'s history, if it is one.
+fn top_route<'h>(
+    harness: &'h Harness<'static, HeadwayTestState>,
+) -> Option<&'h notedeck_headway::HeadwayRoute> {
+    history(harness)
+        .top()
+        .downcast_ref::<notedeck_headway::HeadwayRoute>()
+}
+
+/// Run chrome frames until `done` holds of the chrome's history, or panic
+/// naming `what` after a deadline. Checks before each frame, so it runs none
+/// when `done` already holds. For a push or a back that lands once its
+/// frame runs, or a change that lands through async ndb ingest, such as an
+/// archive folding in.
+fn frames_until(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    what: &str,
+    done: impl Fn(&ChromeStack) -> bool,
+) {
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    while !done(history(harness)) {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}; on screen:\n{}",
+            tree_text(harness)
+        );
+        harness.run_ok();
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// The chrome's back, Alt-←, and the frames after it.
+fn chrome_back(harness: &mut Harness<'static, HeadwayTestState>) {
+    harness.press_key_modifiers(egui::Modifiers::ALT, egui::Key::ArrowLeft);
     harness.run_ok();
+}
 
-    let state = harness.state_mut();
-    let app_ctx = state.notedeck.app_context();
-    for request in app_ctx.navigator.take() {
-        match request {
-            NavRequest::Push(token) => stack.route_to(token),
-            NavRequest::Remove(is_dead) => {
-                stack.retain_routes(|token| !is_dead(token.as_ref()));
-            }
-            // `go_back` only flags the slide; `pop` is what its end does.
-            NavRequest::Back => {
-                stack.go_back();
-                if stack.returning() {
-                    stack.pop();
-                }
-            }
-            _ => panic!("unexpected nav request kind from Headway"),
+/// The chrome's forward, Alt-→, and the frames after it.
+fn chrome_forward(harness: &mut Harness<'static, HeadwayTestState>) {
+    harness.press_key_modifiers(egui::Modifiers::ALT, egui::Key::ArrowRight);
+    harness.run_ok();
+}
+
+/// Raise `action` as an app does mid-render, for the chrome to route after
+/// the next frame's app pass, and run that frame alone.
+fn act(harness: &mut Harness<'static, HeadwayTestState>, action: notedeck::AppAction) {
+    harness
+        .state_mut()
+        .notedeck
+        .app_context()
+        .app_actions
+        .push(action);
+    harness.step();
+}
+
+/// Push `routes` onto the chrome's history in one frame, as Headway's own
+/// pushes go: queued on the navigator and applied by the chrome after the
+/// app's pass, so no entry but the last is drawn.
+fn push_routes(
+    harness: &mut Harness<'static, HeadwayTestState>,
+    routes: impl IntoIterator<Item = notedeck_headway::HeadwayRoute>,
+) {
+    {
+        let app_ctx = harness.state_mut().notedeck.app_context();
+        for route in routes {
+            app_ctx.navigator.push_route(route);
         }
     }
+    harness.run_ok();
 }
 
 /// Pump frames until the demo board, folded fresh off the db, passes `done`,
@@ -6657,57 +6752,42 @@ fn wait_for_demo(
     }
 }
 
-/// Full chrome round-trip (behavioural, no lavapipe): replicate the chrome's global
-/// nav loop — render the stack's top entry via `render_nav`, then drain the app's
-/// `Navigator` requests into a real `NavStack` exactly like
-/// `Chrome::apply_nav_requests` — and prove a real card click grows the stack and a
-/// back step returns to the board. This closes the gap the two tests above leave
-/// (they drive `render_nav`/the push in isolation); here the push actually lands in
-/// the chrome stack and back actually pops it.
+/// Full chrome round-trip (behavioural, no lavapipe): Headway inside the real
+/// chrome, whose history takes the app's pushes and whose back pops them.
+/// A real card click grows the history, drilling into a subissue pushes
+/// rather than collapsing it, and two chrome backs walk the trail to the
+/// board.
 #[test]
 fn chrome_nav_loop_card_open_then_back_returns_to_board() {
     use notedeck_headway::HeadwayRoute;
 
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
-
-    // The chrome seeds one entry per app-switch with a `()` token; Headway's home
-    // (board root) entry is that.
-    let mut stack = root_stack();
+    let mut harness = chrome_harness();
 
     // The board root shows the grid; no card entry yet.
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(stack.len(), 1, "board root only until a card is opened");
+    assert_eq!(
+        history(&harness).len(),
+        1,
+        "board root only until a card is opened"
+    );
     assert!(
         harness.query_by_label("7 cards · 5 columns").is_some(),
         "the board grid renders at the root"
     );
 
-    // Click a card. The click lands on the next pump inside chrome_frame, which then
-    // drains the resulting self-push into the stack.
+    // Click a card: the click lands on the next frame, whose self-push the
+    // chrome applies.
     const CARD: &str = "Define nostr event model for boards";
-    let card = {
-        let state = harness.state_mut();
-        let author = state.account.pubkey;
-        let app_ctx = state.notedeck.app_context();
-        demo_card_id(app_ctx.ndb, &author, CARD)
-    };
+    let card = harness_card_id(&mut harness, CARD);
     harness.get_by_label(CARD).click();
-    chrome_frame(&mut harness, &mut stack);
+    frames_until(&mut harness, "the card's entry", |s| s.len() == 2);
 
     // The click pushed a Card entry onto the global stack (so the back chevron is now
     // live), carrying the clicked card's route.
-    assert_eq!(stack.len(), 2, "opening a card grows the global stack");
     assert_eq!(
-        stack
-            .top()
-            .downcast_ref::<HeadwayRoute>()
-            .and_then(|r| r.selected_card()),
+        top_route(&harness).and_then(HeadwayRoute::selected_card),
         Some(card),
         "the pushed entry is the clicked card"
     );
-
-    // Render the new top (the Card entry): its detail opens.
-    chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "← Back");
 
     // Drill from the card into one of its subissues. This is the case that was
@@ -6715,12 +6795,7 @@ fn chrome_nav_loop_card_open_then_back_returns_to_board() {
     // history (`ReplacementType::All`) — dropping the board root so a global-back had
     // nowhere to return. It must PUSH instead, growing the stack to three.
     const SUBISSUE: &str = "Sync cards across relays";
-    let subissue = {
-        let state = harness.state_mut();
-        let author = state.account.pubkey;
-        let app_ctx = state.notedeck.app_context();
-        demo_card_id(app_ctx.ndb, &author, SUBISSUE)
-    };
+    let subissue = harness_card_id(&mut harness, SUBISSUE);
     // The subissue title shows up in more than one place in the parent detail (the
     // checklist and a dependency list); either row navigates to it via `OpenCard`,
     // so click the first match.
@@ -6729,39 +6804,33 @@ fn chrome_nav_loop_card_open_then_back_returns_to_board() {
         .next()
         .expect("subissue row present in the parent detail")
         .click();
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(
-        stack.len(),
-        3,
-        "drilling into a subissue pushes (does not collapse the stack)"
+    frames_until(
+        &mut harness,
+        "the subissue's entry (a push, not a collapse)",
+        |s| s.len() == 3,
     );
     assert_eq!(
-        stack
-            .top()
-            .downcast_ref::<HeadwayRoute>()
-            .and_then(|r| r.selected_card()),
+        top_route(&harness).and_then(HeadwayRoute::selected_card),
         Some(subissue),
         "the pushed entry is the subissue"
     );
-    chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "← Back");
 
-    // Browser back from the subissue returns to its parent card (not straight to the
+    // Back from the subissue returns to its parent card (not straight to the
     // board), and a second back returns to the board grid — a walkable trail.
-    stack.go_to_route(stack.len() - 2);
-    chrome_frame(&mut harness, &mut stack);
+    chrome_back(&mut harness);
     assert_eq!(
-        stack
-            .top()
-            .downcast_ref::<HeadwayRoute>()
-            .and_then(|r| r.selected_card()),
+        top_route(&harness).and_then(HeadwayRoute::selected_card),
         Some(card),
         "back from the subissue returns to the parent card"
     );
 
-    stack.go_to_route(stack.len() - 2);
-    assert_eq!(stack.len(), 1, "a second back pops to the board root");
-    chrome_frame(&mut harness, &mut stack);
+    chrome_back(&mut harness);
+    assert_eq!(
+        history(&harness).len(),
+        1,
+        "a second back pops to the board root"
+    );
     wait_for_absent(&mut harness, "← Back");
     assert!(
         harness.query_by_label("7 cards · 5 columns").is_some(),
@@ -6769,70 +6838,49 @@ fn chrome_nav_loop_card_open_then_back_returns_to_board() {
     );
 }
 
-/// Full chrome round-trip for the graph view (behavioural, no lavapipe): the same
-/// stack loop as [`chrome_nav_loop_card_open_then_back_returns_to_board`], but
-/// exercising the graph leg — opening an epic's card, then its dependency graph
-/// from the detail's "View dependency graph" action, pushes a `Graph` entry one
-/// level deeper than the card, and a global-back off the graph returns to the
-/// epic's detail (not straight to the board). This is the app-side proof that the
-/// graph joins the chrome global-nav stack as its own entry.
+/// Full chrome round-trip for the graph view (behavioural, no lavapipe): as
+/// [`chrome_nav_loop_card_open_then_back_returns_to_board`], but exercising
+/// the graph leg — opening an epic's card, then its dependency graph from the
+/// detail's "View dependency graph" action, pushes a `Graph` entry one level
+/// deeper than the card, and a chrome back off the graph returns to the
+/// epic's detail (not straight to the board).
 #[test]
 fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
     use notedeck_headway::HeadwayRoute;
 
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
-
-    let mut stack = root_stack();
+    let mut harness = chrome_harness();
 
     // Open the epic's card — it carries sub-issues, so its detail offers the graph.
     const EPIC: &str = "Define nostr event model for boards";
-    let epic = {
-        let state = harness.state_mut();
-        let author = state.account.pubkey;
-        let app_ctx = state.notedeck.app_context();
-        demo_card_id(app_ctx.ndb, &author, EPIC)
-    };
-    chrome_frame(&mut harness, &mut stack);
+    let epic = harness_card_id(&mut harness, EPIC);
     harness.get_by_label(EPIC).click();
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(stack.len(), 2, "opening the epic card grows the stack");
-    // Render the card detail and wait for its graph entry point.
-    chrome_frame(&mut harness, &mut stack);
+    frames_until(&mut harness, "the epic card's entry", |s| s.len() == 2);
     wait_for_label(&mut harness, "☍ View dependency graph");
 
     // Click the graph entry point. It sets local graph mode, which the app diffs
     // into a pushed `Graph` route — the stack grows to three, one deeper than the
     // card, carrying the epic id.
     harness.get_by_label("☍ View dependency graph").click();
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(
-        stack.len(),
-        3,
-        "opening the graph pushes an entry deeper than the epic card"
+    frames_until(
+        &mut harness,
+        "the graph's entry, deeper than the epic card",
+        |s| s.len() == 3,
     );
     assert_eq!(
-        stack
-            .top()
-            .downcast_ref::<HeadwayRoute>()
-            .and_then(|r| r.graph_epic()),
+        top_route(&harness).and_then(HeadwayRoute::graph_epic),
         Some(epic),
         "the pushed entry is the epic's graph"
     );
 
-    // Render the graph top: the graph view's breadcrumb ("· dependency graph")
-    // only exists in the graph top bar, so its presence proves the graph is up.
-    chrome_frame(&mut harness, &mut stack);
+    // The graph view's breadcrumb ("· dependency graph") only exists in the
+    // graph top bar, so its presence proves the graph is up.
     wait_for_label(&mut harness, "· dependency graph");
 
-    // Browser back from the graph returns to the epic's card (not the board): the
+    // Back from the graph returns to the epic's card (not the board): the
     // popped entry is the `Card` route the graph was entered from.
-    stack.go_to_route(stack.len() - 2);
-    chrome_frame(&mut harness, &mut stack);
+    chrome_back(&mut harness);
     assert_eq!(
-        stack
-            .top()
-            .downcast_ref::<HeadwayRoute>()
-            .and_then(|r| r.selected_card()),
+        top_route(&harness).and_then(HeadwayRoute::selected_card),
         Some(epic),
         "back from the graph returns to the epic card"
     );
@@ -6841,9 +6889,12 @@ fn chrome_nav_loop_graph_open_then_back_returns_to_epic_detail() {
     wait_for_label(&mut harness, "☍ View dependency graph");
 
     // A second back pops to the board root.
-    stack.go_to_route(stack.len() - 2);
-    assert_eq!(stack.len(), 1, "a second back pops to the board root");
-    chrome_frame(&mut harness, &mut stack);
+    chrome_back(&mut harness);
+    assert_eq!(
+        history(&harness).len(),
+        1,
+        "a second back pops to the board root"
+    );
     wait_for_absent(&mut harness, "← Back");
     assert!(
         harness.query_by_label("7 cards · 5 columns").is_some(),
@@ -6860,7 +6911,7 @@ fn chrome_nav_loop_review_queue_is_one_entry() {
 
     const CARDS: [&str; 2] = ["Inline card creation", "Column reordering"];
     let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let mut harness = chrome_harness();
     seed_in_review(
         &mut harness,
         repo.path(),
@@ -6868,80 +6919,32 @@ fn chrome_nav_loop_review_queue_is_one_entry() {
         &["src/queue_one.rs", "src/queue_two.rs"],
     );
 
-    let mut stack = root_stack();
-    chrome_frame(&mut harness, &mut stack);
-
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(stack.len(), 2, "opening the queue pushes one entry");
-    assert!(
-        stack
-            .top()
-            .downcast_ref::<HeadwayRoute>()
-            .is_some_and(HeadwayRoute::is_review_queue)
-    );
-    chrome_frame(&mut harness, &mut stack);
+    frames_until(&mut harness, "the queue's entry", |s| s.len() == 2);
+    assert!(top_route(&harness).is_some_and(HeadwayRoute::is_review_queue));
     wait_for_label(&mut harness, "1 / 2");
 
     harness.press_key(egui::Key::N);
-    chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "2 / 2");
     wait_for_label(&mut harness, CARDS[1]);
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(stack.len(), 2, "stepping the queue pushes nothing");
+    assert_eq!(
+        history(&harness).len(),
+        2,
+        "stepping the queue pushes nothing"
+    );
 
-    stack.go_to_route(0);
-    chrome_frame(&mut harness, &mut stack);
+    chrome_back(&mut harness);
     wait_for_label(&mut harness, "7 cards · 5 columns");
     assert!(harness.query_by_label("← Back").is_none());
 
-    assert!(stack.go_forward());
-    chrome_frame(&mut harness, &mut stack);
+    chrome_forward(&mut harness);
     wait_for_label(&mut harness, "2 / 2");
     wait_for_label(&mut harness, CARDS[1]);
-    assert_eq!(stack.len(), 2, "reopening the queue pushes nothing");
-}
-
-/// Drive [`chrome_frame`] until `done` holds of the stack, or panic naming
-/// `what` after a deadline. For a change that lands through async ndb ingest,
-/// such as an archive folding in.
-fn chrome_frames_until(
-    harness: &mut Harness<'static, HeadwayTestState>,
-    stack: &mut ChromeStack,
-    what: &str,
-    done: impl Fn(&ChromeStack) -> bool,
-) {
-    let deadline = Instant::now() + SETTLE_TIMEOUT;
-    loop {
-        chrome_frame(harness, stack);
-        if done(stack) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(25));
-    }
-}
-
-/// The Headway route on top of the stack, if it is one.
-fn top_route(stack: &ChromeStack) -> Option<&notedeck_headway::HeadwayRoute> {
-    stack.top().downcast_ref::<notedeck_headway::HeadwayRoute>()
-}
-
-/// A chrome global-nav stack at the board root, with the harness drawn
-/// through it once.
-fn chrome_stack_at_board(harness: &mut Harness<'static, HeadwayTestState>) -> ChromeStack {
-    let mut stack = root_stack();
-    chrome_frame(harness, &mut stack);
-    stack
-}
-
-/// Whether the entry under the stack's top is `card`'s detail.
-fn top_is_detail_below(stack: &ChromeStack, card: NoteId) -> bool {
-    let routes = stack.routes();
-    routes.len() >= 2
-        && routes[routes.len() - 2]
-            .downcast_ref::<notedeck_headway::HeadwayRoute>()
-            .is_some_and(|r| r.selected_card() == Some(card) && r.review_card().is_none())
+    assert_eq!(
+        history(&harness).len(),
+        2,
+        "reopening the queue pushes nothing"
+    );
 }
 
 /// The demo board's epic: "Sync cards across relays" and "Scaffold the
@@ -6993,7 +6996,7 @@ fn chrome_nav_loop_epic_review_queue() {
         "Column reordering",
     ];
     let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let mut harness = chrome_harness();
     seed_in_review(
         &mut harness,
         repo.path(),
@@ -7003,73 +7006,65 @@ fn chrome_nav_loop_epic_review_queue() {
     let epic = parent_under_demo_epic(&mut harness, &[CARDS[2]]);
     let scope_label = format!("in {}", headway::wordid::encode(epic.bytes()));
 
-    let mut stack = root_stack();
-    chrome_frame(&mut harness, &mut stack);
     harness.get_by_label(DEMO_EPIC).click();
-    chrome_frame(&mut harness, &mut stack);
-    chrome_frame(&mut harness, &mut stack);
+    frames_until(&mut harness, "the epic's entry", |s| s.len() == 2);
     wait_for_label(&mut harness, "Review 2");
-    assert_eq!(stack.len(), 2);
 
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(stack.len(), 3, "opening the epic's queue pushes one entry");
-    let route = stack.top().downcast_ref::<HeadwayRoute>();
+    frames_until(&mut harness, "the epic's queue entry", |s| s.len() == 3);
+    let route = top_route(&harness);
     assert!(route.is_some_and(HeadwayRoute::is_review_queue));
     assert_eq!(route.and_then(|r| r.selected_card()), Some(epic));
     assert_eq!(
         route.and_then(|r| r.title()),
         Some(format!("Review queue: {DEMO_EPIC}").as_str())
     );
-    chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "1 / 2");
     wait_for_label(&mut harness, &scope_label);
 
     harness.press_key(egui::Key::N);
-    chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "2 / 2");
     harness.press_key(egui::Key::N);
-    chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "2 / 2");
     assert!(
         harness.query_by_label(CARDS[0]).is_none(),
         "the In Review card outside the epic isn't in its queue"
     );
-    assert_eq!(stack.len(), 3, "stepping the queue pushes nothing");
+    assert_eq!(
+        history(&harness).len(),
+        3,
+        "stepping the queue pushes nothing"
+    );
 
     // Back lands on the epic's detail, not the grid.
-    stack.go_to_route(1);
-    chrome_frame(&mut harness, &mut stack);
+    chrome_back(&mut harness);
     wait_for_label(&mut harness, "Review 2");
     wait_for_absent(&mut harness, "2 / 2");
     assert!(harness.query_by_label("7 cards · 5 columns").is_none());
 
     // Forward reopens the epic's queue where it was left.
-    assert!(stack.go_forward());
-    chrome_frame(&mut harness, &mut stack);
+    chrome_forward(&mut harness);
     wait_for_label(&mut harness, "2 / 2");
     wait_for_label(&mut harness, &scope_label);
-    assert_eq!(stack.len(), 3, "reopening the queue pushes nothing");
-
-    // `q` leaves it for the epic's detail, as one back. (The chrome's back
-    // animates, so the stack's top only changes once it lands; drive the
-    // frame by hand and read the request instead.)
-    harness.press_key(egui::Key::Q);
-    harness.run_ok();
     assert_eq!(
-        queue_pushes_and_last_back(&mut harness),
-        QueueNav {
-            pushes: 0,
-            last_back: true
-        },
-        "q is one back, no new entry"
+        history(&harness).len(),
+        3,
+        "reopening the queue pushes nothing"
     );
+
+    // `q` leaves it for the epic's detail, as one back: the queue's entry
+    // goes onto the forward stack rather than being replaced.
+    harness.press_key(egui::Key::Q);
+    frames_until(&mut harness, "q's back", |s| s.len() == 2);
+    let route = top_route(&harness);
     assert!(
-        top_is_detail_below(&stack, epic),
+        route.is_some_and(|r| r.selected_card() == Some(epic) && r.review_card().is_none()),
         "the back lands on the epic's detail"
     );
-    stack.go_to_route(1);
-    chrome_frame(&mut harness, &mut stack);
+    assert!(
+        history(&harness).can_go_forward(),
+        "q is a back, no new entry"
+    );
     wait_for_label(&mut harness, "Review 2");
 }
 
@@ -7092,7 +7087,6 @@ fn archive_demo_cards(harness: &mut Harness<'static, HeadwayTestState>, cards: &
 #[test]
 fn chrome_nav_loop_queue_back_off_keeps_its_notice() {
     use notedeck_headway::HeadwayRoute;
-    use std::rc::Rc;
 
     const CARDS: [&str; 3] = [
         "Inline card creation",
@@ -7100,7 +7094,7 @@ fn chrome_nav_loop_queue_back_off_keeps_its_notice() {
         "Column reordering",
     ];
     let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let mut harness = chrome_harness();
     let ids = seed_in_review(
         &mut harness,
         repo.path(),
@@ -7108,43 +7102,43 @@ fn chrome_nav_loop_queue_back_off_keeps_its_notice() {
         &["src/one.rs", "src/two.rs", "src/three.rs"],
     );
     let epic = parent_under_demo_epic(&mut harness, &[CARDS[2]]);
-    let mut stack = chrome_stack_at_board(&mut harness);
 
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
-    chrome_frame(&mut harness, &mut stack);
-    chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "1 / 3");
 
     // The epic's detail and its queue over the board's queue, as a history
     // walk leaves them. The demo epic already holds "Sync cards across
     // relays", so its queue walks two.
-    for route in [
-        HeadwayRoute::card(epic, None),
-        HeadwayRoute::review_queue(Some(epic), None),
-    ] {
-        stack.route_to(Rc::new(route));
-    }
-    chrome_frame(&mut harness, &mut stack);
+    push_routes(
+        &mut harness,
+        [
+            HeadwayRoute::card(epic, None),
+            HeadwayRoute::review_queue(Some(epic), None),
+        ],
+    );
     wait_for_label(&mut harness, "1 / 2");
 
-    stack.go_to_route(1);
-    chrome_frame(&mut harness, &mut stack);
+    chrome_back(&mut harness);
+    chrome_back(&mut harness);
     wait_for_label(&mut harness, "1 / 3");
-    assert!(stack.go_forward() && stack.go_forward());
-    chrome_frame(&mut harness, &mut stack);
+    chrome_forward(&mut harness);
+    chrome_forward(&mut harness);
     wait_for_label(&mut harness, "1 / 2");
 
     archive_demo_cards(&mut harness, &ids);
     wait_for_label(&mut harness, "This card is no longer on the board.");
 
-    stack.go_to_route(1);
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(stack.len(), 1, "the empty queue backs off onto the board");
+    chrome_back(&mut harness);
+    chrome_back(&mut harness);
+    frames_until(
+        &mut harness,
+        "the empty queue backing off onto the board",
+        |s| s.len() == 1,
+    );
     // The notice first: it's up for NOTICE_SECS of egui time, which the
     // harness's steps advance, so waiting on anything else first could let
     // it lapse. The archives have folded, so the grid's count is already
     // drawn beside it.
-    chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "Nothing in review");
     assert!(
         harness.query_by_label("4 cards · 5 columns").is_some(),
@@ -7164,38 +7158,34 @@ fn chrome_nav_loop_queue_back_off_keeps_its_notice() {
 fn chrome_nav_loop_epic_queue_whose_epic_was_archived_lands_on_its_detail() {
     const CARDS: [&str; 1] = ["Column reordering"];
     let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let mut harness = chrome_harness();
     let ids = seed_in_review(&mut harness, repo.path(), &CARDS, &["src/one.rs"]);
     let epic = parent_under_demo_epic(&mut harness, &CARDS);
-    let mut stack = chrome_stack_at_board(&mut harness);
 
     harness.get_by_label(DEMO_EPIC).click();
-    chrome_frame(&mut harness, &mut stack);
-    chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "Review 1");
     harness.get_by_label("Review 1").click_accesskit();
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(stack.len(), 3, "the button opens the epic's queue");
+    frames_until(&mut harness, "the button's queue entry", |s| s.len() == 3);
     // The epic's, not the board's: both would read "1 / 1" here.
-    assert!(top_route(&stack).is_some_and(|r| r.is_review_queue()));
+    assert!(top_route(&harness).is_some_and(|r| r.is_review_queue()));
     assert_eq!(
-        top_route(&stack).and_then(|r| r.selected_card()),
+        top_route(&harness).and_then(|r| r.selected_card()),
         Some(epic),
         "the queue is scoped to the epic"
     );
-    chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "1 / 1");
 
     archive_demo_cards(&mut harness, &[epic, ids[0]]);
-    chrome_frames_until(&mut harness, &mut stack, "the epic's detail", |s| {
-        s.len() == 2 && top_route(s).is_some_and(|r| r.selected_card() == Some(epic))
+    frames_until(&mut harness, "the epic's detail", |s| {
+        s.len() == 2
+            && s.top()
+                .downcast_ref::<notedeck_headway::HeadwayRoute>()
+                .is_some_and(|r| r.selected_card() == Some(epic))
     });
-    chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "This card is archived.");
 
     harness.press_key(egui::Key::Escape);
-    chrome_frames_until(&mut harness, &mut stack, "the board root", |s| s.len() == 1);
-    chrome_frame(&mut harness, &mut stack);
+    frames_until(&mut harness, "the board root", |s| s.len() == 1);
     wait_for_label(&mut harness, "5 cards · 5 columns");
     assert!(harness.query_by_label("← Back").is_none());
 }
@@ -7211,37 +7201,36 @@ fn chrome_nav_loop_epic_queue_whose_epic_was_archived_lands_on_its_detail() {
 #[test]
 fn chrome_nav_loop_archived_epics_queue_backs_onto_its_undrawn_detail() {
     use notedeck_headway::HeadwayRoute;
-    use std::rc::Rc;
 
     const CARDS: [&str; 1] = ["Column reordering"];
     let repo = tempfile::tempdir().expect("repo dir");
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let mut harness = chrome_harness();
     seed_in_review(&mut harness, repo.path(), &CARDS, &["src/one.rs"]);
     let epic = parent_under_demo_epic(&mut harness, &CARDS);
-    let mut stack = chrome_stack_at_board(&mut harness);
 
-    for route in [
-        HeadwayRoute::card(epic, None),
-        HeadwayRoute::review_queue(Some(epic), None),
-    ] {
-        stack.route_to(Rc::new(route));
-    }
-    chrome_frame(&mut harness, &mut stack);
+    push_routes(
+        &mut harness,
+        [
+            HeadwayRoute::card(epic, None),
+            HeadwayRoute::review_queue(Some(epic), None),
+        ],
+    );
     wait_for_label(&mut harness, "1 / 1");
     wait_for_label(&mut harness, CARDS[0]);
 
     archive_demo_cards(&mut harness, &[epic]);
 
     harness.press_key(egui::Key::Q);
-    chrome_frames_until(&mut harness, &mut stack, "the epic's detail", |s| {
-        s.len() == 2 && top_route(s).is_some_and(|r| r.selected_card() == Some(epic))
+    frames_until(&mut harness, "the epic's detail", |s| {
+        s.len() == 2
+            && s.top()
+                .downcast_ref::<HeadwayRoute>()
+                .is_some_and(|r| r.selected_card() == Some(epic))
     });
-    chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "This card is archived.");
 
     harness.press_key(egui::Key::Escape);
-    chrome_frames_until(&mut harness, &mut stack, "the board root", |s| s.len() == 1);
-    chrome_frame(&mut harness, &mut stack);
+    frames_until(&mut harness, "the board root", |s| s.len() == 1);
     wait_for_label(&mut harness, "6 cards · 5 columns");
     assert!(harness.query_by_label("← Back").is_none());
 }
@@ -7267,77 +7256,69 @@ fn epic_review_queue_with_nothing_under_the_card_does_not_open() {
 }
 
 /// `S` in the review queue leaves for the record's agentium session: the app
-/// raises exactly one `AppAction::Open` naming the session, with a
-/// `/code-review` message that names the commit and the card, and Headway
-/// itself pushes no history entry, so the chrome's switch to Dave is the only
-/// one and back returns to the queue. (The chrome's leg — Dave takes the
-/// open as one history entry, and back returns — is notedeck_chrome's
+/// raises an `AppAction::Open` naming the session, with a `/code-review`
+/// message that names the commit and the card, and Headway itself pushes no
+/// history entry, so the chrome's switch to Dave is the only one and back
+/// returns to the queue. This chrome runs no Dave, so the open never
+/// resolves: the chrome holds it ([`Chrome::pending_open`](notedeck_chrome::Chrome::pending_open)),
+/// which is where it's read. (The chrome's leg — Dave takes the open as one
+/// history entry, and back returns — is notedeck_chrome's
 /// `open_lands_an_agentium_session_in_dave_and_back_returns`.) The header's
 /// "Review in session" icon raises the same open.
 #[test]
 fn shift_s_in_the_queue_opens_the_session_asking_for_a_review() {
-    use notedeck::AppAction;
-
     let fixture = review_fixture();
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let mut harness = chrome_harness();
     seed_review_queue(&mut harness, &fixture);
 
-    let mut stack = root_stack();
-    chrome_frame(&mut harness, &mut stack);
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
-    chrome_frame(&mut harness, &mut stack);
-    chrome_frame(&mut harness, &mut stack);
     wait_for_label(&mut harness, "1 / 2");
     wait_for_label(&mut harness, QUEUE_SESSION);
     wait_for_label(&mut harness, "Review in session");
-    assert_eq!(stack.len(), 2, "the queue is one entry");
+    assert_eq!(history(&harness).len(), 2, "the queue is one entry");
 
-    let opens = |harness: &mut Harness<'static, HeadwayTestState>| -> Vec<notedeck::OpenUri> {
-        let app_ctx = harness.state_mut().notedeck.app_context();
-        app_ctx
-            .app_actions
-            .take()
-            .into_iter()
-            .filter_map(|action| match action {
-                AppAction::Open(open) => Some(open),
-                _ => None,
-            })
-            .collect()
+    // The open each input raised, read off the frame that took it, then let
+    // lapse so the next one's can't be mistaken for it.
+    let held = |harness: &mut Harness<'static, HeadwayTestState>| -> notedeck::OpenUri {
+        let open = chrome_of(harness)
+            .pending_open()
+            .cloned()
+            .expect("the input raised an open");
+        let deadline = Instant::now() + SETTLE_TIMEOUT;
+        while chrome_of(harness).pending_open().is_some() {
+            assert!(Instant::now() < deadline, "the held open never lapsed");
+            harness.run_ok();
+        }
+        open
     };
-    // Nothing the harness drains yet (a chip click, say) may count below.
-    opens(&mut harness);
 
+    // The frame that sees Shift-S down is the one that raises the open.
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::S);
-    chrome_frame(&mut harness, &mut stack);
-    let raised = opens(&mut harness);
-    assert_eq!(raised.len(), 1, "one open: {raised:?}");
-    let open = &raised[0];
-    assert_eq!(open.reference, QUEUE_SESSION);
-    let msg = open.msg.as_deref().expect("S sends a message");
+    let raised = held(&mut harness);
+    assert_eq!(raised.reference, QUEUE_SESSION);
+    let msg = raised.msg.as_deref().expect("S sends a message");
     assert!(msg.starts_with("launch a /code-review"), "{msg}");
     assert!(
         msg.contains(&format!("commit {}", &fixture.queue[..12])),
         "{msg}"
     );
     assert!(msg.contains("card headway:"), "{msg}");
-
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(stack.len(), 2, "Headway pushes nothing for the open");
+    assert_eq!(
+        history(&harness).len(),
+        2,
+        "Headway pushes nothing for the open"
+    );
     wait_for_label(&mut harness, "1 / 2");
 
     // The header icon does the same.
     harness.get_by_label("Review in session").click_accesskit();
-    chrome_frame(&mut harness, &mut stack);
-    let clicked = opens(&mut harness);
-    assert_eq!(clicked, raised, "the icon is S");
+    harness.step();
+    assert_eq!(held(&mut harness), raised, "the icon is S");
 
     // `s` opens the session with no message.
     harness.press_key(egui::Key::S);
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(
-        opens(&mut harness),
-        vec![notedeck::OpenUri::new(QUEUE_SESSION)]
-    );
+    harness.step();
+    assert_eq!(held(&mut harness), notedeck::OpenUri::new(QUEUE_SESSION));
 }
 
 /// Title of the one card [`seed_roadmap_board`] puts on its board. It exists on no
@@ -7489,138 +7470,98 @@ fn own_board_note_id(ndb: &Ndb, author: &Pubkey, slug: &str) -> NoteId {
 /// detail that never drew: `g i` did nothing.
 #[test]
 fn chrome_nav_loop_back_onto_a_card_on_another_board_switches_to_it() {
+    use notedeck::{AppAction, NoteAction};
     use notedeck_headway::HeadwayRoute;
 
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let mut harness = chrome_harness();
     seed_side_board(&mut harness);
-    let mut stack = root_stack();
-    chrome_frame(&mut harness, &mut stack);
 
     // The list, over every board, then the Side board's card from it.
-    for key in [egui::Key::G, egui::Key::I] {
-        harness.press_key(key);
-        chrome_frame(&mut harness, &mut stack);
-    }
-    wait_on_stack(&mut harness, &mut stack, "Headway ▾");
-    harness.get_by_label("Headway ▾").click();
-    wait_on_stack(&mut harness, &mut stack, "All boards");
-    harness.get_by_label("All boards").click();
-    wait_on_stack(&mut harness, &mut stack, SIDE_CARD);
+    open_list_all_boards(&mut harness);
+    wait_for_label(&mut harness, SIDE_CARD);
     harness.get_by_label(SIDE_CARD).click();
-    wait_on_stack(&mut harness, &mut stack, "← Back");
+    wait_for_label(&mut harness, "← Back");
     assert_eq!(
-        stack
-            .top()
-            .downcast_ref::<HeadwayRoute>()
-            .and_then(HeadwayRoute::title),
+        top_route(&harness).and_then(HeadwayRoute::title),
         Some(SIDE_CARD),
         "a card opened on another board is titled off the list's row"
     );
 
-    // A chip in another app opens a demo-board card: the active board
-    // switches back to the demo board.
-    let demo = {
-        let state = harness.state_mut();
-        let author = state.account.pubkey;
-        let app_ctx = state.notedeck.app_context();
-        demo_card_id(app_ctx.ndb, &author, "Define nostr event model for boards")
-    };
-    let token = {
-        let state = harness.state_mut();
-        let mut app_ctx = state.notedeck.app_context();
-        state
-            .headway
-            .open_note_route(&mut app_ctx, demo)
-            .expect("a card note mints a route")
-    };
-    stack.route_to(token);
-    wait_on_stack(
-        &mut harness,
-        &mut stack,
-        "Define nostr event model for boards",
-    );
+    // A chip opens a demo-board card, routed by the chrome as a click on it
+    // is: the active board switches back to the demo board.
+    let demo = harness_card_id(&mut harness, DEMO_EPIC);
+    act(&mut harness, AppAction::Note(NoteAction::note(demo)));
+    wait_for_label(&mut harness, DEMO_EPIC);
 
     // `q` backs onto the Side card's entry: its detail shows, on its board.
     harness.press_key(egui::Key::Q);
-    chrome_frame(&mut harness, &mut stack);
-    wait_on_stack(&mut harness, &mut stack, SIDE_CARD);
-    wait_on_stack(&mut harness, &mut stack, "← Back");
+    wait_for_label(&mut harness, SIDE_CARD);
+    wait_for_label(&mut harness, "← Back");
 
     // And the keys still work: `q` again lands on the list.
     harness.press_key(egui::Key::Q);
-    chrome_frame(&mut harness, &mut stack);
-    wait_on_stack(&mut harness, &mut stack, "Issues");
+    wait_for_label(&mut harness, "Issues");
     assert!(
-        stack
-            .top()
-            .downcast_ref::<HeadwayRoute>()
-            .is_some_and(HeadwayRoute::is_list),
+        top_route(&harness).is_some_and(HeadwayRoute::is_list),
         "the second back lands on the list's entry"
     );
 }
 
-/// Drive [`chrome_frame`] until a widget labelled `label` shows, or panic
-/// after a deadline: [`wait_for_label`] for a test that runs the nav loop,
-/// whose pushes and backs only land as each frame's requests drain.
-fn wait_on_stack(
-    harness: &mut Harness<'static, HeadwayTestState>,
-    stack: &mut ChromeStack,
-    label: &str,
-) {
-    let deadline = Instant::now() + SETTLE_TIMEOUT;
-    loop {
-        chrome_frame(harness, stack);
-        if harness.query_by_label(label).is_some() {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for {label:?}; on screen:\n{}",
-            tree_text(harness)
-        );
-        std::thread::sleep(Duration::from_millis(25));
+/// An app with nothing to draw, in front of Headway in a [`chrome_harness_with`]
+/// as the app a cross-app open comes from.
+struct Opener;
+
+impl App for Opener {
+    fn render(&mut self, _ctx: &mut AppContext<'_>, _ui: &mut egui::Ui) -> notedeck::AppResponse {
+        notedeck::AppResponse::none()
     }
 }
 
 /// The headline cross-app deep-link invariant (behavioural, no lavapipe): opening a
 /// Headway card from *another* app lands exactly **one** entry on Headway's stack,
 /// which the chrome's opener return pops to land back in the app the click came
-/// from (`a_cross_app_open_takes_one_back_to_return_to_the_opener` in the chrome).
+/// from.
 ///
-/// Stands in for the chrome's `AppAction::Note` path: `open_note_route` mints the
-/// route, and the token is pushed onto Headway's stack — the one push the chrome
-/// makes. The card lives on a board that is *not* active, so its detail can
-/// only render once the open has switched boards, and its title can only come off
-/// the issue event: the route is minted before that board's view has folded.
+/// The open is the chrome's `AppAction::Note` path, raised while another app
+/// is in front: Headway's `open_note_route` mints the route, and the chrome
+/// pushes it — its one push. The card lives on a board that is *not* active, so
+/// its detail can only render once the open has switched boards, and its title
+/// can only come off the issue event: the route is minted before that board's
+/// view has folded.
 ///
 /// Before the hook existed the chrome pushed an untyped app-switch entry and the
 /// app's own post-render diff pushed the card on top of it — two entries, and the
 /// first back landed on the Headway board rather than the source app.
 #[test]
 fn chrome_nav_loop_cross_app_open_pushes_one_entry() {
-    use notedeck_headway::HeadwayRoute;
+    use notedeck::{AppAction, NoteAction};
+    use notedeck_chrome::NotedeckApp;
 
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    const HEADWAY: usize = 0;
+    const OPENER: usize = 1;
+    let mut harness =
+        chrome_harness_with([NotedeckApp::Other("opener".to_owned(), Box::new(Opener))]);
     let card = seed_roadmap_board(&mut harness);
+    harness
+        .state_mut()
+        .chrome
+        .as_mut()
+        .expect("a chrome harness")
+        .set_active(OPENER as i32);
+    harness.run_ok();
 
-    let mut stack = root_stack();
-
-    let token = {
-        let state = harness.state_mut();
-        let mut app_ctx = state.notedeck.app_context();
-        state
-            .headway
-            .open_note_route(&mut app_ctx, card)
-            .expect("a card note mints a route")
-    };
-    stack.route_to(token);
-
-    chrome_frame(&mut harness, &mut stack);
-    assert_eq!(stack.len(), 2, "a cross-app open is one history entry");
-    let route = stack
-        .top()
-        .downcast_ref::<HeadwayRoute>()
-        .expect("the entry carries a Headway route");
+    act(&mut harness, AppAction::Note(NoteAction::note(card)));
+    assert_eq!(
+        chrome_of(&harness).active_app(),
+        HEADWAY,
+        "the open lands in Headway"
+    );
+    assert_eq!(
+        history(&harness).len(),
+        2,
+        "a cross-app open is one history entry"
+    );
+    let route = top_route(&harness).expect("the entry carries a Headway route");
     assert_eq!(route.selected_card(), Some(card), "the route is the card");
     assert_eq!(
         route.title(),
@@ -7632,22 +7573,38 @@ fn chrome_nav_loop_cross_app_open_pushes_one_entry() {
     // on no other board, so this also proves the open switched boards.
     wait_for_label(&mut harness, "← Back");
 
-    // Keep driving the loop: the pending-open retry and the fold landing must not
-    // push a second entry (reconcile sees Card→same Card) or pop this one (the
-    // not-yet-folded selection is held, not dropped).
+    // Keep driving the loop: the fold landing must not push a second entry
+    // (reconcile sees Card→same Card) or pop this one (the not-yet-folded
+    // selection is held, not dropped).
     for _ in 0..5 {
-        chrome_frame(&mut harness, &mut stack);
+        harness.run_ok();
     }
     assert_eq!(
-        stack.len(),
+        history(&harness).len(),
         2,
         "no spurious push or pop once the card has opened"
     );
     assert!(harness.query_by_label("← Back").is_some());
 
-    // The opener return pops the one entry, and Headway is back on its root.
-    assert!(stack.remove_top_route_for_disposal().is_some());
-    assert_eq!(stack.len(), 1);
+    // One chrome back is the opener return: it pops the one entry and lands
+    // back in the app the open came from, leaving Headway on its root.
+    chrome_back(&mut harness);
+    assert_eq!(
+        chrome_of(&harness).active_app(),
+        OPENER,
+        "back returns to the opener"
+    );
+    harness
+        .state_mut()
+        .chrome
+        .as_mut()
+        .expect("a chrome harness")
+        .set_active(HEADWAY as i32);
+    assert_eq!(
+        history(&harness).len(),
+        1,
+        "the return popped the card's entry"
+    );
 }
 
 /// An open *by reference string* — `AppAction::Open` with a
@@ -7655,20 +7612,18 @@ fn chrome_nav_loop_cross_app_open_pushes_one_entry() {
 /// click on the card's inline chip does: one global-history entry for the card
 /// (behavioural, no lavapipe).
 ///
-/// Mirrors the chrome's `AppAction::Open` arm: parse the URI, resolve its reference
-/// through the *registered* parsers (`ReferenceParserRegistry::resolve_exact`, which
-/// the chrome's `resolve_reference` wraps) relative to the selected account, then
-/// open the note the way the click path does (`open_note_route` + one push). The
-/// `msg` is carried but not consumed, so it must not change where the open lands.
+/// The chrome's `AppAction::Open` arm resolves the reference through the
+/// *registered* parsers relative to the selected account, then opens the note
+/// the way the click path does. The card is on a board that isn't active. The
+/// `msg` is carried but not consumed, so it must not change where the open
+/// lands.
 #[test]
 fn open_uri_for_a_card_ref_lands_one_history_entry() {
-    use notedeck::{OpenUri, ReferenceResolveCtx};
+    use notedeck::{AppAction, OpenUri, ReferenceResolveCtx};
     use notedeck_headway::HeadwayRoute;
 
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    let mut harness = chrome_harness();
     let card = seed_roadmap_board(&mut harness);
-
-    let mut stack = root_stack();
 
     let uri = format!(
         "{}?msg=%22review%20this%22",
@@ -7676,45 +7631,25 @@ fn open_uri_for_a_card_ref_lands_one_history_entry() {
     );
     let open = OpenUri::parse(&uri).expect("a card ref parses");
     assert_eq!(open.msg.as_deref(), Some("review this"));
+    let reference = open.reference.clone();
 
-    let token = {
-        let state = harness.state_mut();
-        let mut app_ctx = state.notedeck.app_context();
-        let resolved = {
-            let txn = Transaction::new(app_ctx.ndb).expect("txn");
-            let resolve_ctx = ReferenceResolveCtx {
-                ndb: app_ctx.ndb,
-                txn: &txn,
-                selected_account: Some(*app_ctx.accounts.selected_account_pubkey()),
-            };
-            app_ctx
-                .registries
-                .reference_parsers
-                .resolve_exact(&open.reference, &resolve_ctx)
-                .expect("the registered headway parser resolves the card ref")
-        };
-        assert_eq!(
-            resolved.note_id, card,
-            "the ref resolves to the card's note"
-        );
-        state
-            .headway
-            .open_note_route(&mut app_ctx, resolved.note_id)
-            .expect("a card note mints a route")
-    };
-    stack.route_to(token);
-
-    chrome_frame(&mut harness, &mut stack);
+    act(&mut harness, AppAction::Open(open));
+    frames_until(&mut harness, "the open to land", |s| s.len() == 2);
     wait_for_label(&mut harness, "← Back");
     for _ in 0..5 {
-        chrome_frame(&mut harness, &mut stack);
+        harness.run_ok();
     }
-    assert_eq!(stack.len(), 2, "an open by URI is one history entry");
-    let route = stack
-        .top()
-        .downcast_ref::<HeadwayRoute>()
-        .expect("the entry carries a Headway route");
-    assert_eq!(route.selected_card(), Some(card), "the route is the card");
+    assert!(chrome_of(&harness).pending_open().is_none(), "nothing held");
+    assert_eq!(
+        history(&harness).len(),
+        2,
+        "an open by URI is one history entry"
+    );
+    assert_eq!(
+        top_route(&harness).and_then(HeadwayRoute::selected_card),
+        Some(card),
+        "the route is the card"
+    );
 
     // Prose around the reference is not a reference: nothing resolves.
     let state = harness.state_mut();
@@ -7725,7 +7660,7 @@ fn open_uri_for_a_card_ref_lands_one_history_entry() {
         txn: &txn,
         selected_account: Some(*app_ctx.accounts.selected_account_pubkey()),
     };
-    let prose = format!("see {}", open.reference);
+    let prose = format!("see {reference}");
     assert!(
         app_ctx
             .registries
