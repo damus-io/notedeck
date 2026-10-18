@@ -1,11 +1,11 @@
 //! The derive step: priority between edits and rules, first-match rules,
-//! condition semantics, split validation, transfer netting, determinism and
-//! explain.
+//! condition semantics, split validation, transfer netting, aliases,
+//! determinism and explain.
 
 use ledgerdb::{
-    Added, Cond, Derived, EditRef, Edits, Field, Journal, LayerFilter, Ledger, Leg, Override,
-    Parsed, Problem, Rejected, Rule, Segment, SegmentHash, SegmentHeader, Split, TransferLink, Why,
-    WriteOptions, derive,
+    Added, Alias, Cond, Derived, EditRef, Edits, Field, Journal, LayerFilter, Ledger, Leg,
+    Override, Parsed, Problem, Rejected, Rule, Segment, SegmentHash, SegmentHeader, Split,
+    TransferLink, Why, WriteOptions, derive,
 };
 
 /// Parse `text` and fail on any error.
@@ -590,4 +590,141 @@ fn rule_order_holds_across_indexed_and_unindexed_rules() {
     let derived = derive(&raw, &edits);
     assert_eq!(derived.explain("card:1"), Some(Why::Rule(0)));
     assert_eq!(derived.explain("card:7"), Some(Why::Default));
+}
+
+fn alias(from: &str, to: &str) -> Alias {
+    Alias {
+        from: from.to_owned(),
+        to: to.to_owned(),
+    }
+}
+
+/// Aliases rename what rules, overrides and splits decided, and every other
+/// posting too, without touching why each transaction was decided.
+#[test]
+fn aliases_rename_after_every_other_edit() {
+    let raw = ledger(vec![card()]);
+    let mut edits = edits();
+    edits.rules = vec![rule(
+        "expenses:food:coffee",
+        vec![merchant_contains("bean")],
+    )];
+    edits.overrides = vec![over("card:2", "expenses:food")];
+    edits.splits = vec![Split {
+        record_id: "card:3".to_owned(),
+        legs: vec![
+            Leg {
+                account: "expenses:food:coffee".to_owned(),
+                qty: 500,
+            },
+            Leg {
+                account: "expenses:gifts".to_owned(),
+                qty: 125,
+            },
+        ],
+    }];
+    edits.aliases = vec![
+        alias("expenses:food", "expenses:eating"),
+        alias("liabilities:card", "liabilities:amex"),
+    ];
+    let derived = derive(&raw, &edits);
+    assert_eq!(
+        legs_of(&derived, "card:1"),
+        ["liabilities:amex -450", "expenses:eating:coffee 450"]
+    );
+    assert_eq!(
+        legs_of(&derived, "card:2"),
+        ["liabilities:amex -3000", "expenses:eating 3000"]
+    );
+    assert_eq!(
+        legs_of(&derived, "card:3"),
+        [
+            "liabilities:amex -625",
+            "expenses:eating:coffee 500",
+            "expenses:gifts 125"
+        ]
+    );
+    assert_eq!(derived.explain("card:1"), Some(Why::Rule(0)));
+    assert_eq!(derived.explain("card:2"), Some(Why::Override(0)));
+    assert_eq!(derived.explain("card:3"), Some(Why::Split(0)));
+    assert_eq!(balance(derived.ledger(), "expenses:food"), 0);
+    assert_eq!(balance(derived.ledger(), "expenses:food:coffee"), 0);
+    assert_eq!(derived.report(), &Default::default());
+}
+
+/// The nearest alias wins, a renamed account isn't renamed again, and moving
+/// a subtree under itself leaves what's already under the target alone.
+#[test]
+fn the_nearest_alias_wins_once() {
+    let text = "2024-01-02 * a\n  ; id: t:1\n  assets:bank  -1.00 CAD\n  expenses:food:coffee:beans\n\n\
+                2024-01-02 * b\n  ; id: t:2\n  assets:bank  -2.00 CAD\n  expenses:food:produce\n\n\
+                2024-01-02 * c\n  ; id: t:3\n  assets:bank  -3.00 CAD\n  expenses:food:groceries:milk\n\n\
+                2024-01-02 * d\n  ; id: t:4\n  assets:bank  -4.00 CAD\n  expenses:fun\n\n";
+    let raw = ledger(vec![segment("t", 1, "bank", text)]);
+    let mut edits = edits();
+    edits.aliases = vec![
+        alias("expenses:food", "expenses:food:groceries"),
+        alias("expenses:food:coffee", "expenses:fun:cafe"),
+        // `expenses:fun` is renamed, but coffee's new name isn't renamed
+        // again by it.
+        alias("expenses:fun", "expenses:play"),
+    ];
+    let derived = derive(&raw, &edits);
+    assert_eq!(legs_of(&derived, "t:1")[1], "expenses:fun:cafe:beans 100");
+    assert_eq!(
+        legs_of(&derived, "t:2")[1],
+        "expenses:food:groceries:produce 200"
+    );
+    assert_eq!(
+        legs_of(&derived, "t:3")[1],
+        "expenses:food:groceries:milk 300"
+    );
+    assert_eq!(legs_of(&derived, "t:4")[1], "expenses:play 400");
+    assert_eq!(derived.report(), &Default::default());
+}
+
+/// A bad name, a no-op alias and a second alias of one `from` are reported
+/// and left out; an alias of an account nobody posts to does nothing.
+#[test]
+fn bad_aliases_are_rejected() {
+    let raw = ledger(vec![card()]);
+    let mut edits = edits();
+    edits.aliases = vec![
+        alias("expenses:unknown", "expenses::bad"),
+        alias("expenses:unknown", "expenses:unknown"),
+        alias("expenses:unknown", "expenses:triage"),
+        alias("expenses:unknown", "expenses:later"),
+        alias("expenses:nobody", "expenses:somebody"),
+    ];
+    let derived = derive(&raw, &edits);
+    let rejected: Vec<(EditRef, Problem)> = derived
+        .report()
+        .rejected
+        .iter()
+        .map(|r| (r.edit, r.problem.clone()))
+        .collect();
+    assert!(matches!(
+        rejected[0],
+        (EditRef::Alias(0), Problem::BadAccount { .. })
+    ));
+    assert_eq!(rejected[1], (EditRef::Alias(1), Problem::AliasSelf));
+    assert_eq!(
+        rejected[2],
+        (
+            EditRef::Alias(3),
+            Problem::Shadowed {
+                by: EditRef::Alias(2)
+            }
+        )
+    );
+    assert_eq!(rejected.len(), 3);
+    assert_eq!(legs_of(&derived, "card:1")[1], "expenses:triage 450");
+    assert!(
+        derived
+            .ledger()
+            .journal()
+            .accounts
+            .lookup("expenses:somebody")
+            .is_none()
+    );
 }

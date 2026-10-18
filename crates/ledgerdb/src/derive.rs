@@ -25,6 +25,11 @@
 //!   [`DeriveReport`]; the transaction falls through to the next tier.
 //!   Edits naming a record id the ledger does not hold (its layer is off,
 //!   or its segment has not arrived) are listed as unmatched, not rejected.
+//! - **Aliases come last.** After every counter leg is decided, each
+//!   [`Alias`] renames an account subtree in the whole derived ledger, so a
+//!   chart of accounts can be restructured without touching the rules and
+//!   overrides that name the old accounts. See [`Alias`] for which alias
+//!   applies to which account.
 //! - **Deterministic.** The result depends only on the raw ledger's
 //!   contents and the edits, so every machine holding the same segments and
 //!   edits derives the same ledger. Edits are keyed by account names and
@@ -142,6 +147,31 @@ pub struct TransferLink {
     pub b: String,
 }
 
+/// Rename an account subtree in the derived ledger: every posting to `from`,
+/// or to an account under it, moves to `to` with the rest of its name kept,
+/// so with `expenses:food` → `expenses:groceries`, `expenses:food:produce`
+/// becomes `expenses:groceries:produce`.
+///
+/// Aliases run after categorization, on the accounts rules, overrides,
+/// splits and links decided, and on every other posting too.
+///
+/// - **Nearest wins.** An account takes the alias of its nearest ancestor
+///   (or itself) that is some alias's `from`, so `expenses:food:coffee` →
+///   `x` beats `expenses:food` → `y` for coffee and everything under it.
+/// - **One pass.** A renamed account is not renamed again, even when its new
+///   name falls under another alias's `from`, so aliases never chain or loop.
+/// - **Moving a subtree under itself.** An account already at or under `to`
+///   stays where it is, so `expenses:food` → `expenses:food:groceries`
+///   files the rest of `expenses:food` under groceries without renaming
+///   groceries itself to `expenses:food:groceries:groceries`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Alias {
+    /// The subtree to rename, by its root's name.
+    pub from: String,
+    /// The name `from` itself becomes.
+    pub to: String,
+}
+
 /// Everything [`derive`] applies to a raw ledger.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Edits {
@@ -159,6 +189,9 @@ pub struct Edits {
     pub splits: Vec<Split>,
     /// Transfer links.
     pub links: Vec<TransferLink>,
+    /// Account renames, applied after everything else; for two with the
+    /// same `from`, the first wins.
+    pub aliases: Vec<Alias>,
 }
 
 impl Default for Edits {
@@ -171,6 +204,7 @@ impl Default for Edits {
             overrides: Vec::new(),
             splits: Vec::new(),
             links: Vec::new(),
+            aliases: Vec::new(),
         }
     }
 }
@@ -186,6 +220,8 @@ pub enum EditRef {
     Split(u32),
     /// `edits.links[i]`.
     Link(u32),
+    /// `edits.aliases[i]`.
+    Alias(u32),
 }
 
 /// Which tier decided a transaction's counter leg.
@@ -238,6 +274,8 @@ pub enum Problem {
     /// A link whose two counter legs are in different commodities or do
     /// not sum to zero.
     TransferUnbalanced,
+    /// An alias whose `from` and `to` are the same account.
+    AliasSelf,
 }
 
 /// An edit that was not applied, and why.
@@ -253,7 +291,7 @@ pub struct Rejected {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeriveReport {
     /// Edits that were invalid or lost to another, in the order checked:
-    /// rules, splits, overrides, links.
+    /// rules, splits, overrides, links, aliases.
     pub rejected: Vec<Rejected>,
     /// Overrides, splits and links naming a record id the ledger does not
     /// hold, in the same order. They apply once it does.
@@ -302,6 +340,7 @@ pub fn derive(raw: &Ledger, edits: &Edits) -> Derived {
     plan.claim_links(edits);
     let rules = plan.compile_rules(edits);
     plan.decide(&rules);
+    plan.resolve_aliases(edits);
     let journal = plan.materialize(edits);
     Derived {
         ledger: raw.with_journal(journal),
@@ -510,6 +549,9 @@ struct Plan<'a> {
     override_accounts: Vec<Option<AccountId>>,
     split_accounts: Vec<Vec<AccountId>>,
     transfers: Option<AccountId>,
+    /// What each account is renamed to by the aliases, by account id;
+    /// empty when there are none, and an account past its end keeps its id.
+    renamed: Vec<AccountId>,
     report: DeriveReport,
 }
 
@@ -531,6 +573,7 @@ impl<'a> Plan<'a> {
             override_accounts: vec![None; edits.overrides.len()],
             split_accounts: vec![Vec::new(); edits.splits.len()],
             transfers: None,
+            renamed: Vec::new(),
             report: DeriveReport::default(),
         }
     }
@@ -759,6 +802,95 @@ impl<'a> Plan<'a> {
         }
     }
 
+    /// Work out what every account is renamed to by `edits.aliases`
+    /// ([`Alias`] has the rules), interning the new names, and reject the
+    /// aliases that can't apply.
+    fn resolve_aliases(&mut self, edits: &Edits) {
+        if edits.aliases.is_empty() {
+            return;
+        }
+        // The alias rooted at each account, by account id.
+        let mut rooted: Vec<Option<u32>> = vec![None; self.accounts.len()];
+        for (i, alias) in edits.aliases.iter().enumerate() {
+            let edit = EditRef::Alias(i as u32);
+            let mut scratch = Accounts::new();
+            if [&alias.from, &alias.to]
+                .into_iter()
+                .any(|name| self.check_name(edit, &mut scratch, name).is_none())
+            {
+                continue;
+            }
+            if alias.from == alias.to {
+                self.reject(edit, Problem::AliasSelf);
+                continue;
+            }
+            let Some(from) = self.accounts.lookup(&alias.from) else {
+                continue;
+            };
+            match rooted[from.index()] {
+                Some(by) => self.reject(
+                    edit,
+                    Problem::Shadowed {
+                        by: EditRef::Alias(by),
+                    },
+                ),
+                None => rooted[from.index()] = Some(i as u32),
+            }
+        }
+
+        let mut moves: Vec<(AccountId, String)> = Vec::new();
+        for id in self.accounts.ids() {
+            let nearest = std::iter::once(id)
+                .chain(self.accounts.ancestors(id))
+                .find_map(|a| rooted[a.index()].map(|i| (a, i)));
+            let Some((root, i)) = nearest else {
+                continue;
+            };
+            let alias = &edits.aliases[i as usize];
+            let under_target = self
+                .accounts
+                .lookup(&alias.to)
+                .is_some_and(|to| to == id || self.accounts.is_ancestor(to, id));
+            if under_target {
+                continue;
+            }
+            let rest = &self.accounts.full_name(id)[self.accounts.full_name(root).len()..];
+            moves.push((id, format!("{}{rest}", alias.to)));
+        }
+        if moves.is_empty() {
+            return;
+        }
+        self.renamed = self.accounts.ids().collect();
+        for (id, name) in moves {
+            // Both halves were checked above, so the joined name is valid.
+            if let Ok(to) = self.accounts.intern(&name) {
+                self.renamed[id.index()] = to;
+            }
+        }
+    }
+
+    /// Check `name` is a valid account name by interning it into `scratch`,
+    /// rejecting `edit` if it isn't.
+    fn check_name(&mut self, edit: EditRef, scratch: &mut Accounts, name: &str) -> Option<()> {
+        match scratch.intern(name) {
+            Ok(_) => Some(()),
+            Err(error) => {
+                let account = name.to_owned();
+                self.reject(edit, Problem::BadAccount { account, error });
+                None
+            }
+        }
+    }
+
+    /// What `account` is renamed to by the aliases: itself when none
+    /// applies.
+    fn rename(&self, account: AccountId) -> AccountId {
+        self.renamed
+            .get(account.index())
+            .copied()
+            .unwrap_or(account)
+    }
+
     /// The raw journal's rows with every decided counter leg moved, and
     /// split ones replaced by their legs.
     #[profiling::function]
@@ -794,7 +926,10 @@ impl<'a> Plan<'a> {
                     });
                 }
                 if counter != Some(offset as u32) {
-                    journal.postings.push(*posting);
+                    journal.postings.push(Posting {
+                        account: self.rename(posting.account),
+                        ..*posting
+                    });
                     continue;
                 }
                 if let Why::Split(i) = why {
@@ -803,7 +938,7 @@ impl<'a> Plan<'a> {
                     journal
                         .postings
                         .extend(legs.iter().zip(accounts).map(|(leg, &account)| Posting {
-                            account,
+                            account: self.rename(account),
                             qty: leg.qty,
                             flags: PostingFlags(posting.flags.0 & !PostingFlags::ELIDED.0),
                             ..*posting
@@ -812,7 +947,7 @@ impl<'a> Plan<'a> {
                     continue;
                 }
                 journal.postings.push(Posting {
-                    account: self.moved_to(why).unwrap_or(posting.account),
+                    account: self.rename(self.moved_to(why).unwrap_or(posting.account)),
                     ..*posting
                 });
             }

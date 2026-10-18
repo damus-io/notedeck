@@ -9,12 +9,13 @@
 use std::collections::HashSet;
 use std::io::Write;
 
+use cashflow::chart::Chart;
 use cashflow::vault_edits::VaultEdits;
 use cashflow::vault_rules::VaultRules;
 use cashflow::{Books, CashflowDir, rules};
 use cashflow::{journal, manifest};
 use ledgerdb::{
-    AccountId, Amount, Commodities, CommodityId, Date, DateRange, Edits, Filter, Journal,
+    AccountId, Amount, Bucket, Commodities, CommodityId, Date, DateRange, Edits, Filter, Journal,
     LayerFilter, Ledger, SegmentHash, Unconverted, WriteOptions,
 };
 
@@ -57,12 +58,13 @@ fn warn_missing(dir: &CashflowDir, session: &Session) -> Result<(), String> {
 }
 
 /// The vault's edits, owned: its rules compiled, then its overrides,
-/// splits and transfer links.
+/// splits and transfer links, then its account aliases.
 pub fn vault_edits(session: &Session) -> Result<Edits, String> {
     let txn = session.txn()?;
     let author = session.vault.author();
     let mut edits = VaultRules::load(&session.ndb, &txn, author).compile().edits;
     VaultEdits::load(&session.ndb, &txn, author).apply(&mut edits);
+    Chart::load(&session.ndb, &txn, author).apply(&mut edits);
     Ok(edits)
 }
 
@@ -86,8 +88,18 @@ fn edits(session: Option<&Session>, args: &BooksArgs) -> Result<Edits, String> {
 /// `--rules`.
 async fn load(dir: &CashflowDir, run: &Run, args: &BooksArgs) -> Result<Books, String> {
     let session = Session::open_if_logged_in(dir, run).await?;
-    let edits = edits(session.as_ref(), args)?;
-    let retired = match &session {
+    books_with(dir, session.as_ref(), args)
+}
+
+/// [`load`] with the vault `session` already open (`None` when logged
+/// out), for a command that reads the vault for more than the books.
+pub fn books_with(
+    dir: &CashflowDir,
+    session: Option<&Session>,
+    args: &BooksArgs,
+) -> Result<Books, String> {
+    let edits = edits(session, args)?;
+    let retired = match session {
         Some(session) => {
             warn_missing(dir, session)?;
             retired(session)?
@@ -182,7 +194,8 @@ pub async fn report(
     args: &BooksArgs,
     report: &Report,
 ) -> Result<(), String> {
-    let books = load(dir, run, args).await?;
+    let session = Session::open_if_logged_in(dir, run).await?;
+    let books = books_with(dir, session.as_ref(), args)?;
     let home = || {
         books.home().ok_or_else(|| {
             format!(
@@ -212,7 +225,76 @@ pub async fn report(
             range,
             limit,
         } => top(&books, parent.as_deref(), *depth, *range, *limit, home()?),
+        Report::Projects { parent, range } => {
+            let into = home()?;
+            match &session {
+                Some(session) => {
+                    let txn = session.txn()?;
+                    let chart = Chart::load(&session.ndb, &txn, session.vault.author());
+                    projects(&books, &chart, parent.as_deref(), *range, into)
+                }
+                None => {
+                    eprintln!(
+                        "cashflow: no signing key, so no projects: everything is unattributed (run `cashflow login`)"
+                    );
+                    projects(&books, &Chart::empty(), parent.as_deref(), *range, into)
+                }
+            }
+        }
     }
+}
+
+/// `range`, or the ledger's whole span when neither end is given.
+fn range_or_span(books: &Books, range: Range) -> DateRange {
+    match (range, books.query().span()) {
+        (
+            Range {
+                begin: None,
+                end: None,
+            },
+            Some(span),
+        ) => span,
+        (range, _) => date_range(range),
+    }
+}
+
+/// `report projects`: `parent`'s subtree over `range`, summed by project.
+fn projects(
+    books: &Books,
+    chart: &Chart,
+    parent: Option<&str>,
+    range: Range,
+    into: CommodityId,
+) -> Result<(), String> {
+    let journal = books.ledger().journal();
+    let parent = account(journal, parent.unwrap_or("income"))?;
+    let query = books.query();
+    let range = range_or_span(books, range);
+    let totals = chart.by_project(&journal.accounts, parent, |account| {
+        query.flows(account, range, Bucket::Year, into).total()
+    });
+    // The parent's subtree covers every project's, so its misses are all.
+    let missed = query.flows(parent, range, Bucket::Year, into).unconverted;
+    let all: i128 = totals.iter().map(|t| t.amount).sum();
+    for total in &totals {
+        let share = if all == 0 {
+            0.0
+        } else {
+            total.amount as f64 / all as f64 * 100.0
+        };
+        println!(
+            "{:>24}  {share:>5.1}%  {}",
+            format_total(total.amount, into, &journal.commodities),
+            total.project.unwrap_or("(unattributed)")
+        );
+    }
+    println!(
+        "{:>24}  {:>6}  total",
+        format_total(all, into, &journal.commodities),
+        ""
+    );
+    warn_unconverted(std::slice::from_ref(&missed), Some(into), journal);
+    Ok(())
 }
 
 /// The account named `name`, or an error saying the ledger has none.
@@ -273,7 +355,7 @@ fn bal(
 }
 
 /// `ids` sorted by full name.
-fn sorted(journal: &Journal, ids: &[AccountId]) -> Vec<AccountId> {
+pub fn sorted(journal: &Journal, ids: &[AccountId]) -> Vec<AccountId> {
     let mut ids = ids.to_vec();
     ids.sort_by(|&a, &b| {
         journal
@@ -333,16 +415,7 @@ fn top(
     let parent = account(journal, parent.unwrap_or("expenses"))?;
     let depth = depth.unwrap_or(journal.accounts.depth(parent) + 1);
     let query = books.query();
-    let range = match (range, query.span()) {
-        (
-            Range {
-                begin: None,
-                end: None,
-            },
-            Some(span),
-        ) => span,
-        (range, _) => date_range(range),
-    };
+    let range = range_or_span(books, range);
     let top = query.top_n(parent, depth, range, limit, into);
     for ranked in &top.ranked {
         println!(
@@ -363,7 +436,7 @@ fn top(
 
 /// Say on stderr how many postings had no rate into `into`, and in which
 /// commodities.
-fn warn_unconverted(missed: &[Unconverted], into: Option<CommodityId>, journal: &Journal) {
+pub fn warn_unconverted(missed: &[Unconverted], into: Option<CommodityId>, journal: &Journal) {
     let Some(into) = into else {
         return;
     };

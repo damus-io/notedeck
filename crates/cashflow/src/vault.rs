@@ -88,6 +88,12 @@ pub trait Record<'a>: Sized {
     fn from_tags(tags: &Tags<'a>) -> Option<Self>;
 }
 
+/// Tag names a record must not use: nostrdb's JSON ingest reads a tag named
+/// after one of these note fields as the field itself, fails to parse its
+/// value, and silently drops the whole note. A `["kind", "income"]` tag
+/// stores nothing, with no error anywhere.
+pub const RESERVED_TAGS: [&str; 3] = ["kind", "id", "created_at"];
+
 /// Builds a record's field tags for [`Record::write_tags`], and remembers the
 /// first field whose value nostrdb would store as an id instead of a string.
 pub struct TagWriter<'b> {
@@ -96,8 +102,13 @@ pub struct TagWriter<'b> {
 }
 
 impl<'b> TagWriter<'b> {
-    /// Add the tag `[name, values...]`.
+    /// Add the tag `[name, values...]`. `name` is never one of
+    /// [`RESERVED_TAGS`].
     pub fn tag(mut self, name: &'static str, values: &[&str]) -> Self {
+        debug_assert!(
+            !RESERVED_TAGS.contains(&name),
+            "tag name {name:?} is reserved"
+        );
         if self.hex_field.is_none() && values.iter().any(|value| is_hex_id(value)) {
             self.hex_field = Some(name);
         }
@@ -114,6 +125,10 @@ impl<'b> TagWriter<'b> {
     /// such a value as a 32-byte id, so read these back with [`tag_text`],
     /// never `get_str`.
     pub fn text_tag(mut self, name: &'static str, values: &[&str]) -> Self {
+        debug_assert!(
+            !RESERVED_TAGS.contains(&name),
+            "tag name {name:?} is reserved"
+        );
         let mut note = self.note.start_tag().tag_str(name);
         for value in values {
             note = note.tag_str(value);
@@ -583,6 +598,35 @@ mod tests {
         let txn = Transaction::new(reader).unwrap();
         let read = latest::<Probe>(reader, &txn, vault.author(), "a").unwrap();
         assert_eq!(read.body, probe("secret"));
+    }
+
+    /// Why [`RESERVED_TAGS`] exists: nostrdb ingests a note carrying one of
+    /// them as a tag name without error and stores nothing. If this starts
+    /// failing, nostrdb fixed it and the guard can go.
+    #[tokio::test]
+    async fn nostrdb_drops_notes_with_a_reserved_tag_name() {
+        for name in RESERVED_TAGS.into_iter().chain(["type"]) {
+            let db = TempNdb::new();
+            let ndb = &db.ndb;
+            let sub = subscribe(ndb);
+            let note = NoteBuilder::new()
+                .kind(kinds::SEGMENT)
+                .content("")
+                .start_tag()
+                .tag_str(name)
+                .tag_str("income")
+                .sign(&SECRET)
+                .build()
+                .unwrap();
+            let frame = format!("[\"EVENT\",{}]", note.json().unwrap());
+            ndb.process_event_with(&frame, IngestMetadata::new().client(true))
+                .unwrap();
+            let landed = ndb
+                .wait_for_all_notes_within(sub, 1, std::time::Duration::from_millis(300))
+                .await
+                .is_ok();
+            assert_eq!(landed, name == "type", "a ['{name}', …] tag");
+        }
     }
 
     #[test]

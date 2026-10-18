@@ -13,9 +13,8 @@
 //! These notes never reach a relay in the clear: each is the rumor inside a
 //! kind-1081 SNS envelope of the account's vault (see [`crate::vault`]).
 //!
-//! [`SETTING`], [`RULE`], [`OVERRIDE`], [`SPLIT`], [`TRANSFER`] and
-//! [`SEGMENT`] have writers so far. The rest are allocated here,
-//! with the card that builds each, so two lanes never pick the same number.
+//! Every kind allocated here has a writer; a new one is allocated here,
+//! with the card that builds it, so two lanes never pick the same number.
 
 use std::ops::RangeInclusive;
 
@@ -50,8 +49,14 @@ pub const SEGMENT: u32 = 30705;
 /// (headway:cashflow/dream-accident-reveal).
 pub const ACCOUNT: u32 = 30706;
 
-/// Every allocated kind. 30707–30709 are still free.
-pub const ALL: [u32; 7] = [SETTING, RULE, OVERRIDE, SPLIT, TRANSFER, SEGMENT, ACCOUNT];
+/// An account alias, `d = alias:<from>`, renaming a subtree at derive time
+/// (headway:cashflow/dream-accident-reveal).
+pub const ALIAS: u32 = 30707;
+
+/// Every allocated kind. 30708–30709 are still free.
+pub const ALL: [u32; 8] = [
+    SETTING, RULE, OVERRIDE, SPLIT, TRANSFER, SEGMENT, ACCOUNT, ALIAS,
+];
 
 #[cfg(test)]
 mod tests {

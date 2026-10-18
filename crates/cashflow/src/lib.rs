@@ -12,7 +12,9 @@
 //! local journal. [`vault_rules`] keeps the categorization rules in the
 //! vault, ordered by [`rank`], and [`rules`] reads a local rules file into
 //! the same derive edits. [`vault_edits`] keeps the per-transaction
-//! overrides, splits and transfer links. [`prices`] fetches daily exchange
+//! overrides, splits and transfer links, and [`chart`] the chart of
+//! accounts: each account's metadata (display, project) and the aliases
+//! that rename subtrees. [`prices`] fetches daily exchange
 //! rates into it, and [`books`] loads, derives and indexes it for queries.
 //! [`transfers`] finds the moves between the owner's own accounts that two
 //! sources each recorded, and [`unknown`] groups what nothing has
@@ -23,6 +25,7 @@
 //! No egui: the app depends on this crate, never the other way round.
 
 pub mod books;
+pub mod chart;
 pub mod config;
 pub mod csv;
 pub mod import;

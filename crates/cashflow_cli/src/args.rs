@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+use cashflow::chart::{AccountKind, MetaField};
 use cli_term::help::{CommandHelp, OPTIONS_PAGE, option_names};
 use ledgerdb::{Date, LayerFilter};
 
@@ -95,6 +96,55 @@ pub enum Command {
     Edits { by: Option<String>, json: bool },
     /// `cashflow unknown [--source <s>] [--limit <n>] [--in <c>] [--json]`.
     Unknown(UnknownArgs),
+    /// `cashflow account ...`.
+    Account(AccountCommand),
+}
+
+/// One `cashflow account` subcommand.
+#[derive(Debug, PartialEq)]
+pub enum AccountCommand {
+    /// `account ls [<account>] [--depth <n>] [--all] [books options] [--json]`.
+    Ls {
+        books: BooksArgs,
+        account: Option<String>,
+        depth: Option<u16>,
+        all: bool,
+        json: bool,
+    },
+    /// `account set <account> [fields] [--clear <field>]... [--dry-run] [--json]`.
+    Set {
+        account: String,
+        set: MetaArgs,
+        write: Write,
+    },
+    /// `account alias <from> <to> [--dry-run] [--json]`.
+    Alias {
+        from: String,
+        to: String,
+        write: Write,
+    },
+    /// `account unalias <from> [--dry-run] [--json]`.
+    Unalias { from: String, write: Write },
+}
+
+/// `account set`'s fields, as given: each `None` leaves the stored value,
+/// and `clear` unsets fields so they are inherited again.
+#[derive(Debug, PartialEq, Default)]
+pub struct MetaArgs {
+    /// `--name <text>`.
+    pub name: Option<String>,
+    /// `--icon <emoji>`.
+    pub icon: Option<String>,
+    /// `--color <#rrggbb>`.
+    pub color: Option<String>,
+    /// `--project <name>`.
+    pub project: Option<String>,
+    /// `--hide` (`Some(true)`) or `--show` (`Some(false)`).
+    pub hidden: Option<bool>,
+    /// `--type <kind>`.
+    pub kind: Option<AccountKind>,
+    /// `--clear <field>`, repeatable.
+    pub clear: Vec<MetaField>,
 }
 
 /// One `split` leg as given: `<account>=<amount>`, or `<account>` alone
@@ -273,6 +323,11 @@ pub enum Report {
         depth: Option<u16>,
         range: Range,
         limit: usize,
+    },
+    /// `report projects [<parent>] [--begin] [--end]`.
+    Projects {
+        parent: Option<String>,
+        range: Range,
     },
 }
 
@@ -476,6 +531,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
             }),
             "unknown",
         )?,
+        "account" => account_command(positionals, &flags, json)?,
         other => unreachable!("'{other}' has a help entry but no parser arm"),
     };
     Ok(Invocation::Run(Box::new(Run {
@@ -633,7 +689,7 @@ fn range(flags: &Flags) -> Result<Range, String> {
 
 /// `report`'s subcommand.
 fn report_command(positionals: Vec<String>, flags: &Flags) -> Result<Command, String> {
-    let usage = "`report` takes `bal`, `reg` or `top` (see `cashflow report --help`)";
+    let usage = "`report` takes `bal`, `reg`, `top` or `projects` (see `cashflow report --help`)";
     let mut positionals = positionals.into_iter();
     let sub = positionals.next().ok_or(usage)?;
     let account = positionals.next();
@@ -670,6 +726,13 @@ fn report_command(positionals: Vec<String>, flags: &Flags) -> Result<Command, St
                 depth: flags.number("--depth")?,
                 range: range(flags)?,
                 limit: flags.number("--limit")?.unwrap_or(DEFAULT_TOP),
+            }
+        }
+        "projects" => {
+            refuse(&["--depth", "--native", "--payee", "--limit"])?;
+            Report::Projects {
+                parent: account,
+                range: range(flags)?,
             }
         }
         _ => return Err(usage.to_owned()),
@@ -864,6 +927,119 @@ fn transfer_command(
         _ => return Err(usage.to_owned()),
     };
     Ok(Command::Transfer(command))
+}
+
+/// `account ls|set|alias|unalias`.
+fn account_command(positionals: Vec<String>, flags: &Flags, json: bool) -> Result<Command, String> {
+    let usage = "`account` takes `ls [<account>]`, `set <account>`, `alias <from> <to>` or `unalias <from>` (see `cashflow account --help`)";
+    let mut positionals = positionals.into_iter();
+    let sub = positionals.next().ok_or(usage)?;
+    let rest: Vec<String> = positionals.collect();
+    let refuse = |names: &[&str]| match flags.first_of(names) {
+        Some(flag) => Err(format!("`account {sub}` doesn't take {flag}")),
+        None => Ok(()),
+    };
+    const BOOKS: [&str; 5] = ["--layer", "--except", "--rules", "--in", "--depth"];
+    const LS: [&str; 1] = ["--all"];
+    const SET: [&str; 8] = [
+        "--name",
+        "--icon",
+        "--color",
+        "--project",
+        "--type",
+        "--hide",
+        "--show",
+        "--clear",
+    ];
+    let write = write_of(flags, json);
+    let command = match sub.as_str() {
+        "ls" => {
+            refuse(&SET)?;
+            refuse(&["--dry-run"])?;
+            if rest.len() > 1 {
+                return Err(usage.to_owned());
+            }
+            AccountCommand::Ls {
+                books: books_args(flags)?,
+                account: rest.into_iter().next(),
+                depth: flags.number("--depth")?,
+                all: flags.has("--all"),
+                json,
+            }
+        }
+        "set" => {
+            refuse(&BOOKS)?;
+            refuse(&LS)?;
+            let [account] = operands(rest, usage)?;
+            AccountCommand::Set {
+                account,
+                set: meta_args(flags)?,
+                write,
+            }
+        }
+        "alias" => {
+            refuse(&BOOKS)?;
+            refuse(&LS)?;
+            refuse(&SET)?;
+            let [from, to] = operands(rest, usage)?;
+            AccountCommand::Alias { from, to, write }
+        }
+        "unalias" => {
+            refuse(&BOOKS)?;
+            refuse(&LS)?;
+            refuse(&SET)?;
+            let [from] = operands(rest, usage)?;
+            AccountCommand::Unalias { from, write }
+        }
+        _ => return Err(usage.to_owned()),
+    };
+    Ok(Command::Account(command))
+}
+
+/// `account set`'s field flags.
+fn meta_args(flags: &Flags) -> Result<MetaArgs, String> {
+    let text = |name: &str| flags.value(name).map(str::to_owned);
+    let hidden = match (flags.has("--hide"), flags.has("--show")) {
+        (true, true) => return Err("--hide and --show can't be used together".to_owned()),
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        (false, false) => None,
+    };
+    let kinds = || {
+        let names: Vec<&str> = AccountKind::ALL.iter().map(|k| k.as_str()).collect();
+        names.join(", ")
+    };
+    let kind = flags
+        .value("--type")
+        .map(|text| {
+            AccountKind::parse(text).ok_or_else(|| format!("--type {text}: not one of {}", kinds()))
+        })
+        .transpose()?;
+    let clear = flags
+        .values("--clear")
+        .map(|text| {
+            MetaField::parse(text).ok_or_else(|| {
+                let names: Vec<&str> = MetaField::ALL.iter().map(|f| f.as_str()).collect();
+                format!("--clear {text}: not one of {}", names.join(", "))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let set = MetaArgs {
+        name: text("--name"),
+        icon: text("--icon"),
+        color: text("--color"),
+        project: text("--project"),
+        hidden,
+        kind,
+        clear,
+    };
+    if set == MetaArgs::default() {
+        return Err(
+            "`account set` needs a field to set or --clear (see `cashflow account --help`)"
+                .to_owned(),
+        );
+    }
+    Ok(set)
 }
 
 /// `rule add`'s conditions.
@@ -1268,7 +1444,7 @@ mod tests {
         };
         assert!(matches!(report, Report::Reg { payee: Some(p), .. } if p == "shop"));
 
-        assert!(err_of(&["report"]).contains("`bal`, `reg` or `top`"));
+        assert!(err_of(&["report"]).contains("`bal`, `reg`, `top` or `projects`"));
         assert!(err_of(&["report", "bal", "--payee", "x"]).contains("doesn't take --payee"));
         assert!(err_of(&["report", "top", "--limit", "many"]).contains("needs a number"));
         assert!(err_of(&["report", "reg", "a", "b"]).contains("at most one"));
@@ -1379,6 +1555,97 @@ mod tests {
         assert!(err_of(&["rule", "add", "a", "--meta", "nokey"]).contains("key=value"));
         assert!(err_of(&["rule", "add", "a", "--amount", "lots"]).contains("--amount"));
         assert!(err_of(&["rule", "rm", "a", "b"]).contains("`ls`, `add <account>`"));
+    }
+
+    #[test]
+    fn account_subcommands() {
+        let write = |dry_run, json| Write { dry_run, json };
+        assert_eq!(
+            run_of(&[
+                "account", "ls", "income", "--depth", "2", "--all", "--in", "USD"
+            ])
+            .command,
+            Command::Account(AccountCommand::Ls {
+                books: BooksArgs {
+                    filter: LayerFilter::All,
+                    rules: None,
+                    home: "USD".to_owned(),
+                },
+                account: Some("income".to_owned()),
+                depth: Some(2),
+                all: true,
+                json: false,
+            })
+        );
+        assert_eq!(
+            run_of(&[
+                "account",
+                "set",
+                "income:a",
+                "--project",
+                "a",
+                "--type",
+                "income",
+                "--show",
+                "--clear",
+                "icon",
+                "--clear",
+                "name",
+                "--dry-run",
+            ])
+            .command,
+            Command::Account(AccountCommand::Set {
+                account: "income:a".to_owned(),
+                set: MetaArgs {
+                    project: Some("a".to_owned()),
+                    kind: Some(AccountKind::Income),
+                    hidden: Some(false),
+                    clear: vec![MetaField::Icon, MetaField::Name],
+                    ..MetaArgs::default()
+                },
+                write: write(true, false),
+            })
+        );
+        assert_eq!(
+            run_of(&["account", "alias", "a:b", "a:c", "--json"]).command,
+            Command::Account(AccountCommand::Alias {
+                from: "a:b".to_owned(),
+                to: "a:c".to_owned(),
+                write: write(false, true),
+            })
+        );
+        assert_eq!(
+            run_of(&["account", "unalias", "a:b"]).command,
+            Command::Account(AccountCommand::Unalias {
+                from: "a:b".to_owned(),
+                write: write(false, false),
+            })
+        );
+        assert_eq!(
+            run_of(&["report", "projects", "income:x", "--begin", "2024-01-01"]).command,
+            Command::Report {
+                books: BooksArgs {
+                    filter: LayerFilter::All,
+                    rules: None,
+                    home: DEFAULT_HOME.to_owned(),
+                },
+                report: Report::Projects {
+                    parent: Some("income:x".to_owned()),
+                    range: Range {
+                        begin: date("2024-01-01"),
+                        end: None,
+                    },
+                },
+            }
+        );
+        assert!(err_of(&["account", "set", "a"]).contains("needs a field"));
+        assert!(err_of(&["account", "set", "a", "--hide", "--show"]).contains("together"));
+        assert!(err_of(&["account", "set", "a", "--type", "cash"]).contains("not one of"));
+        assert!(err_of(&["account", "set", "a", "--clear", "x"]).contains("not one of"));
+        assert!(err_of(&["account", "set", "a", "--all"]).contains("doesn't take --all"));
+        assert!(err_of(&["account", "ls", "--project", "p"]).contains("doesn't take"));
+        assert!(err_of(&["account", "alias", "a"]).contains("`account` takes"));
+        assert!(err_of(&["report", "projects", "--limit", "3"]).contains("doesn't take"));
     }
 
     #[test]

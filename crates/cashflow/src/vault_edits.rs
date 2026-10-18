@@ -134,7 +134,7 @@ pub enum EditError {
 }
 
 /// `account` if it is a valid account name.
-fn check_account(account: &str) -> Result<(), EditError> {
+pub(crate) fn check_account(account: &str) -> Result<(), EditError> {
     match Accounts::new().intern(account) {
         Ok(_) => Ok(()),
         Err(error) => Err(EditError::BadAccount {

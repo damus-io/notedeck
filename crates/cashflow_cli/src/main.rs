@@ -6,14 +6,15 @@
 //! categorized books (`export`, `report`), the signing key
 //! (`login`/`logout`), the vault's synced settings and categorization rules
 //! (`rule`), the per-transaction edits (`categorize`, `uncategorize`,
-//! `split`, `transfer`, `edits`), the triage queue (`unknown`), and the
-//! help surface. The real importers and the vault's other
+//! `split`, `transfer`, `edits`), the triage queue (`unknown`), the chart
+//! of accounts' metadata and aliases (`account`), and the help surface. The real importers and the vault's other
 //! records are later cards on headway:cashflow/flame-vault-near and
 //! headway:cashflow/luggage-insane-limit.
 //!
 //! Parsing is [`args`], the help table [`help`], and each command its own
 //! module; this file is the entry point and the dispatch.
 
+mod account_cmd;
 mod args;
 mod books_cmd;
 mod config_cmd;
@@ -28,7 +29,7 @@ use std::process::ExitCode;
 
 use cashflow::CashflowDir;
 
-use crate::args::{Command, Invocation, Run};
+use crate::args::{AccountCommand, Command, Invocation, Run};
 use crate::vault_cmd::Session;
 
 #[tokio::main]
@@ -149,6 +150,38 @@ async fn execute(run: Run) -> Result<(), String> {
         }
         Command::Unknown(args) => {
             edit_cmd::unknown(&dir, &Session::open(&dir, &run).await?, args).await
+        }
+        Command::Account(AccountCommand::Ls {
+            books,
+            account,
+            depth,
+            all,
+            json,
+        }) => {
+            let args = account_cmd::LsArgs {
+                books,
+                account: account.as_deref(),
+                depth: *depth,
+                all: *all,
+                json: *json,
+            };
+            account_cmd::ls(&dir, &run, args).await
+        }
+        Command::Account(AccountCommand::Set {
+            account,
+            set,
+            write,
+        }) => {
+            let mut session = Session::open(&dir, &run).await?;
+            account_cmd::set(&mut session, account, set, *write).await
+        }
+        Command::Account(AccountCommand::Alias { from, to, write }) => {
+            let mut session = Session::open(&dir, &run).await?;
+            account_cmd::alias(&dir, &mut session, from, Some(to), *write).await
+        }
+        Command::Account(AccountCommand::Unalias { from, write }) => {
+            let mut session = Session::open(&dir, &run).await?;
+            account_cmd::alias(&dir, &mut session, from, None, *write).await
         }
     }
 }

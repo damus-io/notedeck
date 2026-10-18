@@ -399,6 +399,7 @@ Segments that don't load and edits that don't apply are reported on stderr.
             "report bal [<account>] [--depth <n>] [--end <date>] [--native]",
             "report reg [<account>] [--begin/--end <date>] [--payee <text>]",
             "report top [<parent>] [--depth <n>] [--limit <n>] [--begin/--end <date>]",
+            "report projects [<parent>] [--begin/--end <date>]",
         ],
         details: "\
 Quick terminal checks over the categorized ledger, in --in's commodity
@@ -417,6 +418,10 @@ the text (ignoring case).
 `top` ranks the accounts at --depth (default: one below <parent>, which
 defaults to expenses) by their total over the range, with each one's share.
 
+`projects` sums <parent>'s subtree (default: income) over the range by the
+project each account is in (`cashflow account set --project`), with what no
+project claims as (unattributed).
+
 Dates are YYYY-MM-DD; --begin is inclusive, --end exclusive. --layer,
 --except and --rules choose the books as for `export`: the vault's rules
 and edits, unless --rules names a file.",
@@ -426,7 +431,7 @@ and edits, unless --rules names a file.",
                 "Convert into this commodity [default: CAD]"
             ),
             ("--depth <n>", "Account depth to list (bal, top)"),
-            ("--begin <date>", "First day (reg, top)"),
+            ("--begin <date>", "First day (reg, top, projects)"),
             ("--end <date>", "Day after the last"),
             ("--native", "Each commodity as held (bal)"),
             ("--payee <text>", "Payee contains this (reg)"),
@@ -437,6 +442,7 @@ and edits, unless --rules names a file.",
             "cashflow report bal assets --native",
             "cashflow report reg expenses:food --begin 2025-01-01",
             "cashflow report top expenses --except btc --limit 5",
+            "cashflow report projects --begin 2025-01-01",
         ],
     },
     CommandHelp {
@@ -659,6 +665,69 @@ every row's payee contains, and --source when the rows share one. Replace
             "cashflow unknown",
             "cashflow unknown --source amex --limit 5",
             "cashflow unknown --json | jq '.groups[0].rule_add'",
+        ],
+    },
+    CommandHelp {
+        name: "account",
+        group: CATEGORIZE,
+        summary: "The chart of accounts: names, icons, projects and aliases",
+        usage: &[
+            "account ls [<account>] [--depth <n>] [--all] [--json]",
+            "account set <account> [--name <text>] [--icon <emoji>] [--color <#rrggbb>]",
+            "    [--project <name>] [--type <kind>] [--hide|--show] [--clear <field>]...",
+            "account alias <from> <to> [--dry-run] [--json]",
+            "account unalias <from> [--dry-run] [--json]",
+        ],
+        details: "\
+Each account can carry metadata in the vault (d = acct:<account>): a
+display name, an icon, a colour, the project it earns or spends for, a
+hidden flag and a type (asset, liability, equity, income, expense) for an
+account whose top-level name doesn't say. Every field but the name is
+inherited: an account without its own takes its nearest ancestor's, so
+`--project damus` on income:damus puts everything under it in Damus.
+
+`ls` prints the tree under <account> (default: all) with each subtree's
+balance in --in's commodity, its icon and name, and the project where one
+starts. Hidden accounts and accounts with no postings are left out unless
+--all. Then the metadata of accounts the ledger doesn't hold, and the
+aliases.
+
+`set` changes only the fields given; --clear <field> unsets one so it is
+inherited again (name, icon, color, project, hidden, type), and --show
+shows an account a hidden ancestor hides.
+
+`alias` renames the subtree at <from> to <to> when the books are derived,
+after every rule and override, so the chart can be restructured without
+editing them (d = alias:<from>): expenses:food -> expenses:groceries files
+expenses:food:produce as expenses:groceries:produce. An account takes its
+nearest alias, a renamed account isn't renamed again, and one already under
+<to> stays put. `unalias` clears it. Both print the accounts that move.",
+        options: books_options![
+            (
+                "--in <commodity>",
+                "Convert balances into this commodity [default: CAD] (ls)"
+            ),
+            ("--depth <n>", "Deepest account to list (ls)"),
+            ("--all", "Include hidden and empty accounts (ls)"),
+            ("--name <text>", "Display name (set)"),
+            ("--icon <emoji>", "Icon (set)"),
+            ("--color <#rrggbb>", "Colour (set)"),
+            ("--project <name>", "Project the subtree belongs to (set)"),
+            (
+                "--type <kind>",
+                "asset, liability, equity, income or expense (set)"
+            ),
+            ("--hide", "Hide the account and its subtree (set)"),
+            ("--show", "Show it under a hidden ancestor (set)"),
+            ("--clear <field>", "Unset a field; repeatable (set)"),
+            ("--dry-run", "Show the change; write nothing"),
+            ("--json", "Machine-readable output"),
+        ],
+        examples: &[
+            "cashflow account ls income",
+            "cashflow account set income:damus --project damus --icon 🦩",
+            "cashflow account set expenses:food --clear icon",
+            "cashflow account alias expenses:food expenses:groceries --dry-run",
         ],
     },
     CommandHelp {
