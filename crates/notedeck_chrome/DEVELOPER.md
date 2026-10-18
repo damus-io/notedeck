@@ -73,7 +73,7 @@ The Android integration includes custom Java code to handle keyboard visibility 
 
 The theme system supports:
 - Light and dark mode
-- OLED-optimized dark mode for mobile
+- Black (OLED-friendly) dark mode on every platform
 - Customizable text styles
 - Font loading with multiple typefaces
 

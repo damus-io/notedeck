@@ -52,7 +52,7 @@ fn dollars(v: f64) -> String {
 }
 
 fn draw(ui: &mut egui::Ui, state: &mut ChartState) {
-    ui.ctx().set_visuals(notedeck::theme::dark_mode(false));
+    ui.ctx().set_visuals(notedeck::theme::dark_mode());
     let data = TimeSeries {
         series: &state.series,
         bucket_label: &month,

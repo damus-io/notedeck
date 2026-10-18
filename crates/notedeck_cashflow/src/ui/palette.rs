@@ -215,7 +215,7 @@ impl Palette {
     ///
     /// Called at the top of every frame. It is a lookup in egui's temp data
     /// and a copy of a few colors, and it follows every theme change the host
-    /// makes (light/dark, OLED) without the app tracking which one happened.
+    /// makes (light/dark) without the app tracking which one happened.
     /// The [`Faces`] carry over rather than being built again.
     pub fn refresh(&mut self, ctx: &egui::Context) {
         let faces = std::mem::replace(&mut self.faces, Faces::PLACEHOLDER);
@@ -224,22 +224,22 @@ impl Palette {
 }
 
 impl Default for Palette {
-    /// The desktop dark theme's palette, until the first [`Palette::refresh`].
+    /// The dark theme's palette, until the first [`Palette::refresh`].
     fn default() -> Self {
-        Self::from_theme(&notedeck::theme::desktop_dark_color_theme())
+        Self::from_theme(&notedeck::theme::dark_color_theme())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notedeck::theme::{desktop_dark_color_theme, light_color_theme};
+    use notedeck::theme::{dark_color_theme, light_color_theme};
 
     /// Money in and money out never share a color, in either theme, so a
     /// chart never draws income and expense alike.
     #[test]
     fn income_and_expense_differ_in_both_themes() {
-        for theme in [desktop_dark_color_theme(), light_color_theme()] {
+        for theme in [dark_color_theme(), light_color_theme()] {
             let palette = Palette::from_theme(&theme);
             assert_ne!(palette.income, palette.expense);
             assert_ne!(palette.text, palette.background);
@@ -250,7 +250,7 @@ mod tests {
     /// panel's body text, in either theme.
     #[test]
     fn hud_rarity_tiers_are_distinct() {
-        for theme in [desktop_dark_color_theme(), light_color_theme()] {
+        for theme in [dark_color_theme(), light_color_theme()] {
             let hud = Palette::from_theme(&theme).hud;
             let tiers = [hud.text, hud.uncommon, hud.rare, hud.epic, hud.legendary];
             for (i, a) in tiers.iter().enumerate() {
@@ -273,6 +273,6 @@ mod tests {
 
         ctx.set_visuals(egui::Visuals::dark());
         palette.refresh(&ctx);
-        assert_eq!(palette, Palette::from_theme(&desktop_dark_color_theme()));
+        assert_eq!(palette, Palette::from_theme(&dark_color_theme()));
     }
 }

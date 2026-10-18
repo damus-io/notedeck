@@ -185,7 +185,7 @@ mod tests {
         assert!(seen.frames >= 2, "the setup frame asks for a drawing frame");
         assert_eq!(seen.item_gap, Some(0.0));
         let dark = crate::theme::create_themed_visuals(
-            crate::theme::desktop_dark_color_theme(),
+            crate::theme::dark_color_theme(),
             egui::Visuals::dark(),
         );
         assert_eq!(seen.panel_fill, Some(dark.panel_fill));

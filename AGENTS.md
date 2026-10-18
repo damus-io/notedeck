@@ -161,7 +161,7 @@ done-comment described under Work Tracking above.
 ### Localization, Styling, Persistence
 
 - **Localization**: `tr!`/`tr_plural!` macros (documented in `crates/notedeck/DEVELOPER.md`) normalize strings into Fluent keys. `LocalizationManager` caches translations; locale is saved via `SettingsHandler`.
-- **Themes & fonts**: `ColorTheme`, `NamedFontFamily`, and theme builders ensure consistent typography and support OLED dark mode.
+- **Themes & fonts**: `ColorTheme`, `NamedFontFamily`, and theme builders ensure consistent typography and give dark mode a black (OLED-friendly) ground.
 - **Settings & tokens**: `SettingsHandler` stores theme, zoom, locale, and textual toggles; `TokenHandler` persists auth tokens safely.
 
 ### Dave Agent Patterns (Template for Future Agents)

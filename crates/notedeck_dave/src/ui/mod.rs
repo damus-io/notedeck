@@ -4689,7 +4689,7 @@ mod tests {
         snapshot_composer(
             "composer_wide_dark_working",
             egui::vec2(1000.0, 340.0),
-            notedeck::theme::dark_mode(false),
+            notedeck::theme::dark_mode(),
             &ComposerScene {
                 working: true,
                 draft: "and keep the old meter behind a hover",
@@ -4721,7 +4721,7 @@ mod tests {
         snapshot_composer(
             "composer_narrow_dark_working",
             egui::vec2(420.0, 340.0),
-            notedeck::theme::dark_mode(false),
+            notedeck::theme::dark_mode(),
             &ComposerScene {
                 working: true,
                 draft: "",
@@ -5034,7 +5034,7 @@ mod tests {
         let now = chat_time(13, 10, 1, 10);
         snapshot_chat_times(
             "chat_times_dark",
-            notedeck::theme::dark_mode(false),
+            notedeck::theme::dark_mode(),
             now,
             seed_chat_times,
         );
@@ -5065,7 +5065,7 @@ mod tests {
     fn snapshot_chat_range_dark() {
         snapshot_chat_times(
             "chat_range_dark",
-            notedeck::theme::dark_mode(false),
+            notedeck::theme::dark_mode(),
             chat_time(13, 10, 1, 10),
             seed_chat_range,
         );
@@ -5088,7 +5088,7 @@ mod tests {
         let now = chat_time(13, 9, 52, 0);
         snapshot_chat_times(
             "chat_times_running",
-            notedeck::theme::dark_mode(false),
+            notedeck::theme::dark_mode(),
             now,
             seed_running_turn,
         );

@@ -123,7 +123,7 @@ impl ColorTheme {
         ctx.data(|d| d.get_temp(egui::Id::unique(id)))
             .unwrap_or_else(|| {
                 if is_dark {
-                    desktop_dark_color_theme()
+                    dark_color_theme()
                 } else {
                     light_color_theme()
                 }
@@ -198,10 +198,12 @@ pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
     }
 }
 
-pub fn desktop_dark_color_theme() -> ColorTheme {
+/// Notedeck's one dark theme: a black ground (kind to OLED screens), with
+/// popups, inputs and surfaces drawn as gray layers above it.
+pub fn dark_color_theme() -> ColorTheme {
     ColorTheme {
         // VISUALS
-        panel_fill: DARKER_BG,
+        panel_fill: Color32::BLACK,
         extreme_bg_color: SEMI_DARKER_BG,
         text_color: Color32::WHITE,
         err_fg_color: RED_700,
@@ -216,7 +218,7 @@ pub fn desktop_dark_color_theme() -> ColorTheme {
 
         // NONINTERACTIVE WIDGET
         noninteractive_bg_fill: DARK_ISH_BG,
-        noninteractive_weak_bg_fill: DARK_BG,
+        noninteractive_weak_bg_fill: DARKER_BG,
         noninteractive_bg_stroke_color: SEMI_DARKER_BG,
         noninteractive_fg_stroke_color: GRAY_SECONDARY,
 
@@ -248,14 +250,6 @@ pub fn desktop_dark_color_theme() -> ColorTheme {
         // SEMANTIC: Interactive states
         interactive_hover: Color32::from_rgb(0x46, 0x46, 0x46),
         interactive_pressed: Color32::from_rgb(0x50, 0x50, 0x50),
-    }
-}
-
-pub fn mobile_dark_color_theme() -> ColorTheme {
-    ColorTheme {
-        panel_fill: Color32::BLACK,
-        noninteractive_weak_bg_fill: Color32::from_rgb(0x1F, 0x1F, 0x1F),
-        ..desktop_dark_color_theme()
     }
 }
 
@@ -366,15 +360,9 @@ pub fn light_mode() -> Visuals {
     create_themed_visuals(crate::theme::light_color_theme(), Visuals::light())
 }
 
-pub fn dark_mode(is_oled: bool) -> Visuals {
-    create_themed_visuals(
-        if is_oled {
-            mobile_dark_color_theme()
-        } else {
-            desktop_dark_color_theme()
-        },
-        Visuals::dark(),
-    )
+/// The egui visuals of [`dark_color_theme`].
+pub fn dark_mode() -> Visuals {
+    create_themed_visuals(dark_color_theme(), Visuals::dark())
 }
 
 #[cfg(test)]
@@ -417,11 +405,7 @@ mod tests {
     /// selected text must read on it.
     #[test]
     fn selected_text_reads_on_its_highlight() {
-        let themes = [
-            ("desktop dark", desktop_dark_color_theme()),
-            ("mobile dark", mobile_dark_color_theme()),
-            ("light", light_color_theme()),
-        ];
+        let themes = [("dark", dark_color_theme()), ("light", light_color_theme())];
         for (name, theme) in themes {
             let visuals = create_themed_visuals(theme, Visuals::default());
             let highlight = visuals.selection.bg_fill;
@@ -440,7 +424,7 @@ mod tests {
     /// at full strength, not the see-through text-selection tint.
     #[test]
     fn selection_fill_is_the_opaque_hue() {
-        let visuals = create_themed_visuals(desktop_dark_color_theme(), Visuals::default());
+        let visuals = create_themed_visuals(dark_color_theme(), Visuals::default());
         let fill = selection_fill(&visuals);
         assert_eq!(fill.a(), 255);
         let near = |a: u8, b: u8| a.abs_diff(b) <= 2;

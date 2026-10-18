@@ -500,10 +500,7 @@ fn snapshot_text_selection() {
         .with_size(egui::Vec2::new(360.0, 96.0))
         .renderer(notedeck::software_renderer())
         .build_ui(|ui| {
-            let themes = [
-                notedeck::theme::dark_mode(false),
-                notedeck::theme::light_mode(),
-            ];
+            let themes = [notedeck::theme::dark_mode(), notedeck::theme::light_mode()];
             for (row, visuals) in themes.iter().enumerate() {
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(0.0, row as f32 * 48.0),

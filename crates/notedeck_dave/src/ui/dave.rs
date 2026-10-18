@@ -5940,10 +5940,7 @@ mod tests {
             ("", InputMode::Normal { can_stop: true }),
             ("a draft", InputMode::Normal { can_stop: false }),
         ];
-        let themes = [
-            notedeck::theme::dark_mode(false),
-            notedeck::theme::light_mode(),
-        ];
+        let themes = [notedeck::theme::dark_mode(), notedeck::theme::light_mode()];
 
         let mut harness = Harness::builder()
             .with_size(egui::Vec2::new(1000.0, 370.0))

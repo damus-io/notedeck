@@ -16,10 +16,6 @@ pub fn is_narrow(ctx: &egui::Context) -> bool {
     screen_size.x < NARROW_SCREEN_WIDTH
 }
 
-pub fn is_oled(is_mobile_override: bool) -> bool {
-    is_mobile_override || is_compiled_as_mobile()
-}
-
 #[inline]
 #[allow(unreachable_code)]
 pub fn is_compiled_as_mobile() -> bool {

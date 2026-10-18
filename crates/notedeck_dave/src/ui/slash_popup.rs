@@ -2,8 +2,8 @@
 //! [`SlashPopup`], drawn in a floating area as wide as the input.
 //!
 //! It draws only theme visuals (`window_fill`, `window_stroke`,
-//! `popup_shadow`, the selection hue), so it follows the dark, light and
-//! OLED themes with no colours of its own.
+//! `popup_shadow`, the selection hue), so it follows the dark and light
+//! themes with no colours of its own.
 
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{Align2, Color32, FontId, Rect, Sense, TextFormat};
@@ -505,22 +505,14 @@ mod tests {
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_slash_popup_commands() {
-        render(
-            "slash_popup_commands",
-            "/",
-            notedeck::theme::dark_mode(false),
-        );
+        render("slash_popup_commands", "/", notedeck::theme::dark_mode());
     }
 
     /// Filtered: prefix matches first, the matched span underlined.
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_slash_popup_filtered() {
-        render(
-            "slash_popup_filtered",
-            "/co",
-            notedeck::theme::dark_mode(false),
-        );
+        render("slash_popup_filtered", "/co", notedeck::theme::dark_mode());
     }
 
     /// `/model`'s list, the current model ticked.
@@ -530,7 +522,7 @@ mod tests {
         render(
             "slash_popup_models",
             "/model ",
-            notedeck::theme::dark_mode(false),
+            notedeck::theme::dark_mode(),
         );
     }
 
