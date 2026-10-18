@@ -1585,8 +1585,10 @@ fn note_row_ui(note: &PatchNote, galley: Arc<Galley>, ui: &mut Ui) {
 }
 
 /// Note `n`, drawn by the caller's `draw` from row `part` of it (the row this
-/// pass is at). Its band and bar are painted across every row it takes, the
-/// drawer gets the width past the gutter, and when the drawer used more or
+/// pass is at). The drawer gets the width right of the note's bar, and the
+/// bar runs as tall as the drawer drew: no band behind it, since what the
+/// caller draws (a comment card, a walk note's card) is its own container, and
+/// a band showed as grey padding around it. When the drawer used more or
 /// fewer rows than the note has, the note is resized once the pass is done.
 /// Advances one row, as every row does; the note's later rows skip.
 fn drawn_note_ui(
@@ -1607,13 +1609,8 @@ fn drawn_note_ui(
         egui::pos2(min.x, top),
         egui::pos2(right, top + rows as f32 * step - spacing),
     );
-    let visuals = ui.visuals();
-    let accent = note_color(state.line_notes[n].kind, visuals);
-    let painter = ui.painter();
-    painter.rect_filled(note_rect, 0.0, visuals.faint_bg_color);
-    painter.rect_filled(note_rect.with_max_x(min.x + NOTE_BAR), 0.0, accent);
-
-    let inner = note_rect.with_min_x(min.x + ui.spacing().icon_width + STATUS_WIDTH);
+    let accent = note_color(state.line_notes[n].kind, ui.visuals());
+    let inner = note_rect.with_min_x(min.x + NOTE_BAR);
     let mut child = ui.new_child(
         UiBuilder::new()
             .id_salt(("patch_note", n))
@@ -1624,6 +1621,10 @@ fn drawn_note_ui(
     draw(&mut child, &state.line_notes[n]);
 
     let used = child.min_rect().height();
+    let bar = Rect::from_min_size(note_rect.min, egui::vec2(NOTE_BAR, used));
+    ui.painter()
+        .with_clip_rect(note_rect.intersect(ui.clip_rect()))
+        .rect_filled(bar, 0.0, accent);
     let needed = (((used + spacing) / step).ceil() as usize).max(1);
     if needed != rows {
         // Not now: the rows after this one are still to be located against
