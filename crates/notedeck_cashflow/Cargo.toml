@@ -4,8 +4,11 @@ edition = "2024"
 version.workspace = true
 
 [dependencies]
+cashflow = { workspace = true }
+chrono = { workspace = true }
 egui = { workspace = true }
 glam = { workspace = true }
+ledgerdb = { workspace = true }
 notedeck = { workspace = true }
 poll-promise = { workspace = true }
 profiling = { workspace = true }

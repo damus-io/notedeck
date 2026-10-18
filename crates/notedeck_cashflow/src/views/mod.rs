@@ -4,12 +4,14 @@
 //! — so the router is one `match` and a new view is a new module plus an arm
 //! here.
 
+use cashflow::Books;
 use egui::RichText;
+use ledgerdb::Date;
 
-use crate::{View, ui::palette::Palette};
+use crate::{Period, View, ui::palette::Palette};
 
 mod adventure;
-mod categories;
+pub mod categories;
 mod goals;
 mod overview;
 mod projects;
@@ -18,11 +20,38 @@ mod transactions;
 mod trends;
 
 /// What a view draws from. Every view takes this one struct, so handing views
-/// something new (the ledger, the host's `AppContext`) is a field here, not a
-/// new parameter on every view.
+/// something new (the host's `AppContext`) is a field here, not a new
+/// parameter on every view.
 pub struct ViewCx<'a> {
     /// The colors to draw with.
     pub palette: &'a Palette,
+    /// The books, once some are loaded.
+    pub ledger: Option<LedgerCx<'a>>,
+    /// The date [`Self::period`] is resolved against.
+    pub today: Date,
+    /// The span of days every view reports on, shared so picking one in a
+    /// view picks it in all of them.
+    pub period: &'a mut Period,
+    /// What each view keeps between frames.
+    pub states: &'a mut ViewStates,
+}
+
+/// The loaded books, and which load they came from.
+#[derive(Clone, Copy)]
+pub struct LedgerCx<'a> {
+    /// The books.
+    pub books: &'a Books,
+    /// Changes whenever the books are replaced, so a view knows its cached
+    /// results are stale.
+    pub generation: u64,
+}
+
+/// What each view keeps between frames: its cached results and where the
+/// user is in it. One field per view that needs one.
+#[derive(Default)]
+pub struct ViewStates {
+    /// The Categories view's drill-down and its cached breakdowns.
+    pub(crate) categories: categories::CategoriesState,
 }
 
 /// Draw `view` into `ui`.

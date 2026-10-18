@@ -5917,9 +5917,12 @@ dependencies = [
 name = "notedeck_cashflow"
 version = "0.11.0-beta.1"
 dependencies = [
+ "cashflow",
+ "chrono",
  "egui",
  "egui_kittest",
  "glam",
+ "ledgerdb",
  "notedeck",
  "notedeck_ui",
  "poll-promise",

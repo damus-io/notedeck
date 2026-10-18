@@ -1,9 +1,10 @@
 //! Cashflow's UI pieces shared across views: the palette, the view nav, the
-//! frames panes are drawn in, and the Adventure view's game HUD.
+//! period picker, the frames panes are drawn in, and the Adventure view's game HUD.
 
 pub mod hud;
 pub mod nav;
 pub mod palette;
+pub mod period_picker;
 
 use palette::Palette;
 
