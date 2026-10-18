@@ -37,7 +37,18 @@ const PUBLISH_DRAIN: Duration = Duration::from_millis(500);
 /// (headway:notedeck/physical-pink-universe), at which point this takes a
 /// condition to wait on and [`PUBLISH_DRAIN`] goes away.
 pub(crate) async fn flush_publish(engine: &agentium_core::Engine) {
-    let _ = tokio::time::timeout(PUBLISH_FLUSH, engine.wait_for_sync()).await;
+    // A backfill that gave up was already reported by the read's own wait, so
+    // only an expired flush is news here.
+    crate::sync_wait::wait(
+        engine,
+        &crate::sync_wait::SyncWait {
+            label: "flushing",
+            max: PUBLISH_FLUSH,
+            expired: "the event may not have reached the relay",
+            failed: None,
+        },
+    )
+    .await;
     tokio::time::sleep(PUBLISH_DRAIN).await;
 }
 

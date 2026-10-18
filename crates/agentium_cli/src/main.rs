@@ -23,6 +23,7 @@ mod resume;
 mod send;
 mod show;
 mod spawn;
+mod sync_wait;
 mod term;
 mod transcript;
 mod watch;
@@ -391,7 +392,18 @@ async fn run() -> Result<()> {
         // still streaming in. Bounded by SYNC_MAX so a reachable-but-silent relay
         // can't stall the read; an empty or unreachable relay settles (or times
         // out) fast and we fall through to whatever the cache already holds.
-        let _ = tokio::time::timeout(SYNC_MAX, engine.wait_for_sync()).await;
+        // The wait draws its progress on stderr and says so when it expires or
+        // the backfill gives up, since the read is then from the cache alone.
+        sync_wait::wait(
+            &engine,
+            &sync_wait::SyncWait {
+                label: "syncing sessions",
+                max: SYNC_MAX,
+                expired: "showing cached sessions",
+                failed: Some("failed, showing cached sessions"),
+            },
+        )
+        .await;
     }
 
     // `--author` overrides whose sessions we read; it defaults to the signer.

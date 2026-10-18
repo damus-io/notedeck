@@ -61,7 +61,7 @@ use enostr::NormRelayUrl;
 use futures_util::StreamExt;
 use nostrdb::{Filter, Ndb, SubscriptionStream, Transaction};
 use nostrdb_net::pns::PNS_KIND;
-use nostrdb_net::relay::sync::Session;
+use nostrdb_net::relay::sync::{BackfillStatus, Session};
 
 use crate::messages::Message;
 use crate::session_events::AI_CONVERSATION_KIND;
@@ -296,6 +296,16 @@ impl Engine {
     pub async fn wait_for_sync(&self) -> Option<()> {
         self.session.as_ref()?.wait_for_sync().await;
         Some(())
+    }
+
+    /// Watch the engine's [`Session`] history backfills, so a caller waiting in
+    /// [`Engine::wait_for_sync`] can show how far the sync has got and tell a
+    /// settled sync from one that gave up ([`BackfillStatus::failed`]).
+    ///
+    /// Returns `None` for an [`embedded`](Engine::embedded) engine: it has no
+    /// [`Session`], and its host reports its own sync.
+    pub fn backfill_status(&self) -> Option<tokio::sync::watch::Receiver<BackfillStatus>> {
+        Some(self.session.as_ref()?.backfill_status())
     }
 
     /// List the remote sessions known to this identity, newest revision of each

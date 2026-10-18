@@ -19,13 +19,13 @@ regex = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "signal"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "signal", "sync"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 tempfile = { workspace = true }
 bin_testing = { workspace = true }
 bech32 = { workspace = true }
