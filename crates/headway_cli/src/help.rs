@@ -330,7 +330,7 @@ publishes.",
         name: "diff",
         group: READING,
         summary: "Print the commit a card's review record names",
-        usage: &["diff <card> [--record <sha-prefix>]"],
+        usage: &["diff <card> [--record <sha-prefix>] [--note explain|code]"],
         details: "\
 Resolve the card's newest review record (see `review`) to a commit on
 this host and print it `git show`-style. The commit is looked for in the
@@ -343,14 +343,27 @@ under the data dir. When it isn't there it is fetched — from the record's
 your checkout. If the sha is gone (a rebase), the commit is found by its
 `Headway: <card ref>` trailer instead; a card with no record at all is
 searched for that way too. Where it was found goes to stderr, the commit
-to stdout, so the output pipes into `git apply`.",
-        options: &[(
-            "--record <sha>",
-            "Show the record whose commit starts with this prefix instead of the newest",
-        )],
+to stdout, so the output pipes into `git apply`.
+
+--note prints one of the commit's explain notes instead of its patch:
+`explain` (refs/notes/explain, the page) or `code` (refs/notes/explain-code,
+the code walk). The note is read from the repo the commit was found in,
+else fetched from the same place the commit would be, into FETCH_HEAD only:
+your checkout gains no refs and your own notes are never touched.",
+        options: &[
+            (
+                "--record <sha>",
+                "Show the record whose commit starts with this prefix instead of the newest",
+            ),
+            (
+                "--note <explain|code>",
+                "Print that explain note of the commit instead of its patch",
+            ),
+        ],
         examples: &[
             "headway diff headway:headway/report-raven-expand",
             "headway diff headway:headway/report-raven-expand --record 3d718bc",
+            "headway diff headway:headway/report-raven-expand --note explain",
         ],
     },
     // -- cards ------------------------------------------------------------

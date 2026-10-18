@@ -443,8 +443,9 @@ fn same_repo(dir: &Path, repo: Option<&str>) -> bool {
 ///    jb55's `jex0` remote (`jex0:repos/notedeck`) serves a record from `jex0`;
 /// 4. the scp-style `<host>:<path>`.
 ///
-/// `None` when the record says too little to reach its host.
-fn fetch_source(record: &ReviewFields, repo_dir: &Path, ctx: &ResolveCtx) -> Option<String> {
+/// `None` when the record says too little to reach its host. Public so a
+/// reader of the commit's notes ([`super::fetch_notes`]) asks the same place.
+pub fn fetch_source(record: &ReviewFields, repo_dir: &Path, ctx: &ResolveCtx) -> Option<String> {
     if let Some(remote) = record.remote.as_deref() {
         return Some(remote.to_string());
     }
@@ -543,14 +544,14 @@ fn fetch(
     branch: Option<&str>,
     timeout: Duration,
 ) -> Result<Option<String>, GitError> {
-    let by_sha = match git_fetch(repo_dir, src, sha, timeout) {
+    let by_sha = match git_fetch(repo_dir, src, &[sha], timeout) {
         Ok(()) => return Ok(None),
         Err(e) => e,
     };
     let Some(branch) = branch.filter(|b| is_plain_branch(b)) else {
         return Err(by_sha);
     };
-    match git_fetch(repo_dir, src, branch, timeout) {
+    match git_fetch(repo_dir, src, &[branch], timeout) {
         Ok(()) => Ok(git(
             repo_dir,
             &["rev-parse", "--verify", "--quiet", "FETCH_HEAD"],
@@ -575,26 +576,40 @@ fn is_plain_branch(branch: &str) -> bool {
         && !branch.contains("..")
 }
 
-/// `git fetch --no-tags <src> <what>`, non-interactively and under `timeout`.
+/// `git fetch --no-tags <src> <what>...`, non-interactively and under
+/// `timeout`. Each of `what` is a plain refspec with no `:dst` (a sha or a ref
+/// name), so the fetch writes FETCH_HEAD and never a ref.
+pub(super) fn git_fetch(
+    repo_dir: &Path,
+    src: &str,
+    what: &[&str],
+    timeout: Duration,
+) -> Result<(), GitError> {
+    let mut args = vec!["fetch", "--no-tags", "--quiet", "--end-of-options", src];
+    args.extend_from_slice(what);
+    git_remote(repo_dir, &args, timeout).map(drop)
+}
+
+/// `git <args>` against a remote (a fetch or an ls-remote) in `repo_dir`,
+/// returning its stdout, non-interactively and under `timeout`.
 ///
 /// It must never block on a human: `GIT_TERMINAL_PROMPT=0` stops https
 /// credential prompts, and unless the user has set their own `GIT_SSH_COMMAND`
 /// ssh runs with `BatchMode=yes` (no password or host-key prompt) and a connect
 /// timeout. Past `timeout` git is killed; an ssh it spawned outlives it by at
 /// most its own connect timeout. `ext::` transports are refused outright, since
-/// `src` comes from a record someone else wrote.
-fn git_fetch(repo_dir: &Path, src: &str, what: &str, timeout: Duration) -> Result<(), GitError> {
-    let args = [
-        "-c",
-        "protocol.ext.allow=never",
-        "fetch",
-        "--no-tags",
-        "--quiet",
-        "--end-of-options",
-        src,
-        what,
-    ];
-    let command = format!("fetch --no-tags {src} {what}");
+/// the source comes from a record someone else wrote.
+pub(super) fn git_remote(
+    repo_dir: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<String, GitError> {
+    let command = args
+        .iter()
+        .filter(|a| !matches!(**a, "--quiet" | "--end-of-options"))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
     let err = |stderr: String| GitError {
         command: command.clone(),
         stderr,
@@ -603,9 +618,10 @@ fn git_fetch(repo_dir: &Path, src: &str, what: &str, timeout: Duration) -> Resul
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(repo_dir)
+        .args(["-c", "protocol.ext.allow=never"])
         .args(args)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("GIT_TERMINAL_PROMPT", "0");
     if std::env::var_os("GIT_SSH_COMMAND").is_none() {
@@ -616,16 +632,19 @@ fn git_fetch(repo_dir: &Path, src: &str, what: &str, timeout: Duration) -> Resul
     }
     let mut child = cmd.spawn().map_err(|e| err(e.to_string()))?;
 
-    // Drain stderr on its own thread so a chatty git can't fill the pipe and
-    // stall; it's left detached if we give up on the child below.
-    let mut stderr = child.stderr.take();
-    let reader = std::thread::spawn(move || {
-        let mut buf = String::new();
-        if let Some(s) = stderr.as_mut() {
-            let _ = s.read_to_string(&mut buf);
-        }
-        buf
-    });
+    // Drain both pipes on their own threads so a chatty git can't fill one and
+    // stall; they're left detached if we give up on the child below.
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_string(&mut buf);
+            }
+            buf
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
+    let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
 
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -642,9 +661,10 @@ fn git_fetch(repo_dir: &Path, src: &str, what: &str, timeout: Duration) -> Resul
             Err(e) => return Err(err(e.to_string())),
         }
     };
-    let stderr = reader.join().unwrap_or_default();
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
     if status.success() {
-        Ok(())
+        Ok(stdout)
     } else {
         Err(err(stderr.trim().to_string()))
     }
@@ -705,7 +725,7 @@ fn full_commit(repo_dir: &Path, sha: &str) -> Result<String, GitError> {
 /// Whether `s` looks like a (possibly abbreviated) object id: 4 to 64 hex
 /// digits. Guards every record-supplied sha before it reaches git's argv or a
 /// cache path.
-fn is_hex_sha(s: &str) -> bool {
+pub(super) fn is_hex_sha(s: &str) -> bool {
     (4..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 

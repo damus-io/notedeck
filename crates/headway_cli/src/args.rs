@@ -10,6 +10,7 @@ use nostrdb_net::Pubkey;
 use regex::Regex;
 
 use headway::event::{LineRange, ReviewFields, ReviewSource, ReviewSourceRole};
+use headway::git::NoteKind;
 use headway::query::{DisplayProps, GroupBy, Grouping, SortBy, Sorting};
 use headway::store;
 
@@ -249,6 +250,9 @@ pub(crate) enum Command {
         /// `--record`: pick the record whose commit starts with this prefix
         /// instead of the newest.
         record: Option<String>,
+        /// `--note explain|code`: print that explain note of the commit
+        /// instead of its patch.
+        note: Option<NoteKind>,
     },
     Delete {
         card: String,
@@ -660,6 +664,8 @@ impl Cli {
         // `diff --record`: which review record to show. `comment` shares it,
         // with its other review flags.
         let mut record = None;
+        // `diff --note`: print one of the commit's explain notes instead.
+        let mut note = None;
         let mut review_comment = ReviewCommentFlags::default();
         // `show --source`: print one review source's text.
         let mut source = None;
@@ -761,6 +767,13 @@ impl Cli {
                 }),
                 "--source" => source = Some(value("--source")?),
                 "--record" => record = Some(value("--record")?),
+                "--note" => {
+                    let name = value("--note")?;
+                    note = Some(
+                        NoteKind::parse(&name)
+                            .ok_or_else(|| format!("--note takes explain or code, not '{name}'"))?,
+                    )
+                }
                 "--path" => review_comment.path = Some(value("--path")?),
                 "--line" => review_comment.lines = Some(parse_lines(&value("--line")?)?),
                 "--old" => review_comment.old = true,
@@ -862,6 +875,7 @@ impl Cli {
             case,
             review,
             record,
+            note,
             review_comment,
         )?;
 
@@ -1046,6 +1060,7 @@ fn parse_command(
     case: CaseMode,
     review: ReviewFlags,
     record: Option<String>,
+    note: Option<NoteKind>,
     mut review_comment: ReviewCommentFlags,
 ) -> Result<Command> {
     let card = || -> Result<String> { arg(rest, 0, name) };
@@ -1215,6 +1230,7 @@ fn parse_command(
         "diff" => Command::Diff {
             card: card()?,
             record,
+            note,
         },
         "delete" => Command::Delete { card: card()? },
         "archive" => Command::Archive { card: card()? },
@@ -1395,6 +1411,27 @@ mod tests {
         assert!(help_of(&["show"]).is_none());
     }
 
+    /// `diff --note` names one of the commit's two explain notes; any other
+    /// name is refused before any relay or git work, and without it `diff`
+    /// prints the patch.
+    #[test]
+    fn diff_note_flag_parses() {
+        let cli = parse(&["diff", "card", "--note", "code", "--record", "abc"]);
+        let Command::Diff { note, record, .. } = cli.command else {
+            panic!("expected a diff");
+        };
+        assert_eq!(note, Some(NoteKind::Code));
+        assert_eq!(record.as_deref(), Some("abc"));
+
+        let Command::Diff { note, .. } = parse(&["diff", "card"]).command else {
+            panic!("expected a diff");
+        };
+        assert_eq!(note, None);
+
+        let err = parse_err(&["diff", "card", "--note", "page"]);
+        assert!(err.contains("explain or code"), "{err}");
+    }
+
     /// `comment`'s review flags parse into where the comment goes: `--line`
     /// takes one line or an inclusive range, `--record` is shared with `diff`,
     /// and a malformed range is refused before any relay work.
@@ -1479,6 +1516,7 @@ mod tests {
                 None,
                 CaseMode::Smart,
                 ReviewFlags::default(),
+                None,
                 None,
                 ReviewCommentFlags::default(),
             );
@@ -2383,6 +2421,7 @@ mod tests {
             "--show" | "--hide" => "id",
             "--group" | "--sub-group" => "status",
             "--sort" => "manual",
+            "--note" => "explain",
             _ => "1",
         }
     }

@@ -912,14 +912,14 @@ async fn run() -> Result<()> {
         // Read command: resolve the card's review record to a commit (fetching
         // it if this host lacks it) and print it. The bare cache lives beside
         // the nostrdb cache, so a `--db` run keeps its git cache there too.
-        Command::Diff { card, record } => {
+        Command::Diff { card, record, note } => {
             let view = load_board(&ndb, &roster, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
             let cache_root = match cli.db.as_deref() {
                 Some(db) => std::path::Path::new(db).join("git"),
                 None => nostrdb_net::relay::sync::config_path(APP, "git")?,
             };
-            diff::print_diff(&view, &card, record.as_deref(), &cache_root)?;
+            diff::print_diff(&view, &card, record.as_deref(), note, &cache_root)?;
         }
 
         edit => {

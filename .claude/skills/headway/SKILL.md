@@ -197,7 +197,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment or a review comment |
 | `comment <card> --path <f> --line <a[-b]> [--old] [--record <sha>] <text...>` | Inline review comment on a review record's commit (newest record by default); `--record` alone comments on the whole commit |
 | `review <card> [--explainer <url>] [--explainer-source <f>] [--code-source <f>] [--deploy <url>] [--commit <rev>]` | Record a commit for review on the card: sha, title, branch, host, repo path and `agentium:` ref, read from git in `--repo-dir` (default cwd) and `$AGENTIUM_SESSION`; `--deploy` is the URL where this commit's build is live; the source flags store the explainer's Markdown and its code walk on the record (repeatable, text, 32 KiB a file) |
-| `diff <card> [--record <sha>]` | Print the commit the card's newest review record names (`git show`-style), fetching it from the recording host if this one lacks it; falls back to the card's `Headway:` trailer |
+| `diff <card> [--record <sha>] [--note explain\|code]` | Print the commit the card's newest review record names (`git show`-style), fetching it from the recording host if this one lacks it; falls back to the card's `Headway:` trailer. `--note` prints the commit's explain git note instead |
 | `delete <card>` | Remove a card (reversible tombstone) |
 | `archive <card>` | Archive a card off the board |
 | `restore <card>` | Restore an archived card |
@@ -296,7 +296,11 @@ chapter from. The `visual-explainer` skill says how to write both. `show <card>`
 checkout, then any checkout of the same repo (matched by root commit), then a
 bare cache under the headway-cli data dir, and fetches over ssh from the
 recording host when none has it — never prompting, never creating refs in your
-checkout.
+checkout. `explain` also writes the commit's git notes (`refs/notes/explain` for
+the page, `refs/notes/explain-code` for the walk); `headway diff <card> --note
+explain|code` prints one, read from the same place as the commit. Colleagues
+without headway read them with `git log --notes=explain --notes=explain-code`
+after fetching `refs/notes/explain*`.
 
 Inline review comments left on a commit (in the app's review pane, or by
 `comment --path`) print under their record in `show <card>`, threaded, each with

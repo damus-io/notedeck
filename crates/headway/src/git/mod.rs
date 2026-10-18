@@ -9,14 +9,17 @@
 //! exactly what the caller needs to show.
 //!
 //! [`resolve`] (the `resolve` submodule) builds on these to find — or fetch —
-//! the commit a review record names and turn it into a [`CommitPatch`].
+//! the commit a review record names and turn it into a [`CommitPatch`];
+//! [`notes`] reads the explain notes beside that commit, from the same place.
 
 mod lfs;
+mod notes;
 mod resolve;
 
+pub use notes::{CODE_REF, CommitNotes, EXPLAIN_REF, NoteKind, fetch_notes, read_notes};
 pub use resolve::{
-    Blob, CommitPatch, Found, ResolveCtx, Resolved, Target, blob_bytes, commit_patch, remote_host,
-    resolve, resolve_by_trailer,
+    Blob, CommitPatch, Found, ResolveCtx, Resolved, Target, blob_bytes, commit_patch, fetch_source,
+    remote_host, resolve, resolve_by_trailer,
 };
 
 use std::fmt;
