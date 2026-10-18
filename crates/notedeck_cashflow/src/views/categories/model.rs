@@ -9,10 +9,9 @@
 use std::collections::HashMap;
 
 use cashflow::Books;
-use ledgerdb::{
-    AccountId, Amount, Bucket, Commodities, CommodityId, DateRange, Filter, Query, StrId,
-};
+use ledgerdb::{AccountId, Bucket, Commodities, CommodityId, DateRange, Filter, Query, StrId};
 
+use crate::money::money;
 use crate::period::Resolved;
 
 /// Which way money moves through a column, and so how its sums read.
@@ -469,12 +468,4 @@ fn delta(current: i128, previous: i128, home: CommodityId, commodities: &Commodi
     }
     let percent = change as f64 / previous.unsigned_abs() as f64 * 100.0;
     format!("{sign}{amount} ({sign}{percent:.0}%)")
-}
-
-/// `qty` smallest units of `commodity`, in the ledger's style for it.
-pub(crate) fn money(qty: i128, commodity: CommodityId, commodities: &Commodities) -> String {
-    match i64::try_from(qty) {
-        Ok(qty) => Amount { qty, commodity }.display(commodities).to_string(),
-        Err(_) => format!("{qty} units of {}", commodities.name(commodity)),
-    }
 }

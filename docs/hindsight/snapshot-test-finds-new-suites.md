@@ -11,3 +11,4 @@ new test file's snapshots are silently skipped and the run still exits 0.
 - headway:cashflow/elder-spirit-fly — the new `tests/chart_tests.rs` snapshots in notedeck_ui needed `--test chart_tests` added to the suite line by hand
 - headway:cashflow/describe-wheel-culture — the new `tests/hud_gallery.rs` snapshots ran 0 tests with exit 0 until `--test hud_gallery` was added to the cashflow suite line by hand
 - headway:cashflow/response-absent-royal — the new `tests/categories.rs` snapshots ran 0 tests until `--test categories` was added to the cashflow suite line by hand
+- headway:cashflow/clinic-autumn-fault — the new `tests/trends.rs` snapshots ran 0 tests until `--test trends` was added to the cashflow suite line by hand

@@ -17,7 +17,7 @@ mod overview;
 mod projects;
 mod settings;
 mod transactions;
-mod trends;
+pub mod trends;
 
 /// What a view draws from. Every view takes this one struct, so handing views
 /// something new (the host's `AppContext`) is a field here, not a new
@@ -52,6 +52,8 @@ pub struct LedgerCx<'a> {
 pub struct ViewStates {
     /// The Categories view's drill-down and its cached breakdowns.
     pub(crate) categories: categories::CategoriesState,
+    /// The Trends view's span, picks and cached series.
+    pub(crate) trends: trends::TrendsState,
 }
 
 /// Draw `view` into `ui`.

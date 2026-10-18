@@ -316,3 +316,180 @@ pub fn snapshot_harness(app: CashflowApp, size: egui::Vec2) -> Harness<'static, 
     harness.run();
     harness
 }
+
+/// The first month of [`synthetic_years_journal`].
+const YEARS_FROM: (u16, u8) = (2022, 1);
+
+/// How many months [`synthetic_years_journal`] covers: January 2022 through
+/// October 2024, the month of [`TODAY`].
+const YEARS_MONTHS: u32 = 34;
+
+/// Bitcoin's made-up price in CAD on the first of each month of
+/// [`synthetic_years_journal`]: a fall through 2022 and a climb after, so the
+/// net worth line moves with it.
+const BTC_CAD: [u32; YEARS_MONTHS as usize] = [
+    52_000, 48_000, 55_000, 58_000, 40_000, 26_000, 28_000, 30_000, 25_000, 26_000, 22_000, 21_000,
+    28_000, 31_000, 37_000, 39_000, 36_000, 41_000, 40_000, 38_000, 35_000, 46_000, 50_000, 58_000,
+    60_000, 70_000, 94_000, 88_000, 92_000, 84_000, 86_000, 80_000, 82_000, 85_000,
+];
+
+/// A made-up journal of every month from January 2022 through [`TODAY`]:
+/// rent and salary that step up each year, groceries, restaurants on a
+/// credit card paid off the next month, fuel, a quarterly treat, summer and
+/// winter trips (months that spend more than they earn), freelance work
+/// every other month, interest, and two bitcoin buys priced monthly, so the
+/// Trends view's three charts all have something to show. Nothing is dated
+/// after [`TODAY`].
+pub fn synthetic_years_journal() -> String {
+    let today = today();
+    let mut text = String::new();
+    let mut id = 0;
+    let mut txn = |text: &mut String, date: &str, payee: &str, postings: &str| {
+        id += 1;
+        text.push_str(&format!(
+            "{date} * {payee}\n  ; id: years:{id}\n{postings}\n"
+        ));
+    };
+    let cad = |cents: u64| format!("{}.{:02} CAD", cents / 100, cents % 100);
+
+    txn(
+        &mut text,
+        "2022-01-01",
+        "Opening balance",
+        "  assets:checking  12000.00 CAD\n  equity:opening\n",
+    );
+    for m in 0..YEARS_MONTHS {
+        let month = u32::from(YEARS_FROM.1) - 1 + m;
+        let year = YEARS_FROM.0 + (month / 12) as u16;
+        let mon = month % 12 + 1;
+        let day = |d: u8| format!("{year}-{mon:02}-{d:02}");
+        let dated = |d: u8| Date::parse(&day(d)).unwrap() <= today;
+        let paid =
+            |account: &str, cents: u64| format!("  {account}  {}\n  assets:checking\n", cad(cents));
+        let received = |account: &str, cents: u64| {
+            format!("  {account}  -{}\n  assets:checking\n", cad(cents))
+        };
+        let step = u64::from(year - YEARS_FROM.0);
+        let m = u64::from(m);
+
+        text.push_str(&format!(
+            "P {} BTC {}.00 CAD\n\n",
+            day(1),
+            BTC_CAD[m as usize]
+        ));
+        if dated(1) {
+            txn(
+                &mut text,
+                &day(1),
+                "Landlord",
+                &paid("expenses:housing:rent", 180_000 + step * 10_000),
+            );
+        }
+        if dated(3) && m > 0 {
+            // Last month's restaurant bill, paid off.
+            let bill = 8_000 + (m - 1) * 5_300 % 9_000;
+            txn(
+                &mut text,
+                &day(3),
+                "Card payment",
+                &paid("liabilities:card", bill),
+            );
+        }
+        if dated(5) {
+            txn(
+                &mut text,
+                &day(5),
+                "Corner Grocer",
+                &paid("expenses:food:groceries", 30_000 + m * 3_700 % 12_000),
+            );
+        }
+        if dated(10) && (m == 2 || m == 17) {
+            let (btc, price) = if m == 2 {
+                ("0.05000000", 55_000)
+            } else {
+                ("0.10000000", 41_000)
+            };
+            txn(
+                &mut text,
+                &day(10),
+                "Exchange",
+                &format!("  assets:btc  {btc} BTC @ {price}.00 CAD\n  assets:checking\n"),
+            );
+        }
+        if dated(12) {
+            let bill = 8_000 + m * 5_300 % 9_000;
+            txn(
+                &mut text,
+                &day(12),
+                "Bistro",
+                &format!(
+                    "  expenses:food:restaurant  {}\n  liabilities:card\n",
+                    cad(bill)
+                ),
+            );
+        }
+        if dated(15) {
+            txn(
+                &mut text,
+                &day(15),
+                "Acme Corp",
+                &received("income:salary", 420_000 + step * 30_000),
+            );
+        }
+        if dated(18) {
+            txn(
+                &mut text,
+                &day(18),
+                "Fuel Stop",
+                &paid("expenses:transport:fuel", 12_000 + m * 2_900 % 6_000),
+            );
+        }
+        if dated(20) && m % 3 == 0 {
+            txn(
+                &mut text,
+                &day(20),
+                "Game Store",
+                &paid("expenses:fun", 25_000),
+            );
+        }
+        if dated(22) && (mon == 7 || mon == 12) {
+            txn(
+                &mut text,
+                &day(22),
+                "Airline",
+                &paid("expenses:travel", 450_000),
+            );
+        }
+        if dated(25) && m % 2 == 1 {
+            let fee = 60_000 + m * 7_100 % 90_000;
+            txn(
+                &mut text,
+                &day(25),
+                "Client A",
+                &received("income:freelance", fee),
+            );
+        }
+        if dated(28) {
+            txn(
+                &mut text,
+                &day(28),
+                "Bank",
+                &received("income:interest", 500 + m * 100),
+            );
+        }
+    }
+    text
+}
+
+/// [`synthetic_years_journal`], loaded.
+pub fn synthetic_years_books() -> Books {
+    books_from(&synthetic_years_journal())
+}
+
+/// A fresh app on [`TODAY`] reporting on [`synthetic_years_books`].
+pub fn synthetic_years_app() -> CashflowApp {
+    let mut app = CashflowApp::new();
+    app.set_today(today());
+    app.set_books(synthetic_years_books());
+    app
+}

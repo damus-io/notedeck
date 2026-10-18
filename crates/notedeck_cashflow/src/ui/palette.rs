@@ -34,11 +34,39 @@ pub struct Palette {
     pub transfer: Color32,
     /// Needs attention: stale sources, missing segments, uncategorized rows.
     pub warning: Color32,
+    /// Lines that stand for things rather than for money in or out, such as
+    /// accounts compared on one chart, handed out in this order and kept by
+    /// the thing they stand for (see [`SERIES`]).
+    pub series: [Color32; SERIES],
     /// The Adventure view's game HUD (see [`crate::ui::hud`]).
     pub hud: HudPalette,
     /// The bold and medium faces, built once (see [`Faces`]).
     pub faces: Faces,
 }
+
+/// How many [`Palette::series`] colors there are, so how many things one
+/// chart compares.
+pub const SERIES: usize = 5;
+
+/// The categorical steps for a light page: blue, orange, aqua, yellow,
+/// magenta, in that order, which keeps neighbours apart for color-blind
+/// readers (checked with the dataviz skill's palette validator).
+const SERIES_LIGHT: [Color32; SERIES] = [
+    Color32::from_rgb(0x2a, 0x78, 0xd6),
+    Color32::from_rgb(0xeb, 0x68, 0x34),
+    Color32::from_rgb(0x1b, 0xaf, 0x7a),
+    Color32::from_rgb(0xed, 0xa1, 0x00),
+    Color32::from_rgb(0xe8, 0x7b, 0xa4),
+];
+
+/// [`SERIES_LIGHT`]'s hues stepped for a dark page.
+const SERIES_DARK: [Color32; SERIES] = [
+    Color32::from_rgb(0x39, 0x87, 0xe5),
+    Color32::from_rgb(0xd9, 0x59, 0x26),
+    Color32::from_rgb(0x19, 0x9e, 0x70),
+    Color32::from_rgb(0xc9, 0x85, 0x00),
+    Color32::from_rgb(0xd5, 0x51, 0x81),
+];
 
 /// notedeck's bold and medium font families, built once and handed out by
 /// reference.
@@ -173,6 +201,11 @@ impl Palette {
             expense: theme.destructive,
             transfer: theme.text_secondary,
             warning: theme.warning,
+            series: if is_light(theme) {
+                SERIES_LIGHT
+            } else {
+                SERIES_DARK
+            },
             hud: HudPalette::from_theme(theme),
             faces,
         }

@@ -1,4 +1,4 @@
-//! Time-series line and area charts.
+//! Time-series line, area and bar charts.
 //!
 //! The x axis is a run of date buckets (bucket `0` is the oldest), the y axis
 //! is an amount. Any number of [`Series`] share one zero baseline and one set
@@ -7,6 +7,11 @@
 //! otherwise). Hovering the plot draws a vertical crosshair and a tooltip of
 //! every series' value at the hovered bucket; the tooltip's contents come from
 //! a caller-supplied closure, so a view can restyle it.
+//!
+//! [`bar_line_chart`] draws some series as bars, side by side in each bucket,
+//! and the rest as lines over them, on the same axis: a month's income and
+//! expenses as bars with the net as a line, say. Each bucket there is a slot
+//! with its bar group in the middle, and hovering shades the slot.
 //!
 //! Every input is borrowed: the series are slices the caller already holds,
 //! so a chart adds nothing of its own to a frame beyond the shapes egui needs
@@ -246,11 +251,44 @@ pub fn area_chart(
     time_series_chart(ui, size, data, style, SeriesFill::Area, tooltip)
 }
 
-/// Whether the area under each series is filled.
+/// Draws the first `bars` series of `data` as bars, grouped side by side in
+/// each bucket from the zero baseline, and the rest as lines over them, all
+/// on one y axis, filling `size`.
+///
+/// A bar keeps its series' color below zero too; only the lines take the
+/// negative color. `tooltip` renders the hover tooltip's contents; pass
+/// [`default_tooltip`] for the plain one.
+pub fn bar_line_chart(
+    ui: &mut Ui,
+    size: Vec2,
+    data: &TimeSeries<'_>,
+    bars: usize,
+    style: &TimeSeriesStyle,
+    tooltip: impl FnOnce(&mut Ui, &HoverPoint<'_>),
+) -> TimeSeriesResponse {
+    let bars = bars.min(data.series.len());
+    time_series_chart(ui, size, data, style, SeriesFill::Bars(bars), tooltip)
+}
+
+/// How each series is drawn.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SeriesFill {
+    /// Every series a line.
     Line,
+    /// Every series a line over the area it encloses with the baseline.
     Area,
+    /// This many series as bars, the rest as lines.
+    Bars(usize),
+}
+
+impl SeriesFill {
+    /// How many leading series are bars.
+    fn bars(self) -> usize {
+        match self {
+            SeriesFill::Bars(n) => n,
+            SeriesFill::Line | SeriesFill::Area => 0,
+        }
+    }
 }
 
 /// Font of the axis labels.
@@ -314,25 +352,41 @@ fn time_series_chart(
         ),
         buckets,
         ticks,
+        slots: matches!(fill, SeriesFill::Bars(_)),
     };
 
     paint_y_axis(&painter, &plot, data, label_color, ui.visuals());
     paint_x_axis(&painter, &plot, data, style, label_color, rect);
-
-    for series in data.series {
-        if fill == SeriesFill::Area {
-            paint_area(&painter, &plot, series, style, negative);
-        }
-        paint_line(&painter, &plot, series, style, negative);
-    }
 
     let hovered = response
         .hover_pos()
         .filter(|pos| pos.x >= plot.rect.left() - pad && pos.x <= plot.rect.right() + pad)
         .map(|pos| plot.bucket_at(pos.x));
 
+    let (bars, lines) = data.series.split_at(fill.bars());
+    if !bars.is_empty() {
+        if let Some(bucket) = hovered {
+            paint_slot(&painter, &plot, bucket, ui.visuals());
+        }
+        paint_bars(&painter, &plot, bars);
+    }
+    for series in lines {
+        if fill == SeriesFill::Area {
+            paint_area(&painter, &plot, series, style, negative);
+        }
+        paint_line(&painter, &plot, series, style, negative);
+    }
+
     let tooltip_rect = hovered.map(|bucket| {
-        paint_crosshair(&painter, &plot, data, bucket, style, negative, ui.visuals());
+        paint_crosshair(
+            &painter,
+            &plot,
+            lines,
+            bucket,
+            style,
+            negative,
+            ui.visuals(),
+        );
         show_tooltip(
             ui,
             &response,
@@ -357,11 +411,18 @@ struct Plot {
     rect: Rect,
     buckets: usize,
     ticks: AxisTicks,
+    /// Whether each bucket is a slot of the plot's width with its point in
+    /// the middle, as bars need, rather than a point with the first and last
+    /// on the plot's edges.
+    slots: bool,
 }
 
 impl Plot {
-    /// Screen x of bucket `i`. A single bucket sits in the middle.
+    /// Screen x of bucket `i`. A single point sits in the middle.
     fn x(&self, i: usize) -> f32 {
+        if self.slots {
+            return self.rect.left() + (i as f32 + 0.5) * self.bucket_width();
+        }
         if self.buckets < 2 {
             return self.rect.center().x;
         }
@@ -370,6 +431,9 @@ impl Plot {
 
     /// Horizontal distance between two neighbouring buckets.
     fn bucket_width(&self) -> f32 {
+        if self.slots {
+            return self.rect.width() / (self.buckets as f32).max(1.0);
+        }
         self.rect.width() / (self.buckets.saturating_sub(1) as f32).max(1.0)
     }
 
@@ -384,12 +448,14 @@ impl Plot {
         pos2(self.x(i), self.y(v))
     }
 
-    /// The bucket nearest screen x.
+    /// The bucket nearest screen x, or in slots the one whose slot holds
+    /// it.
     fn bucket_at(&self, x: f32) -> usize {
         if self.buckets < 2 {
             return 0;
         }
-        let i = ((x - self.rect.left()) / self.bucket_width()).round();
+        let at = (x - self.rect.left()) / self.bucket_width();
+        let i = if self.slots { at.floor() } else { at.round() };
         (i.max(0.0) as usize).min(self.buckets - 1)
     }
 
@@ -561,23 +627,85 @@ fn paint_area(
     painter.add(Shape::mesh(mesh));
 }
 
-/// The vertical hover line at `bucket`, and a dot on each series there.
+/// Fraction of a slot its bar group spans; the rest is the gap between
+/// groups.
+const BAR_GROUP_WIDTH: f32 = 0.72;
+
+/// Gap between two bars of a group, in points.
+const BAR_GAP: f32 = 2.0;
+
+/// The hovered bucket's slot, shaded behind its bars.
+fn paint_slot(painter: &egui::Painter, plot: &Plot, bucket: usize, visuals: &egui::Visuals) {
+    let half = plot.bucket_width() / 2.0;
+    let x = plot.x(bucket);
+    let slot = Rect::from_x_y_ranges(x - half..=x + half, plot.rect.y_range());
+    painter.rect_filled(
+        slot,
+        notedeck::tokens::RADIUS_SM,
+        visuals.widgets.hovered.weak_bg_fill,
+    );
+}
+
+/// `bars` as a group per bucket: side by side in series order, each from
+/// the baseline to its value, rounded at the value's end.
+fn paint_bars(painter: &egui::Painter, plot: &Plot, bars: &[Series<'_>]) {
+    let group = plot.bucket_width() * BAR_GROUP_WIDTH;
+    let width = ((group - BAR_GAP * (bars.len() as f32 - 1.0)) / bars.len() as f32).max(1.0);
+    let base = plot.y(0.0);
+    let radius = (width / 2.0).min(4.0) as u8;
+    for bucket in 0..plot.buckets {
+        let left = plot.x(bucket) - group / 2.0;
+        for (k, series) in bars.iter().enumerate() {
+            let Some(&v) = series.values.get(bucket) else {
+                continue;
+            };
+            if v == 0.0 {
+                continue;
+            }
+            let x = left + k as f32 * (width + BAR_GAP);
+            let y = plot.y(v);
+            let bar = Rect::from_x_y_ranges(x..=x + width, y.min(base)..=y.max(base));
+            let corners = if v > 0.0 {
+                egui::CornerRadius {
+                    nw: radius,
+                    ne: radius,
+                    sw: 0,
+                    se: 0,
+                }
+            } else {
+                egui::CornerRadius {
+                    nw: 0,
+                    ne: 0,
+                    sw: radius,
+                    se: radius,
+                }
+            };
+            painter.rect_filled(bar, corners, series.color);
+        }
+    }
+}
+
+/// The hover mark at `bucket`: a vertical line (unless the buckets are
+/// slots, which [`paint_slot`] shades instead) and a dot on each of `lines`
+/// there.
 fn paint_crosshair(
     painter: &egui::Painter,
     plot: &Plot,
-    data: &TimeSeries<'_>,
+    lines: &[Series<'_>],
     bucket: usize,
     style: &TimeSeriesStyle,
     negative: Color32,
     visuals: &egui::Visuals,
 ) {
     let x = plot.x(bucket);
-    painter.vline(
-        x,
-        plot.rect.y_range(),
-        Stroke::new(notedeck::tokens::STROKE_THIN, visuals.text_color()),
-    );
-    for series in data.series {
+    if !plot.slots {
+        painter.vline(
+            x,
+            plot.rect.y_range(),
+            Stroke::new(notedeck::tokens::STROKE_THIN, visuals.text_color()),
+        );
+    }
+    for series in lines {
         let Some(&v) = series.values.get(bucket) else {
             continue;
         };
@@ -672,6 +800,7 @@ mod tests {
                 hi: 10.0,
                 step: 5.0,
             },
+            slots: false,
         }
     }
 
@@ -684,6 +813,25 @@ mod tests {
         assert_eq!(p.bucket_at(-50.0), 0);
         assert_eq!(p.bucket_at(500.0), 4);
         assert_eq!(plot(1).x(0), 50.0);
+    }
+
+    #[test]
+    fn slots_center_each_bucket_and_cover_their_width() {
+        let p = Plot {
+            slots: true,
+            ..plot(4)
+        };
+        assert_eq!(p.bucket_width(), 25.0);
+        assert_eq!(p.x(0), 12.5);
+        assert_eq!(p.x(3), 87.5);
+        assert_eq!(p.bucket_at(24.0), 0);
+        assert_eq!(p.bucket_at(26.0), 1);
+        assert_eq!(p.bucket_at(99.0), 3);
+        let one = Plot {
+            slots: true,
+            ..plot(1)
+        };
+        assert_eq!(one.x(0), 50.0);
     }
 
     #[test]

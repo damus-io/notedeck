@@ -19,6 +19,7 @@ use cashflow::Books;
 use ledgerdb::Date;
 use notedeck::{AppContext, AppResponse};
 
+pub mod money;
 pub mod period;
 pub mod ui;
 mod view;

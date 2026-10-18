@@ -10,6 +10,7 @@ egui = { workspace = true }
 glam = { workspace = true }
 ledgerdb = { workspace = true }
 notedeck = { workspace = true }
+notedeck_ui = { workspace = true }
 poll-promise = { workspace = true }
 profiling = { workspace = true }
 renderbud = { workspace = true }
@@ -21,6 +22,4 @@ tracing = { workspace = true }
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 notedeck = { workspace = true, features = ["snapshot-testing"] }
-# The HUD gallery shows the HUD tooltip on a `notedeck_ui::charts` chart.
-notedeck_ui = { workspace = true }
 tempfile = { workspace = true }
