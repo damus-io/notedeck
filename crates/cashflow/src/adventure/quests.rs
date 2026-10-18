@@ -32,9 +32,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use headway::event::BoardView;
 use ledgerdb::{CommodityId, Date};
-use nostrdb_net::NoteId;
 
 use super::backlog::Backlog;
 use super::{Month, SkillId, XpTuning};
@@ -129,25 +127,6 @@ pub struct Award {
     pub title: String,
 }
 
-/// A goal, and when its card moved to the terminal column it is in.
-#[derive(Clone, Copy, Debug)]
-pub struct EpicGoal<'a> {
-    /// The goal.
-    pub goal: &'a Goal,
-    /// Unix seconds its card was placed in its done column, when it is
-    /// done ([`done_at`]).
-    pub done_at: Option<u64>,
-}
-
-/// When `goal`'s card was placed in the terminal column it is in, if it is
-/// done and on `view`.
-pub fn done_at(view: &BoardView, goal: &Goal) -> Option<u64> {
-    if !goal.done {
-        return None;
-    }
-    view.card(NoteId::new(goal.card)).map(|card| card.placed_at)
-}
-
 /// The current quests and every completed quest's award.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Quests {
@@ -165,7 +144,7 @@ pub(super) struct Sources<'a> {
     pub zone: Zone,
     pub tuning: &'a XpTuning,
     pub today: Date,
-    pub goals: &'a [EpicGoal<'a>],
+    pub goals: &'a [Goal],
     /// The fold's first month.
     pub first: Month,
     /// Each month's flow from `first` through the current month.
@@ -411,15 +390,14 @@ fn epics(sources: &Sources<'_>, quests: &mut Quests) {
         projects,
         today,
     };
-    for epic in sources.goals {
-        let goal = epic.goal;
+    for goal in sources.goals {
         let Ok(spec) = &goal.spec else {
             continue;
         };
         let skill = goal_skill(spec.metric, spec.scope.as_ref(), sources.skills);
         let id = QuestId(format!("epic:{}", goal.card_ref));
         if goal.done {
-            let month = epic.done_at.map_or(Month::of(today), |at| {
+            let month = goal.done_at.map_or(Month::of(today), |at| {
                 Month::of(zone.date(at)).min(Month::of(today))
             });
             quests.awards.push(Award {

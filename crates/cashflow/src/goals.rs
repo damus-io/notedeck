@@ -666,6 +666,10 @@ pub struct Goal {
     pub column: String,
     /// Whether that column is terminal (the goal's card is done).
     pub done: bool,
+    /// Unix seconds the card was placed in that terminal column, when it
+    /// is done: the day an epic quest pays
+    /// ([`crate::adventure::quests`]).
+    pub done_at: Option<u64>,
     /// The goal, or why its block couldn't be read.
     pub spec: Result<GoalSpec, GoalError>,
     /// The progress reports already written back to the card, oldest
@@ -718,6 +722,7 @@ fn goal_of(view: &BoardView, column: &str, done: bool, card: &CardView) -> Goal 
         title: card.title.clone(),
         column: column.to_owned(),
         done,
+        done_at: done.then_some(card.placed_at),
         spec,
         posted: writeback::posted(&card.comments),
     }

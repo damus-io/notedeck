@@ -7,12 +7,11 @@
 use cashflow::Books;
 use cashflow::chart::Labels;
 use cashflow::triage::{Action, Triage};
-use egui::RichText;
 use ledgerdb::Date;
 
 use crate::{Layers, Period, View, ui::palette::Palette};
 
-mod adventure;
+pub mod adventure;
 pub mod categories;
 pub mod goals;
 pub mod overview;
@@ -111,6 +110,8 @@ pub struct ViewStates {
     /// The goals measured, and the goal open; the Overview's strip reads
     /// it too.
     pub(crate) goals: goals::GoalsState,
+    /// The Adventure's fold.
+    pub(crate) adventure: adventure::AdventureState,
 }
 
 impl ViewStates {
@@ -134,12 +135,4 @@ pub fn show(view: View, cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
         View::Adventure => adventure::ui(cx, ui),
         View::Settings => settings::ui(cx, ui),
     }
-}
-
-/// A view that has no content yet: its heading and one line on what it will
-/// show.
-fn placeholder(cx: &ViewCx<'_>, ui: &mut egui::Ui, view: View, what: &'static str) {
-    ui.label(RichText::new(view.label()).heading().color(cx.palette.text));
-    ui.add_space(8.0);
-    ui.label(RichText::new(what).color(cx.palette.text_muted));
 }

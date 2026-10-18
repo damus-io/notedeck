@@ -174,8 +174,10 @@ fn a_stale_source_gets_an_import_quest() {
     assert!(quest(&adventure, "monthly:import:card:2024-05").is_none());
 }
 
-/// A goal card from a `cashflow-goal` block.
-fn goal(block: &str, done: bool) -> Goal {
+/// A goal card from a `cashflow-goal` block, done on the day `done_on`
+/// when there is one.
+fn goal(block: &str, done_on: Option<&str>) -> Goal {
+    let done = done_on.is_some();
     Goal {
         card_ref: "headway:cashflow/test-goal-card".to_owned(),
         board: "cashflow".to_owned(),
@@ -184,6 +186,7 @@ fn goal(block: &str, done: bool) -> Goal {
         title: "A goal".to_owned(),
         column: if done { "Done" } else { "Todo" }.to_owned(),
         done,
+        done_at: done_on.map(secs),
         spec: parse_goal(&format!("```cashflow-goal\n{block}\n```")).unwrap(),
         posted: Vec::new(),
     }
@@ -199,11 +202,10 @@ fn a_goal_is_an_epic_quest() {
         .collect();
     let books = books(&text);
     let world = World::new();
-    let done = goal("metric: income\ntarget: 1000 CAD\nper: month", true);
-    let epic = [EpicGoal {
-        goal: &done,
-        done_at: Some(secs("2024-03-04")),
-    }];
+    let epic = [goal(
+        "metric: income\ntarget: 1000 CAD\nper: month",
+        Some("2024-03-04"),
+    )];
     let adventure = world.fold_with(&books, &epic, None);
     assert_eq!(
         awarded(&adventure),
@@ -222,11 +224,7 @@ fn a_goal_is_an_epic_quest() {
     assert_eq!((quest.progress, quest.target), (100_000.0, 100_000.0));
     assert!(quest.done);
 
-    let open = goal("metric: net\ntarget: 5000 CAD\nper: month", false);
-    let epic = [EpicGoal {
-        goal: &open,
-        done_at: None,
-    }];
+    let epic = [goal("metric: net\ntarget: 5000 CAD\nper: month", None)];
     let adventure = world.fold_with(&books, &epic, None);
     assert!(awarded(&adventure).is_empty());
     let quest = &adventure.quests[adventure.quests.len() - 1];
@@ -244,14 +242,10 @@ fn a_project_goal_pays_its_project() {
         account: "income:damus".to_owned(),
         project: "damus".to_owned(),
     }]);
-    let done = goal(
+    let epic = [goal(
         "metric: income\nproject: damus\ntarget: 100 CAD\nper: total",
-        true,
-    );
-    let epic = [EpicGoal {
-        goal: &done,
-        done_at: Some(secs("2024-01-20")),
-    }];
+        Some("2024-01-20"),
+    )];
     let adventure = world.fold_with(&books(text), &epic, None);
     let damus = SkillId::Project("damus".to_owned());
     assert_eq!(

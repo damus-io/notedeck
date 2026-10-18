@@ -296,6 +296,7 @@ mod tests {
             title: "Earn".to_owned(),
             column: "Todo".to_owned(),
             done: false,
+            done_at: None,
             spec: parse_goal(&desc).unwrap(),
             posted: posted.to_vec(),
         }

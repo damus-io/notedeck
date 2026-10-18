@@ -52,6 +52,7 @@ use std::fmt;
 
 use ledgerdb::{CommodityId, Date};
 
+use crate::goals::Goal;
 use crate::net::NetFlow;
 use crate::projects::Projects;
 use crate::zone::Zone;
@@ -60,7 +61,7 @@ use crate::{Books, DeriveInputs};
 pub use curve::{MAX_LEVEL, level_for_xp, xp_for_level, xp_to_next_level};
 pub use figures::{ASSETS, BTC, Bookkeeping};
 pub use log::{Reason, XpEntry};
-pub use quests::{EpicGoal, Quest, QuestId, QuestKind, QuestUnit};
+pub use quests::{Quest, QuestId, QuestKind, QuestUnit};
 pub use tuning::XpTuning;
 
 use backlog::Backlog;
@@ -289,8 +290,9 @@ pub struct Inputs<'a> {
     /// Today: its month is the current one, and the months before it are
     /// closed.
     pub today: Date,
-    /// The Headway goals, which are the epic quests.
-    pub goals: &'a [EpicGoal<'a>],
+    /// The Headway goals, which are the epic quests. A done goal pays in
+    /// the month of its [`Goal::done_at`].
+    pub goals: &'a [Goal],
 }
 
 /// Level every skill from `inputs`, month by month. With `previous`, the

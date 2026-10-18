@@ -296,7 +296,7 @@ fn window_text(per: Period, by: Option<Date>, progress: &Progress) -> String {
 }
 
 /// `Mar 14, 2025`.
-fn day_label(date: Date) -> String {
+pub(crate) fn day_label(date: Date) -> String {
     let month = month_label(date.month_index());
     let (name, year) = month.split_once(' ').unwrap_or((&month, ""));
     format!("{name} {}, {year}", date.ymd().day)

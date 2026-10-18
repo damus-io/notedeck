@@ -16,3 +16,4 @@ new test file's snapshots are silently skipped and the run still exits 0.
 - headway:cashflow/crash-area-planet — the new `tests/journal.rs` snapshots needed `--test journal` added to the cashflow suite line by hand
 - headway:cashflow/borrow-vote-brass — ~1 min: added `--test projects` to the cashflow suite line by hand so the new Projects snapshots would run at all
 - headway:cashflow/book-ignore-priority — ~4 min: the new `tests/goals.rs` snapshots ran 0 tests through a `--update` with exit 0 until `--test goals` was added to the cashflow suite line by hand
+- headway:cashflow/judge-dinner-appear — ~4 min: `--update -p=notedeck_cashflow` rendered nothing for the new `tests/adventure.rs` and exited 0; added it to the notedeck_cashflow line

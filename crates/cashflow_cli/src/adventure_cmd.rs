@@ -15,10 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cashflow::CashflowDir;
 use cashflow::adventure::achievements::{self, Unlocked};
-use cashflow::adventure::quests::done_at;
-use cashflow::adventure::{
-    self, Adventure, EpicGoal, Inputs, Quest, QuestUnit, Reason, XpEntry, XpTuning,
-};
+use cashflow::adventure::{self, Adventure, Inputs, Quest, QuestUnit, Reason, XpEntry, XpTuning};
 use cashflow::chart::Chart;
 use cashflow::goals::Goal;
 use cashflow::projects::Projects;
@@ -78,24 +75,13 @@ async fn fold(dir: &CashflowDir, run: &Run, args: &AdventureArgs) -> Result<Fold
             (Projects::default(), Zone::Local)
         }
     };
-    let boards = match GoalBoards::load(dir, &args.goals) {
-        Ok(boards) => Some(boards),
+    let goals: Vec<Goal> = match GoalBoards::load(dir, &args.goals) {
+        Ok(boards) => boards.goals(),
         Err(err) => {
             eprintln!("cashflow: no goals, so no epic quests: {err}");
-            None
+            Vec::new()
         }
     };
-    let goals: Vec<Goal> = boards.as_ref().map(GoalBoards::goals).unwrap_or_default();
-    let epics: Vec<EpicGoal<'_>> = goals
-        .iter()
-        .map(|goal| EpicGoal {
-            goal,
-            done_at: boards
-                .as_ref()
-                .and_then(|b| b.view_of(goal))
-                .and_then(|view| done_at(view, goal)),
-        })
-        .collect();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -109,7 +95,7 @@ async fn fold(dir: &CashflowDir, run: &Run, args: &AdventureArgs) -> Result<Fold
             zone,
             tuning: &tuning,
             today: zone.date(now),
-            goals: &epics,
+            goals: &goals,
         },
         None,
     );

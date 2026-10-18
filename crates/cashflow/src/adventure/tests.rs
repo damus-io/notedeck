@@ -5,6 +5,7 @@ use ledgerdb::{Date, Edits, Override};
 
 use super::*;
 use crate::edits_cache::Stamp;
+use crate::goals::Goal;
 use crate::projects::ProjectRoot;
 use crate::test_util::{books, books_with};
 use crate::vault_rules::Owner;
@@ -42,7 +43,7 @@ impl World {
     pub fn fold_with(
         &self,
         books: &Books,
-        goals: &[EpicGoal<'_>],
+        goals: &[Goal],
         previous: Option<&Adventure>,
     ) -> Adventure {
         let inputs = Inputs {

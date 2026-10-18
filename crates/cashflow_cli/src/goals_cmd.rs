@@ -60,13 +60,6 @@ impl GoalBoards {
     pub fn goals(&self) -> Vec<Goal> {
         self.views.iter().flat_map(goals::board_goals).collect()
     }
-
-    /// The board `goal` is on.
-    pub fn view_of(&self, goal: &Goal) -> Option<&BoardView> {
-        self.views
-            .iter()
-            .find(|v| v.id == goal.board && v.author == goal.owner)
-    }
 }
 
 /// `cashflow goals`: list the goals on `--board`'s boards (else the config's).

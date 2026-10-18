@@ -32,8 +32,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cashflow::chart::{Chart, Labels};
+use cashflow::settings::Setting;
 use cashflow::sync::{self, SyncJob, SyncReport, TransportInfo, TransportReport};
 use cashflow::triage::Triage;
+use cashflow::zone::Zone;
 use cashflow::{Books, CashflowDir, Config, DeriveInputs, EditsCache, Settings, Vault, manifest};
 use ledgerdb::{Derived, JournalStore, LayerFilter, Ledger, LoadReport, SegmentHash};
 use nostrdb::Transaction;
@@ -271,6 +273,8 @@ pub struct JournalSource {
     home: String,
     /// Bumped whenever [`Self::home`] changes.
     home_generation: u64,
+    /// The synced time zone a note's `created_at` is dated in.
+    zone: Zone,
     /// The last job's listing error.
     error: Option<String>,
     /// What the vault lists that the journal lacks.
@@ -314,6 +318,7 @@ impl JournalSource {
             local: Vec::new(),
             home: cashflow::settings::DEFAULT_HOME_COMMODITY.to_owned(),
             home_generation: 0,
+            zone: Zone::Local,
             error: None,
             missing: MissingSegments::default(),
             retired_here: String::new(),
@@ -367,6 +372,7 @@ impl JournalSource {
                 self.home = home.to_owned();
                 self.home_generation += 1;
             }
+            self.zone = Zone::parse(settings.effective(Setting::Timezone)).unwrap_or(Zone::Local);
             layers.apply(settings.layer_switches());
             let links = crate::boards::links_of(&settings);
             if *self.project_links != *links {
@@ -631,6 +637,13 @@ impl JournalSource {
     /// The chart's display names and icons, as the vault last had them.
     pub fn labels(&self) -> &Arc<Labels> {
         &self.labels
+    }
+
+    /// The synced time zone (the vault's `timezone` setting), as the vault
+    /// last had it: what the Adventure dates vault notes in. The machine's
+    /// own zone until the vault says otherwise.
+    pub fn zone(&self) -> Zone {
+        self.zone
     }
 }
 

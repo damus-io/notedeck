@@ -5,8 +5,8 @@
 //! (`register::Window`), so a frame that holds still after a scroll pays
 //! only what egui charges to paint the rows on screen. This scrolls a
 //! three-thousand-row register part way down, through the real app over a
-//! real `Notedeck`, and holds what a steady-state frame adds over a
-//! placeholder view to a measured figure. Formatting a row's date or
+//! real `Notedeck`, and holds what a steady-state frame adds over an empty
+//! view (Goals, with no goals) to a measured figure. Formatting a row's date or
 //! amount per frame costs at least one allocation per row on screen, which
 //! the tolerance has no room for; matching the filters again costs
 //! thousands.
@@ -33,17 +33,19 @@ const WARM_UP: usize = 30;
 /// Frames measured; the median is what is held to the budget.
 const FRAMES: usize = 15;
 
-/// What a steady-state frame of the scrolled register adds over a
-/// placeholder view, measured on the UI thread: the tab row, the filter
+/// What a steady-state frame of the scrolled register adds over the empty
+/// Goals view, measured on the UI thread: the tab row, the filter
 /// bar, the header and the twenty-odd rows on screen. Attributed with
 /// [`where_a_register_frame_allocates`] when it was written down, it is
 /// egui's: accesskit nodes and `RichText` strings for the tab row and the
 /// filter bar's widgets, and the header's five painted texts. The rows
 /// themselves add nothing: each is laid out once, when it scrolls into
 /// view, and painted from its galleys (before that, painting their texts
-/// cost 240 more). Measured, not chosen; if it moves, measure it again and
-/// write the new figure down.
-const MEASURED_REGISTER_ALLOCS: u64 = 190;
+/// cost 240 more). It was 190 over the Adventure view's old one-line
+/// placeholder; the empty Goals view that replaced it as the baseline
+/// costs 88 more, and the register's own 352 didn't move. Measured, not
+/// chosen; if it moves, measure it again and write the new figure down.
+const MEASURED_REGISTER_ALLOCS: u64 = 102;
 
 /// How far above the measured figure a frame may land and still be
 /// unchanged: a different machine has measured a frame one or two
@@ -88,10 +90,10 @@ fn frame_allocs(view: View) -> u64 {
 /// nothing for working out what they say.
 #[test]
 fn the_register_works_out_nothing_per_frame() {
-    let placeholder = frame_allocs(View::Adventure);
+    let empty = frame_allocs(View::Goals);
     let register = frame_allocs(View::Transactions);
-    let added = register.saturating_sub(placeholder);
-    println!("register {register}, placeholder {placeholder}: the register adds {added}");
+    let added = register.saturating_sub(empty);
+    println!("register {register}, empty {empty}: the register adds {added}");
     let budget = AllocBudget {
         measured_median: MEASURED_REGISTER_ALLOCS,
         measured_peak: MEASURED_REGISTER_ALLOCS,
@@ -100,7 +102,7 @@ fn the_register_works_out_nothing_per_frame() {
     assert!(
         added <= budget.median_ceiling(),
         "drawing the scrolled register costs {added} allocations a frame ({register} with \
-         it, {placeholder} with a placeholder), measured at {MEASURED_REGISTER_ALLOCS}: a \
+         it, {empty} with an empty view), measured at {MEASURED_REGISTER_ALLOCS}: a \
          frame must not match the filters or format a row"
     );
     assert!(
