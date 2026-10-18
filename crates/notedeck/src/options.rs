@@ -18,9 +18,6 @@ bitflags! {
         /// default plaintext file-based storage. Opt-in via `--use-keystore`.
         const UseKeystore = 1 << 4;
 
-        /// Simulate is_compiled_as_mobile ?
-        const Mobile = 1 << 6;
-
         /// Show the native window titlebar?
         const ShowTitle = 1 << 7;
 

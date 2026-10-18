@@ -17,7 +17,6 @@
 //! styles, the root panel's fill and the chrome's zero horizontal item gap.
 //! A harness on egui's defaults draws something the app never shows.
 
-use crate::NotedeckOptions;
 use egui::{Event, Key, Modifiers, ThemePreference};
 use egui_kittest::{Harness, HarnessBuilder};
 
@@ -71,12 +70,7 @@ pub fn app_frame<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) 
 /// app: its fonts, `ColorTheme` visuals for both themes and text styles,
 /// following the context's current theme.
 pub fn install_notedeck_style(ctx: &egui::Context) {
-    crate::setup::setup_egui_context(
-        ctx,
-        NotedeckOptions::empty(),
-        ThemePreference::from(ctx.theme()),
-        1.0,
-    );
+    crate::setup::setup_egui_context(ctx, ThemePreference::from(ctx.theme()), 1.0);
 }
 
 /// Give a harness of a single widget notedeck's look, for a snapshot that

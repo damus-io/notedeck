@@ -68,9 +68,7 @@ impl Args {
         while i < len {
             let arg = &args[i];
 
-            if arg == "--mobile" {
-                res.options.set(NotedeckOptions::Mobile, true);
-            } else if arg == "--light" {
+            if arg == "--light" {
                 res.options.set(NotedeckOptions::LightTheme, true);
             } else if arg == "--locale" {
                 i += 1;

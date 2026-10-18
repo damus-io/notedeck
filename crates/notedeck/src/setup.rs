@@ -1,19 +1,12 @@
 use crate::fonts;
 use crate::theme;
-use crate::NotedeckOptions;
 use egui::ThemePreference;
 
 /// Install notedeck's look on `ctx`: the dark and light themes, fonts, text
 /// sizes, image loaders and zoom. The dark theme has a black ground on every
-/// platform; [`NotedeckOptions::Mobile`] (or a mobile build) only picks the
-/// larger mobile text sizes.
-pub fn setup_egui_context(
-    ctx: &egui::Context,
-    options: NotedeckOptions,
-    theme: ThemePreference,
-    zoom_factor: f32,
-) {
-    let is_mobile = options.contains(NotedeckOptions::Mobile) || crate::ui::is_compiled_as_mobile();
+/// platform; only a mobile build gets the larger mobile text sizes.
+pub fn setup_egui_context(ctx: &egui::Context, theme: ThemePreference, zoom_factor: f32) {
+    let is_mobile = crate::ui::is_compiled_as_mobile();
 
     ctx.options_mut(|o| {
         tracing::info!("Loaded theme {:?} from disk", theme);
