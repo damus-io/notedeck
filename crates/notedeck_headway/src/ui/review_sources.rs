@@ -252,11 +252,23 @@ pub(super) fn walk_note_ui(
     let Some(note) = notes.get(key) else {
         return;
     };
-    walk_frame(ui).show(ui, |ui| {
+    // The card's tint runs down to the bottom of the note's whole rows, so
+    // the slack they leave under the prose reads as the card's, not a gap
+    // before the hunk. Painted behind, after the prose is measured, so the
+    // diff still sizes the note by what the prose needs.
+    let fill = ui.painter().add(egui::Shape::Noop);
+    let frame = walk_frame(ui);
+    let shown = frame.fill(egui::Color32::TRANSPARENT).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let page = Page { palette, figures };
         figured_ui(ui, theme, app_ctx, txn, page, &note.body);
     });
+    let card = shown.response.rect;
+    let card = card.with_max_y(card.bottom().max(ui.max_rect().bottom()));
+    ui.painter().set(
+        fill,
+        egui::epaint::RectShape::filled(card, frame.corner_radius, frame.fill),
+    );
 }
 
 /// The page a body's figures belong to: the palette they're drawn in and
