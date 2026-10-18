@@ -469,7 +469,12 @@ Goals are looked for on --board's boards, else config.toml's
 `[goals] boards` [default: cashflow, personal], owned by --author or the
 stored signing key's account, plus any board of those names shared with it.
 The cards are read from the `headway` CLI's local cache (<data-dir>/headway-cli),
-or --headway-db; run any `headway` command to bring it up to date.",
+or --headway-db; run any `headway` command to bring it up to date.
+
+The notedeck app reports each goal's progress on its card: a comment starting
+`cashflow goal: <status> (<YYYY-MM>)` when the status changes, at most one a
+month while it doesn't, and on achieved a move to the board's done column
+(`[goals] auto_done = false` keeps the card where it is).",
         options: &[
             ("--board <slug>", "A board to look on; repeat for more"),
             (

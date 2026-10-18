@@ -39,6 +39,9 @@
 //! one handed its books is handed its goals too, with
 //! [`CashflowApp::set_goals`]. A view that links to a goal's card asks for
 //! it to be opened, and `render` raises the open for the host to route.
+//! The app that finds its own goals also reports their progress on their
+//! cards, as the account, with a [`goal_writer::GoalWriter`]: a comment
+//! when a goal's status changes, and the move to done once it is achieved.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -54,6 +57,7 @@ use notedeck::{AppAction, AppContext, AppResponse, OpenUri};
 
 pub mod boards;
 pub mod goal_source;
+pub mod goal_writer;
 pub mod journal;
 pub mod layers;
 pub mod money;
@@ -123,6 +127,11 @@ pub struct CashflowApp {
     /// Where the goals come from, when the app finds its own: `None` for
     /// an app handed its goals with [`Self::set_goals`].
     goal_source: Option<goal_source::GoalSource>,
+    /// Reports the goals' progress on their cards, when the app finds its
+    /// own goals.
+    goal_writer: Option<goal_writer::GoalWriter>,
+    /// Whether an achieved goal's card moves to done (`[goals] auto_done`).
+    goal_auto_done: bool,
     /// A card a view asked to open this frame, raised from `render`.
     open_card: Option<String>,
 }
@@ -159,6 +168,8 @@ impl CashflowApp {
             goals_generation: 0,
             goal_boards: cashflow::goals::DEFAULT_BOARDS.map(str::to_owned).to_vec(),
             goal_source: None,
+            goal_writer: None,
+            goal_auto_done: true,
             open_card: None,
         }
     }
@@ -167,20 +178,17 @@ impl CashflowApp {
     /// vault, and keeps both current, and finds the goals on the boards
     /// `dir`'s `config.toml` names (the defaults when it doesn't read).
     pub fn with_journal(dir: CashflowDir) -> Self {
-        let goal_boards = match Config::load(&dir) {
-            Ok(config) => config.goal_boards(),
-            Err(err) => {
-                tracing::warn!(
-                    "cashflow: config.toml doesn't read, so goals use the default boards: {err}"
-                );
-                Config::default().goal_boards()
-            }
-        };
+        let config = Config::load(&dir).unwrap_or_else(|err| {
+            tracing::warn!("cashflow: config.toml doesn't read, so goals use the defaults: {err}");
+            Config::default()
+        });
         Self {
             journal: Some(JournalSource::new(dir)),
             board_source: Some(BoardSource::default()),
             goal_source: Some(goal_source::GoalSource::default()),
-            goal_boards,
+            goal_writer: Some(goal_writer::GoalWriter::default()),
+            goal_auto_done: config.goal_auto_done(),
+            goal_boards: config.goal_boards(),
             ..Self::new()
         }
     }
@@ -367,6 +375,8 @@ impl CashflowApp {
             goals_generation,
             goal_boards,
             goal_source: _,
+            goal_writer: _,
+            goal_auto_done: _,
             open_card,
         } = self;
         egui::CentralPanel::default()
@@ -481,6 +491,20 @@ impl notedeck::App for CashflowApp {
         }
         if let Some(source) = self.board_source.as_mut() {
             source.update(ctx, &mut self.boards);
+        }
+        if let (Some(writer), Some(books)) = (self.goal_writer.as_mut(), self.books.as_ref()) {
+            writer.update(
+                ctx,
+                goal_writer::Inputs {
+                    books,
+                    books_generation: self.generation,
+                    projects: &self.projects,
+                    goals: &self.goals,
+                    goals_generation: self.goals_generation,
+                    today: self.today,
+                    auto_done: self.goal_auto_done,
+                },
+            );
         }
     }
 

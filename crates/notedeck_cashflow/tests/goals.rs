@@ -39,6 +39,7 @@ fn goal(word: &str, title: &str, column: &str, body: &str) -> Goal {
         column: column.to_owned(),
         done: false,
         spec: parse_goal(&desc).expect("a goal block"),
+        posted: Vec::new(),
     }
 }
 

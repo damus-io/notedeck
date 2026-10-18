@@ -64,7 +64,7 @@ pub struct Inputs<'a> {
 }
 
 /// Whether a goal is going to make it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Status {
     /// The target is met: a floor already reached, or a ceiling whose window
     /// closed under it.
@@ -88,6 +88,13 @@ impl Status {
             Status::AtRisk => "at risk",
             Status::Behind => "behind",
         }
+    }
+
+    /// The status [`Self::name`] names.
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::Achieved, Self::OnTrack, Self::AtRisk, Self::Behind]
+            .into_iter()
+            .find(|status| status.name() == name)
     }
 }
 

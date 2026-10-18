@@ -350,7 +350,8 @@ pub struct Config {
     /// `[sync]`: how journal segments move between machines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<SyncConfig>,
-    /// `[goals]`: where the goals on Headway cards are looked for.
+    /// `[goals]`: where the goals on Headway cards are looked for, and
+    /// whether an achieved one's card is moved to done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goals: Option<GoalsConfig>,
 }
@@ -480,6 +481,10 @@ pub struct GoalsConfig {
     /// The Headway board slugs whose `goal`-labelled cards are goals
     /// [default: [`crate::goals::DEFAULT_BOARDS`]].
     pub boards: Option<Vec<String>>,
+    /// Whether the app moves an achieved goal's card to its board's done
+    /// column when it comments that it was achieved (see
+    /// [`crate::goals::writeback`]) [default: true].
+    pub auto_done: Option<bool>,
 }
 
 impl Config {
@@ -490,6 +495,15 @@ impl Config {
             Some(boards) => boards.clone(),
             None => crate::goals::DEFAULT_BOARDS.map(str::to_owned).to_vec(),
         }
+    }
+
+    /// Whether an achieved goal's card is moved to done: `[goals]
+    /// auto_done`, else true.
+    pub fn goal_auto_done(&self) -> bool {
+        self.goals
+            .as_ref()
+            .and_then(|g| g.auto_done)
+            .unwrap_or(true)
     }
 }
 
@@ -685,6 +699,9 @@ mod tests {
         assert_eq!(Config::default().goal_boards(), ["cashflow", "personal"]);
         let goals = Config::parse("[goals]\nboards = [\"money\"]\n").unwrap();
         assert_eq!(goals.goal_boards(), ["money"]);
+        assert!(goals.goal_auto_done());
+        let manual = Config::parse("[goals]\nauto_done = false\n").unwrap();
+        assert!(!manual.goal_auto_done());
         assert_eq!(Config::parse(&goals.to_toml()).unwrap(), goals);
         assert!(Config::parse("[goals]\nboard = [\"x\"]\n").is_err());
     }

@@ -20,7 +20,7 @@
 //! its [`GoalError`], so a typo shows up beside the card instead of the goal
 //! quietly vanishing. [`progress::evaluate`] measures a goal against the
 //! books: how far along it is, where its trend takes it and whether that is
-//! on track.
+//! on track, and [`writeback`] reports that on the goal's card.
 //!
 //! Boards are read through the `headway` core crate ([`headway::boards`]),
 //! never the headway CLI's internals, so a sealed (team-of-one or shared)
@@ -29,6 +29,7 @@
 use std::fmt;
 
 pub mod progress;
+pub mod writeback;
 
 pub use progress::{EvalError, Progress, Status, evaluate};
 
@@ -667,6 +668,9 @@ pub struct Goal {
     pub done: bool,
     /// The goal, or why its block couldn't be read.
     pub spec: Result<GoalSpec, GoalError>,
+    /// The progress reports already written back to the card, oldest
+    /// first (see [`writeback`]).
+    pub posted: Vec<writeback::Posted>,
 }
 
 /// The goals on `boards`, in the order the boards are given, then the
@@ -715,6 +719,7 @@ fn goal_of(view: &BoardView, column: &str, done: bool, card: &CardView) -> Goal 
         column: column.to_owned(),
         done,
         spec,
+        posted: writeback::posted(&card.comments),
     }
 }
 
