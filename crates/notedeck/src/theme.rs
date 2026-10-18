@@ -58,6 +58,11 @@ pub struct ColorTheme {
     /// repaints selected glyphs in this color, so it must read on
     /// [`Self::selection_color`]'s tint over [`Self::panel_fill`].
     pub selection_text_color: Color32,
+    /// egui's "faint accent": an additive lift for striped rows, chart
+    /// backings, blockquotes and meter tracks. Additive, so it lifts whatever
+    /// it lands on, but it has to be strong enough to show on
+    /// [`Self::panel_fill`].
+    pub faint_bg_color: Color32,
 
     // WINDOW
     pub window_fill: Color32,
@@ -75,6 +80,9 @@ pub struct ColorTheme {
     pub inactive_weak_bg_fill: Color32,
 
     // SEMANTIC: Surfaces
+    /// The ground a pane or page is drawn on: the same as
+    /// [`Self::panel_fill`], so a frame filled with it sits flush with the
+    /// panel and a ring stroked in it knocks out to the background.
     pub surface_primary: Color32,
     pub surface_secondary: Color32,
     pub surface_elevated: Color32,
@@ -192,6 +200,7 @@ pub fn create_themed_visuals(theme: ColorTheme, default: Visuals) -> Visuals {
             },
         },
         extreme_bg_color: theme.extreme_bg_color,
+        faint_bg_color: theme.faint_bg_color,
         error_fg_color: theme.err_fg_color,
         image_loading_spinners: false,
         ..default
@@ -211,6 +220,9 @@ pub fn dark_color_theme() -> ColorTheme {
         hyperlink_color: PURPLE,
         selection_color: PURPLE_ALT,
         selection_text_color: LAVENDER,
+        // egui's own 5 was tuned for its gray ground and is all but invisible
+        // on black; 9 is the same perceived step above black (ΔL* ≈ 2.4).
+        faint_bg_color: Color32::from_additive_luminance(9),
 
         // WINDOW
         window_fill: DARK_ISH_BG,
@@ -228,7 +240,8 @@ pub fn dark_color_theme() -> ColorTheme {
         inactive_weak_bg_fill: SEMI_DARK_BG,
 
         // SEMANTIC: Surfaces
-        surface_primary: DARKER_BG,
+        // The primary surface is the ground, as in the light theme.
+        surface_primary: Color32::BLACK,
         surface_secondary: DARK_BG,
         surface_elevated: SEMI_DARK_BG,
 
@@ -264,6 +277,7 @@ pub fn light_color_theme() -> ColorTheme {
         hyperlink_color: PURPLE,
         selection_color: PURPLE_ALT,
         selection_text_color: DEEP_PURPLE,
+        faint_bg_color: Color32::from_additive_luminance(5),
 
         // WINDOW
         window_fill: Color32::WHITE,
@@ -418,6 +432,45 @@ mod tests {
                 "{name}: selected text has contrast {ratio:.2} on its highlight"
             );
         }
+    }
+
+    /// Perceived lightness (CIE L*, 0–100) of an opaque color.
+    fn lightness(c: Color32) -> f32 {
+        let y = luminance(c);
+        if y <= 0.008_856 {
+            903.3 * y
+        } else {
+            116.0 * y.cbrt() - 16.0
+        }
+    }
+
+    /// The primary surface is the ground in every theme. Panes, pages and
+    /// knockout rings fill with `surface_primary` expecting to sit flush with
+    /// the panel; a gray one left over from the old gray dark ground drew
+    /// them as gray islands on black.
+    #[test]
+    fn primary_surface_is_the_ground() {
+        for (name, theme) in [("dark", dark_color_theme()), ("light", light_color_theme())] {
+            assert_eq!(theme.surface_primary, theme.panel_fill, "{name}");
+        }
+    }
+
+    /// egui's faint accent must still show on the black ground: at least the
+    /// step above it that egui's default (5) gave on the old #1F1F1F ground.
+    #[test]
+    fn faint_accent_shows_on_the_dark_ground() {
+        let theme = dark_color_theme();
+        let visuals = create_themed_visuals(theme, Visuals::dark());
+        let lifted = composite(visuals.faint_bg_color, theme.panel_fill);
+        let step = lightness(lifted) - lightness(theme.panel_fill);
+
+        let gray = Color32::from_gray(0x1F);
+        let old = composite(Color32::from_additive_luminance(5), gray);
+        let old_step = lightness(old) - lightness(gray);
+        assert!(
+            step >= old_step,
+            "faint accent lifts black by ΔL* {step:.2}, the gray ground got {old_step:.2}"
+        );
     }
 
     /// A caller filling a row with the selection color gets the theme's hue
