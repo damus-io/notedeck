@@ -35,6 +35,7 @@ use crate::nav::{NavPos, ReviewTarget};
 use crate::review::{
     LoadedReview, RecordSet, ReviewJob, ReviewLoad, ReviewLoader, ReviewSource, short_sha,
 };
+use crate::review_body::CommitBody;
 use crate::store::BoardAction;
 
 /// The review pane's slice of [`BoardUiState`]: which card is open, which of
@@ -1426,8 +1427,9 @@ fn sha_pill(ui: &mut egui::Ui, theme: &ColorTheme, sha: &str) -> egui::Response 
 /// can be fixed by hand) with a retry, or one line above the diff with who
 /// wrote the commit and when, where it came from (the full sentence, with the
 /// repo's path, on hover), the record's agentium `session` as its chip, and
-/// whether its patch was cut short. Between that line and the diff sit the
-/// comment composer and the record's drafts ([`comments_ui`]). `true` when
+/// whether its patch was cut short. Under that line comes the commit message's
+/// body ([`commit_body_ui`]), then the comment composer and the record's drafts
+/// ([`comments_ui`]), then the diff. `true` when
 /// the session chip was clicked, for the pane to raise as `s`.
 fn load_ui(
     ui: &mut egui::Ui,
@@ -1502,6 +1504,7 @@ fn load_ui(
                 }
             });
             ui.add_space(SPACING_MD);
+            commit_body_ui(ui, theme, &mut loaded.body);
             comments_ui(ui, theme, app_ctx, loaded, comments.record, comments.drafts);
             if let Some(walk) = &loaded.walk {
                 walk_top_ui(ui, theme, app_ctx, walk);
@@ -1513,6 +1516,39 @@ fn load_ui(
         loader.retry(source);
     }
     chip
+}
+
+/// The commit message's body under the byline: its first paragraph, and a
+/// Show more / Show less toggle when there's more, which shows the rest with
+/// the trailers small and muted under it. Nothing when the message is only a
+/// subject.
+fn commit_body_ui(ui: &mut egui::Ui, theme: &ColorTheme, body: &mut CommitBody) {
+    if body.is_empty() {
+        return;
+    }
+    let shown = body.shown();
+    if !shown.is_empty() {
+        ui.label(egui::RichText::new(shown).color(theme.text_secondary));
+    }
+    if body.expanded && !body.trailers().is_empty() {
+        ui.add_space(SPACING_XS);
+        ui.label(
+            egui::RichText::new(body.trailers())
+                .small()
+                .color(theme.text_muted),
+        );
+    }
+    if body.has_more() {
+        let label = if body.expanded {
+            "Show less"
+        } else {
+            "Show more"
+        };
+        if sidebar_link(ui, theme, label).clicked() {
+            body.expanded = !body.expanded;
+        }
+    }
+    ui.add_space(SPACING_MD);
 }
 
 /// The loaded diff, with `record`'s posted comments drawn whole under their
@@ -2107,7 +2143,8 @@ pub(super) fn review_sidebar_ui(
     picked
 }
 
-/// A small frameless accent link in the sidebar's Review block.
+/// A small frameless accent link: the sidebar's Review block, and the commit
+/// body's Show more / Show less.
 fn sidebar_link(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) -> egui::Response {
     let text = egui::RichText::new(text).small().color(theme.accent);
     ui.add(egui::Button::new(text).frame(false))

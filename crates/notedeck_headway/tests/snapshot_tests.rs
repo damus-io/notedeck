@@ -3852,6 +3852,46 @@ fn fixture_kit() -> Kit {
     }
 }
 
+/// [`ReviewFixture::queue`]'s message: a subject, a body hard-wrapped as git
+/// bodies are — two prose paragraphs, a list — and trailers, so the pane has a
+/// body to reflow and collapse.
+const QUEUE_MESSAGE: &str = "headway: review queue over In Review cards (R, n/p)
+
+R opens a queue over the board's In Review column and n/p step through
+it, so a reviewer walks every finished card without going back to the
+board between them.
+
+The queue is a snapshot taken when it opens:
+- a card that leaves In Review stays until the queue closes
+- a card that arrives waits for the next R
+
+Changelog-Added: Review queue over In Review cards
+Headway: headway:headway/queue-over-review";
+
+/// The first paragraph of [`QUEUE_MESSAGE`]'s body, reflowed onto one line:
+/// all the collapsed pane shows of it.
+const QUEUE_BODY_FIRST: &str = "R opens a queue over the board's In Review column and n/p step \
+     through it, so a reviewer walks every finished card without going back \
+     to the board between them.";
+
+/// [`QUEUE_MESSAGE`]'s whole body, as the expanded pane shows it.
+const QUEUE_BODY_ALL: &str = "R opens a queue over the board's In Review column and n/p step \
+     through it, so a reviewer walks every finished card without going back \
+     to the board between them.\n\n\
+     The queue is a snapshot taken when it opens:\n\
+     - a card that leaves In Review stays until the queue closes\n\
+     - a card that arrives waits for the next R";
+
+/// [`QUEUE_MESSAGE`]'s trailers, as the expanded pane shows them.
+const QUEUE_TRAILERS: &str = "Changelog-Added: Review queue over In Review cards\n\
+     Headway: headway:headway/queue-over-review";
+
+/// [`ReviewFixture::verdicts`]'s message: a subject and a one-paragraph body.
+const VERDICTS_MESSAGE: &str = "headway: D and X verdicts in the review queue
+
+D marks the card done and X sends it back with a note, both without
+leaving the queue.";
+
 /// The subject of [`ReviewFixture::models`].
 const MODEL_SUBJECT: &str = "headway: recolour the queue cube, add a kit tower";
 
@@ -3865,14 +3905,15 @@ fn fixture_pngs() -> [Vec<u8>; 3] {
     ]
 }
 
-/// Commit everything in `dir` as `subject`, dated `at` (unix seconds) for
-/// author and committer, by a fixed author, and return the sha. Pinning all of
-/// it makes the sha, and the byline the pane prints, the same on every machine.
+/// Commit everything in `dir` with `message` (a subject, and maybe a body
+/// under a blank line), dated `at` (unix seconds) for author and committer, by
+/// a fixed author, and return the sha. Pinning all of it makes the sha, and the
+/// byline the pane prints, the same on every machine.
 ///
 /// The offset is deliberately not UTC: newer gits print a UTC strict-ISO date
 /// as `Z` and older ones as `+00:00`, which would move the byline's pixels
 /// with the git version.
-fn dated_commit(dir: &std::path::Path, subject: &str, at: u64) -> String {
+fn dated_commit(dir: &std::path::Path, message: &str, at: u64) -> String {
     let date = format!("@{at} -0700");
     fixture_git(dir, &["add", "."]);
     let out = std::process::Command::new("git")
@@ -3888,7 +3929,7 @@ fn dated_commit(dir: &std::path::Path, subject: &str, at: u64) -> String {
             "commit",
             "-q",
             "-m",
-            subject,
+            message,
         ])
         .env("GIT_AUTHOR_DATE", &date)
         .env("GIT_COMMITTER_DATE", &date)
@@ -3960,11 +4001,7 @@ fn build_review_fixture(dir: &std::path::Path) -> ReviewFixture {
              }\n\
          }\n",
     );
-    let queue = dated_commit(
-        dir,
-        "headway: review queue over In Review cards (R, n/p)",
-        SEED_AT - 3600,
-    );
+    let queue = dated_commit(dir, QUEUE_MESSAGE, SEED_AT - 3600);
 
     write(
         "src/keys.rs",
@@ -3977,11 +4014,7 @@ fn build_review_fixture(dir: &std::path::Path) -> ReviewFixture {
              Leave,\n\
          }\n",
     );
-    let verdicts = dated_commit(
-        dir,
-        "headway: D and X verdicts in the review queue",
-        SEED_AT,
-    );
+    let verdicts = dated_commit(dir, VERDICTS_MESSAGE, SEED_AT);
 
     let [before, after, added] = fixture_pngs();
     let write_bytes = |file: &str, body: &[u8]| {
@@ -4432,6 +4465,30 @@ fn review_queue_shows_the_recorded_commit_diff() {
     wait_for_label(&mut harness, "send back");
     wait_for_label(&mut harness, "next/prev file");
     assert_queue_hints_fit(&harness, 1200.0);
+}
+
+/// The queue's first commit has a body. Collapsed, the pane shows its first
+/// paragraph, reflowed onto one line, and a Show more; the whole body and the
+/// trailers show only after Show more, and Show less folds them away again.
+#[test]
+fn review_pane_shows_the_commit_body_collapsed() {
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness);
+
+    wait_for_label(&mut harness, QUEUE_BODY_FIRST);
+    assert!(harness.query_by_label(QUEUE_BODY_ALL).is_none());
+    assert!(harness.query_by_label(QUEUE_TRAILERS).is_none());
+
+    harness.get_by_label("Show more").click();
+    wait_for_label(&mut harness, QUEUE_BODY_ALL);
+    wait_for_label(&mut harness, QUEUE_TRAILERS);
+    assert!(harness.query_by_label(QUEUE_BODY_FIRST).is_none());
+
+    harness.get_by_label("Show less").click();
+    wait_for_label(&mut harness, QUEUE_BODY_FIRST);
+    assert!(harness.query_by_label(QUEUE_TRAILERS).is_none());
 }
 
 /// The review header's title-row icons' accessible names, left to right, for

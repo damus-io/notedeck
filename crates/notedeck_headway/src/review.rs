@@ -30,6 +30,7 @@ use nostrdb_net::NoteId;
 use notedeck::{Localization, Renderer3d, Waker};
 use notedeck_ui::diff::{GitPatch, GitPatchState};
 
+use crate::review_body::CommitBody;
 use crate::review_images::{self, FetchedImages};
 use crate::review_models::{self, FetchedModels, ReviewModels};
 use crate::review_walk::CodeWalk;
@@ -177,6 +178,9 @@ pub(crate) struct LoadedReview {
     pub by_trailer: bool,
     /// The commit's author and when, e.g. `William Casarin · 1d ago`.
     pub byline: Byline,
+    /// The commit message under its subject, with its trailers split out;
+    /// parsed from [`CommitPatch::message`] once, when the load lands.
+    pub body: CommitBody,
     pub commit: CommitPatch,
     pub patch: GitPatch,
     pub patch_state: GitPatchState,
@@ -451,6 +455,7 @@ fn loaded(
         source_hover: resolved.to_string(),
         by_trailer: resolved.how == Found::ByTrailer,
         byline: Byline::of(&commit),
+        body: CommitBody::parse(&commit.message),
         patch_state,
         models,
         commit,
