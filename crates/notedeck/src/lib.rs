@@ -141,12 +141,12 @@ pub use private_sync::{
 };
 pub use profile::*;
 pub use publish::{AccountsPublishApi, ExplicitPublishApi, PublishApi};
-pub use realtime_cache::{PollResponse, RealtimeCache, RealtimeCacheStats, Reducer};
+pub use realtime_cache::{FoldedViews, PollResponse, RealtimeCache, RealtimeCacheStats, Reducer};
 pub use reference::{
     reference_note_action, NostrRefParser, ReferenceMatch, ReferenceParser,
     ReferenceParserRegistry, ReferenceResolveCtx, ResolvedRef,
 };
-pub use registries::AppRegistries;
+pub use registries::{AppRegistries, ReferenceLookup, ReferenceRevision};
 pub use relay_resolver::RelaySetResolver;
 pub use relayspec::RelaySpec;
 pub use remote_api::{RelayInspectApi, RelayInspectEntry, RemoteApi};

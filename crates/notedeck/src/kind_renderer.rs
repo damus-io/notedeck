@@ -265,6 +265,22 @@ pub trait KindRenderer {
         let _ = (ndb, txn, note);
         None
     }
+
+    /// Which revision of its data [`title`](Self::title) and
+    /// [`outline`](Self::outline) read for `note`, as of `txn`: a number that
+    /// moves whenever their answer could have changed and holds while it
+    /// can't. This is the key a caller keeps their result under, so it looks
+    /// them up again only when it moves. Must cost far less than a lookup
+    /// (a renderer folding a board reports its fold cache's revision, see
+    /// [`RealtimeCache::revision`](crate::RealtimeCache::revision)).
+    ///
+    /// `None`, the default, means the renderer can't tell, and a caller keeping
+    /// the text has to look again on its own schedule. A renderer that offers a
+    /// title should offer this too.
+    fn revision(&self, ndb: &Ndb, txn: &Transaction, note: &Note) -> Option<u64> {
+        let _ = (ndb, txn, note);
+        None
+    }
 }
 
 /// An entity's place in an outline (see [`KindRenderer::outline`]).
@@ -360,6 +376,21 @@ impl KindRendererRegistry {
     ) -> Option<Outline> {
         self.default_for(note.kind(), chosen_id)?
             .outline(ndb, txn, note)
+    }
+
+    /// The revision of what [`title`](Self::title) and
+    /// [`outline`](Self::outline) read for `note`, from the same renderer
+    /// they pick (see [`KindRenderer::revision`]). `None` if nothing handles
+    /// the kind or the renderer can't tell.
+    pub fn revision(
+        &self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        note: &Note,
+        chosen_id: Option<&str>,
+    ) -> Option<u64> {
+        self.default_for(note.kind(), chosen_id)?
+            .revision(ndb, txn, note)
     }
 }
 

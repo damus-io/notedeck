@@ -13,7 +13,7 @@
 //! [`tool_context`](crate::AppContext::tool_context)) — the same borrow trick
 //! each individual registry relied on before they shared a home.
 
-use nostrdb::Note;
+use nostrdb::{Note, NoteKey};
 
 use crate::{
     kind_renderer::KindRendererRegistry,
@@ -68,6 +68,100 @@ impl AppRegistries {
         let note = self.referenced_note(reference, ctx)?;
         self.kind_renderers.title(ctx.ndb, ctx.txn, &note, None)
     }
+
+    /// Look up what `reference` names: resolve it, and `read` the note it
+    /// resolves to (its title, say), versioned so the caller can keep the
+    /// result and check it with [`reference_revision`](Self::reference_revision)
+    /// instead of reading again.
+    ///
+    /// Each revision is taken before what it versions is read, so a fold that
+    /// moves in between leaves the kept revision older than the read, and the
+    /// next check looks again. Taken after, a note folding in between would
+    /// leave the old answer under the new revision, and it would never be
+    /// looked up again.
+    pub fn lookup_reference<'t, T>(
+        &self,
+        reference: &str,
+        ctx: &ReferenceResolveCtx<'t>,
+        read: impl FnOnce(&Note<'t>) -> T,
+    ) -> ReferenceLookup<T> {
+        let resolve = self.reference_parsers.revision_exact(reference, ctx);
+        let Some(note) = self.referenced_note(reference, ctx) else {
+            return ReferenceLookup {
+                value: None,
+                note: None,
+                revision: resolve.map(|resolve| ReferenceRevision {
+                    resolve,
+                    read: None,
+                }),
+            };
+        };
+        let read_revision = self.kind_renderers.revision(ctx.ndb, ctx.txn, &note, None);
+        let revision = resolve
+            .zip(read_revision)
+            .map(|(resolve, read)| ReferenceRevision {
+                resolve,
+                read: Some(read),
+            });
+        ReferenceLookup {
+            value: Some(read(&note)),
+            note: note.key(),
+            revision,
+        }
+    }
+
+    /// Which revision of its data a lookup of `reference` reads: resolving it
+    /// ([`ReferenceParser::revision`](crate::ReferenceParser::revision)) and,
+    /// when it resolved to the note at `resolved`, that note's title and
+    /// outline ([`KindRenderer::revision`](crate::KindRenderer::revision)).
+    ///
+    /// A caller that keeps a lookup's result (Dave keeps card titles) keeps
+    /// this beside it, with the key of the note it resolved to, and looks
+    /// again only once it differs. `None` when either half can't tell, so the
+    /// caller falls back to looking again on its own schedule.
+    pub fn reference_revision(
+        &self,
+        reference: &str,
+        ctx: &ReferenceResolveCtx,
+        resolved: Option<NoteKey>,
+    ) -> Option<ReferenceRevision> {
+        let resolve = self.reference_parsers.revision_exact(reference, ctx)?;
+        let read = match resolved.map(|key| ctx.ndb.get_note_by_key(ctx.txn, key)) {
+            None => None,
+            Some(Ok(note)) => Some(
+                self.kind_renderers
+                    .revision(ctx.ndb, ctx.txn, &note, None)?,
+            ),
+            // The note it resolved to is gone, which no kept revision matches.
+            Some(Err(_)) => None,
+        };
+        Some(ReferenceRevision { resolve, read })
+    }
+}
+
+/// What [`AppRegistries::lookup_reference`] found.
+pub struct ReferenceLookup<T> {
+    /// What its `read` made of the note the reference resolved to; `None`
+    /// when it resolved to nothing.
+    pub value: Option<T>,
+    /// The key of that note, for a later
+    /// [`reference_revision`](AppRegistries::reference_revision) to check.
+    pub note: Option<NoteKey>,
+    /// The revision of what the lookup read; `None` when the parser or the
+    /// renderer can't tell.
+    pub revision: Option<ReferenceRevision>,
+}
+
+/// The revisions a lookup of a reference read (see
+/// [`AppRegistries::reference_revision`]). Two are equal when nothing the
+/// lookup read has changed between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReferenceRevision {
+    /// What resolving the reference read.
+    pub resolve: u64,
+    /// What the title and outline of the note it resolved to read; `None`
+    /// when it resolved to nothing.
+    pub read: Option<u64>,
 }
 
 #[cfg(test)]
@@ -99,6 +193,143 @@ mod tests {
         fn resolve(&self, _matched: &str, _ctx: &ReferenceResolveCtx) -> Option<ResolvedRef> {
             Some(ResolvedRef::note(self.note))
         }
+    }
+
+    /// Resolves `@card` to `note` once it is set, reporting `revision` as
+    /// what resolving read: a stand-in for a parser over a fold cache.
+    struct VersionedParser {
+        note: std::rc::Rc<std::cell::Cell<Option<NoteId>>>,
+        revision: std::rc::Rc<std::cell::Cell<u64>>,
+    }
+
+    impl ReferenceParser for VersionedParser {
+        fn id(&self) -> &'static str {
+            "card"
+        }
+        fn find(&self, text: &str) -> Option<Range<usize>> {
+            let at = text.find("@card")?;
+            Some(at..at + "@card".len())
+        }
+        fn resolve(&self, _matched: &str, _ctx: &ReferenceResolveCtx) -> Option<ResolvedRef> {
+            self.note.get().map(ResolvedRef::note)
+        }
+        fn revision(&self, _matched: &str, _ctx: &ReferenceResolveCtx) -> Option<u64> {
+            Some(self.revision.get())
+        }
+    }
+
+    /// [`ContentTitle`], reporting `revision` as what its title read.
+    struct VersionedTitle {
+        revision: std::rc::Rc<std::cell::Cell<u64>>,
+    }
+
+    impl KindRenderer for VersionedTitle {
+        fn id(&self) -> &'static str {
+            "test.versioned"
+        }
+        fn name(&self) -> &'static str {
+            "Versioned"
+        }
+        fn kinds(&self) -> &'static [u32] {
+            &[1]
+        }
+        fn render(
+            &self,
+            ui: &mut egui::Ui,
+            _note_context: &mut NoteContext,
+            _req: &KindRenderRequest,
+        ) -> KindRenderResponse {
+            KindRenderResponse::new(ui.label("card"))
+        }
+        fn title(&self, _ndb: &nostrdb::Ndb, _txn: &Transaction, note: &Note) -> Option<String> {
+            Some(note.content().to_owned())
+        }
+        fn revision(&self, _ndb: &nostrdb::Ndb, _txn: &Transaction, _note: &Note) -> Option<u64> {
+            Some(self.revision.get())
+        }
+    }
+
+    /// A versioned lookup keeps the revision of both halves it read, and a
+    /// later [`AppRegistries::reference_revision`] matches it until either
+    /// half moves. Without a renderer revision the lookup is unversioned.
+    #[tokio::test]
+    async fn a_lookup_is_current_until_what_it_read_moves() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let TempNdb { ndb, dir: _dir } = TempNdb::new();
+        let kp = FullKeypair::generate();
+        let note = NoteBuilder::new()
+            .kind(1)
+            .content("Card title")
+            .created_at(1_700_000_000)
+            .sign(&kp.secret_key.secret_bytes())
+            .build()
+            .expect("note");
+        let sub = ndb
+            .subscribe(&[Filter::new().ids([note.id()]).build()])
+            .expect("subscribe");
+        let frame = ClientMessage::event(&note)
+            .expect("event")
+            .to_json()
+            .expect("json");
+        ndb.process_event_with(&frame, IngestMetadata::new().client(true))
+            .expect("ingest");
+        tokio::time::timeout(Duration::from_secs(5), ndb.wait_for_notes(sub, 1))
+            .await
+            .expect("ingested within 5s")
+            .expect("ingest notified the subscription");
+
+        let resolved = Rc::new(Cell::new(None));
+        let resolve_rev = Rc::new(Cell::new(1));
+        let read_rev = Rc::new(Cell::new(10));
+        let mut registries = AppRegistries::default();
+        registries
+            .reference_parsers
+            .register(Box::new(VersionedParser {
+                note: resolved.clone(),
+                revision: resolve_rev.clone(),
+            }));
+        registries.kind_renderers.register(Box::new(VersionedTitle {
+            revision: read_rev.clone(),
+        }));
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let ctx = ReferenceResolveCtx {
+            ndb: &ndb,
+            txn: &txn,
+            selected_account: None,
+        };
+        let title = |note: &Note| note.content().to_owned();
+
+        // A miss is versioned by the parser alone.
+        let miss = registries.lookup_reference("@card", &ctx, title);
+        assert!(miss.value.is_none());
+        let kept = miss.revision.expect("the parser versions it");
+        assert_eq!(kept.read, None);
+        assert_eq!(
+            registries.reference_revision("@card", &ctx, None),
+            Some(kept)
+        );
+
+        // The card arrives: the parser's fold moves, so the miss is stale.
+        resolved.set(Some(NoteId::new(*note.id())));
+        resolve_rev.set(2);
+        assert_ne!(
+            registries.reference_revision("@card", &ctx, None),
+            Some(kept)
+        );
+
+        let hit = registries.lookup_reference("@card", &ctx, title);
+        assert_eq!(hit.value.as_deref(), Some("Card title"));
+        let kept = hit.revision.expect("both halves version it");
+        assert_eq!(kept.read, Some(10));
+        let current = || registries.reference_revision("@card", &ctx, hit.note);
+        assert_eq!(current(), Some(kept), "nothing moved");
+
+        // The renderer's fold moves (the card was renamed): stale.
+        read_rev.set(11);
+        assert_ne!(current(), Some(kept));
     }
 
     /// Titles a kind-1 note with its content.

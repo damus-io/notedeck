@@ -647,50 +647,43 @@ impl<'a, 'n> SessionListUi<'a, 'n> {
 }
 
 /// Look up the current title and outline of each card a session is on, and
-/// of each such card's parent, unless it was looked up within
-/// [`REFRESH_SECS`](crate::card_titles::REFRESH_SECS) of `now`, so the list
-/// and the scene draw from text kept on the [`SessionManager`] instead of
-/// folding a board per session per frame. A lookup that changed what was
-/// kept regroups the list, since card parents link successor chains and the
-/// parent's title and progress head them.
+/// of each such card's parent, unless the lookup kept for it still holds
+/// (nothing it read has changed, see [`CardTitles`](crate::card_titles::CardTitles)),
+/// so the list and the scene draw from text kept on the [`SessionManager`]
+/// instead of folding a board per session per frame. A lookup that changed
+/// what was kept regroups the list, since card parents link successor chains
+/// and the parent's title and progress head them.
 pub fn refresh_card_titles(
     session_manager: &mut SessionManager,
     refs: &TitleRefs<'_, '_>,
     now: f64,
 ) {
+    let note = &*refs.note;
+    let registries = note.registries;
+    let ctx = notedeck::ReferenceResolveCtx {
+        ndb: note.ndb,
+        txn: refs.txn,
+        selected_account: Some(*note.accounts.selected_account_pubkey()),
+    };
     let mut titles = std::mem::take(&mut session_manager.card_titles);
     let mut changed = false;
     for session in session_manager.iter() {
         let Some(card_ref) = session.details.card_ref() else {
             continue;
         };
-        if !titles.is_fresh(card_ref, now) {
-            changed |= titles.store(card_ref, lookup_card(refs, card_ref), now);
-        }
+        changed |= titles.refresh(registries, &ctx, card_ref, now);
         let Some(parent) = titles.parent(card_ref) else {
             continue;
         };
-        if !titles.is_fresh(parent, now) {
+        if !titles.is_current_in(registries, &ctx, parent, now) {
             let parent = parent.to_owned();
-            changed |= titles.store(&parent, lookup_card(refs, &parent), now);
+            changed |= titles.store(&parent, CardLookup::of(registries, &ctx, &parent), now);
         }
     }
     session_manager.card_titles = titles;
     if changed {
         session_manager.lineage_changed();
     }
-}
-
-/// The current title and outline of the card `card_ref` names (see
-/// [`CardLookup::of`]), relative to the selected account.
-fn lookup_card(refs: &TitleRefs<'_, '_>, card_ref: &str) -> CardLookup {
-    let note = &*refs.note;
-    let ctx = notedeck::ReferenceResolveCtx {
-        ndb: note.ndb,
-        txn: refs.txn,
-        selected_account: Some(*note.accounts.selected_account_pubkey()),
-    };
-    CardLookup::of(note.registries, &ctx, card_ref)
 }
 
 /// Where a session's row sits in the list. Every row is one session.
@@ -2963,6 +2956,7 @@ mod tests {
                     parent: Some(EPIC.to_owned()),
                     parts: None,
                 }),
+                ..Default::default()
             };
             sm.card_titles.store(card_ref, lookup, 0.0);
         }

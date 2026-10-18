@@ -295,6 +295,30 @@ pub fn parse(note: &Note) -> Option<HeadwayEvent> {
     }
 }
 
+/// The owner of the board a card's issue note (kind 1621) belongs to, from
+/// its `a` tag: the one field of [`IssueEvent`] that says whose fold the
+/// card lives in. Allocation-free, unlike [`parse`], so a caller can ask it
+/// for many notes every frame. `None` for another kind or a malformed tag.
+pub fn issue_board_author(note: &Note) -> Option<[u8; 32]> {
+    if note.kind() != KIND_ISSUE {
+        return None;
+    }
+    let addr = note
+        .tags()
+        .iter()
+        .find(|tag| tag.get_str(0) == Some("a"))?
+        .get_str(1)?;
+    let mut parts = addr.splitn(3, ':');
+    if parts.next()?.parse::<u32>().ok()? != KIND_BOARD {
+        return None;
+    }
+    let mut owner = [0u8; 32];
+    hex::decode_to_slice(parts.next()?, &mut owner).ok()?;
+    // A coordinate with no slug isn't a board's.
+    parts.next()?;
+    Some(owner)
+}
+
 /// What one revision of a saved list view (kind 30626) holds: a live view's
 /// spec, or the tombstone a delete wrote.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -824,6 +848,32 @@ pub(crate) mod tests {
             .build()
             .expect("build note");
         parse(&note).expect("parse headway event")
+    }
+
+    /// [`issue_board_author`] reads the same owner [`parse`] does, and
+    /// nothing for a note that isn't an issue.
+    #[test]
+    fn issue_board_author_is_the_parsed_board_author() {
+        let kp = FullKeypair::generate();
+        let owner = FullKeypair::generate().pubkey;
+        let sign = |builder: NoteBuilder| {
+            builder
+                .sign(&kp.secret_key.secret_bytes())
+                .build()
+                .expect("build note")
+        };
+        let issue = sign(build_issue(
+            &board_address(&owner, "work"),
+            "A card",
+            "body",
+        ));
+        let Some(HeadwayEvent::Issue(parsed)) = parse(&issue) else {
+            panic!("an issue");
+        };
+        assert_eq!(issue_board_author(&issue), Some(parsed.board_author));
+        assert_eq!(issue_board_author(&issue), Some(*owner.bytes()));
+        let board = sign(build_board("work", "Work", "", &[]));
+        assert_eq!(issue_board_author(&board), None);
     }
 
     /// A saved view as written: its tags, and what [`parse_view`] reads back.

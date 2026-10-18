@@ -110,6 +110,20 @@ pub trait ReferenceParser {
     /// behind interior mutability (`Rc<RefCell<…>>`), the same way
     /// [`KindRenderer`](crate::KindRenderer) impls do.
     fn resolve(&self, matched: &str, ctx: &ReferenceResolveCtx) -> Option<ResolvedRef>;
+
+    /// Which revision of its data [`resolve`](Self::resolve) reads for
+    /// `matched` under `ctx`: a number that moves whenever resolving it could
+    /// give a different answer (the entity arrived, or was renamed away) and
+    /// holds while it can't. A caller that keeps what a reference resolved to
+    /// (or that it didn't) resolves again only when this moves. Must cost far
+    /// less than resolving.
+    ///
+    /// `None`, the default, means the parser can't tell, and a caller keeping a
+    /// resolution has to resolve again on its own schedule.
+    fn revision(&self, matched: &str, ctx: &ReferenceResolveCtx) -> Option<u64> {
+        let _ = (matched, ctx);
+        None
+    }
 }
 
 /// App-registered [`ReferenceParser`]s indexed by [id](ReferenceParser::id).
@@ -197,6 +211,16 @@ impl ReferenceParserRegistry {
         let reference = reference.trim();
         let m = self.exact_match(reference)?;
         self.get(m.parser)?.resolve(reference, ctx)
+    }
+
+    /// The [`revision`](ReferenceParser::revision) of what resolving
+    /// `reference` reads, from the parser [`resolve_exact`](Self::resolve_exact)
+    /// would resolve it with. `None` when no parser recognizes the whole of it
+    /// or that parser can't tell.
+    pub fn revision_exact(&self, reference: &str, ctx: &ReferenceResolveCtx) -> Option<u64> {
+        let reference = reference.trim();
+        let m = self.exact_match(reference)?;
+        self.get(m.parser)?.revision(reference, ctx)
     }
 
     /// Whether `text` is *exactly one* reference some registered parser

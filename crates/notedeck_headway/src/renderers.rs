@@ -125,6 +125,16 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
         });
         Some(notedeck::Outline { parent, parts })
     }
+
+    /// The fold [`title`](Self::title) and [`outline`](Self::outline) read:
+    /// the card's board author's, since both locate the card across all that
+    /// author's boards. Any edit to any of them moves it.
+    fn revision(&self, ndb: &Ndb, txn: &Transaction, note: &Note) -> Option<u64> {
+        // Asked for every card-titled row every frame, so the board's owner
+        // is read off the `a` tag without parsing (and copying) the issue.
+        let author = Pubkey::new(event::issue_board_author(note)?);
+        Some(self.cache.borrow_mut().author_revision(ndb, txn, &author))
+    }
 }
 
 /// Renders a headway board (kind 30619) referenced inline. The note is the
@@ -233,6 +243,19 @@ impl notedeck::ReferenceParser for HeadwayRefParser {
             })
             .flatten()?;
         Some(notedeck::ResolvedRef::note(note_id))
+    }
+
+    /// The fold [`resolve`](Self::resolve) reads: the selected account's
+    /// boards (the author gap). A card arriving, or any other edit to that
+    /// account's boards, moves it.
+    fn revision(&self, matched: &str, ctx: &notedeck::ReferenceResolveCtx) -> Option<u64> {
+        headway::wordid::parse_ref(matched)?;
+        let author = ctx.selected_account?;
+        Some(
+            self.cache
+                .borrow_mut()
+                .author_revision(ctx.ndb, ctx.txn, &author),
+        )
     }
 }
 
@@ -414,6 +437,104 @@ mod tests {
         assert_eq!(
             registry.title(&t.ndb, &txn, &note, None).as_deref(),
             Some("UT7c: renamed — after creation")
+        );
+    }
+
+    /// A card ref looked up through the registries is versioned by the
+    /// parser and the renderer together: the revision holds while the board
+    /// is idle, so a caller keeping the title doesn't look again, and moves
+    /// once the card is renamed, when the next lookup finds the new title.
+    #[tokio::test]
+    async fn a_card_refs_revision_holds_until_the_card_is_renamed() {
+        /// One lookup of the card ref, and the revision a check right after
+        /// it reports.
+        struct Looked {
+            title: Option<String>,
+            kept: Option<notedeck::ReferenceRevision>,
+            current: Option<notedeck::ReferenceRevision>,
+        }
+
+        let mut t = TestSync::new();
+        t.poll();
+        t.seed_and_settle().await;
+
+        let cache = Rc::new(RefCell::new(BoardCache::default()));
+        let mut registries = notedeck::AppRegistries::default();
+        registries
+            .reference_parsers
+            .register(Box::new(HeadwayRefParser {
+                cache: cache.clone(),
+            }));
+        registries
+            .kind_renderers
+            .register(Box::new(HeadwayIssueRenderer {
+                cache: cache.clone(),
+            }));
+        for _ in 0..2 {
+            let txn = Transaction::new(&t.ndb).unwrap();
+            cache.borrow_mut().poll(&t.ndb, &txn, &t.kp.pubkey);
+        }
+
+        let (card_id, card_ref) = {
+            let view = t.view().expect("board loaded");
+            let card = &view.columns[0].cards[0];
+            (
+                card.id,
+                headway::wordid::card_ref(&view.id, card.id.bytes()),
+            )
+        };
+        let ndb = t.ndb.clone();
+        let author = t.kp.pubkey;
+        let lookup = |registries: &notedeck::AppRegistries| {
+            let txn = Transaction::new(&ndb).unwrap();
+            let ctx = notedeck::ReferenceResolveCtx {
+                ndb: &ndb,
+                txn: &txn,
+                selected_account: Some(author),
+            };
+            let found = registries.lookup_reference(&card_ref, &ctx, |note| {
+                registries.kind_renderers.title(&ndb, &txn, note, None)
+            });
+            Looked {
+                title: found.value.flatten(),
+                kept: found.revision,
+                current: registries.reference_revision(&card_ref, &ctx, found.note),
+            }
+        };
+
+        let first = lookup(&registries);
+        assert!(first.title.is_some());
+        let kept = first.kept.expect("a headway card ref is versioned");
+        assert_eq!(
+            first.current,
+            Some(kept),
+            "idle: the kept lookup is current"
+        );
+
+        // Subscribed before the edit, so the wait below can't miss its ingest.
+        let mut stream = crate::cache::tests::ingest_stream(&t.ndb, &t.kp.pubkey);
+        {
+            let view = t.view().expect("board loaded");
+            store::apply(
+                &t.ndb,
+                store::BOARD_ID,
+                &view,
+                &t.kp.pubkey,
+                &store::Signer::new(&t.kp.secret_key.secret_bytes(), None),
+                store::BoardAction::EditTitle {
+                    card: card_id,
+                    title: "Renamed on its board".to_string(),
+                },
+                &mut store::NoPublish,
+            );
+        }
+        // The registries' own cache folds the rename, which moves the revision.
+        while lookup(&registries).current == Some(kept) {
+            notedeck_testing::await_batch(&mut stream).await;
+        }
+        assert_eq!(
+            lookup(&registries).title.as_deref(),
+            Some("Renamed on its board")
         );
     }
 }

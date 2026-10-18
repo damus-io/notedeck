@@ -1973,7 +1973,7 @@ mod tests {
         // fonts lack.
         notedeck::fonts::setup_fonts(&harness.ctx);
         let showing = boards().swap_remove(0);
-        let boards: std::rc::Rc<[BoardView]> = std::rc::Rc::from(boards());
+        let boards = crate::cache::Boards::at(boards(), crate::cache::FoldRevision::Author(1));
         let slugs: Vec<String> = boards.iter().map(|b| b.id.clone()).collect();
         let h = harness.state_mut();
         // The board `a` and `D` edit, as chrome's data tools would the row's:
@@ -1983,8 +1983,7 @@ mod tests {
         h.list_sources = slugs
             .iter()
             .map(|slug| {
-                crate::cache::BoardRef::find(std::rc::Rc::clone(&boards), &[0; 32], slug)
-                    .expect("the board")
+                crate::cache::BoardRef::find(boards.clone(), &[0; 32], slug).expect("the board")
             })
             .collect();
         h.state.open_list(crate::ui::ListScope::All);

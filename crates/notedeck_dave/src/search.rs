@@ -25,7 +25,10 @@
 //! kind renderers, so Dave never learns what a `headway:` ref is. The search
 //! refreshes them first, in two steps: [`stale_refs`] while the session fold
 //! is borrowed, then [`refresh_titles`] once it isn't, since resolving an
-//! `agentium:` ref reads that same fold.
+//! `agentium:` ref reads that same fold. Checking whether a kept title still
+//! holds reads only the revisions of what it was looked up from, which for
+//! an `agentium:` ref is nothing (its parser offers none), so that check can
+//! run under the borrow.
 //!
 //! Hits rank by that score, then by last activity, newest first. Each opens
 //! through its `agentium:<word-id>` reference, which the app's
@@ -46,7 +49,7 @@ use notedeck::{
     SearchHits, SearchQuery,
 };
 
-use crate::card_titles::{CardLookup, CardTitles, SEARCH_REFRESH_SECS};
+use crate::card_titles::CardTitles;
 use crate::path_utils::abbreviate_with_home;
 use crate::session_cache::SessionView;
 
@@ -91,24 +94,23 @@ impl crate::Dave {
         let Some(now) = ctx.egui.map(|egui| egui.input(|i| i.time)) else {
             return;
         };
-        let parsers = &ctx.registries.reference_parsers;
         let titles = &mut self.session_manager.card_titles;
-        // Collected under the fold's borrow, resolved after it drops.
-        let stale = self
-            .session_cache
-            .borrow_mut()
-            .with_sessions(ctx.ndb, txn, &author, |sessions| {
-                stale_refs(sessions, parsers, titles, now)
-            })
-            .unwrap_or_default();
-        if stale.is_empty() {
-            return;
-        }
         let resolve = ReferenceResolveCtx {
             ndb: ctx.ndb,
             txn,
             selected_account: Some(author),
         };
+        // Collected under the fold's borrow, resolved after it drops.
+        let stale = self
+            .session_cache
+            .borrow_mut()
+            .with_sessions(ctx.ndb, txn, &author, |sessions| {
+                stale_refs(sessions, ctx.registries, &resolve, titles, now)
+            })
+            .unwrap_or_default();
+        if stale.is_empty() {
+            return;
+        }
         if refresh_titles(&stale, ctx.registries, &resolve, titles, now) {
             self.session_manager.lineage_changed();
         }
@@ -116,17 +118,19 @@ impl crate::Dave {
 }
 
 /// The references among `sessions`' titles and issues (each whole, trimmed)
-/// that `titles` holds no lookup of from within [`SEARCH_REFRESH_SECS`] of
-/// `now`: the ones [`refresh_titles`] looks up. Only strings that are
-/// exactly one reference a registered parser recognizes, so a plain title
-/// is never looked up.
+/// whose lookup kept in `titles` no longer holds at `now` (see
+/// [`CardTitles::is_current`]), or that have none: the ones
+/// [`refresh_titles`] looks up. Only strings that are exactly one reference
+/// a registered parser recognizes, so a plain title is never looked up.
 #[profiling::function]
 pub(crate) fn stale_refs(
     sessions: &[SessionView],
-    parsers: &ReferenceParserRegistry,
+    registries: &AppRegistries,
+    ctx: &ReferenceResolveCtx,
     titles: &CardTitles,
     now: f64,
 ) -> Vec<String> {
+    let parsers: &ReferenceParserRegistry = &registries.reference_parsers;
     let mut stale = Vec::new();
     for view in sessions {
         let state = &view.state;
@@ -136,8 +140,7 @@ pub(crate) fn stale_refs(
         let issue = state.issue_url.as_deref();
         for text in std::iter::once(state.display_title()).chain(issue) {
             let text = text.trim();
-            if parsers.is_reference(text) && !titles.is_fresh_within(text, now, SEARCH_REFRESH_SECS)
-            {
+            if parsers.is_reference(text) && !titles.is_current_in(registries, ctx, text, now) {
                 stale.push(text.to_owned());
             }
         }
@@ -146,10 +149,9 @@ pub(crate) fn stale_refs(
 }
 
 /// Look up each of `refs` into `titles` through `registries`, at `now`,
-/// skipping one already looked up within [`SEARCH_REFRESH_SECS`] (a ref two
-/// sessions share is listed twice). Returns whether what any lookup found
-/// changed, so the caller regroups the session list (see
-/// [`CardTitles::store`]).
+/// skipping one whose kept lookup already holds (a ref two sessions share is
+/// listed twice). Returns whether what any lookup found changed, so the
+/// caller regroups the session list (see [`CardTitles::store`]).
 #[profiling::function]
 pub(crate) fn refresh_titles(
     refs: &[String],
@@ -160,9 +162,7 @@ pub(crate) fn refresh_titles(
 ) -> bool {
     let mut changed = false;
     for r in refs {
-        changed |= titles.refresh_within(r, now, SEARCH_REFRESH_SECS, || {
-            CardLookup::of(registries, ctx, r)
-        });
+        changed |= titles.refresh(registries, ctx, r, now);
     }
     changed
 }
@@ -284,6 +284,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::card_titles::{CardLookup, UNVERSIONED_REFRESH_SECS};
     use crate::test_refs::{ingest_card, StubCardParser, StubCardRenderer};
     use notedeck::search::HITS_PER_PROVIDER;
     use notedeck_testing::fixtures::TempNdb;
@@ -520,14 +521,24 @@ mod tests {
     }
 
     /// The refs a search looks up are the sessions' titles and issues that
-    /// are references, once each per refresh window: not a plain title, not
-    /// one looked up within the window, not a deleted session's.
+    /// are references whose kept lookup no longer holds: not a plain title,
+    /// not one looked up within the window (the stand-in parser versions
+    /// nothing), not a deleted session's.
     #[test]
     fn stale_refs_are_the_references_not_looked_up_lately() {
-        let mut parsers = ReferenceParserRegistry::default();
-        parsers.register(Box::new(StubCardParser {
-            card: Default::default(),
-        }));
+        let TempNdb { ndb, dir: _dir } = TempNdb::new();
+        let txn = nostrdb::Transaction::new(&ndb).expect("txn");
+        let ctx = ReferenceResolveCtx {
+            ndb: &ndb,
+            txn: &txn,
+            selected_account: None,
+        };
+        let mut registries = AppRegistries::default();
+        registries
+            .reference_parsers
+            .register(Box::new(StubCardParser {
+                card: Default::default(),
+            }));
         let mut titled = view("session-a", "headway:notedeck/field-fever-follow", 1);
         titled.state.issue_url = Some("headway:notedeck/label-weekend-expire".to_owned());
         let plain = view("session-b", "A plain title", 2);
@@ -537,7 +548,7 @@ mod tests {
 
         let mut titles = CardTitles::default();
         assert_eq!(
-            stale_refs(&sessions, &parsers, &titles, 100.0),
+            stale_refs(&sessions, &registries, &ctx, &titles, 100.0),
             [
                 "headway:notedeck/field-fever-follow",
                 "headway:notedeck/label-weekend-expire"
@@ -549,12 +560,19 @@ mod tests {
             90.0,
         );
         assert_eq!(
-            stale_refs(&sessions, &parsers, &titles, 100.0),
+            stale_refs(&sessions, &registries, &ctx, &titles, 100.0),
             ["headway:notedeck/label-weekend-expire"],
             "a ref looked up within the window, even a miss, isn't again"
         );
         assert_eq!(
-            stale_refs(&sessions, &parsers, &titles, 90.0 + SEARCH_REFRESH_SECS).len(),
+            stale_refs(
+                &sessions,
+                &registries,
+                &ctx,
+                &titles,
+                90.0 + UNVERSIONED_REFRESH_SECS
+            )
+            .len(),
             2,
             "until the window passes"
         );
@@ -598,13 +616,13 @@ mod tests {
             view("session-other", "Fix relay reconnect", 2),
         ];
         let mut titles = CardTitles::default();
-        let stale = stale_refs(&sessions, &registries.reference_parsers, &titles, 0.0);
         let txn = nostrdb::Transaction::new(&ndb).expect("txn");
         let ctx = ReferenceResolveCtx {
             ndb: &ndb,
             txn: &txn,
             selected_account: None,
         };
+        let stale = stale_refs(&sessions, &registries, &ctx, &titles, 0.0);
         assert!(refresh_titles(&stale, &registries, &ctx, &mut titles, 0.0));
         assert!(
             !refresh_titles(&stale, &registries, &ctx, &mut titles, 1.0),

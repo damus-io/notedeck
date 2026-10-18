@@ -75,6 +75,10 @@ pub(crate) struct BoardCache {
     /// re-folded whenever a new kind-1081 envelope for the channel arrives (every
     /// shared edit is one, so the envelope stream is the universal change signal).
     shared: HashMap<String, SharedBoard>,
+    /// The last revision handed to a shared board's fold (see
+    /// [`SharedBoard::revision`]): one counter for every shared board, as
+    /// [`RealtimeCache`](notedeck::RealtimeCache) keeps one for every author.
+    shared_revisions: u64,
 }
 
 /// One joined shared board within [`BoardCache`]: the multi-writer reducer folded
@@ -88,10 +92,80 @@ struct SharedBoard {
     /// leg, rebuilt lazily after a re-fold. Shared so [`BoardRef`] can hand it
     /// out without copying.
     finalized: Option<Rc<[BoardView]>>,
+    /// Which fold `reducer` is at: moved by [`refold`](Self::refold) on
+    /// every re-fold, the shared-board twin of
+    /// [`RealtimeCache::revision`](notedeck::RealtimeCache::revision).
+    revision: u64,
     /// Subscription to `{kinds:[1081], authors:[team_pubkey]}` — every edit to the
     /// board is published as one such envelope, so a poll reporting new notes means
     /// the board changed (a member's edit unwrapped) and we re-fold.
     sub: Option<Subscription>,
+}
+
+impl SharedBoard {
+    /// Re-fold the board by coordinate: replace the reducer, drop the memo and
+    /// move [`revision`](Self::revision) to `next`, the cache's next unused
+    /// shared revision.
+    fn refold(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        board_addr: &str,
+        channels: &[Pubkey],
+        next: &mut u64,
+    ) {
+        self.reducer = event::fold_shared_board(ndb, txn, board_addr, channels);
+        self.finalized = None;
+        *next += 1;
+        self.revision = *next;
+    }
+}
+
+/// Which fold a set of [`Boards`] came out of. Two equal ones are the same
+/// fold, so whatever was derived from the first still holds for the second:
+/// the key a reader caches derived rows on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FoldRevision {
+    /// An author's own boards, at
+    /// [`RealtimeCache::revision`](notedeck::RealtimeCache::revision).
+    Author(u64),
+    /// One shared board's multi-writer fold, at [`SharedBoard::revision`].
+    Shared(u64),
+}
+
+/// A shared handle to one fold's memoized boards, with the revision they were
+/// folded at. Derefs to the boards; cloning bumps a refcount.
+#[derive(Clone)]
+pub(crate) struct Boards {
+    boards: Rc<[BoardView]>,
+    revision: FoldRevision,
+}
+
+impl Boards {
+    /// `boards` as folded at `revision`, for a test that builds its own.
+    #[cfg(test)]
+    pub(crate) fn at(boards: Vec<BoardView>, revision: FoldRevision) -> Self {
+        Self {
+            boards: boards.into(),
+            revision,
+        }
+    }
+}
+
+impl Deref for Boards {
+    type Target = [BoardView];
+
+    fn deref(&self) -> &[BoardView] {
+        &self.boards
+    }
+}
+
+/// Which board a [`BoardRef`] names: the fold it comes out of and its place
+/// there. Copy, so a reader keeps it without keeping the fold alive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BoardRevision {
+    fold: FoldRevision,
+    index: usize,
 }
 
 /// A zero-copy handle to one folded board: the memoized board set it lives in
@@ -106,29 +180,32 @@ struct SharedBoard {
 /// instead.
 #[derive(Clone)]
 pub(crate) struct BoardRef {
-    boards: Rc<[BoardView]>,
+    boards: Boards,
     index: usize,
 }
 
 impl BoardRef {
     /// The board `board_id` authored by `author` within `boards`, if present.
-    pub(crate) fn find(boards: Rc<[BoardView]>, author: &[u8; 32], board_id: &str) -> Option<Self> {
+    pub(crate) fn find(boards: Boards, author: &[u8; 32], board_id: &str) -> Option<Self> {
         let index = boards
             .iter()
             .position(|v| v.id == board_id && &v.author == author)?;
         Some(Self { boards, index })
     }
 
-    /// Whether `self` and `other` are the same board out of the same fold: a
-    /// pointer comparison, so a reader that cached something derived from a
-    /// board can tell, without looking at a card, that the board hasn't
-    /// re-folded since.
-    pub(crate) fn same_fold(&self, other: &BoardRef) -> bool {
-        Rc::ptr_eq(&self.boards, &other.boards) && self.index == other.index
+    /// Which fold this board comes out of, and where in it. Equal for two
+    /// handles exactly when the board hasn't re-folded between them, so a
+    /// reader that cached something derived from a board keeps this beside it
+    /// and can tell, without looking at a card, that it still holds.
+    pub(crate) fn revision(&self) -> BoardRevision {
+        BoardRevision {
+            fold: self.boards.revision,
+            index: self.index,
+        }
     }
 
     /// The first board in `boards` — a shared fold's only board — if it has one.
-    fn first(boards: Rc<[BoardView]>) -> Option<Self> {
+    fn first(boards: Boards) -> Option<Self> {
         (!boards.is_empty()).then_some(Self { boards, index: 0 })
     }
 }
@@ -218,8 +295,20 @@ impl BoardCache {
         ndb: &Ndb,
         txn: &Transaction,
         author: &Pubkey,
-    ) -> Option<Rc<[BoardView]>> {
-        self.authors.views(ndb, txn, author)
+    ) -> Option<Boards> {
+        let folded = self.authors.views(ndb, txn, author)?;
+        Some(Boards {
+            boards: folded.views,
+            revision: FoldRevision::Author(folded.revision),
+        })
+    }
+
+    /// Advance `author`'s reducer and return which fold its boards are at (see
+    /// [`RealtimeCache::revision`](notedeck::RealtimeCache::revision)): the key
+    /// for text derived off [`all_boards`](Self::all_boards), such as a card's
+    /// title. Costs an empty subscription poll when nothing arrived.
+    pub(crate) fn author_revision(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> u64 {
+        self.authors.revision(ndb, txn, author)
     }
 
     /// Advance every joined shared board: ensure a kind-1081 envelope subscription
@@ -277,8 +366,13 @@ impl BoardCache {
                 None => Vec::new(),
             };
             if !polled.is_empty() || entry.reducer.is_none() {
-                entry.reducer = event::fold_shared_board(ndb, txn, &team.board_addr, &channels);
-                entry.finalized = None;
+                entry.refold(
+                    ndb,
+                    txn,
+                    &team.board_addr,
+                    &channels,
+                    &mut self.shared_revisions,
+                );
             }
             poll.fresh.extend(polled);
         }
@@ -297,14 +391,23 @@ impl BoardCache {
     ) -> Option<BoardRef> {
         let entry = self.shared.entry(board_addr.to_string()).or_default();
         if entry.reducer.is_none() {
-            entry.reducer = event::fold_shared_board(ndb, txn, board_addr, team_pubkeys);
+            entry.refold(
+                ndb,
+                txn,
+                board_addr,
+                team_pubkeys,
+                &mut self.shared_revisions,
+            );
         }
         if entry.finalized.is_none() {
             entry.finalized = Some(entry.reducer.as_ref()?.finalize().into());
         }
         // fold_shared_board folds a single coordinate, so its finalize yields the
         // one board (empty until the board definition has arrived).
-        BoardRef::first(Rc::clone(entry.finalized.as_ref()?))
+        BoardRef::first(Boards {
+            boards: Rc::clone(entry.finalized.as_ref()?),
+            revision: FoldRevision::Shared(entry.revision),
+        })
     }
 }
 
@@ -418,7 +521,7 @@ pub(crate) mod tests {
     /// a wait means every note the async writer ingests *after* this point wakes
     /// [`await_ingest`], so the fold loops advance on the writer's own
     /// notification instead of a wall-clock sleep.
-    fn ingest_stream(ndb: &Ndb, author: &Pubkey) -> SubscriptionStream {
+    pub(crate) fn ingest_stream(ndb: &Ndb, author: &Pubkey) -> SubscriptionStream {
         let sub = ndb.subscribe(&[event::headway_filter(author)]).unwrap();
         SubscriptionStream::new(ndb.clone(), sub)
     }

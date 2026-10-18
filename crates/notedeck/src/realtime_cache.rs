@@ -106,6 +106,10 @@ struct CachedAuthor<R: Reducer> {
     /// Shared (`Rc`) so [`views`](RealtimeCache::views) can hand a reader the
     /// whole set without copying it.
     finalized: Option<Rc<[R::View]>>,
+    /// Which fold `reducer` is at, as [`RealtimeCache::revision`] reports it:
+    /// moved by [`refolded`](Self::refolded) each time a fold drops the memo,
+    /// and `0` before the first. Text derived off the views keys on it.
+    revision: u64,
     /// Keys the subscription drained but that weren't yet visible under the read
     /// txn they were polled with (committed after that txn's snapshot — see
     /// [`Reducer::reduce_delta`]). Retried on the next advance with a fresher
@@ -133,6 +137,18 @@ struct CachedAuthor<R: Reducer> {
     seeding: Option<Receiver<Option<R>>>,
 }
 
+impl<R: Reducer> CachedAuthor<R> {
+    /// Record that the reducer was refolded: drop the memoized finalize so the
+    /// next read rebuilds it, and move [`revision`](Self::revision) to `next`, the
+    /// cache's next unused revision. Every site that drops the memo goes through
+    /// here, so a revision never stays put across a fold.
+    fn refolded(&mut self, next: &mut u64) {
+        self.finalized = None;
+        *next += 1;
+        self.revision = *next;
+    }
+}
+
 // Derived `Default` would require `R: Default`, which no reducer needs; a manual
 // impl seeds an empty entry for any `R`.
 impl<R: Reducer> Default for CachedAuthor<R> {
@@ -141,6 +157,7 @@ impl<R: Reducer> Default for CachedAuthor<R> {
             reducer: None,
             sub: None,
             finalized: None,
+            revision: 0,
             pending: Vec::new(),
             unsynced: Vec::new(),
             seeding: None,
@@ -163,6 +180,16 @@ pub struct PollResponse {
     /// out to the account's private relays (see
     /// [`fan_out_unseen_notes`](crate::fan_out_unseen_notes)).
     pub fresh: Vec<NoteKey>,
+}
+
+/// One fold's memoized views and the [`revision`](RealtimeCache::revision) it
+/// was folded at, from [`RealtimeCache::views`].
+pub struct FoldedViews<V> {
+    /// The views, shared with the cache's memo.
+    pub views: Rc<[V]>,
+    /// Which fold they are: a reader keeps it beside what it derives from
+    /// `views` and derives again once a later read reports another.
+    pub revision: u64,
 }
 
 /// Always-on observability counters for a [`RealtimeCache`]. Two `u32`s bumped on
@@ -200,6 +227,10 @@ pub struct RealtimeCacheStats {
 pub struct RealtimeCache<R: Reducer> {
     authors: HashMap<Pubkey, CachedAuthor<R>>,
     stats: RealtimeCacheStats,
+    /// The last revision handed to a fold (see [`revision`](Self::revision)).
+    /// One counter for every author, so a revision names one fold of one
+    /// author rather than a step in one author's count.
+    revisions: u64,
     /// How to seed on a worker thread, set by
     /// [`with_background_seed`](Self::with_background_seed); `None` seeds inline on
     /// the calling thread.
@@ -253,6 +284,7 @@ impl<R: Reducer> Default for RealtimeCache<R> {
         Self {
             authors: HashMap::new(),
             stats: RealtimeCacheStats::default(),
+            revisions: 0,
             background: None,
         }
     }
@@ -294,6 +326,7 @@ impl<R: Reducer> RealtimeCache<R> {
     #[profiling::function]
     fn advance(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> bool {
         let background = self.background.as_ref();
+        let revisions = &mut self.revisions;
         let entry = self.authors.entry(*author).or_default();
         if entry.sub.is_none() {
             entry.sub = ndb.subscribe(&[R::filter(author)]).ok();
@@ -331,7 +364,7 @@ impl<R: Reducer> RealtimeCache<R> {
         let Some(sub) = entry.sub else {
             // No subscription: fold the whole history each frame so edits still show.
             entry.reducer = R::fold(ndb, txn, author);
-            entry.finalized = None;
+            entry.refolded(revisions);
             self.stats.full_reloads += 1;
             return true;
         };
@@ -355,7 +388,7 @@ impl<R: Reducer> RealtimeCache<R> {
                     .into_iter()
                     .filter(|key| ndb.get_note_by_key(txn, *key).is_err())
                     .collect();
-                entry.finalized = None;
+                entry.refolded(revisions);
                 self.stats.full_reloads += 1;
                 return true;
             };
@@ -374,12 +407,12 @@ impl<R: Reducer> RealtimeCache<R> {
                 Err(TryRecvError::Disconnected) => None,
             };
             entry.seeding = None;
-            entry.finalized = None;
             let Some(reducer) = landed else {
                 // Nothing folded (a query error); the next advance retries.
                 return true;
             };
             entry.reducer = Some(reducer);
+            entry.refolded(revisions);
             self.stats.full_reloads += 1;
             // Fold in what arrived while the seed ran.
             self.fold_deltas(ndb, txn, author, Vec::new());
@@ -423,7 +456,7 @@ impl<R: Reducer> RealtimeCache<R> {
         }
         // A fold happened, so the memoized finalize is stale; drop it and let
         // the next read rebuild it once (see `with_views`).
-        entry.finalized = None;
+        entry.refolded(&mut self.revisions);
         entry.unsynced.extend(fresh);
         true
     }
@@ -490,18 +523,24 @@ impl<R: Reducer> RealtimeCache<R> {
 
     /// Advance `author`'s reducer and hand back a shared handle to the memoized
     /// views — the same finalize [`with_views`](Self::with_views) reads, without
-    /// the closure. Cloning the handle bumps a refcount; it never copies a view.
-    /// For a reader that has to drop the cache borrow before it draws (a render
-    /// that re-enters the cache to resolve inline references) yet still read the
-    /// views while drawing. `None` until the reducer seeds.
+    /// the closure — with the [`revision`](Self::revision) they were folded at.
+    /// Cloning the handle bumps a refcount; it never copies a view. For a reader
+    /// that has to drop the cache borrow before it draws (a render that re-enters
+    /// the cache to resolve inline references) yet still read the views while
+    /// drawing, and keep what it derives from them keyed on the revision. `None`
+    /// until the reducer seeds.
     #[profiling::function]
     pub fn views(
         &mut self,
         ndb: &Ndb,
         txn: &Transaction,
         author: &Pubkey,
-    ) -> Option<Rc<[R::View]>> {
-        self.memoized(ndb, txn, author).map(Rc::clone)
+    ) -> Option<FoldedViews<R::View>> {
+        let views = Rc::clone(self.memoized(ndb, txn, author)?);
+        // Read under the same advance as the memo, which is rebuilt exactly
+        // when the revision moves, so the two name the same fold.
+        let revision = self.authors.get(author)?.revision;
+        Some(FoldedViews { views, revision })
     }
 
     /// Advance `author`'s reducer and borrow its memoized finalize, rebuilding it
@@ -576,8 +615,27 @@ impl<R: Reducer> RealtimeCache<R> {
     /// finalize-once-per-fold path in a test).
     pub fn invalidate(&mut self, author: &Pubkey) {
         if let Some(entry) = self.authors.get_mut(author) {
-            entry.finalized = None;
+            entry.refolded(&mut self.revisions);
         }
+    }
+
+    /// Advance `author`'s reducer and return which fold it is now at: a number
+    /// that moves every time the views [`with_views`](Self::with_views) reads
+    /// are rebuilt, and stays put while they aren't. `0` before the first fold.
+    ///
+    /// For a caller that keeps something derived from the views (a card's
+    /// title, a list's rows): keep the revision beside it and derive again
+    /// only once this returns a different one, instead of on a timer or every
+    /// frame. Revisions are unique across the cache's authors, so one names a
+    /// single fold of a single author.
+    ///
+    /// It moves when the memo is rebuilt, not strictly when the views changed:
+    /// a relay re-delivering a note the reducer already holds folds as a delta
+    /// and moves it too. A steady frame never does, and an advance that finds
+    /// nothing new costs one empty subscription poll, which doesn't allocate.
+    pub fn revision(&mut self, ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> u64 {
+        self.advance(ndb, txn, author);
+        self.authors.get(author).map_or(0, |entry| entry.revision)
     }
 }
 
@@ -781,6 +839,66 @@ mod tests {
             1,
             "cache re-seeded instead of folding deltas"
         );
+    }
+
+    /// [`RealtimeCache::revision`] moves exactly when the memoized views are
+    /// rebuilt — on the seed, on a delta that folds, on `invalidate` — and holds
+    /// across advances that find nothing, so a caller keyed on it re-derives
+    /// once per fold. Two authors never share a revision.
+    #[test]
+    fn revision_moves_once_per_fold_and_holds_when_idle() {
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        let kp = nostrdb_net::FullKeypair::generate();
+        let other = nostrdb_net::FullKeypair::generate();
+        let mut cache: RealtimeCache<ToyReducer> = RealtimeCache::default();
+        let revision = |cache: &mut RealtimeCache<ToyReducer>, author: &Pubkey| {
+            let txn = Transaction::new(&ndb).unwrap();
+            cache.revision(&ndb, &txn, author)
+        };
+
+        // The first advance only subscribes: nothing folded, so no revision.
+        assert_eq!(revision(&mut cache, &kp.pubkey), 0, "before any fold");
+        let seeded = revision(&mut cache, &kp.pubkey);
+        assert_ne!(seeded, 0, "the seed is a fold");
+        for _ in 0..5 {
+            assert_eq!(
+                revision(&mut cache, &kp.pubkey),
+                seeded,
+                "an idle advance moved the revision"
+            );
+        }
+
+        // A note that folds as a delta moves it, once.
+        let det = ndb.subscribe(&[ToyReducer::filter(&kp.pubkey)]).unwrap();
+        write_note(&ndb, &kp, "one");
+        wait_commit(&ndb, det);
+        let folded = loop {
+            let now = revision(&mut cache, &kp.pubkey);
+            if now != seeded {
+                break now;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(
+            revision(&mut cache, &kp.pubkey),
+            folded,
+            "held after the delta"
+        );
+
+        // A forced invalidation is a rebuild too.
+        cache.invalidate(&kp.pubkey);
+        let invalidated = revision(&mut cache, &kp.pubkey);
+        assert_ne!(invalidated, folded);
+
+        // Another author's seed takes a revision of its own.
+        revision(&mut cache, &other.pubkey);
+        let theirs = revision(&mut cache, &other.pubkey);
+        assert_ne!(theirs, 0);
+        assert!(
+            ![seeded, folded, invalidated].contains(&theirs),
+            "two authors' folds share a revision"
+        );
+        assert_eq!(revision(&mut cache, &kp.pubkey), invalidated);
     }
 
     /// Many reads with no intervening fold share a single finalize; a fold (here

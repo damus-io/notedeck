@@ -48,7 +48,7 @@ use super::widgets::{
     status_icon_ui, text_pill, tinted_pill,
 };
 use super::{Arrival, BoardEffect, BoardNav, BoardUiState, ViewEdit};
-use crate::cache::BoardRef;
+use crate::cache::{BoardRef, BoardRevision};
 use crate::cursor::{CursorMove, Vertical};
 use crate::event::{self, BoardView, CardView, Priority};
 use crate::keys::{self, CardAction};
@@ -573,8 +573,10 @@ fn slot_place(slot: RowSlot, board: &BoardView) -> &str {
 /// The inputs the cached rows were computed from: when any differs, the rows
 /// are stale.
 struct ListInputs {
-    /// Each board read, as a handle into its fold; compared by pointer.
-    sources: Vec<BoardRef>,
+    /// Which fold each board read came out of (see [`BoardRef::revision`]):
+    /// the rows hold until one re-folds. Revisions, not the handles, so the
+    /// cached rows don't keep a superseded fold alive.
+    sources: Vec<BoardRevision>,
     /// The query text.
     query: String,
     /// The tab's own query.
@@ -674,7 +676,7 @@ impl ListState {
     }
 
     /// Whether the cached rows were computed from other inputs than these.
-    /// Compares the boards by pointer and the query by value, so a steady
+    /// Compares the boards by revision and the query by value, so a steady
     /// frame allocates nothing to find out.
     fn stale(&self, sources: &[BoardRef]) -> bool {
         let Some(seen) = &self.seen else {
@@ -692,7 +694,7 @@ impl ListState {
                 .sources
                 .iter()
                 .zip(sources)
-                .any(|(was, now)| !was.same_fold(now))
+                .any(|(was, now)| *was != now.revision())
     }
 
     /// Recompute the rows, their order and their groups from `sources` if
@@ -738,7 +740,7 @@ impl ListState {
         self.groups = headway::query::group(&boards, &kept, self.grouping);
         self.rebuild_entries();
         self.seen = Some(ListInputs {
-            sources: sources.to_vec(),
+            sources: sources.iter().map(BoardRef::revision).collect(),
             query: self.query.clone(),
             base: self.base.clone(),
             hide_subissues: self.hide_subissues,
@@ -2639,13 +2641,19 @@ fn prop_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, label: &str, on: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::{Boards, FoldRevision};
     use crate::cursor::tests::{grid, id};
-    use std::rc::Rc;
 
-    /// [`grid`] as the one source the list reads.
-    fn sources(view: BoardView) -> Vec<BoardRef> {
-        let boards: Rc<[BoardView]> = Rc::from(vec![view]);
+    /// `view` as the one source the list reads, folded at `revision`: a
+    /// test that re-folds the board passes a new one.
+    fn sources_at(view: BoardView, revision: u64) -> Vec<BoardRef> {
+        let boards = Boards::at(vec![view], FoldRevision::Author(revision));
         vec![BoardRef::find(boards, &[0; 32], "headway").expect("the board")]
+    }
+
+    /// `view` as the one source the list reads, as first folded.
+    fn sources(view: BoardView) -> Vec<BoardRef> {
+        sources_at(view, 1)
     }
 
     /// A list over [`grid`], on All issues (Active would drop `c`, the last
@@ -2824,6 +2832,24 @@ mod tests {
         assert_eq!(list.cursor, on_group("c"));
     }
 
+    /// The rows are kept while the board's fold holds, even when the board
+    /// handed in differs, and recomputed once it re-folds.
+    #[test]
+    fn the_rows_hold_until_the_board_refolds() {
+        let mut list = grouped();
+        let rows = list.rows.len();
+        // The board with its first card gone.
+        let shrunk = || {
+            let mut view = grid();
+            view.columns[0].cards.remove(0);
+            view
+        };
+        list.refresh(&sources(shrunk()));
+        assert_eq!(list.rows.len(), rows, "same fold: the cached rows stand");
+        list.refresh(&sources_at(shrunk(), 2));
+        assert_eq!(list.rows.len(), rows - 1, "a re-fold recomputes them");
+    }
+
     /// A board re-fold that moves the cursor's header leaves the cursor on
     /// the same group.
     #[test]
@@ -2835,7 +2861,7 @@ mod tests {
         let mut view = grid();
         let five = view.columns[2].cards.remove(0);
         view.columns[1].cards.push(five);
-        list.refresh(&sources(view));
+        list.refresh(&sources_at(view, 2));
         assert_eq!(list.cursor, on_group("a"));
         assert_eq!(list.cursor_entry(), at.map(|at| at + 1));
     }

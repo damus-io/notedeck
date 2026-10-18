@@ -25,7 +25,7 @@ mod ui_tools;
 
 use ui_tools::HeadwayUiTool;
 
-use cache::{BoardCache, BoardRef};
+use cache::{BoardCache, BoardRef, Boards};
 use nav::{DepartedCards, NavReconcile, SeenCards, reconcile_nav};
 pub use nav::{HeadwayRoute, ReviewTarget};
 pub use renderers::{HeadwayBoardRenderer, HeadwayIssueRenderer, HeadwayRefParser};
@@ -307,7 +307,7 @@ impl Headway {
     fn list_sources(
         &self,
         ctx: &AppContext,
-        own: Option<&Rc<[BoardView]>>,
+        own: Option<&Boards>,
         boards: &[BoardSummary],
     ) -> Vec<BoardRef> {
         let Ok(txn) = Transaction::new(ctx.ndb) else {
@@ -323,7 +323,7 @@ impl Headway {
                         let channels = teams::board_channel_pubkeys(&self.teams, &team.board_addr);
                         cache.shared_board(ctx.ndb, &txn, &team.board_addr, &channels)
                     }
-                    None => BoardRef::find(Rc::clone(own?), &summary.owner, &summary.id),
+                    None => BoardRef::find(own?.clone(), &summary.owner, &summary.id),
                 }
             })
             .filter(|board| !board.deleted)
@@ -341,7 +341,7 @@ impl Headway {
     fn home_of_stray_card(
         &self,
         ctx: &AppContext,
-        own: Option<&Rc<[BoardView]>>,
+        own: Option<&Boards>,
         boards: &[BoardSummary],
         view: &BoardView,
     ) -> Option<event::BoardCoord> {
@@ -711,7 +711,7 @@ impl App for Headway {
         out: &mut notedeck::SearchHits,
     ) {
         let author = *ctx.accounts.selected_account_pubkey();
-        let own_boards: Option<Rc<[BoardView]>> = Transaction::new(ctx.ndb).ok().and_then(|txn| {
+        let own_boards: Option<Boards> = Transaction::new(ctx.ndb).ok().and_then(|txn| {
             self.board_cache
                 .borrow_mut()
                 .all_boards(ctx.ndb, &txn, &author)
@@ -1051,7 +1051,7 @@ impl Headway {
         // (a cold, Headway-never-opened session seeds it lazily on this read). One
         // finalize backs both the active board and the switcher list, and it's a
         // shared handle to the memo: a steady frame copies no boards.
-        let own_boards: Option<Rc<[BoardView]>> = Transaction::new(ctx.ndb).ok().and_then(|txn| {
+        let own_boards: Option<Boards> = Transaction::new(ctx.ndb).ok().and_then(|txn| {
             self.board_cache
                 .borrow_mut()
                 .all_boards(ctx.ndb, &txn, &author)
