@@ -19,6 +19,7 @@ mod batch;
 mod btc;
 mod csv_rows;
 mod ledger;
+mod payroll;
 mod rbc;
 
 use std::path::PathBuf;
@@ -30,15 +31,18 @@ use ledgerdb::{
 };
 
 pub use amex::AmexImporter;
-pub use batch::{Batch, BatchError, LeftOut, RawAmount, RawMeta, RawPosting, RawPrice, RawTxn};
+pub use batch::{
+    Batch, BatchError, LeftOut, RawAmount, RawMeta, RawPosting, RawPrice, RawTxn, Skipped,
+};
 pub use btc::{BitcoindHttp, BtcImporter, Rpc};
 pub use ledger::LedgerImporter;
+pub use payroll::PayrollImporter;
 pub use rbc::RbcImporter;
 
 use crate::{CashflowDir, Config};
 
 /// Every importer's name, as `cashflow import <name>` takes it.
-pub const NAMES: &[&str] = &["amex", "btc", "ledger", "rbc"];
+pub const NAMES: &[&str] = &["amex", "btc", "ledger", "payroll", "rbc"];
 
 /// Reads one kind of source into a batch.
 pub trait Importer {
@@ -73,6 +77,7 @@ pub fn importer(name: &str, config: &Config, dir: &CashflowDir) -> Option<Box<dy
         "amex" => Some(Box::new(AmexImporter::new(config.amex.as_ref()))),
         "btc" => Some(Box::new(BtcImporter::new(config.btc.as_ref(), dir))),
         "ledger" => Some(Box::new(LedgerImporter)),
+        "payroll" => Some(Box::new(PayrollImporter::new(config.payroll.as_ref()))),
         "rbc" => Some(Box::new(RbcImporter::new(config.rbc.as_ref()))),
         _ => None,
     }
@@ -104,7 +109,7 @@ pub enum ImportError {
     /// The batch has no transactions or prices. `skipped` is what the
     /// importer read but left out, so a file where nothing parsed says why.
     #[error("nothing to import{}", first_skip(skipped))]
-    Empty { skipped: Vec<ParseError> },
+    Empty { skipped: Vec<Skipped> },
     /// The segment could not be written, or the journal not read.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -141,7 +146,7 @@ pub struct Written {
     /// uses for their dates and pairs.
     pub price_rows: Rows,
     /// What the importer read but left out, from [`Batch::skipped`].
-    pub skipped: Vec<ParseError>,
+    pub skipped: Vec<Skipped>,
     /// What the importer deliberately left out, from [`Batch::left_out`].
     pub left_out: Vec<LeftOut>,
 }
@@ -282,7 +287,7 @@ impl Rows {
 
 /// `: 3 lines skipped, first 1:1: …` for [`ImportError::Empty`], or
 /// nothing when none were.
-fn first_skip(skipped: &[ParseError]) -> String {
+fn first_skip(skipped: &[Skipped]) -> String {
     match skipped.first() {
         Some(first) => format!(": {} skipped, first {first}", skipped.len()),
         None => String::new(),

@@ -159,7 +159,7 @@ pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
                 "skipped": written.skipped.iter().map(|e| json!({
                     "line": e.line,
                     "col": e.col,
-                    "error": e.kind.to_string(),
+                    "error": e.message,
                 })).collect::<Vec<_>>(),
                 "left_out": written.left_out.iter().map(|l| json!({
                     "id": l.id,

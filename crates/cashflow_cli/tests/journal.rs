@@ -373,6 +373,68 @@ fn rbc_import_maps_accounts_by_last_four() {
     assert_eq!(cf.ok(&["journal", "ls"]).lines().count(), 1);
 }
 
+/// `import payroll` over a payout the `btc` importer already filed as a send:
+/// the payroll record moves it from expenses:unknown to the payroll account,
+/// so the bitcoin is spent once, and the line that doesn't read is reported
+/// while the rest imports.
+#[test]
+fn payroll_import_categorizes_the_btc_send() {
+    let cf = cashflow();
+    std::fs::write(
+        cf.dir().join("config.toml"),
+        "[payroll]\npayee = \"Ada\"\naccount = \"expenses:payroll:ada\"\n",
+    )
+    .unwrap();
+    let txid = "ab".repeat(32);
+    // 2024-03-02, a day after the invoice date.
+    let sends = write(
+        &cf,
+        "sends.tsv",
+        &format!("hot\t\tbc1qpay\tsend\t-0.05\t1709337600\t6\t{txid}\t0\t-0.0001\n"),
+    );
+    cf.ok(&["import", "btc", s(&sends)]);
+    let payroll = write(
+        &cf,
+        "payroll.txt",
+        &format!(
+            "Payouts\n\n*\t??\tbc1qpay\t2024-03-01\t4000CAD\t5000000\t{txid}\n\
+             *\t??\tbc1qpay\t2024-04-01\t4000CAD\n"
+        ),
+    );
+
+    let out = cf.run(&["import", "payroll", s(&payroll)]);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "skipped {}:4:1: a payout has 7 fields",
+            payroll.display()
+        )),
+        "{stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("1 skipped"), "{stdout}");
+
+    let bal = cf.ok(&["report", "bal", "expenses", "--native"]);
+    assert!(bal.contains("5000000000 msat  expenses:payroll"), "{bal}");
+    assert!(!bal.contains("unknown"), "spent once: {bal}");
+    let ada = cf.ok(&["report", "bal", "expenses:payroll:ada", "--native"]);
+    assert!(ada.contains("5000000000 msat"), "{ada}");
+    let exported = cf.ok(&["export"]);
+    assert!(
+        exported.contains("2024-03-01 * Ada invoice 1\n"),
+        "{exported}"
+    );
+    assert!(exported.contains("; raw-cad: 4000.00"), "{exported}");
+    assert!(!exported.contains("P 2024"), "no sat price: {exported}");
+
+    // Re-importing the same file adds nothing.
+    let again: Value =
+        serde_json::from_str(&cf.ok(&["import", "payroll", s(&payroll), "--json"])).unwrap();
+    assert_eq!(again["hash"], Value::Null);
+    assert_eq!(again["txn_rows"]["unchanged"], 1);
+}
+
 /// A legacy ledger file with no ids, a raw line before its first
 /// transaction and an elided payroll-style posting: the bad line is reported
 /// by number, the rest imports with legacy ids, and `journal rm` retires the

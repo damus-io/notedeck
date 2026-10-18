@@ -77,15 +77,39 @@ pub struct Batch {
     /// The batch, in a journal of its own: amounts are written at its own
     /// commodity table's precision, which a segment's hash depends on.
     pub journal: Journal,
-    /// What the source had that is not in `journal`: an importer that reads
-    /// ledger text keeps going past a line that doesn't parse, leaving the
-    /// transaction out, and says so here. Line numbers are the source's.
-    pub skipped: Vec<ParseError>,
+    /// What the source had that is not in `journal`: an importer keeps going
+    /// past a line that doesn't read, leaving its record out, and says so
+    /// here. Line numbers are the source's.
+    pub skipped: Vec<Skipped>,
     /// Records the source had that the importer deliberately left out, such
     /// as a bitcoin transaction not yet in a block, which has no date to file
     /// it under. Unlike [`skipped`](Self::skipped) nothing is wrong with
     /// them; a later import takes them once they settle.
     pub left_out: Vec<LeftOut>,
+}
+
+/// A line of an importer's input that didn't read, so its record is not in
+/// the batch: a ledger file's parse error, or a payroll line with a field
+/// missing.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{line}:{col}: {message}")]
+pub struct Skipped {
+    /// The line, starting at 1.
+    pub line: u32,
+    /// The byte column in the line, starting at 1.
+    pub col: u32,
+    /// What is wrong.
+    pub message: String,
+}
+
+impl From<ParseError> for Skipped {
+    fn from(error: ParseError) -> Self {
+        Self {
+            line: error.line,
+            col: error.col,
+            message: error.kind.to_string(),
+        }
+    }
 }
 
 /// One record an importer read and deliberately left out of its batch.

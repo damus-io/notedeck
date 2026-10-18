@@ -34,8 +34,8 @@ mod test_util;
 
 pub use books::Books;
 pub use config::{
-    AmexConfig, BtcConfig, CashflowDir, Config, ConfigError, DIR_ENV, NamedPath, RELAY_ENV,
-    RbcConfig, Secret, SecretEntry, SecretSource,
+    AmexConfig, BtcConfig, CashflowDir, Config, ConfigError, DIR_ENV, NamedPath, PayrollConfig,
+    RELAY_ENV, RbcConfig, Secret, SecretEntry, SecretSource,
 };
 pub use settings::{Setting, Settings};
 pub use vault::{Record, Stored, Vault, VaultError, Written};

@@ -704,7 +704,7 @@ mod tests {
                 json: false,
             })
         );
-        assert!(err_of(&["import"]).contains("needs an importer: amex, btc, ledger, rbc"));
+        assert!(err_of(&["import"]).contains("needs an importer: amex, btc, ledger, payroll, rbc"));
         assert!(err_of(&["import", "ledger", "--source"]).contains("--source needs a value"));
     }
 

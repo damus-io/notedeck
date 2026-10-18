@@ -27,7 +27,7 @@ use std::path::Path;
 use ledgerdb::{Journal, Parsed, WriteOptions};
 use sha2::{Digest, Sha256};
 
-use super::{Batch, ImportError, ImportInput, Importer};
+use super::{Batch, ImportError, ImportInput, Importer, Skipped};
 
 /// How many hex digits of the sha256 a legacy id keeps: 64 bits, so a file
 /// of a million transactions has about a one in thirty million chance of any
@@ -68,7 +68,7 @@ fn import_file(path: &Path, source: &str) -> Result<Batch, ImportError> {
     } = Journal::parse(&text);
     give_legacy_ids(&mut journal, source);
     Ok(Batch {
-        skipped: errors,
+        skipped: errors.into_iter().map(Skipped::from).collect(),
         ..Batch::new(journal)
     })
 }

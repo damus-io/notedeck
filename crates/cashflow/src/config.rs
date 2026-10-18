@@ -332,6 +332,9 @@ pub struct Config {
     /// `[btc]`: the on-chain bitcoin importer's settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub btc: Option<BtcConfig>,
+    /// `[payroll]`: the payroll importer's settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payroll: Option<PayrollConfig>,
 }
 
 /// `[amex]` in `config.toml`. Every key is optional.
@@ -358,6 +361,25 @@ pub struct RbcConfig {
     /// number.
     #[serde(default)]
     pub accounts: BTreeMap<String, String>,
+}
+
+/// `[payroll]` in `config.toml`: who a payroll file pays and where it
+/// posts. Every key is optional; the payee's name lives here, never in code.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PayrollConfig {
+    /// The payee line's name, written before `invoice <n>`
+    /// [default: `payroll`].
+    pub payee: Option<String>,
+    /// The expense account the pay goes to [default: `expenses:payroll`].
+    pub account: Option<String>,
+    /// The counter leg's account [default: `expenses:unknown`]. Each line's
+    /// payout is a bitcoin send the `btc` importer already files against
+    /// `expenses:unknown`, so by default a payroll record moves it from
+    /// there to the payroll account rather than spending the bitcoin twice.
+    /// Set a wallet account (`assets:btc`) only when the payouts' wallet is
+    /// not imported.
+    pub counter: Option<String>,
 }
 
 /// `[btc]` in `config.toml`: how to reach bitcoind and which wallets to
@@ -524,6 +546,15 @@ mod tests {
             "assets:rbc:chequing"
         );
         assert_eq!(Config::parse(&rbc.to_toml()).unwrap(), rbc);
+
+        let payroll =
+            Config::parse("[payroll]\npayee = \"Ada\"\naccount = \"expenses:pay\"\n").unwrap();
+        assert_eq!(
+            payroll.payroll.as_ref().unwrap().payee.as_deref(),
+            Some("Ada")
+        );
+        assert_eq!(Config::parse(&payroll.to_toml()).unwrap(), payroll);
+        assert!(Config::parse("[payroll]\nname = \"x\"\n").is_err());
 
         let btc = Config::parse(
             "[btc]\nuser = \"rpc\"\nwallets = [\"hot\"]\nexternal_wallets = [\"cold\"]\n",

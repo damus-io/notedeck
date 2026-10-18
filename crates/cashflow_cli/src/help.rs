@@ -211,6 +211,18 @@ Importers:
                   that. Lines that don't parse are reported with their line
                   numbers and their transaction is left out; the rest is
                   imported.
+  payroll <file>  a payroll file of bitcoin payouts, one `*` line each:
+                  `* <invoice|??> <address> <date> <cad>CAD <sats> <txid>`;
+                  other lines are passed over and a `*` line that doesn't
+                  read is reported by line number. The txid is a send the
+                  btc importer already files against expenses:unknown, so
+                  each payout moves its msat from there to
+                  expenses:payroll, as `<payee> invoice <n>`, id
+                  payroll:<txid>, with raw-txid, raw-address and raw-cad
+                  (the invoice's CAD). [payroll] in config.toml sets
+                  `payee` (payroll), `account` (expenses:payroll) and
+                  `counter` (expenses:unknown; a wallet account for
+                  payouts from a wallet that isn't imported).
   rbc <path>...   RBC online banking \"Download Transactions\" CSVs, any
                   mix of chequing, savings and card accounts; a directory
                   reads its *.csv files in name order. [rbc.accounts] in
@@ -240,6 +252,7 @@ importer's), which `export` and `report` can include or leave out.",
             "cashflow import amex ~/Downloads/activity.csv",
             "cashflow import btc",
             "cashflow import ledger books.ledger",
+            "cashflow import payroll payroll.txt",
             "cashflow import rbc ~/Downloads/csv*.csv",
             "cashflow import ledger old.ledger --source bank --layer cards",
         ],
