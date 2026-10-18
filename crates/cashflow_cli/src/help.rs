@@ -11,6 +11,7 @@ const SETUP: &str = "SETUP";
 const VAULT: &str = "VAULT";
 const JOURNAL: &str = "JOURNAL";
 const REPORTS: &str = "REPORTS";
+const CATEGORIZE: &str = "CATEGORIZE";
 
 /// The layer, rules and home-commodity options every reading command takes.
 macro_rules! books_options {
@@ -19,7 +20,7 @@ macro_rules! books_options {
             $($extra,)*
             ("--layer <name>", "Only segments in this layer; repeat for more"),
             ("--except <name>", "Every layer but this one; repeat for more"),
-            ("--rules <toml>", "Categorize with this file, not the vault's rules"),
+            ("--rules <toml>", "Categorize with this file alone, not the vault"),
         ]
     };
 }
@@ -28,7 +29,7 @@ macro_rules! books_options {
 pub const CLI: Cli = Cli {
     bin: "cashflow",
     about: "import, inspect and export a personal finance ledger",
-    groups: &[SETUP, JOURNAL, REPORTS, VAULT],
+    groups: &[SETUP, JOURNAL, REPORTS, CATEGORIZE, VAULT],
     commands: COMMANDS,
     global_hint: "--dir",
 };
@@ -344,15 +345,17 @@ replaces it. A source that fails is reported and the others still run.",
         ],
         details: concat!(
             "\
-Load the journal, categorize it with the vault's rules (`cashflow rule`; with
-no stored key, as imported), or with --rules instead, and print it to stdout in ledgerdb's canonical ledger-cli form, readable by ledger-cli
-and by `cashflow import ledger`.
+Load the journal, categorize it with the vault (its rules from `cashflow
+rule`, and the overrides, splits and transfer links from `categorize`,
+`split` and `transfer`; with no stored key, as imported), or with --rules
+alone instead, and print it to stdout in ledgerdb's canonical ledger-cli
+form, readable by ledger-cli and by `cashflow import ledger`.
 
 With --begin or --end only the transactions in the range are printed
 (--begin inclusive, --end exclusive, both YYYY-MM-DD), after every price
 dated before the end so the range still converts.
 
-Segments that don't load and rules that don't apply are reported on stderr.
+Segments that don't load and edits that don't apply are reported on stderr.
 
 ",
             rules_details!()
@@ -394,7 +397,7 @@ defaults to expenses) by their total over the range, with each one's share.
 
 Dates are YYYY-MM-DD; --begin is inclusive, --end exclusive. --layer,
 --except and --rules choose the books as for `export`: the vault's rules
-unless --rules names a file.",
+and edits, unless --rules names a file.",
         options: books_options![
             (
                 "--in <commodity>",
@@ -416,7 +419,7 @@ unless --rules names a file.",
     },
     CommandHelp {
         name: "rule",
-        group: VAULT,
+        group: CATEGORIZE,
         summary: "List, add, move, remove or test the categorization rules",
         usage: &[
             "rule ls [--by <agentium-ref>] [--json]",
@@ -464,9 +467,15 @@ agentium:<word-id> ref.
             ("--json", "Machine-readable output"),
             ("--dry-run", "Show what would move; write nothing"),
             ("--by <agentium-ref>", "Only rules this session added (ls)"),
-            ("--match <text>", "Payee contains this; repeat for any of (add)"),
+            (
+                "--match <text>",
+                "Payee contains this; repeat for any of (add)",
+            ),
             ("--meta <key=value>", "Metadata contains this; repeat (add)"),
-            ("--amount <min..max>", "Counter leg size, smallest units (add)"),
+            (
+                "--amount <min..max>",
+                "Counter leg size, smallest units (add)",
+            ),
             ("--source <name>", "Segment source (add)"),
             ("--layer <name>", "Segment layer (add)"),
             ("--first", "Try it before every rule (add, mv)"),
@@ -480,6 +489,154 @@ agentium:<word-id> ref.
             "cashflow rule mv oak-flat-lamp --before hill-ripe-sock",
             "cashflow rule test amex:2024-01-02-0001",
             "cashflow rule ls --json",
+        ],
+    },
+    CommandHelp {
+        name: "categorize",
+        group: CATEGORIZE,
+        summary: "Send one transaction to an account",
+        usage: &["categorize <record-id> <account> [--dry-run] [--json]"],
+        details: "\
+Override where one transaction's counter leg goes (its posting to a default
+account such as expenses:unknown), by its `; id:`. An override beats every
+rule, and replaces a split of the same transaction. It is its own vault note
+(d = ov:<record-id>), so it follows the key to every machine.
+
+It prints the transaction's legs before and after, the note it wrote, and
+what that replaced; --dry-run prints the same and writes nothing. A
+transaction linked as a transfer can't be categorized: `transfer unlink` it
+first. The session that wrote it is $AGENTIUM_SESSION, when that is an
+agentium:<word-id> ref (see `cashflow edits --by`).",
+        options: &[
+            ("--dry-run", "Show the change; write nothing"),
+            ("--json", "Machine-readable output"),
+        ],
+        examples: &[
+            "cashflow categorize amex:2024-01-02-0001 expenses:food --dry-run",
+            "cashflow categorize cln:inv:abc income:consulting",
+        ],
+    },
+    CommandHelp {
+        name: "uncategorize",
+        group: CATEGORIZE,
+        summary: "Clear one transaction's override or split",
+        usage: &["uncategorize <record-id> [--dry-run] [--json]"],
+        details: "\
+Clear the override or split `categorize` or `split` wrote for a transaction,
+so the rules decide it again. The clear is a newer revision of the same vault
+note, so it syncs like the edit did. Prints the legs before and after;
+--dry-run writes nothing.",
+        options: &[
+            ("--dry-run", "Show the change; write nothing"),
+            ("--json", "Machine-readable output"),
+        ],
+        examples: &["cashflow uncategorize amex:2024-01-02-0001"],
+    },
+    CommandHelp {
+        name: "split",
+        group: CATEGORIZE,
+        summary: "Share one transaction out over several accounts",
+        usage: &["split <record-id> <account>=<amount>... [<account>] [--dry-run] [--json]"],
+        details: "\
+Replace a transaction's counter leg with several legs, by its `; id:`. Each
+amount is in the counter leg's commodity (`12.50`, or `12.50 CAD` to say
+so) and in its direction: give the parts of a 100.00 purchase as positive
+numbers, and a negative one for a part going the other way. One leg may be a
+bare <account>, taking whatever the others leave. The legs must add up to
+the counter leg exactly.
+
+A split beats every rule and replaces an override of the same transaction.
+It is its own vault note (d = split:<record-id>); `uncategorize` clears it.
+Prints the legs before and after; --dry-run writes nothing.",
+        options: &[
+            ("--dry-run", "Show the change; write nothing"),
+            ("--json", "Machine-readable output"),
+        ],
+        examples: &[
+            "cashflow split amex:2024-01-02-0001 expenses:food=60 expenses:home",
+            "cashflow split rbc:0042 expenses:rent=1200.00 expenses:utilities=80.50",
+        ],
+    },
+    CommandHelp {
+        name: "transfer",
+        group: CATEGORIZE,
+        summary: "Link the two sides of a move between your own accounts",
+        usage: &[
+            "transfer link <record-id> <record-id> [--dry-run] [--json]",
+            "transfer unlink <record-id> <record-id> [--dry-run] [--json]",
+            "transfer suggest [--accept-all [--dry-run]] [--json]",
+        ],
+        details: "\
+Paying a card from chequing is recorded twice, once by each source, and until
+the two are linked it counts as an expense on one side and income on the
+other. A link sends both counter legs to the transfers account, where they
+net out. Its two sides must be equal and opposite in one commodity.
+
+`link` writes the link (d = xfer:<a>|<b>, the ids sorted, so either order is
+the same link), `unlink` clears it. A transaction with an override or split,
+or already in a link, can't be linked: `uncategorize` or `unlink` it first.
+
+`suggest` lists the pairs that look like one transfer: an own account
+(assets, liabilities) on each side, equal and opposite, at most 5 days apart,
+neither decided by an edit yet. --accept-all links every one; with --dry-run
+it lists them and writes nothing.",
+        options: &[
+            ("--accept-all", "Link every suggested pair (suggest)"),
+            ("--dry-run", "Show the change; write nothing"),
+            ("--json", "Machine-readable output"),
+        ],
+        examples: &[
+            "cashflow transfer suggest",
+            "cashflow transfer suggest --accept-all --dry-run",
+            "cashflow transfer link rbc:0042 amex:2024-01-07-0003",
+        ],
+    },
+    CommandHelp {
+        name: "edits",
+        group: CATEGORIZE,
+        summary: "List the overrides, splits and transfer links",
+        usage: &["edits [--by <agentium-ref>] [--json]"],
+        details: "\
+List every live per-transaction edit in the vault: overrides (`categorize`),
+splits and transfer links, each with the agentium session that wrote it.
+--by keeps one session's, to review or undo what an agent did.",
+        options: &[
+            ("--by <agentium-ref>", "Only edits this session wrote"),
+            ("--json", "Machine-readable output"),
+        ],
+        examples: &[
+            "cashflow edits",
+            "cashflow edits --by agentium:oak-flat-lamp --json",
+        ],
+    },
+    CommandHelp {
+        name: "unknown",
+        group: CATEGORIZE,
+        summary: "The triage queue: what nothing has categorized, by payee",
+        usage: &["unknown [--source <name>] [--limit <n>] [--in <commodity>] [--json]"],
+        details: "\
+List the transactions whose counter leg is still on an importer default
+(no edit or rule decided it), grouped by payee (lower-cased, words with
+digits dropped) and by that default, biggest total first, since one rule
+there fixes the most. Totals convert into --in's commodity [default: CAD];
+rows without a rate are counted apart.
+
+Each group comes with the `cashflow rule add` that would take it: a --match
+every row's payee contains, and --source when the rows share one. Replace
+<account> and run it with --dry-run first.",
+        options: &[
+            ("--source <name>", "Only rows from this segment source"),
+            ("--limit <n>", "How many groups [default: 20]"),
+            (
+                "--in <commodity>",
+                "Convert totals into this [default: CAD]",
+            ),
+            ("--json", "Machine-readable output, all rows' ids included"),
+        ],
+        examples: &[
+            "cashflow unknown",
+            "cashflow unknown --source amex --limit 5",
+            "cashflow unknown --json | jq '.groups[0].rule_add'",
         ],
     },
     CommandHelp {

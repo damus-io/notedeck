@@ -9,16 +9,18 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use cashflow::vault_edits::VaultEdits;
 use cashflow::vault_rules::{
     AmountCond, Compiled, Decision, MetaNeedle, Moved, Owner, Place as RulePlace, RuleNote,
     VaultRules, moves, new_rule_id,
 };
-use cashflow::{CashflowDir, journal, rules};
-use ledgerdb::{LayerFilter, Ledger, TxnId, Why, derive};
+use cashflow::{CashflowDir, rules};
+use ledgerdb::{Ledger, TxnId, Why, derive};
 use serde_json::{Value, json};
 
 use crate::args::{NewRule, Place, RuleCommand, Write};
-use crate::vault_cmd::Session;
+use crate::books_cmd::raw_ledger;
+use crate::vault_cmd::{Session, session_ref};
 
 /// How many moved rows a write's summary lists.
 const SAMPLE: usize = 5;
@@ -40,20 +42,12 @@ pub async fn run(
     }
 }
 
-/// Every segment in the journal, uncategorized: what rules are tried on.
-fn raw_ledger(dir: &CashflowDir) -> Result<Ledger, String> {
-    let loaded = Ledger::load(&journal::store(dir), LayerFilter::All).map_err(|e| e.to_string())?;
-    Ok(loaded.ledger)
-}
-
-/// The agentium session this run is part of: `$AGENTIUM_SESSION` when it is
-/// an `agentium:<word-id>` ref, so a malformed value is never recorded.
-fn session_ref() -> Option<String> {
-    let value = std::env::var("AGENTIUM_SESSION").ok()?;
-    match wordid::WordIdRef::parse_uri(value.trim(), "agentium")? {
-        wordid::WordIdRef::Bare { words } => Some(format!("agentium:{words}")),
-        wordid::WordIdRef::Scoped { .. } => None,
-    }
+/// `compiled` with the vault's overrides, splits and transfer links added.
+/// They win over every rule, so counting what a rule decides, or what a
+/// rule change moves, has to leave out the transactions they decide.
+fn with_edits(mut compiled: Compiled, per_txn: &VaultEdits) -> Compiled {
+    per_txn.apply(&mut compiled.edits);
+    compiled
 }
 
 /// `place` as the vault's placement.
@@ -98,8 +92,9 @@ fn rule_json(id: &str, rule: &RuleNote) -> Value {
 fn ls(session: &Session, raw: &Ledger, by: Option<&str>, json: bool) -> Result<(), String> {
     let txn = session.txn()?;
     let rules = VaultRules::load(&session.ndb, &txn, session.vault.author());
+    let per_txn = VaultEdits::load(&session.ndb, &txn, session.vault.author());
     let live: Vec<_> = rules.live().collect();
-    let counts = match_counts(raw, &rules.compile(), live.len());
+    let counts = match_counts(raw, &with_edits(rules.compile(), &per_txn), live.len());
     let shown = live
         .iter()
         .zip(&counts)
@@ -136,8 +131,9 @@ fn ls(session: &Session, raw: &Ledger, by: Option<&str>, json: bool) -> Result<(
 fn test(session: &Session, raw: &Ledger, record_id: &str, json: bool) -> Result<(), String> {
     let txn = session.txn()?;
     let rules = VaultRules::load(&session.ndb, &txn, session.vault.author());
+    let per_txn = VaultEdits::load(&session.ndb, &txn, session.vault.author());
     let live: Vec<_> = rules.live().collect();
-    let compiled = rules.compile();
+    let compiled = with_edits(rules.compile(), &per_txn);
     let derived = derive(raw, &compiled.edits);
     let id = raw
         .find(record_id)
@@ -235,12 +231,13 @@ impl<'r, 'a> Plan<'r, 'a> {
     }
 }
 
-/// What a change does to the books: every row it moves.
-fn plan_moves(raw: &Ledger, before: &Plan, after: &Plan) -> Vec<Moved> {
+/// What a change does to the books: every row it moves. `per_txn`'s rows
+/// never move.
+fn plan_moves(raw: &Ledger, per_txn: &VaultEdits, before: &Plan, after: &Plan) -> Vec<Moved> {
     moves(
         raw,
-        &before.compile(),
-        &after.compile(),
+        &with_edits(before.compile(), per_txn),
+        &with_edits(after.compile(), per_txn),
         |i| before.id(i),
         |i| after.id(i),
     )
@@ -339,6 +336,7 @@ async fn add(
 ) -> Result<(), String> {
     let txn = session.txn()?;
     let rules = VaultRules::load(&session.ndb, &txn, session.vault.author());
+    let per_txn = VaultEdits::load(&session.ndb, &txn, session.vault.author());
     let agentium = session_ref();
     let rank = rules
         .ranks_at(rule_place(place), 1, None)
@@ -383,7 +381,7 @@ async fn add(
         rule: &note,
     });
     let after = after.sorted();
-    let moved = plan_moves(raw, &before, &after);
+    let moved = plan_moves(raw, &per_txn, &before, &after);
     let extra = json!({"added": id, "rule": rule_json(&id, &note)});
     if !write.dry_run {
         let written = session
@@ -409,6 +407,7 @@ async fn mv(
 ) -> Result<(), String> {
     let txn = session.txn()?;
     let rules = VaultRules::load(&session.ndb, &txn, session.vault.author());
+    let per_txn = VaultEdits::load(&session.ndb, &txn, session.vault.author());
     let target = rules.find(selector).map_err(|e| e.to_string())?;
     let rank = rules
         .ranks_at(rule_place(place), 1, Some(target.id))
@@ -426,7 +425,7 @@ async fn mv(
         }
     }
     let after = after.sorted();
-    let moved = plan_moves(raw, &before, &after);
+    let moved = plan_moves(raw, &per_txn, &before, &after);
     if !write.dry_run {
         let written = session
             .vault
@@ -457,6 +456,7 @@ async fn rm(
 ) -> Result<(), String> {
     let txn = session.txn()?;
     let rules = VaultRules::load(&session.ndb, &txn, session.vault.author());
+    let per_txn = VaultEdits::load(&session.ndb, &txn, session.vault.author());
     let target = rules.find(selector).map_err(|e| e.to_string())?;
     let tombstone = RuleNote {
         deleted: true,
@@ -465,7 +465,7 @@ async fn rm(
     let before = Plan::current(&rules);
     let mut after = Plan::current(&rules);
     after.rules.retain(|r| r.id != target.id);
-    let moved = plan_moves(raw, &before, &after);
+    let moved = plan_moves(raw, &per_txn, &before, &after);
     if !write.dry_run {
         let written = session
             .vault
@@ -508,6 +508,7 @@ async fn import(
     }
     let txn = session.txn()?;
     let rules = VaultRules::load(&session.ndb, &txn, session.vault.author());
+    let per_txn = VaultEdits::load(&session.ndb, &txn, session.vault.author());
     let fresh: Vec<_> = file
         .rules
         .iter()
@@ -552,7 +553,7 @@ async fn import(
             .map(|(id, rule)| PlannedRule { id, rule }),
     );
     let after = after.sorted();
-    let moved = plan_moves(raw, &before, &after);
+    let moved = plan_moves(raw, &per_txn, &before, &after);
     if !write.dry_run {
         let mut frames = Vec::with_capacity(notes.len());
         for (id, note) in ids.iter().zip(&notes) {

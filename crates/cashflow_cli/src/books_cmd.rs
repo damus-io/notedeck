@@ -7,18 +7,35 @@
 use std::io::Write;
 
 use cashflow::journal;
+use cashflow::vault_edits::VaultEdits;
 use cashflow::vault_rules::VaultRules;
 use cashflow::{Books, CashflowDir, rules};
 use ledgerdb::{
     AccountId, Amount, Commodities, CommodityId, Date, DateRange, Edits, Filter, Journal,
-    Unconverted, WriteOptions,
+    LayerFilter, Ledger, Unconverted, WriteOptions,
 };
 
 use crate::args::{BooksArgs, Range, Report, Run};
 use crate::vault_cmd::Session;
 
-/// The edits the books derive with: `--rules`' file, else the vault's
-/// rules, else (no stored key) none.
+/// Every segment in the journal, uncategorized: what edits are tried on.
+pub fn raw_ledger(dir: &CashflowDir) -> Result<Ledger, String> {
+    let loaded = Ledger::load(&journal::store(dir), LayerFilter::All).map_err(|e| e.to_string())?;
+    Ok(loaded.ledger)
+}
+
+/// The vault's edits, owned: its rules compiled, then its overrides,
+/// splits and transfer links.
+pub fn vault_edits(session: &Session) -> Result<Edits, String> {
+    let txn = session.txn()?;
+    let author = session.vault.author();
+    let mut edits = VaultRules::load(&session.ndb, &txn, author).compile().edits;
+    VaultEdits::load(&session.ndb, &txn, author).apply(&mut edits);
+    Ok(edits)
+}
+
+/// The edits the books derive with: `--rules`' file alone, else the
+/// vault's rules and per-transaction edits, else (no stored key) none.
 async fn edits(dir: &CashflowDir, run: &Run, args: &BooksArgs) -> Result<Edits, String> {
     if let Some(path) = &args.rules {
         return rules::load(path).map_err(|e| e.to_string());
@@ -29,9 +46,7 @@ async fn edits(dir: &CashflowDir, run: &Run, args: &BooksArgs) -> Result<Edits, 
         );
         return Ok(rules::default_edits());
     };
-    let txn = session.txn()?;
-    let rules = VaultRules::load(&session.ndb, &txn, session.vault.author());
-    Ok(rules.compile().edits)
+    vault_edits(&session)
 }
 
 /// Load the books `args` names, reporting on stderr what didn't load or
@@ -330,7 +345,7 @@ fn warn_unconverted(missed: &[Unconverted], into: Option<CommodityId>, journal: 
 
 /// A sum of smallest units of `commodity`, in its style; a sum too large for
 /// an [`Amount`] prints as a bare count of units.
-fn format_total(qty: i128, commodity: CommodityId, commodities: &Commodities) -> String {
+pub fn format_total(qty: i128, commodity: CommodityId, commodities: &Commodities) -> String {
     match i64::try_from(qty) {
         Ok(qty) => Amount { qty, commodity }.display(commodities).to_string(),
         Err(_) => format!("{qty} units of {}", commodities.name(commodity)),

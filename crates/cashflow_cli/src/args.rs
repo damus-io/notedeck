@@ -71,6 +71,59 @@ pub enum Command {
     Report { books: BooksArgs, report: Report },
     /// `cashflow rule ...`.
     Rule(RuleCommand),
+    /// `cashflow categorize <record-id> <account>`.
+    Categorize {
+        record_id: String,
+        account: String,
+        write: Write,
+    },
+    /// `cashflow uncategorize <record-id>`.
+    Uncategorize { record_id: String, write: Write },
+    /// `cashflow split <record-id> <account>[=<amount>]...`.
+    Split {
+        record_id: String,
+        legs: Vec<LegArg>,
+        write: Write,
+    },
+    /// `cashflow transfer ...`.
+    Transfer(TransferCommand),
+    /// `cashflow edits [--by <ref>] [--json]`.
+    Edits { by: Option<String>, json: bool },
+    /// `cashflow unknown [--source <s>] [--limit <n>] [--in <c>] [--json]`.
+    Unknown(UnknownArgs),
+}
+
+/// One `split` leg as given: `<account>=<amount>`, or `<account>` alone
+/// for the remainder.
+#[derive(Debug, PartialEq)]
+pub struct LegArg {
+    pub account: String,
+    /// The amount as written (`12.50`, `-3`, `12.50 CAD`); `None` takes
+    /// what the other legs leave.
+    pub amount: Option<String>,
+}
+
+/// One `cashflow transfer` subcommand.
+#[derive(Debug, PartialEq)]
+pub enum TransferCommand {
+    /// `transfer link <a> <b> [--dry-run] [--json]`.
+    Link { a: String, b: String, write: Write },
+    /// `transfer unlink <a> <b> [--dry-run] [--json]`.
+    Unlink { a: String, b: String, write: Write },
+    /// `transfer suggest [--accept-all] [--dry-run] [--json]`.
+    Suggest { accept_all: bool, write: Write },
+}
+
+/// `cashflow unknown`'s arguments.
+#[derive(Debug, PartialEq)]
+pub struct UnknownArgs {
+    /// `--source <name>`: only rows from this source.
+    pub source: Option<String>,
+    /// `--limit <n>`: how many groups to print.
+    pub limit: usize,
+    /// `--in <commodity>`: what totals convert into.
+    pub home: String,
+    pub json: bool,
 }
 
 /// One `cashflow rule` subcommand.
@@ -224,6 +277,9 @@ pub const DEFAULT_HOME: &str = "CAD";
 
 /// How many accounts `report top` lists when `--limit` doesn't say.
 pub const DEFAULT_TOP: usize = 10;
+
+/// How many groups `unknown` lists when `--limit` doesn't say.
+pub const DEFAULT_UNKNOWN: usize = 20;
 
 /// A command flag as given, with its value when its page says it takes one.
 struct Flag {
@@ -394,6 +450,28 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
         )?,
         "report" => report_command(positionals, &flags)?,
         "rule" => rule_command(positionals, &flags, json)?,
+        "categorize" => categorize_command(positionals, &flags, json)?,
+        "uncategorize" => uncategorize_command(positionals, &flags, json)?,
+        "split" => split_command(positionals, &flags, json)?,
+        "transfer" => transfer_command(positionals, &flags, json)?,
+        "edits" => no_positionals(
+            positionals,
+            Command::Edits {
+                by: flags.value("--by").map(str::to_owned),
+                json,
+            },
+            "edits",
+        )?,
+        "unknown" => no_positionals(
+            positionals,
+            Command::Unknown(UnknownArgs {
+                source: flags.value("--source").map(str::to_owned),
+                limit: flags.number("--limit")?.unwrap_or(DEFAULT_UNKNOWN),
+                home: flags.value("--in").unwrap_or(DEFAULT_HOME).to_owned(),
+                json,
+            }),
+            "unknown",
+        )?,
         other => unreachable!("'{other}' has a help entry but no parser arm"),
     };
     Ok(Invocation::Run(Box::new(Run {
@@ -666,6 +744,114 @@ fn rule_command(positionals: Vec<String>, flags: &Flags, json: bool) -> Result<C
         return Err(usage.to_owned());
     }
     Ok(Command::Rule(command))
+}
+
+/// `--dry-run` and `--json`, for a command that writes.
+fn write_of(flags: &Flags, json: bool) -> Write {
+    Write {
+        dry_run: flags.has("--dry-run"),
+        json,
+    }
+}
+
+/// Exactly `N` operands, or `usage`.
+fn operands<const N: usize>(positionals: Vec<String>, usage: &str) -> Result<[String; N], String> {
+    <[String; N]>::try_from(positionals).map_err(|_| usage.to_owned())
+}
+
+/// `categorize <record-id> <account>`.
+fn categorize_command(
+    positionals: Vec<String>,
+    flags: &Flags,
+    json: bool,
+) -> Result<Command, String> {
+    let usage = "`categorize` takes <record-id> <account> (see `cashflow categorize --help`)";
+    let [record_id, account] = operands(positionals, usage)?;
+    Ok(Command::Categorize {
+        record_id,
+        account,
+        write: write_of(flags, json),
+    })
+}
+
+/// `uncategorize <record-id>`.
+fn uncategorize_command(
+    positionals: Vec<String>,
+    flags: &Flags,
+    json: bool,
+) -> Result<Command, String> {
+    let usage = "`uncategorize` takes <record-id> (see `cashflow uncategorize --help`)";
+    let [record_id] = operands(positionals, usage)?;
+    Ok(Command::Uncategorize {
+        record_id,
+        write: write_of(flags, json),
+    })
+}
+
+/// `split <record-id> <account>[=<amount>]...`.
+fn split_command(positionals: Vec<String>, flags: &Flags, json: bool) -> Result<Command, String> {
+    let usage = "`split` takes <record-id> and one or more <account>=<amount> legs, one of which may be a bare <account> taking the rest (see `cashflow split --help`)";
+    let mut positionals = positionals.into_iter();
+    let record_id = positionals.next().ok_or(usage)?;
+    let legs: Vec<LegArg> = positionals
+        .map(|leg| match leg.split_once('=') {
+            Some((account, amount)) => LegArg {
+                account: account.to_owned(),
+                amount: Some(amount.to_owned()),
+            },
+            None => LegArg {
+                account: leg,
+                amount: None,
+            },
+        })
+        .collect();
+    if legs.is_empty() || legs.iter().filter(|l| l.amount.is_none()).count() > 1 {
+        return Err(usage.to_owned());
+    }
+    Ok(Command::Split {
+        record_id,
+        legs,
+        write: write_of(flags, json),
+    })
+}
+
+/// `transfer link|unlink|suggest`.
+fn transfer_command(
+    positionals: Vec<String>,
+    flags: &Flags,
+    json: bool,
+) -> Result<Command, String> {
+    let usage = "`transfer` takes `link <a> <b>`, `unlink <a> <b>` or `suggest` (see `cashflow transfer --help`)";
+    let mut positionals = positionals.into_iter();
+    let sub = positionals.next().ok_or(usage)?;
+    let rest: Vec<String> = positionals.collect();
+    let write = write_of(flags, json);
+    if sub != "suggest" && flags.has("--accept-all") {
+        return Err(format!("`transfer {sub}` doesn't take --accept-all"));
+    }
+    let command = match sub.as_str() {
+        "link" => {
+            let [a, b] = operands(rest, usage)?;
+            TransferCommand::Link { a, b, write }
+        }
+        "unlink" => {
+            let [a, b] = operands(rest, usage)?;
+            TransferCommand::Unlink { a, b, write }
+        }
+        "suggest" => {
+            let [] = operands(rest, usage)?;
+            let accept_all = flags.has("--accept-all");
+            if write.dry_run && !accept_all {
+                return Err(
+                    "`transfer suggest` writes only with --accept-all, so --dry-run needs it"
+                        .to_owned(),
+                );
+            }
+            TransferCommand::Suggest { accept_all, write }
+        }
+        _ => return Err(usage.to_owned()),
+    };
+    Ok(Command::Transfer(command))
 }
 
 /// `rule add`'s conditions.
@@ -1167,6 +1353,85 @@ mod tests {
         assert!(err_of(&["rule", "add", "a", "--meta", "nokey"]).contains("key=value"));
         assert!(err_of(&["rule", "add", "a", "--amount", "lots"]).contains("--amount"));
         assert!(err_of(&["rule", "rm", "a", "b"]).contains("`ls`, `add <account>`"));
+    }
+
+    #[test]
+    fn edit_subcommands() {
+        let write = |dry_run, json| Write { dry_run, json };
+        assert_eq!(
+            run_of(&["categorize", "a:1", "expenses:food", "--dry-run"]).command,
+            Command::Categorize {
+                record_id: "a:1".to_owned(),
+                account: "expenses:food".to_owned(),
+                write: write(true, false),
+            }
+        );
+        assert_eq!(
+            run_of(&["uncategorize", "a:1", "--json"]).command,
+            Command::Uncategorize {
+                record_id: "a:1".to_owned(),
+                write: write(false, true),
+            }
+        );
+        assert_eq!(
+            run_of(&["split", "a:1", "x:y=12.50", "x:z"]).command,
+            Command::Split {
+                record_id: "a:1".to_owned(),
+                legs: vec![
+                    LegArg {
+                        account: "x:y".to_owned(),
+                        amount: Some("12.50".to_owned()),
+                    },
+                    LegArg {
+                        account: "x:z".to_owned(),
+                        amount: None,
+                    },
+                ],
+                write: write(false, false),
+            }
+        );
+        assert!(err_of(&["split", "a:1"]).contains("one or more"));
+        assert!(err_of(&["split", "a:1", "x", "y"]).contains("bare <account>"));
+        assert!(err_of(&["categorize", "a:1"]).contains("<record-id> <account>"));
+
+        assert_eq!(
+            run_of(&["transfer", "link", "a:1", "b:2"]).command,
+            Command::Transfer(TransferCommand::Link {
+                a: "a:1".to_owned(),
+                b: "b:2".to_owned(),
+                write: write(false, false),
+            })
+        );
+        assert_eq!(
+            run_of(&["transfer", "suggest", "--accept-all", "--dry-run"]).command,
+            Command::Transfer(TransferCommand::Suggest {
+                accept_all: true,
+                write: write(true, false),
+            })
+        );
+        assert!(err_of(&["transfer", "suggest", "--dry-run"]).contains("--accept-all"));
+        assert!(
+            err_of(&["transfer", "link", "a:1", "b:2", "--accept-all"]).contains("doesn't take")
+        );
+        assert!(err_of(&["transfer", "link", "a:1"]).contains("`transfer` takes"));
+
+        assert_eq!(
+            run_of(&["edits", "--by", "agentium:a-b-c"]).command,
+            Command::Edits {
+                by: Some("agentium:a-b-c".to_owned()),
+                json: false,
+            }
+        );
+        assert_eq!(
+            run_of(&["unknown", "--source", "amex", "--limit", "3", "--json"]).command,
+            Command::Unknown(UnknownArgs {
+                source: Some("amex".to_owned()),
+                limit: 3,
+                home: DEFAULT_HOME.to_owned(),
+                json: true,
+            })
+        );
+        assert!(err_of(&["unknown", "--limit", "x"]).contains("needs a number"));
     }
 
     #[test]

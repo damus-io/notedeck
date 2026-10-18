@@ -93,6 +93,17 @@ impl Session {
     }
 }
 
+/// The agentium session this run is part of: `$AGENTIUM_SESSION` when it is
+/// an `agentium:<word-id>` ref, so a malformed value is never recorded on a
+/// rule or edit.
+pub fn session_ref() -> Option<String> {
+    let value = std::env::var("AGENTIUM_SESSION").ok()?;
+    match wordid::WordIdRef::parse_uri(value.trim(), "agentium")? {
+        wordid::WordIdRef::Bare { words } => Some(format!("agentium:{words}")),
+        wordid::WordIdRef::Scoped { .. } => None,
+    }
+}
+
 /// The relay this run syncs with: `--relay`, else `$CASHFLOW_RELAY`, else
 /// notedeck's embedded relay.
 fn relay_url(run: &Run) -> String {

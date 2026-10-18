@@ -4,7 +4,9 @@
 //! journal (`journal ls`/`verify`/`rm`, `import`, `prices fetch`), the
 //! categorized books (`export`, `report`), the signing key
 //! (`login`/`logout`), the vault's synced settings and categorization rules
-//! (`rule`), and the help surface. The real importers and the vault's other
+//! (`rule`), the per-transaction edits (`categorize`, `uncategorize`,
+//! `split`, `transfer`, `edits`), the triage queue (`unknown`), and the
+//! help surface. The real importers and the vault's other
 //! records are later cards on headway:cashflow/flame-vault-near and
 //! headway:cashflow/luggage-insane-limit.
 //!
@@ -14,6 +16,7 @@
 mod args;
 mod books_cmd;
 mod config_cmd;
+mod edit_cmd;
 mod help;
 mod journal_cmd;
 mod prices_cmd;
@@ -98,6 +101,36 @@ async fn execute(run: Run) -> Result<(), String> {
         Command::Rule(cmd) => {
             let mut session = Session::open(&dir, &run).await?;
             rule_cmd::run(&dir, &mut session, cmd).await
+        }
+        Command::Categorize {
+            record_id,
+            account,
+            write,
+        } => {
+            let mut session = Session::open(&dir, &run).await?;
+            edit_cmd::categorize(&dir, &mut session, record_id, account, *write).await
+        }
+        Command::Uncategorize { record_id, write } => {
+            let mut session = Session::open(&dir, &run).await?;
+            edit_cmd::uncategorize(&dir, &mut session, record_id, *write).await
+        }
+        Command::Split {
+            record_id,
+            legs,
+            write,
+        } => {
+            let mut session = Session::open(&dir, &run).await?;
+            edit_cmd::split(&dir, &mut session, record_id, legs, *write).await
+        }
+        Command::Transfer(cmd) => {
+            let mut session = Session::open(&dir, &run).await?;
+            edit_cmd::transfer(&dir, &mut session, cmd).await
+        }
+        Command::Edits { by, json } => {
+            edit_cmd::ls(&Session::open(&dir, &run).await?, by.as_deref(), *json)
+        }
+        Command::Unknown(args) => {
+            edit_cmd::unknown(&dir, &Session::open(&dir, &run).await?, args).await
         }
     }
 }
