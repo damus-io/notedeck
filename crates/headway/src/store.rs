@@ -265,7 +265,7 @@ pub fn ingest(
 ///
 /// For a plaintext [`Signer`] the note itself is ingested and published. For a
 /// [`Signer::shared`] the signed note is the *rumor*: it is sealed into a
-/// kind-1081 SNS envelope ([`nostrdb_net::sns::wrap_rumor`]), and that envelope is what
+/// kind-1081 SNS envelope ([`nostrdb_net::sns::ingest_rumor`]), and that envelope is what
 /// gets ingested (nostrdb auto-unwraps it back to the rumor, since the team_root
 /// is registered) and published. Either way the returned id is the rumor's, which
 /// nostrdb recomputes identically on unwrap — so a card's id is stable whether the
@@ -281,27 +281,20 @@ pub fn ingest_signed(
     let note = builder.sign(signer.secret).build()?;
     let id = NoteId::new(*note.id());
     let frame = match signer.channel {
-        None => nostrdb_net::ClientMessage::event(&note)
-            .ok()?
-            .to_json()
-            .ok()?,
-        Some(channel) => {
-            let member = nostrdb_net::FullKeypair::from_secret_bytes(signer.secret)?;
-            let rumor_json = note.json().ok()?;
-            let envelope = nostrdb_net::sns::wrap_rumor(
-                &channel.keys,
-                &member,
-                &rumor_json,
-                note.created_at(),
-            )?;
-            nostrdb_net::ClientMessage::event(&envelope)
+        None => {
+            let frame = nostrdb_net::ClientMessage::event(&note)
                 .ok()?
                 .to_json()
-                .ok()?
+                .ok()?;
+            ndb.process_event_with(&frame, IngestMetadata::new().client(true))
+                .ok()?;
+            frame
+        }
+        Some(channel) => {
+            let member = nostrdb_net::FullKeypair::from_secret_bytes(signer.secret)?;
+            nostrdb_net::sns::ingest_rumor(ndb, &channel.keys, &member, &note).ok()?
         }
     };
-    ndb.process_event_with(&frame, IngestMetadata::new().client(true))
-        .ok()?;
     publisher.publish(&frame);
     Some(id)
 }
@@ -641,7 +634,7 @@ fn pns_keyshare_frame(
 /// Registers the root, self-shares it (so the board joins the roster and becomes
 /// shareable — see [`share_board`]), then re-seals every still-plaintext note of
 /// the board: it re-wraps each as a rumor in an SNS envelope
-/// ([`nostrdb_net::sns::wrap_rumor`]) and ingests it. nostrdb promotes each already-stored
+/// ([`nostrdb_net::sns::ingest_rumor_json`]), which ingests it. nostrdb promotes each already-stored
 /// plaintext note to a team-sealed rumor in place (same note_key — see
 /// `ndb_write_note`), so the board then folds via the shared/team-key path.
 /// Idempotent, and cheap to re-run: already-sealed notes are skipped, so a second
@@ -693,24 +686,17 @@ pub fn migrate_board_to_sns(
         if note.sealed {
             continue;
         }
-        let Some(envelope) =
-            nostrdb_net::sns::wrap_rumor(&channel.keys, &member, &note.json, note.created_at)
-        else {
+        let Ok(frame) = nostrdb_net::sns::ingest_rumor_json(
+            ndb,
+            &channel.keys,
+            &member,
+            &note.json,
+            note.created_at,
+        ) else {
             continue;
         };
-        let Some(frame) = nostrdb_net::ClientMessage::event(&envelope)
-            .ok()
-            .and_then(|m| m.to_json().ok())
-        else {
-            continue;
-        };
-        if ndb
-            .process_event_with(&frame, IngestMetadata::new().client(true))
-            .is_ok()
-        {
-            publisher.publish(&frame);
-            sealed += 1;
-        }
+        publisher.publish(&frame);
+        sealed += 1;
     }
     sealed
 }

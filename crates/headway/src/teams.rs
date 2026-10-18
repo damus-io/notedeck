@@ -59,7 +59,7 @@ impl Team {
     }
 
     /// Derive this team's SNS channel keys from its root, or `None` if the root is
-    /// unusable. The keys are what seal an edit ([`nostrdb_net::sns::wrap_rumor`]) and
+    /// unusable. The keys are what seal an edit ([`nostrdb_net::sns::ingest_rumor`]) and
     /// name the channel to subscribe to (the team keypair's pubkey).
     pub fn sns_keys(&self) -> Option<nostrdb_net::sns::SnsKeys> {
         nostrdb_net::sns::derive_sns_keys(&self.root_bytes()?)

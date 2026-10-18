@@ -29,7 +29,7 @@
 //! person later is a hand-off of the root rather than a re-seal.
 //!
 //! Each record is signed by the account, sealed into a kind-1081 envelope
-//! ([`nostrdb_net::sns::wrap_rumor`]) and ingested as that envelope. nostrdb
+//! and ingested as that envelope ([`nostrdb_net::sns::write_note`]). nostrdb
 //! unwraps it back into the record once the root is registered
 //! ([`Vault::register`]), so reads are plain queries by author and kind. A
 //! relay only ever sees the envelope.
@@ -43,14 +43,10 @@
 //! ([`nostrdb_net::private_note::next_stamp`], the one stamp rule notedeck's
 //! private notes share), so a quick re-save still supersedes.
 
-use nostrdb::{
-    Filter, IngestMetadata, Ndb, Note, NoteBuildOptions, NoteBuilder, Tags, Transaction,
-};
-use nostrdb_net::private_note::next_stamp;
+use nostrdb::{Filter, Ndb, Note, NoteBuilder, Tags, Transaction};
+use nostrdb_net::private_note::{Slot, WriteError};
 use nostrdb_net::sns::{self, SnsKeys};
-use nostrdb_net::{
-    ClientMessage, FullKeypair, Pubkey, query_replaceable, query_replaceable_filtered,
-};
+use nostrdb_net::{FullKeypair, Pubkey, query_replaceable, query_replaceable_filtered};
 
 /// The label the vault root is derived under: one vault per account.
 const VAULT_LABEL: &str = "cashflow";
@@ -137,16 +133,11 @@ pub struct Stored<'a, T> {
     pub body: T,
 }
 
-/// A record [`Vault::write`] stored.
-#[derive(Clone, Debug)]
-pub struct Written {
-    /// The `created_at` it was stamped with. A caller writing the same
-    /// record again before this one has landed passes it as `after`.
-    pub created_at: u64,
-    /// The sealed envelope as an `["EVENT", {…}]` frame, already ingested
-    /// locally, for a caller with a relay to publish.
-    pub frame: String,
-}
+/// A record [`Vault::write`] stored: the `created_at` it was stamped with,
+/// which a caller writing the same record again before this one has landed
+/// passes as `after`, and the sealed envelope's `["EVENT", {…}]` frame,
+/// already ingested locally, for a caller with a relay to publish.
+pub type Written = sns::Sealed;
 
 /// Why a vault write stored nothing.
 #[derive(Debug, thiserror::Error)]
@@ -158,18 +149,9 @@ pub enum VaultError {
     /// id that the record's own string read never finds.
     #[error("field '{0}' holds a 64-hex value, which nostrdb stores as an id; prefix it")]
     HexValue(&'static str),
-    /// Signing the record failed.
-    #[error("couldn't build the record note")]
-    Build,
-    /// Serializing a note to JSON failed.
-    #[error("note serialization failed: {0}")]
-    Serialize(String),
-    /// Sealing the record into its envelope failed.
-    #[error("couldn't seal the record into the vault")]
-    Wrap,
-    /// nostrdb rejected the envelope.
-    #[error("ndb ingest failed: {0}")]
-    Ingest(String),
+    /// Signing, sealing or ingesting the record failed.
+    #[error("couldn't write the record into the vault: {0}")]
+    Write(#[from] WriteError),
 }
 
 /// The account's vault: its signing key and the channel it seals into.
@@ -238,13 +220,6 @@ impl Vault {
         after: u64,
     ) -> Result<Written, VaultError> {
         let d = d_tag(T::PREFIX, id)?;
-        // Any stored revision counts, even one this `T` can't read.
-        let stored = Transaction::new(ndb)
-            .ok()
-            .and_then(|txn| Some(newest(ndb, &txn, self.author(), T::KIND, &d)?.created_at()))
-            .unwrap_or(0);
-        let created_at = next_stamp(unix_now(), stored, after);
-
         let note = NoteBuilder::new()
             .kind(T::KIND)
             .content("")
@@ -261,25 +236,20 @@ impl Vault {
         if let Some(field) = fields.hex_field {
             return Err(VaultError::HexValue(field));
         }
-        let secret = self.member.secret_key.secret_bytes();
-        let rumor = fields
-            .note
-            .options(NoteBuildOptions::default())
-            .created_at(created_at)
-            .sign(&secret)
-            .build()
-            .ok_or(VaultError::Build)?;
-        let rumor_json = rumor
-            .json()
-            .map_err(|err| VaultError::Serialize(err.to_string()))?;
-        let envelope = sns::wrap_rumor(&self.keys, &self.member, &rumor_json, created_at)
-            .ok_or(VaultError::Wrap)?;
-        let frame = ClientMessage::event(&envelope)
-            .and_then(|message| message.to_json())
-            .map_err(|err| VaultError::Serialize(err.to_string()))?;
-        ndb.process_event_with(&frame, IngestMetadata::new().client(true))
-            .map_err(|err| VaultError::Ingest(err.to_string()))?;
-        Ok(Written { created_at, frame })
+        // Any stored revision counts, even one this `T` can't read.
+        let slot = Slot {
+            author: self.author(),
+            kind: T::KIND,
+            d: &d,
+        };
+        Ok(sns::write_note(
+            ndb,
+            &self.keys,
+            &self.member,
+            slot,
+            fields.note,
+            after,
+        )?)
     }
 }
 
@@ -365,19 +335,13 @@ fn d_tag(prefix: &str, id: &str) -> Result<String, VaultError> {
     Ok(format!("{prefix}:{id}"))
 }
 
-/// The wall clock in whole seconds, nostr's `created_at` unit.
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use crate::kinds;
     use crate::test_util::{INGEST_TIMEOUT as WAIT, TempNdb};
+    use nostrdb::IngestMetadata;
 
     /// A record shaped like the segment manifest the hex-trap test needs:
     /// its ids are 64-hex sha256s.

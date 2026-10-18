@@ -20,7 +20,7 @@
 //! `*_at` timestamps the reducer surfaces on the view), mirroring headway's
 //! `next_after`.
 
-use nostrdb::{IngestMetadata, Ndb, Note, NoteBuilder, Transaction};
+use nostrdb::{Ndb, Note, NoteBuilder, Transaction};
 use nostrdb_net::{NoteId, Pubkey};
 
 use crate::event::{
@@ -107,7 +107,7 @@ impl Publisher for NoPublish {
 // The whole vault — canvases *and* longform notes — is one team-of-one SNS
 // channel (NIP-SNS sealed shared storage), the notebook analogue of headway's
 // team-of-one boards. Every write is sealed into a kind-1081 envelope
-// ([`nostrdb_net::sns::wrap_rumor`]); nostrdb auto-unwraps it back to the inner rumor
+// ([`nostrdb_net::sns::ingest_rumor`]); nostrdb auto-unwraps it back to the inner rumor
 // once the workspace root is registered, so the rumor stays queryable by its own
 // author/kind and every fold below is unchanged. On a relay only the opaque
 // envelope is visible — no plaintext note or public NIP-23 article ever leaks.
@@ -215,9 +215,8 @@ pub fn ingest(
 /// the rumor stays queryable by its own author/kind (canvas subscriptions,
 /// [`load_longform`], the reducer). The returned id is the **rumor's**, which
 /// nostrdb recomputes identically on unwrap — so a document's coordinate/word-id
-/// is stable whether sealed or not. [`nostrdb_net::sns::wrap_rumor`] re-parses the rumor
-/// on the seal peel and requires every field including the id, which
-/// `builder.sign(...).build()` guarantees. Returns `None` (publishing nothing) if
+/// is stable whether sealed or not. [`nostrdb_net::sns::ingest_rumor`] needs a
+/// complete signed rumor, which `builder.sign(...).build()` guarantees. Returns `None` (publishing nothing) if
 /// the account can't sign or a wrap/ingest step fails.
 fn ingest_sealed(
     ndb: &Ndb,
@@ -228,15 +227,7 @@ fn ingest_sealed(
     let id = NoteId::new(*note.id());
     let channel = workspace_channel(secret)?;
     let member = nostrdb_net::FullKeypair::from_secret_bytes(secret)?;
-    let rumor_json = note.json().ok()?;
-    let envelope =
-        nostrdb_net::sns::wrap_rumor(&channel.keys, &member, &rumor_json, note.created_at())?;
-    let frame = nostrdb_net::ClientMessage::event(&envelope)
-        .ok()?
-        .to_json()
-        .ok()?;
-    ndb.process_event_with(&frame, IngestMetadata::new().client(true))
-        .ok()?;
+    let frame = nostrdb_net::sns::ingest_rumor(ndb, &channel.keys, &member, note).ok()?;
     publisher.publish(&frame);
     Some(id)
 }
@@ -729,7 +720,7 @@ pub use event::{VaultDoc, VaultDocKind, list_canvases, list_vault};
 mod tests {
     use super::*;
     use crate::test_config;
-    use nostrdb::{Ndb, SubscriptionStream, Transaction};
+    use nostrdb::{IngestMetadata, Ndb, SubscriptionStream, Transaction};
     use nostrdb_net::FullKeypair;
 
     /// A headless harness: ingest actions against a bare `Ndb` and wait on a
