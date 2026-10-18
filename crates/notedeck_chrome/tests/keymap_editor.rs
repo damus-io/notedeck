@@ -124,7 +124,7 @@ fn editor_showing(f: &Fixture) -> bool {
 
 /// Whether some text the last frame drew contains `needle`.
 fn drew_part(f: &Fixture, needle: &str) -> bool {
-    f.drawn.iter().any(|text| text.contains(needle))
+    f.drawn().iter().any(|text| text.contains(needle))
 }
 
 #[tokio::test]
@@ -137,11 +137,11 @@ async fn the_editor_opens_on_the_saved_keymap_and_a_save_rebinds_live() {
     saved(&mut f, &mut stream, E_EDITS).await;
 
     open_editor(&mut f, Key::E);
-    assert!(editor_showing(&f), "the editor is showing: {:?}", f.drawn);
+    assert!(editor_showing(&f), "the editor is showing: {:?}", f.drawn());
     assert!(f.drew(E_EDITS), "seeded with the saved keymap");
 
     retype(&mut f, X_EDITS);
-    assert!(f.drew(X_EDITS), "the edit landed: {:?}", f.drawn);
+    assert!(f.drew(X_EDITS), "the edit landed: {:?}", f.drawn());
     assert!(f.drew("●"), "it is unsaved");
     save_in_editor(&mut f);
     stream
@@ -157,13 +157,17 @@ async fn the_editor_opens_on_the_saved_keymap_and_a_save_rebinds_live() {
 
     close_editor(&mut f);
     f.frame(Vec::new());
-    assert!(!editor_showing(&f), "closed: {:?}", f.drawn);
-    assert!(!f.drew("Settings"), "the drawer stayed shut: {:?}", f.drawn);
+    assert!(!editor_showing(&f), "closed: {:?}", f.drawn());
+    assert!(
+        !f.drew("Settings"),
+        "the drawer stayed shut: {:?}",
+        f.drawn()
+    );
     open_editor(&mut f, Key::X);
     assert!(
         editor_showing(&f),
         "x is bound with no restart: {:?}",
-        f.drawn
+        f.drawn()
     );
 }
 
@@ -186,7 +190,7 @@ async fn a_keymap_that_does_not_merge_shows_why_and_changes_nothing() {
     assert!(
         drew_part(&f, "no app has a tool 'chrome_edit_keymaps'"),
         "the reason is shown in the editor: {:?}",
-        f.drawn
+        f.drawn()
     );
     assert!(f.drew("●"), "the change is still unsaved");
 
@@ -213,5 +217,5 @@ async fn a_keymap_that_does_not_merge_shows_why_and_changes_nothing() {
 async fn an_account_with_no_keymap_gets_the_template() {
     let SignedIn { fixture: mut f, .. } = signed_in();
     open_editor(&mut f, Key::E);
-    assert!(f.drew(KEYMAP_TEMPLATE), "{:?}", f.drawn);
+    assert!(f.drew(KEYMAP_TEMPLATE), "{:?}", f.drawn());
 }

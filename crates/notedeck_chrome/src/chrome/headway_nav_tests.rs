@@ -22,10 +22,11 @@ use egui_kittest::Harness;
 use nostrdb::{Filter, Ndb, Transaction};
 use nostrdb_net::{FullKeypair, NoteId, Pubkey};
 use notedeck::test_harness::PressKey;
-use notedeck::{App, NavStack, Notedeck};
+use notedeck::{NavStack, Notedeck};
 use notedeck_headway::{event, store};
 
 use super::Chrome;
+use crate::testing;
 
 /// The demo board's epic, and its subissue the epic tests put in review.
 const EPIC: &str = "Define nostr event model for boards";
@@ -75,8 +76,8 @@ struct ChromeState {
     fonts_installed: bool,
 }
 
-/// One real chrome frame, as the host runs it. The first only installs
-/// fonts, which egui applies on the next pass.
+/// One real chrome frame, as the host runs it ([`testing::chrome_frame`]).
+/// The first only installs fonts, which egui applies on the next pass.
 fn chrome_frame(ui: &mut egui::Ui, state: &mut ChromeState) {
     notedeck::test_harness::full_window(ui, |ui| {
         if !state.fonts_installed {
@@ -84,27 +85,17 @@ fn chrome_frame(ui: &mut egui::Ui, state: &mut ChromeState) {
             state.fonts_installed = true;
             return;
         }
-        // As the host does each frame: the tool registry follows the running
-        // apps, so chrome's keymap can find Headway's UI tools.
-        if let Some(update) = App::take_tool_update(&mut state.chrome) {
-            state.notedeck.apply_tool_update(update);
-        }
-        let mut app_ctx = state.notedeck.app_context();
-        state.chrome.update(&mut app_ctx);
-        egui::CentralPanel::default().show(ui, |ui| {
-            state.chrome.render(&mut app_ctx, ui);
-        });
+        testing::chrome_frame(&mut state.notedeck, &mut state.chrome, ui);
     });
 }
 
 /// The active app's history: Headway's, in every test here.
 fn history<'h>(harness: &'h Harness<'_, ChromeState>) -> &'h NavStack<Rc<dyn Any>> {
-    &harness
+    harness
         .state()
         .chrome
-        .active_nav()
+        .history()
         .expect("every app has a stack")
-        .stack
 }
 
 /// Whether the chrome's history is still, with no slide running, and `len`

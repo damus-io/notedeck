@@ -142,7 +142,10 @@ fn a_macro_whose_first_step_is_unavailable_falls_through() {
 #[test]
 fn an_unknown_tool_is_reported_and_aborts_at_once() {
     let mut f = Fixture::new(KEYMAP);
-    let problems = f.chrome.keymap_problems(&f.notedeck.app_context());
+    let problems = f
+        .driver
+        .chrome
+        .keymap_problems(&f.driver.notedeck.app_context());
     assert_eq!(
         problems,
         ["macro 'unknown' step 2: no app has a tool 'no_such_tool'"]
@@ -323,6 +326,7 @@ mod session_explainer {
     use notedeck::{
         App, AppAction, AppContext, AppResponse, Notedeck, OpenUri, ToolOutcome, ToolSpec,
     };
+    use notedeck_chrome::testing::ChromeDriver;
     use notedeck_chrome::{Chrome, NotedeckApp};
     use notedeck_headway::{store, Headway};
     use serde_json::Value;
@@ -429,14 +433,8 @@ mod session_explainer {
     /// Headway behind it, on the demo board, which Headway has folded.
     struct Session {
         _dir: tempfile::TempDir,
-        egui_ctx: egui::Context,
-        notedeck: Notedeck,
-        chrome: Chrome,
+        driver: ChromeDriver,
         dave: Rc<RefCell<StandInState>>,
-        time: f64,
-        drawn: Vec<String>,
-        /// Every URL a frame asked to open, in order.
-        opened: Vec<String>,
     }
 
     /// The demo card titled `title`.
@@ -530,8 +528,6 @@ mod session_explainer {
                     headway::wordid::card_ref(store::BOARD_ID, card_id(ndb, title).bytes())
                 })
             };
-            notedeck.setup(&egui_ctx);
-
             let dave = Rc::new(RefCell::new(StandInState::default()));
             let stand_in = DaveStandIn {
                 issue: issue_ref,
@@ -547,65 +543,23 @@ mod session_explainer {
 
             let mut session = Self {
                 _dir: dir,
-                egui_ctx,
-                notedeck,
-                chrome,
+                driver: ChromeDriver::new(egui_ctx, notedeck, chrome),
                 dave,
-                time: 0.0,
-                drawn: Vec::new(),
-                opened: Vec::new(),
             };
             // Open Headway once so its board has folded, then go back to
             // Dave, where the key is pressed.
-            session.chrome.set_active(1);
+            session.driver.chrome.set_active(1);
             session.wait_for("the board to fold", |s| s.drew(GRID));
-            session.chrome.set_active(0);
+            session.driver.chrome.set_active(0);
             session.wait_for("Dave in front", |s| s.dave.borrow().rendered);
             session
         }
 
-        /// One real chrome frame, as the host runs it: the tool registry
-        /// follows the running apps, then `update` and `render`.
+        /// One real chrome frame ([`ChromeDriver::frame`]), noting whether
+        /// the stand-in Dave rendered in it.
         fn frame(&mut self, events: Vec<Event>) {
-            let input = egui::RawInput {
-                time: Some(self.time),
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1200.0, 800.0),
-                )),
-                events,
-                ..Default::default()
-            };
-            self.time += 1.0 / 60.0;
             self.dave.borrow_mut().rendered = false;
-            let Self {
-                egui_ctx,
-                notedeck,
-                chrome,
-                drawn,
-                opened,
-                ..
-            } = self;
-            if let Some(update) = App::take_tool_update(chrome) {
-                notedeck.apply_tool_update(update);
-            }
-            let mut app_ctx = notedeck.app_context();
-            let output = egui_ctx.run_ui(input, |ui| {
-                chrome.update(&mut app_ctx);
-                egui::CentralPanel::default().show(ui, |ui| {
-                    chrome.render(&mut app_ctx, ui);
-                });
-            });
-            drawn.clear();
-            for clipped in &output.shapes {
-                super::common::collect_text(&clipped.shape, drawn);
-            }
-            for command in &output.platform_output.commands {
-                if let egui::OutputCommand::OpenUrl(open) = command {
-                    opened.push(open.url.clone());
-                }
-            }
-            output.drop_without_applying_deltas();
+            self.driver.frame(events);
         }
 
         /// Run frames until `done`, or panic naming `what`.
@@ -619,19 +573,20 @@ mod session_explainer {
             }
             panic!(
                 "timed out waiting for {what}; last frame drew {:?}",
-                self.drawn
+                self.driver.drawn()
             );
         }
 
         /// Whether the last frame painted exactly `text`.
         fn drew(&self, text: &str) -> bool {
-            self.drawn.iter().any(|drawn| drawn == text)
+            self.driver.drew(text)
         }
 
         /// The id of the column the card `card` (a ref) is in, as Headway's
         /// `headway_show_board` data tool reads the board.
         fn column_of(&mut self, card: &str) -> Option<String> {
             let ToolOutcome::Data(board) = self
+                .driver
                 .notedeck
                 .app_context()
                 .call_tool("headway_show_board", &serde_json::json!({}))
@@ -668,14 +623,18 @@ mod session_explainer {
     async fn e_opens_the_sessions_card_and_its_explainer() {
         let mut s = Session::new(Some(CARD)).await;
         s.press_e();
-        assert_eq!(s.chrome.running_macro(), Some("session-explainer"));
+        assert_eq!(s.driver.chrome.running_macro(), Some("session-explainer"));
         s.wait_for("the macro to finish", |s| {
-            s.chrome.running_macro().is_none()
+            s.driver.chrome.running_macro().is_none()
         });
         // Headway runs a tool call on its next render.
         s.frame(Vec::new());
 
-        assert_eq!(s.opened, [EXPLAINER], "the card's explainer opened");
+        assert_eq!(
+            s.driver.opened(),
+            [EXPLAINER],
+            "the card's explainer opened"
+        );
         assert!(!s.dave.borrow().rendered, "Headway is in front");
         assert!(s.drew(CARD), "on the card");
         assert!(!s.drew(GRID), "its detail, not the grid");
@@ -689,10 +648,14 @@ mod session_explainer {
         let mut s = Session::new(Some(BARE_CARD)).await;
         s.press_e();
         s.wait_for("the macro to finish", |s| {
-            s.chrome.running_macro().is_none()
+            s.driver.chrome.running_macro().is_none()
         });
         s.frame(Vec::new());
-        assert!(s.opened.is_empty(), "nothing to open: {:?}", s.opened);
+        assert!(
+            s.driver.opened().is_empty(),
+            "nothing to open: {:?}",
+            s.driver.opened()
+        );
         assert!(s.drew(BARE_CARD), "on the card");
     }
 
@@ -720,9 +683,9 @@ mod session_explainer {
             notedeck_chrome::keymap::DEFAULT_KEYMAP
         ))
         .expect("the keymap parses");
-        s.chrome.set_keymap(keymap);
+        s.driver.chrome.set_keymap(keymap);
         let card = {
-            let ctx = s.notedeck.app_context();
+            let ctx = s.driver.notedeck.app_context();
             headway::wordid::card_ref(store::BOARD_ID, card_id(ctx.ndb, CARD).bytes())
         };
         assert_ne!(s.column_of(&card).as_deref(), Some("done"));
@@ -736,7 +699,7 @@ mod session_explainer {
         };
         s.frame(vec![event(true), Event::Text("D".to_owned()), event(false)]);
         s.wait_for("the macro to finish", |s| {
-            s.chrome.running_macro().is_none()
+            s.driver.chrome.running_macro().is_none()
         });
         // The move is a note Headway folds in.
         for _ in 0..SETTLE_FRAMES {
@@ -788,7 +751,7 @@ mod session_explainer {
                 notedeck_chrome::keymap::DEFAULT_KEYMAP
             ))
             .expect("the keymap parses");
-            self.chrome.set_keymap(keymap);
+            self.driver.chrome.set_keymap(keymap);
         }
 
         /// Press Shift+`key`, typing `text`.
@@ -816,10 +779,10 @@ mod session_explainer {
         let mut s = Session::animated(Some(issue)).await;
         s.set_user_keymap(EPIC_REVIEW);
         let done = {
-            let ctx = s.notedeck.app_context();
+            let ctx = s.driver.notedeck.app_context();
             headway::wordid::card_ref(store::BOARD_ID, card_id(ctx.ndb, EPIC_DONE).bytes())
         };
-        let moved = s.notedeck.app_context().call_tool(
+        let moved = s.driver.notedeck.app_context().call_tool(
             "headway_move_card",
             &serde_json::json!({ "card": done, "column": "in-review" }),
         );
@@ -841,9 +804,9 @@ mod session_explainer {
     async fn the_epic_review_macro_opens_the_parents_queue() {
         let mut s = epic_review_session(SUBISSUE).await;
         s.press_shift(Key::R, "R");
-        assert_eq!(s.chrome.running_macro(), Some("session-epic-review"));
+        assert_eq!(s.driver.chrome.running_macro(), Some("session-epic-review"));
         s.wait_for("the macro to finish", |s| {
-            s.chrome.running_macro().is_none()
+            s.driver.chrome.running_macro().is_none()
         });
         s.wait_for("the epic's review queue", |s| s.drew("1 / 1"));
         assert!(s.drew(EPIC_DONE), "the queue shows the epic's subissue");
@@ -856,12 +819,14 @@ mod session_explainer {
     #[tokio::test]
     async fn the_epic_review_macro_stops_on_a_card_with_no_parent() {
         let mut s = epic_review_session(CARD).await;
-        let pressed = s.time;
+        let pressed = s.driver.time();
         s.press_shift(Key::R, "R");
-        assert_eq!(s.chrome.running_macro(), Some("session-epic-review"));
-        s.wait_for("the macro to abort", |s| s.chrome.running_macro().is_none());
+        assert_eq!(s.driver.chrome.running_macro(), Some("session-epic-review"));
+        s.wait_for("the macro to abort", |s| {
+            s.driver.chrome.running_macro().is_none()
+        });
         assert!(
-            s.time - pressed >= notedeck_chrome::keymap::macros::MACRO_TIMEOUT_SECS,
+            s.driver.time() - pressed >= notedeck_chrome::keymap::macros::MACRO_TIMEOUT_SECS,
             "the run waited out its step, not finished"
         );
         s.frame(Vec::new());
@@ -875,11 +840,11 @@ mod session_explainer {
     async fn e_without_an_issue_falls_through_to_dave() {
         let mut s = Session::new(None).await;
         s.press_e();
-        assert_eq!(s.chrome.running_macro(), None);
+        assert_eq!(s.driver.chrome.running_macro(), None);
         assert!(s.dave.borrow().seen.contains(&Key::E), "Dave gets the key");
         s.frame(Vec::new());
         assert!(s.dave.borrow().rendered, "still in Dave");
-        assert!(s.opened.is_empty());
+        assert!(s.driver.opened().is_empty());
     }
 }
 
@@ -889,5 +854,5 @@ fn the_strip_lists_a_macro_by_its_label() {
     let mut f = Fixture::new(KEYMAP);
     f.press(Modifiers::SHIFT, Key::Questionmark, Some("?"));
     f.frame(Vec::new());
-    assert!(f.drew("down then first"), "drew {:?}", f.drawn);
+    assert!(f.drew("down then first"), "drew {:?}", f.drawn());
 }

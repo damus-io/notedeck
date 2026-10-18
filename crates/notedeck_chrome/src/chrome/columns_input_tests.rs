@@ -10,10 +10,11 @@
 //! switch lands on the frame it's made.
 
 use nostrdb_net::FullKeypair;
-use notedeck::{App, NavStack, Notedeck};
+use notedeck::{NavStack, Notedeck};
 use notedeck_columns::Route;
 
 use super::Chrome;
+use crate::testing::ChromeDriver;
 
 /// How many frames a slide gets to land: two seconds of them at 60 Hz.
 const FRAME_CAP: usize = 120;
@@ -22,10 +23,7 @@ const FRAME_CAP: usize = 120;
 /// route deep, so it has somewhere to go back to.
 struct Fixture {
     _dir: tempfile::TempDir,
-    egui_ctx: egui::Context,
-    notedeck: Notedeck,
-    chrome: Chrome,
-    time: f64,
+    driver: ChromeDriver,
 }
 
 impl Fixture {
@@ -49,55 +47,18 @@ impl Fixture {
             app_ctx.settings.complete_welcome();
             app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
         }
-        notedeck.setup(&egui_ctx);
         let chrome = Chrome::new_headless(&args, &mut notedeck).expect("chrome");
 
+        // The driver's two warm-up frames apply the fonts and let Columns
+        // initialize its columns on its first update; Settings then gives it
+        // a route to leave.
         let mut fixture = Self {
             _dir: dir,
-            egui_ctx,
-            notedeck,
-            chrome,
-            time: 0.0,
+            driver: ChromeDriver::new(egui_ctx, notedeck, chrome),
         };
-        // Fonts are applied on the next pass, and Columns initializes its
-        // columns on its first update; Settings then gives it a route to
-        // leave.
-        fixture.frame(Vec::new());
-        fixture.frame(Vec::new());
         fixture.columns_router().route_to(Route::Settings);
         fixture.settle();
         fixture
-    }
-
-    /// One real chrome frame — `update` then `render`, as the host runs them
-    /// — with `events` as its input.
-    fn frame(&mut self, events: Vec<egui::Event>) {
-        let input = egui::RawInput {
-            time: Some(self.time),
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1200.0, 800.0),
-            )),
-            events,
-            ..Default::default()
-        };
-        self.time += 1.0 / 60.0;
-
-        let Self {
-            egui_ctx,
-            notedeck,
-            chrome,
-            ..
-        } = self;
-        let mut app_ctx = notedeck.app_context();
-        egui_ctx
-            .run_ui(input, |ui| {
-                chrome.update(&mut app_ctx);
-                egui::CentralPanel::default().show(ui, |ui| {
-                    chrome.render(&mut app_ctx, ui);
-                });
-            })
-            .drop_without_applying_deltas();
     }
 
     /// Run frames until Columns' selected column has finished sliding.
@@ -107,27 +68,18 @@ impl Fixture {
             if !router.navigating() && !router.returning() {
                 return;
             }
-            self.frame(Vec::new());
+            self.driver.frame(Vec::new());
         }
         panic!("columns' nav never landed");
     }
 
-    /// One frame with Escape pressed and released.
-    fn press_escape(&mut self) {
-        let key = |pressed| egui::Event::Key {
-            key: egui::Key::Escape,
-            physical_key: None,
-            pressed,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        };
-        self.frame(vec![key(true), key(false)]);
-    }
-
     /// Columns' selected column's router.
     fn columns_router(&mut self) -> &mut NavStack<Route> {
-        let app_ctx = self.notedeck.app_context();
-        self.chrome
+        let ChromeDriver {
+            notedeck, chrome, ..
+        } = &mut self.driver;
+        let app_ctx = notedeck.app_context();
+        chrome
             .get_columns_app()
             .expect("columns in the roster")
             .columns_mut(app_ctx.i18n, app_ctx.accounts)
@@ -147,15 +99,19 @@ impl Fixture {
 #[tokio::test]
 async fn a_backgrounded_columns_leaves_escape_alone() {
     let mut fx = Fixture::new();
-    let headway = fx.chrome.headway_slot().expect("headway in the roster");
-    fx.chrome.set_active(headway as i32);
-    fx.frame(Vec::new());
+    let headway = fx
+        .driver
+        .chrome
+        .headway_slot()
+        .expect("headway in the roster");
+    fx.driver.chrome.set_active(headway as i32);
+    fx.driver.frame(Vec::new());
     assert!(
-        fx.chrome.is_opened(0),
+        fx.driver.chrome.is_opened(0),
         "columns stays opened behind headway"
     );
 
-    fx.press_escape();
+    fx.driver.key(egui::Key::Escape);
 
     assert!(
         fx.columns_still_deep(),
@@ -169,7 +125,7 @@ async fn columns_in_front_goes_back_on_escape() {
     let mut fx = Fixture::new();
     assert!(fx.columns_still_deep(), "columns starts one route deep");
 
-    fx.press_escape();
+    fx.driver.key(egui::Key::Escape);
 
     assert!(
         !fx.columns_still_deep(),

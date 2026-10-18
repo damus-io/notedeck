@@ -250,6 +250,17 @@ impl Chrome {
         self.app_nav(self.active as usize)
     }
 
+    /// The active app's history: its back / forward stack, the top the
+    /// entry on screen. `None` only when no app is active.
+    pub fn history(&self) -> Option<&NavStack<Rc<dyn Any>>> {
+        self.active_nav().map(|nav| &nav.stack)
+    }
+
+    /// The active app's slot.
+    pub fn active_app(&self) -> usize {
+        self.active as usize
+    }
+
     /// The active app's navigation, mutably.
     fn active_nav_mut(&mut self) -> Option<&mut AppNav> {
         self.app_navs.get_mut(self.active as usize)

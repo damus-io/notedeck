@@ -22,6 +22,7 @@ use nostrdb::Filter;
 use nostrdb_net::FullKeypair;
 use notedeck::{App, AppContext, AppResponse, Notedeck, ToolInvocation, ToolOutcome, ToolSpec};
 use notedeck_chrome::keymap::DEFAULT_KEYMAP;
+use notedeck_chrome::testing::ChromeDriver;
 use notedeck_chrome::{Chrome, NotedeckApp};
 use notedeck_headway::{store, Headway};
 use serde_json::{json, Value};
@@ -96,14 +97,8 @@ impl App for Recording {
 /// A headless chrome with the recording Headway in front, on the demo board.
 struct Fixture {
     _dir: tempfile::TempDir,
-    egui_ctx: egui::Context,
-    notedeck: Notedeck,
-    chrome: Chrome,
+    driver: ChromeDriver,
     calls: Rc<RefCell<Vec<ToolInvocation>>>,
-    /// The input time of the next frame.
-    time: f64,
-    /// Every piece of text the last frame painted.
-    drawn: Vec<String>,
 }
 
 impl Fixture {
@@ -144,100 +139,37 @@ impl Fixture {
                 .await
                 .expect("the demo board seeds");
         }
-        notedeck.setup(&egui_ctx);
 
         let calls = Rc::new(RefCell::new(Vec::new()));
         let headway = Recording {
             headway: Headway::new(),
             calls: Rc::clone(&calls),
         };
-        let mut chrome = Chrome::new_headless_with_apps(
+        let chrome = Chrome::new_headless_with_apps(
             &mut notedeck,
             [NotedeckApp::Other("headway".to_owned(), Box::new(headway))],
         );
-        let update = App::take_tool_update(&mut chrome).expect("the running set changed");
-        notedeck.apply_tool_update(update);
 
         let mut fixture = Self {
             _dir: dir,
-            egui_ctx,
-            notedeck,
-            chrome,
+            driver: ChromeDriver::new(egui_ctx, notedeck, chrome),
             calls,
-            time: 0.0,
-            drawn: Vec::new(),
         };
         fixture.wait_to_draw(GRID);
         fixture
     }
 
-    /// One real chrome frame, `update` then `render`, with `events` as input.
-    fn frame(&mut self, events: Vec<Event>) {
-        let input = egui::RawInput {
-            time: Some(self.time),
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1200.0, 800.0),
-            )),
-            events,
-            ..Default::default()
-        };
-        self.time += 1.0 / 60.0;
-        let Self {
-            egui_ctx,
-            notedeck,
-            chrome,
-            drawn,
-            ..
-        } = self;
-        let mut app_ctx = notedeck.app_context();
-        let output = egui_ctx.run_ui(input, |ui| {
-            chrome.update(&mut app_ctx);
-            egui::CentralPanel::default().show(ui, |ui| {
-                chrome.render(&mut app_ctx, ui);
-            });
-        });
-        drawn.clear();
-        for clipped in &output.shapes {
-            collect_text(&clipped.shape, drawn);
-        }
-        output.drop_without_applying_deltas();
-    }
-
     /// Run frames until `text` is painted, or panic.
     fn wait_to_draw(&mut self, text: &str) {
-        for _ in 0..SETTLE_FRAMES {
-            self.frame(Vec::new());
-            if self.drew(text) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        panic!("{text:?} never drawn; last frame drew {:?}", self.drawn);
-    }
-
-    /// Whether the last frame painted exactly `text`.
-    fn drew(&self, text: &str) -> bool {
-        self.drawn.iter().any(|drawn| drawn == text)
+        self.driver
+            .frames_until(&format!("{text:?} drawn"), SETTLE_FRAMES, |d| d.drew(text));
     }
 
     /// One frame with `key` pressed (typing `text`, if any) and released, then
     /// one to let it land.
     fn press(&mut self, modifiers: Modifiers, key: Key, text: Option<&str>) {
-        let event = |pressed| Event::Key {
-            key,
-            physical_key: None,
-            pressed,
-            repeat: false,
-            modifiers,
-        };
-        let mut events = vec![event(true)];
-        if let Some(text) = text {
-            events.push(Event::Text(text.to_owned()));
-        }
-        events.push(event(false));
-        self.frame(events);
-        self.frame(Vec::new());
+        self.driver.press(modifiers, key, text);
+        self.driver.frame(Vec::new());
     }
 
     /// Press a bare key.
@@ -248,6 +180,7 @@ impl Fixture {
     /// The demo board as Headway's `headway_show_board` data tool reads it.
     fn board(&mut self) -> Value {
         match self
+            .driver
             .notedeck
             .app_context()
             .call_tool("headway_show_board", &json!({}))
@@ -273,7 +206,7 @@ impl Fixture {
             if at == col {
                 return;
             }
-            self.frame(Vec::new());
+            self.driver.frame(Vec::new());
             std::thread::sleep(Duration::from_millis(5));
         }
         panic!("{card} never landed in column {col:?}");
@@ -282,19 +215,6 @@ impl Fixture {
     /// Take the UI tool calls that reached Headway since the last take.
     fn take_calls(&self) -> Vec<ToolInvocation> {
         std::mem::take(&mut *self.calls.borrow_mut())
-    }
-}
-
-/// Push the text of every text shape in `shape` onto `out`.
-fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
-    match shape {
-        egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
-        egui::Shape::Vec(shapes) => {
-            for shape in shapes {
-                collect_text(shape, out);
-            }
-        }
-        _ => {}
     }
 }
 
@@ -356,15 +276,22 @@ async fn every_headway_binding_names_a_headway_tool() {
             );
             continue;
         }
-        let owner = f.notedeck.app_context().registries.tools.ui_owner(&tool);
+        let owner = f
+            .driver
+            .notedeck
+            .app_context()
+            .registries
+            .tools
+            .ui_owner(&tool);
         assert!(
             matches!(owner, Some(notedeck::ToolOwner::App(id)) if id == headway),
             "{scope} binds {tool}, which isn't Headway's tool ({owner:?})"
         );
         let invocation = ToolInvocation::new(tool.clone(), args.clone());
         let outcome = f
+            .driver
             .chrome
-            .call_ui_tool(&mut f.notedeck.app_context(), &invocation);
+            .call_ui_tool(&mut f.driver.notedeck.app_context(), &invocation);
         if let ToolOutcome::Error(err) = outcome {
             panic!("{scope} binds {tool} {args}: {err}");
         }
@@ -396,17 +323,24 @@ async fn grid_keys_reach_headway_through_chrome() {
     );
 
     f.press(Modifiers::SHIFT, Key::Questionmark, Some("?"));
-    assert!(f.chrome.key_hints_pinned());
+    assert!(f.driver.chrome.key_hints_pinned());
     for text in ["up/down", "columns", "first/last", "open", "explainer"] {
-        assert!(f.drew(text), "{text:?} not in the strip: {:?}", f.drawn);
+        assert!(
+            f.driver.drew(text),
+            "{text:?} not in the strip: {:?}",
+            f.driver.drawn()
+        );
     }
     assert!(f.take_calls().is_empty(), "? is chrome's");
 
     f.key(Key::Escape);
     assert_eq!(f.take_calls(), [call("headway_clear", json!({}))]);
-    assert!(f.chrome.key_hints_pinned(), "the strip is chrome's Esc");
+    assert!(
+        f.driver.chrome.key_hints_pinned(),
+        "the strip is chrome's Esc"
+    );
     f.key(Key::Escape);
-    assert!(!f.chrome.key_hints_pinned());
+    assert!(!f.driver.chrome.key_hints_pinned());
     f.key(Key::Escape);
     assert!(
         f.take_calls().is_empty(),
@@ -464,7 +398,7 @@ async fn a_focused_field_keeps_its_keys() {
 /// ([`notedeck_chrome::open_shortcut`]), the way this platform's keyboard
 /// reports it: off macOS, Ctrl sets `command` too.
 fn cmd_k(f: &mut Fixture) {
-    let open = notedeck_chrome::open_shortcut(f.egui_ctx.os());
+    let open = notedeck_chrome::open_shortcut(f.driver.egui_ctx.os());
     let modifiers = match open.modifiers.ctrl {
         true => open.modifiers | Modifiers::COMMAND,
         false => open.modifiers,
@@ -475,7 +409,8 @@ fn cmd_k(f: &mut Fixture) {
 /// The command bar's selected row's title.
 #[cfg(not(debug_assertions))]
 fn selected(f: &mut Fixture) -> Option<String> {
-    f.chrome
+    f.driver
+        .chrome
         .command_bar_mut()
         .selected()
         .map(|item| item.title.clone())
@@ -493,11 +428,12 @@ async fn the_command_bar_searches_headway_cards() {
     const CARD: &str = "Sync cards across relays";
     let mut f = Fixture::new().await;
     cmd_k(&mut f);
-    f.frame(vec![Event::Text("relays".to_owned())]);
-    f.frame(Vec::new());
+    f.driver.frame(vec![Event::Text("relays".to_owned())]);
+    f.driver.frame(Vec::new());
 
     let listed = |f: &mut Fixture| -> Vec<String> {
-        f.chrome
+        f.driver
+            .chrome
             .command_bar_mut()
             .matches()
             .map(|item| item.title.clone())
@@ -509,21 +445,25 @@ async fn the_command_bar_searches_headway_cards() {
         listed(&mut f)
     );
     assert!(
-        f.drawn
+        f.driver
+            .drawn()
             .iter()
             .any(|d| d.contains(CARD) && d.contains("Card")),
         "drawn as a card: {:?}",
-        f.drawn
+        f.driver.drawn()
     );
     assert!(
-        f.drawn.iter().any(|d| d.contains("Headway · Backlog")),
+        f.driver
+            .drawn()
+            .iter()
+            .any(|d| d.contains("Headway · Backlog")),
         "on its board and column: {:?}",
-        f.drawn
+        f.driver.drawn()
     );
 
     // `label:` is the issue list's term, and this card is labelled `nostr`.
-    f.frame(vec![Event::Text(" label:ui".to_owned())]);
-    f.frame(Vec::new());
+    f.driver.frame(vec![Event::Text(" label:ui".to_owned())]);
+    f.driver.frame(Vec::new());
     assert!(
         !listed(&mut f).iter().any(|t| t == CARD),
         "{:?}",
@@ -543,12 +483,12 @@ async fn the_command_bar_searches_headway_cards() {
 async fn the_command_bar_opens_the_issue_list() {
     let mut f = Fixture::new().await;
     cmd_k(&mut f);
-    assert!(f.chrome.command_bar().is_open());
-    f.frame(vec![Event::Text("issue list".to_owned())]);
+    assert!(f.driver.chrome.command_bar().is_open());
+    f.driver.frame(vec![Event::Text("issue list".to_owned())]);
     assert_eq!(selected(&mut f).as_deref(), Some("Open issue list"));
 
     f.key(Key::Enter);
-    assert!(!f.chrome.command_bar().is_open());
+    assert!(!f.driver.chrome.command_bar().is_open());
     let calls = f.take_calls();
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert_eq!(calls[0].name, "headway_open_list");
@@ -563,17 +503,21 @@ async fn the_command_bar_opens_the_issue_list() {
 async fn the_command_bar_groups_the_list_by_a_picked_value() {
     let mut f = Fixture::new().await;
     cmd_k(&mut f);
-    f.frame(vec![Event::Text("issue list".to_owned())]);
+    f.driver.frame(vec![Event::Text("issue list".to_owned())]);
     f.key(Key::Enter);
     f.wait_to_draw("All issues");
     f.take_calls();
 
     cmd_k(&mut f);
-    f.frame(vec![Event::Text("group list".to_owned())]);
+    f.driver.frame(vec![Event::Text("group list".to_owned())]);
     assert_eq!(selected(&mut f).as_deref(), Some("Group list by"));
     f.key(Key::Enter);
-    assert_eq!(f.chrome.command_bar().prompt(), Some("Group list by"));
+    assert_eq!(
+        f.driver.chrome.command_bar().prompt(),
+        Some("Group list by")
+    );
     let values: Vec<String> = f
+        .driver
         .chrome
         .command_bar_mut()
         .matches()
@@ -584,9 +528,9 @@ async fn the_command_bar_groups_the_list_by_a_picked_value() {
     }
     assert!(f.take_calls().is_empty(), "nothing ran yet");
 
-    f.frame(vec![Event::Text("priority".to_owned())]);
+    f.driver.frame(vec![Event::Text("priority".to_owned())]);
     f.key(Key::Enter);
-    assert!(!f.chrome.command_bar().is_open());
+    assert!(!f.driver.chrome.command_bar().is_open());
     assert_eq!(
         f.take_calls(),
         [call("headway_list_group", json!({ "by": "priority" }))]

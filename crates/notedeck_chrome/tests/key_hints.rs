@@ -8,6 +8,7 @@ mod common;
 use common::Fixture;
 use egui::{Key, KeyboardShortcut, Modifiers};
 use notedeck_chrome::keymap::DEFAULT_KEYMAP;
+use notedeck_chrome::testing::ChromeDriver;
 use notedeck_chrome::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
 
 /// The fake app's bindings, labelled and grouped for the strip.
@@ -80,8 +81,11 @@ impl ShownHint {
 
 /// The strip's hints, one per keycap, or `None` if hidden.
 fn shown(f: &mut Fixture) -> Option<Vec<ShownHint>> {
-    let ctx = f.notedeck.app_context();
-    let hints = f.chrome.key_hints(&ctx.registries.tools)?;
+    let ChromeDriver {
+        notedeck, chrome, ..
+    } = &mut f.driver;
+    let ctx = notedeck.app_context();
+    let hints = chrome.key_hints(&ctx.registries.tools)?;
     Some(
         hints
             .flat_map(|hint| {
@@ -103,7 +107,7 @@ async fn question_mark_toggles_the_strip() {
     assert!(f.seen().is_empty(), "the keymap took ?");
     // Painted: labels and keycaps from the app's scope and the global one.
     for text in ["down", "first", "gg", "^f", "keys", "?", "hide keys", "esc"] {
-        assert!(f.drew(text), "{text:?} not drawn in {:?}", f.drawn);
+        assert!(f.drew(text), "{text:?} not drawn in {:?}", f.drawn());
     }
 
     // The other way a layout can report `?`.

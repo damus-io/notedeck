@@ -21,8 +21,13 @@ impl Chrome {
     }
 
     /// Whether the app at index `i` has been opened.
-    pub(super) fn is_opened(&self, i: usize) -> bool {
+    pub fn is_opened(&self, i: usize) -> bool {
         i < MAX_APPS && bitset_get(&self.opened, i as u16)
+    }
+
+    /// The app in `slot`, if there is one.
+    pub fn app_mut(&mut self, slot: usize) -> Option<&mut NotedeckApp> {
+        self.apps.get_mut(slot)
     }
 
     /// Whether the app at index `i` is running: opened, or every app is kept

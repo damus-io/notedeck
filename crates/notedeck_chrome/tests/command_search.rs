@@ -43,7 +43,7 @@ fn listed(f: &mut Fixture) -> Vec<String> {
 /// Whether the last frame painted `text` within some run of text: a row's
 /// title and subtitle are one.
 fn drew_in(f: &Fixture, text: &str) -> bool {
-    f.drawn.iter().any(|drawn| drawn.contains(text))
+    f.drawn().iter().any(|drawn| drawn.contains(text))
 }
 
 /// A hit of the fake app's titled `title`, opening `fake:<uri>`.

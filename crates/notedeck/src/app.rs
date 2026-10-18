@@ -544,17 +544,13 @@ fn main_panel(style: &egui::Style) -> egui::CentralPanel {
 /// drives every app's background loop without a GPU surface. See
 /// [`Notedeck::tick_headless`].
 #[profiling::function]
-fn render_notedeck(
-    app: Rc<RefCell<dyn App + 'static>>,
-    app_ctx: &mut AppContext,
-    egui: Option<&mut egui::Ui>,
-) {
-    app.borrow_mut().update(app_ctx);
+fn render_notedeck(app: &mut dyn App, app_ctx: &mut AppContext, egui: Option<&mut egui::Ui>) {
+    app.update(app_ctx);
     let Some(ui) = egui else {
         return;
     };
     main_panel(ui.style()).show(ui, |ui| {
-        app.borrow_mut().render(app_ctx, ui);
+        app.render(app_ctx, ui);
     });
 }
 
@@ -587,8 +583,22 @@ impl Notedeck {
         self.tick_core(Some(ui));
     }
 
-    /// The host's current pass number: how many [`tick_core`](Self::tick_core)
-    /// passes have run, and the clock the texture caches age entries against.
+    /// The host's frame, with an app the caller owns instead of
+    /// [`set_app`](Self::set_app)'s: the same background work, tool-registry
+    /// refresh, `update`, main panel, `render` and persistence tail
+    /// [`tick`](Self::tick) runs, around `app`.
+    ///
+    /// For a test that drives a full chrome and needs to reach into it
+    /// between frames, which an app moved into the host can't offer. Going
+    /// through here rather than a hand-rolled `update`-then-`render` keeps the
+    /// test's frame from drifting from the shipped one.
+    pub fn tick_app(&mut self, app: &mut dyn App, ui: &mut egui::Ui) {
+        self.tick_background();
+        self.tick_app_core(app, Some(ui));
+    }
+
+    /// The host's current pass number: how many passes
+    /// ([`tick_background`](Self::tick_background)) have run, and the clock the texture caches age entries against.
     pub fn pass_nr(&self) -> u64 {
         self.pass_nr
     }
@@ -662,11 +672,22 @@ impl Notedeck {
     /// (via [`render_notedeck`]) and the trailing display-preference
     /// persistence. When no app is installed the function returns early in both
     /// modes, so neither the render nor the persistence tail runs.
-    fn tick_core(&mut self, mut egui: Option<&mut egui::Ui>) {
+    fn tick_core(&mut self, egui: Option<&mut egui::Ui>) {
+        self.tick_background();
+        let Some(app) = self.app.clone() else {
+            return;
+        };
+        self.tick_app_core(&mut *app.borrow_mut(), egui);
+    }
+
+    /// The half of a frame that runs whether or not an app is installed:
+    /// the pass clock, media jobs, texture eviction, and polling the relay
+    /// bridge, the host's private sync, NIP-05 and the zap verifier.
+    fn tick_background(&mut self) {
         // The pass number is the clock the texture caches age entries against,
         // and publishing it is the only way one enters the cache layer — so the
-        // reads the render path makes below, the writes the job seam makes, and
-        // the sweep's notion of age are all on this one number.
+        // reads the render path makes later this pass, the writes the job seam
+        // makes, and the sweep's notion of age are all on this one number.
         self.pass_nr += 1;
         self.img_cache.textures.begin_pass(self.pass_nr);
 
@@ -689,13 +710,16 @@ impl Notedeck {
         self.pump_host_private_sync();
         self.nip05_cache.poll();
         self.zap_verifier.poll(&self.ndb, self.zaps.pay_cache());
-        let Some(app) = self.app.clone() else {
-            return;
-        };
+    }
 
+    /// The installed app's half of a frame: everything
+    /// [`tick_core`](Self::tick_core) does after
+    /// [`tick_background`](Self::tick_background), around `app`. `egui` gates
+    /// the display-coupled steps as it does there.
+    fn tick_app_core(&mut self, app: &mut dyn App, mut egui: Option<&mut egui::Ui>) {
         // Let the shell refresh the agent-tool registry from its running apps
         // before we hand a borrow of it to this frame's AppContext.
-        if let Some(update) = app.borrow_mut().take_tool_update() {
+        if let Some(update) = app.take_tool_update() {
             self.apply_tool_update(update);
         }
 
@@ -1812,15 +1836,15 @@ mod tick_headless_tests {
 
         let updates = Rc::new(Cell::new(0));
         let renders = Rc::new(Cell::new(0));
-        let app: Rc<RefCell<dyn App + 'static>> = Rc::new(RefCell::new(CountingApp {
+        let app = RefCell::new(CountingApp {
             updates: updates.clone(),
             renders: renders.clone(),
-        }));
+        });
 
         // Headless: update runs, render is skipped — no egui pass required.
         {
             let mut app_ctx = notedeck.app_context();
-            render_notedeck(app.clone(), &mut app_ctx, None);
+            render_notedeck(&mut *app.borrow_mut(), &mut app_ctx, None);
         }
         assert_eq!(updates.get(), 1, "headless render_notedeck must update");
         assert_eq!(renders.get(), 0, "headless render_notedeck must not render");
@@ -1829,10 +1853,9 @@ mod tick_headless_tests {
         // pass for `main_panel().show()`; the `Fn` closure reaches the borrows
         // through `RefCell`s.
         let app_ctx = RefCell::new(notedeck.app_context());
-        let app_cell = RefCell::new(app.clone());
         egui::__run_test_ui(|ui| {
             let mut ctx = app_ctx.borrow_mut();
-            render_notedeck(app_cell.borrow().clone(), &mut ctx, Some(ui));
+            render_notedeck(&mut *app.borrow_mut(), &mut ctx, Some(ui));
         });
         assert_eq!(updates.get(), 2, "gui render_notedeck must also update");
         assert_eq!(renders.get(), 1, "gui render_notedeck must render");

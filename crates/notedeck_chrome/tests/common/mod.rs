@@ -14,6 +14,7 @@ use notedeck::{
     SearchHit, SearchHits, SearchQuery, ToolArg, ToolArgType, ToolContext, ToolOutcome, ToolSpec,
 };
 use notedeck_chrome::keymap::{self, KeySeq};
+use notedeck_chrome::testing::ChromeDriver;
 use notedeck_chrome::{Chrome, NotedeckApp};
 
 /// The UI tools [`FakeApp`] advertises.
@@ -238,17 +239,27 @@ impl App for FakeApp {
     }
 }
 
-/// A headless chrome with [`FakeApp`] in front and a test keymap loaded.
+/// A headless chrome with [`FakeApp`] in front and a test keymap loaded,
+/// driven through the host's own frame. Derefs to its [`ChromeDriver`], for
+/// `chrome`, `notedeck`, `frame`, `press` and the rest.
 pub struct Fixture {
     _dir: tempfile::TempDir,
-    pub egui_ctx: egui::Context,
-    pub notedeck: Notedeck,
-    pub chrome: Chrome,
+    pub driver: ChromeDriver,
     pub state: Rc<RefCell<FakeState>>,
-    /// The input time of the next frame.
-    pub time: f64,
-    /// Every piece of text the last frame painted.
-    pub drawn: Vec<String>,
+}
+
+impl std::ops::Deref for Fixture {
+    type Target = ChromeDriver;
+
+    fn deref(&self) -> &ChromeDriver {
+        &self.driver
+    }
+}
+
+impl std::ops::DerefMut for Fixture {
+    fn deref_mut(&mut self) -> &mut ChromeDriver {
+        &mut self.driver
+    }
 }
 
 impl Fixture {
@@ -304,7 +315,6 @@ impl Fixture {
             app_ctx.settings.complete_welcome();
             app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
         }
-        notedeck.setup(&egui_ctx);
         let (sent, marked) = mpsc::channel();
         let state = Rc::new(RefCell::new(FakeState {
             calls: Vec::new(),
@@ -335,91 +345,12 @@ impl Fixture {
                 .into_iter()
                 .chain([NotedeckApp::Other("fake".to_owned(), Box::new(fake))]),
         );
-        let update = App::take_tool_update(&mut chrome).expect("the running set changed");
-        notedeck.apply_tool_update(update);
         chrome.set_keymap(keymap::parse(keymap_src).expect("test keymap"));
 
-        let mut fixture = Self {
+        Self {
             _dir: dir,
-            egui_ctx,
-            notedeck,
-            chrome,
+            driver: ChromeDriver::new(egui_ctx, notedeck, chrome),
             state,
-            time: 0.0,
-            drawn: Vec::new(),
-        };
-        fixture.frame(Vec::new());
-        fixture.frame(Vec::new());
-        fixture
-    }
-
-    /// One real chrome frame — `update` then `render`, as the host runs them
-    /// — with `events` as its input, a sixtieth of a second after the last.
-    pub fn frame(&mut self, events: Vec<Event>) {
-        let input = egui::RawInput {
-            time: Some(self.time),
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1200.0, 800.0),
-            )),
-            events,
-            ..Default::default()
-        };
-        self.time += 1.0 / 60.0;
-
-        let Self {
-            egui_ctx,
-            notedeck,
-            chrome,
-            drawn,
-            ..
-        } = self;
-        let mut app_ctx = notedeck.app_context();
-        let output = egui_ctx.run_ui(input, |ui| {
-            chrome.update(&mut app_ctx);
-            egui::CentralPanel::default().show(ui, |ui| {
-                chrome.render(&mut app_ctx, ui);
-            });
-        });
-        drawn.clear();
-        for clipped in &output.shapes {
-            collect_text(&clipped.shape, drawn);
-        }
-        output.drop_without_applying_deltas();
-    }
-
-    /// Whether the last frame painted exactly `text` somewhere.
-    pub fn drew(&self, text: &str) -> bool {
-        self.drawn.iter().any(|drawn| drawn == text)
-    }
-
-    /// One frame with `key` pressed (typing `text`, if any) and released.
-    pub fn press(&mut self, modifiers: Modifiers, key: Key, text: Option<&str>) {
-        let event = |pressed| Event::Key {
-            key,
-            physical_key: None,
-            pressed,
-            repeat: false,
-            modifiers,
-        };
-        let mut events = vec![event(true)];
-        if let Some(text) = text {
-            events.push(Event::Text(text.to_owned()));
-        }
-        events.push(event(false));
-        self.frame(events);
-    }
-
-    /// Press a bare key.
-    pub fn key(&mut self, key: Key) {
-        self.press(Modifiers::NONE, key, None);
-    }
-
-    /// Run idle frames until `seconds` of input time have passed.
-    pub fn idle(&mut self, seconds: f64) {
-        let until = self.time + seconds;
-        while self.time < until {
-            self.frame(Vec::new());
         }
     }
 
@@ -453,18 +384,5 @@ impl Fixture {
         self.chrome
             .pending_keys()
             .map(|seq: KeySeq| seq.to_string())
-    }
-}
-
-/// Push the text of every text shape in `shape` onto `out`.
-pub fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
-    match shape {
-        egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
-        egui::Shape::Vec(shapes) => {
-            for shape in shapes {
-                collect_text(shape, out);
-            }
-        }
-        _ => {}
     }
 }

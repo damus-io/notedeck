@@ -39,8 +39,8 @@ fn ndb(f: &mut Fixture) -> Ndb {
 
 /// Save `toml` as the account's keymap through the chrome.
 fn save(f: &mut Fixture, toml: &str) -> Result<(), String> {
-    let mut ctx = f.notedeck.app_context();
-    f.chrome.save_user_keymap(&mut ctx, toml)
+    let mut ctx = f.driver.notedeck.app_context();
+    f.driver.chrome.save_user_keymap(&mut ctx, toml)
 }
 
 /// A signed-in fixture, its account's keypair, and a stream over the
