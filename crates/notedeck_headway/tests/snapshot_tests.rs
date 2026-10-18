@@ -5275,6 +5275,57 @@ fn snapshot_headway_review_code_walk() {
     harness.snapshot("headway_review_code_walk");
 }
 
+/// Behavioural (no lavapipe): `)` steps the review queue's diff through
+/// its code walk, each note landing at the same place, the first row under
+/// the pinned file header: src/keys.rs's note, then src/queue.rs's. Past
+/// the last a notice says so and the view stays. `(` goes back the same way,
+/// then from the first note to the top, where the walk's intro is, and there
+/// says it has nowhere to go.
+#[test]
+fn parens_step_the_review_diff_through_its_walk_notes() {
+    const KEYS_NOTE: &str = "Keys come next.";
+    const QUEUE_NOTE: &str = "The step stops at the last card.";
+    const INTRO: &str = "Start with the queue.";
+    let fixture = review_fixture();
+    // Opened tall, so the queue's waits see both files in the summary.
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1000.0));
+    seed_review_queue(&mut harness, &fixture);
+    add_queue_sources(&mut harness);
+    open_review_queue(&mut harness);
+    wait_for_label(&mut harness, KEYS_NOTE);
+    harness.set_size(egui::Vec2::new(1200.0, 520.0));
+    harness.run_steps(3);
+    // `)` and `(`, as a US layout delivers them: Shift with 0 and 9.
+    let step = |harness: &mut Harness<'static, HeadwayTestState>, key: egui::Key| {
+        harness.press_key_modifiers(egui::Modifiers::SHIFT, key);
+        harness.run_steps(3);
+    };
+    let top = |harness: &Harness<'static, HeadwayTestState>, label: &str| {
+        harness.get_by_label(label).rect().top()
+    };
+
+    step(&mut harness, egui::Key::Num0);
+    assert!(
+        harness.query_by_label(INTRO).is_none(),
+        "scrolled off the top"
+    );
+    let landed = top(&harness, KEYS_NOTE);
+    step(&mut harness, egui::Key::Num0);
+    assert!(harness.query_by_label(KEYS_NOTE).is_none(), "past keys.rs");
+    assert_eq!(top(&harness, QUEUE_NOTE), landed, "lands as keys.rs's did");
+    step(&mut harness, egui::Key::Num0);
+    wait_for_label(&mut harness, "No later walk note");
+    assert_eq!(top(&harness, QUEUE_NOTE), landed, "stays put");
+
+    step(&mut harness, egui::Key::Num9);
+    assert_eq!(top(&harness, KEYS_NOTE), landed, "back to keys.rs's");
+    assert!(harness.query_by_label(QUEUE_NOTE).is_none());
+    step(&mut harness, egui::Key::Num9);
+    assert!(harness.query_by_label(INTRO).is_some(), "back to the top");
+    step(&mut harness, egui::Key::Num9);
+    wait_for_label(&mut harness, "No earlier walk note");
+}
+
 /// Snapshot: the review queue's code walk in a short window, jumped to
 /// `src/queue.rs` and paged down once, so the top of the view is inside its
 /// hunk: its walk note stays pinned under the file's pinned header, over the

@@ -21,8 +21,8 @@ pub use patch_images::{
     FileImages, ImageSide, MediaKind, ModelGesture, ModelInput, PatchImage, PatchModel,
 };
 pub use patch_view::{
-    git_patch_ui, git_patch_ui_with, GitPatchState, HeaderRows, NoteDrawer, NotePlace, PatchHeader,
-    PatchNote, PatchNoteKind, PatchScroll, PatchSelection,
+    git_patch_ui, git_patch_ui_with, GitPatchState, HeaderRows, NoteDrawer, NotePlace, NoteStep,
+    PatchHeader, PatchNote, PatchNoteKind, PatchScroll, PatchSelection,
 };
 
 use crate::markdown::{tokenize_code, CodeToken, SandCodeTheme};

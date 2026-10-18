@@ -87,6 +87,22 @@ pub enum PatchScroll {
     /// twice. A fractional part moves by that share of the view's height.
     /// Either way the view lands on a row boundary.
     Pages(f32),
+    /// The next or previous [sticky](PatchNote::sticky) note above a hunk
+    /// (a section's header, such as a code walk's note), landing its first
+    /// row as the first readable one, just under the pinned file header, the
+    /// way [`File`](Self::File) lands a header at the top. Back from the
+    /// first such note goes to the top. With none that way it stays put;
+    /// [`GitPatchState::has_sticky_note`] says so beforehand.
+    StickyNote(NoteStep),
+}
+
+/// Which way a [`PatchScroll::StickyNote`] steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteStep {
+    /// Down, to the note after the one at the top of the view.
+    Next,
+    /// Up, to the note before it, or the top.
+    Prev,
 }
 
 /// Lines picked in a [`git_patch_ui`] for a comment: a run of one file's
@@ -175,6 +191,12 @@ impl PatchNote {
             NotePlace::AboveHunk => self.lines.start,
         }
     }
+
+    /// Whether it pins while its hunk is read: [sticky](Self::sticky) and
+    /// above its hunk.
+    fn pins(&self) -> bool {
+        self.sticky && self.place == NotePlace::AboveHunk
+    }
 }
 
 /// The pick being made: where it started and where it stretches to, both
@@ -233,6 +255,8 @@ pub struct GitPatchState {
     synced: bool,
     /// The file whose row is at the top of the view, if any.
     current_file: Option<usize>,
+    /// The row at the top of the view as of the last pass.
+    top_row: usize,
     /// The diff lines in view, laid out.
     galleys: LineGalleys,
     /// The lines picked for a comment, if any.
@@ -1075,9 +1099,7 @@ impl GitPatchState {
         let above = notes
             .partition_point(|n| (n.slot(), n.place == NotePlace::AboveHunk) < (lines.start, true));
         let after = notes.partition_point(|n| n.slot() <= lines.start);
-        let k = (above..after)
-            .rev()
-            .find(|&k| notes[k].sticky && notes[k].place == NotePlace::AboveHunk)?;
+        let k = (above..after).rev().find(|&k| notes[k].pins())?;
         let body = self.file_rows[f] + 1;
         let header = body + self.hunk_row(f, file, g);
         let note_rows = self.note_prefix[start + after] - self.note_prefix[start + k];
@@ -1091,6 +1113,83 @@ impl GitPatchState {
             hunk_first_row: header - note_rows,
             hunk_end_row: body + self.line_row(f, g, last) + 1 + under,
         })
+    }
+
+    /// The virtual row note `n` (an index into `line_notes`) starts on;
+    /// `None` while its file is collapsed.
+    fn note_first_row(&self, patch: &GitPatch, n: usize) -> Option<usize> {
+        let note = &self.line_notes[n];
+        let f = note.file;
+        if self.is_collapsed(f) {
+            return None;
+        }
+        let file = &patch.files()[f];
+        let start = self.note_spans[f].start;
+        let body = self.file_rows[f] + 1;
+        let i = note.slot();
+        let row = match note.place {
+            // Above its hunk's header, under the rest of the notes before
+            // the hunk's first line.
+            NotePlace::AboveHunk => {
+                let after = start + self.notes_before(f, i);
+                let header = body + self.hunk_row(f, file, hunk_of(file, i));
+                header - (self.note_prefix[after] - self.note_prefix[n])
+            }
+            // Under its last line, after the notes before it there.
+            NotePlace::Under => {
+                let last = i - 1;
+                let first = start + self.notes_before(f, last);
+                let line = body + self.line_row(f, hunk_of(file, last), last);
+                line + 1 + self.note_prefix[n] - self.note_prefix[first]
+            }
+        };
+        Some(row)
+    }
+
+    /// The top row a [`PatchScroll::StickyNote`] lands on from a view whose
+    /// top row is `top`: one above the next (or previous) pinning note's
+    /// first row, so the note is the first row under the pinned file header.
+    /// Back with no note above goes to the top. `None` when there's nowhere
+    /// to go. Searches from the top row's file in the notes
+    /// [`set_notes`](Self::set_notes) sorted by file and line, so it reads
+    /// rows only of notes near the view.
+    fn sticky_note_top(&self, patch: &GitPatch, top: usize, step: NoteStep) -> Option<usize> {
+        let here = self
+            .file_at(top)
+            .and_then(|f| self.note_spans.get(f).cloned());
+        // The top row landing on note `n` takes, for a note that pins.
+        let tops = |n: usize| {
+            if !self.line_notes[n].pins() {
+                return None;
+            }
+            self.note_first_row(patch, n).map(|row| row - 1)
+        };
+        match step {
+            NoteStep::Next => {
+                let from = here.map_or(0, |span| span.start);
+                (from..self.line_notes.len())
+                    .filter_map(tops)
+                    .find(|&t| t > top)
+            }
+            NoteStep::Prev => {
+                let to = here.map_or(0, |span| span.end);
+                (0..to)
+                    .rev()
+                    .filter_map(tops)
+                    .find(|&t| t < top)
+                    .or((top > 0).then_some(0))
+            }
+        }
+    }
+
+    /// Whether a [`PatchScroll::StickyNote`] that way would move the view
+    /// as of the last pass: there's a note to land on, or, back, the top to
+    /// go to. `false` before the first pass. For a caller to say why a key
+    /// did nothing rather than ask for a scroll that stays put.
+    pub fn has_sticky_note(&self, patch: &GitPatch, step: NoteStep) -> bool {
+        self.synced
+            && self.collapsed.len() == patch.files().len()
+            && self.sticky_note_top(patch, self.top_row, step).is_some()
     }
 
     /// How many of note `n`'s rows a pin may show: [`PINNED_NOTE_ROWS`] and
@@ -1235,6 +1334,9 @@ impl GitPatchState {
             PatchScroll::Bottom => content_rows as f32 * row_step - self.viewport_height,
             PatchScroll::Rows(rows) => self.offset + rows as f32 * row_step,
             PatchScroll::Pages(pages) => self.pages_target(patch, pages, total_rows, rows),
+            PatchScroll::StickyNote(step) => self
+                .sticky_note_top(patch, top_row, step)
+                .map_or(self.offset, |t| t as f32 * row_step),
             // Past the last file: stay put.
             PatchScroll::File(_) | PatchScroll::NextFile => self.offset,
         };
@@ -1443,6 +1545,7 @@ pub fn git_patch_ui_with(
     state.viewport_height = out.inner_rect.height();
     state.synced = true;
     let top_row = row_at(state.offset, row_step);
+    state.top_row = top_row;
     state.current_file = state.file_at(top_row);
     if state.pending.is_some() {
         // A row asked for a scroll this pass; apply it on the next one.
@@ -3087,6 +3190,91 @@ mod tests {
         state.set_collapsed(4, true);
         state.layout(&patch);
         assert!((0..state.layout(&patch)).all(|top| state.pinned_note(&patch, top).is_none()));
+    }
+
+    /// Notes of every kind, in two files, some taller than a row: an under
+    /// note between two sticky notes above long.txt's hunks, a sticky one
+    /// under lines (which never pins), and one in a later file.
+    fn stepped_notes() -> Vec<PatchNote> {
+        vec![
+            sticky_walk(4, 0),
+            PatchNote {
+                place: NotePlace::Under,
+                sticky: false,
+                ..sticky_walk(4, 6)
+            },
+            sticky_walk(4, 9),
+            // Sticky, but under its line: not a section's note.
+            PatchNote {
+                place: NotePlace::Under,
+                ..sticky_walk(4, 10)
+            },
+            sticky_walk(7, 0),
+        ]
+    }
+
+    /// [`GitPatchState::note_first_row`] is the row
+    /// [`GitPatchState::locate`] puts each note's first row on, and `None`
+    /// while its file is collapsed.
+    #[test]
+    fn note_first_row_matches_locate() {
+        let patch = GitPatch::parse(MULTI);
+        let mut state = noted_state(&patch, stepped_notes(), &[3, 2, 2, 1, 4]);
+        state.layout(&patch);
+        for n in 0..state.line_notes.len() {
+            let row = state.note_first_row(&patch, n).unwrap();
+            assert_eq!(state.locate(&patch, row), Row::Comment(n, 0), "note {n}");
+        }
+        state.set_collapsed(4, true);
+        state.layout(&patch);
+        let collapsed = |n: usize| state.line_notes[n].file == 4;
+        for n in 0..state.line_notes.len() {
+            assert_eq!(
+                state.note_first_row(&patch, n).is_none(),
+                collapsed(n),
+                "note {n}"
+            );
+        }
+    }
+
+    /// From every top row, a [`PatchScroll::StickyNote`] lands one row above
+    /// the next (or previous) pinning note's first row, found here by
+    /// walking the rows instead of searching the notes: back from the first
+    /// goes to the top, and past the last there's nowhere to go. A collapsed
+    /// file's notes are stepped over.
+    #[test]
+    fn sticky_note_steps_land_on_each_note_in_turn() {
+        let patch = GitPatch::parse(MULTI);
+        let mut state = noted_state(&patch, stepped_notes(), &[3, 2, 2, 1, 4]);
+        for collapse in [None, Some(4)] {
+            if let Some(f) = collapse {
+                state.set_collapsed(f, true);
+            }
+            let content = state.layout(&patch);
+            let tops: Vec<usize> = (0..content)
+                .filter(|&r| match state.locate(&patch, r) {
+                    Row::Comment(n, 0) => state.line_notes[n].pins(),
+                    _ => false,
+                })
+                .map(|r| r - 1)
+                .collect();
+            assert_eq!(tops.len(), [3, 1][usize::from(collapse.is_some())]);
+            for top in 0..content {
+                let next = tops.iter().copied().find(|&t| t > top);
+                let prev = tops.iter().rev().copied().find(|&t| t < top);
+                let prev = prev.or((top > 0).then_some(0));
+                assert_eq!(
+                    state.sticky_note_top(&patch, top, NoteStep::Next),
+                    next,
+                    "next from {top}, {collapse:?} collapsed"
+                );
+                assert_eq!(
+                    state.sticky_note_top(&patch, top, NoteStep::Prev),
+                    prev,
+                    "prev from {top}, {collapse:?} collapsed"
+                );
+            }
+        }
     }
 
     /// A walk note's drawer: three labels, about three rows.

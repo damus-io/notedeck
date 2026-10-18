@@ -15,7 +15,8 @@
 //! [`Key::Questionmark`] with Shift held, or as Shift+[`Key::Slash`] on a US
 //! layout. Both [`KeyStroke::from_press`] and the parser fold these into one
 //! canonical stroke (see [`canonical`]), so a binding written `?` matches
-//! either.
+//! either. `(` and `)`, which egui has no key for, are Shift+`9` and
+//! Shift+`0` as a US layout types them (see [`SHIFTED_DIGITS`]).
 
 use std::fmt;
 
@@ -152,6 +153,38 @@ impl KeyStroke {
     }
 }
 
+/// Shifted digits egui has no key of their own for, as a US layout types
+/// them: the glyph, and the digit it's Shift of. egui reports the press as
+/// that digit with Shift held, so the keymap writes and reads it as the glyph.
+const SHIFTED_DIGITS: [ShiftedDigit; 2] = [
+    ShiftedDigit {
+        glyph: '(',
+        digit: Key::Num9,
+    },
+    ShiftedDigit {
+        glyph: ')',
+        digit: Key::Num0,
+    },
+];
+
+/// One of [`SHIFTED_DIGITS`].
+struct ShiftedDigit {
+    glyph: char,
+    digit: Key,
+}
+
+/// The glyph a shifted digit stroke is written as (`)` for Shift+`0`), if
+/// it's one of [`SHIFTED_DIGITS`].
+fn shifted_digit_glyph(stroke: &KeyStroke) -> Option<char> {
+    if !stroke.mods.contains(Mods::SHIFT) {
+        return None;
+    }
+    SHIFTED_DIGITS
+        .iter()
+        .find(|s| s.digit == stroke.key)
+        .map(|s| s.glyph)
+}
+
 /// A one-character token, with `mods` from any `<..>` around it. An uppercase
 /// letter adds Shift.
 fn single_char(token: &str, mods: Mods) -> Result<KeyStroke, KeyParseError> {
@@ -159,6 +192,9 @@ fn single_char(token: &str, mods: Mods) -> Result<KeyStroke, KeyParseError> {
     let (Some(c), None) = (chars.next(), chars.next()) else {
         return Err(KeyParseError::UnknownKey(token.to_owned()));
     };
+    if let Some(s) = SHIFTED_DIGITS.iter().find(|s| s.glyph == c) {
+        return Ok(KeyStroke::new(s.digit, mods | Mods::SHIFT));
+    }
     let Some(key) = Key::from_name(token) else {
         return Err(KeyParseError::UnknownKey(token.to_owned()));
     };
@@ -211,6 +247,10 @@ fn is_shifted_glyph(key: Key) -> bool {
 impl fmt::Display for KeyStroke {
     /// The stroke back in the keymap's own syntax, e.g. `G`, `?`, `<C-f>`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match shifted_digit_glyph(self) {
+            Some(c) if self.mods.without(Mods::SHIFT) == Mods::NONE => return write!(f, "{c}"),
+            _ => {}
+        }
         let glyph = key_glyph(self.key);
         let is_letter = glyph.is_some_and(|c| c.is_ascii_alphabetic());
         // A shifted letter prints as its uppercase form, so Shift only needs
@@ -260,6 +300,16 @@ impl KeyStroke {
     fn write_keycap(&self, out: &mut String) {
         if self.mods.contains(Mods::CTRL) {
             out.push('^');
+        }
+        // Shift is in the glyph itself.
+        if let Some(c) = shifted_digit_glyph(self) {
+            for (bit, prefix) in [(Mods::ALT, "A-"), (Mods::CMD, "D-")] {
+                if self.mods.contains(bit) {
+                    out.push_str(prefix);
+                }
+            }
+            out.push(c);
+            return;
         }
         let glyph = key_glyph(self.key);
         let shifted_letter =
@@ -512,6 +562,28 @@ mod tests {
             assert_eq!(stroke(token), press(Modifiers::SHIFT, base), "{token}");
             assert_eq!(stroke(token).mods, Mods::NONE, "{token}");
         }
+    }
+
+    /// `(` and `)` have no egui key: they're the Shift+`9` and Shift+`0`
+    /// egui reports, and print back as themselves, alone or with Ctrl.
+    #[test]
+    fn parens_are_shifted_digits() {
+        for (token, digit) in [("(", Key::Num9), (")", Key::Num0)] {
+            assert_eq!(stroke(token), press(Modifiers::SHIFT, digit), "{token}");
+            assert_ne!(stroke(token), press(Modifiers::NONE, digit), "{token}");
+            assert_eq!(stroke(token).to_string(), token);
+            let mut cap = String::new();
+            stroke(token).write_keycap(&mut cap);
+            assert_eq!(cap, token);
+        }
+        assert_eq!(
+            stroke("<C-)>"),
+            press(Modifiers::CTRL | Modifiers::SHIFT, Key::Num0)
+        );
+        let mut cap = String::new();
+        stroke("<C-)>").write_keycap(&mut cap);
+        assert_eq!(cap, "^)");
+        assert_eq!(stroke("0").to_string(), "0");
     }
 
     #[test]

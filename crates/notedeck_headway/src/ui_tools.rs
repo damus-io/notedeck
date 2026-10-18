@@ -32,6 +32,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use notedeck::{ToolArg, ToolArgType, ToolSpec};
+use notedeck_ui::diff::NoteStep;
 
 use crate::cursor::{CursorMove, Vertical};
 use crate::keys::{CardAction, PaneScroll};
@@ -111,6 +112,8 @@ pub(crate) const STEP_FILE: &str = "headway_step_file";
 /// `}`/`{`: the next (older) or previous (newer) commit of a review pane's
 /// card, as its sha chips list them.
 pub(crate) const STEP_COMMIT: &str = "headway_step_commit";
+/// `)`/`(`: the next/previous note of a review pane's code walk.
+pub(crate) const STEP_WALK: &str = "headway_step_walk";
 /// `c` in a review pane: comment on the picked lines, or the commit.
 pub(crate) const COMMENT: &str = "headway_comment";
 /// `m` in a review pane: flip the commit body between reflowed and as
@@ -162,6 +165,7 @@ pub(crate) enum HeadwayToolName {
     Scroll,
     StepFile,
     StepCommit,
+    StepWalk,
     Comment,
     RawMessage,
     SendComments,
@@ -210,6 +214,8 @@ pub(crate) enum HeadwayUiTool {
     /// Step a review pane to its card's next (older) or previous (newer)
     /// commit.
     StepCommit(CardStep),
+    /// Scroll a review pane's diff to its code walk's next or previous note.
+    StepWalk(NoteStep),
     /// Write a comment in a review pane.
     Comment,
     /// Flip a review pane's commit body between reflowed and as written.
@@ -238,8 +244,8 @@ struct SessionArgs {
     code_review: bool,
 }
 
-/// Next or previous, for `headway_step_card`, `headway_step_file` and
-/// `headway_list_step_group`.
+/// Next or previous, for `headway_step_card`, `headway_step_file`,
+/// `headway_step_walk` and `headway_list_step_group`.
 #[derive(Deserialize, Default, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 enum Dir {
@@ -261,8 +267,8 @@ struct StepArgs {
     dir: Dir,
 }
 
-/// The arguments of `headway_step_file`, `headway_step_commit` and
-/// `headway_list_step_group`: a direction.
+/// The arguments of `headway_step_file`, `headway_step_commit`,
+/// `headway_step_walk` and `headway_list_step_group`: a direction.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct DirArgs {
@@ -492,7 +498,7 @@ where
 
 impl HeadwayToolName {
     /// Every tool, in the order [`HeadwayUiTool::specs`] lists them.
-    pub(crate) const ALL: [Self; 35] = [
+    pub(crate) const ALL: [Self; 36] = [
         Self::OpenCard,
         Self::OpenExplainer,
         Self::OpenParent,
@@ -524,6 +530,7 @@ impl HeadwayToolName {
         Self::Scroll,
         Self::StepFile,
         Self::StepCommit,
+        Self::StepWalk,
         Self::Comment,
         Self::RawMessage,
         Self::SendComments,
@@ -564,6 +571,7 @@ impl HeadwayToolName {
             Self::Scroll => SCROLL,
             Self::StepFile => STEP_FILE,
             Self::StepCommit => STEP_COMMIT,
+            Self::StepWalk => STEP_WALK,
             Self::Comment => COMMENT,
             Self::RawMessage => RAW_MESSAGE,
             Self::SendComments => SEND_COMMENTS,
@@ -605,6 +613,7 @@ impl HeadwayToolName {
             Self::Scroll => "Scroll",
             Self::StepFile => "Step to next or previous file",
             Self::StepCommit => "Step to next or previous commit",
+            Self::StepWalk => "Step to next or previous walk note",
             Self::Comment => "Write review comment",
             Self::RawMessage => "Toggle raw commit message",
             Self::SendComments => "Send review comments",
@@ -794,6 +803,11 @@ impl HeadwayToolName {
                 "Show the review pane's next (older) or previous (newer) commit of its card.",
                 vec![enum_arg("dir", DIRS, "Which way to step.")],
             ),
+            Self::StepWalk => (
+                "Scroll the review pane's diff to the next or previous note of the commit's \
+                 code walk; back from the first goes to the top.",
+                vec![enum_arg("dir", DIRS, "Which way to step.")],
+            ),
             Self::Comment => (
                 "Write a review comment on the picked diff lines, or on the commit.",
                 vec![],
@@ -951,6 +965,13 @@ impl HeadwayUiTool {
                 Self::StepCommit(match dir {
                     Dir::Next => CardStep::Next,
                     Dir::Prev => CardStep::Prev,
+                })
+            }
+            T::StepWalk => {
+                let DirArgs { dir } = parse_args(name, args)?;
+                Self::StepWalk(match dir {
+                    Dir::Next => NoteStep::Next,
+                    Dir::Prev => NoteStep::Prev,
                 })
             }
             T::Comment => no_args(name, args, Self::Comment)?,
@@ -1224,7 +1245,7 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
                 && !(list && state.list_composing())
         }
         T::StepFile | T::RawMessage => review,
-        T::StepCommit | T::Comment | T::SendComments => review && card,
+        T::StepCommit | T::StepWalk | T::Comment | T::SendComments => review && card,
     }
 }
 

@@ -233,6 +233,7 @@ pub(crate) fn apply_grid_tool(
         | HeadwayUiTool::ListMove(_)
         | HeadwayUiTool::Scroll(_)
         | HeadwayUiTool::StepCommit(_)
+        | HeadwayUiTool::StepWalk(_)
         | HeadwayUiTool::Comment
         | HeadwayUiTool::RawMessage
         | HeadwayUiTool::SendComments
@@ -412,6 +413,12 @@ pub(crate) fn apply_pane_tool(
                 state.set_notice(notice, ctx.input(|i| i.time));
             }
         }
+        HeadwayUiTool::StepWalk(step) => {
+            let found = card.and_then(|c| find_card(view, c))?;
+            if let Err(notice) = state.step_review_walk(found.card, *step) {
+                state.set_notice(notice, ctx.input(|i| i.time));
+            }
+        }
         HeadwayUiTool::RawMessage => state.toggle_raw_message(),
         HeadwayUiTool::Comment | HeadwayUiTool::SendComments => {
             let card = card.filter(|&c| find_card(view, c).is_some())?;
@@ -500,6 +507,7 @@ pub(crate) fn apply_detail_tool(
         | HeadwayUiTool::FocusFilter
         | HeadwayUiTool::Clear
         | HeadwayUiTool::StepCommit(_)
+        | HeadwayUiTool::StepWalk(_)
         | HeadwayUiTool::Comment
         | HeadwayUiTool::RawMessage
         | HeadwayUiTool::SendComments => {}
@@ -1278,6 +1286,22 @@ mod tests {
                 key,
                 modifiers: Modifiers::CTRL,
             }];
+        }
+        // egui has no key for `(` or `)`: a US layout sends Shift with 9 or 0.
+        match cap {
+            "(" => {
+                return vec![KeyPress {
+                    key: Key::Num9,
+                    modifiers: Modifiers::SHIFT,
+                }];
+            }
+            ")" => {
+                return vec![KeyPress {
+                    key: Key::Num0,
+                    modifiers: Modifiers::SHIFT,
+                }];
+            }
+            _ => {}
         }
         cap.chars()
             .map(|c| {
@@ -2680,6 +2704,7 @@ mod tests {
         const DIFF: &[&str] = &[
             "next/prev file",
             "next/prev commit",
+            "next/prev walk note",
             "raw message",
             "comment (picked lines or commit)",
         ];

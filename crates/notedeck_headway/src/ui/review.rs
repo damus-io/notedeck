@@ -14,7 +14,7 @@ use headway::git;
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
-use notedeck_ui::diff::{PatchHeader, PatchNoteKind, PatchScroll};
+use notedeck_ui::diff::{NoteStep, PatchHeader, PatchNoteKind, PatchScroll};
 use notedeck_ui::keybind_hint::KeybindHint;
 use std::time::Instant;
 
@@ -202,6 +202,34 @@ impl ReviewUi {
         self.record = Some(record.id);
         Ok(())
     }
+
+    /// `)`/`(`: scroll `card`'s shown diff so its code walk's next (or
+    /// previous) note is the first row under the pinned file header; back
+    /// from the first goes to the top, where the notes on no hunk are drawn.
+    /// The walk's notes are the diff's [sticky](notedeck_ui::diff::PatchNote::sticky)
+    /// ones, so line comments are stepped over. With nowhere to go it asks
+    /// for no scroll and returns the notice to show. With no diff loaded yet
+    /// it asks anyway, and the pane drops it as it does a file step's.
+    pub(crate) fn step_walk(&mut self, card: &CardView, step: NoteStep) -> Result<(), QueueNotice> {
+        let end = match step {
+            NoteStep::Next => QueueNotice::NoLaterWalkNote,
+            NoteStep::Prev => QueueNotice::NoEarlierWalkNote,
+        };
+        let source = match self.shown_record(card) {
+            Some(r) => ReviewSource::Record {
+                card: card.id,
+                record: r.id,
+            },
+            None => ReviewSource::Trailer(card.id),
+        };
+        if let Some(ReviewLoad::Ready(loaded)) = self.loader.get(source)
+            && !loaded.patch_state.has_sticky_note(&loaded.patch, step)
+        {
+            return Err(end);
+        }
+        self.scroll = Some(PatchScroll::StickyNote(step));
+        Ok(())
+    }
 }
 
 /// A column the review queue reads or moves cards into: found by its id, or,
@@ -381,6 +409,11 @@ pub(crate) enum QueueNotice {
     NoNewerCommit,
     /// `}`/`{` on a card with one commit (or none).
     OneCommit,
+    /// `)` past the code walk's last note on the diff (or on a commit
+    /// without one).
+    NoLaterWalkNote,
+    /// `(` at the top of the diff.
+    NoEarlierWalkNote,
 }
 
 /// A [`QueueNotice`] that's up: when it went up (egui time) and in which view.
@@ -413,6 +446,8 @@ impl QueueNotice {
             QueueNotice::NoOlderCommit => "No older commit on this card",
             QueueNotice::NoNewerCommit => "No newer commit on this card",
             QueueNotice::OneCommit => "This card has one commit",
+            QueueNotice::NoLaterWalkNote => "No later walk note",
+            QueueNotice::NoEarlierWalkNote => "No earlier walk note",
         }
     }
 }
@@ -795,6 +830,17 @@ impl BoardUiState {
         step: CardStep,
     ) -> Result<(), QueueNotice> {
         self.review.step_record(card, step)
+    }
+
+    /// `)`/`(` over a review pane: scroll its diff to the code walk's next
+    /// or previous note (see [`ReviewUi::step_walk`]), returning the notice
+    /// to show at either end.
+    pub(crate) fn step_review_walk(
+        &mut self,
+        card: &CardView,
+        step: NoteStep,
+    ) -> Result<(), QueueNotice> {
+        self.review.step_walk(card, step)
     }
 
     /// Flip the open review's commit body between reflowed and as written.
