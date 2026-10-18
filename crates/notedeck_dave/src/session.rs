@@ -511,6 +511,9 @@ impl AgenticSessionData {
     /// Marks it seen, so its echo through the conversation subscription is not
     /// processed again, and holds it as unindexed until that echo arrives. The
     /// session's chat no longer matches the fold until it does.
+    ///
+    /// Called through [`publish::record_published`](crate::publish::record_published),
+    /// the one funnel for a published note, rather than directly.
     pub fn record_self_note(&mut self, note_id: [u8; 32]) {
         self.seen_note_ids.insert(note_id);
         self.unindexed_self_notes

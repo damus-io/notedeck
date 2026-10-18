@@ -6,8 +6,9 @@
 
 use crate::backend::{AiBackend, BackendType};
 use crate::publish::{
-    build_user_send_event, ingest_live_event, ingest_live_event_within, pns_ingest,
-    publish_auto_accept_response, publish_permission_request, record_dispatch,
+    build_user_send_event, ingest_live_event, ingest_live_event_within,
+    publish_auto_accept_response, publish_permission_request, record_dispatch, record_published,
+    Ingest,
 };
 use crate::session_events::{LiveEventTags, MAX_WIRE_EVENT_BYTES};
 use crate::tools::Tool;
@@ -854,9 +855,11 @@ fn publish_subagent(
     let session_id = agentic.event_session_id().to_string();
     match session_events::build_subagent_event(info, &session_id, &mut agentic.live_threading, sk) {
         Ok(event) => {
-            if pns_ingest(ndb, &event.note_json, sk) {
-                agentic.record_self_note(event.note_id);
-            }
+            record_published(
+                agentic,
+                std::slice::from_ref(&event),
+                Ingest::Pns { ndb, sk },
+            );
             Some(event)
         }
         Err(e) => {

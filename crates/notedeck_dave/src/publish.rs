@@ -35,6 +35,45 @@ pub(crate) fn pns_ingest(ndb: &nostrdb::Ndb, event_json: &str, secret_key: &[u8;
     }
 }
 
+/// How a note handed to [`record_published`] reaches nostrdb.
+pub(crate) enum Ingest<'a> {
+    /// Write it now, through the host's private-note path ([`pns_ingest`]).
+    Pns {
+        ndb: &'a nostrdb::Ndb,
+        sk: &'a [u8; 32],
+    },
+    /// The engine wrote it already, so it is recorded without another write.
+    AlreadyIngested,
+}
+
+/// The one place a note this host published for a session is recorded as its
+/// own (see
+/// [`AgenticSessionData::record_self_note`](session::AgenticSessionData::record_self_note)).
+///
+/// Each event is written as `ingest` says and recorded once it reached
+/// nostrdb; one that nostrdb refused is not recorded, since it never comes
+/// back through the conversation subscription. Returns whether every event
+/// was recorded.
+pub(crate) fn record_published(
+    agentic: &mut session::AgenticSessionData,
+    events: &[session_events::BuiltEvent],
+    ingest: Ingest<'_>,
+) -> bool {
+    let mut all = true;
+    for event in events {
+        let ingested = match ingest {
+            Ingest::Pns { ndb, sk } => pns_ingest(ndb, &event.note_json, sk),
+            Ingest::AlreadyIngested => true,
+        };
+        if ingested {
+            agentic.record_self_note(event.note_id);
+        } else {
+            all = false;
+        }
+    }
+    all
+}
+
 /// Ingest a freshly-built event: PNS-wrap into local ndb and push to the
 /// relay publish queue. Logs on success with `event_desc` and on failure.
 /// Returns `true` if the event was queued successfully.
@@ -241,11 +280,14 @@ fn ingest_built_live_events(
 
     match build(&session_id, cwd, &mut agentic.live_threading) {
         Ok(events) => {
-            for event in &events {
-                if pns_ingest(ndb, &event.note_json, secret_key) {
-                    agentic.record_self_note(event.note_id);
-                }
-            }
+            record_published(
+                agentic,
+                &events,
+                Ingest::Pns {
+                    ndb,
+                    sk: secret_key,
+                },
+            );
             events.into_iter().next()
         }
         Err(e) => {
@@ -278,10 +320,7 @@ fn ingest_remote_user_message(
     let engine = embedded_engine(ndb, secret_key)?;
     match engine.prepare_message(&session_id, text, queued) {
         Ok(events) => {
-            // The engine ingested them already.
-            for event in &events {
-                agentic.record_self_note(event.note_id);
-            }
+            record_published(agentic, &events, Ingest::AlreadyIngested);
             // The first part's id is the message's.
             events.into_iter().next()
         }
@@ -433,7 +472,12 @@ pub(crate) fn publish_user_permission_response(
                 .is_some_and(|a| a.event_session_id() == resp.event_session_id)
     });
     if let Some(agentic) = local.and_then(|s| s.agentic.as_mut()) {
-        agentic.record_self_note(event.note_id);
+        // The engine ingested it when it built it.
+        record_published(
+            agentic,
+            std::slice::from_ref(&event),
+            Ingest::AlreadyIngested,
+        );
     }
 }
 
@@ -483,13 +527,8 @@ pub(crate) fn ingest_session_event(
     sk: &[u8; 32],
 ) -> Option<[u8; 32]> {
     match result {
-        Ok(evt) => {
-            if !pns_ingest(ndb, &evt.note_json, sk) {
-                return None;
-            }
-            agentic.record_self_note(evt.note_id);
-            Some(evt.note_id)
-        }
+        Ok(evt) => record_published(agentic, std::slice::from_ref(&evt), Ingest::Pns { ndb, sk })
+            .then_some(evt.note_id),
         Err(e) => {
             tracing::warn!("failed to build {}: {}", event_desc, e);
             None
@@ -926,10 +965,47 @@ mod tests {
         let first =
             ingest_built_live_events(&mut session, &ndb, &sk, |_, _, _| Ok(vec![refused()]));
         assert!(first.is_some(), "the built note is still handed back");
+        // The funnel every publish goes through, `publish_subagent`'s among
+        // them (whose builder keeps a real note under the wire budget, so it
+        // can't be made to build one nostrdb refuses).
+        let agentic = session.agentic.as_mut().unwrap();
+        assert!(!record_published(
+            agentic,
+            &[refused()],
+            Ingest::Pns { ndb: &ndb, sk: &sk }
+        ));
 
         let agentic = session.agentic.as_ref().unwrap();
         assert!(agentic.unindexed_self_notes.is_empty());
         assert!(!agentic.seen_note_ids.contains(&[7; 32]));
         assert!(!agentic.fold_dirty, "the chat gained no published row");
+    }
+
+    /// A note the engine already wrote is recorded without a second write,
+    /// which is what lets the funnel stand in for the engine-built paths
+    /// (a remote user message, a local session's permission response).
+    #[test]
+    fn an_already_ingested_note_is_recorded() {
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        let agentic = session.agentic.as_mut().unwrap();
+        // Too big for NIP-44: written, it would be refused.
+        let event = session_events::BuiltEvent {
+            note_json: "x".repeat(70_000),
+            note_id: [9; 32],
+            kind: session_events::AI_CONVERSATION_KIND,
+        };
+        assert!(record_published(
+            agentic,
+            std::slice::from_ref(&event),
+            Ingest::AlreadyIngested
+        ));
+        assert!(agentic.seen_note_ids.contains(&[9; 32]));
+        assert!(!agentic.unindexed_self_notes.is_empty());
+        assert!(agentic.fold_dirty);
     }
 }
