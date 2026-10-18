@@ -8,14 +8,17 @@
 //! The walk is prose and ` ```hunk ` fences, as `explain` writes it:
 //!
 //! ````text
-//! Why the guard moved.
+//! The opening paragraph: what the change does, read first.
 //!
 //! ```hunk apps/api/src/admin/admin-sso.guard.ts @@ -41,6 +41,14 @@
 //! match: if (isLocal() && !msAccount)
 //! ```
+//!
+//! Why the guard moved: the note for that hunk, after it.
 //! ````
 //!
-//! The prose before a fence is that hunk's note. The fence is found in the
+//! The prose after a fence, up to the next, is that hunk's note; the prose
+//! before the first fence is the walk's opening. The fence is found in the
 //! diff the way `explain` finds it ([`find_hunk`]): by path and header, and by
 //! its `match:` line when a rebase moved the header. Its text is never shown.
 
@@ -338,8 +341,8 @@ impl CodeWalk {
     }
 }
 
-/// A walk's prose up to a hunk fence, and the fence; the prose after the last
-/// fence has none.
+/// A hunk fence and the prose after it, up to the next fence: its note. The
+/// walk's opening, before any fence, has no fence.
 struct WalkStep {
     prose: String,
     cite: Option<HunkCite>,
@@ -393,10 +396,8 @@ struct OpenFence {
     hunk: Option<HunkFence>,
 }
 
-/// Split a walk into its steps: each hunk fence with the prose before it.
-/// Other fences stay in the prose, as code. Before the first hunk fence only
-/// the last paragraph is that hunk's; any before it is the walk's intro, a
-/// step of its own with no fence.
+/// Split a walk into its steps: its opening, then each hunk fence with the
+/// prose after it. Other fences stay in the prose, as code.
 fn walk_steps(text: &str) -> Vec<WalkStep> {
     let mut walk = Walk::default();
     let mut open: Option<OpenFence> = None;
@@ -428,52 +429,42 @@ fn walk_steps(text: &str) -> Vec<WalkStep> {
                 continue;
             }
         }
-        let blank = bare.trim().is_empty();
-        if !blank && walk.after_blank {
-            walk.last_break = Some(walk.prose.len());
-        }
         walk.prose.push_str(line);
-        walk.after_blank = blank && !walk.prose.trim().is_empty();
     }
     // An unclosed hunk fence still cites its hunk.
     if let Some(hunk) = open.and_then(|o| o.hunk) {
         walk.cite(hunk.cite());
     }
     let Walk {
-        mut steps, prose, ..
+        mut steps,
+        prose,
+        cite,
     } = walk;
-    steps.push(WalkStep { prose, cite: None });
+    steps.push(WalkStep { prose, cite });
     steps
 }
 
-/// [`walk_steps`]' progress: the steps so far and the prose since the last.
+/// [`walk_steps`]' progress: the steps so far, and the fence whose note is
+/// being read.
 #[derive(Default)]
 struct Walk {
     steps: Vec<WalkStep>,
+    /// The prose since the last fence: its note, or the opening.
     prose: String,
-    /// Where in `prose` its last paragraph starts: the first line after a
-    /// blank one (outside a fence) that follows some text.
-    last_break: Option<usize>,
-    /// The line just added to `prose` was blank, and followed some text.
-    after_blank: bool,
+    /// The last fence; `None` while reading the opening.
+    cite: Option<HunkCite>,
 }
 
 impl Walk {
-    /// A hunk fence citing `cite` closed: the prose before it is its note,
-    /// all but the last paragraph of it going to the intro when it's the
-    /// first.
+    /// A hunk fence citing `cite` closed: the prose read so far belongs to
+    /// the fence before it (or is the opening), and `cite` takes the prose
+    /// that follows.
     fn cite(&mut self, cite: HunkCite) {
-        let mut prose = std::mem::take(&mut self.prose);
-        self.after_blank = false;
-        let first = self.steps.is_empty();
-        if let Some(at) = self.last_break.take().filter(|_| first) {
-            let note = prose.split_off(at);
-            self.steps.push(WalkStep { prose, cite: None });
-            prose = note;
-        }
+        let prose = std::mem::take(&mut self.prose);
+        let before = self.cite.replace(cite);
         self.steps.push(WalkStep {
             prose,
-            cite: Some(cite),
+            cite: before,
         });
     }
 }
@@ -624,48 +615,24 @@ diff --git a/README.md b/README.md
         );
     }
 
-    /// Before the first fence, only the last paragraph is its hunk's; the
-    /// rest, code blocks and all, is the intro at the top. A lone paragraph
-    /// is the hunk's.
+    /// A fence's note is the prose after it, up to the next fence, code
+    /// blocks and all; the fence text is dropped. Prose before the first
+    /// fence is the opening, at the top. A fence with no prose after it adds
+    /// no note, and one that finds nothing puts its note at the top with why.
     #[test]
-    fn the_first_fence_takes_only_the_last_paragraph() {
-        let steps = walk_steps(
-            "Intro.\n\n```sh\n\nls\n```\n\nThe hunk's.\nStill it.\n\n```hunk a.rs\n```\nNext.\n\nAlso next.\n```hunk b.rs\n```\n",
-        );
-        let shown: Vec<_> = steps
-            .iter()
-            .map(|s| (s.prose.trim(), s.cite.as_ref().map(|c| c.path.as_str())))
-            .collect();
-        assert_eq!(
-            shown,
-            [
-                ("Intro.\n\n```sh\n\nls\n```", None),
-                ("The hunk's.\nStill it.", Some("a.rs")),
-                ("Next.\n\nAlso next.", Some("b.rs")),
-                ("", None),
-            ]
-        );
-        let lone = walk_steps("Only this.\n\n```hunk a.rs\n```\n");
-        assert_eq!(lone[0].prose.trim(), "Only this.");
-        assert!(lone[0].cite.is_some());
-    }
-
-    /// Prose goes with the hunk fence after it, the fence text is dropped,
-    /// other fences stay in the prose, a fence that finds nothing puts its
-    /// note at the top with why, and prose after the last fence goes at the
-    /// top too.
-    #[test]
-    fn a_walk_threads_its_prose_onto_its_hunks() {
+    fn a_walk_threads_the_prose_after_each_fence_onto_its_hunk() {
         let text = "\
 ---
 title: walk
 ---
-Intro.
+Opening.
+
+Second opening paragraph.
 
 ```hunk src/guard.ts @@ -40,2 +41,3 @@
 ```
 
-About the guard:
+About hunk 1:
 
 ```rust
 let x = 1;
@@ -674,14 +641,13 @@ let x = 1;
 ```hunk src/guard.ts @@ -10,3 +10,4 @@
 match: isLocal()
 ```
+About the guard.
 ```hunk README.md
 ```
-Missing one.
-
 ```hunk gone.rs @@ -1 +1 @@
 ```
 
-Closing words.
+Missing one.
 ";
         let walk = CodeWalk::resolve(&source(text), &GitPatch::parse(PATCH));
         let shown: Vec<_> = walk
@@ -692,22 +658,41 @@ Closing words.
         assert_eq!(
             shown,
             [
-                (hunk(0, 1), None, "Intro."),
+                (None, None, "Opening.\n\nSecond opening paragraph."),
                 (
-                    hunk(0, 0),
+                    hunk(0, 1),
                     None,
-                    "About the guard:\n\n```rust\nlet x = 1;\n```"
+                    "About hunk 1:\n\n```rust\nlet x = 1;\n```"
                 ),
+                (hunk(0, 0), None, "About the guard."),
                 (
                     None,
                     Some("hunk not found: gone.rs @@ -1 +1 @@"),
                     "Missing one."
                 ),
-                (None, None, "Closing words."),
             ]
         );
         let top: Vec<_> = walk.top().map(|n| n.prose.as_str()).collect();
-        assert_eq!(top, ["Missing one.", "Closing words."]);
+        assert_eq!(
+            top,
+            ["Opening.\n\nSecond opening paragraph.", "Missing one."]
+        );
         assert!(walk.notes.iter().all(|n| !n.prose.contains("match:")));
+    }
+
+    /// A walk with no fences is all opening; one ending in an unclosed fence
+    /// still cites its hunk.
+    #[test]
+    fn a_walk_without_fences_is_its_opening() {
+        let steps = walk_steps("Just prose.\n");
+        assert_eq!(steps.len(), 1);
+        assert!(steps[0].cite.is_none());
+        let unclosed = walk_steps("Open.\n```hunk a.rs\nmatch: x\n");
+        assert_eq!(unclosed.len(), 2);
+        assert_eq!(
+            unclosed[1].cite.as_ref().map(|c| c.path.as_str()),
+            Some("a.rs")
+        );
+        assert_eq!(unclosed[1].prose, "");
     }
 }

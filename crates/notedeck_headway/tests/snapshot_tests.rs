@@ -5006,30 +5006,30 @@ Nothing here was verified on a phone.
 ```
 ";
 
-/// The queue card's code walk: an intro, a note on `src/queue.rs` cited by a
-/// header a rebase moved (found again by its `match:`), one on the lone
-/// `src/keys.rs` hunk, one citing a file the diff hasn't got, and closing
-/// words.
+/// The queue card's code walk, each note after its fence: an opening, a note
+/// on `src/queue.rs` cited by a header a rebase moved (found again by its
+/// `match:`), one on the lone `src/keys.rs` hunk, and one under a fence citing
+/// a file the diff hasn't got.
 const QUEUE_WALK_SOURCE: &str = "\
 Start with the queue.
-
-The step stops at the last card.
 
 ```hunk src/queue.rs @@ -1,3 +1,15 @@
 match: self.index = (self.index + 1)
 ```
 
-Keys come next.
+The step stops at the last card.
 
 ```hunk src/keys.rs
 ```
 
-A file that was dropped.
+Keys come next.
+
+That is the whole change.
 
 ```hunk src/gone.rs @@ -1 +1 @@
 ```
 
-That is the whole change.
+A file that was dropped.
 ";
 
 /// Record [`QUEUE_EXPLAINER_SOURCE`] and [`QUEUE_WALK_SOURCE`] on the queue
@@ -5072,11 +5072,11 @@ fn add_queue_sources(harness: &mut Harness<'static, HeadwayTestState>) {
     );
 }
 
-/// A record's code walk threads into its diff: each note sits just above
-/// the hunk it introduces (the queue.rs one found by its `match:` though its
-/// header is stale), prose before the first fence and after the last sits at
-/// the top, and a fence citing a hunk the diff hasn't got puts its note
-/// there too, saying so. The fences' own text never shows. The Explainer tab
+/// A record's code walk threads into its diff: the prose after each fence
+/// sits just above the hunk the fence cites (the queue.rs one found by its
+/// `match:` though its header is stale), the opening before the first fence
+/// sits at the top, and a fence citing a hunk the diff hasn't got puts its
+/// note there too, saying so. The fences' own text never shows. The Explainer tab
 /// renders the explainer source: the front matter's title and facts as a
 /// header, the rest as Markdown.
 #[test]
@@ -5090,7 +5090,6 @@ fn review_sources_thread_the_walk_and_render_the_explainer() {
 
     for top in [
         "Start with the queue.",
-        "That is the whole change.",
         "A file that was dropped.",
         "hunk not found: src/gone.rs @@ -1 +1 @@",
     ] {
@@ -5102,7 +5101,13 @@ fn review_sources_thread_the_walk_and_render_the_explainer() {
     let rect = |harness: &Harness<'static, HeadwayTestState>, label: &str| {
         harness.get_by_label(label).rect()
     };
-    let keys_note = rect(&harness, "Keys come next.");
+    // Both of the keys.rs fence's paragraphs are its note.
+    assert!(
+        harness
+            .query_by_label("That is the whole change.")
+            .is_some()
+    );
+    let keys_note = rect(&harness, "That is the whole change.");
     let keys_header = keys_hunk(&harness).rect();
     assert!(
         keys_note.bottom() <= keys_header.top(),
