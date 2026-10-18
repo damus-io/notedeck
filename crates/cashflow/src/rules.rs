@@ -23,8 +23,8 @@
 //! Every rule condition is optional, matching ignores case, and the rules are
 //! tried in file order with the first match winning, as in `amex.toml`. A
 //! rule's `match` list is *any of* its patterns while everything else is
-//! *all of*, so a rule becomes one ledgerdb [`Rule`] per pattern, in pattern
-//! order, which keeps first-match-wins exactly.
+//! *all of*, so a rule becomes one ledgerdb [`Rule`](ledgerdb::Rule) per
+//! pattern, in pattern order, which keeps first-match-wins exactly.
 //!
 //! `amex.toml`'s top-level `card` and `currency` are the Amex importer's
 //! settings, not edits: they are accepted and ignored here. Its `unknown`
@@ -32,14 +32,23 @@
 //! added to [`Edits::defaults`]. Any other key is an error, so a typo fails
 //! loudly.
 //!
-//! This file is the local, one-off way in. Rules synced through the vault are
-//! headway:cashflow/wrestle-depart-cash, and build on the same [`Rule`]s.
+//! A file's rules are read as [`FileRule`]s, each of which is the body of a
+//! vault rule ([`FileRule::note`]). That is how `cashflow rule import` moves a
+//! file into the vault, and why a file and the vault holding the same rules
+//! derive the same ledger: both compile through [`RuleNote::push_rules`].
+//!
+//! This file is the local, one-off way in, and `--rules` still reads one for
+//! testing; the rules every machine shares live in the vault
+//! ([`crate::vault_rules`]).
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use ledgerdb::{Cond, Edits, Field, Rule};
+use ledgerdb::Edits;
 use serde::Deserialize;
+
+use crate::vault_rules::{AmountCond, Compiled, MetaNeedle, RuleNote};
 
 /// The counter-leg accounts an importer posts to when it does not know the
 /// category, used when a rules file names none. `income:zap` and
@@ -77,25 +86,28 @@ pub enum RulesError {
 /// The file as written.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RulesFile {
-    defaults: Option<Vec<String>>,
-    transfers: Option<String>,
-    /// `amex.toml`'s unmatched-merchant account.
-    unknown: Option<String>,
+pub struct RulesFile {
+    /// The counter-leg accounts, replacing [`DEFAULT_COUNTER_ACCOUNTS`].
+    pub defaults: Option<Vec<String>>,
+    /// Where linked transfers net out.
+    pub transfers: Option<String>,
+    /// `amex.toml`'s unmatched-merchant account, added to the defaults.
+    pub unknown: Option<String>,
     /// `amex.toml`'s card account: the Amex importer's, ignored here.
     #[allow(dead_code)]
     card: Option<String>,
     /// `amex.toml`'s commodity: the Amex importer's, ignored here.
     #[allow(dead_code)]
     currency: Option<String>,
+    /// The `[[rule]]`s, in file order.
     #[serde(default, rename = "rule")]
-    rules: Vec<RuleEntry>,
+    pub rules: Vec<FileRule>,
 }
 
 /// One `[[rule]]`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RuleEntry {
+pub struct FileRule {
     account: String,
     /// Payee substrings, any one of which matches.
     #[serde(default, rename = "match")]
@@ -123,39 +135,103 @@ fn i64_max() -> i64 {
     i64::MAX
 }
 
+impl FileRule {
+    /// The rule as a vault rule's body at `rank`, borrowing from this one.
+    pub fn note<'a>(&'a self, rank: &'a str) -> RuleNote<'a> {
+        RuleNote {
+            patterns: self
+                .patterns
+                .iter()
+                .map(|p| Cow::Borrowed(p.as_str()))
+                .collect(),
+            meta: self
+                .meta
+                .iter()
+                .map(|(key, needle)| MetaNeedle {
+                    key,
+                    needle: Cow::Borrowed(needle),
+                })
+                .collect(),
+            amount: self.amount.as_ref().map(|range| AmountCond {
+                min: range.min,
+                max: range.max,
+                commodity: range.commodity.as_deref(),
+            }),
+            source: self.source.as_deref(),
+            layer: self.layer.as_deref(),
+            ..RuleNote::new(&self.account, rank)
+        }
+    }
+}
+
+impl RulesFile {
+    /// The counter-leg defaults and transfers account the file asks for:
+    /// [`default_edits`] with `defaults`, `unknown` and `transfers` applied,
+    /// and no rules.
+    pub fn base_edits(&self) -> Edits {
+        let mut edits = default_edits();
+        if let Some(defaults) = &self.defaults {
+            edits.defaults = defaults.clone();
+        }
+        if let Some(unknown) = &self.unknown
+            && !edits.defaults.contains(unknown)
+        {
+            edits.defaults.push(unknown.clone());
+        }
+        if let Some(transfers) = &self.transfers {
+            edits.transfers = transfers.clone();
+        }
+        edits
+    }
+}
+
 /// Read the rules file at `path` into [`Edits`] with no overrides, splits or
 /// links.
 pub fn load(path: &Path) -> Result<Edits, RulesError> {
-    let text = std::fs::read_to_string(path).map_err(|source| RulesError::Read {
-        path: path.to_owned(),
-        source,
-    })?;
-    parse(&text, path)
+    parse(&read_text(path)?, path)
 }
 
-/// [`load`] from text already read; `path` only names it in errors.
-pub fn parse(text: &str, path: &Path) -> Result<Edits, RulesError> {
+/// Read the rules file at `path` as written, its rules checked.
+pub fn read(path: &Path) -> Result<RulesFile, RulesError> {
+    parse_file(&read_text(path)?, path)
+}
+
+fn read_text(path: &Path) -> Result<String, RulesError> {
+    std::fs::read_to_string(path).map_err(|source| RulesError::Read {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+/// [`read`] from text already read; `path` only names it in errors.
+pub fn parse_file(text: &str, path: &Path) -> Result<RulesFile, RulesError> {
     let file: RulesFile = toml::from_str(text).map_err(|e| RulesError::Parse {
         path: path.to_owned(),
         message: e.message().to_owned(),
     })?;
+    for (index, rule) in file.rules.iter().enumerate() {
+        if let Some(range) = &rule.amount
+            && (range.min < 0 || range.min > range.max)
+        {
+            return Err(RulesError::BadRange {
+                path: path.to_owned(),
+                index: index + 1,
+                account: rule.account.clone(),
+            });
+        }
+    }
+    Ok(file)
+}
 
-    let mut edits = default_edits();
-    if let Some(defaults) = file.defaults {
-        edits.defaults = defaults;
-    }
-    if let Some(unknown) = file.unknown
-        && !edits.defaults.contains(&unknown)
-    {
-        edits.defaults.push(unknown);
-    }
-    if let Some(transfers) = file.transfers {
-        edits.transfers = transfers;
-    }
-    for (index, entry) in file.rules.into_iter().enumerate() {
-        push_rule(&mut edits.rules, entry, index + 1, path)?;
-    }
-    Ok(edits)
+/// [`load`] from text already read; `path` only names it in errors.
+pub fn parse(text: &str, path: &Path) -> Result<Edits, RulesError> {
+    let file = parse_file(text, path)?;
+    let notes: Vec<RuleNote> = file.rules.iter().map(|rule| rule.note("")).collect();
+    let mut compiled = Compiled::of(&notes);
+    let base = file.base_edits();
+    compiled.edits.defaults = base.defaults;
+    compiled.edits.transfers = base.transfers;
+    Ok(compiled.edits)
 }
 
 /// The edits with no rules file: the default counter accounts and nothing
@@ -170,65 +246,11 @@ pub fn default_edits() -> Edits {
     }
 }
 
-/// Append `entry` as one [`Rule`] per `match` pattern, or one rule when it
-/// has none.
-fn push_rule(
-    rules: &mut Vec<Rule>,
-    entry: RuleEntry,
-    index: usize,
-    path: &Path,
-) -> Result<(), RulesError> {
-    let mut shared = Vec::new();
-    for (key, needle) in entry.meta {
-        shared.push(Cond::Contains {
-            field: Field::Meta(key),
-            needle,
-        });
-    }
-    if let Some(range) = entry.amount {
-        if range.min < 0 || range.min > range.max {
-            return Err(RulesError::BadRange {
-                path: path.to_owned(),
-                index,
-                account: entry.account,
-            });
-        }
-        shared.push(Cond::Amount {
-            commodity: range.commodity,
-            min: range.min,
-            max: range.max,
-        });
-    }
-    if let Some(source) = entry.source {
-        shared.push(Cond::Source(source));
-    }
-
-    let rule = |conditions| Rule {
-        account: entry.account.clone(),
-        conditions,
-        layer: entry.layer.clone(),
-    };
-    if entry.patterns.is_empty() {
-        rules.push(rule(shared));
-        return Ok(());
-    }
-    for needle in &entry.patterns {
-        // The pattern goes first: ledgerdb indexes a rule by its first
-        // `Contains`, so a payee pattern is what narrows the candidates.
-        let mut conditions = Vec::with_capacity(shared.len() + 1);
-        conditions.push(Cond::Contains {
-            field: Field::Payee,
-            needle: needle.clone(),
-        });
-        conditions.extend(shared.iter().cloned());
-        rules.push(rule(conditions));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use ledgerdb::{Cond, Field};
 
     fn parse_ok(text: &str) -> Edits {
         parse(text, Path::new("rules.toml")).unwrap()

@@ -43,7 +43,9 @@
 //! ([`nostrdb_net::private_note::next_stamp`], the one stamp rule notedeck's
 //! private notes share), so a quick re-save still supersedes.
 
-use nostrdb::{Filter, Ndb, Note, NoteBuilder, Tags, Transaction};
+use std::borrow::Cow;
+
+use nostrdb::{Filter, Ndb, NdbStrVariant, Note, NoteBuilder, Tags, Transaction};
 use nostrdb_net::private_note::{Slot, WriteError};
 use nostrdb_net::sns::{self, SnsKeys};
 use nostrdb_net::{FullKeypair, Pubkey, query_replaceable, query_replaceable_filtered};
@@ -106,6 +108,19 @@ impl<'b> TagWriter<'b> {
         self.note = note;
         self
     }
+
+    /// Add the tag `[name, values...]` whose values may be 64 hex
+    /// characters, such as a rule's needle matching a pubkey. nostrdb stores
+    /// such a value as a 32-byte id, so read these back with [`tag_text`],
+    /// never `get_str`.
+    pub fn text_tag(mut self, name: &'static str, values: &[&str]) -> Self {
+        let mut note = self.note.start_tag().tag_str(name);
+        for value in values {
+            note = note.tag_str(value);
+        }
+        self.note = note;
+        self
+    }
 }
 
 /// The string value of the first `[name, value, ...]` tag in `tags`, borrowed
@@ -114,6 +129,17 @@ pub fn tag_value<'a>(tags: &Tags<'a>, name: &str) -> Option<&'a str> {
     tags.iter()
         .find(|tag| tag.count() >= 2 && tag.get_str(0) == Some(name))
         .and_then(|tag| tag.get_str(1))
+}
+
+/// Element `index` of `tag` as text, whether nostrdb kept it as a string or
+/// stored it as a 32-byte id because it was 64 hex characters: the reader for
+/// values written with [`TagWriter::text_tag`]. An id comes back as lowercase
+/// hex, the one case that allocates.
+pub fn tag_text<'a>(tag: &nostrdb::Tag<'a>, index: u16) -> Option<Cow<'a, str>> {
+    match tag.get(index)?.variant() {
+        NdbStrVariant::Str(text) => Some(Cow::Borrowed(text)),
+        NdbStrVariant::Id(id) => Some(Cow::Owned(hex::encode(id))),
+    }
 }
 
 /// Whether nostrdb would store `value` as a 32-byte id: 64 hex characters.

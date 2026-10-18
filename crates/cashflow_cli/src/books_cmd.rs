@@ -1,27 +1,43 @@
 //! The commands that read the categorized books: `export` and `report`.
 //!
-//! Each loads [`Books`] once (the journal, derived with `--rules`, indexed in
-//! `--in`'s commodity) and prints from it. What didn't load or apply goes to
-//! stderr, so stdout stays clean for a pipe.
+//! Each loads [`Books`] once (the journal, derived with the vault's rules or
+//! `--rules`, indexed in `--in`'s commodity) and prints from it. What didn't
+//! load or apply goes to stderr, so stdout stays clean for a pipe.
 
 use std::io::Write;
 
 use cashflow::journal;
+use cashflow::vault_rules::VaultRules;
 use cashflow::{Books, CashflowDir, rules};
 use ledgerdb::{
-    AccountId, Amount, Commodities, CommodityId, Date, DateRange, Filter, Journal, Unconverted,
-    WriteOptions,
+    AccountId, Amount, Commodities, CommodityId, Date, DateRange, Edits, Filter, Journal,
+    Unconverted, WriteOptions,
 };
 
-use crate::args::{BooksArgs, Range, Report};
+use crate::args::{BooksArgs, Range, Report, Run};
+use crate::vault_cmd::Session;
+
+/// The edits the books derive with: `--rules`' file, else the vault's
+/// rules, else (no stored key) none.
+async fn edits(dir: &CashflowDir, run: &Run, args: &BooksArgs) -> Result<Edits, String> {
+    if let Some(path) = &args.rules {
+        return rules::load(path).map_err(|e| e.to_string());
+    }
+    let Some(session) = Session::open_if_logged_in(dir, run).await? else {
+        eprintln!(
+            "cashflow: no signing key, so no vault rules: categorizing as imported (run `cashflow login`, or pass --rules)"
+        );
+        return Ok(rules::default_edits());
+    };
+    let txn = session.txn()?;
+    let rules = VaultRules::load(&session.ndb, &txn, session.vault.author());
+    Ok(rules.compile().edits)
+}
 
 /// Load the books `args` names, reporting on stderr what didn't load or
 /// apply.
-fn load(dir: &CashflowDir, args: &BooksArgs) -> Result<Books, String> {
-    let edits = match &args.rules {
-        Some(path) => rules::load(path).map_err(|e| e.to_string())?,
-        None => rules::default_edits(),
-    };
+async fn load(dir: &CashflowDir, run: &Run, args: &BooksArgs) -> Result<Books, String> {
+    let edits = edits(dir, run, args).await?;
     let books = Books::load(
         &journal::store(dir),
         args.filter.clone(),
@@ -54,8 +70,13 @@ fn load(dir: &CashflowDir, args: &BooksArgs) -> Result<Books, String> {
 }
 
 /// `cashflow export`: the derived ledger as canonical ledger-cli text.
-pub fn export(dir: &CashflowDir, args: &BooksArgs, range: Range) -> Result<(), String> {
-    let books = load(dir, args)?;
+pub async fn export(
+    dir: &CashflowDir,
+    run: &Run,
+    args: &BooksArgs,
+    range: Range,
+) -> Result<(), String> {
+    let books = load(dir, run, args).await?;
     let journal = books.ledger().journal();
     let mut out = String::new();
     let written = if range == Range::default() {
@@ -98,8 +119,13 @@ fn date_range(range: Range) -> DateRange {
 }
 
 /// `cashflow report ...`.
-pub fn report(dir: &CashflowDir, args: &BooksArgs, report: &Report) -> Result<(), String> {
-    let books = load(dir, args)?;
+pub async fn report(
+    dir: &CashflowDir,
+    run: &Run,
+    args: &BooksArgs,
+    report: &Report,
+) -> Result<(), String> {
+    let books = load(dir, run, args).await?;
     let home = || {
         books.home().ok_or_else(|| {
             format!(

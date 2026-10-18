@@ -77,7 +77,9 @@ impl Cashflow {
     /// A `cashflow` command with `$CASHFLOW_DIR` set to [`dir`](Self::dir),
     /// `$CASHFLOW_RELAY` to [`DEAD_RELAY`], `$XDG_DATA_HOME` to
     /// [`data_home`](Self::data_home), and every other `CASHFLOW_*` variable
-    /// removed, ready for more `.env`s.
+    /// and `$AGENTIUM_SESSION` removed, ready for more `.env`s. Inside an
+    /// agent session the runner's own ref would otherwise be stamped on
+    /// every rule a test adds.
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.bin);
         for (var, _) in std::env::vars_os() {
@@ -85,6 +87,7 @@ impl Cashflow {
                 command.env_remove(&var);
             }
         }
+        command.env_remove("AGENTIUM_SESSION");
         command.env("CASHFLOW_DIR", self.dir());
         command.env("CASHFLOW_RELAY", DEAD_RELAY);
         command.env("XDG_DATA_HOME", self.data_home());

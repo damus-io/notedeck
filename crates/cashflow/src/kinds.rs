@@ -13,8 +13,8 @@
 //! These notes never reach a relay in the clear: each is the rumor inside a
 //! kind-1081 SNS envelope of the account's vault (see [`crate::vault`]).
 //!
-//! Only [`SETTING`] has a writer so far. The rest are allocated here, with the
-//! card that builds each, so two lanes never pick the same number.
+//! [`SETTING`] and [`RULE`] have writers so far. The rest are allocated here,
+//! with the card that builds each, so two lanes never pick the same number.
 
 use std::ops::RangeInclusive;
 

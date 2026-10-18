@@ -74,8 +74,21 @@ impl Session {
         }
     }
 
+    /// [`Self::open`], or `None` when no signing key is stored, for a
+    /// command that works without the vault.
+    pub async fn open_if_logged_in(dir: &CashflowDir, run: &Run) -> Result<Option<Self>, String> {
+        if dir
+            .secret(NSEC_SECRET)
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        Self::open(dir, run).await.map(Some)
+    }
+
     /// A read transaction on the cache.
-    fn txn(&self) -> Result<Transaction, String> {
+    pub fn txn(&self) -> Result<Transaction, String> {
         Transaction::new(&self.ndb).map_err(|e| e.to_string())
     }
 }

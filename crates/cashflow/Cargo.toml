@@ -10,6 +10,7 @@ chrono = { workspace = true }
 dirs = { workspace = true }
 ehttp = { workspace = true }
 flate2 = { workspace = true }
+hex = { workspace = true }
 ledgerdb = { workspace = true }
 lnsocket = "0.5.1"
 nostrdb = { workspace = true }
@@ -22,6 +23,7 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true, features = ["display"] }
+wordid = { workspace = true }
 
 [dev-dependencies]
 ndb_testing = { workspace = true }

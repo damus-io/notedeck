@@ -7,8 +7,9 @@
 //! ([`vault`]), whose records use the kinds in [`kinds`] and whose first
 //! record type is the synced [`settings`]. The journal of segments under the
 //! data dir is [`journal`]; [`import`] reads sources into it (the CSV ones
-//! with [`csv`]), [`rules`] reads
-//! a local rules file into derive edits, [`prices`] fetches daily exchange
+//! with [`csv`]). [`vault_rules`] keeps the categorization rules in the
+//! vault, ordered by [`rank`], and [`rules`] reads a local rules file into
+//! the same derive edits, [`prices`] fetches daily exchange
 //! rates into it, and [`books`] loads, derives and indexes it for queries.
 //! [`transfers`] finds the moves between the owner's own accounts that two
 //! sources each recorded. The game derive lands here in a later card; the
@@ -24,10 +25,12 @@ pub mod import;
 pub mod journal;
 pub mod kinds;
 pub mod prices;
+pub mod rank;
 pub mod rules;
 pub mod settings;
 pub mod transfers;
 pub mod vault;
+pub mod vault_rules;
 
 #[cfg(test)]
 mod test_util;

@@ -19,7 +19,7 @@ macro_rules! books_options {
             $($extra,)*
             ("--layer <name>", "Only segments in this layer; repeat for more"),
             ("--except <name>", "Every layer but this one; repeat for more"),
-            ("--rules <toml>", "Categorize with this local rules file"),
+            ("--rules <toml>", "Categorize with this file, not the vault's rules"),
         ]
     };
 }
@@ -344,8 +344,8 @@ replaces it. A source that fails is reported and the others still run.",
         ],
         details: concat!(
             "\
-Load the journal, categorize it with --rules (none: as imported), and print
-it to stdout in ledgerdb's canonical ledger-cli form, readable by ledger-cli
+Load the journal, categorize it with the vault's rules (`cashflow rule`; with
+no stored key, as imported), or with --rules instead, and print it to stdout in ledgerdb's canonical ledger-cli form, readable by ledger-cli
 and by `cashflow import ledger`.
 
 With --begin or --end only the transactions in the range are printed
@@ -393,7 +393,8 @@ the text (ignoring case).
 defaults to expenses) by their total over the range, with each one's share.
 
 Dates are YYYY-MM-DD; --begin is inclusive, --end exclusive. --layer,
---except and --rules choose the books as for `export`.",
+--except and --rules choose the books as for `export`: the vault's rules
+unless --rules names a file.",
         options: books_options![
             (
                 "--in <commodity>",
@@ -411,6 +412,74 @@ Dates are YYYY-MM-DD; --begin is inclusive, --end exclusive. --layer,
             "cashflow report bal assets --native",
             "cashflow report reg expenses:food --begin 2025-01-01",
             "cashflow report top expenses --except btc --limit 5",
+        ],
+    },
+    CommandHelp {
+        name: "rule",
+        group: VAULT,
+        summary: "List, add, move, remove or test the categorization rules",
+        usage: &[
+            "rule ls [--by <agentium-ref>] [--json]",
+            "rule add <account> [--match <text>]... [--meta <key=value>]... [...]",
+            "rule add ... [--amount <min..max>] [--source <s>] [--layer <l>]",
+            "rule mv <rule> --first|--last|--before <rule>|--after <rule>",
+            "rule rm <rule> [--dry-run]",
+            "rule test <record-id> [--json]",
+            "rule import <file.toml> [--dry-run]",
+        ],
+        details: concat!(
+            "\
+The vault's rules decide where each transaction's counter leg goes (its
+posting to a default account such as expenses:unknown). They are tried in
+order and the first match wins; `export` and `report` use them unless given
+--rules. Each rule is its own vault note, so machines editing different rules
+never collide, and a rule is named by its word-id or a unique prefix of it.
+
+`ls` lists the rules in order, each with how many transactions it decides now
+and the agentium session that added it; --by keeps one session's.
+
+`add` puts a rule last, or where --first/--before/--after say. Its conditions:
+--match is a payee substring (repeat: any one), --meta a metadata substring
+(repeat: all), --amount the counter leg's size in smallest units, sign
+ignored (`100..2000`, `5000..`, `1000..1000msat`), --source and --layer the
+segment's. `mv` reorders one rule, `rm` deletes it.
+
+`add`, `mv`, `rm` and `import` print how many transactions move, from which
+account to which, a sample of them, and how many they take from another rule.
+--dry-run prints that and writes nothing.
+
+`test` says which rule decides one transaction, by its `; id:`, and why.
+
+`import` appends a rules file's rules, in file order, skipping any the vault
+already has, so it can be re-run. Its defaults/unknown/transfers are not
+stored: if they differ from the built-in ones it says so.
+
+The session that added a rule is $AGENTIUM_SESSION, when it is an
+agentium:<word-id> ref.
+
+",
+            rules_details!()
+        ),
+        options: &[
+            ("--json", "Machine-readable output"),
+            ("--dry-run", "Show what would move; write nothing"),
+            ("--by <agentium-ref>", "Only rules this session added (ls)"),
+            ("--match <text>", "Payee contains this; repeat for any of (add)"),
+            ("--meta <key=value>", "Metadata contains this; repeat (add)"),
+            ("--amount <min..max>", "Counter leg size, smallest units (add)"),
+            ("--source <name>", "Segment source (add)"),
+            ("--layer <name>", "Segment layer (add)"),
+            ("--first", "Try it before every rule (add, mv)"),
+            ("--last", "Try it after every rule (add, mv)"),
+            ("--before <rule>", "Try it just before this rule (add, mv)"),
+            ("--after <rule>", "Try it just after this rule (add, mv)"),
+        ],
+        examples: &[
+            "cashflow rule import ~/amex.toml --dry-run",
+            "cashflow rule add expenses:food:coffee --match espresso --dry-run",
+            "cashflow rule mv oak-flat-lamp --before hill-ripe-sock",
+            "cashflow rule test amex:2024-01-02-0001",
+            "cashflow rule ls --json",
         ],
     },
     CommandHelp {

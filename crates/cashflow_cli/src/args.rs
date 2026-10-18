@@ -69,6 +69,85 @@ pub enum Command {
     Export { books: BooksArgs, range: Range },
     /// `cashflow report bal|reg|top`.
     Report { books: BooksArgs, report: Report },
+    /// `cashflow rule ...`.
+    Rule(RuleCommand),
+}
+
+/// One `cashflow rule` subcommand.
+#[derive(Debug, PartialEq)]
+pub enum RuleCommand {
+    /// `rule ls [--by <ref>] [--json]`.
+    Ls { by: Option<String>, json: bool },
+    /// `rule add <account> [conditions] [placement] [--dry-run] [--json]`.
+    Add {
+        rule: NewRule,
+        place: Place,
+        write: Write,
+    },
+    /// `rule rm <rule> [--dry-run] [--json]`.
+    Rm { rule: String, write: Write },
+    /// `rule mv <rule> <placement> [--dry-run] [--json]`.
+    Mv {
+        rule: String,
+        place: Place,
+        write: Write,
+    },
+    /// `rule test <record-id> [--json]`.
+    Test { record_id: String, json: bool },
+    /// `rule import <file.toml> [--dry-run] [--json]`.
+    Import { path: PathBuf, write: Write },
+}
+
+/// How a rule command that writes runs: `--dry-run` and `--json`.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct Write {
+    /// `--dry-run`: report what would move, write nothing.
+    pub dry_run: bool,
+    pub json: bool,
+}
+
+/// `rule add`'s rule, as given.
+#[derive(Debug, PartialEq, Default)]
+pub struct NewRule {
+    pub account: String,
+    /// `--match <text>`, repeatable: payee substrings, any one.
+    pub patterns: Vec<String>,
+    /// `--meta <key=value>`, repeatable: metadata substrings, every one.
+    pub meta: Vec<MetaArg>,
+    /// `--amount <min..max>`.
+    pub amount: Option<AmountArg>,
+    /// `--source <name>`.
+    pub source: Option<String>,
+    /// `--layer <name>`.
+    pub layer: Option<String>,
+}
+
+/// One `--meta key=value`.
+#[derive(Debug, PartialEq)]
+pub struct MetaArg {
+    pub key: String,
+    pub needle: String,
+}
+
+/// `--amount <min>..<max>[<commodity>]`, either end open.
+#[derive(Debug, PartialEq)]
+pub struct AmountArg {
+    pub min: i64,
+    pub max: i64,
+    pub commodity: Option<String>,
+}
+
+/// Where `rule add` or `rule mv` puts the rule.
+#[derive(Debug, PartialEq)]
+pub enum Place {
+    /// `--first`.
+    First,
+    /// `--last`, `add`'s default.
+    Last,
+    /// `--before <rule>`.
+    Before(String),
+    /// `--after <rule>`.
+    After(String),
 }
 
 /// `cashflow import`'s arguments.
@@ -314,6 +393,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
             "export",
         )?,
         "report" => report_command(positionals, &flags)?,
+        "rule" => rule_command(positionals, &flags, json)?,
         other => unreachable!("'{other}' has a help entry but no parser arm"),
     };
     Ok(Invocation::Run(Box::new(Run {
@@ -508,6 +588,147 @@ fn report_command(positionals: Vec<String>, flags: &Flags) -> Result<Command, St
         books: books_args(flags)?,
         report,
     })
+}
+
+/// `rule`'s subcommand.
+fn rule_command(positionals: Vec<String>, flags: &Flags, json: bool) -> Result<Command, String> {
+    let usage = "`rule` takes `ls`, `add <account>`, `rm <rule>`, `mv <rule>`, `test <record-id>` or `import <file.toml>` (see `cashflow rule --help`)";
+    let mut positionals = positionals.into_iter();
+    let sub = positionals.next().ok_or(usage)?;
+    let mut operand = || positionals.next().ok_or(usage);
+    let refuse = |names: &[&str]| match flags.first_of(names) {
+        Some(flag) => Err(format!("`rule {sub}` doesn't take {flag}")),
+        None => Ok(()),
+    };
+    const CONDITIONS: &[&str] = &["--match", "--meta", "--amount", "--source", "--layer"];
+    const PLACES: &[&str] = &["--first", "--last", "--before", "--after"];
+    let write = Write {
+        dry_run: flags.has("--dry-run"),
+        json,
+    };
+    let command = match sub.as_str() {
+        "ls" => {
+            refuse(CONDITIONS)?;
+            refuse(PLACES)?;
+            refuse(&["--dry-run"])?;
+            RuleCommand::Ls {
+                by: flags.value("--by").map(str::to_owned),
+                json,
+            }
+        }
+        "add" => {
+            refuse(&["--by"])?;
+            let account = operand()?;
+            RuleCommand::Add {
+                rule: new_rule(account, flags)?,
+                place: place(flags)?.unwrap_or(Place::Last),
+                write,
+            }
+        }
+        "rm" => {
+            refuse(CONDITIONS)?;
+            refuse(PLACES)?;
+            refuse(&["--by"])?;
+            RuleCommand::Rm {
+                rule: operand()?,
+                write,
+            }
+        }
+        "mv" => {
+            refuse(CONDITIONS)?;
+            refuse(&["--by"])?;
+            let rule = operand()?;
+            let place = place(flags)?
+                .ok_or("`rule mv` needs --first, --last, --before <rule> or --after <rule>")?;
+            RuleCommand::Mv { rule, place, write }
+        }
+        "test" => {
+            refuse(CONDITIONS)?;
+            refuse(PLACES)?;
+            refuse(&["--by", "--dry-run"])?;
+            RuleCommand::Test {
+                record_id: operand()?,
+                json,
+            }
+        }
+        "import" => {
+            refuse(CONDITIONS)?;
+            refuse(PLACES)?;
+            refuse(&["--by"])?;
+            RuleCommand::Import {
+                path: PathBuf::from(operand()?),
+                write,
+            }
+        }
+        _ => return Err(usage.to_owned()),
+    };
+    if positionals.next().is_some() {
+        return Err(usage.to_owned());
+    }
+    Ok(Command::Rule(command))
+}
+
+/// `rule add`'s conditions.
+fn new_rule(account: String, flags: &Flags) -> Result<NewRule, String> {
+    let meta = flags
+        .values("--meta")
+        .map(|pair| match pair.split_once('=') {
+            Some((key, needle)) if !key.is_empty() => Ok(MetaArg {
+                key: key.to_owned(),
+                needle: needle.to_owned(),
+            }),
+            _ => Err(format!("--meta wants key=value, got '{pair}'")),
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(NewRule {
+        account,
+        patterns: flags.values("--match").map(str::to_owned).collect(),
+        meta,
+        amount: flags.value("--amount").map(amount_arg).transpose()?,
+        source: flags.value("--source").map(str::to_owned),
+        layer: flags.value("--layer").map(str::to_owned),
+    })
+}
+
+/// `<min>..<max>[<commodity>]`: `100..2000`, `1000..1000msat`, `..500`,
+/// `5000..`.
+fn amount_arg(text: &str) -> Result<AmountArg, String> {
+    let bad = || format!("--amount wants <min>..<max>[<commodity>], like 100..2000, got '{text}'");
+    let (min, rest) = text.split_once("..").ok_or_else(bad)?;
+    let digits = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    let (max, commodity) = rest.split_at(digits);
+    let number = |text: &str, open: i64| match text {
+        "" => Ok(open),
+        text => text.parse().map_err(|_| bad()),
+    };
+    Ok(AmountArg {
+        min: number(min, 0)?,
+        max: number(max, i64::MAX)?,
+        commodity: (!commodity.is_empty()).then(|| commodity.to_owned()),
+    })
+}
+
+/// The one placement flag given, if any.
+fn place(flags: &Flags) -> Result<Option<Place>, String> {
+    let mut given = Vec::new();
+    if flags.has("--first") {
+        given.push(Place::First);
+    }
+    if flags.has("--last") {
+        given.push(Place::Last);
+    }
+    if let Some(rule) = flags.value("--before") {
+        given.push(Place::Before(rule.to_owned()));
+    }
+    if let Some(rule) = flags.value("--after") {
+        given.push(Place::After(rule.to_owned()));
+    }
+    if given.len() > 1 {
+        return Err("give one of --first, --last, --before and --after".to_owned());
+    }
+    Ok(given.pop())
 }
 
 /// `config`'s subcommand, from its positional arguments.
@@ -839,6 +1060,113 @@ mod tests {
         assert!(err_of(&["report", "bal", "--payee", "x"]).contains("doesn't take --payee"));
         assert!(err_of(&["report", "top", "--limit", "many"]).contains("needs a number"));
         assert!(err_of(&["report", "reg", "a", "b"]).contains("at most one"));
+    }
+
+    #[test]
+    fn rule_subcommands() {
+        let write = |dry_run, json| Write { dry_run, json };
+        assert_eq!(
+            run_of(&["rule", "ls", "--by", "agentium:a-b-c", "--json"]).command,
+            Command::Rule(RuleCommand::Ls {
+                by: Some("agentium:a-b-c".to_owned()),
+                json: true
+            })
+        );
+        assert_eq!(
+            run_of(&[
+                "rule",
+                "add",
+                "expenses:food",
+                "--match",
+                "grocer",
+                "--match",
+                "market",
+                "--meta",
+                "raw-city=montreal",
+                "--amount",
+                "100..2000msat",
+                "--source",
+                "amex",
+                "--layer",
+                "cards",
+                "--before",
+                "oak",
+                "--dry-run",
+            ])
+            .command,
+            Command::Rule(RuleCommand::Add {
+                rule: NewRule {
+                    account: "expenses:food".to_owned(),
+                    patterns: vec!["grocer".to_owned(), "market".to_owned()],
+                    meta: vec![MetaArg {
+                        key: "raw-city".to_owned(),
+                        needle: "montreal".to_owned()
+                    }],
+                    amount: Some(AmountArg {
+                        min: 100,
+                        max: 2000,
+                        commodity: Some("msat".to_owned())
+                    }),
+                    source: Some("amex".to_owned()),
+                    layer: Some("cards".to_owned()),
+                },
+                place: Place::Before("oak".to_owned()),
+                write: write(true, false),
+            })
+        );
+        let Command::Rule(RuleCommand::Add { rule, place, .. }) =
+            run_of(&["rule", "add", "a", "--amount", "5000.."]).command
+        else {
+            panic!("not an add");
+        };
+        assert_eq!(place, Place::Last);
+        assert_eq!(
+            rule.amount,
+            Some(AmountArg {
+                min: 5000,
+                max: i64::MAX,
+                commodity: None
+            })
+        );
+        assert_eq!(
+            run_of(&["rule", "mv", "oak", "--first", "--json"]).command,
+            Command::Rule(RuleCommand::Mv {
+                rule: "oak".to_owned(),
+                place: Place::First,
+                write: write(false, true),
+            })
+        );
+        assert_eq!(
+            run_of(&["rule", "rm", "oak"]).command,
+            Command::Rule(RuleCommand::Rm {
+                rule: "oak".to_owned(),
+                write: write(false, false),
+            })
+        );
+        assert_eq!(
+            run_of(&["rule", "test", "amex:1"]).command,
+            Command::Rule(RuleCommand::Test {
+                record_id: "amex:1".to_owned(),
+                json: false
+            })
+        );
+        assert_eq!(
+            run_of(&["rule", "import", "amex.toml", "--dry-run"]).command,
+            Command::Rule(RuleCommand::Import {
+                path: PathBuf::from("amex.toml"),
+                write: write(true, false),
+            })
+        );
+
+        assert!(err_of(&["rule"]).contains("`ls`, `add <account>`"));
+        assert!(err_of(&["rule", "add"]).contains("`ls`, `add <account>`"));
+        assert!(err_of(&["rule", "mv", "oak"]).contains("needs --first"));
+        assert!(err_of(&["rule", "mv", "oak", "--first", "--last"]).contains("one of"));
+        assert!(err_of(&["rule", "ls", "--match", "x"]).contains("doesn't take --match"));
+        assert!(err_of(&["rule", "test", "x", "--dry-run"]).contains("doesn't take --dry-run"));
+        assert!(err_of(&["rule", "add", "a", "--meta", "nokey"]).contains("key=value"));
+        assert!(err_of(&["rule", "add", "a", "--amount", "lots"]).contains("--amount"));
+        assert!(err_of(&["rule", "rm", "a", "b"]).contains("`ls`, `add <account>`"));
     }
 
     #[test]

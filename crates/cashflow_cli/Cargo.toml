@@ -17,6 +17,7 @@ nostrdb = { workspace = true }
 nostrdb_net = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wordid = { workspace = true }
 
 [dev-dependencies]
 bin_testing = { workspace = true }
