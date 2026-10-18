@@ -12,7 +12,7 @@
 //! directory: a test keeps its `TempDir` alive beside it.
 
 use egui::{Event, Key, Modifiers};
-use notedeck::Notedeck;
+use notedeck::{AppAction, Notedeck};
 
 use crate::Chrome;
 
@@ -122,6 +122,19 @@ impl ChromeDriver {
         }
         events.push(event(false));
         self.frame(events);
+    }
+
+    /// One frame that routes `action` through the chrome, as an action an app
+    /// raised mid-render: queued on [`AppContext::app_actions`] and drained
+    /// after the app's pass by the chrome's own routing. An
+    /// [`AppAction::Open`] whose reference doesn't resolve yet is held (see
+    /// [`Chrome::pending_open`]) and retried by the frames after this one, so
+    /// a test runs [`frames_until`](Self::frames_until) for it to land.
+    ///
+    /// [`AppContext::app_actions`]: notedeck::AppContext::app_actions
+    pub fn act(&mut self, action: AppAction) {
+        self.notedeck.app_context().app_actions.push(action);
+        self.frame(Vec::new());
     }
 
     /// Press a bare key.
