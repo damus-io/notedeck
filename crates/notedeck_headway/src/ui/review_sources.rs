@@ -7,16 +7,13 @@
 //! may be the commit's explain git note, when the record has no source of its
 //! own.
 
-use notedeck::ColorTheme;
-use notedeck::media::AnimationMode;
-use notedeck::media::images::ImageType;
 use notedeck::tokens::{RADIUS_MD, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THICK};
+use notedeck::{ColorTheme, NoteContext};
+use notedeck_ui::markdown::{BlockHook, MdBlock, fit_image};
 
 use super::widgets::{text_pill, tinted_pill};
 use crate::explain_palette::Palette;
-use crate::review_figures::{
-    Block, Failure, Figure, FigureBody, FigureView, Figured, Figures, fit,
-};
+use crate::review_figures::{Failure, Figure, FigureBody, FigureView, Figured, Figures};
 use crate::review_walk::{CodeWalk, ExplainerPage, SourceText};
 
 /// What a narrow review pane shows under the record's summary. A wide one has
@@ -199,7 +196,7 @@ fn explainer_page_ui(
         palette: &page.palette,
         figures: &mut page.figures,
     };
-    figured_ui(ui, theme, app_ctx, None, figured, &page.body);
+    page_body_ui(ui, theme, app_ctx, None, figured, &page.body);
 }
 
 /// The walk's notes that thread onto no hunk — its intro, its closing words,
@@ -234,7 +231,7 @@ pub(super) fn walk_top_ui(
                 palette,
                 figures: &mut *figures,
             };
-            figured_ui(ui, theme, app_ctx, None, page, &note.body);
+            page_body_ui(ui, theme, app_ctx, None, page, &note.body);
         });
         let rect = shown.response.rect;
         let edge =
@@ -297,7 +294,7 @@ pub(super) fn walk_note_ui(
     let shown = frame.fill(egui::Color32::TRANSPARENT).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let page = Page { palette, figures };
-        figured_ui(ui, theme, app_ctx, txn, page, &note.body);
+        page_body_ui(ui, theme, app_ctx, txn, page, &note.body);
     });
     let card = shown.response.rect;
     let card = card.with_max_y(card.bottom().max(ui.max_rect().bottom()));
@@ -314,15 +311,15 @@ struct Page<'a> {
     figures: &'a mut Figures,
 }
 
-/// `body`, block by block: its runs of Markdown with refs resolved through
-/// `txn` (or one opened here when the caller holds none; without one refs
-/// draw as plain text), and its figures drawn ([`figure_ui`]).
-fn figured_ui(
+/// `body` drawn with its refs resolved through `txn`, or one opened here
+/// when the caller holds none (without one refs draw as plain text): see
+/// [`figured_ui`].
+fn page_body_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     txn: Option<&nostrdb::Transaction>,
-    mut page: Page<'_>,
+    page: Page<'_>,
     body: &Figured,
 ) {
     let opened = match txn {
@@ -330,21 +327,54 @@ fn figured_ui(
         None => nostrdb::Transaction::new(app_ctx.ndb).ok(),
     };
     let txn = txn.or(opened.as_ref());
-    for block in &body.blocks {
-        match block {
-            Block::Markdown(range) => {
-                let mut note_ctx = app_ctx.note_context();
-                notedeck_ui::markdown::render_parsed_markdown(
-                    &body.md.elements[range.clone()],
-                    None,
-                    &body.md.source,
-                    Some(&mut note_ctx),
-                    txn,
-                    ui,
-                );
-            }
-            Block::Figure(figure) => figure_ui(ui, theme, app_ctx, txn, &mut page, figure),
-        }
+    let mut note_ctx = app_ctx.note_context();
+    figured_ui(ui, theme, Some(&mut note_ctx), txn, page, body);
+}
+
+/// `body` drawn by notedeck_ui's Markdown renderer, its figures by
+/// [`FigureHook`] in their place among the rest.
+fn figured_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    note: Option<&mut NoteContext>,
+    txn: Option<&nostrdb::Transaction>,
+    page: Page<'_>,
+    body: &Figured,
+) {
+    let mut hook = FigureHook { theme, page, body };
+    notedeck_ui::markdown::render_parsed_markdown(
+        &body.md.elements,
+        None,
+        &body.md.source,
+        note,
+        txn,
+        Some(&mut hook),
+        ui,
+    );
+}
+
+/// Claims the elements of `body` that are figures and draws them
+/// ([`figure_ui`]), leaving the rest to the renderer.
+struct FigureHook<'a> {
+    theme: &'a ColorTheme,
+    page: Page<'a>,
+    body: &'a Figured,
+}
+
+impl BlockHook for FigureHook<'_> {
+    fn block_ui(&mut self, ui: &mut egui::Ui, block: MdBlock<'_, '_, '_>) -> bool {
+        let Some(figure) = self.body.figure_at(block.index) else {
+            return false;
+        };
+        figure_ui(
+            ui,
+            self.theme,
+            block.note,
+            block.txn,
+            &mut self.page,
+            figure,
+        );
+        true
     }
 }
 
@@ -354,7 +384,7 @@ fn figured_ui(
 fn figure_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    app_ctx: &mut notedeck::AppContext,
+    note: Option<&mut NoteContext>,
     txn: Option<&nostrdb::Transaction>,
     page: &mut Page<'_>,
     figure: &Figure,
@@ -388,33 +418,13 @@ fn figure_ui(
                         palette: page.palette,
                         figures: &mut *page.figures,
                     };
-                    figured_ui(ui, theme, app_ctx, txn, inner_page, inner);
+                    figured_ui(ui, theme, note, txn, inner_page, inner);
                 });
             }
             FigureBody::Image { alt, src } => {
-                let ctx = ui.ctx().clone();
-                let view = match page
+                let view = page
                     .figures
-                    .image(&ctx, page.palette, figure.index, dark, src)
-                {
-                    Some(view) => view,
-                    None => match app_ctx.img_cache.latest_texture(
-                        app_ctx.media_jobs.sender(),
-                        ui,
-                        src,
-                        ImageType::Content(None),
-                        AnimationMode::NoAnimation,
-                    ) {
-                        Some(texture) => {
-                            let [w, h] = texture.size();
-                            FigureView::Ready {
-                                texture,
-                                size: egui::vec2(w as f32, h as f32),
-                            }
-                        }
-                        None => FigureView::Pending,
-                    },
-                };
+                    .image(ui.ctx(), page.palette, figure.index, dark, src);
                 figure_view_ui(ui, theme, view, available, Some(alt.as_str()), src);
             }
         });
@@ -447,7 +457,7 @@ fn figure_view_ui(
         }
         FigureView::Failed(failure) => placeholder_ui(ui, theme, label, Some(src), &failure),
         FigureView::Ready { texture, size } => {
-            let size = fit(size, available);
+            let size = fit_image(size, available);
             let response = ui.add(egui::Image::new(texture).fit_to_exact_size(size));
             let label = label.unwrap_or("figure");
             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, label));

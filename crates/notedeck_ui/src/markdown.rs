@@ -6,10 +6,12 @@
 use egui::text::LayoutJob;
 use egui::{Color32, FontFamily, FontId, RichText, TextFormat, Ui};
 use md_stream::{
-    parse_inline, CodeBlock, InlineElement, InlineStyle, ListItem, MdElement, ParsedMarkdown,
-    Partial, PartialKind, StreamParser, TableCell,
+    lone_image, parse_inline, split_image_target, CodeBlock, InlineElement, InlineStyle, ListItem,
+    LoneImage, MdElement, ParsedMarkdown, Partial, PartialKind, StreamParser, TableCell,
 };
 use nostrdb::Transaction;
+use notedeck::media::images::ImageType;
+use notedeck::media::AnimationMode;
 use notedeck::NoteContext;
 
 /// Theme for markdown rendering, derived from egui visuals.
@@ -65,7 +67,7 @@ pub fn render_markdown(text: &str, ui: &mut Ui) {
         parser.finalize();
         parser.into_parts()
     };
-    render_parsed_markdown(&elements, None, &source, None, None, ui);
+    render_parsed_markdown(&elements, None, &source, None, None, None, ui);
 }
 
 /// Render `source` as markdown with **interactive** GFM task-list checkboxes.
@@ -95,7 +97,7 @@ fn collect_checkbox_toggles(text: &str, ui: &mut Ui) -> Vec<usize> {
     } = parser.into_parts();
 
     let mut edits = CheckboxEdits::default();
-    render_md_elements(&elements, None, &buffer, Some(&mut edits), None, ui);
+    render_md_elements(&elements, None, &buffer, Some(&mut edits), None, None, ui);
     edits.toggled
 }
 
@@ -153,7 +155,7 @@ pub fn render_markdown_with_refs(
         parser.finalize();
         parser.into_parts()
     };
-    render_parsed_markdown(&elements, None, &source, Some(note), Some(txn), ui);
+    render_parsed_markdown(&elements, None, &source, Some(note), Some(txn), None, ui);
 }
 
 /// Like [`render_markdown_with_refs`], but the GFM task-list checkboxes are
@@ -186,6 +188,7 @@ pub fn render_markdown_with_refs_editable(
         &buffer,
         Some(&mut edits),
         refs.as_mut(),
+        None,
         ui,
     );
     apply_checkbox_toggles(source, &edits.toggled)
@@ -474,12 +477,41 @@ pub fn reference_ui(
     )
 }
 
+/// One top-level element of a render, offered to a [`BlockHook`] before the
+/// renderer draws it.
+pub struct MdBlock<'a, 'n, 'ctx> {
+    /// Its position in the `elements` the render was given.
+    pub index: usize,
+    pub element: &'a MdElement,
+    /// The buffer its spans resolve against.
+    pub source: &'a str,
+    /// The note context the render resolves references with, lent so a hook
+    /// can draw Markdown of its own (a nested body) the same way. `None` when
+    /// the render has none, or no transaction to go with it.
+    pub note: Option<&'n mut NoteContext<'ctx>>,
+    /// The transaction `note`'s reads share; `Some` exactly when `note` is.
+    pub txn: Option<&'n Transaction>,
+}
+
+/// A caller's say over the top-level elements of a
+/// [`render_parsed_markdown`]: it can claim one (a fenced block by its
+/// language, say) and draw it itself, and the renderer draws every element it
+/// leaves alone. Elements nested in a quote or a list, and a streaming
+/// partial tail, are never offered.
+pub trait BlockHook {
+    /// Draw `block` and return `true`, or return `false`, drawing nothing, to
+    /// leave it to the renderer.
+    fn block_ui(&mut self, ui: &mut Ui, block: MdBlock<'_, '_, '_>) -> bool;
+}
+
 /// Render already-parsed markdown `elements` plus any streaming `partial` tail.
 ///
 /// The shared read-only entry point behind [`render_markdown`] and
 /// [`render_markdown_with_refs`], and the one Dave feeds its streaming
 /// [`StreamParser`] output. Pass `Some(ctx)` to resolve inline `scheme:token`
-/// references (see [`render_inlines`]); `None` renders references as plain text.
+/// references (see [`render_inlines`]) and draw lone https images; `None`
+/// renders references as plain text and images as links. `hook`, when given,
+/// is offered each top-level element first (see [`BlockHook`]).
 #[profiling::function]
 pub fn render_parsed_markdown(
     elements: &[MdElement],
@@ -487,12 +519,13 @@ pub fn render_parsed_markdown(
     buffer: &str,
     note: Option<&mut NoteContext>,
     txn: Option<&Transaction>,
+    hook: Option<&mut dyn BlockHook>,
     ui: &mut Ui,
 ) {
     // A reference needs both a context (to resolve + draw) and the caller's
     // transaction (to read the resolved note); bundle them so they thread as one.
     let mut refs = bundle_refs(note, txn);
-    render_md_elements(elements, partial, buffer, None, refs.as_mut(), ui);
+    render_md_elements(elements, partial, buffer, None, refs.as_mut(), hook, ui);
 }
 
 /// Bundle a [`NoteContext`] with the transaction reference reads run through into
@@ -518,12 +551,27 @@ fn render_md_elements(
     buffer: &str,
     mut edits: Option<&mut CheckboxEdits>,
     mut ctx: Option<&mut RefCtx>,
+    mut hook: Option<&mut dyn BlockHook>,
     ui: &mut Ui,
 ) {
     let theme = MdTheme::from_visuals(ui.visuals());
 
     ui.vertical(|ui| {
-        for element in elements {
+        for (index, element) in elements.iter().enumerate() {
+            if let Some(hook) = hook.as_deref_mut() {
+                let refs = ctx.as_deref_mut();
+                let txn = refs.as_ref().map(|r| r.txn);
+                let block = MdBlock {
+                    index,
+                    element,
+                    source: buffer,
+                    note: refs.map(|r| &mut *r.note),
+                    txn,
+                };
+                if hook.block_ui(ui, block) {
+                    continue;
+                }
+            }
             render_element(
                 element,
                 &theme,
@@ -560,6 +608,10 @@ fn render_element(
         }
 
         MdElement::Paragraph(inlines) => {
+            if lone_image_ui(inlines, buffer, ctx.as_deref_mut(), ui) {
+                ui.add_space(notedeck::tokens::SPACING_SM);
+                return;
+            }
             ui.horizontal_wrapped(|ui| {
                 render_inlines(inlines, theme, buffer, ctx.as_deref_mut(), ui);
             });
@@ -622,6 +674,77 @@ fn render_element(
             ui.label(span.resolve(buffer));
         }
     }
+}
+
+/// Draw `inlines` as the image it holds, when it holds one alone
+/// ([`lone_image`]) at an https source the media cache has loaded: fitted to
+/// the column ([`fit_image`]), never upscaled, its title a small muted caption
+/// under it, and a click opening it. Returns `false`, drawing nothing, for any
+/// other paragraph, any other source, an image still loading, or a render
+/// without a note context, so the paragraph draws as ordinary text, the image
+/// as its link.
+///
+/// Only https: this draws note content nobody vetted, so a source that would
+/// have the app read a local file (a path, `file:`) never loads here. A
+/// caller that trusts its Markdown draws those itself, through a
+/// [`BlockHook`].
+fn lone_image_ui(
+    inlines: &[InlineElement],
+    buffer: &str,
+    ctx: Option<&mut RefCtx>,
+    ui: &mut Ui,
+) -> bool {
+    let Some(ctx) = ctx else {
+        return false;
+    };
+    let Some(LoneImage { alt, target }) = lone_image(inlines, buffer) else {
+        return false;
+    };
+    if !target.src.starts_with("https://") {
+        return false;
+    }
+    let note = &mut *ctx.note;
+    let Some(texture) = note.img_cache.latest_texture(
+        note.jobs,
+        ui,
+        target.src,
+        ImageType::Content(None),
+        AnimationMode::NoAnimation,
+    ) else {
+        return false;
+    };
+    let [w, h] = texture.size();
+    let size = fit_image(egui::vec2(w as f32, h as f32), ui.available_width());
+    let response = ui
+        .add(
+            egui::Image::new(texture)
+                .fit_to_exact_size(size)
+                .sense(egui::Sense::click()),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let label = if alt.is_empty() { "image" } else { alt };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, label));
+    if response.clicked() {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(target.src));
+    }
+    if let Some(title) = target.title.filter(|t| !t.is_empty()) {
+        ui.label(
+            RichText::new(title)
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    }
+    true
+}
+
+/// The size an image of intrinsic `size` is drawn at in `available` width:
+/// never wider than either, never upscaled, its aspect ratio kept.
+pub fn fit_image(size: egui::Vec2, available: f32) -> egui::Vec2 {
+    if size.x <= 0.0 || size.y <= 0.0 {
+        return egui::Vec2::ZERO;
+    }
+    let w = size.x.min(available.max(1.0));
+    egui::vec2(w, size.y * w / size.x)
 }
 
 /// Flush a LayoutJob as a wrapped label if it has any content.
@@ -840,10 +963,10 @@ fn render_inlines(
 
             InlineElement::Image { alt, url } => {
                 flush_job(&mut job, ui);
-                ui.hyperlink_to(
-                    format!("[Image: {}]", alt.resolve(buffer)),
-                    url.resolve(buffer),
-                );
+                // The parser leaves a `"title"` in the target; link to the
+                // source alone.
+                let target = split_image_target(url.resolve(buffer));
+                ui.hyperlink_to(format!("[Image: {}]", alt.resolve(buffer)), target.src);
             }
 
             InlineElement::LineBreak => {
@@ -1489,7 +1612,7 @@ mod tests {
         } = parser.into_parts();
 
         let mut edits = CheckboxEdits::default();
-        render_md_elements(&elements, None, &buffer, Some(&mut edits), None, ui);
+        render_md_elements(&elements, None, &buffer, Some(&mut edits), None, None, ui);
         apply_checkbox_toggles(source, &edits.toggled)
     }
 
@@ -1785,6 +1908,77 @@ mod tests {
         assert!(toks
             .iter()
             .any(|t| t.token == SandToken::String && t.text == "\"notedeck\""));
+    }
+
+    /// Claims the `figure` fences it's offered, drawing a label naming each
+    /// one's element index in its place.
+    struct ClaimFigures;
+
+    impl BlockHook for ClaimFigures {
+        fn block_ui(&mut self, ui: &mut Ui, block: MdBlock<'_, '_, '_>) -> bool {
+            let MdElement::CodeBlock(code) = block.element else {
+                return false;
+            };
+            if code.language.map(|l| l.resolve(block.source)) != Some("figure") {
+                return false;
+            }
+            ui.label(format!("figure at {}", block.index));
+            true
+        }
+    }
+
+    /// A hook draws the fence it claims in its place; the renderer draws the
+    /// fence it leaves and everything around them.
+    #[test]
+    fn a_block_hook_draws_the_fences_it_claims() {
+        let md =
+            "Before.\n\n```figure\nhidden body\n```\n\n```rust\nfn shown() {}\n```\n\nAfter.\n";
+        let ParsedMarkdown { elements, source } = ParsedMarkdown::parse(md);
+        let mut harness = Harness::new_ui(move |ui| {
+            render_parsed_markdown(
+                &elements,
+                None,
+                &source,
+                None,
+                None,
+                Some(&mut ClaimFigures),
+                ui,
+            );
+        });
+        harness.run();
+
+        let _ = harness.get_by_label("Before.");
+        let _ = harness.get_by_label("figure at 1");
+        let _ = harness.get_by_label("After.");
+        assert!(harness.query_by_label_contains("hidden body").is_none());
+        assert!(harness.query_by_label_contains("fn shown()").is_some());
+        let before = harness.get_by_label("Before.").rect();
+        let figure = harness.get_by_label("figure at 1").rect();
+        let after = harness.get_by_label("After.").rect();
+        assert!(before.bottom() <= figure.top() && figure.bottom() <= after.top());
+    }
+
+    /// Without a note context a lone image is its link, the title kept out
+    /// of what it says.
+    #[test]
+    fn a_lone_image_without_a_context_is_its_link() {
+        let md = "![A shot](https://x/y.png \"Its caption.\")\n";
+        let mut harness = Harness::new_ui(move |ui| render_markdown(md, ui));
+        harness.run();
+        let _ = harness.get_by_label("[Image: A shot]");
+        assert!(harness.query_by_label_contains("Its caption.").is_none());
+    }
+
+    #[test]
+    fn fit_image_never_upscales() {
+        assert_eq!(
+            fit_image(egui::vec2(360.0, 132.0), 1000.0),
+            egui::vec2(360.0, 132.0)
+        );
+        assert_eq!(
+            fit_image(egui::vec2(400.0, 200.0), 200.0),
+            egui::vec2(200.0, 100.0)
+        );
     }
 
     #[test]

@@ -1,30 +1,32 @@
 //! The figures in an explainer page, drawn in the review pane's Explainer
 //! tab instead of shown as their source.
 //!
-//! A page's Markdown is split once, when it's parsed, into [`Block`]s: runs of
-//! ordinary elements, drawn by `notedeck_ui::markdown`, and the figures among
-//! them, as `explain` builds them:
+//! A page's Markdown is drawn by `notedeck_ui::markdown`, and the figures
+//! among its top-level elements, found once when it's parsed, by a
+//! [`BlockHook`](notedeck_ui::markdown::BlockHook) that claims them. They are
+//! what `explain` builds:
 //!
 //! - a ` ```figure ` fence, its caption after a last `---` line. A body that
 //!   opens with `<svg` is a hand-drawn SVG, rasterised with resvg in the
 //!   pane's light or dark theme (its `var(--…)` colours from the page's
 //!   [`Palette`]); any other body is Markdown, drawn in the frame.
 //! - a paragraph holding one image and nothing else: a screenshot, its
-//!   `"title"` the caption. It's read from a `data:` URI, an absolute path on
-//!   this host, or https; anything else says why it can't show.
+//!   `"title"` the caption, read from a `data:` URI or an absolute path on
+//!   this host; a relative path says it can't show. One at a URL isn't a
+//!   figure: the shared renderer draws it, as it does in any note. Only this
+//!   pane reads local paths, since only its Markdown is the user's own.
 //!
 //! Every load runs on a thread of its own and lands in [`Figures`] as a
 //! texture; a frame only looks it up.
 
 use std::collections::HashMap;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use base64::Engine;
 use egui::{ColorImage, TextureHandle, Vec2};
-use md_stream::{InlineElement, MdElement, ParsedMarkdown};
+use md_stream::{LoneImage, MdElement, ParsedMarkdown, lone_image};
 use resvg::usvg;
 
 use crate::explain_palette::Palette;
@@ -34,11 +36,11 @@ use crate::review_walk::SourceKey;
 /// Longest edge a figure is rasterised at, in pixels.
 const MAX_RASTER_EDGE: f32 = 2048.0;
 
-/// A page's Markdown split into what the pane draws: runs of ordinary
-/// elements, and figures.
+/// A page's Markdown and the figures among its top-level elements.
 pub(crate) struct Figured {
     pub md: ParsedMarkdown,
-    pub blocks: Vec<Block>,
+    /// In element order, one per element that is a figure.
+    pub figures: Vec<Figure>,
 }
 
 impl Figured {
@@ -46,20 +48,24 @@ impl Figured {
     /// leaving `next` past the last), so every figure of a page has its own.
     pub(crate) fn parse(text: &str, next: &mut usize) -> Self {
         let md = ParsedMarkdown::parse(text);
-        let blocks = blocks(&md, next);
-        Self { md, blocks }
+        let figures = figures(&md, next);
+        Self { md, figures }
     }
-}
 
-/// One block of a [`Figured`] body.
-pub(crate) enum Block {
-    /// These of the body's elements, drawn as Markdown.
-    Markdown(Range<usize>),
-    Figure(Figure),
+    /// The figure top-level element `element` is, if it's one.
+    pub(crate) fn figure_at(&self, element: usize) -> Option<&Figure> {
+        let at = self
+            .figures
+            .binary_search_by_key(&element, |f| f.element)
+            .ok()?;
+        self.figures.get(at)
+    }
 }
 
 /// A figure: what it draws, and the caption under it.
 pub(crate) struct Figure {
+    /// The top-level element of its body it is.
+    pub element: usize,
     /// Its number in the page: its load's key.
     pub index: usize,
     pub body: FigureBody,
@@ -76,33 +82,23 @@ pub(crate) enum FigureBody {
     },
     /// Markdown in the figure's frame.
     Markdown(Box<Figured>),
-    /// An image, from a `data:` URI, a path or a URL.
+    /// An image, from a `data:` URI or a path.
     Image { alt: String, src: String },
 }
 
-/// `md`'s elements as blocks, figures numbered from `next`.
-fn blocks(md: &ParsedMarkdown, next: &mut usize) -> Vec<Block> {
-    let mut out = Vec::new();
-    let mut run = 0;
-    for (i, element) in md.elements.iter().enumerate() {
-        let Some(figure) = figure_of(element, &md.source, next) else {
-            continue;
-        };
-        if run < i {
-            out.push(Block::Markdown(run..i));
-        }
-        out.push(Block::Figure(figure));
-        run = i + 1;
-    }
-    if run < md.elements.len() {
-        out.push(Block::Markdown(run..md.elements.len()));
-    }
-    out
+/// The figures among `md`'s top-level elements, numbered from `next`.
+fn figures(md: &ParsedMarkdown, next: &mut usize) -> Vec<Figure> {
+    md.elements
+        .iter()
+        .enumerate()
+        .filter_map(|(i, element)| figure_of(i, element, &md.source, next))
+        .collect()
 }
 
-/// The figure `element` is, if it is one: a ` ```figure ` fence, or a
-/// paragraph holding one image and nothing else.
-fn figure_of(element: &MdElement, source: &str, next: &mut usize) -> Option<Figure> {
+/// The figure `element` (top-level element `at`) is, if it is one: a
+/// ` ```figure ` fence, or a paragraph holding one image and nothing else
+/// whose source isn't a URL.
+fn figure_of(at: usize, element: &MdElement, source: &str, next: &mut usize) -> Option<Figure> {
     match element {
         MdElement::CodeBlock(code) => {
             let lang = code.language.as_ref()?.resolve(source);
@@ -124,29 +120,22 @@ fn figure_of(element: &MdElement, source: &str, next: &mut usize) -> Option<Figu
                 FigureBody::Markdown(Box::new(Figured::parse(body, next)))
             };
             Some(Figure {
+                element: at,
                 index,
                 body,
                 caption: caption.map(str::to_owned),
             })
         }
         MdElement::Paragraph(inlines) => {
-            let mut image = None;
-            for inline in inlines {
-                match inline {
-                    InlineElement::Image { alt, url } if image.is_none() => {
-                        image = Some((alt, url))
-                    }
-                    InlineElement::Text(t) if t.resolve(source).trim().is_empty() => {}
-                    InlineElement::LineBreak => {}
-                    _ => return None,
-                }
+            let LoneImage { alt, target } = lone_image(inlines, source)?;
+            if matches!(image_source(target.src), ImageSource::Url(_)) {
+                return None;
             }
-            let (alt, url) = image?;
-            let target = split_image_target(url.resolve(source));
             Some(Figure {
+                element: at,
                 index: take(next),
                 body: FigureBody::Image {
-                    alt: alt.resolve(source).to_owned(),
+                    alt: alt.to_owned(),
                     src: target.src.to_owned(),
                 },
                 caption: target.title.map(str::to_owned),
@@ -188,47 +177,6 @@ fn split_caption(body: &str) -> Caption<'_> {
         body,
         caption: None,
     })
-}
-
-/// An image's link target, split.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct ImageTarget<'a> {
-    /// Where the image is.
-    pub src: &'a str,
-    /// The `"title"` after it: a screenshot's caption.
-    pub title: Option<&'a str>,
-}
-
-/// `![alt](target)`'s target (as md-stream gives it, title and all) split
-/// into its source and its optional `"title"` or `'title'`. A source in
-/// `<…>` loses them.
-pub(crate) fn split_image_target(target: &str) -> ImageTarget<'_> {
-    let target = target.trim();
-    let mut out = ImageTarget {
-        src: target,
-        title: None,
-    };
-    for q in ['"', '\''] {
-        let Some(inner) = target.strip_suffix(q) else {
-            continue;
-        };
-        let Some(open) = inner.rfind(q) else {
-            continue;
-        };
-        let before = &inner[..open];
-        if !before.ends_with(char::is_whitespace) {
-            continue;
-        }
-        out = ImageTarget {
-            src: before.trim_end(),
-            title: Some(&inner[open + 1..]),
-        };
-        break;
-    }
-    if let Some(bare) = out.src.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
-        out.src = bare;
-    }
-    out
 }
 
 /// The `aria-label` on an SVG's opening tag.
@@ -636,9 +584,7 @@ impl Figures {
         view(self.load(ctx, key, palette, || Job::Svg(source.to_owned())))
     }
 
-    /// Figure `index`, an image at `src`, when it's one [`Figures`] loads
-    /// itself (a `data:` URI or a path); `None` for a URL, which the media
-    /// cache loads.
+    /// Figure `index`, an image at `src`: a `data:` URI or a path.
     pub(crate) fn image(
         &mut self,
         ctx: &egui::Context,
@@ -646,17 +592,20 @@ impl Figures {
         index: usize,
         dark: bool,
         src: &str,
-    ) -> Option<FigureView<'_>> {
+    ) -> FigureView<'_> {
         let job = match image_source(src) {
-            ImageSource::Url(_) => return None,
-            ImageSource::Elsewhere => return Some(FigureView::Failed(Failure::NotOnHost)),
+            // A URL is never a figure ([`figure_of`]): it isn't one to read
+            // off this host.
+            ImageSource::Url(_) | ImageSource::Elsewhere => {
+                return FigureView::Failed(Failure::NotOnHost);
+            }
             ImageSource::Data(uri) => Job::Data(uri.to_owned()),
             ImageSource::Path(path) => Job::File(path.to_owned()),
         };
         // A raster image looks the same in both themes, but a data: or
         // path SVG doesn't, so every image is keyed by theme.
         let key = FigureKey { index, dark };
-        Some(view(self.load(ctx, key, palette, || job)))
+        view(self.load(ctx, key, palette, || job))
     }
 }
 
@@ -671,16 +620,6 @@ fn view(load: &FigureLoad) -> FigureView<'_> {
     }
 }
 
-/// The size a figure of intrinsic `size` is drawn at in `available` width:
-/// never wider than either, never upscaled, its aspect ratio kept.
-pub(crate) fn fit(size: Vec2, available: f32) -> Vec2 {
-    if size.x <= 0.0 || size.y <= 0.0 {
-        return Vec2::ZERO;
-    }
-    let w = size.x.min(available.max(1.0));
-    Vec2::new(w, size.y * w / size.x)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -692,47 +631,6 @@ mod tests {
             pixels_per_point: 1.0,
             fonts: figure_fonts(),
         }
-    }
-
-    #[test]
-    fn split_image_target_takes_the_title_off() {
-        let t = |s| split_image_target(s);
-        assert_eq!(
-            t("/a/b.jpg \"Deep in a chapter.\""),
-            ImageTarget {
-                src: "/a/b.jpg",
-                title: Some("Deep in a chapter.")
-            }
-        );
-        assert_eq!(
-            t(" shot.png 'one' "),
-            ImageTarget {
-                src: "shot.png",
-                title: Some("one")
-            }
-        );
-        assert_eq!(
-            t("<a b.png> \"t\""),
-            ImageTarget {
-                src: "a b.png",
-                title: Some("t")
-            }
-        );
-        // A quote glued to the path is the path's.
-        assert_eq!(
-            t("/a/b\"c\""),
-            ImageTarget {
-                src: "/a/b\"c\"",
-                title: None
-            }
-        );
-        assert_eq!(
-            t("https://x/y.png"),
-            ImageTarget {
-                src: "https://x/y.png",
-                title: None
-            }
-        );
     }
 
     #[test]
@@ -760,12 +658,12 @@ mod tests {
         );
     }
 
-    /// Figures split the body's runs: an SVG fence (its caption and label),
-    /// a Markdown fence (its own image numbered after it), a lone image (its
-    /// title the caption); a flow fence and an image mid-sentence stay in
-    /// the Markdown.
+    /// The figures among a body's elements: an SVG fence (its caption and
+    /// label), a Markdown fence (its own image numbered after it), a lone
+    /// image (its title the caption). A flow fence, an image mid-sentence and
+    /// a lone image at a URL aren't: the shared renderer draws them.
     #[test]
-    fn blocks_find_the_figures() {
+    fn figures_are_found_by_element() {
         let text = "\
 Intro.
 
@@ -793,47 +691,51 @@ Some **markdown**.
 
 ![A shot](/abs/shot.jpg \"Its caption.\")
 
+![Hosted](https://example.com/shot.png \"On the web.\")
+
 Outro.
 ";
         let mut next = 0;
         let doc = Figured::parse(text, &mut next);
         assert_eq!(next, 4);
         let shape: Vec<String> = doc
-            .blocks
+            .figures
             .iter()
-            .map(|b| match b {
-                Block::Markdown(r) => format!("md {}..{}", r.start, r.end),
-                Block::Figure(f) => match &f.body {
-                    FigureBody::Svg { source, label } => format!(
-                        "svg #{} {:?} {:?} blank={}",
-                        f.index,
-                        label,
-                        f.caption,
-                        source.contains("\n\n")
-                    ),
-                    FigureBody::Markdown(inner) => format!(
-                        "md-fig #{} {:?} inner={}",
-                        f.index,
-                        f.caption,
-                        inner.blocks.len()
-                    ),
-                    FigureBody::Image { alt, src } => {
-                        format!("img #{} {alt} {src} {:?}", f.index, f.caption)
-                    }
-                },
+            .map(|f| match &f.body {
+                FigureBody::Svg { source, label } => format!(
+                    "@{} svg #{} {:?} {:?} blank={}",
+                    f.element,
+                    f.index,
+                    label,
+                    f.caption,
+                    source.contains("\n\n")
+                ),
+                FigureBody::Markdown(inner) => format!(
+                    "@{} md-fig #{} {:?} inner={:?}",
+                    f.element,
+                    f.index,
+                    f.caption,
+                    inner.figures.iter().map(|f| f.element).collect::<Vec<_>>()
+                ),
+                FigureBody::Image { alt, src } => {
+                    format!(
+                        "@{} img #{} {alt} {src} {:?}",
+                        f.element, f.index, f.caption
+                    )
+                }
             })
             .collect();
         assert_eq!(
             shape,
             [
-                "md 0..1",
-                "svg #0 Some(\"a box\") Some(\"The caption.\") blank=true",
-                "md 2..4",
-                "md-fig #1 None inner=2",
-                "img #3 A shot /abs/shot.jpg Some(\"Its caption.\")",
-                "md 6..7",
+                "@1 svg #0 Some(\"a box\") Some(\"The caption.\") blank=true",
+                "@4 md-fig #1 None inner=[1]",
+                "@5 img #3 A shot /abs/shot.jpg Some(\"Its caption.\")",
             ]
         );
+        assert_eq!(doc.md.elements.len(), 8);
+        assert!(doc.figure_at(5).is_some());
+        assert!(doc.figure_at(6).is_none(), "the https image");
     }
 
     #[test]
@@ -933,14 +835,5 @@ Outro.
             load_data_uri("data:image/png;base64,!!!", &theme(false)).err(),
             Some(Failure::Unreadable)
         );
-    }
-
-    #[test]
-    fn fit_never_upscales() {
-        assert_eq!(
-            fit(Vec2::new(360.0, 132.0), 1000.0),
-            Vec2::new(360.0, 132.0)
-        );
-        assert_eq!(fit(Vec2::new(400.0, 200.0), 200.0), Vec2::new(200.0, 100.0));
     }
 }

@@ -1587,6 +1587,7 @@ impl<'a> DaveUi<'a> {
                             &plan.source,
                             note_ctx.as_mut(),
                             txn.as_ref(),
+                            None,
                             ui,
                         );
                     } else if let Some(plan_text) =
@@ -2222,6 +2223,7 @@ impl<'a> DaveUi<'a> {
                 system.text(),
                 None,
                 None,
+                None,
                 ui,
             );
         });
@@ -2717,6 +2719,7 @@ pub fn assistant_message_ui(msg: &AssistantMessage, ctx: &mut AppContext, ui: &m
             buffer,
             Some(&mut note_ctx),
             Some(&txn),
+            None,
             ui,
         );
     });

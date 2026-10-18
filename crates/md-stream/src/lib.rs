@@ -4,6 +4,7 @@
 //! and needs to be rendered progressively.
 
 mod element;
+mod image;
 mod inline;
 mod parser;
 mod partial;
@@ -11,6 +12,7 @@ mod partial;
 pub use element::{
     CodeBlock, InlineElement, InlineStyle, ListItem, MdElement, Span, TableCell, TaskMarker,
 };
+pub use image::{lone_image, split_image_target, ImageTarget, LoneImage};
 pub use inline::{parse_inline, InlineState};
 pub use parser::{ParsedMarkdown, StreamParser};
 pub use partial::{LinkState, Partial, PartialKind};

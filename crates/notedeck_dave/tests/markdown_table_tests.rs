@@ -21,7 +21,7 @@ fn table_harness(markdown: &str) -> Harness<'static> {
         .build_ui(move |ui| {
             app_frame(ui, |ui| {
                 own_item_spacing(ui);
-                render_parsed_markdown(&elements, partial.as_ref(), &buffer, None, None, ui);
+                render_parsed_markdown(&elements, partial.as_ref(), &buffer, None, None, None, ui);
             });
         })
 }
