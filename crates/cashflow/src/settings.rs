@@ -14,25 +14,36 @@ use nostrdb_net::Pubkey;
 
 use crate::kinds;
 use crate::vault::{self, Record, Stored, TagWriter, Vault, VaultError, Written, tag_value};
+use crate::zone::Zone;
 
 /// The home commodity when none is set: CAD, per the root epic.
 pub const DEFAULT_HOME_COMMODITY: &str = "CAD";
+
+/// What [`Setting::Timezone`] reads as when it was never set: each
+/// machine's own zone, which is the value the setting exists to replace,
+/// so it can't be set to it.
+pub const DEFAULT_TIMEZONE: &str = "local";
 
 /// A setting the vault holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Setting {
     /// The commodity every amount is converted into for reports.
     Home,
+    /// The zone a source that gives only a unix time (CLN) is dated in:
+    /// see [`crate::zone`]. `[cln] timezone` in `config.toml` overrides it
+    /// on one machine.
+    Timezone,
 }
 
 impl Setting {
     /// Every setting, in the order `settings show` lists them.
-    pub const ALL: [Setting; 1] = [Setting::Home];
+    pub const ALL: [Setting; 2] = [Setting::Home, Setting::Timezone];
 
     /// The setting's name on the command line, and its record id.
     pub fn name(self) -> &'static str {
         match self {
             Setting::Home => "home",
+            Setting::Timezone => "timezone",
         }
     }
 
@@ -49,6 +60,13 @@ impl Setting {
                 setting: self.name(),
                 value: value.to_owned(),
                 expected: "a commodity symbol, like CAD or USD",
+            }),
+            Setting::Timezone if Zone::parse(value).is_ok_and(|z| z != Zone::Local) => Ok(()),
+            Setting::Timezone => Err(SettingsError::Invalid {
+                setting: self.name(),
+                value: value.to_owned(),
+                expected: "a zone like America/Vancouver, utc, or an offset like -07:00 \
+                           (not `local`: that differs from machine to machine)",
             }),
         }
     }
@@ -106,6 +124,8 @@ pub enum SettingsError {
 pub struct Settings<'a> {
     /// [`Setting::Home`]'s note.
     pub home_commodity: Option<Stored<'a, SettingNote<'a>>>,
+    /// [`Setting::Timezone`]'s note.
+    pub timezone: Option<Stored<'a, SettingNote<'a>>>,
 }
 
 impl<'a> Settings<'a> {
@@ -115,6 +135,7 @@ impl<'a> Settings<'a> {
         for stored in vault::latest_all::<SettingNote>(ndb, txn, author) {
             match Setting::from_name(stored.id) {
                 Some(Setting::Home) => settings.home_commodity = Some(stored),
+                Some(Setting::Timezone) => settings.timezone = Some(stored),
                 // A setting a newer cashflow wrote; nothing here reads it.
                 None => {}
             }
@@ -131,6 +152,7 @@ impl<'a> Settings<'a> {
     pub fn value(&self, setting: Setting) -> Option<&'a str> {
         let stored = match setting {
             Setting::Home => self.home_commodity.as_ref(),
+            Setting::Timezone => self.timezone.as_ref(),
         };
         stored.map(|s| s.body.value)
     }
@@ -139,6 +161,7 @@ impl<'a> Settings<'a> {
     pub fn effective(&self, setting: Setting) -> &'a str {
         match setting {
             Setting::Home => self.home_commodity(),
+            Setting::Timezone => self.value(setting).unwrap_or(DEFAULT_TIMEZONE),
         }
     }
 }
@@ -208,6 +231,26 @@ mod tests {
         }
         assert!(is_commodity("$"));
         assert!(is_commodity("BTC"));
+    }
+
+    #[test]
+    fn timezone_takes_a_shared_zone_but_never_local() {
+        let db = TempNdb::new();
+        let ndb = &db.ndb;
+        let vault = Vault::new(&SECRET).unwrap();
+        for bad in ["local", "LOCAL", "Mars/Olympus", "-25:00", ""] {
+            assert!(
+                matches!(
+                    set(&vault, ndb, Setting::Timezone, bad),
+                    Err(SettingsError::Invalid { .. })
+                ),
+                "{bad:?}"
+            );
+        }
+        for good in ["America/Vancouver", "utc", "-07:00"] {
+            assert!(set(&vault, ndb, Setting::Timezone, good).is_ok(), "{good}");
+        }
+        assert_eq!(Settings::default().effective(Setting::Timezone), "local");
     }
 
     #[test]

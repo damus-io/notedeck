@@ -9,7 +9,7 @@ use cashflow::import::{self, ImportInput, Rows};
 use cashflow::journal::{self, Listing, SegmentSummary};
 use cashflow::manifest::{self, Manifest};
 use cashflow::sync::Plan;
-use cashflow::{CashflowDir, Config};
+use cashflow::{CashflowDir, Config, Settings};
 use ledgerdb::{Date, SegmentHash};
 use serde_json::{Value, json};
 
@@ -469,7 +469,18 @@ pub async fn import(
     args: &ImportArgs,
 ) -> Result<(), String> {
     let config = Config::load(dir).map_err(|e| e.to_string())?;
-    let importer = import::importer(&args.importer, &config, dir).ok_or_else(|| {
+    let synced = match &session {
+        Some(session) => {
+            let txn = session.txn()?;
+            import::Synced::from_settings(&Settings::load(
+                &session.ndb,
+                &txn,
+                session.vault.author(),
+            ))
+        }
+        None => import::Synced::default(),
+    };
+    let importer = import::importer(&args.importer, &config, &synced, dir).ok_or_else(|| {
         format!(
             "no importer named '{}' (importers: {})",
             args.importer,

@@ -45,6 +45,7 @@ pub use ledger::LedgerImporter;
 pub use payroll::PayrollImporter;
 pub use rbc::RbcImporter;
 
+use crate::settings::{Setting, Settings};
 use crate::{CashflowDir, Config};
 
 /// Every importer's name, as `cashflow import <name>` takes it.
@@ -85,10 +86,34 @@ pub struct ImportInput {
     pub paths: Vec<PathBuf>,
 }
 
+/// What the vault's synced settings tell the importers: the values every
+/// machine shares, beside `config.toml`'s per-machine tables. Empty when
+/// the run didn't open the vault.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Synced {
+    /// [`Setting::Timezone`], when it was set: the day `cln` files an
+    /// event under.
+    pub timezone: Option<String>,
+}
+
+impl Synced {
+    /// The settings an importer reads, copied out of `settings`.
+    pub fn from_settings(settings: &Settings) -> Self {
+        Self {
+            timezone: settings.value(Setting::Timezone).map(str::to_owned),
+        }
+    }
+}
+
 /// The importer named `name`, if there is one, set up by its table in
-/// `config`. One that signs in to its source reads its secrets from `dir`
-/// when it runs.
-pub fn importer(name: &str, config: &Config, dir: &CashflowDir) -> Option<Box<dyn Importer>> {
+/// `config` and the `synced` settings. One that signs in to its source
+/// reads its secrets from `dir` when it runs.
+pub fn importer(
+    name: &str,
+    config: &Config,
+    synced: &Synced,
+    dir: &CashflowDir,
+) -> Option<Box<dyn Importer>> {
     match name {
         "amex" => Some(Box::new(AmexImporter::new(config.amex.as_ref()))),
         "appstore" => Some(Box::new(AppStoreImporter::new(
@@ -96,7 +121,9 @@ pub fn importer(name: &str, config: &Config, dir: &CashflowDir) -> Option<Box<dy
             dir,
         ))),
         "btc" => Some(Box::new(BtcImporter::new(config.btc.as_ref(), dir))),
-        "cln" => Some(Box::new(ClnImporter::new(config.cln.as_ref(), dir))),
+        "cln" => Some(Box::new(
+            ClnImporter::new(config.cln.as_ref(), dir).synced(synced),
+        )),
         "ledger" => Some(Box::new(LedgerImporter)),
         "payroll" => Some(Box::new(PayrollImporter::new(config.payroll.as_ref()))),
         "rbc" => Some(Box::new(RbcImporter::new(config.rbc.as_ref()))),
@@ -380,13 +407,26 @@ mod tests {
     fn every_name_resolves() {
         for name in NAMES {
             assert_eq!(
-                importer(name, &Config::default(), &CashflowDir::new("unused"))
-                    .unwrap()
-                    .name(),
+                importer(
+                    name,
+                    &Config::default(),
+                    &Synced::default(),
+                    &CashflowDir::new("unused")
+                )
+                .unwrap()
+                .name(),
                 *name
             );
         }
-        assert!(importer("frob", &Config::default(), &CashflowDir::new("unused")).is_none());
+        assert!(
+            importer(
+                "frob",
+                &Config::default(),
+                &Synced::default(),
+                &CashflowDir::new("unused")
+            )
+            .is_none()
+        );
     }
 
     /// Import `text` as a ledger file from source `bank` into `layer`,
@@ -394,7 +434,13 @@ mod tests {
     fn import_text(store: &JournalStore, text: &str, layer: &str, imported: u64) -> Written {
         let file = store.dir().with_extension(format!("{imported}.ledger"));
         std::fs::write(&file, text).unwrap();
-        let ledger = importer("ledger", &Config::default(), &CashflowDir::new("unused")).unwrap();
+        let ledger = importer(
+            "ledger",
+            &Config::default(),
+            &Synced::default(),
+            &CashflowDir::new("unused"),
+        )
+        .unwrap();
         write(
             store,
             &Default::default(),
@@ -580,7 +626,13 @@ mod tests {
     fn ledger_import_refuses_what_it_cannot_take() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
-        let ledger = importer("ledger", &Config::default(), &CashflowDir::new("unused")).unwrap();
+        let ledger = importer(
+            "ledger",
+            &Config::default(),
+            &Synced::default(),
+            &CashflowDir::new("unused"),
+        )
+        .unwrap();
         let empty = tmp.path().join("c");
         std::fs::write(&empty, "; nothing\nnot a transaction\n").unwrap();
         let run = |paths| {
@@ -618,7 +670,13 @@ mod tests {
         )
         .unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
-        let ledger = importer("ledger", &Config::default(), &CashflowDir::new("unused")).unwrap();
+        let ledger = importer(
+            "ledger",
+            &Config::default(),
+            &Synced::default(),
+            &CashflowDir::new("unused"),
+        )
+        .unwrap();
         let written = write(
             &store,
             &Default::default(),

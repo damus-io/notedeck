@@ -245,11 +245,14 @@ Importers:
                   btc-txs-raw TSV listings instead.
   cln [<file>...] Core Lightning bookkeeper events, bkpr-listaccountevents
                   over commando: [cln] in config.toml sets `node_id`,
-                  `host` (host[:9735]) and `timezone` (local, utc or
-                  -07:00; the day an event is filed under), and the
+                  `host` (host[:9735]) and `timezone`, and the
                   cln-rune secret is a rune that permits the call (mint
                   one with lightning-cli createrune
                   restrictions='[[\"method=bkpr-listaccountevents\"]]').
+                  An event is filed under its day in the synced
+                  `timezone` setting, so every machine dates it alike;
+                  `timezone` under [cln] overrides that on one machine,
+                  and with neither set it is this machine's own zone.
                   A node whose bookkeeper takes start_time is read from a
                   day before the newest payment the journal holds; one
                   that doesn't is read whole, and says so. Payments
@@ -744,7 +747,12 @@ Settings live in the vault, so they follow the key across machines; config.toml
 is the per-machine file. Each run reconciles with the relay first, so a
 setting changed elsewhere shows up here.
 
-  home    the commodity reports convert into [default: CAD]
+  home      the commodity reports convert into [default: CAD]
+  timezone  the day a CLN event is filed under: a zone like
+            America/Vancouver, utc, or an offset like -07:00. Set it
+            before importing from two machines, or near midnight each
+            rewrites the other's events [default: local, each machine's
+            own]
 
 `show` lists each setting and its value, marking defaults. `get` prints one
 value alone, for scripts. `set` writes it and publishes it to the relay.",
@@ -753,6 +761,7 @@ value alone, for scripts. `set` writes it and publishes it to the relay.",
             "cashflow settings",
             "cashflow settings set home CAD",
             "cashflow settings get home",
+            "cashflow settings set timezone America/Vancouver",
         ],
     },
 ];

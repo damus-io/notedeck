@@ -5,7 +5,8 @@
 //! per-machine settings file in it ([`Config`]), how a secret is read without
 //! being printed ([`Secret`]), and the account's private nostr vault
 //! ([`vault`]), whose records use the kinds in [`kinds`] and whose first
-//! record type is the synced [`settings`]. The journal of segments under the
+//! record type is the synced [`settings`], among them the [`zone`] that dates
+//! a source's unix times. The journal of segments under the
 //! data dir is [`journal`]; [`import`] reads sources into it (the CSV ones
 //! with [`csv`]). [`manifest`] tells the vault which segments exist, which
 //! host has each and which are retired, and [`sync`] compares that with the
@@ -45,6 +46,7 @@ pub mod unknown;
 pub mod vault;
 pub mod vault_edits;
 pub mod vault_rules;
+pub mod zone;
 
 #[cfg(test)]
 mod test_util;

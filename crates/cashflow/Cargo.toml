@@ -7,6 +7,7 @@ description = "cashflow's non-UI core: the $CASHFLOW_DIR layout, config, secrets
 [dependencies]
 base64 = { workspace = true }
 chrono = { workspace = true }
+chrono-tz = { workspace = true }
 dirs = { workspace = true }
 ehttp = { workspace = true }
 flate2 = { workspace = true }

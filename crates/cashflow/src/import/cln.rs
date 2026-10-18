@@ -72,15 +72,19 @@
 //! a move whose near side is a wallet or channel event, and an on-chain fee
 //! (`equity:cln:fees`), which the wallet and channel events already net.
 //!
-//! **Dates** are the event's day in [`ClnConfig::timezone`], the system's
-//! own by default, as `index.ts` dated them.
+//! **Dates** are the event's day in the synced
+//! [`Setting::Timezone`](crate::settings::Setting::Timezone), so every
+//! machine files an event under the same day and a second machine's import
+//! rewrites nothing. [`ClnConfig::timezone`] overrides it on one machine.
+//! With neither set it is the system's own zone, as `index.ts` dated them,
+//! and the run says so.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
-use ledgerdb::{Date, LayerFilter, Ledger};
+use ledgerdb::{LayerFilter, Ledger};
 use lnsocket::bitcoin::secp256k1::{PublicKey, SecretKey, rand};
 use lnsocket::commando::{CommandoConfig, RetryPolicy};
 use lnsocket::{CommandoClient, LNSocket};
@@ -92,11 +96,12 @@ use sha2::{Digest, Sha256};
 use super::csv_rows::read;
 use super::{
     Batch, ImportError, ImportInput, Importer, OtherLayer, RawAmount, RawMeta, RawPosting, RawTxn,
-    Skipped,
+    Skipped, Synced,
 };
 use crate::CashflowDir;
 use crate::config::{ClnConfig, Secret, secret_env_var};
 use crate::prices::MSAT;
+use crate::zone::Zone;
 
 /// The secret holding the rune commando calls are made with.
 pub const RUNE_SECRET: &str = "cln-rune";
@@ -229,9 +234,18 @@ impl Node for Commando {
     }
 }
 
+/// The zone an import dates events in, and a note for the user when it
+/// isn't the one every machine shares.
+struct Dating {
+    zone: Zone,
+    note: Option<String>,
+}
+
 /// Reads Core Lightning bookkeeper events, from the node or saved listings.
 pub struct ClnImporter {
     config: ClnConfig,
+    /// The synced timezone setting, when the run read the vault.
+    synced_timezone: Option<String>,
     /// Where the rune is read from, when the import runs.
     dir: CashflowDir,
     /// The node to call instead of connecting with `config`, for tests.
@@ -244,6 +258,7 @@ impl ClnImporter {
     pub fn new(config: Option<&ClnConfig>, dir: &CashflowDir) -> Self {
         Self {
             config: config.cloned().unwrap_or_default(),
+            synced_timezone: None,
             dir: dir.clone(),
             node: None,
         }
@@ -255,6 +270,49 @@ impl ClnImporter {
             node: Some(node),
             ..Self::new(config, &CashflowDir::new(""))
         }
+    }
+
+    /// The importer dating events in `synced`'s timezone, unless
+    /// `[cln] timezone` overrides it.
+    pub fn synced(self, synced: &Synced) -> Self {
+        Self {
+            synced_timezone: synced.timezone.clone(),
+            ..self
+        }
+    }
+
+    /// The zone events are dated in: `[cln] timezone`, then the synced
+    /// setting, then the system's own. Either fallback the user may not
+    /// expect comes with a note saying so.
+    fn dating(&self) -> Result<Dating, ImportError> {
+        let synced = self.synced_timezone.as_deref();
+        if let Some(local) = self.config.timezone.as_deref() {
+            let zone = Zone::parse(local)
+                .map_err(|e| ImportError::Usage(format!("[cln] timezone: {e}")))?;
+            let note = synced
+                .filter(|s| Zone::parse(s).ok() != Some(zone))
+                .map(|s| {
+                    format!(
+                        "dating events in [cln] timezone {local}, not the synced timezone {s}: \
+                         another machine dating in {s} rewrites events near midnight"
+                    )
+                });
+            return Ok(Dating { zone, note });
+        }
+        if let Some(synced) = synced {
+            let zone = Zone::parse(synced)
+                .map_err(|e| ImportError::Usage(format!("the timezone setting: {e}")))?;
+            return Ok(Dating { zone, note: None });
+        }
+        Ok(Dating {
+            zone: Zone::Local,
+            note: Some(
+                "dating events in this machine's time zone: set one every machine shares \
+                 (`cashflow settings set timezone America/Vancouver`), or two machines \
+                 importing rewrite each other's events near midnight"
+                    .to_owned(),
+            ),
+        })
     }
 
     /// The node the config names, called with the rune secret.
@@ -301,9 +359,8 @@ impl Importer for ClnImporter {
     }
 
     fn import_held(&self, input: &ImportInput, held: &Ledger) -> Result<Batch, ImportError> {
-        let zone = Zone::parse(self.config.timezone.as_deref().unwrap_or("local"))
-            .map_err(|e| ImportError::Usage(format!("[cln] timezone: {e}")))?;
-        let mut notes = Vec::new();
+        let Dating { zone, note } = self.dating()?;
+        let mut notes: Vec<String> = note.into_iter().collect();
         let listings = if input.paths.is_empty() {
             let connected;
             let node: &dyn Node = match &self.node {
@@ -804,56 +861,6 @@ fn tag_value(entries: &[Value], name: &str) -> Option<String> {
         }
         entry.get(1)?.as_str().map(str::to_owned)
     })
-}
-
-/// The time zone an event's date is read in.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Zone {
-    /// The system's, as `$TZ` or `/etc/localtime` sets it.
-    Local,
-    /// A fixed offset east of UTC, in seconds.
-    Fixed(i32),
-}
-
-impl Zone {
-    /// `local`, `utc`, or `+HH:MM` / `-HH:MM`.
-    fn parse(text: &str) -> Result<Self, String> {
-        let bad = || format!("{text:?} is not `local`, `utc` or an offset like -07:00");
-        match text.to_ascii_lowercase().as_str() {
-            "local" => return Ok(Self::Local),
-            "utc" | "z" => return Ok(Self::Fixed(0)),
-            _ => {}
-        }
-        let (sign, rest) = match text.as_bytes().first() {
-            Some(b'+') => (1, &text[1..]),
-            Some(b'-') => (-1, &text[1..]),
-            _ => return Err(bad()),
-        };
-        let (hours, minutes) = rest.split_once(':').unwrap_or((rest, "0"));
-        let hours: i32 = hours.parse().map_err(|_| bad())?;
-        let minutes: i32 = minutes.parse().map_err(|_| bad())?;
-        if hours > 14 || minutes >= 60 {
-            return Err(bad());
-        }
-        Ok(Self::Fixed(sign * (hours * 3600 + minutes * 60)))
-    }
-
-    /// The day unix time `secs` falls on.
-    fn date(self, secs: u64) -> Date {
-        let secs = secs.min(i64::MAX as u64) as i64;
-        let offset = match self {
-            Self::Fixed(offset) => offset,
-            Self::Local => {
-                use chrono::{Offset, TimeZone};
-                chrono::Local
-                    .timestamp_opt(secs, 0)
-                    .single()
-                    .map_or(0, |t| t.offset().fix().local_minus_utc())
-            }
-        };
-        let days = (secs + i64::from(offset)).div_euclid(86_400);
-        Date::from_days(days.clamp(0, i64::from(u32::MAX)) as u32)
-    }
 }
 
 #[cfg(test)]
@@ -1406,22 +1413,106 @@ mod tests {
         assert!(usage(&config).contains("[cln] timezone"));
     }
 
+    /// Two machines dating in their own zones file an event near midnight
+    /// under different days, so each import rewrites the other's. Once the
+    /// zone comes from the synced setting they agree, and the second
+    /// machine's import writes nothing.
     #[test]
-    fn dates_follow_the_time_zone() {
-        // 2024-03-02 02:30 UTC is still March 1st seven hours west.
-        let late = 1_709_346_600;
-        assert_eq!(
-            Zone::parse("utc").unwrap().date(late).to_string(),
-            "2024-03-02"
+    fn a_synced_zone_keeps_two_machines_from_rewriting_each_other() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = CashflowDir::new(tmp.path());
+        let store = JournalStore::new(tmp.path().join("journal"));
+        let path = tmp.path().join("events.json");
+        let mut late = invoice(1000, 0, "late", 1);
+        // 2024-03-02 02:30 UTC: March 1st anywhere west of UTC-2:30.
+        late["timestamp"] = json!(1_709_346_600);
+        std::fs::write(&path, json!({ "events": [late] }).to_string()).unwrap();
+        let input = ImportInput {
+            source: "cln".to_owned(),
+            paths: vec![path],
+        };
+        let run = |cln: &ClnImporter, imported| {
+            import::write(
+                &store,
+                &Default::default(),
+                cln,
+                &input,
+                None,
+                Some(imported),
+            )
+            .unwrap()
+        };
+        let own_zone = |zone: &str| {
+            let config = ClnConfig {
+                timezone: Some(zone.to_owned()),
+                ..ClnConfig::default()
+            };
+            ClnImporter::new(Some(&config), &dir)
+        };
+        let date = |id: &str| {
+            let ledger = Ledger::load(&store, LayerFilter::All).unwrap().ledger;
+            ledger.txns()[ledger.find(id).unwrap().index()]
+                .date
+                .to_string()
+        };
+
+        run(&own_zone("utc"), 10);
+        assert_eq!(date("cln:channel:1"), "2024-03-02");
+        let flipped = run(&own_zone("-07:00"), 11);
+        assert_eq!(flipped.txn_rows.changed, 1);
+        assert_eq!(date("cln:channel:1"), "2024-03-01");
+
+        let synced = Synced {
+            timezone: Some("Asia/Tokyo".to_owned()),
+        };
+        let laptop = run(&ClnImporter::new(None, &dir).synced(&synced), 12);
+        assert_eq!(laptop.txn_rows.changed, 1);
+        assert!(laptop.notes.is_empty(), "{:?}", laptop.notes);
+        let desktop = run(&ClnImporter::new(None, &dir).synced(&synced), 13);
+        assert_eq!(desktop.hash, None);
+        assert_eq!(desktop.txn_rows.unchanged, 1);
+        assert_eq!(date("cln:channel:1"), "2024-03-02");
+    }
+
+    /// `[cln] timezone` beats the synced setting, and says so when they
+    /// differ; with neither set it is the machine's own zone, and says so.
+    #[test]
+    fn the_local_override_and_the_fallback_are_noted() {
+        let dir = CashflowDir::new("unused");
+        let dating = |config: Option<&str>, synced: Option<&str>| {
+            let config = ClnConfig {
+                timezone: config.map(str::to_owned),
+                ..ClnConfig::default()
+            };
+            let synced = Synced {
+                timezone: synced.map(str::to_owned),
+            };
+            ClnImporter::new(Some(&config), &dir)
+                .synced(&synced)
+                .dating()
+        };
+
+        let shared = dating(None, Some("America/Vancouver")).unwrap();
+        assert!(matches!(shared.zone, Zone::Named(_)));
+        assert_eq!(shared.note, None);
+
+        let overridden = dating(Some("utc"), Some("America/Vancouver")).unwrap();
+        assert_eq!(overridden.zone, Zone::Fixed(0));
+        let note = overridden.note.unwrap();
+        assert!(
+            note.contains("not the synced timezone America/Vancouver"),
+            "{note}"
         );
-        assert_eq!(
-            Zone::parse("-07:00").unwrap().date(late).to_string(),
-            "2024-03-01"
-        );
-        assert_eq!(Zone::parse("+5:30").unwrap(), Zone::Fixed(5 * 3600 + 1800));
-        assert_eq!(Zone::parse("LOCAL").unwrap(), Zone::Local);
-        assert!(Zone::parse("-25:00").is_err());
-        assert!(Zone::parse("America/Vancouver").is_err());
+        assert_eq!(dating(Some("UTC"), Some("utc")).unwrap().note, None);
+
+        let fallback = dating(None, None).unwrap();
+        assert_eq!(fallback.zone, Zone::Local);
+        assert!(fallback.note.unwrap().contains("settings set timezone"));
+
+        let Err(ImportError::Usage(message)) = dating(None, Some("Mars/Olympus")) else {
+            panic!("a bad synced zone is a usage error");
+        };
+        assert!(message.contains("timezone setting"), "{message}");
     }
 
     #[test]

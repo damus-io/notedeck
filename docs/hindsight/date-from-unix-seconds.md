@@ -7,3 +7,4 @@ caller divides by 86 400 itself and keeps its own `now()`.
 - headway:cashflow/pyramid-fluid-bomb — ~2 min: a third `secs / 86_400` in `cashflow::import::btc::date_of` for a block's time
 - headway:cashflow/brick-hospital-race — ~1 min: a fifth `secs / 86_400`, `cashflow::import::appstore::today` for the default months
 - headway:cashflow/oblige-regular-over — ~2 min: a sixth `/ 86_400`, `cashflow::import::cln::Zone::date`, which adds the time zone's offset first; a `Date::from_unix_secs(secs, offset)` would have been the whole function
+- headway:cashflow/junk-brave-fox — ~1 min: moving `Zone::date` into `cashflow::zone` for the synced setting kept its `div_euclid(86_400)` and clamp; with a `Date::from_unix_secs(secs, offset)` the three zone arms would each be one call

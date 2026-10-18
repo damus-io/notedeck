@@ -443,7 +443,7 @@ pub struct AppStoreConfig {
 /// The rune is a secret, `cln-rune` (see [`CashflowDir::secret`]). It must
 /// permit `bkpr-listaccountevents`; mint one on the node with
 /// `lightning-cli createrune restrictions='[["method=bkpr-listaccountevents"]]'`.
-/// Importing a saved listing needs none of this but `timezone`.
+/// Importing a saved listing needs none of this.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClnConfig {
@@ -452,9 +452,12 @@ pub struct ClnConfig {
     /// Where the node takes peer connections, `host:port` [default port
     /// 9735].
     pub host: Option<String>,
-    /// The time zone that decides an event's date: `local` (the system's,
-    /// which `$TZ` sets), `utc`, or a fixed offset such as `-07:00`
-    /// [default: `local`].
+    /// The time zone that decides an event's date on this machine only:
+    /// `local` (the system's, which `$TZ` sets), `utc`, a fixed offset such
+    /// as `-07:00`, or a zone such as `America/Vancouver`. It overrides the
+    /// synced [`Setting::Timezone`](crate::settings::Setting::Timezone),
+    /// which every machine should share instead [default: that setting,
+    /// else `local`].
     pub timezone: Option<String>,
 }
 

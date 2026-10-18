@@ -191,7 +191,7 @@ pub fn show(session: &Session, json: bool) -> Result<(), String> {
             ""
         };
         println!(
-            "{:<8}{}{marker}",
+            "{:<10}{}{marker}",
             setting.name(),
             settings.effective(setting)
         );

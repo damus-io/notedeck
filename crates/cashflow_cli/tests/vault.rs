@@ -93,12 +93,16 @@ fn settings_set_then_read_back_in_another_process() {
     let json: Value = serde_json::from_str(&cf.ok(&["settings", "show", "--json"])).unwrap();
     assert_eq!(
         json,
-        serde_json::json!([{"name": "home", "value": "USD", "default": false}])
+        serde_json::json!([
+            {"name": "home", "value": "USD", "default": false},
+            {"name": "timezone", "value": "local", "default": true},
+        ])
     );
 
     // A later set wins, even within the same second.
     cf.ok(&["settings", "set", "home", "CAD"]);
     assert_eq!(cf.ok(&["settings", "get", "home"]).trim(), "CAD");
+    cf.ok(&["settings", "set", "timezone", "America/Vancouver"]);
     assert!(!cf.ok(&["settings"]).contains("(default)"));
 
     let elsewhere = cf.dir().join("other-db");
@@ -118,6 +122,10 @@ fn settings_reject_bad_names_and_values() {
     let err = expect_failure(cf.run(&["settings", "set", "home", "12"]));
     assert!(err.contains("commodity"), "{err}");
     assert_eq!(cf.ok(&["settings", "get", "home"]).trim(), "CAD");
+
+    let err = expect_failure(cf.run(&["settings", "set", "timezone", "local"]));
+    assert!(err.contains("America/Vancouver"), "{err}");
+    assert_eq!(cf.ok(&["settings", "get", "timezone"]).trim(), "local");
 }
 
 /// The kind settings are stored under (`cashflow::kinds::SETTING`).
