@@ -4025,7 +4025,10 @@ fn build_review_fixture(dir: &std::path::Path) -> ReviewFixture {
 /// without a lock: each builds its own copy in a tempdir and renames it into
 /// place, and a run that loses the rename keeps the winner's identical repo.
 /// A repo left there by an older version of this fixture has a different head
-/// and is replaced.
+/// and is replaced: renamed aside into this run's tempdir (atomic, so a
+/// concurrent run never finds it half deleted) and this run's copy renamed in.
+/// Every test in a run finds the same stale repo at once, so whichever loses a
+/// rename looks again until the path holds this version's head.
 fn review_fixture() -> ReviewFixture {
     let dir = review_fixture_dir();
     let fixed = std::path::Path::new(&dir);
@@ -4049,21 +4052,23 @@ fn review_fixture() -> ReviewFixture {
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
-    if head(fixed).as_deref() == Some(fixture.models.as_str()) {
-        return fixture;
-    }
-    if fixed.exists() {
-        std::fs::remove_dir_all(fixed).expect("remove a stale review fixture");
-    }
-    if std::fs::rename(&built, fixed).is_err() {
-        // Another run renamed its copy in first; it's the same repo.
-        assert_eq!(
-            head(fixed).as_deref(),
-            Some(fixture.models.as_str()),
-            "a concurrent run left a different review fixture at {dir}"
+    let stale = build.path().join("stale");
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        if head(fixed).as_deref() == Some(fixture.models.as_str()) {
+            return fixture;
+        }
+        // Either rename fails when another run got there first; look again.
+        let _ = std::fs::rename(fixed, &stale);
+        if std::fs::rename(&built, fixed).is_ok() {
+            return fixture;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a concurrent run keeps a different review fixture at {dir}"
         );
+        std::thread::sleep(Duration::from_millis(10));
     }
-    fixture
 }
 
 /// The review queue's two cards, in queue order.
