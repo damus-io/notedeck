@@ -494,7 +494,7 @@ month while it doesn't, and on achieved a move to the board's done column
         group: REPORTS,
         summary: "The Adventure's skills: level and XP from the books",
         usage: &[
-            "skills [--layer <name>]... [--except <name>]... [--rules <toml>] [--in <commodity>] [--json]",
+            "skills [--layer <name>]... [--except <name>]... [--rules <toml>] [--in <commodity>] [goal options] [--json]",
         ],
         details: "\
 Level the Adventure view's skills from the categorized books, month by
@@ -511,18 +511,109 @@ level, XP, the XP to its next level and what this month has earned so far.
     <project>    a chart-of-accounts project's revenue, 10 per unit
 
 Positive months in a row are a streak: each adds 5% to the next month's
-Earning and Saving, up to 25%. The same journal and vault give the same
-levels on every machine.",
+Earning and Saving, up to 25%. Completed quests add their XP too (see
+`cashflow quests --help`), the goals' among them, which are read as
+`cashflow goals` reads them. The same journal, vault and boards give the
+same levels on every machine.",
         options: books_options![
             (
                 "--in <commodity>",
                 "Count money in this commodity [default: CAD]"
+            ),
+            ("--board <slug>", "A goal board to look on; repeat for more"),
+            (
+                "--author <key>",
+                "Whose goal boards [default: the signing key's]"
+            ),
+            (
+                "--headway-db <path>",
+                "The headway cache to read goals from"
             ),
             ("--json", "Machine-readable output, the XP log included"),
         ],
         examples: &[
             "cashflow skills",
             "cashflow skills --json | jq '.total_level'",
+        ],
+    },
+    CommandHelp {
+        name: "quests",
+        group: REPORTS,
+        summary: "The Adventure's quests: weekly, monthly and the goals",
+        usage: &[
+            "quests [--layer <name>]... [--except <name>]... [--rules <toml>] [--in <commodity>] [goal options] [--json]",
+        ],
+        details: "\
+List the quests running now, each with its progress, target and the XP it
+pays, then how many quests the books have completed in all and what they
+paid. A quest is worked out from the books and the vault for every period,
+never stored, so one completes when the data says so, on every machine:
+
+    weekly   triage 50 unknown transactions (or every one waiting, if fewer):
+             250 Bookkeeping, the day the count is reached
+    monthly  beat last month's net: 1,000 Saving when the month closes
+    monthly  import a source not imported for 30 days (not after 180):
+             100 Bookkeeping
+    epic     each goal on the goal boards (see `cashflow goals`), with its
+             status: 10,000 XP to the skill its metric levels, in the month
+             its card moved to done
+
+Weeks run Monday to Sunday in the vault's timezone setting.",
+        options: books_options![
+            (
+                "--in <commodity>",
+                "Count money in this commodity [default: CAD]"
+            ),
+            ("--board <slug>", "A goal board to look on; repeat for more"),
+            (
+                "--author <key>",
+                "Whose goal boards [default: the signing key's]"
+            ),
+            (
+                "--headway-db <path>",
+                "The headway cache to read goals from"
+            ),
+            ("--json", "Machine-readable output"),
+        ],
+        examples: &[
+            "cashflow quests",
+            "cashflow quests --json | jq '.quests[] | select(.kind == \"epic\")'",
+        ],
+    },
+    CommandHelp {
+        name: "achievements",
+        group: REPORTS,
+        summary: "The Adventure's achievements: unlocked, locked and points",
+        usage: &[
+            "achievements [--layer <name>]... [--except <name>]... [--rules <toml>] [--in <commodity>] [goal options] [--json]",
+        ],
+        details: "\
+List every achievement with its points, the unlocked ones marked with the
+day each was first reached, then the points earned of the total. An
+achievement is read off the books' history, so its date is when the
+condition first held, not when it was first looked at: a month's figures
+count at the month's end (today for the current month), and inbox zero on
+the day the last waiting transaction was categorized. A correction to the
+books can move a date or relock one.",
+        options: books_options![
+            (
+                "--in <commodity>",
+                "Count money in this commodity [default: CAD]"
+            ),
+            ("--board <slug>", "A goal board to look on; repeat for more"),
+            (
+                "--author <key>",
+                "Whose goal boards [default: the signing key's]"
+            ),
+            (
+                "--headway-db <path>",
+                "The headway cache to read goals from"
+            ),
+            ("--json", "Machine-readable output"),
+        ],
+        examples: &[
+            "cashflow achievements",
+            "cashflow achievements --json | jq '.points'",
         ],
     },
     CommandHelp {

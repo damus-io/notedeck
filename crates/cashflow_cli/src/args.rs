@@ -105,8 +105,22 @@ pub enum Command {
     Account(AccountCommand),
     /// `cashflow goals [--board <slug>]... [--author <key>] [--headway-db <path>] [--json]`.
     Goals(GoalsArgs),
-    /// `cashflow skills [books options] [--json]`.
-    Skills { books: BooksArgs, json: bool },
+    /// `cashflow skills [books options] [goal options] [--json]`.
+    Skills(AdventureArgs),
+    /// `cashflow quests [books options] [goal options] [--json]`.
+    Quests(AdventureArgs),
+    /// `cashflow achievements [books options] [goal options] [--json]`.
+    Achievements(AdventureArgs),
+}
+
+/// What an Adventure command (`skills`, `quests`, `achievements`) reads:
+/// the books, and the boards whose goals are its epic quests.
+#[derive(Debug, PartialEq)]
+pub struct AdventureArgs {
+    pub books: BooksArgs,
+    /// The goal options, as `goals` takes them; their `json` is unused.
+    pub goals: GoalsArgs,
+    pub json: bool,
 }
 
 /// One `cashflow account` subcommand.
@@ -566,21 +580,23 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
         "account" => account_command(positionals, &flags, json)?,
         "goals" => no_positionals(
             positionals,
-            Command::Goals(GoalsArgs {
-                boards: flags.values("--board").map(str::to_owned).collect(),
-                author: flags.value("--author").map(str::to_owned),
-                headway_db: flags.value("--headway-db").map(PathBuf::from),
-                json,
-            }),
+            Command::Goals(goals_args(&flags, json)),
             "goals",
         )?,
         "skills" => no_positionals(
             positionals,
-            Command::Skills {
-                books: books_args(&flags)?,
-                json,
-            },
+            Command::Skills(adventure_args(&flags, json)?),
             "skills",
+        )?,
+        "quests" => no_positionals(
+            positionals,
+            Command::Quests(adventure_args(&flags, json)?),
+            "quests",
+        )?,
+        "achievements" => no_positionals(
+            positionals,
+            Command::Achievements(adventure_args(&flags, json)?),
+            "achievements",
         )?,
         other => unreachable!("'{other}' has a help entry but no parser arm"),
     };
@@ -701,6 +717,25 @@ fn prices_command(positionals: Vec<String>, flags: &Flags, json: bool) -> Result
         sources,
         json,
     }))
+}
+
+/// The `--board`/`--author`/`--headway-db` naming where goals are read.
+fn goals_args(flags: &Flags, json: bool) -> GoalsArgs {
+    GoalsArgs {
+        boards: flags.values("--board").map(str::to_owned).collect(),
+        author: flags.value("--author").map(str::to_owned),
+        headway_db: flags.value("--headway-db").map(PathBuf::from),
+        json,
+    }
+}
+
+/// An Adventure command's books and goal options.
+fn adventure_args(flags: &Flags, json: bool) -> Result<AdventureArgs, String> {
+    Ok(AdventureArgs {
+        books: books_args(flags)?,
+        goals: goals_args(flags, false),
+        json,
+    })
 }
 
 /// The `--layer`/`--except`/`--rules`/`--in` a reading command shares.
@@ -1816,18 +1851,38 @@ mod tests {
             })
         );
         assert!(err_of(&["goals", "extra"]).contains("goals"));
+        let cards = AdventureArgs {
+            books: BooksArgs {
+                filter: LayerFilter::Only(vec!["cards".to_owned()]),
+                rules: None,
+                home: DEFAULT_HOME.to_owned(),
+            },
+            goals: GoalsArgs {
+                boards: Vec::new(),
+                author: None,
+                headway_db: None,
+                json: false,
+            },
+            json: true,
+        };
         assert_eq!(
             run_of(&["skills", "--layer", "cards", "--json"]).command,
-            Command::Skills {
-                books: BooksArgs {
-                    filter: LayerFilter::Only(vec!["cards".to_owned()]),
-                    rules: None,
-                    home: DEFAULT_HOME.to_owned(),
-                },
-                json: true,
-            }
+            Command::Skills(cards)
         );
         assert!(err_of(&["skills", "extra"]).contains("skills"));
+        let Command::Quests(quests) =
+            run_of(&["quests", "--board", "money", "--headway-db", "/tmp/hw"]).command
+        else {
+            panic!("not quests");
+        };
+        assert_eq!(quests.goals.boards, ["money"]);
+        assert_eq!(quests.goals.headway_db, Some(PathBuf::from("/tmp/hw")));
+        assert!(!quests.json);
+        assert!(matches!(
+            run_of(&["achievements", "--json"]).command,
+            Command::Achievements(AdventureArgs { json: true, .. })
+        ));
+        assert!(err_of(&["achievements", "extra"]).contains("achievements"));
     }
 
     #[test]

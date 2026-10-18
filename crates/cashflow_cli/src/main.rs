@@ -9,7 +9,8 @@
 //! (`rule`), the per-transaction edits (`categorize`, `uncategorize`,
 //! `split`, `transfer`, `edits`), the triage queue (`unknown`), the chart
 //! of accounts' metadata and aliases (`account`), the goals on Headway
-//! cards (`goals`), the Adventure's skills (`skills`), and the help surface.
+//! cards (`goals`), the Adventure's skills, quests and achievements
+//! (`skills`, `quests`, `achievements`), and the help surface.
 //! The real importers and the vault's other
 //! records are later cards on headway:cashflow/flame-vault-near and
 //! headway:cashflow/luggage-insane-limit.
@@ -18,6 +19,7 @@
 //! module; this file is the entry point and the dispatch.
 
 mod account_cmd;
+mod adventure_cmd;
 mod args;
 mod books_cmd;
 mod config_cmd;
@@ -27,7 +29,6 @@ mod help;
 mod journal_cmd;
 mod prices_cmd;
 mod rule_cmd;
-mod skills_cmd;
 mod sync_cmd;
 mod vault_cmd;
 
@@ -193,6 +194,8 @@ async fn execute(run: Run) -> Result<(), String> {
             account_cmd::alias(&dir, &mut session, from, None, *write).await
         }
         Command::Goals(args) => goals_cmd::ls(&dir, args),
-        Command::Skills { books, json } => skills_cmd::skills(&dir, &run, books, *json).await,
+        Command::Skills(args) => adventure_cmd::skills(&dir, &run, args).await,
+        Command::Quests(args) => adventure_cmd::quests(&dir, &run, args).await,
+        Command::Achievements(args) => adventure_cmd::achievements(&dir, &run, args).await,
     }
 }

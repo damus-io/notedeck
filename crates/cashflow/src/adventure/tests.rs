@@ -11,22 +11,22 @@ use crate::vault_rules::Owner;
 
 /// Today in the tests: May 2024 is the current month, January to April
 /// are closed.
-const TODAY: &str = "2024-05-15";
+pub(super) const TODAY: &str = "2024-05-15";
 
 /// Unix seconds at noon UTC on `date`.
-fn secs(date: &str) -> u64 {
+pub(super) fn secs(date: &str) -> u64 {
     u64::from(Date::parse(date).unwrap().days()) * 86_400 + 43_200
 }
 
 /// What a fold reads besides the books.
-struct World {
-    derive: DeriveInputs,
-    projects: Projects,
-    tuning: XpTuning,
+pub(super) struct World {
+    pub derive: DeriveInputs,
+    pub projects: Projects,
+    pub tuning: XpTuning,
 }
 
 impl World {
-    fn new() -> Self {
+    pub fn new() -> Self {
         World {
             derive: DeriveInputs::from_edits(Edits::default()),
             projects: Projects::default(),
@@ -34,7 +34,17 @@ impl World {
         }
     }
 
-    fn fold(&self, books: &Books, previous: Option<&Adventure>) -> Adventure {
+    pub fn fold(&self, books: &Books, previous: Option<&Adventure>) -> Adventure {
+        self.fold_with(books, &[], previous)
+    }
+
+    /// [`Self::fold`], with `goals` as the epic quests.
+    pub fn fold_with(
+        &self,
+        books: &Books,
+        goals: &[EpicGoal<'_>],
+        previous: Option<&Adventure>,
+    ) -> Adventure {
         let inputs = Inputs {
             books,
             home: books.home().unwrap(),
@@ -43,22 +53,23 @@ impl World {
             zone: Zone::Fixed(0),
             tuning: &self.tuning,
             today: Date::parse(TODAY).unwrap(),
+            goals,
         };
         fold(&inputs, previous)
     }
 }
 
 /// A month's income, as one salary transaction on its second day.
-fn salary(month: &str, amount: &str) -> String {
+pub(super) fn salary(month: &str, amount: &str) -> String {
     format!("{month}-02 * Acme\n  income:salary  -{amount} CAD\n  assets:checking\n\n")
 }
 
 /// A month's spending, as one grocery transaction on its third day.
-fn groceries(month: &str, amount: &str) -> String {
+pub(super) fn groceries(month: &str, amount: &str) -> String {
     format!("{month}-03 * Grocer\n  expenses:food  {amount} CAD\n  assets:checking\n\n")
 }
 
-fn xp(adventure: &Adventure, month: &str, id: SkillId) -> u64 {
+pub(super) fn xp(adventure: &Adventure, month: &str, id: SkillId) -> u64 {
     let date = Date::parse(&format!("{month}-01")).unwrap();
     let fold = adventure
         .months
@@ -256,7 +267,12 @@ fn bookkeeping_counts_edits_by_when_they_were_written() {
     assert_eq!(counts("2024-02").ruled, 2, "three matches, capped at two");
     assert_eq!(counts("2024-03").triaged, 1);
     assert_eq!(xp(&adventure, "2024-02", SkillId::Bookkeeping), 10);
-    assert_eq!(xp(&adventure, "2024-03", SkillId::Bookkeeping), 10);
+    // March's override cleared the last one waiting: that week's triage
+    // quest pays too.
+    assert_eq!(
+        xp(&adventure, "2024-03", SkillId::Bookkeeping),
+        10 + world.tuning.weekly_triage_xp
+    );
     // The segment was imported in 1970, before the books' months.
     assert_eq!(xp(&adventure, "2024-01", SkillId::Bookkeeping), 0);
 }

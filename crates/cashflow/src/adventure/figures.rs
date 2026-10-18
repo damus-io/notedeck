@@ -61,6 +61,8 @@ pub(super) struct Figures {
     pub projects: Vec<ProjectRevenue>,
     /// The vault edits written each month.
     pub bookkeeping: Vec<Bookkeeping>,
+    /// How many income accounts took revenue each month.
+    pub income_sources: Vec<u32>,
 }
 
 /// Where [`Figures::gather`] reads from.
@@ -86,6 +88,7 @@ impl Figures {
             sats: sats(sources.books, first, len),
             projects: project_revenue(sources, range, len),
             bookkeeping: bookkeeping(sources, first, len),
+            income_sources: income_sources(sources, range, len),
         }
     }
 }
@@ -181,6 +184,32 @@ fn project_revenue(sources: &Sources<'_>, range: DateRange, len: usize) -> Vec<P
         add(&root.project, 1);
         if let Some(enclosing) = enclosing {
             add(enclosing, -1);
+        }
+    }
+    out
+}
+
+/// How many income accounts took revenue each month: the leaves under
+/// [`INCOME`] whose month, in the home commodity, came out as money in.
+/// A month's sources are what the "revenue from several sources"
+/// achievement counts.
+fn income_sources(sources: &Sources<'_>, range: DateRange, len: usize) -> Vec<u32> {
+    let mut out = vec![0; len];
+    let accounts = &sources.books.ledger().journal().accounts;
+    let Some(income) = accounts.lookup(INCOME) else {
+        return out;
+    };
+    let query = sources.books.query();
+    for account in accounts.ids() {
+        if !accounts.is_ancestor(income, account) || !accounts.children(account).is_empty() {
+            continue;
+        }
+        let series = query.flows(account, range, Bucket::Month, sources.home);
+        for (month, point) in out.iter_mut().zip(&series.points) {
+            // Income postings are negative: revenue is below zero.
+            if point.total < 0 {
+                *month += 1;
+            }
         }
     }
     out

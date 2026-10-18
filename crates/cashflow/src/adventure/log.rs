@@ -51,6 +51,13 @@ pub enum Reason {
     Bookkeeping(Bookkeeping),
     /// A project skill: the project's revenue.
     ProjectRevenue { revenue: i128 },
+    /// A quest the books completed that month.
+    Quest {
+        /// The quest.
+        id: super::QuestId,
+        /// What it asked.
+        title: String,
+    },
     /// A re-derive lowered the month's XP from `was` to `now`.
     Adjustment { was: u64, now: u64 },
 }
@@ -98,6 +105,7 @@ impl Reason {
             Reason::ProjectRevenue { revenue } => {
                 format!("revenue {} × {}", money(revenue), tuning.project_per_unit)
             }
+            Reason::Quest { ref title, .. } => format!("quest: {title}"),
             Reason::Adjustment { was, now } => {
                 format!("corrected: the books changed, {was} → {now} XP")
             }

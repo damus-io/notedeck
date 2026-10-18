@@ -22,27 +22,53 @@ pub fn books(text: &str) -> Books {
 
 /// [`books`], derived with `edits`.
 pub fn books_with(text: &str, edits: &Edits) -> Books {
+    books_of(
+        &[TestSegment {
+            source: "t",
+            imported: 1,
+            text,
+        }],
+        edits,
+    )
+}
+
+/// One segment of a test journal.
+pub struct TestSegment<'a> {
+    /// Its source, which also prefixes its record ids.
+    pub source: &'a str,
+    /// When it was imported, in unix seconds.
+    pub imported: u64,
+    /// Its transactions.
+    pub text: &'a str,
+}
+
+/// Books loaded from `segments`, derived with `edits`, CAD as home. The
+/// transactions are given record ids numbered across every segment
+/// (`<source>:1`, `<source>:2`, …), since every one needs one.
+pub fn books_of(segments: &[TestSegment<'_>], edits: &Edits) -> Books {
     let tmp = tempfile::tempdir().unwrap();
     let store = JournalStore::new(tmp.path());
-    let header = SegmentHeader {
-        source: "t".to_owned(),
-        imported: 1,
-        layer: "t".to_owned(),
-    };
-    // Every transaction needs a record id: number them.
     let mut id = 0;
-    let text: String = text
-        .split_inclusive('\n')
-        .map(|line| {
-            if line.starts_with(' ') || line.trim().is_empty() {
-                return line.to_owned();
-            }
-            id += 1;
-            format!("{line}  ; id: t:{id}\n")
-        })
-        .collect();
-    store
-        .write_segment(&header, &Journal::parse(&text).journal)
-        .unwrap();
+    for segment in segments {
+        let header = SegmentHeader {
+            source: segment.source.to_owned(),
+            imported: segment.imported,
+            layer: "t".to_owned(),
+        };
+        let text: String = segment
+            .text
+            .split_inclusive('\n')
+            .map(|line| {
+                if line.starts_with(' ') || line.trim().is_empty() {
+                    return line.to_owned();
+                }
+                id += 1;
+                format!("{line}  ; id: {}:{id}\n", segment.source)
+            })
+            .collect();
+        store
+            .write_segment(&header, &Journal::parse(&text).journal)
+            .unwrap();
+    }
     Books::load(&store, LayerFilter::All, &HashSet::new(), edits, "CAD").unwrap()
 }

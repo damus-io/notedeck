@@ -28,15 +28,24 @@
 //! A month that wasn't positive ends the streak; a negative one shows as a
 //! cosmetic debuff and costs nothing else.
 //!
+//! **Quests** ([`quests`]) are worked out from the same data for every
+//! week and month, and each one the books completed adds its XP to its
+//! skill in the month it completed, logged as [`Reason::Quest`]; the ones
+//! running now are [`Adventure::quests`].
+//!
 //! Each month's XP per skill is kept ([`Adventure::months`]) so the
-//! achievements can read the history, and the [`log`] says what earned it.
+//! [`achievements`] can read the history, and the [`log`] says what
+//! earned it.
 //! A correction that lowers a past month's XP is logged as an adjustment
 //! when the fold before it is passed in (see [`log`] for what a restart
 //! loses).
 
+pub mod achievements;
+mod backlog;
 pub mod curve;
 mod figures;
 pub mod log;
+pub mod quests;
 pub mod tuning;
 
 use std::fmt;
@@ -51,8 +60,10 @@ use crate::{Books, DeriveInputs};
 pub use curve::{MAX_LEVEL, level_for_xp, xp_for_level, xp_to_next_level};
 pub use figures::{ASSETS, BTC, Bookkeeping};
 pub use log::{Reason, XpEntry};
+pub use quests::{EpicGoal, Quest, QuestId, QuestKind, QuestUnit};
 pub use tuning::XpTuning;
 
+use backlog::Backlog;
 use figures::{Figures, Sources};
 
 /// Where each fixed skill sits in [`SkillId::FIXED`], and so in
@@ -166,6 +177,10 @@ pub struct MonthFold {
     /// The streak of positive closed months ending with it (0 when it
     /// wasn't positive); for the current month, the streak behind it.
     pub streak: u32,
+    /// The vault edits written in it, and the sources imported.
+    pub bookkeeping: Bookkeeping,
+    /// How many income accounts took revenue in it.
+    pub income_sources: u32,
     /// The XP it earned in each of [`Adventure::skills`], in that order.
     pub xp: Vec<u64>,
 }
@@ -205,7 +220,7 @@ pub struct Buffs {
 }
 
 /// Every skill, levelled from the books.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Adventure {
     /// The fixed skills in [`SkillId::FIXED`] order, then one per project,
     /// by name.
@@ -218,9 +233,20 @@ pub struct Adventure {
     pub buffs: Buffs,
     /// Every month from the journal's first through the current one.
     pub months: Vec<MonthFold>,
-    /// XP earned, month by month and in skill order within one, then the
-    /// adjustments, in the order the folds found them.
+    /// XP earned, month by month and in skill order within one (each
+    /// month's quest awards after its skills), then the adjustments, in
+    /// the order the folds found them.
     pub log: Vec<XpEntry>,
+    /// The quests running this week and month, and the epic ones.
+    pub quests: Vec<Quest>,
+    /// The first day nothing was left to categorize, once anything had
+    /// been waiting; the first import's when nothing ever was.
+    pub inbox_zero: Option<Date>,
+    /// The decimals the home commodity is kept to, for reading the
+    /// history's amounts as whole units.
+    pub precision: u8,
+    /// The day the fold is as of.
+    pub as_of: Date,
 }
 
 impl Adventure {
@@ -263,6 +289,8 @@ pub struct Inputs<'a> {
     /// Today: its month is the current one, and the months before it are
     /// closed.
     pub today: Date,
+    /// The Headway goals, which are the epic quests.
+    pub goals: &'a [EpicGoal<'a>],
 }
 
 /// Level every skill from `inputs`, month by month. With `previous`, the
@@ -302,11 +330,31 @@ pub fn fold(inputs: &Inputs<'_>, previous: Option<&Adventure>) -> Adventure {
             .iter()
             .map(|p| SkillId::Project(p.project.clone())),
     );
+    let backlog = Backlog::gather(inputs.books, inputs.derive, inputs.zone);
+    let quests = quests::generate(&quests::Sources {
+        books: inputs.books,
+        home: inputs.home,
+        projects: inputs.projects,
+        zone: inputs.zone,
+        tuning,
+        today: inputs.today,
+        goals: inputs.goals,
+        first,
+        flows: &figures.flows,
+        backlog: &backlog,
+        skills: &ids,
+    });
+    // Each award in the month it completed in, clamped into the fold's.
+    let mut awards: Vec<Vec<&quests::Award>> = vec![Vec::new(); len];
+    for award in &quests.awards {
+        let at = (award.month.0.saturating_sub(first.0) as usize).min(len - 1);
+        awards[at].push(award);
+    }
     let mut months = Vec::with_capacity(len);
     let mut log = Vec::new();
     let mut streak = Streak::default();
     let mut debuff = None;
-    for i in 0..len {
+    for (i, awarded) in awards.iter().enumerate() {
         let month = Month(first.0 + i as u32);
         let closed = month < current;
         let flow = figures.flows[i];
@@ -382,6 +430,19 @@ pub fn fold(inputs: &Inputs<'_>, previous: Option<&Adventure>) -> Adventure {
                 Reason::ProjectRevenue { revenue },
             );
         }
+        for award in awarded {
+            let Some(at) = ids.iter().position(|id| id == &award.skill) else {
+                continue;
+            };
+            earned.add(
+                at,
+                award.xp,
+                Reason::Quest {
+                    id: award.id.clone(),
+                    title: award.title.clone(),
+                },
+            );
+        }
 
         if closed {
             if flow.net() > 0 {
@@ -402,6 +463,8 @@ pub fn fold(inputs: &Inputs<'_>, previous: Option<&Adventure>) -> Adventure {
             sats,
             bonus_percent,
             streak: streak.months,
+            bookkeeping: counts,
+            income_sources: figures.income_sources[i],
             xp: earned.xp,
         });
     }
@@ -430,6 +493,14 @@ pub fn fold(inputs: &Inputs<'_>, previous: Option<&Adventure>) -> Adventure {
         },
         months,
         log,
+        quests: quests.current,
+        inbox_zero: if backlog.is_empty() {
+            first_import(inputs)
+        } else {
+            backlog.first_zero()
+        },
+        precision,
+        as_of: inputs.today,
     };
     if let Some(previous) = previous {
         let mut kept: Vec<XpEntry> = previous.adjustments().cloned().collect();
@@ -438,6 +509,13 @@ pub fn fold(inputs: &Inputs<'_>, previous: Option<&Adventure>) -> Adventure {
         adventure.log.extend(kept.into_iter().skip(drop));
     }
     adventure
+}
+
+/// The day the first segment was imported, dated in the synced zone.
+fn first_import(inputs: &Inputs<'_>) -> Option<Date> {
+    let ledger = inputs.books.ledger();
+    let first = ledger.segments().iter().map(|s| s.header.imported).min()?;
+    Some(inputs.zone.date(first))
 }
 
 /// A month's Bookkeeping XP from its counts.
@@ -472,5 +550,7 @@ impl Earned<'_> {
     }
 }
 
+#[cfg(test)]
+mod game_tests;
 #[cfg(test)]
 mod tests;

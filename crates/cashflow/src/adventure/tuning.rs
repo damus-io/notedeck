@@ -1,4 +1,5 @@
-//! Every constant the XP fold multiplies by, in one place.
+//! Every constant the XP fold multiplies by, and the quests' targets and
+//! rewards, in one place.
 
 /// How much XP each thing the fold counts is worth.
 ///
@@ -42,6 +43,24 @@ pub struct XpTuning {
     pub streak_bonus_percent: u32,
     /// The most the Well Rested bonus reaches, in percent.
     pub streak_cap_percent: u32,
+    /// How many transactions the weekly triage quest asks for, at most:
+    /// fewer when fewer were waiting.
+    pub weekly_triage: u32,
+    /// Bookkeeping XP for completing a week's triage quest.
+    pub weekly_triage_xp: u64,
+    /// Saving XP for a closed month whose net beat the month before's.
+    pub beat_net_xp: u64,
+    /// How many days after its last import a source is stale, and gets an
+    /// import quest.
+    pub stale_days: u32,
+    /// How many days after its last import a source is taken to be gone,
+    /// and stops getting one.
+    pub forgotten_days: u32,
+    /// Bookkeeping XP for importing a stale source.
+    pub stale_import_xp: u64,
+    /// XP for a goal whose card moved to done, to the skill its metric
+    /// levels.
+    pub goal_xp: u64,
 }
 
 impl Default for XpTuning {
@@ -60,6 +79,13 @@ impl Default for XpTuning {
             project_per_unit: 10,
             streak_bonus_percent: 5,
             streak_cap_percent: 25,
+            weekly_triage: 50,
+            weekly_triage_xp: 250,
+            beat_net_xp: 1_000,
+            stale_days: 30,
+            forgotten_days: 180,
+            stale_import_xp: 100,
+            goal_xp: 10_000,
         }
     }
 }
