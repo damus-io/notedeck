@@ -61,6 +61,10 @@ const CHEVRON_HALF: f32 = 3.5;
 const GUTTER_GAP: f32 = 8.0;
 /// Gap between a diff line's marker and its content.
 const MARKER_GAP: f32 = 6.0;
+/// Rows a [sticky](PatchNote::sticky) note shows while it's pinned, at most;
+/// a third of the view, if that's fewer. Its chevron opens it to half the
+/// view.
+const PINNED_NOTE_ROWS: usize = 4;
 
 /// A scroll the caller asks for; applied on the next [`git_patch_ui`] pass.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -149,6 +153,14 @@ pub struct PatchNote {
     /// The caller's own handle for it — an index into its comments, say —
     /// so its drawer knows what to draw. The widget never reads it.
     pub key: usize,
+    /// Pin it under the pinned file header while its hunk is read, as a
+    /// section header is: once its own first row has scrolled under the top
+    /// of the view, it stays there until the hunk's last row pushes it out.
+    /// A pin taller than [`PINNED_NOTE_ROWS`] (or a third of the view) is cut
+    /// short, with a chevron to show more. Honoured only for
+    /// [`NotePlace::AboveHunk`]: a note under lines is about those lines, and
+    /// pinning it would hide the code it's on.
+    pub sticky: bool,
 }
 
 impl PatchNote {
@@ -256,6 +268,33 @@ pub struct GitPatchState {
     /// last used (see [`with_header`](Self::with_header)); `None` when it
     /// has none.
     header_rows: Option<usize>,
+    /// The pinned note (index into `line_notes`) opened past its cap with
+    /// its chevron, if any (see [`PatchNote::sticky`]).
+    pinned_open: Option<usize>,
+}
+
+/// The [sticky](PatchNote::sticky) note pinned at the top of the view, and
+/// the run of rows it's pinned over: from its own first row to the end of
+/// the hunk under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PinnedNote {
+    /// Index into `GitPatchState::line_notes`.
+    note: usize,
+    /// The virtual row the note itself starts on, just above its hunk.
+    hunk_first_row: usize,
+    /// The virtual row after the hunk's last: its last line's, or that
+    /// line's own notes'.
+    hunk_end_row: usize,
+}
+
+/// Where a pinned note is drawn, in the scroll content's coordinates: under
+/// the pinned file header, or higher once the end of its hunk pushes it out.
+#[derive(Debug, Clone, Copy)]
+struct PinSpan {
+    top: f32,
+    bottom: f32,
+    /// How many of the note's rows it shows.
+    rows: usize,
 }
 
 /// Where to draw the caller's header this pass, handed back by
@@ -581,6 +620,9 @@ struct Notes {
     binary: String,
     renamed: String,
     unchanged: String,
+    /// A capped pinned note's chevron, closed and open.
+    show_more: String,
+    show_less: String,
 }
 
 impl GitPatchState {
@@ -610,6 +652,16 @@ impl GitPatchState {
                 i18n,
                 "No content changes",
                 "Diff placeholder for a file whose only change is its mode"
+            ),
+            show_more: tr!(
+                i18n,
+                "Show more",
+                "Chevron under a note pinned over the diff, cut short to fit: shows the rest"
+            ),
+            show_less: tr!(
+                i18n,
+                "Show less",
+                "Chevron under a pinned diff note that was opened: cuts it short again"
             ),
         };
         Self {
@@ -726,6 +778,7 @@ impl GitPatchState {
         }
         self.note_rows = vec![1; notes.len()];
         self.line_notes = notes;
+        self.pinned_open = None;
         self.sum_note_rows();
         self.notes_stamp = Some(stamp);
         // Laid out per index, and the indices just changed.
@@ -988,35 +1041,134 @@ impl GitPatchState {
         ((self.viewport_height / row_step) as usize).saturating_sub(1)
     }
 
-    /// How many rows at the top of a view whose top row is `top` the pinned
-    /// file header hides: one while it's pinned (see [`sticky_header`]), none
-    /// on a file's own header row or in the summary.
-    fn pinned_rows(&self, top: usize) -> usize {
-        match self.file_at(top) {
-            Some(f) if self.file_rows[f] != top => 1,
-            _ => 0,
+    /// The [sticky](PatchNote::sticky) note pinned in a view whose top row
+    /// is `top`, if any: the last sticky note above a hunk, once `top` is
+    /// past its own first row and still inside the hunk. Found by locating
+    /// `top`'s hunk, then binary searches over the file's notes, which
+    /// [`set_notes`](Self::set_notes) sorted by the line they sit before.
+    fn pinned_note(&self, patch: &GitPatch, top: usize) -> Option<PinnedNote> {
+        let f = self.file_at(top)?;
+        let file = &patch.files()[f];
+        if self.is_collapsed(f) || file.hunks.is_empty() {
+            return None;
+        }
+        let b = top.checked_sub(self.file_rows[f] + 1)?;
+        // `top` may be on the notes above the hunk after the one it's
+        // located in, past that run's first row.
+        let h = self.hunk_at(f, file, b);
+        [h + 1, h]
+            .into_iter()
+            .filter(|&g| g < file.hunks.len())
+            .filter_map(|g| self.hunk_pin(f, file, g))
+            .find(|pin| pin.hunk_first_row < top && top < pin.hunk_end_row)
+    }
+
+    /// The pin hunk `g` of file `f` would get: its last sticky note above
+    /// it, the row that note starts on and the row after the hunk.
+    fn hunk_pin(&self, f: usize, file: &FilePatch, g: usize) -> Option<PinnedNote> {
+        let lines = file.hunks[g].lines.clone();
+        let last = lines.end.checked_sub(1).filter(|&l| l >= lines.start)?;
+        let start = self.note_spans.get(f)?.start;
+        let notes = self.file_notes(f);
+        // Notes above hunk `g` sit at its first line, after that slot's
+        // notes under the line before.
+        let above = notes
+            .partition_point(|n| (n.slot(), n.place == NotePlace::AboveHunk) < (lines.start, true));
+        let after = notes.partition_point(|n| n.slot() <= lines.start);
+        let k = (above..after)
+            .rev()
+            .find(|&k| notes[k].sticky && notes[k].place == NotePlace::AboveHunk)?;
+        let body = self.file_rows[f] + 1;
+        let header = body + self.hunk_row(f, file, g);
+        let note_rows = self.note_prefix[start + after] - self.note_prefix[start + k];
+        // The hunk ends after its last line and the notes under that line.
+        let under_end = notes
+            .partition_point(|n| (n.slot(), n.place == NotePlace::AboveHunk) < (lines.end, true));
+        let under = self.note_prefix[start + under_end]
+            - self.note_prefix[start + self.notes_before(f, last)];
+        Some(PinnedNote {
+            note: start + k,
+            hunk_first_row: header - note_rows,
+            hunk_end_row: body + self.line_row(f, g, last) + 1 + under,
+        })
+    }
+
+    /// How many of note `n`'s rows a pin may show: [`PINNED_NOTE_ROWS`] and
+    /// a third of the view, or half the view once its chevron opened it.
+    fn pin_cap(&self, n: usize, step: f32) -> usize {
+        if self.pinned_open == Some(n) {
+            return ((self.viewport_height / 2.0 / step) as usize).max(1);
+        }
+        ((self.viewport_height / 3.0 / step) as usize).clamp(1, PINNED_NOTE_ROWS)
+    }
+
+    /// Where `pin` is drawn in a view scrolled to `offset`: one row down,
+    /// under the pinned file header, and pushed up by as much as its bottom
+    /// would pass the bottom of its hunk's last row.
+    fn pin_span(&self, pin: PinnedNote, offset: f32, rows: RowMetrics) -> PinSpan {
+        let spacing = rows.step - rows.height;
+        let shown = self.note_rows[pin.note].min(self.pin_cap(pin.note, rows.step));
+        let top = offset + rows.step;
+        let bottom = top + shown as f32 * rows.step - spacing;
+        let hunk_bottom = pin.hunk_end_row as f32 * rows.step - spacing;
+        let push = (bottom - hunk_bottom).max(0.0);
+        PinSpan {
+            top: top - push,
+            bottom: bottom - push,
+            rows: shown,
         }
     }
 
+    /// How far down from the top of a view scrolled to `offset` what's
+    /// pinned covers the rows: the file header (see [`sticky_header`]), and
+    /// under it a [sticky](PatchNote::sticky) note (see [`sticky_note`]).
+    /// Nothing on a file's own header row or in the summary.
+    fn pinned_cover(&self, patch: &GitPatch, offset: f32, rows: RowMetrics) -> f32 {
+        let top = row_at(offset, rows.step);
+        match self.file_at(top) {
+            Some(f) if self.file_rows[f] != top => {}
+            _ => return 0.0,
+        }
+        let Some(pin) = self.pinned_note(patch, top) else {
+            return rows.height;
+        };
+        let span = self.pin_span(pin, offset, rows);
+        (span.bottom - offset).max(rows.height)
+    }
+
+    /// How many rows at the top of a view whose top row is `top` what's
+    /// pinned hides (see [`Self::pinned_cover`]).
+    fn pinned_rows(&self, patch: &GitPatch, top: usize, rows: RowMetrics) -> usize {
+        let cover = self.pinned_cover(patch, top as f32 * rows.step, rows);
+        ((cover - ROW_SLACK) / rows.step).ceil().max(0.0) as usize
+    }
+
     /// The offset one page on from `offset`: the first row not fully shown
-    /// becomes the first readable one. When a header would be pinned over
-    /// it, the view starts a row higher so the header covers a row already
-    /// read instead.
-    fn page_down(&self, offset: f32, rows: RowMetrics) -> f32 {
+    /// becomes the first readable one. When a header, or a note under it,
+    /// would be pinned over it, the view starts higher so they cover rows
+    /// already read instead: the lowest top whose pins end at that row. Where
+    /// a note's pin starting makes no top end there exactly, the one that
+    /// ends short of it, so rows of the note are read twice, never skipped.
+    fn page_down(&self, patch: &GitPatch, offset: f32, rows: RowMetrics) -> f32 {
         let top = row_at(offset, rows.step);
         // The first row whose bottom edge is below the view's.
         let bottom = offset + self.viewport_height + ROW_SLACK;
         let next = ((bottom - rows.height) / rows.step).floor() as usize + 1;
-        let new_top = next - self.pinned_rows(next).min(next);
+        // What's pinned covers at most the header and half the view.
+        let most = 2 + (self.viewport_height / 2.0 / rows.step) as usize;
+        let new_top = (0..=most.min(next))
+            .map(|k| next - k)
+            .find(|&t| t + self.pinned_rows(patch, t, rows) <= next)
+            .unwrap_or(next.saturating_sub(most));
         new_top.max(top + 1) as f32 * rows.step
     }
 
     /// The offset one page back from `offset`, the inverse of
     /// [`Self::page_down`]: the row above the first readable one becomes the
     /// last fully shown.
-    fn page_up(&self, offset: f32, rows: RowMetrics) -> f32 {
+    fn page_up(&self, patch: &GitPatch, offset: f32, rows: RowMetrics) -> f32 {
         let top = row_at(offset, rows.step);
-        let hidden = self.pinned_rows(top) as f32 * rows.height;
+        let hidden = self.pinned_cover(patch, offset, rows);
         let first_read = ((offset + hidden - ROW_SLACK) / rows.step).ceil() as usize;
         // Rows fully shown below an aligned top row.
         let below = ((self.viewport_height + ROW_SLACK - rows.height) / rows.step).floor() as usize;
@@ -1025,13 +1177,19 @@ impl GitPatchState {
     }
 
     /// The target of a [`PatchScroll::Pages`] request.
-    fn pages_target(&self, pages: f32, total_rows: usize, rows: RowMetrics) -> f32 {
+    fn pages_target(
+        &self,
+        patch: &GitPatch,
+        pages: f32,
+        total_rows: usize,
+        rows: RowMetrics,
+    ) -> f32 {
         let mut offset = self.offset;
         for _ in 0..(pages.trunc().abs() as usize) {
             offset = if pages > 0.0 {
-                self.page_down(offset, rows)
+                self.page_down(patch, offset, rows)
             } else {
-                self.page_up(offset, rows)
+                self.page_up(patch, offset, rows)
             };
             offset = self.clamp(offset, total_rows, rows.step);
         }
@@ -1043,7 +1201,12 @@ impl GitPatchState {
     /// [`Self::layout`], against this pass's rows. Before the first pass the
     /// request is kept: every request is measured from the view (its offset,
     /// its height, the file at its top), which isn't known yet.
-    fn take_target(&mut self, content_rows: usize, rows: RowMetrics) -> Option<f32> {
+    fn take_target(
+        &mut self,
+        patch: &GitPatch,
+        content_rows: usize,
+        rows: RowMetrics,
+    ) -> Option<f32> {
         if !self.synced {
             return None;
         }
@@ -1071,7 +1234,7 @@ impl GitPatchState {
             PatchScroll::Top | PatchScroll::PrevFile => 0.0,
             PatchScroll::Bottom => content_rows as f32 * row_step - self.viewport_height,
             PatchScroll::Rows(rows) => self.offset + rows as f32 * row_step,
-            PatchScroll::Pages(pages) => self.pages_target(pages, total_rows, rows),
+            PatchScroll::Pages(pages) => self.pages_target(patch, pages, total_rows, rows),
             // Past the last file: stay put.
             PatchScroll::File(_) | PatchScroll::NextFile => self.offset,
         };
@@ -1180,7 +1343,7 @@ pub fn git_patch_ui_with(
         height: row_height,
         step: row_step,
     };
-    let target = state.take_target(content_rows, rows);
+    let target = state.take_target(patch, content_rows, rows);
     let total_rows = content_rows + state.padding_rows(row_step);
 
     let id_salt = state
@@ -1208,6 +1371,8 @@ pub fn git_patch_ui_with(
                 let first = (viewport.min.y / row_step) as usize;
                 let end = ((viewport.max.y / row_step) as usize + 1).min(content_rows);
                 let top = ui.max_rect().top();
+                let top_row = row_at(viewport.min.y, row_step);
+                let pinned = state.pinned_note(patch, top_row);
                 let rows_rect = Rect::from_x_y_ranges(
                     ui.max_rect().x_range(),
                     top + first as f32 * row_step..=top + end as f32 * row_step,
@@ -1217,10 +1382,12 @@ pub fn git_patch_ui_with(
                     for row in first..end {
                         match state.locate(patch, row) {
                             // A drawn note is drawn whole from its first row,
-                            // or from the top of the view when that's above it.
+                            // or from the top of the view when that's above it
+                            // and it isn't pinned there instead.
                             Row::Comment(n, part) if state.line_notes[n].caller_draws => {
+                                let is_pinned = pinned.is_some_and(|p| p.note == n);
                                 match draw_note.as_deref_mut() {
-                                    Some(draw) if part == 0 || row == first => {
+                                    Some(draw) if part == 0 || (row == first && !is_pinned) => {
                                         drawn_note_ui(state, n, part, draw, ui)
                                     }
                                     Some(_) => skip_row(ui),
@@ -1235,7 +1402,17 @@ pub fn git_patch_ui_with(
                 });
 
                 let view_top = top + viewport.min.y;
-                sticky_header(patch, state, row_at(viewport.min.y, row_step), view_top, ui);
+                if let Some(pin) = pinned {
+                    let span = state.pin_span(pin, viewport.min.y, rows);
+                    let at = PinPlace {
+                        top: top + span.top,
+                        bottom: top + span.bottom,
+                        view_top: view_top + row_height,
+                    };
+                    // The rows are done with the drawer.
+                    sticky_note(state, pin.note, span.rows, at, draw_note, ui);
+                }
+                sticky_header(patch, state, top_row, view_top, ui);
 
                 // The header's rows, while the view still shows some of them.
                 let rows = state.header_rows?;
@@ -1561,9 +1738,23 @@ fn note_row_ui(note: &PatchNote, galley: Arc<Galley>, ui: &mut Ui) {
     let right = ui.clip_rect().right();
     let row = Rect::from_min_size(min, egui::vec2((right - min.x).max(0.0), height));
     let id = ui.advance_cursor_after_rect(row);
+    paint_note_row(note, galley, row, row.intersect(ui.clip_rect()), id, ui);
+}
+
+/// [`note_row_ui`]'s band, bar, text and hover in `row`, clipped to `clip`,
+/// without taking a row's space: also how a pinned plain note is drawn.
+fn paint_note_row(
+    note: &PatchNote,
+    galley: Arc<Galley>,
+    row: Rect,
+    clip: Rect,
+    id: egui::Id,
+    ui: &Ui,
+) {
+    let height = row.height();
     let visuals = ui.visuals();
     let accent = note_color(note.kind, visuals);
-    let painter = ui.painter();
+    let painter = ui.painter().with_clip_rect(clip);
     painter.rect_filled(row, 0.0, visuals.faint_bg_color);
     painter.rect_filled(
         Rect::from_min_size(row.min, egui::vec2(NOTE_BAR, height)),
@@ -1574,10 +1765,8 @@ fn note_row_ui(note: &PatchNote, galley: Arc<Galley>, ui: &mut Ui) {
         row.left() + ui.spacing().icon_width + STATUS_WIDTH,
         row.center().y - galley.size().y / 2.0,
     );
-    painter
-        .with_clip_rect(row.intersect(ui.clip_rect()))
-        .galley(text_min.round_ui(), galley, visuals.text_color());
-    let response = ui.interact(row, id.with("note"), Sense::hover());
+    painter.galley(text_min.round_ui(), galley, visuals.text_color());
+    let response = ui.interact(clip, id.with("note"), Sense::hover());
     response.widget_info(|| WidgetInfo::labeled(Role::Label, true, &note.text));
     response.on_hover_ui(|ui| {
         ui.label(&note.text);
@@ -1585,12 +1774,9 @@ fn note_row_ui(note: &PatchNote, galley: Arc<Galley>, ui: &mut Ui) {
 }
 
 /// Note `n`, drawn by the caller's `draw` from row `part` of it (the row this
-/// pass is at). The drawer gets the width right of the note's bar, and the
-/// bar runs as tall as the drawer drew: no band behind it, since what the
-/// caller draws (a comment card, a walk note's card) is its own container, and
-/// a band showed as grey padding around it. When the drawer used more or
-/// fewer rows than the note has, the note is resized once the pass is done.
-/// Advances one row, as every row does; the note's later rows skip.
+/// pass is at). When the drawer used more or fewer rows than the note has,
+/// the note is resized once the pass is done. Advances one row, as every row
+/// does; the note's later rows skip.
 fn drawn_note_ui(
     state: &mut GitPatchState,
     n: usize,
@@ -1609,22 +1795,9 @@ fn drawn_note_ui(
         egui::pos2(min.x, top),
         egui::pos2(right, top + rows as f32 * step - spacing),
     );
-    let accent = note_color(state.line_notes[n].kind, ui.visuals());
-    let inner = note_rect.with_min_x(min.x + NOTE_BAR);
-    let mut child = ui.new_child(
-        UiBuilder::new()
-            .id_salt(("patch_note", n))
-            .max_rect(inner)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    child.set_clip_rect(note_rect.intersect(ui.clip_rect()));
-    draw(&mut child, &state.line_notes[n]);
-
-    let used = child.min_rect().height();
-    let bar = Rect::from_min_size(note_rect.min, egui::vec2(NOTE_BAR, used));
-    ui.painter()
-        .with_clip_rect(note_rect.intersect(ui.clip_rect()))
-        .rect_filled(bar, 0.0, accent);
+    let clip = note_rect.intersect(ui.clip_rect());
+    let salt = ("patch_note", n);
+    let used = place_drawn_note(&state.line_notes[n], note_rect, clip, salt, draw, ui);
     let needed = (((used + spacing) / step).ceil() as usize).max(1);
     if needed != rows {
         // Not now: the rows after this one are still to be located against
@@ -1632,6 +1805,143 @@ fn drawn_note_ui(
         state.resized.push((n, needed));
     }
     skip_row(ui);
+}
+
+/// Hand `note` to the caller's `draw` in `note_rect`, right of the note's
+/// bar, clipped to `clip`, and return how tall the drawer drew it. The bar
+/// runs as tall as the drawer drew: no band behind it, since what the caller
+/// draws (a comment card, a walk note's card) is its own container, and a
+/// band showed as grey padding around it. `salt` keeps the drawer's ids its
+/// own where the same note is drawn twice (in its rows, and pinned).
+fn place_drawn_note(
+    note: &PatchNote,
+    note_rect: Rect,
+    clip: Rect,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    draw: &mut dyn FnMut(&mut Ui, &PatchNote),
+    ui: &mut Ui,
+) -> f32 {
+    let accent = note_color(note.kind, ui.visuals());
+    let inner = note_rect.with_min_x(note_rect.left() + NOTE_BAR);
+    let mut child = ui.new_child(
+        UiBuilder::new()
+            .id_salt(salt)
+            .max_rect(inner)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    child.set_clip_rect(clip);
+    draw(&mut child, note);
+
+    let used = child.min_rect().height();
+    let bar = Rect::from_min_size(note_rect.min, egui::vec2(NOTE_BAR, used));
+    ui.painter()
+        .with_clip_rect(clip)
+        .rect_filled(bar, 0.0, accent);
+    used
+}
+
+/// Where a pinned note goes this pass, in screen coordinates: `top` and
+/// `bottom` of the pin, and `view_top`, the bottom of the pinned file
+/// header's row, which it's clipped to as it's pushed out.
+#[derive(Debug, Clone, Copy)]
+struct PinPlace {
+    top: f32,
+    bottom: f32,
+    view_top: f32,
+}
+
+/// Steps of a cut-short pin's fade: painted as bands of rising opacity,
+/// since a gradient mesh would allocate every pass.
+const PIN_FADE_STEPS: usize = 6;
+
+/// Pin [sticky](PatchNote::sticky) note `n` at `at`, over the rows its hunk
+/// scrolls under, showing its first `shown` rows: on an opaque panel, which
+/// takes the clicks meant for the rows below, with the caller's `draw` (or
+/// the built-in one-line row) clipped to the pin. A note cut short fades out
+/// at its bottom and gets a chevron to show more, or less once opened (see
+/// [`GitPatchState::pinned_open`]). Draws nothing into the note's rows and
+/// doesn't resize it: its rows already do both.
+fn sticky_note(
+    state: &mut GitPatchState,
+    n: usize,
+    shown: usize,
+    at: PinPlace,
+    draw: Option<NoteDrawer<'_>>,
+    ui: &mut Ui,
+) {
+    let left = ui.max_rect().left();
+    let right = ui.clip_rect().right().max(left);
+    let spacing = ui.spacing().item_spacing.y;
+    let step = ui.spacing().interact_size.y + spacing;
+    let pin = Rect::from_x_y_ranges(left..=right, at.top..=at.bottom);
+    // The panel also fills the spacing between the header's row and the
+    // pin, so no sliver of the row under them shows through.
+    let panel_rect = pin.with_min_y(pin.top() - spacing);
+    let below_header = Rect::everything_below(at.view_top).intersect(ui.clip_rect());
+    let clip = pin.intersect(below_header);
+    if !clip.is_positive() {
+        return;
+    }
+    let id = ui.scope_id().with(("patch_note_pinned", n));
+    let panel = ui.visuals().panel_fill;
+    let claimed = panel_rect.intersect(below_header);
+    ui.painter()
+        .with_clip_rect(claimed)
+        .rect_filled(panel_rect, 0.0, panel);
+    ui.interact(claimed, id, Sense::click());
+
+    let note = &state.line_notes[n];
+    match draw {
+        Some(draw) if note.caller_draws => {
+            let rows = state.note_rows[n] as f32;
+            let whole = pin.with_max_y(pin.top() + rows * step - spacing);
+            let salt = ("patch_note_pinned", n);
+            place_drawn_note(note, whole, clip, salt, draw, ui);
+        }
+        // Painted in place, as in its row: a child `Ui` would allocate.
+        _ => {
+            let galley = state.galleys.note(n, note, ui);
+            let row = pin.with_max_y(pin.top() + step - spacing);
+            paint_note_row(note, galley, row, clip, id, ui);
+        }
+    }
+
+    let capped = state.note_rows[n] > shown;
+    let open = state.pinned_open == Some(n);
+    if !capped && !open {
+        return;
+    }
+    let painter = ui.painter().with_clip_rect(clip);
+    if capped {
+        let fade = step.min(pin.height());
+        let band = fade / PIN_FADE_STEPS as f32;
+        for i in 0..PIN_FADE_STEPS {
+            let y = pin.bottom() - fade + i as f32 * band;
+            let alpha = (i + 1) as f32 / PIN_FADE_STEPS as f32;
+            let rect = Rect::from_x_y_ranges(pin.left() + NOTE_BAR..=pin.right(), y..=y + band);
+            painter.rect_filled(rect, 0.0, panel.gamma_multiply(alpha));
+        }
+    }
+    let size = ui.spacing().icon_width;
+    let chevron = Rect::from_min_size(
+        egui::pos2(row_right(ui) - size, pin.bottom() - size),
+        egui::vec2(size, size),
+    );
+    let label = if open {
+        &state.notes.show_less
+    } else {
+        &state.notes.show_more
+    };
+    let response = ui
+        .interact(chevron.intersect(clip), id.with("more"), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, label));
+    painter.circle_filled(chevron.center(), size / 2.0, panel);
+    // Down for more, up for less.
+    chevron_ui(ui, if open { -1.0 } else { 1.0 }, chevron);
+    if response.clicked() {
+        state.pinned_open = if open { None } else { Some(n) };
+    }
 }
 
 /// How far right of a row's start an image column begins: under the path,
@@ -2104,6 +2414,7 @@ mod tests {
             place: NotePlace::Under,
             caller_draws: false,
             key: 0,
+            sticky: false,
         };
         // long.txt: hunk 0 is lines 0..7, hunk 1 lines 7..15. Given out of
         // order; one on a file that doesn't exist is dropped.
@@ -2168,6 +2479,7 @@ mod tests {
             place,
             caller_draws: false,
             key: 0,
+            sticky: false,
         };
         // long.txt: hunk 0 is lines 0..7, hunk 1 lines 7..15. "over 1" is
         // given on a line inside hunk 1 and moves to the hunk.
@@ -2227,6 +2539,7 @@ mod tests {
             place: NotePlace::Under,
             caller_draws: true,
             key: 0,
+            sticky: false,
         };
         state.set_notes(&patch, vec![note], 1);
         // As tall as a longer note was last pass.
@@ -2265,6 +2578,7 @@ mod tests {
             place: NotePlace::Under,
             caller_draws: true,
             key: 0,
+            sticky: false,
         };
         state.set_notes(&patch, vec![note], 1);
         let size = egui::vec2(800.0, 1600.0);
@@ -2578,12 +2892,13 @@ mod tests {
     /// drawn rect must sit inside the view and below the pinned header.
     /// `None` when no row is readable.
     fn readable(
+        patch: &GitPatch,
         state: &GitPatchState,
         offset: f32,
         rows: RowMetrics,
         content: usize,
     ) -> Option<RangeInclusive<usize>> {
-        let pinned = state.pinned_rows(row_at(offset, rows.step)) as f32 * rows.height;
+        let pinned = state.pinned_cover(patch, offset, rows);
         let mut shown = (0..content).filter(|&r| {
             let top = r as f32 * rows.step - offset;
             top >= pinned - ROW_SLACK && top + rows.height <= state.viewport_height + ROW_SLACK
@@ -2592,21 +2907,81 @@ mod tests {
         Some(first..=shown.next_back().unwrap_or(first))
     }
 
+    /// A sticky note above file `file`'s hunk with line `line`, `rows` rows
+    /// tall, as a drawn walk note grows to.
+    fn sticky_walk(file: usize, line: usize) -> PatchNote {
+        PatchNote {
+            file,
+            lines: line..line + 1,
+            text: "walk".to_string(),
+            kind: PatchNoteKind::Walk,
+            place: NotePlace::AboveHunk,
+            caller_draws: true,
+            key: 0,
+            sticky: true,
+        }
+    }
+
+    /// `patch`'s state with `notes` set and each grown to `rows` rows.
+    fn noted_state(patch: &GitPatch, notes: Vec<PatchNote>, rows: &[usize]) -> GitPatchState {
+        let mut state = GitPatchState::new(patch, &mut Localization::default());
+        state.set_notes(patch, notes, 1);
+        for (n, &r) in rows.iter().enumerate() {
+            state.set_note_rows(n, r);
+        }
+        state
+    }
+
     /// Paging a page down and back up, from aligned and unaligned offsets,
     /// in views that fit a whole number of rows and views that don't: a page
     /// down starts reading on the row after the last one read (or on that
     /// row's own file header, which a pinned header would otherwise hide),
     /// and a page up ends on the row before the first one read. So no line
     /// is skipped and none is read twice.
+    ///
+    /// With a sticky note pinned under the header, the page counts the pin
+    /// as covering rows too. Where the pin starting makes no page end right
+    /// at the next row, a page down may read the note's own rows (and its
+    /// hunk's header) again, which the pin restates anyway; never a line of
+    /// code, and it never skips one.
     #[test]
     fn a_page_neither_skips_nor_repeats_a_row() {
         let rows = RowMetrics {
             height: 18.0,
             step: 21.0,
         };
-        for patch in [GitPatch::parse(MULTI), tall_patch(120)] {
-            let mut state = GitPatchState::new(&patch, &mut Localization::default());
-            let content = state.layout(&patch);
+        let multi = GitPatch::parse(MULTI);
+        let tall = tall_patch(120);
+        let cases = [
+            (&multi, vec![], vec![]),
+            (&tall, vec![], vec![]),
+            (&tall, vec![sticky_walk(0, 0)], vec![3]),
+            // long.txt's second hunk, under a note on its first's last line,
+            // and a note taller than a pin shows.
+            (
+                &multi,
+                vec![
+                    PatchNote {
+                        place: NotePlace::Under,
+                        sticky: false,
+                        ..sticky_walk(4, 6)
+                    },
+                    sticky_walk(4, 7),
+                    sticky_walk(4, 0),
+                ],
+                vec![2, 7, 2],
+            ),
+        ];
+        for (patch, notes, grown) in cases {
+            let mut state = noted_state(patch, notes, &grown);
+            let content = state.layout(patch);
+            // A row a page may read twice: a pinned note's, or its hunk's
+            // header.
+            let restated = |state: &GitPatchState, r: usize| match state.locate(patch, r) {
+                Row::Comment(n, _) => state.line_notes[n].sticky,
+                Row::HunkHeader(..) => true,
+                _ => false,
+            };
             let max = |state: &GitPatchState| content as f32 * rows.step - state.viewport_height;
             for viewport in [100.0, 147.0, 210.0, 333.0] {
                 state.viewport_height = viewport;
@@ -2614,26 +2989,29 @@ mod tests {
                     if start > max(&state) {
                         break;
                     }
-                    let Some(read) = readable(&state, start, rows, content) else {
+                    let Some(read) = readable(patch, &state, start, rows, content) else {
                         continue;
                     };
                     let last = *read.end();
-                    let down = state.page_down(start, rows);
+                    let down = state.page_down(patch, start, rows);
                     assert_eq!(down % rows.step, 0.0, "page down lands on a row");
                     if down <= max(&state) {
-                        let first = *readable(&state, down, rows, content).unwrap().start();
+                        let first = *readable(patch, &state, down, rows, content)
+                            .unwrap()
+                            .start();
                         let header = state.file_rows.contains(&first);
+                        let again = first <= last && (first..=last).all(|r| restated(&state, r));
                         assert!(
-                            first == last + 1 || (first == last && header),
+                            first == last + 1 || (first == last && header) || again,
                             "viewport {viewport}, from {start}: read to {last}, then from {first}"
                         );
                     }
 
                     let first = *read.start();
-                    let up = state.page_up(start, rows);
+                    let up = state.page_up(patch, start, rows);
                     assert_eq!(up % rows.step, 0.0, "page up lands on a row");
                     if up > 0.0 {
-                        let back_last = *readable(&state, up, rows, content).unwrap().end();
+                        let back_last = *readable(patch, &state, up, rows, content).unwrap().end();
                         assert_eq!(
                             back_last + 1,
                             first,
@@ -2643,6 +3021,251 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// [`GitPatchState::pinned_note`] agrees with [`GitPatchState::locate`]
+    /// on every row: a sticky note pins from the row after its own first
+    /// to its hunk's last row (its last line, or that line's notes), worked
+    /// out here by walking the rows instead of by the binary searches.
+    #[test]
+    fn pinned_note_matches_the_rows_it_covers() {
+        let patch = GitPatch::parse(MULTI);
+        let notes = vec![
+            sticky_walk(4, 0),
+            PatchNote {
+                place: NotePlace::Under,
+                sticky: false,
+                ..sticky_walk(4, 6)
+            },
+            sticky_walk(4, 9),
+            // Not sticky: never pinned.
+            PatchNote {
+                sticky: false,
+                ..sticky_walk(7, 0)
+            },
+        ];
+        let mut state = noted_state(&patch, notes, &[3, 2, 2, 2]);
+        let content = state.layout(&patch);
+        let rows: Vec<_> = (0..content).map(|r| state.locate(&patch, r)).collect();
+        // Per sticky note, its first row and the row after its hunk.
+        let spans: Vec<_> = (0..state.line_notes.len())
+            .filter(|&n| state.line_notes[n].sticky)
+            .map(|n| {
+                let note = &state.line_notes[n];
+                let first = rows.iter().position(|&r| r == Row::Comment(n, 0)).unwrap();
+                let hunk = note.lines.clone();
+                let in_hunk = |r: &Row| match *r {
+                    Row::Line(f, i) => f == note.file && hunk.contains(&i),
+                    Row::Comment(m, _) => {
+                        let m = &state.line_notes[m];
+                        m.file == note.file
+                            && m.place == NotePlace::Under
+                            && m.lines.end == hunk.end
+                    }
+                    _ => false,
+                };
+                let end = rows.iter().rposition(in_hunk).unwrap() + 1;
+                PinnedNote {
+                    note: n,
+                    hunk_first_row: first,
+                    hunk_end_row: end,
+                }
+            })
+            .collect();
+        assert_eq!(spans.len(), 2);
+        let mut pinned_rows = 0;
+        for (top, row) in rows.iter().enumerate() {
+            let want = spans
+                .iter()
+                .find(|p| p.hunk_first_row < top && top < p.hunk_end_row)
+                .copied();
+            assert_eq!(state.pinned_note(&patch, top), want, "row {top}: {row:?}");
+            pinned_rows += usize::from(want.is_some());
+        }
+        assert!(pinned_rows > 10, "pinned over {pinned_rows} rows");
+
+        state.set_collapsed(4, true);
+        state.layout(&patch);
+        assert!((0..state.layout(&patch)).all(|top| state.pinned_note(&patch, top).is_none()));
+    }
+
+    /// A walk note's drawer: three labels, about three rows.
+    fn three_labels(ui: &mut Ui, _: &PatchNote) {
+        ui.label("walk one");
+        ui.label("walk two");
+        ui.label("walk three");
+    }
+
+    /// A 120-line patch with a sticky walk note over its first file's hunk,
+    /// drawn by `draw`.
+    fn pinned_harness(draw: fn(&mut Ui, &PatchNote)) -> Harness<'static, PatchUi> {
+        let patch = tall_patch(120);
+        let mut state = GitPatchState::new(&patch, &mut Localization::default());
+        state.set_notes(&patch, vec![sticky_walk(0, 0)], 1);
+        Harness::builder()
+            .with_size(egui::vec2(800.0, 400.0))
+            .build_ui_state(
+                move |ui, PatchUi { patch, state }: &mut PatchUi| {
+                    let mut draw = draw;
+                    git_patch_ui_with(patch, state, ui, Some(&mut draw));
+                },
+                PatchUi { patch, state },
+            )
+    }
+
+    /// A sticky note stays in view while its hunk is read, under the pinned
+    /// file header; it's gone once the view jumps to the next file, and near
+    /// the hunk's end its bottom is pushed up to the hunk's last row.
+    #[test]
+    fn a_sticky_note_pins_while_its_hunk_is_read() {
+        let mut harness = pinned_harness(three_labels);
+        harness.run();
+        assert!(
+            harness.state().state.note_rows[0] >= 2,
+            "grew to its labels"
+        );
+
+        harness.state_mut().state.scroll(PatchScroll::Rows(60));
+        harness.run();
+        assert_eq!(shown(&harness, "big 1"), 0, "its own rows are far above");
+        assert_eq!(shown(&harness, "walk one"), 1, "pinned");
+        harness.get_by_role_and_label(Role::Button, "big.txt");
+
+        harness.state_mut().state.scroll(PatchScroll::File(1));
+        harness.run();
+        assert_eq!(shown(&harness, "walk one"), 0);
+
+        // The view's top two rows from the hunk's end.
+        let PatchUi { patch, state } = harness.state();
+        let pin = state.pinned_note(patch, 60).unwrap();
+        let end = pin.hunk_end_row;
+        let step = harness.state().state.offset / state.file_rows[1] as f32;
+        harness.state_mut().state.scroll(PatchScroll::Top);
+        harness.run();
+        harness
+            .state_mut()
+            .state
+            .scroll(PatchScroll::Rows(end as isize - 2));
+        harness.run();
+        let PatchUi { patch, state } = harness.state();
+        let offset = state.offset;
+        let rows = RowMetrics {
+            height: step - harness.ctx.global_style().spacing.item_spacing.y,
+            step,
+        };
+        let pin = state
+            .pinned_note(patch, row_at(offset, step))
+            .expect("still pinned");
+        let span = state.pin_span(pin, offset, rows);
+        let hunk_bottom = end as f32 * step - (step - rows.height);
+        assert!(
+            span.bottom <= hunk_bottom + 0.01,
+            "{span:?} vs {hunk_bottom}"
+        );
+        assert!(span.top < offset + step, "pushed up: {span:?}");
+        assert_eq!(shown(&harness, "big 120"), 1);
+    }
+
+    /// A click on a pinned note goes to the note, not to the line whose
+    /// gutter is under it: nothing is picked. The same click below the pin
+    /// picks that line. The note draws no widgets of its own, which would
+    /// take the click themselves: only the pin stands in its way.
+    #[test]
+    fn a_click_on_a_pinned_note_picks_nothing_under_it() {
+        let mut harness = pinned_harness(|ui, _| ui.add_space(50.0));
+        harness.run();
+        harness.state_mut().state.scroll(PatchScroll::Rows(60));
+        harness.run();
+        let rows = harness.state().state.note_rows[0];
+        // Row 60 is under the pinned header and the pin covers the next
+        // `rows`; line `k` is row `7 + k`.
+        let under = format!("big {}", 61 - 7);
+        let below = format!("big {}", 61 + rows + 1 - 7);
+        let click = |harness: &mut Harness<'_, PatchUi>, label: &str| {
+            let y = harness
+                .query_all_by_label(label)
+                .find(|n| n.accesskit_node().role() == Role::Label)
+                .unwrap_or_else(|| panic!("{label} laid out"))
+                .rect()
+                .center()
+                .y;
+            let pos = egui::pos2(12.0, y);
+            harness.event(egui::Event::PointerMoved(pos));
+            harness.step();
+            for pressed in [true, false] {
+                harness.event(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                });
+                harness.step();
+            }
+            harness.run();
+        };
+        click(&mut harness, &under);
+        assert_eq!(harness.state().state.selection(), None);
+        click(&mut harness, &below);
+        assert!(
+            harness.state().state.selection().is_some(),
+            "{below} picked"
+        );
+    }
+
+    /// A pin cut short by its cap gets a chevron that opens it to half the
+    /// view and closes it again; new notes close it.
+    #[test]
+    fn a_capped_pin_opens_with_its_chevron() {
+        let patch = tall_patch(120);
+        let mut state = GitPatchState::new(&patch, &mut Localization::default());
+        state.set_notes(&patch, vec![sticky_walk(0, 0)], 1);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 400.0))
+            .build_ui_state(
+                |ui, PatchUi { patch, state }: &mut PatchUi| {
+                    let mut draw = |ui: &mut Ui, _: &PatchNote| {
+                        for line in ["one", "two", "three", "four", "five", "six", "seven"] {
+                            ui.label(format!("walk {line}"));
+                        }
+                    };
+                    git_patch_ui_with(patch, state, ui, Some(&mut draw));
+                },
+                PatchUi { patch, state },
+            );
+        harness.run();
+        harness.state_mut().state.scroll(PatchScroll::Rows(60));
+        harness.run();
+        assert!(harness.state().state.note_rows[0] > PINNED_NOTE_ROWS);
+        let step = harness.state().state.offset / 60.0;
+        let cover = |h: &Harness<'_, PatchUi>| {
+            let PatchUi { patch, state } = h.state();
+            let rows = RowMetrics {
+                height: step - h.ctx.global_style().spacing.item_spacing.y,
+                step,
+            };
+            state.pinned_cover(patch, state.offset, rows)
+        };
+        let closed = cover(&harness);
+        assert!(closed <= (1 + PINNED_NOTE_ROWS) as f32 * step, "{closed}");
+
+        harness
+            .get_by_role_and_label(Role::Button, "Show more")
+            .click_accesskit();
+        harness.run();
+        assert_eq!(harness.state().state.pinned_open, Some(0));
+        let open = cover(&harness);
+        assert!(open > closed && open <= step + 200.0, "{closed} -> {open}");
+
+        harness
+            .get_by_role_and_label(Role::Button, "Show less")
+            .click_accesskit();
+        harness.run();
+        assert_eq!(harness.state().state.pinned_open, None);
+
+        harness.state_mut().state.pinned_open = Some(0);
+        let PatchUi { patch, state } = harness.state_mut();
+        state.set_notes(patch, vec![sticky_walk(0, 0)], 2);
+        assert_eq!(state.pinned_open, None, "new notes close it");
     }
 
     /// A patch swapped in where another was scrolled opens at the top when

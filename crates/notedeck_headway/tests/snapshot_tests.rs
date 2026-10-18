@@ -5275,6 +5275,36 @@ fn snapshot_headway_review_code_walk() {
     harness.snapshot("headway_review_code_walk");
 }
 
+/// Snapshot: the review queue's code walk in a short window, jumped to
+/// `src/queue.rs` and paged down once, so the top of the view is inside its
+/// hunk: its walk note stays pinned under the file's pinned header, over the
+/// code it explains.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_code_walk_pinned() {
+    let fixture = review_fixture();
+    // Opened tall, so the queue's waits see both files in the summary.
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 1000.0));
+    seed_review_queue(&mut harness, &fixture);
+    add_queue_sources(&mut harness);
+    open_review_queue(&mut harness);
+    wait_for_label(&mut harness, "Keys come next.");
+    harness.set_size(egui::Vec2::new(1200.0, 520.0));
+    harness.run_steps(3);
+    // `]` twice: src/keys.rs's header, then src/queue.rs's.
+    press_board_keys(&mut harness, &[egui::Key::CloseBracket; 2]);
+    harness.run_steps(3);
+    press_board_keys(&mut harness, &[egui::Key::Space]);
+    harness.run_steps(3);
+    assert!(
+        harness
+            .query_by_label("The step stops at the last card.")
+            .is_some(),
+        "queue.rs's walk note is pinned"
+    );
+    harness.snapshot("headway_review_code_walk_pinned");
+}
+
 /// Snapshot: the review queue's Explainer tab, the record's explainer source
 /// rendered with its front matter as a header.
 #[test]

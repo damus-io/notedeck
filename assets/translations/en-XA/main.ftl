@@ -1144,6 +1144,12 @@ Settings_4d83 = {"["}Séttíñgs{"]"}
 # Column title for app settings
 Settings_7a4f = {"["}Séttíñgs{"]"}
 
+# Chevron under a pinned diff note that was opened: cuts it short again
+Show_less_2a7f = {"["}Shów léss{"]"}
+
+# Chevron under a note pinned over the diff, cut short to fit: shows the rest
+Show_more_ee51 = {"["}Shów móré{"]"}
+
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = {"["}Shów thé làst ñóté fór éàçh úsér fróm à líst{"]"}
 

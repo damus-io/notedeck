@@ -17,8 +17,8 @@ use egui::{CentralPanel, Context, Pos2, RawInput, Rect};
 use notedeck::Localization;
 use notedeck_testing::alloc::{measure, CountingAllocator};
 use notedeck_ui::diff::{
-    git_patch_ui, FileImages, GitPatch, GitPatchState, ImageSide, MediaKind, PatchImage,
-    PatchModel, PatchScroll,
+    git_patch_ui, FileImages, GitPatch, GitPatchState, ImageSide, MediaKind, NotePlace, PatchImage,
+    PatchModel, PatchNote, PatchNoteKind, PatchScroll,
 };
 
 #[global_allocator]
@@ -54,11 +54,12 @@ struct Settled {
 
 /// A context showing `patch` in a view `height` tall, scrolled well into the
 /// file so every visible row is a diff line, and settled: fonts loaded, the
-/// scroll applied, the view's rows laid out once.
-fn settled(patch: &GitPatch, height: f32, selectable: bool) -> Settled {
+/// scroll applied, the view's rows laid out once. `notes` are set first.
+fn settled(patch: &GitPatch, height: f32, selectable: bool, notes: Vec<PatchNote>) -> Settled {
     let ctx = Context::default();
     ctx.global_style_mut(|s| s.interaction.selectable_labels = selectable);
     let mut state = GitPatchState::new(patch, &mut Localization::default());
+    state.set_notes(patch, notes, 1);
     state.scroll(PatchScroll::Rows(200));
     let input = RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, height))),
@@ -83,7 +84,7 @@ fn frame_allocs(patch: &GitPatch, height: f32, selectable: bool) -> u64 {
         ctx,
         mut state,
         input,
-    } = settled(patch, height, selectable);
+    } = settled(patch, height, selectable, Vec::new());
     let counts = measure(|| frame(&ctx, patch, &mut state, input)).counts;
     eprintln!("height {height}, selectable {selectable}: {counts}");
     counts.thread.allocs + counts.thread.reallocs
@@ -117,6 +118,41 @@ fn diff_rows_do_not_allocate_per_frame() {
 #[test]
 fn selectable_rows_do_not_allocate_per_frame() {
     assert_eq!(marginal_allocs(true), 0);
+}
+
+/// One steady-state frame of [`rust_patch`] scrolled into its hunk, under a
+/// note above the hunk that is `sticky` or not.
+fn note_frame_allocs(sticky: bool) -> u64 {
+    let patch = rust_patch(900);
+    let note = PatchNote {
+        file: 0,
+        lines: 0..1,
+        text: "What this hunk does".to_string(),
+        kind: PatchNoteKind::Walk,
+        place: NotePlace::AboveHunk,
+        caller_draws: false,
+        key: 0,
+        sticky,
+    };
+    let Settled {
+        ctx,
+        mut state,
+        input,
+    } = settled(&patch, TALL_HEIGHT, true, vec![note]);
+    let counts = measure(|| frame(&ctx, &patch, &mut state, input)).counts;
+    eprintln!("note sticky {sticky}: {counts}");
+    counts.thread.allocs + counts.thread.reallocs
+}
+
+/// A sticky note pinned over its hunk costs nothing per frame: its row is
+/// laid out once, as a note's always is, and the pin only paints it again
+/// in a clipped child, with its fade as bands rather than a mesh. Measured
+/// against the same note unpinned.
+#[test]
+fn a_pinned_note_does_not_allocate_per_frame() {
+    let pinned = note_frame_allocs(true);
+    let unpinned = note_frame_allocs(false);
+    assert_eq!(pinned.saturating_sub(unpinned), 0);
 }
 
 /// A commit changing one PNG.
@@ -219,7 +255,7 @@ fn attribute_tall_frame() {
         ctx,
         mut state,
         input,
-    } = settled(&patch, TALL_HEIGHT, true);
+    } = settled(&patch, TALL_HEIGHT, true, Vec::new());
     let sites = notedeck_testing::alloc::attribute(|| frame(&ctx, &patch, &mut state, input)).sites;
     for s in sites.iter().take(25) {
         eprintln!("{:5} {:8}  {}", s.allocs, s.bytes, s.frame);

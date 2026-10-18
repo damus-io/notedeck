@@ -1144,6 +1144,12 @@ Settings_4d83 = Settings
 # Column title for app settings
 Settings_7a4f = Settings
 
+# Chevron under a pinned diff note that was opened: cuts it short again
+Show_less_2a7f = Show less
+
+# Chevron under a note pinned over the diff, cut short to fit: shows the rest
+Show_more_ee51 = Show more
+
 # Description for last note per user column
 Show_the_last_note_for_each_user_from_a_list_50e7 = Show the last note for each user from a list
 

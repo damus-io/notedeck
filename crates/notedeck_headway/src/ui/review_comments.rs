@@ -283,6 +283,7 @@ fn sync_notes(loaded: &mut LoadedReview, record: &ReviewView, drafts: &ReviewDra
             // Drawn whole, author and all, by `posted_comment_ui`.
             caller_draws: true,
             key,
+            sticky: false,
         })
     });
     // A comment on the commit as a whole has no rows; `comments_ui` lists it.
@@ -300,6 +301,7 @@ fn sync_notes(loaded: &mut LoadedReview, record: &ReviewView, drafts: &ReviewDra
                 place: NotePlace::Under,
                 caller_draws: false,
                 key,
+                sticky: false,
             })
         });
     // Drawn whole, as Markdown, by `walk_note_ui`; one on no hunk is drawn
@@ -315,6 +317,8 @@ fn sync_notes(loaded: &mut LoadedReview, record: &ReviewView, drafts: &ReviewDra
                 place: NotePlace::AboveHunk,
                 caller_draws: true,
                 key,
+                // Kept in view while its hunk is read.
+                sticky: true,
             })
         })
     });
