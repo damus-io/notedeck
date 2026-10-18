@@ -87,7 +87,35 @@ Customize Android views for testing:
 ./scripts/dev_setup.sh
 ```
 
-This installs git hooks for code formatting and changelog trailer validation.
+This installs git hooks for code formatting and changelog trailer validation,
+and a pre-push hook that uploads Git LFS objects.
+
+### Snapshot pngs are in Git LFS
+
+The egui snapshot baselines (`crates/*/tests/snapshots/**/*.png`) are stored in
+[Git LFS](https://git-lfs.com). Everything else, including the images under
+`assets/` and the Android icons, is a plain git blob, so building and
+`cargo test` work without it. You need git-lfs only to run or re-record
+snapshot tests (`scripts/snapshot-test`) and to push a commit that changes a
+snapshot:
+
+```bash
+brew install git-lfs    # or: apt install git-lfs; the nix shell provides it
+git lfs install         # once per machine: the smudge/clean filters
+git lfs pull            # in a clone made before git-lfs was installed
+```
+
+If you never run snapshot tests, `GIT_LFS_SKIP_SMUDGE=1 git clone ...` skips
+downloading them; `scripts/snapshot-test` then stops and says to `git lfs pull`.
+
+The objects live on GitHub (damus-io/notedeck). To push to a remote that has no
+LFS server of its own, such as a plain SSH mirror, point git-lfs at GitHub for
+that remote; don't commit a `.lfsconfig`, which would send every fork's pushes
+there:
+
+```bash
+git config remote.<name>.lfsurl https://github.com/damus-io/notedeck.git/info/lfs
+```
 
 ## 📚 Documentation
 
@@ -116,7 +144,7 @@ Building on notedeck dev documentation is also on the roadmap.
 Contributions are welcome! Please check the developer documentation and follow these guidelines:
 
 1. Fork the repository
-2. Run `./scripts/dev_setup.sh` to install git hooks
+2. Install [git-lfs](https://git-lfs.com) and run `git lfs install` (snapshot pngs are in LFS; see above), then run `./scripts/dev_setup.sh` to install git hooks
 3. Create a feature branch (`git checkout -b feature/amazing-feature`)
 4. Before committing, run `cargo fmt --all && cargo clippy`
 5. Every commit must include a Changelog git trailer. For user-facing changes use `Changelog-Added`, `Changelog-Changed`, `Changelog-Fixed`, or `Changelog-Removed`. For internal changes use `Changelog-None:`. CI enforces this.

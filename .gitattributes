@@ -1,0 +1,5 @@
+# egui_kittest snapshot baselines live in Git LFS (see README, "Snapshot pngs
+# are in Git LFS"). Real assets (assets/, the Android mipmaps) are compiled in
+# and must stay plain blobs; crates/bin_testing/tests/lfs_snapshots.rs checks
+# both.
+crates/*/tests/snapshots/**/*.png filter=lfs diff=lfs merge=lfs -text
