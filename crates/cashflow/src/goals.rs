@@ -32,7 +32,7 @@ pub mod progress;
 
 pub use progress::{EvalError, Progress, Status, evaluate};
 
-use headway::boards::{self, Roster};
+use headway::boards::Roster;
 use headway::event::{BoardView, CardView};
 use ledgerdb::{AmountText, Date, Decimal};
 use nostrdb::Ndb;
@@ -684,17 +684,8 @@ pub struct Goal {
 /// what registers the sealed boards' roots: without it they fold empty.
 #[profiling::function]
 pub fn discover(ndb: &Ndb, roster: &Roster, boards: &[impl AsRef<str>]) -> Vec<Goal> {
-    let shared = boards::list_shared_with_me(ndb, roster);
-    let mut goals = Vec::new();
-    for slug in boards {
-        let slug = slug.as_ref();
-        let own = boards::load_board(ndb, roster, slug).filter(|view| !view.deleted);
-        let theirs = shared.iter().filter(|view| view.id == slug);
-        for view in own.iter().chain(theirs) {
-            goals.extend(board_goals(view));
-        }
-    }
-    goals
+    let views = crate::board_progress::named_boards(ndb, roster, boards);
+    views.iter().flat_map(board_goals).collect()
 }
 
 /// The goals on one folded board, in column then card order.
@@ -962,7 +953,7 @@ mod tests {
 
 #[cfg(test)]
 mod discovery_tests {
-    use headway::boards::{Identity, Roster};
+    use headway::boards::{self, Identity, Roster};
     use headway::event::{self, BoardView};
     use headway::store::{self, BoardAction, NewCard, NoPublish, Signer};
     use headway::teams::RootRegistry;

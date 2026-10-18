@@ -110,6 +110,40 @@ fn settings_set_then_read_back_in_another_process() {
     assert!(fresh.contains("(default)"), "{fresh}");
 }
 
+/// `boards:<project>` links a project to Headway boards: `show` lists it,
+/// `get` prints its slugs, and an empty value unlinks it.
+#[test]
+fn settings_link_a_project_to_boards() {
+    let cf = logged_in();
+    assert_eq!(cf.ok(&["settings", "get", "boards:damus"]).trim(), "");
+    let set = cf.ok(&[
+        "settings",
+        "set",
+        "boards:damus",
+        "damus-ios, damus-android",
+    ]);
+    assert!(
+        set.contains("boards:damus = damus-ios damus-android"),
+        "{set}"
+    );
+    assert_eq!(
+        cf.ok(&["settings", "get", "boards:damus"]).trim(),
+        "damus-ios damus-android"
+    );
+    assert!(cf.ok(&["settings"]).contains("boards:damus"));
+    let json: Value = serde_json::from_str(&cf.ok(&["settings", "show", "--json"])).unwrap();
+    assert_eq!(
+        json[2],
+        serde_json::json!({"name": "boards:damus", "value": "damus-ios damus-android", "default": false})
+    );
+
+    let unlinked = cf.ok(&["settings", "set", "boards:damus", ""]);
+    assert!(unlinked.contains("(unlinked)"), "{unlinked}");
+    assert!(!cf.ok(&["settings"]).contains("boards:damus"));
+    let err = expect_failure(cf.run(&["settings", "set", "boards:two words", "x"]));
+    assert!(err.contains("project"), "{err}");
+}
+
 /// A bad setting name or value fails, naming what's wrong, and stores
 /// nothing.
 #[test]

@@ -8,10 +8,12 @@ cashflow = { workspace = true }
 chrono = { workspace = true }
 egui = { workspace = true }
 glam = { workspace = true }
+headway = { workspace = true }
 ledgerdb = { workspace = true }
 notedeck = { workspace = true }
 notedeck_ui = { workspace = true }
 nostrdb = { workspace = true }
+nostrdb_net = { workspace = true }
 poll-promise = { workspace = true }
 profiling = { workspace = true }
 renderbud = { workspace = true }

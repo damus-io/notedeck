@@ -43,6 +43,8 @@ pub struct ViewCx<'a> {
     /// Which project each account is in, from the chart of accounts. A
     /// change bumps [`LedgerCx::generation`] too.
     pub projects: &'a cashflow::projects::Projects,
+    /// Which Headway boards each project links, and their progress.
+    pub boards: &'a crate::boards::Boards,
     /// The date [`Self::period`] is resolved against.
     pub today: Date,
     /// The span of days every view reports on, shared so picking one in a

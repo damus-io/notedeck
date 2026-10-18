@@ -1,6 +1,7 @@
 //! The Projects view: revenue per project, its delta, sparkline, mix and
 //! net, the unattributed row, and a project's detail, over a synthetic
-//! journal with three projects.
+//! journal with three projects; and the work on the Headway boards two of
+//! them link, from hand-made board progress.
 //!
 //! The model and behavioural tests run under a plain `cargo test`. The
 //! snapshots are `#[ignore]`d and run via `scripts/snapshot-test` (lavapipe).
@@ -8,11 +9,16 @@
 mod common;
 
 use cashflow::Books;
+use cashflow::board_progress::BoardProgress;
 use cashflow::projects::{ProjectRoot, Projects};
 use common::{DESKTOP, MOBILE, books_from, harness, snapshot_harness, today};
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable;
-use notedeck_cashflow::views::projects::model::{Inputs, Report, projects};
+use ledgerdb::Date;
+use notedeck_cashflow::boards::ProjectLink;
+use notedeck_cashflow::views::projects::model::{
+    BoardInputs, BoardRow, Inputs, Report, boards, projects,
+};
 use notedeck_cashflow::{CashflowApp, Period, View};
 
 /// A window tall enough for the list or a detail.
@@ -314,6 +320,168 @@ fn new_attribution_recomputes() {
     assert_eq!(harness.query_all_by_label("4678.50 CAD").count(), 2);
 }
 
+/// Noon UTC on `date`, in unix seconds: the same day in any zone within
+/// eleven hours of UTC, so the machine's zone can't move a card a day.
+fn noon(date: &str) -> u64 {
+    u64::from(Date::parse(date).unwrap().days()) * 86_400 + 43_200
+}
+
+/// Damus links its iOS board and an Android board that isn't in the
+/// cache; Notedeck links its own; the node links nothing.
+fn links() -> Vec<ProjectLink> {
+    let link = |project: &str, boards: &[&str]| ProjectLink {
+        project: project.to_owned(),
+        boards: boards.iter().map(|b| (*b).to_owned()).collect(),
+    };
+    vec![
+        link("damus", &["damus-ios", "damus-android"]),
+        link("notedeck", &["notedeck"]),
+        link("unknown-project", &["elsewhere"]),
+    ]
+}
+
+/// The linked boards: damus-ios finished three cards this October, two in
+/// September, one in June and one in 2023, before the journal starts;
+/// notedeck four in August and one this month. Every card is made up.
+fn progress() -> Vec<BoardProgress> {
+    let board = |slug: &str, in_progress, in_review, done: &[&str]| BoardProgress {
+        board: slug.to_owned(),
+        owner: [7; 32],
+        in_progress,
+        in_review,
+        completed: done.iter().map(|d| noon(d)).collect(),
+    };
+    vec![
+        board(
+            "damus-ios",
+            2,
+            1,
+            &[
+                "2023-11-20",
+                "2024-06-14",
+                "2024-09-02",
+                "2024-09-30",
+                "2024-10-03",
+                "2024-10-05",
+                "2024-10-10",
+            ],
+        ),
+        board(
+            "notedeck",
+            1,
+            0,
+            &[
+                "2024-08-01",
+                "2024-08-09",
+                "2024-08-20",
+                "2024-08-31",
+                "2024-10-16",
+            ],
+        ),
+        board("elsewhere", 5, 5, &["2024-10-01"]),
+    ]
+}
+
+/// [`app`] with [`links`] and [`progress`].
+fn app_with_boards() -> CashflowApp {
+    let mut app = app();
+    app.set_project_links(links());
+    app.set_board_progress(progress());
+    app
+}
+
+/// The board figures for [`report_of`] over `period`.
+fn boards_of(report: &Report, period: Period) -> Vec<Option<BoardRow>> {
+    boards(BoardInputs {
+        report,
+        links: &links(),
+        progress: &progress(),
+        period,
+        today: today(),
+    })
+}
+
+/// This month, Damus's boards finished three cards and Notedeck's one, as
+/// the rows' sparklines count per month from June; a linked board not in
+/// the cache is named; the node and the unattributed row link nothing, and
+/// a linked project with no revenue row is dropped.
+#[test]
+fn board_progress_beside_revenue() {
+    let books = books();
+    let r = report_of(&books, &attribution(), Period::ThisMonth);
+    let rows = boards_of(&r, Period::ThisMonth);
+    assert_eq!(rows.len(), r.rows.len());
+    let of = |project: Option<&str>| rows[r.position(project).unwrap()].as_ref();
+
+    let damus = of(Some("damus")).expect("damus links boards");
+    assert_eq!(damus.boards_text, "damus-ios, damus-android");
+    assert_eq!((damus.done, damus.in_progress, damus.in_review), (3, 2, 1));
+    assert_eq!(damus.stats_text, "3 done · 2 in progress · 1 in review");
+    assert_eq!(damus.spark, [1.0, 0.0, 0.0, 2.0, 3.0]);
+    assert_eq!(
+        damus.missing_text.as_deref(),
+        Some("not found: damus-android")
+    );
+    assert_eq!(damus.lines.len(), 1);
+    assert_eq!(damus.lines[0].board, "damus-ios");
+
+    let notedeck = of(Some("notedeck")).expect("notedeck links its board");
+    assert_eq!(notedeck.stats_text, "1 done · 1 in progress · 0 in review");
+    assert_eq!(notedeck.spark, [0.0, 0.0, 4.0, 0.0, 1.0]);
+    assert_eq!(notedeck.missing_text, None);
+
+    assert!(of(Some("node")).is_none(), "the node links no board");
+    assert!(of(None).is_none());
+
+    // All time counts every card, the one before the journal too.
+    let all = boards_of(&r, Period::AllTime);
+    let damus = all[r.position(Some("damus")).unwrap()].as_ref().unwrap();
+    assert_eq!(damus.done, 7);
+    let last = boards_of(&r, Period::LastMonth);
+    let damus = last[r.position(Some("damus")).unwrap()].as_ref().unwrap();
+    assert_eq!(damus.done, 2);
+}
+
+/// The tiles of linked projects carry their board line; one with no
+/// linked board shows none, and an app with no links shows none at all.
+#[test]
+fn only_linked_projects_show_board_progress() {
+    let linked = harness(app_with_boards(), TALL);
+    assert_eq!(linked.query_all_by_label("Headway").count(), 2);
+    assert!(
+        linked
+            .query_by_label("3 done · 2 in progress · 1 in review")
+            .is_some()
+    );
+    assert!(linked.query_by_label("not found: damus-android").is_some());
+
+    let unlinked = harness(app(), TALL);
+    assert_eq!(unlinked.query_all_by_label("Headway").count(), 0);
+}
+
+/// A project's detail shows its boards' work, a line per board when two
+/// or more fold; new progress redraws it.
+#[test]
+fn detail_lists_each_board() {
+    let mut harness = harness(app_with_boards(), TALL);
+    harness.get_by_role_and_label(Role::Button, "damus").click();
+    harness.run();
+    assert!(harness.query_by_label("Work on Headway").is_some());
+    assert!(harness.query_by_label("damus-ios, damus-android").is_some());
+    // Only damus-ios folded, so no line of its own.
+    assert!(harness.query_by_label("damus-ios").is_none());
+
+    let mut fewer = progress();
+    fewer[0].in_progress = 9;
+    harness.state_mut().app.set_board_progress(fewer);
+    harness.run();
+    assert!(
+        harness
+            .query_by_label("3 done · 9 in progress · 1 in review")
+            .is_some()
+    );
+}
+
 /// With no books loaded the view says so.
 #[test]
 fn no_books_says_so() {
@@ -350,4 +518,31 @@ fn snapshot_projects_detail() {
 fn snapshot_projects_mobile() {
     let mut harness = snapshot_harness(app(), MOBILE);
     harness.snapshot("cashflow_projects_mobile");
+}
+
+/// The list with Damus and Notedeck linked to boards: each tile's board
+/// line and its finished-cards sparkline under the revenue one.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_projects_boards() {
+    let mut harness = snapshot_harness(app_with_boards(), TALL);
+    harness.snapshot("cashflow_projects_boards");
+}
+
+/// Damus's detail with its boards' work, the Android board not found.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_projects_boards_detail() {
+    let mut harness = snapshot_harness(app_with_boards(), TALL);
+    harness.get_by_role_and_label(Role::Button, "damus").click();
+    harness.run();
+    harness.snapshot("cashflow_projects_boards_detail");
+}
+
+/// The boards list on a phone: the board line wraps inside its tile.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_projects_boards_mobile() {
+    let mut harness = snapshot_harness(app_with_boards(), MOBILE);
+    harness.snapshot("cashflow_projects_boards_mobile");
 }

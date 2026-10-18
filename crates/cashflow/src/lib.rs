@@ -26,12 +26,15 @@
 //! income, expenses and net every report totals with. [`goals`] reads the
 //! financial goals that live as `cashflow-goal` blocks on Headway cards,
 //! and measures each one's progress and whether it is on track.
+//! [`board_progress`] reads how the work moves on the boards a project
+//! links.
 //! The game derive
 //! lands here in a later card; the design all of this follows is on the
 //! root epic, headway:cashflow/flame-vault-near.
 //!
 //! No egui: the app depends on this crate, never the other way round.
 
+pub mod board_progress;
 pub mod books;
 pub mod chart;
 pub mod config;

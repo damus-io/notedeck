@@ -8,6 +8,10 @@
 //! - **A project's detail** (click its tile): revenue per month as a line
 //!   chart (expenses beside it when the project has them) and its sources,
 //!   largest first, each a link into the Categories view drilled into it.
+//! - **The work beside it**: a project linked to Headway boards shows, on
+//!   its tile and in its detail, the cards finished in the period, what is
+//!   in progress and in review, and a sparkline of cards finished per
+//!   month over the revenue sparkline's months ([`model::boards`]).
 //!
 //! Which account is in which project comes from the chart of accounts
 //! ([`cashflow::projects::Projects`], handed in with
@@ -25,8 +29,8 @@ use notedeck_ui::charts::{
 
 use super::categories::{self, model::Flow};
 use super::{LedgerCx, ViewCx};
-use crate::{Period, View, money::compact, ui::palette::Palette};
-use model::{Inputs, ProjectRow, Report};
+use crate::{Period, View, boards::Boards, money::compact, ui::palette::Palette};
+use model::{BoardInputs, BoardRow, Inputs, ProjectRow, Report};
 
 /// Height of the detail's revenue chart in the wide layout.
 const CHART_HEIGHT: f32 = 220.0;
@@ -51,6 +55,10 @@ pub(crate) struct ProjectsState {
     key: Option<Key>,
     /// The figures, once there are books in the home commodity.
     report: Option<Report>,
+    /// What [`Self::boards`] was computed from.
+    boards_key: Option<BoardsKey>,
+    /// Each of [`Self::report`]'s rows' board figures, in its order.
+    boards: Vec<Option<BoardRow>>,
     /// The project whose detail is showing, if one is.
     open: Option<Opened>,
 }
@@ -70,13 +78,23 @@ struct Key {
     today: Date,
 }
 
+/// What the cached board figures depend on: the report they line up with,
+/// and the boards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BoardsKey {
+    report: Key,
+    boards: u64,
+}
+
 impl ProjectsState {
-    /// Recompute the figures if `ledger`, `period` or `today` moved.
+    /// Recompute the figures if `ledger`, `period` or `today` moved, and
+    /// the board figures if those or `boards` did.
     #[profiling::function]
     fn refresh(
         &mut self,
         ledger: LedgerCx<'_>,
         projects: &cashflow::projects::Projects,
+        boards: &Boards,
         period: Period,
         today: Date,
     ) {
@@ -85,15 +103,31 @@ impl ProjectsState {
             period,
             today,
         };
-        if self.key == Some(key) {
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.report = ledger.books.home().map(|home| {
+                model::projects(Inputs {
+                    books: ledger.books,
+                    home,
+                    projects,
+                    period,
+                    today,
+                })
+            });
+        }
+        let boards_key = BoardsKey {
+            report: key,
+            boards: boards.generation(),
+        };
+        if self.boards_key == Some(boards_key) {
             return;
         }
-        self.key = Some(key);
-        self.report = ledger.books.home().map(|home| {
-            model::projects(Inputs {
-                books: ledger.books,
-                home,
-                projects,
+        self.boards_key = Some(boards_key);
+        self.boards = self.report.as_ref().map_or_else(Vec::new, |report| {
+            model::boards(BoardInputs {
+                report,
+                links: boards.links(),
+                progress: boards.progress(),
                 period,
                 today,
             })
@@ -129,7 +163,7 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
     let period = *cx.period;
     let states = &mut *cx.states;
     let state = &mut states.projects;
-    state.refresh(ledger, cx.projects, period, cx.today);
+    state.refresh(ledger, cx.projects, cx.boards, period, cx.today);
     let Some(report) = &state.report else {
         muted(
             ui,
@@ -139,20 +173,25 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
         return;
     };
 
-    let open = state
-        .open
-        .as_ref()
-        .and_then(|o| report.row(o.project.as_deref()));
+    let boards = &state.boards;
+    let open = state.open.as_ref().and_then(|o| {
+        let at = report.position(o.project.as_deref())?;
+        Some(Shown {
+            row: &report.rows[at],
+            board: boards.get(at).and_then(Option::as_ref),
+        })
+    });
     let mut action = None;
     egui::ScrollArea::vertical()
         .id_salt("cashflow_projects")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             action = match open {
-                Some(row) => detail_ui(ui, palette, report, row, period, narrow),
-                None => list_ui(ui, palette, report, period),
+                Some(shown) => detail_ui(ui, palette, report, shown, period, narrow),
+                None => list_ui(ui, palette, report, boards, period),
             };
         });
+    let open = open.map(|shown| shown.row);
 
     match action {
         Some(Action::Open(at)) => {
@@ -172,11 +211,19 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
     }
 }
 
+/// A project's row and its board figures, when it links boards.
+#[derive(Clone, Copy)]
+struct Shown<'a> {
+    row: &'a ProjectRow,
+    board: Option<&'a BoardRow>,
+}
+
 /// The total, then a tile per project. Returns a tile or link clicked.
 fn list_ui(
     ui: &mut egui::Ui,
     palette: &Palette,
     report: &Report,
+    boards: &[Option<BoardRow>],
     period: Period,
 ) -> Option<Action> {
     ui.horizontal_wrapped(|ui| {
@@ -202,7 +249,8 @@ fn list_ui(
     }
     let mut action = None;
     for (at, row) in report.rows.iter().enumerate() {
-        if tile(ui, palette, row, period).clicked() {
+        let board = boards.get(at).and_then(Option::as_ref);
+        if tile(ui, palette, Shown { row, board }, period).clicked() {
             action = Some(Action::Open(at));
         }
         if row.project.is_none() && triage_link(ui, palette).clicked() {
@@ -214,9 +262,11 @@ fn list_ui(
 }
 
 /// One project's tile: its name and share, then its sparkline and revenue
-/// at the right; its changes under them; then its revenue mix. The whole tile is a button into the
+/// at the right; its changes under them; its boards' work when it links
+/// any; then its revenue mix. The whole tile is a button into the
 /// project's detail.
-fn tile(ui: &mut egui::Ui, palette: &Palette, row: &ProjectRow, period: Period) -> egui::Response {
+fn tile(ui: &mut egui::Ui, palette: &Palette, shown: Shown<'_>, period: Period) -> egui::Response {
+    let row = shown.row;
     let inner = egui::Frame::new()
         .fill(palette.surface)
         .corner_radius(8.0)
@@ -250,6 +300,9 @@ fn tile(ui: &mut egui::Ui, palette: &Palette, row: &ProjectRow, period: Period) 
                 });
             });
             ui.horizontal_wrapped(|ui| changes_ui(ui, palette, row, period));
+            if let Some(board) = shown.board {
+                board_ui(ui, palette, board);
+            }
             ui.add_space(6.0);
             mix_ui(ui, palette, row);
         });
@@ -291,6 +344,45 @@ fn changes_ui(ui: &mut egui::Ui, palette: &Palette, row: &ProjectRow, period: Pe
         };
         small(ui, "net", palette.text_muted);
         small(ui, &net.net_text, color);
+    }
+}
+
+/// A project's boards' work on one line: the boards, the cards finished
+/// in the period and what is open, and a sparkline of cards finished per
+/// month at the right. On a phone the line wraps, the sparkline last.
+fn board_ui(ui: &mut egui::Ui, palette: &Palette, board: &BoardRow) {
+    let spark = |ui: &mut egui::Ui| {
+        sparkline(
+            ui,
+            SPARK_SIZE,
+            &board.spark,
+            palette.accent,
+            SparkStyle::default(),
+        )
+        .on_hover_text(model::BOARD_HELP);
+    };
+    if notedeck::ui::is_narrow(ui.ctx()) {
+        ui.horizontal_wrapped(|ui| {
+            board_stats_ui(ui, palette, board);
+            spark(ui);
+        });
+        return;
+    }
+    ui.horizontal(|ui| {
+        board_stats_ui(ui, palette, board);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), spark);
+    });
+}
+
+/// The boards' slugs, their figures, and the slugs that didn't fold.
+fn board_stats_ui(ui: &mut egui::Ui, palette: &Palette, board: &BoardRow) {
+    small(ui, "Headway", palette.text_muted);
+    small(ui, &board.boards_text, palette.accent);
+    ui.add_space(4.0);
+    small(ui, &board.stats_text, palette.text);
+    if let Some(missing) = &board.missing_text {
+        ui.add_space(4.0);
+        small(ui, missing, palette.expense);
     }
 }
 
@@ -365,10 +457,11 @@ fn detail_ui(
     ui: &mut egui::Ui,
     palette: &Palette,
     report: &Report,
-    row: &ProjectRow,
+    shown: Shown<'_>,
     period: Period,
     narrow: bool,
 ) -> Option<Action> {
+    let row = shown.row;
     let mut action = None;
     let back =
         egui::Button::new(RichText::new("← All projects").color(palette.text_muted)).frame(false);
@@ -406,6 +499,13 @@ fn detail_ui(
     chart_ui(ui, palette, report, row, narrow);
     ui.add_space(24.0);
 
+    if let Some(board) = shown.board {
+        section_heading(ui, palette, "Work on Headway");
+        ui.add_space(4.0);
+        board_detail_ui(ui, palette, board);
+        ui.add_space(24.0);
+    }
+
     section_heading(ui, palette, "Sources");
     ui.add_space(4.0);
     if row.sources.is_empty() {
@@ -426,6 +526,22 @@ fn detail_ui(
         }
     }
     action
+}
+
+/// The boards' work in a detail: the totals and the per-month sparkline,
+/// then a line per board when more than one folded.
+fn board_detail_ui(ui: &mut egui::Ui, palette: &Palette, board: &BoardRow) {
+    board_ui(ui, palette, board);
+    if board.lines.len() < 2 {
+        return;
+    }
+    ui.add_space(4.0);
+    for line in &board.lines {
+        ui.horizontal_wrapped(|ui| {
+            small(ui, &line.board, palette.accent);
+            small(ui, &line.stats_text, palette.text_muted);
+        });
+    }
 }
 
 /// Revenue per month as a line, and expenses beside it when the project

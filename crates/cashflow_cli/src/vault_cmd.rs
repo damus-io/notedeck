@@ -170,7 +170,11 @@ pub fn logout(dir: &CashflowDir) -> Result<(), String> {
 fn setting_named(name: &str) -> Result<Setting, String> {
     Setting::from_name(name).ok_or_else(|| {
         let known: Vec<&str> = Setting::ALL.iter().map(|s| s.name()).collect();
-        format!("no setting named '{name}' (settings: {})", known.join(", "))
+        format!(
+            "no setting named '{name}' (settings: {}, {}<project>)",
+            known.join(", "),
+            settings::BOARDS_PREFIX
+        )
     })
 }
 
@@ -188,6 +192,13 @@ pub fn show(session: &Session, json: bool) -> Result<(), String> {
                     "default": settings.value(s).is_none(),
                 })
             })
+            .chain(settings.project_boards().map(|links| {
+                json!({
+                    "name": format!("{}{}", settings::BOARDS_PREFIX, links.project),
+                    "value": links.slugs,
+                    "default": false,
+                })
+            }))
             .collect();
         println!("{}", serde_json::Value::Array(rows));
         return Ok(());
@@ -204,20 +215,54 @@ pub fn show(session: &Session, json: bool) -> Result<(), String> {
             settings.effective(setting)
         );
     }
+    for links in settings.project_boards() {
+        println!(
+            "{}{:<10}{}",
+            settings::BOARDS_PREFIX,
+            links.project,
+            links.slugs
+        );
+    }
     Ok(())
 }
 
 /// `cashflow settings get <name>`: the value alone, default included.
 pub fn get(session: &Session, name: &str) -> Result<(), String> {
-    let setting = setting_named(name)?;
     let txn = session.txn()?;
     let settings = Settings::load(&session.ndb, &txn, session.vault.author());
-    println!("{}", settings.effective(setting));
+    if let Some(project) = name.strip_prefix(settings::BOARDS_PREFIX) {
+        let mut linked = settings.project_boards();
+        let slugs = linked
+            .find(|l| l.project == project)
+            .map_or("", |l| l.slugs);
+        println!("{slugs}");
+        return Ok(());
+    }
+    println!("{}", settings.effective(setting_named(name)?));
     Ok(())
 }
 
 /// `cashflow settings set <name> <value>`: write it, then publish it.
+///
+/// `boards:<project>` links the project to the boards `value` names,
+/// separated by spaces or commas.
 pub async fn set(session: &mut Session, name: &str, value: &str) -> Result<(), String> {
+    if let Some(project) = name.strip_prefix(settings::BOARDS_PREFIX) {
+        let slugs: Vec<&str> = value
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|slug| !slug.is_empty())
+            .collect();
+        let written = settings::set_project_boards(&session.vault, &session.ndb, project, &slugs)
+            .map_err(|e| e.to_string())?;
+        session.publish(&[written.frame]).await?;
+        let linked = if slugs.is_empty() {
+            "(unlinked)".to_owned()
+        } else {
+            slugs.join(" ")
+        };
+        println!("{name} = {linked}{}", session.offline_note());
+        return Ok(());
+    }
     let setting = setting_named(name)?;
     let written =
         settings::set(&session.vault, &session.ndb, setting, value).map_err(|e| e.to_string())?;

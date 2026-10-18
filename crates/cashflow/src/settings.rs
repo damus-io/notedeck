@@ -11,6 +11,10 @@
 //! layers. A layer with no note is on, unless it is one of
 //! [`DEFAULT_OFF_LAYERS`].
 //!
+//! So is which Headway boards track each project's work, one note per
+//! project (`d = set:boards:<project>`, [`set_project_boards`]): the
+//! Projects view shows those boards' progress beside the project's revenue.
+//!
 //! `config.toml` (see [`crate::config`]) is the other place settings live:
 //! that one is per machine and never synced. A setting that should be the
 //! same everywhere, like the home currency, belongs here.
@@ -37,6 +41,11 @@ pub const DEFAULT_OFF_LAYERS: &[&str] = &["cln-chain"];
 /// The record-id prefix of a layer's switch, under the settings prefix:
 /// `set:layer:<name>`.
 const LAYER_ID: &str = "layer:";
+
+/// The record-id prefix of a project's boards, under the settings prefix:
+/// `set:boards:<project>`. The CLI takes `boards:<project>` as a setting
+/// name for the same reason.
+pub const BOARDS_PREFIX: &str = "boards:";
 
 /// A layer switch's value when the layer loads.
 const LAYER_ON: &str = "on";
@@ -149,6 +158,27 @@ pub struct Settings<'a> {
     /// Every layer switch ever set, newest revision of each, in no
     /// particular order: see [`Self::layer_switches`].
     pub layers: Vec<Stored<'a, SettingNote<'a>>>,
+    /// Every project's boards ever set, newest revision of each, sorted by
+    /// project: see [`Self::project_boards`].
+    pub project_boards: Vec<Stored<'a, SettingNote<'a>>>,
+}
+
+/// The Headway boards one project's work is tracked on, as the vault
+/// links them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProjectBoards<'a> {
+    /// The project, as the chart of accounts names it.
+    pub project: &'a str,
+    /// The boards' slugs, separated by whitespace: see [`Self::boards`].
+    pub slugs: &'a str,
+}
+
+impl<'a> ProjectBoards<'a> {
+    /// Each board's slug, in the order they were linked. None once the
+    /// project is unlinked.
+    pub fn boards(&self) -> impl Iterator<Item = &'a str> + 'a {
+        self.slugs.split_whitespace()
+    }
 }
 
 /// One layer switched on or off in the vault.
@@ -169,6 +199,9 @@ impl<'a> Settings<'a> {
                 Some(Setting::Home) => settings.home_commodity = Some(stored),
                 Some(Setting::Timezone) => settings.timezone = Some(stored),
                 None if stored.id.starts_with(LAYER_ID) => settings.layers.push(stored),
+                None if stored.id.starts_with(BOARDS_PREFIX) => {
+                    settings.project_boards.push(stored)
+                }
                 // A setting a newer cashflow wrote; nothing here reads it.
                 None => {}
             }
@@ -192,6 +225,18 @@ impl<'a> Settings<'a> {
                 _ => return None,
             };
             Some(LayerSwitch { layer, on })
+        })
+    }
+
+    /// Every project linked to Headway boards, sorted by project. A project
+    /// whose links were all removed is left out.
+    pub fn project_boards(&self) -> impl Iterator<Item = ProjectBoards<'a>> + '_ {
+        self.project_boards.iter().filter_map(|stored| {
+            let links = ProjectBoards {
+                project: stored.id.strip_prefix(BOARDS_PREFIX)?,
+                slugs: stored.body.value,
+            };
+            links.boards().next().is_some().then_some(links)
         })
     }
 
@@ -241,6 +286,41 @@ pub fn set_layer(
     let value = if on { LAYER_ON } else { LAYER_OFF };
     let id = format!("{LAYER_ID}{layer}");
     Ok(vault.write(ndb, &id, &SettingNote { value }, 0)?)
+}
+
+/// Link `project` to the Headway boards `slugs` as its newest boards in the
+/// vault, replacing the ones linked before. No slugs unlinks it.
+///
+/// The slugs are one `value`, separated by spaces: a slug never has
+/// whitespace in it, and one value keeps a project's links one replaceable
+/// note, so relinking it never leaves a stale board behind.
+pub fn set_project_boards(
+    vault: &Vault,
+    ndb: &Ndb,
+    project: &str,
+    slugs: &[&str],
+) -> Result<Written, SettingsError> {
+    let bad = |setting, value: &str, expected| SettingsError::Invalid {
+        setting,
+        value: value.to_owned(),
+        expected,
+    };
+    if project.is_empty() || project.chars().any(char::is_whitespace) {
+        return Err(bad(
+            "project",
+            project,
+            "a project name with no spaces, as the chart of accounts gives it",
+        ));
+    }
+    if let Some(slug) = slugs
+        .iter()
+        .find(|slug| slug.is_empty() || slug.chars().any(char::is_whitespace))
+    {
+        return Err(bad("board", slug, "a Headway board's slug, like damus-ios"));
+    }
+    let value = slugs.join(" ");
+    let id = format!("{BOARDS_PREFIX}{project}");
+    Ok(vault.write(ndb, &id, &SettingNote { value: &value }, 0)?)
 }
 
 #[cfg(test)]
@@ -333,6 +413,56 @@ mod tests {
         );
         assert_eq!(settings.value(Setting::Home), None);
         assert!(set_layer(&vault, ndb, "two words", true).is_err());
+    }
+
+    /// A project's boards round-trip, a relink replaces them, an unlink
+    /// drops the project, and the plain settings and layers don't see them.
+    #[tokio::test]
+    async fn project_boards_round_trip() {
+        let db = TempNdb::new();
+        let ndb = &db.ndb;
+        let vault = Vault::new(&SECRET).unwrap();
+        vault.register(ndb);
+        let sub = ndb
+            .subscribe(&[Filter::new().kinds([kinds::SETTING as u64]).build()])
+            .unwrap();
+        let first = set_project_boards(&vault, ndb, "damus", &["damus-ios"]).unwrap();
+        set_project_boards(&vault, ndb, "notedeck", &["notedeck", "headway"]).unwrap();
+        set_project_boards(&vault, ndb, "gone", &["old"]).unwrap();
+        ndb.wait_for_all_notes_within(sub, 3, INGEST_TIMEOUT)
+            .await
+            .unwrap();
+        let sub = ndb
+            .subscribe(&[Filter::new().kinds([kinds::SETTING as u64]).build()])
+            .unwrap();
+        let id = format!("{BOARDS_PREFIX}damus");
+        let relinked = SettingNote {
+            value: "damus-ios damus-android",
+        };
+        vault.write(ndb, &id, &relinked, first.created_at).unwrap();
+        set_project_boards(&vault, ndb, "gone", &[]).unwrap();
+        ndb.wait_for_all_notes_within(sub, 2, INGEST_TIMEOUT)
+            .await
+            .unwrap();
+
+        let txn = Transaction::new(ndb).unwrap();
+        let settings = Settings::load(ndb, &txn, vault.author());
+        let mut links: Vec<(&str, Vec<&str>)> = settings
+            .project_boards()
+            .map(|l| (l.project, l.boards().collect()))
+            .collect();
+        links.sort();
+        assert_eq!(
+            links,
+            [
+                ("damus", vec!["damus-ios", "damus-android"]),
+                ("notedeck", vec!["notedeck", "headway"]),
+            ]
+        );
+        assert_eq!(settings.layer_switches().count(), 0);
+        assert_eq!(settings.value(Setting::Home), None);
+        assert!(set_project_boards(&vault, ndb, "two words", &["a"]).is_err());
+        assert!(set_project_boards(&vault, ndb, "damus", &["a b"]).is_err());
     }
 
     #[test]

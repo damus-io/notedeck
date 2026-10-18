@@ -42,6 +42,7 @@ use poll_promise::Promise;
 use tokio::sync::oneshot;
 
 use crate::Layers;
+use crate::boards::ProjectLink;
 
 /// How often an idle source lists the journal directory for segments that
 /// arrived by some other route than this app.
@@ -290,6 +291,9 @@ pub struct JournalSource {
     load_time: Option<Duration>,
     /// The chart's display names and icons, re-read when the vault changes.
     labels: Arc<Labels>,
+    /// Which Headway boards each project links, re-read when the vault
+    /// changes.
+    project_links: Arc<[ProjectLink]>,
 }
 
 impl JournalSource {
@@ -319,6 +323,7 @@ impl JournalSource {
             last_sync: None,
             load_time: None,
             labels: Arc::new(Labels::default()),
+            project_links: Arc::from([]),
         }
     }
 
@@ -363,6 +368,10 @@ impl JournalSource {
                 self.home_generation += 1;
             }
             layers.apply(settings.layer_switches());
+            let links = crate::boards::links_of(&settings);
+            if *self.project_links != *links {
+                self.project_links = links.into();
+            }
             self.missing_stale = true;
         }
         if self.missing_stale {
@@ -612,6 +621,11 @@ impl JournalSource {
     /// Where the journal is.
     pub fn journal_path(&self) -> &str {
         &self.journal_path
+    }
+
+    /// Which Headway boards each project links, as the vault last had them.
+    pub fn project_links(&self) -> &Arc<[ProjectLink]> {
+        &self.project_links
     }
 
     /// The chart's display names and icons, as the vault last had them.

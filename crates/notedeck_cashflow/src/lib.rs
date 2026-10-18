@@ -14,14 +14,18 @@
 //!
 //! The app reports on the [`cashflow::Books`] handed to it with
 //! [`CashflowApp::set_books`], over the one [`Period`] every view shares,
-//! with accounts put in projects by [`CashflowApp::set_projects`].
+//! with accounts put in projects by [`CashflowApp::set_projects`]. The
+//! Projects view also shows how the work on each project's Headway boards
+//! is moving ([`boards`]).
 //! In the chrome they come from a [`journal::JournalSource`]
 //! ([`CashflowApp::from_env`]), which loads `$CASHFLOW_DIR`'s journal off the
 //! UI thread and hands the app new books whenever a segment arrives or an
 //! edit lands; until the first load, or while the journal is empty or
 //! unreadable, the shell draws that state in place of every view. It loads
 //! the layers [`CashflowApp::layers`] leaves on, and tells the app what the
-//! journal is missing with [`CashflowApp::set_missing_segments`].
+//! journal is missing with [`CashflowApp::set_missing_segments`]. A
+//! [`boards::BoardSource`] beside it folds the boards the vault links to
+//! projects.
 //!
 //! Books always come with their [`Triage`], what the Transactions view's
 //! inbox burns down. A view never writes to the vault itself: it queues a
@@ -33,6 +37,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use cashflow::board_progress::BoardProgress;
 use cashflow::chart::Labels;
 use cashflow::projects::Projects;
 use cashflow::triage::{self, Action, Triage};
@@ -40,6 +45,7 @@ use cashflow::{Books, CashflowDir, DeriveInputs, Vault};
 use ledgerdb::Date;
 use notedeck::{AppContext, AppResponse};
 
+pub mod boards;
 pub mod journal;
 pub mod layers;
 pub mod money;
@@ -52,6 +58,7 @@ pub use layers::Layers;
 pub use period::Period;
 pub use view::View;
 
+use boards::{BoardSource, Boards, ProjectLink};
 use journal::{JournalSource, JournalState, Loaded};
 use ui::palette::Palette;
 
@@ -82,6 +89,10 @@ pub struct CashflowApp {
     summary: String,
     /// Which project each account is in.
     projects: Projects,
+    /// Which Headway boards each project links, and their progress.
+    boards: Boards,
+    /// Folds [`Self::boards`]' progress, when the app loads its own books.
+    board_source: Option<BoardSource>,
     /// Bumped every time [`Self::books`] or [`Self::projects`] is replaced,
     /// so a view's cached results know to recompute.
     generation: u64,
@@ -117,6 +128,8 @@ impl CashflowApp {
             journal: None,
             summary: String::new(),
             projects: Projects::default(),
+            boards: Boards::default(),
+            board_source: None,
             generation: 0,
             today: period::today(),
             period: Period::default(),
@@ -131,6 +144,7 @@ impl CashflowApp {
     pub fn with_journal(dir: CashflowDir) -> Self {
         Self {
             journal: Some(JournalSource::new(dir)),
+            board_source: Some(BoardSource::default()),
             ..Self::new()
         }
     }
@@ -178,6 +192,18 @@ impl CashflowApp {
         }
         self.projects = projects;
         self.generation += 1;
+    }
+
+    /// Link projects to Headway boards as `links` says from now on. The
+    /// journal source sets them from the vault's settings.
+    pub fn set_project_links(&mut self, links: Vec<ProjectLink>) {
+        self.boards.set_links(links.into());
+    }
+
+    /// Show `progress` for the linked boards from now on, as a
+    /// [`BoardSource`] would have folded it.
+    pub fn set_board_progress(&mut self, progress: Vec<BoardProgress>) {
+        self.boards.set_progress(progress);
     }
 
     /// Draw accounts with `labels`' names and icons. The journal source
@@ -272,6 +298,8 @@ impl CashflowApp {
             journal,
             summary,
             projects,
+            boards,
+            board_source: _,
             generation,
             today,
             period,
@@ -316,6 +344,7 @@ impl CashflowApp {
                     summary,
                     journal: journal.as_mut(),
                     projects,
+                    boards,
                     today: *today,
                     period,
                     layers,
@@ -369,8 +398,12 @@ impl notedeck::App for CashflowApp {
             self.labels = journal.labels().clone();
             self.generation += 1;
         }
+        self.boards.set_links(journal.project_links().clone());
         if let Some(loaded) = loaded {
             self.set_loaded(loaded);
+        }
+        if let Some(source) = self.board_source.as_mut() {
+            source.update(ctx, &mut self.boards);
         }
     }
 

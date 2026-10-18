@@ -843,8 +843,14 @@ setting changed elsewhere shows up here.
             before importing from two machines, or near midnight each
             rewrites the other's events [default: local, each machine's
             own]
+  boards:<project>
+            the Headway boards a chart-of-accounts project's work is
+            tracked on, slugs separated by spaces; the app's Projects
+            view shows their progress beside the project's revenue. An
+            empty value unlinks the project
 
-`show` lists each setting and its value, marking defaults. `get` prints one
+`show` lists each setting and its value, marking defaults, then each linked
+project. `get` prints one
 value alone, for scripts. `set` writes it and publishes it to the relay.",
         options: &[("--json", "Machine-readable output")],
         examples: &[
@@ -852,6 +858,7 @@ value alone, for scripts. `set` writes it and publishes it to the relay.",
             "cashflow settings set home CAD",
             "cashflow settings get home",
             "cashflow settings set timezone America/Vancouver",
+            "cashflow settings set boards:damus 'damus-ios damus-android'",
         ],
     },
 ];

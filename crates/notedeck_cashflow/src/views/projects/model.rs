@@ -22,18 +22,32 @@
 //!   account with postings of its own, and one `routing` row for all its
 //!   routing accounts together.
 //!
+//! ## The work beside it
+//!
+//! A project linked to Headway boards ([`crate::boards`]) also gets a
+//! [`BoardRow`] from [`boards`]: the cards its boards finished in the
+//! period, what sits in In Progress and In Review now, and the cards
+//! finished per month over the revenue sparkline's months, so the two
+//! lines can be read against each other. A card was finished when it last
+//! entered a terminal column ([`cashflow::board_progress`]), dated in the
+//! machine's time zone. A project with no linked board gets none.
+//!
 //! [`projects`] runs only when the books, the attribution, the period or
-//! today change; the view draws the [`Report`] it returned, its text
+//! today change, and [`boards`] when those or the boards do; the view
+//! draws the [`Report`] and the [`BoardRow`]s they returned, their text
 //! already formatted.
 
 use std::collections::HashMap;
 
 use cashflow::Books;
+use cashflow::board_progress::BoardProgress;
 use cashflow::net::{EXPENSES, INCOME, ROUTED};
 use cashflow::projects::Projects;
+use cashflow::zone::Zone;
 use ledgerdb::{AccountId, Bucket, CommodityId, Date, DateRange};
 
 use crate::Period;
+use crate::boards::ProjectLink;
 use crate::money::money;
 use crate::views::categories::model::{Row, RowCx, RowKind, Sums};
 use crate::views::overview::model::{Delta, clip, delta};
@@ -84,6 +98,13 @@ impl Report {
     /// The row for `project` (`None`: the unattributed one), if it has one.
     pub fn row(&self, project: Option<&str>) -> Option<&ProjectRow> {
         self.rows.iter().find(|r| r.project.as_deref() == project)
+    }
+
+    /// Where in [`Self::rows`] the row for `project` is, if it has one.
+    pub fn position(&self, project: Option<&str>) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|r| r.project.as_deref() == project)
     }
 }
 
@@ -510,4 +531,140 @@ fn mix(sources: &[Row]) -> Vec<MixPart> {
         parts.push(part("Other", rest));
     }
     parts
+}
+
+/// What [`boards`] reads.
+#[derive(Clone, Copy)]
+pub struct BoardInputs<'a> {
+    /// The report the rows line up with.
+    pub report: &'a Report,
+    /// Which boards each project links.
+    pub links: &'a [ProjectLink],
+    /// The linked boards' progress.
+    pub progress: &'a [BoardProgress],
+    /// The days "done" counts over.
+    pub period: Period,
+    /// The date `period` is resolved against.
+    pub today: Date,
+}
+
+/// One project's work on its Headway boards, formatted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoardRow {
+    /// The linked boards' slugs, comma separated.
+    pub boards_text: String,
+    /// Cards finished in the period, across the boards.
+    pub done: usize,
+    /// Cards in an In Progress column now.
+    pub in_progress: usize,
+    /// Cards in an In Review column now.
+    pub in_review: usize,
+    /// `12 done · 3 in progress · 2 in review`.
+    pub stats_text: String,
+    /// Cards finished per month over [`Report::window`], for the sparkline.
+    pub spark: Vec<f32>,
+    /// The linked slugs no board folded for, when there are any:
+    /// `not found: damus-android`.
+    pub missing_text: Option<String>,
+    /// Each board's own figures, in link order, for the detail.
+    pub lines: Vec<BoardLine>,
+}
+
+/// One board's figures, formatted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoardLine {
+    /// The board's slug.
+    pub board: String,
+    /// `4 done · 1 in progress · 0 in review`.
+    pub stats_text: String,
+}
+
+/// What a tile's sparkline tooltip says the board line counts.
+pub const BOARD_HELP: &str = "Cards finished per month on the linked Headway boards, last 12 months. \
+A card is finished when it enters a terminal column (In Review or Done, as the board marks them), \
+dated by its move history.";
+
+/// The board figures for each of `inputs.report`'s rows, in its order:
+/// `None` for a row whose project links no board (and for the
+/// unattributed row).
+#[profiling::function]
+pub fn boards(inputs: BoardInputs<'_>) -> Vec<Option<BoardRow>> {
+    let BoardInputs {
+        report,
+        links,
+        progress,
+        period,
+        today,
+    } = inputs;
+    let range = period.resolve(today).range;
+    report
+        .rows
+        .iter()
+        .map(|row| {
+            let project = row.project.as_deref()?;
+            let link = links.iter().find(|l| l.project == project)?;
+            Some(board_row(link, progress, range, report.window.as_ref()))
+        })
+        .collect()
+}
+
+/// `link`'s boards' figures from `progress`, done counted over `range`
+/// and per month over `window`.
+fn board_row(
+    link: &ProjectLink,
+    progress: &[BoardProgress],
+    range: DateRange,
+    window: Option<&Window>,
+) -> BoardRow {
+    let mut row = BoardRow {
+        boards_text: link.boards.join(", "),
+        done: 0,
+        in_progress: 0,
+        in_review: 0,
+        stats_text: String::new(),
+        spark: vec![0.0; window.map_or(0, Window::len)],
+        missing_text: None,
+        lines: Vec::new(),
+    };
+    let mut missing: Vec<&str> = Vec::new();
+    for slug in &link.boards {
+        let mut found = false;
+        // A slug names the account's own board and any shared with it.
+        for board in progress.iter().filter(|b| &b.board == slug) {
+            found = true;
+            let dates = board.completed.iter().map(|&at| Zone::Local.date(at));
+            let mut done = 0;
+            for date in dates {
+                done += usize::from(range.contains(date));
+                let Some(window) = window else {
+                    continue;
+                };
+                let month = date.month_index().checked_sub(window.first_month);
+                let slot = month.and_then(|m| row.spark.get_mut(m as usize));
+                if let Some(slot) = slot {
+                    *slot += 1.0;
+                }
+            }
+            row.done += done;
+            row.in_progress += board.in_progress;
+            row.in_review += board.in_review;
+            row.lines.push(BoardLine {
+                board: board.board.clone(),
+                stats_text: stats(done, board.in_progress, board.in_review),
+            });
+        }
+        if !found {
+            missing.push(slug);
+        }
+    }
+    row.stats_text = stats(row.done, row.in_progress, row.in_review);
+    if !missing.is_empty() {
+        row.missing_text = Some(format!("not found: {}", missing.join(", ")));
+    }
+    row
+}
+
+/// `12 done · 3 in progress · 2 in review`.
+fn stats(done: usize, in_progress: usize, in_review: usize) -> String {
+    format!("{done} done · {in_progress} in progress · {in_review} in review")
 }
