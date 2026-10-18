@@ -8,7 +8,8 @@
 //! (`login`/`logout`), the vault's synced settings and categorization rules
 //! (`rule`), the per-transaction edits (`categorize`, `uncategorize`,
 //! `split`, `transfer`, `edits`), the triage queue (`unknown`), the chart
-//! of accounts' metadata and aliases (`account`), and the help surface. The real importers and the vault's other
+//! of accounts' metadata and aliases (`account`), the goals on Headway
+//! cards (`goals`), and the help surface. The real importers and the vault's other
 //! records are later cards on headway:cashflow/flame-vault-near and
 //! headway:cashflow/luggage-insane-limit.
 //!
@@ -20,6 +21,7 @@ mod args;
 mod books_cmd;
 mod config_cmd;
 mod edit_cmd;
+mod goals_cmd;
 mod help;
 mod journal_cmd;
 mod prices_cmd;
@@ -188,5 +190,6 @@ async fn execute(run: Run) -> Result<(), String> {
             let mut session = Session::open(&dir, &run).await?;
             account_cmd::alias(&dir, &mut session, from, None, *write).await
         }
+        Command::Goals(args) => goals_cmd::ls(&dir, args),
     }
 }

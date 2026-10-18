@@ -446,6 +446,45 @@ Segments that don't load and edits that don't apply are reported on stderr.
         ],
     },
     CommandHelp {
+        name: "goals",
+        group: REPORTS,
+        summary: "List the goals on Headway cards and what each one asks for",
+        usage: &["goals [--board <slug>]... [--author <key>] [--headway-db <path>] [--json]"],
+        details: "\
+A goal is a Headway card labelled `goal` whose description holds a
+```cashflow-goal block of `key: value` lines:
+
+    metric: net        income | expenses | net | savings_rate | balance
+    account: income:x  optional subtree (or project: <name>, not both)
+    target: 10000 CAD  an amount (bare = home commodity), or 20% for savings_rate
+    per: month         month | year | total [default: month; total for balance]
+    by: 2027-01-01     optional deadline
+
+`#` starts a comment. Expenses goals are ceilings, every other one a floor.
+Each goal is listed with its card's headway:<board>/<word-id> ref and column;
+a block that doesn't parse is listed with the line it went wrong on, never
+skipped.
+
+Goals are looked for on --board's boards, else config.toml's
+`[goals] boards` [default: cashflow, personal], owned by --author or the
+stored signing key's account, plus any board of those names shared with it.
+The cards are read from the `headway` CLI's local cache (<data-dir>/headway-cli),
+or --headway-db; run any `headway` command to bring it up to date.",
+        options: &[
+            ("--board <slug>", "A board to look on; repeat for more"),
+            (
+                "--author <key>",
+                "Whose boards (npub or hex) [default: the signing key's]",
+            ),
+            (
+                "--headway-db <path>",
+                "The headway cache to read [default: the headway CLI's]",
+            ),
+            ("--json", "Machine-readable output"),
+        ],
+        examples: &["cashflow goals", "cashflow goals --board money --json"],
+    },
+    CommandHelp {
         name: "report",
         group: REPORTS,
         summary: "Balances, a register or the top accounts, for a quick look",

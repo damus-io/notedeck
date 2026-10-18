@@ -123,6 +123,14 @@ fn signing_key(dir: &CashflowDir) -> Result<[u8; 32], String> {
     Ok(secret)
 }
 
+/// The account the stored signing key is for, without opening the vault.
+pub fn account_pubkey(dir: &CashflowDir) -> Result<nostrdb_net::Pubkey, String> {
+    let secret = signing_key(dir)?;
+    let keypair = nostrdb_net::FullKeypair::from_secret_bytes(&secret)
+        .ok_or("the stored nsec isn't a usable key")?;
+    Ok(keypair.pubkey)
+}
+
 /// `cashflow login [<nsec>]`: validate the key, then store it as the secret
 /// `nsec`. With no argument the key is the first line of stdin.
 pub fn login(dir: &CashflowDir, nsec: Option<String>) -> Result<(), String> {

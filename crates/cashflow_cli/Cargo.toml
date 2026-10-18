@@ -12,6 +12,7 @@ path = "src/main.rs"
 cashflow = { workspace = true }
 cli_term = { workspace = true }
 enostr = { workspace = true }
+headway = { workspace = true }
 ledgerdb = { workspace = true }
 nostrdb = { workspace = true }
 nostrdb_net = { workspace = true }

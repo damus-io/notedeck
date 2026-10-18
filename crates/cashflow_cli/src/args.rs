@@ -103,6 +103,8 @@ pub enum Command {
     Unknown(UnknownArgs),
     /// `cashflow account ...`.
     Account(AccountCommand),
+    /// `cashflow goals [--board <slug>]... [--author <key>] [--headway-db <path>] [--json]`.
+    Goals(GoalsArgs),
 }
 
 /// One `cashflow account` subcommand.
@@ -182,6 +184,21 @@ pub struct UnknownArgs {
     pub limit: usize,
     /// `--in <commodity>`: what totals convert into.
     pub home: String,
+    pub json: bool,
+}
+
+/// `cashflow goals`'s arguments.
+#[derive(Debug, PartialEq)]
+pub struct GoalsArgs {
+    /// `--board <slug>`, repeatable: the boards to look on; empty is
+    /// `config.toml`'s `[goals] boards`.
+    pub boards: Vec<String>,
+    /// `--author <npub|hex>`: whose boards, instead of the stored signing
+    /// key's account.
+    pub author: Option<String>,
+    /// `--headway-db <path>`: the headway cache to read, instead of the
+    /// `headway` CLI's.
+    pub headway_db: Option<PathBuf>,
     pub json: bool,
 }
 
@@ -545,6 +562,16 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
             "unknown",
         )?,
         "account" => account_command(positionals, &flags, json)?,
+        "goals" => no_positionals(
+            positionals,
+            Command::Goals(GoalsArgs {
+                boards: flags.values("--board").map(str::to_owned).collect(),
+                author: flags.value("--author").map(str::to_owned),
+                headway_db: flags.value("--headway-db").map(PathBuf::from),
+                json,
+            }),
+            "goals",
+        )?,
         other => unreachable!("'{other}' has a help entry but no parser arm"),
     };
     Ok(Invocation::Run(Box::new(Run {
@@ -1759,6 +1786,26 @@ mod tests {
             })
         );
         assert!(err_of(&["unknown", "--limit", "x"]).contains("needs a number"));
+
+        assert_eq!(
+            run_of(&["goals", "--board", "a", "--board", "b", "--json"]).command,
+            Command::Goals(GoalsArgs {
+                boards: vec!["a".to_owned(), "b".to_owned()],
+                author: None,
+                headway_db: None,
+                json: true,
+            })
+        );
+        assert_eq!(
+            run_of(&["goals", "--author", "npub1x", "--headway-db", "/tmp/hw"]).command,
+            Command::Goals(GoalsArgs {
+                boards: Vec::new(),
+                author: Some("npub1x".to_owned()),
+                headway_db: Some(PathBuf::from("/tmp/hw")),
+                json: false,
+            })
+        );
+        assert!(err_of(&["goals", "extra"]).contains("goals"));
     }
 
     #[test]

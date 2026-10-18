@@ -350,6 +350,9 @@ pub struct Config {
     /// `[sync]`: how journal segments move between machines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<SyncConfig>,
+    /// `[goals]`: where the goals on Headway cards are looked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goals: Option<GoalsConfig>,
 }
 
 /// `[amex]` in `config.toml`. Every key is optional.
@@ -468,6 +471,26 @@ pub struct ClnConfig {
     /// which every machine should share instead [default: that setting,
     /// else `local`].
     pub timezone: Option<String>,
+}
+
+/// `[goals]` in `config.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalsConfig {
+    /// The Headway board slugs whose `goal`-labelled cards are goals
+    /// [default: [`crate::goals::DEFAULT_BOARDS`]].
+    pub boards: Option<Vec<String>>,
+}
+
+impl Config {
+    /// The board slugs goals are looked for on: `[goals] boards`, else
+    /// [`crate::goals::DEFAULT_BOARDS`].
+    pub fn goal_boards(&self) -> Vec<String> {
+        match self.goals.as_ref().and_then(|g| g.boards.as_ref()) {
+            Some(boards) => boards.clone(),
+            None => crate::goals::DEFAULT_BOARDS.map(str::to_owned).to_vec(),
+        }
+    }
 }
 
 /// `[sync]` in `config.toml`.
@@ -658,6 +681,12 @@ mod tests {
         assert_eq!(table.external_wallets, ["cold"]);
         assert_eq!(Config::parse(&btc.to_toml()).unwrap(), btc);
         assert!(Config::parse("[btc]\nwallet = [\"x\"]\n").is_err());
+
+        assert_eq!(Config::default().goal_boards(), ["cashflow", "personal"]);
+        let goals = Config::parse("[goals]\nboards = [\"money\"]\n").unwrap();
+        assert_eq!(goals.goal_boards(), ["money"]);
+        assert_eq!(Config::parse(&goals.to_toml()).unwrap(), goals);
+        assert!(Config::parse("[goals]\nboard = [\"x\"]\n").is_err());
     }
 
     /// `create` makes the subdirectories, `secrets/` owner-only, and is

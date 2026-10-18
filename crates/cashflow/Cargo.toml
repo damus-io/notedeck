@@ -12,6 +12,7 @@ dirs = { workspace = true }
 ehttp = { workspace = true }
 flate2 = { workspace = true }
 gethostname = "1"
+headway = { workspace = true }
 hex = { workspace = true }
 ledgerdb = { workspace = true }
 lnsocket = "0.5.1"
