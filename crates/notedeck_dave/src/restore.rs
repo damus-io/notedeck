@@ -937,7 +937,7 @@ impl Dave {
     /// had a dave state) it pins the Nostr identity to the d-tag the messages are
     /// keyed by and loads history + dedup directly. Either way it restores the
     /// three things the old picker path dropped: `event_id`, the ledger's
-    /// seen set, and the `responded` permission map — so a resumed session keeps
+    /// delivered history, and the `responded` permission map — so a resumed session keeps
     /// its `agentium:` identity and doesn't double-append its own history.
     ///
     /// `source` says how much of the store is history: see [`ResumedHistory`].
@@ -978,6 +978,7 @@ impl Dave {
             if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
                 agentic.live_threading.seed(root, last);
             }
+            agentic.ledger.install_history(&loaded);
         }
         crate::conversation::apply_loaded_chat(session, loaded);
     }
@@ -1120,7 +1121,7 @@ fn is_session_remote(hostname: &str, cwd: &str, local_hostname: &str) -> bool {
 /// keeps a resumed session's Nostr **identity** intact — `agentic.event_id` is
 /// repointed at the d-tag so future state events keep the same `agentium:` ref
 /// (and, for a tombstoned session, a later active publish revives it) — and its
-/// **history** present (chat, threading seed, permission state, dedup set).
+/// **history** present (chat, threading seed, permission state, delivered set).
 ///
 /// The history goes in with [`apply_loaded_chat`](crate::conversation::apply_loaded_chat),
 /// the same install a rebuild does, so a hydrated session also gets its
@@ -1215,10 +1216,11 @@ fn hydrate_session_from_state(
         }
         // Live conversation events flow through the shared per-account
         // subscription; no per-session subscription needed here.
+        agentic.ledger.install_history(&loaded);
     }
 
-    // The history, and the state that points into it (dedup set, permission
-    // state, fast-path tail, subagent rows) — the same install a rebuild does.
+    // The history, and the state that points into it (permission state,
+    // fast-path tail, subagent rows) — the same install a rebuild does.
     crate::conversation::apply_loaded_chat(session, loaded);
 }
 
@@ -1339,8 +1341,8 @@ mod tests {
         assert_eq!(agentic.event_id, "dead-dtag");
         // The real CLI id is what `claude --resume` needs.
         assert_eq!(agentic.resume_session_id.as_deref(), Some("cli-uuid-123"));
-        // Dedup set seeded so live polling won't double-append restored notes.
-        assert_eq!(*agentic.ledger.seen_set(), note_ids);
+        // History installed as delivered so live polling won't double-append it.
+        assert_eq!(*agentic.ledger.delivered(), note_ids);
         // The session keeps the issue it was spawned for, so `s` still opens it.
         assert_eq!(
             manager.get(sid).unwrap().details.issue_url.as_deref(),

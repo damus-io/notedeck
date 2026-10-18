@@ -1,18 +1,24 @@
-//! A session's kind-1988 note bookkeeping (headway:notedeck/hammer-evolve-knee).
+//! A session's kind-1988 note bookkeeping (headway:notedeck/hammer-evolve-knee,
+//! headway:notedeck/cushion-audit-embark).
 //!
-//! Three things track a session's notes, and every reader and writer of them
-//! goes through [`NoteLedger`]:
-//! - which notes are marked seen, so the conversation poll skips them;
-//! - which notes this host published that nostrdb hasn't handed back yet
-//!   ([`UnindexedNotes`]), which the reconcile at rest waits on;
-//! - the newest note the poll has handed over or a load has claimed
-//!   ([`NoteLedger::through`]), which caps what a rebuild folds.
+//! Every reader and writer of a session's notes goes through [`NoteLedger`],
+//! which keeps two questions apart:
+//! - **own**: did this host publish the note ([`NoteLedger::record_own`])? Its
+//!   side effects ran when it was published, so the poll skips its echo and the
+//!   outbound fan-out has already sent its envelope;
+//! - **delivered**: has the note been processed, because the poll handed it
+//!   over ([`NoteLedger::deliver`]) or a restore installed it as history
+//!   ([`NoteLedger::install_history`])?
 //!
-//! A note gets marked seen three ways: this host published it
-//! ([`NoteLedger::record_own`]), the poll delivered it
-//! ([`NoteLedger::deliver`]), or a rebuild or restore loaded it as history
-//! ([`NoteLedger::claim`]). The seen set doesn't yet say which, so a reader
-//! asking one of those questions gets the union.
+//! A rebuild answers neither. It folds what the poll has passed, and the one
+//! thing it records is which of this host's notes it couldn't show
+//! ([`NoteLedger::unshow_unfolded`]), so the poll shows them on arrival. A note
+//! the rebuild folds before the poll reaches it is still undelivered, and the
+//! poll still processes it.
+//!
+//! Beside those, the ledger holds the host's notes nostrdb hasn't handed back
+//! yet ([`UnindexedNotes`]), which the reconcile at rest waits on, and how far
+//! the poll has got ([`NoteLedger::through`]), which caps what a rebuild folds.
 
 use crate::reconcile::{Stall, UnindexedNotes};
 use agentium_core::session_loader::LoadedSession;
@@ -44,94 +50,114 @@ impl Delivered {
 /// What [`NoteLedger::deliver`] made of a note the poll handed over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Delivery {
-    /// Not seen before: the poll processes it.
+    /// Not processed before: the poll processes it.
     New,
-    /// The echo of a note this host published and still has marked seen. Its
-    /// side effects already ran when it was published, so the poll skips it.
+    /// The echo of a note this host published. Its side effects already ran
+    /// when it was published, so the poll skips it.
     Own,
-    /// Already seen, delivered again or loaded as history: the poll skips it.
+    /// Delivered before, or installed as history: the poll skips it.
     Again,
 }
 
-/// Which of a session's notes are seen, which of its own are still to come
-/// back from nostrdb, and how far the poll has got.
+/// Which of a session's notes this host published, which have been processed,
+/// which of its own are still to come back from nostrdb, and how far the poll
+/// has got.
 #[derive(Debug, Default)]
 pub(crate) struct NoteLedger {
-    /// Notes the poll skips: every note this host published, the poll
-    /// delivered, or a load claimed as history.
-    seen: HashSet<[u8; 32]>,
+    /// Notes this host published, for the life of the session. A restored
+    /// session starts with none: what it published before is history.
+    own: HashSet<[u8; 32]>,
     /// Notes this host published that nostrdb hasn't handed back through the
-    /// conversation subscription yet.
+    /// conversation subscription yet. Always a subset of `own`.
     unindexed: UnindexedNotes,
-    /// Newest note the conversation poll has handed this session, or a load
-    /// claimed into its chat.
+    /// Own notes the last rebuild couldn't fold, because nostrdb hadn't stored
+    /// them: the poll treats their arrival as new, so it shows them.
+    unshown_own: HashSet<[u8; 32]>,
+    /// Notes the poll handed over, or a restore installed as history.
+    delivered: HashSet<[u8; 32]>,
+    /// Newest note the conversation poll has handed this session, or a
+    /// restore installed into its chat.
     ///
     /// nostrdb delivers notes in the order it stores them, and a restore
     /// loads only notes the poll has already passed, so every note of this
     /// session stored at or before this key has been through the poll or that
     /// restore. A rebuild folds only up to here: a note stored since is still
-    /// on its way through the poll, which must see it unseen to run its side
-    /// effects (a remote user message is dispatched and fanned out from
-    /// there). `None` until the first note arrives.
+    /// on its way through the poll, which runs its side effects (a remote user
+    /// message is dispatched and fanned out from there). `None` until the
+    /// first note arrives.
     through: Option<NoteKey>,
 }
 
 impl NoteLedger {
-    /// Record a note this host just published at `now`: marked seen, so its
-    /// echo through the poll isn't processed again, and held as unindexed
-    /// until that echo arrives.
+    /// Record a note this host just published at `now`: own, so its echo
+    /// through the poll isn't processed again, and held as unindexed until
+    /// that echo arrives.
     pub fn record_own(&mut self, id: [u8; 32], now: Instant) {
-        self.seen.insert(id);
+        self.own.insert(id);
         self.unindexed.insert(id, now);
     }
 
     /// Take a note the poll handed over, and say whether the poll should
     /// process it.
     ///
-    /// Seen or not, its arrival means nostrdb has indexed it, and that the
-    /// poll has passed it, so a rebuild may fold it. A note of this host's
-    /// that a rebuild unmarked ([`unshow_unfolded`](Self::unshow_unfolded))
-    /// is [`Delivery::New`], so the poll shows it.
+    /// Whatever it is, its arrival means nostrdb has indexed it and the poll
+    /// has passed it, so it is delivered and a rebuild may fold it. An own
+    /// note the last rebuild couldn't show
+    /// ([`unshow_unfolded`](Self::unshow_unfolded)) arrives as
+    /// [`Delivery::New`], so the poll shows it.
     pub fn deliver(&mut self, note: Delivered) -> Delivery {
-        let own = self.unindexed.remove(&note.id);
+        self.unindexed.remove(&note.id);
         self.through = self.through.max(Some(note.key));
-        if self.seen.insert(note.id) {
-            Delivery::New
-        } else if own {
+        let first = self.delivered.insert(note.id);
+        if self.own.contains(&note.id) && !self.unshown_own.remove(&note.id) {
             Delivery::Own
+        } else if first {
+            Delivery::New
         } else {
             Delivery::Again
         }
     }
 
     /// Whether this host published the note, so the outbound fan-out has
-    /// already sent its envelope. For now this answers from every seen note,
-    /// own or not.
+    /// already sent its envelope.
     pub fn is_own(&self, id: &[u8; 32]) -> bool {
-        self.seen.contains(id)
+        self.own.contains(id)
     }
 
-    /// Every note marked seen, for the rebuild's cap exception: one stored
-    /// past [`through`](Self::through) is folded anyway when it's in here.
-    pub fn seen_set(&self) -> &HashSet<[u8; 32]> {
-        &self.seen
+    /// Every note this host published, for the rebuild's cap exception: one
+    /// stored past [`through`](Self::through) is folded anyway when it's in
+    /// here, since it has no side effect left for the poll to run.
+    pub fn own(&self) -> &HashSet<[u8; 32]> {
+        &self.own
     }
 
-    /// Unmark each note this host published that nostrdb hasn't stored yet
-    /// and so isn't among `folded`: a rebuild can't show it, so the poll
-    /// treats it as new when it arrives and shows it then.
+    /// Notes the poll handed over or a restore installed.
+    #[cfg(test)]
+    pub fn delivered(&self) -> &HashSet<[u8; 32]> {
+        &self.delivered
+    }
+
+    /// Note which of this host's notes nostrdb hasn't handed back are among
+    /// `folded`, what a rebuild just showed: one that isn't, the poll shows
+    /// when it arrives; one that is, the poll skips as its own.
     pub fn unshow_unfolded(&mut self, folded: &HashSet<[u8; 32]>) {
         for id in self.unindexed.ids() {
-            if !folded.contains(id) {
-                self.seen.remove(id);
+            if folded.contains(id) {
+                self.unshown_own.remove(id);
+            } else {
+                self.unshown_own.insert(*id);
             }
         }
     }
 
-    /// Claim what a rebuild or restore loaded into the chat: its notes are
-    /// marked seen, and [`through`](Self::through) covers them.
-    pub fn claim(&mut self, loaded: &LoadedSession) {
-        self.seen.extend(loaded.note_ids.iter().copied());
+    /// Install what a restore loaded as the session's history: its notes are
+    /// delivered, so the poll skips them, and [`through`](Self::through)
+    /// covers them. A restore loads only notes the poll has passed (see
+    /// [`ConversationFeed`](crate::conversation_feed::ConversationFeed)), so
+    /// none of them is still to come through the poll. A rebuild never calls
+    /// this.
+    pub fn install_history(&mut self, loaded: &LoadedSession) {
+        self.delivered.extend(loaded.note_ids.iter().copied());
         self.through = self.through.max(loaded.max_key);
     }
 
@@ -152,8 +178,8 @@ impl NoteLedger {
         self.unindexed.take_stall(now)
     }
 
-    /// Newest note the poll has handed over or a load has claimed. `None`
-    /// until the first.
+    /// Newest note the poll has handed over or a restore has installed.
+    /// `None` until the first.
     pub fn through(&self) -> Option<NoteKey> {
         self.through
     }
@@ -170,8 +196,9 @@ mod tests {
         }
     }
 
-    /// An unseen note is new, an own note's echo is own, and any note seen
-    /// before is again; every delivery advances `through`, never backwards.
+    /// A note never processed is new, an own note's echo is own however often
+    /// it comes, and any other note delivered before is again; every delivery
+    /// advances `through`, never backwards.
     #[test]
     fn deliver_says_new_own_or_again() {
         let mut ledger = NoteLedger::default();
@@ -183,28 +210,57 @@ mod tests {
         assert_eq!(ledger.through(), Some(NoteKey::new(5)), "never backwards");
 
         assert_eq!(ledger.deliver(delivered(5, 2)), Delivery::Again);
-        assert_eq!(
-            ledger.deliver(delivered(3, 1)),
-            Delivery::Again,
-            "an own note's second echo"
-        );
+        assert_eq!(ledger.deliver(delivered(3, 1)), Delivery::Own);
         assert_eq!(ledger.deliver(delivered(7, 3)), Delivery::New);
         assert_eq!(ledger.through(), Some(NoteKey::new(7)));
+        assert_eq!(
+            *ledger.delivered(),
+            HashSet::from([[1; 32], [2; 32], [3; 32]])
+        );
     }
 
-    /// An own note a rebuild couldn't fold is unmarked, so its echo is new;
-    /// one it folded stays marked.
+    /// An own note a rebuild couldn't fold is new on arrival, so the poll
+    /// shows it; one it folded is own. Neither is delivered by the rebuild,
+    /// and a later rebuild that folds the first takes it back off the unshown.
     #[test]
     fn an_unfolded_own_note_is_new_on_arrival() {
         let mut ledger = NoteLedger::default();
         let now = Instant::now();
         ledger.record_own([1; 32], now);
         ledger.record_own([2; 32], now);
+        ledger.record_own([3; 32], now);
 
         ledger.unshow_unfolded(&HashSet::from([[2; 32]]));
+        assert!(ledger.is_own(&[1; 32]), "still the host's own");
+        assert!(ledger.delivered().is_empty(), "the rebuild claims nothing");
+        ledger.unshow_unfolded(&HashSet::from([[2; 32], [3; 32]]));
 
-        assert!(!ledger.is_own(&[1; 32]));
         assert_eq!(ledger.deliver(delivered(1, 1)), Delivery::New);
         assert_eq!(ledger.deliver(delivered(2, 2)), Delivery::Own);
+        assert_eq!(ledger.deliver(delivered(3, 3)), Delivery::Own);
+        assert_eq!(ledger.through(), Some(NoteKey::new(3)));
+    }
+
+    /// A restore's history is delivered and moves `through`; none of it is
+    /// own, so its notes would be fanned out by a poll that met them.
+    #[test]
+    fn installed_history_is_delivered_not_own() {
+        let mut ledger = NoteLedger::default();
+        let loaded = LoadedSession {
+            messages: Vec::new(),
+            orders: Vec::new(),
+            root_note_id: None,
+            last_note_id: None,
+            permissions: crate::session::PermissionTracker::new(),
+            note_ids: HashSet::from([[4; 32]]),
+            max_order: None,
+            max_key: Some(NoteKey::new(9)),
+            turns: Vec::new(),
+        };
+        ledger.install_history(&loaded);
+
+        assert_eq!(ledger.through(), Some(NoteKey::new(9)));
+        assert!(!ledger.is_own(&[4; 32]));
+        assert_eq!(ledger.deliver(delivered(9, 4)), Delivery::Again);
     }
 }

@@ -340,12 +340,13 @@ pub struct AgenticSessionData {
     /// Timestamp of the kind-31988 event that last set `remote_status`.
     /// Used to ignore older replaceable event revisions that arrive out of order.
     pub remote_status_ts: u64,
-    /// Which of the session's kind-1988 notes are seen, which of the ones
-    /// this host published nostrdb hasn't handed back yet, and how far the
-    /// conversation poll has got (see [`NoteLedger`](crate::note_ledger::NoteLedger)).
-    /// Filled by [`record_self_note`](Self::record_self_note) on every
-    /// publish, by the poll (`process_conversation_notes`) and by each
-    /// rebuild or restore. The chat is only rebuilt from the fold while every
+    /// Which of the session's kind-1988 notes this host published, which have
+    /// been processed, which of the host's nostrdb hasn't handed back yet, and
+    /// how far the conversation poll has got (see
+    /// [`NoteLedger`](crate::note_ledger::NoteLedger)). Filled by
+    /// [`record_self_note`](Self::record_self_note) on every publish, by the
+    /// poll (`process_conversation_notes`) and by a restore; a rebuild only
+    /// notes which own notes it couldn't show. The chat is only rebuilt from the fold while every
     /// note published is indexed: a fold taken earlier would be missing rows
     /// the host is showing.
     pub(crate) ledger: crate::note_ledger::NoteLedger,

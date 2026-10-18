@@ -237,11 +237,11 @@ impl Dave {
             // (see the doc on this fn), but only for a note we did not publish
             // ourselves. Notes dave builds ride `pending_relay_events` and are
             // recorded as own in the ledger at build time, so skipping them avoids a
-            // second, redundant envelope on the relay; a note absent from the set
+            // second, redundant envelope on the relay; a note that isn't own
             // reached ndb some other way — chiefly an agentium-CLI injection into
             // the local embedded relay, which nothing else propagates. A note
-            // whose session isn't materialized here can't be matched against a
-            // dedup set, so fan it out (it isn't one of ours).
+            // whose session isn't materialized here has no ledger to ask, so
+            // fan it out (it isn't one of ours).
             let self_published = session_id
                 .and_then(|sid| self.session_manager.get(sid))
                 .and_then(|s| s.agentic.as_ref())
@@ -466,7 +466,7 @@ fn remote_user_message<'n>(
 /// loaded) the batch conservatively takes the slow path, so a missed seeding
 /// can only cost an extra rebuild, never misorder.
 ///
-/// Every note in the batch, seen or not, advances the ledger's `through`: the poll has
+/// Every note in the batch, processed or not, advances the ledger's `through`: the poll has
 /// now handed it over, so a rebuild may fold it (see
 /// [`rebuild_chat_from_fold`]).
 ///
@@ -761,18 +761,18 @@ pub(crate) fn process_conversation_notes<'a>(
 ///
 /// Only notes the poll has handed the session are folded (see
 /// [`NoteLedger::through`](crate::note_ledger::NoteLedger::through)). `txn` is opened after the poll, so it
-/// can hold a note stored since; folding that one would mark it seen before
-/// the poll processed it, and a remote user message would show without ever
-/// being dispatched. It comes through the next poll instead.
+/// can hold a note stored since; it comes through the next poll, which
+/// processes it and folds it then. The rebuild claims nothing: what it folds
+/// isn't marked delivered, so a note it shows early would still be processed
+/// by the poll.
 ///
 /// This device's own notes are the exception, both ways:
-/// - one stored past the cap is folded anyway. It is already in
-///   the ledger's seen set (see `record_self_note`), so it has no side effect left
-///   for the poll to run, and the poll would skip it. Capping it out would drop
-///   a message the user just sent to a remote session from the chat until some
-///   later rebuild;
-/// - one nostrdb hasn't stored yet can't be folded, so it is no longer marked
-///   seen: the poll then treats it as new when it arrives and shows it.
+/// - one stored past the cap is folded anyway. It is own (see
+///   `record_self_note`), so it has no side effect left for the poll to run.
+///   Capping it out would drop a message the user just sent to a remote
+///   session from the chat until some later rebuild;
+/// - one nostrdb hasn't stored yet can't be folded, so the ledger records it
+///   as unshown: the poll then treats it as new when it arrives and shows it.
 ///
 /// The fold is O(session) and runs on the UI thread: once per turn for a local
 /// session, and on each out-of-order batch for a remote one.
@@ -794,7 +794,7 @@ pub(crate) fn rebuild_chat_from_fold(
             author,
             claude_sid,
             through,
-            agentic.ledger.seen_set(),
+            agentic.ledger.own(),
         ),
         // Unreachable in production: a rebuild only follows a poll batch, a
         // reconcile only follows the poll handing back the host's own notes,
@@ -810,13 +810,11 @@ pub(crate) fn rebuild_chat_from_fold(
 /// points into the chat along with it.
 ///
 /// Shared by the rebuild ([`rebuild_chat_from_fold`]) and restore, so a
-/// restored session starts with the same bookkeeping as a rebuilt one:
-/// - the ledger claims what the fold loaded ([`NoteLedger::claim`](crate::note_ledger::NoteLedger::claim)),
-///   and the permission state gains it. Every caller folds only notes the poll has
-///   already passed (see
-///   [`ConversationFeed`](crate::conversation_feed::ConversationFeed)), so
-///   nothing marked seen here is still to come through the poll and be
-///   skipped;
+/// restored session starts with the same chat state as a rebuilt one. It
+/// leaves the note ledger alone: a restore also installs the fold as history
+/// ([`NoteLedger::install_history`](crate::note_ledger::NoteLedger::install_history)),
+/// a rebuild doesn't.
+/// - the permission state gains the fold's;
 /// - the fast-path tail is seeded from the fold's highest order, so notes
 ///   that sort after it append instead of forcing another rebuild (a real
 ///   order, never the display order of a waiting message). A background
@@ -835,9 +833,6 @@ pub(crate) fn apply_loaded_chat(
     session: &mut session::ChatSession,
     loaded: session_loader::LoadedSession,
 ) {
-    if let Some(agentic) = &mut session.agentic {
-        agentic.ledger.claim(&loaded);
-    }
     session.replace_chat(loaded.messages);
     session.set_turns(loaded.turns);
 
@@ -1099,6 +1094,73 @@ mod tests {
             !envelope.is_rumor(),
             "the envelope is a real note fan_out_unseen_notes will publish"
         );
+    }
+
+    /// The poll fans out the envelope of a conversation note this host didn't
+    /// publish, and not of one it did (headway:dave/found-logic-despair,
+    /// headway:notedeck/cushion-audit-embark). The CLI's note is folded by a
+    /// rebuild before the poll reaches it, which used to claim it, so the
+    /// poll took it for the host's own: it was neither fanned out nor
+    /// dispatched.
+    #[tokio::test]
+    async fn poll_fans_out_only_what_the_host_did_not_publish() {
+        let mut test = crate::test_support::TestDave::new();
+        test.subscribe_feed();
+        let [sid] = test.add_sessions(["/tmp"], BackendType::Claude);
+        let session_id = "fan-out-own";
+        let (ndb, sk, author) = (test.ndb.clone(), test.sk, test.account);
+        let session = test.dave.session_manager.get_mut(sid).unwrap();
+        session.agentic.as_mut().unwrap().event_id = session_id.to_string();
+
+        let sub = ndb
+            .subscribe(&[nostrdb::Filter::new()
+                .kinds([session_events::AI_CONVERSATION_KIND as u64])
+                .build()])
+            .unwrap();
+        crate::publish::record_user_message(session, &ndb, Some(&sk), "own".into(), vec![]);
+        let cli = build_live_event(
+            "from the CLI",
+            "user",
+            session_id,
+            None,
+            LiveEventTags::default(),
+            &mut ThreadingState::new(),
+            &sk,
+        )
+        .unwrap();
+        assert!(pns_ingest(&ndb, &cli.note_json, &sk));
+        let _ = ndb.wait_for_notes(sub, 2).await.unwrap();
+
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            rebuild_chat_from_fold(session, &ndb, &txn, &author);
+        }
+        assert!(
+            session
+                .agentic
+                .as_ref()
+                .unwrap()
+                .ledger
+                .delivered()
+                .is_empty(),
+            "the rebuild claims nothing"
+        );
+
+        let mut fan_out = Vec::new();
+        let parts = test.parts();
+        let dispatched = parts
+            .dave
+            .poll_remote_conversation_events(&parts.host, &mut fan_out);
+
+        let envelope_of = |id: &[u8; 32]| {
+            let txn = Transaction::new(&ndb).unwrap();
+            let note = ndb.get_note_by_id(&txn, id).unwrap();
+            ndb.get_notekey_by_id(&txn, note.rumor_giftwrap_id().unwrap())
+                .unwrap()
+        };
+        assert_eq!(fan_out, [envelope_of(&cli.note_id)], "only the CLI's note");
+        assert_eq!(dispatched.len(), 1, "and the poll dispatches it");
+        assert_eq!(dispatched[0].text, "from the CLI");
     }
 
     /// The selected account's pubkey alongside the author pubkeys of every
@@ -2056,6 +2118,25 @@ mod tests {
             .collect()
     }
 
+    /// Where the stored conversation note whose content is `text` is, and its
+    /// id.
+    fn stored(ndb: &Ndb, text: &str) -> Delivered {
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        let txn = Transaction::new(ndb).unwrap();
+        let notes: Vec<_> = ndb
+            .query(&txn, std::slice::from_ref(&filter), 128)
+            .unwrap()
+            .iter()
+            .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
+            .filter(|n| n.content() == text)
+            .filter_map(|n| Delivered::of(&n))
+            .collect();
+        assert_eq!(notes.len(), 1, "exactly one {text:?} note is stored");
+        notes[0]
+    }
+
     /// Hand the session the stored conversation note whose content is `text`
     /// through the poll, and rebuild when the batch asks for it, as
     /// `poll_remote_conversation_events` does. Returns whether it rebuilt.
@@ -2198,11 +2279,15 @@ mod tests {
         let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
     }
 
-    /// A controller's send on a remote session is marked seen when it is built.
-    /// If the poll delivers an earlier-stored host note that forces a rebuild
-    /// before the send comes back through it, the rebuild still folds the send
-    /// (headway:dave/pledge-pilot-bind): capping it out left it hidden, since
-    /// its arrival is skipped as seen and asks for no rebuild.
+    /// A controller's send on a remote session is recorded as own when it is
+    /// built. If the poll delivers an earlier-stored host note that forces a
+    /// rebuild before the send comes back through it, the rebuild still folds
+    /// the send (headway:dave/pledge-pilot-bind): capping it out left it
+    /// hidden, since its arrival is skipped as own and asks for no rebuild.
+    ///
+    /// Folding it claims nothing (headway:notedeck/cushion-audit-embark): the
+    /// send stays undelivered and the cap stays at `H` until the poll hands
+    /// the send over.
     #[tokio::test]
     async fn capped_rebuild_keeps_an_unpolled_own_send() {
         let sk = test_secret_key();
@@ -2232,9 +2317,22 @@ mod tests {
         assert!(deliver(&ndb, &mut session, &sk, &author, "H"));
         assert_eq!(chat_texts(&session.chat), ["H", "A", "M"]);
 
+        let key_of = |text: &str| stored(&ndb, text).key;
+        let m = stored(&ndb, "M").id;
+        let ledger = &session.agentic.as_ref().unwrap().ledger;
+        assert!(ledger.is_own(&m), "M is own");
+        assert!(
+            !ledger.delivered().contains(&m),
+            "the rebuild folded M without claiming it"
+        );
+        assert_eq!(ledger.through(), Some(key_of("H")), "nor moving the cap");
+
         // M comes through: already shown, so no rebuild and no second row.
         assert!(!deliver(&ndb, &mut session, &sk, &author, "M"));
         assert_eq!(chat_texts(&session.chat), ["H", "A", "M"]);
+        let ledger = &session.agentic.as_ref().unwrap().ledger;
+        assert!(ledger.delivered().contains(&m));
+        assert_eq!(ledger.through(), Some(key_of("M")), "its delivery does");
 
         let txn = Transaction::new(&ndb).unwrap();
         let fold =
@@ -2243,8 +2341,8 @@ mod tests {
     }
 
     /// An own send nostrdb hasn't stored when a rebuild runs can't be folded.
-    /// The rebuild stops treating it as seen, so the poll shows it when it
-    /// arrives rather than skipping it.
+    /// The rebuild records it as unshown, so the poll shows it when it arrives
+    /// rather than skipping it as own.
     #[tokio::test]
     async fn rebuild_leaves_an_unstored_own_send_to_the_poll() {
         let sk = test_secret_key();

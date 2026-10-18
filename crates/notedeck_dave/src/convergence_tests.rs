@@ -144,6 +144,11 @@ struct Host {
     unobserved: Vec<NoteKey>,
     /// A remote device watching the session, fed after every step.
     observer: Observer,
+    /// What the host published before its last restart. A restored session's
+    /// ledger starts with no own notes, so this carries them across.
+    published_before: HashSet<[u8; 32]>,
+    /// Notes another device published that the scenario stored.
+    stored_remote: HashSet<[u8; 32]>,
     _dir: TempDir,
 }
 
@@ -176,6 +181,8 @@ impl Host {
             envelopes,
             unobserved: Vec::new(),
             observer: Observer::new(),
+            published_before: HashSet::new(),
+            stored_remote: HashSet::new(),
             _dir: dir,
         }
     }
@@ -291,9 +298,9 @@ impl Host {
         }
     }
 
-    /// Wait until every note the host has published so far is indexed.
+    /// Wait until every note of the session so far is indexed.
     async fn settle(&mut self) {
-        let ids = self.published_note_ids();
+        let ids = self.session_note_ids();
         self.wait_indexed(&ids).await;
     }
 
@@ -331,7 +338,7 @@ impl Host {
     /// the fold.
     async fn assert_converged(&mut self, at: &str) -> Vec<RowSig> {
         self.settle().await;
-        let ids = self.published_note_ids();
+        let ids = self.session_note_ids();
         let sk = self.secret_key.unwrap();
 
         let host_view = view_signature(&self.session().chat);
@@ -365,16 +372,20 @@ impl Host {
             .count()
     }
 
-    /// Every note id the host published for this session. Each publish
-    /// records its note as seen.
+    /// Every note id the host published for this session, across restarts.
+    /// Each publish records its note as own.
     fn published_note_ids(&mut self) -> HashSet<[u8; 32]> {
-        self.session()
-            .agentic
-            .as_ref()
-            .unwrap()
-            .ledger
-            .seen_set()
-            .clone()
+        let session = self.sessions.get(self.sid).unwrap();
+        let own = session.agentic.as_ref().unwrap().ledger.own();
+        own.union(&self.published_before).copied().collect()
+    }
+
+    /// Every note of the session, the host's and those the scenario stored
+    /// from other devices.
+    fn session_note_ids(&mut self) -> HashSet<[u8; 32]> {
+        let mut ids = self.published_note_ids();
+        ids.extend(&self.stored_remote);
+        ids
     }
 
     fn author(&self) -> nostrdb_net::Pubkey {
@@ -426,8 +437,8 @@ impl Host {
             &note.note_json,
             &self.secret_key.unwrap()
         ));
-        let mut ids = self.published_note_ids();
-        ids.insert(note.note_id);
+        self.stored_remote.insert(note.note_id);
+        let ids = self.session_note_ids();
         self.wait_indexed(&ids).await;
     }
 
@@ -466,11 +477,13 @@ impl Host {
             .expect("the session was restored")
             .id;
         assert!(!self.session().is_remote(), "it is restored as this host's");
-        assert_eq!(
-            self.published_note_ids(),
-            published,
-            "the restored session has seen every note it published"
+        let ledger = &self.session().agentic.as_ref().unwrap().ledger;
+        assert!(
+            ledger.delivered().is_superset(&published),
+            "the restored session has every note it published as history"
         );
+        assert!(ledger.own().is_empty(), "and none of them as its own");
+        self.published_before = published;
     }
 
     /// Store the session's kind-31988 state as this host, `hostname`, last
@@ -2764,7 +2777,7 @@ async fn remote_rebuild_leaves_a_late_note_to_the_next_poll() {
         .as_ref()
         .unwrap()
         .ledger
-        .seen_set()
+        .delivered()
         .contains(&request_note));
 
     let keys = std::mem::take(&mut host.unobserved);
