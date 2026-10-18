@@ -19,7 +19,7 @@
 
 use super::Chrome;
 use crate::app::NotedeckApp;
-use egui_nav::{NavUiType, RouteResponse};
+use egui_nav::{NavAction, NavUiType, ReturnType, RouteResponse};
 use notedeck::{nav_frame, App, AppContext, NavPass, NavStackEvent};
 use notedeck::{
     AppId, NavRequest, NavStack, RoutePredicate, ToolInvocation, ToolOutcome, ToolSpec,
@@ -101,9 +101,11 @@ pub(super) struct AppNavPass<A> {
     pub(super) response: A,
     /// egui ids the drawn routes will take a drag-back from.
     pub(super) can_take_drag_from: Vec<egui::Id>,
-    /// The entry a completed back popped this frame, for its app's
-    /// `cleanup_nav` (see [`Chrome::cleanup_entries`]).
-    pub(super) popped: Option<TakenEntry>,
+    /// The entries a back popped this frame, for their app's `cleanup_nav`
+    /// (see [`Chrome::cleanup_entries`]): one a completed back popped, and in
+    /// [`settle_nav`](Chrome::settle_nav) mode one the settle landed before
+    /// the draw. Empty, without allocating, on a frame that pops nothing.
+    pub(super) popped: Vec<TakenEntry>,
 }
 
 /// An entry taken off an app's stack, for that app's `cleanup_nav`.
@@ -155,6 +157,28 @@ impl AppNav {
         {
             self.opener = None;
         }
+    }
+
+    /// Land a flagged transition at once, as egui-nav would once its slide
+    /// ended, without drawing it: a push is navigated, a back pops. Returns
+    /// what the back popped, for its app's `cleanup_nav`. Both flags are
+    /// landed in egui-nav's order, push first, should one frame set both.
+    ///
+    /// For [`Chrome::settle_nav`]: egui-nav draws a flagged transition's two
+    /// routes on two layers for a frame even with animations off.
+    fn settle(&mut self) -> Option<Rc<dyn Any>> {
+        if self.stack.navigating() {
+            self.stack.reconcile(NavAction::Navigated);
+        }
+        if !self.stack.returning() {
+            return None;
+        }
+        let popped = match self.stack.reconcile(NavAction::Returned(ReturnType::Click)) {
+            Some(NavStackEvent::Popped { route, .. }) => route,
+            _ => None,
+        };
+        self.forget_stale_opener();
+        popped
     }
 
     /// Step back in-app. The pop lands when the slide does, so an opener the
@@ -409,6 +433,34 @@ impl Chrome {
             .collect()
     }
 
+    /// Test-only: with `on`, every push and back lands at once instead of
+    /// sliding, so a test can drive a full chrome through them under a debug
+    /// build.
+    ///
+    /// egui-nav draws a flagged transition's outgoing and incoming routes on
+    /// two layers for one frame, even with animations off, and a widget that
+    /// both draw with one id trips egui's debug "changed layer_id" assert. In
+    /// this mode the chrome lands the transition before the app's pass draws
+    /// it, and again at the end of each frame, so egui-nav only ever sees a
+    /// stack at rest. A drag still slides: it never sets the stack's flags.
+    pub fn settle_nav(&mut self, on: bool) {
+        self.settle_nav = on;
+    }
+
+    /// In [`settle_nav`](Chrome::settle_nav) mode, land the active app's
+    /// flagged transition (see [`AppNav::settle`]), returning what a back
+    /// popped for [`cleanup_entries`](Chrome::cleanup_entries). Otherwise
+    /// nothing.
+    #[must_use = "a popped entry that skips its app's cleanup_nav leaks what its route opened"]
+    pub(super) fn settle_active_nav(&mut self) -> Option<TakenEntry> {
+        if !self.settle_nav {
+            return None;
+        }
+        let app = AppId(self.active as usize);
+        let token = self.active_nav_mut()?.settle()?;
+        Some(TakenEntry { app, token })
+    }
+
     /// True while the active app's stack is still sliding (or being dragged)
     /// between entries: until the slide lands, egui-nav renders both the
     /// outgoing and the incoming route, so an app seeding its view from each
@@ -570,13 +622,17 @@ impl Chrome {
         animate: bool,
         mut body: impl FnMut(&mut NotedeckApp, &mut egui::Ui, &Rc<dyn Any>, NavPass) -> RouteResponse<A>,
     ) -> AppNavPass<A> {
+        // Settled before the stack is read, so egui-nav never draws the
+        // transition in settle-nav mode.
+        let settled = self.settle_active_nav();
+
         let slot = self.active as usize;
         let Chrome { app_navs, apps, .. } = self;
         let (Some(nav), Some(app)) = (app_navs.get_mut(slot), apps.get_mut(slot)) else {
             return AppNavPass {
                 response: A::default(),
                 can_take_drag_from: Vec::new(),
-                popped: None,
+                popped: settled.into_iter().collect(),
             };
         };
         // Read before the stack is lent to egui-nav, so each draw can tell
@@ -610,10 +666,11 @@ impl Chrome {
         // which holds prunes over until it lands.
         nav.in_flight = frame.in_flight;
 
-        // A completed back popped the top entry inside `nav_frame`. The
-        // chrome itself never inspects the token. A pop below the opener's
-        // depth (a drag-back included) forgets it.
-        let popped = match frame.event {
+        // A completed back popped the top entry inside `nav_frame`, after
+        // any the settle above popped. The chrome itself never inspects the
+        // token. A pop below the opener's depth (a drag-back included)
+        // forgets it.
+        let drawn_pop = match frame.event {
             Some(NavStackEvent::Popped {
                 route: Some(token), ..
             }) => Some(TakenEntry {
@@ -622,6 +679,7 @@ impl Chrome {
             }),
             _ => None,
         };
+        let popped = settled.into_iter().chain(drawn_pop).collect();
         nav.forget_stale_opener();
 
         AppNavPass {
@@ -652,6 +710,7 @@ impl Chrome {
             repaint_causes: Default::default(),
             nav: Default::default(),
             app_navs,
+            settle_nav: false,
             pending_open: None,
             keys: Default::default(),
             key_hints: [0u16; MAX_APPS / 16],

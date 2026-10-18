@@ -125,6 +125,10 @@ pub struct Chrome {
     /// [`Chrome::add_app`].
     app_navs: Vec<AppNav>,
 
+    /// Test-only: land every flagged slide at once instead of drawing it (see
+    /// [`Chrome::settle_nav`]). Off in the app.
+    settle_nav: bool,
+
     /// An [`AppAction::Open`](notedeck::AppAction::Open) whose reference didn't
     /// resolve on the frame it was raised, retried on the frames after it (see
     /// [`PendingOpen`]). At most one: a newer unresolved open replaces it.
@@ -365,6 +369,7 @@ impl Chrome {
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
             app_navs: Vec::new(),
+            settle_nav: false,
             pending_open: None,
             keys: KeyEngine::with_default_keymap(),
             key_hints: [0u16; MAX_APPS / 16],
@@ -569,6 +574,11 @@ impl notedeck::App for Chrome {
         // Apply any navigation requests the active app enqueued while
         // rendering to its stack.
         self.drain_nav_requests(ctx);
+
+        // A test that settles nav lands what this frame flagged now, so the
+        // stack it reads between frames is already where the slide would end.
+        let settled = self.settle_active_nav();
+        self.cleanup_entries(ctx, settled);
 
         // With this frame's navigation applied, a macro waiting on it may
         // run its next step.

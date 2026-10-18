@@ -67,6 +67,14 @@ impl ChromeDriver {
         driver
     }
 
+    /// Land every push and back at once instead of sliding, so a test can
+    /// navigate under a debug build (see [`Chrome::settle_nav`]). Returns
+    /// the driver, to chain onto [`new`](Self::new).
+    pub fn settle_nav(mut self) -> Self {
+        self.chrome.settle_nav(true);
+        self
+    }
+
     /// One frame with `events` as its input, a sixtieth of a second after
     /// the last.
     pub fn frame(&mut self, events: Vec<Event>) {
