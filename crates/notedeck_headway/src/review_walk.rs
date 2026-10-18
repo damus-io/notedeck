@@ -22,13 +22,18 @@
 //! diff the way `explain` finds it ([`find_hunk`]): by path and header, and by
 //! its `match:` line when a rebase moved the header. Its text is never shown.
 
+use std::borrow::Cow;
+
 use headway::event::ReviewSourceView;
-use md_stream::ParsedMarkdown;
 use nostrdb_net::NoteId;
 use notedeck_ui::diff::{GitPatch, Hunk, LineKind};
 
-/// The explainer's front matter the pane shows as its header. The rest of it
-/// (fonts, accent, sidecars) is for the built page and is skipped.
+use crate::explain_palette::Palette;
+use crate::review_figures::{Figured, Figures};
+
+/// The explainer's front matter the pane shows as its header, and the keys
+/// that pick its palette for figures. The rest of it (fonts, sidecars) is for
+/// the built page and is skipped.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct FrontMatter {
     /// The page's name.
@@ -37,6 +42,30 @@ pub(crate) struct FrontMatter {
     pub src: Option<String>,
     /// The header's chips, each a short claim with a number in it.
     pub facts: Vec<String>,
+    /// The accent's hue (degrees or a name): moves brass.
+    pub accent: Option<String>,
+    /// The ground (`cool`, `warm`, `neutral`, `paper`, or a hue): tints the
+    /// neutrals.
+    pub ground: Option<String>,
+    /// `hues:`'s entries, each moving one role's hue.
+    pub hues: Vec<HueOverride>,
+}
+
+/// One `hues:` entry: `<role>: <hue>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HueOverride {
+    /// `brass`, `slate`, `moss` or `alert`.
+    pub role: String,
+    /// Degrees or a named hue.
+    pub value: String,
+}
+
+/// The indented block under a front matter key being read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FrontBlock {
+    None,
+    Facts,
+    Hues,
 }
 
 /// A source split at the end of its front matter.
@@ -60,7 +89,7 @@ fn split_front_matter(text: &str) -> FrontSplit<'_> {
     }
     let mut front = FrontMatter::default();
     let mut at = text.find('\n').map_or(text.len(), |n| n + 1);
-    let mut in_facts = false;
+    let mut block = FrontBlock::None;
     for line in lines {
         at += line.len();
         let trimmed = line.trim_end();
@@ -71,13 +100,27 @@ fn split_front_matter(text: &str) -> FrontSplit<'_> {
             };
         }
         let indented = trimmed.starts_with([' ', '\t']);
-        if in_facts && indented {
-            if let Some(fact) = trimmed.trim_start().strip_prefix("- ") {
-                front.facts.push(unquote(fact).to_owned());
+        if indented && block != FrontBlock::None {
+            let item = trimmed.trim_start();
+            match block {
+                FrontBlock::Facts => {
+                    if let Some(fact) = item.strip_prefix("- ") {
+                        front.facts.push(unquote(fact).to_owned());
+                    }
+                }
+                FrontBlock::Hues => {
+                    if let Some((role, value)) = item.split_once(':') {
+                        front.hues.push(HueOverride {
+                            role: role.trim().to_owned(),
+                            value: unquote(value).to_owned(),
+                        });
+                    }
+                }
+                FrontBlock::None => {}
             }
             continue;
         }
-        in_facts = false;
+        block = FrontBlock::None;
         let Some((key, value)) = trimmed.split_once(':') else {
             continue;
         };
@@ -85,7 +128,10 @@ fn split_front_matter(text: &str) -> FrontSplit<'_> {
         match key {
             "title" if !value.is_empty() => front.title = Some(value.to_owned()),
             "src" if !value.is_empty() => front.src = Some(value.to_owned()),
-            "facts" => in_facts = true,
+            "accent" if !value.is_empty() => front.accent = Some(value.to_owned()),
+            "ground" if !value.is_empty() => front.ground = Some(value.to_owned()),
+            "facts" => block = FrontBlock::Facts,
+            "hues" => block = FrontBlock::Hues,
             _ => {}
         }
     }
@@ -108,26 +154,117 @@ fn unquote(value: &str) -> &str {
 }
 
 /// A record's explainer source, ready to draw: its front matter as a header
-/// and the rest as Markdown. The explain fences (`figure`, `flow`,
-/// `sequence`, `ba`, `wrong`) render as the code blocks they are to a
-/// Markdown reader.
+/// and the rest as Markdown, its figures ([`review_figures`]) drawn. The
+/// other explain fences (`flow`, `sequence`, `ba`, `wrong`) render as the
+/// code blocks they are to a Markdown reader.
+///
+/// [`review_figures`]: crate::review_figures
 pub(crate) struct ExplainerPage {
     /// The source event it was parsed from, to tell when it's stale.
     pub source: NoteId,
     pub front: FrontMatter,
-    pub body: ParsedMarkdown,
+    pub body: Figured,
+    /// The palette its figures' `var(--…)` colours come from.
+    pub palette: Palette,
+    /// Its figures' loads and textures, dropped with the page.
+    pub figures: Figures,
 }
 
 impl ExplainerPage {
     /// Parse `source`'s text.
     pub(crate) fn new(source: &ReviewSourceView) -> Self {
         let FrontSplit { front, body } = split_front_matter(&source.text);
+        let mut figure = 0;
         Self {
             source: source.id,
+            body: Figured::parse(&fence_raw_svg(body), &mut figure),
+            palette: Palette::of(&front),
             front,
-            body: ParsedMarkdown::parse(body),
+            figures: Figures::new(source.id),
         }
     }
+}
+
+/// `text` with every top-level block that opens with `<svg` wrapped in a
+/// ` ```figure ` fence, so it draws as one. The block runs to the first line
+/// holding `</svg>`, blank lines and all, as explain reads it (nesting isn't
+/// counted); one already inside a fence is left alone.
+pub(crate) fn fence_raw_svg(text: &str) -> Cow<'_, str> {
+    if !text.contains("<svg") && !text.contains("<SVG") {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + 32);
+    let mut open: Option<Fence> = None;
+    let mut in_svg = false;
+    for line in text.split_inclusive('\n') {
+        let bare = line.trim_end_matches(['\n', '\r']);
+        if in_svg {
+            out.push_str(line);
+            if bare.to_ascii_lowercase().contains("</svg>") {
+                close_figure(&mut out);
+                in_svg = false;
+            }
+            continue;
+        }
+        if let Some(fence) = open {
+            let closes = fence_of(bare).is_some_and(|f| {
+                f.fence.marker == fence.marker && f.fence.len >= fence.len && f.info.is_empty()
+            });
+            if closes {
+                open = None;
+            }
+            out.push_str(line);
+            continue;
+        }
+        if let Some(f) = fence_of(bare) {
+            open = Some(f.fence);
+            out.push_str(line);
+            continue;
+        }
+        if opens_svg(bare) {
+            out.push_str("```figure\n");
+            out.push_str(line);
+            if bare.to_ascii_lowercase().contains("</svg>") {
+                close_figure(&mut out);
+            } else {
+                in_svg = true;
+            }
+            continue;
+        }
+        out.push_str(line);
+    }
+    if in_svg {
+        close_figure(&mut out);
+    }
+    Cow::Owned(out)
+}
+
+/// Close a figure fence [`fence_raw_svg`] opened, on a line of its own.
+fn close_figure(out: &mut String) {
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("```\n");
+}
+
+/// Whether `line` opens an HTML block with `<svg`: at most three spaces in,
+/// then `<svg` followed by whitespace, `>` or the line's end.
+fn opens_svg(line: &str) -> bool {
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    if indent > 3 {
+        return false;
+    }
+    let rest = &line[indent..];
+    let Some(tag) = rest.get(..4) else {
+        return false;
+    };
+    if !tag.eq_ignore_ascii_case("<svg") {
+        return false;
+    }
+    rest[4..]
+        .chars()
+        .next()
+        .is_none_or(|c| c == '>' || c.is_whitespace())
 }
 
 /// A ` ```hunk ` fence: the hunk it cites.
@@ -290,7 +427,7 @@ pub(crate) struct WalkNote {
     pub missing: Option<String>,
     /// The prose, as written: the diff's hover and accessible label.
     pub prose: String,
-    pub body: ParsedMarkdown,
+    pub body: Figured,
 }
 
 /// A record's code walk, resolved against the diff it is drawn into.
@@ -299,12 +436,17 @@ pub(crate) struct CodeWalk {
     pub source: NoteId,
     /// In walk order.
     pub notes: Vec<WalkNote>,
+    /// The palette its figures' `var(--…)` colours come from.
+    pub palette: Palette,
+    /// Its figures' loads and textures, numbered across all its notes.
+    pub figures: Figures,
 }
 
 impl CodeWalk {
     /// Parse `source`'s walk and find each of its hunks in `patch`.
     pub(crate) fn resolve(source: &ReviewSourceView, patch: &GitPatch) -> Self {
-        let body = split_front_matter(&source.text).body;
+        let FrontSplit { front, body } = split_front_matter(&source.text);
+        let mut figure = 0;
         let notes = walk_steps(body)
             .into_iter()
             .filter_map(|step| {
@@ -324,7 +466,7 @@ impl CodeWalk {
                 Some(WalkNote {
                     at,
                     missing,
-                    body: ParsedMarkdown::parse(prose),
+                    body: Figured::parse(&fence_raw_svg(prose), &mut figure),
                     prose: prose.to_owned(),
                 })
             })
@@ -332,6 +474,8 @@ impl CodeWalk {
         Self {
             source: source.id,
             notes,
+            palette: Palette::of(&front),
+            figures: Figures::new(source.id),
         }
     }
 
@@ -535,6 +679,47 @@ diff --git a/README.md b/README.md
         let unclosed = "---\ntitle: x\n";
         assert_eq!(split_front_matter(unclosed).body, unclosed);
         assert_eq!(split_front_matter(unclosed).front, FrontMatter::default());
+    }
+
+    /// `accent`, `ground` and `hues:` are kept for the figures' palette.
+    #[test]
+    fn front_matter_keeps_the_palette_keys() {
+        let text = "---\naccent: rust\nground: '92'\nhues:\n  moss: 150\n  alert: red\nfacts:\n  - 1 fact\n---\nBody.\n";
+        let front = split_front_matter(text).front;
+        assert_eq!(front.accent.as_deref(), Some("rust"));
+        assert_eq!(front.ground.as_deref(), Some("92"));
+        assert_eq!(
+            front.hues,
+            [
+                HueOverride {
+                    role: "moss".into(),
+                    value: "150".into()
+                },
+                HueOverride {
+                    role: "alert".into(),
+                    value: "red".into()
+                },
+            ]
+        );
+        assert_eq!(front.facts, ["1 fact"]);
+    }
+
+    /// A top-level `<svg` block is fenced as a figure through its `</svg>`,
+    /// blank lines and all; one inside a fence, an indented one, or a
+    /// `<svgfoo>` is left alone.
+    #[test]
+    fn fence_raw_svg_keeps_blank_lines() {
+        let text = "Intro.\n<svg viewBox=\"0 0 1 1\">\n  <g/>\n\n  <g/>\n</svg>\nAfter.\n\n```html\n<svg>\n```\n    <svg>\n<svgfoo>\n<SVG></SVG>\n";
+        assert_eq!(
+            fence_raw_svg(text),
+            "Intro.\n```figure\n<svg viewBox=\"0 0 1 1\">\n  <g/>\n\n  <g/>\n</svg>\n```\nAfter.\n\n```html\n<svg>\n```\n    <svg>\n<svgfoo>\n```figure\n<SVG></SVG>\n```\n"
+        );
+        assert!(matches!(fence_raw_svg("no drawings"), Cow::Borrowed(_)));
+        // An unclosed one runs to the end, and is closed there.
+        assert_eq!(
+            fence_raw_svg("<svg>\n<g/>"),
+            "```figure\n<svg>\n<g/>\n```\n"
+        );
     }
 
     /// A fence's info string gives the path and header, its body the last

@@ -10,12 +10,14 @@ pub use headway::{event, store, teams, views};
 
 mod cache;
 mod cursor;
+mod explain_palette;
 mod jump;
 mod keys;
 mod nav;
 mod renderers;
 mod review;
 mod review_body;
+mod review_figures;
 mod review_images;
 mod review_models;
 mod review_walk;

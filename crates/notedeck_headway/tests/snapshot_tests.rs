@@ -5069,6 +5069,12 @@ A file that was dropped.
 /// Record [`QUEUE_EXPLAINER_SOURCE`] and [`QUEUE_WALK_SOURCE`] on the queue
 /// card's review record.
 fn add_queue_sources(harness: &mut Harness<'static, HeadwayTestState>) {
+    add_queue_sources_with(harness, QUEUE_EXPLAINER_SOURCE);
+}
+
+/// Record `explainer` and [`QUEUE_WALK_SOURCE`] on the queue card's review
+/// record.
+fn add_queue_sources_with(harness: &mut Harness<'static, HeadwayTestState>, explainer: &str) {
     let card = harness_card_id(harness, QUEUE_CARDS[0]);
     let record = std::cell::Cell::new(None);
     wait_for_demo(harness, "the queue card's review record", |view| {
@@ -5091,11 +5097,7 @@ fn add_queue_sources(harness: &mut Harness<'static, HeadwayTestState>) {
             card,
             record,
             sources: vec![
-                source(
-                    event::ReviewSourceRole::Explainer,
-                    "queue.md",
-                    QUEUE_EXPLAINER_SOURCE,
-                ),
+                source(event::ReviewSourceRole::Explainer, "queue.md", explainer),
                 source(
                     event::ReviewSourceRole::Code,
                     "queue.code.md",
@@ -5212,6 +5214,138 @@ fn snapshot_headway_review_explainer() {
     wait_for_label(&mut harness, "A queue you can walk");
     harness.run_steps(3);
     harness.snapshot("headway_review_explainer");
+}
+
+/// An explainer source with figures: a hand-drawn SVG in a figure fence (a
+/// blank line between its groups, explain's theme vars for its colours and
+/// font, a caption), a raw `<svg>` outside any fence, a screenshot from a
+/// `data:` URI with its title as the caption, and one from a path no host
+/// has, drawn as a placeholder naming it.
+fn figures_explainer_source() -> String {
+    use base64::Engine;
+    let shot = image::RgbaImage::from_fn(160, 60, |x, y| {
+        image::Rgba([(x * 255 / 160) as u8, 120, (y * 255 / 60) as u8, 255])
+    });
+    let mut png = std::io::Cursor::new(Vec::new());
+    shot.write_to(&mut png, image::ImageFormat::Png)
+        .expect("encode png");
+    let data = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+    format!(
+        "\
+---
+title: Figures that draw
+src: notedeck · review_figures.rs
+---
+
+The drawing below is drawn by hand.
+
+```figure
+<svg viewBox=\"0 0 360 132\" aria-label=\"A bracket spanning the whole block\">
+  <g font-family=\"var(--mono)\" font-size=\"12\" fill=\"var(--ink-2)\">
+    <text x=\"0\" y=\"18\">&lt;svg viewBox=…&gt;</text>
+    <text x=\"0\" y=\"62\" fill=\"var(--ink-3)\">(blank line)</text>
+    <text x=\"0\" y=\"110\">&lt;/svg&gt;</text>
+  </g>
+
+  <g font-family=\"JetBrains Mono, monospace\" font-size=\"12\">
+    <path d=\"M200,6 L210,6 L210,114 L200,114\" fill=\"none\" stroke=\"var(--moss)\" stroke-width=\"1.6\"/>
+    <text x=\"218\" y=\"58\" fill=\"var(--moss-ink)\">one HTML block</text>
+    <path d=\"M140,58 L190,58\" fill=\"none\" stroke=\"var(--alert)\" stroke-width=\"1.3\" stroke-dasharray=\"4 3\"/>
+    <text x=\"146\" y=\"50\" fill=\"var(--alert-ink)\" font-size=\"11\">ended here</text>
+  </g>
+</svg>
+---
+The dashed line is where CommonMark ends the block.
+```
+
+<svg viewBox=\"0 0 200 24\" aria-label=\"A raw drawing\">
+  <rect x=\"0\" y=\"4\" width=\"200\" height=\"16\" rx=\"8\" fill=\"var(--brass-soft)\" stroke=\"var(--t)\"/>
+
+  <text x=\"100\" y=\"16\" text-anchor=\"middle\" font-family=\"var(--body)\" font-size=\"10\" fill=\"var(--brass-ink)\">raw svg, fenced</text>
+</svg>
+
+![A gradient screenshot](data:image/png;base64,{data} \"A screenshot from a data URI.\")
+
+![A screenshot on another host](/nowhere/explainers/book-stuck.jpg \"Recorded elsewhere.\")
+
+The end.
+"
+    )
+}
+
+/// Open the queue card's Explainer tab on [`figures_explainer_source`] and
+/// wait until both drawings and the data: screenshot have landed.
+fn open_figures_explainer(harness: &mut Harness<'static, HeadwayTestState>) {
+    let fixture = review_fixture();
+    seed_review_queue(harness, &fixture);
+    add_queue_sources_with(harness, &figures_explainer_source());
+    open_review_queue(harness);
+    wait_for_label(harness, "Keys come next.");
+    harness.get_by_label("Explainer source").click_accesskit();
+    wait_for_label(harness, "Figures that draw");
+    for drawn in [
+        "A bracket spanning the whole block",
+        "A raw drawing",
+        "A gradient screenshot",
+    ] {
+        wait_for_label(harness, drawn);
+    }
+}
+
+/// The Explainer tab draws its figures: the fenced and the raw SVG as
+/// images with their captions, the data: screenshot with its title as the
+/// caption, and the missing file as a placeholder naming its path and why.
+#[test]
+fn review_explainer_draws_its_figures() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1400.0));
+    open_figures_explainer(&mut harness);
+    for shown in [
+        "The dashed line is where CommonMark ends the block.",
+        "A screenshot from a data URI.",
+        "A screenshot on another host",
+        "/nowhere/explainers/book-stuck.jpg",
+        "not on this host",
+        "Recorded elsewhere.",
+        "The end.",
+    ] {
+        assert!(harness.query_by_label(shown).is_some(), "{shown}");
+    }
+    // Drawn, not shown as source.
+    assert!(harness.query_by_label_contains("<svg").is_none());
+    assert!(harness.query_by_label_contains("[Image:").is_none());
+    // Never upscaled: the 160px screenshot is drawn 160 wide.
+    let shot = harness.get_by_label("A gradient screenshot").rect();
+    assert!((shot.width() - 160.0).abs() < 0.5, "{shot:?}");
+}
+
+/// Snapshot: the Explainer tab's figures (a hand-drawn SVG, a raw one, a
+/// data: screenshot and a missing file's placeholder) in the light theme.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_figures() {
+    review_explainer_figures_snapshot(
+        egui::ThemePreference::Light,
+        "headway_review_explainer_figures",
+    );
+}
+
+/// Snapshot: [`snapshot_headway_review_explainer_figures`] in the dark
+/// theme, the drawings' colours from explain's dark palette.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_figures_dark() {
+    review_explainer_figures_snapshot(
+        egui::ThemePreference::Dark,
+        "headway_review_explainer_figures_dark",
+    );
+}
+
+fn review_explainer_figures_snapshot(theme: egui::ThemePreference, name: &str) {
+    let mut harness = headway_harness(egui::Vec2::new(1000.0, 1000.0));
+    harness.ctx.options_mut(|o| o.theme_preference = theme);
+    open_figures_explainer(&mut harness);
+    harness.run_steps(3);
+    harness.snapshot(name);
 }
 
 /// A review pane opened from a card's detail ("Review diff"), not the queue,

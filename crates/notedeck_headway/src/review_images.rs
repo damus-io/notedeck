@@ -27,7 +27,7 @@ use notedeck_ui::diff::{FileImages, FilePatch, FileStatus, GitPatch, GitPatchSta
 const MAX_IMAGES: usize = 12;
 
 /// Largest side read, in bytes; a bigger one is named by its size, unread.
-const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Extensions (compared ignoring case) of the binary files worth decoding.
 /// SVG isn't one: git diffs it as text. A GIF shows its first frame.
@@ -134,18 +134,44 @@ fn read_side(repo_dir: &Path, rev: &str, path: &str) -> Option<FetchedSide> {
 }
 
 /// `bytes` decoded through notedeck's image pipeline, or why not.
-#[profiling::function]
 fn decode(bytes: &[u8]) -> FetchedSide {
+    match decode_image(bytes) {
+        Some(Decoded {
+            image,
+            width,
+            height,
+        }) => FetchedSide::Decoded {
+            image,
+            width,
+            height,
+            bytes: bytes.len() as u64,
+        },
+        None => FetchedSide::Unreadable,
+    }
+}
+
+/// An image decoded by [`decode_image`].
+pub(crate) struct Decoded {
+    /// Its pixels, the longest edge capped at 2048px.
+    pub image: ColorImage,
+    /// The stored image's size, before any downscale.
+    pub width: u32,
+    pub height: u32,
+}
+
+/// `bytes` decoded through notedeck's image pipeline
+/// ([`process_image`]); `None` when they aren't an image it reads.
+#[profiling::function]
+pub(crate) fn decode_image(bytes: &[u8]) -> Option<Decoded> {
     match image::load_from_memory(bytes) {
-        Ok(image) => FetchedSide::Decoded {
+        Ok(image) => Some(Decoded {
             width: image.width(),
             height: image.height(),
-            bytes: bytes.len() as u64,
             image: process_image(ImageType::Content(None), image),
-        },
+        }),
         Err(e) => {
-            tracing::debug!("decoding an image for the review diff: {e}");
-            FetchedSide::Unreadable
+            tracing::debug!("decoding an image for the review pane: {e}");
+            None
         }
     }
 }

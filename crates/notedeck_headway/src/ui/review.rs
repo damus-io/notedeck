@@ -1598,7 +1598,7 @@ fn commit_header_ui(
     if let Some(record) = record {
         commit_comments_ui(ui, theme, app_ctx, record);
     }
-    if let Some(walk) = &loaded.walk {
+    if let Some(walk) = &mut loaded.walk {
         walk_top_ui(ui, theme, app_ctx, walk);
     }
     chip
@@ -1663,14 +1663,16 @@ fn diff_ui(
             None,
         );
     };
-    let walk = loaded.walk.as_ref();
+    let mut walk = loaded.walk.as_mut();
     let txn = (!record.comments.is_empty() || walk.is_some())
         .then(|| nostrdb::Transaction::new(app_ctx.ndb).ok())
         .flatten();
-    let mut draw = |ui: &mut egui::Ui, note: &notedeck_ui::diff::PatchNote| match (note.kind, walk)
-    {
+    let mut draw = |ui: &mut egui::Ui, note: &notedeck_ui::diff::PatchNote| match (
+        note.kind,
+        walk.as_deref_mut(),
+    ) {
         (PatchNoteKind::Walk, Some(walk)) => {
-            walk_note_ui(ui, app_ctx, txn.as_ref(), walk, note.key)
+            walk_note_ui(ui, theme, app_ctx, txn.as_ref(), walk, note.key)
         }
         (PatchNoteKind::Walk, None) => {}
         _ => posted_comment_ui(ui, theme, app_ctx, txn.as_ref(), record, note.key),

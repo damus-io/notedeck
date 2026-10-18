@@ -4,11 +4,16 @@
 //! the hunks they introduce, or at its top when they introduce none.
 
 use headway::event::{ReviewSourceRole, ReviewView};
-use md_stream::ParsedMarkdown;
 use notedeck::ColorTheme;
+use notedeck::media::AnimationMode;
+use notedeck::media::images::ImageType;
 use notedeck::tokens::{RADIUS_MD, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THICK};
 
 use super::widgets::{text_pill, tinted_pill};
+use crate::explain_palette::Palette;
+use crate::review_figures::{
+    Block, Failure, Figure, FigureBody, FigureView, Figured, Figures, fit,
+};
 use crate::review_walk::{CodeWalk, ExplainerPage};
 
 /// What the review pane shows under the record's summary.
@@ -31,7 +36,7 @@ pub(crate) struct ExplainerCache {
 impl ExplainerCache {
     /// `record`'s explainer page, parsed now if it changed since the last
     /// frame; `None` when the record has no explainer source.
-    fn page(&mut self, record: &ReviewView) -> Option<&ExplainerPage> {
+    fn page(&mut self, record: &ReviewView) -> Option<&mut ExplainerPage> {
         let Some(source) = record.source(ReviewSourceRole::Explainer) else {
             self.page = None;
             return None;
@@ -39,7 +44,7 @@ impl ExplainerCache {
         if self.page.as_ref().map(|p| p.source) != Some(source.id) {
             self.page = Some(ExplainerPage::new(source));
         }
-        self.page.as_ref()
+        self.page.as_mut()
     }
 }
 
@@ -136,6 +141,7 @@ pub(super) fn explainer_ui(
     let Some(page) = cache.page(record) else {
         return;
     };
+    let page = &mut *page;
     egui::ScrollArea::vertical()
         .id_salt("headway-review-explainer")
         .auto_shrink([false, false])
@@ -163,7 +169,11 @@ pub(super) fn explainer_ui(
             if front.title.is_some() || front.src.is_some() || !front.facts.is_empty() {
                 ui.add_space(SPACING_SM);
             }
-            markdown_ui(ui, app_ctx, None, &page.body);
+            let figured = Page {
+                palette: &page.palette,
+                figures: &mut page.figures,
+            };
+            figured_ui(ui, theme, app_ctx, None, figured, &page.body);
         });
 }
 
@@ -176,12 +186,18 @@ pub(super) fn walk_top_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
-    walk: &CodeWalk,
+    walk: &mut CodeWalk,
 ) {
     if walk.top().next().is_none() {
         return;
     }
-    for note in walk.top() {
+    let CodeWalk {
+        notes,
+        palette,
+        figures,
+        ..
+    } = walk;
+    for note in notes.iter().filter(|n| n.at.is_none()) {
         let bar = ui.visuals().hyperlink_color;
         let shown = walk_frame(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -189,7 +205,11 @@ pub(super) fn walk_top_ui(
                 tinted_pill(ui, missing, theme.warning);
                 ui.add_space(SPACING_XS);
             }
-            markdown_ui(ui, app_ctx, None, &note.body);
+            let page = Page {
+                palette,
+                figures: &mut *figures,
+            };
+            figured_ui(ui, theme, app_ctx, None, page, &note.body);
         });
         let rect = shown.response.rect;
         let edge =
@@ -228,40 +248,196 @@ const WALK_TINT: f32 = 0.08;
 /// same card as the header's ([`walk_frame`]), as wide as the diff gives it.
 pub(super) fn walk_note_ui(
     ui: &mut egui::Ui,
+    theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     txn: Option<&nostrdb::Transaction>,
-    walk: &CodeWalk,
+    walk: &mut CodeWalk,
     key: usize,
 ) {
-    let Some(note) = walk.notes.get(key) else {
+    let CodeWalk {
+        notes,
+        palette,
+        figures,
+        ..
+    } = walk;
+    let Some(note) = notes.get(key) else {
         return;
     };
     walk_frame(ui).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        markdown_ui(ui, app_ctx, txn, &note.body);
+        let page = Page { palette, figures };
+        figured_ui(ui, theme, app_ctx, txn, page, &note.body);
     });
 }
 
-/// `md`, with refs resolved through `txn`, or one opened here when the caller
-/// holds none. Without a transaction refs draw as plain text.
-fn markdown_ui(
+/// The page a body's figures belong to: the palette they're drawn in and
+/// their loads.
+struct Page<'a> {
+    palette: &'a Palette,
+    figures: &'a mut Figures,
+}
+
+/// `body`, block by block: its runs of Markdown with refs resolved through
+/// `txn` (or one opened here when the caller holds none; without one refs
+/// draw as plain text), and its figures drawn ([`figure_ui`]).
+fn figured_ui(
     ui: &mut egui::Ui,
+    theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     txn: Option<&nostrdb::Transaction>,
-    md: &ParsedMarkdown,
+    mut page: Page<'_>,
+    body: &Figured,
 ) {
-    let mut note_ctx = app_ctx.note_context();
     let opened = match txn {
         Some(_) => None,
-        None => nostrdb::Transaction::new(note_ctx.ndb).ok(),
+        None => nostrdb::Transaction::new(app_ctx.ndb).ok(),
     };
     let txn = txn.or(opened.as_ref());
-    notedeck_ui::markdown::render_parsed_markdown(
-        &md.elements,
-        None,
-        &md.source,
-        Some(&mut note_ctx),
-        txn,
-        ui,
-    );
+    for block in &body.blocks {
+        match block {
+            Block::Markdown(range) => {
+                let mut note_ctx = app_ctx.note_context();
+                notedeck_ui::markdown::render_parsed_markdown(
+                    &body.md.elements[range.clone()],
+                    None,
+                    &body.md.source,
+                    Some(&mut note_ctx),
+                    txn,
+                    ui,
+                );
+            }
+            Block::Figure(figure) => figure_ui(ui, theme, app_ctx, txn, &mut page, figure),
+        }
+    }
+}
+
+/// A figure, centred in a thin frame at no more than its own size or the
+/// pane's width, its caption small and muted under it. A figure that can't
+/// show draws a placeholder saying why; one loading, a spinner.
+fn figure_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    txn: Option<&nostrdb::Transaction>,
+    page: &mut Page<'_>,
+    figure: &Figure,
+) {
+    let dark = ui.visuals().dark_mode;
+    let margin = SPACING_SM;
+    ui.add_space(SPACING_XS);
+    ui.vertical_centered(|ui| {
+        let frame = egui::Frame::new()
+            .stroke(egui::Stroke::new(1.0, theme.border_default))
+            .corner_radius(4.0)
+            .inner_margin(margin);
+        let available = ui.available_width() - 2.0 * margin - 2.0;
+        frame.show(ui, |ui| match &figure.body {
+            FigureBody::Svg { source, label } => {
+                let label = label.as_deref().or(figure.caption.as_deref());
+                let view = page
+                    .figures
+                    .svg(ui.ctx(), page.palette, figure.index, dark, source);
+                if let FigureView::Failed(failure) = &view {
+                    placeholder_ui(ui, theme, label, None, failure);
+                    ui.label(egui::RichText::new(source.as_str()).small().monospace());
+                    return;
+                }
+                figure_view_ui(ui, theme, view, available, label, "");
+            }
+            FigureBody::Markdown(inner) => {
+                ui.vertical(|ui| {
+                    ui.set_max_width(available);
+                    let inner_page = Page {
+                        palette: page.palette,
+                        figures: &mut *page.figures,
+                    };
+                    figured_ui(ui, theme, app_ctx, txn, inner_page, inner);
+                });
+            }
+            FigureBody::Image { alt, src } => {
+                let ctx = ui.ctx().clone();
+                let view = match page
+                    .figures
+                    .image(&ctx, page.palette, figure.index, dark, src)
+                {
+                    Some(view) => view,
+                    None => match app_ctx.img_cache.latest_texture(
+                        app_ctx.media_jobs.sender(),
+                        ui,
+                        src,
+                        ImageType::Content(None),
+                        AnimationMode::NoAnimation,
+                    ) {
+                        Some(texture) => {
+                            let [w, h] = texture.size();
+                            FigureView::Ready {
+                                texture,
+                                size: egui::vec2(w as f32, h as f32),
+                            }
+                        }
+                        None => FigureView::Pending,
+                    },
+                };
+                figure_view_ui(ui, theme, view, available, Some(alt.as_str()), src);
+            }
+        });
+        if let Some(caption) = &figure.caption {
+            ui.add_space(SPACING_XS);
+            ui.label(
+                egui::RichText::new(caption.as_str())
+                    .small()
+                    .color(theme.text_muted),
+            );
+        }
+    });
+    ui.add_space(SPACING_SM);
+}
+
+/// A loaded figure at its fitted size (labelled `label` for a screen
+/// reader), a spinner while it loads, or a placeholder naming `src` and why
+/// it can't show.
+fn figure_view_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    view: FigureView<'_>,
+    available: f32,
+    label: Option<&str>,
+    src: &str,
+) {
+    match view {
+        FigureView::Pending => {
+            ui.spinner();
+        }
+        FigureView::Failed(failure) => placeholder_ui(ui, theme, label, Some(src), &failure),
+        FigureView::Ready { texture, size } => {
+            let size = fit(size, available);
+            let response = ui.add(egui::Image::new(texture).fit_to_exact_size(size));
+            let label = label.unwrap_or("figure");
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, label));
+        }
+    }
+}
+
+/// Why a figure can't show: its alt text, the `src` it names in mono (when
+/// it has one) and the reason.
+fn placeholder_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    alt: Option<&str>,
+    src: Option<&str>,
+    failure: &Failure,
+) {
+    ui.vertical_centered(|ui| {
+        if let Some(alt) = alt.filter(|a| !a.is_empty()) {
+            ui.label(egui::RichText::new(alt).color(theme.text_secondary));
+        }
+        if let Some(src) = src.filter(|s| !s.is_empty() && !s.starts_with("data:")) {
+            ui.label(egui::RichText::new(src).small().monospace());
+        }
+        ui.label(
+            egui::RichText::new(failure.reason())
+                .small()
+                .color(theme.warning),
+        );
+    });
 }

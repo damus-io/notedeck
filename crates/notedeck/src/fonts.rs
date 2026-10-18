@@ -97,6 +97,14 @@ const INCONSOLATA_Y_OFFSET_FACTOR: f32 =
     -(INCONSOLATA_SCALE - 1.0) * 0.5 * (INCONSOLATA_ASCENT_EM + INCONSOLATA_DESCENT_EM)
         / INCONSOLATA_SCALE;
 
+/// The bundled Inconsolata Regular, notedeck's monospace face. Public so a
+/// renderer outside egui (an SVG rasteriser) can draw with the same face.
+pub const INCONSOLATA: &[u8] = include_bytes!("../../../assets/fonts/Inconsolata-Regular.ttf");
+
+/// The bundled DejaVu Sans (its emoji stripped), notedeck's fallback text
+/// face. Public for the same reason as [`INCONSOLATA`].
+pub const DEJAVU_SANS: &[u8] = include_bytes!("../../../assets/fonts/DejaVuSansSansEmoji.ttf");
+
 // Use gossip's approach to font loading. This includes japanese fonts
 // for rending stuff from japanese users.
 pub fn setup_fonts(ctx: &egui::Context) {
@@ -119,9 +127,7 @@ pub fn setup_fonts(ctx: &egui::Context) {
 
     font_data.insert(
         "DejaVuSans".to_owned(),
-        Arc::new(FontData::from_static(include_bytes!(
-            "../../../assets/fonts/DejaVuSansSansEmoji.ttf"
-        ))),
+        Arc::new(FontData::from_static(DEJAVU_SANS)),
     );
 
     font_data.insert(
@@ -153,17 +159,12 @@ pub fn setup_fonts(ctx: &egui::Context) {
 
     font_data.insert(
         "Inconsolata".to_owned(),
-        Arc::new(
-            FontData::from_static(include_bytes!(
-                "../../../assets/fonts/Inconsolata-Regular.ttf"
-            ))
-            .tweak(FontTweak {
-                scale: INCONSOLATA_SCALE,
-                y_offset_factor: INCONSOLATA_Y_OFFSET_FACTOR,
-                y_offset: 0.0,
-                ..Default::default()
-            }),
-        ),
+        Arc::new(FontData::from_static(INCONSOLATA).tweak(FontTweak {
+            scale: INCONSOLATA_SCALE,
+            y_offset_factor: INCONSOLATA_Y_OFFSET_FACTOR,
+            y_offset: 0.0,
+            ..Default::default()
+        })),
     );
 
     font_data.insert(
