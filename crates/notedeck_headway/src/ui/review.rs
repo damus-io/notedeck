@@ -79,6 +79,10 @@ pub(crate) struct ReviewUi {
     /// Whether the diff or the record's explainer is showing; kept across
     /// cards, so a reviewer reading explainers down the queue stays on them.
     tab: ReviewTab,
+    /// Whether the commit's body is drawn as written (monospace, hard wraps
+    /// kept) rather than reflowed; `m` flips it. Kept across cards like
+    /// [`tab`](Self::tab), and not persisted.
+    raw_message: bool,
     /// The shown record's explainer, parsed once per source.
     explainer: ExplainerCache,
 }
@@ -129,6 +133,11 @@ impl ReviewUi {
     /// Ask the open diff to scroll; applied on the pane's next pass.
     pub(crate) fn scroll(&mut self, request: PatchScroll) {
         self.scroll = Some(request);
+    }
+
+    /// Flip the commit body between reflowed and as written.
+    pub(crate) fn toggle_raw_message(&mut self) {
+        self.raw_message = !self.raw_message;
     }
 
     /// The scroll waiting for the pane's next pass, if any.
@@ -788,10 +797,21 @@ impl BoardUiState {
         self.review.step_record(card, step)
     }
 
+    /// Flip the open review's commit body between reflowed and as written.
+    pub(crate) fn toggle_raw_message(&mut self) {
+        self.review.toggle_raw_message();
+    }
+
     /// The scroll the review keys left for the diff's next pass.
     #[cfg(test)]
     pub(crate) fn review_scroll(&self) -> Option<PatchScroll> {
         self.review.pending_scroll()
+    }
+
+    /// Whether the open review draws its commit body as written.
+    #[cfg(test)]
+    pub(crate) fn review_raw_message(&self) -> bool {
+        self.review.raw_message
     }
 }
 
@@ -942,6 +962,7 @@ pub(super) fn review_pane_ui(
                 drafts: &mut review.drafts,
                 card_title: &card.title,
                 location: &mut review.location,
+                raw_message: review.raw_message,
             };
             let chip = load_ui(ui, theme, app_ctx, &mut review.loader, source, shown);
             let chip = chip.then_some(TopbarClick::Card(CardAction::Session(
@@ -978,6 +999,8 @@ struct Shown<'a> {
     card_title: &'a str,
     /// The record's `host:path`, elided to fit its byline.
     location: &'a mut MiddleElided,
+    /// Whether the commit's body is drawn as written.
+    raw_message: bool,
 }
 
 /// Start `source`'s load if it hasn't been: the record (or the card's trailer)
@@ -1554,6 +1577,7 @@ fn load_ui(
                 drafts,
                 card_title,
                 location,
+                raw_message,
             } = shown;
             comments_ui(ui, theme, loaded, record, drafts);
             if let Some(header) = patch_ui(ui, theme, app_ctx, loaded, record) {
@@ -1561,6 +1585,7 @@ fn load_ui(
                     record,
                     card_title,
                     location,
+                    raw_message,
                 };
                 let rows = header.show(ui, |ui| {
                     chip = commit_header_ui(ui, theme, app_ctx, loaded, commit);
@@ -1581,6 +1606,8 @@ struct CommitHeader<'a> {
     record: Option<&'a ReviewView>,
     card_title: &'a str,
     location: &'a mut MiddleElided,
+    /// Whether the commit's body is drawn as written.
+    raw_message: bool,
 }
 
 /// The top of the diff, which scrolls away with it. The commit's subject,
@@ -1605,6 +1632,7 @@ fn commit_header_ui(
         record,
         card_title,
         location,
+        raw_message,
     } = commit;
     let fields = record.map(|r| &r.fields);
     let session = fields.and_then(|f| f.agentium.as_deref());
@@ -1678,7 +1706,7 @@ fn commit_header_ui(
         }
     });
     ui.add_space(SPACING_MD);
-    commit_body_ui(ui, theme, &loaded.body);
+    commit_body_ui(ui, theme, &loaded.body, raw_message);
     if let Some(record) = record {
         commit_comments_ui(ui, theme, app_ctx, record);
     }
@@ -1691,8 +1719,22 @@ fn commit_header_ui(
 /// The commit message's body under the byline, whole, with its trailers small
 /// and muted under it. Nothing when the message is only a subject. It scrolls
 /// away with the diff, so a long one never keeps the diff off the screen.
-fn commit_body_ui(ui: &mut egui::Ui, theme: &ColorTheme, body: &CommitBody) {
+///
+/// When `raw`, the body is drawn as written instead: monospace, hard wraps and
+/// trailers in place. It still wraps at the pane's width, since the diff's
+/// header clips to the view and has no horizontal scroll; a ~72-column message
+/// fits a pane of any width as written.
+fn commit_body_ui(ui: &mut egui::Ui, theme: &ColorTheme, body: &CommitBody, raw: bool) {
     if body.is_empty() {
+        return;
+    }
+    if raw {
+        ui.label(
+            egui::RichText::new(body.raw())
+                .monospace()
+                .color(theme.text_secondary),
+        );
+        ui.add_space(SPACING_MD);
         return;
     }
     if !body.body().is_empty() {

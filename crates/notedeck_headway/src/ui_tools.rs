@@ -113,6 +113,9 @@ pub(crate) const STEP_FILE: &str = "headway_step_file";
 pub(crate) const STEP_COMMIT: &str = "headway_step_commit";
 /// `c` in a review pane: comment on the picked lines, or the commit.
 pub(crate) const COMMENT: &str = "headway_comment";
+/// `m` in a review pane: flip the commit body between reflowed and as
+/// written.
+pub(crate) const RAW_MESSAGE: &str = "headway_raw_message";
 /// The review pane's "Send N comments": send the drafted comments. No key:
 /// `C`'s comment takes them along.
 pub(crate) const SEND_COMMENTS: &str = "headway_send_comments";
@@ -160,6 +163,7 @@ pub(crate) enum HeadwayToolName {
     StepFile,
     StepCommit,
     Comment,
+    RawMessage,
     SendComments,
     Back,
 }
@@ -208,6 +212,8 @@ pub(crate) enum HeadwayUiTool {
     StepCommit(CardStep),
     /// Write a comment in a review pane.
     Comment,
+    /// Flip a review pane's commit body between reflowed and as written.
+    RawMessage,
     /// Send a review pane's drafted comments.
     SendComments,
     /// Back out of the queue, a review pane or the detail.
@@ -486,7 +492,7 @@ where
 
 impl HeadwayToolName {
     /// Every tool, in the order [`HeadwayUiTool::specs`] lists them.
-    pub(crate) const ALL: [Self; 34] = [
+    pub(crate) const ALL: [Self; 35] = [
         Self::OpenCard,
         Self::OpenExplainer,
         Self::OpenParent,
@@ -519,6 +525,7 @@ impl HeadwayToolName {
         Self::StepFile,
         Self::StepCommit,
         Self::Comment,
+        Self::RawMessage,
         Self::SendComments,
         Self::Back,
     ];
@@ -558,6 +565,7 @@ impl HeadwayToolName {
             Self::StepFile => STEP_FILE,
             Self::StepCommit => STEP_COMMIT,
             Self::Comment => COMMENT,
+            Self::RawMessage => RAW_MESSAGE,
             Self::SendComments => SEND_COMMENTS,
             Self::Back => BACK,
         }
@@ -598,6 +606,7 @@ impl HeadwayToolName {
             Self::StepFile => "Step to next or previous file",
             Self::StepCommit => "Step to next or previous commit",
             Self::Comment => "Write review comment",
+            Self::RawMessage => "Toggle raw commit message",
             Self::SendComments => "Send review comments",
             Self::Back => "Go back",
         }
@@ -789,6 +798,11 @@ impl HeadwayToolName {
                 "Write a review comment on the picked diff lines, or on the commit.",
                 vec![],
             ),
+            Self::RawMessage => (
+                "Show the review pane's commit message as written (monospace, hard wraps \
+                 and trailers kept), or back to reflowed.",
+                vec![],
+            ),
             Self::SendComments => ("Send the review pane's drafted comments.", vec![]),
             Self::Back => (
                 "Leave the review queue, back a review pane out to its card, or leave the \
@@ -940,6 +954,7 @@ impl HeadwayUiTool {
                 })
             }
             T::Comment => no_args(name, args, Self::Comment)?,
+            T::RawMessage => no_args(name, args, Self::RawMessage)?,
             T::SendComments => no_args(name, args, Self::SendComments)?,
             T::Back => no_args(name, args, Self::Back)?,
         })
@@ -1208,7 +1223,7 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
                 && !(at == KeyView::Detail && state.detail_field_focused())
                 && !(list && state.list_composing())
         }
-        T::StepFile => review,
+        T::StepFile | T::RawMessage => review,
         T::StepCommit | T::Comment | T::SendComments => review && card,
     }
 }

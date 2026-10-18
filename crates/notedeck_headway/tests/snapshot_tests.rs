@@ -3880,10 +3880,27 @@ const QUEUE_BODY_ALL: &str = "R opens a queue over the board's In Review column 
 const QUEUE_TRAILERS: &str = "Changelog-Added: Review queue over In Review cards\n\
      Headway: headway:headway/queue-over-review";
 
+/// [`QUEUE_MESSAGE`] as `m` shows it: everything under the subject as
+/// written, hard wraps, list and trailers in place.
+const QUEUE_RAW: &str = "R opens a queue over the board's In Review column and n/p step through
+it, so a reviewer walks every finished card without going back to the
+board between them.
+
+The queue is a snapshot taken when it opens:
+- a card that leaves In Review stays until the queue closes
+- a card that arrives waits for the next R
+
+Changelog-Added: Review queue over In Review cards
+Headway: headway:headway/queue-over-review";
+
 /// [`ReviewFixture::verdicts`]'s message: a subject and a one-paragraph body.
 const VERDICTS_MESSAGE: &str = "headway: D and X verdicts in the review queue
 
 D marks the card done and X sends it back with a note, both without
+leaving the queue.";
+
+/// [`VERDICTS_MESSAGE`]'s body as `m` shows it, its hard wrap kept.
+const VERDICTS_RAW: &str = "D marks the card done and X sends it back with a note, both without
 leaving the queue.";
 
 /// The subject of [`ReviewFixture::models`].
@@ -4474,6 +4491,34 @@ fn review_pane_shows_the_commit_body() {
     wait_for_label(&mut harness, QUEUE_BODY_ALL);
     wait_for_label(&mut harness, QUEUE_TRAILERS);
     assert!(harness.query_by_label("Show more").is_none());
+}
+
+/// `m` flips the commit body to the message as written — hard wraps and
+/// trailers in one label — and back. The choice is the pane's, so `n` onto
+/// the next card keeps it.
+#[test]
+fn review_pane_m_shows_the_message_as_written() {
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness);
+    wait_for_label(&mut harness, QUEUE_BODY_ALL);
+
+    harness.press_key(egui::Key::M);
+    wait_for_label(&mut harness, QUEUE_RAW);
+    wait_for_absent(&mut harness, QUEUE_BODY_ALL);
+    assert!(harness.query_by_label(QUEUE_TRAILERS).is_none());
+
+    harness.press_key(egui::Key::M);
+    wait_for_label(&mut harness, QUEUE_BODY_ALL);
+    wait_for_label(&mut harness, QUEUE_TRAILERS);
+    wait_for_absent(&mut harness, QUEUE_RAW);
+
+    harness.press_key(egui::Key::M);
+    wait_for_label(&mut harness, QUEUE_RAW);
+    harness.press_key(egui::Key::N);
+    wait_for_label(&mut harness, "2 / 2");
+    wait_for_label(&mut harness, VERDICTS_RAW);
 }
 
 /// The review header's title-row icons' accessible names, left to right, for
@@ -5756,6 +5801,21 @@ fn snapshot_headway_review_queue_epic() {
     wait_for_label(&mut harness, "local checkout");
     harness.run_steps(3);
     harness.snapshot("headway_review_queue_epic");
+}
+
+/// Snapshot: the review queue with `m` pressed: the commit body as written,
+/// monospace, its hard wraps, list and trailers in place.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_raw_message() {
+    let fixture = review_fixture();
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness);
+    harness.press_key(egui::Key::M);
+    wait_for_label(&mut harness, QUEUE_RAW);
+    harness.run_steps(3);
+    harness.snapshot("headway_review_raw_message");
 }
 
 /// Snapshot: a plain review pane (opened from a card's "Review diff") with `?`

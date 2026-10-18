@@ -7,6 +7,10 @@
 //! lines that egui wraps at the pane's width. Bullet lists and indented lines
 //! (code, aligned output) keep their line breaks, since there the breaks mean
 //! something.
+//!
+//! The message is also kept as written ([`CommitBody::raw`]), for the pane's
+//! `m` toggle: there the author's own layout — ASCII tables, wrapping, the
+//! exact trailers — is the point.
 
 /// A commit message's body and trailers, reflowed.
 #[derive(Debug, Default)]
@@ -17,6 +21,9 @@ pub(crate) struct CommitBody {
     /// The trailer block (`Changelog-Fixed: …`, `Headway: …`), one per line as
     /// written; empty when the message has none.
     trailers: String,
+    /// The message as written, without the subject: hard wraps, lists and
+    /// trailers kept, blank lines trimmed at both ends.
+    raw: String,
 }
 
 impl CommitBody {
@@ -41,7 +48,12 @@ impl CommitBody {
             }
             reflow(paragraph, &mut body);
         }
-        Self { body, trailers }
+        let raw = raw_body(message);
+        Self {
+            body,
+            trailers,
+            raw,
+        }
     }
 
     /// Whether there's nothing under the subject: the pane draws nothing.
@@ -59,6 +71,31 @@ impl CommitBody {
     pub(crate) fn trailers(&self) -> &str {
         &self.trailers
     }
+
+    /// The message as written, without the subject (the header shows it):
+    /// hard wraps kept and the trailers in place; empty when the message is
+    /// only a subject.
+    pub(crate) fn raw(&self) -> &str {
+        &self.raw
+    }
+}
+
+/// `message` without its subject — the first paragraph, as [`paragraphs`]
+/// reads it — and without blank lines at either end; every other line as
+/// written, trailing whitespace trimmed.
+fn raw_body(message: &str) -> String {
+    let blank = |l: &&str| l.trim_end().is_empty();
+    let mut lines = message
+        .lines()
+        .skip_while(blank)
+        .skip_while(|l| !blank(l))
+        .skip_while(blank)
+        .map(str::trim_end)
+        .collect::<Vec<_>>();
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
 }
 
 /// `message`'s paragraphs, each its lines with trailing whitespace trimmed;
@@ -131,7 +168,46 @@ mod tests {
             let body = CommitBody::parse(message);
             assert!(body.is_empty(), "{message:?}");
             assert_eq!(body.body(), "");
+            assert_eq!(body.raw(), "");
         }
+    }
+
+    /// The raw body keeps the hard wraps, the list and the trailers as
+    /// written, and drops the subject and the blank lines around it.
+    #[test]
+    fn raw_keeps_the_message_as_written() {
+        let body = CommitBody::parse(
+            "headway: subject\n\
+             that wraps\n\
+             \n\
+             \n\
+             The review pane shows only the subject and drops\n\
+             the body, which is where the reasoning lives.\n\
+             - one item\n\
+             \n\
+             Changelog-Fixed: the pane drops the body\n\
+             Headway: headway:headway/skirt-laugh-domain\n\
+             \n",
+        );
+        assert_eq!(
+            body.raw(),
+            "The review pane shows only the subject and drops\n\
+             the body, which is where the reasoning lives.\n\
+             - one item\n\
+             \n\
+             Changelog-Fixed: the pane drops the body\n\
+             Headway: headway:headway/skirt-laugh-domain"
+        );
+    }
+
+    /// A message with no trailers gives its body as written, untouched by
+    /// the reflow.
+    #[test]
+    fn raw_without_trailers() {
+        let body = CommitBody::parse("subject\n\nFirst line\nsecond line.\n\n\tcode\n");
+        assert_eq!(body.trailers(), "");
+        assert_eq!(body.body(), "First line second line.\n\n\tcode");
+        assert_eq!(body.raw(), "First line\nsecond line.\n\n\tcode");
     }
 
     /// The trailer block is split off the body, which keeps every paragraph.

@@ -234,6 +234,7 @@ pub(crate) fn apply_grid_tool(
         | HeadwayUiTool::Scroll(_)
         | HeadwayUiTool::StepCommit(_)
         | HeadwayUiTool::Comment
+        | HeadwayUiTool::RawMessage
         | HeadwayUiTool::SendComments
         | HeadwayUiTool::Back => {}
     }
@@ -411,6 +412,7 @@ pub(crate) fn apply_pane_tool(
                 state.set_notice(notice, ctx.input(|i| i.time));
             }
         }
+        HeadwayUiTool::RawMessage => state.toggle_raw_message(),
         HeadwayUiTool::Comment | HeadwayUiTool::SendComments => {
             let card = card.filter(|&c| find_card(view, c).is_some())?;
             let now = ctx.input(|i| i.time);
@@ -499,6 +501,7 @@ pub(crate) fn apply_detail_tool(
         | HeadwayUiTool::Clear
         | HeadwayUiTool::StepCommit(_)
         | HeadwayUiTool::Comment
+        | HeadwayUiTool::RawMessage
         | HeadwayUiTool::SendComments => {}
     }
     None
@@ -2533,6 +2536,8 @@ mod tests {
         hints: bool,
         /// The record whose commit as a whole the review composer is open on.
         commenting: Option<NoteId>,
+        /// Whether the commit body is drawn as written.
+        raw_message: bool,
     }
 
     fn pane_effects(harness: &Harness<'static, KeysHarness>) -> PaneEffects {
@@ -2553,6 +2558,7 @@ mod tests {
             session: h.session.clone(),
             hints: h.hints_pinned,
             commenting: h.state.commenting_on_commit(),
+            raw_message: h.state.review_raw_message(),
         }
     }
 
@@ -2664,6 +2670,7 @@ mod tests {
         const DIFF: &[&str] = &[
             "next/prev file",
             "next/prev commit",
+            "raw message",
             "comment (picked lines or commit)",
         ];
         let grid: &[&str] = &[
@@ -3828,6 +3835,7 @@ diff --git a/b.txt b/b.txt
             key_tool("]", STEP_FILE, json!({ "dir": "next" })),
             key_tool("[", STEP_FILE, json!({ "dir": "prev" })),
             key_tool("c", COMMENT, json!({})),
+            key_tool("m", RAW_MESSAGE, json!({})),
         ];
         let detail = [key_tool("R", OPEN_REVIEW_QUEUE, json!({}))];
         let with = |extra: &[KeyTool], scroll: bool| {
@@ -3992,7 +4000,14 @@ diff --git a/b.txt b/b.txt
         ] {
             assert!(available(&grid, name), "{name} on the grid");
         }
-        for name in [SCROLL, STEP_FILE, COMMENT, BACK, "headway_nope"] {
+        for name in [
+            SCROLL,
+            STEP_FILE,
+            COMMENT,
+            RAW_MESSAGE,
+            BACK,
+            "headway_nope",
+        ] {
             assert!(!available(&grid, name), "{name} on the grid");
         }
 
@@ -4030,6 +4045,7 @@ diff --git a/b.txt b/b.txt
             SCROLL,
             STEP_FILE,
             COMMENT,
+            RAW_MESSAGE,
             SEND_COMMENTS,
             BACK,
         ] {
@@ -4051,6 +4067,7 @@ diff --git a/b.txt b/b.txt
             ]
         );
         assert!(available(&pane, STEP_FILE));
+        assert!(available(&pane, RAW_MESSAGE));
         assert!(!available(&pane, OPEN_REVIEW_QUEUE));
 
         let detail = detail_harness(None);
@@ -4072,7 +4089,14 @@ diff --git a/b.txt b/b.txt
         ] {
             assert!(available(&detail, name), "{name} in the detail");
         }
-        for name in [OPEN_CARD, STEP_FILE, COMMENT, CURSOR_MOVE, CLEAR] {
+        for name in [
+            OPEN_CARD,
+            STEP_FILE,
+            COMMENT,
+            RAW_MESSAGE,
+            CURSOR_MOVE,
+            CLEAR,
+        ] {
             assert!(!available(&detail, name), "{name} in the detail");
         }
 

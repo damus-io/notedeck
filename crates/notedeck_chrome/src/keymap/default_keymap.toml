@@ -474,6 +474,13 @@ tool  = "headway_comment"
 label = "comment (picked lines or commit)"
 group = "comment"
 
+[[bind]]
+scope = "headway.diff"
+keys  = "m"
+tool  = "headway_raw_message"
+label = "raw message"
+group = "diff"
+
 # Leaving the review queue, for the grid (or an epic's detail).
 
 [[bind]]
