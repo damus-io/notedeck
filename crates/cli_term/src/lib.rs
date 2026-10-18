@@ -6,12 +6,14 @@
 //! pager itself ([`emit`]), SGR painting ([`paint`]), and the smart-case
 //! pattern compilation and match highlighting behind `grep`. The [`help`]
 //! module holds the per-command help table and its printer, so each CLI's
-//! `--help` pages share one layout.
+//! `--help` pages share one layout. The [`progress`] module draws the live
+//! stderr progress line the CLIs show during slow relay phases.
 //!
 //! Std plus `regex` only, so a CLI can depend on it without pulling in any of
 //! the other's machinery.
 
 pub mod help;
+pub mod progress;
 
 use regex::Regex;
 

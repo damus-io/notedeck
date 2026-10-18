@@ -2,7 +2,7 @@
 name = "cli_term"
 edition = "2024"
 version.workspace = true
-description = "Terminal output shared by the standalone CLIs: --color/--pager modes, the pager, smart-case grep patterns with match highlighting, and the per-command help printer"
+description = "Terminal output shared by the standalone CLIs: --color/--pager modes, the pager, smart-case grep patterns with match highlighting, the per-command help printer, and the stderr progress line"
 
 [dependencies]
 regex = "1"
