@@ -36,5 +36,6 @@ profiling = { workspace = true }
 futures-util = { workspace = true }
 
 [dev-dependencies]
+ndb_testing = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
 tempfile = { workspace = true }

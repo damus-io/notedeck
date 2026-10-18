@@ -10,43 +10,14 @@
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use nostrdb::{Config, Filter, Ndb, SubscriptionStream, Transaction};
+use nostrdb::{Filter, Ndb, SubscriptionStream, Transaction};
 use nostrdb_net::relay::server::{self, RelayHandle};
-use tempfile::TempDir;
 
-/// A [`Config`] with a small mapsize.
-///
-/// On Windows LMDB actually allocates the full mapsize on disk rather than only
-/// mapping it virtually, so a test taking nostrdb's large default eats the CI
-/// runner's disk. Mirrors `notedeck::test_util::test_config`, which this crate
-/// can't reach (it doesn't depend on notedeck).
-pub(crate) fn test_config() -> Config {
-    if cfg!(target_os = "windows") {
-        Config::new().set_mapsize(32 * 1024 * 1024) // 32 MiB
-    } else {
-        Config::new()
-    }
-}
+pub(crate) use ndb_testing::{test_config, TempNdb};
 
 /// A fixed, deterministic secret key for signing test events. Doubles as the
 /// engine device key in tests, so signed events author-match the engine.
 pub(crate) const TEST_SECKEY: [u8; 32] = [7u8; 32];
-
-/// A nostrdb open in a throwaway directory that lives as long as it does.
-/// Mirrors `notedeck::test_util::TempNdb`, which this crate can't reach.
-pub(crate) struct TempNdb {
-    /// The db. Declared before `dir` so it closes before the directory goes.
-    pub(crate) ndb: Ndb,
-    /// The directory holding the db, removed on drop.
-    pub(crate) _dir: TempDir,
-}
-
-/// Open a fresh nostrdb under a throwaway directory.
-pub(crate) fn temp_ndb() -> TempNdb {
-    let dir = TempDir::new().expect("tmp dir");
-    let ndb = Ndb::new(dir.path().to_str().expect("path"), &test_config()).expect("ndb");
-    TempNdb { ndb, _dir: dir }
-}
 
 /// Spawn an in-process hermetic relay backed by `ndb` on an ephemeral port. Pass
 /// a clone if you also need to inspect the backing db (`Ndb` is a shared handle).

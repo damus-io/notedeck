@@ -14,22 +14,14 @@ use crate::pns_runtime::PnsLocalState;
 use crate::session::{SessionId, SessionMessage};
 use crate::stream_events::HostCtx;
 use crate::{Dave, DaveOverlay};
-use nostrdb::{Config, Ndb};
+use nostrdb::Ndb;
 use notedeck::timed_serializer::TimedSerializer;
 use notedeck::{DataPath, DataPathType, Waker};
 use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
 
-/// A store config small enough for Windows CI, where nostrdb maps its whole
-/// size up front.
-pub(crate) fn test_config() -> Config {
-    if cfg!(target_os = "windows") {
-        Config::new().set_mapsize(32 * 1024 * 1024)
-    } else {
-        Config::new()
-    }
-}
+pub(crate) use ndb_testing::test_config;
 
 /// The account every test signs as.
 pub(crate) fn test_secret_key() -> [u8; 32] {

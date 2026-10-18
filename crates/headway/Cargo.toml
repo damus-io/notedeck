@@ -14,6 +14,7 @@ wordid = { workspace = true }
 profiling = { workspace = true }
 
 [dev-dependencies]
+ndb_testing = { workspace = true }
 nostr = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }

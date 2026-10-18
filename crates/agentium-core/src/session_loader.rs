@@ -1673,18 +1673,11 @@ fn load_recent_paths_by_host_with_author(
 mod tests {
     use super::*;
     use crate::file_update::FileUpdateType;
-    use nostrdb::{Config, IngestMetadata, Ndb, NoteBuildOptions, NoteBuilder};
+    use crate::test_support::test_config;
+    use nostrdb::{IngestMetadata, Ndb, NoteBuildOptions, NoteBuilder};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tempfile::TempDir;
-
-    fn test_config() -> Config {
-        if cfg!(target_os = "windows") {
-            Config::new().set_mapsize(32 * 1024 * 1024)
-        } else {
-            Config::new()
-        }
-    }
 
     fn test_secret_key() -> [u8; 32] {
         let mut key = [0u8; 32];

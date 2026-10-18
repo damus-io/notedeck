@@ -118,7 +118,7 @@ mod tests {
         build_live_events, BuiltEvent, LiveEventTags, ThreadingState, MAX_WIRE_EVENT_BYTES,
     };
     use crate::session_loader::load_session_messages;
-    use crate::test_support::{temp_ndb, TEST_SECKEY};
+    use crate::test_support::{TempNdb, TEST_SECKEY};
     use nostrdb::IngestMetadata;
 
     /// Text that escapes to far more than one note holds, with multi-byte
@@ -155,7 +155,7 @@ mod tests {
     /// of its content.
     #[tokio::test]
     async fn split_message_loads_as_one_row() {
-        let db = temp_ndb();
+        let db = TempNdb::new();
         let ndb = db.ndb.clone();
         let mut threading = ThreadingState::new();
         let text = oversized();
@@ -195,7 +195,7 @@ mod tests {
     /// part's id.
     #[tokio::test]
     async fn gather_split_waits_for_every_part() {
-        let db = temp_ndb();
+        let db = TempNdb::new();
         let ndb = db.ndb.clone();
         let text = oversized();
         let parts = build(&text, "user", &mut ThreadingState::new());
@@ -230,7 +230,7 @@ mod tests {
     /// A note that fits is no part of anything.
     #[tokio::test]
     async fn a_whole_note_is_no_split() {
-        let db = temp_ndb();
+        let db = TempNdb::new();
         let ndb = db.ndb.clone();
         let events = build("hello", "user", &mut ThreadingState::new());
         ingest(&ndb, &events).await;

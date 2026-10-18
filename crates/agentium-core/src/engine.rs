@@ -1054,7 +1054,7 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{await_note, spawn_relay, temp_ndb, TEST_SECKEY};
+    use crate::test_support::{await_note, spawn_relay, TempNdb, TEST_SECKEY};
     use std::time::Duration;
     use tempfile::TempDir;
 
@@ -1332,7 +1332,7 @@ mod tests {
     /// tag surviving the trip.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn send_message_round_trips_between_engines() {
-        let relay_db = temp_ndb();
+        let relay_db = TempNdb::new();
         let relay_ndb = relay_db.ndb.clone();
         let relay = spawn_relay(relay_ndb.clone());
         let url = relay.url();
@@ -1393,7 +1393,7 @@ mod tests {
     async fn controller_prepare_writes_round_trip_to_the_host() {
         use crate::session_events::{build_permission_request_event, ThreadingState};
 
-        let relay_db = temp_ndb();
+        let relay_db = TempNdb::new();
         let relay_ndb = relay_db.ndb.clone();
         let relay = spawn_relay(relay_ndb.clone());
         let url = relay.url();
@@ -1747,7 +1747,7 @@ mod tests {
     /// the host on this machine sees it without a relay round trip.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn set_issue_url_builds_and_ingests() {
-        let db = temp_ndb();
+        let db = TempNdb::new();
         let ndb = db.ndb.clone();
         let engine = Engine::embedded(ndb, TEST_SECKEY).expect("embedded engine");
 
@@ -1771,7 +1771,7 @@ mod tests {
     /// see it immediately) and returns it, without needing a session.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn prepare_set_permission_mode_ingests_without_publish() {
-        let db = temp_ndb();
+        let db = TempNdb::new();
         let ndb = db.ndb.clone();
         let engine = Engine::embedded(ndb, TEST_SECKEY).expect("embedded engine");
 
@@ -1795,7 +1795,7 @@ mod tests {
     /// local reads see it immediately, and returns it — no transport required.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn prepare_message_ingests_without_publish() {
-        let db = temp_ndb();
+        let db = TempNdb::new();
         let ndb = db.ndb.clone();
         let engine = Engine::embedded(ndb, TEST_SECKEY).expect("embedded engine");
 
@@ -1897,7 +1897,7 @@ mod tests {
     /// rejected before anything is ingested.
     #[test]
     fn prepare_permission_response_rejects_unknown_request() {
-        let db = temp_ndb();
+        let db = TempNdb::new();
         let ndb = db.ndb.clone();
         let engine = Engine::embedded(ndb, TEST_SECKEY).expect("embedded engine");
 
@@ -1922,7 +1922,7 @@ mod tests {
 
     #[tokio::test]
     async fn with_ndb_shares_one_database() {
-        let db = temp_ndb();
+        let db = TempNdb::new();
         let host = db.ndb.clone();
 
         // The caller hands the engine a clone; dropping the engine (which drops
@@ -1936,7 +1936,7 @@ mod tests {
     /// the host owns sync and observes settle its own way.
     #[tokio::test]
     async fn wait_for_sync_is_none_for_embedded_engine() {
-        let db = temp_ndb();
+        let db = TempNdb::new();
         let ndb = db.ndb.clone();
         let engine = Engine::embedded(ndb, TEST_SECKEY).expect("embedded engine");
         assert_eq!(engine.wait_for_sync().await, None);

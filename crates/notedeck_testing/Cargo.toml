@@ -12,6 +12,7 @@ egui_kittest = { workspace = true, features = ["eframe"] }
 nostrdb_net = { workspace = true }
 futures-util = { workspace = true }
 hex = { workspace = true }
+ndb_testing = { workspace = true }
 negentropy = { workspace = true }
 nostr = { workspace = true }
 nostrdb = { workspace = true }

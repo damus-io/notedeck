@@ -599,9 +599,9 @@ impl Dave {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::{test_config, test_secret_key, TestDave};
-    use nostrdb::{IngestMetadata, Ndb, Transaction};
-    use tempfile::TempDir;
+    use crate::tests::{test_secret_key, TestDave};
+    use ndb_testing::TempNdb;
+    use nostrdb::{IngestMetadata, Transaction};
 
     /// The kind-31989 command-parse branch on the receiving host: a
     /// `resume_session` command addressed to us decodes to
@@ -614,8 +614,7 @@ mod tests {
     #[tokio::test]
     async fn session_command_parse_respects_target_and_reads_session_id() {
         let sk = test_secret_key();
-        let tmp = TempDir::new().unwrap();
-        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
 
         // A resume command targeting "host-a" naming session "sess-42", and a
         // plain spawn command for the same host.
@@ -762,8 +761,7 @@ mod tests {
             (None, SessionRelation::None),
         ];
         for (n, (parent, relation)) in cases.into_iter().enumerate() {
-            let tmp = TempDir::new().unwrap();
-            let ndb = Ndb::new(tmp.path().to_str().unwrap(), &test_config()).unwrap();
+            let TempNdb { dir: _dir, ndb } = TempNdb::new();
             let cmd = session_events::build_spawn_command_event(
                 "host-a",
                 "/work/dir",

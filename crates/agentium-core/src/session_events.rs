@@ -2303,14 +2303,7 @@ pub fn decode_set_issue(content: &str) -> Option<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_config() -> nostrdb::Config {
-        if cfg!(target_os = "windows") {
-            nostrdb::Config::new().set_mapsize(32 * 1024 * 1024)
-        } else {
-            nostrdb::Config::new()
-        }
-    }
+    use crate::test_support::test_config;
 
     // Test secret key (32 bytes, not for real use)
     fn test_secret_key() -> [u8; 32] {

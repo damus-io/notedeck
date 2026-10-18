@@ -1,0 +1,9 @@
+[package]
+name = "ndb_testing"
+edition = "2021"
+version.workspace = true
+description = "A throwaway nostrdb for tests, low enough in the graph for every crate that opens one"
+
+[dependencies]
+nostrdb = { workspace = true }
+tempfile = { workspace = true }

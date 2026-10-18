@@ -80,6 +80,7 @@ path = "src/bin/update_test_helper.rs"
 required-features = ["auto-update"]
 
 [dev-dependencies]
+ndb_testing = { workspace = true }
 # egui no longer bundles fonts by default; harnesses that don't install
 # notedeck's own fonts fall back to egui's, as they did before 0.36.
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
