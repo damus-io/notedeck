@@ -101,7 +101,7 @@ pub fn window(span: Span, today: Date, journal: Option<DateRange>) -> Option<Win
 }
 
 /// `Oct 2024` for month index `month`.
-fn month_label(month: u32) -> String {
+pub(crate) fn month_label(month: u32) -> String {
     const NAMES: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];

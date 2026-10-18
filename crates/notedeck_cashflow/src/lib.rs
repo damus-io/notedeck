@@ -33,19 +33,27 @@
 //! where it has the host's nostrdb and account. The write lands in the
 //! vault, the journal source sees the edits move and re-derives, and the
 //! new triage arrives a few frames later.
+//!
+//! Goals are Headway cards. An app that loads its own books finds them
+//! with a [`goal_source::GoalSource`] on the boards `config.toml` names;
+//! one handed its books is handed its goals too, with
+//! [`CashflowApp::set_goals`]. A view that links to a goal's card asks for
+//! it to be opened, and `render` raises the open for the host to route.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use cashflow::board_progress::BoardProgress;
 use cashflow::chart::Labels;
+use cashflow::goals::Goal;
 use cashflow::projects::Projects;
 use cashflow::triage::{self, Action, Triage};
-use cashflow::{Books, CashflowDir, DeriveInputs, Vault};
+use cashflow::{Books, CashflowDir, Config, DeriveInputs, Vault};
 use ledgerdb::Date;
-use notedeck::{AppContext, AppResponse};
+use notedeck::{AppAction, AppContext, AppResponse, OpenUri};
 
 pub mod boards;
+pub mod goal_source;
 pub mod journal;
 pub mod layers;
 pub mod money;
@@ -106,6 +114,17 @@ pub struct CashflowApp {
     missing_segments: usize,
     /// What each view keeps between frames.
     views: views::ViewStates,
+    /// The goals on the Headway boards.
+    goals: Vec<Goal>,
+    /// Bumped every time [`Self::goals`] is replaced.
+    goals_generation: u64,
+    /// The board slugs goals are looked for on.
+    goal_boards: Vec<String>,
+    /// Where the goals come from, when the app finds its own: `None` for
+    /// an app handed its goals with [`Self::set_goals`].
+    goal_source: Option<goal_source::GoalSource>,
+    /// A card a view asked to open this frame, raised from `render`.
+    open_card: Option<String>,
 }
 
 impl Default for CashflowApp {
@@ -136,15 +155,32 @@ impl CashflowApp {
             layers: Layers::default(),
             missing_segments: 0,
             views: views::ViewStates::default(),
+            goals: Vec::new(),
+            goals_generation: 0,
+            goal_boards: cashflow::goals::DEFAULT_BOARDS.map(str::to_owned).to_vec(),
+            goal_source: None,
+            open_card: None,
         }
     }
 
     /// An app that loads the journal in `dir` and the selected account's
-    /// vault, and keeps both current.
+    /// vault, and keeps both current, and finds the goals on the boards
+    /// `dir`'s `config.toml` names (the defaults when it doesn't read).
     pub fn with_journal(dir: CashflowDir) -> Self {
+        let goal_boards = match Config::load(&dir) {
+            Ok(config) => config.goal_boards(),
+            Err(err) => {
+                tracing::warn!(
+                    "cashflow: config.toml doesn't read, so goals use the default boards: {err}"
+                );
+                Config::default().goal_boards()
+            }
+        };
         Self {
             journal: Some(JournalSource::new(dir)),
             board_source: Some(BoardSource::default()),
+            goal_source: Some(goal_source::GoalSource::default()),
+            goal_boards,
             ..Self::new()
         }
     }
@@ -211,6 +247,27 @@ impl CashflowApp {
     pub fn set_labels(&mut self, labels: Labels) {
         self.labels = Arc::new(labels);
         self.generation += 1;
+    }
+
+    /// Track `goals` from now on: the goals found on the boards. The Goals
+    /// view measures them again on its next frame.
+    pub fn set_goals(&mut self, goals: Vec<Goal>) {
+        if self.goals == goals {
+            return;
+        }
+        self.goals = goals;
+        self.goals_generation += 1;
+    }
+
+    /// The goals the app tracks.
+    pub fn goals(&self) -> &[Goal] {
+        &self.goals
+    }
+
+    /// The card a view asked to open this frame, taken: what `render`
+    /// raises as [`AppAction::Open`].
+    pub fn take_open_card(&mut self) -> Option<String> {
+        self.open_card.take()
     }
 
     /// The triage of the books, if any are loaded.
@@ -306,6 +363,11 @@ impl CashflowApp {
             layers,
             missing_segments,
             views: states,
+            goals,
+            goals_generation,
+            goal_boards,
+            goal_source: _,
+            open_card,
         } = self;
         egui::CentralPanel::default()
             .frame(ui::panel_frame(palette).inner_margin(egui::Margin::symmetric(24, 16)))
@@ -351,10 +413,19 @@ impl CashflowApp {
                     missing_segments: *missing_segments,
                     states,
                     open: None,
+                    goals: views::GoalsCx {
+                        goals,
+                        generation: *goals_generation,
+                        boards: goal_boards,
+                    },
+                    open_card: None,
                 };
                 views::show(*view, &mut cx, ui);
                 if let Some(open) = cx.open {
                     *view = open;
+                }
+                if let Some(card) = cx.open_card {
+                    *open_card = Some(card);
                 }
             });
     }
@@ -386,8 +457,14 @@ impl CashflowApp {
 }
 
 impl notedeck::App for CashflowApp {
-    /// Poll the journal source, and take any books it finished deriving.
+    /// Poll the journal source, and take any books it finished deriving;
+    /// poll the goal source, and take any goals it found.
     fn update(&mut self, ctx: &mut AppContext<'_>) {
+        if let Some(source) = self.goal_source.as_mut()
+            && let Some(goals) = source.update(ctx, &self.goal_boards)
+        {
+            self.set_goals(goals);
+        }
         let Some(journal) = self.journal.as_mut() else {
             return;
         };
@@ -410,6 +487,7 @@ impl notedeck::App for CashflowApp {
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         self.ui(ui);
         self.flush_writes(ctx);
-        AppResponse::none()
+        let open = self.take_open_card();
+        AppResponse::action(open.map(|card| AppAction::Open(OpenUri::new(card))))
     }
 }

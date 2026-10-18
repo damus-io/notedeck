@@ -13,6 +13,12 @@
 //! expenses as bars with the net as a line, say. Each bucket there is a slot
 //! with its bar group in the middle, and hovering shades the slot.
 //!
+//! [`line_chart_marked`] draws a line chart with [`Marks`] over it: dashed
+//! [`Trail`]s that carry a solid series on past where it ends (a
+//! projection), horizontal [`Level`]s (a target) and vertical [`Marker`]s (a
+//! deadline). Marks widen the axes to fit, but the tooltip and crosshair
+//! stay the series' own.
+//!
 //! Every input is borrowed: the series are slices the caller already holds,
 //! so a chart adds nothing of its own to a frame beyond the shapes egui needs
 //! to paint it (one line per same-sign run, one mesh per filled series) and
@@ -74,6 +80,89 @@ impl TimeSeries<'_> {
 struct ValueSpan {
     min: f64,
     max: f64,
+}
+
+/// What [`line_chart_marked`] draws over its series, borrowed from the
+/// caller like the series are.
+#[derive(Clone, Copy, Default)]
+pub struct Marks<'a> {
+    /// Dashed lines, each starting partway along the x axis.
+    pub trails: &'a [Trail<'a>],
+    /// Horizontal lines at a value.
+    pub levels: &'a [Level<'a>],
+    /// Vertical lines at a bucket.
+    pub markers: &'a [Marker<'a>],
+}
+
+impl Marks<'_> {
+    /// No marks: what [`line_chart`] draws with.
+    pub const NONE: Marks<'static> = Marks {
+        trails: &[],
+        levels: &[],
+        markers: &[],
+    };
+
+    /// Number of x buckets the trails reach.
+    fn buckets(&self) -> usize {
+        self.trails
+            .iter()
+            .map(|t| t.start + t.values.len())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// `span` widened to every value the trails and levels draw.
+    fn widen(&self, mut span: ValueSpan) -> ValueSpan {
+        let trails = self
+            .trails
+            .iter()
+            .flat_map(|t| t.join.iter().chain(t.values));
+        let levels = self.levels.iter().map(|l| &l.value);
+        for &v in trails.chain(levels) {
+            span.min = span.min.min(v);
+            span.max = span.max.max(v);
+        }
+        span
+    }
+}
+
+/// A dashed line whose first value is at bucket [`Self::start`]: a
+/// projection carrying on from where a solid series ends.
+#[derive(Clone, Copy)]
+pub struct Trail<'a> {
+    /// The bucket of [`Self::values`]' first value.
+    pub start: usize,
+    /// Where the line starts from at [`Self::start`] before its first
+    /// value, also at `start`: the solid series' last value, so the two
+    /// join even when the trail's first value differs from it.
+    pub join: Option<f64>,
+    /// One finite value per bucket from [`Self::start`] on.
+    pub values: &'a [f64],
+    /// The line's color.
+    pub color: Color32,
+}
+
+/// A dashed horizontal line across the plot at a value, labelled at its
+/// right end: a target.
+#[derive(Clone, Copy)]
+pub struct Level<'a> {
+    /// The value it is drawn at.
+    pub value: f64,
+    /// Drawn above the line at the plot's right edge.
+    pub label: &'a str,
+    /// The line's and label's color.
+    pub color: Color32,
+}
+
+/// A vertical line at a bucket, labelled at its top: a deadline.
+#[derive(Clone, Copy)]
+pub struct Marker<'a> {
+    /// The bucket it is drawn at.
+    pub bucket: usize,
+    /// Drawn beside the line's top.
+    pub label: &'a str,
+    /// The line's and label's color.
+    pub color: Color32,
 }
 
 /// Styling for [`line_chart`] and [`area_chart`].
@@ -233,7 +322,31 @@ pub fn line_chart(
     style: &TimeSeriesStyle,
     tooltip: impl FnOnce(&mut Ui, &HoverPoint<'_>),
 ) -> TimeSeriesResponse {
-    time_series_chart(ui, size, data, style, SeriesFill::Line, tooltip)
+    time_series_chart(
+        ui,
+        size,
+        data,
+        &Marks::NONE,
+        style,
+        SeriesFill::Line,
+        tooltip,
+    )
+}
+
+/// Draws `data` as lines, one per series, with `marks` over them, filling
+/// `size`. The axes cover the marks as well as the series.
+///
+/// `tooltip` renders the hover tooltip's contents; pass [`default_tooltip`]
+/// for the plain one.
+pub fn line_chart_marked(
+    ui: &mut Ui,
+    size: Vec2,
+    data: &TimeSeries<'_>,
+    marks: &Marks<'_>,
+    style: &TimeSeriesStyle,
+    tooltip: impl FnOnce(&mut Ui, &HoverPoint<'_>),
+) -> TimeSeriesResponse {
+    time_series_chart(ui, size, data, marks, style, SeriesFill::Line, tooltip)
 }
 
 /// Draws `data` as lines with the area between each line and the zero
@@ -248,7 +361,15 @@ pub fn area_chart(
     style: &TimeSeriesStyle,
     tooltip: impl FnOnce(&mut Ui, &HoverPoint<'_>),
 ) -> TimeSeriesResponse {
-    time_series_chart(ui, size, data, style, SeriesFill::Area, tooltip)
+    time_series_chart(
+        ui,
+        size,
+        data,
+        &Marks::NONE,
+        style,
+        SeriesFill::Area,
+        tooltip,
+    )
 }
 
 /// Draws the first `bars` series of `data` as bars, grouped side by side in
@@ -267,7 +388,15 @@ pub fn bar_line_chart(
     tooltip: impl FnOnce(&mut Ui, &HoverPoint<'_>),
 ) -> TimeSeriesResponse {
     let bars = bars.min(data.series.len());
-    time_series_chart(ui, size, data, style, SeriesFill::Bars(bars), tooltip)
+    time_series_chart(
+        ui,
+        size,
+        data,
+        &Marks::NONE,
+        style,
+        SeriesFill::Bars(bars),
+        tooltip,
+    )
 }
 
 /// How each series is drawn.
@@ -301,6 +430,7 @@ fn time_series_chart(
     ui: &mut Ui,
     size: Vec2,
     data: &TimeSeries<'_>,
+    marks: &Marks<'_>,
     style: &TimeSeriesStyle,
     fill: SeriesFill,
     tooltip: impl FnOnce(&mut Ui, &HoverPoint<'_>),
@@ -313,7 +443,7 @@ fn time_series_chart(
         ui.visuals().faint_bg_color,
     );
 
-    let buckets = data.buckets();
+    let buckets = data.buckets().max(marks.buckets());
     if buckets == 0 {
         return TimeSeriesResponse {
             response,
@@ -323,7 +453,7 @@ fn time_series_chart(
         };
     }
 
-    let span = data.value_span();
+    let span = marks.widen(data.value_span());
     let ticks = axis_ticks(span.min, span.max, style.y_ticks);
     let label_color = ui.visuals().weak_text_color();
     let negative = style
@@ -376,6 +506,7 @@ fn time_series_chart(
         }
         paint_line(&painter, &plot, series, style, negative);
     }
+    paint_marks(&painter, &plot, marks, style);
 
     let tooltip_rect = hovered.map(|bucket| {
         paint_crosshair(
@@ -627,6 +758,62 @@ fn paint_area(
     painter.add(Shape::mesh(mesh));
 }
 
+/// Length of a dash in a mark, and of the gap after it.
+const DASH: f32 = 6.0;
+
+/// `marks` over the series: the levels and markers, then the trails on top.
+fn paint_marks(painter: &egui::Painter, plot: &Plot, marks: &Marks<'_>, style: &TimeSeriesStyle) {
+    let pad = notedeck::tokens::SPACING_XS;
+    for level in marks.levels {
+        let y = plot.y(level.value);
+        let stroke = Stroke::new(notedeck::tokens::STROKE_THIN, level.color);
+        let ends = [pos2(plot.rect.left(), y), pos2(plot.rect.right(), y)];
+        painter.extend(Shape::dashed_line(&ends, stroke, DASH, DASH / 2.0));
+        painter.text(
+            pos2(plot.rect.right(), y - pad),
+            Align2::RIGHT_BOTTOM,
+            level.label,
+            axis_font(),
+            level.color,
+        );
+    }
+    for marker in marks.markers.iter().filter(|m| m.bucket < plot.buckets) {
+        let x = plot.x(marker.bucket);
+        let stroke = Stroke::new(notedeck::tokens::STROKE_THIN, marker.color);
+        let ends = [pos2(x, plot.rect.top()), pos2(x, plot.rect.bottom())];
+        painter.extend(Shape::dashed_line(&ends, stroke, DASH / 2.0, DASH / 2.0));
+        let (anchor, x) = if x > plot.rect.center().x {
+            (Align2::RIGHT_TOP, x - pad)
+        } else {
+            (Align2::LEFT_TOP, x + pad)
+        };
+        painter.text(
+            pos2(x, plot.rect.top()),
+            anchor,
+            marker.label,
+            axis_font(),
+            marker.color,
+        );
+    }
+    for trail in marks.trails {
+        let joined = trail.join.map(|v| plot.point(trail.start, v));
+        let points: Vec<Pos2> = joined
+            .into_iter()
+            .chain(
+                (trail.start..)
+                    .zip(trail.values)
+                    .map(|(i, &v)| plot.point(i, v)),
+            )
+            .collect();
+        let stroke = Stroke::new(style.stroke_width, trail.color);
+        if let [only] = points[..] {
+            painter.circle_filled(only, style.stroke_width, trail.color);
+            continue;
+        }
+        painter.extend(Shape::dashed_line(&points, stroke, DASH, DASH / 2.0));
+    }
+}
+
 /// Fraction of a slot its bar group spans; the rest is the gap between
 /// groups.
 const BAR_GROUP_WIDTH: f32 = 0.72;
@@ -840,5 +1027,37 @@ mod tests {
         assert_eq!(p.y(0.0), 50.0);
         let c = p.zero_crossing(0, 5.0, -5.0);
         assert_eq!(c, pos2(50.0, 50.0));
+    }
+
+    /// A trail reaches past the series and a level above them, so the
+    /// axes cover both; a trail's join value counts too.
+    #[test]
+    fn marks_widen_the_buckets_and_the_span() {
+        let trail = Trail {
+            start: 3,
+            join: Some(-4.0),
+            values: &[5.0, 6.0],
+            color: Color32::WHITE,
+        };
+        let level = Level {
+            value: 12.0,
+            label: "target",
+            color: Color32::WHITE,
+        };
+        let marks = Marks {
+            trails: &[trail],
+            levels: &[level],
+            markers: &[],
+        };
+        assert_eq!(marks.buckets(), 5);
+        assert_eq!(Marks::NONE.buckets(), 0);
+        let span = marks.widen(ValueSpan { min: 0.0, max: 3.0 });
+        assert_eq!(
+            span,
+            ValueSpan {
+                min: -4.0,
+                max: 12.0
+            }
+        );
     }
 }

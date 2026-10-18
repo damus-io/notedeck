@@ -68,7 +68,7 @@ fn frame_allocs(view: View) -> u64 {
 /// working out what they say.
 #[test]
 fn the_overview_works_out_nothing_per_frame() {
-    let placeholder = frame_allocs(View::Goals);
+    let placeholder = frame_allocs(View::Adventure);
     let overview = frame_allocs(View::Overview);
     let added = overview.saturating_sub(placeholder);
     println!("overview {overview}, placeholder {placeholder}: the overview adds {added}");

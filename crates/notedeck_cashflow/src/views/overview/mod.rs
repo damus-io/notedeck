@@ -14,6 +14,8 @@
 //!   segments the journal is missing (a link to Settings).
 //! - A chip per **journal layer**; switching one asks for the books to be
 //!   reloaded without it ([`crate::Layers`]).
+//! - A **goals** strip, `Goals: 1 at risk, 2 on track`, linking to the
+//!   Goals view (none when there are no goals).
 //!
 //! The figures are worked out by [`model::overview`] only when the books,
 //! the period or today change, and drawn from there each frame.
@@ -121,6 +123,10 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
     let states = &mut *cx.states;
     let state = &mut states.overview;
     state.refresh(ledger, period, cx.today, cx.missing_segments);
+    states
+        .goals
+        .refresh(ledger, cx.goals, cx.projects, cx.today);
+    let goals = states.goals.report();
     let Some(overview) = &state.overview else {
         muted(
             ui,
@@ -138,6 +144,11 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             action = status_ui(ui, palette, overview, layers, missing);
+            if let Some(goals) = goals
+                && super::goals::strip_ui(ui, palette, goals)
+            {
+                action = Some(Action::Open(View::Goals));
+            }
             ui.add_space(12.0);
             figures_ui(ui, palette, overview, period, narrow);
             ui.add_space(24.0);

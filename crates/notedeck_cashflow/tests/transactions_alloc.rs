@@ -88,7 +88,7 @@ fn frame_allocs(view: View) -> u64 {
 /// nothing for working out what they say.
 #[test]
 fn the_register_works_out_nothing_per_frame() {
-    let placeholder = frame_allocs(View::Goals);
+    let placeholder = frame_allocs(View::Adventure);
     let register = frame_allocs(View::Transactions);
     let added = register.saturating_sub(placeholder);
     println!("register {register}, placeholder {placeholder}: the register adds {added}");

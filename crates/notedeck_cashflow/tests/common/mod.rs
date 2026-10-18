@@ -375,10 +375,10 @@ pub fn publish_missing_segment(state: &mut CashflowTestState, host: &str) -> Seg
 }
 
 /// How long a journal test waits for nostrdb or the job pool.
-const INGEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub const INGEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Run `future` to completion on a throwaway runtime.
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
+pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
@@ -417,6 +417,9 @@ pub struct CashflowTestState {
     /// journal harness is built with, since building runs frames until
     /// the harness settles and the load would finish meanwhile.
     hold_updates: bool,
+    /// Every reference the app asked the host to open, oldest first: what
+    /// the chrome would route as `AppAction::Open`.
+    pub opened: Vec<String>,
 }
 
 /// One frame: install notedeck's look on the first, then `update` and
@@ -441,7 +444,10 @@ fn render_cashflow(ui: &mut egui::Ui, state: &mut CashflowTestState) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new())
             .show(ui, |ui| {
-                state.app.render(&mut app_ctx, ui);
+                let response = state.app.render(&mut app_ctx, ui);
+                if let Some(notedeck::AppAction::Open(open)) = response.action {
+                    state.opened.push(open.reference);
+                }
             });
     });
 }
@@ -470,6 +476,7 @@ pub fn test_state(app: CashflowApp) -> CashflowTestState {
         tmpdir,
         setup_done: false,
         hold_updates: false,
+        opened: Vec::new(),
     }
 }
 

@@ -14,7 +14,7 @@ use crate::{Layers, Period, View, ui::palette::Palette};
 
 mod adventure;
 pub mod categories;
-mod goals;
+pub mod goals;
 pub mod overview;
 pub mod projects;
 pub mod settings;
@@ -59,6 +59,23 @@ pub struct ViewCx<'a> {
     /// The view to switch to once this frame is drawn, set by a view that
     /// links to another.
     pub open: Option<View>,
+    /// The goals on the Headway boards.
+    pub goals: GoalsCx<'a>,
+    /// A `headway:<board>/<word-id>` card to open in notedeck once this
+    /// frame is drawn, set by a view that links to one.
+    pub open_card: Option<String>,
+}
+
+/// The goals found on the Headway boards, and which find they came from.
+#[derive(Clone, Copy)]
+pub struct GoalsCx<'a> {
+    /// The goals, in the order they were found.
+    pub goals: &'a [cashflow::goals::Goal],
+    /// Changes whenever the goals are replaced, so a view knows its cached
+    /// results are stale.
+    pub generation: u64,
+    /// The board slugs goals are looked for on, for the empty state.
+    pub boards: &'a [String],
 }
 
 /// The loaded books, their triage, and which load they came from.
@@ -91,6 +108,9 @@ pub struct ViewStates {
     pub(crate) transactions: transactions::TransactionsState,
     /// The Settings view's cached journal status.
     pub(crate) settings: settings::SettingsState,
+    /// The goals measured, and the goal open; the Overview's strip reads
+    /// it too.
+    pub(crate) goals: goals::GoalsState,
 }
 
 impl ViewStates {
