@@ -31,7 +31,7 @@ pub async fn run(
     session: &mut Session,
     cmd: &RuleCommand,
 ) -> Result<(), String> {
-    let raw = raw_ledger(dir)?;
+    let raw = raw_ledger(dir, session)?;
     match cmd {
         RuleCommand::Ls { by, json } => ls(session, &raw, by.as_deref(), *json),
         RuleCommand::Test { record_id, json } => test(session, &raw, record_id, *json),

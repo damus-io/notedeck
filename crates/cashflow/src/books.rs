@@ -1,15 +1,18 @@
 //! The books: the journal loaded, categorized and indexed, ready to query.
 //!
 //! [`Books::load`] is the pipeline every reader runs: read the segments the
-//! layer filter allows into the raw ledger, [`derive`] the categorized one
+//! layer filter allows, less the ones the vault retires
+//! ([`crate::manifest::retired`]), into the raw ledger, [`derive`] the categorized one
 //! from it with the edits, build the price db from its `P` directives, and
 //! index it for queries in the home commodity. The CLI's `export` and
 //! `report` run it once per command; the app runs it off the UI thread and
 //! again when the journal or the edits change.
 
+use std::collections::HashSet;
+
 use ledgerdb::{
     CommodityId, Derived, Edits, JournalStore, LayerFilter, Ledger, LoadReport, PriceDb, Query,
-    Rollups, StoreError, derive,
+    Rollups, SegmentHash, StoreError, derive,
 };
 
 /// The derived ledger and everything a query reads.
@@ -25,7 +28,8 @@ pub struct Books {
 }
 
 impl Books {
-    /// Load the segments in `store` that `filter` includes, derive them with
+    /// Load the segments in `store` that `filter` includes and `retired`
+    /// doesn't name (even when the file is still here), derive them with
     /// `edits`, and index the result with `home` (a commodity name) as the
     /// home commodity. A `home` the ledger has never seen leaves the index
     /// without one: native balances still work, converted ones don't.
@@ -35,10 +39,11 @@ impl Books {
     pub fn load(
         store: &JournalStore,
         filter: LayerFilter,
+        retired: &HashSet<SegmentHash>,
         edits: &Edits,
         home: &str,
     ) -> Result<Books, StoreError> {
-        let loaded = Ledger::load(store, filter)?;
+        let loaded = Ledger::load_without(store, filter, retired.clone())?;
         let derived = derive(&loaded.ledger, edits);
         let prices = PriceDb::from_ledger(derived.ledger());
         let home = derived.ledger().journal().commodities.get(home);
@@ -92,7 +97,7 @@ mod tests {
         )
         .unwrap();
 
-        let books = Books::load(&store, LayerFilter::All, &edits, "CAD").unwrap();
+        let books = Books::load(&store, LayerFilter::All, &HashSet::new(), &edits, "CAD").unwrap();
         let accounts = &books.ledger().journal().accounts;
         let food = accounts.lookup("expenses:food").unwrap();
         let unknown = accounts.lookup("expenses:unknown").unwrap();
@@ -106,6 +111,7 @@ mod tests {
         let none = Books::load(
             &store,
             LayerFilter::Except(vec!["cards".to_owned()]),
+            &HashSet::new(),
             &edits,
             "CAD",
         )

@@ -7,7 +7,9 @@
 //! ([`vault`]), whose records use the kinds in [`kinds`] and whose first
 //! record type is the synced [`settings`]. The journal of segments under the
 //! data dir is [`journal`]; [`import`] reads sources into it (the CSV ones
-//! with [`csv`]). [`vault_rules`] keeps the categorization rules in the
+//! with [`csv`]). [`manifest`] tells the vault which segments exist, which
+//! host has each and which are retired, and [`sync`] compares that with the
+//! local journal. [`vault_rules`] keeps the categorization rules in the
 //! vault, ordered by [`rank`], and [`rules`] reads a local rules file into
 //! the same derive edits. [`vault_edits`] keeps the per-transaction
 //! overrides, splits and transfer links. [`prices`] fetches daily exchange
@@ -26,10 +28,12 @@ pub mod csv;
 pub mod import;
 pub mod journal;
 pub mod kinds;
+pub mod manifest;
 pub mod prices;
 pub mod rank;
 pub mod rules;
 pub mod settings;
+pub mod sync;
 pub mod transfers;
 pub mod unknown;
 pub mod vault;

@@ -529,7 +529,15 @@ mod tests {
         let store = JournalStore::new(tmp.path().join("journal"));
         let run = |name: &str, text: &str, imported| {
             let path = file(tmp.path(), name, text);
-            write(&store, &rbc(), &input(vec![path]), None, Some(imported)).unwrap()
+            write(
+                &store,
+                &Default::default(),
+                &rbc(),
+                &input(vec![path]),
+                None,
+                Some(imported),
+            )
+            .unwrap()
         };
         assert_eq!(run("1.csv", &first, 1).txns, 4);
         let later = run("2.csv", &second, 2);

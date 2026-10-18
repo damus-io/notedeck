@@ -147,6 +147,9 @@ pub struct LoadReport {
     pub loaded: Vec<SegmentHash>,
     /// Segments whose layer is filtered out.
     pub excluded: Vec<SegmentHash>,
+    /// Segments the store has that the ledger was told to leave out
+    /// ([`Ledger::load_without`]); none of them was read.
+    pub skipped: Vec<SegmentHash>,
     /// Loaded segments that had transactions which did not parse.
     pub damaged: Vec<DamagedSegment>,
     /// Segments that could not be read: corrupt, not text, or with a bad
@@ -187,6 +190,8 @@ pub struct Ledger {
     /// Every segment loaded or excluded.
     seen: HashSet<SegmentHash>,
     filter: LayerFilter,
+    /// Segments never to read, though the store has them.
+    skip: HashSet<SegmentHash>,
     /// The live transaction carrying each record id.
     by_id: HashMap<StrId, TxnId>,
     /// `account_postings[account_starts[a]..account_starts[a + 1]]` are the
@@ -268,7 +273,26 @@ impl Ledger {
     /// includes. Only listing the store can fail; bad segments are reported.
     #[profiling::function]
     pub fn load(store: &JournalStore, filter: LayerFilter) -> Result<Loaded, StoreError> {
-        let mut ledger = Ledger::new(filter);
+        Self::load_without(store, filter, HashSet::new())
+    }
+
+    /// [`Self::load`], leaving out the segments in `skip` as if the store
+    /// didn't have them: they are never read, here or on a later
+    /// [`Self::refresh`], and are listed in [`LoadReport::skipped`].
+    ///
+    /// A store is write-once, so this is how a reader retires a segment
+    /// whose file is still there, such as one another machine retired after
+    /// it had been synced here.
+    #[profiling::function]
+    pub fn load_without(
+        store: &JournalStore,
+        filter: LayerFilter,
+        skip: HashSet<SegmentHash>,
+    ) -> Result<Loaded, StoreError> {
+        let mut ledger = Ledger {
+            skip,
+            ..Ledger::new(filter)
+        };
         let report = ledger.refresh(store)?;
         Ok(Loaded { ledger, report })
     }
@@ -280,6 +304,10 @@ impl Ledger {
         let mut report = LoadReport::default();
         for hash in store.list()? {
             if self.seen.contains(&hash) {
+                continue;
+            }
+            if self.skip.contains(&hash) {
+                report.skipped.push(hash);
                 continue;
             }
             let mut segment = match store.read(hash) {
@@ -411,6 +439,7 @@ impl Ledger {
             excluded: self.excluded.clone(),
             seen: self.seen.clone(),
             filter: self.filter.clone(),
+            skip: self.skip.clone(),
             by_id: self.by_id.clone(),
             account_starts: Vec::new(),
             account_postings: Vec::new(),

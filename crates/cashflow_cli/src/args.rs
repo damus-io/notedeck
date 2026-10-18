@@ -61,6 +61,10 @@ pub enum Command {
     /// `cashflow journal rm <hash> [--json]`: `hash` is the whole hash or a
     /// unique prefix.
     JournalRm { hash: String, json: bool },
+    /// `cashflow journal status [--json]`.
+    JournalStatus { json: bool },
+    /// `cashflow journal publish [--dry-run] [--json]`.
+    JournalPublish { write: Write },
     /// `cashflow import <importer> [<path>...]`.
     Import(ImportArgs),
     /// `cashflow prices fetch`.
@@ -437,7 +441,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
         "login" => login_command(positionals)?,
         "logout" => no_positionals(positionals, Command::Logout, "logout")?,
         "settings" => settings_command(positionals, json)?,
-        "journal" => journal_command(positionals, json)?,
+        "journal" => journal_command(positionals, &flags, json)?,
         "import" => import_command(positionals, &flags, json)?,
         "prices" => prices_command(positionals, &flags, json)?,
         "export" => no_positionals(
@@ -526,12 +530,20 @@ fn settings_command(positionals: Vec<String>, json: bool) -> Result<Command, Str
 }
 
 /// `journal`'s subcommand.
-fn journal_command(positionals: Vec<String>, json: bool) -> Result<Command, String> {
-    let usage = "`journal` takes `ls`, `verify` or `rm <hash>` (see `cashflow journal --help`)";
+fn journal_command(positionals: Vec<String>, flags: &Flags, json: bool) -> Result<Command, String> {
+    let usage = "`journal` takes `ls`, `status`, `verify`, `publish` or `rm <hash>` (see `cashflow journal --help`)";
     let mut positionals = positionals.into_iter();
-    let command = match positionals.next().as_deref() {
+    let sub = positionals.next();
+    if sub.as_deref() != Some("publish") && flags.has("--dry-run") {
+        return Err("only `journal publish` takes --dry-run".to_owned());
+    }
+    let command = match sub.as_deref() {
         Some("ls") => Command::JournalLs { json },
+        Some("status") => Command::JournalStatus { json },
         Some("verify") => Command::JournalVerify { json },
+        Some("publish") => Command::JournalPublish {
+            write: write_of(flags, json),
+        },
         Some("rm") => Command::JournalRm {
             hash: positionals.next().ok_or(usage)?,
             json,
@@ -1092,7 +1104,21 @@ mod tests {
                 json: true
             }
         );
-        let usage = "`ls`, `verify` or `rm <hash>`";
+        assert_eq!(
+            run_of(&["journal", "status"]).command,
+            Command::JournalStatus { json: false }
+        );
+        assert_eq!(
+            run_of(&["journal", "publish", "--dry-run", "--json"]).command,
+            Command::JournalPublish {
+                write: Write {
+                    dry_run: true,
+                    json: true
+                }
+            }
+        );
+        assert!(err_of(&["journal", "ls", "--dry-run"]).contains("only `journal publish`"));
+        let usage = "`ls`, `status`, `verify`, `publish` or `rm <hash>`";
         assert!(err_of(&["journal"]).contains(usage));
         assert!(err_of(&["journal", "ls", "x"]).contains(usage));
         assert!(err_of(&["journal", "rm"]).contains(usage));

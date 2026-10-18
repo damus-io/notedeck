@@ -285,6 +285,41 @@ fn layers_are_filtered() {
     assert!(all.ledger.excluded().is_empty());
 }
 
+/// A skipped segment is never read, even though the store has it, and a
+/// refresh leaves it out too; the record id it would have replaced keeps
+/// its older row.
+#[test]
+fn load_without_leaves_skipped_segments_out() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = JournalStore::new(tmp.path());
+    let old = Batch::new("a", 1, "x", &txn("2024-01-01", "a:1", "assets:a", "1 CAD"));
+    let newer = Batch::new("a", 2, "x", &txn("2024-01-01", "a:1", "assets:a", "2 CAD"));
+    let other = Batch::new("b", 1, "x", &txn("2024-01-02", "b:1", "assets:b", "3 CAD"));
+    for batch in [&old, &newer, &other] {
+        store.write_segment(&batch.header, &batch.journal).unwrap();
+    }
+
+    let all = Ledger::load(&store, LayerFilter::All).unwrap();
+    assert!(export(&all.ledger).contains("-2 CAD"));
+    assert!(all.report.skipped.is_empty());
+
+    let skip = std::collections::HashSet::from([newer.hash()]);
+    let mut loaded = Ledger::load_without(&store, LayerFilter::All, skip).unwrap();
+    assert_eq!(loaded.report.skipped, [newer.hash()]);
+    assert_eq!(loaded.report.loaded.len(), 2);
+    assert!(!loaded.ledger.has_seen(newer.hash()));
+    let text = export(&loaded.ledger);
+    assert!(
+        text.contains("-1 CAD") && !text.contains("-2 CAD"),
+        "{text}"
+    );
+
+    let refreshed = loaded.ledger.refresh(&store).unwrap();
+    assert_eq!(refreshed.skipped, [newer.hash()]);
+    assert!(refreshed.loaded.is_empty());
+    assert_eq!(export(&loaded.ledger), text);
+}
+
 #[test]
 fn coarser_precision_is_scaled_up_in_either_order() {
     let coarse = Batch::new(

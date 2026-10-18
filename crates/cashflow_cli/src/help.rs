@@ -136,34 +136,56 @@ untouched.",
     CommandHelp {
         name: "journal",
         group: JOURNAL,
-        summary: "List, check or retire the journal's segments",
+        summary: "List, check, publish or retire the journal's segments",
         usage: &[
             "journal ls [--json]",
+            "journal status [--json]",
             "journal verify [--json]",
+            "journal publish [--dry-run] [--json]",
             "journal rm <hash> [--json]",
         ],
         details: "\
 The journal is journal/ under the data dir: one write-once segment per import,
 named by the sha256 of its bytes, the synced truth everything else is derived
-from.
+from. The vault keeps a manifest of each segment (its source, layer, dates,
+size and the host that has it), so every machine knows which segments exist
+even before their files arrive.
 
 `ls` prints each segment, oldest import first: its hash, import date (UTC),
 layer, source, and how many transactions and prices it holds.
+
+`status` compares the journal with the vault's manifests: the segments this
+machine is missing, grouped by the host that has them; local segments with
+no manifest yet; retired segments whose file is still here; and a verify
+summary. Until the missing segments arrive, every number is partial.
 
 `verify` reads every segment, checking its bytes still hash to its name and
 that it parses, and prints each one that doesn't. It exits non-zero when any
 fails.
 
-`rm` retires one segment, named by its hash or a prefix of it unique in `ls`,
-by moving the file to journal/.trash/; its records drop out of every later
-export and report. Use it to retire a legacy `import ledger` segment once a
-real importer covers the same source. A delete does not sync: sync is a
-union of files, so the segment comes back from any other copy of the journal
-that still has it. Remove it there too, or delete it before it is synced.",
-        options: &[("--json", "Machine-readable output")],
+`publish` writes the manifest of every local segment the vault lacks one
+for: a segment imported before manifests existed, or while logged out.
+`import` publishes its segments' manifests itself.
+
+`rm` retires one segment, named by its hash or a prefix of it unique among
+the local segments and the vault's manifests: it moves the file to
+journal/.trash/ if it is here, and marks its manifest retired, so every
+machine leaves its records out of every later load, even where the file is
+still there. Use it to retire a legacy `import ledger` segment once a real
+importer covers the same source. Logged out, only the file moves, and the
+segment comes back from any other copy of the journal that still has it.",
+        options: &[
+            (
+                "--dry-run",
+                "publish: list what would be published, write nothing",
+            ),
+            ("--json", "Machine-readable output"),
+        ],
         examples: &[
             "cashflow journal ls",
+            "cashflow journal status",
             "cashflow journal verify",
+            "cashflow journal publish",
             "cashflow journal rm 3fa9c2",
         ],
     },

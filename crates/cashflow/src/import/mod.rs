@@ -24,6 +24,7 @@ mod ledger;
 mod payroll;
 mod rbc;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -196,7 +197,9 @@ pub struct Rows {
 /// `imported` unix seconds (now when `None`).
 ///
 /// Every transaction is checked against the journal loaded with all its
-/// layers, since record ids dedup across layers, and only the new and
+/// layers but without the `retired` segments (whose rows no reader sees,
+/// even where the file is still here), since record ids dedup across
+/// layers, and only the new and
 /// changed ones are written (see [`novel_rows`]). A daily pull of a source's
 /// trailing 90 days so stores each row once, not ninety times, in a store
 /// that can never delete a synced segment. A price is left out when the
@@ -208,12 +211,13 @@ pub struct Rows {
 /// its newest record in `layer` never resumes past one it failed to write.
 pub fn write(
     store: &JournalStore,
+    retired: &HashSet<SegmentHash>,
     importer: &dyn Importer,
     input: &ImportInput,
     layer: Option<&str>,
     imported: Option<u64>,
 ) -> Result<Written, ImportError> {
-    let ledger = Ledger::load(store, LayerFilter::All)?.ledger;
+    let ledger = Ledger::load_without(store, LayerFilter::All, retired.clone())?.ledger;
     let batch = importer.import_held(input, &ledger)?;
     if batch.is_empty() {
         return Err(ImportError::Empty {
@@ -393,6 +397,7 @@ mod tests {
         let ledger = importer("ledger", &Config::default(), &CashflowDir::new("unused")).unwrap();
         write(
             store,
+            &Default::default(),
             &*ledger,
             &input("bank", vec![file]),
             Some(layer),
@@ -578,7 +583,16 @@ mod tests {
         let ledger = importer("ledger", &Config::default(), &CashflowDir::new("unused")).unwrap();
         let empty = tmp.path().join("c");
         std::fs::write(&empty, "; nothing\nnot a transaction\n").unwrap();
-        let run = |paths| write(&store, &*ledger, &input("x", paths), None, None);
+        let run = |paths| {
+            write(
+                &store,
+                &Default::default(),
+                &*ledger,
+                &input("x", paths),
+                None,
+                None,
+            )
+        };
 
         assert!(matches!(run(vec![]), Err(ImportError::Usage(_))));
         assert!(matches!(
@@ -605,7 +619,15 @@ mod tests {
         .unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         let ledger = importer("ledger", &Config::default(), &CashflowDir::new("unused")).unwrap();
-        let written = write(&store, &*ledger, &input("x", vec![file]), None, None).unwrap();
+        let written = write(
+            &store,
+            &Default::default(),
+            &*ledger,
+            &input("x", vec![file]),
+            None,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(written.txns, 1);
         let lines: Vec<_> = written.skipped.iter().map(|e| e.line).collect();

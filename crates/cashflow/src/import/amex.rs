@@ -382,7 +382,15 @@ mod tests {
 
     /// Import `paths` into `store` as one run stamped `imported`.
     fn import(store: &JournalStore, paths: Vec<PathBuf>, imported: u64) -> super::super::Written {
-        write(store, &amex(), &input(paths), None, Some(imported)).unwrap()
+        write(
+            store,
+            &Default::default(),
+            &amex(),
+            &input(paths),
+            None,
+            Some(imported),
+        )
+        .unwrap()
     }
 
     /// Every transaction in the journal as canonical text, sorted, so two
@@ -726,7 +734,9 @@ match = ["grocer", "shop"]
             Path::new("amex.toml"),
         )
         .unwrap();
-        let books = crate::Books::load(&store, LayerFilter::All, &edits, "CAD").unwrap();
+        let books =
+            crate::Books::load(&store, LayerFilter::All, &Default::default(), &edits, "CAD")
+                .unwrap();
         let accounts = &books.ledger().journal().accounts;
         let q = books.query();
         let at = date("2026-12-31");

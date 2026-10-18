@@ -1,13 +1,34 @@
 //! The commands that read or write the journal itself: `journal ls`,
-//! `journal verify`, `journal rm` and `import`.
+//! `journal status`, `journal verify`, `journal publish`, `journal rm` and
+//! `import`, and the segment manifests they keep in the vault
+//! ([`cashflow::manifest`]).
+
+use std::collections::HashSet;
 
 use cashflow::import::{self, ImportInput, Rows};
-use cashflow::journal::{self, SegmentSummary};
+use cashflow::journal::{self, Listing, SegmentSummary};
+use cashflow::manifest::{self, Manifest};
+use cashflow::sync::Plan;
 use cashflow::{CashflowDir, Config};
-use ledgerdb::Date;
+use ledgerdb::{Date, SegmentHash};
 use serde_json::{Value, json};
 
-use crate::args::ImportArgs;
+use crate::args::{ImportArgs, Write};
+use crate::books_cmd;
+use crate::vault_cmd::Session;
+
+/// Overrides the host name a manifest records, for a machine with more
+/// than one data dir.
+const HOST_ENV: &str = "CASHFLOW_HOST";
+
+/// The host this run publishes manifests as: `$CASHFLOW_HOST`, else the
+/// machine's hostname.
+fn host() -> String {
+    std::env::var(HOST_ENV)
+        .ok()
+        .filter(|h| !h.trim().is_empty())
+        .unwrap_or_else(|| gethostname::gethostname().to_string_lossy().into_owned())
+}
 
 /// `cashflow journal ls`: one line per segment, oldest import first.
 pub fn ls(dir: &CashflowDir, json: bool) -> Result<(), String> {
@@ -44,10 +65,261 @@ fn summary_json(s: &SegmentSummary) -> serde_json::Value {
         "source": s.header.source,
         "layer": s.header.layer,
         "imported": s.header.imported,
+        "first": s.first.map(|d| d.to_string()),
+        "last": s.last.map(|d| d.to_string()),
         "txns": s.txns,
         "prices": s.prices,
+        "bytes": s.bytes,
         "errors": s.errors,
     })
+}
+
+/// A local segment as one `status`/`publish` line.
+fn summary_line(s: &SegmentSummary) -> String {
+    manifest_line(s.hash, &Manifest::of(s, ""))
+}
+
+/// Segment `hash` as one line from what `m` says of it:
+/// `<hash>  <import day>  <layer>  <source>  <first>..<last>  <n> txns`.
+fn manifest_line(hash: SegmentHash, m: &Manifest<'_>) -> String {
+    let dates = match (m.first, m.last) {
+        (Some(first), Some(last)) => format!("{first}..{last}"),
+        _ => "no dates".to_owned(),
+    };
+    format!(
+        "{hash}  {}  {}  {}  {dates}  {} txns",
+        day_of(m.imported),
+        m.layer,
+        m.source,
+        m.txns
+    )
+}
+
+/// `n segment` or `n segments`.
+fn segments(n: usize) -> String {
+    if n == 1 {
+        "1 segment".to_owned()
+    } else {
+        format!("{n} segments")
+    }
+}
+
+/// The readable segments, after printing the unreadable ones to stderr.
+fn listing(dir: &CashflowDir) -> Result<Listing, String> {
+    let listing = journal::list(&journal::store(dir)).map_err(|e| e.to_string())?;
+    for bad in &listing.bad {
+        eprintln!("cashflow: {bad}");
+    }
+    Ok(listing)
+}
+
+/// `cashflow journal status`: what the journal lacks, what the vault lacks,
+/// what is retired but still here, and a verify summary. Logged out, only
+/// the verify summary.
+pub fn status(dir: &CashflowDir, session: Option<&Session>, json: bool) -> Result<(), String> {
+    let listing = listing(dir)?;
+    // `list` read and parsed every segment already: that is a verify.
+    let damaged = listing.segments.iter().filter(|s| s.errors > 0).count();
+    let verify = json!({
+        "ok": listing.segments.len() - damaged,
+        "damaged": damaged,
+        "bad": listing.bad.len(),
+    });
+    let verify_line = format!(
+        "verify: {} ok, {damaged} damaged, {} bad",
+        listing.segments.len() - damaged,
+        listing.bad.len()
+    );
+    let Some(session) = session else {
+        if json {
+            println!("{}", json!({ "logged_in": false, "verify": verify }));
+        } else {
+            println!("not logged in: no vault manifests to compare (run `cashflow login`)");
+            println!("{verify_line}");
+        }
+        return Ok(());
+    };
+    let txn = session.txn()?;
+    let manifests = manifest::load(&session.ndb, &txn, session.vault.author());
+    let plan = Plan::new(&manifests, &listing.segments);
+
+    if json {
+        let missing: Vec<_> = plan
+            .missing_locally
+            .iter()
+            .map(|m| {
+                let body = m.manifest;
+                json!({
+                    "hash": m.hash.to_string(),
+                    "host": body.host,
+                    "source": body.source,
+                    "layer": body.layer,
+                    "imported": body.imported,
+                    "first": body.first.map(|d| d.to_string()),
+                    "last": body.last.map(|d| d.to_string()),
+                    "txns": body.txns,
+                    "prices": body.prices,
+                    "bytes": body.bytes,
+                })
+            })
+            .collect();
+        let local = |list: &[&SegmentSummary]| -> Vec<Value> {
+            list.iter().map(|s| summary_json(s)).collect()
+        };
+        println!(
+            "{}",
+            json!({
+                "logged_in": true,
+                "in_sync": plan.is_in_sync(),
+                "segments": listing.segments.len(),
+                "manifests": manifests.len(),
+                "missing_locally": missing,
+                "unpublished": local(&plan.unpublished),
+                "retired_here": local(&plan.retired_here),
+                "verify": verify,
+            })
+        );
+        return Ok(());
+    }
+
+    if plan.is_in_sync() {
+        println!(
+            "in sync: {} here, {} known to the vault",
+            segments(listing.segments.len()),
+            segments(manifests.len())
+        );
+    }
+    if !plan.missing_locally.is_empty() {
+        println!(
+            "missing here: {} (every total leaves them out until they arrive)",
+            segments(plan.missing_locally.len())
+        );
+        for group in plan.missing_by_host() {
+            let txns: u64 = group.segments.iter().map(|m| m.manifest.txns).sum();
+            println!(
+                "  on {}: {}, {txns} txns",
+                group.host,
+                segments(group.segments.len())
+            );
+            for m in group.segments {
+                println!("    {}", manifest_line(m.hash, m.manifest));
+            }
+        }
+    }
+    if !plan.unpublished.is_empty() {
+        println!(
+            "unpublished: {} the vault has no manifest of (run `cashflow journal publish`)",
+            segments(plan.unpublished.len())
+        );
+        for s in &plan.unpublished {
+            println!("    {}", summary_line(s));
+        }
+    }
+    if !plan.retired_here.is_empty() {
+        println!(
+            "retired but still here: {}, already left out of every total (`cashflow journal rm <hash>` moves the file to the trash)",
+            segments(plan.retired_here.len())
+        );
+        for s in &plan.retired_here {
+            println!("    {}", summary_line(s));
+        }
+    }
+    println!("{verify_line}");
+    Ok(())
+}
+
+/// `cashflow journal publish`: write the manifest of every local segment
+/// the vault has none of.
+pub async fn publish(dir: &CashflowDir, session: &mut Session, write: Write) -> Result<(), String> {
+    let listing = listing(dir)?;
+    let host = host();
+    let mut frames = Vec::new();
+    let mut hashes = HashSet::new();
+    {
+        let txn = session.txn()?;
+        let manifests = manifest::load(&session.ndb, &txn, session.vault.author());
+        let plan = Plan::new(&manifests, &listing.segments);
+        for summary in &plan.unpublished {
+            if !write.dry_run {
+                let body = Manifest::of(summary, &host);
+                let written = manifest::write(&session.vault, &session.ndb, summary.hash, &body, 0)
+                    .map_err(|e| e.to_string())?;
+                frames.push(written.frame);
+            }
+            hashes.insert(summary.hash);
+        }
+    }
+    session.publish(&frames).await?;
+    let rows: Vec<&SegmentSummary> = listing
+        .segments
+        .iter()
+        .filter(|s| hashes.contains(&s.hash))
+        .collect();
+    if write.json {
+        let rows: Vec<_> = rows.iter().map(|s| summary_json(s)).collect();
+        println!(
+            "{}",
+            json!({ "dry_run": write.dry_run, "host": host, "published": rows })
+        );
+        return Ok(());
+    }
+    let verb = if write.dry_run {
+        "would publish"
+    } else {
+        "published"
+    };
+    for s in &rows {
+        println!("{verb} {}", summary_line(s));
+    }
+    let tail = if write.dry_run {
+        ""
+    } else {
+        session.offline_note()
+    };
+    println!(
+        "{verb} {} as host {host}{tail}",
+        segments(rows.len()).replace("segment", "manifest")
+    );
+    Ok(())
+}
+
+/// Publish the manifest of each segment in `hashes` the vault has no live
+/// one of, as host [`host`]: what `import` and `prices fetch` run on the
+/// segments they wrote. Logged out, says how to publish them later.
+pub async fn publish_manifests(
+    dir: &CashflowDir,
+    session: Option<&mut Session>,
+    hashes: &[SegmentHash],
+) -> Result<(), String> {
+    if hashes.is_empty() {
+        return Ok(());
+    }
+    let Some(session) = session else {
+        eprintln!(
+            "cashflow: not logged in, so the vault has no manifest of this import yet: `cashflow journal publish` writes it after `cashflow login`"
+        );
+        return Ok(());
+    };
+    let store = journal::store(dir);
+    let host = host();
+    let mut frames = Vec::new();
+    {
+        let txn = session.txn()?;
+        let manifests = manifest::load(&session.ndb, &txn, session.vault.author());
+        for &hash in hashes {
+            let written = manifest::publish_segment(
+                &session.vault,
+                &session.ndb,
+                &manifests,
+                &store,
+                hash,
+                &host,
+            )
+            .map_err(|e| e.to_string())?;
+            frames.extend(written.map(|w| w.frame));
+        }
+    }
+    session.publish(&frames).await
 }
 
 /// `cashflow journal verify`: every segment's hash, header and body.
@@ -95,16 +367,93 @@ pub fn verify(dir: &CashflowDir, json: bool) -> Result<(), String> {
     ))
 }
 
-/// `cashflow journal rm <hash>`: retire one segment to `journal/.trash/`.
-pub fn rm(dir: &CashflowDir, prefix: &str, json: bool) -> Result<(), String> {
-    let removed = journal::remove(&journal::store(dir), prefix).map_err(|e| e.to_string())?;
+/// `cashflow journal rm <hash>`: retire one segment, named among the local
+/// segments and (logged in) the vault's manifests: move its file to
+/// `journal/.trash/` if it is here, and mark its manifest retired.
+pub async fn rm(
+    dir: &CashflowDir,
+    session: Option<&mut Session>,
+    prefix: &str,
+    json: bool,
+) -> Result<(), String> {
+    let Some(session) = session else {
+        let removed = journal::remove(&journal::store(dir), prefix).map_err(|e| e.to_string())?;
+        if json {
+            println!(
+                "{}",
+                json!({ "hash": removed.hash.to_string(), "to": removed.to, "retired": false })
+            );
+        } else {
+            println!("removed {} -> {}", removed.hash, removed.to.display());
+            println!("not logged in: other copies of the journal still load it");
+        }
+        return Ok(());
+    };
+
+    let store = journal::store(dir);
+    let local = store.list().map_err(|e| e.to_string())?;
+    let host = host();
+    let (hash, frame) = {
+        let txn = session.txn()?;
+        let manifests = manifest::load(&session.ndb, &txn, session.vault.author());
+        let known = manifests.iter().filter_map(manifest::hash_of);
+        let hash = journal::resolve(local.iter().copied().chain(known), prefix)
+            .map_err(|e| e.to_string())?;
+        let stored = manifest::find(&manifests, hash);
+        let frame = match stored {
+            Some(m) if m.body.retired => None,
+            Some(m) => Some(
+                manifest::write(
+                    &session.vault,
+                    &session.ndb,
+                    hash,
+                    &m.body.retire(),
+                    m.created_at,
+                )
+                .map_err(|e| e.to_string())?
+                .frame,
+            ),
+            None => {
+                // Here but never published: describe it before it moves.
+                let summary = journal::summarize(&store, hash).map_err(|e| e.to_string())?;
+                let body = Manifest::of(&summary, &host).retire();
+                Some(
+                    manifest::write(&session.vault, &session.ndb, hash, &body, 0)
+                        .map_err(|e| e.to_string())?
+                        .frame,
+                )
+            }
+        };
+        (hash, frame)
+    };
+    let to = if local.contains(&hash) {
+        Some(store.trash(hash).map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    let wrote = frame.is_some();
+    session
+        .publish(&frame.into_iter().collect::<Vec<_>>())
+        .await?;
+
     if json {
         println!(
             "{}",
-            json!({ "hash": removed.hash.to_string(), "to": removed.to })
+            json!({ "hash": hash.to_string(), "to": to, "retired": true })
+        );
+        return Ok(());
+    }
+    match &to {
+        Some(to) => println!("removed {hash} -> {}", to.display()),
+        None => println!("{hash} isn't here"),
+    }
+    if wrote {
+        println!(
+            "retired {hash} in the vault: every copy of the journal leaves it out{}",
+            session.offline_note()
         );
     } else {
-        println!("removed {} -> {}", removed.hash, removed.to.display());
+        println!("{hash} was already retired in the vault");
     }
     Ok(())
 }
@@ -112,8 +461,13 @@ pub fn rm(dir: &CashflowDir, prefix: &str, json: bool) -> Result<(), String> {
 /// How many skipped lines `import` prints before summing up the rest.
 const SKIPPED_SHOWN: usize = 20;
 
-/// `cashflow import <importer> [<path>...]`.
-pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
+/// `cashflow import <importer> [<path>...]`: logged in, the rows retired
+/// segments hold count as new, and each segment written gets its manifest.
+pub async fn import(
+    dir: &CashflowDir,
+    mut session: Option<Session>,
+    args: &ImportArgs,
+) -> Result<(), String> {
     let config = Config::load(dir).map_err(|e| e.to_string())?;
     let importer = import::importer(&args.importer, &config, dir).ok_or_else(|| {
         format!(
@@ -129,14 +483,26 @@ pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
             .unwrap_or_else(|| importer.name().to_owned()),
         paths: args.paths.clone(),
     };
+    let retired = match &session {
+        Some(session) => books_cmd::retired(session)?,
+        None => HashSet::new(),
+    };
     let written = import::write(
         &journal::store(dir),
+        &retired,
         &*importer,
         &input,
         args.layer.as_deref(),
         None,
     )
     .map_err(|e| e.to_string())?;
+    let hashes: Vec<SegmentHash> = written
+        .other_layers
+        .iter()
+        .chain([&written])
+        .filter_map(|w| w.hash)
+        .collect();
+    publish_manifests(dir, session.as_mut(), &hashes).await?;
     // A skipped line's number is in the one input file the importers that
     // skip (`ledger`) take.
     let file = args

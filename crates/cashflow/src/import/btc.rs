@@ -1205,7 +1205,15 @@ mod tests {
         let run = |imported| {
             let node = fake_node(&wallets);
             let importer = BtcImporter::with_rpc(None, Box::new(node));
-            import::write(&store, &importer, &input(), None, Some(imported)).unwrap()
+            import::write(
+                &store,
+                &Default::default(),
+                &importer,
+                &input(),
+                None,
+                Some(imported),
+            )
+            .unwrap()
         };
 
         let first = run(7);

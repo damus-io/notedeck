@@ -1589,6 +1589,7 @@ dependencies = [
  "cashflow",
  "cli_term",
  "enostr",
+ "gethostname",
  "ledgerdb",
  "nostrdb",
  "nostrdb_net",

@@ -3,11 +3,12 @@
 //!
 //! The store itself is ledgerdb's [`JournalStore`]; this module is the
 //! cashflow-shaped view of it the CLI's `journal ls`/`journal verify`/
-//! `journal rm` and the app's journal status print.
+//! `journal rm` and the app's journal status print. What the vault knows
+//! about each segment is [`crate::manifest`].
 
 use std::path::PathBuf;
 
-use ledgerdb::{DamagedSegment, JournalStore, SegmentHash, SegmentHeader, StoreError};
+use ledgerdb::{DamagedSegment, Date, JournalStore, SegmentHash, SegmentHeader, StoreError};
 
 use crate::CashflowDir;
 
@@ -27,6 +28,12 @@ pub struct SegmentSummary {
     pub prices: usize,
     /// Lines that did not parse; a segment cashflow wrote has none.
     pub errors: usize,
+    /// The earliest transaction or price date, `None` for an empty segment.
+    pub first: Option<Date>,
+    /// The latest.
+    pub last: Option<Date>,
+    /// The file's size.
+    pub bytes: u64,
 }
 
 /// What [`list`] read.
@@ -43,14 +50,8 @@ pub struct Listing {
 pub fn list(store: &JournalStore) -> Result<Listing, StoreError> {
     let mut listing = Listing::default();
     for hash in store.list()? {
-        match store.read(hash) {
-            Ok(segment) => listing.segments.push(SegmentSummary {
-                hash,
-                txns: segment.journal.txns.len(),
-                prices: segment.journal.prices.len(),
-                errors: segment.errors.len(),
-                header: segment.header,
-            }),
+        match summarize(store, hash) {
+            Ok(summary) => listing.segments.push(summary),
             Err(err) => listing.bad.push(err),
         }
     }
@@ -58,6 +59,28 @@ pub fn list(store: &JournalStore) -> Result<Listing, StoreError> {
         .segments
         .sort_by_key(|s| (s.header.imported, s.hash));
     Ok(listing)
+}
+
+/// Read segment `hash` and sum up what it holds, as [`list`] does for each.
+pub fn summarize(store: &JournalStore, hash: SegmentHash) -> Result<SegmentSummary, StoreError> {
+    let segment = store.read(hash)?;
+    let bytes = std::fs::metadata(store.path_of(hash)).map_or(0, |m| m.len());
+    let journal = &segment.journal;
+    let dates = journal
+        .txns
+        .iter()
+        .map(|t| t.date)
+        .chain(journal.prices.iter().map(|p| p.date));
+    Ok(SegmentSummary {
+        hash,
+        txns: journal.txns.len(),
+        prices: journal.prices.len(),
+        errors: segment.errors.len(),
+        first: dates.clone().min(),
+        last: dates.max(),
+        bytes,
+        header: segment.header,
+    })
 }
 
 /// What [`verify`] found.
@@ -128,26 +151,35 @@ pub struct Removed {
 /// The move is local only: sync is a union of files, so the segment comes
 /// back from any other copy of the journal that still has it.
 pub fn remove(store: &JournalStore, prefix: &str) -> Result<Removed, RemoveError> {
+    let hash = resolve(store.list()?, prefix)?;
+    let to = store.trash(hash)?;
+    Ok(Removed { hash, to })
+}
+
+/// The one hash in `hashes` that starts with `prefix`. `hashes` may repeat
+/// one, as when it chains the local store with the vault's manifests.
+pub fn resolve(
+    hashes: impl IntoIterator<Item = SegmentHash>,
+    prefix: &str,
+) -> Result<SegmentHash, RemoveError> {
     let is_hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
     if prefix.is_empty() || !prefix.bytes().all(is_hex) {
         return Err(RemoveError::NotHex(prefix.to_owned()));
     }
-    let mut matches = store
-        .list()?
+    let mut matches: Vec<SegmentHash> = hashes
         .into_iter()
-        .filter(|hash| hash.to_string().starts_with(prefix));
-    let Some(hash) = matches.next() else {
-        return Err(RemoveError::NoMatch(prefix.to_owned()));
-    };
-    let others = matches.count();
-    if others > 0 {
-        return Err(RemoveError::Ambiguous {
+        .filter(|hash| hash.to_string().starts_with(prefix))
+        .collect();
+    matches.sort_unstable();
+    matches.dedup();
+    match matches.as_slice() {
+        [] => Err(RemoveError::NoMatch(prefix.to_owned())),
+        [hash] => Ok(*hash),
+        _ => Err(RemoveError::Ambiguous {
             prefix: prefix.to_owned(),
-            count: others + 1,
-        });
+            count: matches.len(),
+        }),
     }
-    let to = store.trash(hash)?;
-    Ok(Removed { hash, to })
 }
 
 #[cfg(test)]
@@ -188,6 +220,10 @@ mod tests {
         assert_eq!(hashes, [early, late]);
         assert_eq!(listing.segments[0].txns, 1);
         assert_eq!(listing.segments[0].prices, 1);
+        assert_eq!(listing.segments[0].first, Date::parse("2024-01-01").ok());
+        assert_eq!(listing.segments[0].last, Date::parse("2024-01-02").ok());
+        let len = std::fs::metadata(store.path_of(early)).unwrap().len();
+        assert_eq!(listing.segments[0].bytes, len);
         assert!(verify(&store).unwrap().is_clean());
 
         std::fs::write(store.path_of(late), "; edited\n").unwrap();

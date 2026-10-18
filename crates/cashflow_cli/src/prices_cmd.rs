@@ -9,10 +9,17 @@ use ledgerdb::{Date, LayerFilter, Ledger};
 use serde_json::json;
 
 use crate::args::PricesArgs;
+use crate::journal_cmd;
+use crate::vault_cmd::Session;
 
 /// Fetch each asked-for source and print what it wrote. A source that fails
 /// is reported and the rest still run; the command fails if any did.
-pub fn fetch(dir: &CashflowDir, args: &PricesArgs) -> Result<(), String> {
+/// Logged in, each segment written gets its manifest in the vault.
+pub async fn fetch(
+    dir: &CashflowDir,
+    mut session: Option<Session>,
+    args: &PricesArgs,
+) -> Result<(), String> {
     let store = journal::store(dir);
     let sources: &[Source] = if args.sources.is_empty() {
         SOURCES
@@ -40,9 +47,11 @@ pub fn fetch(dir: &CashflowDir, args: &PricesArgs) -> Result<(), String> {
 
     let mut rows = Vec::new();
     let mut failed = Vec::new();
+    let mut hashes = Vec::new();
     for (source, since) in starts {
         match prices::fetch_into(&store, &Ehttp, source, since, now) {
             Ok(fetched) => {
+                hashes.extend(fetched.filed.iter().map(|f| f.hash));
                 if args.json {
                     rows.push(fetched_json(&fetched));
                 } else {
@@ -61,6 +70,7 @@ pub fn fetch(dir: &CashflowDir, args: &PricesArgs) -> Result<(), String> {
     if args.json {
         println!("{}", serde_json::Value::Array(rows));
     }
+    journal_cmd::publish_manifests(dir, session.as_mut(), &hashes).await?;
     if failed.is_empty() {
         return Ok(());
     }

@@ -210,7 +210,14 @@ pub fn books_from(text: &str) -> Books {
     store
         .write_segment(&header, &Journal::parse(text).journal)
         .expect("write the synthetic segment");
-    Books::load(&store, LayerFilter::All, &Edits::default(), "CAD").expect("load the books")
+    Books::load(
+        &store,
+        LayerFilter::All,
+        &Default::default(),
+        &Edits::default(),
+        "CAD",
+    )
+    .expect("load the books")
 }
 
 /// [`synthetic_journal`], loaded.

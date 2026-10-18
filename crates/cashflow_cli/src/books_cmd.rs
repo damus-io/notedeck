@@ -1,27 +1,59 @@
 //! The commands that read the categorized books: `export` and `report`.
 //!
-//! Each loads [`Books`] once (the journal, derived with the vault's rules or
-//! `--rules`, indexed in `--in`'s commodity) and prints from it. What didn't
-//! load or apply goes to stderr, so stdout stays clean for a pipe.
+//! Each loads [`Books`] once (the journal less the segments the vault
+//! retires, derived with the vault's rules or `--rules`, indexed in `--in`'s
+//! commodity) and prints from it. What didn't load or apply, and the
+//! segments the vault knows of that aren't here yet, go to stderr, so stdout
+//! stays clean for a pipe.
 
+use std::collections::HashSet;
 use std::io::Write;
 
-use cashflow::journal;
 use cashflow::vault_edits::VaultEdits;
 use cashflow::vault_rules::VaultRules;
 use cashflow::{Books, CashflowDir, rules};
+use cashflow::{journal, manifest};
 use ledgerdb::{
     AccountId, Amount, Commodities, CommodityId, Date, DateRange, Edits, Filter, Journal,
-    LayerFilter, Ledger, Unconverted, WriteOptions,
+    LayerFilter, Ledger, SegmentHash, Unconverted, WriteOptions,
 };
 
 use crate::args::{BooksArgs, Range, Report, Run};
 use crate::vault_cmd::Session;
 
-/// Every segment in the journal, uncategorized: what edits are tried on.
-pub fn raw_ledger(dir: &CashflowDir) -> Result<Ledger, String> {
-    let loaded = Ledger::load(&journal::store(dir), LayerFilter::All).map_err(|e| e.to_string())?;
+/// Every segment in the journal but the retired ones, uncategorized: what
+/// edits are tried on.
+pub fn raw_ledger(dir: &CashflowDir, session: &Session) -> Result<Ledger, String> {
+    let loaded = Ledger::load_without(&journal::store(dir), LayerFilter::All, retired(session)?)
+        .map_err(|e| e.to_string())?;
     Ok(loaded.ledger)
+}
+
+/// The segments the vault's manifests retire, which every load leaves out.
+pub fn retired(session: &Session) -> Result<HashSet<SegmentHash>, String> {
+    let txn = session.txn()?;
+    let manifests = manifest::load(&session.ndb, &txn, session.vault.author());
+    Ok(manifest::retired(&manifests))
+}
+
+/// Warn on stderr when the vault knows of live segments this journal
+/// lacks, so a total is never silently partial. Only stats files.
+fn warn_missing(dir: &CashflowDir, session: &Session) -> Result<(), String> {
+    let store = journal::store(dir);
+    let txn = session.txn()?;
+    let manifests = manifest::load(&session.ndb, &txn, session.vault.author());
+    let missing = manifests
+        .iter()
+        .filter(|m| !m.body.retired)
+        .filter_map(manifest::hash_of)
+        .filter(|&hash| !store.contains(hash))
+        .count();
+    if missing > 0 {
+        eprintln!(
+            "cashflow: {missing} segment(s) in the vault aren't in this journal yet, so these totals leave them out (see `cashflow journal status`)"
+        );
+    }
+    Ok(())
 }
 
 /// The vault's edits, owned: its rules compiled, then its overrides,
@@ -36,26 +68,36 @@ pub fn vault_edits(session: &Session) -> Result<Edits, String> {
 
 /// The edits the books derive with: `--rules`' file alone, else the
 /// vault's rules and per-transaction edits, else (no stored key) none.
-async fn edits(dir: &CashflowDir, run: &Run, args: &BooksArgs) -> Result<Edits, String> {
+fn edits(session: Option<&Session>, args: &BooksArgs) -> Result<Edits, String> {
     if let Some(path) = &args.rules {
         return rules::load(path).map_err(|e| e.to_string());
     }
-    let Some(session) = Session::open_if_logged_in(dir, run).await? else {
+    let Some(session) = session else {
         eprintln!(
             "cashflow: no signing key, so no vault rules: categorizing as imported (run `cashflow login`, or pass --rules)"
         );
         return Ok(rules::default_edits());
     };
-    vault_edits(&session)
+    vault_edits(session)
 }
 
 /// Load the books `args` names, reporting on stderr what didn't load or
-/// apply.
+/// apply. Logged in, the vault's retired segments are left out even under
+/// `--rules`.
 async fn load(dir: &CashflowDir, run: &Run, args: &BooksArgs) -> Result<Books, String> {
-    let edits = edits(dir, run, args).await?;
+    let session = Session::open_if_logged_in(dir, run).await?;
+    let edits = edits(session.as_ref(), args)?;
+    let retired = match &session {
+        Some(session) => {
+            warn_missing(dir, session)?;
+            retired(session)?
+        }
+        None => HashSet::new(),
+    };
     let books = Books::load(
         &journal::store(dir),
         args.filter.clone(),
+        &retired,
         &edits,
         &args.home,
     )

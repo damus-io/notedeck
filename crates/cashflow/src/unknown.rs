@@ -278,7 +278,8 @@ mod tests {
             record_id: "t:5".to_owned(),
             account: "expenses:food".to_owned(),
         });
-        let books = Books::load(&store, LayerFilter::All, &edits, "CAD").unwrap();
+        let books =
+            Books::load(&store, LayerFilter::All, &Default::default(), &edits, "CAD").unwrap();
 
         let found = groups(&books, &edits, Scope::default());
         let summary: Vec<(&str, &str, usize, i128, u64)> = found

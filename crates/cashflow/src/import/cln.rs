@@ -1229,7 +1229,15 @@ mod tests {
         imported: u64,
     ) -> import::Written {
         let Rig { cln, .. } = importer(events.to_vec(), patched);
-        import::write(store, &cln, &input(), None, Some(imported)).unwrap()
+        import::write(
+            store,
+            &Default::default(),
+            &cln,
+            &input(),
+            None,
+            Some(imported),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1268,7 +1276,8 @@ mod tests {
         let mut later = first.clone();
         later.push(invoice(3000, 0, "three", 3));
         let Rig { cln, calls } = importer(later.clone(), true);
-        let written = import::write(&store, &cln, &input(), None, Some(11)).unwrap();
+        let written =
+            import::write(&store, &Default::default(), &cln, &input(), None, Some(11)).unwrap();
         assert_eq!(
             calls.borrow().as_slice(),
             [json!({ "start_time": T + 2 - OVERLAP_SECS })]
@@ -1295,7 +1304,8 @@ mod tests {
         pull(&store, &events, false, 10);
 
         let Rig { cln, calls } = importer(events, false);
-        let written = import::write(&store, &cln, &input(), None, Some(11)).unwrap();
+        let written =
+            import::write(&store, &Default::default(), &cln, &input(), None, Some(11)).unwrap();
         assert_eq!(
             calls.borrow().as_slice(),
             [json!({ "start_time": T + 1 - OVERLAP_SECS }), json!({})]

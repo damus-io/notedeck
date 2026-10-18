@@ -22,7 +22,7 @@ use ledgerdb::{
 use serde_json::{Value, json};
 
 use crate::args::{LegArg, TransferCommand, UnknownArgs, Write};
-use crate::books_cmd::{format_total, raw_ledger, vault_edits};
+use crate::books_cmd::{format_total, raw_ledger, retired, vault_edits};
 use crate::vault_cmd::{Session, session_ref};
 
 /// The raw transaction with record id `record`, or an error.
@@ -362,7 +362,7 @@ pub async fn categorize(
     account: &str,
     write: Write,
 ) -> Result<(), String> {
-    let raw = raw_ledger(dir)?;
+    let raw = raw_ledger(dir, session)?;
     find(&raw, record)?;
     let before = vault_edits(session)?;
     let txn = session.txn()?;
@@ -432,7 +432,7 @@ pub async fn uncategorize(
     record: &str,
     write: Write,
 ) -> Result<(), String> {
-    let raw = raw_ledger(dir)?;
+    let raw = raw_ledger(dir, session)?;
     find(&raw, record)?;
     let before = vault_edits(session)?;
     let txn = session.txn()?;
@@ -549,7 +549,7 @@ pub async fn split(
     legs: &[LegArg],
     write: Write,
 ) -> Result<(), String> {
-    let raw = raw_ledger(dir)?;
+    let raw = raw_ledger(dir, session)?;
     let id = find(&raw, record)?;
     let before = vault_edits(session)?;
     let counter = counter_leg(&raw, &before, id).ok_or_else(|| {
@@ -664,7 +664,7 @@ async fn link(
     write: Write,
 ) -> Result<(), String> {
     let id = link_id(a, b).map_err(|e| e.to_string())?;
-    let raw = raw_ledger(dir)?;
+    let raw = raw_ledger(dir, session)?;
     let before = vault_edits(session)?;
     let txn = session.txn()?;
     let stored = VaultEdits::load(&session.ndb, &txn, session.vault.author());
@@ -726,7 +726,7 @@ async fn unlink(
     write: Write,
 ) -> Result<(), String> {
     let id = link_id(a, b).map_err(|e| e.to_string())?;
-    let raw = raw_ledger(dir)?;
+    let raw = raw_ledger(dir, session)?;
     let before = vault_edits(session)?;
     let txn = session.txn()?;
     let stored = VaultEdits::load(&session.ndb, &txn, session.vault.author());
@@ -802,7 +802,7 @@ async fn suggest(
     accept_all: bool,
     write: Write,
 ) -> Result<(), String> {
-    let raw = raw_ledger(dir)?;
+    let raw = raw_ledger(dir, session)?;
     let edits = vault_edits(session)?;
     let pairs = transfers::suggest(&raw, &edits);
     let writing = accept_all && !write.dry_run;
@@ -957,8 +957,14 @@ pub async fn unknown(
     args: &UnknownArgs,
 ) -> Result<(), String> {
     let edits = vault_edits(session)?;
-    let books = Books::load(&journal::store(dir), LayerFilter::All, &edits, &args.home)
-        .map_err(|e| e.to_string())?;
+    let books = Books::load(
+        &journal::store(dir),
+        LayerFilter::All,
+        &retired(session)?,
+        &edits,
+        &args.home,
+    )
+    .map_err(|e| e.to_string())?;
     let groups = unknown::groups(
         &books,
         &edits,

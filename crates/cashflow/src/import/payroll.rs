@@ -467,6 +467,7 @@ mod tests {
         let path = file(tmp.path(), &signed(""));
         let err = write(
             &store,
+            &Default::default(),
             &PayrollImporter::new(None),
             &input(vec![path]),
             None,
@@ -491,6 +492,7 @@ mod tests {
             let path = file(tmp.path(), text);
             write(
                 &store,
+                &Default::default(),
                 &PayrollImporter::new(None),
                 &input(vec![path]),
                 None,
