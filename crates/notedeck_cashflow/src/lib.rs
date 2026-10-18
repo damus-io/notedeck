@@ -14,17 +14,22 @@
 //!
 //! The app reports on the [`cashflow::Books`] handed to it with
 //! [`CashflowApp::set_books`], over the one [`Period`] every view shares.
+//! Whoever loads them reads [`CashflowApp::layers`] for the layers to load
+//! and tells the app what the journal is missing with
+//! [`CashflowApp::set_missing_segments`].
 
 use cashflow::Books;
 use ledgerdb::Date;
 use notedeck::{AppContext, AppResponse};
 
+pub mod layers;
 pub mod money;
 pub mod period;
 pub mod ui;
 mod view;
 pub mod views;
 
+pub use layers::Layers;
 pub use period::Period;
 pub use view::View;
 
@@ -47,6 +52,10 @@ pub struct CashflowApp {
     today: Date,
     /// The span of days every view reports on.
     period: Period,
+    /// The journal layers switched off.
+    layers: Layers,
+    /// Segments the vault says exist that the local journal lacks.
+    missing_segments: usize,
     /// What each view keeps between frames.
     views: views::ViewStates,
 }
@@ -68,6 +77,8 @@ impl CashflowApp {
             generation: 0,
             today: period::today(),
             period: Period::default(),
+            layers: Layers::default(),
+            missing_segments: 0,
             views: views::ViewStates::default(),
         }
     }
@@ -98,6 +109,18 @@ impl CashflowApp {
     /// Report on `period` from now on.
     pub fn set_period(&mut self, period: Period) {
         self.period = period;
+    }
+
+    /// The journal layers switched on and off. Reload the books with
+    /// [`Layers::filter`] when [`Layers::generation`] moves.
+    pub fn layers(&self) -> &Layers {
+        &self.layers
+    }
+
+    /// Say that the vault lists `count` segments the local journal does
+    /// not have, so every figure is partial until they arrive.
+    pub fn set_missing_segments(&mut self, count: usize) {
+        self.missing_segments = count;
     }
 
     /// The view currently showing.
@@ -137,6 +160,8 @@ impl CashflowApp {
             generation,
             today,
             period,
+            layers,
+            missing_segments,
             views: states,
         } = self;
         egui::CentralPanel::default()
@@ -150,9 +175,15 @@ impl CashflowApp {
                     }),
                     today: *today,
                     period,
+                    layers,
+                    missing_segments: *missing_segments,
                     states,
+                    open: None,
                 };
                 views::show(*view, &mut cx, ui);
+                if let Some(open) = cx.open {
+                    *view = open;
+                }
             });
     }
 }

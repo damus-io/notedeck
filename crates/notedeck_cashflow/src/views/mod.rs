@@ -8,12 +8,12 @@ use cashflow::Books;
 use egui::RichText;
 use ledgerdb::Date;
 
-use crate::{Period, View, ui::palette::Palette};
+use crate::{Layers, Period, View, ui::palette::Palette};
 
 mod adventure;
 pub mod categories;
 mod goals;
-mod overview;
+pub mod overview;
 mod projects;
 mod settings;
 mod transactions;
@@ -32,8 +32,15 @@ pub struct ViewCx<'a> {
     /// The span of days every view reports on, shared so picking one in a
     /// view picks it in all of them.
     pub period: &'a mut Period,
+    /// The journal layers switched on and off.
+    pub layers: &'a mut Layers,
+    /// Segments the vault lists that the local journal lacks.
+    pub missing_segments: usize,
     /// What each view keeps between frames.
     pub states: &'a mut ViewStates,
+    /// The view to switch to once this frame is drawn, set by a view that
+    /// links to another.
+    pub open: Option<View>,
 }
 
 /// The loaded books, and which load they came from.
@@ -54,6 +61,8 @@ pub struct ViewStates {
     pub(crate) categories: categories::CategoriesState,
     /// The Trends view's span, picks and cached series.
     pub(crate) trends: trends::TrendsState,
+    /// The Overview's cached figures.
+    pub(crate) overview: overview::OverviewState,
 }
 
 /// Draw `view` into `ui`.

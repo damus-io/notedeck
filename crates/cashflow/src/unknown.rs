@@ -124,6 +124,15 @@ pub fn groups(books: &Books, edits: &Edits, scope: Scope) -> Vec<PayeeGroup> {
     groups
 }
 
+/// How many transactions in `books` are unknown: the size of the triage
+/// queue [`groups`] ranks, without grouping it.
+#[profiling::function]
+pub fn count(books: &Books) -> usize {
+    (0..books.ledger().txns().len())
+        .filter(|&i| books.derived.why(TxnId(i as u32)) == Why::Default)
+        .count()
+}
+
 /// What a group's rows share.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct GroupKey {
@@ -303,6 +312,12 @@ mod tests {
                 ("lightning", "income:unknown", 1, 0, 1),
             ]
         );
+        // The count is every grouped row: five, the overridden one left out.
+        assert_eq!(
+            count(&books),
+            found.iter().map(|g| g.rows.len()).sum::<usize>()
+        );
+        assert_eq!(count(&books), 5);
         assert_eq!(found[1].pattern.as_deref(), Some("corner grocer"));
         assert_eq!(found[1].sources, ["card"]);
 

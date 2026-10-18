@@ -5936,6 +5936,7 @@ dependencies = [
  "glam",
  "ledgerdb",
  "notedeck",
+ "notedeck_testing",
  "notedeck_ui",
  "poll-promise",
  "profiling",

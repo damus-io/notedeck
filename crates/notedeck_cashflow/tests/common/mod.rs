@@ -200,24 +200,40 @@ pub fn synthetic_journal() -> String {
 /// app and the CLI run: written to a journal store as one segment, loaded
 /// and derived with no edits.
 pub fn books_from(text: &str) -> Books {
+    books_from_segments(
+        &[Segment {
+            layer: "synthetic",
+            text: text.to_owned(),
+        }],
+        &Edits::default(),
+    )
+}
+
+/// One segment of a journal: its layer and its ledger-cli text.
+pub struct Segment {
+    /// The layer it is in.
+    pub layer: &'static str,
+    /// Its transactions.
+    pub text: String,
+}
+
+/// `segments` written to one journal store and loaded as books in CAD,
+/// derived with `edits` (whose defaults decide what counts as unknown).
+pub fn books_from_segments(segments: &[Segment], edits: &Edits) -> Books {
     let dir = tempfile::TempDir::new().expect("tmpdir");
     let store = JournalStore::new(dir.path());
-    let header = SegmentHeader {
-        source: "synthetic".to_owned(),
-        imported: 1,
-        layer: "synthetic".to_owned(),
-    };
-    store
-        .write_segment(&header, &Journal::parse(text).journal)
-        .expect("write the synthetic segment");
-    Books::load(
-        &store,
-        LayerFilter::All,
-        &Default::default(),
-        &Edits::default(),
-        "CAD",
-    )
-    .expect("load the books")
+    for segment in segments {
+        let header = SegmentHeader {
+            source: segment.layer.to_owned(),
+            imported: 1,
+            layer: segment.layer.to_owned(),
+        };
+        store
+            .write_segment(&header, &Journal::parse(&segment.text).journal)
+            .expect("write the synthetic segment");
+    }
+    Books::load(&store, LayerFilter::All, &Default::default(), edits, "CAD")
+        .expect("load the books")
 }
 
 /// [`synthetic_journal`], loaded.

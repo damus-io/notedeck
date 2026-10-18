@@ -3,7 +3,7 @@
 use egui::RichText;
 
 use super::palette::Palette;
-use crate::Period;
+use crate::{Period, View};
 
 /// Draw a chip per period into `ui`, set `period` to the one clicked, and
 /// return whether it changed.
@@ -27,4 +27,33 @@ pub fn show(ui: &mut egui::Ui, palette: &Palette, period: &mut Period) -> bool {
         }
     });
     changed
+}
+
+/// A view's heading with the period chips beside it, or, on a phone, under
+/// it on a row of their own that scrolls rather than widening the page.
+/// Returns whether the period changed.
+pub fn heading(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    view: View,
+    period: &mut Period,
+    narrow: bool,
+) -> bool {
+    let heading = RichText::new(view.label()).heading().color(palette.text);
+    if !narrow {
+        return ui
+            .horizontal(|ui| {
+                ui.label(heading);
+                ui.add_space(16.0);
+                show(ui, palette, period)
+            })
+            .inner;
+    }
+    ui.label(heading);
+    ui.add_space(4.0);
+    egui::ScrollArea::horizontal()
+        .id_salt("cashflow_period_picker")
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .show(ui, |ui| show(ui, palette, period))
+        .inner
 }

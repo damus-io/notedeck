@@ -11,6 +11,7 @@
 //! today, the accounts picked); the view draws what they returned.
 
 use cashflow::Books;
+use cashflow::net::{NetFlow, net_flows};
 use ledgerdb::{AccountId, Amount, Bucket, CommodityId, Date, DateRange};
 
 use crate::money::money;
@@ -120,7 +121,7 @@ pub struct Line {
 
 impl Line {
     /// A line of `values` (smallest units of `home`), each formatted.
-    fn new(values: Vec<i128>, home: CommodityId, books: &Books) -> Self {
+    pub(crate) fn new(values: Vec<i128>, home: CommodityId, books: &Books) -> Self {
         let commodities = &books.ledger().journal().commodities;
         Line {
             texts: values
@@ -153,63 +154,38 @@ pub struct Monthly {
     pub unconverted: Option<String>,
 }
 
-/// Income, expenses and net for each month of `window`, in `home`.
+/// Income, expenses and net for each month of `window`, in `home`, as
+/// [`cashflow::net`] defines them.
 #[profiling::function]
 pub fn monthly(books: &Books, home: CommodityId, window: &Window) -> Monthly {
-    let income = root_flow(books, home, "income", window);
-    let expenses = root_flow(books, home, "expenses", window);
-    // Income postings are negative in the ledger: flip them to read as
-    // money in.
-    let income_values: Vec<i128> = income.values.iter().map(|v| -v).collect();
-    let net_values: Vec<i128> = income_values
-        .iter()
-        .zip(&expenses.values)
-        .map(|(i, e)| i - e)
-        .collect();
+    let mut flows = net_flows(books, home, window.range, Bucket::Month);
+    flows.resize(window.len(), NetFlow::default());
+    let income: Vec<i128> = flows.iter().map(|f| f.income).collect();
+    let expenses: Vec<i128> = flows.iter().map(|f| f.expenses).collect();
+    let net: Vec<i128> = flows.iter().map(NetFlow::net).collect();
 
     let commodities = &books.ledger().journal().commodities;
     let total = |values: &[i128]| money(values.iter().sum(), home, commodities);
     Monthly {
-        income_total: total(&income_values),
-        expenses_total: total(&expenses.values),
-        net_total: total(&net_values),
-        unconverted: unconverted_note(income.unconverted + expenses.unconverted),
-        income: Line::new(income_values, home, books),
-        expenses: Line::new(expenses.values, home, books),
-        net: Line::new(net_values, home, books),
-    }
-}
-
-/// A subtree's sum per month, before formatting.
-struct Flow {
-    values: Vec<i128>,
-    unconverted: u64,
-}
-
-/// The top-level account `name`'s sum per month of `window`, zeros when the
-/// journal has no such account.
-fn root_flow(books: &Books, home: CommodityId, name: &str, window: &Window) -> Flow {
-    match books.ledger().journal().accounts.lookup(name) {
-        Some(account) => flow(books, home, account, window),
-        None => Flow {
-            values: vec![0; window.len()],
-            unconverted: 0,
-        },
+        income_total: total(&income),
+        expenses_total: total(&expenses),
+        net_total: total(&net),
+        unconverted: unconverted_note(flows.iter().map(|f| f.unconverted).sum()),
+        income: Line::new(income, home, books),
+        expenses: Line::new(expenses, home, books),
+        net: Line::new(net, home, books),
     }
 }
 
 /// `account`'s subtree summed per month of `window`, converted to `home` at
 /// each posting's date.
-fn flow(books: &Books, home: CommodityId, account: AccountId, window: &Window) -> Flow {
+fn flow(books: &Books, home: CommodityId, account: AccountId, window: &Window) -> Vec<i128> {
     let series = books
         .query()
         .flows(account, window.range, Bucket::Month, home);
     let mut values: Vec<i128> = series.points.iter().map(|p| p.total).collect();
     values.resize(window.len(), 0);
-    Flow {
-        values,
-        unconverted: series.unconverted.count,
-    }
+    values
 }
 
 /// One account's monthly flow, for comparing accounts on one chart.
@@ -229,7 +205,7 @@ pub struct Trend {
 /// reads above the baseline.
 #[profiling::function]
 pub fn trend(books: &Books, home: CommodityId, account: AccountId, window: &Window) -> Trend {
-    let Flow { mut values, .. } = flow(books, home, account, window);
+    let mut values = flow(books, home, account, window);
     let sum: i128 = values.iter().sum();
     let flipped = sum < 0;
     if flipped {

@@ -21,9 +21,10 @@
 //! rates into it, and [`books`] loads, derives and indexes it for queries.
 //! [`transfers`] finds the moves between the owner's own accounts that two
 //! sources each recorded, and [`unknown`] groups what nothing has
-//! categorized yet into a triage queue. The game derive lands here in a later card; the
-//! design all of this follows is on the root epic,
-//! headway:cashflow/flame-vault-near.
+//! categorized yet into a triage queue. [`net`] is the one definition of
+//! income, expenses and net every report totals with. The game derive
+//! lands here in a later card; the design all of this follows is on the
+//! root epic, headway:cashflow/flame-vault-near.
 //!
 //! No egui: the app depends on this crate, never the other way round.
 
@@ -36,6 +37,7 @@ pub mod import;
 pub mod journal;
 pub mod kinds;
 pub mod manifest;
+pub mod net;
 pub mod prices;
 pub mod rank;
 pub mod rules;

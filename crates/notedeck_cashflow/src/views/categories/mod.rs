@@ -52,6 +52,17 @@ impl Default for CategoriesState {
     }
 }
 
+impl CategoriesState {
+    /// Show `flow`'s column drilled into `account` (a full name), as a
+    /// click on its bar would: the Overview's top categories link here.
+    pub(crate) fn open(&mut self, flow: Flow, account: &str) {
+        let Some(column) = self.columns.iter_mut().find(|c| c.flow == flow) else {
+            return;
+        };
+        column.navigate(Nav::Into(account.to_owned()));
+    }
+}
+
 /// What every column's breakdown depends on besides its own level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Key {
@@ -181,27 +192,7 @@ impl ColumnState {
 pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
     let palette = cx.palette;
     let narrow = notedeck::ui::is_narrow(ui.ctx());
-    let heading = RichText::new(View::Categories.label())
-        .heading()
-        .color(palette.text);
-    if narrow {
-        // The chips are wider than a phone: they scroll on a row of their
-        // own rather than widening the page.
-        ui.label(heading);
-        ui.add_space(4.0);
-        egui::ScrollArea::horizontal()
-            .id_salt("cashflow_period_picker")
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-            .show(ui, |ui| {
-                crate::ui::period_picker::show(ui, palette, cx.period)
-            });
-    } else {
-        ui.horizontal(|ui| {
-            ui.label(heading);
-            ui.add_space(16.0);
-            crate::ui::period_picker::show(ui, palette, cx.period);
-        });
-    }
+    crate::ui::period_picker::heading(ui, palette, View::Categories, cx.period, narrow);
     ui.add_space(12.0);
 
     let Some(ledger) = cx.ledger else {
@@ -340,7 +331,7 @@ fn breadcrumb(ui: &mut egui::Ui, palette: &Palette, crumbs: &[Crumb]) -> Option<
 /// One bar: the label and its amount and share on a line, over a track
 /// filled in proportion to the column's largest row. Clickable when the row
 /// is an account to drill into.
-fn bar_row(
+pub(crate) fn bar_row(
     ui: &mut egui::Ui,
     palette: &Palette,
     flow: Flow,
@@ -426,7 +417,7 @@ fn bar_row(
 }
 
 /// What hovering a bar shows: the row's name, amount, share and change.
-fn tooltip(ui: &mut egui::Ui, palette: &Palette, row: &Row, period: Period) {
+pub(crate) fn tooltip(ui: &mut egui::Ui, palette: &Palette, row: &Row, period: Period) {
     ui.label(RichText::new(&row.label).strong().color(palette.text));
     ui.label(RichText::new(&row.detail).small().color(palette.text_muted));
     ui.add_space(4.0);
