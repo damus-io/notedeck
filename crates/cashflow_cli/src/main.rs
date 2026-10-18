@@ -2,7 +2,8 @@
 //!
 //! So far: the data directory ([`cashflow::CashflowDir`]) and its config, the
 //! journal (`journal ls`/`status`/`verify`/`publish`/`rm`, `import`,
-//! `prices fetch`) and its segment manifests in the vault, the
+//! `prices fetch`), its segment manifests in the vault and `sync`, which
+//! moves the segments between machines, the
 //! categorized books (`export`, `report`), the signing key
 //! (`login`/`logout`), the vault's synced settings and categorization rules
 //! (`rule`), the per-transaction edits (`categorize`, `uncategorize`,
@@ -23,6 +24,7 @@ mod help;
 mod journal_cmd;
 mod prices_cmd;
 mod rule_cmd;
+mod sync_cmd;
 mod vault_cmd;
 
 use std::process::ExitCode;
@@ -106,6 +108,9 @@ async fn execute(run: Run) -> Result<(), String> {
         Command::JournalPublish { write } => {
             let mut session = Session::open(&dir, &run).await?;
             journal_cmd::publish(&dir, &mut session, *write).await
+        }
+        Command::Sync { transport, write } => {
+            sync_cmd::sync(&dir, &run, transport.as_deref(), *write).await
         }
         Command::Import(args) => {
             let session = Session::open_if_logged_in(&dir, &run).await?;

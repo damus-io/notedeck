@@ -4,10 +4,23 @@
 //! Segments move between machines as files, never through nostr; the
 //! vault's [manifests](crate::manifest) are the index of what exists and
 //! which host has it. [`Plan`] compares that index with the local journal.
-//! `cashflow journal status` prints it, the app warns with it so its
-//! numbers are never silently partial, and the file transports (the
-//! `SegmentTransport` seam, headway:cashflow/radar-army-cover) fetch what it
-//! lists as missing.
+//! `cashflow journal status` prints it, and the app warns with it so its
+//! numbers are never silently partial.
+//!
+//! The files themselves move through a [`SegmentTransport`], one per remote
+//! copy of the journal (`[[sync.transport]]` in `config.toml`, built by
+//! [`transports`]). [`run`] fetches what a [`SyncJob`] made from the plan
+//! lists as missing, into staging, admits it through the journal store's
+//! hash check, and pushes each remote what it lacks: `cashflow sync`.
+
+mod rsync;
+mod transport;
+
+pub use rsync::RsyncTransport;
+pub use transport::{
+    FetchReport, KINDS, PushReport, SegmentTransport, SyncJob, SyncReport, TransportConfigError,
+    TransportError, TransportReport, run, transports,
+};
 
 use ledgerdb::SegmentHash;
 

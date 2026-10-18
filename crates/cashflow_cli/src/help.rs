@@ -190,6 +190,48 @@ segment comes back from any other copy of the journal that still has it.",
         ],
     },
     CommandHelp {
+        name: "sync",
+        group: JOURNAL,
+        summary: "Fetch and push segments to the remotes in config.toml",
+        usage: &["sync [--transport <name>] [--dry-run] [--json]"],
+        details: "\
+Each [[sync.transport]] in config.toml is a remote copy of the journal:
+
+    [[sync.transport]]
+    kind = \"rsync\"
+    remote = \"host:/path/to/journal\"   # or a local dir, e.g. a mounted drive
+    # name = \"backup\"                  # [default: the kind]
+
+For each transport in order, sync pushes the remote every local segment it
+lacks, then fetches the segments the vault's manifests say this machine
+lacks (`journal status` lists them) into staging/<name>/, admitting each one
+only if its bytes hash to its name. A segment that arrives from one remote
+is pushed on to the ones after it. Retired segments are neither fetched nor
+pushed. Nothing a remote sends is written into journal/ unchecked: a file
+that fails the check is rejected and left in staging until the next sync.
+
+Sync is a union of files named by their hashes, so it never conflicts and
+is safe to run from any machine at any time. The rsync transport runs
+`rsync -a --ignore-existing` (over ssh for host:path), which must be on
+PATH. Needs `cashflow login`: the manifests say what to fetch.
+
+Exits non-zero when a transport fails or serves a bad file; the others still
+run.",
+        options: &[
+            ("--transport <name>", "Only the transport with this name"),
+            (
+                "--dry-run",
+                "List what would be fetched and offered, move nothing",
+            ),
+            ("--json", "Machine-readable output"),
+        ],
+        examples: &[
+            "cashflow sync",
+            "cashflow sync --dry-run",
+            "cashflow sync --transport backup",
+        ],
+    },
+    CommandHelp {
         name: "import",
         group: JOURNAL,
         summary: "Read a source into the journal as one new segment",

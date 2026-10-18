@@ -191,7 +191,7 @@ pub fn status(dir: &CashflowDir, session: Option<&Session>, json: bool) -> Resul
     }
     if !plan.missing_locally.is_empty() {
         println!(
-            "missing here: {} (every total leaves them out until they arrive)",
+            "missing here: {} (every total leaves them out until they arrive; `cashflow sync` fetches them)",
             segments(plan.missing_locally.len())
         );
         for group in plan.missing_by_host() {

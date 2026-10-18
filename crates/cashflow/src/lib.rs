@@ -10,7 +10,7 @@
 //! data dir is [`journal`]; [`import`] reads sources into it (the CSV ones
 //! with [`csv`]). [`manifest`] tells the vault which segments exist, which
 //! host has each and which are retired, and [`sync`] compares that with the
-//! local journal. [`vault_rules`] keeps the categorization rules in the
+//! local journal and moves the missing files through rsync. [`vault_rules`] keeps the categorization rules in the
 //! vault, ordered by [`rank`], and [`rules`] reads a local rules file into
 //! the same derive edits. [`vault_edits`] keeps the per-transaction
 //! overrides, splits and transfer links, and [`chart`] the chart of
@@ -54,7 +54,8 @@ mod test_util;
 pub use books::Books;
 pub use config::{
     AmexConfig, AppStoreConfig, BtcConfig, CashflowDir, Config, ConfigError, DIR_ENV, NamedPath,
-    PayrollConfig, RELAY_ENV, RbcConfig, Secret, SecretEntry, SecretSource,
+    PayrollConfig, RELAY_ENV, RbcConfig, Secret, SecretEntry, SecretSource, SyncConfig,
+    TransportConfig,
 };
 pub use edits_cache::{DeriveInputs, EditsCache};
 pub use settings::{Setting, Settings};

@@ -95,11 +95,13 @@ impl Cashflow {
     }
 
     /// Run `cashflow <args>`.
+    #[allow(dead_code)]
     pub fn run<S: AsRef<OsStr>>(&self, args: &[S]) -> Output {
         self.command().args(args).output().expect("run cashflow")
     }
 
     /// Run `cashflow <args>`, panic unless it succeeds, and return its stdout.
+    #[allow(dead_code)]
     pub fn ok<S: AsRef<OsStr>>(&self, args: &[S]) -> String {
         expect_success(self.run(args))
     }

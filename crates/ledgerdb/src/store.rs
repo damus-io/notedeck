@@ -134,8 +134,15 @@ impl JournalStore {
 
     /// Where the segment `hash` is filed: `<dir>/<first two hex>/<hash>.ledger`.
     pub fn path_of(&self, hash: SegmentHash) -> PathBuf {
+        self.dir.join(Self::relative_path(hash))
+    }
+
+    /// The segment `hash`'s path inside any store, `<first two
+    /// hex>/<hash>.ledger`: what a sync transport names a file by on the
+    /// remote side, or in a staging directory [`Self::admit_from`] reads.
+    pub fn relative_path(hash: SegmentHash) -> PathBuf {
         let name = hash.to_string();
-        self.dir.join(&name[..2]).join(name + EXTENSION)
+        Path::new(&name[..2]).join(format!("{name}{EXTENSION}"))
     }
 
     /// Whether the store has the segment `hash`.

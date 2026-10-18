@@ -66,6 +66,11 @@ pub enum Command {
     JournalStatus { json: bool },
     /// `cashflow journal publish [--dry-run] [--json]`.
     JournalPublish { write: Write },
+    /// `cashflow sync [--transport <name>] [--dry-run] [--json]`.
+    Sync {
+        transport: Option<String>,
+        write: Write,
+    },
     /// `cashflow import <importer> [<path>...]`.
     Import(ImportArgs),
     /// `cashflow prices fetch`.
@@ -497,6 +502,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
         "logout" => no_positionals(positionals, Command::Logout, "logout")?,
         "settings" => settings_command(positionals, json)?,
         "journal" => journal_command(positionals, &flags, json)?,
+        "sync" => no_positionals(
+            positionals,
+            Command::Sync {
+                transport: flags.value("--transport").map(str::to_owned),
+                write: write_of(&flags, json),
+            },
+            "sync",
+        )?,
         "import" => import_command(positionals, &flags, json)?,
         "prices" => prices_command(positionals, &flags, json)?,
         "export" => no_positionals(
@@ -1294,6 +1307,27 @@ mod tests {
             }
         );
         assert!(err_of(&["journal", "ls", "--dry-run"]).contains("only `journal publish`"));
+        assert_eq!(
+            run_of(&["sync", "--transport", "usb", "--dry-run"]).command,
+            Command::Sync {
+                transport: Some("usb".to_owned()),
+                write: Write {
+                    dry_run: true,
+                    json: false,
+                },
+            }
+        );
+        assert_eq!(
+            run_of(&["sync", "--json"]).command,
+            Command::Sync {
+                transport: None,
+                write: Write {
+                    dry_run: false,
+                    json: true,
+                },
+            }
+        );
+        assert!(err_of(&["sync", "now"]).contains("takes no arguments"));
         let usage = "`ls`, `status`, `verify`, `publish` or `rm <hash>`";
         assert!(err_of(&["journal"]).contains(usage));
         assert!(err_of(&["journal", "ls", "x"]).contains(usage));

@@ -341,6 +341,9 @@ pub struct Config {
     /// `[cln]`: the Core Lightning bookkeeper importer's settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cln: Option<ClnConfig>,
+    /// `[sync]`: how journal segments move between machines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<SyncConfig>,
 }
 
 /// `[amex]` in `config.toml`. Every key is optional.
@@ -459,6 +462,35 @@ pub struct ClnConfig {
     /// which every machine should share instead [default: that setting,
     /// else `local`].
     pub timezone: Option<String>,
+}
+
+/// `[sync]` in `config.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncConfig {
+    /// `[[sync.transport]]`, one per remote, tried in this order. See
+    /// [`crate::sync::transports`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transport: Vec<TransportConfig>,
+}
+
+/// One `[[sync.transport]]`: a remote copy of the journal and how to reach
+/// it, as in `kind = "rsync"`, `remote = "host:/path/to/journal"`.
+///
+/// `kind` stays a string here, checked when [`crate::sync::transports`]
+/// builds the transport, so a config naming a kind this build lacks still
+/// loads for every command but `sync`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransportConfig {
+    /// What `sync --transport` calls it, and its directory under
+    /// `staging/` [default: its `kind`].
+    pub name: Option<String>,
+    /// Which transport: `rsync`.
+    pub kind: String,
+    /// Where the remote journal is: for `rsync`, anything rsync takes as a
+    /// destination (`host:/path`, `user@host:path`, or a local directory).
+    pub remote: Option<String>,
 }
 
 impl Config {
