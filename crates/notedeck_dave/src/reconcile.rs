@@ -65,7 +65,8 @@ pub(crate) struct Drift {
 ///   chat not ending on a user turn;
 /// - its chat gained a row since its last reconcile (`fold_dirty`);
 /// - nostrdb has handed back every note it published
-///   (`unindexed_self_notes` is empty), so the fold is complete.
+///   ([`NoteLedger::all_indexed`](crate::note_ledger::NoteLedger::all_indexed)),
+///   so the fold is complete.
 ///
 /// Called after each conversation poll batch, which is where the last of a
 /// turn's notes arrive, and at the end of a turn, for one whose notes were all
@@ -87,7 +88,7 @@ pub(crate) fn maybe_reconcile_at_rest(
         && session
             .agentic
             .as_ref()
-            .is_some_and(|a| a.fold_dirty && a.unindexed_self_notes.is_empty());
+            .is_some_and(|a| a.fold_dirty && a.ledger.all_indexed());
     if !ready {
         return ReconcileOutcome::NotReady;
     }
@@ -135,7 +136,7 @@ pub(crate) fn warn_stalled_reconciles<'a>(
         if !at_rest {
             continue;
         }
-        let Some(stall) = agentic.unindexed_self_notes.take_stall(now) else {
+        let Some(stall) = agentic.ledger.take_stall(now) else {
             continue;
         };
         tracing::warn!(
@@ -178,12 +179,13 @@ impl UnindexedNotes {
         self.published.insert(note_id, now);
     }
 
-    /// Release a note nostrdb has handed back.
-    pub fn remove(&mut self, note_id: &[u8; 32]) {
-        self.published.remove(note_id);
+    /// Release a note nostrdb has handed back. Returns whether it was held.
+    pub fn remove(&mut self, note_id: &[u8; 32]) -> bool {
+        let held = self.published.remove(note_id).is_some();
         if self.published.is_empty() {
             self.stall_warned = false;
         }
+        held
     }
 
     /// The notes still waiting to be handed back.

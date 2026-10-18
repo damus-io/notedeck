@@ -1251,7 +1251,13 @@ mod tests {
 
         /// How many notes the session has published so far.
         fn published(&self) -> usize {
-            self.session.agentic.as_ref().unwrap().seen_note_ids.len()
+            self.session
+                .agentic
+                .as_ref()
+                .unwrap()
+                .ledger
+                .seen_set()
+                .len()
         }
 
         /// The session's assistant rows, in chat order.
@@ -1532,7 +1538,7 @@ mod tests {
             serde_json::from_str(v["content"].as_str().unwrap()).unwrap();
         assert_eq!(content.output.as_deref(), Some("found 3 call sites"));
 
-        let seen = &session.agentic.as_ref().unwrap().seen_note_ids;
+        let seen = &session.agentic.as_ref().unwrap().ledger.seen_set();
         assert!(seen.contains(&spawned.note_id) && seen.contains(&completed.note_id));
 
         assert!(

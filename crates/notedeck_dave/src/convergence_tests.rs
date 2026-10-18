@@ -372,7 +372,8 @@ impl Host {
             .agentic
             .as_ref()
             .unwrap()
-            .seen_note_ids
+            .ledger
+            .seen_set()
             .clone()
     }
 
@@ -2133,7 +2134,7 @@ async fn assert_rest_gate(gate: &str, hold: Vec<Step>, release: Vec<Step>) {
     host.poll_own_notes();
     let agentic = host.session().agentic.as_mut().unwrap();
     assert!(
-        agentic.unindexed_self_notes.is_empty(),
+        agentic.ledger.all_indexed(),
         "{gate}: every note the host published is back"
     );
     agentic.fold_dirty = true;
@@ -2639,7 +2640,7 @@ async fn poll_delivery_reconciles_a_local_session() {
 
     assert!(remote.is_empty(), "the batch is the host's own notes");
     let agentic = host.session().agentic.as_ref().unwrap();
-    assert!(agentic.unindexed_self_notes.is_empty());
+    assert!(agentic.ledger.all_indexed());
     assert!(!agentic.fold_dirty, "the delivery reconciled the session");
     assert_eq!(
         view_signature(&host.session().chat),
@@ -2716,7 +2717,7 @@ async fn answering_a_remote_request_records_nothing() {
 }
 
 /// A remote session's rebuild folds only what the poll has handed it
-/// (`seen_through`). A note stored after the poll ran, before a rebuild
+/// (`NoteLedger::through`). A note stored after the poll ran, before a rebuild
 /// (an earlier batch's), is left out of that rebuild and not marked seen. The
 /// next poll then delivers it as new and runs its side effects: here the
 /// observer's runtime allowlist auto-accepts the request.
@@ -2762,7 +2763,8 @@ async fn remote_rebuild_leaves_a_late_note_to_the_next_poll() {
         .agentic
         .as_ref()
         .unwrap()
-        .seen_note_ids
+        .ledger
+        .seen_set()
         .contains(&request_note));
 
     let keys = std::mem::take(&mut host.unobserved);

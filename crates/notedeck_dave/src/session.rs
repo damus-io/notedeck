@@ -1,5 +1,5 @@
 use agentium_core::session_events::SessionRelation;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -340,21 +340,15 @@ pub struct AgenticSessionData {
     /// Timestamp of the kind-31988 event that last set `remote_status`.
     /// Used to ignore older replaceable event revisions that arrive out of order.
     pub remote_status_ts: u64,
-    /// Note IDs we've already processed from live conversation polling.
-    /// Prevents duplicate messages when events are loaded during restore
-    /// and then appear again via the subscription.
-    pub seen_note_ids: HashSet<[u8; 32]>,
-    /// Newest note the conversation poll has handed this session, or a
-    /// restore loaded into its chat.
-    ///
-    /// nostrdb delivers notes in the order it stores them, and a restore loads
-    /// only notes the poll has already passed, so every note of this session
-    /// stored at or before this key has been through the poll or that restore.
-    /// A rebuild folds only up to here: a note stored since is still on its
-    /// way through the poll, which must see it unseen to run its side effects
-    /// (a remote user message is dispatched and fanned out from there).
-    /// `None` until the first note arrives.
-    pub seen_through: Option<nostrdb::NoteKey>,
+    /// Which of the session's kind-1988 notes are seen, which of the ones
+    /// this host published nostrdb hasn't handed back yet, and how far the
+    /// conversation poll has got (see [`NoteLedger`](crate::note_ledger::NoteLedger)).
+    /// Filled by [`record_self_note`](Self::record_self_note) on every
+    /// publish, by the poll (`process_conversation_notes`) and by each
+    /// rebuild or restore. The chat is only rebuilt from the fold while every
+    /// note published is indexed: a fold taken earlier would be missing rows
+    /// the host is showing.
+    pub(crate) ledger: crate::note_ledger::NoteLedger,
     /// Highest [`EventOrder`](agentium_core::session_loader::EventOrder) already
     /// reflected in `chat` for a remote session — the fast-path tail marker.
     /// When a poll batch's new notes all sort after this, they are appended in
@@ -363,13 +357,6 @@ pub struct AgenticSessionData {
     /// (see `rebuild_chat_from_fold`); `None` conservatively forces a rebuild, so a
     /// missed seeding can never misorder — it only costs one extra rebuild.
     pub tail_order: Option<agentium_core::session_loader::EventOrder>,
-    /// Kind-1988 notes this host published for the session that nostrdb has
-    /// not handed back through the conversation subscription yet. Filled by
-    /// [`record_self_note`](Self::record_self_note) on every publish and
-    /// drained as each note arrives (`process_conversation_notes`). The chat
-    /// is only rebuilt from the fold while this is empty: a fold taken earlier
-    /// would be missing rows the host is showing.
-    pub unindexed_self_notes: crate::reconcile::UnindexedNotes,
     /// The chat gained a row since it last matched the fold, so the next
     /// reconcile at rest has work to do (see `reconcile.rs`). Set by a note
     /// the host published ([`record_self_note`](Self::record_self_note)) and
@@ -458,10 +445,8 @@ impl AgenticSessionData {
             live_threading: ThreadingState::new(),
             remote_status: None,
             remote_status_ts: 0,
-            seen_note_ids: HashSet::new(),
-            seen_through: None,
+            ledger: Default::default(),
             tail_order: None,
-            unindexed_self_notes: Default::default(),
             fold_dirty: false,
             runtime_allows: BTreeSet::new(),
             event_id: uuid::Uuid::new_v4().to_string(),
@@ -515,9 +500,7 @@ impl AgenticSessionData {
     /// Called through [`publish::record_published`](crate::publish::record_published),
     /// the one funnel for a published note, rather than directly.
     pub fn record_self_note(&mut self, note_id: [u8; 32]) {
-        self.seen_note_ids.insert(note_id);
-        self.unindexed_self_notes
-            .insert(note_id, std::time::Instant::now());
+        self.ledger.record_own(note_id, std::time::Instant::now());
         self.fold_dirty = true;
     }
 

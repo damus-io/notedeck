@@ -976,8 +976,8 @@ mod tests {
         ));
 
         let agentic = session.agentic.as_ref().unwrap();
-        assert!(agentic.unindexed_self_notes.is_empty());
-        assert!(!agentic.seen_note_ids.contains(&[7; 32]));
+        assert!(agentic.ledger.all_indexed());
+        assert!(!agentic.ledger.is_own(&[7; 32]));
         assert!(!agentic.fold_dirty, "the chat gained no published row");
     }
 
@@ -1004,8 +1004,8 @@ mod tests {
             std::slice::from_ref(&event),
             Ingest::AlreadyIngested
         ));
-        assert!(agentic.seen_note_ids.contains(&[9; 32]));
-        assert!(!agentic.unindexed_self_notes.is_empty());
+        assert!(agentic.ledger.is_own(&[9; 32]));
+        assert!(!agentic.ledger.all_indexed());
         assert!(agentic.fold_dirty);
     }
 }

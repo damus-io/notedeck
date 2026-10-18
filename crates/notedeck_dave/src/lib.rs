@@ -17,6 +17,7 @@ mod inspector_sync;
 mod jump;
 pub(crate) mod mesh;
 mod nav;
+mod note_ledger;
 mod notifications;
 mod path_normalize;
 pub(crate) mod path_utils;

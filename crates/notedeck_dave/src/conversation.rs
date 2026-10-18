@@ -4,6 +4,7 @@
 //! they carry.
 
 use crate::backend::BackendType;
+use crate::note_ledger::{Delivered, Delivery};
 use crate::publish::{ingest_live_event, publish_auto_accept_response};
 use crate::session::{SessionManager, SessionMessage};
 use crate::stream_events::HostCtx;
@@ -235,7 +236,7 @@ impl Dave {
             // Collect the wrapping envelope for the caller's outbound fan-out
             // (see the doc on this fn), but only for a note we did not publish
             // ourselves. Notes dave builds ride `pending_relay_events` and are
-            // marked in `seen_note_ids` at build time, so skipping them avoids a
+            // recorded as own in the ledger at build time, so skipping them avoids a
             // second, redundant envelope on the relay; a note absent from the set
             // reached ndb some other way — chiefly an agentium-CLI injection into
             // the local embedded relay, which nothing else propagates. A note
@@ -244,7 +245,7 @@ impl Dave {
             let self_published = session_id
                 .and_then(|sid| self.session_manager.get(sid))
                 .and_then(|s| s.agentic.as_ref())
-                .is_some_and(|a| a.seen_note_ids.contains(note.id()));
+                .is_some_and(|a| a.ledger.is_own(note.id()));
             if !self_published {
                 if let Some(gw_id) = note.rumor_giftwrap_id() {
                     if let Ok(gw_key) = ndb.get_notekey_by_id(&txn, gw_id) {
@@ -444,7 +445,7 @@ fn remote_user_message<'n>(
 
 /// Process a batch of kind-1988 notes for a single session.
 ///
-/// Deduplicates via `seen_note_ids` and runs the side effects each note implies
+/// Deduplicates via the session's [`NoteLedger`](crate::note_ledger::NoteLedger) and runs the side effects each note implies
 /// (permission auto-accept + response tracking, compaction lifecycle,
 /// proceed-after-compaction). Returns any remote user messages (for local
 /// sessions) and events to publish.
@@ -465,7 +466,7 @@ fn remote_user_message<'n>(
 /// loaded) the batch conservatively takes the slow path, so a missed seeding
 /// can only cost an extra rebuild, never misorder.
 ///
-/// Every note in the batch, seen or not, advances `seen_through`: the poll has
+/// Every note in the batch, seen or not, advances the ledger's `through`: the poll has
 /// now handed it over, so a rebuild may fold it (see
 /// [`rebuild_chat_from_fold`]).
 ///
@@ -511,16 +512,10 @@ pub(crate) fn process_conversation_notes<'a>(
         // published is one of those, but its arrival means nostrdb has indexed
         // it, which the reconcile at rest waits for. Either way the poll has
         // now handed it over, so a rebuild may fold it.
-        let note_id = *note.id();
-        let dominated = session
-            .agentic
-            .as_mut()
-            .map(|a| {
-                a.unindexed_self_notes.remove(&note_id);
-                a.seen_through = a.seen_through.max(note.key());
-                !a.seen_note_ids.insert(note_id)
-            })
-            .unwrap_or(true);
+        let dominated = match (session.agentic.as_mut(), Delivered::of(note)) {
+            (Some(a), Some(delivered)) => a.ledger.deliver(delivered) != Delivery::New,
+            _ => true,
+        };
         if dominated {
             continue;
         }
@@ -765,14 +760,14 @@ pub(crate) fn process_conversation_notes<'a>(
 /// then installs it with [`apply_loaded_chat`].
 ///
 /// Only notes the poll has handed the session are folded (see
-/// `AgenticSessionData::seen_through`). `txn` is opened after the poll, so it
+/// [`NoteLedger::through`](crate::note_ledger::NoteLedger::through)). `txn` is opened after the poll, so it
 /// can hold a note stored since; folding that one would mark it seen before
 /// the poll processed it, and a remote user message would show without ever
 /// being dispatched. It comes through the next poll instead.
 ///
 /// This device's own notes are the exception, both ways:
 /// - one stored past the cap is folded anyway. It is already in
-///   `seen_note_ids` (see `record_self_note`), so it has no side effect left
+///   the ledger's seen set (see `record_self_note`), so it has no side effect left
 ///   for the poll to run, and the poll would skip it. Capping it out would drop
 ///   a message the user just sent to a remote session from the chat until some
 ///   later rebuild;
@@ -792,14 +787,14 @@ pub(crate) fn rebuild_chat_from_fold(
         return;
     };
     let claude_sid = agentic.event_session_id();
-    let loaded = match agentic.seen_through {
+    let loaded = match agentic.ledger.through() {
         Some(through) => session_loader::load_session_messages_seen_through(
             ndb,
             txn,
             author,
             claude_sid,
             through,
-            &agentic.seen_note_ids,
+            agentic.ledger.seen_set(),
         ),
         // Unreachable in production: a rebuild only follows a poll batch, a
         // reconcile only follows the poll handing back the host's own notes,
@@ -807,11 +802,7 @@ pub(crate) fn rebuild_chat_from_fold(
         // Only a test rebuilds a session the poll never fed.
         None => session_loader::load_session_messages_for_author(ndb, txn, author, claude_sid),
     };
-    for note_id in agentic.unindexed_self_notes.ids() {
-        if !loaded.note_ids.contains(note_id) {
-            agentic.seen_note_ids.remove(note_id);
-        }
-    }
+    agentic.ledger.unshow_unfolded(&loaded.note_ids);
     apply_loaded_chat(session, loaded);
 }
 
@@ -820,8 +811,8 @@ pub(crate) fn rebuild_chat_from_fold(
 ///
 /// Shared by the rebuild ([`rebuild_chat_from_fold`]) and restore, so a
 /// restored session starts with the same bookkeeping as a rebuilt one:
-/// - the dedup set and permission state gain what the fold loaded, and
-///   `seen_through` covers it. Every caller folds only notes the poll has
+/// - the ledger claims what the fold loaded ([`NoteLedger::claim`](crate::note_ledger::NoteLedger::claim)),
+///   and the permission state gains it. Every caller folds only notes the poll has
 ///   already passed (see
 ///   [`ConversationFeed`](crate::conversation_feed::ConversationFeed)), so
 ///   nothing marked seen here is still to come through the poll and be
@@ -844,14 +835,15 @@ pub(crate) fn apply_loaded_chat(
     session: &mut session::ChatSession,
     loaded: session_loader::LoadedSession,
 ) {
+    if let Some(agentic) = &mut session.agentic {
+        agentic.ledger.claim(&loaded);
+    }
     session.replace_chat(loaded.messages);
     session.set_turns(loaded.turns);
 
     let Some(agentic) = &mut session.agentic else {
         return;
     };
-    agentic.seen_note_ids.extend(loaded.note_ids);
-    agentic.seen_through = agentic.seen_through.max(loaded.max_key);
     agentic.tail_order = loaded.max_order;
     agentic.permissions.merge_loaded(loaded.permissions);
 
@@ -2813,7 +2805,7 @@ mod tests {
         );
         let agentic = session.agentic.as_ref().unwrap();
         assert!(
-            agentic.unindexed_self_notes.is_empty(),
+            agentic.ledger.all_indexed(),
             "the observer must not answer a request the host already answered"
         );
         let decision = agentic.permissions.responded[&answered];
@@ -2833,7 +2825,7 @@ mod tests {
         );
         let agentic = session.agentic.as_ref().unwrap();
         assert_eq!(
-            agentic.unindexed_self_notes.ids().count(),
+            agentic.ledger.unindexed_count(),
             1,
             "an unanswered allowlisted request is auto-accepted and published"
         );

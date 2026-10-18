@@ -3056,7 +3056,7 @@ mod tests {
             nostrdb::Ndb::new(dir.path().to_str().unwrap(), &crate::tests::test_config()).unwrap();
         let sk = Some(crate::tests::test_secret_key());
         let cwd = std::env::temp_dir();
-        let published = |s: &ChatSession| s.agentic.as_ref().unwrap().seen_note_ids.len();
+        let published = |s: &ChatSession| s.agentic.as_ref().unwrap().ledger.seen_set().len();
 
         let mut claude = ChatSession::new(1, cwd.clone(), AiMode::Agentic, BackendType::Claude);
         claude.input = "/model sonnet".to_string();
