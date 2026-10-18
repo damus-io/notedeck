@@ -195,6 +195,12 @@ export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
 # ignored test in the listed binaries, and a test that skips itself at runtime
 # is still reported as a pass — so anything ignored for a reason other than
 # lavapipe has to be excluded here or CI claims to have run it.
+#
+# Each suite's `cargo test -p` resolves the crates it shares with the others
+# (chrome, columns, notedeck) with its own features, so each gets its own build
+# of them. They coexist, and a second run compiles nothing, only because none
+# of them is a cdylib: cargo keeps a single build of a path crate's cdylib, and
+# the suites took turns evicting it (crates/bin_testing/tests/cdylibs.rs).
 suites=(
     "notedeck_chrome|--features auto-update,snapshot-testing --test ui_tests --test command_bar --test shot|"
     "notedeck_ui|--test widget_tests --test chart_tests|"
@@ -223,7 +229,7 @@ suites=(
     # Keep until the fault is understood; it has never reproduced locally,
     # including 100+ runs on aarch64 lavapipe both pinned to two cores and
     # unpinned across 18.
-    "notedeck_headway|--features snapshot-testing --test snapshot_tests|--test-threads=1 --nocapture"
+    "notedeck_headway|--test snapshot_tests|--test-threads=1 --nocapture"
     "notedeck_notebook|--test snapshot_tests|"
     "notedeck_horizon|--test snapshot_tests|"
     "notedeck_cashflow|--test snapshot_tests --test hud_gallery --test categories --test trends --test overview --test journal --test projects --test transactions --test settings --test goals --test adventure|"

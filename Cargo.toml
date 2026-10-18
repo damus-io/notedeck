@@ -9,6 +9,7 @@ members = [
     "crates/cashflow_cli",
     "crates/cli_term",
     "crates/notedeck",
+    "crates/notedeck_android",
     "crates/notedeck_chrome",
     "crates/notedeck_columns",
     "crates/notedeck_cashflow",

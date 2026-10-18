@@ -43,4 +43,3 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time
 
 [features]
 default = []
-snapshot-testing = ["notedeck/snapshot-testing"]

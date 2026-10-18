@@ -2,6 +2,10 @@
 .PHONY: fake
 
 ANDROID_DIR := crates/notedeck_chrome/android
+# cargo-ndk copies every workspace cdylib here and never deletes one, so an
+# old build's libs (libnotedeck_chrome.so, libnotedeck_columns.so) would ride
+# along in the apk; each jni build starts it empty.
+JNI_LIBS := $(ANDROID_DIR)/app/src/main/jniLibs
 MACOS_APP := target/release/bundle/osx/Notedeck.app
 MACOS_FEATURES ?= dave,messages
 
@@ -12,7 +16,8 @@ tags: fake
 	rusty-tags vi
 
 jni: fake
-	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ build --features dave,messages,headway,notebook,auto-update --profile release --workspace --exclude notedeck_release
+	rm -rf $(JNI_LIBS)
+	cargo ndk --target arm64-v8a -o $(JNI_LIBS)/ build --features dave,messages,headway,notebook,auto-update --profile release --workspace --exclude notedeck_release
 
 jni-check: fake
 	cargo ndk --target arm64-v8a check --workspace --exclude notedeck_release
@@ -45,7 +50,8 @@ release-aab: jni
 	@echo "Signed AAB: $(ANDROID_DIR)/app/build/outputs/bundle/release/app-release.aab"
 
 android-tracy: fake
-	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ build --profile release --features tracy
+	rm -rf $(JNI_LIBS)
+	cargo ndk --target arm64-v8a -o $(JNI_LIBS)/ build --profile release --features tracy
 	cd $(ANDROID_DIR) && ./gradlew installDebug
 	adb shell am start -n com.damus.notedeck/.MainActivity
 	adb forward tcp:8086 tcp:8086

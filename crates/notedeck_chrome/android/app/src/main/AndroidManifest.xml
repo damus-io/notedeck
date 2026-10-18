@@ -20,7 +20,7 @@
 
             <meta-data
                 android:name="android.app.lib_name"
-                android:value="notedeck_chrome" />
+                android:value="notedeck_android" />
         </activity>
 
         <provider

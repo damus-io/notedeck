@@ -8,6 +8,8 @@ description = "Find this worktree's own build of a CLI binary for e2e tests when
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# tests/cdylibs.rs reads `cargo metadata`.
+serde_json = { workspace = true }
 # tests/signatures.rs parses the workspace's sources; span-locations gives
 # each offender its line.
 proc-macro2 = { version = "1", features = ["span-locations"] }

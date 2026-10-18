@@ -1,0 +1,20 @@
+[package]
+name = "notedeck_android"
+version = { workspace = true }
+authors = ["William Casarin <jb55@jb55.com>"]
+edition = "2021"
+license = "GPLv3"
+description = "The shared library the Notedeck Android app loads"
+publish = false
+
+# The workspace's one cdylib, so that no crate other tests build is one.
+# Cargo names a path crate's cdylib without a hash, so it keeps a single build
+# of that crate per profile: when notedeck_chrome and notedeck_columns were
+# `["lib", "cdylib"]`, every `cargo test -p` that resolved them with other
+# features (each snapshot suite's dev-dependencies do) rebuilt them over the
+# previous one. Nothing depends on this crate, so its one slot costs nothing.
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+notedeck_chrome = { workspace = true }

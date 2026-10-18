@@ -68,9 +68,6 @@ notedeck = { workspace = true, features = ["snapshot-testing", "auto-update"] }
 notedeck_testing = { workspace = true }
 image = { workspace = true }
 
-[lib]
-crate-type = ["lib", "cdylib"]
-
 [[bin]]
 name = "notedeck"
 path = "src/notedeck.rs"
