@@ -15,6 +15,7 @@
 //! [`Config`].
 
 mod amex;
+mod appstore;
 mod batch;
 mod btc;
 mod csv_rows;
@@ -31,6 +32,7 @@ use ledgerdb::{
 };
 
 pub use amex::AmexImporter;
+pub use appstore::{AppStoreImporter, ReportSource};
 pub use batch::{
     Batch, BatchError, LeftOut, RawAmount, RawMeta, RawPosting, RawPrice, RawTxn, Skipped,
 };
@@ -42,7 +44,7 @@ pub use rbc::RbcImporter;
 use crate::{CashflowDir, Config};
 
 /// Every importer's name, as `cashflow import <name>` takes it.
-pub const NAMES: &[&str] = &["amex", "btc", "ledger", "payroll", "rbc"];
+pub const NAMES: &[&str] = &["amex", "appstore", "btc", "ledger", "payroll", "rbc"];
 
 /// Reads one kind of source into a batch.
 pub trait Importer {
@@ -75,6 +77,10 @@ pub struct ImportInput {
 pub fn importer(name: &str, config: &Config, dir: &CashflowDir) -> Option<Box<dyn Importer>> {
     match name {
         "amex" => Some(Box::new(AmexImporter::new(config.amex.as_ref()))),
+        "appstore" => Some(Box::new(AppStoreImporter::new(
+            config.appstore.as_ref(),
+            dir,
+        ))),
         "btc" => Some(Box::new(BtcImporter::new(config.btc.as_ref(), dir))),
         "ledger" => Some(Box::new(LedgerImporter)),
         "payroll" => Some(Box::new(PayrollImporter::new(config.payroll.as_ref()))),

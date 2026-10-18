@@ -8,10 +8,12 @@ description = "cashflow's non-UI core: the $CASHFLOW_DIR layout, config, secrets
 base64 = { workspace = true }
 dirs = { workspace = true }
 ehttp = { workspace = true }
+flate2 = { workspace = true }
 ledgerdb = { workspace = true }
 nostrdb = { workspace = true }
 nostrdb_net = { workspace = true }
 profiling = { workspace = true }
+ring = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
 sha2 = { workspace = true }

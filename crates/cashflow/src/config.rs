@@ -335,6 +335,9 @@ pub struct Config {
     /// `[payroll]`: the payroll importer's settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payroll: Option<PayrollConfig>,
+    /// `[appstore]`: the App Store Connect importer's settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appstore: Option<AppStoreConfig>,
 }
 
 /// `[amex]` in `config.toml`. Every key is optional.
@@ -406,6 +409,29 @@ pub struct BtcConfig {
     /// so a move between one of them and another wallet is a transfer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_wallets: Vec<String>,
+}
+
+/// `[appstore]` in `config.toml`: whose App Store Connect reports these
+/// are and how to sign in for them.
+///
+/// The API key itself is a secret, `appstore.p8` (see
+/// [`CashflowDir::secret`]); `key_id` and `issuer` are its ids, which are not.
+/// Importing downloaded report files needs only `vendor`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppStoreConfig {
+    /// The vendor number, from *Payments and Financial Reports*. Every
+    /// record id carries it.
+    pub vendor: Option<String>,
+    /// The API key's id, shown beside it under *Users and Access*.
+    pub key_id: Option<String>,
+    /// The issuer id, shown above the API keys.
+    pub issuer: Option<String>,
+    /// The report region the API is asked for [default: `ZZ`, every region
+    /// in one report].
+    pub region: Option<String>,
+    /// Where proceeds post [default: `assets:apple`].
+    pub account: Option<String>,
 }
 
 impl Config {

@@ -488,3 +488,59 @@ fn legacy_import_reports_skips_and_rm_retires_it() {
     let err = expect_failure(cf.run(&["journal", "rm", &hash]));
     assert!(err.contains("no segment"), "{err}");
 }
+
+/// `import appstore` over a downloaded financial report: its rows sum into
+/// one transaction per product and currency, a rule on `raw-app-id` files
+/// the proceeds under an app, and the same report again writes nothing.
+#[test]
+fn appstore_import_reads_a_report_and_a_rule_names_the_app() {
+    let cf = cashflow();
+    std::fs::write(
+        cf.dir().join("config.toml"),
+        "[appstore]\nvendor = \"80000001\"\n",
+    )
+    .unwrap();
+    let header = "Start Date\tEnd Date\tUPC\tISRC/ISBN\tVendor Identifier\tQuantity\t\
+                  Partner Share\tExtended Partner Share\tPartner Share Currency\t\
+                  Sales or Return\tApple Identifier\tArtist/Show/Developer/Author\tTitle\t\
+                  Label/Studio/Network/Developer/Publisher\tGrid\tProduct Type Identifier\t\
+                  ISAN/Other Identifier\tCountry Of Sale\tPre-order Flag\tPromo Code\t\
+                  Customer Price\tCustomer Currency\n";
+    let row = |qty: &str, ext: &str, country: &str| {
+        format!(
+            "03/29/2026\t05/02/2026\t\tcom.example.pro\tcom.example.pro\t{qty}\t2.10\t{ext}\t\
+             USD\tS\t1000000001\tExample Dev\tExample Pro\t\t\tIAY\t\t{country}\t\t\t2.99\tUSD\n"
+        )
+    };
+    let report = write(
+        &cf,
+        "80000001_0426_ZZ.txt",
+        &format!(
+            "{header}{}{}Total_Rows\t2\nTotal_Amount\t10.50\nTotal_Units\t5\n",
+            row("3", "6.30", "US"),
+            row("2", "4.20", "CA")
+        ),
+    );
+
+    let first: Value =
+        serde_json::from_str(&cf.ok(&["import", "appstore", s(&report), "--json"])).unwrap();
+    assert_eq!(first["txns"], 1);
+    assert_eq!(first["layer"], "appstore");
+    let rules = write(
+        &cf,
+        "rules.toml",
+        "[[rule]]\naccount = \"income:example:appstore\"\nmeta = { raw-app-id = \"1000000001\" }\n",
+    );
+    let derived = cf.ok(&["export", "--rules", s(&rules)]);
+    assert!(
+        derived.contains("\t; id: appstore:80000001:2026-05-02:1000000001:USD:IAY\n"),
+        "{derived}"
+    );
+    assert!(
+        derived.contains("\tassets:apple\t10.50 USD\n\tincome:example:appstore\t-10.50 USD\n"),
+        "{derived}"
+    );
+
+    cf.ok(&["import", "appstore", s(&report)]);
+    assert_eq!(cf.ok(&["journal", "ls"]).lines().count(), 1);
+}

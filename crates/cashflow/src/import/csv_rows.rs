@@ -14,6 +14,8 @@
 
 use std::path::{Path, PathBuf};
 
+use ledgerdb::{Date, Ymd};
+
 use super::ImportError;
 
 /// Why an export could not be read, at `row` (from 1, the header being 1).
@@ -103,6 +105,15 @@ pub(super) fn number<R: Ord>(mut rows: Vec<R>, stem: impl Fn(&R) -> String) -> V
 /// The CSV files `paths` name: a file as it is, a directory as its `*.csv`
 /// files in name order.
 pub(super) fn csv_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, ImportError> {
+    files_with(paths, &["csv"])
+}
+
+/// The files `paths` name: a file as it is, a directory as its files
+/// ending in one of `extensions` (any case), in name order.
+pub(super) fn files_with(
+    paths: &[PathBuf],
+    extensions: &[&str],
+) -> Result<Vec<PathBuf>, ImportError> {
     let mut files = Vec::new();
     for path in paths {
         if !path.is_dir() {
@@ -116,7 +127,7 @@ pub(super) fn csv_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, ImportError> 
         let mut found = Vec::new();
         for entry in std::fs::read_dir(path).map_err(read_err)? {
             let file = entry.map_err(read_err)?.path();
-            if is_csv(&file) {
+            if has_extension(&file, extensions) {
                 found.push(file);
             }
         }
@@ -126,12 +137,12 @@ pub(super) fn csv_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, ImportError> 
     Ok(files)
 }
 
-/// Whether `path` is a file ending in `.csv`, in any case.
-fn is_csv(path: &Path) -> bool {
+/// Whether `path` is a file ending in one of `extensions`, in any case.
+fn has_extension(path: &Path, extensions: &[&str]) -> bool {
     path.is_file()
         && path
             .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("csv"))
+            .is_some_and(|ext| extensions.iter().any(|want| ext.eq_ignore_ascii_case(want)))
 }
 
 /// Read `path` as text.
@@ -140,6 +151,27 @@ pub(super) fn read(path: &Path) -> Result<String, ImportError> {
         path: path.to_owned(),
         source,
     })
+}
+
+/// Read `path` as bytes, for a file that may be compressed.
+pub(super) fn read_bytes(path: &Path) -> Result<Vec<u8>, ImportError> {
+    std::fs::read(path).map_err(|source| ImportError::Read {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+/// A US-style `M/D/YYYY` date, as RBC and App Store Connect write them;
+/// `4/3/2026` and `04/03/2026` are both April 3.
+pub(super) fn parse_mdy(text: &str) -> Option<Date> {
+    let mut parts = text.split('/');
+    let month: u8 = parts.next()?.trim().parse().ok()?;
+    let day: u8 = parts.next()?.trim().parse().ok()?;
+    let year: u16 = parts.next()?.trim().parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Date::from_ymd(Ymd { year, month, day }).ok()
 }
 
 /// `text` trimmed, with each run of whitespace one space.

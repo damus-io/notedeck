@@ -37,10 +37,10 @@
 
 use std::collections::BTreeMap;
 
-use ledgerdb::{Date, Ymd};
+use ledgerdb::Date;
 
 use super::csv_rows::{
-    Header, Identified, RowError, csv_files, id_key, number, parse_cents, read, squeeze,
+    Header, Identified, RowError, csv_files, id_key, number, parse_cents, parse_mdy, read, squeeze,
 };
 use super::{Batch, ImportError, ImportInput, Importer, RawAmount, RawMeta, RawPosting, RawTxn};
 use crate::config::RbcConfig;
@@ -189,7 +189,7 @@ impl RbcImporter {
                      under [rbc.accounts] in config.toml"
                 )));
             }
-            let date = parse_date(field(columns.date))
+            let date = parse_mdy(field(columns.date))
                 .ok_or_else(|| error(format!("bad date {:?}", field(columns.date))))?;
             let Amount { cents, commodity } =
                 amount(field(columns.cad), field(columns.usd)).map_err(error)?;
@@ -337,18 +337,6 @@ fn last4(number: &str) -> Option<String> {
     Some(digits[start..].iter().collect())
 }
 
-/// `"4/3/2026"` (month, day, year) to 2026-04-03.
-fn parse_date(text: &str) -> Option<Date> {
-    let mut parts = text.split('/');
-    let month: u8 = parts.next()?.trim().parse().ok()?;
-    let day: u8 = parts.next()?.trim().parse().ok()?;
-    let year: u16 = parts.next()?.trim().parse().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Date::from_ymd(Ymd { year, month, day }).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,11 +379,11 @@ mod tests {
 
     #[test]
     fn dates_and_account_numbers() {
-        assert_eq!(parse_date("4/3/2026"), Some(date("2026-04-03")));
-        assert_eq!(parse_date("12/31/2025"), Some(date("2025-12-31")));
-        assert_eq!(parse_date("13/1/2026"), None);
-        assert_eq!(parse_date("2026-04-03"), None);
-        assert_eq!(parse_date("4/3/2026/1"), None);
+        assert_eq!(parse_mdy("4/3/2026"), Some(date("2026-04-03")));
+        assert_eq!(parse_mdy("12/31/2025"), Some(date("2025-12-31")));
+        assert_eq!(parse_mdy("13/1/2026"), None);
+        assert_eq!(parse_mdy("2026-04-03"), None);
+        assert_eq!(parse_mdy("4/3/2026/1"), None);
         assert_eq!(last4("00000-0001234").as_deref(), Some("1234"));
         assert_eq!(last4("4500 **** **** 9876").as_deref(), Some("9876"));
         assert_eq!(last4("12-3"), None);

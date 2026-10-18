@@ -188,6 +188,23 @@ Importers:
                   keep each charge once. [amex] in config.toml sets
                   `card`, `currency` (CAD) and `title_case` (payees in
                   Title Case).
+  appstore [<file>|<month>...]
+                  App Store Connect financial reports: the proceeds Apple
+                  pays out. Given report files (plain or .gz; a directory
+                  reads its *.txt, *.tsv and *.gz), it reads those;
+                  otherwise it fetches each named fiscal month (2026-03, or
+                  2025-10..2026-03), or the 12 before this one, from the
+                  App Store Connect API with regionCode ZZ. A report's rows
+                  for one product, currency and product type are summed
+                  into one transaction on the period's end date, posting
+                  its Extended Partner Share to assets:apple and
+                  income:unknown in the report's currency, with raw-app-id,
+                  raw-sku, raw-title, raw-product-type, raw-country,
+                  raw-units and raw-period. Its id is
+                  appstore:<vendor>:<end>:<apple-id>:<currency>:<type>.
+                  [appstore] in config.toml sets `vendor` (required),
+                  `key_id` and `issuer` (the API key's ids; the key is the
+                  appstore.p8 secret), `region` (ZZ) and `account`.
   btc [<file>...] on-chain bitcoin wallets, from bitcoind's JSON-RPC: every
                   wallet `listwallets` names (or [btc] wallets), each
                   read whole. Amounts are exact msat in assets:btc:<wallet>,
@@ -250,6 +267,8 @@ importer's), which `export` and `report` can include or leave out.",
         ],
         examples: &[
             "cashflow import amex ~/Downloads/activity.csv",
+            "cashflow import appstore 2025-10..2026-03",
+            "cashflow import appstore ~/Downloads/80000001_0326_ZZ.txt.gz",
             "cashflow import btc",
             "cashflow import ledger books.ledger",
             "cashflow import payroll payroll.txt",
