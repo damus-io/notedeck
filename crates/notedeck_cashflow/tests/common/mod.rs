@@ -4,14 +4,24 @@
 //!
 //! [`synthetic_books`] is the journal every view's tests draw: made-up
 //! accounts, payees and amounts, never real data. Later cards extend this
-//! harness (an edits vault in the host's nostrdb) rather than each suite
-//! growing its own.
+//! harness rather than each suite growing its own.
+//!
+//! An app handed its books with `set_books` never touches disk. One that
+//! loads its own ([`JournalFixture`], [`journal_harness`]) reads a journal
+//! written to a temp `$CASHFLOW_DIR`, and the vault of [`account`], which
+//! the host is logged in as.
 
 #![allow(dead_code)]
 
-use cashflow::Books;
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+use cashflow::manifest::{self, Manifest};
+use cashflow::{Books, CashflowDir, Vault, kinds};
 use egui_kittest::Harness;
-use ledgerdb::{Date, Edits, Journal, JournalStore, LayerFilter, SegmentHeader};
+use ledgerdb::{Date, Edits, Journal, JournalStore, LayerFilter, SegmentHash, SegmentHeader};
+use nostrdb::Filter;
+use nostrdb_net::FullKeypair;
 use notedeck::{App, Notedeck};
 use notedeck_cashflow::CashflowApp;
 
@@ -196,6 +206,18 @@ pub fn synthetic_journal() -> String {
     text
 }
 
+/// Write `text` (ledger-cli) to `store` as one segment of `layer`.
+fn write_segment(store: &JournalStore, layer: &str, text: &str) -> SegmentHash {
+    let header = SegmentHeader {
+        source: layer.to_owned(),
+        imported: 1,
+        layer: layer.to_owned(),
+    };
+    store
+        .write_segment(&header, &Journal::parse(text).journal)
+        .expect("write the synthetic segment")
+}
+
 /// `text` (ledger-cli) loaded as books in CAD, through the same pipeline the
 /// app and the CLI run: written to a journal store as one segment, loaded
 /// and derived with no edits.
@@ -223,14 +245,7 @@ pub fn books_from_segments(segments: &[Segment], edits: &Edits) -> Books {
     let dir = tempfile::TempDir::new().expect("tmpdir");
     let store = JournalStore::new(dir.path());
     for segment in segments {
-        let header = SegmentHeader {
-            source: segment.layer.to_owned(),
-            imported: 1,
-            layer: segment.layer.to_owned(),
-        };
-        store
-            .write_segment(&header, &Journal::parse(&segment.text).journal)
-            .expect("write the synthetic segment");
+        write_segment(&store, segment.layer, &segment.text);
     }
     Books::load(&store, LayerFilter::All, &Default::default(), edits, "CAD")
         .expect("load the books")
@@ -261,6 +276,133 @@ pub const DESKTOP: egui::Vec2 = egui::Vec2::new(1200.0, 800.0);
 /// collapses to a tab strip.
 pub const MOBILE: egui::Vec2 = egui::Vec2::new(400.0, 800.0);
 
+/// The secret of the account a journal harness's host is logged in as,
+/// whose vault the app reads.
+const ACCOUNT_SECRET: [u8; 32] = [7u8; 32];
+
+/// The account a journal harness's host is logged in as.
+pub fn account() -> FullKeypair {
+    FullKeypair::from_secret_bytes(&ACCOUNT_SECRET).expect("a valid secret")
+}
+
+/// A `$CASHFLOW_DIR` in a temp dir, for an app that loads its own books.
+pub struct JournalFixture {
+    /// Deleted with the fixture.
+    tmp: tempfile::TempDir,
+}
+
+impl JournalFixture {
+    /// An empty data dir: no journal, no `config.toml`.
+    pub fn empty() -> Self {
+        JournalFixture {
+            tmp: tempfile::TempDir::new().expect("tmpdir"),
+        }
+    }
+
+    /// A data dir whose journal holds [`synthetic_journal`] as one segment.
+    pub fn synthetic() -> Self {
+        let fixture = Self::empty();
+        fixture.write(&synthetic_journal());
+        fixture
+    }
+
+    /// The data dir.
+    pub fn dir(&self) -> CashflowDir {
+        CashflowDir::new(self.tmp.path())
+    }
+
+    /// Add `text` (ledger-cli) to the journal as one segment, as an import
+    /// or a sync from another machine would.
+    pub fn write(&self, text: &str) -> SegmentHash {
+        write_segment(&cashflow::journal::store(&self.dir()), "synthetic", text)
+    }
+
+    /// Give `config.toml` an rsync transport, so the app offers a sync.
+    /// Nothing is run unless a test clicks it.
+    pub fn with_transport(self) -> Self {
+        std::fs::write(
+            self.dir().config_file(),
+            "[[sync.transport]]\nkind = \"rsync\"\nremote = \"bigbox:cashflow/journal\"\n",
+        )
+        .expect("write config.toml");
+        self
+    }
+
+    /// A fresh app on [`TODAY`] loading this data dir.
+    pub fn app(&self) -> CashflowApp {
+        journal_app(self.tmp.path())
+    }
+}
+
+/// A fresh app on [`TODAY`] loading the data dir at `dir`.
+pub fn journal_app(dir: &Path) -> CashflowApp {
+    let mut app = CashflowApp::with_journal(CashflowDir::new(dir));
+    app.set_today(today());
+    app
+}
+
+/// A data dir no machine has, so a pane that prints the journal's path
+/// draws the same one in every snapshot. Loading it finds no segments.
+pub const ABSENT_DIR: &str = "/nonexistent/cashflow";
+
+/// Publish a manifest in [`account`]'s vault for a segment no local journal
+/// has, as if `host` had imported it, and wait until nostrdb has it.
+pub fn publish_missing_segment(state: &mut CashflowTestState, host: &str) -> SegmentHash {
+    let app_ctx = state.notedeck.app_context();
+    let ndb = &*app_ctx.ndb;
+    let vault = Vault::new(&ACCOUNT_SECRET).expect("a vault");
+    vault.register(ndb);
+    let hash = SegmentHash::of(b"a segment only bigbox has");
+    let body = Manifest {
+        source: "bank",
+        layer: "banks",
+        imported: 1_700_000_000,
+        first: None,
+        last: None,
+        txns: 12,
+        prices: 0,
+        bytes: 900,
+        host,
+        retired: false,
+    };
+    let landed = ndb
+        .subscribe(&[Filter::new().kinds([kinds::SEGMENT as u64]).build()])
+        .expect("subscribe");
+    manifest::write(&vault, ndb, hash, &body, 0).expect("write the manifest");
+    let wait = ndb.wait_for_all_notes_within(landed, 1, INGEST_TIMEOUT);
+    block_on(wait).expect("the manifest landed");
+    hash
+}
+
+/// How long a journal test waits for nostrdb or the job pool.
+const INGEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Run `future` to completion on a throwaway runtime.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("runtime")
+        .block_on(future)
+}
+
+/// Step `harness` until `done` holds of its state, or fail after
+/// [`INGEST_TIMEOUT`]. For an app whose results arrive from the job pool,
+/// which `Harness::run`'s few steps don't wait for.
+pub fn step_until(
+    harness: &mut Harness<'_, CashflowTestState>,
+    what: &str,
+    done: impl Fn(&CashflowTestState) -> bool,
+) {
+    let deadline = Instant::now() + INGEST_TIMEOUT;
+    while !done(harness.state()) {
+        assert!(Instant::now() < deadline, "timed out waiting until {what}");
+        harness.step();
+    }
+    // One more frame, so what arrived is drawn.
+    harness.step();
+}
+
 /// What a Cashflow harness holds between frames.
 pub struct CashflowTestState {
     /// The host: nostrdb, accounts, job pool, all in [`Self::tmpdir`].
@@ -271,6 +413,10 @@ pub struct CashflowTestState {
     pub tmpdir: tempfile::TempDir,
     /// Whether the first frame has installed notedeck's fonts and styles.
     setup_done: bool,
+    /// Skip the app's `update`, so it renders but loads nothing: what a
+    /// journal harness is built with, since building runs frames until
+    /// the harness settles and the load would finish meanwhile.
+    hold_updates: bool,
 }
 
 /// One frame: install notedeck's look on the first, then `update` and
@@ -288,7 +434,9 @@ fn render_cashflow(ui: &mut egui::Ui, state: &mut CashflowTestState) {
         }
 
         let mut app_ctx = state.notedeck.app_context();
-        state.app.update(&mut app_ctx);
+        if !state.hold_updates {
+            state.app.update(&mut app_ctx);
+        }
         // Edge to edge, as the chrome hands an app its `Ui`.
         egui::CentralPanel::default()
             .frame(egui::Frame::new())
@@ -303,12 +451,25 @@ pub fn test_state(app: CashflowApp) -> CashflowTestState {
     let tmpdir = tempfile::TempDir::new().expect("tmpdir");
     let ctx = egui::Context::default();
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-    let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+    let mut notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+    {
+        let account = account();
+        let mut app_ctx = notedeck.app_context();
+        // The response asks to fetch the account's profile, which a host
+        // that dials no relay has no use for.
+        let _ = app_ctx
+            .accounts
+            .add_account(nostrdb_net::Keypair::from_secret(
+                account.secret_key.clone(),
+            ));
+        app_ctx.select_account(&account.pubkey);
+    }
     CashflowTestState {
         notedeck,
         app,
         tmpdir,
         setup_done: false,
+        hold_updates: false,
     }
 }
 
@@ -330,6 +491,43 @@ pub fn snapshot_harness(app: CashflowApp, size: egui::Vec2) -> Harness<'static, 
         .renderer(notedeck::software_renderer())
         .build_ui_state(render_cashflow, test_state(app));
     harness.run();
+    harness
+}
+
+/// A harness of `size` running `app`, which loads its own books, built
+/// with its `update` held back and then given one: the first load has
+/// started and nothing has come back. With `snapshot`, on the software
+/// renderer.
+pub fn journal_harness(
+    app: CashflowApp,
+    size: egui::Vec2,
+    snapshot: bool,
+) -> Harness<'static, CashflowTestState> {
+    let mut builder = Harness::builder().with_size(size);
+    if snapshot {
+        builder = builder.renderer(notedeck::software_renderer());
+    }
+    let state = CashflowTestState {
+        hold_updates: true,
+        ..test_state(app)
+    };
+    let mut harness = builder.build_ui_state(render_cashflow, state);
+    // One frame with `update`: it starts the load, whose result only the
+    // next `update` can take.
+    harness.state_mut().hold_updates = false;
+    harness.step();
+    assert!(harness.state().app.journal().is_some_and(|j| j.is_busy()));
+    harness
+}
+
+/// [`journal_harness`], stepped until the first load's books are in.
+pub fn loaded_harness(
+    app: CashflowApp,
+    size: egui::Vec2,
+    snapshot: bool,
+) -> Harness<'static, CashflowTestState> {
+    let mut harness = journal_harness(app, size, snapshot);
+    step_until(&mut harness, "the books load", |s| s.app.books().is_some());
     harness
 }
 

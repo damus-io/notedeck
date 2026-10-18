@@ -1564,6 +1564,7 @@ dependencies = [
  "dirs",
  "ehttp 0.5.0",
  "flate2",
+ "gethostname",
  "hex",
  "ledgerdb",
  "lnsocket",
@@ -1590,7 +1591,6 @@ dependencies = [
  "cashflow",
  "cli_term",
  "enostr",
- "gethostname",
  "ledgerdb",
  "nostrdb",
  "nostrdb_net",
@@ -5935,6 +5935,8 @@ dependencies = [
  "egui_kittest",
  "glam",
  "ledgerdb",
+ "nostrdb",
+ "nostrdb_net",
  "notedeck",
  "notedeck_testing",
  "notedeck_ui",
@@ -5942,6 +5944,7 @@ dependencies = [
  "profiling",
  "renderbud",
  "tempfile",
+ "tokio",
  "tracing",
 ]
 

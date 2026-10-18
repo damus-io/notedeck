@@ -2,6 +2,7 @@
 //! period picker, the frames panes are drawn in, and the Adventure view's game HUD.
 
 pub mod hud;
+pub mod journal_status;
 pub mod nav;
 pub mod palette;
 pub mod period_picker;

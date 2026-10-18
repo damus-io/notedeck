@@ -17,17 +17,9 @@ use crate::args::{ImportArgs, Write};
 use crate::books_cmd;
 use crate::vault_cmd::Session;
 
-/// Overrides the host name a manifest records, for a machine with more
-/// than one data dir.
-const HOST_ENV: &str = "CASHFLOW_HOST";
-
-/// The host this run publishes manifests as: `$CASHFLOW_HOST`, else the
-/// machine's hostname.
+/// The host this run publishes manifests as ([`cashflow::sync::host`]).
 pub fn host() -> String {
-    std::env::var(HOST_ENV)
-        .ok()
-        .filter(|h| !h.trim().is_empty())
-        .unwrap_or_else(|| gethostname::gethostname().to_string_lossy().into_owned())
+    cashflow::sync::host()
 }
 
 /// `cashflow journal ls`: one line per segment, oldest import first.

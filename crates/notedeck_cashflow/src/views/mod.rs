@@ -27,6 +27,9 @@ pub struct ViewCx<'a> {
     pub palette: &'a Palette,
     /// The books, once some are loaded.
     pub ledger: Option<LedgerCx<'a>>,
+    /// One line on what the books hold and how long they took to load
+    /// ([`crate::ui::journal_status::summary`]); empty with no books.
+    pub summary: &'a str,
     /// The date [`Self::period`] is resolved against.
     pub today: Date,
     /// The span of days every view reports on, shared so picking one in a

@@ -12,7 +12,6 @@ path = "src/main.rs"
 cashflow = { workspace = true }
 cli_term = { workspace = true }
 enostr = { workspace = true }
-gethostname = "1"
 ledgerdb = { workspace = true }
 nostrdb = { workspace = true }
 nostrdb_net = { workspace = true }

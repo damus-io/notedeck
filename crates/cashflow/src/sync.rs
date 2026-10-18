@@ -77,24 +77,7 @@ impl<'a> Plan<'a> {
         // `local` is in import order: sort its hashes to look them up.
         let mut have: Vec<SegmentHash> = local.iter().map(|s| s.hash).collect();
         have.sort_unstable();
-        plan.missing_locally = manifests
-            .iter()
-            .filter(|m| !m.body.retired)
-            .filter_map(|m| {
-                let hash = manifest::hash_of(m)?;
-                have.binary_search(&hash).is_err().then_some(Missing {
-                    hash,
-                    manifest: &m.body,
-                })
-            })
-            .collect();
-        plan.missing_locally.sort_by(|a, b| {
-            (a.manifest.host, a.manifest.imported, a.hash).cmp(&(
-                b.manifest.host,
-                b.manifest.imported,
-                b.hash,
-            ))
-        });
+        plan.missing_locally = missing_locally(manifests, &have);
         plan
     }
 
@@ -116,6 +99,51 @@ impl<'a> Plan<'a> {
             && self.unpublished.is_empty()
             && self.retired_here.is_empty()
     }
+}
+
+/// The live segments `manifests` name that `have` (sorted, as
+/// [`ledgerdb::JournalStore::list`] returns them) lacks, by host, then
+/// oldest import first, then hash: [`Plan::missing_locally`].
+///
+/// For a reader that knows the local hashes but not their summaries, such
+/// as the app, whose loader lists the store without reading every segment.
+pub fn missing_locally<'a>(
+    manifests: &'a [StoredManifest<'a>],
+    have: &[SegmentHash],
+) -> Vec<Missing<'a>> {
+    let mut missing: Vec<Missing<'a>> = manifests
+        .iter()
+        .filter(|m| !m.body.retired)
+        .filter_map(|m| {
+            let hash = manifest::hash_of(m)?;
+            have.binary_search(&hash).is_err().then_some(Missing {
+                hash,
+                manifest: &m.body,
+            })
+        })
+        .collect();
+    missing.sort_by(|a, b| {
+        (a.manifest.host, a.manifest.imported, a.hash).cmp(&(
+            b.manifest.host,
+            b.manifest.imported,
+            b.hash,
+        ))
+    });
+    missing
+}
+
+/// Overrides the host name a manifest records, for a machine with more
+/// than one data dir.
+pub const HOST_ENV: &str = "CASHFLOW_HOST";
+
+/// The name this machine publishes manifests and sync commits as:
+/// `$CASHFLOW_HOST`, else the machine's hostname. The CLI and the app use
+/// the same one, so both agree on which host a segment came from.
+pub fn host() -> String {
+    std::env::var(HOST_ENV)
+        .ok()
+        .filter(|h| !h.trim().is_empty())
+        .unwrap_or_else(|| gethostname::gethostname().to_string_lossy().into_owned())
 }
 
 #[cfg(test)]

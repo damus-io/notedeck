@@ -286,7 +286,7 @@ impl Chrome {
         chrome.add_app(NotedeckApp::Horizon(Box::new(Horizon::default())));
 
         #[cfg(feature = "cashflow")]
-        chrome.add_app(NotedeckApp::Cashflow(Box::new(CashflowApp::new())));
+        chrome.add_app(NotedeckApp::Cashflow(Box::new(CashflowApp::from_env())));
 
         #[cfg(feature = "notebook")]
         chrome.add_app(NotedeckApp::Notebook(Box::default()));

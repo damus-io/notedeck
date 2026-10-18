@@ -5,14 +5,19 @@
 //! ([`crate::manifest::retired`]), into the raw ledger, [`derive`] the categorized one
 //! from it with the edits, build the price db from its `P` directives, and
 //! index it for queries in the home commodity. The CLI's `export` and
-//! `report` run it once per command; the app runs it off the UI thread and
-//! again when the journal or the edits change.
+//! `report` run it once per command.
+//!
+//! The app keeps the raw ledger instead, so a new segment is merged in with
+//! [`Ledger::refresh`] rather than reloading everything, and an edit
+//! re-derives with [`rederive`], reusing the previous books' rule matches.
+//! [`Books::from_raw`] is that second half of the pipeline on its own.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use ledgerdb::{
     CommodityId, Derived, Edits, JournalStore, LayerFilter, Ledger, LoadReport, PriceDb, Query,
-    Rollups, SegmentHash, StoreError, derive,
+    Rollups, SegmentHash, StoreError, derive, rederive,
 };
 
 /// The derived ledger and everything a query reads.
@@ -20,7 +25,10 @@ pub struct Books {
     /// What loading the raw ledger skipped or found damaged.
     pub report: LoadReport,
     /// The categorized ledger, and why each transaction was categorized so.
-    pub derived: Derived,
+    /// Shared, since the books themselves aren't `Sync` (the price db
+    /// caches conversion paths), so a re-derive on another thread can reuse
+    /// its rule matches while these books are still drawn.
+    pub derived: Arc<Derived>,
     /// Rates from the ledger's `P` directives.
     pub prices: PriceDb,
     /// The query index over [`Self::ledger`].
@@ -44,16 +52,44 @@ impl Books {
         home: &str,
     ) -> Result<Books, StoreError> {
         let loaded = Ledger::load_without(store, filter, retired.clone())?;
-        let derived = derive(&loaded.ledger, edits);
+        Ok(Books::from_raw(
+            &loaded.ledger,
+            loaded.report,
+            edits,
+            None,
+            home,
+        ))
+    }
+
+    /// Derive `raw` with `edits` and index the result with `home` as the
+    /// home commodity, as [`Self::load`] does after reading the store.
+    /// `report` is what the load or refresh of `raw` found.
+    ///
+    /// With `previous`, the [`Self::derived`] of the books last derived from
+    /// `raw` (before a refresh or an edit), the derive reuses its rule
+    /// matches when the rules and segments are unchanged ([`rederive`]); the
+    /// result is the same either way.
+    #[profiling::function]
+    pub fn from_raw(
+        raw: &Ledger,
+        report: LoadReport,
+        edits: &Edits,
+        previous: Option<&Derived>,
+        home: &str,
+    ) -> Books {
+        let derived = Arc::new(match previous {
+            Some(previous) => rederive(raw, edits, previous),
+            None => derive(raw, edits),
+        });
         let prices = PriceDb::from_ledger(derived.ledger());
         let home = derived.ledger().journal().commodities.get(home);
         let rollups = Rollups::new(derived.ledger(), &prices, home);
-        Ok(Books {
-            report: loaded.report,
+        Books {
+            report,
             derived,
             prices,
             rollups,
-        })
+        }
     }
 
     /// The categorized ledger.
