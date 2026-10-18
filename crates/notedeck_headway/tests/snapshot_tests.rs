@@ -5133,7 +5133,9 @@ fn review_sources_thread_the_walk_and_render_the_explainer() {
     }
     assert!(harness.query_by_label_contains("match:").is_none());
 
-    // Each threaded note is just above its hunk's header.
+    // Each threaded note is just above its hunk's header: under the walk
+    // card's bottom margin and a row of slack (a note takes whole rows).
+    const NOTE_GAP: f32 = 48.0;
     let rect = |harness: &Harness<'static, HeadwayTestState>, label: &str| {
         harness.get_by_label(label).rect()
     };
@@ -5149,7 +5151,10 @@ fn review_sources_thread_the_walk_and_render_the_explainer() {
         keys_note.bottom() <= keys_header.top(),
         "{keys_note:?} {keys_header:?}"
     );
-    assert!(keys_header.top() - keys_note.bottom() < 40.0);
+    assert!(
+        keys_header.top() - keys_note.bottom() < NOTE_GAP,
+        "{keys_note:?} {keys_header:?}"
+    );
     let queue_note = rect(&harness, "The step stops at the last card.");
     let queue_header = harness
         .get(
@@ -5160,7 +5165,7 @@ fn review_sources_thread_the_walk_and_render_the_explainer() {
         .rect();
     assert!(queue_note.bottom() <= queue_header.top());
     assert!(
-        queue_header.top() - queue_note.bottom() < 40.0,
+        queue_header.top() - queue_note.bottom() < NOTE_GAP,
         "{queue_note:?} {queue_header:?}"
     );
     // The intro is above the whole diff.
