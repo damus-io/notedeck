@@ -198,6 +198,49 @@ pub fn transports(
         .collect()
 }
 
+/// One `[[sync.transport]]` as `config.toml` lists it, described without
+/// building or running it: what the app's settings show before a sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportInfo {
+    /// Its name: its `name`, else its `kind`.
+    pub name: String,
+    /// `rsync` or `git` (or a kind this cashflow can't build).
+    pub kind: String,
+    /// Where the remote journal is; empty when the entry leaves it out.
+    pub remote: String,
+    /// Why it can't run on this machine: its program isn't on `PATH`, as
+    /// the error a run would fail with.
+    pub unavailable: Option<String>,
+}
+
+/// Describe every transport `config` lists, checking each one's program is
+/// on `PATH` so a missing `rsync` shows before anyone presses sync.
+pub fn describe(config: &Config) -> Vec<TransportInfo> {
+    let configured = config.sync.as_ref().map_or(&[][..], |s| &s.transport[..]);
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    configured
+        .iter()
+        .map(|entry| TransportInfo {
+            name: name_of(entry).to_owned(),
+            kind: entry.kind.clone(),
+            remote: entry.remote.clone().unwrap_or_default(),
+            unavailable: not_installed(&entry.kind, &path).map(|err| err.to_string()),
+        })
+        .collect()
+}
+
+/// The [`TransportError::NotInstalled`] a `kind` transport fails with when
+/// its program isn't in any directory of `path` (a `PATH` value).
+fn not_installed(kind: &str, path: &std::ffi::OsStr) -> Option<TransportError> {
+    let (program, kind) = match kind {
+        "rsync" => ("rsync", "rsync"),
+        "git" => ("git", "git"),
+        _ => return None,
+    };
+    let found = std::env::split_paths(path).any(|dir| dir.join(program).is_file());
+    (!found).then_some(TransportError::NotInstalled { program, kind })
+}
+
 /// A transport's name: its `name`, else its `kind`.
 fn name_of(entry: &TransportConfig) -> &str {
     entry.name.as_deref().unwrap_or(&entry.kind)
@@ -815,5 +858,21 @@ mod tests {
         assert_eq!(parsed.sync.as_ref().unwrap().transport.len(), 2);
         assert_eq!(Config::parse(&parsed.to_toml()).unwrap(), parsed);
         assert!(Config::parse("[[sync.transport]]\nkind = \"rsync\"\nremot = \"x\"\n").is_err());
+    }
+
+    /// A transport whose program is in no `PATH` directory says so with
+    /// the error a run would fail with; one that is found, or a kind with
+    /// no program, says nothing.
+    #[test]
+    fn a_missing_program_is_reported_before_a_run() {
+        let empty = tempfile::tempdir().unwrap();
+        let bin = tempfile::tempdir().unwrap();
+        std::fs::write(bin.path().join("rsync"), "").unwrap();
+        let path = std::env::join_paths([empty.path(), bin.path()]).unwrap();
+
+        assert!(not_installed("rsync", &path).is_none());
+        let err = not_installed("git", &path).expect("no git in either dir");
+        assert!(err.to_string().starts_with("git is not on PATH"), "{err}");
+        assert!(not_installed("blossom", &path).is_none());
     }
 }

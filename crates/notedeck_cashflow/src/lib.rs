@@ -282,7 +282,7 @@ impl CashflowApp {
         egui::CentralPanel::default()
             .frame(ui::panel_frame(palette).inner_margin(egui::Margin::symmetric(24, 16)))
             .show(ui, |ui| {
-                if let Some(journal) = journal {
+                if let Some(journal) = journal.as_mut() {
                     let delay = if journal.is_busy() {
                         BUSY_REPAINT
                     } else {
@@ -314,6 +314,7 @@ impl CashflowApp {
                     labels,
                     outbox,
                     summary,
+                    journal: journal.as_mut(),
                     projects,
                     today: *today,
                     period,
@@ -362,7 +363,7 @@ impl notedeck::App for CashflowApp {
             return;
         };
         let since = period::start_of_day(self.today);
-        let loaded = journal.update(ctx, &self.layers, self.books.as_ref(), since);
+        let loaded = journal.update(ctx, &mut self.layers, self.books.as_ref(), since);
         self.missing_segments = journal.missing().hashes.len();
         if !Arc::ptr_eq(&self.labels, journal.labels()) {
             self.labels = journal.labels().clone();

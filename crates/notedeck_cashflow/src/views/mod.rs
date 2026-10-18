@@ -17,7 +17,7 @@ pub mod categories;
 mod goals;
 pub mod overview;
 pub mod projects;
-mod settings;
+pub mod settings;
 pub mod transactions;
 pub mod trends;
 
@@ -37,6 +37,9 @@ pub struct ViewCx<'a> {
     /// One line on what the books hold and how long they took to load
     /// ([`crate::ui::journal_status::summary`]); empty with no books.
     pub summary: &'a str,
+    /// Where the books come from, when the app loads its own: the journal's
+    /// state and its sync. `None` for an app handed its books.
+    pub journal: Option<&'a mut crate::journal::JournalSource>,
     /// Which project each account is in, from the chart of accounts. A
     /// change bumps [`LedgerCx::generation`] too.
     pub projects: &'a cashflow::projects::Projects,
@@ -84,6 +87,8 @@ pub struct ViewStates {
     pub(crate) projects: projects::ProjectsState,
     /// The register's filters and rows, and the triage inbox.
     pub(crate) transactions: transactions::TransactionsState,
+    /// The Settings view's cached journal status.
+    pub(crate) settings: settings::SettingsState,
 }
 
 impl ViewStates {

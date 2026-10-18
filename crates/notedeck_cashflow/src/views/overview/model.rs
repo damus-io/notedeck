@@ -138,15 +138,7 @@ pub fn overview(inputs: Inputs<'_>) -> Overview {
         rows
     };
 
-    let mut layers: Vec<String> = books
-        .ledger()
-        .segments()
-        .iter()
-        .chain(books.ledger().excluded())
-        .map(|segment| segment.header.layer.clone())
-        .collect();
-    layers.sort_unstable();
-    layers.dedup();
+    let layers = crate::layers::known(books);
 
     let unknown = cashflow::unknown::count(books);
     Overview {

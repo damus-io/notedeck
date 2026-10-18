@@ -21,7 +21,7 @@ pub use git::GitTransport;
 pub use rsync::RsyncTransport;
 pub use transport::{
     FetchReport, KINDS, PushReport, SegmentTransport, SyncJob, SyncReport, TransportConfigError,
-    TransportError, TransportReport, run, transports,
+    TransportError, TransportInfo, TransportReport, describe, run, transports,
 };
 
 use ledgerdb::SegmentHash;

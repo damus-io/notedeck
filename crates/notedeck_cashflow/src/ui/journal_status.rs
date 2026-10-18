@@ -46,7 +46,7 @@ fn thousands(n: usize) -> String {
     let digits = n.to_string();
     let mut text = String::with_capacity(digits.len() + digits.len() / 3);
     for (at, digit) in digits.chars().enumerate() {
-        if at > 0 && (digits.len() - at) % 3 == 0 {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
             text.push(',');
         }
         text.push(digit);
@@ -133,7 +133,7 @@ pub fn banner_ui(ui: &mut egui::Ui, palette: &Palette, source: &mut JournalSourc
 
 /// What is missing, the Sync now button (or why there is none), and how the
 /// running or last sync went.
-fn sync_row(ui: &mut egui::Ui, palette: &Palette, source: &mut JournalSource) {
+pub(crate) fn sync_row(ui: &mut egui::Ui, palette: &Palette, source: &mut JournalSource) {
     let missing = &source.missing().summary;
     if !missing.is_empty() {
         ui.horizontal_wrapped(|ui| {

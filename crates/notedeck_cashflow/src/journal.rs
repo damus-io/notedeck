@@ -8,9 +8,10 @@
 //!
 //! 1. takes a finished job's result: the raw ledger back, and new books if
 //!    the job derived any;
-//! 2. polls the [`EditsCache`], and when a vault record changed re-reads
-//!    the home commodity and which segments the vault lists that the
-//!    journal lacks;
+//! 2. writes the layer flips [`Layers`] queued to the vault, then polls the
+//!    [`EditsCache`], and when a vault record changed re-reads the home
+//!    commodity, the layer switches and which segments the vault lists that
+//!    the journal lacks;
 //! 3. starts the next job when nothing is running: a derive when the edits,
 //!    the home commodity or the [`Layers`] differ from what the books were
 //!    derived with, else a rescan every [`RESCAN_EVERY`].
@@ -31,9 +32,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cashflow::chart::{Chart, Labels};
-use cashflow::sync::{self, SyncJob, SyncReport};
+use cashflow::sync::{self, SyncJob, SyncReport, TransportInfo, TransportReport};
 use cashflow::triage::Triage;
-use cashflow::{Books, CashflowDir, Config, DeriveInputs, EditsCache, Settings, manifest};
+use cashflow::{Books, CashflowDir, Config, DeriveInputs, EditsCache, Settings, Vault, manifest};
 use ledgerdb::{Derived, JournalStore, LayerFilter, Ledger, LoadReport, SegmentHash};
 use nostrdb::Transaction;
 use notedeck::AppContext;
@@ -205,6 +206,43 @@ pub struct SyncOutcome {
     pub summary: String,
 }
 
+/// One configured transport, and how its part of the last sync went.
+#[derive(Debug)]
+pub struct TransportStatus {
+    /// What `config.toml` says about it, and whether its program is here.
+    pub info: TransportInfo,
+    /// Its part of the last sync this app ran, if it ran one.
+    pub last: Option<TransportRun>,
+}
+
+/// One transport's part of a sync, written once when the sync finished.
+#[derive(Debug)]
+pub struct TransportRun {
+    /// When the sync finished, as local `HH:MM`.
+    pub at: String,
+    /// "fetched 2, admitted 2, rejected 0, pushed 5".
+    pub counts: String,
+    /// What failed, if anything did.
+    pub error: Option<String>,
+}
+
+impl TransportRun {
+    /// `report`'s counts and first error, stamped `at`.
+    fn of(report: &TransportReport, at: &str) -> Self {
+        TransportRun {
+            at: at.to_owned(),
+            counts: format!(
+                "fetched {}, admitted {}, rejected {}, pushed {}",
+                report.fetched.len(),
+                report.admit.admitted.len(),
+                report.admit.rejected.len(),
+                report.pushed.len()
+            ),
+            error: report.errors.first().map(|err| err.to_string()),
+        }
+    }
+}
+
 /// The journal and vault behind a [`crate::CashflowApp`], loaded and kept
 /// current. See the module docs.
 pub struct JournalSource {
@@ -236,11 +274,14 @@ pub struct JournalSource {
     error: Option<String>,
     /// What the vault lists that the journal lacks.
     missing: MissingSegments,
+    /// "2 segments here are retired by the vault, …", or empty: written
+    /// with [`Self::missing`].
+    retired_here: String,
     /// Whether [`Self::missing`] needs comparing again.
     missing_stale: bool,
-    /// How many `[[sync.transport]]`s `config.toml` lists, or why it
-    /// doesn't read.
-    transports: Result<usize, String>,
+    /// The `[[sync.transport]]`s `config.toml` lists, or why it doesn't
+    /// read.
+    transports: Result<Vec<TransportStatus>, String>,
     /// The running sync.
     sync: Option<Promise<SyncReport>>,
     /// How the last sync went.
@@ -255,7 +296,7 @@ impl JournalSource {
     /// A source over the journal in `dir`. Nothing is read until the first
     /// [`Self::update`].
     pub fn new(dir: CashflowDir) -> Self {
-        let transports = transport_count(&dir);
+        let transports = transport_status(&dir, Vec::new());
         Self {
             store: cashflow::journal::store(&dir),
             journal_path: dir.journal().to_string_lossy().into_owned(),
@@ -271,6 +312,7 @@ impl JournalSource {
             home_generation: 0,
             error: None,
             missing: MissingSegments::default(),
+            retired_here: String::new(),
             missing_stale: true,
             transports,
             sync: None,
@@ -280,16 +322,17 @@ impl JournalSource {
         }
     }
 
-    /// One frame's worth of work: take what finished, poll the vault, and
-    /// start the next job if one is due, loading the layers `layers` leaves
-    /// on and counting the triage's "today" from `since` (unix seconds).
-    /// Returns new books when a job derived some; `books` are the ones in
-    /// hand, which a re-derive reuses.
+    /// One frame's worth of work: take what finished, write `layers`' flips
+    /// to the vault and switch them as the vault says, and start the next
+    /// job if one is due, loading the layers `layers` leaves on and counting
+    /// the triage's "today" from `since` (unix seconds). Returns new books
+    /// when a job derived some; `books` are the ones in hand, which a
+    /// re-derive reuses.
     #[profiling::function]
     pub fn update(
         &mut self,
         ctx: &mut AppContext<'_>,
-        layers: &Layers,
+        layers: &mut Layers,
         books: Option<&Books>,
         since: u64,
     ) -> Option<Loaded> {
@@ -300,6 +343,7 @@ impl JournalSource {
         if let Some(full) = ctx.accounts.selected_filled() {
             let secret = full.secret_key.secret_bytes();
             ctx.register_team_root(cashflow::vault::vault_root(&secret));
+            write_layers(layers, &secret, ctx);
         }
         if self.edits.as_ref().is_none_or(|c| c.author() != &author) {
             // Before the txn the first poll reads: see `EditsCache::new`.
@@ -312,11 +356,13 @@ impl JournalSource {
         };
         if edits.poll(ctx.ndb, &txn).vault {
             self.labels = Arc::new(Chart::load(ctx.ndb, &txn, &author).labels());
-            let home = Settings::load(ctx.ndb, &txn, &author).home_commodity();
+            let settings = Settings::load(ctx.ndb, &txn, &author);
+            let home = settings.home_commodity();
             if home != self.home {
                 self.home = home.to_owned();
                 self.home_generation += 1;
             }
+            layers.apply(settings.layer_switches());
             self.missing_stale = true;
         }
         if self.missing_stale {
@@ -325,6 +371,19 @@ impl JournalSource {
             self.missing = MissingSegments {
                 hashes: missing.iter().map(|m| m.hash).collect(),
                 summary: missing_summary(&missing),
+            };
+            let retired = edits.inputs().map_or(0, |inputs| {
+                let here = self.local.iter();
+                here.filter(|hash| inputs.retired.contains(hash)).count()
+            });
+            self.retired_here = if retired == 0 {
+                String::new()
+            } else {
+                format!(
+                    "{} here retired by the vault, left out of every total \
+                     (`cashflow journal rm <hash>` trashes the file)",
+                    segments(retired)
+                )
             };
             self.missing_stale = false;
         }
@@ -413,6 +472,15 @@ impl JournalSource {
         match sync.try_take() {
             Ok(report) => {
                 self.last_sync = Some(sync_outcome(&report));
+                if let Ok(transports) = &mut self.transports {
+                    let at = chrono::Local::now().format("%H:%M").to_string();
+                    for done in &report.transports {
+                        let status = transports.iter_mut().find(|t| t.info.name == done.name);
+                        if let Some(status) = status {
+                            status.last = Some(TransportRun::of(done, &at));
+                        }
+                    }
+                }
                 // What arrived is in the journal now: list it straight away.
                 self.last_scan = None;
             }
@@ -428,7 +496,8 @@ impl JournalSource {
         if self.sync.is_some() {
             return;
         }
-        self.transports = transport_count(&self.dir);
+        let previous = std::mem::replace(&mut self.transports, Ok(Vec::new())).unwrap_or_default();
+        self.transports = transport_status(&self.dir, previous);
         let transports = Config::load(&self.dir)
             .map_err(|e| e.to_string())
             .and_then(|config| {
@@ -501,9 +570,28 @@ impl JournalSource {
         &self.missing
     }
 
+    /// One line on the local segments the vault retires, or empty.
+    pub fn retired_here(&self) -> &str {
+        &self.retired_here
+    }
+
     /// Whether `config.toml` lists a transport to sync with.
     pub fn can_sync(&self) -> bool {
-        matches!(self.transports, Ok(n) if n > 0)
+        matches!(&self.transports, Ok(t) if !t.is_empty())
+    }
+
+    /// The transports `config.toml` lists and how each last ran, or why
+    /// `config.toml` doesn't read.
+    pub fn transports(&self) -> Result<&[TransportStatus], &str> {
+        match &self.transports {
+            Ok(transports) => Ok(transports),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// The vault's home commodity, every amount is converted into.
+    pub fn home(&self) -> &str {
+        &self.home
     }
 
     /// Whether a sync is running.
@@ -532,11 +620,43 @@ impl JournalSource {
     }
 }
 
-/// How many transports `dir`'s `config.toml` lists, or why it doesn't read.
-fn transport_count(dir: &CashflowDir) -> Result<usize, String> {
-    Config::load(dir)
-        .map(|config| config.sync.map_or(0, |sync| sync.transport.len()))
-        .map_err(|e| e.to_string())
+/// The transports `dir`'s `config.toml` lists, each keeping its last run
+/// from `previous` by name, or why `config.toml` doesn't read.
+fn transport_status(
+    dir: &CashflowDir,
+    mut previous: Vec<TransportStatus>,
+) -> Result<Vec<TransportStatus>, String> {
+    let config = Config::load(dir).map_err(|e| e.to_string())?;
+    let transports = sync::describe(&config)
+        .into_iter()
+        .map(|info| {
+            let last = previous
+                .iter_mut()
+                .find(|p| p.info.name == info.name)
+                .and_then(|p| p.last.take());
+            TransportStatus { info, last }
+        })
+        .collect();
+    Ok(transports)
+}
+
+/// Write the layer flips `layers` queued to the vault of the account whose
+/// secret is `secret`. A write that fails is logged and dropped: the
+/// switch still holds on this machine, it just doesn't follow the account.
+fn write_layers(layers: &mut Layers, secret: &[u8; 32], ctx: &mut AppContext<'_>) {
+    let writes = layers.take_writes();
+    if writes.is_empty() {
+        return;
+    }
+    let Some(vault) = Vault::new(secret) else {
+        tracing::error!("cashflow: no vault to save layer switches in");
+        return;
+    };
+    for write in writes {
+        if let Err(err) = cashflow::settings::set_layer(&vault, ctx.ndb, &write.layer, write.on) {
+            tracing::error!("cashflow: saving layer {}: {err}", write.layer);
+        }
+    }
 }
 
 /// "3 segments are on bigbox and 1 on laptop", or empty when nothing is

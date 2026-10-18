@@ -5,6 +5,12 @@
 //! changing different settings never overwrite each other. [`Settings::load`]
 //! folds them into one struct with defaults filled in.
 //!
+//! Which journal layers load is a setting too, one note per layer
+//! (`d = set:layer:<name>`, [`set_layer`]), so switching `cln-chain` on at
+//! one desk switches it on at every desk without touching the other
+//! layers. A layer with no note is on, unless it is one of
+//! [`DEFAULT_OFF_LAYERS`].
+//!
 //! `config.toml` (see [`crate::config`]) is the other place settings live:
 //! that one is per machine and never synced. A setting that should be the
 //! same everywhere, like the home currency, belongs here.
@@ -23,6 +29,20 @@ pub const DEFAULT_HOME_COMMODITY: &str = "CAD";
 /// machine's own zone, which is the value the setting exists to replace,
 /// so it can't be set to it.
 pub const DEFAULT_TIMEZONE: &str = "local";
+
+/// The layers that start switched off: on-chain BTC as CLN's chain moves
+/// see it overlaps the wallet's own view, so counting both doubles it.
+pub const DEFAULT_OFF_LAYERS: &[&str] = &["cln-chain"];
+
+/// The record-id prefix of a layer's switch, under the settings prefix:
+/// `set:layer:<name>`.
+const LAYER_ID: &str = "layer:";
+
+/// A layer switch's value when the layer loads.
+const LAYER_ON: &str = "on";
+
+/// A layer switch's value when the layer is left out.
+const LAYER_OFF: &str = "off";
 
 /// A setting the vault holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,6 +146,18 @@ pub struct Settings<'a> {
     pub home_commodity: Option<Stored<'a, SettingNote<'a>>>,
     /// [`Setting::Timezone`]'s note.
     pub timezone: Option<Stored<'a, SettingNote<'a>>>,
+    /// Every layer switch ever set, newest revision of each, in no
+    /// particular order: see [`Self::layer_switches`].
+    pub layers: Vec<Stored<'a, SettingNote<'a>>>,
+}
+
+/// One layer switched on or off in the vault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayerSwitch<'a> {
+    /// The layer, as segment headers name it.
+    pub layer: &'a str,
+    /// Whether it loads.
+    pub on: bool,
 }
 
 impl<'a> Settings<'a> {
@@ -136,6 +168,7 @@ impl<'a> Settings<'a> {
             match Setting::from_name(stored.id) {
                 Some(Setting::Home) => settings.home_commodity = Some(stored),
                 Some(Setting::Timezone) => settings.timezone = Some(stored),
+                None if stored.id.starts_with(LAYER_ID) => settings.layers.push(stored),
                 // A setting a newer cashflow wrote; nothing here reads it.
                 None => {}
             }
@@ -146,6 +179,20 @@ impl<'a> Settings<'a> {
     /// The home commodity, or [`DEFAULT_HOME_COMMODITY`].
     pub fn home_commodity(&self) -> &'a str {
         self.value(Setting::Home).unwrap_or(DEFAULT_HOME_COMMODITY)
+    }
+
+    /// Every layer the vault switches on or off. A value other than `on`
+    /// or `off` (a newer cashflow's) is skipped, leaving the default.
+    pub fn layer_switches(&self) -> impl Iterator<Item = LayerSwitch<'a>> + '_ {
+        self.layers.iter().filter_map(|stored| {
+            let layer = stored.id.strip_prefix(LAYER_ID)?;
+            let on = match stored.body.value {
+                LAYER_ON => true,
+                LAYER_OFF => false,
+                _ => return None,
+            };
+            Some(LayerSwitch { layer, on })
+        })
     }
 
     /// `setting`'s stored value, or `None` when it was never set.
@@ -175,6 +222,25 @@ pub fn set(
 ) -> Result<Written, SettingsError> {
     setting.validate(value)?;
     Ok(vault.write(ndb, setting.name(), &SettingNote { value }, 0)?)
+}
+
+/// Write whether `layer` loads as its newest switch in the vault.
+pub fn set_layer(
+    vault: &Vault,
+    ndb: &Ndb,
+    layer: &str,
+    on: bool,
+) -> Result<Written, SettingsError> {
+    if layer.is_empty() || layer.chars().any(char::is_whitespace) {
+        return Err(SettingsError::Invalid {
+            setting: "layer",
+            value: layer.to_owned(),
+            expected: "a layer name, as a segment header gives it",
+        });
+    }
+    let value = if on { LAYER_ON } else { LAYER_OFF };
+    let id = format!("{LAYER_ID}{layer}");
+    Ok(vault.write(ndb, &id, &SettingNote { value }, 0)?)
 }
 
 #[cfg(test)]
@@ -213,6 +279,60 @@ mod tests {
         let settings = Settings::load(ndb, &txn, vault.author());
         assert_eq!(settings.value(Setting::Home), Some("USD"));
         assert_eq!(settings.effective(Setting::Home), "USD");
+    }
+
+    /// A layer switch round-trips, a later one replaces it, and the plain
+    /// settings don't see it.
+    #[tokio::test]
+    async fn layer_switches_round_trip() {
+        let db = TempNdb::new();
+        let ndb = &db.ndb;
+        let vault = Vault::new(&SECRET).unwrap();
+        vault.register(ndb);
+        let sub = ndb
+            .subscribe(&[Filter::new().kinds([kinds::SETTING as u64]).build()])
+            .unwrap();
+
+        let first = set_layer(&vault, ndb, "cln-chain", true).unwrap();
+        set_layer(&vault, ndb, "amex", false).unwrap();
+        ndb.wait_for_all_notes_within(sub, 2, INGEST_TIMEOUT)
+            .await
+            .unwrap();
+        let sub = ndb
+            .subscribe(&[Filter::new().kinds([kinds::SETTING as u64]).build()])
+            .unwrap();
+        let id = format!("{LAYER_ID}cln-chain");
+        vault
+            .write(
+                ndb,
+                &id,
+                &SettingNote { value: LAYER_OFF },
+                first.created_at,
+            )
+            .unwrap();
+        ndb.wait_for_all_notes_within(sub, 1, INGEST_TIMEOUT)
+            .await
+            .unwrap();
+
+        let txn = Transaction::new(ndb).unwrap();
+        let settings = Settings::load(ndb, &txn, vault.author());
+        let mut switches: Vec<LayerSwitch> = settings.layer_switches().collect();
+        switches.sort_by_key(|s| s.layer);
+        assert_eq!(
+            switches,
+            [
+                LayerSwitch {
+                    layer: "amex",
+                    on: false
+                },
+                LayerSwitch {
+                    layer: "cln-chain",
+                    on: false
+                },
+            ]
+        );
+        assert_eq!(settings.value(Setting::Home), None);
+        assert!(set_layer(&vault, ndb, "two words", true).is_err());
     }
 
     #[test]
