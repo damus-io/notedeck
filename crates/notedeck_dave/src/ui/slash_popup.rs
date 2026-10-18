@@ -452,49 +452,61 @@ mod tests {
     }
 
     /// Render the input holding `text` at the bottom of a chat-sized panel,
-    /// with its popup open above it, under `visuals`.
+    /// with its popup open above it, under `visuals`. The harness runs in
+    /// the matching theme, since the popup is an `Area` and takes the
+    /// context's visuals, not the input's `Ui`'s.
     fn render(name: &str, text: &str, visuals: egui::Visuals) {
         let mut popup = SlashPopup::default();
         popup.set_catalog(CatalogView::Ready(catalog()));
         let mut text = text.to_owned();
-        let mut harness = Harness::builder()
-            .with_size(egui::Vec2::new(640.0, 440.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui_state(
-                move |ui, i18n: &mut Localization| {
-                    // Fonts set during a pass load at the start of the next,
-                    // so the first pass only installs notedeck's: egui's own
-                    // lack the footer's arrows, and drawing them would panic.
-                    if ui.ctx().cumulative_pass_nr() == 0 {
-                        notedeck::fonts::setup_fonts(ui.ctx());
-                        return;
-                    }
-                    ui.style_mut().visuals = visuals.clone();
-                    ui.painter()
-                        .rect_filled(ui.max_rect(), 0.0, visuals.panel_fill);
-                    popup.sync(&text);
-                    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                        let input = egui::Frame::new()
-                            .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_SM as i8))
-                            .fill(input_fill(ui.visuals(), false))
-                            .corner_radius(notedeck::tokens::RADIUS_LG)
-                            .show(ui, |ui| {
-                                InputboxLayout::new(&mut text, i18n, InputMode::Insert)
-                                    .claim_popup_keys(true)
-                                    .show(ui)
-                            });
-                        slash_popup_ui(
-                            &mut popup,
-                            &mut text,
-                            "default",
-                            input.response.rect,
-                            i18n,
-                            ui,
-                        );
-                    });
-                },
-                Localization::default(),
-            );
+        let theme = if visuals.dark_mode {
+            egui::Theme::Dark
+        } else {
+            egui::Theme::Light
+        };
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            Harness::builder()
+                .with_size(egui::Vec2::new(640.0, 440.0))
+                .with_theme(theme)
+                .renderer(notedeck::software_renderer())
+                .build_ui_state(
+                    move |ui, i18n: &mut Localization| {
+                        // Fonts set during a pass load at the start of the next,
+                        // so the first pass only installs notedeck's: egui's own
+                        // lack the footer's arrows, and drawing them would panic.
+                        if ui.ctx().cumulative_pass_nr() == 0 {
+                            notedeck::fonts::setup_fonts(ui.ctx());
+                            return;
+                        }
+                        ui.style_mut().visuals = visuals.clone();
+                        ui.painter()
+                            .rect_filled(ui.max_rect(), 0.0, visuals.panel_fill);
+                        popup.sync(&text);
+                        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                            let input = egui::Frame::new()
+                                .inner_margin(egui::Margin::same(
+                                    notedeck::tokens::SPACING_SM as i8,
+                                ))
+                                .fill(input_fill(ui.visuals(), false))
+                                .corner_radius(notedeck::tokens::RADIUS_LG)
+                                .show(ui, |ui| {
+                                    InputboxLayout::new(&mut text, i18n, InputMode::Insert)
+                                        .claim_popup_keys(true)
+                                        .show(ui)
+                                });
+                            slash_popup_ui(
+                                &mut popup,
+                                &mut text,
+                                "default",
+                                input.response.rect,
+                                i18n,
+                                ui,
+                            );
+                        });
+                    },
+                    Localization::default(),
+                ),
+        );
         harness.run();
         harness.snapshot(name);
     }

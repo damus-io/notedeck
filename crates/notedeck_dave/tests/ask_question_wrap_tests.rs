@@ -73,12 +73,14 @@ fn ask_question_harness() -> Harness<'static> {
     );
     let mut index_map: HashMap<Uuid, usize> = HashMap::new();
 
-    Harness::builder()
-        .with_size(egui::Vec2::new(320.0, 480.0))
-        .renderer(notedeck::software_renderer())
-        .build_ui(move |ui| {
-            ask_user_question_ui(&request, &questions, &mut answers_map, &mut index_map, ui);
-        })
+    notedeck::test_harness::with_notedeck_style(
+        Harness::builder()
+            .with_size(egui::Vec2::new(320.0, 480.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                ask_user_question_ui(&request, &questions, &mut answers_map, &mut index_map, ui);
+            }),
+    )
 }
 
 #[test]

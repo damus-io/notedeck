@@ -671,10 +671,12 @@ mod tests {
             .panel
             .push_env_row("MY VAR".to_string(), "oops".to_string());
 
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(size)
-            .renderer(notedeck::software_renderer())
-            .build_ui_state(overlay, state);
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(size)
+                .renderer(notedeck::software_renderer())
+                .build_ui_state(overlay, state),
+        );
         harness.run();
         harness.snapshot(name);
     }

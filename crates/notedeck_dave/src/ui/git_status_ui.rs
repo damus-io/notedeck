@@ -234,7 +234,7 @@ mod tests {
         if render {
             builder = builder.renderer(notedeck::software_renderer());
         }
-        builder.build_ui(move |ui| {
+        notedeck::test_harness::with_notedeck_style(builder.build_ui(move |ui| {
             let snap = StatusSnapshot {
                 branch: Some(branch.clone()),
                 added_lines,
@@ -250,7 +250,7 @@ mod tests {
                 ui.separator();
                 git_status_content_ui(&mut cache, &snapshot, ui);
             });
-        })
+        }))
     }
 
     #[test]

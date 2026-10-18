@@ -5,14 +5,16 @@ use notedeck_dave::ui::InputboxLayout;
 /// running when `show_stop` (the IsWorking state).
 fn dave_inputbox_harness(input: &str, show_stop: bool) -> Harness<'static> {
     let mut text = input.to_string();
-    Harness::builder()
-        .with_size(egui::Vec2::new(300.0, 120.0))
-        .renderer(notedeck::software_renderer())
-        .build_ui(move |ui| {
-            InputboxLayout::new_default(&mut text)
-                .show_stop(show_stop)
-                .show(ui);
-        })
+    notedeck::test_harness::with_notedeck_style(
+        Harness::builder()
+            .with_size(egui::Vec2::new(300.0, 120.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                InputboxLayout::new_default(&mut text)
+                    .show_stop(show_stop)
+                    .show(ui);
+            }),
+    )
 }
 
 /// The buttons the inputbox draws for `input` with a turn running or not,

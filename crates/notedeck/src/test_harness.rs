@@ -50,13 +50,7 @@ pub fn app_frame<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) 
     let ctx = ui.ctx().clone();
     let installed = egui::Id::unique("notedeck_test_app_setup");
     if !ctx.data(|d| d.get_temp::<bool>(installed).unwrap_or(false)) {
-        // What `Notedeck::setup` does for the real app.
-        crate::setup::setup_egui_context(
-            &ctx,
-            NotedeckOptions::empty(),
-            ThemePreference::from(ctx.theme()),
-            1.0,
-        );
+        install_notedeck_style(&ctx);
         ctx.data_mut(|d| d.insert_temp(installed, true));
         ctx.request_repaint();
         return None;
@@ -71,6 +65,32 @@ pub fn app_frame<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) 
         ui.spacing_mut().item_spacing.x = 0.0;
         add_contents(ui)
     }))
+}
+
+/// Install notedeck's look on `ctx`, as `Notedeck::setup` does for the real
+/// app: its fonts, `ColorTheme` visuals for both themes and text styles,
+/// following the context's current theme.
+pub fn install_notedeck_style(ctx: &egui::Context) {
+    crate::setup::setup_egui_context(
+        ctx,
+        NotedeckOptions::empty(),
+        ThemePreference::from(ctx.theme()),
+        1.0,
+    );
+}
+
+/// Give a harness of a single widget notedeck's look, for a snapshot that
+/// isn't of a whole app (use [`app_frame`] for those).
+///
+/// kittest builds every harness on egui's default style, a gray ground and
+/// egui's own fonts, which no notedeck screen shows. This installs notedeck's
+/// style on the built harness and runs it again so the fonts load: fonts set
+/// outside a pass apply from the next one. Unlike [`app_frame`] it leaves the
+/// widget's `Ui` as kittest made it, margins and item gap included.
+pub fn with_notedeck_style<'a, S>(mut harness: Harness<'a, S>) -> Harness<'a, S> {
+    install_notedeck_style(&harness.ctx);
+    harness.run_ok();
+    harness
 }
 
 /// A strict harness builder for [`app_frame`] harnesses: with notedeck's fonts

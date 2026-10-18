@@ -2484,30 +2484,36 @@ mod tests {
         priority: Option<FocusPriority>,
         git_lines: Option<GitLines>,
     ) -> Harness<'static> {
-        Harness::builder()
-            .with_size(egui::Vec2::new(260.0, 56.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                let mut session_manager = SessionManager::new();
-                let id = session_manager.new_session(
-                    PathBuf::from("/tmp/project"),
-                    AiMode::Agentic,
-                    BackendType::Claude,
-                );
-                let focus_queue = FocusQueue::new();
-                let collapse_state = CollapseState::new();
-                let list =
-                    SessionListUi::new(&mut session_manager, &focus_queue, &collapse_state, false);
-                list.agent_row_ui(
-                    ui,
-                    AgentRow {
-                        cwd_display: Some("~/src/notedeck-wt"),
-                        queue_priority: priority,
-                        git_lines,
-                        ..test_row(id, "refactor auth module", AgentStatus::NeedsInput)
-                    },
-                );
-            })
+        notedeck::test_harness::with_notedeck_style(
+            Harness::builder()
+                .with_size(egui::Vec2::new(260.0, 56.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    let mut session_manager = SessionManager::new();
+                    let id = session_manager.new_session(
+                        PathBuf::from("/tmp/project"),
+                        AiMode::Agentic,
+                        BackendType::Claude,
+                    );
+                    let focus_queue = FocusQueue::new();
+                    let collapse_state = CollapseState::new();
+                    let list = SessionListUi::new(
+                        &mut session_manager,
+                        &focus_queue,
+                        &collapse_state,
+                        false,
+                    );
+                    list.agent_row_ui(
+                        ui,
+                        AgentRow {
+                            cwd_display: Some("~/src/notedeck-wt"),
+                            queue_priority: priority,
+                            git_lines,
+                            ..test_row(id, "refactor auth module", AgentStatus::NeedsInput)
+                        },
+                    );
+                }),
+        )
     }
 
     /// An [`AgentRow`] for `id` titled `title`, with nothing else to show.
@@ -2567,22 +2573,28 @@ mod tests {
     /// remote-resume "Connecting…" placeholder (spinner + muted title) can be
     /// compared against the live row it upgrades into via snapshot.
     fn status_row_harness(status: AgentStatus, title: &'static str) -> Harness<'static> {
-        Harness::builder()
-            .with_size(egui::Vec2::new(260.0, 48.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                let mut session_manager = SessionManager::new();
-                let id = session_manager.new_session(
-                    PathBuf::from("/tmp/project"),
-                    AiMode::Agentic,
-                    BackendType::Claude,
-                );
-                let focus_queue = FocusQueue::new();
-                let collapse_state = CollapseState::new();
-                let list =
-                    SessionListUi::new(&mut session_manager, &focus_queue, &collapse_state, false);
-                list.agent_row_ui(ui, test_row(id, title, status));
-            })
+        notedeck::test_harness::with_notedeck_style(
+            Harness::builder()
+                .with_size(egui::Vec2::new(260.0, 48.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    let mut session_manager = SessionManager::new();
+                    let id = session_manager.new_session(
+                        PathBuf::from("/tmp/project"),
+                        AiMode::Agentic,
+                        BackendType::Claude,
+                    );
+                    let focus_queue = FocusQueue::new();
+                    let collapse_state = CollapseState::new();
+                    let list = SessionListUi::new(
+                        &mut session_manager,
+                        &focus_queue,
+                        &collapse_state,
+                        false,
+                    );
+                    list.agent_row_ui(ui, test_row(id, title, status));
+                }),
+        )
     }
 
     #[test]
@@ -2608,73 +2620,79 @@ mod tests {
     /// "notedeck" header wrapping its worktrees, versus the flush single project
     /// — can be verified visually.
     fn project_grouping_harness() -> Harness<'static> {
-        Harness::builder()
-            .with_size(egui::Vec2::new(300.0, 420.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                let mut sm = SessionManager::new();
+        notedeck::test_harness::with_notedeck_style(
+            Harness::builder()
+                .with_size(egui::Vec2::new(300.0, 420.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    let mut sm = SessionManager::new();
 
-                // A flat, single-checkout project (renders flush, no header).
-                let solo = sm.new_session(
-                    PathBuf::from("/home/dev/scratch"),
-                    AiMode::Agentic,
-                    BackendType::Claude,
-                );
+                    // A flat, single-checkout project (renders flush, no header).
+                    let solo = sm.new_session(
+                        PathBuf::from("/home/dev/scratch"),
+                        AiMode::Agentic,
+                        BackendType::Claude,
+                    );
 
-                // A multi-worktree "notedeck" project: main checkout + two
-                // worktrees, all sharing one repo root. The dave worktree,
-                // which holds two sessions, is dirty: its folder header shows
-                // the +/- once, and its rows show none.
-                let wt = |sm: &mut SessionManager, cwd: &str, title: &str, lines: GitLines| {
-                    let id =
-                        sm.new_session(PathBuf::from(cwd), AiMode::Agentic, BackendType::Claude);
-                    let s = sm.get_mut(id).expect("session");
-                    s.details.title = title.to_string();
-                    s.details.home_dir = "/home/dev".to_string();
-                    s.details.project_root = Some(PathBuf::from("/home/dev/notedeck"));
-                    s.details.project_slug = Some("notedeck".to_string());
-                    let git = &mut s.agentic.as_mut().expect("agentic").git_status;
-                    git.set_lines(lines.added, lines.deleted);
-                    id
-                };
-                let clean = GitLines {
-                    added: 0,
-                    deleted: 0,
-                };
-                let dave = GitLines {
-                    added: 142,
-                    deleted: 37,
-                };
-                wt(&mut sm, "/home/dev/notedeck", "fix streaming bug", clean);
-                wt(&mut sm, "/home/dev/notedeck-dave", "project grouping", dave);
-                wt(
-                    &mut sm,
-                    "/home/dev/notedeck-dave",
-                    "render tool results",
-                    dave,
-                );
-                let feature = GitLines {
-                    added: 12,
-                    deleted: 0,
-                };
-                wt(
-                    &mut sm,
-                    "/home/dev/notedeck-feature",
-                    "responsive layout",
-                    feature,
-                );
+                    // A multi-worktree "notedeck" project: main checkout + two
+                    // worktrees, all sharing one repo root. The dave worktree,
+                    // which holds two sessions, is dirty: its folder header shows
+                    // the +/- once, and its rows show none.
+                    let wt = |sm: &mut SessionManager, cwd: &str, title: &str, lines: GitLines| {
+                        let id = sm.new_session(
+                            PathBuf::from(cwd),
+                            AiMode::Agentic,
+                            BackendType::Claude,
+                        );
+                        let s = sm.get_mut(id).expect("session");
+                        s.details.title = title.to_string();
+                        s.details.home_dir = "/home/dev".to_string();
+                        s.details.project_root = Some(PathBuf::from("/home/dev/notedeck"));
+                        s.details.project_slug = Some("notedeck".to_string());
+                        let git = &mut s.agentic.as_mut().expect("agentic").git_status;
+                        git.set_lines(lines.added, lines.deleted);
+                        id
+                    };
+                    let clean = GitLines {
+                        added: 0,
+                        deleted: 0,
+                    };
+                    let dave = GitLines {
+                        added: 142,
+                        deleted: 37,
+                    };
+                    wt(&mut sm, "/home/dev/notedeck", "fix streaming bug", clean);
+                    wt(&mut sm, "/home/dev/notedeck-dave", "project grouping", dave);
+                    wt(
+                        &mut sm,
+                        "/home/dev/notedeck-dave",
+                        "render tool results",
+                        dave,
+                    );
+                    let feature = GitLines {
+                        added: 12,
+                        deleted: 0,
+                    };
+                    wt(
+                        &mut sm,
+                        "/home/dev/notedeck-feature",
+                        "responsive layout",
+                        feature,
+                    );
 
-                if let Some(s) = sm.get_mut(solo) {
-                    s.details.title = "one-off".to_string();
-                    s.details.home_dir = "/home/dev".to_string();
-                }
-                sm.rebuild_groups();
+                    if let Some(s) = sm.get_mut(solo) {
+                        s.details.title = "one-off".to_string();
+                        s.details.home_dir = "/home/dev".to_string();
+                    }
+                    sm.rebuild_groups();
 
-                let focus_queue = FocusQueue::new();
-                let collapse_state = CollapseState::new();
-                let mut list = SessionListUi::new(&mut sm, &focus_queue, &collapse_state, false);
-                list.ui(ui);
-            })
+                    let focus_queue = FocusQueue::new();
+                    let collapse_state = CollapseState::new();
+                    let mut list =
+                        SessionListUi::new(&mut sm, &focus_queue, &collapse_state, false);
+                    list.ui(ui);
+                }),
+        )
     }
 
     #[test]
@@ -2751,17 +2769,19 @@ mod tests {
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_card_titles() {
-        let mut harness = Harness::builder()
-            .with_size(egui::Vec2::new(300.0, 520.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui_state(
-                |ui, sm: &mut SessionManager| {
-                    let focus_queue = FocusQueue::new();
-                    let collapse_state = CollapseState::new();
-                    SessionListUi::new(sm, &focus_queue, &collapse_state, false).ui(ui);
-                },
-                card_sessions(),
-            );
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            Harness::builder()
+                .with_size(egui::Vec2::new(300.0, 520.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui_state(
+                    |ui, sm: &mut SessionManager| {
+                        let focus_queue = FocusQueue::new();
+                        let collapse_state = CollapseState::new();
+                        SessionListUi::new(sm, &focus_queue, &collapse_state, false).ui(ui);
+                    },
+                    card_sessions(),
+                ),
+        );
         harness.run();
         harness.snapshot("session_list_card_titles");
     }
@@ -3017,17 +3037,19 @@ mod tests {
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_lineage() {
-        let mut harness = Harness::builder()
-            .with_size(egui::Vec2::new(300.0, 560.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui_state(
-                |ui, sm: &mut SessionManager| {
-                    let focus_queue = FocusQueue::new();
-                    let collapse_state = CollapseState::new();
-                    SessionListUi::new(sm, &focus_queue, &collapse_state, false).ui(ui);
-                },
-                lineage_sessions().sm,
-            );
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            Harness::builder()
+                .with_size(egui::Vec2::new(300.0, 560.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui_state(
+                    |ui, sm: &mut SessionManager| {
+                        let focus_queue = FocusQueue::new();
+                        let collapse_state = CollapseState::new();
+                        SessionListUi::new(sm, &focus_queue, &collapse_state, false).ui(ui);
+                    },
+                    lineage_sessions().sm,
+                ),
+        );
         harness.run();
         harness.snapshot("session_list_lineage");
     }

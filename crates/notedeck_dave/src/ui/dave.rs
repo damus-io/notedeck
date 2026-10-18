@@ -4495,19 +4495,21 @@ mod tests {
             ("Accept Edits", PermissionMode::AcceptEdits),
             ("Auto", PermissionMode::Auto),
         ];
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(egui::Vec2::new(360.0, 250.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                ui.spacing_mut().item_spacing.y = 10.0;
-                for (name, mode) in modes {
-                    ui.label(name);
-                    ui.horizontal(|ui| {
-                        let _ = toggle_badges_ui(ui, mode, false, None);
-                    });
-                    ui.add_space(4.0);
-                }
-            });
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(egui::Vec2::new(360.0, 250.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    for (name, mode) in modes {
+                        ui.label(name);
+                        ui.horizontal(|ui| {
+                            let _ = toggle_badges_ui(ui, mode, false, None);
+                        });
+                        ui.add_space(4.0);
+                    }
+                }),
+        );
         harness.run();
         harness.snapshot("permission_mode_badges");
     }
@@ -4851,27 +4853,29 @@ mod tests {
             ),
         ];
 
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(egui::Vec2::new(460.0, 180.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                let mut input = String::new();
-                let mut focus = false;
-                let mut nav = BlockNav::default();
-                for request in &requests {
-                    let mut dave_ui = DaveUi::new(
-                        false,
-                        1,
-                        &[],
-                        &mut input,
-                        &mut focus,
-                        &mut nav,
-                        AiMode::Agentic,
-                    );
-                    dave_ui.permission_request_ui(request, None, ui);
-                    ui.add_space(8.0);
-                }
-            });
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(egui::Vec2::new(460.0, 180.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    let mut input = String::new();
+                    let mut focus = false;
+                    let mut nav = BlockNav::default();
+                    for request in &requests {
+                        let mut dave_ui = DaveUi::new(
+                            false,
+                            1,
+                            &[],
+                            &mut input,
+                            &mut focus,
+                            &mut nav,
+                            AiMode::Agentic,
+                        );
+                        dave_ui.permission_request_ui(request, None, ui);
+                        ui.add_space(8.0);
+                    }
+                }),
+        );
 
         harness.run();
         harness.snapshot("responded_permission_widgets");
@@ -4906,27 +4910,29 @@ mod tests {
             ),
         ];
 
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(egui::Vec2::new(460.0, 320.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                let mut input = String::new();
-                let mut focus = false;
-                let mut nav = BlockNav::default();
-                for request in &requests {
-                    let mut dave_ui = DaveUi::new(
-                        false,
-                        1,
-                        &[],
-                        &mut input,
-                        &mut focus,
-                        &mut nav,
-                        AiMode::Agentic,
-                    );
-                    dave_ui.permission_request_ui(request, None, ui);
-                    ui.add_space(8.0);
-                }
-            });
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(egui::Vec2::new(460.0, 320.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    let mut input = String::new();
+                    let mut focus = false;
+                    let mut nav = BlockNav::default();
+                    for request in &requests {
+                        let mut dave_ui = DaveUi::new(
+                            false,
+                            1,
+                            &[],
+                            &mut input,
+                            &mut focus,
+                            &mut nav,
+                            AiMode::Agentic,
+                        );
+                        dave_ui.permission_request_ui(request, None, ui);
+                        ui.add_space(8.0);
+                    }
+                }),
+        );
 
         harness.run();
         // "Allowed" and "Denied" are each unique here, so clicking those status
@@ -5135,15 +5141,17 @@ mod tests {
                 description: None,
             },
         ];
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(egui::Vec2::new(420.0, 120.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                for rt in &running {
-                    DaveUi::tool_running_ui(rt, ui);
-                    ui.add_space(4.0);
-                }
-            });
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(egui::Vec2::new(420.0, 120.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    for rt in &running {
+                        DaveUi::tool_running_ui(rt, ui);
+                        ui.add_space(4.0);
+                    }
+                }),
+        );
 
         harness.run();
         harness.snapshot("running_tool_rows");
@@ -5216,14 +5224,16 @@ mod tests {
     fn snapshot_system_notice_rows() {
         let context = SystemMessage::from(CONTEXT_REPLY);
         let model = SystemMessage::from("Model set to `opus` for the next turn");
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(egui::Vec2::new(460.0, 200.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                DaveUi::system_message_ui(&context, true, ui);
-                ui.add_space(4.0);
-                DaveUi::system_message_ui(&model, true, ui);
-            });
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(egui::Vec2::new(460.0, 200.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    DaveUi::system_message_ui(&context, true, ui);
+                    ui.add_space(4.0);
+                    DaveUi::system_message_ui(&model, true, ui);
+                }),
+        );
         harness.run();
         harness.snapshot("system_notice_rows");
     }
@@ -5233,16 +5243,18 @@ mod tests {
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_executed_tool_results() {
         let results = executed_tool_fixtures();
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(egui::Vec2::new(420.0, 120.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                let mut nav = BlockNav::default();
-                for result in &results {
-                    DaveUi::executed_tool_ui(result, &mut nav, ui);
-                    ui.add_space(4.0);
-                }
-            });
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(egui::Vec2::new(420.0, 120.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    let mut nav = BlockNav::default();
+                    for result in &results {
+                        DaveUi::executed_tool_ui(result, &mut nav, ui);
+                        ui.add_space(4.0);
+                    }
+                }),
+        );
 
         harness.run();
         harness.snapshot("executed_tool_results");
@@ -5257,16 +5269,18 @@ mod tests {
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_executed_tool_results_hover() {
         let results = executed_tool_fixtures();
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(egui::Vec2::new(420.0, 120.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                let mut nav = BlockNav::default();
-                for result in &results {
-                    DaveUi::executed_tool_ui(result, &mut nav, ui);
-                    ui.add_space(4.0);
-                }
-            });
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(egui::Vec2::new(420.0, 120.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    let mut nav = BlockNav::default();
+                    for result in &results {
+                        DaveUi::executed_tool_ui(result, &mut nav, ui);
+                        ui.add_space(4.0);
+                    }
+                }),
+        );
 
         // Park the pointer over the first (collapsible) row so the hover
         // highlight paints. The first row sits a few px below the top margin.
@@ -5285,21 +5299,23 @@ mod tests {
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_executed_tool_results_expanded() {
         let results = executed_tool_fixtures();
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(egui::Vec2::new(420.0, 200.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                // Seed the ls row's disclosure open so the stdout block renders.
-                // `executed_tool_ui` keys its expand flag off `exec_output` +
-                // summary against this same `ui`'s id, so the key matches.
-                let expand_id = ui.scope_id().with("exec_output").with("`ls -la crates`");
-                ui.data_mut(|d| d.insert_temp(expand_id, true));
-                let mut nav = BlockNav::default();
-                for result in &results {
-                    DaveUi::executed_tool_ui(result, &mut nav, ui);
-                    ui.add_space(4.0);
-                }
-            });
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(egui::Vec2::new(420.0, 200.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    // Seed the ls row's disclosure open so the stdout block renders.
+                    // `executed_tool_ui` keys its expand flag off `exec_output` +
+                    // summary against this same `ui`'s id, so the key matches.
+                    let expand_id = ui.scope_id().with("exec_output").with("`ls -la crates`");
+                    ui.data_mut(|d| d.insert_temp(expand_id, true));
+                    let mut nav = BlockNav::default();
+                    for result in &results {
+                        DaveUi::executed_tool_ui(result, &mut nav, ui);
+                        ui.add_space(4.0);
+                    }
+                }),
+        );
 
         harness.run();
         harness.snapshot("executed_tool_results_expanded");
@@ -5403,48 +5419,50 @@ mod tests {
             None,
         );
 
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(egui::Vec2::new(460.0, 200.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                // Fill the harness so the full-width row highlights sit on the
-                // panel rather than running off it.
-                ui.set_width(ui.available_width());
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(egui::Vec2::new(460.0, 200.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    // Fill the harness so the full-width row highlights sit on the
+                    // panel rather than running off it.
+                    ui.set_width(ui.available_width());
 
-                // Collapse the Bash row so the cursor lands on a one-line row,
-                // which is what a keyboard walk through a transcript mostly
-                // sees. Same `exec_output` + summary key `executed_tool_ui` uses.
-                let expand_id = ui.scope_id().with("exec_output").with("`ls -la crates`");
-                ui.data_mut(|d| d.insert_temp(expand_id, false));
+                    // Collapse the Bash row so the cursor lands on a one-line row,
+                    // which is what a keyboard walk through a transcript mostly
+                    // sees. Same `exec_output` + summary key `executed_tool_ui` uses.
+                    let expand_id = ui.scope_id().with("exec_output").with("`ls -la crates`");
+                    ui.data_mut(|d| d.insert_temp(expand_id, false));
 
-                let mut nav = BlockNav::default();
-                nav.seed_cursor(0);
-                for result in &results {
-                    DaveUi::executed_tool_ui(result, &mut nav, ui);
-                    ui.add_space(4.0);
-                }
+                    let mut nav = BlockNav::default();
+                    nav.seed_cursor(0);
+                    for result in &results {
+                        DaveUi::executed_tool_ui(result, &mut nav, ui);
+                        ui.add_space(4.0);
+                    }
 
-                ui.add_space(8.0);
-                let mut nav = BlockNav::default();
-                nav.seed_cursor(0);
-                DaveUi::subagent_ui(&subagent, &mut nav, ui);
+                    ui.add_space(8.0);
+                    let mut nav = BlockNav::default();
+                    nav.seed_cursor(0);
+                    DaveUi::subagent_ui(&subagent, &mut nav, ui);
 
-                ui.add_space(8.0);
-                let mut nav = BlockNav::default();
-                nav.seed_cursor(0);
-                let mut input = String::new();
-                let mut focus = false;
-                let mut dave_ui = DaveUi::new(
-                    false,
-                    1,
-                    &[],
-                    &mut input,
-                    &mut focus,
-                    &mut nav,
-                    AiMode::Agentic,
-                );
-                dave_ui.permission_request_ui(&request, None, ui);
-            });
+                    ui.add_space(8.0);
+                    let mut nav = BlockNav::default();
+                    nav.seed_cursor(0);
+                    let mut input = String::new();
+                    let mut focus = false;
+                    let mut dave_ui = DaveUi::new(
+                        false,
+                        1,
+                        &[],
+                        &mut input,
+                        &mut focus,
+                        &mut nav,
+                        AiMode::Agentic,
+                    );
+                    dave_ui.permission_request_ui(&request, None, ui);
+                }),
+        );
 
         harness.run();
         harness.snapshot("block_cursor_rows");
@@ -5495,16 +5513,18 @@ mod tests {
                 is_error: false,
             },
         ];
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(egui::Vec2::new(460.0, 120.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                let mut nav = BlockNav::default();
-                for result in &results {
-                    DaveUi::executed_tool_ui(result, &mut nav, ui);
-                    ui.add_space(4.0);
-                }
-            });
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(egui::Vec2::new(460.0, 120.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    let mut nav = BlockNav::default();
+                    for result in &results {
+                        DaveUi::executed_tool_ui(result, &mut nav, ui);
+                        ui.add_space(4.0);
+                    }
+                }),
+        );
 
         harness.run();
         harness.snapshot("agentic_tool_summaries");
@@ -5660,18 +5680,20 @@ mod tests {
             description: None,
             is_error: false,
         }];
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(egui::Vec2::new(460.0, 140.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                ui.vertical(|ui| {
-                    let mut nav = BlockNav::default();
-                    for result in &results {
-                        DaveUi::executed_tool_ui(result, &mut nav, ui);
-                        ui.add_space(4.0);
-                    }
-                });
-            });
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(egui::Vec2::new(460.0, 140.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    ui.vertical(|ui| {
+                        let mut nav = BlockNav::default();
+                        for result in &results {
+                            DaveUi::executed_tool_ui(result, &mut nav, ui);
+                            ui.add_space(4.0);
+                        }
+                    });
+                }),
+        );
 
         harness.run();
         harness.snapshot("websearch_result");
@@ -5699,24 +5721,26 @@ mod tests {
             description: None,
             is_error: false,
         }];
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(egui::Vec2::new(700.0, 260.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        ui.vertical(|ui| {
-                            let expand_id = ui.scope_id().with("exec_output").with(summary);
-                            ui.data_mut(|d| d.insert_temp(expand_id, true));
-                            let mut nav = BlockNav::default();
-                            for result in &results {
-                                DaveUi::executed_tool_ui(result, &mut nav, ui);
-                                ui.add_space(4.0);
-                            }
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(egui::Vec2::new(700.0, 260.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                let expand_id = ui.scope_id().with("exec_output").with(summary);
+                                ui.data_mut(|d| d.insert_temp(expand_id, true));
+                                let mut nav = BlockNav::default();
+                                for result in &results {
+                                    DaveUi::executed_tool_ui(result, &mut nav, ui);
+                                    ui.add_space(4.0);
+                                }
+                            });
                         });
-                    });
-            });
+                }),
+        );
 
         harness.run();
         harness.snapshot("tool_output_wraps_in_viewport");
@@ -5743,22 +5767,24 @@ mod tests {
             description: None,
             is_error: false,
         }];
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(egui::Vec2::new(460.0, 80.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                ui.vertical(|ui| {
-                    // Bash-output rows start expanded; force the collapsed state
-                    // to exercise the header-truncation path this test guards.
-                    let expand_id = ui.scope_id().with("exec_output").with(summary);
-                    ui.data_mut(|d| d.insert_temp(expand_id, false));
-                    let mut nav = BlockNav::default();
-                    for result in &results {
-                        DaveUi::executed_tool_ui(result, &mut nav, ui);
-                        ui.add_space(4.0);
-                    }
-                });
-            });
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(egui::Vec2::new(460.0, 80.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    ui.vertical(|ui| {
+                        // Bash-output rows start expanded; force the collapsed state
+                        // to exercise the header-truncation path this test guards.
+                        let expand_id = ui.scope_id().with("exec_output").with(summary);
+                        ui.data_mut(|d| d.insert_temp(expand_id, false));
+                        let mut nav = BlockNav::default();
+                        for result in &results {
+                            DaveUi::executed_tool_ui(result, &mut nav, ui);
+                            ui.add_space(4.0);
+                        }
+                    });
+                }),
+        );
 
         harness.run();
         harness.snapshot("collapsed_bash_header_truncates");
@@ -5902,19 +5928,21 @@ mod tests {
             description: None,
             is_error: false,
         }];
-        let mut harness = notedeck::test_harness::lenient_builder()
-            .with_size(egui::Vec2::new(520.0, 360.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(move |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        let mut nav = BlockNav::default();
-                        for result in &results {
-                            DaveUi::executed_tool_ui(result, &mut nav, ui);
-                        }
-                    });
-            });
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            notedeck::test_harness::lenient_builder()
+                .with_size(egui::Vec2::new(520.0, 360.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(move |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            let mut nav = BlockNav::default();
+                            for result in &results {
+                                DaveUi::executed_tool_ui(result, &mut nav, ui);
+                            }
+                        });
+                }),
+        );
         harness.run();
         harness.snapshot("clamped_bash_output");
 
@@ -5942,43 +5970,51 @@ mod tests {
         ];
         let themes = [notedeck::theme::dark_mode(), notedeck::theme::light_mode()];
 
-        let mut harness = Harness::builder()
-            .with_size(egui::Vec2::new(1000.0, 370.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui_state(
-                move |ui, i18n: &mut Localization| {
-                    ui.columns(themes.len(), |columns| {
-                        for (col, (ui, visuals)) in columns.iter_mut().zip(&themes).enumerate() {
-                            ui.style_mut().visuals = visuals.clone();
-                            ui.painter()
-                                .rect_filled(ui.max_rect(), 0.0, visuals.panel_fill);
-                            for (row, (text, mode)) in rows.into_iter().enumerate() {
-                                let mut text = text.to_string();
-                                // Eight inputs in one ui would share one
-                                // ScrollArea id, which a debug build paints
-                                // over the render as an id-clash warning.
-                                ui.push_id((col, row), |ui| {
-                                    egui::Frame::new()
-                                        .inner_margin(egui::Margin::same(
-                                            notedeck::tokens::SPACING_SM as i8,
-                                        ))
-                                        .fill(input_fill(ui.visuals(), mode != InputMode::Insert))
-                                        .corner_radius(notedeck::tokens::RADIUS_LG)
-                                        .show(ui, |ui| {
-                                            InputboxLayout::new(&mut text, i18n, mode)
-                                                .show_stop(
-                                                    mode == InputMode::Normal { can_stop: true },
-                                                )
-                                                .show(ui);
-                                        });
-                                });
-                                ui.add_space(notedeck::tokens::SPACING_SM);
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            Harness::builder()
+                .with_size(egui::Vec2::new(1000.0, 370.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui_state(
+                    move |ui, i18n: &mut Localization| {
+                        ui.columns(themes.len(), |columns| {
+                            for (col, (ui, visuals)) in columns.iter_mut().zip(&themes).enumerate()
+                            {
+                                ui.style_mut().visuals = visuals.clone();
+                                ui.painter()
+                                    .rect_filled(ui.max_rect(), 0.0, visuals.panel_fill);
+                                for (row, (text, mode)) in rows.into_iter().enumerate() {
+                                    let mut text = text.to_string();
+                                    // Eight inputs in one ui would share one
+                                    // ScrollArea id, which a debug build paints
+                                    // over the render as an id-clash warning.
+                                    ui.push_id((col, row), |ui| {
+                                        egui::Frame::new()
+                                            .inner_margin(egui::Margin::same(
+                                                notedeck::tokens::SPACING_SM as i8,
+                                            ))
+                                            .fill(input_fill(
+                                                ui.visuals(),
+                                                mode != InputMode::Insert,
+                                            ))
+                                            .corner_radius(notedeck::tokens::RADIUS_LG)
+                                            .show(ui, |ui| {
+                                                InputboxLayout::new(&mut text, i18n, mode)
+                                                    .show_stop(
+                                                        mode == InputMode::Normal {
+                                                            can_stop: true,
+                                                        },
+                                                    )
+                                                    .show(ui);
+                                            });
+                                    });
+                                    ui.add_space(notedeck::tokens::SPACING_SM);
+                                }
                             }
-                        }
-                    });
-                },
-                Localization::default(),
-            );
+                        });
+                    },
+                    Localization::default(),
+                ),
+        );
         harness.run();
         harness.snapshot("dave_input_normal_mode_cue");
     }

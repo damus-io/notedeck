@@ -448,25 +448,27 @@ mod tests {
     #[test]
     #[ignore] // requires lavapipe — run via scripts/snapshot-test
     fn snapshot_chevron_badge() {
-        let mut harness = Harness::builder()
-            .with_size(Vec2::new(220.0, 40.0))
-            .renderer(notedeck::software_renderer())
-            .build_ui(|ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    for variant in [
-                        BadgeVariant::Warning,
-                        BadgeVariant::Destructive,
-                        BadgeVariant::Info,
-                    ] {
-                        StatusBadge::new("Next")
-                            .icon(BadgeIcon::ChevronRight)
-                            .variant(variant)
-                            .min_size(Vec2::new(40.0, 28.0))
-                            .show(ui);
-                    }
-                });
-            });
+        let mut harness = notedeck::test_harness::with_notedeck_style(
+            Harness::builder()
+                .with_size(Vec2::new(220.0, 40.0))
+                .renderer(notedeck::software_renderer())
+                .build_ui(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        for variant in [
+                            BadgeVariant::Warning,
+                            BadgeVariant::Destructive,
+                            BadgeVariant::Info,
+                        ] {
+                            StatusBadge::new("Next")
+                                .icon(BadgeIcon::ChevronRight)
+                                .variant(variant)
+                                .min_size(Vec2::new(40.0, 28.0))
+                                .show(ui);
+                        }
+                    });
+                }),
+        );
 
         harness.run();
         harness.snapshot("chevron_badge");

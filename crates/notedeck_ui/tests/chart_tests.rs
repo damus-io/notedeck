@@ -110,10 +110,12 @@ fn harness(kind: Kind, series: Vec<Series<'static>>) -> Harness<'static, ChartSt
 
 /// A harness that renders through lavapipe, for snapshots.
 fn render_harness(kind: Kind, series: Vec<Series<'static>>) -> Harness<'static, ChartState> {
-    Harness::builder()
-        .with_size(egui::vec2(640.0, 320.0))
-        .renderer(notedeck::software_renderer())
-        .build_ui_state(draw, state(kind, series))
+    notedeck::test_harness::with_notedeck_style(
+        Harness::builder()
+            .with_size(egui::vec2(640.0, 320.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(draw, state(kind, series)),
+    )
 }
 
 /// Hovers bucket `bucket` and returns the chart's response once the tooltip

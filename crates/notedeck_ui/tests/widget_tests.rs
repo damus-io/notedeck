@@ -58,10 +58,10 @@ fn menu_items(ui: &mut egui::Ui) {
 }
 
 fn context_menu_harness(padding: MenuPadding) -> Harness<'static> {
-    Harness::new_ui(move |ui| {
+    notedeck::test_harness::with_notedeck_style(Harness::new_ui(move |ui| {
         let resp = ui.button("...");
         stationary_arbitrary_menu_button_padding(resp, padding, menu_items);
-    })
+    }))
 }
 
 #[test]
@@ -100,10 +100,12 @@ fn test_context_menu_thin_snapshot() {
 // ---------------------------------------------------------------------------
 
 fn icon_harness(f: impl Fn(&mut egui::Ui) + 'static) -> Harness<'static> {
-    Harness::builder()
-        .with_size(egui::Vec2::new(64.0, 64.0))
-        .renderer(notedeck::software_renderer())
-        .build_ui(f)
+    notedeck::test_harness::with_notedeck_style(
+        Harness::builder()
+            .with_size(egui::Vec2::new(64.0, 64.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(f),
+    )
 }
 
 #[test]
@@ -243,13 +245,15 @@ fn snapshot_headway_icon() {
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_search_input() {
-    let mut harness = Harness::builder()
-        .with_size(egui::Vec2::new(300.0, 50.0))
-        .renderer(notedeck::software_renderer())
-        .build_ui(|ui| {
-            let mut query = String::new();
-            ui.add(search_input_box(&mut query, "Search..."));
-        });
+    let mut harness = notedeck::test_harness::with_notedeck_style(
+        Harness::builder()
+            .with_size(egui::Vec2::new(300.0, 50.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(|ui| {
+                let mut query = String::new();
+                ui.add(search_input_box(&mut query, "Search..."));
+            }),
+    );
     harness.run();
     harness.snapshot("search_input");
 }
@@ -257,17 +261,19 @@ fn snapshot_search_input() {
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_toolbar_row() {
-    let mut harness = Harness::builder()
-        .with_size(egui::Vec2::new(300.0, 64.0))
-        .renderer(notedeck::software_renderer())
-        .build_ui(|ui| {
-            ui.horizontal(|ui| {
-                icons::home_button(ui, 24.0, true);
-                ui.add(icons::search_button(egui::Color32::WHITE, 1.5, false));
-                icons::chat_button(ui, 24.0, false);
-                icons::notifications_button(ui, 24.0, false, true);
-            });
-        });
+    let mut harness = notedeck::test_harness::with_notedeck_style(
+        Harness::builder()
+            .with_size(egui::Vec2::new(300.0, 64.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(|ui| {
+                ui.horizontal(|ui| {
+                    icons::home_button(ui, 24.0, true);
+                    ui.add(icons::search_button(egui::Color32::WHITE, 1.5, false));
+                    icons::chat_button(ui, 24.0, false);
+                    icons::notifications_button(ui, 24.0, false, true);
+                });
+            }),
+    );
     harness.run();
     harness.snapshot("toolbar_row");
 }
@@ -338,23 +344,25 @@ fn git_patch_snapshot(name: &str, patch: &str, width: f32) {
 
     let patch = GitPatch::parse(patch);
     let state = GitPatchState::new(&patch, &mut notedeck::Localization::default());
-    let mut harness = Harness::builder()
-        .with_size(egui::Vec2::new(width, 900.0))
-        .renderer(notedeck::software_renderer())
-        .build_ui_state(
-            |ui, (patch, state): &mut (GitPatch, GitPatchState)| {
-                // Fonts set during a pass load at the start of the next one, so
-                // the first pass only installs them: drawing in egui's default
-                // fonts, which lack the rename arrow, would panic.
-                if ui.ctx().cumulative_pass_nr() == 0 {
-                    notedeck::fonts::setup_fonts(ui.ctx());
-                    return;
-                }
-                ui.spacing_mut().item_spacing.x = 0.0;
-                git_patch_ui(patch, state, ui);
-            },
-            (patch, state),
-        );
+    let mut harness = notedeck::test_harness::with_notedeck_style(
+        Harness::builder()
+            .with_size(egui::Vec2::new(width, 900.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui_state(
+                |ui, (patch, state): &mut (GitPatch, GitPatchState)| {
+                    // Fonts set during a pass load at the start of the next one, so
+                    // the first pass only installs them: drawing in egui's default
+                    // fonts, which lack the rename arrow, would panic.
+                    if ui.ctx().cumulative_pass_nr() == 0 {
+                        notedeck::fonts::setup_fonts(ui.ctx());
+                        return;
+                    }
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    git_patch_ui(patch, state, ui);
+                },
+                (patch, state),
+            ),
+    );
     harness.run();
     harness.snapshot(name);
 }
@@ -496,38 +504,40 @@ fn monospace_label_sits_on_the_baseline_of_a_centred_row() {
 fn snapshot_text_selection() {
     use egui::text::{CCursor, CCursorRange};
 
-    let mut h = Harness::builder()
-        .with_size(egui::Vec2::new(360.0, 96.0))
-        .renderer(notedeck::software_renderer())
-        .build_ui(|ui| {
-            let themes = [notedeck::theme::dark_mode(), notedeck::theme::light_mode()];
-            for (row, visuals) in themes.iter().enumerate() {
-                let rect = egui::Rect::from_min_size(
-                    egui::pos2(0.0, row as f32 * 48.0),
-                    egui::vec2(360.0, 48.0),
-                );
-                let painter = ui.painter();
-                painter.rect_filled(rect, 0.0, visuals.panel_fill);
-                let mut galley = painter.layout_no_wrap(
-                    "The quick brown fox jumps over".to_owned(),
-                    egui::FontId::proportional(20.0),
-                    visuals.text_color(),
-                );
-                // "quick brown fox"
-                let selected = CCursorRange::two(CCursor::new(4), CCursor::new(19));
-                egui::text_selection::visuals::paint_text_selection(
-                    &mut galley,
-                    visuals,
-                    &selected,
-                    None,
-                );
-                painter.galley(
-                    rect.min + egui::vec2(16.0, 12.0),
-                    galley,
-                    visuals.text_color(),
-                );
-            }
-        });
+    let mut h = notedeck::test_harness::with_notedeck_style(
+        Harness::builder()
+            .with_size(egui::Vec2::new(360.0, 96.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(|ui| {
+                let themes = [notedeck::theme::dark_mode(), notedeck::theme::light_mode()];
+                for (row, visuals) in themes.iter().enumerate() {
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(0.0, row as f32 * 48.0),
+                        egui::vec2(360.0, 48.0),
+                    );
+                    let painter = ui.painter();
+                    painter.rect_filled(rect, 0.0, visuals.panel_fill);
+                    let mut galley = painter.layout_no_wrap(
+                        "The quick brown fox jumps over".to_owned(),
+                        egui::FontId::proportional(20.0),
+                        visuals.text_color(),
+                    );
+                    // "quick brown fox"
+                    let selected = CCursorRange::two(CCursor::new(4), CCursor::new(19));
+                    egui::text_selection::visuals::paint_text_selection(
+                        &mut galley,
+                        visuals,
+                        &selected,
+                        None,
+                    );
+                    painter.galley(
+                        rect.min + egui::vec2(16.0, 12.0),
+                        galley,
+                        visuals.text_color(),
+                    );
+                }
+            }),
+    );
     h.run();
     h.snapshot("text_selection");
 }

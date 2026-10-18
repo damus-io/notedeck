@@ -1455,7 +1455,7 @@ mod tests {
         if snapshot {
             builder = builder.renderer(notedeck::software_renderer());
         }
-        builder.build_ui_state(
+        notedeck::test_harness::with_notedeck_style(builder.build_ui_state(
             |ui, state: &mut MapState| {
                 let response =
                     state
@@ -1480,7 +1480,7 @@ mod tests {
                     action: None,
                 }
             },
-        )
+        ))
     }
 
     /// Move the pointer onto the node labelled `code`. A node's accesskit
