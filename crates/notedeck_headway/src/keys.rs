@@ -2002,6 +2002,16 @@ mod tests {
         harness.run();
         harness.get_by_label("All issues").click();
         harness.run();
+        // Grouped by status and ordered by priority, the layout these tests
+        // were written against; the default is ungrouped, by last updated.
+        harness.state_mut().state.list_mut().set_layout(
+            headway::query::Grouping {
+                by: headway::query::GroupBy::Status,
+                ..Default::default()
+            },
+            headway::query::Sorting::by(headway::query::SortBy::Priority),
+        );
+        harness.run();
         for name in folded {
             let key = crate::ui::ListState::status_group(name);
             let list = harness.state_mut().state.list_mut();

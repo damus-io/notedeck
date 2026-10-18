@@ -17,15 +17,15 @@
 //! rollup, labels, estimate, blockers, due date and when it changed — each a
 //! [`DisplayProp`] the header's Display menu turns on and off.
 //!
-//! The rows are gathered under group headers (headway:headway/office-flower-churn),
-//! by status unless the Display menu says otherwise, each split again by a
-//! sub-grouping if one is set: [`headway::query::group`], the same grouping
+//! The rows can be gathered under group headers (headway:headway/office-flower-churn)
+//! when the Display menu picks a grouping (the list starts ungrouped), each
+//! split again by a sub-grouping if one is set: [`headway::query::group`], the same grouping
 //! `headway list --group` prints. A header folds its rows away, and its `+`
 //! adds a card already in that group (see [`group_add`]).
 //!
 //! The rows are ordered before they're grouped
-//! (headway:headway/battle-stock-expire), by priority unless the Display menu
-//! says otherwise: [`headway::query::sort_order`], what `headway list --sort`
+//! (headway:headway/battle-stock-expire), most recently updated first unless
+//! the Display menu says otherwise (headway:headway/join-drum-margin): [`headway::query::sort_order`], what `headway list --sort`
 //! prints. Ordered by work order, the rows `headway next --ready` would hand
 //! out wear an accent bar, and a row on the board showing drags into a new
 //! place in that order (see [`work_order_drop`]).
@@ -146,10 +146,10 @@ pub(crate) struct ListState {
     /// header's Display menu; a saved view keeps it.
     display: DisplayProps,
     /// How the rows are gathered under headers, set in the Display menu.
-    /// By status unless changed, as Linear's list is.
+    /// Ungrouped unless changed.
     grouping: Grouping,
-    /// How the rows are ordered, set in the Display menu. By priority unless
-    /// changed, as Linear's list is.
+    /// How the rows are ordered, set in the Display menu. Most recently
+    /// updated first unless changed.
     sorting: Sorting,
     /// The groups [`rows`](Self::rows) fall in, their rows as indices into
     /// it. One [`GroupKey::All`] group while the list isn't grouped.
@@ -186,11 +186,8 @@ impl Default for ListState {
             seen: None,
             count: KeyedText::default(),
             display: DisplayProps::default(),
-            grouping: Grouping {
-                by: GroupBy::Status,
-                ..Grouping::default()
-            },
-            sorting: Sorting::by(SortBy::Priority),
+            grouping: Grouping::default(),
+            sorting: Sorting::by(SortBy::Updated),
             groups: Vec::new(),
             collapsed: std::collections::HashSet::new(),
             entries: Vec::new(),
@@ -659,6 +656,15 @@ impl ListState {
     pub(crate) fn set_cursor(&mut self, to: ListCursor) {
         self.cursor = Some(to);
         self.cursor_at = None;
+    }
+
+    /// Lay the list out by `grouping` and `sorting`, for a test that needs
+    /// a layout other than the default (ungrouped, most recently updated
+    /// first).
+    #[cfg(test)]
+    pub(crate) fn set_layout(&mut self, grouping: Grouping, sorting: Sorting) {
+        self.grouping = grouping;
+        self.sorting = sorting;
     }
 
     /// The header key of status group `name`, for a test.
@@ -2658,10 +2664,17 @@ mod tests {
 
     /// A list over [`grid`], on All issues (Active would drop `c`, the last
     /// column, as done) and grouped by status: `a` (1, 2, 3), `b` (4) and `c`
-    /// (5, 6), each under its header.
+    /// (5, 6), each under its header. Groups and orders the list itself (by
+    /// priority, the order these tests were written against) rather than
+    /// leaning on the default layout, which is ungrouped.
     fn grouped() -> ListState {
         let mut list = ListState {
             base: BuiltinView::All.query().to_string(),
+            grouping: Grouping {
+                by: GroupBy::Status,
+                ..Grouping::default()
+            },
+            sorting: Sorting::by(SortBy::Priority),
             ..ListState::default()
         };
         list.refresh(&sources(grid()));

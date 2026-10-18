@@ -643,6 +643,24 @@ fn open_list_all_boards(harness: &mut Harness<'static, HeadwayTestState>) {
     wait_for_label(harness, "All boards ▾");
 }
 
+/// Group the open issue list by status through its Display menu, as a person
+/// would: the list starts ungrouped (headway:headway/join-drum-margin), and
+/// the tests that exercise headers, folds and in-group moves need groups.
+/// The menu's rows go Grouping, Sub-grouping, Ordering, then Display
+/// properties, so the first "Status" chip is the grouping's.
+fn group_list_by_status(harness: &mut Harness<'static, HeadwayTestState>) {
+    harness.get_by_label("☰ Display").click();
+    wait_for_label(harness, "Grouping");
+    harness
+        .query_all_by_label("Status")
+        .next()
+        .expect("the Grouping menu's Status chip")
+        .click();
+    harness.run_ok();
+    harness.press_key(egui::Key::Escape);
+    wait_for_absent(harness, "Sub-grouping");
+}
+
 /// Pump frames (with small sleeps, since ndb ingest is async) until a widget
 /// with `label` appears, or panic after a deadline.
 fn wait_for_label(harness: &mut Harness<'static, HeadwayTestState>, label: &str) {
@@ -1682,7 +1700,7 @@ fn group_headers(harness: &Harness<'static, HeadwayTestState>) -> Vec<String> {
 }
 
 /// The issue list groups its rows (headway:headway/office-flower-churn): by
-/// status by default, a header folds its rows away and back, a header's `+`
+/// status once the Display menu says so, a header folds its rows away and back, a header's `+`
 /// adds a card that lands in that group, and grouping by priority gives the
 /// card added under a priority's header that priority. Behavioural
 /// (accesskit only), so it runs without lavapipe.
@@ -1695,6 +1713,7 @@ fn issue_list_groups_rows_folds_and_adds_to_a_group() {
 
     open_list_all_boards(&mut harness);
     wait_for_label(&mut harness, SIDE_CARD);
+    group_list_by_status(&mut harness);
     // Grouped by status: the side board's Todo and the demo board's are one
     // group, and the rows drop the status circle the header already says.
     let headers = group_headers(&harness);
@@ -1786,6 +1805,7 @@ fn issue_list_fold_keys_fold_groups_and_skip_their_rows() {
     seed_side_board(&mut harness);
     open_list_all_boards(&mut harness);
     wait_for_label(&mut harness, SIDE_CARD);
+    group_list_by_status(&mut harness);
     let headers = group_headers(&harness);
     assert!(headers.len() >= 2, "{headers:?}");
     assert!(
@@ -1822,6 +1842,7 @@ fn snapshot_headway_list_group_cursor() {
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
     seed_side_board(&mut harness);
     open_issue_list(&mut harness);
+    group_list_by_status(&mut harness);
     press_board_keys(&mut harness, &[egui::Key::J]);
     press_board_keys(&mut harness, &[egui::Key::CloseBracket, egui::Key::G]);
     harness.run_steps(3);
@@ -1840,6 +1861,7 @@ fn snapshot_headway_list_key_hints() {
     let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
     seed_side_board(&mut harness);
     open_issue_list(&mut harness);
+    group_list_by_status(&mut harness);
     harness.get_by_label("☰ Display").click();
     wait_for_label(&mut harness, "Ordering");
     harness.get_by_label("Work order").click();
@@ -1997,7 +2019,7 @@ fn demo_card_ref(harness: &mut Harness<'static, HeadwayTestState>, title: &str) 
     headway::wordid::card_ref(&view.id, card.id.bytes())
 }
 
-/// `J` in the issue list, ordered by work order
+/// `J` in the issue list, grouped by status and ordered by work order
 /// (headway:notedeck/until-object-oak): with the cursor on the earlier of
 /// Todo's two cards, it moves that card past the later one, written as the
 /// same sequence edit a drag makes, so the board's own walk follows; the
@@ -2014,6 +2036,7 @@ fn issue_list_shift_j_reorders_in_work_order() {
 
     press_board_keys(&mut harness, &[egui::Key::G, egui::Key::I]);
     wait_for_label(&mut harness, INLINE);
+    group_list_by_status(&mut harness);
     harness.get_by_label("☰ Display").click();
     wait_for_label(&mut harness, "Ordering");
     harness.get_by_label("Work order").click();
@@ -2127,8 +2150,9 @@ fn archived_cards_are_searchable_and_open_their_detail() {
     harness.get_by_label(DROPPED);
 }
 
-/// The issue list across the demo board and a second one, All toggled on so
-/// the done card shows too, grouped by status under its headers.
+/// The issue list across the demo board and a second one, on All issues so
+/// the done card shows too, in the default layout: one ungrouped list, most
+/// recently updated first (headway:headway/join-drum-margin).
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_headway_list() {
@@ -2167,6 +2191,8 @@ fn list_hover_snapshot(theme: egui::ThemePreference, name: &str) {
     harness.ctx.options_mut(|o| o.theme_preference = theme);
     seed_side_board(&mut harness);
     open_issue_list(&mut harness);
+    // Grouped, so the header bands the hover must stay quieter than show.
+    group_list_by_status(&mut harness);
     harness.get_by_label(SIDE_CARD).hover();
     harness.run_steps(3);
     harness.snapshot(name);
