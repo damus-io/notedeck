@@ -17,6 +17,11 @@ pub const INGEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Each transaction is given a record id (`t:1`, `t:2`, …), since every one
 /// needs one.
 pub fn books(text: &str) -> Books {
+    books_with(text, &Edits::default())
+}
+
+/// [`books`], derived with `edits`.
+pub fn books_with(text: &str, edits: &Edits) -> Books {
     let tmp = tempfile::tempdir().unwrap();
     let store = JournalStore::new(tmp.path());
     let header = SegmentHeader {
@@ -39,12 +44,5 @@ pub fn books(text: &str) -> Books {
     store
         .write_segment(&header, &Journal::parse(&text).journal)
         .unwrap();
-    Books::load(
-        &store,
-        LayerFilter::All,
-        &HashSet::new(),
-        &Edits::default(),
-        "CAD",
-    )
-    .unwrap()
+    Books::load(&store, LayerFilter::All, &HashSet::new(), edits, "CAD").unwrap()
 }

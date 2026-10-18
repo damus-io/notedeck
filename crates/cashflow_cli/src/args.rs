@@ -105,6 +105,8 @@ pub enum Command {
     Account(AccountCommand),
     /// `cashflow goals [--board <slug>]... [--author <key>] [--headway-db <path>] [--json]`.
     Goals(GoalsArgs),
+    /// `cashflow skills [books options] [--json]`.
+    Skills { books: BooksArgs, json: bool },
 }
 
 /// One `cashflow account` subcommand.
@@ -571,6 +573,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
                 json,
             }),
             "goals",
+        )?,
+        "skills" => no_positionals(
+            positionals,
+            Command::Skills {
+                books: books_args(&flags)?,
+                json,
+            },
+            "skills",
         )?,
         other => unreachable!("'{other}' has a help entry but no parser arm"),
     };
@@ -1806,6 +1816,18 @@ mod tests {
             })
         );
         assert!(err_of(&["goals", "extra"]).contains("goals"));
+        assert_eq!(
+            run_of(&["skills", "--layer", "cards", "--json"]).command,
+            Command::Skills {
+                books: BooksArgs {
+                    filter: LayerFilter::Only(vec!["cards".to_owned()]),
+                    rules: None,
+                    home: DEFAULT_HOME.to_owned(),
+                },
+                json: true,
+            }
+        );
+        assert!(err_of(&["skills", "extra"]).contains("skills"));
     }
 
     #[test]

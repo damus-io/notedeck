@@ -9,7 +9,8 @@
 //! (`rule`), the per-transaction edits (`categorize`, `uncategorize`,
 //! `split`, `transfer`, `edits`), the triage queue (`unknown`), the chart
 //! of accounts' metadata and aliases (`account`), the goals on Headway
-//! cards (`goals`), and the help surface. The real importers and the vault's other
+//! cards (`goals`), the Adventure's skills (`skills`), and the help surface.
+//! The real importers and the vault's other
 //! records are later cards on headway:cashflow/flame-vault-near and
 //! headway:cashflow/luggage-insane-limit.
 //!
@@ -26,6 +27,7 @@ mod help;
 mod journal_cmd;
 mod prices_cmd;
 mod rule_cmd;
+mod skills_cmd;
 mod sync_cmd;
 mod vault_cmd;
 
@@ -191,5 +193,6 @@ async fn execute(run: Run) -> Result<(), String> {
             account_cmd::alias(&dir, &mut session, from, None, *write).await
         }
         Command::Goals(args) => goals_cmd::ls(&dir, args),
+        Command::Skills { books, json } => skills_cmd::skills(&dir, &run, books, *json).await,
     }
 }

@@ -485,6 +485,42 @@ or --headway-db; run any `headway` command to bring it up to date.",
         examples: &["cashflow goals", "cashflow goals --board money --json"],
     },
     CommandHelp {
+        name: "skills",
+        group: REPORTS,
+        summary: "The Adventure's skills: level and XP from the books",
+        usage: &[
+            "skills [--layer <name>]... [--except <name>]... [--rules <toml>] [--in <commodity>] [--json]",
+        ],
+        details: "\
+Level the Adventure view's skills from the categorized books, month by
+month, on the OSRS curve (level 99 = 13,034,431 XP), and print each skill's
+level, XP, the XP to its next level and what this month has earned so far.
+
+    Earning      income, 10 XP per unit of --in's commodity
+    Saving       a closed month's net, 20 XP per unit; nothing for a loss
+    Frugality    a closed month's expenses under the 6 months before, 10 per unit
+    Stacking     net sats into assets:*, 1 XP per 1,000
+    Bookkeeping  vault edits, in the month each was written: 10 per
+                 transaction triaged, 5 per one a rule takes (50 a rule),
+                 5 per transfer side linked, 50 per source imported
+    <project>    a chart-of-accounts project's revenue, 10 per unit
+
+Positive months in a row are a streak: each adds 5% to the next month's
+Earning and Saving, up to 25%. The same journal and vault give the same
+levels on every machine.",
+        options: books_options![
+            (
+                "--in <commodity>",
+                "Count money in this commodity [default: CAD]"
+            ),
+            ("--json", "Machine-readable output, the XP log included"),
+        ],
+        examples: &[
+            "cashflow skills",
+            "cashflow skills --json | jq '.total_level'",
+        ],
+    },
+    CommandHelp {
         name: "report",
         group: REPORTS,
         summary: "Balances, a register or the top accounts, for a quick look",

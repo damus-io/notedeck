@@ -10,3 +10,4 @@ caller divides by 86 400 itself and keeps its own `now()`.
 - headway:cashflow/junk-brave-fox — ~1 min: moving `Zone::date` into `cashflow::zone` for the synced setting kept its `div_euclid(86_400)` and clamp; with a `Date::from_unix_secs(secs, offset)` the three zone arms would each be one call
 - headway:cashflow/boat-burst-capital — ~1 min: a seventh `imported / 86_400` in `notedeck_cashflow::views::settings::model` for a source's last import, and `days() * 86_400` again in its test fixture
 - headway:cashflow/right-gain-gym — ~1 min: an eighth `days() * 86_400` (`noon()` in `notedeck_cashflow/tests/projects.rs`) to stamp board completions
+- headway:cashflow/regret-sing-attitude — ~1 min: a ninth `days() * 86_400` (`secs()` in `cashflow/src/adventure/tests.rs`) to stamp vault edits for Bookkeeping

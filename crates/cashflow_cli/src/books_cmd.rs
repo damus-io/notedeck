@@ -112,6 +112,24 @@ pub fn books_with(
     session: Option<&Session>,
     args: &BooksArgs,
 ) -> Result<Books, String> {
+    Ok(loaded_books(dir, session, args)?.books)
+}
+
+/// Books and the vault fold they were derived with.
+pub struct LoadedBooks {
+    /// The books.
+    pub books: Books,
+    /// What they were derived with, so a `Why` can be traced to its note.
+    pub inputs: DeriveInputs,
+}
+
+/// [`books_with`], keeping the [`DeriveInputs`] the books were derived
+/// with, for a command that reads where each edit came from.
+pub fn loaded_books(
+    dir: &CashflowDir,
+    session: Option<&Session>,
+    args: &BooksArgs,
+) -> Result<LoadedBooks, String> {
     let inputs = inputs(session, args)?;
     if let Some(session) = session {
         warn_missing(dir, session)?;
@@ -145,7 +163,7 @@ pub fn books_with(
             rejected.edit, rejected.problem
         );
     }
-    Ok(books)
+    Ok(LoadedBooks { books, inputs })
 }
 
 /// `cashflow export`: the derived ledger as canonical ledger-cli text.
