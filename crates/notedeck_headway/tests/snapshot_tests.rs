@@ -3868,13 +3868,7 @@ The queue is a snapshot taken when it opens:
 Changelog-Added: Review queue over In Review cards
 Headway: headway:headway/queue-over-review";
 
-/// The first paragraph of [`QUEUE_MESSAGE`]'s body, reflowed onto one line:
-/// all the collapsed pane shows of it.
-const QUEUE_BODY_FIRST: &str = "R opens a queue over the board's In Review column and n/p step \
-     through it, so a reviewer walks every finished card without going back \
-     to the board between them.";
-
-/// [`QUEUE_MESSAGE`]'s whole body, as the expanded pane shows it.
+/// [`QUEUE_MESSAGE`]'s whole body, as the pane shows it.
 const QUEUE_BODY_ALL: &str = "R opens a queue over the board's In Review column and n/p step \
      through it, so a reviewer walks every finished card without going back \
      to the board between them.\n\n\
@@ -3882,7 +3876,7 @@ const QUEUE_BODY_ALL: &str = "R opens a queue over the board's In Review column 
      - a card that leaves In Review stays until the queue closes\n\
      - a card that arrives waits for the next R";
 
-/// [`QUEUE_MESSAGE`]'s trailers, as the expanded pane shows them.
+/// [`QUEUE_MESSAGE`]'s trailers, as the pane shows them.
 const QUEUE_TRAILERS: &str = "Changelog-Added: Review queue over In Review cards\n\
      Headway: headway:headway/queue-over-review";
 
@@ -4467,28 +4461,19 @@ fn review_queue_shows_the_recorded_commit_diff() {
     assert_queue_hints_fit(&harness, 1200.0);
 }
 
-/// The queue's first commit has a body. Collapsed, the pane shows its first
-/// paragraph, reflowed onto one line, and a Show more; the whole body and the
-/// trailers show only after Show more, and Show less folds them away again.
+/// The queue's first commit has a body. The pane shows all of it, its
+/// paragraphs reflowed and its list kept, with the trailers under it, and no
+/// fold to open first.
 #[test]
-fn review_pane_shows_the_commit_body_collapsed() {
+fn review_pane_shows_the_commit_body() {
     let fixture = review_fixture();
     let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
     seed_review_queue(&mut harness, &fixture);
     open_review_queue(&mut harness);
 
-    wait_for_label(&mut harness, QUEUE_BODY_FIRST);
-    assert!(harness.query_by_label(QUEUE_BODY_ALL).is_none());
-    assert!(harness.query_by_label(QUEUE_TRAILERS).is_none());
-
-    harness.get_by_label("Show more").click();
     wait_for_label(&mut harness, QUEUE_BODY_ALL);
     wait_for_label(&mut harness, QUEUE_TRAILERS);
-    assert!(harness.query_by_label(QUEUE_BODY_FIRST).is_none());
-
-    harness.get_by_label("Show less").click();
-    wait_for_label(&mut harness, QUEUE_BODY_FIRST);
-    assert!(harness.query_by_label(QUEUE_TRAILERS).is_none());
+    assert!(harness.query_by_label("Show more").is_none());
 }
 
 /// The review header's title-row icons' accessible names, left to right, for
@@ -4734,7 +4719,7 @@ fn review_queue_key_hints_wrap_on_a_narrow_pane() {
 /// out (scrolled out of a `show_rows` area, say).
 fn label_top(harness: &Harness<'static, HeadwayTestState>, label: &str) -> Option<f64> {
     harness
-        .get_all_by_label(label)
+        .query_all_by_label(label)
         .filter_map(|node| node.accesskit_node().bounding_box())
         .map(|bb| bb.y0)
         .reduce(f64::min)
@@ -4831,8 +4816,8 @@ fn draft_on_keys_hunk(harness: &mut Harness<'static, HeadwayTestState>, body: &s
 #[test]
 fn review_comments_draft_then_send_to_the_session() {
     let fixture = review_fixture();
-    // Tall enough that both files' lines are all laid out.
-    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1400.0));
+    // Tall enough that both files' lines are all laid out under the body.
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1700.0));
     seed_review_queue(&mut harness, &fixture);
     post_queue_comment(&mut harness, &fixture);
     open_review_queue(&mut harness);
@@ -5003,7 +4988,7 @@ fn snapshot_headway_review_comment_scrolled() {
     harness.press_key_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
     wait_for_label(&mut harness, "Send 1 comment");
     harness.press_key(egui::Key::CloseBracket);
-    wait_for_absent(&mut harness, "Show more");
+    wait_for_absent(&mut harness, QUEUE_BODY_ALL);
     harness.press_key(egui::Key::C);
     wait_for_label(&mut harness, "Comment on");
     harness.run_steps(3);
@@ -5239,17 +5224,17 @@ fn a_plain_review_pane_reads_with_the_queue_keys() {
     harness.get_by_label(QUEUE_CARDS[0]).click();
     wait_for_label(&mut harness, "± Review diff");
     harness.get_by_label("± Review diff").click_accesskit();
-    wait_for_any_label(&mut harness, "src/queue.rs");
+    // The byline opens the diff's scroll, so it moves when the diff does.
     wait_for_label(&mut harness, "local checkout");
     harness.run_steps(3);
 
-    let before = label_top(&harness, "src/queue.rs");
+    let before = label_top(&harness, "local checkout");
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::G);
     harness.run_steps(3);
-    let after = label_top(&harness, "src/queue.rs");
+    let after = label_top(&harness, "local checkout");
     assert!(
         after.is_none_or(|y| Some(y) < before),
-        "G scrolls the diff: src/queue.rs went from {before:?} to {after:?}"
+        "G scrolls the diff: the byline went from {before:?} to {after:?}"
     );
 
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);

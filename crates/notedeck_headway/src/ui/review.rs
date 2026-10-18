@@ -1533,7 +1533,7 @@ fn commit_header_ui(
         }
     });
     ui.add_space(SPACING_MD);
-    commit_body_ui(ui, theme, &mut loaded.body);
+    commit_body_ui(ui, theme, &loaded.body);
     if let Some(record) = record {
         commit_comments_ui(ui, theme, app_ctx, record);
     }
@@ -1543,35 +1543,23 @@ fn commit_header_ui(
     chip
 }
 
-/// The commit message's body under the byline: its first paragraph, and a
-/// Show more / Show less toggle when there's more, which shows the rest with
-/// the trailers small and muted under it. Nothing when the message is only a
-/// subject.
-fn commit_body_ui(ui: &mut egui::Ui, theme: &ColorTheme, body: &mut CommitBody) {
+/// The commit message's body under the byline, whole, with its trailers small
+/// and muted under it. Nothing when the message is only a subject. It scrolls
+/// away with the diff, so a long one never keeps the diff off the screen.
+fn commit_body_ui(ui: &mut egui::Ui, theme: &ColorTheme, body: &CommitBody) {
     if body.is_empty() {
         return;
     }
-    let shown = body.shown();
-    if !shown.is_empty() {
-        ui.label(egui::RichText::new(shown).color(theme.text_secondary));
-    }
-    if body.expanded && !body.trailers().is_empty() {
+    if !body.body().is_empty() {
+        ui.label(egui::RichText::new(body.body()).color(theme.text_secondary));
         ui.add_space(SPACING_XS);
+    }
+    if !body.trailers().is_empty() {
         ui.label(
             egui::RichText::new(body.trailers())
                 .small()
                 .color(theme.text_muted),
         );
-    }
-    if body.has_more() {
-        let label = if body.expanded {
-            "Show less"
-        } else {
-            "Show more"
-        };
-        if sidebar_link(ui, theme, label).clicked() {
-            body.expanded = !body.expanded;
-        }
     }
     ui.add_space(SPACING_MD);
 }
@@ -2174,8 +2162,7 @@ pub(super) fn review_sidebar_ui(
     picked
 }
 
-/// A small frameless accent link: the sidebar's Review block, and the commit
-/// body's Show more / Show less.
+/// A small frameless accent link, as in the sidebar's Review block.
 fn sidebar_link(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) -> egui::Response {
     let text = egui::RichText::new(text).small().color(theme.accent);
     ui.add(egui::Button::new(text).frame(false))

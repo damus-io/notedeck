@@ -8,22 +8,15 @@
 //! (code, aligned output) keep their line breaks, since there the breaks mean
 //! something.
 
-/// A commit message's body and trailers, reflowed, with whether the pane shows
-/// all of it.
+/// A commit message's body and trailers, reflowed.
 #[derive(Debug, Default)]
 pub(crate) struct CommitBody {
     /// The body without the subject or the trailers: paragraphs separated by a
     /// blank line, each prose paragraph on one line.
     body: String,
-    /// Where the body's first paragraph ends, as a byte index into
-    /// [`body`](Self::body): the collapsed view is `body[..first_end]`.
-    first_end: usize,
     /// The trailer block (`Changelog-Fixed: …`, `Headway: …`), one per line as
     /// written; empty when the message has none.
     trailers: String,
-    /// Whether the pane shows the whole body and the trailers, or only the
-    /// first paragraph.
-    pub expanded: bool,
 }
 
 impl CommitBody {
@@ -42,22 +35,13 @@ impl CommitBody {
         };
 
         let mut body = String::new();
-        let mut first_end = 0;
         for (i, paragraph) in paragraphs.iter().enumerate() {
             if i > 0 {
                 body.push_str("\n\n");
             }
             reflow(paragraph, &mut body);
-            if i == 0 {
-                first_end = body.len();
-            }
         }
-        Self {
-            body,
-            first_end,
-            trailers,
-            expanded: false,
-        }
+        Self { body, trailers }
     }
 
     /// Whether there's nothing under the subject: the pane draws nothing.
@@ -65,25 +49,15 @@ impl CommitBody {
         self.body.is_empty() && self.trailers.is_empty()
     }
 
-    /// The body as the pane shows it: the first paragraph while collapsed,
-    /// all of it once expanded.
-    pub(crate) fn shown(&self) -> &str {
-        if self.expanded {
-            &self.body
-        } else {
-            &self.body[..self.first_end]
-        }
+    /// The body, reflowed, without the subject or the trailers; empty when
+    /// the message has none.
+    pub(crate) fn body(&self) -> &str {
+        &self.body
     }
 
     /// The trailer block, one per line; empty when there is none.
     pub(crate) fn trailers(&self) -> &str {
         &self.trailers
-    }
-
-    /// Whether there's more than the first paragraph to show, so the pane
-    /// offers its Show more / Show less toggle.
-    pub(crate) fn has_more(&self) -> bool {
-        self.first_end < self.body.len() || !self.trailers.is_empty()
     }
 }
 
@@ -150,20 +124,17 @@ fn is_list_item(line: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// A subject alone (with or without a trailing newline) has no body, and
-    /// nothing to expand.
+    /// A subject alone (with or without a trailing newline) has no body.
     #[test]
     fn subject_only_is_empty() {
         for message in ["headway: a subject", "headway: a subject\n", ""] {
             let body = CommitBody::parse(message);
             assert!(body.is_empty(), "{message:?}");
-            assert!(!body.has_more());
-            assert_eq!(body.shown(), "");
+            assert_eq!(body.body(), "");
         }
     }
 
-    /// The trailer block is split off the body; collapsed shows the first
-    /// paragraph, expanded the whole body, the trailers apart from both.
+    /// The trailer block is split off the body, which keeps every paragraph.
     #[test]
     fn body_and_trailers_split() {
         let message = "headway: subject\n\
@@ -175,11 +146,8 @@ mod tests {
                        Changelog-Fixed: the pane drops the body\n\
                        Headway: headway:headway/skirt-laugh-domain\n\
                        Co-Authored-By: Claude <noreply@anthropic.com>\n";
-        let mut body = CommitBody::parse(message);
-        assert_eq!(body.shown(), "First paragraph.");
-        assert!(body.has_more());
-        body.expanded = true;
-        assert_eq!(body.shown(), "First paragraph.\n\nSecond paragraph.");
+        let body = CommitBody::parse(message);
+        assert_eq!(body.body(), "First paragraph.\n\nSecond paragraph.");
         assert_eq!(
             body.trailers(),
             "Changelog-Fixed: the pane drops the body\n\
@@ -188,16 +156,15 @@ mod tests {
         );
     }
 
-    /// A message of a subject and trailers alone has no body text but still
-    /// something to expand: the trailers. An empty value (`Changelog-None:`)
-    /// is a trailer, and a trailer's indented continuation stays in the block.
+    /// A message of a subject and trailers alone has no body text but isn't
+    /// empty: it has the trailers. An empty value (`Changelog-None:`) is a
+    /// trailer, and a trailer's indented continuation stays in the block.
     #[test]
     fn trailers_without_body() {
         let body = CommitBody::parse("subject\n\nChangelog-None:\nFixes: abc (\"x\n  y\")");
-        assert_eq!(body.shown(), "");
+        assert_eq!(body.body(), "");
         assert_eq!(body.trailers(), "Changelog-None:\nFixes: abc (\"x\n  y\")");
         assert!(!body.is_empty());
-        assert!(body.has_more());
     }
 
     /// A hard-wrapped paragraph comes back on one line, so the pane wraps it
@@ -210,7 +177,7 @@ mod tests {
              the body, which is where the reasoning lives.\n",
         );
         assert_eq!(
-            body.shown(),
+            body.body(),
             "The review pane shows only the subject and drops the body, which is \
              where the reasoning lives."
         );
@@ -220,7 +187,7 @@ mod tests {
     /// list in the same paragraph still reflows.
     #[test]
     fn bullet_list_kept() {
-        let mut body = CommitBody::parse(
+        let body = CommitBody::parse(
             "subject\n\n\
              Intro that is\n\
              hard-wrapped:\n\
@@ -232,9 +199,8 @@ mod tests {
              \tindented code\n\
              \tmore code\n",
         );
-        body.expanded = true;
         assert_eq!(
-            body.shown(),
+            body.body(),
             "Intro that is hard-wrapped:\n\
              - one item\n  \
                continued\n\
@@ -251,22 +217,13 @@ mod tests {
     /// whose "token" has a space in it — stays in the body.
     #[test]
     fn prose_last_paragraph_stays_body() {
-        let mut body = CommitBody::parse(
+        let body = CommitBody::parse(
             "subject\n\nFirst.\n\nWorth noting: the cache is cold on first open.\n",
         );
         assert_eq!(body.trailers(), "");
-        body.expanded = true;
         assert_eq!(
-            body.shown(),
+            body.body(),
             "First.\n\nWorth noting: the cache is cold on first open."
         );
-    }
-
-    /// A one-paragraph body has nothing more to show without trailers.
-    #[test]
-    fn one_paragraph_has_no_more() {
-        let body = CommitBody::parse("subject\n\nJust this.");
-        assert_eq!(body.shown(), "Just this.");
-        assert!(!body.has_more());
     }
 }
