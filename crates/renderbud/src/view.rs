@@ -619,6 +619,74 @@ mod tests {
         );
     }
 
+    /// A mesh built in code uploads with its bounds and triangles, and a
+    /// view draws it like a loaded model; one with no whole triangle, or an
+    /// index past its vertices, is refused before touching the GPU.
+    #[test]
+    #[ignore] // needs a GPU adapter (lavapipe): run via scripts/snapshot-test
+    fn code_built_mesh_uploads_and_draws() {
+        use crate::{LoadError, MaterialUniform, MeshData, Vertex};
+
+        let Gpu { device, queue } = headless_device();
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let mut renderer = Renderer::new(&device, &queue, format, PixelSize::new(64, 64));
+        let uploader = renderer.model_uploader(&device, &queue);
+        let vertex = |x: f32, y: f32| Vertex {
+            pos: [x, y, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            uv: [x * 0.5 + 0.5, 0.5 - y * 0.5],
+            tangent: [0.0; 4],
+        };
+        let quad = || MeshData {
+            vertices: vec![
+                vertex(-1.0, -1.0),
+                vertex(1.0, -1.0),
+                vertex(1.0, 1.0),
+                vertex(-1.0, 1.0),
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+        };
+        let material = MaterialUniform {
+            base_color_factor: glam::Vec4::new(0.68, 0.48, 0.14, 1.0),
+            metallic_factor: 1.0,
+            roughness_factor: 0.28,
+            ao_strength: 1.0,
+            _pad0: 0.0,
+        };
+
+        let data = uploader
+            .upload_mesh(quad(), material)
+            .expect("quad uploads");
+        assert_eq!(data.triangles(), 2);
+        assert_eq!(data.bounds.min, Vec3::new(-1.0, -1.0, 0.0));
+        assert_eq!(data.bounds.max, Vec3::new(1.0, 1.0, 0.0));
+        let model = renderer.insert_model(data);
+        let options = ViewOptions {
+            background: ViewBackground::Transparent,
+        };
+        let mut view = renderer
+            .create_model_view_with(&device, model, PixelSize::new(64, 64), options)
+            .expect("model is loaded");
+        assert!(renderer.render_model_view(&device, &queue, &mut view));
+        let img = read_back(&device, &queue, &view);
+        let centre = &img[(32 * 64 + 32) * 4..][..4];
+        assert_eq!(centre[3], 255, "the quad covers the centre");
+        assert_ne!(&centre[..3], &[0, 0, 0], "and is lit, not black");
+
+        let mut short = quad();
+        short.indices.truncate(2);
+        assert!(matches!(
+            uploader.upload_mesh(short, material),
+            Err(LoadError::Empty)
+        ));
+        let mut stray = quad();
+        stray.indices[4] = 9;
+        assert!(matches!(
+            uploader.upload_mesh(stray, material),
+            Err(LoadError::IndexOutOfRange(9))
+        ));
+    }
+
     /// The light box for a unit cube at the origin maps the cube's centre
     /// into the middle of clip space and every corner inside it.
     #[test]

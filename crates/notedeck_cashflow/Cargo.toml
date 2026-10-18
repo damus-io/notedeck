@@ -5,8 +5,12 @@ version.workspace = true
 
 [dependencies]
 egui = { workspace = true }
+glam = { workspace = true }
 notedeck = { workspace = true }
+poll-promise = { workspace = true }
 profiling = { workspace = true }
+renderbud = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 # egui no longer bundles fonts by default; harnesses that don't install

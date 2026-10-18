@@ -5,19 +5,27 @@
 //!
 //! [`Toasts`] is a queue the app keeps in its state and draws every frame;
 //! one toast shows at a time. A level-up bursts around its medallion as it
-//! lands ([`super::burst`]). Animation is frame-aware (CLAUDE.md rule 17):
-//! it repaints every frame only while a toast is sliding, bursting or
-//! fading, and for the rest of the hold it asks for one repaint when the
-//! hold ends, so a toast on screen costs no frames while it sits still.
+//! lands ([`super::burst`]). Given the host's 3D renderer, a level-up's
+//! medallion is a gilt coin ([`super::coin`]) that flips as the toast slides
+//! in and settles face-on as the burst ends; without one it is drawn flat.
+//! Animation is frame-aware (CLAUDE.md rule 17): it repaints every frame
+//! only while a toast is sliding, bursting or fading, and for the rest of
+//! the hold it asks for one repaint when the hold ends, so a toast on screen
+//! costs no frames while it sits still.
 
 use std::collections::VecDeque;
 use std::time::Duration;
 
 use egui::{
-    Align2, FontId, Frame, Order, Painter, Pos2, Rect, RichText, Stroke, StrokeKind, Ui, vec2,
+    Align2, FontId, Frame, Order, Painter, Pos2, Rect, RichText, Stroke, StrokeKind, TextureId, Ui,
+    vec2,
 };
+use notedeck::Renderer3d;
+use renderbud::PixelSize;
 
+use super::BURST;
 use super::burst::{BurstPhase, paint_burst};
+use super::coin::Coin;
 use super::paint::{diamond, ease_out, shadowed_text};
 use crate::ui::palette::{HudPalette, Palette};
 
@@ -38,6 +46,23 @@ const TOP_MARGIN: f32 = 24.0;
 
 /// The medallion's radius.
 const MEDALLION: f32 = 22.0;
+
+/// The side of the 3D coin's texture, in points. The view's fitted camera
+/// frames the coin's bounding box with room to spare, so the texture is
+/// this much wider than the coin for the coin to fill the medallion.
+const COIN_SIDE: f32 = MEDALLION * 2.0 * 1.7;
+
+/// How many texture pixels the coin is rendered at per screen pixel. Its
+/// offscreen view has no multisampling, so it is drawn larger and egui's
+/// linear sampling smooths the silhouette as it scales it down.
+const COIN_SUPERSAMPLE: f32 = 2.0;
+
+/// How long the coin spins: through the slide and the burst. Those already
+/// repaint every frame, so the spin costs no repaints of its own.
+const SPIN: f64 = ENTER + BURST;
+
+/// How many times the coin turns over while it spins.
+const SPIN_TURNS: f32 = 2.0;
 
 /// What a toast announces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,14 +156,17 @@ impl ToastPhase {
     }
 }
 
-/// The queue of toasts waiting to show, oldest first, and when the front one
-/// started showing.
+/// The queue of toasts waiting to show, oldest first, when the front one
+/// started showing, and the level-up coin, built the first time a level-up
+/// shows with a renderer and kept for the next.
 #[derive(Debug, Default)]
 pub struct Toasts {
     queue: VecDeque<Toast>,
     /// The time (egui's `input.time`) the front toast first showed, or `None`
     /// if it has not shown yet.
     shown_since: Option<f64>,
+    /// The 3D medallion a level-up shows, once built.
+    coin: Coin,
 }
 
 impl Toasts {
@@ -157,17 +185,35 @@ impl Toasts {
         self.queue.front()
     }
 
-    /// Draws the front toast, if any, at the clock time of `ui`'s input.
+    /// Whether the level-up coin is built, so a level-up draws it rather
+    /// than the flat medallion.
+    pub fn coin_ready(&self) -> bool {
+        self.coin.is_ready()
+    }
+
+    /// Draws the front toast, if any, at the clock time of `ui`'s input,
+    /// a level-up's medallion in 3D through `renderer` when there is one.
     /// Returns where it was drawn.
-    pub fn show(&mut self, ui: &Ui, palette: &Palette) -> Option<Rect> {
+    pub fn show(
+        &mut self,
+        ui: &Ui,
+        palette: &Palette,
+        renderer: Option<&Renderer3d>,
+    ) -> Option<Rect> {
         let now = ui.input(|i| i.time);
-        self.show_at(ui, palette, now)
+        self.show_at(ui, palette, renderer, now)
     }
 
     /// [`Self::show`] at the clock time `now`, in seconds: retires a toast
     /// whose time is up, starts the next, and schedules the next repaint.
     #[profiling::function]
-    pub fn show_at(&mut self, ui: &Ui, palette: &Palette, now: f64) -> Option<Rect> {
+    pub fn show_at(
+        &mut self,
+        ui: &Ui,
+        palette: &Palette,
+        renderer: Option<&Renderer3d>,
+        now: f64,
+    ) -> Option<Rect> {
         loop {
             self.queue.front()?;
             let since = *self.shown_since.get_or_insert(now);
@@ -175,8 +221,24 @@ impl Toasts {
             if let Some(phase) = ToastPhase::at(elapsed) {
                 let toast = self.queue.front()?;
                 let burst = burst_at(toast.kind, elapsed);
+                let coin = match toast.kind {
+                    ToastKind::LevelUp => {
+                        let pixels = coin_pixels(ui.ctx().pixels_per_point());
+                        let coin = self.coin.poll(renderer, palette.hud.gilt, pixels, ui.ctx());
+                        coin.map(|coin| {
+                            let yaw = coin_yaw(elapsed);
+                            coin.turn(yaw);
+                            CoinFace {
+                                texture: coin.texture(),
+                                yaw,
+                            }
+                        })
+                    }
+                    ToastKind::Achievement { .. } => None,
+                };
                 ui.ctx().request_repaint_after(repaint_after(phase, burst));
-                return Some(paint(ui, palette, toast, phase, burst));
+                let medallion = Medallion { burst, coin };
+                return Some(paint(ui, palette, toast, phase, medallion));
             }
             self.queue.pop_front();
             self.shown_since = None;
@@ -194,6 +256,20 @@ fn burst_at(kind: ToastKind, elapsed: f64) -> Option<BurstPhase> {
     }
 }
 
+/// The coin's texture size at `pixels_per_point`.
+fn coin_pixels(pixels_per_point: f32) -> PixelSize {
+    let side = (COIN_SIDE * pixels_per_point * COIN_SUPERSAMPLE).round() as u32;
+    PixelSize::new(side, side)
+}
+
+/// The coin's turn `elapsed` seconds into the toast: [`SPIN_TURNS`] whole
+/// turns, fast at first and slowing to rest face-on at [`SPIN`], and
+/// exactly zero from then on, so a resting coin is never rendered again.
+fn coin_yaw(elapsed: f64) -> f32 {
+    let t = (elapsed / SPIN) as f32;
+    SPIN_TURNS * std::f32::consts::TAU * (1.0 - ease_out(t))
+}
+
 /// When the next repaint is needed for a toast at `phase` with `burst`
 /// running: the sooner of the two.
 fn repaint_after(phase: ToastPhase, burst: Option<BurstPhase>) -> Duration {
@@ -202,14 +278,30 @@ fn repaint_after(phase: ToastPhase, burst: Option<BurstPhase>) -> Duration {
     })
 }
 
-/// Draws `toast` at `phase`, with `burst` around its medallion, centered at
-/// the top of the window.
+/// The 3D coin as one frame draws it: its texture, turned to `yaw`.
+#[derive(Debug, Clone, Copy)]
+struct CoinFace {
+    texture: TextureId,
+    yaw: f32,
+}
+
+/// What a frame draws in and around a toast's medallion.
+#[derive(Debug, Clone, Copy)]
+struct Medallion {
+    /// The level-up burst behind it, while it runs.
+    burst: Option<BurstPhase>,
+    /// The 3D coin, when there is one: drawn in place of the flat ring.
+    coin: Option<CoinFace>,
+}
+
+/// Draws `toast` at `phase` with its `medallion`, centered at the top of the
+/// window.
 fn paint(
     ui: &Ui,
     palette: &Palette,
     toast: &Toast,
     phase: ToastPhase,
-    burst: Option<BurstPhase>,
+    medallion: Medallion,
 ) -> Rect {
     let hud = &palette.hud;
     let frame = Frame::new()
@@ -240,7 +332,7 @@ fn paint(
             ui.multiply_opacity(phase.alpha);
             let shown = frame.show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    medallion(ui, palette, toast, burst);
+                    medallion_ui(ui, palette, toast, medallion);
                     ui.add_space(12.0);
                     ui.vertical(|ui| text_lines(ui, palette, toast));
                 });
@@ -266,20 +358,27 @@ fn text_lines(ui: &mut Ui, palette: &Palette, toast: &Toast) {
     ui.label(body);
 }
 
-/// The medallion: a gold ring with the new level for a level-up, a
-/// legendary diamond with the points for an achievement. `burst`, if any,
-/// is drawn behind it.
-fn medallion(ui: &mut Ui, palette: &Palette, toast: &Toast, burst: Option<BurstPhase>) {
+/// The medallion: a gold ring (or the 3D coin) with the new level for a
+/// level-up, a legendary diamond with the points for an achievement. Its
+/// burst, if any, is drawn behind it.
+fn medallion_ui(ui: &mut Ui, palette: &Palette, toast: &Toast, medallion: Medallion) {
     let hud = &palette.hud;
     let size = vec2(MEDALLION * 2.0, MEDALLION * 2.0);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter();
     let center = rect.center();
-    if let Some(burst) = burst {
+    if let Some(burst) = medallion.burst {
         paint_burst(painter, hud, center, MEDALLION, burst);
     }
-    let (color, font_size) = match toast.kind {
-        ToastKind::LevelUp => {
+    let (color, font_size) = match (toast.kind, medallion.coin) {
+        (ToastKind::LevelUp, Some(coin)) => {
+            let side = vec2(COIN_SIDE, COIN_SIDE);
+            let uv = Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0));
+            let at = Rect::from_center_size(center, side);
+            painter.image(coin.texture, at, uv, egui::Color32::WHITE);
+            (hud.text, 18.0)
+        }
+        (ToastKind::LevelUp, None) => {
             painter.circle(
                 center,
                 MEDALLION,
@@ -293,7 +392,7 @@ fn medallion(ui: &mut Ui, palette: &Palette, toast: &Toast, burst: Option<BurstP
             );
             (hud.title, 18.0)
         }
-        ToastKind::Achievement { .. } => {
+        (ToastKind::Achievement { .. }, _) => {
             let stroke = Stroke::new(notedeck::tokens::STROKE_THICK, hud.legendary);
             diamond(painter, center, MEDALLION + 2.0, hud.shade, stroke);
             let inner = Stroke::new(1.0, hud.legendary.gamma_multiply(0.45));
@@ -307,14 +406,17 @@ fn medallion(ui: &mut Ui, palette: &Palette, toast: &Toast, burst: Option<BurstP
             (hud.legendary, 14.0)
         }
     };
+    // On the coin the level is struck on the face: it fades as the coin
+    // turns edge-on and comes back on the far face.
+    let face = medallion.coin.map_or(1.0, |coin| coin.yaw.cos().abs());
     shadowed_text(
         painter,
         center,
         Align2::CENTER_CENTER,
         toast.badge.as_str(),
         FontId::new(font_size, palette.faces.bold.clone()),
-        color,
-        hud.shade,
+        color.gamma_multiply(face),
+        hud.shade.gamma_multiply(face),
     );
 }
 
@@ -386,6 +488,26 @@ mod tests {
 
         let achievement = ToastKind::Achievement { points: 10 };
         assert_eq!(burst_at(achievement, landed), None);
+    }
+
+    /// The coin turns while it spins and rests at exactly zero once the
+    /// spin is over, so a resting coin needs no render. Every spinning
+    /// frame of a level-up already repaints (it is sliding or bursting),
+    /// so the spin asks for no frames of its own.
+    #[test]
+    fn the_coin_spins_while_the_toast_repaints_then_rests_face_on() {
+        assert_eq!(coin_yaw(0.0), SPIN_TURNS * std::f32::consts::TAU);
+        assert!(coin_yaw(SPIN / 2.0) > 0.0);
+        assert_eq!(coin_yaw(SPIN), 0.0);
+        assert_eq!(coin_yaw(SPIN + 1.0), 0.0);
+
+        let mut t = 0.0;
+        while t < SPIN {
+            let phase = ToastPhase::at(t).unwrap();
+            let burst = burst_at(ToastKind::LevelUp, t);
+            assert_eq!(repaint_after(phase, burst), Duration::ZERO, "at {t}");
+            t += 1.0 / 120.0;
+        }
     }
 
     #[test]

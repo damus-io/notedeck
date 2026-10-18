@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
 #[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     pub pos: [f32; 3],
     pub normal: [f32; 3],
@@ -49,6 +49,8 @@ pub enum LoadError {
     Missing(String),
     /// The GPU rejected one of its resources.
     Gpu(wgpu::Error),
+    /// A [`MeshData`] index names a vertex past the end of its vertices.
+    IndexOutOfRange(u32),
 }
 
 impl std::fmt::Display for LoadError {
@@ -58,6 +60,7 @@ impl std::fmt::Display for LoadError {
             LoadError::Empty => f.write_str("no triangle geometry"),
             LoadError::Missing(what) => write!(f, "missing buffer {what}"),
             LoadError::Gpu(e) => write!(f, "GPU: {e}"),
+            LoadError::IndexOutOfRange(i) => write!(f, "index {i} past the last vertex"),
         }
     }
 }
@@ -285,6 +288,107 @@ pub fn load_gltf_slice(
         images,
     } = import_slice(bytes, resolve)?;
     upload_gltf(device, queue, material_bgl, &document, &buffers, &images)
+}
+
+/// A triangle mesh built in code rather than loaded from a file: procedural
+/// geometry, such as a coin, for
+/// [`ModelUploader::upload_mesh`](crate::ModelUploader::upload_mesh).
+///
+/// Every three [`indices`](Self::indices) wind one triangle (a trailing one
+/// or two are dropped). Each vertex's `tangent` is ignored and filled in on
+/// upload from its normal and UVs.
+#[derive(Debug, Clone, Default)]
+pub struct MeshData {
+    /// The vertices, in model space.
+    pub vertices: Vec<Vertex>,
+    /// Indices into [`vertices`](Self::vertices), three per triangle.
+    pub indices: Vec<u32>,
+}
+
+/// Upload `mesh`, drawn in one untextured `material`.
+///
+/// The material's textures are factor-only, as glTF's are when it names
+/// none: a white base colour, a flat normal, and a metallic-roughness texel
+/// of ones, so `material`'s metallic and roughness apply as given and its
+/// occlusion is none. A mesh with no whole triangle is [`LoadError::Empty`];
+/// one whose index names a missing vertex is [`LoadError::IndexOutOfRange`].
+pub(crate) fn upload_mesh(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    material_bgl: &wgpu::BindGroupLayout,
+    mesh: MeshData,
+    material: MaterialUniform,
+) -> Result<ModelData, LoadError> {
+    let MeshData {
+        mut vertices,
+        mut indices,
+    } = mesh;
+    indices.truncate(indices.len() / 3 * 3);
+    if indices.is_empty() {
+        return Err(LoadError::Empty);
+    }
+    if let Some(&index) = indices.iter().find(|&&i| i as usize >= vertices.len()) {
+        return Err(LoadError::IndexOutOfRange(index));
+    }
+    compute_tangents(&mut vertices, &indices);
+
+    let mut bounds = Aabb::empty();
+    for v in &vertices {
+        bounds.include_point(Vec3::from(v.pos));
+    }
+
+    let vert_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("mesh_vertices"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let ind_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("mesh_indices"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    let texel = |rgba: [u8; 4], format, label| {
+        upload_rgba8_texture_2d(device, queue, 1, 1, &rgba, format, label)
+    };
+    let basecolor = texel(
+        [255, 255, 255, 255],
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        "mesh_basecolor",
+    );
+    let mr = texel(
+        [255, 255, 255, 255],
+        wgpu::TextureFormat::Rgba8Unorm,
+        "mesh_mr",
+    );
+    let normal = texel(
+        [128, 128, 255, 255],
+        wgpu::TextureFormat::Rgba8Unorm,
+        "mesh_normal",
+    );
+    let material = make_material_gpu(
+        device,
+        queue,
+        material_bgl,
+        &make_default_sampler(device),
+        &basecolor,
+        &mr,
+        &normal,
+        material,
+    );
+
+    Ok(ModelData {
+        draws: vec![ModelDraw {
+            mesh: Mesh {
+                num_indices: indices.len() as u32,
+                vert_buf,
+                ind_buf,
+            },
+            material_index: 0,
+        }],
+        materials: vec![material],
+        bounds,
+    })
 }
 
 /// A parsed glTF with its buffers loaded and its images decoded to RGBA8.

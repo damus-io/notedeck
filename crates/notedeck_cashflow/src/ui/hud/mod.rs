@@ -18,6 +18,7 @@
 //! [`Faces`]: crate::ui::palette::Faces
 
 mod burst;
+mod coin;
 mod paint;
 mod skill_tile;
 mod toast;

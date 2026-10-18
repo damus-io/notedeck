@@ -1,7 +1,8 @@
 //! The HUD widget kit (`notedeck_cashflow::ui::hud`), drawn as one gallery:
 //! a tooltip panel, an XP bar, a row of skill tiles (one locked), a time-series
 //! chart with the HUD tooltip on hover, a character sheet of slim XP bars, and
-//! a level-up toast, settled and mid-burst.
+//! a level-up toast, settled and mid-burst, its medallion flat or (given the
+//! host's 3D renderer) a gilt coin.
 //!
 //! The behavioural tests run under a plain `cargo test`. The snapshots — the
 //! gallery at rest and with each hoverable widget hovered, in the dark and
@@ -98,6 +99,8 @@ struct GalleryState {
     toast_rect: Option<Rect>,
     /// Where the character sheet's first slim bar was drawn last frame.
     slim_rect: Option<Rect>,
+    /// The host's 3D renderer, for a gallery that draws the level-up coin.
+    renderer3d: Option<notedeck::Renderer3d>,
 }
 
 /// Progress for a skill at `level`, on a made-up curve and a made-up way
@@ -215,7 +218,8 @@ fn render_gallery(ui: &mut egui::Ui, state: &mut GalleryState) {
                     });
                 }
 
-                state.toast_rect = state.toasts.show(ui, palette);
+                let renderer3d = state.renderer3d.as_ref();
+                state.toast_rect = state.toasts.show(ui, palette, renderer3d);
             });
     });
 }
@@ -228,6 +232,7 @@ fn gallery(theme: egui::Theme, toasts: Toasts, renderer: bool) -> Harness<'stati
         plot_rect: None,
         toast_rect: None,
         slim_rect: None,
+        renderer3d: None,
     };
     let mut builder = notedeck::test_harness::app_builder()
         .with_size(SIZE)
@@ -237,6 +242,62 @@ fn gallery(theme: egui::Theme, toasts: Toasts, renderer: bool) -> Harness<'stati
     }
     let mut harness = builder.build_ui_state(render_gallery, state);
     harness.run();
+    harness
+}
+
+/// A settled gallery in `theme` whose host has the shared 3D renderer, on
+/// the same lavapipe device the snapshot samples textures from, with the
+/// level-up coin already built: level-ups have shown until the coin landed,
+/// then left, so the next one draws the coin from its first frame.
+fn coin_gallery(theme: egui::Theme) -> Harness<'static, GalleryState> {
+    let render_state = notedeck::software_render_state();
+    let state = GalleryState {
+        palette: Palette::default(),
+        toasts: level_up(),
+        plot_rect: None,
+        toast_rect: None,
+        slim_rect: None,
+        renderer3d: Some(notedeck::Renderer3d::new(render_state.clone())),
+    };
+    let mut harness = notedeck::test_harness::app_builder()
+        .with_size(SIZE)
+        .with_theme(theme)
+        .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+            render_state,
+        ))
+        .build_ui_state(render_gallery, state);
+    // The coin uploads on a worker, which also builds the renderer (it
+    // prefilters the lighting environment on the CPU, slowly on lavapipe).
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    while !harness.state().toasts.coin_ready() {
+        assert!(std::time::Instant::now() < deadline, "the coin never built");
+        // The coin lands on a level-up's frame, so keep one showing.
+        if harness.state().toasts.current().is_none() {
+            harness
+                .state_mut()
+                .toasts
+                .push(Toast::level_up("Saving", 42));
+        }
+        harness.step();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Out with the warm-up toast (its hold and fade, 1/4 s a step).
+    harness.run_steps(24);
+    assert!(harness.state().toast_rect.is_none(), "the warm-up has left");
+    harness
+}
+
+/// A coin gallery in `theme` with a level-up pushed onto it, `elapsed_steps`
+/// steps (1/4 s each) after the frame it first shows on.
+fn coin_level_up_at(theme: egui::Theme, elapsed_steps: usize) -> Harness<'static, GalleryState> {
+    let mut harness = coin_gallery(theme);
+    harness
+        .state_mut()
+        .toasts
+        .push(Toast::level_up("Saving", 42));
+    harness.step();
+    assert!(harness.state().toast_rect.is_some(), "the toast shows");
+    harness.run_steps(elapsed_steps);
     harness
 }
 
@@ -541,4 +602,22 @@ fn snapshot_hud_toast_achievement_dark() {
         toasts,
         |_| {},
     );
+}
+
+/// The level-up toast with the host's 3D renderer, at rest (1.5 s in, the
+/// spin over): its medallion is the gilt coin face-on, the level struck on
+/// it, the coin's silhouette clean against the banner.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_hud_toast_level_up_coin_dark() {
+    coin_level_up_at(egui::Theme::Dark, 6).snapshot("hud_toast_level_up_coin_dark");
+}
+
+/// [`snapshot_hud_toast_level_up_coin_dark`] mid-spin (0.5 s in), with the
+/// burst behind it: the coin is turned past edge-on, its rounded edge
+/// catching the light and the level faded with its face.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_hud_toast_level_up_coin_spin_dark() {
+    coin_level_up_at(egui::Theme::Dark, 2).snapshot("hud_toast_level_up_coin_spin_dark");
 }

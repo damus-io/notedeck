@@ -20,15 +20,16 @@ pub mod test_util;
 
 pub use camera::{ArcballController, Camera, FlyController, ThirdPersonController};
 pub use material::{MaterialGpu, MaterialUniform};
-pub use model::{Aabb, LoadError, Mesh, Model, ModelData, ModelDraw, Vertex};
+pub use model::{Aabb, LoadError, Mesh, MeshData, Model, ModelData, ModelDraw, Vertex};
 pub use texture::upload_rgba8_texture_2d;
 pub use view::{ModelView, ViewBackground, ViewOptions};
 pub use world::{Node, NodeId, ObjectId, Transform, World};
 
-/// Loads glTF models for a [`Renderer`] off its thread: everything a model
-/// upload needs (the device, queue and material layout), cloned out of the
-/// renderer by [`Renderer::model_uploader`] so a worker can parse and upload
-/// without locking it. The [`ModelData`] it returns joins the renderer
+/// Loads models (glTF files, or meshes built in code) for a [`Renderer`]
+/// off its thread: everything a model upload needs (the device, queue and
+/// material layout), cloned out of the renderer by
+/// [`Renderer::model_uploader`] so a worker can parse and upload without
+/// locking it. The [`ModelData`] it returns joins the renderer
 /// through [`Renderer::insert_model`].
 #[derive(Clone)]
 pub struct ModelUploader {
@@ -61,15 +62,49 @@ impl ModelUploader {
         bytes: &[u8],
         resolve: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
     ) -> Result<ModelData, LoadError> {
+        self.in_error_scope(|| {
+            model::load_gltf_slice(
+                &self.device,
+                &self.queue,
+                &self.material_bgl,
+                bytes,
+                resolve,
+            )
+        })
+    }
+
+    /// Upload a mesh built in code, drawn in one untextured `material`.
+    ///
+    /// Its textures are factor-only, as a glTF material's are when it names
+    /// none, so `material`'s colour, metallic and roughness apply as given.
+    /// A mesh with no whole triangle is [`LoadError::Empty`] and one whose
+    /// index names a missing vertex [`LoadError::IndexOutOfRange`]; a GPU
+    /// error is caught as for a glTF upload. Call it off the UI thread too.
+    pub fn upload_mesh(
+        &self,
+        mesh: MeshData,
+        material: MaterialUniform,
+    ) -> Result<ModelData, LoadError> {
+        self.in_error_scope(|| {
+            model::upload_mesh(
+                &self.device,
+                &self.queue,
+                &self.material_bgl,
+                mesh,
+                material,
+            )
+        })
+    }
+
+    /// Run `upload` inside out-of-memory and validation error scopes, and
+    /// return the first GPU error either caught as [`LoadError::Gpu`].
+    fn in_error_scope(
+        &self,
+        upload: impl FnOnce() -> Result<ModelData, LoadError>,
+    ) -> Result<ModelData, LoadError> {
         let oom = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let model = model::load_gltf_slice(
-            &self.device,
-            &self.queue,
-            &self.material_bgl,
-            bytes,
-            resolve,
-        );
+        let model = upload();
         let validation = pollster::block_on(validation.pop());
         let oom = pollster::block_on(oom.pop());
         match validation.or(oom) {

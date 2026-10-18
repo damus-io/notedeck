@@ -92,6 +92,9 @@ pub struct HudPalette {
     pub shade: Color32,
     /// A tooltip's title line, a skill tile's level and a toast's frame.
     pub title: Color32,
+    /// The metal of the level-up toast's 3D medallion: its base colour, lit
+    /// as a polished metal (see [`crate::ui::hud`]'s coin). Brass by default.
+    pub gilt: Color32,
     /// Body text on a panel.
     pub text: Color32,
     /// Captions on a panel.
@@ -125,6 +128,11 @@ impl HudPalette {
             highlight: Color32::from_white_alpha(70),
             shade: Color32::from_black_alpha(140),
             title: Color32::from_rgb(255, 206, 60),
+            // Linear (0.90, 0.60, 0.12): a warm brass. Lit as polished
+            // metal it reflects the dim lighting environment, so it is
+            // brighter than the brass it reads as (microverse's 0.68,
+            // 0.48, 0.14 renders khaki here).
+            gilt: Color32::from_rgb(244, 203, 97),
             text: Color32::from_rgb(238, 238, 238),
             text_muted: Color32::from_rgb(160, 162, 176),
             track: Color32::from_rgba_unmultiplied(6, 7, 14, 230),

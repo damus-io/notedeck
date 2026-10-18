@@ -5919,10 +5919,14 @@ version = "0.11.0-beta.1"
 dependencies = [
  "egui",
  "egui_kittest",
+ "glam",
  "notedeck",
  "notedeck_ui",
+ "poll-promise",
  "profiling",
+ "renderbud",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
