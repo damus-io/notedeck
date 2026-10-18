@@ -202,11 +202,20 @@ pub use zaps::{
 /// On standard Linux distros, install `mesa-vulkan-drivers` (or equivalent)
 /// and the ICD is auto-discovered.
 ///
-/// Panics at adapter selection time if no CPU adapter is available.
+/// Panics at adapter selection time if no CPU adapter is available, unless
+/// [`SNAPSHOT_PREVIEW_ENV`] is set.
 #[cfg(feature = "snapshot-testing")]
 pub fn software_renderer() -> egui_kittest::wgpu::WgpuTestRenderer {
     egui_kittest::wgpu::WgpuTestRenderer::from_render_state(software_render_state())
 }
+
+/// Set (to anything) to let [`software_renderer`] fall back to the host's GPU
+/// adapter when there is no CPU one, for `scripts/snapshot-test --preview`.
+///
+/// The renders are for looking at, not for checking: a GPU draws different
+/// pixels from the lavapipe that recorded the references. CI never sets it.
+#[cfg(feature = "snapshot-testing")]
+pub const SNAPSHOT_PREVIEW_ENV: &str = "SNAPSHOT_PREVIEW";
 
 /// The software-rasterized [`egui_wgpu::RenderState`] behind
 /// [`software_renderer`], for a test that also needs the device itself: build
@@ -227,17 +236,21 @@ pub fn software_render_state() -> egui_wgpu::RenderState {
         .backends
         .remove(wgpu::Backends::BROWSER_WEBGPU);
 
-    setup.native_adapter_selector = Some(Arc::new(|adapters, _surface| {
-        adapters
+    let preview = std::env::var_os(SNAPSHOT_PREVIEW_ENV).is_some();
+    setup.native_adapter_selector = Some(Arc::new(move |adapters, _surface| {
+        let cpu = adapters
             .iter()
-            .find(|a| a.get_info().device_type == wgpu::DeviceType::Cpu)
-            .cloned()
-            .ok_or_else(|| {
-                "No CPU adapter found — install a software rasterizer \
-                 (e.g. lavapipe/swiftshader) for deterministic snapshots. \
-                 On NixOS, run via: scripts/snapshot-test"
-                    .to_owned()
-            })
+            .find(|a| a.get_info().device_type == wgpu::DeviceType::Cpu);
+        // A preview has no lavapipe to ask for (a Mac without Docker), so it
+        // takes whatever the host has. Its pixels differ from the references,
+        // which is why scripts/snapshot-test --preview never compares them.
+        let gpu = || adapters.first().filter(|_| preview);
+        cpu.or_else(gpu).cloned().ok_or_else(|| {
+            "No CPU adapter found — install a software rasterizer \
+             (e.g. lavapipe/swiftshader) for deterministic snapshots. \
+             On NixOS, run via: scripts/snapshot-test"
+                .to_owned()
+        })
     }));
 
     egui_kittest::wgpu::create_render_state(

@@ -10,6 +10,7 @@
 #   scripts/snapshot-test --debug ...           # render from the debug build
 #   scripts/snapshot-test --changed --debug     # only suites the working tree can affect
 #   scripts/snapshot-test --changed=master      # ... or everything since master
+#   scripts/snapshot-test --preview -p=<crate>  # render on the host GPU, compare nothing
 #
 # Without --update it is the check: it runs every selected suite to the end and
 # then names each png that no longer matches its render (the `.new.png` kittest
@@ -32,6 +33,15 @@
 # On macOS there is no lavapipe, so every run delegates to a per-checkout
 # docker container built from scripts/lavapipe.Dockerfile (which mirrors the
 # CI snapshot job, so the pngs it generates match CI pixel-exactly).
+#
+# --preview is for a Mac without Docker: it renders on whatever adapter the
+# host has (Metal) and writes each render to `<name>.preview.png` beside its
+# reference, so a restyled row can at least be looked at. It never compares and
+# never writes a reference: the test binaries run from a mirror of the crate
+# whose tests/snapshots starts empty (kittest resolves its output path against
+# the cwd), and the renders are copied out afterwards. A GPU's pixels differ
+# from lavapipe's, so a preview is never committed (.gitignore) and is no check:
+# re-record with --update in lavapipe (docker, or CI's job) before landing.
 
 set -euo pipefail
 
@@ -51,6 +61,7 @@ filter=""
 # Space-separated crates to run; empty runs every suite.
 only=""
 changed=""
+preview=""
 release="--release"
 # The args a docker re-exec gets: --changed resolved to -p=, since the
 # container can't read a worktree's git dir. Expanded as ${args[@]+...}
@@ -61,6 +72,7 @@ for arg in "$@"; do
     case "$arg" in
         --update) update="1"; args+=("$arg") ;;
         --debug) release=""; args+=("$arg") ;;
+        --preview) preview="1" ;;
         -p=*|--package=*) only="$only ${arg#*=}"; args+=("$arg") ;;
         --changed) changed="HEAD" ;;
         --changed=*) changed="${arg#*=}" ;;
@@ -94,9 +106,14 @@ if [[ -n "$changed" ]]; then
     done
 fi
 
+if [[ -n "$preview" && -n "$update" ]]; then
+    echo "error: --preview never writes a reference; re-record with --update alone" >&2
+    exit 1
+fi
+
 # macOS can't render snapshots natively: re-exec this script inside a lavapipe
-# container bound to this checkout.
-if [[ "$(uname -s)" == "Darwin" ]]; then
+# container bound to this checkout. A preview renders natively instead.
+if [[ -z "$preview" && "$(uname -s)" == "Darwin" ]]; then
     if ! command -v docker >/dev/null; then
         echo "error: snapshots on macOS render with lavapipe in docker, but docker was not found." >&2
         exit 1
@@ -124,7 +141,9 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 fi
 
 # Resolve lavapipe ICD path
-if [[ -n "${LAVAPIPE_ICD:-}" ]]; then
+if [[ -n "$preview" ]]; then
+    export SNAPSHOT_PREVIEW=1  # notedeck::SNAPSHOT_PREVIEW_ENV: take the host's GPU
+elif [[ -n "${LAVAPIPE_ICD:-}" ]]; then
     icd="$LAVAPIPE_ICD"
 elif [[ -f "/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json" ]]; then
     icd="/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json"
@@ -136,7 +155,7 @@ else
     exit 1
 fi
 
-export VK_ICD_FILENAMES="$icd"
+[[ -z "$preview" ]] && export VK_ICD_FILENAMES="$icd"
 ${update:+export UPDATE_SNAPSHOTS=1}
 # Release builds default to non-incremental; force it on so iterating on a
 # single crate only re-codegens what changed instead of the whole crate.
@@ -210,8 +229,46 @@ suites=(
 # settling): a slower build draws them at a different frame, and some differ
 # between two release runs too.
 # CI is the check: a debug-recorded png it rejects is re-recorded without --debug.
+# Run one suite's test binaries from a mirror of its crate whose
+# tests/snapshots is empty, so kittest (told to write every snapshot) writes
+# into the mirror; then copy each render out as `<name>.preview.png`.
+# Everything else in the crate is symlinked, so a test that reads a fixture by
+# a relative path still finds it.
+preview_suite() {
+    local crate="$1" profile="$2" cargo_args="$3" harness_args="$4" dir="$5"
+    local mirror="${CARGO_TARGET_DIR:-$repo/target}/snapshot-preview/$crate"
+    local entry bins bin ok=1
+    find "$dir" -path '*/snapshots/*' -name '*.preview.png' -delete
+    rm -rf "$mirror"
+    mkdir -p "$mirror/tests/snapshots"
+    for entry in "$dir"/*; do
+        [[ "$(basename "$entry")" == tests ]] || ln -s "$entry" "$mirror/"
+    done
+    for entry in "$dir"/tests/*; do
+        [[ -e "$entry" && "$(basename "$entry")" != snapshots ]] && ln -s "$entry" "$mirror/tests/"
+    done
+    # shellcheck disable=SC2086
+    bins="$(cargo test --no-run --message-format=json $profile -p "$crate" $cargo_args |
+        sed -n 's/.*"executable":"\([^"]*\)".*/\1/p')" || return 1
+    for bin in $bins; do
+        # shellcheck disable=SC2086
+        (cd "$mirror" && CARGO_MANIFEST_DIR="$dir" UPDATE_SNAPSHOTS=force \
+            "$bin" --ignored $harness_args ${filter:+"$filter"}) || ok=""
+    done
+    while IFS= read -r png; do
+        local rel="${png#"$mirror/tests/snapshots/"}"
+        local out="$dir/tests/snapshots/${rel%.png}.preview.png"
+        mkdir -p "$(dirname "$out")"
+        cp "$png" "$out"
+        previews+=("${out#"$repo"/}")
+    done < <(find "$mirror/tests/snapshots" -name '*.png' \
+        ! -name '*.old.png' ! -name '*.new.png' ! -name '*.diff.png' | sort)
+    [[ -n "$ok" ]]
+}
+
 failed=()
 stale=()
+previews=()
 for suite in "${suites[@]}"; do
     IFS='|' read -r crate cargo_args harness_args release_only <<< "$suite"
     if [[ -n "${only// /}" && " $only " != *" $crate "* ]]; then
@@ -223,6 +280,10 @@ for suite in "${suites[@]}"; do
         profile="--release"
     fi
     dir="$repo/crates/$crate"
+    if [[ -n "$preview" ]]; then
+        preview_suite "$crate" "$profile" "$cargo_args" "$harness_args" "$dir" || failed+=("$crate")
+        continue
+    fi
     # kittest clears a test's .new/.diff pngs only when that test runs again, so
     # clear the suite's up front: what is left afterwards is this run's.
     find "$dir" -path '*/snapshots/*' \( -name '*.new.png' -o -name '*.diff.png' \) -delete
@@ -236,6 +297,19 @@ for suite in "${suites[@]}"; do
         stale+=("${new#"$repo"/}")
     done < <(find "$dir" -path '*/snapshots/*' -name '*.new.png' | sort)
 done
+
+if [[ -n "$preview" ]]; then
+    echo >&2
+    echo "${#previews[@]} preview pngs (host GPU, not lavapipe: look, don't commit):" >&2
+    for png in ${previews[@]+"${previews[@]}"}; do
+        echo "  $png" >&2
+    done
+    if [[ ${#failed[@]} -gt 0 ]]; then
+        echo "suites with a failing test (a preview never fails on pixels): ${failed[*]}" >&2
+        exit 1
+    fi
+    exit 0
+fi
 
 if [[ ${#failed[@]} -eq 0 ]]; then
     exit 0

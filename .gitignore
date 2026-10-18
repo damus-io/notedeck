@@ -36,3 +36,5 @@ keystore.properties
 **/snapshots/*.diff.png
 **/snapshots/*.new.png
 **/snapshots/*.old.png
+# scripts/snapshot-test --preview: a host-GPU render, never a baseline
+**/snapshots/**/*.preview.png
