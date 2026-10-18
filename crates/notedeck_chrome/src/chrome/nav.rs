@@ -18,7 +18,9 @@
 //! - Closing an app (Ctrl-W) drops its stack.
 
 use super::Chrome;
-use notedeck::{App, AppContext};
+use crate::app::NotedeckApp;
+use egui_nav::{NavUiType, RouteResponse};
+use notedeck::{nav_frame, App, AppContext, NavPass, NavStackEvent};
 use notedeck::{
     AppId, NavRequest, NavStack, RoutePredicate, ToolInvocation, ToolOutcome, ToolSpec,
 };
@@ -91,6 +93,17 @@ pub(super) struct Opener {
     /// return then pops. An open that pushes nothing (Dave opening a session,
     /// a note shown in a Columns column) only switches back.
     pushed: bool,
+}
+
+/// What one [`Chrome::app_nav_pass`] drew and took off the stack.
+pub(super) struct AppNavPass<A> {
+    /// What the body returned for the top route.
+    pub(super) response: A,
+    /// egui ids the drawn routes will take a drag-back from.
+    pub(super) can_take_drag_from: Vec<egui::Id>,
+    /// The entry a completed back popped this frame, for its app's
+    /// `cleanup_nav` (see [`Chrome::cleanup_entries`]).
+    pub(super) popped: Option<TakenEntry>,
 }
 
 /// An entry taken off an app's stack, for that app's `cleanup_nav`.
@@ -535,6 +548,90 @@ impl Chrome {
     }
 }
 
+impl Chrome {
+    /// Draw the active app's stack through egui-nav for one frame, and keep
+    /// the stack's books on what egui-nav reported: whether the transition is
+    /// still in flight (which holds prunes over it), the entry a completed
+    /// back popped, and an opener that pop left stale.
+    ///
+    /// `body` draws one route: it gets the active app, the route's token, and
+    /// which [`NavPass`] this draw is (egui-nav draws the entry beneath a
+    /// slide first, then the top). The title row draws nothing yet.
+    ///
+    /// The chrome's frame and the slide test rig both call this, so a test
+    /// that drags the stack keeps the same books the app does. It takes the
+    /// app and its stack out of `self` together, which is why a caller can't
+    /// spell this out itself without copying it. What it pops still has to
+    /// reach [`cleanup_entries`](Chrome::cleanup_entries).
+    #[must_use = "a popped entry that skips its app's cleanup_nav leaks what its route opened"]
+    pub(super) fn app_nav_pass<A: Default>(
+        &mut self,
+        ui: &mut egui::Ui,
+        animate: bool,
+        mut body: impl FnMut(&mut NotedeckApp, &mut egui::Ui, &Rc<dyn Any>, NavPass) -> RouteResponse<A>,
+    ) -> AppNavPass<A> {
+        let slot = self.active as usize;
+        let Chrome { app_navs, apps, .. } = self;
+        let (Some(nav), Some(app)) = (app_navs.get_mut(slot), apps.get_mut(slot)) else {
+            return AppNavPass {
+                response: A::default(),
+                can_take_drag_from: Vec::new(),
+                popped: None,
+            };
+        };
+        // Read before the stack is lent to egui-nav, so each draw can tell
+        // the app which pass it is.
+        let transition = nav.stack.transition();
+
+        // Each app's stack keeps its own egui-nav state, so a slide inside
+        // one app survives a switch to another.
+        let frame = nav_frame(
+            ui,
+            egui::Id::unique(("chrome_app_nav", slot)),
+            &mut nav.stack,
+            animate,
+            |ui, ui_type, frame_nav| match ui_type {
+                NavUiType::Body => {
+                    let routes = frame_nav.routes();
+                    let token = routes.last().expect("stack always has a top");
+                    body(app, ui, token, transition.pass(routes.len()))
+                }
+
+                // The header (back button, breadcrumb) is drawn by the
+                // chrome's tab strip, not per route.
+                NavUiType::Title => RouteResponse {
+                    response: A::default(),
+                    can_take_drag_from: Vec::new(),
+                },
+            },
+        );
+
+        // Whether egui-nav is still moving the routes (a drag included),
+        // which holds prunes over until it lands.
+        nav.in_flight = frame.in_flight;
+
+        // A completed back popped the top entry inside `nav_frame`. The
+        // chrome itself never inspects the token. A pop below the opener's
+        // depth (a drag-back included) forgets it.
+        let popped = match frame.event {
+            Some(NavStackEvent::Popped {
+                route: Some(token), ..
+            }) => Some(TakenEntry {
+                app: AppId(slot),
+                token,
+            }),
+            _ => None,
+        };
+        nav.forget_stale_opener();
+
+        AppNavPass {
+            response: frame.response,
+            can_take_drag_from: frame.can_take_drag_from,
+            popped,
+        }
+    }
+}
+
 /// A bare chrome over `apps`, each at its root, and nothing else: no egui or
 /// ndb context, so tests can drive the nav machinery (`set_active`, the
 /// `Navigator` drain, back / forward) directly.
@@ -962,38 +1059,26 @@ mod app_nav_tests {
 
         /// A bare chrome's slot-1 stack drawn through the real egui-nav, one
         /// harness step per frame, as the chrome's frame draws it:
-        /// `nav_frame`, then record what it reported, then drain this frame's
-        /// requests.
+        /// [`Chrome::app_nav_pass`], then drain this frame's requests.
         struct DragRig {
             chrome: Chrome,
             /// Requests to drain at the end of the next frame, as an app would
             /// have queued them while rendering.
             requests: Vec<NavRequest>,
-            /// Tokens a completed back popped inside `nav_frame`.
-            popped: Vec<Rc<dyn Any>>,
+            /// Entries a completed back popped inside the nav pass.
+            popped: Vec<TakenEntry>,
             /// Entries a drained prune removed.
             removed: Vec<TakenEntry>,
         }
 
         fn drag_rig_frame(ui: &mut egui::Ui, rig: &mut DragRig) {
-            let nav = rig.chrome.active_nav_mut().unwrap();
-            let frame = notedeck::nav_frame(
-                ui,
-                egui::Id::unique("drag_rig"),
-                &mut nav.stack,
-                true,
-                |_, _, _| egui_nav::RouteResponse {
+            let pass = rig
+                .chrome
+                .app_nav_pass(ui, true, |_, _, _, _| RouteResponse {
                     response: (),
                     can_take_drag_from: Vec::new(),
-                },
-            );
-            nav.in_flight = frame.in_flight;
-            if let Some(notedeck::NavStackEvent::Popped {
-                route: Some(token), ..
-            }) = frame.event
-            {
-                rig.popped.push(token);
-            }
+                });
+            rig.popped.extend(pass.popped);
             let requests = std::mem::take(&mut rig.requests);
             let removed = rig.chrome.apply_nav_requests(requests);
             rig.removed.extend(removed);
@@ -1075,7 +1160,7 @@ mod app_nav_tests {
             let state = harness.state();
             assert_eq!(history(&state.chrome, 1), vec![None, Some(7)]);
             assert_eq!(state.popped.len(), 1);
-            assert_eq!(state.popped[0].downcast_ref::<u32>(), Some(&8));
+            assert_eq!(state.popped[0].token.downcast_ref::<u32>(), Some(&8));
             assert!(state.removed.is_empty());
             let nav = state.chrome.active_nav().unwrap();
             assert!(nav.pending_prunes.is_empty());

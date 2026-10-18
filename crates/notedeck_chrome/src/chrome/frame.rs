@@ -5,16 +5,15 @@
 use super::actions::{chrome_handle_app_action, retry_pending_open};
 use super::header::chrome_app_tabs;
 use super::keyboard::{keyboard_visibility, virtual_keyboard_ui};
-use super::nav::TakenEntry;
 use super::sidebar::{milestone_name, topdown_sidebar, SidebarOptions};
 use super::toolbar::{chrome_toolbar, toolbar_visibility_height, ChromeToolbarAction};
 use super::{Chrome, ChromePanelAction, ChromeRoute};
 use crate::ChromeOptions;
 use egui::{CornerRadius, Layout, Margin};
 use egui_extras::{Size, StripBuilder};
-use egui_nav::{NavAction, NavDrawer, NavUiType, RouteResponse};
+use egui_nav::{NavAction, NavDrawer, RouteResponse};
 use notedeck::ui::is_compiled_as_mobile;
-use notedeck::{nav_frame, App, AppContext, AppId, NavPass, NavStackEvent};
+use notedeck::{App, AppContext, NavPass};
 
 impl Chrome {
     /// The chrome side panel
@@ -76,98 +75,42 @@ impl Chrome {
                 // the app has drawn in all of it.
                 let app_rect = ui.available_rect_before_wrap();
 
-                // `nav_frame` needs `&mut app_navs` while the render callback
-                // needs `&mut apps` — split-borrow the two fields so both can be
-                // lent at once. The app's action is bubbled out via the frame
-                // response and routed *after* `nav_frame` returns, since the
-                // callback can't reborrow the whole `self` that
-                // `chrome_handle_app_action` wants.
-                let slot = self.active as usize;
-                let (app_action, can_take_drag_from, popped) = {
-                    let Chrome { app_navs, apps, .. } = &mut *self;
-                    let nav = &mut app_navs[slot];
-                    // Read before the stack is lent to egui-nav, so each draw
-                    // can tell the app which pass it is.
-                    let transition = nav.stack.transition();
-
-                    // Each app's stack keeps its own egui-nav state, so a
-                    // slide inside one app survives a switch to another.
-                    let frame = nav_frame(
-                        ui,
-                        egui::Id::unique(("chrome_app_nav", slot)),
-                        &mut nav.stack,
-                        animate,
-                        |ui, ui_type, frame_nav| match ui_type {
-                            NavUiType::Body => {
-                                // Paint an opaque panel background before the app
-                                // draws. During an egui_nav slide the incoming
-                                // route renders in a foreground layer over the
-                                // outgoing one; the outgoing app's floating
-                                // `egui::Area`s (popups, tooltips, side panels)
-                                // escape egui_nav's route clip and would otherwise
-                                // show through an app whose `render` doesn't fill
-                                // its whole rect (e.g. Dave). This fill occludes
-                                // whatever sits beneath the incoming route so every
-                                // slide clips cleanly. It lives here rather
-                                // than in the shared, business-logic-free
-                                // `nav_frame` (columns paints its own column
-                                // backgrounds and has its own nav path).
-                                ui.painter().rect_filled(
-                                    ui.max_rect(),
-                                    CornerRadius::ZERO,
-                                    ui.visuals().panel_fill,
-                                );
-                                let routes = frame_nav.routes();
-                                let token = routes.last().expect("stack always has a top");
-                                // egui-nav draws the entry beneath a slide
-                                // first, then the top: say which this is.
-                                app_ctx.navigator.set_pass(transition.pass(routes.len()));
-                                let resp = apps[slot].render_nav(app_ctx, ui, token);
-                                app_ctx.navigator.set_pass(NavPass::Settled);
-                                RouteResponse {
-                                    response: resp.action,
-                                    can_take_drag_from: resp.can_take_drag_from,
-                                }
-                            }
-
-                            // The global-nav header (back button, breadcrumb)
-                            // lands with the nav controls in a later subissue.
-                            NavUiType::Title => RouteResponse {
-                                response: None,
-                                can_take_drag_from: Vec::new(),
-                            },
-                        },
+                // The app's action is bubbled out of the pass and routed
+                // *after* it returns, since the body can't reborrow the whole
+                // `self` that `chrome_handle_app_action` wants.
+                let pass = self.app_nav_pass(ui, animate, |app, ui, token, pass| {
+                    // Paint an opaque panel background before the app draws.
+                    // During an egui_nav slide the incoming route renders in a
+                    // foreground layer over the outgoing one; the outgoing
+                    // app's floating `egui::Area`s (popups, tooltips, side
+                    // panels) escape egui_nav's route clip and would otherwise
+                    // show through an app whose `render` doesn't fill its whole
+                    // rect (e.g. Dave). This fill occludes whatever sits
+                    // beneath the incoming route so every slide clips cleanly.
+                    // It lives here rather than in the shared,
+                    // business-logic-free `nav_frame` (columns paints its own
+                    // column backgrounds and has its own nav path).
+                    ui.painter().rect_filled(
+                        ui.max_rect(),
+                        CornerRadius::ZERO,
+                        ui.visuals().panel_fill,
                     );
-
-                    // Whether egui-nav is still moving the routes (a drag
-                    // included), which holds prunes over until it lands.
-                    nav.in_flight = frame.in_flight;
-
-                    // A completed back popped the top entry inside
-                    // `nav_frame`. Surface the popped entry so we can hand it
-                    // to the app's `cleanup_nav` once the split borrows above
-                    // are released — the chrome itself never inspects the
-                    // token. A pop below the opener's depth (a drag-back
-                    // included) forgets it.
-                    let popped = match frame.event {
-                        Some(NavStackEvent::Popped {
-                            route: Some(token), ..
-                        }) => Some(TakenEntry {
-                            app: AppId(slot),
-                            token,
-                        }),
-                        _ => None,
-                    };
-                    nav.forget_stale_opener();
-
-                    (frame.response, frame.can_take_drag_from, popped)
-                };
+                    app_ctx.navigator.set_pass(pass);
+                    let resp = app.render_nav(app_ctx, ui, token);
+                    app_ctx.navigator.set_pass(NavPass::Settled);
+                    RouteResponse {
+                        response: resp.action,
+                        can_take_drag_from: resp.can_take_drag_from,
+                    }
+                });
+                let app_action = pass.response;
+                let can_take_drag_from = pass.can_take_drag_from;
 
                 self.key_hints_ui(app_ctx, ui, app_rect);
 
                 // Split borrows released — free the popped entry's resources by
                 // routing the pop back to the app that owned it.
-                self.cleanup_entries(app_ctx, popped);
+                self.cleanup_entries(app_ctx, pass.popped);
 
                 // Retry an open raised on an earlier frame whose reference
                 // hadn't resolved yet, before this frame's actions so a newer
