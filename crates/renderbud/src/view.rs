@@ -8,6 +8,10 @@
 //! lighting environment and the model's GPU data. Any number of views can
 //! show different models (or the same one from different angles) in the
 //! same frame, each as an ordinary texture the UI samples.
+//!
+//! A view made with [`ViewBackground::Transparent`] draws no skybox, so its
+//! texture is the model alone over clear pixels: an icon a UI can lay over
+//! its own background.
 
 use glam::{Mat4, Vec3};
 
@@ -23,11 +27,35 @@ const MAX_VIEW_SIDE: u32 = 4096;
 /// How far past the model's bounding sphere the starting camera sits.
 const FIT_PADDING: f32 = 1.2;
 
-/// One model drawn into its own texture, orbited by dragging.
+/// How a [`ModelView`] fills the pixels its model doesn't cover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewBackground {
+    /// The renderer's lighting environment, drawn as a skybox behind the
+    /// model: a standalone viewer's backdrop.
+    #[default]
+    Skybox,
+    /// Cleared to `(0, 0, 0, 0)` with no skybox. The model's own pixels stay
+    /// opaque (the main pipeline replaces and its shader writes alpha 1), so
+    /// every texel is either opaque or zero, which is valid premultiplied
+    /// alpha: egui's linear sampling blends the edges without a dark fringe.
+    Transparent,
+}
+
+/// What [`Renderer::create_model_view_with`] makes a view with, beyond its
+/// model and size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewOptions {
+    /// What shows behind the model.
+    pub background: ViewBackground,
+}
+
+/// One model drawn into its own texture, orbited by dragging or spun with
+/// [`set_yaw`](Self::set_yaw).
 ///
-/// Made by [`Renderer::create_model_view`] and drawn by
-/// [`Renderer::render_model_view`], which does nothing until the camera has
-/// moved since the last render. The texture is
+/// Made by [`Renderer::create_model_view`] (or
+/// [`create_model_view_with`](Renderer::create_model_view_with)) and drawn by
+/// [`Renderer::render_model_view`], which does nothing until the camera or
+/// the yaw has changed since the last render. The texture is
 /// `RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC` in the renderer's colour
 /// format, ready to register with a UI (or read back in a test).
 pub struct ModelView {
@@ -42,8 +70,9 @@ pub struct ModelView {
     globals: GpuData<Globals>,
     /// The same uniform buffer, bound alone for the shadow pass.
     shadow_globals_bg: wgpu::BindGroup,
-    /// The model's transform (identity), in a buffer of its own so the
-    /// renderer's per-scene object buffer is never touched.
+    /// The model's transform (its [`yaw`](Self::yaw) about its centre), in
+    /// a buffer of its own so the renderer's per-scene object buffer is
+    /// never touched.
     object_buf: wgpu::Buffer,
     object_bg: wgpu::BindGroup,
     bounds: Aabb,
@@ -52,6 +81,10 @@ pub struct ModelView {
     orbit: ArcballController,
     /// The fitted camera's lens, kept so the orbit only moves the eye.
     lens: Camera,
+    background: ViewBackground,
+    /// The model's turn about the vertical axis through its centre, in
+    /// radians.
+    yaw: f32,
     dirty: bool,
 }
 
@@ -94,15 +127,50 @@ impl ModelView {
         self.dirty = true;
     }
 
-    /// Put the camera back where it started.
+    /// Put the camera back where it started. The [`yaw`](Self::yaw) is the
+    /// model's, not the camera's, so it stays.
     pub fn reset(&mut self) {
         self.orbit = self.home.clone();
         self.dirty = true;
     }
 
-    /// Whether the camera has moved since the last render.
+    /// Turn the model to `radians` about the vertical axis through its
+    /// centre. Absolute, unlike [`orbit`](Self::orbit), so a spin can be a
+    /// pure function of time: the same angle always draws the same picture.
+    /// Marks the view for a render only when the angle changes.
+    ///
+    /// The model stays inside its bounding sphere as it turns, and both the
+    /// fitted camera and the shadow box are sized to that sphere, so no yaw
+    /// crops it or its shadow.
+    pub fn set_yaw(&mut self, radians: f32) {
+        if radians == self.yaw {
+            return;
+        }
+        self.yaw = radians;
+        self.dirty = true;
+    }
+
+    /// The model's current turn, as last given to [`set_yaw`](Self::set_yaw).
+    pub fn yaw(&self) -> f32 {
+        self.yaw
+    }
+
+    /// What shows behind the model.
+    pub fn background(&self) -> ViewBackground {
+        self.background
+    }
+
+    /// Whether the camera or the yaw has changed since the last render.
     pub fn needs_render(&self) -> bool {
         self.dirty
+    }
+
+    /// The object transform: the yaw about the model's centre.
+    fn transform(&self) -> Mat4 {
+        let center = self.bounds.center();
+        Mat4::from_translation(center)
+            * Mat4::from_rotation_y(self.yaw)
+            * Mat4::from_translation(-center)
     }
 
     /// The camera the orbit currently looks through.
@@ -134,15 +202,28 @@ fn light_view_proj(bounds: &Aabb, light_dir: Vec3) -> Mat4 {
 }
 
 impl Renderer {
-    /// A view of `model` into a `size` texture, its camera fitted to the
-    /// model's bounds. `None` when the model isn't loaded. The first
-    /// [`render_model_view`](Self::render_model_view) draws it.
+    /// A view of `model` into a `size` texture over the skybox, its camera
+    /// fitted to the model's bounds. `None` when the model isn't loaded. The
+    /// first [`render_model_view`](Self::render_model_view) draws it.
     pub fn create_model_view(
         &self,
         device: &wgpu::Device,
         model: Model,
         size: PixelSize,
     ) -> Option<ModelView> {
+        self.create_model_view_with(device, model, size, ViewOptions::default())
+    }
+
+    /// [`create_model_view`](Self::create_model_view) with `options`, e.g. a
+    /// transparent background for an icon laid over a UI.
+    pub fn create_model_view_with(
+        &self,
+        device: &wgpu::Device,
+        model: Model,
+        size: PixelSize,
+        options: ViewOptions,
+    ) -> Option<ModelView> {
+        let ViewOptions { background } = options;
         let bounds = self.models.get(&model)?.bounds;
         let size = PixelSize::new(
             size.width.clamp(1, MAX_VIEW_SIDE),
@@ -251,14 +332,16 @@ impl Renderer {
             orbit: home.clone(),
             home,
             lens,
+            background,
+            yaw: 0.0,
             dirty: true,
         })
     }
 
-    /// Draw `view` if its camera moved since it was last drawn; returns
-    /// whether it did. Records the model's shadow pass (into the renderer's
-    /// shared shadow map) and the skybox and model into the view's texture,
-    /// then submits. Nothing waits on the GPU, so this is safe on the UI
+    /// Draw `view` if its camera or yaw changed since it was last drawn;
+    /// returns whether it did. Records the model's shadow pass (into the
+    /// renderer's shared shadow map) and the background and model into the
+    /// view's texture, then submits. Nothing waits on the GPU, so this is safe on the UI
     /// thread; queue order puts it ahead of any later submit that samples
     /// the texture.
     pub fn render_model_view(
@@ -287,7 +370,7 @@ impl Renderer {
         queue.write_buffer(
             &view.object_buf,
             0,
-            bytemuck::bytes_of(&ObjectUniform::from_model(Mat4::IDENTITY)),
+            bytemuck::bytes_of(&ObjectUniform::from_model(view.transform())),
         );
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -316,6 +399,10 @@ impl Renderer {
             crate::draw_model(&mut shadow_pass, model_data, false);
         }
 
+        let clear = match view.background {
+            ViewBackground::Skybox => wgpu::Color::BLACK,
+            ViewBackground::Transparent => wgpu::Color::TRANSPARENT,
+        };
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("model_view_main"),
@@ -324,7 +411,7 @@ impl Renderer {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(clear),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -341,12 +428,14 @@ impl Renderer {
                 multiview_mask: None,
             });
 
-            rpass.set_pipeline(&self.skybox_pipeline);
-            rpass.set_bind_group(0, &view.globals.bindgroup, &[]);
-            rpass.set_bind_group(1, &view.object_bg, &[0]);
-            rpass.set_bind_group(2, &self.material.bindgroup, &[]);
-            rpass.set_bind_group(3, &self.ibl.bindgroup, &[]);
-            rpass.draw(0..3, 0..1);
+            if view.background == ViewBackground::Skybox {
+                rpass.set_pipeline(&self.skybox_pipeline);
+                rpass.set_bind_group(0, &view.globals.bindgroup, &[]);
+                rpass.set_bind_group(1, &view.object_bg, &[0]);
+                rpass.set_bind_group(2, &self.material.bindgroup, &[]);
+                rpass.set_bind_group(3, &self.ibl.bindgroup, &[]);
+                rpass.draw(0..3, 0..1);
+            }
 
             rpass.set_pipeline(&self.pipeline);
             rpass.set_bind_group(0, &view.globals.bindgroup, &[]);
@@ -463,6 +552,70 @@ mod tests {
             first,
             read_back(&device, &queue, &view),
             "reset returns home"
+        );
+    }
+
+    /// A transparent view leaves every pixel the cube doesn't cover at
+    /// `(0, 0, 0, 0)` and the cube's own pixels opaque, where the default
+    /// view paints its corner with the opaque skybox. `set_yaw` turns the
+    /// picture, marks a render only when the angle changes, and the same
+    /// angle draws the same bytes however the view got there.
+    #[test]
+    #[ignore] // needs a GPU adapter (lavapipe): run via scripts/snapshot-test
+    fn transparent_view_spins_by_yaw() {
+        let Gpu { device, queue } = headless_device();
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let mut renderer = Renderer::new(&device, &queue, format, PixelSize::new(64, 64));
+        let data = renderer
+            .model_uploader(&device, &queue)
+            .upload_gltf_slice(&crate::test_util::cube_glb([0.9, 0.2, 0.1, 1.0]))
+            .expect("cube uploads");
+        let model = renderer.insert_model(data);
+        let px = |img: &[u8], x: usize, y: usize| img[(y * 64 + x) * 4..][..4].to_vec();
+
+        let mut skybox = renderer
+            .create_model_view(&device, model, PixelSize::new(64, 64))
+            .expect("model is loaded");
+        assert_eq!(skybox.background(), ViewBackground::Skybox);
+        renderer.render_model_view(&device, &queue, &mut skybox);
+        assert_eq!(
+            px(&read_back(&device, &queue, &skybox), 0, 0)[3],
+            255,
+            "the skybox is opaque"
+        );
+
+        let options = ViewOptions {
+            background: ViewBackground::Transparent,
+        };
+        let mut view = renderer
+            .create_model_view_with(&device, model, PixelSize::new(64, 64), options)
+            .expect("model is loaded");
+        assert!(renderer.render_model_view(&device, &queue, &mut view));
+        let home = read_back(&device, &queue, &view);
+        assert_eq!(px(&home, 0, 0), [0, 0, 0, 0], "corner is clear");
+        assert_eq!(px(&home, 32, 32)[3], 255, "cube is opaque");
+
+        view.set_yaw(0.7);
+        assert!(renderer.render_model_view(&device, &queue, &mut view));
+        let turned = read_back(&device, &queue, &view);
+        assert_ne!(home, turned, "a yaw turns the cube");
+        assert_eq!(px(&turned, 0, 0), [0, 0, 0, 0], "corner stays clear");
+
+        view.set_yaw(0.7);
+        assert!(
+            !renderer.render_model_view(&device, &queue, &mut view),
+            "the same angle needs no render"
+        );
+
+        view.set_yaw(0.0);
+        assert!(renderer.render_model_view(&device, &queue, &mut view));
+        assert_eq!(home, read_back(&device, &queue, &view), "yaw 0 is home");
+        view.set_yaw(0.7);
+        assert!(renderer.render_model_view(&device, &queue, &mut view));
+        assert_eq!(
+            turned,
+            read_back(&device, &queue, &view),
+            "an angle draws the same bytes every time"
         );
     }
 

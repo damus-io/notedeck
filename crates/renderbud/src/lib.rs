@@ -22,7 +22,7 @@ pub use camera::{ArcballController, Camera, FlyController, ThirdPersonController
 pub use material::{MaterialGpu, MaterialUniform};
 pub use model::{Aabb, LoadError, Mesh, Model, ModelData, ModelDraw, Vertex};
 pub use texture::upload_rgba8_texture_2d;
-pub use view::ModelView;
+pub use view::{ModelView, ViewBackground, ViewOptions};
 pub use world::{Node, NodeId, ObjectId, Transform, World};
 
 /// Loads glTF models for a [`Renderer`] off its thread: everything a model
