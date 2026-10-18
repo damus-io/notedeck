@@ -86,6 +86,24 @@ pub struct Batch {
     /// it under. Unlike [`skipped`](Self::skipped) nothing is wrong with
     /// them; a later import takes them once they settle.
     pub left_out: Vec<LeftOut>,
+    /// Transactions the importer files in a layer other than its own, each
+    /// written as a segment of its own ahead of this batch's, such as the
+    /// `cln` importer's on-chain events, which a reader switches off apart
+    /// from its payments.
+    pub other_layers: Vec<OtherLayer>,
+    /// Things the run should tell whoever ran it that are neither a skip nor
+    /// a deliberate leave-out, such as a node that had to be read whole
+    /// because it can't be asked for only the newer events.
+    pub notes: Vec<String>,
+}
+
+/// Transactions of a [`Batch`] filed in another layer.
+#[derive(Debug)]
+pub struct OtherLayer {
+    /// The layer their segment goes in.
+    pub layer: String,
+    /// The transactions, in a journal of their own, as [`Batch::journal`].
+    pub journal: Journal,
 }
 
 /// A line of an importer's input that didn't read, so its record is not in
@@ -128,6 +146,8 @@ impl Batch {
             journal,
             skipped: Vec::new(),
             left_out: Vec::new(),
+            other_layers: Vec::new(),
+            notes: Vec::new(),
         }
     }
 
@@ -141,9 +161,15 @@ impl Batch {
         self.journal.prices.len()
     }
 
-    /// Whether the batch holds nothing to write.
+    /// Whether the batch holds nothing to write, in its own layer or any
+    /// other.
     pub fn is_empty(&self) -> bool {
-        self.txn_count() == 0 && self.price_count() == 0
+        self.txn_count() == 0
+            && self.price_count() == 0
+            && self
+                .other_layers
+                .iter()
+                .all(|other| other.journal.txns.is_empty() && other.journal.prices.is_empty())
     }
 
     /// Build a batch from raw records. Each transaction must parse whole,

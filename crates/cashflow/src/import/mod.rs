@@ -18,6 +18,7 @@ mod amex;
 mod appstore;
 mod batch;
 mod btc;
+mod cln;
 mod csv_rows;
 mod ledger;
 mod payroll;
@@ -34,9 +35,11 @@ use ledgerdb::{
 pub use amex::AmexImporter;
 pub use appstore::{AppStoreImporter, ReportSource};
 pub use batch::{
-    Batch, BatchError, LeftOut, RawAmount, RawMeta, RawPosting, RawPrice, RawTxn, Skipped,
+    Batch, BatchError, LeftOut, OtherLayer, RawAmount, RawMeta, RawPosting, RawPrice, RawTxn,
+    Skipped,
 };
 pub use btc::{BitcoindHttp, BtcImporter, Rpc};
+pub use cln::{ClnImporter, Commando, Node, NodeError};
 pub use ledger::LedgerImporter;
 pub use payroll::PayrollImporter;
 pub use rbc::RbcImporter;
@@ -44,7 +47,7 @@ pub use rbc::RbcImporter;
 use crate::{CashflowDir, Config};
 
 /// Every importer's name, as `cashflow import <name>` takes it.
-pub const NAMES: &[&str] = &["amex", "appstore", "btc", "ledger", "payroll", "rbc"];
+pub const NAMES: &[&str] = &["amex", "appstore", "btc", "cln", "ledger", "payroll", "rbc"];
 
 /// Reads one kind of source into a batch.
 pub trait Importer {
@@ -58,6 +61,16 @@ pub trait Importer {
 
     /// Read `input` into one batch.
     fn import(&self, input: &ImportInput) -> Result<Batch, ImportError>;
+
+    /// [`import`](Self::import), knowing what the journal already `held`,
+    /// loaded with all its layers. An importer that can ask its source for
+    /// only the newer records overrides this to find where the journal
+    /// leaves off, so the cursor travels with the journal rather than in
+    /// saved state of its own. Every other importer ignores it.
+    fn import_held(&self, input: &ImportInput, held: &Ledger) -> Result<Batch, ImportError> {
+        let _ = held;
+        self.import(input)
+    }
 }
 
 /// What an import run hands its importer.
@@ -82,6 +95,7 @@ pub fn importer(name: &str, config: &Config, dir: &CashflowDir) -> Option<Box<dy
             dir,
         ))),
         "btc" => Some(Box::new(BtcImporter::new(config.btc.as_ref(), dir))),
+        "cln" => Some(Box::new(ClnImporter::new(config.cln.as_ref(), dir))),
         "ledger" => Some(Box::new(LedgerImporter)),
         "payroll" => Some(Box::new(PayrollImporter::new(config.payroll.as_ref()))),
         "rbc" => Some(Box::new(RbcImporter::new(config.rbc.as_ref()))),
@@ -155,6 +169,12 @@ pub struct Written {
     pub skipped: Vec<Skipped>,
     /// What the importer deliberately left out, from [`Batch::left_out`].
     pub left_out: Vec<LeftOut>,
+    /// What the importer said about the run, from [`Batch::notes`].
+    pub notes: Vec<String>,
+    /// The segments of the batch's [`Batch::other_layers`], each as this
+    /// one, in the batch's order. Their `skipped`, `left_out`, `notes` and
+    /// `other_layers` are empty: those are the run's, and are here.
+    pub other_layers: Vec<Written>,
 }
 
 /// How a batch's transactions or prices compared with the journal they were
@@ -181,6 +201,11 @@ pub struct Rows {
 /// trailing 90 days so stores each row once, not ninety times, in a store
 /// that can never delete a synced segment. A price is left out when the
 /// journal already uses that rate for its date and pair.
+///
+/// The importer sees the same loaded journal ([`Importer::import_held`]).
+/// Transactions it files in [other layers](Batch::other_layers) are written
+/// first, each as a segment of its own, so an importer that resumes after
+/// its newest record in `layer` never resumes past one it failed to write.
 pub fn write(
     store: &JournalStore,
     importer: &dyn Importer,
@@ -188,23 +213,50 @@ pub fn write(
     layer: Option<&str>,
     imported: Option<u64>,
 ) -> Result<Written, ImportError> {
-    let batch = importer.import(input)?;
+    let ledger = Ledger::load(store, LayerFilter::All)?.ledger;
+    let batch = importer.import_held(input, &ledger)?;
     if batch.is_empty() {
         return Err(ImportError::Empty {
             skipped: batch.skipped,
         });
     }
-    let header = SegmentHeader {
+    let imported = imported.unwrap_or_else(now);
+    let header = |layer: &str| SegmentHeader {
         source: input.source.clone(),
-        imported: imported.unwrap_or_else(now),
-        layer: layer.unwrap_or(importer.layer()).to_owned(),
+        imported,
+        layer: layer.to_owned(),
     };
-    let ledger = Ledger::load(store, LayerFilter::All)?.ledger;
+    let other_layers = batch
+        .other_layers
+        .into_iter()
+        .map(|other| file(store, &ledger, header(&other.layer), other.journal))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut written = file(
+        store,
+        &ledger,
+        header(layer.unwrap_or(importer.layer())),
+        batch.journal,
+    )?;
+    written.skipped = batch.skipped;
+    written.left_out = batch.left_out;
+    written.notes = batch.notes;
+    written.other_layers = other_layers;
+    Ok(written)
+}
+
+/// Write what of `journal` the `ledger` doesn't hold as one segment under
+/// `header`.
+fn file(
+    store: &JournalStore,
+    ledger: &Ledger,
+    header: SegmentHeader,
+    journal: Journal,
+) -> Result<Written, ImportError> {
     let Novel {
         journal,
         txn_rows,
         price_rows,
-    } = novel_rows(&ledger, batch.journal)?;
+    } = novel_rows(ledger, journal)?;
     let mut written = Written {
         hash: None,
         header,
@@ -213,8 +265,10 @@ pub fn write(
         prices: journal.prices.len(),
         txn_rows,
         price_rows,
-        skipped: batch.skipped,
-        left_out: batch.left_out,
+        skipped: Vec::new(),
+        left_out: Vec::new(),
+        notes: Vec::new(),
+        other_layers: Vec::new(),
     };
     if journal.txns.is_empty() && journal.prices.is_empty() {
         return Ok(written);

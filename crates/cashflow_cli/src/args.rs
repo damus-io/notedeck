@@ -706,7 +706,7 @@ mod tests {
         );
         assert!(
             err_of(&["import"])
-                .contains("needs an importer: amex, appstore, btc, ledger, payroll, rbc")
+                .contains("needs an importer: amex, appstore, btc, cln, ledger, payroll, rbc")
         );
         assert!(err_of(&["import", "ledger", "--source"]).contains("--source needs a value"));
     }

@@ -338,6 +338,9 @@ pub struct Config {
     /// `[appstore]`: the App Store Connect importer's settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appstore: Option<AppStoreConfig>,
+    /// `[cln]`: the Core Lightning bookkeeper importer's settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cln: Option<ClnConfig>,
 }
 
 /// `[amex]` in `config.toml`. Every key is optional.
@@ -432,6 +435,27 @@ pub struct AppStoreConfig {
     pub region: Option<String>,
     /// Where proceeds post [default: `assets:apple`].
     pub account: Option<String>,
+}
+
+/// `[cln]` in `config.toml`: which Core Lightning node to read bookkeeper
+/// events from over commando, and which day an event falls on.
+///
+/// The rune is a secret, `cln-rune` (see [`CashflowDir::secret`]). It must
+/// permit `bkpr-listaccountevents`; mint one on the node with
+/// `lightning-cli createrune restrictions='[["method=bkpr-listaccountevents"]]'`.
+/// Importing a saved listing needs none of this but `timezone`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClnConfig {
+    /// The node's public key, 66 hex characters.
+    pub node_id: Option<String>,
+    /// Where the node takes peer connections, `host:port` [default port
+    /// 9735].
+    pub host: Option<String>,
+    /// The time zone that decides an event's date: `local` (the system's,
+    /// which `$TZ` sets), `utc`, or a fixed offset such as `-07:00`
+    /// [default: `local`].
+    pub timezone: Option<String>,
 }
 
 impl Config {

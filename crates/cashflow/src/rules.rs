@@ -5,7 +5,8 @@
 //!
 //! ```toml
 //! # The counter-leg accounts importers post to when they don't know the
-//! # category. [default: expenses:unknown, income:unknown]
+//! # category. [default: expenses:unknown, income:unknown, income:zap,
+//! # income:lnurl]
 //! defaults = ["expenses:unknown", "income:unknown"]
 //! # Where linked transfers net out. [default: transfers]
 //! transfers = "transfers"
@@ -41,8 +42,15 @@ use ledgerdb::{Cond, Edits, Field, Rule};
 use serde::Deserialize;
 
 /// The counter-leg accounts an importer posts to when it does not know the
-/// category, used when a rules file names none.
-pub const DEFAULT_COUNTER_ACCOUNTS: &[&str] = &["expenses:unknown", "income:unknown"];
+/// category, used when a rules file names none. `income:zap` and
+/// `income:lnurl` are the `cln` importer's: it knows a payment was a zap or
+/// came through a lightning address, but not whose.
+pub const DEFAULT_COUNTER_ACCOUNTS: &[&str] = &[
+    "expenses:unknown",
+    "income:unknown",
+    "income:zap",
+    "income:lnurl",
+];
 
 /// Why a rules file could not be read.
 #[derive(Debug, thiserror::Error)]
@@ -230,7 +238,7 @@ mod tests {
     fn empty_file_is_the_defaults() {
         let edits = parse_ok("");
         assert_eq!(edits, default_edits());
-        assert_eq!(edits.defaults, ["expenses:unknown", "income:unknown"]);
+        assert_eq!(edits.defaults, DEFAULT_COUNTER_ACCOUNTS);
         assert_eq!(edits.transfers, "transfers");
     }
 
@@ -255,7 +263,13 @@ match = ["AIRLINE"]
         );
         assert_eq!(
             edits.defaults,
-            ["expenses:unknown", "income:unknown", "expenses:misc"]
+            [
+                "expenses:unknown",
+                "income:unknown",
+                "income:zap",
+                "income:lnurl",
+                "expenses:misc"
+            ]
         );
         let accounts: Vec<&str> = edits.rules.iter().map(|r| r.account.as_str()).collect();
         assert_eq!(

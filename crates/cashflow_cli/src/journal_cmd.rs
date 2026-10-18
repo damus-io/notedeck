@@ -144,29 +144,31 @@ pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
         .first()
         .map_or_else(String::new, |p| format!("{}:", p.display()));
     if args.json {
-        println!(
-            "{}",
-            json!({
-                "hash": written.hash.map(|h| h.to_string()),
-                "new": written.new,
-                "txn_rows": rows_json(written.txn_rows),
-                "price_rows": rows_json(written.price_rows),
-                "source": written.header.source,
-                "layer": written.header.layer,
-                "imported": written.header.imported,
-                "txns": written.txns,
-                "prices": written.prices,
-                "skipped": written.skipped.iter().map(|e| json!({
+        let mut out = segment_json(&written);
+        out["other_layers"] = written.other_layers.iter().map(segment_json).collect();
+        out["notes"] = json!(written.notes);
+        out["skipped"] = json!(
+            written
+                .skipped
+                .iter()
+                .map(|e| json!({
                     "line": e.line,
                     "col": e.col,
                     "error": e.message,
-                })).collect::<Vec<_>>(),
-                "left_out": written.left_out.iter().map(|l| json!({
+                }))
+                .collect::<Vec<_>>()
+        );
+        out["left_out"] = json!(
+            written
+                .left_out
+                .iter()
+                .map(|l| json!({
                     "id": l.id,
                     "why": l.why,
-                })).collect::<Vec<_>>(),
-            })
+                }))
+                .collect::<Vec<_>>()
         );
+        println!("{out}");
         return Ok(());
     }
     for error in written.skipped.iter().take(SKIPPED_SHOWN) {
@@ -185,6 +187,9 @@ pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
     {
         eprintln!("cashflow: … and {more} more left out (see --json)");
     }
+    for note in &written.notes {
+        eprintln!("cashflow: {note}");
+    }
     let mut skipped = match written.skipped.len() {
         0 => String::new(),
         n => format!("  {n} skipped"),
@@ -192,24 +197,47 @@ pub fn import(dir: &CashflowDir, args: &ImportArgs) -> Result<(), String> {
     if !written.left_out.is_empty() {
         skipped.push_str(&format!("  {} left out", written.left_out.len()));
     }
+    for other in &written.other_layers {
+        println!("{}", segment_line(other, ""));
+    }
+    println!("{}", segment_line(&written, &skipped));
+    Ok(())
+}
+
+/// One segment `import` wrote, or would have, as JSON.
+fn segment_json(written: &import::Written) -> Value {
+    json!({
+        "hash": written.hash.map(|h| h.to_string()),
+        "new": written.new,
+        "txn_rows": rows_json(written.txn_rows),
+        "price_rows": rows_json(written.price_rows),
+        "source": written.header.source,
+        "layer": written.header.layer,
+        "imported": written.header.imported,
+        "txns": written.txns,
+        "prices": written.prices,
+    })
+}
+
+/// One segment `import` wrote, or would have, as its summary line, with
+/// `tail` after it.
+fn segment_line(written: &import::Written, tail: &str) -> String {
     let rows = format!(
         "txns {}  prices {}",
         rows_text(written.txn_rows),
         rows_text(written.price_rows)
     );
     let Some(hash) = written.hash else {
-        println!(
-            "nothing new  {rows}  source {}  layer {}{skipped}",
+        return format!(
+            "nothing new  {rows}  source {}  layer {}{tail}",
             written.header.source, written.header.layer
         );
-        return Ok(());
     };
     let verb = if written.new { "imported" } else { "unchanged" };
-    println!(
-        "{verb} {hash}  {} txns  {} prices  ({rows})  source {}  layer {}{skipped}",
+    format!(
+        "{verb} {hash}  {} txns  {} prices  ({rows})  source {}  layer {}{tail}",
         written.txns, written.prices, written.header.source, written.header.layer
-    );
-    Ok(())
+    )
 }
 
 /// `{"new": 1, "changed": 0, "unchanged": 89}`.

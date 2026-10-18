@@ -220,6 +220,26 @@ Importers:
                   (~/.bitcoin/.cookie), and `external_wallets` (watch-only
                   wallets read too). Given files, it reads the old
                   btc-txs-raw TSV listings instead.
+  cln [<file>...] Core Lightning bookkeeper events, bkpr-listaccountevents
+                  over commando: [cln] in config.toml sets `node_id`,
+                  `host` (host[:9735]) and `timezone` (local, utc or
+                  -07:00; the day an event is filed under), and the
+                  cln-rune secret is a rune that permits the call (mint
+                  one with lightning-cli createrune
+                  restrictions='[[\"method=bkpr-listaccountevents\"]]').
+                  A node whose bookkeeper takes start_time is read from a
+                  day before the newest payment the journal holds; one
+                  that doesn't is read whole, and says so. Payments
+                  (invoice, routed) go in layer cln, posting msat to
+                  assets:cln against routed:in/out, income:zap (a zap
+                  request; raw-zap-p is the recipient), income:lnurl
+                  (raw-lnurl-address) or income/expenses:unknown
+                  (raw-description); every other event goes in layer
+                  cln-chain. Ids are cln:channel:<n>, cln:chain:<n> and
+                  cln:fee:… from a patched bookkeeper, cln:h:<hash>
+                  otherwise. A description edited later on an event older
+                  than the cursor is not read again. Given files, it reads
+                  saved bkpr-listaccountevents output instead.
   ledger <file>   a ledger-cli file, such as books kept by hand or a script.
                   A transaction with no `; id:` is given a legacy one,
                   <source>:<hash of its text>, plus :2, :3, … for identical
@@ -253,7 +273,8 @@ Importers:
 
 --source names the segment's source (default: the importer's name), the
 prefix of the record ids it makes. --layer files it in a layer (default: the
-importer's), which `export` and `report` can include or leave out.",
+importer's), which `export` and `report` can include or leave out; an
+importer's second layer, such as cln-chain, keeps its own name.",
         options: &[
             (
                 "--source <name>",
@@ -270,6 +291,7 @@ importer's), which `export` and `report` can include or leave out.",
             "cashflow import appstore 2025-10..2026-03",
             "cashflow import appstore ~/Downloads/80000001_0326_ZZ.txt.gz",
             "cashflow import btc",
+            "cashflow import cln",
             "cashflow import ledger books.ledger",
             "cashflow import payroll payroll.txt",
             "cashflow import rbc ~/Downloads/csv*.csv",

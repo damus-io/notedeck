@@ -435,6 +435,87 @@ fn payroll_import_categorizes_the_btc_send() {
     assert_eq!(again["txn_rows"]["unchanged"], 1);
 }
 
+/// A saved `bkpr-listaccountevents` listing: payments land in layer `cln`
+/// and the on-chain deposit in `cln-chain`, each its own segment, and a rule
+/// on the zap's recipient categorizes it.
+#[test]
+fn cln_import_files_payments_and_chain_events_apart() {
+    let cf = cashflow();
+    std::fs::write(cf.dir().join("config.toml"), "[cln]\ntimezone = \"utc\"\n").unwrap();
+    let zap = serde_json::json!({
+        "kind": 9734, "pubkey": "aa".repeat(32), "content": "",
+        "tags": [["p", "bb".repeat(32)]],
+    })
+    .to_string();
+    let listing = serde_json::json!({ "events": [
+        {
+            "account": "c0ffee", "type": "channel", "tag": "invoice",
+            "credit_msat": 21000, "debit_msat": 0, "currency": "bc",
+            "payment_id": "01".repeat(32), "part_id": 0, "timestamp": 1709294400u64,
+            "description": zap, "is_rebalance": false,
+        },
+        {
+            "account": "wallet", "type": "chain", "tag": "deposit",
+            "credit_msat": 5000000, "debit_msat": 0, "currency": "bc",
+            "outpoint": format!("{}:0", "02".repeat(32)), "timestamp": 1709294400u64,
+            "blockheight": 1,
+        },
+    ]});
+    let events = write(&cf, "events.json", &listing.to_string());
+
+    let out = cf.ok(&["import", "cln", s(&events)]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2, "{out}");
+    assert!(lines[0].ends_with("layer cln-chain"), "{out}");
+    assert!(
+        lines[1].contains("1 txns") && lines[1].ends_with("layer cln"),
+        "{out}"
+    );
+
+    let rules = write(
+        &cf,
+        "rules.toml",
+        &format!(
+            "[[rule]]\naccount = \"income:zap:mine\"\nmeta = {{ raw-zap-p = \"{}\" }}\n",
+            "bb".repeat(32)
+        ),
+    );
+    let bal = cf.ok(&[
+        "report",
+        "bal",
+        "--native",
+        "--depth",
+        "3",
+        "--rules",
+        s(&rules),
+        "--except",
+        "cln-chain",
+    ]);
+    assert!(bal.contains("-21000 msat  income:zap:mine"), "{bal}");
+    assert!(
+        !bal.contains("assets:cln:wallet"),
+        "cln-chain is its own layer: {bal}"
+    );
+    let chain = cf.ok(&[
+        "report",
+        "bal",
+        "--native",
+        "--depth",
+        "3",
+        "--layer",
+        "cln-chain",
+    ]);
+    assert!(chain.contains("5000000 msat  assets:cln:wallet"), "{chain}");
+
+    let again: Value =
+        serde_json::from_str(&cf.ok(&["import", "cln", s(&events), "--json"])).unwrap();
+    assert_eq!(again["hash"], Value::Null);
+    assert_eq!(again["layer"], "cln");
+    assert_eq!(again["other_layers"][0]["layer"], "cln-chain");
+    assert_eq!(again["other_layers"][0]["txn_rows"]["unchanged"], 1);
+    assert_eq!(again["notes"], serde_json::json!([]));
+}
+
 /// A legacy ledger file with no ids, a raw line before its first
 /// transaction and an elided payroll-style posting: the bad line is reported
 /// by number, the rest imports with legacy ids, and `journal rm` retires the

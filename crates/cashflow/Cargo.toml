@@ -6,10 +6,12 @@ description = "cashflow's non-UI core: the $CASHFLOW_DIR layout, config, secrets
 
 [dependencies]
 base64 = { workspace = true }
+chrono = { workspace = true }
 dirs = { workspace = true }
 ehttp = { workspace = true }
 flate2 = { workspace = true }
 ledgerdb = { workspace = true }
+lnsocket = "0.5.1"
 nostrdb = { workspace = true }
 nostrdb_net = { workspace = true }
 profiling = { workspace = true }
@@ -18,6 +20,7 @@ serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 toml = { workspace = true, features = ["display"] }
 
 [dev-dependencies]
