@@ -29,12 +29,30 @@ const BLACK: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
 const RED_700: Color32 = Color32::from_rgb(0xC7, 0x37, 0x5A);
 const ORANGE_700: Color32 = Color32::from_rgb(0xF6, 0xB1, 0x4A);
 
-// BACKGROUNDS
-const SEMI_DARKER_BG: Color32 = Color32::from_rgb(0x39, 0x39, 0x39);
-const DARKER_BG: Color32 = Color32::from_rgb(0x1F, 0x1F, 0x1F);
-const DARK_BG: Color32 = Color32::from_rgb(0x2C, 0x2C, 0x2C);
-const DARK_ISH_BG: Color32 = Color32::from_rgb(0x25, 0x25, 0x25);
-const SEMI_DARK_BG: Color32 = Color32::from_rgb(0x44, 0x44, 0x44);
+// DARK LAYERS
+//
+// The dark theme's grays above its black ground, lowest first. Each keeps the
+// perceived step (CIE ΔL*) above black that its predecessor had above the old
+// #1F1F1F ground, so the palette moved down as a whole when the ground went
+// black instead of being re-picked by eye.
+
+/// Plain frames and buttons: the first step off the ground (was #252525).
+const LAYER_LOW: Color32 = Color32::from_rgb(0x0B, 0x0B, 0x0B);
+/// Secondary surfaces such as side panels and board columns (was #2C2C2C).
+const LAYER_SURFACE: Color32 = Color32::from_rgb(0x14, 0x14, 0x14);
+/// Input fields, borders and separators (was #393939).
+const LAYER_FIELD: Color32 = Color32::from_rgb(0x20, 0x20, 0x20);
+/// Elevated surfaces such as cards on a column (was #444444).
+const LAYER_ELEVATED: Color32 = Color32::from_rgb(0x2A, 0x2A, 0x2A);
+/// A hovered row or control (was #464646).
+const LAYER_HOVER: Color32 = Color32::from_rgb(0x2C, 0x2C, 0x2C);
+/// A pressed row or control (was #505050).
+const LAYER_PRESSED: Color32 = Color32::from_rgb(0x35, 0x35, 0x35);
+/// Floating windows such as the command bar. The one layer off the ΔL*
+/// rule: on gray a popup's drop shadow set it apart, and a shadow does not
+/// show on black, so it keeps the lift of egui's own popups (`window_fill`
+/// #1B1B1B), which every other menu and popup already draws with.
+const LAYER_FLOAT: Color32 = Color32::from_rgb(0x1B, 0x1B, 0x1B);
 
 const LIGHTER_GRAY: Color32 = Color32::from_rgb(0xf8, 0xf8, 0xf8);
 const LIGHT_GRAY: Color32 = Color32::from_rgb(0xc8, 0xc8, 0xc8); // 78%
@@ -213,7 +231,7 @@ pub fn dark_color_theme() -> ColorTheme {
     ColorTheme {
         // VISUALS
         panel_fill: Color32::BLACK,
-        extreme_bg_color: SEMI_DARKER_BG,
+        extreme_bg_color: LAYER_FIELD,
         text_color: Color32::WHITE,
         err_fg_color: RED_700,
         warn_fg_color: ORANGE_700,
@@ -225,25 +243,25 @@ pub fn dark_color_theme() -> ColorTheme {
         faint_bg_color: Color32::from_additive_luminance(9),
 
         // WINDOW
-        window_fill: DARK_ISH_BG,
-        window_stroke_color: DARK_BG,
+        window_fill: LAYER_FLOAT,
+        window_stroke_color: LAYER_FIELD,
 
         // NONINTERACTIVE WIDGET
-        noninteractive_bg_fill: DARK_ISH_BG,
-        noninteractive_weak_bg_fill: DARKER_BG,
-        noninteractive_bg_stroke_color: SEMI_DARKER_BG,
+        noninteractive_bg_fill: LAYER_LOW,
+        noninteractive_weak_bg_fill: LAYER_FIELD,
+        noninteractive_bg_stroke_color: LAYER_FIELD,
         noninteractive_fg_stroke_color: GRAY_SECONDARY,
 
         // INACTIVE WIDGET
-        inactive_bg_stroke_color: SEMI_DARKER_BG,
-        inactive_bg_fill: Color32::from_rgb(0x25, 0x25, 0x25),
-        inactive_weak_bg_fill: SEMI_DARK_BG,
+        inactive_bg_stroke_color: LAYER_FIELD,
+        inactive_bg_fill: LAYER_LOW,
+        inactive_weak_bg_fill: LAYER_ELEVATED,
 
         // SEMANTIC: Surfaces
         // The primary surface is the ground, as in the light theme.
         surface_primary: Color32::BLACK,
-        surface_secondary: DARK_BG,
-        surface_elevated: SEMI_DARK_BG,
+        surface_secondary: LAYER_SURFACE,
+        surface_elevated: LAYER_ELEVATED,
 
         // SEMANTIC: Text
         text_primary: Color32::WHITE,
@@ -257,12 +275,12 @@ pub fn dark_color_theme() -> ColorTheme {
         success: Color32::from_rgb(0x4C, 0xAF, 0x50),
 
         // SEMANTIC: Borders
-        border_default: SEMI_DARKER_BG,
+        border_default: LAYER_FIELD,
         border_strong: EVEN_DARKER_GRAY,
 
         // SEMANTIC: Interactive states
-        interactive_hover: Color32::from_rgb(0x46, 0x46, 0x46),
-        interactive_pressed: Color32::from_rgb(0x50, 0x50, 0x50),
+        interactive_hover: LAYER_HOVER,
+        interactive_pressed: LAYER_PRESSED,
     }
 }
 
@@ -471,6 +489,31 @@ mod tests {
             step >= old_step,
             "faint accent lifts black by ΔL* {step:.2}, the gray ground got {old_step:.2}"
         );
+    }
+
+    /// The dark layers climb off the black ground in order, each a visible
+    /// step above the one below it, so a popup, a column and the card on it
+    /// still read as layers.
+    #[test]
+    fn dark_layers_climb_off_the_ground() {
+        let theme = dark_color_theme();
+        let layers = [
+            ("ground", theme.panel_fill),
+            ("low", theme.inactive_bg_fill),
+            ("surface", theme.surface_secondary),
+            ("field", theme.extreme_bg_color),
+            ("elevated", theme.surface_elevated),
+            ("pressed", theme.interactive_pressed),
+        ];
+        for pair in layers.windows(2) {
+            let (low_name, low) = pair[0];
+            let (high_name, high) = pair[1];
+            let step = lightness(high) - lightness(low);
+            assert!(
+                step >= 2.5,
+                "{high_name} sits ΔL* {step:.2} above {low_name}"
+            );
+        }
     }
 
     /// A caller filling a row with the selection color gets the theme's hue
