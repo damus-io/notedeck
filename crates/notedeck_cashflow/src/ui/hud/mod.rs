@@ -9,7 +9,8 @@
 //! ([`Faces`]).
 //!
 //! The widgets take what they show as borrowed `&str`s and plain numbers, and
-//! hold no state of their own except [`Toasts`], which owns its queue. Numbers
+//! hold no state of their own except [`Toasts`] and [`FloatingXp`], which own
+//! their queues. Numbers
 //! are formatted straight into the one `String` egui needs to lay text out
 //! (through `format_args!` and [`Grouped`]), never into an intermediate
 //! buffer, so a widget adds no allocation beyond egui's own per text run.
@@ -19,6 +20,7 @@
 
 mod burst;
 mod coin;
+mod float;
 mod paint;
 mod skill_tile;
 mod toast;
@@ -26,6 +28,7 @@ mod tooltip;
 mod xp_bar;
 
 pub use burst::{BURST, BurstPhase, paint_burst};
+pub use float::{FloatPhase, FloatingXp};
 pub use skill_tile::{SKILL_TILE_SIZE, locked_skill_tile, skill_tile};
 pub use toast::{Toast, ToastKind, ToastPhase, Toasts};
 pub use tooltip::{HudTooltip, TOOLTIP_MAX_WIDTH, show_tooltip, tooltip_frame, tooltip_ui};

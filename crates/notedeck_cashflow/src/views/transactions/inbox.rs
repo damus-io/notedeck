@@ -8,9 +8,16 @@
 //! whatever it takes is hidden at once; the hides go when the next triage
 //! arrives, which is the re-derive with the write in it, and come back if
 //! the write fails.
+//!
+//! Each write also floats the Bookkeeping XP it earns ("+35 Bookkeeping
+//! XP") up from the progress line, worked out on the rates the Adventure
+//! folds with ([`cashflow::adventure::triage_reward`]). It is the one
+//! place the game shows on the dashboard, and the vault's
+//! `adventure.feedback_in_dashboard` setting turns it off.
 
 use std::collections::HashSet;
 
+use cashflow::adventure::{SkillId, XpTuning, triage_reward};
 use cashflow::triage::{Action, Progress};
 use egui::RichText;
 use ledgerdb::TxnId;
@@ -18,6 +25,7 @@ use ledgerdb::TxnId;
 use super::TransactionsState;
 use super::model::{self, GroupView, SuggestionView};
 use crate::ui::account_picker::{self, AccountPicker, Choices};
+use crate::ui::hud::{FloatingXp, Grouped};
 use crate::ui::palette::Palette;
 use crate::views::LedgerCx;
 
@@ -48,6 +56,8 @@ pub(crate) struct InboxState {
     picker: AccountPicker,
     /// The last write that failed, and why.
     error: Option<String>,
+    /// The XP the writes earned, floating up from the progress line.
+    floating: FloatingXp,
 }
 
 /// What hides until the next triage: queued writes' groups, rows and
@@ -109,6 +119,34 @@ impl InboxState {
         &self.progress_text
     }
 
+    /// The XP texts floating, oldest first.
+    pub(crate) fn floating(&self) -> impl Iterator<Item = &str> {
+        self.floating.texts()
+    }
+
+    /// Queue `action` on `outbox`, floating the XP it earns when `xp`
+    /// gives the rates: `rows` is how many transactions it categorizes.
+    fn queue(
+        &mut self,
+        outbox: &mut Vec<Action>,
+        action: Action,
+        rows: usize,
+        xp: Option<&XpTuning>,
+    ) {
+        if let Some(tuning) = xp {
+            let rows = u32::try_from(rows).unwrap_or(u32::MAX);
+            let earned = triage_reward(&action, rows, tuning);
+            if earned > 0 {
+                self.floating.push(format!(
+                    "+{} {} XP",
+                    Grouped(earned),
+                    SkillId::Bookkeeping.name()
+                ));
+            }
+        }
+        outbox.push(action);
+    }
+
     /// A queued write failed: show what it hid again, and why.
     pub(crate) fn write_failed(&mut self, err: String) {
         self.hidden = Hidden::default();
@@ -145,12 +183,14 @@ enum Click {
     Dismiss(usize),
 }
 
-/// Draw the inbox, queueing on `outbox` the writes it asks for.
+/// Draw the inbox, queueing on `outbox` the writes it asks for, and
+/// floating the XP each earns at `xp`'s rates when it is given.
 #[profiling::function]
 pub(crate) fn ui(
     ui: &mut egui::Ui,
     palette: &Palette,
     outbox: &mut Vec<Action>,
+    xp: Option<&XpTuning>,
     state: &mut TransactionsState,
 ) {
     let TransactionsState {
@@ -162,11 +202,13 @@ pub(crate) fn ui(
         .id_salt("cashflow_inbox")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.label(
+            let progress = ui.label(
                 RichText::new(&inbox.progress_text)
                     .size(20.0)
                     .color(palette.text),
             );
+            let from = progress.rect.right_bottom() + egui::vec2(12.0, 0.0);
+            inbox.floating.show(ui, palette, from);
             if let Some(error) = &inbox.error {
                 ui.label(RichText::new(error).color(palette.warning));
             }
@@ -232,7 +274,7 @@ pub(crate) fn ui(
     {
         account_picker::remember(&mut accounts.recent, &account);
         inbox.error = None;
-        categorize(inbox, outbox, target, account);
+        categorize(inbox, outbox, xp, target, account);
     }
     match click {
         Some(Click::Pick(target)) => {
@@ -244,31 +286,44 @@ pub(crate) fn ui(
                 inbox.expanded.insert(index);
             }
         }
-        Some(Click::Accept(index)) => answer(inbox, outbox, index, true),
-        Some(Click::Dismiss(index)) => answer(inbox, outbox, index, false),
+        Some(Click::Accept(index)) => answer(inbox, outbox, xp, index, true),
+        Some(Click::Dismiss(index)) => answer(inbox, outbox, xp, index, false),
         None => {}
     }
 }
 
 /// Queue the write that accepts (or dismisses) suggestion `index`, and
 /// hide it.
-fn answer(inbox: &mut InboxState, outbox: &mut Vec<Action>, index: usize, accept: bool) {
+fn answer(
+    inbox: &mut InboxState,
+    outbox: &mut Vec<Action>,
+    xp: Option<&XpTuning>,
+    index: usize,
+    accept: bool,
+) {
     let Some(s) = inbox.suggestions.get(index) else {
         return;
     };
     let a = s.a.clone();
     let b = s.b.clone();
-    outbox.push(if accept {
+    let action = if accept {
         Action::Link { a, b }
     } else {
         Action::Dismiss { a, b }
-    });
+    };
+    inbox.queue(outbox, action, 2, xp);
     inbox.error = None;
     inbox.hidden.suggestions.insert(index);
 }
 
 /// Queue the write that sends `target` to `account`, and hide it.
-fn categorize(inbox: &mut InboxState, outbox: &mut Vec<Action>, target: Target, account: String) {
+fn categorize(
+    inbox: &mut InboxState,
+    outbox: &mut Vec<Action>,
+    xp: Option<&XpTuning>,
+    target: Target,
+    account: String,
+) {
     match target {
         Target::Group(index) => {
             let Some(group) = inbox.groups.get(index) else {
@@ -277,12 +332,13 @@ fn categorize(inbox: &mut InboxState, outbox: &mut Vec<Action>, target: Target, 
             let Some(rule) = &group.rule else {
                 return;
             };
-            outbox.push(Action::Rule {
+            let action = Action::Rule {
                 pattern: rule.pattern.clone(),
                 source: rule.source.clone(),
                 account,
-            });
+            };
             let rows = group.rows.len() + group.more;
+            inbox.queue(outbox, action, rows, xp);
             inbox.hide_group(index, rows);
         }
         Target::Row { group, txn } => {
@@ -293,7 +349,7 @@ fn categorize(inbox: &mut InboxState, outbox: &mut Vec<Action>, target: Target, 
             let Some(record) = row.and_then(|r| r.record.clone()) else {
                 return;
             };
-            outbox.push(Action::Override { record, account });
+            inbox.queue(outbox, Action::Override { record, account }, 1, xp);
             inbox.hide_row(txn);
         }
     }

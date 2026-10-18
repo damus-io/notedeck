@@ -96,6 +96,7 @@ fn settings_set_then_read_back_in_another_process() {
         serde_json::json!([
             {"name": "home", "value": "USD", "default": false},
             {"name": "timezone", "value": "local", "default": true},
+            {"name": "adventure.feedback_in_dashboard", "value": "on", "default": true},
         ])
     );
 
@@ -103,6 +104,11 @@ fn settings_set_then_read_back_in_another_process() {
     cf.ok(&["settings", "set", "home", "CAD"]);
     assert_eq!(cf.ok(&["settings", "get", "home"]).trim(), "CAD");
     cf.ok(&["settings", "set", "timezone", "America/Vancouver"]);
+    let off = cf.ok(&["settings", "set", "adventure.feedback_in_dashboard", "off"]);
+    assert!(
+        off.contains("adventure.feedback_in_dashboard = off"),
+        "{off}"
+    );
     assert!(!cf.ok(&["settings"]).contains("(default)"));
 
     let elsewhere = cf.dir().join("other-db");
@@ -133,7 +139,7 @@ fn settings_link_a_project_to_boards() {
     assert!(cf.ok(&["settings"]).contains("boards:damus"));
     let json: Value = serde_json::from_str(&cf.ok(&["settings", "show", "--json"])).unwrap();
     assert_eq!(
-        json[2],
+        json[3],
         serde_json::json!({"name": "boards:damus", "value": "damus-ios damus-android", "default": false})
     );
 

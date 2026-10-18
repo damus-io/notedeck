@@ -4,3 +4,4 @@
 each folds its figures on the UI thread, the first frame after a load, however long.
 
 - headway:cashflow/judge-dinner-appear — ~5 min: the card asked for the Adventure fold off-thread "like the other views", but no view is; it folds on the UI thread cached per books/goals/zone/today, like the Goals view's measuring
+- headway:cashflow/help-lesson-season — no time lost, but the cost grew: toasts over every view mean the Adventure now folds on the UI thread after each load in whichever view is showing, once the Adventure has been opened, not only in its own view

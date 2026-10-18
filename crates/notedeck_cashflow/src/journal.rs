@@ -31,6 +31,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use cashflow::adventure::seen;
 use cashflow::chart::{Chart, Labels};
 use cashflow::settings::Setting;
 use cashflow::sync::{self, SyncJob, SyncReport, TransportInfo, TransportReport};
@@ -45,6 +46,7 @@ use tokio::sync::oneshot;
 
 use crate::Layers;
 use crate::boards::ProjectLink;
+use crate::news::Announced;
 
 /// How often an idle source lists the journal directory for segments that
 /// arrived by some other route than this app.
@@ -298,6 +300,14 @@ pub struct JournalSource {
     /// Which Headway boards each project links, re-read when the vault
     /// changes.
     project_links: Arc<[ProjectLink]>,
+    /// What the vault's seen note says the Adventure announced, re-read
+    /// when the vault changes.
+    announced: Announced,
+    /// Bumped whenever [`Self::announced`] is re-read.
+    announced_generation: u64,
+    /// Whether the triage inbox shows the XP a categorization earns (the
+    /// vault's `adventure.feedback_in_dashboard`).
+    adventure_feedback: bool,
 }
 
 impl JournalSource {
@@ -329,6 +339,9 @@ impl JournalSource {
             load_time: None,
             labels: Arc::new(Labels::default()),
             project_links: Arc::from([]),
+            announced: Announced::Unknown,
+            announced_generation: 0,
+            adventure_feedback: true,
         }
     }
 
@@ -374,6 +387,12 @@ impl JournalSource {
             }
             self.zone = Zone::parse(settings.effective(Setting::Timezone)).unwrap_or(Zone::Local);
             layers.apply(settings.layer_switches());
+            self.adventure_feedback = settings.adventure_feedback();
+            self.announced = match seen::load(ctx.ndb, &txn, &author) {
+                Some(seen) => Announced::Seen(seen),
+                None => Announced::Never,
+            };
+            self.announced_generation += 1;
             let links = crate::boards::links_of(&settings);
             if *self.project_links != *links {
                 self.project_links = links.into();
@@ -637,6 +656,29 @@ impl JournalSource {
     /// The chart's display names and icons, as the vault last had them.
     pub fn labels(&self) -> &Arc<Labels> {
         &self.labels
+    }
+
+    /// What the vault's seen note says the Adventure announced, as the
+    /// vault last had it: [`Announced::Unknown`] until it is first read.
+    pub fn announced(&self) -> &Announced {
+        &self.announced
+    }
+
+    /// Bumped whenever [`Self::announced`] is re-read.
+    pub fn announced_generation(&self) -> u64 {
+        self.announced_generation
+    }
+
+    /// The account whose vault is read, once the first update has picked
+    /// it: whose seen note [`Self::announced`] is.
+    pub fn vault_author(&self) -> Option<&[u8; 32]> {
+        self.edits.as_ref().map(|edits| edits.author().bytes())
+    }
+
+    /// Whether the triage inbox shows the XP a categorization earns, as
+    /// the vault last had it: on until it says otherwise.
+    pub fn adventure_feedback(&self) -> bool {
+        self.adventure_feedback
     }
 
     /// The synced time zone (the vault's `timezone` setting), as the vault

@@ -38,6 +38,13 @@ pub const DEFAULT_TIMEZONE: &str = "local";
 /// see it overlaps the wallet's own view, so counting both doubles it.
 pub const DEFAULT_OFF_LAYERS: &[&str] = &["cln-chain"];
 
+/// [`Setting::AdventureFeedback`]'s value when the triage inbox shows the
+/// XP a categorization earns, and when it doesn't.
+pub const ON: &str = "on";
+
+/// See [`ON`].
+pub const OFF: &str = "off";
+
 /// The record-id prefix of a layer's switch, under the settings prefix:
 /// `set:layer:<name>`.
 const LAYER_ID: &str = "layer:";
@@ -62,17 +69,22 @@ pub enum Setting {
     /// see [`crate::zone`]. `[cln] timezone` in `config.toml` overrides it
     /// on one machine.
     Timezone,
+    /// Whether the triage inbox shows the Bookkeeping XP a categorization
+    /// earns (`on`, the default, or `off`): the one place the Adventure
+    /// crosses into the dashboard.
+    AdventureFeedback,
 }
 
 impl Setting {
     /// Every setting, in the order `settings show` lists them.
-    pub const ALL: [Setting; 2] = [Setting::Home, Setting::Timezone];
+    pub const ALL: [Setting; 3] = [Setting::Home, Setting::Timezone, Setting::AdventureFeedback];
 
     /// The setting's name on the command line, and its record id.
     pub fn name(self) -> &'static str {
         match self {
             Setting::Home => "home",
             Setting::Timezone => "timezone",
+            Setting::AdventureFeedback => "adventure.feedback_in_dashboard",
         }
     }
 
@@ -96,6 +108,12 @@ impl Setting {
                 value: value.to_owned(),
                 expected: "a zone like America/Vancouver, utc, or an offset like -07:00 \
                            (not `local`: that differs from machine to machine)",
+            }),
+            Setting::AdventureFeedback if value == ON || value == OFF => Ok(()),
+            Setting::AdventureFeedback => Err(SettingsError::Invalid {
+                setting: self.name(),
+                value: value.to_owned(),
+                expected: "on or off",
             }),
         }
     }
@@ -155,6 +173,8 @@ pub struct Settings<'a> {
     pub home_commodity: Option<Stored<'a, SettingNote<'a>>>,
     /// [`Setting::Timezone`]'s note.
     pub timezone: Option<Stored<'a, SettingNote<'a>>>,
+    /// [`Setting::AdventureFeedback`]'s note.
+    pub adventure_feedback: Option<Stored<'a, SettingNote<'a>>>,
     /// Every layer switch ever set, newest revision of each, in no
     /// particular order: see [`Self::layer_switches`].
     pub layers: Vec<Stored<'a, SettingNote<'a>>>,
@@ -198,6 +218,7 @@ impl<'a> Settings<'a> {
             match Setting::from_name(stored.id) {
                 Some(Setting::Home) => settings.home_commodity = Some(stored),
                 Some(Setting::Timezone) => settings.timezone = Some(stored),
+                Some(Setting::AdventureFeedback) => settings.adventure_feedback = Some(stored),
                 None if stored.id.starts_with(LAYER_ID) => settings.layers.push(stored),
                 None if stored.id.starts_with(BOARDS_PREFIX) => {
                     settings.project_boards.push(stored)
@@ -212,6 +233,12 @@ impl<'a> Settings<'a> {
     /// The home commodity, or [`DEFAULT_HOME_COMMODITY`].
     pub fn home_commodity(&self) -> &'a str {
         self.value(Setting::Home).unwrap_or(DEFAULT_HOME_COMMODITY)
+    }
+
+    /// Whether the triage inbox shows the XP a categorization earns: on
+    /// unless [`Setting::AdventureFeedback`] is `off`.
+    pub fn adventure_feedback(&self) -> bool {
+        self.value(Setting::AdventureFeedback) != Some(OFF)
     }
 
     /// Every layer the vault switches on or off. A value other than `on`
@@ -245,6 +272,7 @@ impl<'a> Settings<'a> {
         let stored = match setting {
             Setting::Home => self.home_commodity.as_ref(),
             Setting::Timezone => self.timezone.as_ref(),
+            Setting::AdventureFeedback => self.adventure_feedback.as_ref(),
         };
         stored.map(|s| s.body.value)
     }
@@ -254,6 +282,7 @@ impl<'a> Settings<'a> {
         match setting {
             Setting::Home => self.home_commodity(),
             Setting::Timezone => self.value(setting).unwrap_or(DEFAULT_TIMEZONE),
+            Setting::AdventureFeedback => self.value(setting).unwrap_or(ON),
         }
     }
 }
@@ -359,6 +388,33 @@ mod tests {
         let settings = Settings::load(ndb, &txn, vault.author());
         assert_eq!(settings.value(Setting::Home), Some("USD"));
         assert_eq!(settings.effective(Setting::Home), "USD");
+    }
+
+    /// The inbox's XP feedback is on until it is set off, and takes only
+    /// `on` or `off`.
+    #[tokio::test]
+    async fn adventure_feedback_defaults_on_and_switches_off() {
+        let db = TempNdb::new();
+        let ndb = &db.ndb;
+        let vault = Vault::new(&SECRET).unwrap();
+        vault.register(ndb);
+        {
+            let txn = Transaction::new(ndb).unwrap();
+            let settings = Settings::load(ndb, &txn, vault.author());
+            assert!(settings.adventure_feedback());
+            assert_eq!(settings.effective(Setting::AdventureFeedback), ON);
+        }
+        assert!(set(&vault, ndb, Setting::AdventureFeedback, "maybe").is_err());
+        let setting = Setting::from_name("adventure.feedback_in_dashboard").unwrap();
+        let sub = ndb
+            .subscribe(&[Filter::new().kinds([kinds::SETTING as u64]).build()])
+            .unwrap();
+        set(&vault, ndb, setting, OFF).unwrap();
+        ndb.wait_for_all_notes_within(sub, 1, INGEST_TIMEOUT)
+            .await
+            .unwrap();
+        let txn = Transaction::new(ndb).unwrap();
+        assert!(!Settings::load(ndb, &txn, vault.author()).adventure_feedback());
     }
 
     /// A layer switch round-trips, a later one replaces it, and the plain

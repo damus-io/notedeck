@@ -116,6 +116,9 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
             let range = cx.period.resolve(cx.today).range;
             register::ui(ui, palette, ledger, cx.labels, range, state);
         }
-        Tab::Inbox => inbox::ui(ui, palette, cx.outbox, state),
+        Tab::Inbox => {
+            let xp = cx.xp_feedback.then_some(cx.tuning);
+            inbox::ui(ui, palette, cx.outbox, xp, state)
+        }
     }
 }

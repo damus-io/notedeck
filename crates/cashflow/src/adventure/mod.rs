@@ -46,6 +46,7 @@ pub mod curve;
 mod figures;
 pub mod log;
 pub mod quests;
+pub mod seen;
 pub mod tuning;
 
 use std::fmt;
@@ -139,7 +140,30 @@ impl SkillId {
             SkillId::Project(name) => name,
         }
     }
+
+    /// The skill's key where it is stored ([`seen`]): a fixed skill's name
+    /// in lower case, or `project:<name>`, so a project named like a fixed
+    /// skill is still its own.
+    pub fn key(&self) -> String {
+        match self {
+            SkillId::Project(name) => format!("{PROJECT_KEY}{name}"),
+            fixed => fixed.name().to_ascii_lowercase(),
+        }
+    }
+
+    /// The skill whose [`Self::key`] is `key`, if any.
+    pub fn from_key(key: &str) -> Option<SkillId> {
+        if let Some(name) = key.strip_prefix(PROJECT_KEY) {
+            return Some(SkillId::Project(name.to_owned()));
+        }
+        SkillId::FIXED
+            .into_iter()
+            .find(|id| id.name().eq_ignore_ascii_case(key))
+    }
 }
+
+/// The prefix of a project skill's [`SkillId::key`].
+const PROJECT_KEY: &str = "project:";
 
 /// One skill's standing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -518,6 +542,33 @@ fn first_import(inputs: &Inputs<'_>) -> Option<Date> {
     let ledger = inputs.books.ledger();
     let first = ledger.segments().iter().map(|s| s.header.imported).min()?;
     Some(inputs.zone.date(first))
+}
+
+/// The Bookkeeping XP `action` earns once its write lands, on the rates
+/// the fold pays: what the triage inbox shows as it is clicked. `rows` is
+/// how many transactions a rule categorizes; it counts up to
+/// [`XpTuning::rule_cap`], as the fold does. Dismissing a transfer earns
+/// nothing.
+pub fn triage_reward(action: &crate::triage::Action, rows: u32, tuning: &XpTuning) -> u64 {
+    use crate::triage::Action;
+
+    let counts = match action {
+        Action::Rule { .. } => Bookkeeping {
+            ruled: rows.min(tuning.rule_cap),
+            ..Bookkeeping::default()
+        },
+        Action::Override { .. } => Bookkeeping {
+            triaged: 1,
+            ..Bookkeeping::default()
+        },
+        // Both legs of the link.
+        Action::Link { .. } => Bookkeeping {
+            linked: 2,
+            ..Bookkeeping::default()
+        },
+        Action::Dismiss { .. } => Bookkeeping::default(),
+    };
+    bookkeeping_xp(counts, tuning)
 }
 
 /// A month's Bookkeeping XP from its counts.

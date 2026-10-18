@@ -63,6 +63,10 @@ pub struct ViewCx<'a> {
     /// A `headway:<board>/<word-id>` card to open in notedeck once this
     /// frame is drawn, set by a view that links to one.
     pub open_card: Option<String>,
+    /// The XP rates the Adventure folds with.
+    pub tuning: &'a cashflow::adventure::XpTuning,
+    /// Whether the triage inbox shows the XP a categorization earns.
+    pub xp_feedback: bool,
 }
 
 /// The goals found on the Headway boards, and which find they came from.

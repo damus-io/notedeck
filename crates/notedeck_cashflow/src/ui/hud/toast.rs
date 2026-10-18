@@ -110,6 +110,35 @@ impl Toast {
             badge: format!("+{points}"),
         }
     }
+
+    /// "ACHIEVEMENTS UNLOCKED — You unlocked `count` achievements from
+    /// your history!": the Adventure's first opening, summing up what the
+    /// books had already earned rather than toasting each. `points` is
+    /// their total.
+    pub fn history(count: usize, points: u32) -> Self {
+        let noun = if count == 1 {
+            "achievement"
+        } else {
+            "achievements"
+        };
+        Self {
+            kind: ToastKind::Achievement { points },
+            title: "ACHIEVEMENTS UNLOCKED".to_owned(),
+            body: format!("You unlocked {count} {noun} from your history!"),
+            badge: format!("+{points}"),
+        }
+    }
+
+    /// "ACHIEVEMENTS UNLOCKED — You unlocked `count` achievements": several
+    /// earned at once, in one toast rather than a queue of them.
+    pub fn achievements(count: usize, points: u32) -> Self {
+        Self {
+            kind: ToastKind::Achievement { points },
+            title: "ACHIEVEMENTS UNLOCKED".to_owned(),
+            body: format!("You unlocked {count} achievements"),
+            badge: format!("+{points}"),
+        }
+    }
 }
 
 /// Where a toast is in its animation at one moment.
@@ -178,6 +207,11 @@ impl Toasts {
     /// Queues `toast` behind any already waiting.
     pub fn push(&mut self, toast: Toast) {
         self.queue.push_back(toast);
+    }
+
+    /// Every toast waiting, the one showing first.
+    pub fn queued(&self) -> impl Iterator<Item = &Toast> {
+        self.queue.iter()
     }
 
     /// The toast showing (or about to show), if any.

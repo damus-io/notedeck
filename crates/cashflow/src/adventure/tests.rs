@@ -276,6 +276,25 @@ fn bookkeeping_counts_edits_by_when_they_were_written() {
     );
     // The segment was imported in 1970, before the books' months.
     assert_eq!(xp(&adventure, "2024-01", SkillId::Bookkeeping), 0);
+
+    // What the triage inbox shows on the click is what the fold paid.
+    let rule = crate::triage::Action::Rule {
+        pattern: "grocer".to_owned(),
+        source: None,
+        account: "expenses:food".to_owned(),
+    };
+    assert_eq!(
+        triage_reward(&rule, 3, &world.tuning),
+        xp(&adventure, "2024-02", SkillId::Bookkeeping)
+    );
+    let one = crate::triage::Action::Override {
+        record: "t:4".to_owned(),
+        account: "expenses:travel".to_owned(),
+    };
+    assert_eq!(
+        triage_reward(&one, 1, &world.tuning) + world.tuning.weekly_triage_xp,
+        xp(&adventure, "2024-03", SkillId::Bookkeeping)
+    );
 }
 
 /// The same books fold the same, every time.

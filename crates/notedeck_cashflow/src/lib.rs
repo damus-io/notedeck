@@ -42,15 +42,24 @@
 //! The app that finds its own goals also reports their progress on their
 //! cards, as the account, with a [`goal_writer::GoalWriter`]: a comment
 //! when a goal's status changes, and the move to done once it is achieved.
+//!
+//! The Adventure view is the game; the rest of the app stays a dashboard.
+//! Two things cross over. Once the Adventure has been opened, a level-up
+//! or an achievement toasts over whichever view is showing, once per
+//! account across machines ([`news`]). And the triage inbox floats the
+//! Bookkeeping XP a categorization earns, unless the vault's
+//! `adventure.feedback_in_dashboard` setting is off.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use cashflow::adventure::XpTuning;
 use cashflow::board_progress::BoardProgress;
 use cashflow::chart::Labels;
 use cashflow::goals::Goal;
 use cashflow::projects::Projects;
 use cashflow::triage::{self, Action, Triage};
+use cashflow::zone::Zone;
 use cashflow::{Books, CashflowDir, Config, DeriveInputs, Vault};
 use ledgerdb::Date;
 use notedeck::{AppAction, AppContext, AppResponse, OpenUri};
@@ -61,6 +70,7 @@ pub mod goal_writer;
 pub mod journal;
 pub mod layers;
 pub mod money;
+pub mod news;
 pub mod period;
 pub mod ui;
 mod view;
@@ -134,6 +144,18 @@ pub struct CashflowApp {
     goal_auto_done: bool,
     /// A card a view asked to open this frame, raised from `render`.
     open_card: Option<String>,
+    /// The Adventure's level-up and achievement toasts, and the seen note
+    /// they are checked against.
+    news: news::AdventureNews,
+    /// The journal's [`JournalSource::announced_generation`] last taken.
+    announced_generation: u64,
+    /// The account [`Self::news`] is for: another account's seen note
+    /// starts the news over.
+    news_author: Option<[u8; 32]>,
+    /// The XP rates the Adventure and the triage inbox's feedback share.
+    tuning: XpTuning,
+    /// Whether the triage inbox shows the XP a categorization earns.
+    adventure_feedback: bool,
 }
 
 impl Default for CashflowApp {
@@ -171,6 +193,11 @@ impl CashflowApp {
             goal_writer: None,
             goal_auto_done: true,
             open_card: None,
+            news: news::AdventureNews::default(),
+            announced_generation: 0,
+            news_author: None,
+            tuning: XpTuning::default(),
+            adventure_feedback: true,
         }
     }
 
@@ -278,6 +305,30 @@ impl CashflowApp {
         self.open_card.take()
     }
 
+    /// Take `announced` as what the vault's seen note says, as the journal
+    /// source does whenever the vault changes: the Adventure's toasts
+    /// announce only what it lacks.
+    pub fn set_announced(&mut self, announced: news::Announced) {
+        self.news.set_announced(announced);
+    }
+
+    /// The Adventure's toasts, and what they were checked against.
+    pub fn news(&self) -> &news::AdventureNews {
+        &self.news
+    }
+
+    /// The XP texts the triage inbox is floating ("+35 Bookkeeping XP"),
+    /// oldest first: gone once they have faded.
+    pub fn floating_xp(&self) -> impl Iterator<Item = &str> {
+        self.views.transactions.inbox.floating()
+    }
+
+    /// Show the XP a categorization earns in the triage inbox from now on,
+    /// or don't. The journal source sets it from the vault.
+    pub fn set_adventure_feedback(&mut self, on: bool) {
+        self.adventure_feedback = on;
+    }
+
     /// The triage of the books, if any are loaded.
     pub fn triage(&self) -> Option<&Triage> {
         self.triage.as_ref()
@@ -345,6 +396,12 @@ impl CashflowApp {
     /// [`views::ViewCx`].
     #[profiling::function]
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        self.ui_with(ui, None);
+    }
+
+    /// [`Self::ui`], a level-up toast's medallion drawn in 3D through
+    /// `renderer` when the host has one.
+    fn ui_with(&mut self, ui: &mut egui::Ui, renderer: Option<&notedeck::Renderer3d>) {
         self.palette.refresh(ui.ctx());
 
         let narrow = notedeck::ui::is_narrow(ui.ctx());
@@ -378,7 +435,13 @@ impl CashflowApp {
             goal_writer: _,
             goal_auto_done: _,
             open_card,
+            news,
+            announced_generation: _,
+            news_author: _,
+            tuning,
+            adventure_feedback,
         } = self;
+        let zone = journal.as_ref().map_or(Zone::Local, JournalSource::zone);
         egui::CentralPanel::default()
             .frame(ui::panel_frame(palette).inner_margin(egui::Margin::symmetric(24, 16)))
             .show(ui, |ui| {
@@ -402,15 +465,33 @@ impl CashflowApp {
                         JournalState::Ready => ui::journal_status::banner_ui(ui, palette, journal),
                     }
                 }
-                let mut cx = views::ViewCx {
-                    palette,
-                    ledger: books.as_ref().zip(triage.as_ref()).map(|(books, triage)| {
-                        views::LedgerCx {
+                let ledger =
+                    books
+                        .as_ref()
+                        .zip(triage.as_ref())
+                        .map(|(books, triage)| views::LedgerCx {
                             books,
                             triage,
                             generation: *generation,
-                        }
-                    }),
+                        });
+                let goals = views::GoalsCx {
+                    goals,
+                    generation: *goals_generation,
+                    boards: goal_boards,
+                };
+                // Once the Adventure has been opened, its news reaches
+                // every view, so it folds while they show too.
+                if let Some(ledger) = ledger
+                    && news.wants_fold()
+                    && *view != View::Adventure
+                {
+                    states
+                        .adventure
+                        .refresh(ledger, goals, projects, zone, *today, tuning);
+                }
+                let mut cx = views::ViewCx {
+                    palette,
+                    ledger,
                     labels,
                     outbox,
                     summary,
@@ -423,14 +504,13 @@ impl CashflowApp {
                     missing_segments: *missing_segments,
                     states,
                     open: None,
-                    goals: views::GoalsCx {
-                        goals,
-                        generation: *goals_generation,
-                        boards: goal_boards,
-                    },
+                    goals,
                     open_card: None,
+                    tuning,
+                    xp_feedback: *adventure_feedback,
                 };
                 views::show(*view, &mut cx, ui);
+                news.check(&cx.states.adventure, *view == View::Adventure);
                 if let Some(open) = cx.open {
                     *view = open;
                 }
@@ -438,6 +518,27 @@ impl CashflowApp {
                     *open_card = Some(card);
                 }
             });
+        news.show(ui, palette, renderer);
+    }
+
+    /// Write the seen note the Adventure's news queued, as the selected
+    /// account. A write that fails is logged: the toasts already showed,
+    /// and the note is written again with the next news.
+    fn flush_news(&mut self, ctx: &mut AppContext<'_>) {
+        let Some(write) = self.news.take_write() else {
+            return;
+        };
+        let Some(vault) = ctx
+            .accounts
+            .selected_filled()
+            .and_then(|full| Vault::new(&full.secret_key.secret_bytes()))
+        else {
+            return;
+        };
+        match cashflow::adventure::seen::write(&vault, ctx.ndb, &write.seen, write.after) {
+            Ok(written) => self.news.written(written.created_at),
+            Err(err) => tracing::warn!("cashflow: saving what the Adventure announced: {err}"),
+        }
     }
 
     /// Make the vault writes the views queued this frame, as the selected
@@ -486,6 +587,16 @@ impl notedeck::App for CashflowApp {
             self.generation += 1;
         }
         self.boards.set_links(journal.project_links().clone());
+        let author = journal.vault_author().copied();
+        if author != self.news_author {
+            self.news_author = author;
+            self.news = news::AdventureNews::default();
+        }
+        if journal.announced_generation() != self.announced_generation {
+            self.announced_generation = journal.announced_generation();
+            self.news.set_announced(journal.announced().clone());
+        }
+        self.adventure_feedback = journal.adventure_feedback();
         if let Some(loaded) = loaded {
             self.set_loaded(loaded);
         }
@@ -509,8 +620,9 @@ impl notedeck::App for CashflowApp {
     }
 
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        self.ui(ui);
+        self.ui_with(ui, ctx.renderer3d);
         self.flush_writes(ctx);
+        self.flush_news(ctx);
         let open = self.take_open_card();
         AppResponse::action(open.map(|card| AppAction::Open(OpenUri::new(card))))
     }

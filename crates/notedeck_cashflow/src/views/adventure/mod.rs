@@ -77,7 +77,9 @@ const LOG_SKILL_WIDTH: f32 = 96.0;
 /// The XP log's delta column.
 const LOG_DELTA_WIDTH: f32 = 64.0;
 
-/// The Adventure view's state: the fold, cached.
+/// The Adventure view's state: the fold, cached. The app's toasts read it
+/// too ([`crate::news`]), and fold it while another view shows once the
+/// Adventure has been opened.
 #[derive(Default)]
 pub(crate) struct AdventureState {
     /// What [`Self::report`] was folded from; a frame with a different key
@@ -85,8 +87,8 @@ pub(crate) struct AdventureState {
     key: Option<Key>,
     /// The fold written out, once there are books with a home commodity.
     report: Option<Report>,
-    /// The XP rates.
-    tuning: XpTuning,
+    /// Bumped every fold, so a reader knows [`Self::report`] changed.
+    generation: u64,
 }
 
 /// What the fold depends on.
@@ -99,7 +101,8 @@ struct Key {
 }
 
 impl AdventureState {
-    /// Fold again if the books, the goals, the zone or today moved.
+    /// Fold again if the books, the goals, the zone or today moved, at the
+    /// rates `tuning` sets.
     #[profiling::function]
     pub(crate) fn refresh(
         &mut self,
@@ -108,6 +111,7 @@ impl AdventureState {
         projects: &cashflow::projects::Projects,
         zone: Zone,
         today: Date,
+        tuning: &XpTuning,
     ) {
         let key = Key {
             books: ledger.generation,
@@ -119,6 +123,7 @@ impl AdventureState {
             return;
         }
         self.key = Some(key);
+        self.generation += 1;
         let previous = self.report.take().map(|r| r.adventure);
         self.report = model::report(
             Inputs {
@@ -128,10 +133,20 @@ impl AdventureState {
                 zone,
                 today,
                 goals: goals.goals,
-                tuning: &self.tuning,
+                tuning,
             },
             previous.as_ref(),
         );
+    }
+
+    /// The fold written out, if there are books with a home commodity.
+    pub(crate) fn report(&self) -> Option<&Report> {
+        self.report.as_ref()
+    }
+
+    /// Bumped every time [`Self::report`] is folded again.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
     }
 }
 
@@ -152,7 +167,7 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut Ui) {
     };
     let zone = cx.journal.as_ref().map_or(Zone::Local, |j| j.zone());
     let state = &mut cx.states.adventure;
-    state.refresh(ledger, cx.goals, cx.projects, zone, cx.today);
+    state.refresh(ledger, cx.goals, cx.projects, zone, cx.today, cx.tuning);
     let Some(report) = &state.report else {
         muted(
             ui,

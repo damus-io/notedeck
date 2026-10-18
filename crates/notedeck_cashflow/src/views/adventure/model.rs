@@ -8,6 +8,7 @@
 //! away ([`cashflow::adventure::log`]).
 
 use cashflow::adventure::achievements;
+use cashflow::adventure::seen::Seen;
 use cashflow::adventure::{
     self, Adventure, MAX_LEVEL, QuestKind, QuestUnit, Reason, SkillId, XpEntry, XpTuning,
     xp_for_level,
@@ -63,6 +64,9 @@ pub struct Report {
     pub total_points: u32,
     /// How many achievements are unlocked.
     pub unlocked: usize,
+    /// Each skill's level and every achievement unlocked: what the toasts
+    /// compare with the seen note ([`cashflow::adventure::seen`]).
+    pub standing: Seen,
     /// This week's, this month's and the epic quests, in that order.
     pub quests: Vec<QuestRow>,
     /// The recent XP log: the adjustments newest first, then what was
@@ -242,7 +246,9 @@ pub fn report(inputs: Inputs<'_>, previous: Option<&Adventure>) -> Option<Report
         })
         .collect();
     let log = log_rows(&adventure, units);
+    let standing = Seen::of(&adventure, &unlocked);
     Some(Report {
+        standing,
         skills,
         sheet,
         points: achievements::points(&unlocked),

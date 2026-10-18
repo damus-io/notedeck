@@ -53,9 +53,13 @@ pub const ACCOUNT: u32 = 30706;
 /// (headway:cashflow/dream-accident-reveal).
 pub const ALIAS: u32 = 30707;
 
-/// Every allocated kind. 30708–30709 are still free.
-pub const ALL: [u32; 8] = [
-    SETTING, RULE, OVERRIDE, SPLIT, TRANSFER, SEGMENT, ACCOUNT, ALIAS,
+/// What the Adventure has announced, `d = adv:seen`: the levels and
+/// achievements already toasted (headway:cashflow/help-lesson-season).
+pub const ADVENTURE: u32 = 30708;
+
+/// Every allocated kind. 30709 is still free.
+pub const ALL: [u32; 9] = [
+    SETTING, RULE, OVERRIDE, SPLIT, TRANSFER, SEGMENT, ACCOUNT, ALIAS, ADVENTURE,
 ];
 
 #[cfg(test)]
