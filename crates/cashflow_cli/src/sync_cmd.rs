@@ -23,7 +23,8 @@ pub async fn sync(
 ) -> Result<(), String> {
     // A config mistake fails before the relay is dialled.
     let config = Config::load(dir).map_err(|e| e.to_string())?;
-    let transports = sync::transports(&config, only).map_err(|e| e.to_string())?;
+    let transports =
+        sync::transports(&config, dir, &journal_cmd::host(), only).map_err(|e| e.to_string())?;
     let mut session = Session::open(dir, run).await?;
 
     let store = journal::store(dir);

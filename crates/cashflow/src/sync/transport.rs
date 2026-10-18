@@ -18,12 +18,14 @@ use std::path::{Path, PathBuf};
 use ledgerdb::{AdmitReport, JournalStore, SegmentHash, StoreError};
 
 use super::Plan;
+use super::git::GitTransport;
 use super::rsync::RsyncTransport;
+use crate::CashflowDir;
 use crate::config::{Config, TransportConfig};
 use crate::journal::SegmentSummary;
 
 /// The `kind`s [`transports`] can build.
-pub const KINDS: &[&str] = &["rsync"];
+pub const KINDS: &[&str] = &["rsync", "git"];
 
 /// One way of moving journal segments between machines.
 ///
@@ -118,7 +120,7 @@ impl TransportError {
 pub enum TransportConfigError {
     /// `config.toml` has no `[[sync.transport]]`.
     #[error(
-        "config.toml has no [[sync.transport]]; add one, e.g.\n\n    [[sync.transport]]\n    kind = \"rsync\"\n    remote = \"host:/path/to/journal\""
+        "config.toml has no [[sync.transport]]; add one, e.g.\n\n    [[sync.transport]]\n    kind = \"rsync\"\n    remote = \"host:/path/to/journal\"\n\nor kind = \"git\" with remote = a git URL"
     )]
     NoTransports,
     /// A transport's `kind` isn't one this build has.
@@ -158,9 +160,14 @@ pub enum TransportConfigError {
 }
 
 /// The transports `config` lists, in order, or only the one named `only`.
-/// Each is built by a match on its `kind`; there is no registry.
+/// Each is built by a match on its `kind`; there is no registry. A
+/// transport that keeps state of its own (git's clone) keeps it under
+/// `dir`'s [`CashflowDir::sync`], and `host` names this machine to the
+/// remote where a transport records it (git's commit messages).
 pub fn transports(
     config: &Config,
+    dir: &CashflowDir,
+    host: &str,
     only: Option<&str>,
 ) -> Result<Vec<Box<dyn SegmentTransport>>, TransportConfigError> {
     let configured = config.sync.as_ref().map_or(&[][..], |s| &s.transport[..]);
@@ -187,7 +194,7 @@ pub fn transports(
     configured
         .iter()
         .filter(|entry| only.is_none_or(|only| name_of(entry) == only))
-        .map(build)
+        .map(|entry| build(entry, dir, host))
         .collect()
 }
 
@@ -212,7 +219,11 @@ fn check_name(name: &str) -> Result<(), TransportConfigError> {
 }
 
 /// Build one configured transport.
-fn build(entry: &TransportConfig) -> Result<Box<dyn SegmentTransport>, TransportConfigError> {
+fn build(
+    entry: &TransportConfig,
+    dir: &CashflowDir,
+    host: &str,
+) -> Result<Box<dyn SegmentTransport>, TransportConfigError> {
     let name = name_of(entry).to_owned();
     let missing = |key| TransportConfigError::Missing {
         name: name.clone(),
@@ -223,6 +234,16 @@ fn build(entry: &TransportConfig) -> Result<Box<dyn SegmentTransport>, Transport
         "rsync" => {
             let remote = entry.remote.clone().ok_or_else(|| missing("remote"))?;
             Ok(Box::new(RsyncTransport::new(name, remote)))
+        }
+        "git" => {
+            let remote = entry.remote.clone().ok_or_else(|| missing("remote"))?;
+            let clone = dir.sync().join("git").join(&name);
+            Ok(Box::new(GitTransport::new(
+                name,
+                remote,
+                clone,
+                host.to_owned(),
+            )))
         }
         _ => Err(TransportConfigError::UnknownKind {
             name,
@@ -734,6 +755,8 @@ mod tests {
             kind: "rsync".to_owned(),
             remote: Some("host:/journal".to_owned()),
         };
+        let dir = CashflowDir::new("/data/cashflow");
+        let transports = |c: &Config, only| transports(c, &dir, "here", only);
         let err = |c: &Config, only| transports(c, only).err().unwrap().to_string();
 
         assert!(matches!(
@@ -759,9 +782,15 @@ mod tests {
         }]);
         let msg = err(&blossom, None);
         assert!(
-            msg.contains("blossom") && msg.contains("known kinds: rsync"),
+            msg.contains("blossom") && msg.contains("known kinds: rsync, git"),
             "{msg}"
         );
+
+        let git = config(vec![TransportConfig {
+            kind: "git".to_owned(),
+            ..rsync(Some("history"))
+        }]);
+        assert_eq!(transports(&git, None).unwrap()[0].name(), "history");
 
         let no_remote = config(vec![TransportConfig {
             remote: None,

@@ -13,9 +13,11 @@
 //! lists as missing, into staging, admits it through the journal store's
 //! hash check, and pushes each remote what it lacks: `cashflow sync`.
 
+mod git;
 mod rsync;
 mod transport;
 
+pub use git::GitTransport;
 pub use rsync::RsyncTransport;
 pub use transport::{
     FetchReport, KINDS, PushReport, SegmentTransport, SyncJob, SyncReport, TransportConfigError,

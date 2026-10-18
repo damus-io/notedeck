@@ -193,6 +193,79 @@ fn two_hosts_sync_through_an_rsync_hub() {
     );
 }
 
+fn have_git() -> bool {
+    Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+/// The same two hosts through a bare git repository: each one's segments
+/// reach the other, every push is one commit naming its host, and the
+/// transport works in its own clone under sync/git/, never in journal/.
+#[test]
+fn two_hosts_sync_through_a_git_remote() {
+    if !have_git() {
+        eprintln!("skipping: git is not on PATH");
+        return;
+    }
+    let cf = Cashflow::knowing("sync");
+    let remote = cf.dir().join("remote.git");
+    let init = Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .arg(&remote)
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+    let config = format!(
+        "[[sync.transport]]\nname = \"hub\"\nkind = \"git\"\nremote = \"{}\"\n",
+        remote.display()
+    );
+    let alpha = Host {
+        cf: &cf,
+        name: "alpha",
+    };
+    let beta = Host {
+        cf: &cf,
+        name: "beta",
+    };
+    alpha.configure(&config);
+    beta.configure(&config);
+    let a1 = alpha.import("shop:1", "Corner");
+    let b1 = beta.import("shop:2", "Bakery");
+
+    let out = alpha.json(&["sync", "--json"]);
+    assert_eq!(
+        sorted(&out["transports"][0]["pushed"]),
+        std::slice::from_ref(&a1)
+    );
+    let text = expect_success(beta.run(&["sync"]));
+    assert!(text.contains(&format!("    admitted {a1}")), "{text}");
+    assert!(text.contains(&format!("    pushed {b1}")), "{text}");
+    let out = alpha.json(&["sync", "--json"]);
+    assert_eq!(
+        sorted(&out["transports"][0]["admitted"]),
+        std::slice::from_ref(&b1)
+    );
+    for host in [&alpha, &beta] {
+        let status = host.json(&["journal", "status", "--json"]);
+        assert_eq!(status["in_sync"], true, "{}: {status}", host.name);
+        assert!(host.dir().join("sync/git/hub/.git").is_dir());
+        assert!(!host.dir().join("journal/.git").exists());
+    }
+
+    let log = Command::new("git")
+        .arg("--git-dir")
+        .arg(&remote)
+        .args(["log", "--format=%s", "main"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&log.stdout),
+        "cashflow: add 1 segment from beta\ncashflow: add 1 segment from alpha\n"
+    );
+}
+
 /// A config that can't be synced is an error before any relay is dialled:
 /// no transports, an unknown kind (naming the known ones), and a
 /// `--transport` nothing is called.
@@ -210,7 +283,7 @@ fn sync_config_errors() {
     host.configure("[[sync.transport]]\nkind = \"blossom\"\nremote = \"x\"\n");
     let err = expect_failure(host.run(&["sync"]));
     assert!(
-        err.contains("unknown kind \"blossom\" (known kinds: rsync)"),
+        err.contains("unknown kind \"blossom\" (known kinds: rsync, git)"),
         "{err}"
     );
 

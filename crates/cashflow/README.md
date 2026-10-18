@@ -13,6 +13,7 @@ $CASHFLOW_DIR/              default: <data-local-dir>/cashflow
     config.toml             settings; missing means all defaults, unknown keys are errors
     journal/                content-addressed ledger segments (the synced truth)
     staging/                where a sync transport fetches before the journal admits
+    sync/                   a transport's own state, e.g. the git transport's clone
     secrets/                one file per secret (owner-only)
 ```
 
@@ -48,6 +49,13 @@ The journal and what reads it:
 - `Books::load` is the pipeline every reader runs: load the segments a
   `LayerFilter` allows, derive them with the edits, build the price db and
   index the result in the home commodity for queries.
+- `sync` moves segments between machines through a `SegmentTransport` per
+  `[[sync.transport]]`: `rsync` (any rsync destination) or `git` (any git
+  URL; its own clone under `sync/git/<name>/`, one commit per push). A
+  transport only ever fetches into `staging/`, and the journal admits a file
+  only if it hashes to its name. Segments are plaintext, so a **hosted** git
+  remote should be private, and ideally encrypted (git-crypt) or
+  self-hosted.
 
 The real importers, the vault's other records, goals and the Adventure
 view's XP all land here in later cards. The design they follow, including the three

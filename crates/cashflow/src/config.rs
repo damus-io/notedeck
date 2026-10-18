@@ -128,6 +128,12 @@ impl CashflowDir {
         self.root.join("staging")
     }
 
+    /// `sync/`: state a sync transport keeps for itself, such as the git
+    /// transport's clone at `sync/git/<name>/`. Never the journal.
+    pub fn sync(&self) -> PathBuf {
+        self.root.join("sync")
+    }
+
     /// `secrets/`: one file per secret.
     pub fn secrets(&self) -> PathBuf {
         self.root.join("secrets")
@@ -486,10 +492,11 @@ pub struct TransportConfig {
     /// What `sync --transport` calls it, and its directory under
     /// `staging/` [default: its `kind`].
     pub name: Option<String>,
-    /// Which transport: `rsync`.
+    /// Which transport: `rsync` or `git`.
     pub kind: String,
     /// Where the remote journal is: for `rsync`, anything rsync takes as a
-    /// destination (`host:/path`, `user@host:path`, or a local directory).
+    /// destination (`host:/path`, `user@host:path`, or a local directory);
+    /// for `git`, any URL git takes (`host:repo.git`, `ssh://…`, a path).
     pub remote: Option<String>,
 }
 

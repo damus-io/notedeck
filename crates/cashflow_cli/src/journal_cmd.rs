@@ -23,7 +23,7 @@ const HOST_ENV: &str = "CASHFLOW_HOST";
 
 /// The host this run publishes manifests as: `$CASHFLOW_HOST`, else the
 /// machine's hostname.
-fn host() -> String {
+pub fn host() -> String {
     std::env::var(HOST_ENV)
         .ok()
         .filter(|h| !h.trim().is_empty())

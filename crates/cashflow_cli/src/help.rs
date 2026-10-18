@@ -202,6 +202,10 @@ Each [[sync.transport]] in config.toml is a remote copy of the journal:
     remote = \"host:/path/to/journal\"   # or a local dir, e.g. a mounted drive
     # name = \"backup\"                  # [default: the kind]
 
+    [[sync.transport]]
+    kind = \"git\"
+    remote = \"host:cashflow.git\"       # any git URL; segments go on `main`
+
 For each transport in order, sync pushes the remote every local segment it
 lacks, then fetches the segments the vault's manifests say this machine
 lacks (`journal status` lists them) into staging/<name>/, admitting each one
@@ -213,7 +217,12 @@ that fails the check is rejected and left in staging until the next sync.
 Sync is a union of files named by their hashes, so it never conflicts and
 is safe to run from any machine at any time. The rsync transport runs
 `rsync -a --ignore-existing` (over ssh for host:path), which must be on
-PATH. Needs `cashflow login`: the manifests say what to fetch.
+PATH. The git transport keeps its own clone in sync/git/<name>/ (never in
+journal/) and makes one commit per push, `cashflow: add N segments from
+<host>`, so the remote has the history; git must be on PATH and must reach
+the remote without prompting. Segments are plaintext: a hosted git remote
+should be private, and ideally encrypted (git-crypt) or self-hosted.
+Needs `cashflow login`: the manifests say what to fetch.
 
 Exits non-zero when a transport fails or serves a bad file; the others still
 run.",
