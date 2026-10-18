@@ -14,6 +14,7 @@ use headway::teams;
 
 use crate::APP;
 use crate::edit::Collect;
+use crate::progress::SyncProgress;
 
 /// Upper bound for a windowed reconcile's `created_at` search: `u32::MAX` (unix
 /// second `4294967295` ≈ year 2106) — past any real event time, yet within the
@@ -50,6 +51,45 @@ pub(crate) fn plaintext_sync_filter(author: &Pubkey) -> nostrdb::Filter {
         .build()
 }
 
+/// Connect to `relay_url` and reconcile the plaintext headway events (`filter`)
+/// both ways, returning the live relay — or `None` when nothing answered, in
+/// which case the CLI works offline against the cache.
+///
+/// The fork's `connect_and_sync`, split open here so the offline warning can
+/// erase the progress line first rather than splice into it; the warning text
+/// is the fork's verbatim. A failed pull propagates, as it does there.
+pub(crate) async fn connect_and_sync(
+    relay_url: &str,
+    ndb: &Ndb,
+    author: &Pubkey,
+    filter: &nostrdb::Filter,
+    is_addressable: &dyn Fn(u32) -> bool,
+    progress: &SyncProgress,
+) -> nostrdb_net::relay::sync::Result<Option<nostrdb_net::relay::sync::Relay>> {
+    let mut relay = match nostrdb_net::relay::sync::Relay::connect(relay_url).await {
+        Ok(relay) => relay,
+        // The app being closed is the common case, not an error worth failing
+        // over — fall back to the local cache.
+        Err(e) => {
+            progress.clear();
+            eprintln!("warning: {e}");
+            eprintln!("working offline against the local cache (--relay to point elsewhere)");
+            return Ok(None);
+        }
+    };
+    nostrdb_net::relay::sync::reconcile_sync_with_progress(
+        &mut relay,
+        ndb,
+        author,
+        &event::HEADWAY_KINDS,
+        filter,
+        is_addressable,
+        progress,
+    )
+    .await?;
+    Ok(Some(relay))
+}
+
 /// Reconcile every joined board's kind-1081 SNS envelopes with the relay, both
 /// ways, keyed by each channel's team pubkey.
 ///
@@ -72,6 +112,7 @@ pub(crate) async fn sync_envelopes(
     relay: &mut nostrdb_net::relay::sync::Relay,
     ndb: &Ndb,
     roster: &Roster,
+    progress: &SyncProgress,
 ) {
     // Every distinct channel pubkey across all joined boards — a board can span
     // several channels, and one channel can back several boards, so dedup.
@@ -90,22 +131,30 @@ pub(crate) async fn sync_envelopes(
 
     let envelope_kinds = [nostrdb_net::sns::SNS_ENVELOPE_KIND];
     let before = count_matching(ndb, &teams::envelope_filter(&pubkeys));
-    for pk in &pubkeys {
+    for (i, pk) in pubkeys.iter().enumerate() {
+        progress.phase(format!(
+            "syncing sealed boards ({}/{})",
+            i + 1,
+            pubkeys.len()
+        ));
         let filter = teams::envelope_filter(std::slice::from_ref(pk));
         let author = nostrdb_net::Pubkey::new(*pk.bytes());
-        if let Err(e) = nostrdb_net::relay::sync::reconcile_sync(
+        if let Err(e) = nostrdb_net::relay::sync::reconcile_sync_with_progress(
             relay,
             ndb,
             &author,
             &envelope_kinds,
             &filter,
             &|_| false,
+            progress,
         )
         .await
         {
+            progress.clear();
             eprintln!("warning: couldn't sync sealed-board envelopes: {e}");
         }
     }
+    progress.finish();
 
     // Peel any envelopes that just arrived. Auto-unwrap fires on ingest for an
     // already-registered root, but a `process_sns` catch-up covers an envelope
@@ -115,7 +164,9 @@ pub(crate) async fn sync_envelopes(
     if count_matching(ndb, &teams::envelope_filter(&pubkeys)) > before
         && let Ok(txn) = Transaction::new(ndb)
     {
+        progress.phase("peeling sealed boards");
         ndb.process_sns(&txn);
+        progress.finish_with("done");
     }
 }
 
@@ -129,7 +180,9 @@ pub(crate) async fn pull_giftwraps(
     relay: &mut nostrdb_net::relay::sync::Relay,
     ndb: &Ndb,
     me: &Pubkey,
+    progress: &SyncProgress,
 ) {
+    progress.phase("pulling key-shares");
     let filter = teams::giftwrap_filter(me);
     let wire = json!({ "kinds": [1059], "#p": [me.hex()] }).to_string();
     let before = count_matching(ndb, &filter);
@@ -139,11 +192,19 @@ pub(crate) async fn pull_giftwraps(
     // every run. `pull_reconcile_windowed` bisects `created_at` so each sub-sync
     // stays under the cap. `RECONCILE_UNTIL` bounds the search past any real event
     // time yet within nostrdb's 32-bit `until`.
-    if let Err(e) =
-        nostrdb_net::relay::sync::pull_reconcile_windowed(relay, ndb, &wire, RECONCILE_UNTIL).await
+    if let Err(e) = nostrdb_net::relay::sync::pull_reconcile_windowed_with_progress(
+        relay,
+        ndb,
+        &wire,
+        RECONCILE_UNTIL,
+        progress,
+    )
+    .await
     {
+        progress.clear();
         eprintln!("warning: couldn't sync shared-board key-shares: {e}");
     }
+    progress.finish();
     // Peel what just arrived, but only if something did. A gift-wrap is unwrapped
     // against the registered account keys as it is ingested; one that landed in an
     // earlier run — before this key was registered, or before the peel existed —
@@ -156,7 +217,9 @@ pub(crate) async fn pull_giftwraps(
     if count_matching(ndb, &filter) > before
         && let Ok(txn) = Transaction::new(ndb)
     {
+        progress.phase("peeling key-shares");
         ndb.process_giftwraps(&txn);
+        progress.finish_with("done");
     }
 }
 
@@ -178,7 +241,9 @@ pub(crate) async fn pull_pns_keyshares(
     relay: &mut nostrdb_net::relay::sync::Relay,
     ndb: &Ndb,
     secret: &[u8; 32],
+    progress: &SyncProgress,
 ) {
+    progress.phase("pulling own key-shares");
     let filter = teams::pns_keyshare_filter(secret);
     // No `authors`: the relay's nostrdb would walk the account's whole PNS stream
     // to apply the tag (see `teams::pns_keyshare_filter`). The marker is already
@@ -190,11 +255,19 @@ pub(crate) async fn pull_pns_keyshares(
     })
     .to_string();
     let before = count_matching(ndb, &filter);
-    if let Err(e) =
-        nostrdb_net::relay::sync::pull_reconcile_windowed(relay, ndb, &wire, RECONCILE_UNTIL).await
+    if let Err(e) = nostrdb_net::relay::sync::pull_reconcile_windowed_with_progress(
+        relay,
+        ndb,
+        &wire,
+        RECONCILE_UNTIL,
+        progress,
+    )
+    .await
     {
+        progress.clear();
         eprintln!("warning: couldn't sync own board key-shares: {e}");
     }
+    progress.finish();
     // Peel what just arrived if a wrapper landed before the key that unwraps it
     // was registered — the PNS counterpart of `pull_giftwraps`' catch-up.
     if count_matching(ndb, &filter) > before
@@ -235,6 +308,7 @@ pub(crate) async fn flush_own_selfshares(
     roster: &Roster,
     secret: &[u8; 32],
     db: Option<&str>,
+    progress: &SyncProgress,
 ) {
     // A board coordinate is `30619:<owner>:<slug>`; ours start with this prefix.
     // `me` is the signer, not the owner being read: a member's roster also holds
@@ -274,7 +348,13 @@ pub(crate) async fn flush_own_selfshares(
     if sink.0.is_empty() {
         return;
     }
-    match relay.publish(&sink.0).await {
+    progress.phase("flushing self-shares");
+    let published = relay.publish(&sink.0).await;
+    progress.finish_with(&match &published {
+        Ok(()) => format!("{} pushed", sink.0.len()),
+        Err(_) => "failed".to_owned(),
+    });
+    match published {
         Ok(()) => {
             eprintln!("flushed {} own self-share(s) to the relay", sink.0.len());
             flushed.extend(newly);
@@ -316,6 +396,7 @@ pub(crate) async fn recover_derived_board(
     me: &Pubkey,
     secret: &[u8; 32],
     board_id: &str,
+    progress: &SyncProgress,
 ) -> bool {
     let root = nostrdb_net::sns::derive_board_root(secret, board_id);
     let Some(keys) = nostrdb_net::sns::derive_sns_keys(&root) else {
@@ -329,16 +410,19 @@ pub(crate) async fn recover_derived_board(
     let filter = teams::envelope_filter(std::slice::from_ref(&team_pk));
     let before = count_matching(ndb, &filter);
     let wire_author = nostrdb_net::Pubkey::new(*team_pk.bytes());
-    if let Err(e) = nostrdb_net::relay::sync::reconcile_sync(
+    progress.phase(format!("joining {board_id}"));
+    if let Err(e) = nostrdb_net::relay::sync::reconcile_sync_with_progress(
         relay,
         ndb,
         &wire_author,
         &[nostrdb_net::sns::SNS_ENVELOPE_KIND],
         &filter,
         &|_| false,
+        progress,
     )
     .await
     {
+        progress.clear();
         eprintln!("warning: couldn't sync derived-board envelopes: {e}");
     }
     if count_matching(ndb, &filter) > before
@@ -346,6 +430,7 @@ pub(crate) async fn recover_derived_board(
     {
         ndb.process_sns(&txn);
     }
+    progress.finish();
 
     let addr = event::board_address(me, board_id);
     {

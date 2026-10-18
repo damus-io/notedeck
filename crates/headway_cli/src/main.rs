@@ -17,6 +17,7 @@ mod grep;
 mod help;
 mod list;
 mod output;
+mod progress;
 mod review;
 mod sync;
 
@@ -43,9 +44,10 @@ use crate::output::{
     card_count, declined_message, deleted_board_error, plain_ref, print_all_boards, print_board,
     print_boards, print_cards, print_deleted_boards, print_next, print_seq_place,
 };
+use crate::progress::SyncProgress;
 use crate::sync::{
-    flush_own_selfshares, plaintext_sync_filter, pull_giftwraps, pull_pns_keyshares,
-    recover_derived_board, sync_envelopes,
+    connect_and_sync, flush_own_selfshares, plaintext_sync_filter, pull_giftwraps,
+    pull_pns_keyshares, recover_derived_board, sync_envelopes,
 };
 
 /// The CLI's cache/key directory under the platform data dir (e.g.
@@ -283,13 +285,17 @@ async fn run() -> Result<()> {
     // `connect_and_sync` speaks `nostrdb_net::Pubkey`; convert our enostr owner
     // across the boundary (both are `[u8; 32]` newtypes).
     let owner_nn = nostrdb_net::Pubkey::new(*id.owner.bytes());
-    let mut relay = nostrdb_net::relay::sync::connect_and_sync(
+    // One live progress line across every relay leg below (see `progress`),
+    // closed before the command prints anything.
+    let progress = SyncProgress::stderr();
+    progress.phase("syncing boards");
+    let mut relay = connect_and_sync(
         &cli.relay,
         &ndb,
         &owner_nn,
-        &event::HEADWAY_KINDS,
         &filter,
         &is_addressable,
+        &progress,
     )
     .await?;
 
@@ -300,14 +306,14 @@ async fn run() -> Result<()> {
     // look private, so this CLI would fold it the plaintext way and write
     // plaintext edits no other client can read.
     if let Some(relay) = relay.as_mut() {
-        pull_giftwraps(relay, &ndb, &id.me).await;
+        pull_giftwraps(relay, &ndb, &id.me, &progress).await;
     }
     // The same key-shares for our own boards, carried over PNS: the copy that
     // reaches this device when a private relay won't serve it the gift-wrap
     // (headway:headway/pepper-rack-usual). Deriving the PNS stream needs the
     // signing key, so a read-only `--author` run skips it.
     if let (Some(relay), Some(key)) = (relay.as_mut(), cli.secret.as_ref()) {
-        pull_pns_keyshares(relay, &ndb, &key.secret).await;
+        pull_pns_keyshares(relay, &ndb, &key.secret, &progress).await;
     }
     // Join every shared board we hold a key for. Registering a root re-peels any
     // envelope that arrived before it, so it is safe for this to run after the sync
@@ -334,7 +340,7 @@ async fn run() -> Result<()> {
     // Runs after `Roster::load` has registered the channel roots, so every pulled
     // envelope auto-unwraps into a queryable rumor and the sealed board folds.
     if let Some(relay) = relay.as_mut() {
-        sync_envelopes(relay, &ndb, &roster).await;
+        sync_envelopes(relay, &ndb, &roster, &progress).await;
     }
 
     // Push half of the giftwrap leg: re-publish our own boards' self-shares so a
@@ -346,7 +352,15 @@ async fn run() -> Result<()> {
     // those to the owner under the member's signature is exactly what this must
     // not do.
     if let (Some(relay), Some(key)) = (relay.as_mut(), cli.secret.as_ref()) {
-        flush_own_selfshares(relay, &ndb, &roster, &key.secret, cli.db.as_deref()).await;
+        flush_own_selfshares(
+            relay,
+            &ndb,
+            &roster,
+            &key.secret,
+            cli.db.as_deref(),
+            &progress,
+        )
+        .await;
     }
 
     // Recover an own board named explicitly on the command line that the roster
@@ -363,10 +377,14 @@ async fn run() -> Result<()> {
         && id.is_owner()
         && load_board(&ndb, &roster, &cli.board).is_none()
         && let Some(relay) = relay.as_mut()
-        && recover_derived_board(relay, &ndb, &id.me, &key.secret, &cli.board).await
+        && recover_derived_board(relay, &ndb, &id.me, &key.secret, &cli.board, &progress).await
     {
         roster = Roster::load(&ndb, id, &mut root_registry);
     }
+    // Close the line before the command prints anything to stdout or starts
+    // the pager.
+    progress.finish();
+    drop(progress);
 
     let board = cli.board;
     let board_explicit = cli.board_explicit;
