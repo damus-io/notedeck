@@ -6,7 +6,9 @@
 //! each side of every binary image file with [`git::blob_bytes`] and decodes it
 //! through notedeck's own image pipeline
 //! ([`process_image`](notedeck::media::images::process_image), which caps the
-//! longest edge at 2048px). [`upload`] runs once on the UI thread when the load
+//! longest edge at 2048px). A png kept in Git LFS is one of these too:
+//! `headway::git` reports its pointer diff as a binary file and reads the
+//! content the pointer names. [`upload`] runs once on the UI thread when the load
 //! lands, turning each decoded side into a texture for
 //! [`GitPatchState::set_file_images`]. Nothing here runs per frame.
 

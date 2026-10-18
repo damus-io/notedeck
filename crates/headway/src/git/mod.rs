@@ -11,6 +11,7 @@
 //! [`resolve`] (the `resolve` submodule) builds on these to find — or fetch —
 //! the commit a review record names and turn it into a [`CommitPatch`].
 
+mod lfs;
 mod resolve;
 
 pub use resolve::{

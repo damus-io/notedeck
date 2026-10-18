@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::{GitError, git};
+use super::{GitError, git, lfs};
 use crate::event::ReviewFields;
 
 /// What [`resolve`] needs to know about this host.
@@ -260,11 +260,11 @@ pub fn commit_patch(repo_dir: &Path, sha: &str, max_bytes: usize) -> Result<Comm
     let rest = parts.next().unwrap_or_default();
     // `%B` ends with a newline, and git puts a blank line before the patch.
     let start = rest.iter().position(|b| *b != b'\n').unwrap_or(rest.len());
-    let rest = &rest[start..];
+    let rest = lfs::pointer_diffs_as_binary(&rest[start..]);
     let Capped {
         bytes: patch,
         truncated,
-    } = cap_at_line(rest, max_bytes);
+    } = cap_at_line(&rest, max_bytes);
     Ok(CommitPatch {
         sha,
         author,
@@ -292,6 +292,10 @@ pub enum Blob {
 /// unless it's over `max_bytes`: its size is checked first, so a huge file is
 /// never read. A `rev` or `path` that doesn't name a blob is
 /// [`Blob::Missing`], not an error; git failing to run is one.
+///
+/// A blob that is a Git LFS pointer reads as the content it points to, capped
+/// by the size the pointer records; content that can't be had (no git-lfs, no
+/// LFS endpoint) is an error.
 pub fn blob_bytes(
     repo_dir: &Path,
     rev: &str,
@@ -312,7 +316,17 @@ pub fn blob_bytes(
     if size > max_bytes {
         return Ok(Blob::TooLarge(size));
     }
-    git_bytes(repo_dir, &["cat-file", "blob", &oid]).map(Blob::Bytes)
+    let bytes = git_bytes(repo_dir, &["cat-file", "blob", &oid])?;
+    if size > lfs::MAX_POINTER_BYTES {
+        return Ok(Blob::Bytes(bytes));
+    }
+    let Some(pointer) = lfs::Pointer::parse(&bytes) else {
+        return Ok(Blob::Bytes(bytes));
+    };
+    if pointer.size > max_bytes {
+        return Ok(Blob::TooLarge(pointer.size));
+    }
+    lfs::object_bytes(repo_dir, pointer, &bytes, path).map(Blob::Bytes)
 }
 
 /// `bytes` cut to at most `max` bytes, backed up to just after the last newline
@@ -1116,6 +1130,62 @@ mod tests {
         assert_eq!(read(&format!("{root}^"), "shot.png", 1024), Blob::Missing);
         assert_eq!(read(&sha, "shot.png", 255), Blob::TooLarge(256));
         assert_eq!(read(&sha, "shot.png", 256), Blob::Bytes(new));
+    }
+
+    /// Store `content` in `repo`'s LFS object store and return the pointer
+    /// git would commit in its place. The oid only has to be unique here, so
+    /// it's `fill` repeated rather than a real sha256.
+    fn store_lfs(repo: &Path, fill: char, content: &[u8]) -> String {
+        let oid: String = std::iter::repeat_n(fill, 64).collect();
+        let dir = repo
+            .join(".git/lfs/objects")
+            .join(&oid[..2])
+            .join(&oid[2..4]);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(&oid), content).unwrap();
+        format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            content.len()
+        )
+    }
+
+    /// A png committed as an LFS pointer reads back as its content from the
+    /// LFS store, capped by the pointer's size; its commit's patch says it's
+    /// a binary file, not a pointer text diff; a pointer whose object isn't
+    /// stored, with no LFS endpoint to fetch it from, is an error.
+    #[test]
+    fn lfs_pointers_read_as_their_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        init_repo(&repo);
+        let old: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0, 1, 2, 3];
+        let new: Vec<u8> = (0..=255).collect();
+        std::fs::write(repo.join("shot.png"), store_lfs(&repo, 'a', &old)).unwrap();
+        run(&repo, &["add", "shot.png"]);
+        run(&repo, &["commit", "-q", "-m", "add shot"]);
+        std::fs::write(repo.join("shot.png"), store_lfs(&repo, 'b', &new)).unwrap();
+        run(&repo, &["commit", "-q", "-am", "change shot"]);
+        let sha = run(&repo, &["rev-parse", "HEAD"]);
+
+        let read = |rev: &str, max: u64| blob_bytes(&repo, rev, "shot.png", max).unwrap();
+        assert_eq!(read(&sha, 1024), Blob::Bytes(new.clone()));
+        assert_eq!(read(&format!("{sha}^"), 1024), Blob::Bytes(old));
+        assert_eq!(read(&sha, 255), Blob::TooLarge(256));
+
+        let patch = commit_patch(&repo, &sha, usize::MAX).unwrap().patch;
+        assert!(
+            patch.ends_with("Binary files a/shot.png and b/shot.png differ\n"),
+            "{patch}"
+        );
+        assert!(!patch.contains("oid sha256:"), "{patch}");
+
+        let lost = "version https://git-lfs.github.com/spec/v1\n\
+            oid sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n\
+            size 9\n";
+        std::fs::write(repo.join("lost.png"), lost).unwrap();
+        run(&repo, &["add", "lost.png"]);
+        run(&repo, &["commit", "-q", "-m", "lost"]);
+        assert!(blob_bytes(&repo, "HEAD", "lost.png", 1024).is_err());
     }
 
     /// Every [`Found`] × [`Target`] pair gets its short label: a local find
