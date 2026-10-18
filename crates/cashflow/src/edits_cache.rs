@@ -40,7 +40,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use ledgerdb::{Edits, SegmentHash};
+use ledgerdb::{Edits, SegmentHash, Why};
 use nostrdb::{Filter, Ndb, NoteKey, Subscription, Transaction};
 use nostrdb_net::{Pubkey, query_replaceable};
 
@@ -56,7 +56,12 @@ use crate::vault_rules::{Owner, VaultRules};
 const POLL_BATCH: u32 = 64;
 
 /// Everything derive takes from the vault, owned.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Two are equal when they derive the same and suggest the same: the
+/// [`Provenance`] write times don't count, so re-saving an unchanged edit
+/// doesn't re-derive, but its cleared links do, so a dismissed suggestion
+/// does.
+#[derive(Clone, Debug)]
 pub struct DeriveInputs {
     /// The default counter accounts, the live rules in order, then the
     /// live overrides, splits, links and aliases.
@@ -66,22 +71,118 @@ pub struct DeriveInputs {
     pub owners: Vec<Owner>,
     /// The segments the vault retires, which every journal load leaves out.
     pub retired: HashSet<SegmentHash>,
+    /// Which note each edit came from and when it was written.
+    pub provenance: Provenance,
 }
+
+impl PartialEq for DeriveInputs {
+    fn eq(&self, other: &Self) -> bool {
+        self.edits == other.edits
+            && self.owners == other.owners
+            && self.retired == other.retired
+            && self.provenance.cleared_links == other.provenance.cleared_links
+    }
+}
+
+impl Eq for DeriveInputs {}
 
 impl DeriveInputs {
     /// Fold `author`'s vault records in `txn`.
     #[profiling::function]
     pub fn load(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Self {
-        let compiled = VaultRules::load(ndb, txn, author).compile();
+        let rules = VaultRules::load(ndb, txn, author);
+        let compiled = rules.compile();
         let mut edits = compiled.edits;
-        VaultEdits::load(ndb, txn, author).apply(&mut edits);
+        let per_txn = VaultEdits::load(ndb, txn, author);
+        per_txn.apply(&mut edits);
         Chart::load(ndb, txn, author).apply(&mut edits);
+        let mut provenance = Provenance {
+            rules: rules
+                .live()
+                .map(|r| Stamp {
+                    id: r.id.to_owned(),
+                    created_at: r.created_at,
+                })
+                .collect(),
+            ..Provenance::default()
+        };
+        per_txn.stamp(&mut provenance);
         DeriveInputs {
             edits,
             owners: compiled.owners,
             retired: manifest::retired(&manifest::load(ndb, txn, author)),
+            provenance,
         }
     }
+
+    /// Just `edits`, as from a rules file: no vault notes behind them.
+    pub fn from_edits(edits: Edits) -> Self {
+        DeriveInputs {
+            edits,
+            owners: Vec::new(),
+            retired: HashSet::new(),
+            provenance: Provenance::default(),
+        }
+    }
+
+    /// When the edit that decided a transaction `why` was written, if a
+    /// vault note decided it.
+    pub fn written_at(&self, why: Why) -> Option<u64> {
+        let p = &self.provenance;
+        match why {
+            Why::Untouched | Why::Default => None,
+            Why::Rule(i) => {
+                let owner = self.owners.get(i as usize)?;
+                p.rules.get(owner.rule as usize).map(|r| r.created_at)
+            }
+            Why::Transfer(i) => p.links.get(i as usize).copied(),
+            Why::Override(i) => p.overrides.get(i as usize).copied(),
+            Why::Split(i) => p.splits.get(i as usize).copied(),
+        }
+    }
+
+    /// The id of the vault rule that decided a transaction `why`, if a rule
+    /// did.
+    pub fn rule_id(&self, why: Why) -> Option<&str> {
+        let Why::Rule(i) = why else {
+            return None;
+        };
+        let owner = self.owners.get(i as usize)?;
+        let rule = self.provenance.rules.get(owner.rule as usize)?;
+        Some(&rule.id)
+    }
+}
+
+/// Which vault note each of a [`DeriveInputs`]' edits came from, and when
+/// it was written, so a transaction's [`Why`] can be traced to a note and a
+/// day: what the triage inbox's "categorized today" counts.
+///
+/// Each list runs parallel to what the edits hold: [`Self::rules`] to the
+/// live rules [`DeriveInputs::owners`] index, the others to
+/// `edits.overrides`, `edits.splits` and `edits.links`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Provenance {
+    /// The live rules, in order.
+    pub rules: Vec<Stamp>,
+    /// Each live override's `created_at`.
+    pub overrides: Vec<u64>,
+    /// Each live split's `created_at`.
+    pub splits: Vec<u64>,
+    /// Each live link's `created_at`.
+    pub links: Vec<u64>,
+    /// The ids ([`crate::vault_edits::link_id`]) of links whose newest note
+    /// clears them: unlinked, or dismissed as a suggestion. Neither is
+    /// suggested again.
+    pub cleared_links: HashSet<String>,
+}
+
+/// A vault record's id and when its newest revision was written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    /// The record id.
+    pub id: String,
+    /// Its `created_at`.
+    pub created_at: u64,
 }
 
 /// What one [`EditsCache::poll`] changed.

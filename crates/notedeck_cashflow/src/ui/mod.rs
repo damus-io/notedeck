@@ -1,6 +1,8 @@
 //! Cashflow's UI pieces shared across views: the palette, the view nav, the
-//! period picker, the frames panes are drawn in, and the Adventure view's game HUD.
+//! period picker, the account picker, the frames panes are drawn in, and the
+//! Adventure view's game HUD.
 
+pub mod account_picker;
 pub mod hud;
 pub mod journal_status;
 pub mod nav;

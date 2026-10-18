@@ -15,6 +15,11 @@
 //!    the home commodity or the [`Layers`] differ from what the books were
 //!    derived with, else a rescan every [`RESCAN_EVERY`].
 //!
+//! A job that derives also works out the books' [`Triage`] from the raw
+//! ledger and the same edits, so the inbox never groups or suggests on the
+//! UI thread. When a vault record changes the chart's [`Labels`] are
+//! re-read too.
+//!
 //! The raw ledger is kept between jobs, so a rescan that finds a segment
 //! (from `cashflow import`, rsync, git, anything) merges just that one in
 //! with [`ledgerdb::Ledger::refresh`], and an edit re-derives reusing the
@@ -25,7 +30,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use cashflow::chart::{Chart, Labels};
 use cashflow::sync::{self, SyncJob, SyncReport};
+use cashflow::triage::Triage;
 use cashflow::{Books, CashflowDir, Config, DeriveInputs, EditsCache, Settings, manifest};
 use ledgerdb::{Derived, JournalStore, LayerFilter, Ledger, LoadReport, SegmentHash};
 use nostrdb::Transaction;
@@ -66,15 +73,26 @@ pub struct LoadJob {
     /// Derive even when the refresh found nothing new: the edits, the home
     /// commodity or the filter changed. A plain rescan leaves it off.
     pub derive: bool,
+    /// When today began (unix seconds), what the triage counts "today"
+    /// from.
+    pub since: u64,
+}
+
+/// Books a job derived, and their triage.
+pub struct Loaded {
+    /// The books.
+    pub books: Books,
+    /// What is left to categorize in them, worked out with the same edits.
+    pub triage: Triage,
 }
 
 /// What a [`LoadJob`] did.
 pub struct LoadDone {
     /// The raw ledger, to hand to the next job; `None` after an error.
     pub raw: Option<RawLedger>,
-    /// New books, when the job derived; `None` when a rescan found nothing
-    /// new or the store couldn't be listed.
-    pub books: Option<Books>,
+    /// New books and their triage, when the job derived; `None` when a
+    /// rescan found nothing new or the store couldn't be listed.
+    pub loaded: Option<Loaded>,
     /// Every segment in the store, sorted, as the job listed it.
     pub local: Vec<SegmentHash>,
     /// Why the store couldn't be listed.
@@ -91,7 +109,7 @@ impl LoadJob {
         let started = Instant::now();
         let failed = |err: ledgerdb::StoreError| LoadDone {
             raw: None,
-            books: None,
+            loaded: None,
             local: Vec::new(),
             error: Some(err.to_string()),
             elapsed: started.elapsed(),
@@ -119,18 +137,20 @@ impl LoadJob {
             Err(err) => return failed(err),
         };
         let grew = !report.loaded.is_empty();
-        let books = (self.derive || grew).then(|| {
-            Books::from_raw(
+        let loaded = (self.derive || grew).then(|| {
+            let books = Books::from_raw(
                 &raw.ledger,
                 report,
                 &self.inputs.edits,
                 self.previous.as_deref(),
                 &self.home,
-            )
+            );
+            let triage = Triage::new(Some(&raw.ledger), &books, self.inputs.clone(), self.since);
+            Loaded { books, triage }
         });
         LoadDone {
             raw: Some(raw),
-            books,
+            loaded,
             local,
             error: None,
             elapsed: started.elapsed(),
@@ -227,6 +247,8 @@ pub struct JournalSource {
     last_sync: Option<SyncOutcome>,
     /// How long the last derive's job took.
     load_time: Option<Duration>,
+    /// The chart's display names and icons, re-read when the vault changes.
+    labels: Arc<Labels>,
 }
 
 impl JournalSource {
@@ -254,20 +276,23 @@ impl JournalSource {
             sync: None,
             last_sync: None,
             load_time: None,
+            labels: Arc::new(Labels::default()),
         }
     }
 
     /// One frame's worth of work: take what finished, poll the vault, and
     /// start the next job if one is due, loading the layers `layers` leaves
-    /// on. Returns new books when a job derived some; `books` are the ones
-    /// in hand, which a re-derive reuses.
+    /// on and counting the triage's "today" from `since` (unix seconds).
+    /// Returns new books when a job derived some; `books` are the ones in
+    /// hand, which a re-derive reuses.
     #[profiling::function]
     pub fn update(
         &mut self,
         ctx: &mut AppContext<'_>,
         layers: &Layers,
         books: Option<&Books>,
-    ) -> Option<Books> {
+        since: u64,
+    ) -> Option<Loaded> {
         let fresh = self.take_job();
         self.take_sync();
 
@@ -286,6 +311,7 @@ impl JournalSource {
             return fresh;
         };
         if edits.poll(ctx.ndb, &txn).vault {
+            self.labels = Arc::new(Chart::load(ctx.ndb, &txn, &author).labels());
             let home = Settings::load(ctx.ndb, &txn, &author).home_commodity();
             if home != self.home {
                 self.home = home.to_owned();
@@ -323,7 +349,7 @@ impl JournalSource {
         if stale || due {
             let previous = books.map(|books| books.derived.clone());
             let filter = layers.filter();
-            self.start_job(ctx, wanted, filter, inputs, previous, stale);
+            self.start_job(ctx, wanted, filter, inputs, previous, stale, since);
         }
         None
     }
@@ -337,6 +363,7 @@ impl JournalSource {
         inputs: Arc<DeriveInputs>,
         previous: Option<Arc<Derived>>,
         derive: bool,
+        since: u64,
     ) {
         let job = LoadJob {
             store: self.store.clone(),
@@ -346,13 +373,14 @@ impl JournalSource {
             previous,
             home: self.home.clone(),
             derive,
+            since,
         };
         self.job = Some(ctx.job_pool.schedule_receivable(move || job.run()));
         self.job_with = Some(wanted);
     }
 
     /// Take the running job's result if it has finished.
-    fn take_job(&mut self) -> Option<Books> {
+    fn take_job(&mut self) -> Option<Loaded> {
         let done = match self.job.as_mut()?.try_recv() {
             Ok(done) => done,
             Err(oneshot::error::TryRecvError::Empty) => return None,
@@ -371,10 +399,10 @@ impl JournalSource {
             self.local = done.local;
             self.missing_stale = true;
         }
-        let books = done.books?;
+        let loaded = done.loaded?;
         self.derived_with = with;
         self.load_time = Some(done.elapsed);
-        Some(books)
+        Some(loaded)
     }
 
     /// Take the running sync's report if it has finished.
@@ -497,6 +525,11 @@ impl JournalSource {
     pub fn journal_path(&self) -> &str {
         &self.journal_path
     }
+
+    /// The chart's display names and icons, as the vault last had them.
+    pub fn labels(&self) -> &Arc<Labels> {
+        &self.labels
+    }
 }
 
 /// How many transports `dir`'s `config.toml` lists, or why it doesn't read.
@@ -591,14 +624,11 @@ mod tests {
             store: store.clone(),
             raw,
             filter: LayerFilter::All,
-            inputs: Arc::new(DeriveInputs {
-                edits: cashflow::rules::default_edits(),
-                owners: Vec::new(),
-                retired: HashSet::new(),
-            }),
+            inputs: Arc::new(DeriveInputs::from_edits(cashflow::rules::default_edits())),
             previous: None,
             home: "CAD".to_owned(),
             derive,
+            since: 0,
         }
     }
 
@@ -613,15 +643,15 @@ mod tests {
         let done = job(&store, None, true).run();
         assert!(done.error.is_none());
         assert_eq!(done.local, [first]);
-        let books = done.books.expect("a first load derives");
+        let books = done.loaded.expect("a first load derives").books;
         assert_eq!(books.ledger().txns().len(), 1);
 
         let done = job(&store, done.raw, false).run();
-        assert!(done.books.is_none(), "nothing new, no derive");
+        assert!(done.loaded.is_none(), "nothing new, no derive");
 
         let second = write(&store, 2, "t:2", "expenses:fun");
         let done = job(&store, done.raw, false).run();
-        let books = done.books.expect("a new segment derives");
+        let books = done.loaded.expect("a new segment derives").books;
         assert_eq!(books.ledger().txns().len(), 2);
         assert_eq!(books.report.loaded, [second], "only the new one is read");
         let mut both = vec![first, second];
@@ -638,14 +668,14 @@ mod tests {
         let first = write(&store, 1, "t:1", "expenses:food");
         write(&store, 2, "t:2", "expenses:fun");
         let done = job(&store, None, true).run();
-        assert_eq!(done.books.unwrap().ledger().txns().len(), 2);
+        assert_eq!(done.loaded.unwrap().books.ledger().txns().len(), 2);
 
         let mut retire = job(&store, done.raw, false);
         retire.inputs = Arc::new(DeriveInputs {
             retired: HashSet::from([first]),
             ..(*retire.inputs).clone()
         });
-        let books = retire.run().books.expect("a reload derives");
+        let books = retire.run().loaded.expect("a reload derives").books;
         assert_eq!(books.ledger().txns().len(), 1);
         assert_eq!(books.report.skipped, [first]);
     }
@@ -659,6 +689,6 @@ mod tests {
         let done = job(&store, None, true).run();
         assert!(done.error.is_none());
         assert!(done.local.is_empty());
-        assert!(done.books.unwrap().ledger().txns().is_empty());
+        assert!(done.loaded.unwrap().books.ledger().txns().is_empty());
     }
 }

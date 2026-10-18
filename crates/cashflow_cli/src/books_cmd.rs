@@ -87,11 +87,7 @@ fn inputs(session: Option<&Session>, args: &BooksArgs) -> Result<DeriveInputs, S
                 rules::default_edits()
             }
         };
-        return Ok(DeriveInputs {
-            edits,
-            owners: Vec::new(),
-            retired: HashSet::new(),
-        });
+        return Ok(DeriveInputs::from_edits(edits));
     };
     let mut inputs = derive_inputs(session)?;
     if let Some(path) = &args.rules {

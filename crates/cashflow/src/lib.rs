@@ -21,7 +21,8 @@
 //! rates into it, and [`books`] loads, derives and indexes it for queries.
 //! [`transfers`] finds the moves between the owner's own accounts that two
 //! sources each recorded, and [`unknown`] groups what nothing has
-//! categorized yet into a triage queue. [`net`] is the one definition of
+//! categorized yet into a triage queue, which [`triage`] counts down and
+//! writes the inbox's edits for. [`net`] is the one definition of
 //! income, expenses and net every report totals with. The game derive
 //! lands here in a later card; the design all of this follows is on the
 //! root epic, headway:cashflow/flame-vault-near.
@@ -45,6 +46,7 @@ pub mod rules;
 pub mod settings;
 pub mod sync;
 pub mod transfers;
+pub mod triage;
 pub mod unknown;
 pub mod vault;
 pub mod vault_edits;

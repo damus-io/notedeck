@@ -43,6 +43,7 @@ use ledgerdb::{Accounts, Edits, Leg, Override, Split, TransferLink};
 use nostrdb::{Ndb, Tags, Transaction};
 use nostrdb_net::Pubkey;
 
+use crate::edits_cache::Provenance;
 use crate::kinds;
 use crate::vault::{self, Record, SCHEMA_VERSION, Stored, TagWriter};
 
@@ -358,6 +359,20 @@ impl<'a> VaultEdits<'a> {
             }));
     }
 
+    /// Fill in `provenance`'s per-transaction stamps, parallel to what
+    /// [`Self::apply`] appends, and its cleared links.
+    pub fn stamp(&self, provenance: &mut Provenance) {
+        provenance.overrides.extend(stamps(&self.overrides));
+        provenance.splits.extend(stamps(&self.splits));
+        provenance.links.extend(stamps(&self.links));
+        provenance.cleared_links.extend(
+            self.links
+                .iter()
+                .filter(|l| l.body.body.is_none())
+                .map(|l| l.id.to_owned()),
+        );
+    }
+
     /// The stored override of `record`, cleared or not.
     pub fn override_of(&self, record: &str) -> Option<&Stored<'a, OverrideNote<'a>>> {
         find(&self.overrides, record)
@@ -397,6 +412,14 @@ fn live<'s, 'a, B>(
     stored
         .iter()
         .filter_map(|s| s.body.body.as_ref().map(|body| Live { id: s.id, body }))
+}
+
+/// The `created_at` of each live edit in `stored`, in [`live`]'s order.
+fn stamps<'s, B>(stored: &'s [Stored<'_, EditNote<'_, B>>]) -> impl Iterator<Item = u64> + 's {
+    stored
+        .iter()
+        .filter(|s| s.body.body.is_some())
+        .map(|s| s.created_at)
 }
 
 /// The record `id` in `stored`, which is sorted by id.

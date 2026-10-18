@@ -22,11 +22,21 @@
 //! unreadable, the shell draws that state in place of every view. It loads
 //! the layers [`CashflowApp::layers`] leaves on, and tells the app what the
 //! journal is missing with [`CashflowApp::set_missing_segments`].
+//!
+//! Books always come with their [`Triage`], what the Transactions view's
+//! inbox burns down. A view never writes to the vault itself: it queues a
+//! [`triage::Action`], and [`CashflowApp`] makes the write in `render`,
+//! where it has the host's nostrdb and account. The write lands in the
+//! vault, the journal source sees the edits move and re-derives, and the
+//! new triage arrives a few frames later.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use cashflow::chart::Labels;
 use cashflow::projects::Projects;
-use cashflow::{Books, CashflowDir};
+use cashflow::triage::{self, Action, Triage};
+use cashflow::{Books, CashflowDir, DeriveInputs, Vault};
 use ledgerdb::Date;
 use notedeck::{AppContext, AppResponse};
 
@@ -42,7 +52,7 @@ pub use layers::Layers;
 pub use period::Period;
 pub use view::View;
 
-use journal::{JournalSource, JournalState};
+use journal::{JournalSource, JournalState, Loaded};
 use ui::palette::Palette;
 
 /// How soon to poll again while a load or a sync is running.
@@ -58,6 +68,12 @@ pub struct CashflowApp {
     palette: Palette,
     /// The loaded books, once there are some.
     books: Option<Books>,
+    /// What is left to categorize in [`Self::books`], set with them.
+    triage: Option<Triage>,
+    /// The chart's display names and icons.
+    labels: Arc<Labels>,
+    /// Vault writes the views asked for this frame, made in `render`.
+    outbox: Vec<Action>,
     /// Where the books come from, when the app loads its own: `None` for an
     /// app handed its books with [`Self::set_books`].
     journal: Option<JournalSource>,
@@ -95,6 +111,9 @@ impl CashflowApp {
             view: View::Overview,
             palette: Palette::default(),
             books: None,
+            triage: None,
+            labels: Arc::new(Labels::default()),
+            outbox: Vec::new(),
             journal: None,
             summary: String::new(),
             projects: Projects::default(),
@@ -129,12 +148,24 @@ impl CashflowApp {
         }
     }
 
-    /// Report on `books` from now on. Every view recomputes what it shows
-    /// from them on its next frame.
+    /// Report on `books` from now on, derived with no vault edits but the
+    /// default counter accounts. Their triage is worked out here, on the
+    /// calling thread, without transfer suggestions (it has no raw
+    /// ledger); [`Self::set_loaded`] takes one worked out elsewhere.
     pub fn set_books(&mut self, books: Books) {
+        let inputs = Arc::new(DeriveInputs::from_edits(cashflow::rules::default_edits()));
+        let since = period::start_of_day(self.today);
+        let triage = Triage::new(None, &books, inputs, since);
+        self.set_loaded(Loaded { books, triage });
+    }
+
+    /// Report on `loaded`'s books and triage from now on. Every view
+    /// recomputes what it shows from them on its next frame.
+    pub fn set_loaded(&mut self, loaded: Loaded) {
         let load_time = self.journal.as_ref().and_then(JournalSource::load_time);
-        self.summary = ui::journal_status::summary(&books, load_time);
-        self.books = Some(books);
+        self.summary = ui::journal_status::summary(&loaded.books, load_time);
+        self.books = Some(loaded.books);
+        self.triage = Some(loaded.triage);
         self.generation += 1;
     }
 
@@ -147,6 +178,18 @@ impl CashflowApp {
         }
         self.projects = projects;
         self.generation += 1;
+    }
+
+    /// Draw accounts with `labels`' names and icons. The journal source
+    /// sets them from the vault's chart.
+    pub fn set_labels(&mut self, labels: Labels) {
+        self.labels = Arc::new(labels);
+        self.generation += 1;
+    }
+
+    /// The triage of the books, if any are loaded.
+    pub fn triage(&self) -> Option<&Triage> {
+        self.triage.as_ref()
     }
 
     /// The books the app reports on, if any are loaded.
@@ -223,6 +266,9 @@ impl CashflowApp {
             view,
             palette,
             books,
+            triage,
+            labels,
+            outbox,
             journal,
             summary,
             projects,
@@ -258,10 +304,15 @@ impl CashflowApp {
                 }
                 let mut cx = views::ViewCx {
                     palette,
-                    ledger: books.as_ref().map(|books| views::LedgerCx {
-                        books,
-                        generation: *generation,
+                    ledger: books.as_ref().zip(triage.as_ref()).map(|(books, triage)| {
+                        views::LedgerCx {
+                            books,
+                            triage,
+                            generation: *generation,
+                        }
                     }),
+                    labels,
+                    outbox,
                     summary,
                     projects,
                     today: *today,
@@ -277,6 +328,31 @@ impl CashflowApp {
                 }
             });
     }
+
+    /// Make the vault writes the views queued this frame, as the selected
+    /// account. A write that fails is reported back to the Transactions
+    /// view, which shows what it had hidden again.
+    fn flush_writes(&mut self, ctx: &mut AppContext<'_>) {
+        if self.outbox.is_empty() {
+            return;
+        }
+        let vault = ctx
+            .accounts
+            .selected_filled()
+            .and_then(|full| Vault::new(&full.secret_key.secret_bytes()));
+        for action in self.outbox.drain(..) {
+            let result = match &vault {
+                Some(vault) => triage::apply(vault, ctx.ndb, &action).map_err(|e| e.to_string()),
+                None => {
+                    Err("this account has no secret key, so it can't write to the vault".to_owned())
+                }
+            };
+            if let Err(err) = result {
+                tracing::warn!("cashflow: {action:?} failed: {err}");
+                self.views.write_failed(err);
+            }
+        }
+    }
 }
 
 impl notedeck::App for CashflowApp {
@@ -285,15 +361,21 @@ impl notedeck::App for CashflowApp {
         let Some(journal) = self.journal.as_mut() else {
             return;
         };
-        let books = journal.update(ctx, &self.layers, self.books.as_ref());
+        let since = period::start_of_day(self.today);
+        let loaded = journal.update(ctx, &self.layers, self.books.as_ref(), since);
         self.missing_segments = journal.missing().hashes.len();
-        if let Some(books) = books {
-            self.set_books(books);
+        if !Arc::ptr_eq(&self.labels, journal.labels()) {
+            self.labels = journal.labels().clone();
+            self.generation += 1;
+        }
+        if let Some(loaded) = loaded {
+            self.set_loaded(loaded);
         }
     }
 
-    fn render(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         self.ui(ui);
+        self.flush_writes(ctx);
         AppResponse::none()
     }
 }

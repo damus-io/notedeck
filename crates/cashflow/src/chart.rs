@@ -360,6 +360,55 @@ fn self_and_ancestors(path: &str) -> impl Iterator<Item = &str> {
     std::iter::successors(Some(path), |p| p.rfind(':').map(|at| &p[..at]))
 }
 
+/// The chart's display names and icons, owned ([`Chart::labels`]): what a
+/// list of accounts draws beside each.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Labels {
+    /// The accounts with a name or icon of their own, by record id.
+    accounts: Vec<OwnedLabel>,
+}
+
+/// One account's own name and icon.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OwnedLabel {
+    id: String,
+    name: Option<String>,
+    icon: Option<String>,
+}
+
+/// How to show an account: its display name, else none, and its icon, its
+/// own or inherited from the nearest ancestor that sets one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Label<'l> {
+    /// What to call it instead of its last name segment; names don't
+    /// inherit.
+    pub name: Option<&'l str>,
+    /// The emoji drawn beside it.
+    pub icon: Option<&'l str>,
+}
+
+impl Labels {
+    /// How to show `account`.
+    pub fn label(&self, account: &str) -> Label<'_> {
+        let id = record_id(account);
+        let mut label = Label {
+            name: self.at(&id).and_then(|l| l.name.as_deref()),
+            icon: None,
+        };
+        label.icon = self_and_ancestors(&id).find_map(|at| self.at(at)?.icon.as_deref());
+        label
+    }
+
+    /// The label at record id `id`.
+    fn at(&self, id: &str) -> Option<&OwnedLabel> {
+        let at = self
+            .accounts
+            .binary_search_by(|l| l.id.as_str().cmp(id))
+            .ok()?;
+        Some(&self.accounts[at])
+    }
+}
+
 /// A field's value as an account sees it, and the account it came from:
 /// itself, or the nearest ancestor that sets it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -497,6 +546,23 @@ impl<'a> Chart<'a> {
             .kind
             .map(|k| k.value)
             .or_else(|| AccountKind::of_root(account))
+    }
+
+    /// Every account's display name and icon, owned, so a reader can
+    /// keep them past the transaction.
+    pub fn labels(&self) -> Labels {
+        Labels {
+            accounts: self
+                .accounts
+                .iter()
+                .filter(|s| s.body.name.is_some() || s.body.icon.is_some())
+                .map(|s| OwnedLabel {
+                    id: s.id.to_owned(),
+                    name: s.body.name.map(str::to_owned),
+                    icon: s.body.icon.map(str::to_owned),
+                })
+                .collect(),
+        }
     }
 
     /// Append the live aliases to `edits`, in record-id order, so every
@@ -672,6 +738,20 @@ mod tests {
         // `expensesx` isn't under `expenses`: prefixes stop at a colon.
         assert_eq!(chart.resolve("expensesx:a"), Resolved::default());
         assert_eq!(chart.kind_of("misc"), None);
+
+        // The owned labels resolve the same way.
+        let labels = chart.labels();
+        let label = labels.label("expenses:food:coffee");
+        assert_eq!(
+            label,
+            Label {
+                name: None,
+                icon: Some("🍔")
+            }
+        );
+        let label = labels.label("expenses");
+        assert_eq!(label.name, Some("Spending"));
+        assert_eq!(labels.label("income"), Label::default());
     }
 
     #[test]

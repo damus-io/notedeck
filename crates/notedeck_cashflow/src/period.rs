@@ -143,6 +143,27 @@ pub fn today() -> Date {
     Date::from_ymd(ymd).unwrap_or(Date::EPOCH)
 }
 
+/// When `day` began on this machine's clock, in its local time zone, as
+/// unix seconds: what the triage inbox counts "today" from. 0 for a day the
+/// clock can't place.
+pub fn start_of_day(day: Date) -> u64 {
+    use chrono::TimeZone;
+
+    let ymd = day.ymd();
+    let Some(midnight) = chrono::NaiveDate::from_ymd_opt(
+        i32::from(ymd.year),
+        u32::from(ymd.month),
+        u32::from(ymd.day),
+    )
+    .and_then(|d| d.and_hms_opt(0, 0, 0)) else {
+        return 0;
+    };
+    chrono::Local
+        .from_local_datetime(&midnight)
+        .earliest()
+        .map_or(0, |at| u64::try_from(at.timestamp()).unwrap_or(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

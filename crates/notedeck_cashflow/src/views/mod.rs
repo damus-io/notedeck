@@ -5,6 +5,8 @@
 //! here.
 
 use cashflow::Books;
+use cashflow::chart::Labels;
+use cashflow::triage::{Action, Triage};
 use egui::RichText;
 use ledgerdb::Date;
 
@@ -16,7 +18,7 @@ mod goals;
 pub mod overview;
 pub mod projects;
 mod settings;
-mod transactions;
+pub mod transactions;
 pub mod trends;
 
 /// What a view draws from. Every view takes this one struct, so handing views
@@ -27,6 +29,11 @@ pub struct ViewCx<'a> {
     pub palette: &'a Palette,
     /// The books, once some are loaded.
     pub ledger: Option<LedgerCx<'a>>,
+    /// The chart's display names and icons for accounts.
+    pub labels: &'a Labels,
+    /// Vault writes to make once this frame is drawn: a view queues what
+    /// the person asked for, and the app writes it with the host's account.
+    pub outbox: &'a mut Vec<Action>,
     /// One line on what the books hold and how long they took to load
     /// ([`crate::ui::journal_status::summary`]); empty with no books.
     pub summary: &'a str,
@@ -49,13 +56,17 @@ pub struct ViewCx<'a> {
     pub open: Option<View>,
 }
 
-/// The loaded books, and which load they came from.
+/// The loaded books, their triage, and which load they came from.
 #[derive(Clone, Copy)]
 pub struct LedgerCx<'a> {
     /// The books.
     pub books: &'a Books,
     /// Changes whenever the books (or the project attribution) are
     /// replaced, so a view knows its cached results are stale.
+    /// What is left to categorize in them.
+    pub triage: &'a Triage,
+    /// Changes whenever the books are replaced, so a view knows its cached
+    /// results are stale.
     pub generation: u64,
 }
 
@@ -71,6 +82,16 @@ pub struct ViewStates {
     pub(crate) overview: overview::OverviewState,
     /// The Projects view's cached figures and the project open.
     pub(crate) projects: projects::ProjectsState,
+    /// The register's filters and rows, and the triage inbox.
+    pub(crate) transactions: transactions::TransactionsState,
+}
+
+impl ViewStates {
+    /// A vault write a view queued failed with `err`: say so, and show
+    /// again whatever was hidden waiting for it.
+    pub(crate) fn write_failed(&mut self, err: String) {
+        self.transactions.write_failed(err);
+    }
 }
 
 /// Draw `view` into `ui`.

@@ -707,3 +707,234 @@ pub fn synthetic_years_app() -> CashflowApp {
     app.set_books(synthetic_years_books());
     app
 }
+
+/// What a card's export holds for the triage tests: coffees and groceries
+/// nothing has categorized, an airline, the card payment arriving, and a
+/// bookshop the importer already knew. Made up.
+pub const TRIAGE_CARD: &str = "\
+2024-10-02 * SQ *COFFEE SHOP #12
+  ; id: card:1
+  liabilities:card  -4.50 CAD
+  expenses:unknown
+
+2024-10-03 * CORNER GROCER 1
+  ; id: card:2
+  liabilities:card  -84.20 CAD
+  expenses:unknown
+
+2024-10-05 * SQ *COFFEE SHOP #9
+  ; id: card:3
+  liabilities:card  -5.25 CAD
+  expenses:unknown
+
+2024-10-06 * Bookshop
+  ; id: card:4
+  liabilities:card  -38.00 CAD
+  expenses:shopping
+
+2024-10-07 * Airline tickets
+  ; id: card:5
+  liabilities:card  -412.00 CAD
+  expenses:unknown
+
+2024-10-09 * SQ *COFFEE SHOP #31
+  ; id: card:6
+  liabilities:card  -4.75 CAD
+  expenses:unknown
+
+2024-10-11 * Corner Grocer 2
+  ; id: card:7
+  liabilities:card  -61.10 CAD
+  expenses:unknown
+
+2024-10-14 * Payment received
+  ; id: card:8
+  liabilities:card  600.00 CAD
+  income:unknown
+";
+
+/// What a bank's download holds for the triage tests: pay, rent, the card
+/// payment leaving, and an e-transfer nothing has categorized. Made up.
+const TRIAGE_BANK: &str = "\
+2024-10-01 * Acme Corp payroll
+  ; id: bank:1
+  assets:checking  4200.00 CAD
+  income:unknown
+
+2024-10-04 * Landlord
+  ; id: bank:2
+  assets:checking  -1800.00 CAD
+  expenses:housing:rent
+
+2024-10-10 * Mystery e-transfer
+  ; id: bank:3
+  assets:checking  -45.00 CAD
+  expenses:unknown
+
+2024-10-12 * Card payment
+  ; id: bank:4
+  assets:checking  -600.00 CAD
+  expenses:unknown
+";
+
+/// The chart labels the triage app draws with: rent and shopping get a
+/// name and an icon.
+pub fn triage_labels() -> cashflow::chart::Labels {
+    use cashflow::Stored;
+    use cashflow::chart::{AccountMeta, Chart};
+
+    let meta = |id, name, icon| Stored {
+        id,
+        created_at: 1,
+        body: AccountMeta {
+            name: Some(name),
+            icon: Some(icon),
+            ..AccountMeta::default()
+        },
+    };
+    Chart {
+        accounts: vec![
+            meta("expenses:housing:rent", "Rent", "🏠"),
+            meta("expenses:shopping", "Shopping", "🛍"),
+        ],
+        aliases: Vec::new(),
+    }
+    .labels()
+}
+
+/// A fresh app on [`TODAY`] showing the Transactions view over the triage
+/// journals ([`TRIAGE_CARD`] as source `card`, [`TRIAGE_BANK`] as `bank`),
+/// derived with the default counter accounts and no vault edits, its
+/// triage worked out from the raw ledger so the card payment is
+/// suggested as a transfer.
+pub fn triage_app() -> CashflowApp {
+    let dir = tempfile::TempDir::new().expect("tmpdir");
+    let store = JournalStore::new(dir.path());
+    write_segment(&store, "card", TRIAGE_CARD);
+    write_segment(&store, "bank", TRIAGE_BANK);
+    loaded_app(&store)
+}
+
+/// A fresh app on [`TODAY`] showing the Transactions view over `store`'s
+/// segments, derived and triaged as [`triage_app`]'s are.
+pub fn loaded_app(store: &JournalStore) -> CashflowApp {
+    use std::sync::Arc;
+
+    let loaded = ledgerdb::Ledger::load(store, LayerFilter::All).expect("load the raw ledger");
+    let edits = cashflow::rules::default_edits();
+    let books = Books::from_raw(&loaded.ledger, loaded.report, &edits, None, "CAD");
+    let inputs = Arc::new(cashflow::DeriveInputs::from_edits(edits));
+    let triage = cashflow::triage::Triage::new(Some(&loaded.ledger), &books, inputs, 0);
+    let mut app = CashflowApp::new();
+    app.set_today(today());
+    app.set_loaded(notedeck_cashflow::journal::Loaded { books, triage });
+    app.set_labels(triage_labels());
+    app.set_view(notedeck_cashflow::View::Transactions);
+    app
+}
+
+/// A journal store in a temp dir, deleted with it.
+pub struct TempJournal {
+    /// The store.
+    pub store: JournalStore,
+    /// Where it is.
+    _dir: tempfile::TempDir,
+}
+
+/// A journal holding `count` made-up card transactions, three a day up to
+/// [`TODAY`], every fifth one uncategorized: enough rows that the register
+/// has to scroll.
+pub fn long_register(count: usize) -> TempJournal {
+    let dir = tempfile::TempDir::new().expect("tmpdir");
+    let store = JournalStore::new(dir.path());
+    let payees = [
+        "Corner Grocer",
+        "Fuel Stop",
+        "Sushi Bar",
+        "Bookshop",
+        "Pharmacy",
+    ];
+    let accounts = [
+        "expenses:food:groceries",
+        "expenses:transport:fuel",
+        "expenses:food:restaurant",
+        "expenses:shopping",
+        "expenses:unknown",
+    ];
+    let start = today().days() - (count as u32 / 3);
+    let mut text = String::new();
+    for i in 0..count {
+        let date = Date::from_days(start + i as u32 / 3);
+        let cents = 500 + (i * 137) % 9000;
+        text.push_str(&format!(
+            "{date} * {} #{i}\n  ; id: long:{i}\n  liabilities:card  -{}.{:02} CAD\n  {}\n\n",
+            payees[i % 5],
+            cents / 100,
+            cents % 100,
+            accounts[i % 5],
+        ));
+    }
+    write_segment(&store, "card", &text);
+    TempJournal { store, _dir: dir }
+}
+
+/// Register [`account`]'s vault root with the host's nostrdb, so the notes
+/// the app writes unwrap there, and subscribe to every cashflow vault kind:
+/// call before the click that writes, then [`wait_vault`].
+pub fn watch_vault(state: &mut CashflowTestState) -> nostrdb::Subscription {
+    let app_ctx = state.notedeck.app_context();
+    let ndb = &*app_ctx.ndb;
+    Vault::new(&ACCOUNT_SECRET).expect("a vault").register(ndb);
+    ndb.subscribe(&[Filter::new().kinds(kinds::ALL.map(u64::from)).build()])
+        .expect("subscribe")
+}
+
+/// Wait until `notes` vault records landed on `sub`, then return the
+/// newest revision of every one of [`account`]'s records of `kind`, by
+/// `d`.
+pub fn wait_vault(
+    state: &mut CashflowTestState,
+    sub: nostrdb::Subscription,
+    notes: u32,
+    kind: u32,
+) -> Vec<VaultNote> {
+    let app_ctx = state.notedeck.app_context();
+    let ndb = &*app_ctx.ndb;
+    let wait = ndb.wait_for_all_notes_within(sub, notes, INGEST_TIMEOUT);
+    block_on(wait).expect("the vault notes landed");
+    let txn = nostrdb::Transaction::new(ndb).expect("txn");
+    let filter = Filter::new()
+        .authors([account().pubkey.bytes()])
+        .kinds([u64::from(kind)])
+        .build();
+    let mut found: Vec<VaultNote> = nostrdb_net::query_replaceable(ndb, &txn, &[filter])
+        .into_iter()
+        .filter_map(|key| ndb.get_note_by_key(&txn, key).ok())
+        .map(|note| {
+            let tag = |name: &str| {
+                note.tags()
+                    .iter()
+                    .find(|t| t.count() >= 2 && t.get_str(0) == Some(name))
+                    .and_then(|t| t.get_str(1).map(str::to_owned))
+            };
+            VaultNote {
+                d: tag("d").unwrap_or_default(),
+                cleared: tag("cleared").is_some(),
+                account: tag("account"),
+            }
+        })
+        .collect();
+    found.sort_by(|a, b| a.d.cmp(&b.d));
+    found
+}
+
+/// One vault record as [`wait_vault`] read it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultNote {
+    /// Its `d` tag.
+    pub d: String,
+    /// Whether this revision clears it.
+    pub cleared: bool,
+    /// Its `account` tag, for a rule or an override.
+    pub account: Option<String>,
+}
