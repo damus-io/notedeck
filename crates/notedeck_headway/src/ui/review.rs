@@ -9,7 +9,7 @@
 //! that recorded it, `git show`) runs on a [`ReviewLoader`] worker so the frame
 //! only ever draws what has already arrived.
 
-use headway::event::{BoardView, CardView, ReviewFields, ReviewView};
+use headway::event::{BoardView, CardView, ReviewFields, ReviewSourceRole, ReviewView};
 use headway::git;
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
@@ -23,8 +23,7 @@ use super::review_comments::{
     DraftComment, ReviewDrafts, comments_ui, commit_comments_ui, location_place, posted_comment_ui,
 };
 use super::review_sources::{
-    ExplainerCache, ReviewTab, explainer_ui, has_explainer, review_tabs_ui, shown_tab,
-    walk_note_ui, walk_top_ui,
+    ExplainerCache, ReviewTab, explainer_ui, review_tabs_ui, shown_tab, walk_note_ui, walk_top_ui,
 };
 use super::widgets::{
     ChevronDir, ControlSize, ICON_BUTTON, ICON_BUTTON_SM, IconFace, MiddleElided, StatusIcon,
@@ -36,8 +35,10 @@ use crate::keys::{ActionView, CardAction, apply_card_action};
 use crate::nav::{NavPos, ReviewTarget};
 use crate::review::{
     LoadedReview, RecordSet, ReviewJob, ReviewLoad, ReviewLoader, ReviewSource, short_sha,
+    wants_notes,
 };
 use crate::review_body::CommitBody;
+use crate::review_walk::{SourceText, source_text};
 use crate::store::BoardAction;
 
 /// The review pane's slice of [`BoardUiState`]: which card is open, which of
@@ -919,14 +920,21 @@ pub(super) fn review_pane_ui(
             };
             let clicked = review_topbar_ui(ui, theme, header, review, notice, lands);
             ui.add_space(SPACING_MD);
+            // The record's explainer source, else the commit's git note once
+            // the load has read it.
+            let notes = match review.loader.get(source) {
+                Some(ReviewLoad::Ready(loaded)) => Some(&loaded.notes),
+                _ => None,
+            };
+            let page = source_text(record, notes, ReviewSourceRole::Explainer);
             if let Some(picked) =
-                view_bar_ui(ui, theme, record, &card.reviews, shown, &mut review.tab)
+                view_bar_ui(ui, theme, page, &card.reviews, shown, &mut review.tab)
             {
                 review.record = Some(picked);
             }
             ui.add_space(SPACING_MD);
-            if let (ReviewTab::Explainer, Some(r)) = (shown_tab(record, review.tab), record) {
-                explainer_ui(ui, theme, app_ctx, &mut review.explainer, r);
+            if let (ReviewTab::Explainer, Some(page)) = (shown_tab(page, review.tab), page) {
+                explainer_ui(ui, theme, app_ctx, &mut review.explainer, page);
                 return clicked;
             }
             let shown = Shown {
@@ -989,6 +997,7 @@ fn start_load(
     let checkouts = git::known_checkouts(view, loader.local_host(), None);
     let job = ReviewJob {
         record: record.map(|r| r.fields.clone()),
+        notes: wants_notes(record),
         card_ref: card_ref.to_string(),
         checkouts,
         cache_root: app_ctx
@@ -1358,7 +1367,7 @@ fn card_status_ui(ui: &mut egui::Ui, theme: &ColorTheme, status: CardStatus<'_>,
 const VIEW_BAR_HEIGHT: f32 = 28.0;
 
 /// The bar between the header and what the pane shows, Linear's view tabs:
-/// Diff / Explainer source on the left when the record has an explainer
+/// Diff / Explainer source on the left when there is an explainer, `page`
 /// ([`review_tabs_ui`]), the card's records as sha chips on the right when it
 /// has more than one ([`record_picker_ui`]), and a hairline rule the width of
 /// the pane under both, which the shown tab's underline sits on. With
@@ -1368,12 +1377,12 @@ const VIEW_BAR_HEIGHT: f32 = 28.0;
 fn view_bar_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    record: Option<&ReviewView>,
+    page: Option<SourceText<'_>>,
     reviews: &[ReviewView],
     shown: usize,
     tab: &mut ReviewTab,
 ) -> Option<NoteId> {
-    let tabs = has_explainer(record);
+    let tabs = page.is_some();
     let picker = reviews.len() > 1;
     // Under everything the row draws, so the tab's underline covers it.
     let rule = ui.painter().add(egui::Shape::Noop);
@@ -1381,8 +1390,8 @@ fn view_bar_ui(
     let bottom = if tabs || picker {
         ui.horizontal(|ui| {
             ui.set_min_height(VIEW_BAR_HEIGHT);
-            if tabs {
-                review_tabs_ui(ui, theme, tab, VIEW_BAR_HEIGHT);
+            if let Some(page) = page {
+                review_tabs_ui(ui, theme, page, tab, VIEW_BAR_HEIGHT);
             }
             if picker {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -18,14 +18,19 @@
 //! a card once that card's review records change. A record's own load is
 //! otherwise kept: the record pins its sha. The pane can still ask to
 //! [`retry`](ReviewLoader::retry) a load by hand.
+//!
+//! A record missing an explainer source or a code walk has the commit's explain
+//! git notes read in the same load ([`git::fetch_notes`]), which can fetch
+//! from the host the commit came from; the pane draws a note wherever the
+//! record has no source of its own ([`review_walk::source_text`]).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use headway::event::{ReviewFields, ReviewView};
-use headway::git::{self, CommitPatch, Found, GitError, ResolveCtx, Resolved};
+use headway::event::{ReviewFields, ReviewSourceRole, ReviewView};
+use headway::git::{self, CommitNotes, CommitPatch, Found, GitError, ResolveCtx, Resolved};
 use nostrdb_net::NoteId;
 use notedeck::{Localization, Renderer3d, Waker};
 use notedeck_ui::diff::{GitPatch, GitPatchState};
@@ -33,13 +38,18 @@ use notedeck_ui::diff::{GitPatch, GitPatchState};
 use crate::review_body::CommitBody;
 use crate::review_images::{self, FetchedImages};
 use crate::review_models::{self, FetchedModels, ReviewModels};
-use crate::review_walk::CodeWalk;
+use crate::review_walk::{self, CodeWalk, ReviewNotes, SourceKey};
 
 /// The patch size the pane loads before cutting it off (as `headway diff`).
 const MAX_PATCH_BYTES: usize = 4 << 20;
 
 /// How long one `git fetch` from another host may take (as `headway diff`).
 const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long reading the commit's explain notes from another host may take.
+/// Shorter than [`FETCH_TIMEOUT`]: the diff waits on it, and the notes only
+/// stand in for sources the record hasn't got.
+const NOTES_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long a failed load is shown before the pane starts it again on its own.
 const FAILED_BACKOFF: Duration = Duration::from_secs(30);
@@ -67,6 +77,9 @@ impl ReviewSource {
 pub(crate) struct ReviewJob {
     /// The record to resolve; `None` searches by trailer alone.
     pub record: Option<ReviewFields>,
+    /// Read the commit's explain notes too: the record lacks a source they
+    /// could stand in for (see [`wants_notes`]).
+    pub notes: bool,
     /// The card's `headway:<board>/<word-id>`, for the trailer search.
     pub card_ref: String,
     /// Checkouts on this host to try before the bare cache (see
@@ -190,8 +203,37 @@ pub(crate) struct LoadedReview {
     pub models: Option<ReviewModels>,
     /// The record's code walk, threaded into this diff; resolved when the
     /// pane first draws the record's comments, and again when its source
-    /// changes (see `sync_notes`). `None` when the record has no walk.
+    /// changes (see [`sync_walk`](Self::sync_walk)). `None` when neither the
+    /// record nor the commit's note has a walk.
     pub walk: Option<CodeWalk>,
+    /// The commit's explain notes, for the sources the record hasn't got;
+    /// empty when the record has both, or the commit has none.
+    pub notes: ReviewNotes,
+}
+
+impl LoadedReview {
+    /// Resolve the walk against this diff when its source changed: `record`'s
+    /// code walk, else the commit's note. Returns the walk's key, `None` when
+    /// there is none. A key compare on every other frame.
+    pub(crate) fn sync_walk(&mut self, record: Option<&ReviewView>) -> Option<SourceKey> {
+        let code = review_walk::source_text(record, Some(&self.notes), ReviewSourceRole::Code);
+        let key = code.map(|c| c.key);
+        if self.walk.as_ref().map(|w| w.source) != key {
+            self.walk = code.map(|c| CodeWalk::resolve(c.text, c.key, &self.patch));
+        }
+        key
+    }
+}
+
+/// Whether a load of `record` should read the commit's explain notes: it
+/// lacks a source a note could stand in for. A card found by its trailer has
+/// no record to draw them on, so it doesn't.
+pub(crate) fn wants_notes(record: Option<&ReviewView>) -> bool {
+    record.is_some_and(|r| {
+        [ReviewSourceRole::Explainer, ReviewSourceRole::Code]
+            .into_iter()
+            .any(|role| r.source(role).is_none())
+    })
 }
 
 /// A commit's author line, formatted once when its load lands rather than
@@ -225,6 +267,7 @@ impl Byline {
 /// the models' views.
 struct Fetched {
     resolved: Resolved,
+    notes: CommitNotes,
     commit: CommitPatch,
     patch: GitPatch,
     images: Vec<FetchedImages>,
@@ -379,6 +422,7 @@ impl ReviewLoader {
 
 /// The worker: resolve the commit (fetching it if needed), then read it back.
 fn load(job: &ReviewJob, local_host: &str) -> Result<Fetched, GitError> {
+    let mut notes = CommitNotes::default();
     let resolved = match &job.record {
         Some(record) => {
             let ctx = ResolveCtx {
@@ -387,7 +431,19 @@ fn load(job: &ReviewJob, local_host: &str) -> Result<Fetched, GitError> {
                 known_checkouts: &job.checkouts,
                 timeout: FETCH_TIMEOUT,
             };
-            git::resolve(record, &job.card_ref, &ctx)?
+            let resolved = git::resolve(record, &job.card_ref, &ctx)?;
+            if job.notes {
+                let src = git::fetch_source(record, &resolved.repo_dir, &ctx);
+                // Notes are extra: a failed read leaves the record's sources
+                // as they are rather than failing the diff.
+                notes = git::fetch_notes(&resolved, src.as_deref(), NOTES_TIMEOUT).unwrap_or_else(
+                    |e| {
+                        tracing::debug!("explain notes of {}: {e}", resolved.sha);
+                        CommitNotes::default()
+                    },
+                );
+            }
+            resolved
         }
         None => git::resolve_by_trailer(&job.card_ref, &job.checkouts).ok_or_else(|| GitError {
             command: format!("log --all --grep='Headway: {}'", job.card_ref),
@@ -410,6 +466,7 @@ fn load(job: &ReviewJob, local_host: &str) -> Result<Fetched, GitError> {
     );
     Ok(Fetched {
         resolved,
+        notes,
         commit,
         patch,
         images,
@@ -436,6 +493,7 @@ fn loaded(
 ) -> LoadedReview {
     let Fetched {
         resolved,
+        notes,
         commit,
         patch,
         images,
@@ -465,6 +523,7 @@ fn loaded(
         commit,
         patch,
         walk: None,
+        notes: ReviewNotes::new(notes),
     }
 }
 
@@ -658,6 +717,176 @@ mod tests {
             load: ReviewLoad::Failed(err),
             at,
         }
+    }
+
+    /// A walk citing the one hunk of an empty file's creation.
+    const WALK: &str = "Opening.\n\n```hunk new.txt\n```\n\nThe file.\n";
+
+    /// A one-file patch, its commit and the notes it was loaded with, landed
+    /// on the UI side as the pane would.
+    fn loaded_with(notes: CommitNotes) -> LoadedReview {
+        let patch =
+            "diff --git a/new.txt b/new.txt\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+hi\n";
+        let commit = CommitPatch {
+            sha: "a".repeat(40),
+            author: "t <t@t>".to_string(),
+            date: String::new(),
+            time: 0,
+            message: "subject\n".to_string(),
+            patch: patch.to_string(),
+            truncated: false,
+        };
+        let fetched = Fetched {
+            resolved: Resolved {
+                repo_dir: PathBuf::from("/nonexistent"),
+                sha: commit.sha.clone(),
+                target: git::Target::Checkout,
+                how: Found::Local,
+            },
+            notes,
+            patch: GitPatch::parse(commit.patch.clone()),
+            commit,
+            images: Vec::new(),
+            models: Vec::new(),
+        };
+        let ctx = egui::Context::default();
+        let source = ReviewSource::Trailer(id(1));
+        loaded(fetched, source, &ctx, None, &mut Localization::default())
+    }
+
+    fn record(sources: Vec<headway::event::ReviewSourceView>) -> ReviewView {
+        ReviewView {
+            id: id(2),
+            author: [0; 32],
+            created_at: 0,
+            fields: ReviewFields::default(),
+            comments: Vec::new(),
+            sources,
+        }
+    }
+
+    /// A record with no sources gets its walk from the commit's note,
+    /// threaded onto the diff's hunk; a record with a walk of its own keeps
+    /// it over the note.
+    #[test]
+    fn a_record_without_sources_walks_the_note() {
+        let notes = CommitNotes {
+            explain: None,
+            code: Some(WALK.to_string()),
+        };
+        let mut loaded = loaded_with(notes);
+        let bare = record(Vec::new());
+        let key = loaded.sync_walk(Some(&bare));
+        assert!(matches!(key, Some(SourceKey::Note(_))));
+        let walk = loaded.walk.as_ref().expect("walk from the note");
+        let shown: Vec<_> = walk
+            .notes
+            .iter()
+            .map(|n| (n.at.is_some(), n.prose.as_str()))
+            .collect();
+        assert_eq!(shown, [(false, "Opening."), (true, "The file.")]);
+        assert_eq!(
+            loaded.sync_walk(Some(&bare)),
+            key,
+            "unchanged on the next frame"
+        );
+
+        let own = record(vec![headway::event::ReviewSourceView {
+            id: id(3),
+            author: [0; 32],
+            role: ReviewSourceRole::Code,
+            name: "x.code.md".to_string(),
+            text: "Own walk.\n".to_string(),
+            created_at: 0,
+        }]);
+        assert_eq!(loaded.sync_walk(Some(&own)), Some(SourceKey::Event(id(3))));
+        let walk = loaded.walk.as_ref().expect("the record's walk");
+        assert_eq!(walk.notes[0].prose, "Own walk.");
+    }
+
+    /// Notes are read for a record missing either source, not for one with
+    /// both, nor for a trailer search with no record to draw them on.
+    #[test]
+    fn notes_are_read_only_for_a_record_missing_a_source() {
+        let view = |role| headway::event::ReviewSourceView {
+            id: id(4),
+            author: [0; 32],
+            role,
+            name: String::new(),
+            text: String::new(),
+            created_at: 0,
+        };
+        assert!(!wants_notes(None));
+        assert!(wants_notes(Some(&record(Vec::new()))));
+        assert!(wants_notes(Some(&record(vec![view(
+            ReviewSourceRole::Code
+        )]))));
+        let both = record(vec![
+            view(ReviewSourceRole::Explainer),
+            view(ReviewSourceRole::Code),
+        ]);
+        assert!(!wants_notes(Some(&both)));
+    }
+
+    /// The worker reads a local commit's explain note beside its patch when
+    /// asked to, and not otherwise.
+    #[test]
+    fn the_worker_reads_the_commits_notes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        run(&["init", "-q"]);
+        run(&["commit", "-q", "--allow-empty", "-m", "work"]);
+        let sha = run(&["rev-parse", "HEAD"]);
+        run(&[
+            "notes",
+            "--ref",
+            git::EXPLAIN_REF,
+            "add",
+            "-m",
+            "# page",
+            &sha,
+        ]);
+
+        let mut job = ReviewJob {
+            record: Some(ReviewFields {
+                commit: Some(sha.clone()),
+                host: Some("here".to_string()),
+                path: Some(dir.to_str().unwrap().to_string()),
+                ..Default::default()
+            }),
+            notes: true,
+            card_ref: "headway:b/a-b-c".to_string(),
+            checkouts: Vec::new(),
+            cache_root: dir.join("cache"),
+            renderer: None,
+        };
+        let fetched = load(&job, "here").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(fetched.notes.explain.as_deref(), Some("# page"));
+        assert_eq!(fetched.notes.code, None);
+
+        job.notes = false;
+        assert!(load(&job, "here").unwrap().notes.is_empty());
     }
 
     /// Short shas are cut to 12, shorter strings pass through.

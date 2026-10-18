@@ -21,10 +21,19 @@
 //! before the first fence is the walk's opening. The fence is found in the
 //! diff the way `explain` finds it ([`find_hunk`]): by path and header, and by
 //! its `match:` line when a rebase moved the header. Its text is never shown.
+//!
+//! A source is the record's own sealed copy when it has one, or else the
+//! commit's explain git note ([`source_text`]): a colleague's commit, or one
+//! recorded before records carried sources. A squashed commit's note holds
+//! two pages joined by a blank line; it is drawn whole, so the second page's
+//! front matter shows as text.
 
 use std::borrow::Cow;
+use std::fmt;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
-use headway::event::ReviewSourceView;
+use headway::event::{ReviewSourceRole, ReviewView};
+use headway::git::{CommitNotes, NoteKind};
 use nostrdb_net::NoteId;
 use notedeck_ui::diff::{GitPatch, Hunk, LineKind};
 
@@ -153,6 +162,109 @@ fn unquote(value: &str) -> &str {
     value
 }
 
+/// What a parsed source was parsed from, to tell when it's stale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum SourceKey {
+    /// The record's source event.
+    Event(NoteId),
+    /// A git note, which has no id of its own: a hash of its text.
+    Note(u64),
+}
+
+/// The key as a name, for the textures a page's figures are uploaded under:
+/// the event's hex id, or `note-<hash>`.
+impl fmt::Display for SourceKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Event(id) => f.write_str(&id.hex()),
+            Self::Note(hash) => write!(f, "note-{hash:016x}"),
+        }
+    }
+}
+
+/// A source's text and what it is keyed by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SourceText<'a> {
+    pub text: &'a str,
+    pub key: SourceKey,
+}
+
+impl SourceText<'_> {
+    /// Whether the text came from the commit's git note rather than the
+    /// record.
+    pub(crate) fn is_note(&self) -> bool {
+        matches!(self.key, SourceKey::Note(_))
+    }
+}
+
+/// One explain note's text and the key it's cached by.
+struct KeyedNote {
+    text: String,
+    key: SourceKey,
+}
+
+impl KeyedNote {
+    fn new(text: Option<String>) -> Option<Self> {
+        let text = text?;
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        let key = SourceKey::Note(hasher.finish());
+        Some(Self { text, key })
+    }
+}
+
+/// A commit's explain notes, as the review pane reads them: each one hashed
+/// into its [`SourceKey`] once, when the load lands, so a frame compares keys
+/// without hashing the text again.
+#[derive(Default)]
+pub(crate) struct ReviewNotes {
+    explain: Option<KeyedNote>,
+    code: Option<KeyedNote>,
+}
+
+impl ReviewNotes {
+    pub(crate) fn new(notes: CommitNotes) -> Self {
+        Self {
+            explain: KeyedNote::new(notes.explain),
+            code: KeyedNote::new(notes.code),
+        }
+    }
+
+    /// The note standing in for `role`'s source, if the commit has one.
+    pub(crate) fn get(&self, role: ReviewSourceRole) -> Option<SourceText<'_>> {
+        let note = match note_kind(role) {
+            NoteKind::Explain => &self.explain,
+            NoteKind::Code => &self.code,
+        };
+        note.as_ref().map(|n| SourceText {
+            text: &n.text,
+            key: n.key,
+        })
+    }
+}
+
+/// The git note that carries a record source of `role`.
+fn note_kind(role: ReviewSourceRole) -> NoteKind {
+    match role {
+        ReviewSourceRole::Explainer => NoteKind::Explain,
+        ReviewSourceRole::Code => NoteKind::Code,
+    }
+}
+
+/// `role`'s source for the pane: `record`'s own copy first, then the commit's
+/// git note out of `notes` (`None` while the commit is still loading).
+pub(crate) fn source_text<'a>(
+    record: Option<&'a ReviewView>,
+    notes: Option<&'a ReviewNotes>,
+    role: ReviewSourceRole,
+) -> Option<SourceText<'a>> {
+    let own = record.and_then(|r| r.source(role)).map(|s| SourceText {
+        text: &s.text,
+        key: SourceKey::Event(s.id),
+    });
+    own.or_else(|| notes?.get(role))
+}
+
 /// A record's explainer source, ready to draw: its front matter as a header
 /// and the rest as Markdown, its figures ([`review_figures`]) drawn. The
 /// other explain fences (`flow`, `sequence`, `ba`, `wrong`) render as the
@@ -160,8 +272,8 @@ fn unquote(value: &str) -> &str {
 ///
 /// [`review_figures`]: crate::review_figures
 pub(crate) struct ExplainerPage {
-    /// The source event it was parsed from, to tell when it's stale.
-    pub source: NoteId,
+    /// What it was parsed from, to tell when it's stale.
+    pub source: SourceKey,
     pub front: FrontMatter,
     pub body: Figured,
     /// The palette its figures' `var(--…)` colours come from.
@@ -171,16 +283,16 @@ pub(crate) struct ExplainerPage {
 }
 
 impl ExplainerPage {
-    /// Parse `source`'s text.
-    pub(crate) fn new(source: &ReviewSourceView) -> Self {
-        let FrontSplit { front, body } = split_front_matter(&source.text);
+    /// Parse `text`, the source keyed by `key`.
+    pub(crate) fn new(text: &str, key: SourceKey) -> Self {
+        let FrontSplit { front, body } = split_front_matter(text);
         let mut figure = 0;
         Self {
-            source: source.id,
+            source: key,
             body: Figured::parse(&fence_raw_svg(body), &mut figure),
             palette: Palette::of(&front),
             front,
-            figures: Figures::new(source.id),
+            figures: Figures::new(key),
         }
     }
 }
@@ -432,8 +544,8 @@ pub(crate) struct WalkNote {
 
 /// A record's code walk, resolved against the diff it is drawn into.
 pub(crate) struct CodeWalk {
-    /// The source event it was parsed from, to tell when it's stale.
-    pub source: NoteId,
+    /// What it was parsed from, to tell when it's stale.
+    pub source: SourceKey,
     /// In walk order.
     pub notes: Vec<WalkNote>,
     /// The palette its figures' `var(--…)` colours come from.
@@ -443,9 +555,10 @@ pub(crate) struct CodeWalk {
 }
 
 impl CodeWalk {
-    /// Parse `source`'s walk and find each of its hunks in `patch`.
-    pub(crate) fn resolve(source: &ReviewSourceView, patch: &GitPatch) -> Self {
-        let FrontSplit { front, body } = split_front_matter(&source.text);
+    /// Parse `text`, the walk keyed by `key`, and find each of its hunks in
+    /// `patch`.
+    pub(crate) fn resolve(text: &str, key: SourceKey, patch: &GitPatch) -> Self {
+        let FrontSplit { front, body } = split_front_matter(text);
         let mut figure = 0;
         let notes = walk_steps(body)
             .into_iter()
@@ -472,10 +585,10 @@ impl CodeWalk {
             })
             .collect();
         Self {
-            source: source.id,
+            source: key,
             notes,
             palette: Palette::of(&front),
-            figures: Figures::new(source.id),
+            figures: Figures::new(key),
         }
     }
 
@@ -616,7 +729,7 @@ impl Walk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use headway::event::ReviewSourceRole;
+    use headway::event::{ReviewFields, ReviewSourceView};
 
     const PATCH: &str = "\
 diff --git a/src/guard.ts b/src/guard.ts
@@ -639,14 +752,28 @@ diff --git a/README.md b/README.md
 +new
 ";
 
-    fn source(text: &str) -> ReviewSourceView {
+    /// The key a walk parsed from a plain string is given.
+    const KEY: SourceKey = SourceKey::Note(7);
+
+    fn source(role: ReviewSourceRole, text: &str) -> ReviewSourceView {
         ReviewSourceView {
             id: NoteId::new([7; 32]),
             author: [0; 32],
-            role: ReviewSourceRole::Code,
+            role,
             name: "x.code.md".into(),
             text: text.into(),
             created_at: 0,
+        }
+    }
+
+    fn record(sources: Vec<ReviewSourceView>) -> ReviewView {
+        ReviewView {
+            id: NoteId::new([1; 32]),
+            author: [0; 32],
+            created_at: 0,
+            fields: ReviewFields::default(),
+            comments: Vec::new(),
+            sources,
         }
     }
 
@@ -834,7 +961,8 @@ About the guard.
 
 Missing one.
 ";
-        let walk = CodeWalk::resolve(&source(text), &GitPatch::parse(PATCH));
+        let walk = CodeWalk::resolve(text, KEY, &GitPatch::parse(PATCH));
+        assert_eq!(walk.source, KEY);
         let shown: Vec<_> = walk
             .notes
             .iter()
@@ -879,5 +1007,65 @@ Missing one.
             Some("a.rs")
         );
         assert_eq!(unclosed[1].prose, "");
+    }
+
+    /// A record's own source wins; a role it lacks falls back to the commit's
+    /// note, keyed by its text's hash; with neither (or the notes still
+    /// loading) there is none.
+    #[test]
+    fn the_record_comes_first_then_the_note() {
+        let notes = ReviewNotes::new(CommitNotes {
+            explain: Some("# the note's page".into()),
+            code: Some("the note's walk".into()),
+        });
+        let own = record(vec![source(ReviewSourceRole::Explainer, "# own page")]);
+        let page = source_text(Some(&own), Some(&notes), ReviewSourceRole::Explainer).unwrap();
+        assert_eq!(page.text, "# own page");
+        assert_eq!(page.key, SourceKey::Event(NoteId::new([7; 32])));
+        assert!(!page.is_note());
+
+        let walk = source_text(Some(&own), Some(&notes), ReviewSourceRole::Code).unwrap();
+        assert_eq!(walk.text, "the note's walk");
+        assert!(walk.is_note());
+        let again = ReviewNotes::new(CommitNotes {
+            explain: None,
+            code: Some("the note's walk".into()),
+        });
+        assert_eq!(
+            again.get(ReviewSourceRole::Code).map(|s| s.key),
+            Some(walk.key)
+        );
+        assert_eq!(again.get(ReviewSourceRole::Explainer), None);
+
+        assert_eq!(source_text(Some(&own), None, ReviewSourceRole::Code), None);
+        let bare = record(Vec::new());
+        assert_eq!(
+            source_text(
+                Some(&bare),
+                Some(&ReviewNotes::default()),
+                ReviewSourceRole::Code
+            ),
+            None
+        );
+    }
+
+    /// A note's page parses like a record's; a squashed note's second page
+    /// stays in the body, its front matter as text.
+    #[test]
+    fn a_page_parses_from_a_plain_string() {
+        let text = "---\ntitle: first\n---\nOne.\n\n---\ntitle: second\n---\nTwo.\n";
+        let page = ExplainerPage::new(text, KEY);
+        assert_eq!(page.source, KEY);
+        assert_eq!(page.front.title.as_deref(), Some("first"));
+        let body = split_front_matter(text).body;
+        assert!(body.contains("title: second") && body.contains("Two."));
+    }
+
+    /// A note's key names its figures' textures apart from any event's.
+    #[test]
+    fn a_note_key_names_textures_apart_from_events() {
+        assert_eq!(SourceKey::Note(0xab).to_string(), "note-00000000000000ab");
+        let id = NoteId::new([1; 32]);
+        assert_eq!(SourceKey::Event(id).to_string(), id.hex());
     }
 }

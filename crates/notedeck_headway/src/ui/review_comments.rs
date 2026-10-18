@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
-use headway::event::{BoardView, LineSide, ReviewLocation, ReviewSourceRole, ReviewView};
+use headway::event::{BoardView, LineSide, ReviewLocation, ReviewView};
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_SM, SPACING_XS};
@@ -28,7 +28,6 @@ use super::review::{QueueNotice, review_comments_open};
 use super::widgets::secondary_action_button;
 use super::{BoardEffect, BoardUiState, FoundCard, find_card};
 use crate::review::LoadedReview;
-use crate::review_walk::CodeWalk;
 use crate::store::{BoardAction, NewReviewComment};
 
 /// A comment written on a record's commit and not sent yet: on picked lines
@@ -250,16 +249,13 @@ pub(crate) fn composer_field_id() -> egui::Id {
 }
 
 /// Hand the diff its rows for `record`'s comments — posted ones and drafts —
-/// and its code walk's notes, when they changed since the last pass: a posted
+/// and its code walk's notes (the record's walk, else the commit's git note;
+/// see [`LoadedReview::sync_walk`]), when they changed since the last pass: a posted
 /// comment lands under its lines when it's on this commit and they're in this
 /// diff, a walk note above the hunk it introduces. Only builds on a change,
 /// so a steady frame allocates nothing here.
 fn sync_notes(loaded: &mut LoadedReview, record: &ReviewView, drafts: &ReviewDrafts) {
-    let code = record.source(ReviewSourceRole::Code);
-    let walk_id = code.map(|s| s.id);
-    if loaded.walk.as_ref().map(|w| w.source) != walk_id {
-        loaded.walk = code.map(|s| CodeWalk::resolve(s, &loaded.patch));
-    }
+    let walk_id = loaded.sync_walk(Some(record));
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     (record.id, drafts.rev, record.comments.len(), walk_id).hash(&mut hasher);
     let stamp = hasher.finish();

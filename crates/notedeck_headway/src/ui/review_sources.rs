@@ -1,9 +1,10 @@
 //! A review record's explainer sources in the review pane (see
 //! [`review_walk`](crate::review_walk)): the explainer's Markdown as a tab
 //! beside the diff, and the code walk's notes threaded into the diff — above
-//! the hunks they introduce, or at its top when they introduce none.
+//! the hunks they introduce, or at its top when they introduce none. Either
+//! may be the commit's explain git note, when the record has no source of its
+//! own.
 
-use headway::event::{ReviewSourceRole, ReviewView};
 use notedeck::ColorTheme;
 use notedeck::media::AnimationMode;
 use notedeck::media::images::ImageType;
@@ -14,7 +15,7 @@ use crate::explain_palette::Palette;
 use crate::review_figures::{
     Block, Failure, Figure, FigureBody, FigureView, Figured, Figures, fit,
 };
-use crate::review_walk::{CodeWalk, ExplainerPage};
+use crate::review_walk::{CodeWalk, ExplainerPage, SourceText};
 
 /// What the review pane shows under the record's summary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -22,7 +23,7 @@ pub(crate) enum ReviewTab {
     /// The commit's diff, with the code walk threaded in.
     #[default]
     Diff,
-    /// The record's explainer source, rendered.
+    /// The record's explainer source (or the commit's note), rendered.
     Explainer,
 }
 
@@ -34,50 +35,41 @@ pub(crate) struct ExplainerCache {
 }
 
 impl ExplainerCache {
-    /// `record`'s explainer page, parsed now if it changed since the last
-    /// frame; `None` when the record has no explainer source.
-    fn page(&mut self, record: &ReviewView) -> Option<&mut ExplainerPage> {
-        let Some(source) = record.source(ReviewSourceRole::Explainer) else {
+    /// `source`'s page, parsed now if it changed since the last frame.
+    fn page(&mut self, source: SourceText<'_>) -> &mut ExplainerPage {
+        if self.page.as_ref().map(|p| p.source) != Some(source.key) {
             self.page = None;
-            return None;
-        };
-        if self.page.as_ref().map(|p| p.source) != Some(source.id) {
-            self.page = Some(ExplainerPage::new(source));
         }
-        self.page.as_mut()
+        self.page
+            .get_or_insert_with(|| ExplainerPage::new(source.text, source.key))
     }
 }
 
-/// Whether `record` has an explainer source, so the pane offers its tab.
-pub(super) fn has_explainer(record: Option<&ReviewView>) -> bool {
-    record.is_some_and(|r| r.source(ReviewSourceRole::Explainer).is_some())
-}
-
-/// The tab to show for `record`: the one picked, but always
-/// [`ReviewTab::Diff`] for a record without an explainer, whatever was picked
-/// on another.
-pub(super) fn shown_tab(record: Option<&ReviewView>, tab: ReviewTab) -> ReviewTab {
-    if has_explainer(record) {
-        tab
-    } else {
-        ReviewTab::Diff
-    }
+/// The tab to show when the explainer source is `page`: the one picked, but
+/// always [`ReviewTab::Diff`] without one, whatever was picked on another
+/// record.
+pub(super) fn shown_tab(page: Option<SourceText<'_>>, tab: ReviewTab) -> ReviewTab {
+    if page.is_some() { tab } else { ReviewTab::Diff }
 }
 
 /// The Diff / Explainer switch as Linear's view tabs: plain text, the shown
 /// tab in primary text over an accent underline, the other muted. Each is
 /// `height` tall, so the underline lands on the bottom of the row the caller
-/// rules off under them.
+/// rules off under them. The explainer's tab says "(git note)" when `page`
+/// is the commit's note rather than the record's source.
 pub(super) fn review_tabs_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
+    page: SourceText<'_>,
     tab: &mut ReviewTab,
     height: f32,
 ) {
-    let tabs = [
-        (ReviewTab::Diff, "Diff"),
-        (ReviewTab::Explainer, "Explainer source"),
-    ];
+    let explainer = if page.is_note() {
+        "Explainer (git note)"
+    } else {
+        "Explainer source"
+    };
+    let tabs = [(ReviewTab::Diff, "Diff"), (ReviewTab::Explainer, explainer)];
     for (i, (value, label)) in tabs.into_iter().enumerate() {
         if i > 0 {
             ui.add_space(SPACING_MD);
@@ -128,7 +120,7 @@ fn view_tab_ui(
     response
 }
 
-/// `record`'s explainer source as a page filling the rest of the pane: its
+/// The explainer source `source` as a page filling the rest of the pane: its
 /// front matter's title, src and facts as a header, then the Markdown, with
 /// `headway:` refs drawn as their chips.
 pub(super) fn explainer_ui(
@@ -136,12 +128,9 @@ pub(super) fn explainer_ui(
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     cache: &mut ExplainerCache,
-    record: &ReviewView,
+    source: SourceText<'_>,
 ) {
-    let Some(page) = cache.page(record) else {
-        return;
-    };
-    let page = &mut *page;
+    let page = cache.page(source);
     egui::ScrollArea::vertical()
         .id_salt("headway-review-explainer")
         .auto_shrink([false, false])

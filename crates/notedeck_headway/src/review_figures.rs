@@ -25,11 +25,11 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use base64::Engine;
 use egui::{ColorImage, TextureHandle, Vec2};
 use md_stream::{InlineElement, MdElement, ParsedMarkdown};
-use nostrdb_net::NoteId;
 use resvg::usvg;
 
 use crate::explain_palette::Palette;
 use crate::review_images::{Decoded, MAX_IMAGE_BYTES, decode_image};
+use crate::review_walk::SourceKey;
 
 /// Longest edge a figure is rasterised at, in pixels.
 const MAX_RASTER_EDGE: f32 = 2048.0;
@@ -540,15 +540,15 @@ enum FigureLoad {
 /// One page's figure loads and textures, kept across frames and dropped with
 /// the page (so a page key needn't be in each key).
 pub(crate) struct Figures {
-    /// The page's source event: names its textures.
-    page: NoteId,
+    /// What the page was parsed from: names its textures.
+    page: SourceKey,
     /// The font database SVGs draw with, built on the first one.
     fonts: Option<Arc<usvg::fontdb::Database>>,
     loads: HashMap<FigureKey, FigureLoad>,
 }
 
 impl Figures {
-    pub(crate) fn new(page: NoteId) -> Self {
+    pub(crate) fn new(page: SourceKey) -> Self {
         Self {
             page,
             fonts: None,
@@ -597,8 +597,7 @@ impl Figures {
         if let FigureLoad::Pending(rx) = load {
             match rx.try_recv() {
                 Ok(Ok(Raster { image, size })) => {
-                    let name =
-                        format!("explainer-figure:{}:{}:{}", page.hex(), key.index, key.dark);
+                    let name = format!("explainer-figure:{page}:{}:{}", key.index, key.dark);
                     let texture =
                         notedeck::media::load_texture_checked(ctx, name, image, Default::default());
                     *load = FigureLoad::Ready { texture, size };
