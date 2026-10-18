@@ -221,8 +221,9 @@ impl AppStoreImporter {
     fn vendor(&self) -> Result<&str, ImportError> {
         self.config.vendor.as_deref().ok_or_else(|| {
             ImportError::Usage(
-                "set `vendor` under [appstore] in config.toml: your vendor number, from App \
-                 Store Connect's Payments and Financial Reports"
+                "no `vendor` under [appstore] in config.toml: run `cashflow config set \
+                 appstore.vendor <number>` with your vendor number, from App Store Connect's \
+                 Payments and Financial Reports"
                     .to_owned(),
             )
         })
@@ -232,8 +233,8 @@ impl AppStoreImporter {
     fn connect(&self, vendor: &str) -> Result<AppStoreHttp, ImportError> {
         let need = |key: &str| {
             ImportError::Usage(format!(
-                "fetching reports needs `{key}` under [appstore] in config.toml (or give \
-                 report files instead)"
+                "fetching reports needs `{key}` under [appstore] in config.toml: run \
+                 `cashflow config set appstore.{key} <id>` (or give report files instead)"
             ))
         };
         let key_id = self
@@ -252,9 +253,9 @@ impl AppStoreImporter {
             .map_err(|e| ImportError::Usage(e.to_string()))?
             .ok_or_else(|| {
                 ImportError::Usage(format!(
-                    "no App Store Connect key: set ${} or write the .p8 file to {}",
+                    "no App Store Connect key: store the .p8 file with `cashflow secret set \
+                     {KEY_SECRET} < AuthKey_<key id>.p8` (or set ${})",
                     secret_env_var(KEY_SECRET),
-                    self.dir.secrets().join(KEY_SECRET).display()
                 ))
             })?;
         let claims = TokenClaims {
@@ -1091,7 +1092,8 @@ mod tests {
         let importer = AppStoreImporter::new(Some(&config()), &CashflowDir::new(tmp.path()));
         let err = importer.import(&input(vec![])).unwrap_err();
         assert!(
-            matches!(&err, ImportError::Usage(m) if m.contains("`key_id`")),
+            matches!(&err, ImportError::Usage(m)
+                if m.contains("`key_id`") && m.contains("cashflow config set appstore.key_id")),
             "{err}"
         );
 
@@ -1103,7 +1105,9 @@ mod tests {
         let importer = AppStoreImporter::new(Some(&ids), &CashflowDir::new(tmp.path()));
         let err = importer.import(&input(vec![])).unwrap_err();
         assert!(
-            matches!(&err, ImportError::Usage(m) if m.contains("no App Store Connect key")),
+            matches!(&err, ImportError::Usage(m)
+                if m.contains("no App Store Connect key")
+                    && m.contains("cashflow secret set appstore.p8")),
             "{err}"
         );
     }

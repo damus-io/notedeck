@@ -184,9 +184,9 @@ impl RbcImporter {
                 .ok_or_else(|| error("an account number with fewer than 4 digits".to_owned()))?;
             if !self.accounts.contains_key(&last4) {
                 return Err(error(format!(
-                    "the account ending {last4} has no ledger account; add \
-                     `\"{last4}\" = \"assets:rbc:chequing\"` (or wherever it belongs) \
-                     under [rbc.accounts] in config.toml"
+                    "the account ending {last4} has no ledger account; run `cashflow config \
+                     set rbc.accounts.{last4} assets:rbc:chequing` (or wherever it belongs) to map \
+                     it under [rbc.accounts]"
                 )));
             }
             let date = parse_mdy(field(columns.date))
@@ -472,6 +472,10 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("[rbc.accounts]"), "{message}");
+        assert!(
+            message.contains("cashflow config set rbc.accounts.4444 "),
+            "{message}"
+        );
         assert!(!message.contains("4500000000004444"), "{message}");
 
         // With no [rbc] table at all, the same.

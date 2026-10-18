@@ -317,28 +317,33 @@ impl ClnImporter {
 
     /// The node the config names, called with the rune secret.
     fn connect(&self) -> Result<Commando, ImportError> {
-        let need = |key: &str| {
+        let need = |key: &str, example: &str| {
             ImportError::Usage(format!(
-                "set `{key}` under [cln] in config.toml to fetch from the node (or give \
-                 `bkpr-listaccountevents` output files)"
+                "no `{key}` under [cln] in config.toml: run `cashflow config set cln.{key} \
+                 {example}` to fetch from the node (or give `bkpr-listaccountevents` output \
+                 files)"
             ))
         };
         let node_id = self
             .config
             .node_id
             .as_deref()
-            .ok_or_else(|| need("node_id"))?;
-        let host = self.config.host.as_deref().ok_or_else(|| need("host"))?;
+            .ok_or_else(|| need("node_id", "<66-hex node id>"))?;
+        let host = self
+            .config
+            .host
+            .as_deref()
+            .ok_or_else(|| need("host", "<host[:port]>"))?;
         let rune = self
             .dir
             .secret(RUNE_SECRET)
             .map_err(|e| ImportError::Usage(e.to_string()))?
             .ok_or_else(|| {
                 ImportError::Usage(format!(
-                    "no rune: set ${} or write it to {} (mint one on the node with \
-                     lightning-cli createrune restrictions='[[\"method={METHOD}\"]]')",
+                    "no rune: mint one on the node with lightning-cli createrune \
+                     restrictions='[[\"method={METHOD}\"]]', then store it with `cashflow \
+                     secret set {RUNE_SECRET}` (or set ${})",
                     secret_env_var(RUNE_SECRET),
-                    self.dir.secrets().join(RUNE_SECRET).display()
                 ))
             })?;
         Commando::new(node_id, host, rune).map_err(ImportError::Usage)
@@ -1395,7 +1400,12 @@ mod tests {
             Err(ImportError::Usage(message)) => message,
             other => panic!("{other:?}"),
         };
-        assert!(usage(&utc()).contains("`node_id` under [cln]"));
+        let message = usage(&utc());
+        assert!(message.contains("`node_id` under [cln]"), "{message}");
+        assert!(
+            message.contains("cashflow config set cln.node_id"),
+            "{message}"
+        );
         let config = ClnConfig {
             node_id: Some(format!("02{}", "11".repeat(32))),
             host: Some("127.0.0.1".to_owned()),
@@ -1405,6 +1415,10 @@ mod tests {
         if std::env::var(secret_env_var(RUNE_SECRET)).is_err() {
             let message = usage(&config);
             assert!(message.contains("createrune"), "{message}");
+            assert!(
+                message.contains("cashflow secret set cln-rune"),
+                "{message}"
+            );
         }
         let config = ClnConfig {
             timezone: Some("mars".to_owned()),

@@ -158,10 +158,9 @@ impl BtcImporter {
                     .map_err(|e| ImportError::Usage(e.to_string()))?
                     .ok_or_else(|| {
                         ImportError::Usage(format!(
-                            "[btc] user is set but its password is not: set ${} or write \
-                             it to {}",
+                            "[btc] user is set but its password is not: store it with \
+                             `cashflow secret set {PASSWORD_SECRET}` (or set ${})",
                             secret_env_var(PASSWORD_SECRET),
-                            self.dir.secrets().join(PASSWORD_SECRET).display()
                         ))
                     })?;
                 format!("{user}:{}", password.expose())
@@ -173,7 +172,9 @@ impl BtcImporter {
                     });
                 let Some(cookie) = cookie else {
                     return Err(ImportError::Usage(
-                        "no bitcoind credentials: set [btc] user or cookie in config.toml"
+                        "no bitcoind credentials: run `cashflow config set btc.cookie <path>`, \
+                         or `cashflow config set btc.user <rpcuser>` and `cashflow secret set \
+                         bitcoind-rpc-password`"
                             .to_owned(),
                     ));
                 };
@@ -914,6 +915,27 @@ mod tests {
 
     fn ledger_text(batch: &Batch) -> String {
         batch.journal.to_ledger(WriteOptions::default())
+    }
+
+    /// A `user` with no password secret says how to store one.
+    #[test]
+    fn a_user_without_its_password_names_the_command() {
+        if std::env::var(secret_env_var(PASSWORD_SECRET)).is_ok() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let config = BtcConfig {
+            user: Some("rpcuser".to_owned()),
+            ..BtcConfig::default()
+        };
+        let importer = BtcImporter::new(Some(&config), &CashflowDir::new(tmp.path()));
+        let Some(ImportError::Usage(message)) = importer.connect().err() else {
+            panic!("expected a usage error");
+        };
+        assert!(
+            message.contains("cashflow secret set bitcoind-rpc-password"),
+            "{message}"
+        );
     }
 
     #[test]

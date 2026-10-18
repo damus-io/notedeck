@@ -299,6 +299,10 @@ segment. Importing the same input again writes nothing: the segment is named
 by its bytes and is already there. A record imported again by a later run
 replaces the earlier one, keyed by its `; id:`.
 
+An importer's config.toml keys are set with `cashflow config set
+<table>.<key> <value>`, and its secrets with `cashflow secret set <name>`
+(the value on stdin); an importer missing one names the command to run.
+
 Importers:
 
   amex <path>...  Amex activity CSV exports; a directory reads its *.csv
@@ -417,6 +421,7 @@ importer's second layer, such as cln-chain, keeps its own name.",
             "cashflow import appstore ~/Downloads/80000001_0326_ZZ.txt.gz",
             "cashflow import btc",
             "cashflow import cln",
+            "cashflow config set cln.host 203.0.113.7:9735",
             "cashflow import ledger books.ledger",
             "cashflow import payroll payroll.txt",
             "cashflow import rbc ~/Downloads/csv*.csv",
