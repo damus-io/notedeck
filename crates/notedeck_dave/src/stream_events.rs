@@ -8,7 +8,7 @@ use crate::backend::{AiBackend, BackendType};
 use crate::publish::{
     build_user_send_event, ingest_live_event, ingest_live_event_within,
     publish_auto_accept_response, publish_permission_request, record_dispatch, record_published,
-    Ingest,
+    Ingest, Place,
 };
 use crate::session_events::{LiveEventTags, MAX_WIRE_EVENT_BYTES};
 use crate::tools::Tool;
@@ -348,8 +348,10 @@ pub(crate) fn apply_response(
         flush_open_assistant(session, ctx.host.ndb, &ctx.host.secret_key);
     }
 
-    // Publish the live event for this response. Centralised here so every
-    // response type that needs relay propagation is handled in one place.
+    // Publish the live event for a response whose note isn't a row's: a
+    // running tool, a tool result, a compaction starting. A response that adds
+    // a row it publishes (an error, a command reply, a todo list, a finished
+    // compaction) does both through `push_published` in the match below.
     if let Some(sk) = ctx.host.sk() {
         publish_response(session, &res, ctx.host.ndb, sk);
     }
@@ -375,8 +377,13 @@ pub(crate) fn apply_response(
     }
 
     match res {
-        DaveApiResponse::Failed(ref err) => {
-            session.insert_turn_content(Message::Error(err.to_string()));
+        DaveApiResponse::Failed(err) => {
+            session.push_published(
+                Message::Error(err),
+                Place::Turn,
+                ctx.host.ndb,
+                ctx.host.sk(),
+            );
         }
         DaveApiResponse::Token(token) => {
             session.append_token(&token);
@@ -401,7 +408,8 @@ pub(crate) fn apply_response(
             session.slash_catalog = Some(std::rc::Rc::new(catalog));
         }
         DaveApiResponse::CommandReply(text) => {
-            session.insert_turn_content(Message::System(text.into()));
+            let reply = Message::System(text.into());
+            session.push_published(reply, Place::Turn, ctx.host.ndb, ctx.host.sk());
         }
         DaveApiResponse::SubagentSpawned(subagent) => {
             let task_id = match session.resume_subagent(&subagent) {
@@ -446,7 +454,7 @@ pub(crate) fn apply_response(
             }
         }
         DaveApiResponse::CompactionComplete(info) => {
-            handle_compaction_complete(session, session_id, info);
+            handle_compaction_complete(session, session_id, info, ctx.host);
         }
         // The inspector's usage history (folded above) is the one record
         // of a session's tokens and cost; nothing else keeps a copy.
@@ -461,7 +469,8 @@ pub(crate) fn apply_response(
 
         DaveApiResponse::TodoUpdate(todos) => {
             tracing::debug!("Todo update for session {}", session_id);
-            session.insert_turn_content(Message::TodoUpdate(todos));
+            let todos = Message::TodoUpdate(todos);
+            session.push_published(todos, Place::Turn, ctx.host.ndb, ctx.host.sk());
         }
         DaveApiResponse::WaitingOn(waiting_on) => {
             session.waiting_on = waiting_on;
@@ -490,12 +499,11 @@ pub(crate) fn apply_response(
 /// a subagent-internal result its `parent-task`, so the fold can pair the two
 /// into one row and nest the result the way the host does.
 ///
-/// A failure publishes an `error` note and a todo list a `todo` note (see
-/// [`publish_todo`]).
-///
-/// PermissionRequest and the subagent lifecycle (spawned/completed/failed)
-/// have their own event builders. Token, ToolCalls, SessionInfo and streamed
-/// SubagentOutput don't publish.
+/// A failure, a command reply, a todo list and a finished compaction publish
+/// with their rows, through [`session::ChatSession::push_published`] in
+/// [`apply_response`]. PermissionRequest and the subagent lifecycle
+/// (spawned/completed/failed) have their own event builders. Token, ToolCalls,
+/// SessionInfo and streamed SubagentOutput don't publish.
 fn publish_response(
     session: &mut session::ChatSession,
     res: &DaveApiResponse,
@@ -503,12 +511,6 @@ fn publish_response(
     sk: &[u8; 32],
 ) {
     match res {
-        DaveApiResponse::Failed(err) => {
-            ingest_live_event(session, ndb, sk, err, "error", LiveEventTags::default());
-        }
-        DaveApiResponse::CommandReply(text) => {
-            ingest_live_event(session, ndb, sk, text, "system", LiveEventTags::default());
-        }
         DaveApiResponse::ToolRunning(running) => {
             let tags = LiveEventTags {
                 tool_id: Some(&running.tool_use_id),
@@ -531,46 +533,7 @@ fn publish_response(
                 LiveEventTags::default(),
             );
         }
-        DaveApiResponse::CompactionComplete(info) => {
-            let content = info.pre_tokens.to_string();
-            ingest_live_event(
-                session,
-                ndb,
-                sk,
-                &content,
-                "compaction_complete",
-                LiveEventTags::default(),
-            );
-        }
-        DaveApiResponse::TodoUpdate(todos) => {
-            publish_todo(session, todos, ndb, sk);
-        }
         _ => {}
-    }
-}
-
-/// Publish a todo list as a `role=todo` live event whose content is the
-/// TodoWrite JSON.
-///
-/// A list over the wire budget is not published at all: cutting JSON short
-/// leaves something the fold can't parse, so observers keep the previous list
-/// instead of a broken one.
-fn publish_todo(
-    session: &mut session::ChatSession,
-    todos: &serde_json::Value,
-    ndb: &nostrdb::Ndb,
-    sk: &[u8; 32],
-) {
-    let content = todos.to_string();
-    let whole = |_cap| content.clone();
-    if ingest_live_event_within(session, ndb, sk, 0, whole, "todo", LiveEventTags::default())
-        .is_none()
-    {
-        tracing::warn!(
-            "todo list is {} bytes, over the {MAX_WIRE_EVENT_BYTES} byte wire budget once \
-             built; not publishing it",
-            content.len(),
-        );
     }
 }
 
@@ -872,11 +835,12 @@ fn publish_subagent(
 /// Handle compaction completion from the AI backend.
 ///
 /// Updates agentic state, advances compact-and-proceed if waiting,
-/// and pushes the compaction info to chat.
+/// and shows and publishes the compaction info.
 fn handle_compaction_complete(
     session: &mut session::ChatSession,
     session_id: SessionId,
     info: messages::CompactionInfo,
+    host: &HostCtx<'_>,
 ) {
     tracing::debug!(
         "Compaction completed for session {}: pre_tokens={}",
@@ -895,7 +859,8 @@ fn handle_compaction_complete(
             }
         }
     }
-    session.insert_turn_content(Message::CompactionComplete(info));
+    let complete = Message::CompactionComplete(info);
+    session.push_published(complete, Place::Turn, host.ndb, host.sk());
 }
 
 /// Handle a SessionInfo response from the AI backend.
@@ -962,7 +927,8 @@ pub(crate) fn handle_stream_end(
     ) && !session.turn_has_content()
     {
         tracing::warn!("Session {}: backend returned empty response", session_id);
-        publish_error(session, NO_RESPONSE_ERROR, ndb, secret_key);
+        let error = Message::Error(NO_RESPONSE_ERROR.to_string());
+        session.push_published(error, Place::Turn, ndb, secret_key.as_ref());
     }
 
     // The turn is over: count its time and mark where it ended, before the
@@ -1028,26 +994,6 @@ fn publish_turn_end(
 
 /// The error a turn shows when the backend ended it without producing anything.
 const NO_RESPONSE_ERROR: &str = "No response from backend";
-
-/// Show `text` as this turn's error row and publish it as a `role=error` live
-/// event (locally ingested; the host fans it out), so observers and a restart
-/// show it too.
-///
-/// The row goes through [`session::ChatSession::insert_turn_content`], so a
-/// message queued during the turn stays the trailing run and is still
-/// redispatched.
-fn publish_error(
-    session: &mut session::ChatSession,
-    text: &str,
-    ndb: &nostrdb::Ndb,
-    secret_key: &Option<[u8; 32]>,
-) {
-    session.insert_turn_content(Message::Error(text.to_string()));
-    let Some(sk) = secret_key else {
-        return;
-    };
-    ingest_live_event(session, ndb, sk, text, "error", LiveEventTags::default());
-}
 
 /// Ask session `sid`'s backend to compact it, for a backend with no slash
 /// commands ([`Dave::compact_active`]). Does nothing when the backend has no

@@ -1594,26 +1594,8 @@ fn push_notice(
     ndb: &nostrdb::Ndb,
     secret_key: &Option<[u8; 32]>,
 ) {
-    let wire = match &notice {
-        Message::System(system) => Some(("system", system.text().to_owned())),
-        Message::Error(text) => Some(("error", text.clone())),
-        _ => None,
-    };
-    session.chat.push(notice);
-    let (Some((role, text)), Some(sk)) = (wire, secret_key) else {
-        return;
-    };
-    if session.is_remote() {
-        return;
-    }
-    crate::publish::ingest_live_event(
-        session,
-        ndb,
-        sk,
-        &text,
-        role,
-        crate::session_events::LiveEventTags::default(),
-    );
+    let sk = secret_key.as_ref().filter(|_| !session.is_remote());
+    session.push_published(notice, crate::publish::Place::End, ndb, sk);
 }
 
 #[cfg(test)]

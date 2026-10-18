@@ -297,6 +297,109 @@ fn ingest_built_live_events(
     }
 }
 
+/// Where [`ChatSession::push_published`] puts its row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Place {
+    /// In the running turn, through
+    /// [`ChatSession::insert_turn_content`], so a message queued during the
+    /// turn stays the trailing run and is still redispatched.
+    Turn,
+    /// At the end of the chat.
+    End,
+}
+
+/// What a [`LiveNote`] too big for one wire note publishes as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fit {
+    /// Several parts a reader joins back into one ([`ingest_live_event`]).
+    Split,
+    /// The whole note or nothing ([`ingest_live_event_within`] with a cap of
+    /// 0): its content is JSON, which a cut leaves unparseable, so observers
+    /// keep the previous copy instead of a broken one.
+    WholeOrNothing,
+}
+
+/// The live note a chat row publishes as.
+#[derive(Debug, PartialEq, Eq)]
+struct LiveNote<'a> {
+    /// The note's `role` tag.
+    role: &'static str,
+    content: std::borrow::Cow<'a, str>,
+    fit: Fit,
+}
+
+/// The live note `msg` publishes as when [`ChatSession::push_published`]
+/// shows it, or `None` for a row that has its own note builder (user, tool,
+/// permission and subagent rows) or none.
+fn live_note(msg: &Message) -> Option<LiveNote<'_>> {
+    let (role, content, fit) = match msg {
+        Message::Error(text) => ("error", text.as_str().into(), Fit::Split),
+        Message::System(system) => ("system", system.text().into(), Fit::Split),
+        Message::TodoUpdate(todos) => ("todo", todos.to_string().into(), Fit::WholeOrNothing),
+        Message::CompactionComplete(info) => (
+            "compaction_complete",
+            info.pre_tokens.to_string().into(),
+            Fit::Split,
+        ),
+        Message::User(_)
+        | Message::Assistant(_)
+        | Message::ToolCalls(_)
+        | Message::ToolRunning(_)
+        | Message::ToolResponse(_)
+        | Message::PermissionRequest(_)
+        | Message::Subagent(_) => return None,
+    };
+    Some(LiveNote { role, content, fit })
+}
+
+impl ChatSession {
+    /// Show `msg` as a row `at` its place and publish the live note it carries
+    /// ([`live_note`]; locally ingested, the host fans it out), so observers,
+    /// `agentium log` and a restart show it too. The note's role comes from
+    /// the variant, so a row and its note can't disagree.
+    ///
+    /// Publishes nothing without `sk`, which is how a caller keeps a row
+    /// local, or for a chat-mode session. The note is published before the
+    /// row is inserted. Returns the row's index.
+    pub(crate) fn push_published(
+        &mut self,
+        msg: Message,
+        at: Place,
+        ndb: &nostrdb::Ndb,
+        sk: Option<&[u8; 32]>,
+    ) -> usize {
+        if let (Some(note), Some(sk)) = (live_note(&msg), sk) {
+            let tags = session_events::LiveEventTags::default();
+            match note.fit {
+                Fit::Split => {
+                    ingest_live_event(self, ndb, sk, &note.content, note.role, tags);
+                }
+                Fit::WholeOrNothing => {
+                    let whole = |_cap| note.content.to_string();
+                    if ingest_live_event_within(self, ndb, sk, 0, whole, note.role, tags).is_none()
+                    {
+                        tracing::warn!(
+                            "{} note is {} bytes, over the {} byte wire budget once built; \
+                             not publishing it",
+                            note.role,
+                            note.content.len(),
+                            session_events::MAX_WIRE_EVENT_BYTES,
+                        );
+                    }
+                }
+            }
+        }
+
+        match at {
+            Place::Turn => self.insert_turn_content(msg),
+            Place::End => {
+                self.chat.push(msg);
+                self.chat.len() - 1
+            }
+        }
+    }
+}
+
 /// Build a *remote* session's user message through the engine — the
 /// [`agentium_core::Engine::send_message`] equivalent for a controller sending
 /// input to a remote host.
@@ -821,6 +924,7 @@ mod tests {
     use crate::config::AiMode;
     use crate::session::SessionSource;
     use crate::tests::{test_config, test_secret_key};
+    use ndb_testing::TempNdb;
     use nostrdb::{IngestMetadata, Ndb};
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -1007,5 +1111,84 @@ mod tests {
         assert!(agentic.ledger.is_own(&[9; 32]));
         assert!(!agentic.ledger.all_indexed());
         assert!(agentic.fold_dirty);
+    }
+
+    fn agentic_session() -> session::ChatSession {
+        session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        )
+    }
+
+    /// Each row that publishes with itself carries the role its variant
+    /// names, and every other row publishes nothing through the funnel.
+    #[test]
+    fn live_note_role_and_content_follow_the_variant() {
+        use crate::messages::{CompactionInfo, SystemMessage};
+        let todos = serde_json::json!([{"content": "a", "status": "pending"}]);
+        let cases = [
+            (
+                Message::Error("boom".into()),
+                Some(("error", "boom".to_string(), Fit::Split)),
+            ),
+            (
+                Message::System(SystemMessage::from("cd /tmp")),
+                Some(("system", "cd /tmp".to_string(), Fit::Split)),
+            ),
+            (
+                Message::TodoUpdate(todos.clone()),
+                Some(("todo", todos.to_string(), Fit::WholeOrNothing)),
+            ),
+            (
+                Message::CompactionComplete(CompactionInfo { pre_tokens: 1234 }),
+                Some(("compaction_complete", "1234".to_string(), Fit::Split)),
+            ),
+            (Message::User(UserMessage::from("hi")), None),
+            (Message::ToolCalls(vec![]), None),
+        ];
+        for (msg, want) in cases {
+            let got = live_note(&msg).map(|n| (n.role, n.content.into_owned(), n.fit));
+            assert_eq!(got, want, "{msg:?}");
+        }
+    }
+
+    /// Without a key the row is still shown, and nothing is published or
+    /// recorded.
+    #[test]
+    fn push_published_without_a_key_shows_the_row_only() {
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        let mut session = agentic_session();
+        let at = session.push_published(Message::Error("boom".into()), Place::End, &ndb, None);
+        assert_eq!(at, 0);
+        assert!(matches!(&session.chat[at], Message::Error(text) if text == "boom"));
+        assert!(session.agentic.as_ref().unwrap().ledger.own().is_empty());
+    }
+
+    /// With a key the row's note is published and recorded as this host's.
+    #[test]
+    fn push_published_records_the_rows_note() {
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        let sk = test_secret_key();
+        let mut session = agentic_session();
+        let error = Message::Error("boom".into());
+        session.push_published(error, Place::Turn, &ndb, Some(&sk));
+        assert_eq!(session.chat.len(), 1);
+        assert_eq!(session.agentic.as_ref().unwrap().ledger.own().len(), 1);
+    }
+
+    /// A todo list over the wire budget is shown but not published: cut JSON
+    /// would leave observers a list they can't parse.
+    #[test]
+    fn an_oversized_todo_shows_the_row_and_publishes_nothing() {
+        let TempNdb { dir: _dir, ndb } = TempNdb::new();
+        let sk = test_secret_key();
+        let mut session = agentic_session();
+        let big = "x".repeat(session_events::MAX_WIRE_EVENT_BYTES + 1);
+        let todos = serde_json::json!([{"content": big, "status": "pending"}]);
+        session.push_published(Message::TodoUpdate(todos), Place::Turn, &ndb, Some(&sk));
+        assert!(matches!(session.chat.as_slice(), [Message::TodoUpdate(_)]));
+        assert!(session.agentic.as_ref().unwrap().ledger.own().is_empty());
     }
 }
