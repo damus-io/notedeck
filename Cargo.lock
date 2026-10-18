@@ -2791,7 +2791,7 @@ dependencies = [
 [[package]]
 name = "egui_nav"
 version = "0.2.0"
-source = "git+https://github.com/damus-io/egui-nav?rev=989b95c087f35eca134392e959c78f9be02b3422#989b95c087f35eca134392e959c78f9be02b3422"
+source = "git+https://github.com/damus-io/egui-nav?rev=f56fb24cee6cdb0cc391c979c47792c8fd7d0e7a#f56fb24cee6cdb0cc391c979c47792c8fd7d0e7a"
 dependencies = [
  "bitflags 2.13.2",
  "egui",

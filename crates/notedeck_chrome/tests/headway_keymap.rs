@@ -407,7 +407,6 @@ fn cmd_k(f: &mut Fixture) {
 }
 
 /// The command bar's selected row's title.
-#[cfg(not(debug_assertions))]
 fn selected(f: &mut Fixture) -> Option<String> {
     f.driver
         .chrome
@@ -473,12 +472,6 @@ async fn the_command_bar_searches_headway_cards() {
 
 /// Cmd-K lists Headway's tools; "issue list" picks Open issue list, and
 /// Enter runs it on Headway, which opens the list.
-///
-/// Release only, with its own CI step, as is every test that opens the
-/// list: its push slides through egui_nav, which draws both routes on two
-/// layers with repeating widget ids, and egui debug-asserts against that
-/// (see `chrome/headway_nav_tests.rs`).
-#[cfg(not(debug_assertions))]
 #[tokio::test]
 async fn the_command_bar_opens_the_issue_list() {
     let mut f = Fixture::new().await;
@@ -497,8 +490,6 @@ async fn the_command_bar_opens_the_issue_list() {
 
 /// An enum argument from the command bar: Group list by asks what to group
 /// by, listing Headway's own values, and the one picked reaches Headway.
-/// Release only, as the test above.
-#[cfg(not(debug_assertions))]
 #[tokio::test]
 async fn the_command_bar_groups_the_list_by_a_picked_value() {
     let mut f = Fixture::new().await;

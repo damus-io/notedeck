@@ -35,7 +35,7 @@ use ui::{
 };
 pub use ui::{
     BoardUiState, ChipStatus, GRAPH_NODE_SIZE, GraphNodeView, board_inline_ui, card_chip_ui,
-    card_inline_ui, graph_node_ui, issue_inline_ui,
+    card_inline_ui, comment_field_id, graph_node_ui, issue_inline_ui,
 };
 
 use event::BoardView;

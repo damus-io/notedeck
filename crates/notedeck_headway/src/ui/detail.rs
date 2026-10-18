@@ -1509,7 +1509,7 @@ fn detail_comments_ui(
     }
 
     ui.add_space(SPACING_MD);
-    detail_comment_composer_ui(ui, theme, state, outcome);
+    detail_comment_composer_ui(ui, theme, &ctx.card_id, state, outcome);
 }
 
 /// One derived activity-timeline row, Linear-style: a small gutter icon (the
@@ -1759,12 +1759,16 @@ fn comment_row_ui(ui: &mut egui::Ui, theme: &ColorTheme, comment: &CommentView) 
     ui.add_space(SPACING_SM);
 }
 
-/// The id of the detail's comment composer. Fixed rather than egui's auto
-/// id, which counts the widgets laid out before it: a fold that adds a row
-/// above the composer (the card's status change, a new activity line) would
+/// The id of `card`'s comment composer. Fixed rather than egui's auto id,
+/// which counts the widgets laid out before it: a fold that adds a row above
+/// the composer (the card's status change, a new activity line) would
 /// otherwise rename the field and drop its focus while someone is typing.
-fn comment_field_id() -> egui::Id {
-    egui::Id::unique("headway-detail-comment")
+///
+/// One per card, not one for every card: stepping from one card's detail to
+/// another's slides the two through egui_nav, drawing both composers in one
+/// frame on two layers, and egui debug-asserts against one id on two layers.
+pub fn comment_field_id(card: &NoteId) -> egui::Id {
+    egui::Id::unique(("headway-detail-comment", card.bytes()))
 }
 
 /// The "leave a comment" composer at the foot of the thread, Linear-style: a
@@ -1775,6 +1779,7 @@ fn comment_field_id() -> egui::Id {
 fn detail_comment_composer_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
+    card: &NoteId,
     state: &mut BoardUiState,
     outcome: &mut DetailOutcome,
 ) {
@@ -1788,7 +1793,7 @@ fn detail_comment_composer_ui(
             ui.set_width(ui.available_width());
             let resp = ui.add(
                 egui::TextEdit::multiline(&mut state.comment_draft)
-                    .id(comment_field_id())
+                    .id(comment_field_id(card))
                     .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2)))
                     .desired_rows(3)
                     .desired_width(f32::INFINITY)

@@ -2139,7 +2139,12 @@ fn list_rows_ui(
     let scroll = list.scroll_to_cursor;
     let display = list.grouping.row_display(list.display);
     let row_height = ROW_HEIGHT;
+    // Its own id, not egui's default: the board's columns scroll under the
+    // default one, and opening the list slides the two through egui_nav,
+    // drawing both in one frame on two layers, which egui debug-asserts
+    // against (and the two would share one scroll offset).
     egui::ScrollArea::vertical()
+        .id_salt("headway-list")
         .auto_shrink([false, false])
         .show_rows(ui, row_height, list.entries.len(), |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;

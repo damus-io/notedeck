@@ -308,12 +308,7 @@ fn an_as_step_with_nothing_to_bind_aborts() {
 }
 
 /// The shipped `E` in Dave's normal mode, through the real Headway.
-///
-/// Release only, like the chrome's `headway_nav_tests` (its own step in CI):
-/// the macro switches apps, which slides egui_nav, and during a slide two
-/// routes draw the same widget ids on two layers, which egui debug-asserts
-/// against.
-#[cfg(all(feature = "headway", not(debug_assertions)))]
+#[cfg(feature = "headway")]
 mod session_explainer {
     use std::cell::RefCell;
     use std::rc::Rc;

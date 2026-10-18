@@ -439,7 +439,8 @@ impl Chrome {
     ///
     /// egui-nav draws a flagged transition's outgoing and incoming routes on
     /// two layers for one frame, even with animations off, and a widget that
-    /// both draw with one id trips egui's debug "changed layer_id" assert. In
+    /// both draw with one fixed id (an explicit `Id`, not one egui derives from
+    /// the route's `Ui`) trips egui's debug "changed layer_id" assert. In
     /// this mode the chrome lands the transition before the app's pass draws
     /// it, and again at the end of each frame, so egui-nav only ever sees a
     /// stack at rest. A drag still slides: it never sets the stack's flags.
@@ -1108,11 +1109,7 @@ mod app_nav_tests {
         assert_eq!(back(&chrome), Some(true), "the opener return counts");
     }
 
-    // Driven through the real egui-nav, a drag included. Release only, as
-    // `headway_nav_tests` is and for the same reason: mid-transition egui-nav
-    // draws the routes on two layers under one widget id, which egui
-    // debug-asserts against. CI's release nav step runs these.
-    #[cfg(not(debug_assertions))]
+    // Driven through the real egui-nav, a drag included.
     mod slide_tests {
         use super::*;
 

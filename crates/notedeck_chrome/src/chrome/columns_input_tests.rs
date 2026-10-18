@@ -4,10 +4,8 @@
 //! is. Escape is the one that shows: Columns consumes it to go back a route,
 //! out from under the app the user is actually typing at.
 //!
-//! Release only, like `headway_nav_tests`: Columns' own per-column nav still
-//! slides a pushed route in, drawing two layers whose widget ids repeat, which
-//! egui debug-asserts against. The chrome's app-switch slide is off, so a
-//! switch lands on the frame it's made.
+//! The chrome's app-switch slide is off, so a switch lands on the frame it's
+//! made.
 
 use nostrdb_net::FullKeypair;
 use notedeck::{NavStack, Notedeck};

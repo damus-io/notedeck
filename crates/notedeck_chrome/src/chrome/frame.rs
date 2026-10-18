@@ -337,11 +337,8 @@ impl Chrome {
 }
 
 // Through a real chrome frame: an app whose `render_nav` records the
-// `NavPass` it was told, slid forward and back by egui-nav. Release only, as
-// `headway_nav_tests` is: mid-slide egui-nav draws two routes on two layers
-// under one widget id, which egui debug-asserts against. CI's release nav
-// step runs it.
-#[cfg(all(test, not(feature = "auto-update"), not(debug_assertions)))]
+// `NavPass` it was told, slid forward and back by egui-nav.
+#[cfg(all(test, not(feature = "auto-update")))]
 mod nav_pass_tests {
     use super::Chrome;
     use crate::app::NotedeckApp;

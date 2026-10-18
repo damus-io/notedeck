@@ -34,7 +34,7 @@ use notedeck_ui::expanding_button;
 use std::collections::HashMap;
 
 mod actions;
-#[cfg(all(test, feature = "headway", not(debug_assertions)))]
+#[cfg(all(test, feature = "headway"))]
 mod columns_input_tests;
 mod command_bar;
 mod command_search;
@@ -43,7 +43,7 @@ mod debug;
 mod focus;
 mod frame;
 mod header;
-#[cfg(all(test, feature = "headway", not(debug_assertions)))]
+#[cfg(all(test, feature = "headway"))]
 mod headway_nav_tests;
 mod ipc;
 mod jumps;

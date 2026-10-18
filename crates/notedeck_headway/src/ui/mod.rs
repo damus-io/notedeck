@@ -42,6 +42,7 @@ mod review_comments;
 mod review_sources;
 mod widgets;
 
+pub use detail::comment_field_id;
 pub use graph::{GRAPH_NODE_SIZE, GraphNodeView, graph_node_ui};
 pub use header::SyncStatus;
 pub use inline::{ChipStatus, board_inline_ui, card_chip_ui, card_inline_ui, issue_inline_ui};

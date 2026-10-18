@@ -424,10 +424,6 @@ fn render_notedeck_tick_no_anim(ui: &mut egui::Ui, state: &mut TickTestState) {
 
 #[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
 #[tokio::test]
-#[cfg_attr(
-    debug_assertions,
-    ignore = "egui_nav renders transition routes on separate layers with shared widget ids"
-)]
 /// A pointer click on Add account must not also activate the column's Back button.
 async fn mobile_chrome_add_account_stays_open() {
     use notedeck_chrome::Chrome;

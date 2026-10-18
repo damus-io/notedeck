@@ -65,7 +65,7 @@ egui_system_fonts = "0.36.2"
 egui_extras = { version = "0.36.2", features = ["all_loaders"] }
 epaint = { version = "0.36.2", features = ["color_fonts"] }
 egui-winit = { version = "0.36.2", features = ["android-game-activity", "clipboard"] }
-egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "989b95c087f35eca134392e959c78f9be02b3422" }
+egui_nav = { git = "https://github.com/damus-io/egui-nav", rev = "f56fb24cee6cdb0cc391c979c47792c8fd7d0e7a" }
 egui_tabs = { git = "https://github.com/damus-io/egui-tabs", rev = "f352ebae7acadab328bf92d9ac7188caa520d676" }
 egui_virtual_list = "0.12.0"
 ehttp = "0.5.0"

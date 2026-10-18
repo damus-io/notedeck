@@ -1,6 +1,6 @@
 //! The chrome's settle-nav mode through real chrome frames, under a debug
 //! build: an app that pushes and backs out of a route while drawing one
-//! widget id on every route trips egui's "changed layer_id" assert when the
+//! fixed widget id on every route trips egui's "changed layer_id" assert when the
 //! slide is drawn, and lands both without it when nav settles.
 
 use std::any::Any;

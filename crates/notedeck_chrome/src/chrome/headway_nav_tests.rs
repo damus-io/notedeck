@@ -6,11 +6,10 @@
 //! same pass, and a back pops only when its slide lands. Keys and clicks go
 //! in as a user makes them, and the assertions read the screen.
 //!
-//! Release only (`cfg(not(debug_assertions))` on the module, with its own
-//! release step in CI). During a slide egui_nav draws two routes of the same
-//! app on two layers, and their widget ids repeat, which egui debug-asserts
-//! against ("Widget .. changed layer_id during the frame"). In release that
-//! check is compiled out, as in the shipped app.
+//! Runs under a plain debug `cargo test`: egui-nav gives each route it
+//! draws during a slide its own `Ui` id, so the two layers don't repeat one,
+//! which egui debug-asserts against ("Widget .. changed layer_id during the
+//! frame"). A fixed id an app draws on both routes still would.
 
 use std::any::Any;
 use std::path::Path;
@@ -708,15 +707,29 @@ fn open_from_outside(harness: &mut Harness<'_, ChromeState>, title: &str) {
 /// A card opened from another app lands with nothing focused, so the
 /// detail's keys (Dave's `s` then `e`) work at once. Before, chrome put back
 /// the field Headway last had focused, here the detail's comment composer,
-/// whose id is the same on every card, and the keys typed into it.
+/// and the keys typed into it. The test reopens the same card, so the
+/// composer it focused is on screen again and a restore would take.
+///
+/// Settled, so neither open slides: during an open's slide Headway's root
+/// route, under the card, draws that card's detail too, so the card's
+/// composer is drawn by one id on two layers, which egui debug-asserts
+/// against.
 #[tokio::test]
 async fn a_card_opened_from_another_app_lands_unfocused() {
     let repo = tempfile::tempdir().expect("repo dir");
     let mut harness = two_in_review(repo.path()).await;
+    harness.state_mut().chrome.settle_nav(true);
     open_from_outside(&mut harness, CARD);
 
     // Type in the comment composer, then leave Headway with it focused.
-    let composer = egui::Id::unique("headway-detail-comment");
+    let composer = {
+        let state = harness.state_mut();
+        let app_ctx = state.notedeck.app_context();
+        notedeck_headway::comment_field_id(&card_id(
+            &demo_board(app_ctx.ndb, &state.kp.pubkey),
+            CARD,
+        ))
+    };
     harness.ctx.memory_mut(|m| m.request_focus(composer));
     let _ = harness.run_ok();
     assert_eq!(harness.ctx.memory(|m| m.focused()), Some(composer));
@@ -726,8 +739,8 @@ async fn a_card_opened_from_another_app_lands_unfocused() {
         !nav.navigating() && !nav.returning() && h.query_by_label(DETAIL).is_none()
     });
 
-    open_from_outside(&mut harness, NEXT_CARD);
-    about(&harness, NEXT_CARD, CARD);
+    open_from_outside(&mut harness, CARD);
+    about(&harness, CARD, NEXT_CARD);
     assert_eq!(harness.ctx.memory(|m| m.focused()), None);
 }
 
