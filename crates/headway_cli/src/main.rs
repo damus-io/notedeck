@@ -25,7 +25,9 @@ use std::process::ExitCode;
 
 use serde_json::json;
 
-use headway::boards::{Roster, list_all_boards, list_boards, list_shared_with_me, load_board};
+use headway::boards::{
+    Identity, Roster, list_all_boards, list_boards, list_shared_with_me, load_board,
+};
 use headway::event::{self, Container, resolve_card};
 use headway::query::{ListQuery, ViewSpec};
 use headway::store;
@@ -82,19 +84,28 @@ fn cross_board_error(err: store::CrossBoardError) -> String {
     }
 }
 
-/// Refuse a board-creating command (`seed`, `migrate`) when the signer isn't the
-/// board's owner. Both mint a channel from the *signer's* secret at the *owner's*
-/// coordinate, so a member running one against `--author <owner>` would seal a
-/// board under a key the owner never derives — a split no fold can merge back.
-fn require_owner(me: &Pubkey, owner: &Pubkey, cmd: &str) -> Result<()> {
-    if me == owner {
+/// Refuse an owner-only command when the signer isn't the board's owner, with
+/// `refusal` as the error.
+///
+/// `seed` and `migrate` mint a channel from the *signer's* secret at the
+/// *owner's* coordinate, so a member running one against `--author <owner>`
+/// would seal a board under a key the owner never derives — a split no fold can
+/// merge back. `share` would let a member hand the owner's board on to anyone,
+/// and `delete-board`/`restore-board` tombstone a board that isn't ours.
+fn require_owner(id: &Identity, refusal: impl FnOnce() -> String) -> Result<()> {
+    if id.is_owner() {
         return Ok(());
     }
-    Err(format!(
+    Err(refusal().into())
+}
+
+/// The refusal for an owner-only command run with `--author` naming somebody
+/// else, see [`require_owner`].
+fn drop_author(cmd: &str, id: &Identity) -> String {
+    format!(
         "{cmd} acts on a board you own, but --author names {} — drop --author",
-        owner.hex()
+        id.owner.hex()
     )
-    .into())
 }
 
 /// The boards a cross-board read command (`grep`, `list`) reads, and the
@@ -106,15 +117,13 @@ struct ReadScope {
     subtree: Option<[u8; 32]>,
 }
 
-/// Gather a [`ReadScope`]: with `all`, every board `author` has (plus those
-/// shared with us, when reading our own); otherwise the one board `board`,
+/// Gather a [`ReadScope`]: with `all`, every board the roster's owner has (plus
+/// those shared with us, when reading our own); otherwise the one board `board`,
 /// narrowed to `container`'s subtree when `--in` names a card. Each board is
 /// folded once.
 fn read_scope(
     ndb: &Ndb,
     roster: &Roster,
-    author: &Pubkey,
-    me: &Pubkey,
     board: &str,
     all: bool,
     container: Option<String>,
@@ -123,15 +132,15 @@ fn read_scope(
         if container.is_some() {
             return Err("--in reads one card's subtree on its own board — drop --all".into());
         }
-        let mut boards = list_boards(ndb, roster, author);
+        let mut boards = list_boards(ndb, roster);
         // Only when reading our own: `--author <someone>` asks for theirs.
-        if author == me {
-            boards.extend(list_shared_with_me(ndb, roster, me));
+        if roster.identity().is_owner() {
+            boards.extend(list_shared_with_me(ndb, roster));
         }
         boards
     } else {
         vec![
-            load_board(ndb, roster, author, board)
+            load_board(ndb, roster, board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?,
         ]
     };
@@ -172,11 +181,12 @@ fn resolves_owner_by_slug(cmd: &Command, show_all: bool) -> bool {
 }
 
 /// The owner of the board `board_id` names when it isn't one of ours: the one
-/// owner in the roster sharing a board under that slug with `me`.
+/// owner in the roster sharing a board under that slug with us.
 ///
-/// `None` when we have our own board by that name (ours always wins) or no one
-/// shared one — the caller keeps `me` as the owner and the usual "no board" path
-/// takes over. Several owners is an error, since picking one would silently act
+/// `roster` must still address our own boards (no `--author`), which is what
+/// makes its `load_board` the "do we have one" check. `None` when we have our
+/// own board by that name (ours always wins) or no one shared one — the caller
+/// keeps us as the owner and the usual "no board" path takes over. Several owners is an error, since picking one would silently act
 /// on a board the caller may not have meant; it lists them so `--author` can
 /// choose.
 ///
@@ -184,11 +194,15 @@ fn resolves_owner_by_slug(cmd: &Command, show_all: bool) -> bool {
 /// device has seen is found later by deriving its root, which this runs before —
 /// so if someone also shared a board under the same slug, that one wins here and
 /// `--author <our own key>` is how to reach ours.
-fn shared_owner(ndb: &Ndb, roster: &Roster, me: &Pubkey, board_id: &str) -> Result<Option<Pubkey>> {
-    if load_board(ndb, roster, me, board_id).is_some() {
+fn shared_owner(ndb: &Ndb, roster: &Roster, board_id: &str) -> Result<Option<Pubkey>> {
+    debug_assert!(
+        roster.identity().is_owner(),
+        "shared_owner reads our own boards"
+    );
+    if load_board(ndb, roster, board_id).is_some() {
         return Ok(None);
     }
-    let owners = roster.owners_of(me, board_id);
+    let owners = roster.owners_of(board_id);
     match owners.as_slice() {
         [] => Ok(None),
         [owner] => Ok(Some(*owner)),
@@ -234,19 +248,21 @@ async fn run() -> Result<()> {
     }
 
     // The board *owner* whose coordinate (`30619:<owner>:<slug>`) we read and
-    // write: an explicit `--author`, else the signing key's own pubkey.
-    let author = match (&cli.author, &cli.secret) {
-        (Some(pk), _) => *pk,
-        (None, Some(key)) => key.pubkey,
-        (None, None) => return Err("need --nsec to sign, or --author to read a board".into()),
-    };
-    // Who *we* are: the signing key's pubkey, falling back to the owner for a
-    // read-only `--author` run. Distinct from `author` when a member works a
-    // board someone else owns — then the gift-wraps to pull, the key-shares the
-    // roster is built from, and the acting editor are all ours, while the board
+    // write: an explicit `--author`, else the signing key's own pubkey. And who
+    // *we* are: the signing key's pubkey, falling back to the owner for a
+    // read-only `--author` run. The two differ when a member works a board
+    // someone else owns — then the gift-wraps to pull, the key-shares the roster
+    // is built from, and the acting editor are all ours, while the board
     // coordinate stays the owner's. Conflating the two left a member with "no
     // board" either way (headway:headway/vacuum-priority-ordinary).
-    let me = cli.secret.as_ref().map_or(author, |key| key.pubkey);
+    let id = match (&cli.author, &cli.secret) {
+        (Some(owner), key) => Identity {
+            me: key.as_ref().map_or(*owner, |key| key.pubkey),
+            owner: *owner,
+        },
+        (None, Some(key)) => Identity::own(key.pubkey),
+        (None, None) => return Err("need --nsec to sign, or --author to read a board".into()),
+    };
 
     let ndb = nostrdb_net::relay::sync::open_ndb(cli.db.as_deref(), APP)?;
 
@@ -262,15 +278,15 @@ async fn run() -> Result<()> {
     // excludes unwrapped rumors so a sealed board's edits are never pushed to the
     // relay as plaintext (see `plaintext_sync_filter`); their kind-1081 envelopes
     // ride the separate `sync_envelopes` leg below instead.
-    let filter = plaintext_sync_filter(&author);
+    let filter = plaintext_sync_filter(&id.owner);
     let is_addressable = event::is_addressable;
-    // `connect_and_sync` speaks `nostrdb_net::Pubkey`; convert our enostr author
+    // `connect_and_sync` speaks `nostrdb_net::Pubkey`; convert our enostr owner
     // across the boundary (both are `[u8; 32]` newtypes).
-    let author_nn = nostrdb_net::Pubkey::new(*author.bytes());
+    let owner_nn = nostrdb_net::Pubkey::new(*id.owner.bytes());
     let mut relay = nostrdb_net::relay::sync::connect_and_sync(
         &cli.relay,
         &ndb,
-        &author_nn,
+        &owner_nn,
         &event::HEADWAY_KINDS,
         &filter,
         &is_addressable,
@@ -284,7 +300,7 @@ async fn run() -> Result<()> {
     // look private, so this CLI would fold it the plaintext way and write
     // plaintext edits no other client can read.
     if let Some(relay) = relay.as_mut() {
-        pull_giftwraps(relay, &ndb, &me).await;
+        pull_giftwraps(relay, &ndb, &id.me).await;
     }
     // The same key-shares for our own boards, carried over PNS: the copy that
     // reaches this device when a private relay won't serve it the gift-wrap
@@ -298,21 +314,21 @@ async fn run() -> Result<()> {
     // above rather than before it. The registry is held across both loads below so
     // a root is only ever handed to nostrdb once (see `teams::RootRegistry`).
     let mut root_registry = teams::RootRegistry::default();
-    let roster = Roster::load(&ndb, &me, &author, &mut root_registry);
+    let roster = Roster::load(&ndb, id, &mut root_registry);
 
     // With no `--author`, a slug we don't own ourselves may still name a board
     // someone shared with us. Only the roster knows who owns it, so this is the
     // earliest the owner can be settled; everything below reads and writes at the
-    // resolved owner's coordinate.
-    let (author, roster) = if cli.author.is_none() && resolves_owner_by_slug(&cli.command, cli.all)
-    {
-        match shared_owner(&ndb, &roster, &me, &cli.board)? {
-            Some(owner) => (owner, roster.for_author(owner)),
-            None => (author, roster),
+    // resolved owner's coordinate, through the roster's identity.
+    let roster = if cli.author.is_none() && resolves_owner_by_slug(&cli.command, cli.all) {
+        match shared_owner(&ndb, &roster, &cli.board)? {
+            Some(owner) => roster.for_owner(owner),
+            None => roster,
         }
     } else {
-        (author, roster)
+        roster
     };
+    let id = roster.identity();
 
     // Sync each joined board's kind-1081 SNS envelopes (see `sync_envelopes`).
     // Runs after `Roster::load` has registered the channel roots, so every pulled
@@ -325,11 +341,12 @@ async fn run() -> Result<()> {
     // fresh cache / another device can join a board sealed while offline (or by a
     // front end that never fanned its self-share). Needs the signing key — a
     // self-share is re-wrapped, not forwarded — and a reachable relay. Scoped to
-    // boards *we* own (`me`), never the `--author` we are reading: a member's
-    // roster holds the owner's roots too, and re-wrapping those to the owner
-    // under the member's signature is exactly what this must not do.
+    // boards *we* own (the roster's `id.me`), never the `--author` we are
+    // reading: a member's roster holds the owner's roots too, and re-wrapping
+    // those to the owner under the member's signature is exactly what this must
+    // not do.
     if let (Some(relay), Some(key)) = (relay.as_mut(), cli.secret.as_ref()) {
-        flush_own_selfshares(relay, &ndb, &roster, &me, &key.secret, cli.db.as_deref()).await;
+        flush_own_selfshares(relay, &ndb, &roster, &key.secret, cli.db.as_deref()).await;
     }
 
     // Recover an own board named explicitly on the command line that the roster
@@ -343,12 +360,12 @@ async fn run() -> Result<()> {
     let mut roster = roster;
     if cli.board_explicit
         && let Some(key) = cli.secret.as_ref()
-        && key.pubkey == author
-        && load_board(&ndb, &roster, &author, &cli.board).is_none()
+        && id.is_owner()
+        && load_board(&ndb, &roster, &cli.board).is_none()
         && let Some(relay) = relay.as_mut()
-        && recover_derived_board(relay, &ndb, &author, &key.secret, &cli.board).await
+        && recover_derived_board(relay, &ndb, &id.me, &key.secret, &cli.board).await
     {
-        roster = Roster::load(&ndb, &me, &author, &mut root_registry);
+        roster = Roster::load(&ndb, id, &mut root_registry);
     }
 
     let board = cli.board;
@@ -365,38 +382,38 @@ async fn run() -> Result<()> {
         // `--all` fans the render across every board in the cache, ignoring any
         // card selectors (which address a single board).
         Command::Show { .. } if show_all => {
-            let mut boards = list_boards(&ndb, &roster, &author);
+            let mut boards = list_boards(&ndb, &roster);
             // Only when listing our own: `--author <someone>` asks for their boards.
-            if author == me {
-                boards.extend(list_shared_with_me(&ndb, &roster, &me));
+            if id.is_owner() {
+                boards.extend(list_shared_with_me(&ndb, &roster));
             }
-            print_all_boards(&boards, &me, as_json, show_archived)
+            print_all_boards(&boards, &id.me, as_json, show_archived)
         }
 
         Command::Show {
             cards,
             source: Some(name),
         } => {
-            let view = load_board(&ndb, &roster, &author, &board)
+            let view = load_board(&ndb, &roster, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
             output::print_review_source(&view, &cards[0], &name)?;
         }
 
-        Command::Show { cards, .. } => match load_board(&ndb, &roster, &author, &board) {
+        Command::Show { cards, .. } => match load_board(&ndb, &roster, &board) {
             Some(view) if cards.is_empty() => print_board(&view, as_json, show_archived),
             Some(view) => print_cards(&view, &cards, as_json)?,
             None if as_json => println!("null"),
             None => println!(
                 "no board '{}' for {} — run `headway seed`",
                 board,
-                author.hex()
+                id.owner.hex()
             ),
         },
 
         Command::Seed { title } => {
             let secret = secret.ok_or("seed needs --nsec to sign")?;
-            require_owner(&me, &author, "seed")?;
-            match load_board(&ndb, &roster, &author, &board) {
+            require_owner(&id, || drop_author("seed", &id))?;
+            match load_board(&ndb, &roster, &board) {
                 Some(view) if view.deleted => {
                     return Err(format!(
                         "board '{board}' was deleted — bring it back with \
@@ -421,8 +438,9 @@ async fn run() -> Result<()> {
             // kind-1082 key-share) so the board joins this account's roster.
             let root = nostrdb_net::sns::derive_board_root(&secret, &board);
             let mut sink = Collect::default();
-            if !store::create_shared_board(&ndb, &author, &secret, &board, &title, &root, &mut sink)
-            {
+            if !store::create_shared_board(
+                &ndb, &id.owner, &secret, &board, &title, &root, &mut sink,
+            ) {
                 return Err(format!("failed to seal new board '{board}'").into());
             }
             let n = sink.0.len();
@@ -446,11 +464,11 @@ async fn run() -> Result<()> {
                 );
             }
             let secret = secret.ok_or("migrate needs --nsec to sign")?;
-            require_owner(&me, &author, "migrate")?;
-            if load_board(&ndb, &roster, &author, &board).is_none() {
+            require_owner(&id, || drop_author("migrate", &id))?;
+            if load_board(&ndb, &roster, &board).is_none() {
                 return Err(format!("no board '{board}' to migrate — nothing to seal").into());
             }
-            let preview = store::preview_migration(&ndb, &author, &board);
+            let preview = store::preview_migration(&ndb, &id.owner, &board);
             // Which channel to seal into. A board already in the roster MUST
             // reuse its existing root: its already-sealed notes cannot be moved
             // to a second channel (nostrdb promotes a stored note to a rumor only
@@ -492,7 +510,7 @@ async fn run() -> Result<()> {
                 return Ok(());
             }
             let mut sink = Collect::default();
-            let n = store::migrate_board_to_sns(&ndb, &author, &secret, &board, &root, &mut sink);
+            let n = store::migrate_board_to_sns(&ndb, &id.owner, &secret, &board, &root, &mut sink);
             nostrdb_net::relay::sync::publish(&mut relay, &sink.0).await?;
             println!(
                 "migrated board '{board}' to SNS ({n} notes re-sealed into its {channel} channel){}",
@@ -515,17 +533,16 @@ async fn run() -> Result<()> {
             // Owner-only, and checked before the roster lookup below: a member's
             // roster holds the owner's root too, so without this a member could
             // hand the board on to anyone.
-            if me != author {
-                return Err(format!(
+            require_owner(&id, || {
+                format!(
                     "only the board owner can share it — '{board}' belongs to {}",
-                    author.hex()
+                    id.owner.hex()
                 )
-                .into());
-            }
-            if recipient == me {
+            })?;
+            if recipient == id.me {
                 return Err("that's your own key — you already hold this board's channel".into());
             }
-            if load_board(&ndb, &roster, &author, &board).is_none() {
+            if load_board(&ndb, &roster, &board).is_none() {
                 return Err(format!("no board '{board}' to share").into());
             }
             // The root of the board's *primary* channel, from the roster — never
@@ -548,7 +565,7 @@ async fn run() -> Result<()> {
                 .into());
             };
             let mut sink = Collect::default();
-            let addr = event::board_address(&author, &board);
+            let addr = event::board_address(&id.owner, &board);
             if !store::share_board(&ndb, &secret, &recipient, &addr, &root, &mut sink) {
                 return Err(format!("failed to wrap the key-share for {}", recipient.hex()).into());
             }
@@ -575,20 +592,22 @@ async fn run() -> Result<()> {
             }
         }
 
-        Command::Board { id } => match id {
+        Command::Board { id: switch_to } => match switch_to {
             // Switch: persist the new current board, then report whether it
             // already exists so the next step (seed vs. use) is obvious.
-            Some(id) => {
-                nostrdb_net::relay::sync::write_config(APP, "board", &id)?;
-                match load_board(&ndb, &roster, &author, &id) {
+            Some(slug) => {
+                nostrdb_net::relay::sync::write_config(APP, "board", &slug)?;
+                match load_board(&ndb, &roster, &slug) {
                     Some(view) if view.deleted => println!(
-                        "switched to board '{id}' — it is deleted, run `headway restore-board {id}`"
+                        "switched to board '{slug}' — it is deleted, run `headway restore-board {slug}`"
                     ),
                     Some(view) => {
-                        println!("switched to board '{id}' ({} cards)", card_count(&view))
+                        println!("switched to board '{slug}' ({} cards)", card_count(&view))
                     }
                     None => {
-                        println!("switched to board '{id}' — doesn't exist yet, run `headway seed`")
+                        println!(
+                            "switched to board '{slug}' — doesn't exist yet, run `headway seed`"
+                        )
                     }
                 }
             }
@@ -596,12 +615,12 @@ async fn run() -> Result<()> {
             None => {
                 // Boards shared with us only alongside our own: `--author
                 // <someone>` asks for their boards, not ours.
-                let shared = if author == me {
-                    list_shared_with_me(&ndb, &roster, &me)
+                let shared = if id.is_owner() {
+                    list_shared_with_me(&ndb, &roster)
                 } else {
                     Vec::new()
                 };
-                let (own, deleted): (Vec<_>, Vec<_>) = list_all_boards(&ndb, &roster, &author)
+                let (own, deleted): (Vec<_>, Vec<_>) = list_all_boards(&ndb, &roster)
                     .into_iter()
                     .partition(|v| !v.deleted);
                 print_boards(&own, &shared, &board);
@@ -620,8 +639,8 @@ async fn run() -> Result<()> {
                 ("restore", "restore-board")
             };
             let secret = secret.ok_or_else(|| format!("{name} needs --nsec to sign"))?;
-            require_owner(&me, &author, name)?;
-            let view = load_board(&ndb, &roster, &author, &board)
+            require_owner(&id, || drop_author(name, &id))?;
+            let view = load_board(&ndb, &roster, &board)
                 .ok_or_else(|| format!("no board '{board}' to {verb}"))?;
             if view.deleted == delete {
                 let state = if delete {
@@ -647,7 +666,7 @@ async fn run() -> Result<()> {
                 &ndb,
                 &board,
                 &view,
-                &me,
+                &id.me,
                 &store::Signer::new(&secret, channel.as_ref()),
                 action,
                 &mut sink,
@@ -678,9 +697,9 @@ async fn run() -> Result<()> {
         // These touch two boards, so they sidestep the single-board `apply` path.
         Command::Link { card, to_board } => {
             let secret = secret.ok_or("this command needs --nsec to sign")?;
-            let source = load_board(&ndb, &roster, &author, &board)
+            let source = load_board(&ndb, &roster, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
-            let target = load_board(&ndb, &roster, &author, &to_board).ok_or_else(|| {
+            let target = load_board(&ndb, &roster, &to_board).ok_or_else(|| {
                 format!("no target board '{to_board}' — switch to it and `headway seed` first")
             })?;
             let card_id = resolve_card(&source, &card)?;
@@ -716,9 +735,9 @@ async fn run() -> Result<()> {
 
         Command::MoveBoard { card, to_board } => {
             let secret = secret.ok_or("this command needs --nsec to sign")?;
-            let source = load_board(&ndb, &roster, &author, &board)
+            let source = load_board(&ndb, &roster, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
-            let target = load_board(&ndb, &roster, &author, &to_board).ok_or_else(|| {
+            let target = load_board(&ndb, &roster, &to_board).ok_or_else(|| {
                 format!("no target board '{to_board}' — switch to it and `headway seed` first")
             })?;
             let card_id = resolve_card(&source, &card)?;
@@ -768,7 +787,7 @@ async fn run() -> Result<()> {
                         .into(),
                 );
             }
-            let view = load_board(&ndb, &roster, &author, &board)
+            let view = load_board(&ndb, &roster, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
             let container = match container.as_deref() {
                 Some(sel) => resolve_container(&view, sel)?,
@@ -780,7 +799,7 @@ async fn run() -> Result<()> {
         // Read command: where one card sits in a container's work-order. Never
         // signs. Like `show` it reads whichever board the card ref routes to.
         Command::SeqQuery { card, container } => {
-            let view = load_board(&ndb, &roster, &author, &board)
+            let view = load_board(&ndb, &roster, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
             let card = resolve_card(&view, &card)?;
             let container = match container.as_deref() {
@@ -794,7 +813,7 @@ async fn run() -> Result<()> {
         // readable board, unless `--board`/`--in` narrowed it to one — see the
         // grep default in `args.rs`) and one pass over its cards. Never signs.
         Command::Grep { pattern, container } => {
-            let scope = read_scope(&ndb, &roster, &author, &me, &board, show_all, container)?;
+            let scope = read_scope(&ndb, &roster, &board, show_all, container)?;
             let out = grep::GrepOutput {
                 json: as_json,
                 color: cli.color,
@@ -818,7 +837,7 @@ async fn run() -> Result<()> {
         } => {
             // Saved views are the signer's own, PNS-wrapped: a read-only
             // `--author` run can't unwrap them, and sees only the built-ins.
-            let saved = headway::views::load_views(&ndb, &me);
+            let saved = headway::views::load_views(&ndb, &id.me);
             let run = ViewSpec {
                 name: String::new(),
                 query,
@@ -832,12 +851,12 @@ async fn run() -> Result<()> {
                 list::print_views(&saved, &run, as_json)?;
             } else if let Some(name) = &views.delete {
                 let secret = secret.ok_or("--delete-view needs --nsec to sign")?;
-                list::delete_named_view(&ndb, &me, &secret, &saved, name)?;
+                list::delete_named_view(&ndb, &id.me, &secret, &saved, name)?;
             } else {
                 let spec = list::compose_view(&saved, &views, run, include_done)?;
                 if let Some(name) = &views.save {
                     let secret = secret.ok_or("--save-view needs --nsec to sign")?;
-                    list::save_named_view(&ndb, &me, &secret, &saved, name, spec, as_json)?;
+                    list::save_named_view(&ndb, &id.me, &secret, &saved, name, spec, as_json)?;
                 } else {
                     // A view scoped to a board reads that board, unless the
                     // command line narrowed the run itself. Only that board
@@ -849,8 +868,6 @@ async fn run() -> Result<()> {
                     let scope = read_scope(
                         &ndb,
                         &roster,
-                        &author,
-                        &me,
                         view_board.as_ref().unwrap_or(&board),
                         show_all && view_board.is_none(),
                         container,
@@ -878,7 +895,7 @@ async fn run() -> Result<()> {
         // it if this host lacks it) and print it. The bare cache lives beside
         // the nostrdb cache, so a `--db` run keeps its git cache there too.
         Command::Diff { card, record } => {
-            let view = load_board(&ndb, &roster, &author, &board)
+            let view = load_board(&ndb, &roster, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
             let cache_root = match cli.db.as_deref() {
                 Some(db) => std::path::Path::new(db).join("git"),
@@ -889,7 +906,7 @@ async fn run() -> Result<()> {
 
         edit => {
             let secret = secret.ok_or("this command needs --nsec to sign")?;
-            let view = load_board(&ndb, &roster, &author, &board)
+            let view = load_board(&ndb, &roster, &board)
                 .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
             if view.deleted {
                 return Err(deleted_board_error(&board).into());
@@ -915,7 +932,7 @@ async fn run() -> Result<()> {
                 // The acting editor, not the board owner: `apply_outcome` anchors
                 // the edit at the owner's coordinate itself (from `view.author`),
                 // and reads our own replaceable sets (blockers, related) by `me`.
-                &me,
+                &id.me,
                 &store::Signer::new(signing_key, channel.as_ref()),
                 action,
                 &mut sink,

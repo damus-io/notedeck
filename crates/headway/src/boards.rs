@@ -12,6 +12,38 @@ use crate::event::{self, BoardCoord, BoardView};
 use crate::store;
 use crate::teams;
 
+/// Who a run is, as the two keys a board edit needs: the one that signs and the
+/// one whose board it addresses.
+///
+/// They are the same key when you work your own boards and differ when a member
+/// works a board someone shared with them. Each call site names the half it
+/// means (`id.me`, `id.owner`) instead of taking "a pubkey called author", which
+/// is how the two were once conflated without anyone noticing
+/// (headway:headway/vacuum-priority-ordinary).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Identity {
+    /// The signing key's pubkey, or the owner's on a read-only `--author` run:
+    /// the gift-wrap recipient, the roster member, the acting editor, and the
+    /// scope of the self-share flush.
+    pub me: Pubkey,
+    /// The owner half of every board coordinate (`30619:<owner>:<slug>`) the run
+    /// reads and writes: the CLI's `--author`, else [`Self::me`].
+    pub owner: Pubkey,
+}
+
+impl Identity {
+    /// An identity working its own boards: signer and owner are one key.
+    pub fn own(me: Pubkey) -> Self {
+        Self { me, owner: me }
+    }
+
+    /// Whether the boards addressed are our own, so an owner-only command
+    /// (seed, migrate, share, delete) may act on them.
+    pub fn is_owner(&self) -> bool {
+        self.me == self.owner
+    }
+}
+
 /// The shared boards this account holds keys for, resolved once per run.
 ///
 /// A shared board isn't a different kind of board, it's a different *transport*:
@@ -42,10 +74,10 @@ pub struct Roster {
     /// coordinate its key unlocks. Our membership, not the owner's: a member's
     /// roster lists the owner's boards it was shared, keyed to the owner.
     teams: Vec<teams::Team>,
-    /// Whose boards we address — the owner half of a board coordinate
-    /// (the CLI's `--author`, else the signing key). One suffices because a run works one
-    /// owner's boards; it differs from the signer when we are a member.
-    author: Pubkey,
+    /// Who loaded it: `me` is whose key-shares the channels came from, `owner`
+    /// whose boards they are looked up for. One owner suffices because a run
+    /// works one owner's boards.
+    id: Identity,
 }
 
 impl Roster {
@@ -56,29 +88,27 @@ impl Roster {
     /// nostrdb peels them, so an unregistered root means a write we can't even
     /// read back ourselves.
     ///
-    /// `me` is the signer, whose received key-shares make up the roster; `author`
-    /// is the board owner whose coordinates [`Self::channel`] and friends look up.
-    /// They are the same key on an own board and differ for a member, whose
-    /// key-shares are addressed to it but name the owner's board.
-    pub fn load(
-        ndb: &Ndb,
-        me: &Pubkey,
-        author: &Pubkey,
-        registry: &mut teams::RootRegistry,
-    ) -> Self {
-        let teams = teams::teams_from_ndb(ndb, me);
+    /// `id.me` is the signer, whose received key-shares make up the roster;
+    /// `id.owner` is the board owner whose coordinates [`Self::channel`] and
+    /// friends look up. They are the same key on an own board and differ for a
+    /// member, whose key-shares are addressed to it but name the owner's board.
+    pub fn load(ndb: &Ndb, id: Identity, registry: &mut teams::RootRegistry) -> Self {
+        let teams = teams::teams_from_ndb(ndb, &id.me);
         registry.register(ndb, &teams);
-        Self {
-            teams,
-            author: *author,
-        }
+        Self { teams, id }
+    }
+
+    /// The identity this roster was loaded for, with the owner it now addresses
+    /// (see [`Self::for_owner`]).
+    pub fn identity(&self) -> Identity {
+        self.id
     }
 
     /// The channel new edits to `board_id` seal into — its *primary* channel (see
     /// [`teams::board_channels`]) — or `None` for a private board. Reads gather
     /// every channel instead; see [`Self::channel_pubkeys`].
     pub fn channel(&self, board_id: &str) -> Option<store::SnsChannel> {
-        let addr = event::board_address(&self.author, board_id);
+        let addr = event::board_address(&self.id.owner, board_id);
         let team = *teams::board_channels(&self.teams, &addr).first()?;
         Some(store::SnsChannel {
             keys: team.sns_keys()?,
@@ -89,7 +119,7 @@ impl Roster {
     /// a read folds the union of, because a board's history can be split across
     /// channels that cannot be merged back together.
     pub fn channel_pubkeys(&self, board_id: &str) -> Vec<Pubkey> {
-        let addr = event::board_address(&self.author, board_id);
+        let addr = event::board_address(&self.id.owner, board_id);
         teams::board_channel_pubkeys(&self.teams, &addr)
     }
 
@@ -100,21 +130,25 @@ impl Roster {
         &self.teams
     }
 
-    /// The same roster, addressing `author`'s boards instead — for when the
+    /// The same roster, addressing `owner`'s boards instead — for when the
     /// owner is only known once the roster itself has been read (see
     /// [`Self::owners_of`]). The channels don't change: they are *our*
     /// membership, whoever's board we then look up in it.
-    pub fn for_author(self, author: Pubkey) -> Self {
-        Self { author, ..self }
+    pub fn for_owner(self, owner: Pubkey) -> Self {
+        Self {
+            id: Identity { owner, ..self.id },
+            ..self
+        }
     }
 
-    /// Every board in the roster that someone *other* than `me` owns — the boards
-    /// shared with us — one per coordinate, sorted by slug then owner.
+    /// Every board in the roster that someone *other* than us (`me`) owns — the
+    /// boards shared with us — one per coordinate, sorted by slug then owner.
     ///
     /// A board can back several channels (one per key-share generation), so the
     /// coordinates are deduplicated; our own boards are left out because the
     /// author fold in [`list_boards`] already lists them.
-    pub fn foreign_boards(&self, me: &Pubkey) -> Vec<BoardCoord> {
+    pub fn foreign_boards(&self) -> Vec<BoardCoord> {
+        let me = &self.id.me;
         let mut coords: Vec<BoardCoord> = self
             .teams
             .iter()
@@ -126,14 +160,14 @@ impl Roster {
         coords
     }
 
-    /// The owners of every board shared with `me` under the slug `board_id`.
+    /// The owners of every board shared with us (`me`) under the slug `board_id`.
     ///
     /// A card ref (`headway:<board>/<word-id>`) names a slug but not its owner, so
     /// this is what lets a member say `--board shared` instead of carrying the
     /// owner's hex around: exactly one owner resolves it, several make it
     /// ambiguous. Slugs are only unique per owner, so more than one is possible.
-    pub fn owners_of(&self, me: &Pubkey, board_id: &str) -> Vec<Pubkey> {
-        self.foreign_boards(me)
+    pub fn owners_of(&self, board_id: &str) -> Vec<Pubkey> {
+        self.foreign_boards()
             .into_iter()
             .filter(|c| c.slug == board_id)
             .map(|c| Pubkey::new(c.owner))
@@ -144,22 +178,18 @@ impl Roster {
     /// needs in order to keep sealing a shared board into the channel it already
     /// has, rather than minting a second one (see the `migrate` command).
     pub fn team_root(&self, board_id: &str) -> Option<[u8; 32]> {
-        let addr = event::board_address(&self.author, board_id);
+        let addr = event::board_address(&self.id.owner, board_id);
         teams::board_channels(&self.teams, &addr)
             .first()?
             .root_bytes()
     }
 }
 
-/// Fold one board, by whichever transport it uses: a joined shared board folds
-/// by *coordinate* (gathering every member's sealed edits), a private one folds
-/// from `author`'s own plaintext events.
-pub fn load_board(
-    ndb: &Ndb,
-    roster: &Roster,
-    author: &Pubkey,
-    board_id: &str,
-) -> Option<BoardView> {
+/// Fold the roster owner's board `board_id`, by whichever transport it uses: a
+/// joined shared board folds by *coordinate* (gathering every member's sealed
+/// edits), a private one folds from the owner's own plaintext events.
+pub fn load_board(ndb: &Ndb, roster: &Roster, board_id: &str) -> Option<BoardView> {
+    let author = &roster.id.owner;
     let txn = Transaction::new(ndb).ok()?;
     let channels = roster.channel_pubkeys(board_id);
     if channels.is_empty() {
@@ -173,23 +203,23 @@ pub fn load_board(
     )
 }
 
-/// `author`'s live boards in the cache — [`list_all_boards`] without the deleted
-/// ones, which only `headway board` lists (apart, so they can be restored).
-pub fn list_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Vec<BoardView> {
-    let mut boards = list_all_boards(ndb, roster, author);
+/// The roster owner's live boards in the cache — [`list_all_boards`] without the
+/// deleted ones, which only `headway board` lists (apart, so they can be restored).
+pub fn list_boards(ndb: &Ndb, roster: &Roster) -> Vec<BoardView> {
+    let mut boards = list_all_boards(ndb, roster);
     boards.retain(|v| !v.deleted);
     boards
 }
 
-/// All of `author`'s boards in the cache, deleted ones included, sorted by id
-/// for a stable listing. Each shared board is re-folded by coordinate so its
-/// card counts match what the app draws, rather than the plaintext-only subset
-/// the author fold sees.
-pub fn list_all_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Vec<BoardView> {
+/// All of the roster owner's boards in the cache, deleted ones included, sorted
+/// by id for a stable listing. Each shared board is re-folded by coordinate so
+/// its card counts match what the app draws, rather than the plaintext-only
+/// subset the author fold sees.
+pub fn list_all_boards(ndb: &Ndb, roster: &Roster) -> Vec<BoardView> {
     let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
     };
-    let mut boards = event::fold_board(ndb, &txn, author)
+    let mut boards = event::fold_board(ndb, &txn, &roster.id.owner)
         .map(|r| r.finalize())
         .unwrap_or_default();
     for board in &mut boards {
@@ -198,7 +228,7 @@ pub fn list_all_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Vec<Board
         if roster.channel_pubkeys(&board.id).is_empty() {
             continue;
         }
-        if let Some(shared) = load_board(ndb, roster, author, &board.id) {
+        if let Some(shared) = load_board(ndb, roster, &board.id) {
             *board = shared;
         }
     }
@@ -206,19 +236,19 @@ pub fn list_all_boards(ndb: &Ndb, roster: &Roster, author: &Pubkey) -> Vec<Board
     boards
 }
 
-/// Every board shared with `me` — owned by someone else, joined through a
-/// key-share — folded by coordinate, sorted by slug then owner.
+/// Every board shared with us (the roster's `me`) — owned by someone else,
+/// joined through a key-share — folded by coordinate, sorted by slug then owner.
 ///
 /// Folded with the shared fold, gathering every channel of each board, so a
 /// board's card count includes every member's edits. A board we hold a key for
 /// but whose envelopes haven't arrived yet doesn't fold, and is left out rather
 /// than listed empty; so is one its owner deleted.
-pub fn list_shared_with_me(ndb: &Ndb, roster: &Roster, me: &Pubkey) -> Vec<BoardView> {
+pub fn list_shared_with_me(ndb: &Ndb, roster: &Roster) -> Vec<BoardView> {
     let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
     };
     roster
-        .foreign_boards(me)
+        .foreign_boards()
         .iter()
         .filter_map(|coord| {
             let addr = coord.coordinate();
@@ -263,7 +293,7 @@ mod tests {
                     shared_at: 0,
                 },
             ],
-            author: owner,
+            id: Identity::own(owner),
         };
 
         assert!(
@@ -300,11 +330,11 @@ mod tests {
                 team(&bob, "shared", None),
                 team(&alice, "roadmap", None),
             ],
-            author: me,
+            id: Identity::own(me),
         };
 
         let foreign: Vec<(String, [u8; 32])> = roster
-            .foreign_boards(&me)
+            .foreign_boards()
             .into_iter()
             .map(|c| (c.slug, c.owner))
             .collect();
@@ -312,12 +342,30 @@ mod tests {
         assert!(foreign.iter().all(|(_, owner)| owner != me.bytes()));
         assert_eq!(foreign[0].0, "roadmap", "sorted by slug");
 
-        let mut owners = roster.owners_of(&me, "shared");
+        let mut owners = roster.owners_of("shared");
         owners.sort();
         let mut expected = vec![alice, bob];
         expected.sort();
         assert_eq!(owners, expected);
-        assert_eq!(roster.owners_of(&me, "roadmap"), vec![alice]);
-        assert!(roster.owners_of(&me, "nope").is_empty());
+        assert_eq!(roster.owners_of("roadmap"), vec![alice]);
+        assert!(roster.owners_of("nope").is_empty());
+    }
+
+    /// Re-pointing a roster at a shared board's owner moves only the owner half:
+    /// `me` stays the signer, so the run still edits and pulls as itself — the
+    /// swap the [`Identity`] pair exists to make impossible to write by accident.
+    #[test]
+    fn for_owner_moves_only_the_owner_half() {
+        let me = nostrdb_net::FullKeypair::generate().pubkey;
+        let alice = nostrdb_net::FullKeypair::generate().pubkey;
+        let roster = Roster {
+            teams: Vec::new(),
+            id: Identity::own(me),
+        };
+        assert!(roster.identity().is_owner());
+
+        let id = roster.for_owner(alice).identity();
+        assert_eq!(id, Identity { me, owner: alice });
+        assert!(!id.is_owner());
     }
 }

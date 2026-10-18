@@ -119,7 +119,7 @@ pub(crate) async fn sync_envelopes(
     }
 }
 
-/// Pull the kind-1059 gift-wraps addressed to `author` into the local cache, so
+/// Pull the kind-1059 gift-wraps addressed to `me` (the signer) into the local cache, so
 /// nostrdb can peel out the key-shares the roster is derived from.
 ///
 /// Pull-only and best-effort: gift-wraps are addressed *to* us, so there is
@@ -128,10 +128,10 @@ pub(crate) async fn sync_envelopes(
 pub(crate) async fn pull_giftwraps(
     relay: &mut nostrdb_net::relay::sync::Relay,
     ndb: &Ndb,
-    author: &Pubkey,
+    me: &Pubkey,
 ) {
-    let filter = teams::giftwrap_filter(author);
-    let wire = json!({ "kinds": [1059], "#p": [author.hex()] }).to_string();
+    let filter = teams::giftwrap_filter(me);
+    let wire = json!({ "kinds": [1059], "#p": [me.hex()] }).to_string();
     let before = count_matching(ndb, &filter);
     // Windowed, not a plain `pull_reconcile`: an active account's kind-1059 inbox
     // can exceed the relay's per-sync negentropy cap, and the un-windowed pull's
@@ -233,13 +233,13 @@ pub(crate) async fn flush_own_selfshares(
     relay: &mut nostrdb_net::relay::sync::Relay,
     ndb: &Ndb,
     roster: &Roster,
-    me: &Pubkey,
     secret: &[u8; 32],
     db: Option<&str>,
 ) {
     // A board coordinate is `30619:<owner>:<slug>`; ours start with this prefix.
-    // `me` is the signer, not the `--author` being read: a member's roster also
-    // holds the owner's roots, which must never be re-wrapped from here.
+    // `me` is the signer, not the owner being read: a member's roster also holds
+    // the owner's roots, which must never be re-wrapped from here.
+    let me = &roster.identity().me;
     let owner_prefix = format!("{}:{}:", event::KIND_BOARD as u64, me.hex());
     let mut flushed = read_flushed(db, GIFTWRAP_MARKER);
     let mut flushed_pns = read_flushed(db, PNS_MARKER);
@@ -301,6 +301,9 @@ pub(crate) async fn flush_own_selfshares(
 /// what *enumerates* boards — a slug nobody told us cannot be derived, so this
 /// only ever runs for a board named on the command line.
 ///
+/// `me` is both the board's owner and the signer: the root derives from our own
+/// secret, so this only ever recovers a board we own.
+///
 /// Returns whether the board now folds. On success it also self-shares the root,
 /// which both persists the join (the next run finds it in the roster with no
 /// derivation) and puts the missing 1059 back on the relay for the account's
@@ -310,7 +313,7 @@ pub(crate) async fn flush_own_selfshares(
 pub(crate) async fn recover_derived_board(
     relay: &mut nostrdb_net::relay::sync::Relay,
     ndb: &Ndb,
-    author: &Pubkey,
+    me: &Pubkey,
     secret: &[u8; 32],
     board_id: &str,
 ) -> bool {
@@ -344,7 +347,7 @@ pub(crate) async fn recover_derived_board(
         ndb.process_sns(&txn);
     }
 
-    let addr = event::board_address(author, board_id);
+    let addr = event::board_address(me, board_id);
     {
         let Ok(txn) = Transaction::new(ndb) else {
             return false;

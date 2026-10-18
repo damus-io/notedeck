@@ -208,11 +208,11 @@ fn join_terms(a: &str, b: &str) -> String {
     }
 }
 
-/// `headway list --save-view <name>`: save `spec` as `author`'s view `name`,
+/// `headway list --save-view <name>`: save `spec` as the signer's (`me`) view `name`,
 /// over the view already called that (keeping its slug) or as a new one.
 pub(crate) fn save_named_view(
     ndb: &Ndb,
-    author: &Pubkey,
+    me: &Pubkey,
     secret: &[u8; 32],
     saved: &[SavedView],
     name: &str,
@@ -234,7 +234,7 @@ pub(crate) fn save_named_view(
             ..spec
         },
     };
-    headway::views::save_view(ndb, author, secret, &view, 0);
+    headway::views::save_view(ndb, me, secret, &view, 0);
     if json {
         println!(
             "{}",
@@ -246,16 +246,16 @@ pub(crate) fn save_named_view(
     Ok(())
 }
 
-/// `headway list --delete-view <name>`: delete `author`'s saved view `name`.
+/// `headway list --delete-view <name>`: delete the signer's (`me`) saved view `name`.
 pub(crate) fn delete_named_view(
     ndb: &Ndb,
-    author: &Pubkey,
+    me: &Pubkey,
     secret: &[u8; 32],
     saved: &[SavedView],
     name: &str,
 ) -> Result<()> {
     let view = find_view(saved, name).ok_or_else(|| format!("no saved view named '{name}'"))?;
-    headway::views::delete_view(ndb, author, secret, &view.slug, 0);
+    headway::views::delete_view(ndb, me, secret, &view.slug, 0);
     println!("deleted view '{}'", view.spec.name);
     Ok(())
 }
