@@ -115,44 +115,10 @@ pub fn net_flows(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
-    use ledgerdb::{Date, Edits, Journal, JournalStore, LayerFilter, SegmentHeader};
+    use ledgerdb::Date;
 
     use super::*;
-
-    fn books(text: &str) -> Books {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = JournalStore::new(tmp.path());
-        let header = SegmentHeader {
-            source: "t".to_owned(),
-            imported: 1,
-            layer: "t".to_owned(),
-        };
-        // Every transaction needs a record id: number them.
-        let mut id = 0;
-        let text: String = text
-            .split_inclusive('\n')
-            .map(|line| {
-                if line.starts_with(' ') || line.trim().is_empty() {
-                    return line.to_owned();
-                }
-                id += 1;
-                format!("{line}  ; id: t:{id}\n")
-            })
-            .collect();
-        store
-            .write_segment(&header, &Journal::parse(&text).journal)
-            .unwrap();
-        Books::load(
-            &store,
-            LayerFilter::All,
-            &HashSet::new(),
-            &Edits::default(),
-            "CAD",
-        )
-        .unwrap()
-    }
+    use crate::test_util::books;
 
     fn range(start: &str, end: &str) -> DateRange {
         DateRange::new(Date::parse(start).unwrap(), Date::parse(end).unwrap())

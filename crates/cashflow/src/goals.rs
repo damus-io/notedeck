@@ -18,14 +18,19 @@
 //! finds the goals on a set of boards (see [`GoalsConfig`](crate::config::GoalsConfig)
 //! for which). A goal whose block is malformed is still returned, carrying
 //! its [`GoalError`], so a typo shows up beside the card instead of the goal
-//! quietly vanishing. Progress against the target is a later card; this
-//! module only says what each goal asks for.
+//! quietly vanishing. [`progress::evaluate`] measures a goal against the
+//! books: how far along it is, where its trend takes it and whether that is
+//! on track.
 //!
 //! Boards are read through the `headway` core crate ([`headway::boards`]),
 //! never the headway CLI's internals, so a sealed (team-of-one or shared)
 //! board folds here the same way it does in the app.
 
 use std::fmt;
+
+pub mod progress;
+
+pub use progress::{EvalError, Progress, Status, evaluate};
 
 use headway::boards::{self, Roster};
 use headway::event::{BoardView, CardView};

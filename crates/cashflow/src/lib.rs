@@ -24,7 +24,8 @@
 //! categorized yet into a triage queue, which [`triage`] counts down and
 //! writes the inbox's edits for. [`net`] is the one definition of
 //! income, expenses and net every report totals with. [`goals`] reads the
-//! financial goals that live as `cashflow-goal` blocks on Headway cards.
+//! financial goals that live as `cashflow-goal` blocks on Headway cards,
+//! and measures each one's progress and whether it is on track.
 //! The game derive
 //! lands here in a later card; the design all of this follows is on the
 //! root epic, headway:cashflow/flame-vault-near.
