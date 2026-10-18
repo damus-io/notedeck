@@ -247,9 +247,12 @@ preview_suite() {
     for entry in "$dir"/tests/*; do
         [[ -e "$entry" && "$(basename "$entry")" != snapshots ]] && ln -s "$entry" "$mirror/tests/"
     done
+    # Only the test harnesses ("test":true in the artifact's profile): cargo
+    # also builds and reports a crate's [[bin]]s for its integration tests,
+    # and run with --ignored, chrome's would start the real notedeck app.
     # shellcheck disable=SC2086
     bins="$(cargo test --no-run --message-format=json $profile -p "$crate" $cargo_args |
-        sed -n 's/.*"executable":"\([^"]*\)".*/\1/p')" || return 1
+        sed -n 's/.*"test":true}.*"executable":"\([^"]*\)".*/\1/p')" || return 1
     for bin in $bins; do
         # shellcheck disable=SC2086
         (cd "$mirror" && CARGO_MANIFEST_DIR="$dir" UPDATE_SNAPSHOTS=force \
