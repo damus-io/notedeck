@@ -45,6 +45,14 @@ pub enum Command {
     ConfigPath { name: Option<String>, json: bool },
     /// `cashflow config show [--json]`.
     ConfigShow { json: bool },
+    /// `cashflow config set <table>.<key> <value>`.
+    ConfigSet { key: String, value: String },
+    /// `cashflow config unset <table>.<key>`.
+    ConfigUnset { key: String },
+    /// `cashflow secret set <name>`: the value is read from stdin.
+    SecretSet { name: String },
+    /// `cashflow secret rm <name>`.
+    SecretRm { name: String },
     /// `cashflow login [<nsec>]`: `None` reads it from stdin.
     Login { nsec: Option<String> },
     /// `cashflow logout`.
@@ -506,7 +514,11 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
             want_help = true;
             continue;
         }
-        if !arg.starts_with('-') || arg == "-" {
+        // No flag starts with a digit, so `-07:00` or `-5` is a value.
+        let negative = arg
+            .strip_prefix('-')
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+        if !arg.starts_with('-') || arg == "-" || negative {
             positionals.push(arg);
             continue;
         }
@@ -531,6 +543,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
 
     let command = match cmd.name {
         "config" => config_command(positionals, json)?,
+        "secret" => secret_command(positionals)?,
         "login" => login_command(positionals)?,
         "logout" => no_positionals(positionals, Command::Logout, "logout")?,
         "settings" => settings_command(positionals, json)?,
@@ -1190,16 +1203,48 @@ fn place(flags: &Flags) -> Result<Option<Place>, String> {
     Ok(given.pop())
 }
 
-/// `config`'s subcommand, from its positional arguments.
+/// `config`'s subcommand, from its positional arguments. Only `path` and
+/// `show` take --json.
 fn config_command(positionals: Vec<String>, json: bool) -> Result<Command, String> {
     let mut positionals = positionals.into_iter();
-    let usage = "`config` takes `path [<name>]` or `show` (see `cashflow config --help`)";
-    let command = match positionals.next().as_deref() {
+    let usage = "`config` takes `path [<name>]`, `show`, `set <table>.<key> <value>` or `unset <table>.<key>` (see `cashflow config --help`)";
+    let sub = positionals.next();
+    if json && matches!(sub.as_deref(), Some("set" | "unset")) {
+        return Err("only `config path` and `config show` take --json".to_owned());
+    }
+    let command = match sub.as_deref() {
         Some("path") => Command::ConfigPath {
             name: positionals.next(),
             json,
         },
         Some("show") => Command::ConfigShow { json },
+        Some("set") => Command::ConfigSet {
+            key: positionals.next().ok_or(usage)?,
+            value: positionals.next().ok_or(usage)?,
+        },
+        Some("unset") => Command::ConfigUnset {
+            key: positionals.next().ok_or(usage)?,
+        },
+        _ => return Err(usage.to_owned()),
+    };
+    if positionals.next().is_some() {
+        return Err(usage.to_owned());
+    }
+    Ok(command)
+}
+
+/// `secret set <name>` or `secret rm <name>`. A value is never an argument,
+/// so it stays out of shell history.
+fn secret_command(positionals: Vec<String>) -> Result<Command, String> {
+    let usage = "`secret` takes `set <name>` (the value on stdin) or `rm <name>` (see `cashflow secret --help`)";
+    let mut positionals = positionals.into_iter();
+    let command = match positionals.next().as_deref() {
+        Some("set") => Command::SecretSet {
+            name: positionals.next().ok_or(usage)?,
+        },
+        Some("rm") => Command::SecretRm {
+            name: positionals.next().ok_or(usage)?,
+        },
         _ => return Err(usage.to_owned()),
     };
     if positionals.next().is_some() {
@@ -1283,6 +1328,30 @@ mod tests {
         assert!(err_of(&["config"]).contains("path"));
         assert!(err_of(&["config", "frob"]).contains("path"));
         assert!(err_of(&["config", "show", "extra"]).contains("path"));
+        assert_eq!(
+            run_of(&["config", "set", "cln.node_id", "03ab"]).command,
+            Command::ConfigSet {
+                key: "cln.node_id".to_owned(),
+                value: "03ab".to_owned(),
+            }
+        );
+        assert_eq!(
+            run_of(&["config", "set", "cln.timezone", "-07:00"]).command,
+            Command::ConfigSet {
+                key: "cln.timezone".to_owned(),
+                value: "-07:00".to_owned(),
+            }
+        );
+        assert_eq!(
+            run_of(&["config", "unset", "cln.host"]).command,
+            Command::ConfigUnset {
+                key: "cln.host".to_owned(),
+            }
+        );
+        assert!(err_of(&["config", "set", "cln.host"]).contains("unset"));
+        assert!(err_of(&["config", "set", "a.b", "c", "d"]).contains("unset"));
+        assert!(err_of(&["config", "unset"]).contains("unset"));
+        assert!(err_of(&["config", "set", "a.b", "c", "--json"]).contains("--json"));
     }
 
     #[test]
@@ -1317,6 +1386,22 @@ mod tests {
         assert!(err_of(&["login", "a", "b"]).contains("at most one"));
         assert_eq!(run_of(&["logout"]).command, Command::Logout);
         assert!(err_of(&["logout", "x"]).contains("no arguments"));
+
+        assert_eq!(
+            run_of(&["secret", "set", "cln-rune"]).command,
+            Command::SecretSet {
+                name: "cln-rune".to_owned(),
+            }
+        );
+        assert_eq!(
+            run_of(&["secret", "rm", "cln-rune"]).command,
+            Command::SecretRm {
+                name: "cln-rune".to_owned(),
+            }
+        );
+        assert!(err_of(&["secret", "set"]).contains("stdin"));
+        assert!(err_of(&["secret", "set", "cln-rune", "value"]).contains("stdin"));
+        assert!(err_of(&["secret"]).contains("rm <name>"));
 
         assert_eq!(
             run_of(&["settings"]).command,

@@ -92,6 +92,10 @@ async fn execute(run: Run) -> Result<(), String> {
     match &run.command {
         Command::ConfigPath { name, json } => config_cmd::path(&dir, name.as_deref(), *json),
         Command::ConfigShow { json } => config_cmd::show(&dir, *json),
+        Command::ConfigSet { key, value } => config_cmd::set(&dir, key, value),
+        Command::ConfigUnset { key } => config_cmd::unset(&dir, key),
+        Command::SecretSet { name } => config_cmd::secret_set(&dir, name),
+        Command::SecretRm { name } => config_cmd::secret_rm(&dir, name),
         Command::Login { nsec } => vault_cmd::login(&dir, nsec.clone()),
         Command::Logout => vault_cmd::logout(&dir),
         Command::SettingsShow { json } => vault_cmd::show(&Session::open(&dir, &run).await?, *json),

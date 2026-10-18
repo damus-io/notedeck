@@ -1,7 +1,10 @@
-//! `cashflow config path|show`: where the data lives, and the config a run
-//! reads. Neither creates or changes anything.
+//! `cashflow config path|show|set|unset` and `cashflow secret set|rm`: where
+//! the data lives, the config a run reads, and the edits to it. `path` and
+//! `show` create or change nothing.
 
-use cashflow::{CashflowDir, Config, SecretEntry, SecretSource};
+use std::io::{IsTerminal, Read};
+
+use cashflow::{CashflowDir, Config, SecretEntry, SecretSource, config::secret_env_var};
 use serde_json::{Map, Value, json};
 
 /// `config path [<name>]`: every path of the layout, or the one named.
@@ -87,6 +90,61 @@ pub fn show(dir: &CashflowDir, json: bool) -> Result<(), String> {
             }
             SecretSource::Env => println!("    {:<24} env", secret.name),
         }
+    }
+    Ok(())
+}
+
+/// `config set <table>.<key> <value>`: write one key of `config.toml`,
+/// keeping its comments, once the edited file is known to load.
+pub fn set(dir: &CashflowDir, key: &str, value: &str) -> Result<(), String> {
+    let set = dir.set_config(key, value).map_err(|e| e.to_string())?;
+    println!("set {key} = {} in {}", set.value, set.path.display());
+    Ok(())
+}
+
+/// `config unset <table>.<key>`: remove one key of `config.toml`, and its
+/// table if that leaves it empty.
+pub fn unset(dir: &CashflowDir, key: &str) -> Result<(), String> {
+    match dir.unset_config(key).map_err(|e| e.to_string())? {
+        Some(path) => println!("unset {key} in {}", path.display()),
+        None => println!("{key} is not set"),
+    }
+    Ok(())
+}
+
+/// `secret set <name>`: store stdin as `secrets/<name>`, owner-only. From a
+/// terminal one line is read; from a pipe, all of it, so a multi-line key
+/// file can be piped in. The value is never printed.
+pub fn secret_set(dir: &CashflowDir, name: &str) -> Result<(), String> {
+    let mut stdin = std::io::stdin();
+    let mut value = String::new();
+    let read = if stdin.is_terminal() {
+        eprint!("{name}: ");
+        stdin.read_line(&mut value).map(|_| ())
+    } else {
+        stdin.read_to_string(&mut value).map(|_| ())
+    };
+    read.map_err(|e| format!("reading {name} from stdin: {e}"))?;
+    let value = value.trim_end_matches(['\n', '\r']);
+    if value.is_empty() {
+        return Err(format!("no value for {name} on stdin; nothing stored"));
+    }
+
+    let path = dir.write_secret(name, value).map_err(|e| e.to_string())?;
+    println!("stored {name} in {}", path.display());
+    let var = secret_env_var(name);
+    if std::env::var_os(&var).is_some() {
+        eprintln!("cashflow: note: ${var} is set and still wins over the file");
+    }
+    Ok(())
+}
+
+/// `secret rm <name>`: delete `secrets/<name>`. A `$CASHFLOW_<NAME>` variable
+/// is untouched.
+pub fn secret_rm(dir: &CashflowDir, name: &str) -> Result<(), String> {
+    match dir.remove_secret(name).map_err(|e| e.to_string())? {
+        Some(path) => println!("removed {name} at {}", path.display()),
+        None => println!("no stored secret named {name}"),
     }
     Ok(())
 }

@@ -1581,6 +1581,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml",
+ "toml_edit",
  "wordid",
 ]
 
@@ -9832,6 +9833,7 @@ dependencies = [
  "indexmap 2.14.2",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow 0.7.15",
 ]
 

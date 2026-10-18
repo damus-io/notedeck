@@ -59,8 +59,9 @@ pub const OPTIONS_FOOTER: &str = "\
 SECRETS:
     A secret <name> is read from $CASHFLOW_<NAME> (upper-cased, - and . as _),
     else from the file secrets/<name> under the data dir. Secrets never go in
-    config.toml, and no command prints one. The vault's signing key is the
-    secret `nsec` ($CASHFLOW_NSEC), which `cashflow login` stores.
+    config.toml, and no command prints one. `cashflow secret set` stores one.
+    The vault's signing key is the secret `nsec` ($CASHFLOW_NSEC), which
+    `cashflow login` stores.
 ";
 
 /// How `--rules` files read, shared by the pages that take one (a macro so
@@ -89,8 +90,13 @@ const COMMANDS: &[CommandHelp] = &[
     CommandHelp {
         name: "config",
         group: SETUP,
-        summary: "Print the data dir's paths, or the effective config",
-        usage: &["config path [<name>] [--json]", "config show [--json]"],
+        summary: "Print the data dir's paths or config, or set a config key",
+        usage: &[
+            "config path [<name>] [--json]",
+            "config show [--json]",
+            "config set <table>.<key> <value>",
+            "config unset <table>.<key>",
+        ],
         details: "\
 `config path` prints the data dir's layout, one name and path per line:
 dir, config, journal, staging and secrets. With a <name>, just that path, so
@@ -98,13 +104,55 @@ a script can `cd \"$(cashflow config path journal)\"`. Nothing is created.
 
 `config show` prints the effective config.toml (a missing file is all
 defaults, an unknown key an error) and the secrets this run can see, by name
-and source. A secret's value is never printed.",
-        options: &[("--json", "Machine-readable output")],
+and source. A secret's value is never printed.
+
+`config set` writes one key of config.toml, creating the file or the table if
+need be. The <value> is read as TOML when it is a TOML value (true, 3,
+'[\"a\", \"b\"]', '\"quoted\"'), else as a string. The edited file must load,
+so an unknown key or a value of the wrong type is an error that changes
+nothing. The user's comments and key order are kept.
+
+`config unset` removes one key, and its table if that leaves it empty.
+
+config.toml is this machine's: settings every machine should share, such as
+the home commodity or the time zone, go in `cashflow settings`. Secrets go in
+`cashflow secret`, never here.",
+        options: &[("--json", "Machine-readable output (path and show)")],
         examples: &[
             "cashflow config path",
             "cashflow config path journal",
             "cashflow config show",
             "CASHFLOW_DIR=/tmp/cf cashflow config show --json",
+            "cashflow config set cln.node_id 03f3c1...",
+            "cashflow config set cln.host 203.0.113.7:9735",
+            "cashflow config set btc.wallets '[\"hot\", \"cold\"]'",
+            "cashflow config set rbc.accounts.1234 assets:rbc:chequing",
+            "cashflow config unset cln.timezone",
+        ],
+    },
+    CommandHelp {
+        name: "secret",
+        group: SETUP,
+        summary: "Store or remove a secret under secrets/",
+        usage: &["secret set <name>", "secret rm <name>"],
+        details: "\
+`secret set` stores stdin as the secret <name>: the file secrets/<name> under
+the data dir, owner-only (0600). The value is never an argument, which keeps
+it out of shell history. From a terminal one line is read; from a pipe, all of
+it. $CASHFLOW_<NAME>, when set, still wins over the file.
+
+`secret rm` deletes secrets/<name>.
+
+The secrets the importers read are cln-rune (the Core Lightning rune for
+`import cln`), bitcoind-rpc-password (with [btc] user, for `import btc`) and
+appstore.p8 (the App Store Connect API key). The vault's key, nsec, is stored
+by `cashflow login`. `config show` lists every secret by name, never value.",
+        options: &[],
+        examples: &[
+            "cashflow secret set cln-rune",
+            "pass show cln/rune | cashflow secret set cln-rune",
+            "cashflow secret set appstore.p8 < AuthKey_ABC123.p8",
+            "cashflow secret rm bitcoind-rpc-password",
         ],
     },
     CommandHelp {

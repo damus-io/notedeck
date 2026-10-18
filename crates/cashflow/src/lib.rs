@@ -2,7 +2,8 @@
 //! and the notedeck app (`crates/notedeck_cashflow`).
 //!
 //! So far it holds where cashflow keeps its data ([`CashflowDir`]), the
-//! per-machine settings file in it ([`Config`]), how a secret is read without
+//! per-machine settings file in it ([`Config`]), edited a key at a time by
+//! [`config_edit`], how a secret is read without
 //! being printed ([`Secret`]), and the account's private nostr vault
 //! ([`vault`]), whose records use the kinds in [`kinds`] and whose first
 //! record type is the synced [`settings`], among them the [`zone`] that dates
@@ -38,6 +39,7 @@ pub mod board_progress;
 pub mod books;
 pub mod chart;
 pub mod config;
+pub mod config_edit;
 pub mod csv;
 pub mod edits_cache;
 pub mod goals;

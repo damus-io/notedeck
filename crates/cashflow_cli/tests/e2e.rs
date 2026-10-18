@@ -150,3 +150,132 @@ fn config_show_rejects_unknown_keys() {
 
     cf.ok(&["config", "path", "config"]);
 }
+
+/// `config set` writes keys `config show` then reads back, in text and JSON,
+/// and `config unset` takes them out again, table and all.
+#[test]
+fn config_set_then_show_round_trips() {
+    let cf = Cashflow::knowing("secret");
+    let node = "03f3c1aa";
+    let out = cf.ok(&["config", "set", "cln.node_id", node]);
+    assert!(out.contains("set cln.node_id = \"03f3c1aa\""), "{out}");
+    cf.ok(&["config", "set", "cln.timezone", "-07:00"]);
+    cf.ok(&["config", "set", "btc.wallets", r#"["hot","cold"]"#]);
+    cf.ok(&["config", "set", "rbc.accounts.1234", "assets:rbc:chequing"]);
+    cf.ok(&["config", "set", "goals.auto_done", "false"]);
+
+    let json: Value = serde_json::from_str(&cf.ok(&["config", "show", "--json"])).unwrap();
+    let config = &json["config"];
+    assert_eq!(config["cln"]["node_id"], node);
+    assert_eq!(config["cln"]["timezone"], "-07:00");
+    assert_eq!(config["btc"]["wallets"], serde_json::json!(["hot", "cold"]));
+    assert_eq!(config["rbc"]["accounts"]["1234"], "assets:rbc:chequing");
+    assert_eq!(config["goals"]["auto_done"], false);
+
+    let text = cf.ok(&["config", "show"]);
+    assert!(text.contains("node_id = \"03f3c1aa\""), "{text}");
+
+    cf.ok(&["config", "unset", "rbc.accounts.1234"]);
+    let out = cf.ok(&["config", "unset", "rbc.accounts.1234"]);
+    assert!(out.contains("is not set"), "{out}");
+    let file = std::fs::read_to_string(cf.dir().join("config.toml")).unwrap();
+    assert!(!file.contains("rbc"), "{file}");
+    let json: Value = serde_json::from_str(&cf.ok(&["config", "show", "--json"])).unwrap();
+    assert!(json["config"].get("rbc").is_none(), "{json}");
+}
+
+/// A key `Config` doesn't know, or a value of the wrong type, fails and
+/// leaves `config.toml` byte-identical.
+#[test]
+fn config_set_unknown_key_changes_nothing() {
+    let cf = Cashflow::knowing("secret");
+    let path = cf.dir().join("config.toml");
+    let original = "# hand-written\n[cln]\nhost = \"a:9735\"\n";
+    std::fs::write(&path, original).unwrap();
+
+    let err = expect_failure(cf.run(&["config", "set", "cln.nod_id", "03ab"]));
+    assert!(err.contains("nod_id"), "{err}");
+    assert!(err.contains("unchanged"), "{err}");
+    let err = expect_failure(cf.run(&["config", "set", "frob.x", "1"]));
+    assert!(err.contains("frob"), "{err}");
+    let err = expect_failure(cf.run(&["config", "set", "goals.auto_done", "yes"]));
+    assert!(err.contains("auto_done"), "{err}");
+    let err = expect_failure(cf.run(&["config", "set", "cln", "x"]));
+    assert!(err.contains("<table>.<key>"), "{err}");
+
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    let names: Vec<_> = std::fs::read_dir(cf.dir())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["config.toml"], "a temp file was left behind");
+}
+
+/// A comment in `config.toml`, before a table or after a value, survives a
+/// set, and so does the order of the keys.
+#[test]
+fn config_set_keeps_comments() {
+    let cf = Cashflow::knowing("secret");
+    let path = cf.dir().join("config.toml");
+    std::fs::write(
+        &path,
+        "# my lightning node\n[cln]\nhost = \"a:9735\" # the vps\ntimezone = \"utc\"\n\n# cards\n[amex]\ntitle_case = true\n",
+    )
+    .unwrap();
+
+    cf.ok(&["config", "set", "cln.host", "b:9735"]);
+    cf.ok(&["config", "set", "cln.node_id", "03ab"]);
+    let file = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        file,
+        "# my lightning node\n[cln]\nhost = \"b:9735\" # the vps\ntimezone = \"utc\"\nnode_id = \"03ab\"\n\n# cards\n[amex]\ntitle_case = true\n"
+    );
+}
+
+/// `secret set` reads the value from stdin into `secrets/<name>`, 0600, and
+/// `config show` names it without printing it; `secret rm` removes it.
+#[test]
+fn secret_set_from_stdin() {
+    let cf = Cashflow::knowing("secret");
+    let out = cf.run_with_stdin(&["secret", "set", "cln-rune"], &format!("{PLANTED}\n"));
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let stdout = harness::expect_success(out);
+    assert!(stdout.contains("stored cln-rune"), "{stdout}");
+    assert!(
+        !stdout.contains(PLANTED) && !stderr.contains(PLANTED),
+        "{stdout}{stderr}"
+    );
+
+    let path = cf.dir().join("secrets").join("cln-rune");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        format!("{PLANTED}\n")
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    for args in [&["config", "show"][..], &["config", "show", "--json"]] {
+        let shown = cf.ok(args);
+        assert!(shown.contains("cln-rune"), "{shown}");
+        assert!(!shown.contains(PLANTED), "secret leaked:\n{shown}");
+    }
+
+    let err = expect_failure(cf.run_with_stdin(&["secret", "set", "cln-rune"], ""));
+    assert!(err.contains("nothing stored"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        format!("{PLANTED}\n")
+    );
+    let err = expect_failure(cf.run_with_stdin(&["secret", "set", "../config.toml"], "x"));
+    assert!(err.contains("not a secret name"), "{err}");
+
+    let out = cf.ok(&["secret", "rm", "cln-rune"]);
+    assert!(out.contains("removed cln-rune"), "{out}");
+    assert!(!path.exists());
+    let out = cf.ok(&["secret", "rm", "cln-rune"]);
+    assert!(out.contains("no stored secret"), "{out}");
+}

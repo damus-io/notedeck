@@ -66,6 +66,9 @@ pub enum ConfigError {
     /// A secret file couldn't be written or removed.
     #[error("writing {path}: {source}")]
     Write { path: PathBuf, source: io::Error },
+    /// A secret's name isn't a plain file name under `secrets/`.
+    #[error("'{0}' is not a secret name: give a file name such as cln-rune, with no /")]
+    SecretName(String),
 }
 
 /// The data directory and the fixed layout under it.
@@ -198,10 +201,12 @@ impl CashflowDir {
     }
 
     /// Store secret `name` as the file `secrets/<name>`, owner-only (0600 on
-    /// unix) from the moment it exists, creating the data dir if need be.
-    /// Returns the file's path. A `$CASHFLOW_<NAME>` variable still wins over
-    /// it on read (see [`Self::secret`]).
+    /// unix) from the moment it exists, and made so if an older file wasn't,
+    /// creating the data dir if need be. Returns the file's path. A
+    /// `$CASHFLOW_<NAME>` variable still wins over it on read (see
+    /// [`Self::secret`]).
     pub fn write_secret(&self, name: &str, value: &str) -> Result<PathBuf, ConfigError> {
+        check_secret_name(name)?;
         self.create()?;
         let path = self.secrets().join(name);
         let write = |path: &Path| -> io::Result<()> {
@@ -210,9 +215,13 @@ impl CashflowDir {
             options.write(true).create(true).truncate(true);
             #[cfg(unix)]
             std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-            options
-                .open(path)?
-                .write_all(format!("{value}\n").as_bytes())
+            let mut file = options.open(path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+            file.write_all(format!("{value}\n").as_bytes())
         };
         write(&path).map_err(|source| ConfigError::Write {
             path: path.clone(),
@@ -224,6 +233,7 @@ impl CashflowDir {
     /// Delete the file `secrets/<name>`. `Ok(None)` when there was none,
     /// else its path.
     pub fn remove_secret(&self, name: &str) -> Result<Option<PathBuf>, ConfigError> {
+        check_secret_name(name)?;
         let path = self.secrets().join(name);
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(Some(path)),
@@ -302,6 +312,17 @@ pub fn secret_env_var(name: &str) -> String {
         })
         .collect();
     format!("{ENV_PREFIX}{tail}")
+}
+
+/// `name` is a plain file name, so `secrets/<name>` stays inside `secrets/`.
+fn check_secret_name(name: &str) -> Result<(), ConfigError> {
+    let plain =
+        !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0']);
+    if plain {
+        Ok(())
+    } else {
+        Err(ConfigError::SecretName(name.to_owned()))
+    }
 }
 
 #[cfg(unix)]
@@ -770,6 +791,37 @@ mod tests {
         assert_eq!(dir.remove_secret("test-only-key").unwrap(), Some(path));
         assert_eq!(dir.remove_secret("test-only-key").unwrap(), None);
         assert!(dir.secret("test-only-key").unwrap().is_none());
+    }
+
+    /// Overwriting a secret whose file is world-readable makes it owner-only,
+    /// and a name that would leave `secrets/` is refused.
+    #[test]
+    fn write_secret_tightens_and_checks_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = CashflowDir::new(tmp.path());
+        dir.create().unwrap();
+        let path = dir.secrets().join("loose");
+        std::fs::write(&path, "old").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            dir.write_secret("loose", "new").unwrap();
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        for name in ["", ".", "..", "../config.toml", "a/b"] {
+            assert!(
+                matches!(dir.write_secret(name, "x"), Err(ConfigError::SecretName(_))),
+                "{name:?}"
+            );
+            assert!(
+                matches!(dir.remove_secret(name), Err(ConfigError::SecretName(_))),
+                "{name:?}"
+            );
+        }
+        assert!(!tmp.path().join("config.toml").exists());
     }
 
     /// Entries list secret files then `CASHFLOW_*` variables, each sorted,

@@ -11,8 +11,9 @@
 //! sibling build without it is never picked.
 
 use std::ffi::OsStr;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use tempfile::TempDir;
 
@@ -98,6 +99,23 @@ impl Cashflow {
     #[allow(dead_code)]
     pub fn run<S: AsRef<OsStr>>(&self, args: &[S]) -> Output {
         self.command().args(args).output().expect("run cashflow")
+    }
+
+    /// Run `cashflow <args>` with `input` on stdin, then closed.
+    #[allow(dead_code)]
+    pub fn run_with_stdin<S: AsRef<OsStr>>(&self, args: &[S], input: &str) -> Output {
+        let mut child = self
+            .command()
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn cashflow");
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        stdin.write_all(input.as_bytes()).expect("write stdin");
+        drop(stdin);
+        child.wait_with_output().expect("run cashflow")
     }
 
     /// Run `cashflow <args>`, panic unless it succeeds, and return its stdout.
