@@ -22,7 +22,8 @@ use super::review_comments::{
     DraftComment, ReviewDrafts, comments_ui, commit_comments_ui, location_place, posted_comment_ui,
 };
 use super::review_sources::{
-    ExplainerCache, ReviewTab, explainer_ui, review_tabs_ui, walk_note_ui, walk_top_ui,
+    ExplainerCache, ReviewTab, explainer_ui, has_explainer, review_tabs_ui, shown_tab,
+    walk_note_ui, walk_top_ui,
 };
 use super::widgets::{
     ChevronDir, ControlSize, ICON_BUTTON, ICON_BUTTON_SM, IconFace, MiddleElided, StatusIcon,
@@ -60,7 +61,7 @@ pub(crate) struct ReviewUi {
     card_ref: String,
     /// The record [`location`](Self::location) was built for.
     location_for: Option<NoteId>,
-    /// The shown record's `host:path`, elided to the commit line's width.
+    /// The shown record's `host:path`, elided to fit its byline.
     location: MiddleElided,
     /// The pane was opened (or moved to another card) since it last drew, so
     /// its trailer search is re-run (see [`ReviewLoader::expire`]).
@@ -775,9 +776,10 @@ fn prefetch(
 }
 
 /// Draw the review pane for `card`, which sits in `view`'s column `col`: the
-/// two-row header ([`review_topbar_ui`]), the record picker when there are
-/// several, the commit line, the resolve status with the record's session,
-/// and the commit's diff filling the rest. ← Back closes it, as `q`/`Esc` do
+/// two-row header ([`review_topbar_ui`]), the view bar under it with the
+/// Diff / Explainer tabs and the record picker ([`view_bar_ui`]), then the
+/// resolve status or the commit's diff filling the rest, opening on the
+/// commit's subject, byline and body ([`commit_header_ui`]). ← Back closes it, as `q`/`Esc` do
 /// (`headway_back`, through [`crate::keys::apply_pane_tool`]).
 ///
 /// The header's icon clicks raise the [`CardAction`] their key does and are
@@ -873,39 +875,24 @@ pub(super) fn review_pane_ui(
                 queue,
             };
             let clicked = review_topbar_ui(ui, theme, header, review, notice, lands);
-            ui.add_space(SPACING_SM);
-            ui.separator();
-            ui.add_space(SPACING_SM);
-
-            if card.reviews.len() > 1 {
-                if let Some(picked) = record_picker_ui(ui, &card.reviews, shown) {
-                    review.record = Some(picked);
-                }
-                ui.add_space(SPACING_XS);
+            ui.add_space(SPACING_MD);
+            if let Some(picked) =
+                view_bar_ui(ui, theme, record, &card.reviews, shown, &mut review.tab)
+            {
+                review.record = Some(picked);
             }
-            if let Some(r) = record {
-                record_summary_ui(ui, theme, &r.fields, &card.title, &mut review.location);
-            }
-            ui.add_space(SPACING_XS);
-            let tab = review_tabs_ui(ui, record, &mut review.tab);
-            if let (ReviewTab::Explainer, Some(r)) = (tab, record) {
+            ui.add_space(SPACING_MD);
+            if let (ReviewTab::Explainer, Some(r)) = (shown_tab(record, review.tab), record) {
                 explainer_ui(ui, theme, app_ctx, &mut review.explainer, r);
                 return clicked;
             }
-            let session = record.and_then(|r| r.fields.agentium.as_deref());
-            let comments = Comments {
+            let shown = Shown {
                 record,
                 drafts: &mut review.drafts,
+                card_title: &card.title,
+                location: &mut review.location,
             };
-            let chip = load_ui(
-                ui,
-                theme,
-                app_ctx,
-                &mut review.loader,
-                source,
-                session,
-                comments,
-            );
+            let chip = load_ui(ui, theme, app_ctx, &mut review.loader, source, shown);
             let chip = chip.then_some(TopbarClick::Card(CardAction::Session(
                 SessionOpen::Plain,
                 None,
@@ -929,11 +916,17 @@ enum TopbarClick {
     SendComments,
 }
 
-/// The shown record and the pane's drafts, for [`load_ui`]'s comment
-/// composer above the diff.
-struct Comments<'a> {
+/// The shown record and what the pane keeps for it, for [`load_ui`]: the
+/// drafts for its comment composer above the diff, and what the commit's
+/// header at the top of the diff draws besides the load.
+struct Shown<'a> {
     record: Option<&'a ReviewView>,
     drafts: &'a mut ReviewDrafts,
+    /// The card's title, which the commit's subject is left out under when
+    /// it's the same.
+    card_title: &'a str,
+    /// The record's `host:path`, elided to fit its byline.
+    location: &'a mut MiddleElided,
 }
 
 /// Start `source`'s load if it hasn't been: the record (or the card's trailer)
@@ -1317,27 +1310,95 @@ fn card_status_ui(ui: &mut egui::Ui, theme: &ColorTheme, status: CardStatus<'_>,
     );
 }
 
-/// One selectable chip per record, newest first, labelled by short sha, with
-/// the `shown`-th selected. Returns the note id of a chip clicked this frame.
-fn record_picker_ui(ui: &mut egui::Ui, reviews: &[ReviewView], shown: usize) -> Option<NoteId> {
+/// Height of the view bar's row: its tabs' and its chips' height, so the
+/// tabs' underline sits on the rule under it.
+const VIEW_BAR_HEIGHT: f32 = 28.0;
+
+/// The bar between the header and what the pane shows, Linear's view tabs:
+/// Diff / Explainer source on the left when the record has an explainer
+/// ([`review_tabs_ui`]), the card's records as sha chips on the right when it
+/// has more than one ([`record_picker_ui`]), and a hairline rule the width of
+/// the pane under both, which the shown tab's underline sits on. With
+/// neither it is just the rule, closing off the header.
+///
+/// Returns the note id of a record chip clicked this frame.
+fn view_bar_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    record: Option<&ReviewView>,
+    reviews: &[ReviewView],
+    shown: usize,
+    tab: &mut ReviewTab,
+) -> Option<NoteId> {
+    let tabs = has_explainer(record);
+    let picker = reviews.len() > 1;
+    // Under everything the row draws, so the tab's underline covers it.
+    let rule = ui.painter().add(egui::Shape::Noop);
     let mut picked = None;
-    ui.horizontal_wrapped(|ui| {
-        for (i, r) in reviews.iter().enumerate() {
-            let sha = r.fields.commit.as_deref().map_or("(no commit)", short_sha);
-            let chip = ui.selectable_label(shown == i, egui::RichText::new(sha).monospace());
-            let chip = match r.fields.title.as_deref() {
-                Some(title) => chip.on_hover_text(title),
-                None => chip,
-            };
-            if chip.clicked() {
-                picked = Some(r.id);
+    let bottom = if tabs || picker {
+        ui.horizontal(|ui| {
+            ui.set_min_height(VIEW_BAR_HEIGHT);
+            if tabs {
+                review_tabs_ui(ui, theme, tab, VIEW_BAR_HEIGHT);
             }
-        }
-    });
+            if picker {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    picked = record_picker_ui(ui, theme, reviews, shown);
+                });
+            }
+        })
+        .response
+        .rect
+        .bottom()
+    } else {
+        ui.cursor().top()
+    };
+    let x = ui.max_rect().x_range();
+    let stroke = egui::Stroke::new(1.0, theme.border_default);
+    ui.painter()
+        .set(rule, egui::Shape::hline(x, bottom - 0.5, stroke));
     picked
 }
 
-/// Share of the commit line a record's `host:path` may take before it's
+/// One chip per record, each its short sha in a pill, the `shown`-th in the
+/// accent and the rest muted. Laid out right to left from the oldest, so
+/// they read newest first. Returns the note id of a chip clicked this frame.
+fn record_picker_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    reviews: &[ReviewView],
+    shown: usize,
+) -> Option<NoteId> {
+    let mut picked = None;
+    for (i, r) in reviews.iter().enumerate().rev() {
+        if i + 1 < reviews.len() {
+            ui.add_space(SPACING_XS);
+        }
+        let sha = r.fields.commit.as_deref().map_or("(no commit)", short_sha);
+        let color = if shown == i {
+            theme.accent
+        } else {
+            theme.text_muted
+        };
+        let chip = tinted_control(
+            ui,
+            egui::RichText::new(sha).monospace(),
+            color,
+            ControlSize::Pill,
+            egui::Sense::click(),
+        );
+        let chip = match r.fields.title.as_deref() {
+            Some(title) => chip.on_hover_text(title),
+            None => chip,
+        };
+        if chip.clicked() {
+            picked = Some(r.id);
+        }
+    }
+    picked
+}
+
+/// Share of the byline's line a record's `host:path` may take before it's
 /// elided in its middle.
 const LOCATION_SHARE: f32 = 0.4;
 
@@ -1348,64 +1409,6 @@ fn host_path(fields: &ReviewFields) -> String {
         (Some(host), Some(path)) => format!("{host}:{path}"),
         (Some(part), None) | (None, Some(part)) => part.to_string(),
         (None, None) => String::new(),
-    }
-}
-
-/// The pane's commit line: the sha as a pill (click copies it) and the subject,
-/// unless it's the card's title already in the header; then, on the right, where
-/// the record was made — `location` (`host:path`, elided in its middle past
-/// [`LOCATION_SHARE`] of the row, full on hover) and `⎇ branch`, small and muted.
-/// A narrow screen leaves the location out so the subject keeps the row, as the
-/// header leaves out the card ref.
-///
-/// The right side lays out first, right to left, so the subject knows how much
-/// room is left to elide into.
-fn record_summary_ui(
-    ui: &mut egui::Ui,
-    theme: &ColorTheme,
-    fields: &ReviewFields,
-    card_title: &str,
-    location: &mut MiddleElided,
-) {
-    let narrow = notedeck::ui::is_narrow(ui.ctx());
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = SPACING_XS;
-        let location_width = ui.available_width() * LOCATION_SHARE;
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if !narrow {
-                elided_location_ui(ui, theme, fields, location, location_width);
-            }
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                if let Some(sha) = fields.commit.as_deref()
-                    && sha_pill(ui, theme, sha).on_hover_text(sha).clicked()
-                {
-                    ui.ctx().copy_text(sha.to_owned());
-                }
-                if let Some(subject) = fields.title.as_deref().filter(|t| *t != card_title) {
-                    let subject = egui::RichText::new(subject).color(theme.text_primary);
-                    ui.add(egui::Label::new(subject).truncate());
-                }
-            });
-        });
-    });
-}
-
-/// The commit line's right side, laid out right to left: `⎇ branch`, then
-/// `location` elided to `location_width`, small and muted.
-fn elided_location_ui(
-    ui: &mut egui::Ui,
-    theme: &ColorTheme,
-    fields: &ReviewFields,
-    location: &mut MiddleElided,
-    location_width: f32,
-) {
-    if let Some(branch) = fields.branch.as_deref() {
-        let muted = |text: &str| egui::RichText::new(text).small().color(theme.text_muted);
-        ui.label(muted(branch));
-        ui.label(muted("⎇"));
-    }
-    if !location.is_empty() {
-        location.ui(ui, theme.text_muted, location_width);
     }
 }
 
@@ -1435,8 +1438,7 @@ fn load_ui(
     app_ctx: &mut notedeck::AppContext,
     loader: &mut ReviewLoader,
     source: ReviewSource,
-    session: Option<&str>,
-    comments: Comments<'_>,
+    shown: Shown<'_>,
 ) -> bool {
     let mut retry = false;
     let mut chip = false;
@@ -1463,10 +1465,21 @@ fn load_ui(
             retry = ui.button("Retry").clicked();
         }
         Some(ReviewLoad::Ready(loaded)) => {
-            comments_ui(ui, theme, loaded, comments.record, comments.drafts);
-            if let Some(header) = patch_ui(ui, theme, app_ctx, loaded, comments.record) {
+            let Shown {
+                record,
+                drafts,
+                card_title,
+                location,
+            } = shown;
+            comments_ui(ui, theme, loaded, record, drafts);
+            if let Some(header) = patch_ui(ui, theme, app_ctx, loaded, record) {
+                let commit = CommitHeader {
+                    record,
+                    card_title,
+                    location,
+                };
                 let rows = header.show(ui, |ui| {
-                    chip = commit_header_ui(ui, theme, app_ctx, loaded, session, comments.record);
+                    chip = commit_header_ui(ui, theme, app_ctx, loaded, commit);
                 });
                 loaded.patch_state.set_header_rows(rows);
             }
@@ -1478,10 +1491,22 @@ fn load_ui(
     chip
 }
 
-/// The top of the diff, which scrolls away with it: one line with who wrote
-/// the commit and when, where it came from (the full sentence, with the
-/// repo's path, on hover), the record's agentium `session` as its chip, and
-/// whether its patch was cut short. Under it the commit message's body
+/// What [`commit_header_ui`] draws besides the load: the record, the card's
+/// title its subject is checked against, and the record's elided location.
+struct CommitHeader<'a> {
+    record: Option<&'a ReviewView>,
+    card_title: &'a str,
+    location: &'a mut MiddleElided,
+}
+
+/// The top of the diff, which scrolls away with it. The commit's subject,
+/// unless it's the card's title already in the header; then the byline, in
+/// small muted text that wraps: the sha as a pill (click copies it), who
+/// wrote the commit and when, where it came from (the full sentence, with the
+/// repo's path, on hover), where the record was made (`⎇ branch` and
+/// `host:path`, elided in its middle past [`LOCATION_SHARE`] of the line, full
+/// on hover), the record's agentium session as its chip, and whether its
+/// patch was cut short. Under it the commit message's body
 /// ([`commit_body_ui`]), the comments posted on the commit as a whole
 /// ([`commit_comments_ui`]) and the code walk's notes on no hunk
 /// ([`walk_top_ui`]). `true` when the session chip was clicked.
@@ -1490,13 +1515,36 @@ fn commit_header_ui(
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     loaded: &mut LoadedReview,
-    session: Option<&str>,
-    record: Option<&ReviewView>,
+    commit: CommitHeader<'_>,
 ) -> bool {
+    let CommitHeader {
+        record,
+        card_title,
+        location,
+    } = commit;
+    let fields = record.map(|r| &r.fields);
+    let session = fields.and_then(|f| f.agentium.as_deref());
+    if let Some(subject) = fields
+        .and_then(|f| f.title.as_deref())
+        .filter(|t| *t != card_title)
+    {
+        let subject = egui::RichText::new(subject)
+            .strong()
+            .color(theme.text_primary);
+        ui.add(egui::Label::new(subject).wrap());
+        ui.add_space(SPACING_XS);
+    }
     let mut chip = false;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = SPACING_XS;
+        let line_width = ui.available_width();
         let muted = |text: &str| egui::RichText::new(text).small().color(theme.text_muted);
+        if let Some(sha) = fields.and_then(|f| f.commit.as_deref()) {
+            if sha_pill(ui, theme, sha).on_hover_text(sha).clicked() {
+                ui.ctx().copy_text(sha.to_owned());
+            }
+            ui.add_space(SPACING_XS);
+        }
         ui.label(muted(&loaded.byline.short))
             .on_hover_text(loaded.byline.full.as_str());
         ui.label(muted("·"));
@@ -1523,6 +1571,19 @@ fn commit_header_ui(
                 "The recorded commit couldn't be found, so this is the newest \
                          commit carrying the card's Headway trailer.",
             );
+        }
+        if let Some(branch) = fields.and_then(|f| f.branch.as_deref()) {
+            ui.label(muted("·"));
+            ui.label(muted("⎇"));
+            ui.label(muted(branch));
+        }
+        if record.is_some() && !location.is_empty() {
+            ui.label(muted("·"));
+            let width = line_width * LOCATION_SHARE;
+            if ui.available_size_before_wrap().x < location.width(ui, width) {
+                ui.end_row();
+            }
+            location.ui(ui, theme.text_muted, width);
         }
         if let Some(session) = session {
             ui.label(muted("·"));

@@ -5157,7 +5157,10 @@ fn review_sources_thread_the_walk_and_render_the_explainer() {
         )
         .rect();
     assert!(queue_note.bottom() <= queue_header.top());
-    assert!(queue_header.top() - queue_note.bottom() < 40.0);
+    assert!(
+        queue_header.top() - queue_note.bottom() < 40.0,
+        "{queue_note:?} {queue_header:?}"
+    );
     // The intro is above the whole diff.
     let intro = rect(&harness, "Start with the queue.");
     assert!(intro.bottom() < keys_note.top(), "{intro:?} {keys_note:?}");

@@ -6,7 +6,7 @@
 use headway::event::{ReviewSourceRole, ReviewView};
 use md_stream::ParsedMarkdown;
 use notedeck::ColorTheme;
-use notedeck::tokens::{SPACING_SM, SPACING_XS};
+use notedeck::tokens::{RADIUS_MD, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THICK};
 
 use super::widgets::{text_pill, tinted_pill};
 use crate::review_walk::{CodeWalk, ExplainerPage};
@@ -43,24 +43,84 @@ impl ExplainerCache {
     }
 }
 
-/// The Diff / Explainer switch, drawn only when `record` has an explainer
-/// source. Returns the tab to show: always [`ReviewTab::Diff`] for a record
-/// without one, whatever was picked on another.
+/// Whether `record` has an explainer source, so the pane offers its tab.
+pub(super) fn has_explainer(record: Option<&ReviewView>) -> bool {
+    record.is_some_and(|r| r.source(ReviewSourceRole::Explainer).is_some())
+}
+
+/// The tab to show for `record`: the one picked, but always
+/// [`ReviewTab::Diff`] for a record without an explainer, whatever was picked
+/// on another.
+pub(super) fn shown_tab(record: Option<&ReviewView>, tab: ReviewTab) -> ReviewTab {
+    if has_explainer(record) {
+        tab
+    } else {
+        ReviewTab::Diff
+    }
+}
+
+/// The Diff / Explainer switch as Linear's view tabs: plain text, the shown
+/// tab in primary text over an accent underline, the other muted. Each is
+/// `height` tall, so the underline lands on the bottom of the row the caller
+/// rules off under them.
 pub(super) fn review_tabs_ui(
     ui: &mut egui::Ui,
-    record: Option<&ReviewView>,
+    theme: &ColorTheme,
     tab: &mut ReviewTab,
-) -> ReviewTab {
-    let has_explainer = record.is_some_and(|r| r.source(ReviewSourceRole::Explainer).is_some());
-    if !has_explainer {
-        return ReviewTab::Diff;
+    height: f32,
+) {
+    let tabs = [
+        (ReviewTab::Diff, "Diff"),
+        (ReviewTab::Explainer, "Explainer source"),
+    ];
+    for (i, (value, label)) in tabs.into_iter().enumerate() {
+        if i > 0 {
+            ui.add_space(SPACING_MD);
+        }
+        if view_tab_ui(ui, theme, label, *tab == value, height).clicked() {
+            *tab = value;
+        }
     }
-    ui.horizontal(|ui| {
-        ui.selectable_value(tab, ReviewTab::Diff, "Diff");
-        ui.selectable_value(tab, ReviewTab::Explainer, "Explainer source");
+}
+
+/// One of [`review_tabs_ui`]'s tabs: `label` `height` tall, its text centred,
+/// and while `selected` an accent bar along its bottom edge.
+fn view_tab_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    label: &str,
+    selected: bool,
+    height: f32,
+) -> egui::Response {
+    let color = if selected {
+        theme.text_primary
+    } else {
+        theme.text_muted
+    };
+    let galley = egui::WidgetText::from(egui::RichText::new(label).color(color)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Body,
+    );
+    let size = egui::vec2(galley.size().x, height);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::Role::Button, true, selected, galley.text())
     });
-    ui.add_space(SPACING_XS);
-    *tab
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let hovered = response.hovered() && !selected;
+    let text_color = if hovered { theme.text_secondary } else { color };
+    let origin = egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0);
+    ui.painter().galley(origin, galley, text_color);
+    if selected {
+        let bar = egui::Rect::from_min_max(
+            egui::pos2(rect.left(), rect.bottom() - STROKE_THICK),
+            rect.max,
+        );
+        ui.painter().rect_filled(bar, 0.0, theme.accent);
+    }
+    response
 }
 
 /// `record`'s explainer source as a page filling the rest of the pane: its
@@ -109,7 +169,9 @@ pub(super) fn explainer_ui(
 
 /// The walk's notes that thread onto no hunk — its intro, its closing words,
 /// and any whose hunk wasn't found (saying which) — in the diff's header, so
-/// they scroll away with it.
+/// they scroll away with it. Each is drawn as the notes in the diff are
+/// ([`walk_frame`]), with the link-coloured bar the diff gives them, so a
+/// walk reads as one voice from its intro down through the hunks.
 pub(super) fn walk_top_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -120,16 +182,50 @@ pub(super) fn walk_top_ui(
         return;
     }
     for note in walk.top() {
-        if let Some(missing) = &note.missing {
-            tinted_pill(ui, missing, theme.warning);
-        }
-        markdown_ui(ui, app_ctx, None, &note.body);
-        ui.add_space(SPACING_XS);
+        let bar = ui.visuals().hyperlink_color;
+        let shown = walk_frame(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if let Some(missing) = &note.missing {
+                tinted_pill(ui, missing, theme.warning);
+                ui.add_space(SPACING_XS);
+            }
+            markdown_ui(ui, app_ctx, None, &note.body);
+        });
+        let rect = shown.response.rect;
+        let edge =
+            egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + WALK_BAR, rect.bottom()));
+        ui.painter().rect_filled(edge, 0.0, bar);
+        ui.add_space(SPACING_SM);
     }
-    ui.add_space(SPACING_SM);
 }
 
-/// Walk note `key` where the diff hands it its rows, above its hunk.
+/// Width of the bar down a walk note's left edge in the header, as the diff
+/// marks one inside it.
+const WALK_BAR: f32 = 3.0;
+
+/// The card a walk note's prose sits in: a faint tint of the link colour the
+/// walk is marked in, rounded on the right where the bar doesn't run, and
+/// padded so the prose doesn't touch its edges — the diff's band alone
+/// left it flush against the hunks around it.
+fn walk_frame(ui: &egui::Ui) -> egui::Frame {
+    let tint = ui.visuals().hyperlink_color.gamma_multiply(WALK_TINT);
+    let r = RADIUS_MD as u8;
+    egui::Frame::new()
+        .fill(tint)
+        .corner_radius(egui::CornerRadius {
+            nw: 0,
+            sw: 0,
+            ne: r,
+            se: r,
+        })
+        .inner_margin(egui::Margin::symmetric(SPACING_MD as i8, SPACING_SM as i8))
+}
+
+/// How strongly a walk note's card is tinted with the walk's colour.
+const WALK_TINT: f32 = 0.08;
+
+/// Walk note `key` where the diff hands it its rows, above its hunk: in the
+/// same card as the header's ([`walk_frame`]), as wide as the diff gives it.
 pub(super) fn walk_note_ui(
     ui: &mut egui::Ui,
     app_ctx: &mut notedeck::AppContext,
@@ -137,9 +233,13 @@ pub(super) fn walk_note_ui(
     walk: &CodeWalk,
     key: usize,
 ) {
-    if let Some(note) = walk.notes.get(key) {
+    let Some(note) = walk.notes.get(key) else {
+        return;
+    };
+    walk_frame(ui).show(ui, |ui| {
+        ui.set_width(ui.available_width());
         markdown_ui(ui, app_ctx, txn, &note.body);
-    }
+    });
 }
 
 /// `md`, with refs resolved through `txn`, or one opened here when the caller

@@ -314,6 +314,8 @@ pub(super) struct MiddleElided {
     /// The whole-pixel width [`shown`](Self::shown) was cut for.
     width: Option<f32>,
     shown: String,
+    /// How wide [`shown`](Self::shown) draws.
+    shown_width: f32,
 }
 
 impl MiddleElided {
@@ -330,21 +332,30 @@ impl MiddleElided {
         self.full.is_empty()
     }
 
-    /// Draw the text in small `color`, no wider than `max_width`.
-    pub(super) fn ui(&mut self, ui: &mut egui::Ui, color: egui::Color32, max_width: f32) {
+    /// How wide the text draws cut to `max_width`, cutting it now if
+    /// `max_width` changed: for a wrapping row to know whether it fits on
+    /// the line before drawing it.
+    pub(super) fn width(&mut self, ui: &egui::Ui, max_width: f32) -> f32 {
         let width = max_width.floor();
         if self.width != Some(width) {
             let font = egui::TextStyle::Small.resolve(ui.style());
-            self.shown = ui.fonts_mut(|fonts| {
-                elide_middle(&self.full, width, |s| {
-                    fonts
-                        .layout_no_wrap(s.to_owned(), font.clone(), color)
-                        .size()
-                        .x
-                })
-            });
+            let measure = |fonts: &mut egui::epaint::FontsView<'_>, s: &str| {
+                fonts
+                    .layout_no_wrap(s.to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+                    .size()
+                    .x
+            };
+            self.shown =
+                ui.fonts_mut(|fonts| elide_middle(&self.full, width, |s| measure(fonts, s)));
+            self.shown_width = ui.fonts_mut(|fonts| measure(fonts, &self.shown));
             self.width = Some(width);
         }
+        self.shown_width
+    }
+
+    /// Draw the text in small `color`, no wider than `max_width`.
+    pub(super) fn ui(&mut self, ui: &mut egui::Ui, color: egui::Color32, max_width: f32) {
+        self.width(ui, max_width);
         let label = ui.label(
             egui::RichText::new(self.shown.as_str())
                 .small()

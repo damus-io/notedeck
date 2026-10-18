@@ -52,6 +52,13 @@ const INSERT_BG: Color32 = Color32::from_rgba_premultiplied(9, 28, 9, 40);
 const DELETE_GUTTER_BG: Color32 = Color32::from_rgba_premultiplied(55, 16, 16, 70);
 const INSERT_GUTTER_BG: Color32 = Color32::from_rgba_premultiplied(16, 49, 16, 70);
 
+/// A hunk header's band: a cool blue, rgb(56,139,253) @ alpha=28, so each
+/// hunk opens on a band neither the added nor the removed tint uses.
+const HUNK_BG: Color32 = Color32::from_rgba_premultiplied(6, 15, 28, 28);
+/// A hunk header's `@@ -a,b +c,d @@` range, in the band's hue, so it reads as
+/// chrome and the function context after it as the heading.
+const HUNK_RANGE_COLOR: Color32 = Color32::from_rgb(110, 150, 215);
+
 /// Whether a diff line is unchanged context, removed, or added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffTag {

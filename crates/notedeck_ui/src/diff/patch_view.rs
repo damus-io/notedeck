@@ -12,8 +12,8 @@
 use super::patch::{FilePatch, FileStatus, GitPatch, LineKind};
 use super::patch_images::{images_ui, FileImages, ImageGeometry, ModelInput, ShownImages};
 use super::{
-    file_extension, DiffTag, RowGalleys, DELETE_COLOR, DIFF_FONT_SIZE, INSERT_COLOR,
-    LINE_NUMBER_COLOR,
+    file_extension, DiffTag, RowGalleys, DELETE_COLOR, DIFF_FONT_SIZE, HUNK_BG, HUNK_RANGE_COLOR,
+    INSERT_COLOR, LINE_NUMBER_COLOR,
 };
 use egui::emath::GuiRounding;
 use egui::epaint::{text::TextOptions, TextShape};
@@ -43,6 +43,21 @@ const BAR_BLOCK: f32 = 7.0;
 const BAR_BLOCK_GAP: f32 = 2.0;
 /// Width of the whole bar.
 const BAR_WIDTH: f32 = BAR_BLOCKS as f32 * (BAR_BLOCK + BAR_BLOCK_GAP) - BAR_BLOCK_GAP;
+
+/// Font size of the file table — the summary, each file's row in it and each
+/// file's header — and of the one-line notes. A step under the body font, so
+/// a row is sized by the diff's own lines rather than by the table's text.
+const TABLE_FONT_SIZE: f32 = 13.0;
+/// Room above and below the taller of a diff line and a table row, inside
+/// every row.
+const ROW_PAD: f32 = 0.0;
+/// Room kept clear at the file table's right edge, so the stats aren't drawn
+/// under the scroll bar, which floats over the rows.
+const SCROLL_BAR_GUTTER: f32 = 12.0;
+/// Room above and below a note the caller draws, inside its band.
+const NOTE_PAD_Y: f32 = 6.0;
+/// Half the width of a file header's collapse chevron.
+const CHEVRON_HALF: f32 = 3.5;
 
 /// Gap between a diff line's line numbers and its `+`/`-` marker.
 const GUTTER_GAP: f32 = 8.0;
@@ -220,6 +235,9 @@ pub struct GitPatchState {
     /// How many rows each of `line_notes` takes: one for a plain note, what
     /// its drawer last needed for one the caller draws.
     note_rows: Vec<usize>,
+    /// How tall each of `line_notes`' drawers last drew it, so its next pass
+    /// centres it in its whole rows; 0 until it has drawn.
+    note_heights: Vec<f32>,
     /// Running totals of `note_rows`, one longer than it: the rows every note
     /// before index `n` takes is `note_prefix[n]`.
     note_prefix: Vec<usize>,
@@ -409,7 +427,7 @@ impl LineGalleys {
             return cached.galley.clone();
         }
         let first = note.text.lines().next().unwrap_or_default().to_owned();
-        let font = egui::TextStyle::Body.resolve(ui.style());
+        let font = table_font();
         let galley = ui.fonts_mut(|f| f.layout_no_wrap(first, font, ui.visuals().text_color()));
         self.notes.insert(
             n,
@@ -527,7 +545,7 @@ struct StatColumns {
 impl StatColumns {
     /// Measure the labels again if the stat font or scale changed.
     fn update(&mut self, rows: &[FileRow], totals: &Stats, ui: &Ui) {
-        let key = (stat_font(ui), ui.ctx().pixels_per_point());
+        let key = (stat_font(), ui.ctx().pixels_per_point());
         if self.key.as_ref() == Some(&key) {
             return;
         }
@@ -712,6 +730,7 @@ impl GitPatchState {
             self.note_spans.push(start..end);
         }
         self.note_rows = vec![1; notes.len()];
+        self.note_heights = vec![0.0; notes.len()];
         self.line_notes = notes;
         self.sum_note_rows();
         self.notes_stamp = Some(stamp);
@@ -1261,12 +1280,22 @@ pub fn git_patch_ui_with(
     out.inner
 }
 
-/// The one height every row is drawn at: tall enough for a diff line, a
-/// body-text label and egui's own minimum interactive height.
+/// The one height every row is drawn at: the taller of a diff line and a
+/// file-table row, with [`ROW_PAD`] above and below. Not the body font's nor
+/// egui's minimum interactive height, either of which spaces the diff's lines
+/// further apart than its text needs; every row sets its own interactive
+/// height to this one.
 fn row_height(ui: &Ui) -> f32 {
-    let mono = ui.fonts_mut(|f| f.row_height(&FontId::monospace(DIFF_FONT_SIZE)));
-    let body = ui.text_style_height(&egui::TextStyle::Body);
-    ui.spacing().interact_size.y.max(mono).max(body)
+    let text = ui.fonts_mut(|f| {
+        f.row_height(&FontId::monospace(DIFF_FONT_SIZE))
+            .max(f.row_height(&table_font()))
+    });
+    (text + 2.0 * ROW_PAD).ceil()
+}
+
+/// The file table's font (see [`TABLE_FONT_SIZE`]).
+fn table_font() -> FontId {
+    FontId::proportional(TABLE_FONT_SIZE)
 }
 
 fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
@@ -1275,7 +1304,7 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
         Row::Summary => {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                ui.strong(&state.summary);
+                ui.label(RichText::new(&state.summary).font(table_font()).strong());
                 let right = row_right(ui);
                 ui.add_space((right - ui.cursor().left() - state.columns.width()).max(COLUMN_GAP));
                 stats_ui(&state.totals, &state.columns, ui);
@@ -1310,7 +1339,7 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 // Under the path column.
                 ui.add_space(ui.spacing().icon_width + STATUS_WIDTH);
-                ui.weak(note);
+                ui.label(RichText::new(note).font(table_font()).weak());
             });
         }
         Row::Image(f, part) => {
@@ -1338,23 +1367,25 @@ fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
         }
         Row::HunkHeader(f, h) => {
             let header = patch.text(patch.files()[f].hunks[h].header);
+            let HunkHeading { range, context } = split_hunk_header(header);
             let row = ui.horizontal(|ui| {
-                // A band with a rule along its top, and text a step brighter
-                // than the line numbers, so each hunk reads as a section.
+                // A tinted band with a rule along its top, the range in the
+                // band's hue and the function after it in strong text, so
+                // each hunk opens a section and says where it is.
                 let rect = full_row(ui);
                 let visuals = ui.visuals();
-                ui.painter().rect_filled(rect, 0.0, visuals.faint_bg_color);
-                ui.painter().hline(
-                    rect.x_range(),
-                    rect.top(),
-                    visuals.widgets.noninteractive.bg_stroke,
-                );
-                ui.label(
-                    RichText::new(header)
-                        .monospace()
-                        .size(DIFF_FONT_SIZE)
-                        .color(visuals.text_color()),
-                );
+                let strong = visuals.strong_text_color();
+                let rule = visuals.widgets.noninteractive.bg_stroke;
+                let band = rect.expand2(egui::vec2(0.0, ui.spacing().item_spacing.y / 2.0));
+                ui.painter().rect_filled(band, 0.0, HUNK_BG);
+                ui.painter().hline(band.x_range(), band.top(), rule);
+                ui.add_space(GUTTER_GAP);
+                let mono = |text: &str| RichText::new(text).monospace().size(DIFF_FONT_SIZE);
+                ui.label(mono(range).color(HUNK_RANGE_COLOR));
+                if !context.is_empty() {
+                    ui.add_space(MARKER_GAP);
+                    ui.label(mono(context).color(strong));
+                }
             });
             // Takes the whole hunk for a comment.
             if clickable(row.response, Role::Button, header) {
@@ -1561,7 +1592,9 @@ fn note_row_ui(note: &PatchNote, galley: Arc<Galley>, ui: &mut Ui) {
 
 /// Note `n`, drawn by the caller's `draw` from row `part` of it (the row this
 /// pass is at). Its band and bar are painted across every row it takes, the
-/// drawer gets the width past the gutter, and when the drawer used more or
+/// drawer gets the width past the gutter, less [`NOTE_PAD_Y`] above and below
+/// so the note doesn't touch the lines either side, and centred in what its
+/// whole rows leave over, and when the drawer used more or
 /// fewer rows than the note has, the note is resized once the pass is done.
 /// Advances one row, as every row does; the note's later rows skip.
 fn drawn_note_ui(
@@ -1588,7 +1621,15 @@ fn drawn_note_ui(
     painter.rect_filled(note_rect, 0.0, visuals.faint_bg_color);
     painter.rect_filled(note_rect.with_max_x(min.x + NOTE_BAR), 0.0, accent);
 
-    let inner = note_rect.with_min_x(min.x + ui.spacing().icon_width + STATUS_WIDTH);
+    // The rows are whole, so they leave up to one row more than the note
+    // needs: split it above and below, by the height it drew at last pass.
+    let mut inner = note_rect
+        .with_min_x(min.x + ui.spacing().icon_width + STATUS_WIDTH)
+        .shrink2(egui::vec2(0.0, NOTE_PAD_Y));
+    let last = state.note_heights[n];
+    if last > 0.0 {
+        inner.min.y += ((inner.height() - last) / 2.0).max(0.0);
+    }
     let mut child = ui.new_child(
         UiBuilder::new()
             .id_salt(("patch_note", n))
@@ -1598,7 +1639,12 @@ fn drawn_note_ui(
     child.set_clip_rect(note_rect.intersect(ui.clip_rect()));
     draw(&mut child, &state.line_notes[n]);
 
-    let used = child.min_rect().height();
+    let drew = child.min_rect().height();
+    if (drew - last).abs() > 0.5 {
+        state.note_heights[n] = drew;
+        ui.ctx().request_repaint();
+    }
+    let used = drew + 2.0 * NOTE_PAD_Y;
     let needed = (((used + spacing) / step).ceil() as usize).max(1);
     if needed != rows {
         // Not now: the rows after this one are still to be located against
@@ -1619,6 +1665,29 @@ fn skip_row(ui: &mut Ui) {
     let height = ui.spacing().interact_size.y;
     let row = Rect::from_min_size(ui.cursor().min, egui::vec2(0.0, height));
     ui.advance_cursor_after_rect(row);
+}
+
+/// A hunk header split for drawing: git's `@@ -a,b +c,d @@` and the function
+/// context it names after it (empty when it names none).
+#[derive(Debug, PartialEq, Eq)]
+struct HunkHeading<'a> {
+    range: &'a str,
+    context: &'a str,
+}
+
+/// `header` split after its closing `@@`. A header with no closing `@@` is
+/// all range.
+fn split_hunk_header(header: &str) -> HunkHeading<'_> {
+    let end = header
+        .get(2..)
+        .and_then(|rest| rest.find("@@"))
+        .map(|i| i + 4)
+        .unwrap_or(header.len());
+    let (range, context) = header.split_at(end);
+    HunkHeading {
+        range,
+        context: context.trim(),
+    }
 }
 
 /// The hunk of `file` that line `i` is in.
@@ -1661,20 +1730,16 @@ fn file_row_ui(
         ui.spacing_mut().item_spacing.x = 0.0;
         let height = ui.spacing().interact_size.y;
         if openness.is_some() {
-            let rect = full_row(ui);
-            let visuals = ui.visuals();
-            ui.painter().rect_filled(rect, 0.0, visuals.panel_fill);
-            ui.painter()
-                .rect_filled(rect, 0.0, visuals.extreme_bg_color);
+            file_header_band(ui);
         }
         let lead = egui::vec2(ui.spacing().icon_width, height);
-        let (_, lead) = ui.allocate_exact_size(lead, Sense::hover());
+        let (lead, _) = ui.allocate_exact_size(lead, Sense::hover());
         if let Some(openness) = openness {
-            egui::collapsing_header::paint_default_icon(ui, openness, &lead);
+            chevron_ui(ui, openness, lead);
         }
         status_ui(file.status, height, ui);
 
-        let body = egui::TextStyle::Body.resolve(ui.style());
+        let body = table_font();
         let visuals = ui.visuals();
         let name_color = if openness.is_some() {
             visuals.strong_text_color()
@@ -1707,6 +1772,40 @@ fn file_row_ui(
     } else {
         inner.response
     }
+}
+
+/// A file header's background: opaque, so it can be pinned over the rows it
+/// scrolls past, one step off the panel, with a rule along its top and
+/// bottom so the pinned header has an edge against the code under it. It
+/// fills the item spacing either side, as a run of changed lines' tint does.
+fn file_header_band(ui: &Ui) {
+    let visuals = ui.visuals();
+    let rect = full_row(ui).expand2(egui::vec2(0.0, ui.spacing().item_spacing.y / 2.0));
+    let rule = visuals.widgets.noninteractive.bg_stroke;
+    let painter = ui.painter();
+    painter.rect_filled(rect, 0.0, visuals.panel_fill);
+    painter.rect_filled(rect, 0.0, visuals.faint_bg_color);
+    painter.hline(rect.x_range(), rect.top(), rule);
+    painter.hline(rect.x_range(), rect.bottom(), rule);
+}
+
+/// A file header's collapse chevron in `rect`: pointing right while the file
+/// is collapsed (`openness` 0), turning to point down as it opens (1). A
+/// thin stroke in the line numbers' colour, lighter than egui's filled
+/// triangle. Two segments rather than a path, which would allocate.
+fn chevron_ui(ui: &Ui, openness: f32, rect: Rect) {
+    let rot = egui::emath::Rot2::from_angle((openness - 1.0) * std::f32::consts::FRAC_PI_2);
+    let c = rect.center();
+    let h = CHEVRON_HALF;
+    let [left, tip, right] = [
+        egui::vec2(-h, -h / 2.0),
+        egui::vec2(0.0, h / 2.0),
+        egui::vec2(h, -h / 2.0),
+    ]
+    .map(|p| c + rot * p);
+    let stroke = Stroke::new(1.5, LINE_NUMBER_COLOR);
+    ui.painter().line_segment([left, tip], stroke);
+    ui.painter().line_segment([tip, right], stroke);
 }
 
 /// Make a whole row clickable, as one accessible widget named `label` (the
@@ -1754,11 +1853,12 @@ fn sticky_header(
     }
 }
 
-/// Where the file table's rows end: the right edge of the view. Not the
-/// `max_rect`'s, which grows past the view once a wide diff line has been
-/// laid out above, so rows drawn after one would end further right.
+/// Where the file table's rows end: the right edge of the view, less
+/// [`SCROLL_BAR_GUTTER`]. Not the `max_rect`'s, which grows past the view
+/// once a wide diff line has been laid out above, so rows drawn after one
+/// would end further right.
 fn row_right(ui: &Ui) -> f32 {
-    ui.max_rect().right().min(ui.clip_rect().right())
+    ui.max_rect().right().min(ui.clip_rect().right()) - SCROLL_BAR_GUTTER
 }
 
 /// The rect of the current `horizontal` row, stretched to the full width.
@@ -1781,14 +1881,19 @@ fn status_ui(status: FileStatus, height: f32, ui: &mut Ui) {
     };
     ui.add_sized(
         [STATUS_WIDTH, height],
-        Label::new(RichText::new(letter).strong().color(color)),
+        Label::new(
+            RichText::new(letter)
+                .font(table_font())
+                .strong()
+                .color(color),
+        ),
     );
 }
 
 /// The stats columns: `+a` and `−d`, each right-aligned in its column and
 /// left blank when zero, then the proportion bar.
 fn stats_ui(stats: &Stats, columns: &StatColumns, ui: &mut Ui) {
-    let font = stat_font(ui);
+    let font = stat_font();
     let cells = [
         (&stats.additions, columns.additions, INSERT_COLOR),
         (&stats.deletions, columns.deletions, DELETE_COLOR),
@@ -1863,12 +1968,12 @@ fn bar_blocks(additions: usize, deletions: usize) -> BarBlocks {
     }
 }
 
-/// The stats' font: the body font, so they sit on the path's baseline. (A
+/// The stats' font: the table's, so they sit on the path's baseline. (A
 /// monospace one doesn't, even at the same size: its ascent differs, and the
 /// row centres each label's box, not its baseline.) Each stat is
 /// right-aligned in its column, so the digits needn't be tabular.
-fn stat_font(ui: &Ui) -> FontId {
-    egui::TextStyle::Body.resolve(ui.style())
+fn stat_font() -> FontId {
+    table_font()
 }
 
 /// `sign` then `n` with thousands separators (`+1,655`), or nothing for zero.
@@ -2427,6 +2532,23 @@ mod tests {
         // A lopsided change still shows its minority side.
         assert_eq!(bar_blocks(1000, 1), (4, 1));
         assert_eq!(bar_blocks(1, 1000), (1, 4));
+    }
+
+    #[test]
+    fn split_hunk_header_parts_the_range_from_the_function() {
+        let heading = split_hunk_header("@@ -1426,8 +1427,9 @@ fn sha_pill(ui: &mut Ui)");
+        assert_eq!(
+            heading,
+            HunkHeading {
+                range: "@@ -1426,8 +1427,9 @@",
+                context: "fn sha_pill(ui: &mut Ui)",
+            }
+        );
+        let bare = split_hunk_header("@@ -0,0 +1,16 @@");
+        assert_eq!(bare.range, "@@ -0,0 +1,16 @@");
+        assert_eq!(bare.context, "");
+        // No closing `@@`: all of it is the range.
+        assert_eq!(split_hunk_header("@@ -1 +1").range, "@@ -1 +1");
     }
 
     #[test]
