@@ -207,7 +207,7 @@ fn average(
 /// The days of `range` from the journal's first day on, so a period that
 /// reaches back before the journal (or all time) totals only real days.
 /// The end is left alone, so "this month" stays through today.
-fn clip(range: DateRange, span: DateRange) -> DateRange {
+pub(crate) fn clip(range: DateRange, span: DateRange) -> DateRange {
     let start = range.start.max(span.start);
     let end = if range.end.days() == u32::MAX {
         span.end
@@ -229,7 +229,7 @@ fn trend(books: &Books, home: CommodityId, window: Window) -> Trend {
 }
 
 /// A [`Delta`] of `amount`, signed.
-fn delta(amount: i128, home: CommodityId, books: &Books) -> Delta {
+pub(crate) fn delta(amount: i128, home: CommodityId, books: &Books) -> Delta {
     let text = money(amount, home, &books.ledger().journal().commodities);
     Delta {
         amount,

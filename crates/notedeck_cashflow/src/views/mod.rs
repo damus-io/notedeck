@@ -14,7 +14,7 @@ mod adventure;
 pub mod categories;
 mod goals;
 pub mod overview;
-mod projects;
+pub mod projects;
 mod settings;
 mod transactions;
 pub mod trends;
@@ -30,6 +30,9 @@ pub struct ViewCx<'a> {
     /// One line on what the books hold and how long they took to load
     /// ([`crate::ui::journal_status::summary`]); empty with no books.
     pub summary: &'a str,
+    /// Which project each account is in, from the chart of accounts. A
+    /// change bumps [`LedgerCx::generation`] too.
+    pub projects: &'a cashflow::projects::Projects,
     /// The date [`Self::period`] is resolved against.
     pub today: Date,
     /// The span of days every view reports on, shared so picking one in a
@@ -51,8 +54,8 @@ pub struct ViewCx<'a> {
 pub struct LedgerCx<'a> {
     /// The books.
     pub books: &'a Books,
-    /// Changes whenever the books are replaced, so a view knows its cached
-    /// results are stale.
+    /// Changes whenever the books (or the project attribution) are
+    /// replaced, so a view knows its cached results are stale.
     pub generation: u64,
 }
 
@@ -66,6 +69,8 @@ pub struct ViewStates {
     pub(crate) trends: trends::TrendsState,
     /// The Overview's cached figures.
     pub(crate) overview: overview::OverviewState,
+    /// The Projects view's cached figures and the project open.
+    pub(crate) projects: projects::ProjectsState,
 }
 
 /// Draw `view` into `ui`.

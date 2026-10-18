@@ -44,6 +44,7 @@ use nostrdb::{Ndb, Tags, Transaction};
 use nostrdb_net::Pubkey;
 
 use crate::kinds;
+use crate::projects::{ProjectRoot, Projects};
 use crate::vault::{self, Record, SCHEMA_VERSION, Stored, TagWriter};
 use crate::vault_edits::{EditBody, EditError, EditNote, check_account};
 
@@ -477,6 +478,18 @@ impl<'a> Chart<'a> {
         self.resolve(account).project.map(|p| p.value)
     }
 
+    /// The project attribution, owned, so a view can keep it past the
+    /// transaction this chart borrows from: every account that sets a
+    /// project, by its account name (unescaped from its record id).
+    pub fn projects(&self) -> Projects {
+        Projects::new(self.accounts.iter().filter_map(|stored| {
+            Some(ProjectRoot {
+                account: account_of(stored.id).into_owned(),
+                project: stored.body.project?.to_owned(),
+            })
+        }))
+    }
+
     /// What `account` is: its kind hint, its own or inherited, else what its
     /// top-level name says.
     pub fn kind_of(&self, account: &str) -> Option<AccountKind> {
@@ -760,6 +773,34 @@ mod tests {
         let sum: i128 = totals.iter().map(|t| t.amount).sum();
         assert_eq!(sum, subtree(income));
         assert_eq!(calls, 5, "the top and each root that changes project");
+    }
+
+    /// The owned attribution puts every account in the project the chart
+    /// does, an escaped record id included.
+    #[test]
+    fn projects_agree_with_project_of() {
+        let chart = chart(vec![
+            stored("income:damus", project("damus")),
+            stored("income:damus:zaps:personal", project("personal")),
+            stored("income:coffee%20shop", project("cafe")),
+            stored("income:salary", AccountMeta::default()),
+        ]);
+        let projects = chart.projects();
+        assert_eq!(projects.roots().len(), 3);
+        for account in [
+            "income",
+            "income:damus",
+            "income:damus:zaps",
+            "income:damus:zaps:personal:tips",
+            "income:coffee shop:tips",
+            "income:salary",
+        ] {
+            assert_eq!(
+                projects.project_of(account),
+                chart.project_of(account),
+                "{account}"
+            );
+        }
     }
 
     /// Account metadata and aliases survive the vault; a live alias renames

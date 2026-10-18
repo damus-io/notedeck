@@ -39,6 +39,7 @@ pub mod kinds;
 pub mod manifest;
 pub mod net;
 pub mod prices;
+pub mod projects;
 pub mod rank;
 pub mod rules;
 pub mod settings;

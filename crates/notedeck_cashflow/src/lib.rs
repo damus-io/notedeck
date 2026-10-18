@@ -13,7 +13,8 @@
 //! the seam a second theme plugs into.
 //!
 //! The app reports on the [`cashflow::Books`] handed to it with
-//! [`CashflowApp::set_books`], over the one [`Period`] every view shares.
+//! [`CashflowApp::set_books`], over the one [`Period`] every view shares,
+//! with accounts put in projects by [`CashflowApp::set_projects`].
 //! In the chrome they come from a [`journal::JournalSource`]
 //! ([`CashflowApp::from_env`]), which loads `$CASHFLOW_DIR`'s journal off the
 //! UI thread and hands the app new books whenever a segment arrives or an
@@ -24,6 +25,7 @@
 
 use std::time::Duration;
 
+use cashflow::projects::Projects;
 use cashflow::{Books, CashflowDir};
 use ledgerdb::Date;
 use notedeck::{AppContext, AppResponse};
@@ -62,8 +64,10 @@ pub struct CashflowApp {
     /// [`ui::journal_status::summary`] of the books, written when they
     /// change.
     summary: String,
-    /// Bumped every time [`Self::books`] is replaced, so a view's cached
-    /// results know to recompute.
+    /// Which project each account is in.
+    projects: Projects,
+    /// Bumped every time [`Self::books`] or [`Self::projects`] is replaced,
+    /// so a view's cached results know to recompute.
     generation: u64,
     /// The date periods are resolved against.
     today: Date,
@@ -93,6 +97,7 @@ impl CashflowApp {
             books: None,
             journal: None,
             summary: String::new(),
+            projects: Projects::default(),
             generation: 0,
             today: period::today(),
             period: Period::default(),
@@ -130,6 +135,17 @@ impl CashflowApp {
         let load_time = self.journal.as_ref().and_then(JournalSource::load_time);
         self.summary = ui::journal_status::summary(&books, load_time);
         self.books = Some(books);
+        self.generation += 1;
+    }
+
+    /// Attribute accounts to projects by `projects` from now on: the chart
+    /// of accounts' attribution ([`cashflow::chart::Chart::projects`]).
+    /// Every view recomputes on its next frame.
+    pub fn set_projects(&mut self, projects: Projects) {
+        if self.projects == projects {
+            return;
+        }
+        self.projects = projects;
         self.generation += 1;
     }
 
@@ -209,6 +225,7 @@ impl CashflowApp {
             books,
             journal,
             summary,
+            projects,
             generation,
             today,
             period,
@@ -246,6 +263,7 @@ impl CashflowApp {
                         generation: *generation,
                     }),
                     summary,
+                    projects,
                     today: *today,
                     period,
                     layers,

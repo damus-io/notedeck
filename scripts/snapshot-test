@@ -187,7 +187,7 @@ suites=(
     "notedeck_headway|--features snapshot-testing --test snapshot_tests|--test-threads=1 --nocapture"
     "notedeck_notebook|--test snapshot_tests|"
     "notedeck_horizon|--test snapshot_tests|"
-    "notedeck_cashflow|--test snapshot_tests --test hud_gallery --test categories --test trends --test overview --test journal|"
+    "notedeck_cashflow|--test snapshot_tests --test hud_gallery --test categories --test trends --test overview --test journal --test projects|"
     # dashboard disabled for now: can't seem to regenerate its snapshots
     # "notedeck_dashboard|--features snapshot-testing --test snapshot_tests|"
 )

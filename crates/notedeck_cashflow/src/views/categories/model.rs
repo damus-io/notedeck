@@ -144,9 +144,11 @@ pub fn breakdown(level: Level<'_>) -> Breakdown {
 
 /// One sum per row id, for the period and the one compared with it.
 #[derive(Default, Clone, Copy)]
-struct Sums {
-    current: i128,
-    previous: i128,
+pub(crate) struct Sums {
+    /// Over the period.
+    pub(crate) current: i128,
+    /// Over the period compared with it.
+    pub(crate) previous: i128,
 }
 
 /// The parent's children, ranked, plus its own postings and the tail.
@@ -423,20 +425,20 @@ fn subtree_sum(
 
 /// What every row of one level shares: the level's total, whether it has a
 /// comparison period, and how its amounts are written.
-struct RowCx<'a> {
+pub(crate) struct RowCx<'a> {
     /// The level's total, which each row's share is of.
-    total: i128,
+    pub(crate) total: i128,
     /// Whether the period has one to compare with, so rows carry a delta.
-    compared: bool,
+    pub(crate) compared: bool,
     /// The commodity the amounts are in.
-    home: CommodityId,
+    pub(crate) home: CommodityId,
     /// How to write them.
-    commodities: &'a Commodities,
+    pub(crate) commodities: &'a Commodities,
 }
 
 impl RowCx<'_> {
     /// A row, with its share of the level's total and its text.
-    fn row(&self, kind: RowKind, label: String, detail: String, sums: Sums) -> Row {
+    pub(crate) fn row(&self, kind: RowKind, label: String, detail: String, sums: Sums) -> Row {
         let share = if self.total == 0 {
             0.0
         } else {
