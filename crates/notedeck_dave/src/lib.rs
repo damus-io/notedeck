@@ -42,8 +42,8 @@ pub mod slash;
 mod stream_events;
 #[cfg(test)]
 mod test_refs;
-#[cfg(test)]
-mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 mod turn_rows;
 mod ui_tools;
 pub use ui_tools::SPAWN_SESSION;

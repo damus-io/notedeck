@@ -1,30 +1,42 @@
-//! A [`Dave`] for unit tests, with the host pieces its per-frame work borrows.
+//! A [`Dave`] for tests, with the host pieces its per-frame work borrows.
 //!
 //! [`TestDave`] owns a Dave beside the store, key and waker a
 //! [`HostCtx`] lends, so a test drives Dave the way the app's update loop
 //! does without an `AppContext`. Dave listens on no socket (the chrome owns
 //! notedeck's), so running the tests never touches the one of the notedeck
 //! running on the same machine.
+//!
+//! Another crate's tests reach it through the `test-support` feature: chrome's
+//! end-to-end key tests build one with [`TestDave::hosted`], seed it
+//! ([`TestDave::add_sessions`], [`TestDave::set_issue`],
+//! [`TestDave::add_subagent`], or anything else through
+//! [`TestDave::session_mut`]) and hand its `dave` to the chrome. Normal mode isn't seeded: the chrome autofocuses an
+//! app's input the first time it shows it, so a hosted test presses Esc
+//! through the chrome, as a user does.
 
-use crate::backend::BackendType;
+use crate::backend::{BackendType, RemoteOnlyBackend};
 use crate::config::{AiMode, AiProvider, DaveSettings};
 use crate::conversation::subscribe_conversation_events;
 use crate::conversation_feed::ConversationFeed;
+use crate::messages::{Message, SubagentInfo, SubagentStatus};
 use crate::pns_runtime::PnsLocalState;
-use crate::session::{SessionId, SessionMessage};
+use crate::session::{ChatSession, SessionId, SessionMessage};
 use crate::stream_events::HostCtx;
+use crate::ui::{self, DaveAction, UiActionResult};
 use crate::{Dave, DaveOverlay};
 use nostrdb::Ndb;
 use notedeck::timed_serializer::TimedSerializer;
-use notedeck::{DataPath, DataPathType, Waker};
+use notedeck::{AppContext, DataPath, DataPathType, Waker};
+use std::any::Any;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 use tempfile::TempDir;
 
-pub(crate) use ndb_testing::test_config;
+pub use ndb_testing::test_config;
 
 /// The account every test signs as.
-pub(crate) fn test_secret_key() -> [u8; 32] {
+pub fn test_secret_key() -> [u8; 32] {
     let mut key = [0u8; 32];
     key[0] = 1;
     key
@@ -35,7 +47,7 @@ pub(crate) fn test_secret_key() -> [u8; 32] {
 /// The store it was built over is dropped with this call: Dave keeps no
 /// handle to it under the Claude backend [`seed_agentic_settings`] picks.
 /// A test that does read the store wants [`TestDave`].
-pub(crate) fn test_dave(data_path: &DataPath) -> Dave {
+pub fn test_dave(data_path: &DataPath) -> Dave {
     TestDave::at(data_path).dave
 }
 
@@ -45,7 +57,7 @@ pub(crate) fn test_dave(data_path: &DataPath) -> Dave {
 /// Dave starts the way an agentic Dave settles once its account is known
 /// and its first session picked: `pns_local_state` names [`Self::account`],
 /// no overlay is open, and the session manager is empty.
-pub(crate) struct TestDave {
+pub struct TestDave {
     pub dave: Dave,
     /// The store the host hands Dave each frame; it unwraps the account's
     /// PNS envelopes.
@@ -60,9 +72,16 @@ pub(crate) struct TestDave {
     _ndb_dir: Option<TempDir>,
 }
 
+/// [`TestDave::new`]: its own settings dir and store.
+impl Default for TestDave {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A [`TestDave`]'s Dave beside the host its per-frame work takes, lent
 /// together because the host borrows the fixture's store.
-pub(crate) struct TestParts<'a> {
+pub struct TestParts<'a> {
     pub dave: &'a mut Dave,
     pub host: HostCtx<'a>,
 }
@@ -118,13 +137,91 @@ impl TestDave {
         sessions
     }
 
+    /// A Dave for `ctx`'s host to run: over its store, waker and data dir,
+    /// already settled on its selected account, so the first frame the host
+    /// runs keeps the sessions a test seeded rather than swapping in the
+    /// account's own (empty) ones. The account must hold its secret key.
+    ///
+    /// Seed it, then hand `test.dave` to the host.
+    pub fn hosted(ctx: &mut AppContext<'_>) -> Self {
+        let keypair = ctx.accounts.get_selected_account().keypair();
+        let sk = keypair
+            .secret_key
+            .expect("a hosted TestDave signs as the host's account")
+            .secret_bytes();
+        let account = *keypair.pubkey;
+        Self::build_as(ctx.path, ctx.ndb.clone(), sk, account, ctx.waker.clone())
+    }
+
+    /// The session `id`, to seed what the methods below don't (its chat,
+    /// say).
+    pub fn session_mut(&mut self, id: SessionId) -> &mut ChatSession {
+        self.dave
+            .session_manager
+            .get_mut(id)
+            .expect("a session the test added")
+    }
+
+    /// Have the session `id` work `issue` (a `headway:` card ref), as
+    /// `agentium spawn --issue-url` records it.
+    pub fn set_issue(&mut self, id: SessionId, issue: &str) {
+        self.session_mut(id).details.issue_url = Some(issue.to_owned());
+    }
+
+    /// Give the session `parent` a running subagent, as its turn raises one:
+    /// a block in its chat, and the subagent's own session beside it.
+    pub fn add_subagent(&mut self, parent: SessionId, subagent: SubagentSeed<'_>) {
+        self.session_mut(parent)
+            .insert_turn_content(Message::Subagent(SubagentInfo {
+                task_id: subagent.task_id.into(),
+                description: subagent.description.into(),
+                subagent_type: subagent.subagent_type.into(),
+                status: SubagentStatus::Running,
+                output: String::new(),
+                max_output_size: 4000,
+                tool_results: Vec::new(),
+                background: false,
+                agent_id: None,
+                transcript: Default::default(),
+            }));
+    }
+
+    /// Open the active session's subagent `task_id`, as its block's `open`
+    /// does in the chat: its session becomes active, and the route returned
+    /// is the entry the chrome pushes.
+    pub fn open_subagent(&mut self, task_id: &str) -> Rc<dyn Any> {
+        let dave = &mut self.dave;
+        let result = ui::handle_ui_action(
+            DaveAction::OpenSubagent(task_id.into()),
+            &mut dave.session_manager,
+            &RemoteOnlyBackend,
+            &mut DaveOverlay::None,
+            &mut false,
+            &egui::Context::default(),
+        );
+        let UiActionResult::OpenedSubagent(route) = result else {
+            panic!("opening a subagent is a nav entry");
+        };
+        Rc::new(route)
+    }
+
     fn build(data_path: &DataPath, ndb: Ndb) -> Self {
-        seed_agentic_settings(data_path);
         let sk = test_secret_key();
         let account = nostrdb_net::FullKeypair::from_secret_bytes(&sk)
             .unwrap()
             .pubkey;
-        let waker = Waker::noop();
+        Self::build_as(data_path, ndb, sk, account, Waker::noop())
+    }
+
+    /// A Dave signing as `sk`, whose public key is `account`.
+    fn build_as(
+        data_path: &DataPath,
+        ndb: Ndb,
+        sk: [u8; 32],
+        account: nostrdb_net::Pubkey,
+        waker: Waker,
+    ) -> Self {
+        seed_agentic_settings(data_path);
         let mut dave = Dave::new(None, ndb.clone(), waker.clone(), data_path);
         // An empty agentic Dave opens on the directory picker; a test picks
         // its sessions itself.
@@ -188,6 +285,17 @@ impl TestDave {
     }
 }
 
+/// A subagent for [`TestDave::add_subagent`] to raise, by what its block
+/// shows.
+pub struct SubagentSeed<'a> {
+    /// The tool call that started it, which names it to `open_subagent`.
+    pub task_id: &'a str,
+    /// What it was asked to do.
+    pub description: &'a str,
+    /// Its kind, e.g. `"Explore"`.
+    pub subagent_type: &'a str,
+}
+
 /// Pin the constructed [`Dave`] to [`AiMode::Agentic`], which every test
 /// assumes — the session manager starts empty there.
 ///
@@ -217,6 +325,7 @@ fn seed_agentic_settings(data_path: &DataPath) {
     );
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 

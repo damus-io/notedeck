@@ -73,7 +73,7 @@ impl<'a> HostCtx<'a> {
 
     /// A host signing as `secret_key`'s account, for tests that drive Dave's
     /// per-frame work over their own ndb.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn signing(ndb: &'a nostrdb::Ndb, secret_key: &[u8; 32], waker: &'a Waker) -> Self {
         let keypair = nostrdb_net::FullKeypair::from_secret_bytes(secret_key)
             .expect("a valid secret key")

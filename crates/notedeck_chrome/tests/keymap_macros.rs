@@ -4,10 +4,10 @@
 //! doesn't settle in time.
 //!
 //! The first tests drive the fake app of `common` with test keymaps. The last
-//! ones run the shipped `E` macro: a stand-in for Dave, in front, answers
-//! `dave_open_issue` with the session's card ref as real Dave does
-//! (`notedeck_dave`'s `open_issue_hands_chrome_the_sessions_issue` checks
-//! that half), and the real Headway, on a seeded board, opens the card and its
+//! ones run the shipped `E` macro end to end: the real Dave, in front and in
+//! normal mode on a session seeded with a card for its issue
+//! (`notedeck_dave`'s `test_support`), answers `dave_open_issue` with the
+//! card's ref, and the real Headway, on a seeded board, opens the card and its
 //! explainer.
 
 mod common;
@@ -307,24 +307,21 @@ fn an_as_step_with_nothing_to_bind_aborts() {
     assert!(f.marked().is_empty(), "the step after never ran");
 }
 
-/// The shipped `E` in Dave's normal mode, through the real Headway.
-#[cfg(feature = "headway")]
+/// The shipped `E` in the real Dave's normal mode, through the real Headway.
+#[cfg(all(feature = "headway", feature = "dave"))]
 mod session_explainer {
-    use std::cell::RefCell;
-    use std::rc::Rc;
     use std::time::Duration;
 
     use egui::{Event, Key, Modifiers};
     use headway::event::{build_review, ReviewFields, KIND_ISSUE};
     use nostrdb::{Filter, Transaction};
     use nostrdb_net::{FullKeypair, NoteId};
-    use notedeck::{
-        App, AppAction, AppContext, AppResponse, Notedeck, OpenUri, ToolOutcome, ToolSpec,
-    };
+    use notedeck::{Notedeck, ToolOutcome};
     use notedeck_chrome::testing::ChromeDriver;
     use notedeck_chrome::{Chrome, NotedeckApp};
+    use notedeck_dave::backend::BackendType;
+    use notedeck_dave::test_support::TestDave;
     use notedeck_headway::{store, Headway};
-    use serde_json::Value;
 
     /// The demo card given a review record with an explainer.
     const CARD: &str = "Inline card creation";
@@ -342,94 +339,15 @@ mod session_explainer {
     /// well past a macro step's three.
     const SETTLE_FRAMES: usize = 600;
 
-    /// What the stand-in for Dave saw.
-    #[derive(Default)]
-    struct StandInState {
-        /// Whether it rendered on the last frame.
-        rendered: bool,
-        /// Keys whose press reached its render.
-        seen: Vec<Key>,
-    }
+    /// Dave's place in the chrome's apps.
+    const DAVE: usize = 0;
 
-    /// Dave in normal mode, as chrome sees it: the `dave.normal` scope, and
-    /// `dave_open_issue` available while the session has an issue, answering
-    /// with an open of it.
-    struct DaveStandIn {
-        issue: Option<String>,
-        state: Rc<RefCell<StandInState>>,
-    }
-
-    impl App for DaveStandIn {
-        fn render(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-            let mut state = self.state.borrow_mut();
-            state.rendered = true;
-            let pressed: Vec<Key> = ui.input(|i| {
-                i.events
-                    .iter()
-                    .filter_map(|e| match e {
-                        Event::Key {
-                            key, pressed: true, ..
-                        } => Some(*key),
-                        _ => None,
-                    })
-                    .collect()
-            });
-            state.seen.extend(pressed);
-            ui.label("dave stand-in");
-            AppResponse::none()
-        }
-
-        fn ui_tools(&self) -> Vec<ToolSpec> {
-            vec![
-                ToolSpec::new(
-                    "dave_open_issue",
-                    "Open the active session's issue.",
-                    Vec::new(),
-                ),
-                ToolSpec::new(
-                    "dave_session_issue",
-                    "The active session's issue, as data.",
-                    Vec::new(),
-                ),
-            ]
-        }
-
-        /// `dave_session_issue` answers with the issue as real Dave does
-        /// (`notedeck_dave`'s `session_issue_answers_with_the_issue_and_changes_nothing`);
-        /// `dave_open_issue` asks chrome to open it.
-        fn call_ui_tool(
-            &mut self,
-            _ctx: &mut AppContext<'_>,
-            name: &str,
-            _args: &Value,
-        ) -> ToolOutcome {
-            let Some(issue) = &self.issue else {
-                return ToolOutcome::Error("the session has no issue".to_owned());
-            };
-            if name == "dave_session_issue" {
-                return ToolOutcome::Data(serde_json::json!({ "issue": issue }));
-            }
-            ToolOutcome::Intent(AppAction::Open(OpenUri {
-                reference: issue.clone(),
-                msg: None,
-            }))
-        }
-
-        fn ui_tool_available(&self, name: &str) -> bool {
-            matches!(name, "dave_open_issue" | "dave_session_issue") && self.issue.is_some()
-        }
-
-        fn key_scopes(&self) -> &'static [&'static str] {
-            &["dave.normal"]
-        }
-    }
-
-    /// A headless chrome with the stand-in Dave in front and the real
-    /// Headway behind it, on the demo board, which Headway has folded.
+    /// A headless chrome with the real Dave in front, in normal mode on its
+    /// one session, and the real Headway behind it, on the demo board, which
+    /// Headway has folded.
     struct Session {
         _dir: tempfile::TempDir,
         driver: ChromeDriver,
-        dave: Rc<RefCell<StandInState>>,
     }
 
     /// The demo card titled `title`.
@@ -452,7 +370,7 @@ mod session_explainer {
 
     impl Session {
         /// Seed the demo board, give [`CARD`] a review record with an
-        /// explainer, and start the chrome with a Dave stand-in whose session
+        /// explainer, and start the chrome with a Dave whose one session
         /// works `issue` (a demo card's title), or none. Navigation doesn't
         /// slide.
         async fn new(issue: Option<&str>) -> Self {
@@ -523,15 +441,15 @@ mod session_explainer {
                     headway::wordid::card_ref(store::BOARD_ID, card_id(ndb, title).bytes())
                 })
             };
-            let dave = Rc::new(RefCell::new(StandInState::default()));
-            let stand_in = DaveStandIn {
-                issue: issue_ref,
-                state: Rc::clone(&dave),
-            };
+            let mut dave = TestDave::hosted(&mut notedeck.app_context());
+            let [working] = dave.add_sessions(["/tmp/session-explainer"], BackendType::Remote);
+            if let Some(issue) = &issue_ref {
+                dave.set_issue(working, issue);
+            }
             let chrome = Chrome::new_headless_with_apps(
                 &mut notedeck,
                 [
-                    NotedeckApp::Other("dave".to_owned(), Box::new(stand_in)),
+                    NotedeckApp::Other("dave".to_owned(), Box::new(dave.dave)),
                     NotedeckApp::Headway(Box::new(Headway::new())),
                 ],
             );
@@ -539,22 +457,34 @@ mod session_explainer {
             let mut session = Self {
                 _dir: dir,
                 driver: ChromeDriver::new(egui_ctx, notedeck, chrome),
-                dave,
             };
             // Open Headway once so its board has folded, then go back to
-            // Dave, where the key is pressed.
+            // Dave, where the key is pressed. Dave opened on its input, as
+            // the chrome autofocuses an app's first showing; Esc leaves it
+            // for normal mode, where the keymap's `dave.*` bindings apply.
             session.driver.chrome.set_active(1);
             session.wait_for("the board to fold", |s| s.drew(GRID));
-            session.driver.chrome.set_active(0);
-            session.wait_for("Dave in front", |s| s.dave.borrow().rendered);
+            session.driver.chrome.set_active(DAVE as i32);
+            session.frame(Vec::new());
+            session.driver.key(Key::Escape);
+            session.wait_for("Dave's normal mode", |s| {
+                s.driver.egui_ctx.memory(|m| m.focused()).is_none()
+                    && s.driver
+                        .drawn()
+                        .iter()
+                        .any(|t| t.starts_with("-- NORMAL --"))
+            });
             session
         }
 
-        /// One real chrome frame ([`ChromeDriver::frame`]), noting whether
-        /// the stand-in Dave rendered in it.
+        /// One real chrome frame ([`ChromeDriver::frame`]).
         fn frame(&mut self, events: Vec<Event>) {
-            self.dave.borrow_mut().rendered = false;
             self.driver.frame(events);
+        }
+
+        /// Whether Dave is the app in front.
+        fn dave_in_front(&self) -> bool {
+            self.driver.chrome.active_app() == DAVE
         }
 
         /// Run frames until `done`, or panic naming `what`.
@@ -630,10 +560,9 @@ mod session_explainer {
             [EXPLAINER],
             "the card's explainer opened"
         );
-        assert!(!s.dave.borrow().rendered, "Headway is in front");
+        assert!(!s.dave_in_front(), "Headway is in front");
         assert!(s.drew(CARD), "on the card");
         assert!(!s.drew(GRID), "its detail, not the grid");
-        assert!(!s.dave.borrow().seen.contains(&Key::E), "E was the macro's");
     }
 
     /// A card with no review record has no explainer: the macro lands on the
@@ -709,8 +638,7 @@ mod session_explainer {
             Some("done"),
             "the card is in Done"
         );
-        assert!(s.dave.borrow().rendered, "Dave stays in front");
-        assert!(!s.dave.borrow().seen.contains(&Key::D), "D was the macro's");
+        assert!(s.dave_in_front(), "Dave stays in front");
     }
 
     /// A demo card that's a subissue of the demo board's epic, "Define nostr
@@ -805,7 +733,6 @@ mod session_explainer {
         });
         s.wait_for("the epic's review queue", |s| s.drew("1 / 1"));
         assert!(s.drew(EPIC_DONE), "the queue shows the epic's subissue");
-        assert!(!s.dave.borrow().seen.contains(&Key::R), "R was the macro's");
     }
 
     /// On a card with no parent `headway_open_parent` is never offered, so
@@ -830,15 +757,14 @@ mod session_explainer {
     }
 
     /// A session with no issue has no `dave_open_issue`, so `E` isn't the
-    /// macro's: it falls through to Dave.
+    /// macro's: it falls through to Dave, and nothing opens.
     #[tokio::test]
     async fn e_without_an_issue_falls_through_to_dave() {
         let mut s = Session::new(None).await;
         s.press_e();
         assert_eq!(s.driver.chrome.running_macro(), None);
-        assert!(s.dave.borrow().seen.contains(&Key::E), "Dave gets the key");
         s.frame(Vec::new());
-        assert!(s.dave.borrow().rendered, "still in Dave");
+        assert!(s.dave_in_front(), "still in Dave");
         assert!(s.driver.opened().is_empty());
     }
 }

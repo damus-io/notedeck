@@ -118,49 +118,26 @@ impl Dave {
 mod tests {
     use super::*;
     use crate::backend::BackendType;
-    use crate::messages::{Message, SubagentInfo, SubagentStatus};
-    use crate::test_support::TestDave;
-    use crate::ui::{self, DaveAction, UiActionResult};
+    use crate::test_support::{SubagentSeed, TestDave};
 
     /// A parent session with one running subagent, `toolu_a`, whose virtual
     /// session exists.
     fn with_subagent(test: &mut TestDave) -> SessionId {
         let [parent] = test.add_sessions(["/tmp/parent"], BackendType::Claude);
-        let sm = &mut test.dave.session_manager;
-        sm.get_mut(parent)
-            .unwrap()
-            .insert_turn_content(Message::Subagent(SubagentInfo {
-                task_id: "toolu_a".into(),
-                description: "find the parser".into(),
-                subagent_type: "Explore".into(),
-                status: SubagentStatus::Running,
-                output: String::new(),
-                max_output_size: 4000,
-                tool_results: Vec::new(),
-                background: false,
-                agent_id: None,
-                transcript: Default::default(),
-            }));
+        test.add_subagent(
+            parent,
+            SubagentSeed {
+                task_id: "toolu_a",
+                description: "find the parser",
+                subagent_type: "Explore",
+            },
+        );
         parent
     }
 
-    /// The parent's `open` on the subagent's block, as the chat raises it:
-    /// the subagent's session becomes active, and the route it hands back
-    /// is the entry the chrome pushes.
+    /// The parent's `open` on the subagent's block, as the chat raises it.
     fn open_subagent(test: &mut TestDave) -> Rc<dyn Any> {
-        let dave = &mut test.dave;
-        let result = ui::handle_ui_action(
-            DaveAction::OpenSubagent("toolu_a".into()),
-            &mut dave.session_manager,
-            &crate::backend::RemoteOnlyBackend,
-            &mut crate::DaveOverlay::None,
-            &mut false,
-            &egui::Context::default(),
-        );
-        let UiActionResult::OpenedSubagent(route) = result else {
-            panic!("opening a subagent is a nav entry");
-        };
-        Rc::new(route)
+        test.open_subagent("toolu_a")
     }
 
     /// Open a subagent, then back: the parent's chat is active again, its

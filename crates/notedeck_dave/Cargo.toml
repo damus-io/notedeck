@@ -46,6 +46,13 @@ base64 = { workspace = true }
 mime_guess = { workspace = true }
 tempfile = { workspace = true }
 opener = { workspace = true }
+# The throwaway store `test_support` opens, for the `test-support` feature.
+ndb_testing = { workspace = true, optional = true }
+
+[features]
+# `test_support`'s seeded Dave, public, for another crate's tests (chrome's
+# end-to-end key tests host one).
+test-support = ["dep:ndb_testing"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -124,7 +124,7 @@ impl SessionRestoreLoader {
     }
 
     /// Whether every message the workers have sent so far was received.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn is_drained(&self) -> bool {
         self.loader.is_empty()
     }

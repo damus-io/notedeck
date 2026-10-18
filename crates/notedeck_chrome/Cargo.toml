@@ -59,6 +59,9 @@ headway = { workspace = true }
 # The rich-row snapshot draws cards with Headway's real kind renderers, on
 # its seeded demo board, without building the chrome with Headway in it.
 notedeck_headway = { workspace = true }
+# The end-to-end key tests host a real Dave, seeded with sessions and issues
+# through its `test_support`.
+notedeck_dave = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 notedeck = { workspace = true, features = ["snapshot-testing", "auto-update"] }

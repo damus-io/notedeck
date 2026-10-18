@@ -1224,7 +1224,7 @@ fn hydrate_session_from_state(
     crate::conversation::apply_loaded_chat(session, loaded);
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Dave {
     /// Start the background restore of `account`'s sessions from `ndb` the
     /// way `ensure_pns_local_state` does, and wait until the worker has read
