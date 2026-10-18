@@ -117,6 +117,49 @@ pub(crate) const SEND_COMMENTS: &str = "headway_send_comments";
 /// card, or leave the detail for the grid.
 pub(crate) const BACK: &str = "headway_back";
 
+/// One of Headway's UI tools, by name: one variant per tool, holding the
+/// facts every tool has ([`name`](Self::name), [`title`](Self::title),
+/// [`spec`](Self::spec)) as one match each, so a tool missing one is a
+/// compile error. Its arguments pick the [`HeadwayUiTool`] it runs
+/// ([`HeadwayUiTool::parse`]), which can cover several of these: `Card`
+/// covers every card tool, `StepBoard` the next and previous board.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HeadwayToolName {
+    OpenCard,
+    OpenExplainer,
+    OpenParent,
+    OpenSession,
+    OpenReview,
+    SendBack,
+    QuickComment,
+    StepCard,
+    CursorMove,
+    ComposeCard,
+    FocusFilter,
+    OpenReviewQueue,
+    OpenList,
+    NextBoard,
+    PrevBoard,
+    PickBoard,
+    Clear,
+    ListFold,
+    ListStepGroup,
+    ListMoveDown,
+    ListMoveUp,
+    ListTab,
+    ListGroup,
+    ListSubgroup,
+    ListOrder,
+    ListOrderDir,
+    ListDisplay,
+    ListSaveView,
+    Scroll,
+    StepFile,
+    Comment,
+    SendComments,
+    Back,
+}
+
 /// What a Headway key or UI tool does. Card tools carry the [`CardAction`]
 /// their key maps to; the rest name what they do in the view that has them,
 /// and do nothing in a view that doesn't.
@@ -397,11 +440,11 @@ fn card_arg() -> ToolArg {
     )
 }
 
-/// A card tool's spec: its description and the `card` argument, plus `more`.
-fn card_spec(name: &'static str, description: &'static str, more: Vec<ToolArg>) -> ToolSpec {
+/// A card tool's arguments: the `card` argument, then `more`.
+fn card_args(more: Vec<ToolArg>) -> Vec<ToolArg> {
     let mut args = vec![card_arg()];
     args.extend(more);
-    ToolSpec::new(name, description, args).ui()
+    args
 }
 
 /// An enum argument named `name` over `values`, defaulting to the first.
@@ -434,159 +477,227 @@ where
     }
 }
 
-impl HeadwayUiTool {
-    /// The spec of every Headway UI tool, for [`notedeck::App::ui_tools`].
-    pub(crate) fn specs() -> Vec<ToolSpec> {
-        [
-            card_spec(OPEN_CARD, "Open the current card's detail.", vec![]).titled("Open card"),
-            card_spec(
-                OPEN_EXPLAINER,
+impl HeadwayToolName {
+    /// Every tool, in the order [`HeadwayUiTool::specs`] lists them.
+    pub(crate) const ALL: [Self; 33] = [
+        Self::OpenCard,
+        Self::OpenExplainer,
+        Self::OpenParent,
+        Self::OpenSession,
+        Self::OpenReview,
+        Self::SendBack,
+        Self::QuickComment,
+        Self::StepCard,
+        Self::CursorMove,
+        Self::ComposeCard,
+        Self::FocusFilter,
+        Self::OpenReviewQueue,
+        Self::OpenList,
+        Self::NextBoard,
+        Self::PrevBoard,
+        Self::PickBoard,
+        Self::Clear,
+        Self::ListFold,
+        Self::ListStepGroup,
+        Self::ListMoveDown,
+        Self::ListMoveUp,
+        Self::ListTab,
+        Self::ListGroup,
+        Self::ListSubgroup,
+        Self::ListOrder,
+        Self::ListOrderDir,
+        Self::ListDisplay,
+        Self::ListSaveView,
+        Self::Scroll,
+        Self::StepFile,
+        Self::Comment,
+        Self::SendComments,
+        Self::Back,
+    ];
+
+    /// The tool's name.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::OpenCard => OPEN_CARD,
+            Self::OpenExplainer => OPEN_EXPLAINER,
+            Self::OpenParent => OPEN_PARENT,
+            Self::OpenSession => OPEN_SESSION,
+            Self::OpenReview => OPEN_REVIEW,
+            Self::SendBack => SEND_BACK,
+            Self::QuickComment => QUICK_COMMENT,
+            Self::StepCard => STEP_CARD,
+            Self::CursorMove => CURSOR_MOVE,
+            Self::ComposeCard => COMPOSE_CARD,
+            Self::FocusFilter => FOCUS_FILTER,
+            Self::OpenReviewQueue => OPEN_REVIEW_QUEUE,
+            Self::OpenList => OPEN_LIST,
+            Self::NextBoard => NEXT_BOARD,
+            Self::PrevBoard => PREV_BOARD,
+            Self::PickBoard => PICK_BOARD,
+            Self::Clear => CLEAR,
+            Self::ListFold => LIST_FOLD,
+            Self::ListStepGroup => LIST_STEP_GROUP,
+            Self::ListMoveDown => LIST_MOVE_DOWN,
+            Self::ListMoveUp => LIST_MOVE_UP,
+            Self::ListTab => LIST_TAB,
+            Self::ListGroup => LIST_GROUP,
+            Self::ListSubgroup => LIST_SUBGROUP,
+            Self::ListOrder => LIST_ORDER,
+            Self::ListOrderDir => LIST_ORDER_DIR,
+            Self::ListDisplay => LIST_DISPLAY,
+            Self::ListSaveView => LIST_SAVE_VIEW,
+            Self::Scroll => SCROLL,
+            Self::StepFile => STEP_FILE,
+            Self::Comment => COMMENT,
+            Self::SendComments => SEND_COMMENTS,
+            Self::Back => BACK,
+        }
+    }
+
+    /// The tool's human title, for a command bar ([`ToolSpec::title`]).
+    fn title(self) -> &'static str {
+        match self {
+            Self::OpenCard => "Open card",
+            Self::OpenExplainer => "Open card's explainer",
+            Self::OpenParent => "Open parent card",
+            Self::OpenSession => "Open card's agent session",
+            Self::OpenReview => "Review card's commit",
+            Self::SendBack => "Send card back",
+            Self::QuickComment => "Comment on card",
+            Self::StepCard => "Step to next or previous card",
+            Self::CursorMove => "Move cursor",
+            Self::ComposeCard => "New card",
+            Self::FocusFilter => "Filter cards",
+            Self::OpenReviewQueue => "Open review queue",
+            Self::OpenList => "Open issue list",
+            Self::NextBoard => "Next board",
+            Self::PrevBoard => "Previous board",
+            Self::PickBoard => "Switch board",
+            Self::Clear => "Clear cursor",
+            Self::ListFold => "Fold groups",
+            Self::ListStepGroup => "Step to next or previous group",
+            Self::ListMoveDown => "Move card down in work order",
+            Self::ListMoveUp => "Move card up in work order",
+            Self::ListTab => "Switch list view",
+            Self::ListGroup => "Group list by",
+            Self::ListSubgroup => "Sub-group list by",
+            Self::ListOrder => "Order list by",
+            Self::ListOrderDir => "Reverse list order",
+            Self::ListDisplay => "Show or hide row property",
+            Self::ListSaveView => "Save list view",
+            Self::Scroll => "Scroll",
+            Self::StepFile => "Step to next or previous file",
+            Self::Comment => "Write review comment",
+            Self::SendComments => "Send review comments",
+            Self::Back => "Go back",
+        }
+    }
+
+    /// The tool called `name`, if Headway has one.
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|tool| tool.name() == name)
+    }
+
+    /// This tool's spec. A card tool's arguments start with `card`
+    /// ([`card_args`]).
+    fn spec(self) -> ToolSpec {
+        let (description, args) = match self {
+            Self::OpenCard => ("Open the current card's detail.", card_args(vec![])),
+            Self::OpenExplainer => (
                 "Open the explainer of the current card's review record in a browser.",
-                vec![],
-            )
-            .titled("Open card's explainer"),
-            card_spec(
-                OPEN_PARENT,
+                card_args(vec![]),
+            ),
+            Self::OpenParent => (
                 "Open the detail of the current card's parent, switching boards when the \
                  parent is on another. Only offered on a card that has a parent.",
-                vec![],
-            )
-            .titled("Open parent card"),
-            card_spec(
-                OPEN_SESSION,
+                card_args(vec![]),
+            ),
+            Self::OpenSession => (
                 "Open the agentium session of the current card's review record.",
-                vec![
+                card_args(vec![
                     ToolArg::new(
                         "code_review",
                         ToolArgType::Boolean,
                         "Ask the session for a code review of its work.",
                     )
                     .default(json!(false)),
-                ],
-            )
-            .titled("Open card's agent session"),
-            card_spec(
-                OPEN_REVIEW,
+                ]),
+            ),
+            Self::OpenReview => (
                 "Open the current card's review pane on its newest record.",
-                vec![],
-            )
-            .titled("Review card's commit"),
-            card_spec(
-                SEND_BACK,
+                card_args(vec![]),
+            ),
+            Self::SendBack => (
                 "Send the current card back to In Progress, asking for a reason.",
-                vec![],
-            )
-            .titled("Send card back"),
-            card_spec(
-                QUICK_COMMENT,
+                card_args(vec![]),
+            ),
+            Self::QuickComment => (
                 "Ask for a one-line comment on the current card, post it, and send it to its \
                  review record's agentium session with any line comments drafted on the record.",
-                vec![],
-            )
-            .titled("Comment on card"),
-            card_spec(
-                STEP_CARD,
+                card_args(vec![]),
+            ),
+            Self::StepCard => (
                 "Step to the next or previous card: the grid cursor's, the review queue's, \
                  or the card's column neighbour.",
-                vec![enum_arg("dir", DIRS, "Which way to step.")],
-            )
-            .titled("Step to next or previous card"),
-            ToolSpec::new(
-                CURSOR_MOVE,
+                card_args(vec![enum_arg("dir", DIRS, "Which way to step.")]),
+            ),
+            Self::CursorMove => (
                 "Move the board grid's or the issue list's cursor.",
                 vec![enum_arg("to", CURSOR_TOS, "Where the cursor goes.")],
-            )
-            .ui()
-            .titled("Move cursor"),
-            ToolSpec::new(
-                COMPOSE_CARD,
+            ),
+            Self::ComposeCard => (
                 "Open the add-card composer in the grid cursor's column, or in the issue \
                  list, the composer for a card in the cursor's group.",
                 vec![],
-            )
-            .ui()
-            .titled("New card"),
-            ToolSpec::new(
-                FOCUS_FILTER,
+            ),
+            Self::FocusFilter => (
                 "Focus the board grid's filter, or the issue list's query.",
                 vec![],
-            )
-            .ui()
-            .titled("Filter cards"),
-            ToolSpec::new(
-                OPEN_REVIEW_QUEUE,
+            ),
+            Self::OpenReviewQueue => (
                 "Open the review queue: over the board's In Review column from the grid, \
                  over the card's In Review subissues from its detail.",
                 vec![],
-            )
-            .ui()
-            .titled("Open review queue"),
-            ToolSpec::new(
-                OPEN_LIST,
+            ),
+            Self::OpenList => (
                 "Open the issue list: every board's cards as one filterable list.",
                 vec![],
-            )
-            .ui()
-            .titled("Open issue list"),
-            ToolSpec::new(
-                NEXT_BOARD,
+            ),
+            Self::NextBoard => (
                 "Switch to the next board, in the board switcher's order, wrapping around.",
                 vec![],
-            )
-            .ui()
-            .titled("Next board"),
-            ToolSpec::new(
-                PREV_BOARD,
+            ),
+            Self::PrevBoard => (
                 "Switch to the previous board, in the board switcher's order, wrapping around.",
                 vec![],
-            )
-            .ui()
-            .titled("Previous board"),
-            ToolSpec::new(
-                PICK_BOARD,
+            ),
+            Self::PickBoard => (
                 "Open the board picker: every board, narrowed as you type, to switch to one.",
                 vec![],
-            )
-            .ui()
-            .titled("Switch board"),
-            ToolSpec::new(CLEAR, "Drop the board grid's cursor.", vec![])
-                .ui()
-                .titled("Clear cursor"),
-            ToolSpec::new(
-                LIST_FOLD,
+            ),
+            Self::Clear => ("Drop the board grid's cursor.", vec![]),
+            Self::ListFold => (
                 "Fold the issue list's group headers: toggle, open or close the cursor's \
                  group, or close (all) or open (none) every group.",
                 vec![enum_arg("to", FOLD_TOS, "What to fold.")],
-            )
-            .ui()
-            .titled("Fold groups"),
-            ToolSpec::new(
-                LIST_STEP_GROUP,
+            ),
+            Self::ListStepGroup => (
                 "Move the issue list's cursor to the next or previous group header.",
                 vec![enum_arg("dir", DIRS, "Which way to step.")],
-            )
-            .ui()
-            .titled("Step to next or previous group"),
-            ToolSpec::new(
-                LIST_MOVE_DOWN,
+            ),
+            Self::ListMoveDown => (
                 "Move the issue list cursor's card one place later in its board's work \
                  order, past the next card in its group. Only while the list is ordered by \
                  work order, top first.",
                 vec![],
-            )
-            .ui()
-            .titled("Move card down in work order"),
-            ToolSpec::new(
-                LIST_MOVE_UP,
+            ),
+            Self::ListMoveUp => (
                 "Move the issue list cursor's card one place earlier in its board's work \
                  order, past the card before it in its group. Only while the list is ordered \
                  by work order, top first.",
                 vec![],
-            )
-            .ui()
-            .titled("Move card up in work order"),
-            ToolSpec::new(
-                LIST_TAB,
+            ),
+            Self::ListTab => (
                 "Show one of the issue list's view tabs: the next or previous one, a built-in \
                  view (active, backlog, all), or a saved view by slug or name.",
                 vec![
@@ -597,11 +708,8 @@ impl HeadwayUiTool {
                         "A saved view's slug or name, instead of `to`.",
                     ),
                 ],
-            )
-            .ui()
-            .titled("Switch list view"),
-            ToolSpec::new(
-                LIST_GROUP,
+            ),
+            Self::ListGroup => (
                 "Group the issue list's rows: by status, priority, label, board or parent, \
                  none, or the next grouping in the Display menu's order.",
                 vec![names_arg(
@@ -609,11 +717,8 @@ impl HeadwayUiTool {
                     pick_values(&GroupBy::ALL, GroupBy::name),
                     "What to group by.",
                 )],
-            )
-            .ui()
-            .titled("Group list by"),
-            ToolSpec::new(
-                LIST_SUBGROUP,
+            ),
+            Self::ListSubgroup => (
                 "Split each of the issue list's groups again: by status, priority, label, \
                  board or parent, none, or the next sub-grouping in the Display menu's order.",
                 vec![names_arg(
@@ -621,11 +726,8 @@ impl HeadwayUiTool {
                     pick_values(&GroupBy::ALL, GroupBy::name),
                     "What to sub-group by.",
                 )],
-            )
-            .ui()
-            .titled("Sub-group list by"),
-            ToolSpec::new(
-                LIST_ORDER,
+            ),
+            Self::ListOrder => (
                 "Order the issue list's rows, run the ordering's natural way: manually, by \
                  priority, last updated, created, due date or work order, or the next ordering \
                  in the Display menu's order.",
@@ -634,18 +736,12 @@ impl HeadwayUiTool {
                     pick_values(&SortBy::ALL, SortBy::name),
                     "What to order by.",
                 )],
-            )
-            .ui()
-            .titled("Order list by"),
-            ToolSpec::new(
-                LIST_ORDER_DIR,
+            ),
+            Self::ListOrderDir => (
                 "Run the issue list's ordering the other way, or ascending or descending.",
                 vec![enum_arg("dir", DIR_TOS, "Which way to run it.")],
-            )
-            .ui()
-            .titled("Reverse list order"),
-            ToolSpec::new(
-                LIST_DISPLAY,
+            ),
+            Self::ListDisplay => (
                 "Show or hide one of the properties each issue-list row draws beside its \
                  title, as the Display menu's chips do.",
                 vec![
@@ -661,57 +757,45 @@ impl HeadwayUiTool {
                         "Show it (true), hide it (false), or flip it.",
                     ),
                 ],
-            )
-            .ui()
-            .titled("Show or hide row property"),
-            ToolSpec::new(
-                LIST_SAVE_VIEW,
+            ),
+            Self::ListSaveView => (
                 "Save what the issue list shows, its query and layout, as a new view: opens \
                  the view-name field.",
                 vec![],
-            )
-            .ui()
-            .titled("Save list view"),
-            ToolSpec::new(
-                SCROLL,
+            ),
+            Self::Scroll => (
                 "Scroll the review pane's diff or the card detail.",
                 vec![enum_arg("to", SCROLL_TOS, "How far to scroll.")],
-            )
-            .ui()
-            .titled("Scroll"),
-            ToolSpec::new(
-                STEP_FILE,
+            ),
+            Self::StepFile => (
                 "Scroll the review pane's diff to the next or previous file.",
                 vec![enum_arg("dir", DIRS, "Which way to step.")],
-            )
-            .ui()
-            .titled("Step to next or previous file"),
-            ToolSpec::new(
-                COMMENT,
+            ),
+            Self::Comment => (
                 "Write a review comment on the picked diff lines, or on the commit.",
                 vec![],
-            )
-            .ui()
-            .titled("Write review comment"),
-            ToolSpec::new(
-                SEND_COMMENTS,
-                "Send the review pane's drafted comments.",
-                vec![],
-            )
-            .ui()
-            .titled("Send review comments"),
-            ToolSpec::new(
-                BACK,
+            ),
+            Self::SendComments => ("Send the review pane's drafted comments.", vec![]),
+            Self::Back => (
                 "Leave the review queue, back a review pane out to its card, or leave the \
                  card detail or the issue list for the grid.",
                 vec![],
-            )
+            ),
+        };
+        ToolSpec::new(self.name(), description, args)
             .ui()
-            .titled("Go back"),
-        ]
-        .into_iter()
-        .map(|spec| spec.filed_under(crate::TOOL_CATEGORY))
-        .collect()
+            .titled(self.title())
+            .filed_under(crate::TOOL_CATEGORY)
+    }
+}
+
+impl HeadwayUiTool {
+    /// The spec of every Headway UI tool, for [`notedeck::App::ui_tools`].
+    pub(crate) fn specs() -> Vec<ToolSpec> {
+        HeadwayToolName::ALL
+            .into_iter()
+            .map(HeadwayToolName::spec)
+            .collect()
     }
 
     /// Parse a call of the tool `name` with `args` (an object, or `null` for
@@ -724,11 +808,15 @@ impl HeadwayUiTool {
         if !args.is_object() {
             return Err(format!("'{name}' arguments must be an object, not {args}"));
         }
-        Ok(match name {
-            OPEN_CARD => card_tool(name, args, CardAction::Open)?,
-            OPEN_EXPLAINER => card_tool(name, args, CardAction::Explainer(None))?,
-            OPEN_PARENT => card_tool(name, args, CardAction::Parent)?,
-            OPEN_SESSION => {
+        let Some(tool) = HeadwayToolName::from_name(name) else {
+            return Err(format!("unknown tool '{name}'"));
+        };
+        use HeadwayToolName as T;
+        Ok(match tool {
+            T::OpenCard => card_tool(name, args, CardAction::Open)?,
+            T::OpenExplainer => card_tool(name, args, CardAction::Explainer(None))?,
+            T::OpenParent => card_tool(name, args, CardAction::Parent)?,
+            T::OpenSession => {
                 let SessionArgs { card, code_review } = parse_args(name, args)?;
                 let how = if code_review {
                     SessionOpen::CodeReview
@@ -737,10 +825,10 @@ impl HeadwayUiTool {
                 };
                 card_target(CardAction::Session(how, None), card)?
             }
-            OPEN_REVIEW => card_tool(name, args, CardAction::Review(None))?,
-            SEND_BACK => card_tool(name, args, CardAction::SendBack)?,
-            QUICK_COMMENT => card_tool(name, args, CardAction::Comment)?,
-            STEP_CARD => {
+            T::OpenReview => card_tool(name, args, CardAction::Review(None))?,
+            T::SendBack => card_tool(name, args, CardAction::SendBack)?,
+            T::QuickComment => card_tool(name, args, CardAction::Comment)?,
+            T::StepCard => {
                 let StepArgs { card, dir } = parse_args(name, args)?;
                 let step = match dir {
                     Dir::Next => CardStep::Next,
@@ -748,7 +836,7 @@ impl HeadwayUiTool {
                 };
                 card_target(CardAction::Step(step), card)?
             }
-            CURSOR_MOVE => {
+            T::CursorMove => {
                 let CursorArgs { to } = parse_args(name, args)?;
                 Self::Cursor(match to {
                     CursorTo::Down => CursorMove::Down,
@@ -759,15 +847,15 @@ impl HeadwayUiTool {
                     CursorTo::Last => CursorMove::Last,
                 })
             }
-            COMPOSE_CARD => no_args(name, args, Self::AddCard)?,
-            FOCUS_FILTER => no_args(name, args, Self::FocusFilter)?,
-            OPEN_REVIEW_QUEUE => no_args(name, args, Self::ReviewQueue)?,
-            OPEN_LIST => no_args(name, args, Self::OpenList)?,
-            NEXT_BOARD => no_args(name, args, Self::StepBoard(BoardStep::Next))?,
-            PREV_BOARD => no_args(name, args, Self::StepBoard(BoardStep::Prev))?,
-            PICK_BOARD => no_args(name, args, Self::PickBoard)?,
-            CLEAR => no_args(name, args, Self::Clear)?,
-            LIST_FOLD => {
+            T::ComposeCard => no_args(name, args, Self::AddCard)?,
+            T::FocusFilter => no_args(name, args, Self::FocusFilter)?,
+            T::OpenReviewQueue => no_args(name, args, Self::ReviewQueue)?,
+            T::OpenList => no_args(name, args, Self::OpenList)?,
+            T::NextBoard => no_args(name, args, Self::StepBoard(BoardStep::Next))?,
+            T::PrevBoard => no_args(name, args, Self::StepBoard(BoardStep::Prev))?,
+            T::PickBoard => no_args(name, args, Self::PickBoard)?,
+            T::Clear => no_args(name, args, Self::Clear)?,
+            T::ListFold => {
                 let FoldArgs { to } = parse_args(name, args)?;
                 Self::ListFold(match to {
                     FoldTo::Toggle => ListFold::Toggle,
@@ -777,30 +865,20 @@ impl HeadwayUiTool {
                     FoldTo::None => ListFold::OpenAll,
                 })
             }
-            LIST_STEP_GROUP => {
+            T::ListStepGroup => {
                 let DirArgs { dir } = parse_args(name, args)?;
                 Self::ListStepGroup(match dir {
                     Dir::Next => GroupStep::Next,
                     Dir::Prev => GroupStep::Prev,
                 })
             }
-            LIST_MOVE_DOWN => no_args(name, args, Self::ListMove(Vertical::Down))?,
-            LIST_MOVE_UP => no_args(name, args, Self::ListMove(Vertical::Up))?,
-            LIST_TAB => Self::ListLayout(ListLayout::Tab(parse_tab(name, args)?)),
-            LIST_GROUP | LIST_SUBGROUP => {
-                let ByArgs { by } = parse_args(name, args)?;
-                let pick = parse_pick(by).map_err(|e| format!("'{name}': {e}"))?;
-                Self::ListLayout(match name {
-                    LIST_GROUP => ListLayout::Group(pick),
-                    _ => ListLayout::SubGroup(pick),
-                })
-            }
-            LIST_ORDER => {
-                let ByArgs { by } = parse_args(name, args)?;
-                let pick = parse_pick(by).map_err(|e| format!("'{name}': {e}"))?;
-                Self::ListLayout(ListLayout::Order(pick))
-            }
-            LIST_ORDER_DIR => {
+            T::ListMoveDown => no_args(name, args, Self::ListMove(Vertical::Down))?,
+            T::ListMoveUp => no_args(name, args, Self::ListMove(Vertical::Up))?,
+            T::ListTab => Self::ListLayout(ListLayout::Tab(parse_tab(name, args)?)),
+            T::ListGroup => Self::ListLayout(ListLayout::Group(parse_by(name, args)?)),
+            T::ListSubgroup => Self::ListLayout(ListLayout::SubGroup(parse_by(name, args)?)),
+            T::ListOrder => Self::ListLayout(ListLayout::Order(parse_by(name, args)?)),
+            T::ListOrderDir => {
                 let OrderDirArgs { dir } = parse_args(name, args)?;
                 Self::ListLayout(ListLayout::OrderDir(match dir {
                     DirTo::Toggle => OrderDir::Toggle,
@@ -808,7 +886,7 @@ impl HeadwayUiTool {
                     DirTo::Desc => OrderDir::Descending,
                 }))
             }
-            LIST_DISPLAY => {
+            T::ListDisplay => {
                 let DisplayArgs { prop, on } = parse_args(name, args)?;
                 let prop = prop.parse().map_err(|e| format!("'{name}': {e}"))?;
                 let on = match on {
@@ -819,8 +897,8 @@ impl HeadwayUiTool {
                 };
                 Self::ListLayout(ListLayout::Display(DisplaySwitch { prop, on }))
             }
-            LIST_SAVE_VIEW => no_args(name, args, Self::ListLayout(ListLayout::SaveView))?,
-            SCROLL => {
+            T::ListSaveView => no_args(name, args, Self::ListLayout(ListLayout::SaveView))?,
+            T::Scroll => {
                 let ScrollArgs { to } = parse_args(name, args)?;
                 Self::Scroll(match to {
                     ScrollTo::Down => PaneScroll::Rows(1),
@@ -833,19 +911,28 @@ impl HeadwayUiTool {
                     ScrollTo::Bottom => PaneScroll::Bottom,
                 })
             }
-            STEP_FILE => {
+            T::StepFile => {
                 let DirArgs { dir } = parse_args(name, args)?;
                 Self::Scroll(match dir {
                     Dir::Next => PaneScroll::NextFile,
                     Dir::Prev => PaneScroll::PrevFile,
                 })
             }
-            COMMENT => no_args(name, args, Self::Comment)?,
-            SEND_COMMENTS => no_args(name, args, Self::SendComments)?,
-            BACK => no_args(name, args, Self::Back)?,
-            _ => return Err(format!("unknown tool '{name}'")),
+            T::Comment => no_args(name, args, Self::Comment)?,
+            T::SendComments => no_args(name, args, Self::SendComments)?,
+            T::Back => no_args(name, args, Self::Back)?,
         })
     }
+}
+
+/// A Display-menu tool's pick (`headway_list_group`, `headway_list_subgroup`,
+/// `headway_list_order`): its `by`, read by [`parse_pick`].
+fn parse_by<T: std::str::FromStr>(name: &str, args: &Value) -> Result<Pick<T>, String>
+where
+    T::Err: std::fmt::Display,
+{
+    let ByArgs { by } = parse_args(name, args)?;
+    parse_pick(by).map_err(|e| format!("'{name}': {e}"))
 }
 
 /// Deserialize `args` for the tool `name`.
@@ -1048,52 +1135,60 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
     let Some(at) = key_view(state) else {
         return false;
     };
+    let Some(tool) = HeadwayToolName::from_name(name) else {
+        return false;
+    };
     let card = current_card(state, at).is_some();
     let grid = at == KeyView::Grid;
     let list = at == KeyView::List;
     let review = matches!(at, KeyView::Queue | KeyView::Pane);
-    match name {
+    use HeadwayToolName as T;
+    match tool {
         // The detail has nothing to open: its card is open. The list's
         // Enter on a group header folds it.
-        OPEN_CARD => {
+        T::OpenCard => {
             (card && at != KeyView::Detail) || (list && state.list_cursor_spot().is_some())
         }
         // Say there's no explainer, or no session, when there's none, so
         // the key answers rather than falling through. On a list row they
         // act on the row's board; `r`, `X` and `C` open its detail first.
-        OPEN_EXPLAINER | OPEN_SESSION | OPEN_REVIEW | SEND_BACK | QUICK_COMMENT => card,
+        T::OpenExplainer | T::OpenSession | T::OpenReview | T::SendBack | T::QuickComment => card,
         // Only a subissue has a parent to open: on any other card the key
         // falls through, and a macro's step waits and aborts. Not from the
         // list, whose rows are already every card, parents and all.
-        OPEN_PARENT => !list && current_card(state, at).is_some_and(|c| state.has_parent(c)),
+        T::OpenParent => !list && current_card(state, at).is_some_and(|c| state.has_parent(c)),
         // The grid's step lands a missing cursor on the first card; the
         // queue's steps off a card that has left the board. The list's `j`/`k`
         // are its steps.
-        STEP_CARD => (card && !list) || grid || at == KeyView::Queue,
-        CURSOR_MOVE | FOCUS_FILTER => grid || list,
-        COMPOSE_CARD => grid || (list && state.list_can_compose()),
-        OPEN_LIST | PICK_BOARD => grid,
-        LIST_FOLD | LIST_STEP_GROUP => list && state.list_has_groups(),
+        T::StepCard => (card && !list) || grid || at == KeyView::Queue,
+        T::CursorMove | T::FocusFilter => grid || list,
+        T::ComposeCard => grid || (list && state.list_can_compose()),
+        T::OpenList | T::PickBoard => grid,
+        T::ListFold | T::ListStepGroup => list && state.list_has_groups(),
         // Only with a neighbour in its group to step past, so `J`/`K` fall
         // through otherwise.
-        LIST_MOVE_DOWN => list && state.list_can_move(Vertical::Down),
-        LIST_MOVE_UP => list && state.list_can_move(Vertical::Up),
-        LIST_TAB | LIST_GROUP | LIST_SUBGROUP | LIST_ORDER | LIST_ORDER_DIR | LIST_DISPLAY
-        | LIST_SAVE_VIEW => list,
-        NEXT_BOARD | PREV_BOARD => grid && state.other_boards(),
-        OPEN_REVIEW_QUEUE => grid || at == KeyView::Detail,
-        CLEAR => grid && card,
-        SCROLL => !grid && !list,
+        T::ListMoveDown => list && state.list_can_move(Vertical::Down),
+        T::ListMoveUp => list && state.list_can_move(Vertical::Up),
+        T::ListTab
+        | T::ListGroup
+        | T::ListSubgroup
+        | T::ListOrder
+        | T::ListOrderDir
+        | T::ListDisplay
+        | T::ListSaveView => list,
+        T::NextBoard | T::PrevBoard => grid && state.other_boards(),
+        T::OpenReviewQueue => grid || at == KeyView::Detail,
+        T::Clear => grid && card,
+        T::Scroll => !grid && !list,
         // An Esc that only left a detail field mustn't leave the card too,
         // nor one that closes the list's `+` composer the list.
-        BACK => {
+        T::Back => {
             !grid
                 && !(at == KeyView::Detail && state.detail_field_focused())
                 && !(list && state.list_composing())
         }
-        STEP_FILE => review,
-        COMMENT | SEND_COMMENTS => review && card,
-        _ => false,
+        T::StepFile => review,
+        T::Comment | T::SendComments => review && card,
     }
 }
 
@@ -1189,6 +1284,19 @@ mod tests {
         }
         for prop in DisplayProp::ALL {
             assert!(values(LIST_DISPLAY, "prop").contains(&prop.name().to_owned()));
+        }
+    }
+
+    /// Every tool's spec is under its own name, which reads back as the
+    /// tool, in [`HeadwayToolName::ALL`]'s order.
+    #[test]
+    fn every_tool_round_trips_its_name() {
+        let specs = HeadwayUiTool::specs();
+        assert_eq!(specs.len(), HeadwayToolName::ALL.len());
+        for (tool, spec) in HeadwayToolName::ALL.into_iter().zip(&specs) {
+            assert_eq!(HeadwayToolName::from_name(tool.name()), Some(tool));
+            assert_eq!(spec.name(), tool.name());
+            assert!(spec.name().starts_with("headway_"), "{}", spec.name());
         }
     }
 
