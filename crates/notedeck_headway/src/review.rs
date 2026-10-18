@@ -441,7 +441,11 @@ fn loaded(
         images,
         models,
     } = fetched;
-    let mut patch_state = GitPatchState::new(&patch, i18n).with_id_salt((source, &commit.sha));
+    // The header carries the byline, the body and the comments on the commit,
+    // so they scroll away with the diff.
+    let mut patch_state = GitPatchState::new(&patch, i18n)
+        .with_id_salt((source, &commit.sha))
+        .with_header();
     review_images::upload(images, &commit.sha, &mut patch_state, ctx, i18n);
     let models = ReviewModels::upload(
         models,

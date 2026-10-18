@@ -239,6 +239,57 @@ pub struct GitPatchState {
     /// A drag or double-click on a 3D model side, waiting for the caller
     /// (see [`GitPatchState::take_model_input`]).
     model_input: Option<ModelInput>,
+    /// Rows kept above the summary for the caller's header, as many as it
+    /// last used (see [`with_header`](Self::with_header)); `None` when it
+    /// has none.
+    header_rows: Option<usize>,
+}
+
+/// Where to draw the caller's header this pass, handed back by
+/// [`git_patch_ui_with`] while any of it is in view (see
+/// [`GitPatchState::with_header`]). It sits in the scroll area above the
+/// summary and scrolls with the diff, but not sideways: it is as wide as the
+/// view.
+#[derive(Debug, Clone, Copy)]
+pub struct PatchHeader {
+    /// The rows kept for it, on screen, as the diff is scrolled.
+    rect: Rect,
+    /// The view: the header is clipped to it.
+    clip: Rect,
+    /// How many rows it has, and the distance from one row to the next.
+    rows: usize,
+    step: f32,
+}
+
+/// The rows a header drawn by [`PatchHeader::show`] needs, for
+/// [`GitPatchState::set_header_rows`].
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeaderRows(usize);
+
+impl PatchHeader {
+    /// Draw the header with `add`, top-down in its rows, and say how many
+    /// rows it used. Takes `ui` the diff was drawn in, after
+    /// [`git_patch_ui_with`], so it lands over its rows. A header that grew
+    /// or shrank asks for another pass, since the diff below it moves once
+    /// [`GitPatchState::set_header_rows`] has the new size.
+    pub fn show(self, ui: &mut Ui, add: impl FnOnce(&mut Ui)) -> HeaderRows {
+        let mut child = ui.new_child(
+            UiBuilder::new()
+                .id_salt("git_patch_header")
+                .max_rect(self.rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        child.set_clip_rect(self.clip.intersect(ui.clip_rect()));
+        add(&mut child);
+        let spacing = ui.spacing().item_spacing.y;
+        let used = child.min_rect().height();
+        let needed = (((used + spacing) / self.step).ceil() as usize).max(1);
+        if needed != self.rows {
+            ui.ctx().request_repaint();
+        }
+        HeaderRows(needed)
+    }
 }
 
 /// Laid-out diff lines, kept across passes so a line is laid out once, when
@@ -572,6 +623,29 @@ impl GitPatchState {
         self
     }
 
+    /// Keep room above the summary for a header the caller draws, which
+    /// scrolls away with the diff: while it's in view, [`git_patch_ui_with`]
+    /// hands back where it goes ([`PatchHeader`]). It starts one row tall and
+    /// takes what [`PatchHeader::show`] measured once that's handed to
+    /// [`set_header_rows`](Self::set_header_rows), a pass later.
+    pub fn with_header(mut self) -> Self {
+        self.header_rows = Some(1);
+        self
+    }
+
+    /// Give the header the rows [`PatchHeader::show`] said it needs. Ignored
+    /// by a state built without [`with_header`](Self::with_header).
+    pub fn set_header_rows(&mut self, rows: HeaderRows) {
+        if let Some(slot) = &mut self.header_rows {
+            *slot = rows.0;
+        }
+    }
+
+    /// The rows above the summary: the header's, or none.
+    fn header_rows(&self) -> usize {
+        self.header_rows.unwrap_or(0)
+    }
+
     /// Ask for a scroll on the next pass. A later request replaces an earlier
     /// one that hasn't been applied yet.
     pub fn scroll(&mut self, request: PatchScroll) {
@@ -835,11 +909,12 @@ impl GitPatchState {
     }
 
     /// Lay the rows out for this pass: fill `file_rows` and return the
-    /// content's row count. The summary takes the first `1 + files` rows.
+    /// content's row count. The caller's header, when it has one, takes the
+    /// first rows, and the summary the `1 + files` after them.
     fn layout(&mut self, patch: &GitPatch) -> usize {
         let files = patch.files();
         self.file_rows.clear();
-        let mut row = 1 + files.len();
+        let mut row = self.header_rows() + 1 + files.len();
         for (f, (file, collapsed)) in files.iter().zip(&self.collapsed).enumerate() {
             self.file_rows.push(row);
             row += 1;
@@ -853,11 +928,15 @@ impl GitPatchState {
     /// What virtual row `row` shows.
     fn locate(&self, patch: &GitPatch, row: usize) -> Row {
         let n = patch.files().len();
-        if row == 0 {
+        let header = self.header_rows();
+        if row < header {
+            return Row::Header;
+        }
+        if row == header {
             return Row::Summary;
         }
-        if row <= n {
-            return Row::SummaryFile(row - 1);
+        if row <= header + n {
+            return Row::SummaryFile(row - header - 1);
         }
         let f = self.file_rows.partition_point(|&r| r <= row) - 1;
         let body = row - self.file_rows[f];
@@ -995,6 +1074,9 @@ impl GitPatchState {
 /// What one virtual row shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Row {
+    /// One of the caller's header rows: drawn by the caller, over them all
+    /// (see [`PatchHeader`]).
+    Header,
     /// "N files changed", then the totals.
     Summary,
     /// File `n`'s line in the summary.
@@ -1045,13 +1127,16 @@ pub type NoteDrawer<'a> = &'a mut dyn FnMut(&mut Ui, &PatchNote);
 /// [`git_patch_ui`], with `draw_note` drawing the notes marked
 /// `caller_draws` (the rest keep the one-line row). A drawn note starts one
 /// row tall and grows to what its drawer used, a pass later.
+///
+/// With a state built [`with_header`](GitPatchState::with_header), returns
+/// where the caller's header goes while any of it is in view.
 #[profiling::function]
 pub fn git_patch_ui_with(
     patch: &GitPatch,
     state: &mut GitPatchState,
     ui: &mut Ui,
     mut draw_note: Option<NoteDrawer<'_>>,
-) {
+) -> Option<PatchHeader> {
     if state.collapsed.len() != patch.files().len() {
         // The caller swapped the patch without new state. Recover rather than
         // index out of bounds; the labels fall back to the source strings.
@@ -1061,6 +1146,7 @@ pub fn git_patch_ui_with(
             offset: state.offset,
             viewport_height: state.viewport_height,
             synced: state.synced,
+            header_rows: state.header_rows,
             ..GitPatchState::new(patch, &mut Localization::default())
         };
     }
@@ -1137,6 +1223,19 @@ pub fn git_patch_ui_with(
 
                 let view_top = top + viewport.min.y;
                 sticky_header(patch, state, row_at(viewport.min.y, row_step), view_top, ui);
+
+                // The header's rows, while the view still shows some of them.
+                let rows = state.header_rows?;
+                let height = rows as f32 * row_step - spacing;
+                (viewport.min.y < height).then(|| {
+                    let clip = ui.clip_rect();
+                    PatchHeader {
+                        rect: Rect::from_x_y_ranges(clip.x_range(), top..=top + height),
+                        clip,
+                        rows,
+                        step: row_step,
+                    }
+                })
             })
         })
         .inner;
@@ -1159,6 +1258,7 @@ pub fn git_patch_ui_with(
         // A row asked for a scroll this pass; apply it on the next one.
         ui.ctx().request_repaint();
     }
+    out.inner
 }
 
 /// The one height every row is drawn at: tall enough for a diff line, a
@@ -1171,6 +1271,7 @@ fn row_height(ui: &Ui) -> f32 {
 
 fn row_ui(patch: &GitPatch, state: &mut GitPatchState, row: Row, ui: &mut Ui) {
     match row {
+        Row::Header => skip_row(ui),
         Row::Summary => {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
@@ -2102,6 +2203,53 @@ mod tests {
         assert!(harness.query_by_label("third line").is_some());
         let state = &harness.state().state;
         assert!(state.note_rows[0] >= 3, "grew to {}", state.note_rows[0]);
+    }
+
+    /// A header grows to what its drawer used, sits above the summary and
+    /// scrolls away with the diff: a jump to a file leaves it out of view,
+    /// and going back to the top brings it back.
+    #[test]
+    fn a_header_scrolls_with_the_diff() {
+        let patch = tall_patch(600);
+        let state = GitPatchState::new(&patch, &mut Localization::default()).with_header();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 400.0))
+            .build_ui_state(
+                |ui, PatchUi { patch, state }: &mut PatchUi| {
+                    let Some(header) = git_patch_ui_with(patch, state, ui, None) else {
+                        return;
+                    };
+                    let rows = header.show(ui, |ui| {
+                        ui.label("header first");
+                        ui.label("header second");
+                        ui.label("header third");
+                    });
+                    state.set_header_rows(rows);
+                },
+                PatchUi { patch, state },
+            );
+        harness.run();
+        assert!(harness.query_by_label("header third").is_some());
+        let rows = harness.state().state.header_rows();
+        assert!(rows >= 3, "grew to {rows}");
+        assert_eq!(harness.state().state.file_rows[0], rows + 1 + 2);
+        assert_eq!(harness.state().state.current_file(), None);
+        // The summary sits under it, not under its first row.
+        let header = harness.get_by_label("header third").rect();
+        let summary = harness.state().state.summary.clone();
+        let summary = harness.get_by_label(&summary).rect();
+        assert!(header.max.y <= summary.min.y, "{header:?} over {summary:?}");
+
+        harness.state_mut().state.scroll(PatchScroll::File(0));
+        harness.run();
+        assert_eq!(harness.state().state.current_file(), Some(0));
+        assert!(harness.query_by_label("header first").is_none());
+        assert_eq!(harness.state().state.header_rows(), rows, "kept while away");
+
+        harness.state_mut().state.scroll(PatchScroll::Top);
+        harness.run();
+        assert!(harness.query_by_label("header first").is_some());
+        assert_eq!(harness.state().state.current_file(), None);
     }
 
     /// A click picks one line, a shift-click stretches the pick within its

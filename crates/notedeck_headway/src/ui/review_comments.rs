@@ -359,16 +359,17 @@ pub(super) fn posted_comment_ui(
     });
 }
 
-/// Above the diff: the record's posted comments on the commit as a whole
-/// (they have no lines to sit under), the composer for the picked lines or,
-/// after a `c` with nothing picked, for the commit, and the record's drafts,
-/// each with a ✕ to drop it. Also keeps the diff's comment rows current
-/// ([`sync_notes`]). A pane with no record (a card found by its trailer) has
+/// Above the diff, staying there as it scrolls: the composer for the picked
+/// lines or, after a `c` with nothing picked, for the commit, and the
+/// record's drafts, each with a ✕ to drop it. So a pick deep in the diff, or
+/// a `c` with the diff scrolled, has its composer in view, and what's still
+/// to send stays listed. Also keeps the diff's comment rows current
+/// ([`sync_notes`]). The comments already posted on the commit as a whole
+/// scroll with the diff instead ([`commit_comments_ui`]). A pane with no record (a card found by its trailer) has
 /// nothing to root a comment on, so it gets none of it.
 pub(super) fn comments_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    app_ctx: &mut notedeck::AppContext,
     loaded: &mut LoadedReview,
     record: Option<&ReviewView>,
     drafts: &mut ReviewDrafts,
@@ -378,7 +379,6 @@ pub(super) fn comments_ui(
         return;
     };
     sync_notes(loaded, record, drafts);
-    commit_comments_ui(ui, theme, app_ctx, record);
 
     if let Some(picked) = loaded.patch_state.selection() {
         // Picking lines takes over a composer opened on the commit.
@@ -396,9 +396,10 @@ pub(super) fn comments_ui(
 }
 
 /// `record`'s posted comments on the commit as a whole, oldest first, each
-/// drawn by the note renderer ([`posted_comment_ui`]). Replies to a comment
-/// on lines carry its lines, so they draw in the diff instead.
-fn commit_comments_ui(
+/// drawn by the note renderer ([`posted_comment_ui`]), in the diff's header
+/// (they have no lines to sit under). Replies to a comment on lines carry its
+/// lines, so they draw in the diff under them instead.
+pub(super) fn commit_comments_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,

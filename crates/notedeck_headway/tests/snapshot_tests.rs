@@ -13,7 +13,7 @@ use notedeck_chrome::{
     key_hints_tool_available,
 };
 use notedeck_headway::{Headway, event, store, views};
-use notedeck_testing::ui::{get_by_text, strip_isolates, text_eq, tree_text};
+use notedeck_testing::ui::{get_by_text, query_all_by_text, strip_isolates, text_eq, tree_text};
 
 /// The two-party suite's SNS helpers; here we reuse only its gift-wrap key-share
 /// builder so the shared-board flows below don't hand-roll a kind-1059 envelope.
@@ -4932,6 +4932,27 @@ fn review_comment_on_the_whole_commit() {
     // value rather than its name.
     wait_for_label(&mut harness, "nostrich");
     get_by_text(&harness, BODY);
+
+    // It scrolls with the diff rather than sticking over it: `]` brings the
+    // first file's header to the top and takes the comment off it, and `[`
+    // from there goes back to the top, where it is again.
+    harness.press_key(egui::Key::CloseBracket);
+    wait_for_absent(&mut harness, "nostrich");
+    assert_eq!(query_all_by_text(&harness, BODY).count(), 0, "scrolled off");
+    harness.press_key(egui::Key::OpenBracket);
+    wait_for_label(&mut harness, "nostrich");
+    get_by_text(&harness, BODY);
+
+    // The composer stays over the diff, so `c` with it scrolled still has
+    // the composer in view.
+    harness.press_key(egui::Key::CloseBracket);
+    wait_for_absent(&mut harness, "nostrich");
+    harness.press_key(egui::Key::C);
+    wait_for_label(&mut harness, "this commit");
+    assert!(
+        harness.query_by_label("nostrich").is_none(),
+        "still scrolled"
+    );
 }
 
 /// Snapshot: the review queue with nothing picked, a draft on the commit as
@@ -4959,6 +4980,34 @@ fn snapshot_headway_review_comment_on_commit() {
     wait_for_label(&mut harness, "Comment on");
     harness.run_steps(3);
     harness.snapshot("headway_review_comment_on_commit");
+}
+
+/// Snapshot: the review queue scrolled to its first file with a draft on the
+/// commit as a whole and `c` pressed: the composer and the draft stay over
+/// the diff, while the byline and the commit body have scrolled away with it.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_comment_scrolled() {
+    let fixture = review_fixture();
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    open_review_queue(&mut harness);
+    harness.press_key(egui::Key::C);
+    wait_for_label(&mut harness, "this commit");
+    harness.run_ok();
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text("split this commit in two".to_string()));
+    harness.run_ok();
+    harness.press_key_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    wait_for_label(&mut harness, "Send 1 comment");
+    harness.press_key(egui::Key::CloseBracket);
+    wait_for_absent(&mut harness, "Show more");
+    harness.press_key(egui::Key::C);
+    wait_for_label(&mut harness, "Comment on");
+    harness.run_steps(3);
+    harness.snapshot("headway_review_comment_scrolled");
 }
 
 /// Snapshot: the review queue's diff with a comment posted on `src/queue.rs`

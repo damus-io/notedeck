@@ -11,10 +11,6 @@ use notedeck::tokens::{SPACING_SM, SPACING_XS};
 use super::widgets::{text_pill, tinted_pill};
 use crate::review_walk::{CodeWalk, ExplainerPage};
 
-/// Tallest the walk's notes at the top of the diff draw before they scroll,
-/// so the diff under them keeps most of the pane.
-const WALK_TOP_MAX_HEIGHT: f32 = 220.0;
-
 /// What the review pane shows under the record's summary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ReviewTab {
@@ -112,8 +108,8 @@ pub(super) fn explainer_ui(
 }
 
 /// The walk's notes that thread onto no hunk — its intro, its closing words,
-/// and any whose hunk wasn't found (saying which) — above the diff, scrolling
-/// past [`WALK_TOP_MAX_HEIGHT`].
+/// and any whose hunk wasn't found (saying which) — in the diff's header, so
+/// they scroll away with it.
 pub(super) fn walk_top_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -123,19 +119,13 @@ pub(super) fn walk_top_ui(
     if walk.top().next().is_none() {
         return;
     }
-    egui::ScrollArea::vertical()
-        .id_salt("headway-review-walk-top")
-        .max_height(WALK_TOP_MAX_HEIGHT)
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            for note in walk.top() {
-                if let Some(missing) = &note.missing {
-                    tinted_pill(ui, missing, theme.warning);
-                }
-                markdown_ui(ui, app_ctx, None, &note.body);
-                ui.add_space(SPACING_XS);
-            }
-        });
+    for note in walk.top() {
+        if let Some(missing) = &note.missing {
+            tinted_pill(ui, missing, theme.warning);
+        }
+        markdown_ui(ui, app_ctx, None, &note.body);
+        ui.add_space(SPACING_XS);
+    }
     ui.add_space(SPACING_SM);
 }
 

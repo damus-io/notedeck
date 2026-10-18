@@ -14,12 +14,12 @@ use headway::git;
 use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
-use notedeck_ui::diff::{PatchNoteKind, PatchScroll};
+use notedeck_ui::diff::{PatchHeader, PatchNoteKind, PatchScroll};
 use std::time::Instant;
 
 use super::card_actions::CardStep;
 use super::review_comments::{
-    DraftComment, ReviewDrafts, comments_ui, location_place, posted_comment_ui,
+    DraftComment, ReviewDrafts, comments_ui, commit_comments_ui, location_place, posted_comment_ui,
 };
 use super::review_sources::{
     ExplainerCache, ReviewTab, explainer_ui, review_tabs_ui, walk_note_ui, walk_top_ui,
@@ -1424,13 +1424,11 @@ fn sha_pill(ui: &mut egui::Ui, theme: &ColorTheme, sha: &str) -> egui::Response 
 
 /// The load's status and, once it's in, the diff: a spinner while the worker
 /// runs, git's own error (command and stderr, verbatim, so a broken ssh or path
-/// can be fixed by hand) with a retry, or one line above the diff with who
-/// wrote the commit and when, where it came from (the full sentence, with the
-/// repo's path, on hover), the record's agentium `session` as its chip, and
-/// whether its patch was cut short. Under that line comes the commit message's
-/// body ([`commit_body_ui`]), then the comment composer and the record's drafts
-/// ([`comments_ui`]), then the diff. `true` when
-/// the session chip was clicked, for the pane to raise as `s`.
+/// can be fixed by hand) with a retry, or the comment composer and the
+/// record's drafts ([`comments_ui`]) over the diff, which they stay above, and
+/// the diff, which opens on the commit's header ([`commit_header_ui`]) and
+/// scrolls it away. `true` when the session chip was clicked, for the pane to
+/// raise as `s`.
 fn load_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1465,55 +1463,82 @@ fn load_ui(
             retry = ui.button("Retry").clicked();
         }
         Some(ReviewLoad::Ready(loaded)) => {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = SPACING_XS;
-                let muted = |text: &str| egui::RichText::new(text).small().color(theme.text_muted);
-                ui.label(muted(&loaded.byline.short))
-                    .on_hover_text(loaded.byline.full.as_str());
-                ui.label(muted("·"));
-                // A trailer match may not be the recorded commit, so its source
-                // is the warning.
-                let source_color = if loaded.by_trailer {
-                    theme.warning
-                } else {
-                    theme.text_muted
-                };
-                ui.label(
-                    egui::RichText::new(loaded.source.as_str())
-                        .small()
-                        .color(source_color),
-                )
-                .on_hover_text(loaded.source_hover.as_str());
-                if loaded.by_trailer {
-                    ui.label(
-                        egui::RichText::new("hash differs from the record? (rebased)")
-                            .small()
-                            .color(theme.warning),
-                    )
-                    .on_hover_text(
-                        "The recorded commit couldn't be found, so this is the newest \
-                         commit carrying the card's Headway trailer.",
-                    );
-                }
-                if let Some(session) = session {
-                    ui.label(muted("·"));
-                    chip = wrapped_session_chip_ui(ui, theme, app_ctx, session);
-                }
-                if loaded.commit.truncated {
-                    tinted_pill(ui, "patch truncated", theme.warning);
-                }
-            });
-            ui.add_space(SPACING_MD);
-            commit_body_ui(ui, theme, &mut loaded.body);
-            comments_ui(ui, theme, app_ctx, loaded, comments.record, comments.drafts);
-            if let Some(walk) = &loaded.walk {
-                walk_top_ui(ui, theme, app_ctx, walk);
+            comments_ui(ui, theme, loaded, comments.record, comments.drafts);
+            if let Some(header) = patch_ui(ui, theme, app_ctx, loaded, comments.record) {
+                let rows = header.show(ui, |ui| {
+                    chip = commit_header_ui(ui, theme, app_ctx, loaded, session, comments.record);
+                });
+                loaded.patch_state.set_header_rows(rows);
             }
-            patch_ui(ui, theme, app_ctx, loaded, comments.record);
         }
     }
     if retry {
         loader.retry(source);
+    }
+    chip
+}
+
+/// The top of the diff, which scrolls away with it: one line with who wrote
+/// the commit and when, where it came from (the full sentence, with the
+/// repo's path, on hover), the record's agentium `session` as its chip, and
+/// whether its patch was cut short. Under it the commit message's body
+/// ([`commit_body_ui`]), the comments posted on the commit as a whole
+/// ([`commit_comments_ui`]) and the code walk's notes on no hunk
+/// ([`walk_top_ui`]). `true` when the session chip was clicked.
+fn commit_header_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    loaded: &mut LoadedReview,
+    session: Option<&str>,
+    record: Option<&ReviewView>,
+) -> bool {
+    let mut chip = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = SPACING_XS;
+        let muted = |text: &str| egui::RichText::new(text).small().color(theme.text_muted);
+        ui.label(muted(&loaded.byline.short))
+            .on_hover_text(loaded.byline.full.as_str());
+        ui.label(muted("·"));
+        // A trailer match may not be the recorded commit, so its source
+        // is the warning.
+        let source_color = if loaded.by_trailer {
+            theme.warning
+        } else {
+            theme.text_muted
+        };
+        ui.label(
+            egui::RichText::new(loaded.source.as_str())
+                .small()
+                .color(source_color),
+        )
+        .on_hover_text(loaded.source_hover.as_str());
+        if loaded.by_trailer {
+            ui.label(
+                egui::RichText::new("hash differs from the record? (rebased)")
+                    .small()
+                    .color(theme.warning),
+            )
+            .on_hover_text(
+                "The recorded commit couldn't be found, so this is the newest \
+                         commit carrying the card's Headway trailer.",
+            );
+        }
+        if let Some(session) = session {
+            ui.label(muted("·"));
+            chip = wrapped_session_chip_ui(ui, theme, app_ctx, session);
+        }
+        if loaded.commit.truncated {
+            tinted_pill(ui, "patch truncated", theme.warning);
+        }
+    });
+    ui.add_space(SPACING_MD);
+    commit_body_ui(ui, theme, &mut loaded.body);
+    if let Some(record) = record {
+        commit_comments_ui(ui, theme, app_ctx, record);
+    }
+    if let Some(walk) = &loaded.walk {
+        walk_top_ui(ui, theme, app_ctx, walk);
     }
     chip
 }
@@ -1555,20 +1580,22 @@ fn commit_body_ui(ui: &mut egui::Ui, theme: &ColorTheme, body: &mut CommitBody) 
 /// lines — author and all, from their events in the db
 /// ([`posted_comment_ui`]) — and its code walk's notes above their hunks
 /// ([`walk_note_ui`]). A pane with no record has none to draw. A drag on one
-/// of its 3D models turns that model's view.
+/// of its 3D models turns that model's view. Where its header goes, while
+/// it's in view.
 fn patch_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     loaded: &mut LoadedReview,
     record: Option<&ReviewView>,
-) {
-    diff_ui(ui, theme, app_ctx, loaded, record);
+) -> Option<PatchHeader> {
+    let header = diff_ui(ui, theme, app_ctx, loaded, record);
     if let Some(input) = loaded.patch_state.take_model_input()
         && let Some(models) = &mut loaded.models
     {
         models.apply(input);
     }
+    header
 }
 
 /// [`patch_ui`]'s diff itself.
@@ -1578,10 +1605,14 @@ fn diff_ui(
     app_ctx: &mut notedeck::AppContext,
     loaded: &mut LoadedReview,
     record: Option<&ReviewView>,
-) {
+) -> Option<PatchHeader> {
     let Some(record) = record else {
-        notedeck_ui::diff::git_patch_ui(&loaded.patch, &mut loaded.patch_state, ui);
-        return;
+        return notedeck_ui::diff::git_patch_ui_with(
+            &loaded.patch,
+            &mut loaded.patch_state,
+            ui,
+            None,
+        );
     };
     let walk = loaded.walk.as_ref();
     let txn = (!record.comments.is_empty() || walk.is_some())
@@ -1600,7 +1631,7 @@ fn diff_ui(
         &mut loaded.patch_state,
         ui,
         Some(&mut draw),
-    );
+    )
 }
 
 /// The detail's explainer links' text.
