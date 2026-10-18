@@ -44,7 +44,7 @@ jobs:
       # (compiled out in release). See
       # crates/notedeck_chrome/src/chrome/headway_nav_tests.rs.
       - name: Run Nav Slide Tests (Release, Real Chrome)
-        run: cargo test --release -p notedeck_chrome --features headway --lib --test keymap_macros --test headway_keymap -- headway_nav_tests global_nav_tests::slide_tests columns_input_tests session_explainer the_command_bar_
+        run: cargo test --release -p notedeck_chrome --features headway --lib --test keymap_macros --test headway_keymap -- headway_nav_tests app_nav_tests::slide_tests nav_pass_tests columns_input_tests session_explainer the_command_bar_
         env:
           CI: true
 

@@ -861,7 +861,12 @@ mod tests {
             |ui, h: &mut KeysHarness| {
                 let everything = IssueFilter::default();
                 chrome_keys(ui.ctx(), h);
-                let keyed = crate::ui::run_view_keys(ui.ctx(), &h.view, &mut h.state);
+                let keyed = crate::ui::run_view_keys(
+                    ui.ctx(),
+                    &h.view,
+                    &mut h.state,
+                    notedeck::NavPass::Settled,
+                );
                 let list = h.state.list_open() && !h.list_sources.is_empty();
                 let grid = match h.state.settled() {
                     Settled::Grid => true,

@@ -412,6 +412,16 @@ impl<R: Clone> NavStack<R> {
         self.returning
     }
 
+    /// The transition the stack is in, read before it's lent to egui-nav so
+    /// each draw of a frame can name its [`NavPass`](crate::NavPass).
+    pub fn transition(&self) -> crate::NavTransition {
+        crate::NavTransition {
+            depth: self.routes.len(),
+            navigating: self.navigating,
+            returning: self.returning,
+        }
+    }
+
     /// Set the back-transition flag.
     pub fn returning_mut(&mut self, new: bool) {
         self.returning = new;

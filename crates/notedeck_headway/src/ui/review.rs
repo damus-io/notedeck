@@ -342,8 +342,7 @@ pub(crate) enum QueueNotice {
 }
 
 /// A [`QueueNotice`] that's up: when it went up (egui time) and in which view.
-/// It's about that view, so it only draws there, and it comes down once a
-/// pass has gone by without that view (see
+/// It's about that view, so it comes down once a pass lands on another (see
 /// [`BoardUiState::retire_stale_notice`]) rather than following the user two
 /// screens away from its cause.
 #[derive(Clone, Copy, Debug)]
@@ -354,11 +353,6 @@ pub(crate) struct Notice {
     pub(crate) at: f64,
     /// The view it went up in.
     pub(crate) pos: NavPos,
-    /// The last egui pass that drew its view, or `None` until the first
-    /// [`retire_stale_notice`](BoardUiState::retire_stale_notice) or
-    /// [`notice_ui`](super::notice_ui) after it went up, which counts the
-    /// pass it went up in.
-    pub(crate) seen: Option<u64>,
 }
 
 impl QueueNotice {
@@ -817,7 +811,7 @@ pub(super) fn review_pane_ui(
     } else {
         ActionView::Pane
     };
-    let here = state.settled().pos();
+    let lands = state.lands();
     let notice = &mut state.notice;
     let review = &mut state.review;
     if review.ref_for != Some(card.id) {
@@ -877,7 +871,7 @@ pub(super) fn review_pane_ui(
                 record,
                 queue,
             };
-            let clicked = review_topbar_ui(ui, theme, header, review, notice, here);
+            let clicked = review_topbar_ui(ui, theme, header, review, notice, lands);
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_SM);
@@ -1032,7 +1026,7 @@ fn review_topbar_ui(
     header: ReviewHeader<'_>,
     review: &mut ReviewUi,
     notice: &mut Option<Notice>,
-    here: NavPos,
+    lands: bool,
 ) -> Option<TopbarClick> {
     let ReviewHeader {
         card,
@@ -1040,7 +1034,7 @@ fn review_topbar_ui(
         record,
         queue,
     } = header;
-    let stepped = breadcrumb_ui(ui, theme, status, queue, review, notice, here);
+    let stepped = breadcrumb_ui(ui, theme, status, queue, review, notice, lands);
     ui.add_space(SPACING_SM);
     let send = record.and_then(|r| review.drafts.send_label(r.id));
     let acted = title_row_ui(
@@ -1070,7 +1064,7 @@ fn breadcrumb_ui(
     queue: Option<QueueHeader<'_>>,
     review: &mut ReviewUi,
     notice: &mut Option<Notice>,
-    here: NavPos,
+    lands: bool,
 ) -> Option<CardAction> {
     let narrow = notedeck::ui::is_narrow(ui.ctx());
     let mut stepped = None;
@@ -1097,7 +1091,7 @@ fn breadcrumb_ui(
             if let Some(queue) = queue {
                 stepped = queue_nav_ui(ui, theme, queue);
             }
-            super::notice_ui(ui, theme, notice, here);
+            super::notice_ui(ui, theme, notice, lands);
             if narrow {
                 return;
             }

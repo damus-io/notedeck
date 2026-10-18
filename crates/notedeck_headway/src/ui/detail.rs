@@ -22,7 +22,6 @@ use crate::event::{
     ReviewView,
 };
 use crate::keys::{ActionView, CardAction, apply_card_action};
-use crate::nav::NavPos;
 use crate::store::{self, BoardAction, NewCard};
 
 /// Max width the full-pane card detail body is constrained to, so a card reads
@@ -172,12 +171,12 @@ pub(super) fn card_detail_pane_ui(
     };
 
     let mut outcome = DetailOutcome::None;
-    let here = state.settled().pos();
+    let lands = state.lands();
 
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
-            detail_pane_topbar_ui(ui, theme, &ctx, &mut state.notice, here, &mut outcome);
+            detail_pane_topbar_ui(ui, theme, &ctx, &mut state.notice, lands, &mut outcome);
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_MD);
@@ -264,7 +263,7 @@ fn detail_pane_topbar_ui(
     theme: &ColorTheme,
     ctx: &DetailCtx,
     notice: &mut Option<super::Notice>,
-    here: NavPos,
+    lands: bool,
     outcome: &mut DetailOutcome,
 ) {
     ui.horizontal(|ui| {
@@ -295,7 +294,7 @@ fn detail_pane_topbar_ui(
             if ui.add(x).clicked() {
                 *outcome = DetailOutcome::Close;
             }
-            notice_ui(ui, theme, notice, here);
+            notice_ui(ui, theme, notice, lands);
         });
     });
 }

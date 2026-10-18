@@ -63,6 +63,80 @@ pub enum NavRequest {
 /// holding the token is dead and should be removed.
 pub type RoutePredicate = Box<dyn Fn(&dyn Any) -> bool>;
 
+/// Which nav pass an app's `render_nav` is drawing.
+///
+/// While a slide or a drag-back moves an app's stack, egui-nav draws two
+/// entries a frame: the one beneath the top first, then the top. Each goes
+/// through the app's `render_nav`, so an app that keeps state across frames
+/// (a notice, a tool queue, the card its keys act on) would otherwise see
+/// two views a frame and have to guess which one is real. Of the two, one
+/// is the view the transition **lands** on ([`lands`](Self::lands)): what
+/// should retire overlays, run tools and latch what the keys read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NavPass {
+    /// No transition: the stack's top, drawn once. Also the top while a drag
+    /// moves it, which stays where it is unless the drag is released far
+    /// enough, and only lands beneath once the pop does.
+    #[default]
+    Settled,
+    /// The entry beneath the top, drawn under a slide or a drag. It `lands`
+    /// when the slide is a back taking the top off it; under a forward slide
+    /// it is the view being left, and under a drag it may never be reached.
+    Beneath {
+        /// Whether a back is sliding the top off this entry.
+        lands: bool,
+    },
+    /// The top while a push slides it in: the view the push lands on.
+    IncomingTop,
+    /// The top while a back slides it out: the view being left.
+    OutgoingTop,
+}
+
+impl NavPass {
+    /// Whether this pass draws the view the stack is at, or is landing on:
+    /// the one pass a frame that should act on the view rather than just
+    /// draw it.
+    pub fn lands(self) -> bool {
+        match self {
+            NavPass::Settled | NavPass::IncomingTop => true,
+            NavPass::Beneath { lands } => lands,
+            NavPass::OutgoingTop => false,
+        }
+    }
+}
+
+/// The transition an app's stack is in as a frame starts: what the chrome
+/// reads off it before drawing, since the stack is lent to egui-nav for the
+/// draw itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NavTransition {
+    /// How many entries the stack holds.
+    pub depth: usize,
+    /// Whether a push is sliding in.
+    pub navigating: bool,
+    /// Whether a back is sliding out.
+    pub returning: bool,
+}
+
+impl NavTransition {
+    /// The pass that draws `drawn` entries of the stack: egui-nav hands the
+    /// entry beneath the top a stack one shorter than the whole.
+    pub fn pass(self, drawn: usize) -> NavPass {
+        if drawn < self.depth {
+            return NavPass::Beneath {
+                lands: self.returning,
+            };
+        }
+        if self.returning {
+            return NavPass::OutgoingTop;
+        }
+        if self.navigating {
+            return NavPass::IncomingTop;
+        }
+        NavPass::Settled
+    }
+}
+
 /// A frame-local queue of navigation requests raised by apps during rendering.
 ///
 /// Apps never mutate their [`NavStack`](crate::NavStack) — it lives in the
@@ -77,12 +151,28 @@ pub type RoutePredicate = Box<dyn Fn(&dyn Any) -> bool>;
 /// Raise requests while rendering as the active app: the chrome applies them
 /// to whichever app is active when it drains the queue, so a request queued
 /// from a background app's `update` would land on another app's stack.
+///
+/// It also says which [`NavPass`] the chrome is drawing, set around each
+/// `render_nav` call ([`pass`](Self::pass)).
 #[derive(Default)]
 pub struct Navigator {
     requests: Vec<NavRequest>,
+    pass: NavPass,
 }
 
 impl Navigator {
+    /// Which nav pass the app is drawing: [`NavPass::Settled`] outside a
+    /// slide, and outside the chrome's nav frame altogether.
+    pub fn pass(&self) -> NavPass {
+        self.pass
+    }
+
+    /// Say which nav pass the next `render_nav` draws. Set by the chrome
+    /// before each call, and put back to [`NavPass::Settled`] after it.
+    pub fn set_pass(&mut self, pass: NavPass) {
+        self.pass = pass;
+    }
+
     /// Enqueue a push of `token` onto the active app's stack.
     pub fn push(&mut self, token: Rc<dyn Any>) {
         self.requests.push(NavRequest::Push(token));
@@ -194,6 +284,38 @@ mod navigator_tests {
         ));
         assert!(matches!(requests[3], NavRequest::Back));
         assert!(matches!(requests[4], NavRequest::Forward));
+    }
+
+    /// egui-nav draws the entry beneath first, with one entry fewer, then
+    /// the top; which of the two lands follows the slide's direction.
+    #[test]
+    fn transition_names_each_draw() {
+        let at = |navigating, returning| NavTransition {
+            depth: 3,
+            navigating,
+            returning,
+        };
+
+        let still = at(false, false);
+        assert_eq!(still.pass(3), NavPass::Settled);
+        // A drag: neither flag, the top drawn over the entry beneath.
+        assert_eq!(still.pass(2), NavPass::Beneath { lands: false });
+
+        let push = at(true, false);
+        assert_eq!(push.pass(2), NavPass::Beneath { lands: false });
+        assert_eq!(push.pass(3), NavPass::IncomingTop);
+
+        let back = at(false, true);
+        assert_eq!(back.pass(2), NavPass::Beneath { lands: true });
+        assert_eq!(back.pass(3), NavPass::OutgoingTop);
+
+        let landing: Vec<bool> = [push.pass(2), push.pass(3), back.pass(2), back.pass(3)]
+            .into_iter()
+            .map(NavPass::lands)
+            .collect();
+        assert_eq!(landing, [false, true, true, false]);
+        assert!(still.pass(3).lands());
+        assert!(!still.pass(2).lands());
     }
 
     #[test]

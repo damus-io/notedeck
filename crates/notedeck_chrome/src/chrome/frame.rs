@@ -14,7 +14,7 @@ use egui::{CornerRadius, Layout, Margin};
 use egui_extras::{Size, StripBuilder};
 use egui_nav::{NavAction, NavDrawer, NavUiType, RouteResponse};
 use notedeck::ui::is_compiled_as_mobile;
-use notedeck::{nav_frame, App, AppContext, AppId, NavStackEvent};
+use notedeck::{nav_frame, App, AppContext, AppId, NavPass, NavStackEvent};
 
 impl Chrome {
     /// The chrome side panel
@@ -86,6 +86,9 @@ impl Chrome {
                 let (app_action, can_take_drag_from, popped) = {
                     let Chrome { app_navs, apps, .. } = &mut *self;
                     let nav = &mut app_navs[slot];
+                    // Read before the stack is lent to egui-nav, so each draw
+                    // can tell the app which pass it is.
+                    let transition = nav.stack.transition();
 
                     // Each app's stack keeps its own egui-nav state, so a
                     // slide inside one app survives a switch to another.
@@ -114,9 +117,13 @@ impl Chrome {
                                     CornerRadius::ZERO,
                                     ui.visuals().panel_fill,
                                 );
-                                let token =
-                                    frame_nav.routes().last().expect("stack always has a top");
+                                let routes = frame_nav.routes();
+                                let token = routes.last().expect("stack always has a top");
+                                // egui-nav draws the entry beneath a slide
+                                // first, then the top: say which this is.
+                                app_ctx.navigator.set_pass(transition.pass(routes.len()));
                                 let resp = apps[slot].render_nav(app_ctx, ui, token);
+                                app_ctx.navigator.set_pass(NavPass::Settled);
                                 RouteResponse {
                                     response: resp.action,
                                     can_take_drag_from: resp.can_take_drag_from,
@@ -383,5 +390,171 @@ impl Chrome {
         }
 
         action
+    }
+}
+
+// Through a real chrome frame: an app whose `render_nav` records the
+// `NavPass` it was told, slid forward and back by egui-nav. Release only, as
+// `headway_nav_tests` is: mid-slide egui-nav draws two routes on two layers
+// under one widget id, which egui debug-asserts against. CI's release nav
+// step runs it.
+#[cfg(all(test, not(feature = "auto-update"), not(debug_assertions)))]
+mod nav_pass_tests {
+    use super::Chrome;
+    use crate::app::NotedeckApp;
+    use notedeck::{App, AppContext, AppResponse, NavPass, NavRequest, Notedeck};
+    use std::any::Any;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// One `render_nav` call: the `u32` token it drew (`None` for the root)
+    /// and the pass the navigator named.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Drawn {
+        token: Option<u32>,
+        pass: NavPass,
+    }
+
+    /// An app that draws nothing and records each [`Drawn`].
+    struct PassRecorder {
+        drawn: Rc<RefCell<Vec<Drawn>>>,
+    }
+
+    impl App for PassRecorder {
+        fn render(&mut self, _ctx: &mut AppContext<'_>, _ui: &mut egui::Ui) -> AppResponse {
+            AppResponse::none()
+        }
+
+        fn render_nav(
+            &mut self,
+            ctx: &mut AppContext<'_>,
+            _ui: &mut egui::Ui,
+            token: &Rc<dyn Any>,
+        ) -> AppResponse {
+            self.drawn.borrow_mut().push(Drawn {
+                token: token.downcast_ref::<u32>().copied(),
+                pass: ctx.navigator.pass(),
+            });
+            AppResponse::none()
+        }
+    }
+
+    struct Rig {
+        _dir: tempfile::TempDir,
+        notedeck: Notedeck,
+        chrome: Chrome,
+        drawn: Rc<RefCell<Vec<Drawn>>>,
+        /// The navigator's pass once each frame's render returned.
+        after: Vec<NavPass>,
+    }
+
+    fn frame(ui: &mut egui::Ui, rig: &mut Rig) {
+        let mut ctx = rig.notedeck.app_context();
+        rig.chrome.render(&mut ctx, ui);
+        rig.after.push(ctx.navigator.pass());
+    }
+
+    /// Step frames until the stack is still, returning every draw on the
+    /// way, in order.
+    fn slide(harness: &mut egui_kittest::Harness<'_, Rig>) -> Vec<Drawn> {
+        harness.state().drawn.borrow_mut().clear();
+        for _ in 0..240 {
+            harness.step();
+            let nav = harness.state().chrome.active_nav().unwrap();
+            if !nav.stack.navigating() && !nav.stack.returning() {
+                break;
+            }
+        }
+        // One frame still, to see the settled top.
+        harness.step();
+        harness.state().drawn.borrow().clone()
+    }
+
+    /// Each frame of a push's slide draws the root beneath, not landing, then
+    /// the incoming top; a back's draws the root beneath, landing, then the
+    /// outgoing top. Still, the top is drawn once, settled. The pass is
+    /// put back to `Settled` once the app has drawn.
+    #[test]
+    fn render_nav_is_told_which_pass_it_draws() {
+        let dir = tempfile::TempDir::new().expect("tmp dir");
+        let args: Vec<String> = ["notedeck-test", "--testrunner"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut notedeck = Notedeck::init(&egui::Context::default(), dir.path(), &args);
+        let drawn = Rc::new(RefCell::new(Vec::new()));
+        let recorder = PassRecorder {
+            drawn: drawn.clone(),
+        };
+        let chrome = Chrome::new_headless_with_apps(
+            &mut notedeck,
+            [NotedeckApp::Other("recorder".into(), Box::new(recorder))],
+        );
+        notedeck
+            .app_context()
+            .settings
+            .get_settings_mut()
+            .animate_nav_transitions = true;
+        let rig = Rig {
+            _dir: dir,
+            notedeck,
+            chrome,
+            drawn,
+            after: Vec::new(),
+        };
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(frame, rig);
+        harness.step();
+
+        let root = |pass| Drawn { token: None, pass };
+        let seven = |pass| Drawn {
+            token: Some(7),
+            pass,
+        };
+
+        let removed = harness
+            .state_mut()
+            .chrome
+            .apply_nav_requests(vec![NavRequest::Push(Rc::new(7u32))]);
+        assert!(removed.is_empty());
+        let push = slide(&mut harness);
+        let (still, sliding) = push.split_last().unwrap();
+        assert_eq!(*still, seven(NavPass::Settled));
+        assert!(sliding.len() >= 4, "the push slid: {push:?}");
+        for pair in sliding.chunks(2) {
+            assert_eq!(
+                pair,
+                [
+                    root(NavPass::Beneath { lands: false }),
+                    seven(NavPass::IncomingTop)
+                ]
+            );
+        }
+
+        let removed = harness
+            .state_mut()
+            .chrome
+            .apply_nav_requests(vec![NavRequest::Back]);
+        assert!(removed.is_empty());
+        let back = slide(&mut harness);
+        let (still, sliding) = back.split_last().unwrap();
+        assert_eq!(*still, root(NavPass::Settled));
+        assert!(sliding.len() >= 4, "the back slid: {back:?}");
+        for pair in sliding.chunks(2) {
+            assert_eq!(
+                pair,
+                [
+                    root(NavPass::Beneath { lands: true }),
+                    seven(NavPass::OutgoingTop)
+                ]
+            );
+        }
+
+        assert!(
+            harness.state().after.iter().all(|&p| p == NavPass::Settled),
+            "the pass is reset once the app has drawn"
+        );
     }
 }

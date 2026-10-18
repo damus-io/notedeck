@@ -98,39 +98,21 @@ impl BoardUiState {
             what: notice,
             at: now,
             pos: self.nav_pos(),
-            seen: None,
         });
     }
 
     /// Take down a notice whose view has been left — by a key, a click, or a
     /// global back/forward the route seeded — so it isn't still up when that
-    /// view comes back. Run by [`settle_view`](BoardUiState::settle_view),
-    /// against the view it settled, so a view the pane would have dropped
-    /// never counts; `pass` is egui's
-    /// [`cumulative_pass_nr`](egui::Context::cumulative_pass_nr).
-    ///
-    /// A view other than the notice's isn't enough to take it down: during a
-    /// chrome nav slide egui_nav draws the stack's top *and* the entry beneath
-    /// it, each through `render_nav`, which reseeds the view. A verdict that
-    /// finishes the queue puts "Review queue done" up in the view the back
-    /// lands on, and for the length of that back the outgoing queue entry is
-    /// the top, drawing too. So the notice goes only once a whole pass has
-    /// gone by without its view, and meanwhile it draws only in its own
-    /// ([`super::notice_ui`]).
-    pub(super) fn retire_stale_notice(&mut self, pass: u64) {
+    /// view comes back. Run by [`settle_view`](BoardUiState::settle_view)
+    /// on the pass that [lands](notedeck::NavPass::lands), against the view
+    /// it settled, so a view the pane would have dropped never counts, nor
+    /// does the view a slide is leaving: a verdict that finishes the queue
+    /// puts "Review queue done" up in the view the back lands on, while the
+    /// outgoing queue entry still draws over it.
+    pub(super) fn retire_stale_notice(&mut self) {
         let here = self.settled.pos();
-        let Some(notice) = &mut self.notice else {
-            return;
-        };
-        let seen = notice.seen.get_or_insert(pass);
-        // The last pass went by without its view: it was left, even if this
-        // pass is back in it.
-        if *seen + 1 < pass {
+        if self.notice.is_some_and(|notice| notice.pos != here) {
             self.notice = None;
-            return;
-        }
-        if notice.pos == here {
-            *seen = pass;
         }
     }
 

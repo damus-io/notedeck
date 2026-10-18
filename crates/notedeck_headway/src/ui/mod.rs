@@ -15,8 +15,8 @@
 use std::collections::{HashMap, HashSet};
 
 use nostrdb_net::NoteId;
-use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM};
+use notedeck::{ColorTheme, NavPass};
 
 use crate::BoardSummary;
 use crate::cache::BoardRef;
@@ -292,8 +292,14 @@ pub struct BoardUiState {
     /// Which view this pass draws, as [`settle_view`](Self::settle_view)
     /// last decided it: what the keys, the UI tools, their availability and
     /// the overlays read, so none of them repeats the precedence or meets a
-    /// view the pane is about to drop.
+    /// view the pane is about to drop. Between passes, the view the last
+    /// pass that [lands](notedeck::NavPass::lands) drew: a slide's other
+    /// pass puts it back as it ends.
     settled: Settled,
+    /// Which nav pass is drawing, as [`settle_view`](Self::settle_view) was
+    /// told: only the pass that lands retires overlays, runs the UI tools and
+    /// latches what the keys read, since a slide draws two views a pass.
+    pass: NavPass,
     /// The last card action a tool applied, and to which card: what the
     /// `card_actions_mean_the_same_in_every_view` test compares across views.
     #[cfg(test)]
@@ -444,11 +450,13 @@ impl BoardUiState {
     /// the board on the way. In order: the queue retakes a snapshot a route
     /// asked for and follows a verdict that folded in; a graph, a review pane
     /// or a detail whose card has left is dropped; then the [`Settled`] view
-    /// is stored, and an `X`/`C` composer or a notice whose view has gone is
-    /// retired. Idempotent: [`run_view_keys`] runs it again after the tools,
-    /// which can change the view. `now` is egui time, `pass` egui's
-    /// [`cumulative_pass_nr`](egui::Context::cumulative_pass_nr).
-    pub(crate) fn settle_view(&mut self, view: &BoardView, now: f64, pass: u64) -> Settled {
+    /// is stored, and, on the pass that [lands](NavPass::lands), an `X`/`C`
+    /// composer or a notice whose view has gone is retired: a slide's other
+    /// pass draws a view the user is leaving or passing over. Idempotent:
+    /// [`run_view_keys`] runs it again after the tools, which can change the
+    /// view. `now` is egui time, `pass` the nav pass drawing.
+    pub(crate) fn settle_view(&mut self, view: &BoardView, now: f64, pass: NavPass) -> Settled {
+        self.pass = pass;
         self.refresh_queue(view, now);
         self.follow_queue(view, now);
         // An epic that has left the board drops its graph back to the grid
@@ -497,9 +505,17 @@ impl BoardUiState {
             self.detail_for = None;
         }
         self.settled = self.settled_of(view);
-        self.retire_stale_reason();
-        self.retire_stale_notice(pass);
+        if pass.lands() {
+            self.retire_stale_reason();
+            self.retire_stale_notice();
+        }
         self.settled
+    }
+
+    /// Whether the pass drawing is the one that [lands](NavPass::lands):
+    /// what the overlays, the tools and the latches act on.
+    pub(crate) fn lands(&self) -> bool {
+        self.pass.lands()
     }
 
     /// The view the state names now, in [`Settled`]'s precedence, without
@@ -971,8 +987,12 @@ impl BoardUiState {
         !self.queued_tools.is_empty()
     }
 
-    /// Take the oldest queued UI tool, if any.
+    /// Take the oldest queued UI tool, if any. None on a pass that doesn't
+    /// [land](Self::lands): the tools wait for the view they're for.
     pub(crate) fn next_queued_tool(&mut self) -> Option<HeadwayUiTool> {
+        if !self.lands() {
+            return None;
+        }
         (!self.queued_tools.is_empty()).then(|| self.queued_tools.remove(0))
     }
 
@@ -1134,16 +1154,26 @@ pub(crate) fn board_ui(
     sync: SyncStatus,
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
+    // During a slide the chrome draws two views a frame; only the one it
+    // lands on acts.
+    let pass = app_ctx.navigator.pass();
+    let landed = state.settled;
     // While the composer is open no view takes tools, so at most one of them
     // edits.
-    let ran_tools = state.has_queued_tools();
-    let keyed = run_view_keys(ui.ctx(), view, state);
+    let ran_tools = pass.lands() && state.has_queued_tools();
+    let keyed = run_view_keys(ui.ctx(), view, state, pass);
     if keyed.is_some() || ran_tools {
         // The next card, and an `X`'s follow-up move, want a frame.
         ui.ctx().request_repaint();
     }
     let action = board_pane_ui(ui, theme, app_ctx, view, boards, lists, sync, state);
-    end_view_pass(view, state);
+    if pass.lands() {
+        end_view_pass(view, state);
+    } else {
+        // The keys chrome asks about before the next pass are the landing
+        // view's, so this pass's view goes as it ends.
+        state.settled = landed;
+    }
     // A key swallowed the frame's keys, so the pane's edit could only be a
     // drop landing in the same frame; the key wins, as it does over a drop in
     // the grid.
@@ -1159,13 +1189,20 @@ pub(crate) fn board_ui(
 /// last card, Enter onto the card) has the view it lands on draw this same
 /// frame rather than a blank one. (The grid's and the list's tools run as they
 /// lay out, in the pane.) Returns the first edit they made.
+///
+/// On a `pass` that doesn't [land](NavPass::lands) only the view settles: the
+/// keys and tools wait for the pass that does.
 pub(crate) fn run_view_keys(
     ctx: &egui::Context,
     view: &BoardView,
     state: &mut BoardUiState,
+    pass: NavPass,
 ) -> Option<BoardAction> {
     let now = ctx.input(|i| i.time);
-    let pass = ctx.cumulative_pass_nr();
+    if !pass.lands() {
+        state.settle_view(view, now, pass);
+        return None;
+    }
     state.reset_grid_menu_open();
     state.settle_view(view, now, pass);
     let keyed = keys::reason_keys(ctx, view, state);
@@ -1174,10 +1211,10 @@ pub(crate) fn run_view_keys(
     keyed
 }
 
-/// What [`board_ui`] runs as the pane finishes: the tools no view ran are
-/// dropped, and the view the pane left (a click may have opened a card, a
-/// list row a card on another board) and its current card are latched for
-/// the keys chrome asks about before the next pass. Nothing is dropped here:
+/// What [`board_ui`] runs as a pass that [lands](NavPass::lands) finishes:
+/// the tools no view ran are dropped, and the view the pane left (a click may
+/// have opened a card, a list row a card on another board) and its current
+/// card are latched for the keys chrome asks about before the next pass. Nothing is dropped here:
 /// a card the pane opened that isn't on this board is the next pass's to
 /// hold or drop, once the board it asked for has switched in.
 pub(crate) fn end_view_pass(view: &BoardView, state: &mut BoardUiState) {
@@ -1309,7 +1346,7 @@ fn board_pane_ui(
                         .count()
                 })
                 .sum::<usize>();
-            let here = state.settled.pos();
+            let lands = state.lands();
             ui.horizontal(|ui| {
                 // Sync affordance: is this board reaching a private relay?
                 sync_indicator(ui, theme, sync);
@@ -1331,7 +1368,7 @@ fn board_pane_ui(
                         .color(theme.text_muted),
                     );
                 }
-                notice_ui(ui, theme, &mut state.notice, here);
+                notice_ui(ui, theme, &mut state.notice, lands);
                 // The archived entry point only appears when there's something
                 // behind it, so the header stays quiet on a fresh board.
                 if !view.archived.is_empty() {
@@ -1469,14 +1506,14 @@ pub fn empty_state(ui: &mut egui::Ui, theme: &ColorTheme, message: &str) {
 }
 
 /// The [`QueueNotice`] showing, for [`NOTICE_SECS`] seconds after it went up,
-/// when it's about `here`, the view drawing. Another view leaves it alone: a
-/// nav slide draws two views in one pass, and the notice belongs to one of
-/// them. Schedules the frame that takes it down.
-fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<Notice>, here: NavPos) {
+/// on the pass that [`lands`](BoardUiState::lands): by then
+/// [`retire_stale_notice`](BoardUiState::retire_stale_notice) has taken down
+/// one about another view. Schedules the frame that takes it down.
+fn notice_ui(ui: &mut egui::Ui, theme: &ColorTheme, notice: &mut Option<Notice>, lands: bool) {
     let Some(up) = notice else {
         return;
     };
-    if up.pos != here {
+    if !lands {
         return;
     }
     let left = NOTICE_SECS - (ui.input(|i| i.time) - up.at);
@@ -1597,11 +1634,17 @@ pub(crate) mod tests {
         let mut view = grid();
         let mut state = BoardUiState::default();
         state.open_graph(id(5));
-        assert_eq!(state.settle_view(&view, 0.0, 1), Settled::Graph(id(5)));
+        assert_eq!(
+            state.settle_view(&view, 0.0, NavPass::Settled),
+            Settled::Graph(id(5))
+        );
         state.graph_scene_rect = Some(egui::Rect::EVERYTHING);
 
         remove(&mut view, id(5));
-        assert_eq!(state.settle_view(&view, 0.0, 2), Settled::Grid);
+        assert_eq!(
+            state.settle_view(&view, 0.0, NavPass::Settled),
+            Settled::Grid
+        );
         assert_eq!(state.graph_epic(), None);
         assert_eq!(state.graph_scene_rect, None);
         assert_eq!(ui_tools::key_view(&state), Some(KeyView::Grid));
@@ -1620,10 +1663,16 @@ pub(crate) mod tests {
             card: id(5),
             record: None,
         }));
-        assert_eq!(state.settle_view(&view, 0.0, 1), Settled::Review(id(5)));
+        assert_eq!(
+            state.settle_view(&view, 0.0, NavPass::Settled),
+            Settled::Review(id(5))
+        );
 
         remove(&mut view, id(5));
-        assert_eq!(state.settle_view(&view, 0.0, 2), Settled::Grid);
+        assert_eq!(
+            state.settle_view(&view, 0.0, NavPass::Settled),
+            Settled::Grid
+        );
         assert_eq!(state.review_card(), None);
         assert_eq!(state.selected(), None);
         assert_eq!(state.detail_for, None);
@@ -1641,7 +1690,7 @@ pub(crate) mod tests {
         state.set_selected(Some(id(6)));
 
         assert_eq!(
-            state.settle_view(&view, 0.0, 1),
+            state.settle_view(&view, 0.0, NavPass::Settled),
             Settled::DetailPending(id(6))
         );
         assert_eq!(state.selected(), Some(id(6)), "held");
@@ -1652,19 +1701,21 @@ pub(crate) mod tests {
         assert!(!ui_tools::available(&state, ui_tools::OPEN_EXPLAINER));
 
         view.columns[2].cards.push(landed);
-        assert_eq!(state.settle_view(&view, 0.0, 2), Settled::Detail(id(6)));
+        assert_eq!(
+            state.settle_view(&view, 0.0, NavPass::Settled),
+            Settled::Detail(id(6))
+        );
         assert!(ui_tools::available(&state, ui_tools::OPEN_EXPLAINER));
     }
 
     /// A notice on the grid survives a back that lands, for a pass, on the
     /// detail entry of a card that has left: the retire looks at the view
     /// settled after the drop, the grid, not at the gone card's detail.
-    /// (Before `settle_view`, the grid's `notice_ui` counted the pass itself.)
     #[test]
     fn a_notice_survives_a_pass_on_a_gone_cards_entry() {
         let mut view = grid();
         let mut state = BoardUiState::default();
-        state.settle_view(&view, 0.0, 1);
+        state.settle_view(&view, 0.0, NavPass::Settled);
         state.set_notice(QueueNotice::QueueDone, 0.0);
         assert_eq!(state.notice(), Some(QueueNotice::QueueDone));
 
@@ -1673,8 +1724,34 @@ pub(crate) mod tests {
         remove(&mut view, id(5));
         state.set_selected(Some(id(5)));
         state.detail_for = Some(id(5));
-        assert_eq!(state.settle_view(&view, 0.0, 2), Settled::Grid);
-        assert_eq!(state.settle_view(&view, 0.0, 3), Settled::Grid);
+        assert_eq!(
+            state.settle_view(&view, 0.0, NavPass::Settled),
+            Settled::Grid
+        );
         assert_eq!(state.notice(), Some(QueueNotice::QueueDone));
+    }
+
+    /// A slide draws two views a frame. The one it doesn't land on never
+    /// takes the notice down, nor runs a tool; the one it lands on does both.
+    #[test]
+    fn only_the_landing_pass_retires_the_notice_and_runs_tools() {
+        let view = grid();
+        let mut state = BoardUiState::default();
+        state.settle_view(&view, 0.0, NavPass::Settled);
+        state.set_notice(QueueNotice::QueueDone, 0.0);
+        state.queue_tool(HeadwayUiTool::AddCard);
+
+        // A push off the grid: the grid beneath, then the card coming in.
+        state.set_selected(Some(id(6)));
+        state.settle_view(&view, 0.0, NavPass::Beneath { lands: false });
+        assert!(state.next_queued_tool().is_none(), "the tool waits");
+        assert!(state.notice.is_some(), "a pass that doesn't land leaves it");
+
+        state.settle_view(&view, 0.0, NavPass::IncomingTop);
+        assert!(state.notice.is_none(), "the push lands on another view");
+        assert!(
+            state.next_queued_tool().is_some(),
+            "the landing pass runs it"
+        );
     }
 }
