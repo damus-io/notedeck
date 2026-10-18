@@ -108,6 +108,9 @@ pub(crate) const LIST_SAVE_VIEW: &str = "headway_list_save_view";
 pub(crate) const SCROLL: &str = "headway_scroll";
 /// `]`/`[`: the next/previous file of a review pane's diff.
 pub(crate) const STEP_FILE: &str = "headway_step_file";
+/// `}`/`{`: the next (older) or previous (newer) commit of a review pane's
+/// card, as its sha chips list them.
+pub(crate) const STEP_COMMIT: &str = "headway_step_commit";
 /// `c` in a review pane: comment on the picked lines, or the commit.
 pub(crate) const COMMENT: &str = "headway_comment";
 /// The review pane's "Send N comments": send the drafted comments. No key:
@@ -155,6 +158,7 @@ pub(crate) enum HeadwayToolName {
     ListSaveView,
     Scroll,
     StepFile,
+    StepCommit,
     Comment,
     SendComments,
     Back,
@@ -199,6 +203,9 @@ pub(crate) enum HeadwayUiTool {
     ListMove(Vertical),
     /// Scroll the review pane's diff or the detail.
     Scroll(PaneScroll),
+    /// Step a review pane to its card's next (older) or previous (newer)
+    /// commit.
+    StepCommit(CardStep),
     /// Write a comment in a review pane.
     Comment,
     /// Send a review pane's drafted comments.
@@ -248,8 +255,8 @@ struct StepArgs {
     dir: Dir,
 }
 
-/// The arguments of `headway_step_file` and `headway_list_step_group`: a
-/// direction.
+/// The arguments of `headway_step_file`, `headway_step_commit` and
+/// `headway_list_step_group`: a direction.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct DirArgs {
@@ -479,7 +486,7 @@ where
 
 impl HeadwayToolName {
     /// Every tool, in the order [`HeadwayUiTool::specs`] lists them.
-    pub(crate) const ALL: [Self; 33] = [
+    pub(crate) const ALL: [Self; 34] = [
         Self::OpenCard,
         Self::OpenExplainer,
         Self::OpenParent,
@@ -510,6 +517,7 @@ impl HeadwayToolName {
         Self::ListSaveView,
         Self::Scroll,
         Self::StepFile,
+        Self::StepCommit,
         Self::Comment,
         Self::SendComments,
         Self::Back,
@@ -548,6 +556,7 @@ impl HeadwayToolName {
             Self::ListSaveView => LIST_SAVE_VIEW,
             Self::Scroll => SCROLL,
             Self::StepFile => STEP_FILE,
+            Self::StepCommit => STEP_COMMIT,
             Self::Comment => COMMENT,
             Self::SendComments => SEND_COMMENTS,
             Self::Back => BACK,
@@ -587,6 +596,7 @@ impl HeadwayToolName {
             Self::ListSaveView => "Save list view",
             Self::Scroll => "Scroll",
             Self::StepFile => "Step to next or previous file",
+            Self::StepCommit => "Step to next or previous commit",
             Self::Comment => "Write review comment",
             Self::SendComments => "Send review comments",
             Self::Back => "Go back",
@@ -771,6 +781,10 @@ impl HeadwayToolName {
                 "Scroll the review pane's diff to the next or previous file.",
                 vec![enum_arg("dir", DIRS, "Which way to step.")],
             ),
+            Self::StepCommit => (
+                "Show the review pane's next (older) or previous (newer) commit of its card.",
+                vec![enum_arg("dir", DIRS, "Which way to step.")],
+            ),
             Self::Comment => (
                 "Write a review comment on the picked diff lines, or on the commit.",
                 vec![],
@@ -916,6 +930,13 @@ impl HeadwayUiTool {
                 Self::Scroll(match dir {
                     Dir::Next => PaneScroll::NextFile,
                     Dir::Prev => PaneScroll::PrevFile,
+                })
+            }
+            T::StepCommit => {
+                let DirArgs { dir } = parse_args(name, args)?;
+                Self::StepCommit(match dir {
+                    Dir::Next => CardStep::Next,
+                    Dir::Prev => CardStep::Prev,
                 })
             }
             T::Comment => no_args(name, args, Self::Comment)?,
@@ -1188,7 +1209,7 @@ pub(crate) fn available(state: &BoardUiState, name: &str) -> bool {
                 && !(list && state.list_composing())
         }
         T::StepFile => review,
-        T::Comment | T::SendComments => review && card,
+        T::StepCommit | T::Comment | T::SendComments => review && card,
     }
 }
 
@@ -1370,6 +1391,14 @@ mod tests {
         assert_eq!(
             parse(STEP_FILE, json!({ "dir": "prev" })),
             HeadwayUiTool::Scroll(PaneScroll::PrevFile)
+        );
+        assert_eq!(
+            parse(STEP_COMMIT, json!({ "dir": "next" })),
+            HeadwayUiTool::StepCommit(CardStep::Next)
+        );
+        assert_eq!(
+            parse(STEP_COMMIT, json!({ "dir": "prev" })),
+            HeadwayUiTool::StepCommit(CardStep::Prev)
         );
     }
 

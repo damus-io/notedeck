@@ -429,7 +429,8 @@ jump  = true
 label = "top/bottom"
 group = "scroll"
 
-# A review pane's diff, in the queue or opened from a card: its files, and
+# A review pane's diff, in the queue or opened from a card: its files, its
+# card's commits (`}` the next sha chip, older; `{` the previous, newer), and
 # commenting on the lines picked in it (or, with none picked, the commit).
 # The card's `C` sends what's drafted here; with nothing drafted it asks for a
 # one-line comment instead.
@@ -448,6 +449,22 @@ keys  = "["
 tool  = "headway_step_file"
 args  = { dir = "prev" }
 label = "next/prev file"
+group = "diff"
+
+[[bind]]
+scope = "headway.diff"
+keys  = "}"
+tool  = "headway_step_commit"
+args  = { dir = "next" }
+label = "next/prev commit"
+group = "diff"
+
+[[bind]]
+scope = "headway.diff"
+keys  = "{"
+tool  = "headway_step_commit"
+args  = { dir = "prev" }
+label = "next/prev commit"
 group = "diff"
 
 [[bind]]

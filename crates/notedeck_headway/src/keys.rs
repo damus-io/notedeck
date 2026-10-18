@@ -21,7 +21,8 @@
 //!   one dispatcher ([`apply_card_action`]), which every view shares.
 //! - **Navigation** keeps its meaning while its target is whatever the view
 //!   shows: the grid's cursor and its card moves, a pane's or the detail's
-//!   scroll ([`PaneScroll`]), backing out.
+//!   scroll ([`PaneScroll`]), a review pane's step through its card's
+//!   commits (`}`/`{`), backing out.
 //!
 //! The board edits `a` (archive), `D` (done) and `H`/`L`/`J`/`K` (move the
 //! cursor card) aren't here: chrome's keymap binds them to Headway's data
@@ -231,6 +232,7 @@ pub(crate) fn apply_grid_tool(
         | HeadwayUiTool::ListLayout(_)
         | HeadwayUiTool::ListMove(_)
         | HeadwayUiTool::Scroll(_)
+        | HeadwayUiTool::StepCommit(_)
         | HeadwayUiTool::Comment
         | HeadwayUiTool::SendComments
         | HeadwayUiTool::Back => {}
@@ -403,6 +405,12 @@ pub(crate) fn apply_pane_tool(
             }
         }
         HeadwayUiTool::Scroll(scroll) => state.scroll_review(scroll.patch()),
+        HeadwayUiTool::StepCommit(step) => {
+            let found = card.and_then(|c| find_card(view, c))?;
+            if let Err(notice) = state.step_review_record(found.card, *step) {
+                state.set_notice(notice, ctx.input(|i| i.time));
+            }
+        }
         HeadwayUiTool::Comment | HeadwayUiTool::SendComments => {
             let card = card.filter(|&c| find_card(view, c).is_some())?;
             let now = ctx.input(|i| i.time);
@@ -489,6 +497,7 @@ pub(crate) fn apply_detail_tool(
         | HeadwayUiTool::ListMove(_)
         | HeadwayUiTool::FocusFilter
         | HeadwayUiTool::Clear
+        | HeadwayUiTool::StepCommit(_)
         | HeadwayUiTool::Comment
         | HeadwayUiTool::SendComments => {}
     }
@@ -2652,7 +2661,11 @@ mod tests {
             "next/prev card",
         ];
         const SCROLL: &[&str] = &["scroll", "page", "half page", "top/bottom"];
-        const DIFF: &[&str] = &["next/prev file", "comment (picked lines or commit)"];
+        const DIFF: &[&str] = &[
+            "next/prev file",
+            "next/prev commit",
+            "comment (picked lines or commit)",
+        ];
         let grid: &[&str] = &[
             "up/down",
             "columns",

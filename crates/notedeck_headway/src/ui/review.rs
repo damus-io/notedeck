@@ -15,6 +15,7 @@ use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
 use notedeck_ui::diff::{PatchHeader, PatchNoteKind, PatchScroll};
+use notedeck_ui::keybind_hint::KeybindHint;
 use std::time::Instant;
 
 use super::card_actions::CardStep;
@@ -167,6 +168,29 @@ impl ReviewUi {
             .record
             .and_then(|id| card.reviews.iter().position(|r| r.id == id));
         Some(picked.unwrap_or(0))
+    }
+
+    /// `}`/`{`: show `card`'s next (`Next`, older: the picker lists newest
+    /// first) or previous (newer) record, as a click on its sha chip would,
+    /// so the diff opens at its top and the tab (Diff or Explainer source)
+    /// stays. Doesn't wrap: at either end, or on a card with one record (or
+    /// none), it changes nothing and returns the notice to show instead.
+    pub(crate) fn step_record(
+        &mut self,
+        card: &CardView,
+        step: CardStep,
+    ) -> Result<(), QueueNotice> {
+        let shown = self.shown_index(card).unwrap_or(0);
+        if card.reviews.len() < 2 {
+            return Err(QueueNotice::OneCommit);
+        }
+        let to = match step {
+            CardStep::Next => shown + 1,
+            CardStep::Prev => shown.checked_sub(1).ok_or(QueueNotice::NoNewerCommit)?,
+        };
+        let record = card.reviews.get(to).ok_or(QueueNotice::NoOlderCommit)?;
+        self.record = Some(record.id);
+        Ok(())
     }
 }
 
@@ -341,6 +365,12 @@ pub(crate) enum QueueNotice {
     NoComments,
     /// `c` with no lines of the diff picked.
     NoRecordToComment,
+    /// `}` on the card's oldest commit.
+    NoOlderCommit,
+    /// `{` on the card's newest commit.
+    NoNewerCommit,
+    /// `}`/`{` on a card with one commit (or none).
+    OneCommit,
 }
 
 /// A [`QueueNotice`] that's up: when it went up (egui time) and in which view.
@@ -370,6 +400,9 @@ impl QueueNotice {
             QueueNotice::CardGone => "This card has left the board",
             QueueNotice::NoComments => "No comments to send",
             QueueNotice::NoRecordToComment => "No review record to comment on",
+            QueueNotice::NoOlderCommit => "No older commit on this card",
+            QueueNotice::NoNewerCommit => "No newer commit on this card",
+            QueueNotice::OneCommit => "This card has one commit",
         }
     }
 }
@@ -742,6 +775,16 @@ impl BoardUiState {
     /// Ask the open diff for `request`.
     pub(crate) fn scroll_review(&mut self, request: PatchScroll) {
         self.review.scroll(request);
+    }
+
+    /// `}`/`{` over a review pane: step it through `card`'s records (see
+    /// [`ReviewUi::step_record`]), returning the notice to show at either end.
+    pub(crate) fn step_review_record(
+        &mut self,
+        card: &CardView,
+        step: CardStep,
+    ) -> Result<(), QueueNotice> {
+        self.review.step_record(card, step)
     }
 
     /// The scroll the review keys left for the diff's next pass.
@@ -1360,9 +1403,15 @@ fn view_bar_ui(
     picked
 }
 
+/// The keys that step a review pane through its card's commits, as the chip
+/// row's hint and its chips' hovers name them.
+const COMMIT_KEYS: [&str; 2] = ["{", "}"];
+
 /// One chip per record, each its short sha in a pill, the `shown`-th in the
-/// accent and the rest muted. Laid out right to left from the oldest, so
-/// they read newest first. Returns the note id of a chip clicked this frame.
+/// accent and the rest muted, then the `{ }` keycaps that step through them
+/// (`}` to the right, older). Laid out right to left, the hint first and then
+/// the chips from the oldest, so they read newest first. Each chip's hover is
+/// its subject and the keys. Returns the note id of a chip clicked this frame.
 fn record_picker_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1370,6 +1419,8 @@ fn record_picker_ui(
     shown: usize,
 ) -> Option<NoteId> {
     let mut picked = None;
+    commit_keys_hint_ui(ui, theme);
+    ui.add_space(SPACING_SM);
     for (i, r) in reviews.iter().enumerate().rev() {
         if i + 1 < reviews.len() {
             ui.add_space(SPACING_XS);
@@ -1387,15 +1438,39 @@ fn record_picker_ui(
             ControlSize::Pill,
             egui::Sense::click(),
         );
-        let chip = match r.fields.title.as_deref() {
-            Some(title) => chip.on_hover_text(title),
-            None => chip,
-        };
+        // Built only while hovered, so the row allocates nothing per frame.
+        let chip = chip.on_hover_ui(|ui| {
+            let [prev, next] = COMMIT_KEYS;
+            match r.fields.title.as_deref() {
+                Some(title) => ui.label(format!("{title} ({prev} / {next})")),
+                None => ui.label(format!("{prev} / {next}")),
+            };
+        });
         if chip.clicked() {
             picked = Some(r.id);
         }
     }
     picked
+}
+
+/// The chip row's tail, laid out right to left: small muted `{` `}` keycaps
+/// and the word "commits".
+fn commit_keys_hint_ui(ui: &mut egui::Ui, theme: &ColorTheme) {
+    let size = ui.text_style_height(&egui::TextStyle::Small) + SPACING_XS;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = SPACING_XS;
+        ui.label(
+            egui::RichText::new("commits")
+                .small()
+                .color(theme.text_muted),
+        );
+        for key in COMMIT_KEYS.into_iter().rev() {
+            KeybindHint::new(key)
+                .size(size)
+                .color(theme.text_muted)
+                .show(ui);
+        }
+    });
 }
 
 /// Share of the byline's line a record's `host:path` may take before it's
@@ -2216,7 +2291,7 @@ pub(super) fn review_sidebar_ui(
             .color(theme.text_secondary);
         if ui
             .add(egui::Button::new(text).frame(false))
-            .on_hover_text("Open the review pane (r)")
+            .on_hover_text("Open the review pane (r), then { } to step commits")
             .clicked()
         {
             picked = Some(CardAction::Review(None));
@@ -2283,6 +2358,48 @@ mod tests {
         assert_eq!(in_review_cards(&by_name), ids[3..]);
 
         assert!(in_review_cards(&board(vec![column("todo", "Todo", &ids)])).is_empty());
+    }
+
+    /// `}` steps a pane to the next chip (older), `{` back (newer), stopping
+    /// at either end with its notice and leaving the pick alone there; a
+    /// card with one record says so.
+    #[test]
+    fn step_record_walks_the_chips_without_wrapping() {
+        let record = |i: u8| ReviewView {
+            id: NoteId::new([i; 32]),
+            author: [0; 32],
+            created_at: 0,
+            fields: ReviewFields::default(),
+            comments: Vec::new(),
+            sources: Vec::new(),
+        };
+        let mut card = crate::ui::tests::card("", "", &[]);
+        card.reviews = (1..=3).map(record).collect();
+        let ids: Vec<NoteId> = card.reviews.iter().map(|r| r.id).collect();
+        let mut review = ReviewUi::default();
+        review.open(card.id, None);
+
+        assert_eq!(
+            review.step_record(&card, CardStep::Prev),
+            Err(QueueNotice::NoNewerCommit)
+        );
+        assert_eq!(review.record(), None, "the newest stays shown");
+        assert_eq!(review.step_record(&card, CardStep::Next), Ok(()));
+        assert_eq!(review.record(), Some(ids[1]));
+        assert_eq!(review.step_record(&card, CardStep::Next), Ok(()));
+        assert_eq!(review.record(), Some(ids[2]));
+        assert_eq!(
+            review.step_record(&card, CardStep::Next),
+            Err(QueueNotice::NoOlderCommit)
+        );
+        assert_eq!(review.record(), Some(ids[2]), "no wrap to the newest");
+        assert_eq!(review.step_record(&card, CardStep::Prev), Ok(()));
+        assert_eq!(review.record(), Some(ids[1]));
+
+        card.reviews.truncate(1);
+        for step in [CardStep::Next, CardStep::Prev] {
+            assert_eq!(review.step_record(&card, step), Err(QueueNotice::OneCommit));
+        }
     }
 
     /// The queue steps both ways and stops at its ends, keeping its position

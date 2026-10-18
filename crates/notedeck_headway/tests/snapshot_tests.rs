@@ -5392,6 +5392,103 @@ fn a_plain_review_pane_reads_with_the_queue_keys() {
     wait_for_label(&mut harness, QUEUE_CARDS[1]);
 }
 
+/// Behavioural (no lavapipe): `}` steps a plain review pane to its card's
+/// next (older) commit and `{` back to the newer, the byline showing each
+/// commit's subject; at either end a notice says there's nothing further
+/// rather than wrapping. The chip row ends in the keys' hint.
+#[test]
+fn braces_step_the_review_pane_through_its_commits() {
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 900.0));
+    record_local_checkout(&mut harness, &fixture);
+    let card = harness_card_id(&mut harness, QUEUE_CARDS[0]);
+    // Oldest first, each added once the last has folded so it stamps past
+    // it; the subjects are the fixture commits' own, as the byline draws.
+    let commits = [
+        (&fixture.queue, QUEUE_MESSAGE.lines().next().unwrap()),
+        (&fixture.images, "headway: refresh the queue screenshots"),
+        (&fixture.verdicts, VERDICTS_MESSAGE.lines().next().unwrap()),
+    ];
+    harness.get_by_label(QUEUE_CARDS[0]).click();
+    for (n, (sha, subject)) in commits.iter().enumerate() {
+        add_fixture_record(&mut harness, card, sha, subject, None, None, &fixture);
+        wait_for_any_label(&mut harness, &sha[..12]);
+        if n > 0 {
+            wait_for_label(&mut harness, &format!("All {} records ›", n + 1));
+        }
+    }
+    let subject = |i: usize| commits[i].1;
+    harness.get_by_label("± Review diff").click_accesskit();
+    wait_for_any_label(&mut harness, subject(2));
+    assert!(
+        harness.query_by_label("commits").is_some(),
+        "the {{ }} hint"
+    );
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::OpenBracket);
+    wait_for_label(&mut harness, "No newer commit on this card");
+    assert!(harness.query_by_label(subject(2)).is_some());
+
+    for i in (0..2).rev() {
+        harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::CloseBracket);
+        wait_for_any_label(&mut harness, subject(i));
+    }
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::CloseBracket);
+    wait_for_label(&mut harness, "No older commit on this card");
+    assert!(harness.query_by_label(subject(0)).is_some(), "no wrap");
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::OpenBracket);
+    wait_for_any_label(&mut harness, subject(1));
+}
+
+/// Behavioural (no lavapipe): a `}` typed into the review pane's comment
+/// composer is text: it lands in the field, and the pane stays on its
+/// commit (the composer, open on that commit alone, is still there).
+#[test]
+fn a_brace_typed_in_the_review_composer_stays_text() {
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 800.0));
+    seed_review_queue(&mut harness, &fixture);
+    let card = harness_card_id(&mut harness, QUEUE_CARDS[0]);
+    let subject = "headway: D and X verdicts in the review queue";
+    add_fixture_record(
+        &mut harness,
+        card,
+        &fixture.verdicts,
+        subject,
+        None,
+        None,
+        &fixture,
+    );
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::R);
+    wait_for_label(&mut harness, "commits");
+    wait_for_label(&mut harness, "local checkout");
+
+    harness.press_key(egui::Key::C);
+    wait_for_label(&mut harness, "this commit");
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text("}".to_owned()));
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::CloseBracket);
+    harness.run_steps(3);
+
+    let composer = harness
+        .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+        .find(|n| n.is_focused())
+        .expect("the composer keeps the keyboard");
+    assert_eq!(composer.value().as_deref(), Some("}"));
+    assert!(
+        harness.query_by_label("this commit").is_some(),
+        "same commit"
+    );
+    assert!(
+        harness
+            .query_by_label("No older commit on this card")
+            .is_none()
+    );
+}
+
 /// The card detail takes the card actions: `s` opens its record's agentium
 /// session, `n` steps to the next card in its column, `D` moves that card to
 /// Done. An `s` typed into the comment composer stays text.
@@ -5663,6 +5760,7 @@ fn snapshot_headway_review_queue_epic() {
 
 /// Snapshot: a plain review pane (opened from a card's "Review diff") with `?`
 /// pinning its key strip: the queue's strip, bar `q` going back to the card.
+/// Its card has two records, so the sha chips end in the `{ }` hint.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_headway_review_pane_key_hints() {
@@ -5671,8 +5769,22 @@ fn snapshot_headway_review_pane_key_hints() {
     seed_review_queue(&mut harness, &fixture);
     harness.get_by_label(QUEUE_CARDS[0]).click();
     wait_for_label(&mut harness, "± Review diff");
+    // A second, newer record, so the pane draws its sha chips and their
+    // `{ }` hint. Added once the first has folded, so it stamps past it.
+    let card = harness_card_id(&mut harness, QUEUE_CARDS[0]);
+    let subject = "headway: D and X verdicts in the review queue";
+    add_fixture_record(
+        &mut harness,
+        card,
+        &fixture.verdicts,
+        subject,
+        None,
+        None,
+        &fixture,
+    );
+    wait_for_label(&mut harness, "All 2 records ›");
     harness.get_by_label("± Review diff").click_accesskit();
-    wait_for_any_label(&mut harness, "src/queue.rs");
+    wait_for_label(&mut harness, subject);
     wait_for_label(&mut harness, "local checkout");
     harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::Questionmark);
     wait_for_label(&mut harness, "back to card");

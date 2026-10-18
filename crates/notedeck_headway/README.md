@@ -363,6 +363,7 @@ opened (the grid's `r`, a pane's `n`/`p`), so its `q` lands on that detail.
 | `Space` / `Shift-Space`, `Ctrl-f` / `Ctrl-b` |        | a page, by whole lines      | a page          |
 | `Ctrl-d` / `Ctrl-u`     |                             | half a page                 | half a page     |
 | `]` / `[`               |                             | next / previous file        |                 |
+| `}` / `{`               |                             | next (older) / previous (newer) commit of the card, no wrap |  |
 | `h` / `l`               | column left / right         |                             |                 |
 | `H` / `L`, `J` / `K`    | move the card across / reorder it |                       |                 |
 | `c`                     | new card                    | comment on the picked lines, or on the commit with none picked |  |

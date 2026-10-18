@@ -96,13 +96,16 @@ backs off onto the view under it and says so.
 The queue takes the same keys as every other view, from one table: the card
 actions (`Enter`/`o`, `e`, `s`/`S`, `r`, `a`, `D`, `X`, `n`/`p`) and a review
 pane's navigation (`j`/`k`, `Space`/`Shift-Space` and `Ctrl-f`/`Ctrl-b` a
-page, `Ctrl-d`/`Ctrl-u` half a page, `gg`/`G`, `]`/`[`). See
+page, `Ctrl-d`/`Ctrl-u` half a page, `gg`/`G`, `]`/`[`, `}`/`{`). See
 [Keys](../README.md#keys) in the README. What is the queue's own:
 
 - `n` / `p` step through the queue's cards, stopping at the ends.
 - A verdict steps it on: `D` (Done), `X` (reason, then In Progress) and `a`
   (archive). A verdict on the last card closes the queue ("Review queue done").
 - `r` goes back to the card's newest record; the queue stays on the card.
+- `}` / `{` step through the card's commits, its sha chips: `}` to the next
+  chip, older, `{` back, newer. They stop at either end with a notice ("No
+  older commit on this card"), and keep the Diff or Explainer source tab.
 - The queue's cards are a snapshot taken when it opened. A card that has left
   the board since (archived elsewhere) takes no card action but `n`/`p`; the
   rest say "This card has left the board".
