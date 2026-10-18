@@ -10,9 +10,7 @@ use std::collections::HashSet;
 use std::io::Write;
 
 use cashflow::chart::Chart;
-use cashflow::vault_edits::VaultEdits;
-use cashflow::vault_rules::VaultRules;
-use cashflow::{Books, CashflowDir, rules};
+use cashflow::{Books, CashflowDir, DeriveInputs, rules};
 use cashflow::{journal, manifest};
 use ledgerdb::{
     AccountId, Amount, Bucket, Commodities, CommodityId, Date, DateRange, Edits, Filter, Journal,
@@ -57,30 +55,50 @@ fn warn_missing(dir: &CashflowDir, session: &Session) -> Result<(), String> {
     Ok(())
 }
 
-/// The vault's edits, owned: its rules compiled, then its overrides,
-/// splits and transfer links, then its account aliases.
-pub fn vault_edits(session: &Session) -> Result<Edits, String> {
+/// The vault folded once for this run: its edits (rules compiled, then
+/// overrides, splits and transfer links, then account aliases) and the
+/// segments it retires.
+pub fn derive_inputs(session: &Session) -> Result<DeriveInputs, String> {
     let txn = session.txn()?;
-    let author = session.vault.author();
-    let mut edits = VaultRules::load(&session.ndb, &txn, author).compile().edits;
-    VaultEdits::load(&session.ndb, &txn, author).apply(&mut edits);
-    Chart::load(&session.ndb, &txn, author).apply(&mut edits);
-    Ok(edits)
+    Ok(DeriveInputs::load(
+        &session.ndb,
+        &txn,
+        session.vault.author(),
+    ))
 }
 
-/// The edits the books derive with: `--rules`' file alone, else the
-/// vault's rules and per-transaction edits, else (no stored key) none.
-fn edits(session: Option<&Session>, args: &BooksArgs) -> Result<Edits, String> {
-    if let Some(path) = &args.rules {
-        return rules::load(path).map_err(|e| e.to_string());
-    }
+/// The vault's edits, owned: [`derive_inputs`]' edits.
+pub fn vault_edits(session: &Session) -> Result<Edits, String> {
+    Ok(derive_inputs(session)?.edits)
+}
+
+/// The edits the books derive with and the segments they leave out:
+/// `--rules`' file alone, else the vault's rules and per-transaction
+/// edits, else (no stored key) none. Logged in, the vault's retired
+/// segments are left out even under `--rules`.
+fn inputs(session: Option<&Session>, args: &BooksArgs) -> Result<DeriveInputs, String> {
     let Some(session) = session else {
-        eprintln!(
-            "cashflow: no signing key, so no vault rules: categorizing as imported (run `cashflow login`, or pass --rules)"
-        );
-        return Ok(rules::default_edits());
+        let edits = match &args.rules {
+            Some(path) => rules::load(path).map_err(|e| e.to_string())?,
+            None => {
+                eprintln!(
+                    "cashflow: no signing key, so no vault rules: categorizing as imported (run `cashflow login`, or pass --rules)"
+                );
+                rules::default_edits()
+            }
+        };
+        return Ok(DeriveInputs {
+            edits,
+            owners: Vec::new(),
+            retired: HashSet::new(),
+        });
     };
-    vault_edits(session)
+    let mut inputs = derive_inputs(session)?;
+    if let Some(path) = &args.rules {
+        inputs.edits = rules::load(path).map_err(|e| e.to_string())?;
+        inputs.owners.clear();
+    }
+    Ok(inputs)
 }
 
 /// Load the books `args` names, reporting on stderr what didn't load or
@@ -98,19 +116,15 @@ pub fn books_with(
     session: Option<&Session>,
     args: &BooksArgs,
 ) -> Result<Books, String> {
-    let edits = edits(session, args)?;
-    let retired = match session {
-        Some(session) => {
-            warn_missing(dir, session)?;
-            retired(session)?
-        }
-        None => HashSet::new(),
-    };
+    let inputs = inputs(session, args)?;
+    if let Some(session) = session {
+        warn_missing(dir, session)?;
+    }
     let books = Books::load(
         &journal::store(dir),
         args.filter.clone(),
-        &retired,
-        &edits,
+        &inputs.retired,
+        &inputs.edits,
         &args.home,
     )
     .map_err(|e| e.to_string())?;

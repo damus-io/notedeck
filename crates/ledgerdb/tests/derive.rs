@@ -1,11 +1,11 @@
 //! The derive step: priority between edits and rules, first-match rules,
 //! condition semantics, split validation, transfer netting, aliases,
-//! determinism and explain.
+//! determinism, explain, and re-deriving from a previous result.
 
 use ledgerdb::{
     Added, Alias, Cond, Derived, EditRef, Edits, Field, Journal, LayerFilter, Ledger, Leg,
     Override, Parsed, Problem, Rejected, Rule, Segment, SegmentHash, SegmentHeader, Split,
-    TransferLink, Why, WriteOptions, derive,
+    TransferLink, Why, WriteOptions, derive, rederive,
 };
 
 /// Parse `text` and fail on any error.
@@ -727,4 +727,93 @@ fn bad_aliases_are_rejected() {
             .lookup("expenses:somebody")
             .is_none()
     );
+}
+
+/// `rederive` from `previous` gives exactly what a full `derive` does, and
+/// says whether it reused the rule matches.
+fn rederive_matches_derive(raw: &Ledger, edits: &Edits, previous: &Derived) -> Derived {
+    let full = derive(raw, edits);
+    let again = rederive(raw, edits, previous);
+    assert_eq!(export(again.ledger()), export(full.ledger()));
+    for at in 0..raw.txns().len() as u32 {
+        let txn = ledgerdb::TxnId(at);
+        assert_eq!(again.why(txn), full.why(txn), "why of txn {at}");
+    }
+    assert_eq!(again.report(), full.report());
+    again
+}
+
+#[test]
+fn rederive_reuses_rule_matches_when_only_per_transaction_edits_change() {
+    let raw = ledger(vec![card()]);
+    let mut edits = edits();
+    edits.rules = vec![rule("expenses:coffee", vec![merchant_contains("bean")])];
+    let first = derive(&raw, &edits);
+    assert!(!first.reused_rule_matches());
+
+    // An override on a rule-matched transaction, then on an unmatched one.
+    edits.overrides = vec![
+        over("card:1", "expenses:treats"),
+        over("card:2", "expenses:food"),
+    ];
+    let second = rederive_matches_derive(&raw, &edits, &first);
+    assert!(second.reused_rule_matches());
+    assert_eq!(second.explain("card:1"), Some(Why::Override(0)));
+
+    // Dropping the override hands card:1 back to its rule, from the memo.
+    edits.overrides = vec![over("card:2", "expenses:food")];
+    let third = rederive_matches_derive(&raw, &edits, &second);
+    assert!(third.reused_rule_matches());
+    assert_eq!(third.explain("card:1"), Some(Why::Rule(0)));
+
+    // A split and an alias reuse them too.
+    edits.splits = vec![Split {
+        record_id: "card:3".to_owned(),
+        legs: vec![
+            Leg {
+                account: "expenses:coffee".to_owned(),
+                qty: 425,
+            },
+            Leg {
+                account: "expenses:treats".to_owned(),
+                qty: 200,
+            },
+        ],
+    }];
+    edits.aliases = vec![alias("expenses:coffee", "expenses:food:coffee")];
+    let fourth = rederive_matches_derive(&raw, &edits, &third);
+    assert!(fourth.reused_rule_matches());
+    assert_eq!(fourth.explain("card:3"), Some(Why::Split(0)));
+}
+
+#[test]
+fn rederive_matches_again_when_rules_defaults_or_the_ledger_change() {
+    let raw = ledger(vec![card()]);
+    let mut edits = edits();
+    edits.rules = vec![rule("expenses:coffee", vec![merchant_contains("bean")])];
+    let first = derive(&raw, &edits);
+
+    edits
+        .rules
+        .push(rule("expenses:food", vec![merchant_contains("grocer")]));
+    let ruled = rederive_matches_derive(&raw, &edits, &first);
+    assert!(!ruled.reused_rule_matches());
+    assert_eq!(ruled.explain("card:2"), Some(Why::Rule(1)));
+
+    edits.defaults.pop();
+    let defaulted = rederive_matches_derive(&raw, &edits, &ruled);
+    assert!(!defaulted.reused_rule_matches());
+
+    let more = ledger(vec![
+        card(),
+        segment(
+            "card",
+            101,
+            "cards",
+            &purchase("card:4", "Bean There Cafe", "3.00"),
+        ),
+    ]);
+    let grown = rederive_matches_derive(&more, &edits, &defaulted);
+    assert!(!grown.reused_rule_matches());
+    assert_eq!(grown.explain("card:4"), Some(Why::Rule(0)));
 }

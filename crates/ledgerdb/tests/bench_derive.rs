@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use ledgerdb::{
     Cond, Edits, Field, Journal, JournalStore, LayerFilter, Ledger, Override, Parsed, Rule,
-    SegmentHeader, Why, derive,
+    SegmentHeader, Why, derive, rederive,
 };
 
 /// A deterministic xorshift generator, so every run builds the same journal.
@@ -162,4 +162,19 @@ fn bench_derive() {
         edits.overrides.len(),
         best * 1e3,
     );
+
+    // One more override: the edit a triage click makes.
+    let mut edited = edits.clone();
+    edited.overrides.push(Override {
+        record_id: "card:00000007".to_owned(),
+        account: "expenses:triaged".to_owned(),
+    });
+    let mut best = f64::MAX;
+    for _ in 0..5 {
+        let started = Instant::now();
+        let again = rederive(&raw, &edited, &derived);
+        best = best.min(started.elapsed().as_secs_f64());
+        assert!(again.reused_rule_matches());
+    }
+    println!("rederive after one more override: {:.1} ms", best * 1e3);
 }

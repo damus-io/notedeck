@@ -37,17 +37,25 @@
 //!
 //! Every transaction keeps its position, so a [`TxnId`] means the same
 //! transaction in the raw and the derived ledger, and [`Derived::why`] says
-//! which tier decided it. Re-deriving after an edit changes is a full pass:
-//! the derive benchmark puts it near 100 ms for 700k postings and 200
-//! rules, so nothing finer is kept. Each transaction's decision depends
-//! only on itself and the edits, so a partial re-derive can be added if
-//! that ever gets slow.
+//! which tier decided it.
+//!
+//! ## Re-deriving
+//!
+//! A full derive of 700k postings with 200 rules takes about 90 ms, and
+//! about 80% of that is matching rules. A transaction's rule match depends
+//! only on the raw ledger, [`Edits::rules`] and [`Edits::defaults`], so a
+//! [`Derived`] keeps every transaction's match, and [`rederive`] reuses them
+//! when only overrides, splits, links or aliases changed: it redoes the
+//! claims and rebuilds the ledger, which is about 13 ms. A changed rule, a
+//! changed default or a different raw ledger falls back to a full derive.
+
+use std::sync::Arc;
 
 use aho_corasick::AhoCorasick;
 
 use crate::{
-    AccountError, AccountId, Accounts, CommodityId, Journal, Ledger, Posting, PostingFlags, Span,
-    StrId, Txn, TxnId,
+    AccountError, AccountId, Accounts, CommodityId, Journal, Ledger, Posting, PostingFlags,
+    SegmentHash, Span, StrId, Txn, TxnId,
 };
 
 /// A transaction field a [`Cond`] reads.
@@ -304,6 +312,40 @@ pub struct Derived {
     ledger: Ledger,
     why: Vec<Why>,
     report: DeriveReport,
+    /// Every transaction's rule match, for [`rederive`]. Shared, so a
+    /// caller deriving off its UI thread can hand the previous result's
+    /// memo to a worker while it still draws from that result.
+    matches: Arc<RuleMatches>,
+    /// Whether `matches` came from the previous result.
+    reused: bool,
+}
+
+/// What the rule tier decided for every transaction of one raw ledger,
+/// claimed or not, and what that depended on.
+#[derive(Debug)]
+struct RuleMatches {
+    /// The raw ledger's segments, in load order.
+    segments: Vec<SegmentHash>,
+    /// The edits' defaults and rules the matches were made with.
+    defaults: Vec<String>,
+    rules: Vec<Rule>,
+    /// By transaction: [`Why::Untouched`] without a counter leg, else
+    /// [`Why::Rule`] with the first matching rule, else [`Why::Default`].
+    by_txn: Vec<Why>,
+}
+
+impl RuleMatches {
+    /// Whether these matches hold for `raw` derived with `edits`.
+    fn hold_for(&self, raw: &Ledger, edits: &Edits) -> bool {
+        self.by_txn.len() == raw.journal().txns.len()
+            && self.rules == edits.rules
+            && self.defaults == edits.defaults
+            && self
+                .segments
+                .iter()
+                .copied()
+                .eq(raw.segments().iter().map(|s| s.hash))
+    }
 }
 
 impl Derived {
@@ -328,18 +370,53 @@ impl Derived {
     pub fn report(&self) -> &DeriveReport {
         &self.report
     }
+
+    /// Whether this came from [`rederive`] reusing the previous result's
+    /// rule matches, rather than matching every transaction itself.
+    pub fn reused_rule_matches(&self) -> bool {
+        self.reused
+    }
 }
 
 /// Derive the categorized ledger from `raw` by applying `edits` to every
 /// transaction's counter leg. See the module docs for the rules.
 #[profiling::function]
 pub fn derive(raw: &Ledger, edits: &Edits) -> Derived {
+    run(raw, edits, None)
+}
+
+/// [`derive`] `raw` with `edits`, reusing `previous`'s rule matches when
+/// they still hold: when `previous` was derived from a raw ledger of the
+/// same segments with the same [`Edits::rules`] and [`Edits::defaults`].
+/// Otherwise it is a full derive. Either way the result is exactly what
+/// [`derive`] returns.
+///
+/// For a caller that keeps the raw ledger and re-derives when an edit
+/// changes, such as an app triaging transactions one at a time.
+#[profiling::function]
+pub fn rederive(raw: &Ledger, edits: &Edits, previous: &Derived) -> Derived {
+    let reuse = previous.matches.hold_for(raw, edits);
+    run(raw, edits, reuse.then(|| previous.matches.clone()))
+}
+
+/// Derive `raw` with `edits`, taking the rule tier from `matches` when
+/// given (which hold for them) instead of matching every transaction.
+fn run(raw: &Ledger, edits: &Edits, matches: Option<Arc<RuleMatches>>) -> Derived {
     let mut plan = Plan::new(raw, edits);
     plan.claim_splits(edits);
     plan.claim_overrides(edits);
     plan.claim_links(edits);
     let rules = plan.compile_rules(edits);
-    plan.decide(&rules);
+    let reused = matches.is_some();
+    let matches = matches.unwrap_or_else(|| {
+        Arc::new(RuleMatches {
+            segments: raw.segments().iter().map(|s| s.hash).collect(),
+            defaults: edits.defaults.clone(),
+            rules: edits.rules.clone(),
+            by_txn: plan.match_rules(&rules),
+        })
+    });
+    plan.decide(&matches.by_txn);
     plan.resolve_aliases(edits);
     let journal = plan.materialize(edits);
     Derived {
@@ -350,6 +427,8 @@ pub fn derive(raw: &Ledger, edits: &Edits) -> Derived {
             .map(|w| w.unwrap_or(Why::Untouched))
             .collect(),
         report: plan.report,
+        matches,
+        reused,
     }
 }
 
@@ -780,25 +859,33 @@ impl<'a> Plan<'a> {
         }
     }
 
-    /// Give every unclaimed transaction its first matching rule, or the
-    /// default.
+    /// The rule tier's decision for every transaction, claimed or not: its
+    /// first matching rule, or the default, or untouched without a counter
+    /// leg. Claimed ones are matched too, so a [`rederive`] that drops the
+    /// claim finds the match already made.
     #[profiling::function]
-    fn decide(&mut self, rules: &Rules) {
+    fn match_rules(&self, rules: &Rules) -> Vec<Why> {
         let journal = self.raw.journal();
         let mut found = vec![0u64; rules.needles.div_ceil(64)];
+        let mut by_txn = Vec::with_capacity(journal.txns.len());
         for (at, txn) in journal.txns.iter().enumerate() {
-            if self.why[at].is_some() {
-                continue;
-            }
             let Some(counter) = counter_leg(journal, &self.is_default, txn) else {
-                self.why[at] = Some(Why::Untouched);
+                by_txn.push(Why::Untouched);
                 continue;
             };
             let posting = &journal.postings[(txn.postings.start + counter) as usize];
             let segment = self.raw.origin(TxnId(at as u32)).segment as usize;
             search(journal, txn, &rules.searches, &mut found);
             let matched = rules.first_match(segment, txn, posting, journal, &found);
-            self.why[at] = Some(matched.map_or(Why::Default, |rule| Why::Rule(rule.index)));
+            by_txn.push(matched.map_or(Why::Default, |rule| Why::Rule(rule.index)));
+        }
+        by_txn
+    }
+
+    /// Give every unclaimed transaction the rule tier's decision.
+    fn decide(&mut self, matches: &[Why]) {
+        for (why, matched) in self.why.iter_mut().zip(matches) {
+            why.get_or_insert(*matched);
         }
     }
 

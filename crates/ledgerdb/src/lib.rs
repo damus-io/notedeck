@@ -31,7 +31,7 @@ pub use commodity::{Commodities, CommodityId, MAX_PRECISION, Side, Style};
 pub use date::{Date, DateError, Ymd};
 pub use derive::{
     Alias, Cond, DeriveReport, Derived, EditRef, Edits, Field, Leg, Override, Problem, Rejected,
-    Rule, Split, TransferLink, Why, derive,
+    Rule, Split, TransferLink, Why, derive, rederive,
 };
 pub use journal::{Comment, Cost, CostKind, Decimal, DecimalDisplay, FileComment, Journal, Price};
 pub use ledger::{
