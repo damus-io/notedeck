@@ -1,8 +1,7 @@
 # One public chrome frame that tests drive, instead of each suite's own copy
 
-Card: headway:notedeck/shallow-obvious-nerve
-headless chrome tests hand-roll the chrome's frame (tool update, actions, nav,
-render), so each copy drifts from the real one and misses what it skipped.
+Chrome's frame, nav, actions and key decision are public (ChromeDriver, KeyTools);
+Dave's key frames, Notebook's harness and Fixture::frame still copy chrome's frame.
 
 - headway:notedeck/favorite-please-side — three hand-rolled host frames (headway_nav_tests chrome_frame, tests/common Fixture::frame, headway_keymap Fixture::frame); the one that skipped the tool update cost a diagnosis
 - headway:headway/identify-payment-segment — slide_tests::drag_rig_frame copies frame.rs's record-in_flight/collect-pop/drain sequence because global_nav borrows against apps

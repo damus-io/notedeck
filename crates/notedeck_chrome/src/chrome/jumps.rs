@@ -28,6 +28,19 @@ pub const JUMP_FORWARD: &str = "chrome_jump_forward";
 /// How many locations one app's list keeps; the oldest goes first. Vim's.
 pub const JUMP_LIST_CAP: usize = 100;
 
+/// Whether [`JUMP_BACK`] or [`JUMP_FORWARD`] has anywhere to go in `list`,
+/// the app in front's (`None` before it has jumped), or `None` for another
+/// tool. The chrome's rule, public so a harness standing in for the chrome
+/// answers the same (see [`KeyTools`](crate::keymap::KeyTools)). Doesn't
+/// allocate.
+pub fn jump_tool_available(name: &str, list: Option<&JumpList>) -> Option<bool> {
+    match name {
+        JUMP_BACK => Some(list.is_some_and(JumpList::can_go_back)),
+        JUMP_FORWARD => Some(list.is_some_and(JumpList::can_go_forward)),
+        _ => None,
+    }
+}
+
 /// The jump list's UI tools, for the host's tool registry.
 pub(super) fn jump_tools() -> [ToolSpec; 2] {
     [
@@ -226,12 +239,7 @@ impl Chrome {
     /// Whether [`JUMP_BACK`] or [`JUMP_FORWARD`] has anywhere to go in the
     /// app in front, or `None` for another tool. Doesn't allocate.
     pub(super) fn jump_tool_available(&self, name: &str) -> Option<bool> {
-        let list = || self.active_jump_list();
-        match name {
-            JUMP_BACK => Some(list().is_some_and(JumpList::can_go_back)),
-            JUMP_FORWARD => Some(list().is_some_and(JumpList::can_go_forward)),
-            _ => None,
-        }
+        jump_tool_available(name, self.active_jump_list())
     }
 }
 

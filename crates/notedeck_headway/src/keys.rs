@@ -660,9 +660,10 @@ mod tests {
     use headway::event::{ReviewFields, ReviewView};
     use headway::query::IssueFilter;
     use notedeck::ColorTheme;
+    use notedeck::ToolRegistry;
     use notedeck::test_harness::PressKey;
-    use notedeck_chrome::keymap::{KeyDispatch, KeyEngine, Scopes};
-    use notedeck_chrome::{HIDE_KEY_HINTS, TOGGLE_KEY_HINTS};
+    use notedeck_chrome::keymap::{KeyEngine, KeyTarget, KeyTools, Scopes, is_data_tool};
+    use notedeck_chrome::{TOGGLE_KEY_HINTS, key_hints_tool_available};
     use notedeck_ui::chord::KeyPress;
 
     use crate::ui_tools::{available, key_scopes};
@@ -703,6 +704,9 @@ mod tests {
         keys: KeyEngine,
         /// Whether `?` pinned chrome's which-key strip.
         hints_pinned: bool,
+        /// Headway's data tools, as the host registers them, for which tools
+        /// the keymap runs as data tools ([`HarnessKeyTools`]).
+        tools: ToolRegistry,
         /// The board switcher's list: [`grid`]'s board and one other, for
         /// `]b`/`[b` to step between.
         boards: Vec<BoardSummary>,
@@ -713,20 +717,39 @@ mod tests {
         list_sources: Vec<crate::cache::BoardRef>,
     }
 
-    /// Headway's data tools the shipped keymap binds its board edits to
-    /// (`a`, `D`, `H L J K`), on the current card.
-    const BOARD_EDITS: &[&str] = &["headway_archive_card", "headway_move_card"];
+    /// What chrome's key decision asks, answered for the harness's one
+    /// Headway: the strip's tools by chrome's own rule, Headway's UI tools by
+    /// [`available`], its data tools from the harness's registry.
+    #[derive(Clone, Copy)]
+    struct HarnessKeyTools<'a> {
+        state: &'a BoardUiState,
+        /// Whether `?` pinned the strip.
+        pinned: bool,
+        tools: &'a ToolRegistry,
+    }
 
-    /// Whether the chrome's own tool, Headway's UI tool, or Headway's data
-    /// tool `name` is available, as chrome asks its keymap: `?` only while
-    /// Headway reports scopes, Esc's strip-hide only while it's pinned, a
-    /// data tool always (the keymap holds it to the current card).
-    fn tool_available(state: &BoardUiState, pinned: bool, name: &str) -> bool {
-        match name {
-            TOGGLE_KEY_HINTS => !key_scopes(state).is_empty(),
-            HIDE_KEY_HINTS => pinned,
-            name if BOARD_EDITS.contains(&name) => true,
-            name => available(state, name),
+    impl KeyTools for HarnessKeyTools<'_> {
+        fn chrome_tool_available(&self, name: &str) -> Option<bool> {
+            key_hints_tool_available(name, !key_scopes(self.state).is_empty(), self.pinned)
+        }
+
+        fn ui_tool_available(&self, name: &str) -> bool {
+            available(self.state, name)
+        }
+
+        fn is_data_tool(&self, name: &str) -> bool {
+            is_data_tool(self.tools, name)
+        }
+    }
+
+    impl KeysHarness {
+        /// The harness's answers to chrome's key decision.
+        fn key_tools(&self) -> HarnessKeyTools<'_> {
+            HarnessKeyTools {
+                state: &self.state,
+                pinned: self.hints_pinned,
+                tools: &self.tools,
+            }
         }
     }
 
@@ -735,33 +758,33 @@ mod tests {
         Scopes::new(key_scopes(state)).with_current(state.current_ref())
     }
 
-    /// Chrome's part of a frame, ahead of Headway's render: the key engine
-    /// resolving this frame's press against Headway's scopes and current
-    /// card, then the tool it's bound to called: a UI tool queued, as
-    /// `Headway::call_ui_tool` does; a board edit's data tool run, its edit
-    /// recorded and folded into the board ([`fold`]); or the strip toggled.
+    /// Chrome's part of a frame, ahead of Headway's render: chrome's key
+    /// decision resolving this frame's press against Headway's scopes and
+    /// current card, then the tool it's bound to called where chrome would
+    /// run it: a UI tool queued, as `Headway::call_ui_tool` does; a data
+    /// tool's board edit recorded and folded into the board ([`fold`]); or
+    /// the strip toggled.
     fn chrome_keys(ctx: &egui::Context, h: &mut KeysHarness) {
-        let pinned = h.hints_pinned;
-        let state = &h.state;
-        let dispatch = h.keys.resolve(ctx, chrome_scopes(state), |name| {
-            tool_available(state, pinned, name)
-        });
-        let Some(KeyDispatch::Tool(call)) = dispatch else {
-            return;
-        };
-        match call.name.as_str() {
-            TOGGLE_KEY_HINTS => h.hints_pinned = !pinned,
-            HIDE_KEY_HINTS => h.hints_pinned = false,
-            name if BOARD_EDITS.contains(&name) => {
+        let mut keys = std::mem::take(&mut h.keys);
+        let target = keys.resolve_target(ctx, chrome_scopes(&h.state), &h.key_tools());
+        h.keys = keys;
+        match target {
+            None | Some(KeyTarget::Macro(_)) => {}
+            // The strip's `?` and Esc, the chrome tools the harness answers
+            // for.
+            Some(KeyTarget::Chrome(call)) => {
+                h.hints_pinned = call.name == TOGGLE_KEY_HINTS && !h.hints_pinned;
+            }
+            Some(KeyTarget::Data(call)) => {
                 // An edit the tool refuses (a move off the board's edge) is
                 // only logged by chrome.
-                if let Ok(edit) = crate::tools::board_edit(&h.view, name, &call.args) {
+                if let Ok(edit) = crate::tools::board_edit(&h.view, &call.name, &call.args) {
                     fold(h, edit);
                 }
             }
-            name => {
-                let tool = HeadwayUiTool::parse(name, &call.args)
-                    .unwrap_or_else(|e| panic!("keymap binds {name} {}: {e}", call.args));
+            Some(KeyTarget::Ui(call)) => {
+                let tool = HeadwayUiTool::parse(&call.name, &call.args)
+                    .unwrap_or_else(|e| panic!("keymap binds {} {}: {e}", call.name, call.args));
                 h.state.queue_tool(tool);
             }
         }
@@ -830,12 +853,12 @@ mod tests {
     /// scopes bind to an available tool.
     fn chrome_strip(ui: &egui::Ui, h: &KeysHarness) {
         let pending = h.keys.pending();
-        let (state, pinned) = (&h.state, h.hints_pinned);
-        let hints = (pending.is_some() || pinned).then(|| {
+        let tools = h.key_tools();
+        let hints = (pending.is_some() || h.hints_pinned).then(|| {
             h.keys
                 .keymap()
-                .hints(chrome_scopes(state), pending, move |name| {
-                    tool_available(state, pinned, name)
+                .hints(chrome_scopes(&h.state), pending, move |name| {
+                    tools.key_tool_available(name)
                 })
                 .map(|hint| (hint.keycap_iter(), hint.label))
         });
@@ -950,6 +973,13 @@ mod tests {
                 review_comments: None,
                 keys: KeyEngine::with_default_keymap(),
                 hints_pinned: false,
+                tools: {
+                    let mut tools = ToolRegistry::default();
+                    crate::tools::tools()
+                        .into_iter()
+                        .for_each(|t| tools.register(t));
+                    tools
+                },
                 boards: vec![
                     BoardSummary {
                         owner: [0; 32],
@@ -1268,11 +1298,14 @@ mod tests {
     /// a pending chord, else everything, as if `?` pinned it.
     fn strip_now(harness: &Harness<'static, KeysHarness>) -> Vec<StripKey> {
         let h = harness.state();
-        let state = &h.state;
+        let tools = HarnessKeyTools {
+            pinned: true,
+            ..h.key_tools()
+        };
         h.keys
             .keymap()
-            .hints(chrome_scopes(state), h.keys.pending(), move |name| {
-                tool_available(state, true, name)
+            .hints(chrome_scopes(&h.state), h.keys.pending(), move |name| {
+                tools.key_tool_available(name)
             })
             .flat_map(|hint| {
                 hint.keycap_iter().map(move |cap| StripKey {

@@ -6,9 +6,12 @@ use egui_kittest::Node;
 use egui_kittest::kittest::{NodeT, Queryable};
 use nostrdb::{Filter, IngestMetadata, Ndb, NoteBuilder, Subscription, Transaction};
 use nostrdb_net::{FullKeypair, Keypair, NoteId, Pubkey};
-use notedeck::{App, AppContext, InlineChrome, Notedeck};
-use notedeck_chrome::keymap::{KeyDispatch, KeyEngine, Scopes};
-use notedeck_chrome::{HIDE_KEY_HINTS, JUMP_BACK, JUMP_FORWARD, JumpList, TOGGLE_KEY_HINTS};
+use notedeck::{App, AppContext, InlineChrome, Notedeck, ToolRegistry};
+use notedeck_chrome::keymap::{KeyEngine, KeyTarget, KeyTools, Scopes, is_data_tool};
+use notedeck_chrome::{
+    HIDE_KEY_HINTS, JUMP_BACK, JUMP_FORWARD, JumpList, TOGGLE_KEY_HINTS, jump_tool_available,
+    key_hints_tool_available,
+};
 use notedeck_headway::{Headway, event, store, views};
 use notedeck_testing::ui::{get_by_text, strip_isolates, text_eq, tree_text};
 
@@ -46,45 +49,63 @@ struct HeadwayTestState {
     chrome: Option<notedeck_chrome::Chrome>,
 }
 
-/// The data tools the shipped keymap binds Headway's board edits to (`a`,
-/// `D`, `H L J K`), on the current card.
-const BOARD_EDITS: &[&str] = &["headway_archive_card", "headway_move_card"];
-
 /// What the chrome does with Headway's keys, stood in for here: its key
 /// engine, with the shipped keymap, resolves each frame's press against
-/// Headway's key scopes and current card before Headway renders and calls the
-/// tool it's bound to; `?` pins the which-key strip the chrome draws below
-/// the app. A binding marked `jump` records Headway's location on its jump
-/// list first, which Ctrl-O / Ctrl-I walk.
+/// Headway's key scopes and current card before Headway renders, and chrome's
+/// key decision ([`KeyTools`]) says where the tool it's bound to runs; `?`
+/// pins the which-key strip the chrome draws below the app. A binding marked
+/// `jump` records Headway's location on its jump list first, which Ctrl-O /
+/// Ctrl-I walk.
 struct ChromeKeys {
     engine: KeyEngine,
     /// Whether `?` pinned the strip.
     pinned: bool,
     /// Headway's jump list, as the chrome keeps one per app.
     jumps: JumpList,
+    /// Headway's data tools, as the host registers them, for which tools the
+    /// keymap runs as data tools and to run them.
+    tools: ToolRegistry,
+}
+
+/// Chrome's key decision's questions, answered for the harness's one
+/// Headway: the strip's and the jump list's tools by chrome's own rules,
+/// Headway's UI tools by Headway, its data tools from [`ChromeKeys::tools`].
+#[derive(Clone, Copy)]
+struct HarnessKeyTools<'a> {
+    pinned: bool,
+    jumps: &'a JumpList,
+    tools: &'a ToolRegistry,
+    headway: &'a Headway,
+}
+
+impl KeyTools for HarnessKeyTools<'_> {
+    fn chrome_tool_available(&self, name: &str) -> Option<bool> {
+        let has_scopes = !self.headway.key_scopes().is_empty();
+        key_hints_tool_available(name, has_scopes, self.pinned)
+            .or_else(|| jump_tool_available(name, Some(self.jumps)))
+    }
+
+    fn ui_tool_available(&self, name: &str) -> bool {
+        self.headway.ui_tool_available(name)
+    }
+
+    fn is_data_tool(&self, name: &str) -> bool {
+        is_data_tool(self.tools, name)
+    }
 }
 
 impl ChromeKeys {
-    fn new() -> Self {
+    /// The chrome's keys around `headway`, with its data tools registered.
+    fn new(headway: &Headway) -> Self {
+        let mut tools = ToolRegistry::default();
+        for tool in headway.tools() {
+            tools.register(tool);
+        }
         Self {
             engine: KeyEngine::with_default_keymap(),
             pinned: false,
             jumps: JumpList::default(),
-        }
-    }
-
-    /// Whether chrome's own tool, Headway's UI tool, or one of the data tools
-    /// Headway's board-edit keys are bound to is available, as chrome asks:
-    /// `?` only while Headway reports scopes, the strip's Esc only while it's
-    /// pinned, a data tool always (the keymap holds it to the current card).
-    fn available(pinned: bool, jumps: &JumpList, headway: &Headway, name: &str) -> bool {
-        match name {
-            TOGGLE_KEY_HINTS => !headway.key_scopes().is_empty(),
-            HIDE_KEY_HINTS => pinned,
-            JUMP_BACK => jumps.can_go_back(),
-            JUMP_FORWARD => jumps.can_go_forward(),
-            name if BOARD_EDITS.contains(&name) => true,
-            name => headway.ui_tool_available(name),
+            tools,
         }
     }
 
@@ -93,54 +114,60 @@ impl ChromeKeys {
         Scopes::new(headway.key_scopes()).with_current(headway.current_ref())
     }
 
-    /// Resolve this frame's key press and run what it's bound to: a UI tool
-    /// in Headway, a data tool at once, as chrome does.
+    /// Resolve this frame's key press and run what it's bound to where
+    /// chrome's key decision says: a UI tool in Headway, a data tool at
+    /// once, the strip's and jump list's tools here.
     fn dispatch(&mut self, ctx: &egui::Context, app_ctx: &mut AppContext, headway: &mut Headway) {
-        let pinned = self.pinned;
-        let jumps = &self.jumps;
-        let dispatch = self.engine.resolve(ctx, Self::scopes(headway), |name| {
-            Self::available(pinned, jumps, headway, name)
-        });
-        let Some(KeyDispatch::Tool(call)) = dispatch else {
-            return;
+        let tools = HarnessKeyTools {
+            pinned: self.pinned,
+            jumps: &self.jumps,
+            tools: &self.tools,
+            headway,
+        };
+        let target = match self
+            .engine
+            .resolve_target(ctx, Self::scopes(headway), &tools)
+        {
+            None | Some(KeyTarget::Macro(_)) => return,
+            Some(target) => target,
         };
         if self.engine.fired_jump()
             && let Some(here) = headway.jump_location()
         {
             self.jumps.push(here);
         }
-        match call.name.as_str() {
-            TOGGLE_KEY_HINTS => self.pinned = !pinned,
-            HIDE_KEY_HINTS => self.pinned = false,
-            JUMP_BACK => {
-                if let Some(to) = self.jumps.back(headway.jump_location()) {
-                    headway.restore_jump(app_ctx, &*to);
+        match target {
+            KeyTarget::Chrome(call) => match call.name.as_str() {
+                TOGGLE_KEY_HINTS => self.pinned = !self.pinned,
+                HIDE_KEY_HINTS => self.pinned = false,
+                JUMP_BACK => {
+                    if let Some(to) = self.jumps.back(headway.jump_location()) {
+                        headway.restore_jump(app_ctx, &*to);
+                    }
+                }
+                JUMP_FORWARD => {
+                    if let Some(to) = self.jumps.forward() {
+                        headway.restore_jump(app_ctx, &*to);
+                    }
+                }
+                _ => {}
+            },
+            KeyTarget::Data(call) => {
+                let outcome = self
+                    .tools
+                    .call(&mut app_ctx.tool_context(), &call.name, &call.args);
+                if let notedeck::ToolOutcome::Error(err) = outcome {
+                    tracing::warn!("keymap's {} {}: {err}", call.name, call.args);
                 }
             }
-            JUMP_FORWARD => {
-                if let Some(to) = self.jumps.forward() {
-                    headway.restore_jump(app_ctx, &*to);
-                }
-            }
-            name if BOARD_EDITS.contains(&name) => {
-                let tools = headway.tools();
-                let tool = tools
-                    .iter()
-                    .find(|t| t.name() == name)
-                    .expect("a data tool");
+            KeyTarget::Ui(call) => {
                 if let notedeck::ToolOutcome::Error(err) =
-                    tool.call(&mut app_ctx.tool_context(), &call.args)
+                    headway.call_ui_tool(app_ctx, &call.name, &call.args)
                 {
-                    tracing::warn!("keymap's {name} {}: {err}", call.args);
+                    panic!("keymap's {} {}: {err}", call.name, call.args);
                 }
             }
-            name => {
-                if let notedeck::ToolOutcome::Error(err) =
-                    headway.call_ui_tool(app_ctx, name, &call.args)
-                {
-                    panic!("keymap's {name} {}: {err}", call.args);
-                }
-            }
+            KeyTarget::Macro(_) => {}
         }
     }
 
@@ -149,13 +176,17 @@ impl ChromeKeys {
     /// Headway's keys.
     fn strip_ui(&self, ui: &egui::Ui, rect: egui::Rect, headway: &Headway) {
         let pending = self.engine.pending();
-        let pinned = self.pinned;
-        let jumps = &self.jumps;
-        let hints = (pending.is_some() || pinned).then(|| {
+        let tools = HarnessKeyTools {
+            pinned: self.pinned,
+            jumps: &self.jumps,
+            tools: &self.tools,
+            headway,
+        };
+        let hints = (pending.is_some() || self.pinned).then(|| {
             self.engine
                 .keymap()
                 .hints(Self::scopes(headway), pending, move |name| {
-                    Self::available(pinned, jumps, headway, name)
+                    tools.key_tool_available(name)
                 })
                 .map(|hint| (hint.keycap_iter(), hint.label))
         });
@@ -375,15 +406,16 @@ fn bare_state() -> HeadwayTestState {
     // records how long ago SEED_AT was on the day it ran.
     notedeck.app_context().time_cache.freeze_now(SEED_AT);
 
+    let headway = Headway::new();
     HeadwayTestState {
         notedeck,
-        headway: Headway::new(),
+        keys: ChromeKeys::new(&headway),
+        headway,
         account: test_keypair(),
         _tmpdir: tmpdir,
         fonts_installed: false,
         ref_note: None,
         nav_token: None,
-        keys: ChromeKeys::new(),
         chrome: None,
     }
 }

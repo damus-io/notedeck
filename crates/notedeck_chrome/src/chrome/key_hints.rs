@@ -18,6 +18,20 @@ pub const TOGGLE_KEY_HINTS: &str = "chrome_toggle_key_hints";
 /// so its key (Esc) falls through otherwise.
 pub const HIDE_KEY_HINTS: &str = "chrome_hide_key_hints";
 
+/// Whether the which-key strip's tool `name` would do something now, or
+/// `None` for another tool: `?` only in an app that reports key scopes
+/// (`has_scopes`), so any other app keeps the key, and the strip's Esc only
+/// while `?` has `pinned` it, so Esc falls through otherwise. The chrome's
+/// rule, public so a harness standing in for the chrome answers the same
+/// (see [`KeyTools`](crate::keymap::KeyTools)).
+pub fn key_hints_tool_available(name: &str, has_scopes: bool, pinned: bool) -> Option<bool> {
+    match name {
+        TOGGLE_KEY_HINTS => Some(has_scopes),
+        HIDE_KEY_HINTS => Some(pinned),
+        _ => None,
+    }
+}
+
 /// The which-key strip's UI tools, for the host's tool registry; the rest of
 /// the chrome's own are the keymap editor's.
 pub(super) fn chrome_ui_tools() -> [ToolSpec; 2] {
@@ -101,12 +115,15 @@ impl Chrome {
         match name {
             // Any time: whether the reference opens is the call's to say.
             super::OPEN => Some(true),
-            TOGGLE_KEY_HINTS => Some(
+            // Matched first so asking after an app's tool never asks the
+            // app for its scopes.
+            TOGGLE_KEY_HINTS | HIDE_KEY_HINTS => key_hints_tool_available(
+                name,
                 self.apps
                     .get(self.active as usize)
                     .is_some_and(|app| !app.key_scopes().is_empty()),
+                self.key_hints_pinned(),
             ),
-            HIDE_KEY_HINTS => Some(self.key_hints_pinned()),
             _ => None,
         }
     }

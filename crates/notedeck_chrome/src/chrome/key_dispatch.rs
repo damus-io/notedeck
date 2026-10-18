@@ -6,8 +6,8 @@
 use super::actions::chrome_handle_app_action;
 use super::Chrome;
 use crate::keymap::macros::{Advance, MacroRun, Settle, MACRO_POLL_INTERVAL, MACRO_TIMEOUT_SECS};
-use crate::keymap::{KeyDispatch, KeySeq, Keymap, MacroStep, Scopes};
-use notedeck::{App, AppAction, AppContext, ToolInvocation, ToolOutcome, ToolOwner};
+use crate::keymap::{is_data_tool, KeySeq, KeyTarget, KeyTools, Keymap, MacroStep, Scopes};
+use notedeck::{App, AppAction, AppContext, ToolInvocation, ToolOutcome, ToolOwner, ToolRegistry};
 
 /// A macro step ready to call: its placeholders filled, and the name its
 /// result is bound to.
@@ -18,13 +18,27 @@ struct PreparedStep {
     bind: Option<String>,
 }
 
-/// What a key press fired, owned, so the engine can be put back before it
-/// runs.
-enum Fired {
-    /// A tool call.
-    Tool(ToolInvocation),
-    /// The macro with this name.
-    Macro(String),
+/// The chrome's answers to the key decision ([`KeyTools`]): its own tools
+/// from its state, the apps' from `tools`, the host's registry.
+struct ChromeKeyTools<'a> {
+    /// The chrome, for its own tools and its running apps.
+    chrome: &'a Chrome,
+    /// The host's tool registry.
+    tools: &'a ToolRegistry,
+}
+
+impl KeyTools for ChromeKeyTools<'_> {
+    fn chrome_tool_available(&self, name: &str) -> Option<bool> {
+        self.chrome.chrome_tool_available(name)
+    }
+
+    fn ui_tool_available(&self, name: &str) -> bool {
+        self.chrome.app_ui_tool_available(self.tools, name)
+    }
+
+    fn is_data_tool(&self, name: &str) -> bool {
+        is_data_tool(self.tools, name)
+    }
 }
 
 impl Chrome {
@@ -44,27 +58,27 @@ impl Chrome {
         // The engine is lent out while it asks `self` which tools are
         // available; an empty `KeyEngine` doesn't allocate.
         let mut keys = std::mem::take(&mut self.keys);
-        let fired = match keys.resolve(ui.ctx(), scopes, |name| {
-            self.key_tool_available(&ctx.registries.tools, name)
-        }) {
-            None => None,
-            Some(KeyDispatch::Tool(invocation)) => Some(Fired::Tool(invocation)),
-            Some(KeyDispatch::Macro(name)) => Some(Fired::Macro(name.to_owned())),
+        let tools = ChromeKeyTools {
+            chrome: self,
+            tools: &ctx.registries.tools,
         };
+        let fired = keys.resolve_target(ui.ctx(), scopes, &tools);
         let jump = keys.fired_jump();
         self.keys = keys;
         if jump {
             self.record_active_jump();
         }
 
-        match fired {
-            None => {}
-            Some(Fired::Tool(invocation)) => {
-                if let Some(action) = tool_action(ctx, invocation) {
-                    chrome_handle_app_action(self, ctx, action, ui);
-                }
+        let action = match fired {
+            None => return,
+            Some(KeyTarget::Chrome(invocation) | KeyTarget::Ui(invocation)) => {
+                Some(AppAction::CallTool(invocation))
             }
-            Some(Fired::Macro(name)) => self.start_macro(ctx, name, ui),
+            Some(KeyTarget::Data(invocation)) => call_data_tool(ctx, &invocation),
+            Some(KeyTarget::Macro(name)) => return self.start_macro(ctx, name, ui),
+        };
+        if let Some(action) = action {
+            chrome_handle_app_action(self, ctx, action, ui);
         }
     }
 
@@ -232,7 +246,7 @@ impl Chrome {
         invocation: &ToolInvocation,
         ui: &mut egui::Ui,
     ) -> Result<serde_json::Value, String> {
-        let outcome = if is_data_tool(ctx, &invocation.name) {
+        let outcome = if is_data_tool(&ctx.registries.tools, &invocation.name) {
             ctx.call_tool(&invocation.name, &invocation.args)
         } else {
             self.call_ui_tool(ctx, invocation)
@@ -261,7 +275,7 @@ impl Chrome {
             Some(ToolOwner::Shell) => true,
             // A data tool runs here, whichever app is in front; one no
             // running app has registered yet waits for its app to start.
-            None => is_registered_data_tool(tools, tool),
+            None => is_data_tool(tools, tool),
         };
         Settle {
             open_pending: self.pending_open.is_some(),
@@ -316,8 +330,12 @@ impl Chrome {
     /// registered data tool (which acts on what its args name, so only the
     /// keymap's [`CURRENT`](crate::keymap::CURRENT) gate applies). Doesn't
     /// allocate.
-    pub fn key_tool_available(&self, tools: &notedeck::ToolRegistry, name: &str) -> bool {
-        self.ui_tool_available(tools, name) || is_registered_data_tool(tools, name)
+    pub fn key_tool_available(&self, tools: &ToolRegistry, name: &str) -> bool {
+        ChromeKeyTools {
+            chrome: self,
+            tools,
+        }
+        .key_tool_available(name)
     }
 
     /// The keymap the chrome resolves keys against.
@@ -343,27 +361,15 @@ impl Chrome {
     }
 }
 
-/// Whether `name` is an app's data tool in `tools`, not a UI tool (nor the
-/// chrome's own, which never registers).
-fn is_registered_data_tool(tools: &notedeck::ToolRegistry, name: &str) -> bool {
-    tools.contains(name) && tools.ui_owner(name).is_none()
-}
-
 /// Run `invocation` as a key bound to it would, returning the action it
 /// raised for the chrome to route: a data tool runs here and now, a UI tool
 /// becomes an [`AppAction::CallTool`] for the app that owns it.
 pub(super) fn tool_action(ctx: &mut AppContext, invocation: ToolInvocation) -> Option<AppAction> {
-    if is_data_tool(ctx, &invocation.name) {
+    if is_data_tool(&ctx.registries.tools, &invocation.name) {
         call_data_tool(ctx, &invocation)
     } else {
         Some(AppAction::CallTool(invocation))
     }
-}
-
-/// Whether the key's tool `name` is an app's data tool, to run here rather
-/// than route to an app.
-fn is_data_tool(ctx: &AppContext, name: &str) -> bool {
-    is_registered_data_tool(&ctx.registries.tools, name)
 }
 
 /// Run a data tool a key is bound to, returning the intent it raised, if

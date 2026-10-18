@@ -384,9 +384,17 @@ impl Chrome {
     /// it in `tools` and says it's [available](App::ui_tool_available). A key
     /// bound to a tool that isn't falls through. Doesn't allocate.
     pub fn ui_tool_available(&self, tools: &notedeck::ToolRegistry, name: &str) -> bool {
-        if let Some(available) = self.chrome_tool_available(name) {
-            return available;
+        match self.chrome_tool_available(name) {
+            Some(available) => available,
+            None => self.app_ui_tool_available(tools, name),
         }
+    }
+
+    /// Whether `name` is an app's UI tool that would do something now: a
+    /// running app owns it in `tools` and says it's
+    /// [available](App::ui_tool_available). Not the chrome's own tools.
+    /// Doesn't allocate.
+    pub(super) fn app_ui_tool_available(&self, tools: &notedeck::ToolRegistry, name: &str) -> bool {
         let Some(ToolOwner::App(owner)) = tools.ui_owner(name) else {
             return false;
         };

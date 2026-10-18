@@ -36,6 +36,7 @@ mod hints;
 pub mod keys;
 pub mod macros;
 mod parse;
+mod target;
 pub mod template;
 mod tool_keys;
 pub mod user;
@@ -48,6 +49,7 @@ use notedeck_ui::chord::{self, ChordState};
 pub use hints::{Hint, MAX_HINT_KEYS};
 pub use keys::{KeyParseError, KeySeq, KeyStroke, Mods, MAX_SEQ};
 pub use parse::{parse, parse_over, BindProblem, KeymapError, StepProblem};
+pub use target::{is_data_tool, KeyTarget, KeyTools};
 
 /// The scope searched after every app's own: the chrome's bindings, live in
 /// any app.
