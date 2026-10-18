@@ -1,7 +1,9 @@
 //! A review record's explainer sources in the review pane (see
-//! [`review_walk`](crate::review_walk)): the explainer's Markdown as a tab
-//! beside the diff, and the code walk's notes threaded into the diff — above
-//! the hunks they introduce, or at its top when they introduce none. Either
+//! [`review_walk`](crate::review_walk)): the explainer's Markdown beside the
+//! commit message at the top of the diff on a wide pane, or as a tab beside
+//! the diff on a narrow one, and the code walk's notes threaded into the
+//! diff — above the hunks they introduce, or at its top when they introduce
+//! none. Either
 //! may be the commit's explain git note, when the record has no source of its
 //! own.
 
@@ -17,7 +19,8 @@ use crate::review_figures::{
 };
 use crate::review_walk::{CodeWalk, ExplainerPage, SourceText};
 
-/// What the review pane shows under the record's summary.
+/// What a narrow review pane shows under the record's summary. A wide one has
+/// no tabs: its explainer sits beside the commit message, over the diff.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ReviewTab {
     /// The commit's diff, with the code walk threaded in.
@@ -120,9 +123,9 @@ fn view_tab_ui(
     response
 }
 
-/// The explainer source `source` as a page filling the rest of the pane: its
-/// front matter's title, src and facts as a header, then the Markdown, with
-/// `headway:` refs drawn as their chips.
+/// The explainer source `source` as a page filling the rest of a narrow
+/// pane, in a scroll of its own ([`explainer_page_ui`]). The tab above it
+/// says when it is the commit's git note.
 pub(super) fn explainer_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -134,36 +137,69 @@ pub(super) fn explainer_ui(
     egui::ScrollArea::vertical()
         .id_salt("headway-review-explainer")
         .auto_shrink([false, false])
-        .show(ui, |ui| {
-            let front = &page.front;
+        .show(ui, |ui| explainer_page_ui(ui, theme, app_ctx, page, false));
+}
+
+/// The explainer source `source` as a column of a wide pane's diff header,
+/// beside the commit message: the page whole ([`explainer_page_ui`]), for
+/// the caller to clamp. With no tab to say so, a "git note" pill by its
+/// title says when it is the commit's note.
+pub(super) fn explainer_column_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    cache: &mut ExplainerCache,
+    source: SourceText<'_>,
+) {
+    let page = cache.page(source);
+    explainer_page_ui(ui, theme, app_ctx, page, source.is_note());
+}
+
+/// `page`: its front matter's title (with a "git note" pill when `note`),
+/// src and facts as a header, then the Markdown, with `headway:` refs drawn
+/// as their chips.
+fn explainer_page_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    page: &mut ExplainerPage,
+    note: bool,
+) {
+    let front = &page.front;
+    if front.title.is_some() || note {
+        ui.horizontal_wrapped(|ui| {
             if let Some(title) = &front.title {
                 ui.label(egui::RichText::new(title).size(20.0).strong());
             }
-            if let Some(src) = &front.src {
-                ui.label(
-                    egui::RichText::new(src)
-                        .small()
-                        .monospace()
-                        .color(theme.text_muted),
-                );
+            if note {
+                tinted_pill(ui, "git note", theme.warning);
             }
-            if !front.facts.is_empty() {
-                ui.add_space(SPACING_XS);
-                ui.horizontal_wrapped(|ui| {
-                    for fact in &front.facts {
-                        text_pill(ui, theme, fact);
-                    }
-                });
-            }
-            if front.title.is_some() || front.src.is_some() || !front.facts.is_empty() {
-                ui.add_space(SPACING_SM);
-            }
-            let figured = Page {
-                palette: &page.palette,
-                figures: &mut page.figures,
-            };
-            figured_ui(ui, theme, app_ctx, None, figured, &page.body);
         });
+    }
+    if let Some(src) = &front.src {
+        ui.label(
+            egui::RichText::new(src)
+                .small()
+                .monospace()
+                .color(theme.text_muted),
+        );
+    }
+    if !front.facts.is_empty() {
+        ui.add_space(SPACING_XS);
+        ui.horizontal_wrapped(|ui| {
+            for fact in &front.facts {
+                text_pill(ui, theme, fact);
+            }
+        });
+    }
+    if front.title.is_some() || note || front.src.is_some() || !front.facts.is_empty() {
+        ui.add_space(SPACING_SM);
+    }
+    let figured = Page {
+        palette: &page.palette,
+        figures: &mut page.figures,
+    };
+    figured_ui(ui, theme, app_ctx, None, figured, &page.body);
 }
 
 /// The walk's notes that thread onto no hunk — its intro, its closing words,

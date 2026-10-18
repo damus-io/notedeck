@@ -5183,9 +5183,10 @@ fn add_queue_sources_with(harness: &mut Harness<'static, HeadwayTestState>, expl
 /// sits just above the hunk the fence cites (the queue.rs one found by its
 /// `match:` though its header is stale), the opening before the first fence
 /// sits at the top, and a fence citing a hunk the diff hasn't got puts its
-/// note there too, saying so. The fences' own text never shows. The Explainer tab
-/// renders the explainer source: the front matter's title and facts as a
-/// header, the rest as Markdown.
+/// note there too, saying so. The fences' own text never shows. A wide pane
+/// renders the explainer source beside the commit message, over the diff
+/// and with no tabs: the front matter's title and facts as a header, the rest
+/// as Markdown.
 #[test]
 fn review_sources_thread_the_walk_and_render_the_explainer() {
     let fixture = review_fixture();
@@ -5243,9 +5244,8 @@ fn review_sources_thread_the_walk_and_render_the_explainer() {
     let intro = rect(&harness, "Start with the queue.");
     assert!(intro.bottom() < keys_note.top(), "{intro:?} {keys_note:?}");
 
-    harness.get_by_label("Explainer source").click_accesskit();
-    wait_for_label(&mut harness, "A queue you can walk");
     for shown in [
+        "A queue you can walk",
         "notedeck · src/queue.rs",
         "2 keys",
         "Why a queue",
@@ -5253,10 +5253,70 @@ fn review_sources_thread_the_walk_and_render_the_explainer() {
     ] {
         assert!(harness.query_by_label(shown).is_some(), "{shown}");
     }
+    assert!(harness.query_by_label("Explainer source").is_none());
+    assert!(harness.query_by_label("Diff").is_none());
+    // Beside the message, the two above the walk's intro.
+    let title = rect(&harness, "A queue you can walk");
+    let body = rect(&harness, QUEUE_BODY_ALL);
+    assert!(title.right() < body.left(), "{title:?} {body:?}");
+    assert!(body.top() < title.bottom(), "{title:?} {body:?}");
+    assert!(body.bottom() < intro.top(), "{body:?} {intro:?}");
+    // It fits the peek, so there's nothing to expand.
+    assert!(harness.query_by_label(SHOW_WHOLE).is_none());
+}
+
+/// A narrow pane keeps the explainer as a tab beside the diff: the explainer
+/// source fills the pane in place of the diff, and Diff brings it back.
+#[test]
+fn a_narrow_review_pane_keeps_the_explainer_tab() {
+    let fixture = review_fixture();
+    let mut harness = behavioral_harness(egui::Vec2::new(420.0, 1400.0));
+    seed_review_queue(&mut harness, &fixture);
+    add_queue_sources(&mut harness);
+    open_review_queue(&mut harness);
+    wait_for_label(&mut harness, "Keys come next.");
+    assert!(harness.query_by_label("A queue you can walk").is_none());
+
+    harness.get_by_label("Explainer source").click_accesskit();
+    wait_for_label(&mut harness, "A queue you can walk");
     assert!(harness.query_by_label("Keys come next.").is_none());
+    assert!(harness.query_by_label("git note").is_none());
 
     harness.get_by_label("Diff").click_accesskit();
     wait_for_label(&mut harness, "Keys come next.");
+}
+
+/// The peek's button on a wide pane: shows the explainer and message whole.
+const SHOW_WHOLE: &str = "Show the whole explainer and message";
+
+/// A wide pane clamps an explainer taller than its peek: its end is cut
+/// off above the diff, under a button that shows it whole, as `E` does. Shown
+/// whole, the diff starts under its end, and "Show less" clamps it again.
+#[test]
+fn a_long_explainer_peeks_until_e_shows_it_whole() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1400.0));
+    open_figures_explainer(&mut harness);
+    let rect = |harness: &Harness<'static, HeadwayTestState>, label: &str| {
+        harness.get_by_label(label).rect()
+    };
+    let title = rect(&harness, "Figures that draw");
+    let intro = rect(&harness, "Start with the queue.");
+    let end = rect(&harness, "The end.");
+    assert!(intro.top() < end.top(), "clamped: {intro:?} {end:?}");
+    assert!(intro.top() - title.top() < 520.0, "{title:?} {intro:?}");
+    assert!(harness.query_by_label("Show less").is_none());
+
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::E);
+    wait_for_label(&mut harness, "Show less");
+    assert!(harness.query_by_label(SHOW_WHOLE).is_none());
+    let end = rect(&harness, "The end.");
+    let intro = rect(&harness, "Start with the queue.");
+    assert!(end.bottom() < intro.top(), "whole: {end:?} {intro:?}");
+
+    harness.get_by_label("Show less").click_accesskit();
+    wait_for_label(&mut harness, SHOW_WHOLE);
+    harness.get_by_label(SHOW_WHOLE).click_accesskit();
+    wait_for_label(&mut harness, "Show less");
 }
 
 /// Snapshot: the review queue's diff with the record's code walk threaded
@@ -5356,13 +5416,14 @@ fn snapshot_headway_review_code_walk_pinned() {
     harness.snapshot("headway_review_code_walk_pinned");
 }
 
-/// Snapshot: the review queue's Explainer tab, the record's explainer source
-/// rendered with its front matter as a header.
+/// Snapshot: a narrow review queue's Explainer tab, the record's explainer
+/// source rendered with its front matter as a header. (A wide pane draws it
+/// beside the commit message: [`snapshot_headway_review_code_walk`].)
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_headway_review_explainer() {
     let fixture = review_fixture();
-    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+    let mut harness = headway_harness(egui::Vec2::new(420.0, 800.0));
     seed_review_queue(&mut harness, &fixture);
     add_queue_sources(&mut harness);
     open_review_queue(&mut harness);
@@ -5371,6 +5432,18 @@ fn snapshot_headway_review_explainer() {
     wait_for_label(&mut harness, "A queue you can walk");
     harness.run_steps(3);
     harness.snapshot("headway_review_explainer");
+}
+
+/// Snapshot: a wide pane's explainer taller than its peek, clamped beside
+/// the commit message and fading out under the button that shows it whole,
+/// the diff starting under it.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_peek() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 1000.0));
+    open_figures_explainer(&mut harness);
+    harness.run_steps(3);
+    harness.snapshot("headway_review_explainer_peek");
 }
 
 /// An explainer source with figures: a hand-drawn SVG in a figure fence (a
@@ -5430,15 +5503,15 @@ The end.
     )
 }
 
-/// Open the queue card's Explainer tab on [`figures_explainer_source`] and
-/// wait until both drawings and the data: screenshot have landed.
+/// Open the queue card's review on [`figures_explainer_source`], its
+/// explainer beside the commit message on a wide pane, and wait until both
+/// drawings and the data: screenshot have landed.
 fn open_figures_explainer(harness: &mut Harness<'static, HeadwayTestState>) {
     let fixture = review_fixture();
     seed_review_queue(harness, &fixture);
     add_queue_sources_with(harness, &figures_explainer_source());
     open_review_queue(harness);
     wait_for_label(harness, "Keys come next.");
-    harness.get_by_label("Explainer source").click_accesskit();
     wait_for_label(harness, "Figures that draw");
     for drawn in [
         "A bracket spanning the whole block",
@@ -5449,7 +5522,7 @@ fn open_figures_explainer(harness: &mut Harness<'static, HeadwayTestState>) {
     }
 }
 
-/// The Explainer tab draws its figures: the fenced and the raw SVG as
+/// The explainer draws its figures: the fenced and the raw SVG as
 /// images with their captions, the data: screenshot with its title as the
 /// caption, and the missing file as a placeholder naming its path and why.
 #[test]
@@ -5475,8 +5548,9 @@ fn review_explainer_draws_its_figures() {
     assert!((shot.width() - 160.0).abs() < 0.5, "{shot:?}");
 }
 
-/// Snapshot: the Explainer tab's figures (a hand-drawn SVG, a raw one, a
-/// data: screenshot and a missing file's placeholder) in the light theme.
+/// Snapshot: the explainer's figures (a hand-drawn SVG, a raw one, a
+/// data: screenshot and a missing file's placeholder) shown whole (`E`)
+/// beside the commit message, in the light theme.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_headway_review_explainer_figures() {
@@ -5501,6 +5575,8 @@ fn review_explainer_figures_snapshot(theme: egui::ThemePreference, name: &str) {
     let mut harness = headway_harness(egui::Vec2::new(1000.0, 1000.0));
     harness.ctx.options_mut(|o| o.theme_preference = theme);
     open_figures_explainer(&mut harness);
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::E);
+    wait_for_label(&mut harness, "Show less");
     harness.run_steps(3);
     harness.snapshot(name);
 }

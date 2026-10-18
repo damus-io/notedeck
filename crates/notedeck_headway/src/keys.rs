@@ -236,6 +236,7 @@ pub(crate) fn apply_grid_tool(
         | HeadwayUiTool::StepWalk(_)
         | HeadwayUiTool::Comment
         | HeadwayUiTool::RawMessage
+        | HeadwayUiTool::ExpandExplainer
         | HeadwayUiTool::SendComments
         | HeadwayUiTool::Back => {}
     }
@@ -420,6 +421,7 @@ pub(crate) fn apply_pane_tool(
             }
         }
         HeadwayUiTool::RawMessage => state.toggle_raw_message(),
+        HeadwayUiTool::ExpandExplainer => state.toggle_explainer_expanded(),
         HeadwayUiTool::Comment | HeadwayUiTool::SendComments => {
             let card = card.filter(|&c| find_card(view, c).is_some())?;
             let now = ctx.input(|i| i.time);
@@ -510,6 +512,7 @@ pub(crate) fn apply_detail_tool(
         | HeadwayUiTool::StepWalk(_)
         | HeadwayUiTool::Comment
         | HeadwayUiTool::RawMessage
+        | HeadwayUiTool::ExpandExplainer
         | HeadwayUiTool::SendComments => {}
     }
     None
@@ -2572,6 +2575,8 @@ mod tests {
         commenting: Option<NoteId>,
         /// Whether the commit body is drawn as written.
         raw_message: bool,
+        /// Whether a wide pane's explainer and message are shown whole.
+        explainer_expanded: bool,
     }
 
     fn pane_effects(harness: &Harness<'static, KeysHarness>) -> PaneEffects {
@@ -2593,6 +2598,7 @@ mod tests {
             hints: h.hints_pinned,
             commenting: h.state.commenting_on_commit(),
             raw_message: h.state.review_raw_message(),
+            explainer_expanded: h.state.review_explainer_expanded(),
         }
     }
 
@@ -2706,6 +2712,7 @@ mod tests {
             "next/prev commit",
             "next/prev walk note",
             "raw message",
+            "whole explainer",
             "comment (picked lines or commit)",
         ];
         let grid: &[&str] = &[
@@ -3871,6 +3878,7 @@ diff --git a/b.txt b/b.txt
             key_tool("[", STEP_FILE, json!({ "dir": "prev" })),
             key_tool("c", COMMENT, json!({})),
             key_tool("m", RAW_MESSAGE, json!({})),
+            key_tool("E", EXPAND_EXPLAINER, json!({})),
         ];
         let detail = [key_tool("R", OPEN_REVIEW_QUEUE, json!({}))];
         let with = |extra: &[KeyTool], scroll: bool| {
@@ -4103,6 +4111,7 @@ diff --git a/b.txt b/b.txt
         );
         assert!(available(&pane, STEP_FILE));
         assert!(available(&pane, RAW_MESSAGE));
+        assert!(available(&pane, EXPAND_EXPLAINER));
         assert!(!available(&pane, OPEN_REVIEW_QUEUE));
 
         let detail = detail_harness(None);

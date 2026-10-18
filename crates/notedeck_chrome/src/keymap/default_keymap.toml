@@ -498,6 +498,13 @@ tool  = "headway_raw_message"
 label = "raw message"
 group = "diff"
 
+[[bind]]
+scope = "headway.diff"
+keys  = "E"
+tool  = "headway_expand_explainer"
+label = "whole explainer"
+group = "diff"
+
 # Leaving the review queue, for the grid (or an epic's detail).
 
 [[bind]]

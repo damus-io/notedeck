@@ -23,7 +23,8 @@ use super::review_comments::{
     DraftComment, ReviewDrafts, comments_ui, commit_comments_ui, location_place, posted_comment_ui,
 };
 use super::review_sources::{
-    ExplainerCache, ReviewTab, explainer_ui, review_tabs_ui, shown_tab, walk_note_ui, walk_top_ui,
+    ExplainerCache, ReviewTab, explainer_column_ui, explainer_ui, review_tabs_ui, shown_tab,
+    walk_note_ui, walk_top_ui,
 };
 use super::widgets::{
     ChevronDir, ControlSize, ICON_BUTTON, ICON_BUTTON_SM, IconFace, MiddleElided, StatusIcon,
@@ -83,6 +84,11 @@ pub(crate) struct ReviewUi {
     /// kept) rather than reflowed; `m` flips it. Kept across cards like
     /// [`tab`](Self::tab), and not persisted.
     raw_message: bool,
+    /// Whether a wide pane shows its explainer and message whole, rather
+    /// than clamped to their peek; `E` or the peek's button flips it. Kept
+    /// across cards like [`raw_message`](Self::raw_message), and not
+    /// persisted.
+    explainer_expanded: bool,
     /// The shown record's explainer, parsed once per source.
     explainer: ExplainerCache,
 }
@@ -138,6 +144,11 @@ impl ReviewUi {
     /// Flip the commit body between reflowed and as written.
     pub(crate) fn toggle_raw_message(&mut self) {
         self.raw_message = !self.raw_message;
+    }
+
+    /// Flip a wide pane's explainer and message between whole and clamped.
+    pub(crate) fn toggle_explainer_expanded(&mut self) {
+        self.explainer_expanded = !self.explainer_expanded;
     }
 
     /// The scroll waiting for the pane's next pass, if any.
@@ -848,6 +859,12 @@ impl BoardUiState {
         self.review.toggle_raw_message();
     }
 
+    /// Flip the open review's explainer and message between whole and
+    /// clamped to their peek.
+    pub(crate) fn toggle_explainer_expanded(&mut self) {
+        self.review.toggle_explainer_expanded();
+    }
+
     /// The scroll the review keys left for the diff's next pass.
     #[cfg(test)]
     pub(crate) fn review_scroll(&self) -> Option<PatchScroll> {
@@ -858,6 +875,12 @@ impl BoardUiState {
     #[cfg(test)]
     pub(crate) fn review_raw_message(&self) -> bool {
         self.review.raw_message
+    }
+
+    /// Whether the open review shows its explainer and message whole.
+    #[cfg(test)]
+    pub(crate) fn review_explainer_expanded(&self) -> bool {
+        self.review.explainer_expanded
     }
 }
 
@@ -992,7 +1015,10 @@ pub(super) fn review_pane_ui(
                 Some(ReviewLoad::Ready(loaded)) => Some(&loaded.notes),
                 _ => None,
             };
-            let page = source_text(record, notes, ReviewSourceRole::Explainer);
+            // A wide pane draws the explainer beside the commit message in
+            // the diff's header, so only a narrow one has tabs for it.
+            let wide = !notedeck::ui::is_narrow(ui.ctx());
+            let page = source_text(record, notes, ReviewSourceRole::Explainer).filter(|_| !wide);
             if let Some(picked) =
                 view_bar_ui(ui, theme, page, &card.reviews, shown, &mut review.tab)
             {
@@ -1003,12 +1029,17 @@ pub(super) fn review_pane_ui(
                 explainer_ui(ui, theme, app_ctx, &mut review.explainer, page);
                 return clicked;
             }
+            let beside = wide.then_some(Beside {
+                cache: &mut review.explainer,
+                expanded: &mut review.explainer_expanded,
+            });
             let shown = Shown {
                 record,
                 drafts: &mut review.drafts,
                 card_title: &card.title,
                 location: &mut review.location,
                 raw_message: review.raw_message,
+                beside,
             };
             let chip = load_ui(ui, theme, app_ctx, &mut review.loader, source, shown);
             let chip = chip.then_some(TopbarClick::Card(CardAction::Session(
@@ -1047,6 +1078,17 @@ struct Shown<'a> {
     location: &'a mut MiddleElided,
     /// Whether the commit's body is drawn as written.
     raw_message: bool,
+    /// On a wide pane, what the explainer beside the commit message needs;
+    /// `None` on a narrow one, whose explainer is a tab.
+    beside: Option<Beside<'a>>,
+}
+
+/// What a wide pane keeps for the explainer it draws beside the commit
+/// message ([`split_ui`]): the parsed page, and whether the two are shown
+/// whole or clamped to their peek.
+struct Beside<'a> {
+    cache: &'a mut ExplainerCache,
+    expanded: &'a mut bool,
 }
 
 /// Start `source`'s load if it hasn't been: the record (or the card's trailer)
@@ -1624,6 +1666,7 @@ fn load_ui(
                 card_title,
                 location,
                 raw_message,
+                beside,
             } = shown;
             comments_ui(ui, theme, loaded, record, drafts);
             if let Some(header) = patch_ui(ui, theme, app_ctx, loaded, record) {
@@ -1632,6 +1675,7 @@ fn load_ui(
                     card_title,
                     location,
                     raw_message,
+                    beside,
                 };
                 let rows = header.show(ui, |ui| {
                     chip = commit_header_ui(ui, theme, app_ctx, loaded, commit);
@@ -1654,6 +1698,8 @@ struct CommitHeader<'a> {
     location: &'a mut MiddleElided,
     /// Whether the commit's body is drawn as written.
     raw_message: bool,
+    /// The explainer to draw beside the message, on a wide pane.
+    beside: Option<Beside<'a>>,
 }
 
 /// The top of the diff, which scrolls away with it. The commit's subject,
@@ -1663,9 +1709,9 @@ struct CommitHeader<'a> {
 /// repo's path, on hover), where the record was made (`⎇ branch` and
 /// `host:path`, elided in its middle past [`LOCATION_SHARE`] of the line, full
 /// on hover), the record's agentium session as its chip, and whether its
-/// patch was cut short. Under it the commit message's body
-/// ([`commit_body_ui`]), the comments posted on the commit as a whole
-/// ([`commit_comments_ui`]) and the code walk's notes on no hunk
+/// patch was cut short. Under it the commit message ([`message_ui`]): on a
+/// wide pane with an explainer, in a column beside it ([`split_ui`]), else
+/// alone at a readable measure. Then the code walk's notes on no hunk
 /// ([`walk_top_ui`]). `true` when the session chip was clicked.
 fn commit_header_ui(
     ui: &mut egui::Ui,
@@ -1679,6 +1725,7 @@ fn commit_header_ui(
         card_title,
         location,
         raw_message,
+        beside,
     } = commit;
     let fields = record.map(|r| &r.fields);
     let session = fields.and_then(|f| f.agentium.as_deref());
@@ -1752,14 +1799,268 @@ fn commit_header_ui(
         }
     });
     ui.add_space(SPACING_MD);
-    commit_body_ui(ui, theme, &loaded.body, raw_message);
-    if let Some(record) = record {
-        commit_comments_ui(ui, theme, app_ctx, record);
+    let message = Message {
+        body: &loaded.body,
+        raw: raw_message,
+        record,
+    };
+    let page = beside
+        .as_ref()
+        .and_then(|_| source_text(record, Some(&loaded.notes), ReviewSourceRole::Explainer));
+    match (beside, page) {
+        (Some(beside), Some(page)) => split_ui(ui, theme, app_ctx, beside, page, message),
+        _ => {
+            ui.scope(|ui| {
+                ui.set_max_width(MESSAGE_MEASURE);
+                message_ui(ui, theme, app_ctx, message);
+            });
+        }
     }
     if let Some(walk) = &mut loaded.walk {
         walk_top_ui(ui, theme, app_ctx, walk);
     }
     chip
+}
+
+/// The commit message under the byline, for [`message_ui`].
+struct Message<'a> {
+    body: &'a CommitBody,
+    /// Whether it is drawn as written.
+    raw: bool,
+    /// The record whose comments on the commit as a whole go under it.
+    record: Option<&'a ReviewView>,
+}
+
+/// The commit message's body ([`commit_body_ui`]) and the comments posted on
+/// the commit as a whole ([`commit_comments_ui`]), as wide as `ui` lets them.
+fn message_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    message: Message<'_>,
+) {
+    commit_body_ui(ui, theme, message.body, message.raw);
+    if let Some(record) = message.record {
+        commit_comments_ui(ui, theme, app_ctx, record);
+    }
+}
+
+/// The widest a commit message runs with no explainer beside it: a readable
+/// measure, where the pane's full width would run its lines across a wide
+/// monitor.
+const MESSAGE_MEASURE: f32 = 720.0;
+
+/// The message column's share of a wide pane's header beside the explainer,
+/// kept within [`MESSAGE_COLUMN`].
+const MESSAGE_SHARE: f32 = 0.25;
+
+/// The narrowest and widest the message column beside the explainer gets,
+/// so its lines run about 50 to 70 characters.
+const MESSAGE_COLUMN: egui::Rangef = egui::Rangef {
+    min: 320.0,
+    max: 520.0,
+};
+
+/// The columns a raw (monospace) message is drawn as written in, which the
+/// message column widens to while [`ReviewUi::raw_message`] is on.
+const RAW_COLUMNS: f32 = 72.0;
+
+/// The most of the header the message column takes to fit [`RAW_COLUMNS`],
+/// so the explainer keeps at least half.
+const RAW_SHARE: f32 = 0.5;
+
+/// How tall the explainer and message stand clamped, before `E` (or the
+/// peek's button) shows them whole: their opening, with the diff still on
+/// the pane's first screen.
+const PEEK_HEIGHT: f32 = 400.0;
+
+/// How far up from the peek's bottom edge it fades into the pane.
+const PEEK_FADE: f32 = 96.0;
+
+/// The explainer and the commit message side by side at the top of a wide
+/// pane's diff: the message in a column on the right,
+/// [`MESSAGE_SHARE`] of the width within [`MESSAGE_COLUMN`] (wider to fit
+/// a raw message's [`RAW_COLUMNS`]), the explainer in the rest, a hairline
+/// between them. Unless `beside` is expanded, both are clamped to
+/// [`PEEK_HEIGHT`], fading out under a button that shows them whole (as `E`
+/// does); expanded past the peek, a "Show less" under them clamps them
+/// again. A split that fits the peek is drawn whole with neither.
+fn split_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    beside: Beside<'_>,
+    page: SourceText<'_>,
+    message: Message<'_>,
+) {
+    let width = ui.available_width();
+    let gap = 2.0 * SPACING_LG;
+    let mut message_width = MESSAGE_COLUMN.clamp(width * MESSAGE_SHARE);
+    if message.raw {
+        let mono = egui::TextStyle::Monospace.resolve(ui.style());
+        let raw = RAW_COLUMNS * ui.fonts_mut(|f| f.glyph_width(&mono, '0'));
+        message_width = message_width.max(raw.min(width * RAW_SHARE));
+    }
+    let explainer_width = (width - message_width - gap).max(0.0);
+    let top = ui.cursor().min;
+    let clip = if *beside.expanded {
+        ui.clip_rect()
+    } else {
+        let peek = egui::Rect::from_min_size(top, egui::vec2(width, PEEK_HEIGHT));
+        ui.clip_rect().intersect(peek)
+    };
+    let bottom = ui.max_rect().bottom().max(top.y);
+    let column = |ui: &mut egui::Ui, salt: &str, left: f32, column_width: f32| {
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(left, top.y),
+            egui::pos2(left + column_width, bottom),
+        );
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(salt)
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        child.set_clip_rect(clip);
+        child
+    };
+    let mut left = column(
+        ui,
+        "headway-review-beside-explainer",
+        top.x,
+        explainer_width,
+    );
+    explainer_column_ui(&mut left, theme, app_ctx, beside.cache, page);
+    let message_left = top.x + explainer_width + gap;
+    let mut right = column(
+        ui,
+        "headway-review-beside-message",
+        message_left,
+        message_width,
+    );
+    message_ui(&mut right, theme, app_ctx, message);
+
+    let full = left.min_rect().height().max(right.min_rect().height());
+    let clamped = !*beside.expanded && full > PEEK_HEIGHT;
+    let height = if clamped { PEEK_HEIGHT } else { full };
+    let rect = egui::Rect::from_min_size(top, egui::vec2(width, height));
+    ui.allocate_rect(rect, egui::Sense::hover());
+    let rule_x = top.x + explainer_width + gap / 2.0;
+    ui.painter().vline(
+        rule_x,
+        rect.y_range(),
+        egui::Stroke::new(1.0, theme.border_default),
+    );
+    if clamped {
+        peek_fade(ui, rect);
+        if peek_button_ui(ui, theme, rect).clicked() {
+            *beside.expanded = true;
+        }
+    } else if full > PEEK_HEIGHT && show_less_ui(ui, theme).clicked() {
+        *beside.expanded = false;
+    }
+    ui.add_space(SPACING_SM);
+}
+
+/// The clamped split's bottom [`PEEK_FADE`] fading into the pane, so its cut
+/// reads as more to come rather than a clipped line.
+fn peek_fade(ui: &egui::Ui, rect: egui::Rect) {
+    let fill = ui.visuals().panel_fill;
+    let fade =
+        egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - PEEK_FADE), rect.max);
+    let mut mesh = egui::Mesh::default();
+    let clear = egui::Color32::TRANSPARENT;
+    mesh.colored_vertex(fade.left_top(), clear);
+    mesh.colored_vertex(fade.right_top(), clear);
+    mesh.colored_vertex(fade.left_bottom(), fill);
+    mesh.colored_vertex(fade.right_bottom(), fill);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+    ui.painter().add(egui::Shape::mesh(mesh));
+}
+
+/// The button centred on the clamped split's fade that shows the explainer
+/// and message whole: a pill saying so, with the `E` that does the same. One
+/// widget, so a screen reader's click lands on what it names.
+fn peek_button_ui(ui: &mut egui::Ui, theme: &ColorTheme, rect: egui::Rect) -> egui::Response {
+    let galley = egui::WidgetText::from(egui::RichText::new(SHOW_ALL).small()).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Small,
+    );
+    let key = ui.text_style_height(&egui::TextStyle::Small) + SPACING_XS;
+    let pad = egui::vec2(SPACING_MD, SPACING_XS);
+    let size = egui::vec2(
+        galley.size().x + SPACING_SM + key + 2.0 * pad.x,
+        galley.size().y.max(key) + 2.0 * pad.y,
+    );
+    let center = egui::pos2(rect.center().x, rect.bottom() - SPACING_MD - size.y / 2.0);
+    let pill = egui::Rect::from_center_size(center, size);
+    let response = ui
+        .interact(
+            pill,
+            ui.scope_id().with("headway-review-peek"),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, SHOW_ALL));
+    let stroke = if response.hovered() {
+        theme.border_strong
+    } else {
+        theme.border_default
+    };
+    let painter = ui.painter();
+    painter.rect(
+        pill,
+        size.y / 2.0,
+        theme.surface_elevated,
+        egui::Stroke::new(1.0, stroke),
+        egui::StrokeKind::Inside,
+    );
+    let text_at = egui::pos2(pill.left() + pad.x, center.y - galley.size().y / 2.0);
+    painter.galley(text_at, galley, theme.text_primary);
+    let key_at = egui::pos2(pill.right() - pad.x - key / 2.0, center.y);
+    KeybindHint::new(EXPAND_KEY)
+        .size(key)
+        .color(theme.text_muted)
+        .paint_at(ui, key_at);
+    response
+}
+
+/// The peek button's words.
+const SHOW_ALL: &str = "Show the whole explainer and message";
+
+/// What expands or clamps the split: `E`, as [`EXPAND_EXPLAINER`](crate::ui_tools::EXPAND_EXPLAINER)'s
+/// keymap binds it.
+const EXPAND_KEY: &str = "E";
+
+/// [`EXPAND_KEY`] as a small muted keycap.
+fn key_hint_ui(ui: &mut egui::Ui, theme: &ColorTheme) {
+    let size = ui.text_style_height(&egui::TextStyle::Small) + SPACING_XS;
+    KeybindHint::new(EXPAND_KEY)
+        .size(size)
+        .color(theme.text_muted)
+        .show(ui);
+}
+
+/// Under an expanded split taller than its peek, small muted "Show less"
+/// and its `E`: clamps it again.
+fn show_less_ui(ui: &mut egui::Ui, theme: &ColorTheme) -> egui::Response {
+    ui.add_space(SPACING_XS);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = SPACING_SM;
+        let less = egui::Button::new(
+            egui::RichText::new("Show less")
+                .small()
+                .color(theme.text_muted),
+        )
+        .frame(false);
+        let response = ui.add(less);
+        key_hint_ui(ui, theme);
+        response
+    })
+    .inner
 }
 
 /// The commit message's body under the byline, whole, with its trailers small
