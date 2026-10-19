@@ -5581,6 +5581,116 @@ fn review_explainer_figures_snapshot(theme: egui::ThemePreference, name: &str) {
     harness.snapshot(name);
 }
 
+/// An explainer source with ba fences: a Before | After pair whose two
+/// untoned panes take explain's alert and moss, and a `~~~ba` whose toned
+/// panes hold code, captioned so it sits in a figure's frame.
+const BA_EXPLAINER: &str = "\
+---
+title: Panes that compare
+---
+
+The pair below is drawn as panes.
+
+```ba
+### Before
+`)` and `(` are **unbound**: reaching the next walk note means scrolling.
+### After
+`)` lands the next walk note under the pinned file header.
+```
+
+~~~ba
+### Old {dim}
+```rust
+let step = 1;
+```
+### New {hot}
+```rust
+let step = walk.next();
+```
+---
+Code in panes, in a frame for its caption.
+~~~
+
+The end.
+";
+
+/// The top-left corner of the first node labelled `label`.
+fn label_corner(harness: &Harness<'static, HeadwayTestState>, label: &str) -> egui::Pos2 {
+    let rect = harness.get_by_label(label).rect();
+    rect.min
+}
+
+/// Open the queue card's review on [`BA_EXPLAINER`] and wait until its
+/// panes are drawn.
+fn open_ba_explainer(harness: &mut Harness<'static, HeadwayTestState>) {
+    let fixture = review_fixture();
+    seed_review_queue(harness, &fixture);
+    add_queue_sources_with(harness, BA_EXPLAINER);
+    open_review_queue(harness);
+    wait_for_label(harness, "Keys come next.");
+}
+
+/// A wide pane draws a ba fence's panes side by side, titled, their
+/// Markdown drawn rather than shown as the fence's source; a narrow one's
+/// Explainer tab stacks them.
+#[test]
+fn review_explainer_draws_ba_panes() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1400.0, 1400.0));
+    open_ba_explainer(&mut harness);
+    wait_for_label(&mut harness, "Code in panes, in a frame for its caption.");
+    assert!(harness.query_by_label_contains("### ").is_none());
+    for (left, right) in [("Before", "After"), ("Old", "New")] {
+        let (l, r) = (label_corner(&harness, left), label_corner(&harness, right));
+        assert!((l.y - r.y).abs() < 0.5, "{left} {l:?} beside {right} {r:?}");
+        assert!(l.x + 240.0 <= r.x, "{left} {l:?} left of {right} {r:?}");
+    }
+    assert!(harness.query_by_label_contains("unbound").is_some());
+
+    let mut narrow = behavioral_harness(egui::Vec2::new(420.0, 1400.0));
+    open_ba_explainer(&mut narrow);
+    narrow.get_by_label("Explainer source").click_accesskit();
+    wait_for_label(&mut narrow, "Panes that compare");
+    narrow.run_steps(2);
+    let (before, after) = (
+        label_corner(&narrow, "Before"),
+        label_corner(&narrow, "After"),
+    );
+    assert!(
+        (before.x - after.x).abs() < 0.5,
+        "{before:?} over {after:?}"
+    );
+    assert!(before.y < after.y, "{before:?} over {after:?}");
+}
+
+/// Snapshot: [`BA_EXPLAINER`] beside the commit message, short enough to
+/// show whole:
+/// the Before | After pair, then the toned code panes in a captioned frame.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_ba() {
+    review_explainer_ba_snapshot(egui::ThemePreference::Light, "headway_review_explainer_ba");
+}
+
+/// Snapshot: [`snapshot_headway_review_explainer_ba`] in the dark theme, the
+/// panes' tones from explain's dark palette.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_ba_dark() {
+    review_explainer_ba_snapshot(
+        egui::ThemePreference::Dark,
+        "headway_review_explainer_ba_dark",
+    );
+}
+
+fn review_explainer_ba_snapshot(theme: egui::ThemePreference, name: &str) {
+    let mut harness = headway_harness(egui::Vec2::new(1400.0, 900.0));
+    harness.ctx.options_mut(|o| o.theme_preference = theme);
+    open_ba_explainer(&mut harness);
+    wait_for_label(&mut harness, "Code in panes, in a frame for its caption.");
+    harness.run_steps(3);
+    harness.snapshot(name);
+}
+
 /// A review pane opened from a card's detail ("Review diff"), not the queue,
 /// reads with the queue's keys: `G` scrolls the diff, `?` pins a strip that
 /// says `q` goes back to the card, `n` steps to the next In Review card's

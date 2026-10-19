@@ -10,6 +10,10 @@
 //!   opens with `<svg` is a hand-drawn SVG, rasterised with resvg in the
 //!   pane's light or dark theme (its `var(--…)` colours from the page's
 //!   [`Palette`]); any other body is Markdown, drawn in the frame.
+//! - a ` ```ba ` fence (or `~~~ba`, when its panes hold code): panes, each
+//!   opened by a `### Title {tone}` line, drawn side by side; two untoned
+//!   panes read as before (alert) and after (moss). Its caption, after a last
+//!   `---`, puts it in a figure's frame.
 //! - a paragraph holding one image and nothing else: a screenshot, its
 //!   `"title"` the caption, read from a `data:` URI or an absolute path on
 //!   this host; a relative path says it can't show. One at a URL isn't a
@@ -84,6 +88,133 @@ pub(crate) enum FigureBody {
     Markdown(Box<Figured>),
     /// An image, from a `data:` URI or a path.
     Image { alt: String, src: String },
+    /// A ` ```ba ` fence's panes, in order.
+    Panes(Vec<Pane>),
+}
+
+/// One pane of a ` ```ba ` fence.
+pub(crate) struct Pane {
+    /// Its `### ` line, without the tone.
+    pub title: String,
+    /// Its `{tone}`, or the before/after one a two-pane block gives it.
+    pub tone: Option<Tone>,
+    /// The Markdown under its title, up to the next pane's.
+    pub body: Figured,
+}
+
+/// explain's one vocabulary of tones, for panes (and later cells, nodes and
+/// edges): its `.tone-*` classes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Tone {
+    Brass,
+    Slate,
+    Moss,
+    Alert,
+    Dim,
+}
+
+impl Tone {
+    /// The tone a `{word}` names, aliases included, as explain's `TONES`.
+    pub(crate) fn named(word: &str) -> Option<Self> {
+        Some(match word {
+            "brass" | "hot" => Self::Brass,
+            "slate" => Self::Slate,
+            "moss" | "good" | "ok" => Self::Moss,
+            "alert" | "bad" => Self::Alert,
+            "dim" => Self::Dim,
+            _ => return None,
+        })
+    }
+
+    /// The palette tokens it draws with, as explain's `--t` (its edge) and
+    /// `--t-ink` (its text): a role's own pair, or for dim the rule and the
+    /// second ink.
+    pub(crate) fn tokens(self) -> ToneTokens {
+        let (edge, ink) = match self {
+            Self::Brass => ("brass", "brass-ink"),
+            Self::Slate => ("slate", "slate-ink"),
+            Self::Moss => ("moss", "moss-ink"),
+            Self::Alert => ("alert", "alert-ink"),
+            Self::Dim => ("rule-strong", "ink-2"),
+        };
+        ToneTokens { edge, ink }
+    }
+}
+
+/// The palette token names a [`Tone`] draws with.
+pub(crate) struct ToneTokens {
+    pub edge: &'static str,
+    pub ink: &'static str,
+}
+
+/// A line split at a trailing `{tone}`.
+#[derive(Debug, PartialEq, Eq)]
+struct Toned<'a> {
+    text: &'a str,
+    tone: Option<Tone>,
+}
+
+/// `line` without a trailing `{tone}` naming a known tone, and that tone, as
+/// explain's `take_tone`; an unknown word stays in the text.
+fn take_tone(line: &str) -> Toned<'_> {
+    let untoned = Toned {
+        text: line,
+        tone: None,
+    };
+    let trimmed = line.trim_end();
+    let Some(open) = trimmed.strip_suffix('}').and_then(|t| t.rfind('{')) else {
+        return untoned;
+    };
+    match Tone::named(&trimmed[open + 1..trimmed.len() - 1]) {
+        Some(tone) => Toned {
+            text: trimmed[..open].trim_end(),
+            tone: Some(tone),
+        },
+        None => untoned,
+    }
+}
+
+/// A ` ```ba ` body's panes, each opened by a `### Title {tone}` line, its
+/// figures numbered from `next`. Text before the first pane is dropped, as
+/// explain does (with a warning there). Two untoned panes read as before
+/// (alert) and after (moss).
+fn panes(body: &str, next: &mut usize) -> Vec<Pane> {
+    struct Open<'a> {
+        toned: Toned<'a>,
+        start: usize,
+    }
+    let mut panes = Vec::new();
+    let mut open: Option<Open> = None;
+    let mut close = |open: Option<Open>, end: usize, next: &mut usize| {
+        if let Some(Open { toned, start }) = open {
+            panes.push(Pane {
+                title: toned.text.trim().to_owned(),
+                tone: toned.tone,
+                body: Figured::parse(&body[start..end], next),
+            });
+        }
+    };
+    let mut at = 0;
+    for line in body.split_inclusive('\n') {
+        let heading = line
+            .trim_end_matches(['\n', '\r'])
+            .strip_prefix("###")
+            .filter(|rest| rest.starts_with([' ', '\t']));
+        if let Some(rest) = heading {
+            close(open.take(), at, next);
+            open = Some(Open {
+                toned: take_tone(rest),
+                start: at + line.len(),
+            });
+        }
+        at += line.len();
+    }
+    close(open, body.len(), next);
+    if let [before, after] = panes.as_mut_slice() {
+        before.tone = before.tone.or(Some(Tone::Alert));
+        after.tone = after.tone.or(Some(Tone::Moss));
+    }
+    panes
 }
 
 /// The figures among `md`'s top-level elements, numbered from `next`.
@@ -96,17 +227,26 @@ fn figures(md: &ParsedMarkdown, next: &mut usize) -> Vec<Figure> {
 }
 
 /// The figure `element` (top-level element `at`) is, if it is one: a
-/// ` ```figure ` fence, or a paragraph holding one image and nothing else
-/// whose source isn't a URL.
+/// ` ```figure ` or ` ```ba ` fence, or a paragraph holding one image and
+/// nothing else whose source isn't a URL.
 fn figure_of(at: usize, element: &MdElement, source: &str, next: &mut usize) -> Option<Figure> {
     match element {
         MdElement::CodeBlock(code) => {
             let lang = code.language.as_ref()?.resolve(source);
-            if lang.split_whitespace().next() != Some("figure") {
+            let kind = lang.split_whitespace().next();
+            if !matches!(kind, Some("figure" | "ba")) {
                 return None;
             }
             let Caption { body, caption } = split_caption(code.content.resolve(source));
             let index = take(next);
+            if kind == Some("ba") {
+                return Some(Figure {
+                    element: at,
+                    index,
+                    body: FigureBody::Panes(panes(body, next)),
+                    caption: caption.map(str::to_owned),
+                });
+            }
             let trimmed = body.trim();
             let body = if trimmed
                 .get(..4)
@@ -723,6 +863,7 @@ Outro.
                         f.element, f.index, f.caption
                     )
                 }
+                FigureBody::Panes(panes) => format!("@{} ba {}", f.element, panes.len()),
             })
             .collect();
         assert_eq!(
@@ -736,6 +877,100 @@ Outro.
         assert_eq!(doc.md.elements.len(), 8);
         assert!(doc.figure_at(5).is_some());
         assert!(doc.figure_at(6).is_none(), "the https image");
+    }
+
+    /// A ba fence's panes, as explain splits them: at `### ` lines, the
+    /// text before the first dropped, a known `{tone}` taken off the title
+    /// and an unknown one left on it.
+    #[test]
+    fn ba_panes_split_on_their_titles() {
+        let text = "\
+~~~ba
+dropped
+### Old way {bad}
+It **stalls**.
+
+```rust
+let x = 1;
+```
+### Middle {nope}
+###notatitle
+### New way {hot}
+It runs.
+---
+The caption.
+~~~
+";
+        let mut next = 0;
+        let doc = Figured::parse(text, &mut next);
+        let [figure] = doc.figures.as_slice() else {
+            panic!("one figure");
+        };
+        assert_eq!(figure.caption.as_deref(), Some("The caption."));
+        let FigureBody::Panes(panes) = &figure.body else {
+            panic!("panes");
+        };
+        let shape: Vec<String> = panes
+            .iter()
+            .map(|p| format!("{} {:?} {}", p.title, p.tone, p.body.md.elements.len()))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                "Old way Some(Alert) 2",
+                "Middle {nope} None 1",
+                "New way Some(Brass) 1",
+            ]
+        );
+        assert!(matches!(
+            panes[0].body.md.elements[1],
+            MdElement::CodeBlock(_)
+        ));
+    }
+
+    /// Two untoned panes read as before (alert) then after (moss); one or
+    /// three untoned stay untoned, and a pane's own tone wins.
+    #[test]
+    fn two_untoned_panes_are_before_and_after() {
+        let tones = |text: &str| -> Vec<Option<Tone>> {
+            let mut next = 0;
+            let doc = Figured::parse(text, &mut next);
+            let Some(Figure {
+                body: FigureBody::Panes(panes),
+                ..
+            }) = doc.figures.first()
+            else {
+                panic!("panes in {text:?}");
+            };
+            panes.iter().map(|p| p.tone).collect()
+        };
+        assert_eq!(
+            tones("```ba\n### Before\na\n### After\nb\n```\n"),
+            [Some(Tone::Alert), Some(Tone::Moss)]
+        );
+        assert_eq!(
+            tones("```ba\n### Before {slate}\na\n### After\nb\n```\n"),
+            [Some(Tone::Slate), Some(Tone::Moss)]
+        );
+        assert_eq!(
+            tones("```ba\n### A\n### B\n### C\n```\n"),
+            [None, None, None]
+        );
+        assert_eq!(tones("```ba\n### Only\nx\n```\n"), [None]);
+    }
+
+    #[test]
+    fn take_tone_reads_a_trailing_tone() {
+        let cases = [
+            ("Title {ok}", "Title", Some(Tone::Moss)),
+            ("Title {dim}  ", "Title", Some(Tone::Dim)),
+            ("Title {what}", "Title {what}", None),
+            ("{x} Title", "{x} Title", None),
+            ("Title", "Title", None),
+        ];
+        for (line, text, tone) in cases {
+            assert_eq!(take_tone(line), Toned { text, tone }, "{line:?}");
+        }
     }
 
     #[test]

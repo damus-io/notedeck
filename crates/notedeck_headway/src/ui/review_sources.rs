@@ -13,7 +13,7 @@ use notedeck_ui::markdown::{BlockHook, MdBlock, fit_image};
 
 use super::widgets::{section_label, text_pill, tinted_pill};
 use crate::explain_palette::Palette;
-use crate::review_figures::{Failure, Figure, FigureBody, FigureView, Figured, Figures};
+use crate::review_figures::{Failure, Figure, FigureBody, FigureView, Figured, Figures, Pane};
 use crate::review_walk::{CodeWalk, ExplainerPage, FrontMatter, SourceText};
 
 /// What a narrow review pane shows under the record's summary. A wide one has
@@ -421,7 +421,8 @@ impl BlockHook for FigureHook<'_> {
 
 /// A figure, centred in a thin frame at no more than its own size or the
 /// pane's width, its caption small and muted under it. A figure that can't
-/// show draws a placeholder saying why; one loading, a spinner.
+/// show draws a placeholder saying why; one loading, a spinner. A ba block
+/// without a caption is no figure in explain, so it draws bare.
 fn figure_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -430,6 +431,12 @@ fn figure_ui(
     page: &mut Page<'_>,
     figure: &Figure,
 ) {
+    if let (FigureBody::Panes(panes), None) = (&figure.body, &figure.caption) {
+        ui.add_space(SPACING_XS);
+        panes_ui(ui, theme, note, txn, page, panes);
+        ui.add_space(SPACING_SM);
+        return;
+    }
     let dark = ui.visuals().dark_mode;
     let margin = SPACING_SM;
     ui.add_space(SPACING_XS);
@@ -468,6 +475,10 @@ fn figure_ui(
                     .image(ui.ctx(), page.palette, figure.index, dark, src);
                 figure_view_ui(ui, theme, view, available, Some(alt.as_str()), src);
             }
+            FigureBody::Panes(panes) => {
+                ui.set_width(available);
+                panes_ui(ui, theme, note, txn, page, panes);
+            }
         });
         if let Some(caption) = &figure.caption {
             ui.add_space(SPACING_XS);
@@ -479,6 +490,137 @@ fn figure_ui(
         }
     });
     ui.add_space(SPACING_SM);
+}
+
+/// The most panes a ba block lays side by side; one with more stacks.
+const MAX_SIDE_PANES: usize = 4;
+
+/// The narrowest a pane is drawn beside another: under it, they stack, as
+/// explain's grid goes to one column on a narrow page.
+const MIN_PANE_WIDTH: f32 = 240.0;
+
+/// The gap between two panes, across or down.
+const PANE_GAP: f32 = 10.0;
+
+/// A ba block's panes side by side, as tall as the tallest, or stacked
+/// when the column can't give each [`MIN_PANE_WIDTH`].
+fn panes_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    mut note: Option<&mut NoteContext>,
+    txn: Option<&nostrdb::Transaction>,
+    page: &mut Page<'_>,
+    panes: &[Pane],
+) {
+    let n = panes.len();
+    let across = (ui.available_width() - PANE_GAP * n.saturating_sub(1) as f32) / n.max(1) as f32;
+    if (1..=MAX_SIDE_PANES).contains(&n) && across >= MIN_PANE_WIDTH {
+        pane_row_ui(ui, theme, note, txn, page, panes);
+        return;
+    }
+    for (i, pane) in panes.iter().enumerate() {
+        if i > 0 {
+            ui.add_space(PANE_GAP);
+        }
+        let row = std::slice::from_ref(pane);
+        pane_row_ui(ui, theme, note.as_deref_mut(), txn, page, row);
+    }
+}
+
+/// One row of at most [`MAX_SIDE_PANES`] panes splitting the column's width:
+/// each drawn in its own child, then its card painted behind it down to the
+/// row's tallest — a neutral fill and border, its tone's bar down the left
+/// edge and its title, small, in the tone's ink.
+fn pane_row_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    mut note: Option<&mut NoteContext>,
+    txn: Option<&nostrdb::Transaction>,
+    page: &mut Page<'_>,
+    panes: &[Pane],
+) {
+    let panes = &panes[..panes.len().min(MAX_SIDE_PANES)];
+    let dark = ui.visuals().dark_mode;
+    let top = ui.cursor().min;
+    let n = panes.len().max(1) as f32;
+    let width = (ui.available_width() - PANE_GAP * (n - 1.0)) / n;
+    let margin = egui::Margin {
+        left: (WALK_BAR + SPACING_MD) as i8,
+        right: SPACING_MD as i8,
+        top: SPACING_SM as i8,
+        bottom: SPACING_SM as i8,
+    };
+    let mut cards = [egui::layers::ShapeIdx(0); MAX_SIDE_PANES];
+    let mut bottom = top.y;
+    for (i, pane) in panes.iter().enumerate() {
+        cards[i] = ui.painter().add(egui::Shape::Noop);
+        let left = top.x + i as f32 * (width + PANE_GAP);
+        let room =
+            egui::Rect::from_min_size(egui::pos2(left, top.y), egui::vec2(width, f32::INFINITY));
+        // Left-aligned even in a figure's frame, which centres what it holds.
+        let builder = egui::UiBuilder::new()
+            .max_rect(room)
+            .layout(egui::Layout::top_down(egui::Align::Min));
+        let mut child = ui.new_child(builder);
+        egui::Frame::new()
+            .inner_margin(margin)
+            .show(&mut child, |ui| {
+                ui.set_width(ui.available_width());
+                let ink = tone_color(page.palette, pane.tone.map(|t| t.tokens().ink), dark)
+                    .unwrap_or(theme.text_primary);
+                ui.label(
+                    egui::RichText::new(pane.title.as_str())
+                        .small()
+                        .strong()
+                        .color(ink),
+                );
+                ui.add_space(SPACING_XS);
+                let inner = Page {
+                    palette: page.palette,
+                    figures: &mut *page.figures,
+                };
+                figured_ui(ui, theme, note.as_deref_mut(), txn, inner, &pane.body);
+            });
+        bottom = bottom.max(child.min_rect().bottom());
+    }
+    let r = RADIUS_MD as u8;
+    for (i, pane) in panes.iter().enumerate() {
+        let left = top.x + i as f32 * (width + PANE_GAP);
+        let card =
+            egui::Rect::from_min_max(egui::pos2(left, top.y), egui::pos2(left + width, bottom));
+        let edge = tone_color(page.palette, pane.tone.map(|t| t.tokens().edge), dark)
+            .unwrap_or(theme.border_strong);
+        let fill = egui::epaint::RectShape::new(
+            card,
+            r,
+            theme.surface_secondary,
+            egui::Stroke::new(1.0, theme.border_default),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().set(cards[i], fill);
+        let bar = egui::Rect::from_min_max(card.min, egui::pos2(card.left() + WALK_BAR, bottom));
+        ui.painter().rect_filled(
+            bar,
+            egui::CornerRadius {
+                nw: r,
+                sw: r,
+                ne: 0,
+                se: 0,
+            },
+            edge,
+        );
+    }
+    let right = top.x + n * width + (n - 1.0) * PANE_GAP;
+    ui.allocate_rect(
+        egui::Rect::from_min_max(top, egui::pos2(right, bottom)),
+        egui::Sense::hover(),
+    );
+}
+
+/// Palette token `name`'s colour in the light or dark theme; `None` for no
+/// token, or one the palette doesn't have.
+fn tone_color(palette: &Palette, name: Option<&str>, dark: bool) -> Option<egui::Color32> {
+    egui::Color32::from_hex(palette.get(name?, dark)?).ok()
 }
 
 /// A loaded figure at its fitted size (labelled `label` for a screen
