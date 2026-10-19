@@ -44,8 +44,9 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use base64::Engine;
 use egui::{ColorImage, TextureHandle, Vec2};
-use md_stream::{LoneImage, MdElement, ParsedMarkdown, lone_image};
+use md_stream::{InlineElement, LoneImage, MdElement, ParsedMarkdown, TableCell, lone_image};
 use notedeck_ui::diff::GitPatch;
+use notedeck_ui::markdown::CellAt;
 use resvg::usvg;
 
 use crate::explain_diagram::{Diagram, Drawing};
@@ -58,20 +59,29 @@ use crate::review_walk::{HunkCite, HunkRef, SourceKey, find_hunk};
 /// Longest edge a figure is rasterised at, in pixels.
 const MAX_RASTER_EDGE: f32 = 2048.0;
 
-/// A page's Markdown and the figures among its top-level elements.
+/// A page's Markdown, the figures among its top-level elements, and its
+/// top-level tables that mark cells.
 pub(crate) struct Figured {
     pub md: ParsedMarkdown,
     /// In element order, one per element that is a figure.
     pub figures: Vec<Figure>,
+    /// In element order, one per table with a cell marked.
+    pub tables: Vec<MarkedTable>,
 }
 
 impl Figured {
     /// Parse `text` and find its figures, numbering them from `next` on (and
-    /// leaving `next` past the last), so every figure of a page has its own.
+    /// leaving `next` past the last), so every figure of a page has its own,
+    /// and its tables' cell marks, which come out of the cells' text.
     pub(crate) fn parse(text: &str, next: &mut usize) -> Self {
-        let md = ParsedMarkdown::parse(text);
+        let mut md = ParsedMarkdown::parse(text);
         let figures = figures(&md, next);
-        Self { md, figures }
+        let tables = mark_tables(&mut md);
+        Self {
+            md,
+            figures,
+            tables,
+        }
     }
 
     /// Find every hunk fence's hunk in `patch`, the commit's diff, its own
@@ -101,6 +111,113 @@ impl Figured {
             .ok()?;
         self.figures.get(at)
     }
+
+    /// The marks of top-level element `element`'s cells, if it's a table
+    /// with one.
+    pub(crate) fn table_at(&self, element: usize) -> Option<&MarkedTable> {
+        let at = self
+            .tables
+            .binary_search_by_key(&element, |t| t.element)
+            .ok()?;
+        self.tables.get(at)
+    }
+}
+
+/// A table's marked cells: explain's `{ok}`, `{bad}`, `{hot}` or `{dim}` at
+/// the end of a cell.
+pub(crate) struct MarkedTable {
+    /// The top-level element it is.
+    pub element: usize,
+    pub cells: Vec<MarkedCell>,
+}
+
+impl MarkedTable {
+    /// The mark of the cell at `at`, if it has one.
+    pub(crate) fn mark(&self, at: CellAt) -> Option<CellMark> {
+        self.cells.iter().find(|c| c.at == at).map(|c| c.mark)
+    }
+}
+
+/// One marked cell of a [`MarkedTable`].
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct MarkedCell {
+    /// Its place: row 0 is the header row.
+    pub at: CellAt,
+    pub mark: CellMark,
+}
+
+/// How a marked cell draws, as explain's `td.ok`, `td.bad`, `td.hot` and
+/// `td.dim`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CellMark {
+    /// In moss ink: it worked.
+    Ok,
+    /// In alert ink: it didn't.
+    Bad,
+    /// On brass-soft: look here.
+    Hot,
+    /// In the third ink: by the way.
+    Dim,
+}
+
+impl CellMark {
+    /// The mark a cell's `{tone}` gives it, as explain's `CELL`: slate is dim.
+    fn of(tone: Tone) -> Self {
+        match tone {
+            Tone::Moss => Self::Ok,
+            Tone::Alert => Self::Bad,
+            Tone::Brass => Self::Hot,
+            Tone::Slate | Tone::Dim => Self::Dim,
+        }
+    }
+}
+
+/// Take the marks off the cells of `md`'s top-level tables, shortening each
+/// marked cell's spans so its text no longer holds the mark, and say which
+/// cells had one. A cell is marked as explain's `render_cell` marks it: its
+/// last inline is text ending in a `{tone}` naming a known tone, so a mark
+/// in code (`` `x {bad}` ``) or an unknown word (`{nope}`) stays text.
+fn mark_tables(md: &mut ParsedMarkdown) -> Vec<MarkedTable> {
+    let source = md.source.as_str();
+    let mut tables = Vec::new();
+    for (element, block) in md.elements.iter_mut().enumerate() {
+        let MdElement::Table { headers, rows } = block else {
+            continue;
+        };
+        let rows = std::iter::once(headers).chain(rows.iter_mut());
+        let cells: Vec<MarkedCell> = rows
+            .enumerate()
+            .flat_map(|(row, cells)| {
+                cells.iter_mut().enumerate().filter_map(move |(col, cell)| {
+                    let mark = take_cell_mark(cell, source)?;
+                    Some(MarkedCell {
+                        at: CellAt { row, col },
+                        mark,
+                    })
+                })
+            })
+            .collect();
+        if !cells.is_empty() {
+            tables.push(MarkedTable { element, cells });
+        }
+    }
+    tables
+}
+
+/// `cell`'s mark, taken off the end of its text (and its last inline, which
+/// goes when nothing else is left of it), or `None`, leaving it as it was.
+fn take_cell_mark(cell: &mut TableCell, source: &str) -> Option<CellMark> {
+    let Some(InlineElement::Text(last)) = cell.content.last_mut() else {
+        return None;
+    };
+    let toned = take_tone(last.resolve(source));
+    let tone = toned.tone?;
+    last.end = last.start + toned.text.len();
+    if last.is_empty() {
+        cell.content.pop();
+    }
+    cell.span.end = cell.span.start + take_tone(cell.span.resolve(source)).text.len();
+    Some(CellMark::of(tone))
 }
 
 /// A figure: what it draws, and the caption under it.
@@ -1243,6 +1360,68 @@ x
         doc.resolve_hunks(&patch);
         let hunk = |hunk| HunkFound::Found(HunkRef { file: 0, hunk });
         assert_eq!(found(&doc), [hunk(0), HunkFound::Missing, hunk(1)]);
+    }
+
+    /// A cell's trailing `{tone}` comes off its text and marks it, as
+    /// explain's own fixture (test/fixtures/build/blocks.md) has it: in
+    /// code, or naming no tone, it stays text, and an unmarked table has no
+    /// marks to keep.
+    #[test]
+    fn table_cells_lose_their_marks() {
+        let figured = Figured::parse(
+            "\
+| one {hot} | two |
+|---|---|
+| a | up {ok} | `x {bad}` |
+| b | down {bad} | plain {nope} |
+| c {hot} | {dim} | **z** {slate} |
+
+| plain | table |
+|---|---|
+| x | y |
+",
+            &mut 0,
+        );
+        let [marked] = figured.tables.as_slice() else {
+            panic!("one marked table, got {}", figured.tables.len());
+        };
+        assert_eq!(marked.element, 0);
+        let at = |row, col| CellAt { row, col };
+        let marks = [
+            (at(0, 0), CellMark::Hot),
+            (at(1, 1), CellMark::Ok),
+            (at(2, 1), CellMark::Bad),
+            (at(3, 0), CellMark::Hot),
+            (at(3, 1), CellMark::Dim),
+            (at(3, 2), CellMark::Dim),
+        ];
+        assert_eq!(
+            marked.cells,
+            marks.map(|(at, mark)| MarkedCell { at, mark }),
+        );
+        assert_eq!(marked.mark(at(2, 2)), None);
+
+        let MdElement::Table { headers, rows } = &figured.md.elements[0] else {
+            panic!("a table");
+        };
+        let source = figured.md.source.as_str();
+        let shown: Vec<Vec<&str>> = std::iter::once(headers)
+            .chain(rows)
+            .map(|row| row.iter().map(|c| c.span.resolve(source)).collect())
+            .collect();
+        let expected: [&[&str]; 4] = [
+            &["one", "two"],
+            &["a", "up", "`x {bad}`"],
+            &["b", "down", "plain {nope}"],
+            &["c", "", "**z**"],
+        ];
+        assert_eq!(shown, expected);
+        // The bold cell's mark was a text run of its own: it's gone, the
+        // bold left.
+        assert!(matches!(
+            rows[2][2].content.as_slice(),
+            [InlineElement::Styled { .. }]
+        ));
     }
 
     #[test]

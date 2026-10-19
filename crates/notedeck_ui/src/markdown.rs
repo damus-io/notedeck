@@ -528,6 +528,42 @@ pub fn render_parsed_markdown(
     render_md_elements(elements, partial, buffer, None, refs.as_mut(), hook, ui);
 }
 
+/// Where a cell sits in a table: `row` 0 is the header row, its data rows
+/// count from 1, as an [`egui::Grid`] numbers them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CellAt {
+    pub row: usize,
+    pub col: usize,
+}
+
+/// How one table cell draws apart from the rest of its table. The default
+/// draws it as [`render_parsed_markdown`] does.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CellLook {
+    /// Its text's colour, in place of the table's.
+    pub ink: Option<Color32>,
+    /// A fill under the whole cell, out to its column's edges and its row's.
+    pub fill: Option<Color32>,
+}
+
+/// A table element's `headers` and `rows` drawn as [`render_parsed_markdown`]
+/// draws one, each cell in the [`CellLook`] `look` gives its place. For a
+/// [`BlockHook`] that claims a table to mark some of its cells; `note` and
+/// `txn` resolve its references as the render's own do.
+pub fn table_ui(
+    headers: &[TableCell],
+    rows: &[Vec<TableCell>],
+    buffer: &str,
+    note: Option<&mut NoteContext>,
+    txn: Option<&Transaction>,
+    look: &dyn Fn(CellAt) -> CellLook,
+    ui: &mut Ui,
+) {
+    let theme = MdTheme::from_visuals(ui.visuals());
+    let mut refs = bundle_refs(note, txn);
+    render_table(headers, rows, &theme, buffer, refs.as_mut(), look, ui);
+}
+
 /// Bundle a [`NoteContext`] with the transaction reference reads run through into
 /// a [`RefCtx`], if both are present. `None` (no context, or no transaction)
 /// renders references as plain text. Shared by every markdown entry point so the
@@ -662,7 +698,15 @@ fn render_element(
         }
 
         MdElement::Table { headers, rows } => {
-            render_table(headers, rows, theme, buffer, ctx, ui);
+            render_table(
+                headers,
+                rows,
+                theme,
+                buffer,
+                ctx,
+                &|_| CellLook::default(),
+                ui,
+            );
         }
 
         MdElement::ThematicBreak => {
@@ -1390,12 +1434,14 @@ fn render_list_item(
 /// keeps the `ui.strong`/`ui.label` fast path, skipping the `LayoutJob` and
 /// `horizontal_wrapped` the inline path needs; the reference probe
 /// ([`contains_reference`]) is allocation-free. A header renders its inline
-/// path in the strong text color, matching the fast path's `ui.strong`.
+/// path in the strong text color, matching the fast path's `ui.strong`. `ink`,
+/// when given, colours the cell's text in place of either.
 fn render_table_cell(
     cell: &TableCell,
     theme: &MdTheme,
     buffer: &str,
     strong: bool,
+    ink: Option<Color32>,
     ctx: Option<&mut RefCtx>,
     ui: &mut Ui,
 ) {
@@ -1406,20 +1452,54 @@ fn render_table_cell(
         .is_some_and(|ctx| contains_reference(text, &ctx.note.registries.reference_parsers));
 
     if plain && !has_ref {
-        if strong {
-            ui.strong(text);
-        } else {
-            ui.label(text);
-        }
+        match (ink, strong) {
+            (Some(ink), _) => ui.label(RichText::new(text).color(ink)),
+            (None, true) => ui.strong(text),
+            (None, false) => ui.label(text),
+        };
         return;
     }
 
     ui.horizontal_wrapped(|ui| {
-        if strong {
-            ui.visuals_mut().override_text_color = Some(ui.visuals().strong_text_color());
+        let strong = strong.then(|| ui.visuals().strong_text_color());
+        if let Some(color) = ink.or(strong) {
+            ui.visuals_mut().override_text_color = Some(color);
         }
         render_inlines(&cell.content, theme, buffer, ctx, ui);
     });
+}
+
+/// One table cell in its frame, in the [`CellLook`] it was given. A fill is
+/// painted under the cell once it's drawn, out to its column's right edge
+/// (where the grid's cursor lands after it) and down `row_height`, last
+/// frame's height of its row, or its own if that's taller.
+#[allow(clippy::too_many_arguments)]
+fn table_cell_ui(
+    cell: Option<&TableCell>,
+    theme: &MdTheme,
+    buffer: &str,
+    strong: bool,
+    look: CellLook,
+    row_height: f32,
+    ctx: Option<&mut RefCtx>,
+    ui: &mut Ui,
+) {
+    let cell_padding = egui::Margin::symmetric(8, 4);
+    let top_left = ui.cursor().min;
+    let under = look.fill.map(|_| ui.painter().add(egui::Shape::Noop));
+    let shown = egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
+        if let Some(cell) = cell {
+            render_table_cell(cell, theme, buffer, strong, look.ink, ctx, ui);
+        }
+    });
+    let (Some(under), Some(fill)) = (under, look.fill) else {
+        return;
+    };
+    let right = ui.cursor().min.x - ui.spacing().item_spacing.x;
+    let bottom = shown.response.rect.bottom().max(top_left.y + row_height);
+    let rect = egui::Rect::from_min_max(top_left, egui::pos2(right, bottom));
+    ui.painter()
+        .set(under, egui::epaint::RectShape::filled(rect, 0.0, fill));
 }
 
 fn render_table(
@@ -1428,14 +1508,13 @@ fn render_table(
     theme: &MdTheme,
     buffer: &str,
     mut ctx: Option<&mut RefCtx>,
+    look: &dyn Fn(CellAt) -> CellLook,
     ui: &mut Ui,
 ) {
     let num_cols = headers.len();
     if num_cols == 0 {
         return;
     }
-
-    let cell_padding = egui::Margin::symmetric(8, 4);
 
     // Use first header's byte offset as id_salt so multiple tables don't clash
     let salt = headers.first().map_or(0, |h| h.span.start);
@@ -1468,31 +1547,35 @@ fn render_table(
                 )
                 .spacing([spacing, 0.0])
                 .show(ui, |ui| {
-                    // Header row
-                    for h in headers {
-                        egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
-                            render_table_cell(h, theme, buffer, true, ctx.as_deref_mut(), ui);
-                        });
-                    }
-                    ui.end_row();
-
-                    // Data rows
-                    for row in rows {
-                        for i in 0..num_cols {
-                            egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
-                                if let Some(cell) = row.get(i) {
-                                    render_table_cell(
-                                        cell,
-                                        theme,
-                                        buffer,
-                                        false,
-                                        ctx.as_deref_mut(),
-                                        ui,
-                                    );
-                                }
-                            });
+                    let header = std::iter::once(headers);
+                    for (row, cells) in header.chain(rows.iter().map(Vec::as_slice)).enumerate() {
+                        // A filled cell runs down its row, whose height the
+                        // grid knows only once the row's drawn: it's kept
+                        // from last frame, only for a row that has a fill.
+                        let filled =
+                            (0..num_cols).any(|col| look(CellAt { row, col }).fill.is_some());
+                        let height_id = ui.make_persistent_id(("md_table_row", salt, row));
+                        let row_height = filled
+                            .then(|| ui.data(|d| d.get_temp::<f32>(height_id)))
+                            .flatten();
+                        let top = ui.cursor().min.y;
+                        for col in 0..num_cols {
+                            table_cell_ui(
+                                cells.get(col),
+                                theme,
+                                buffer,
+                                row == 0,
+                                look(CellAt { row, col }),
+                                row_height.unwrap_or(0.0),
+                                ctx.as_deref_mut(),
+                                ui,
+                            );
                         }
                         ui.end_row();
+                        let height = ui.cursor().min.y - top;
+                        if filled && row_height != Some(height) {
+                            ui.data_mut(|d| d.insert_temp(height_id, height));
+                        }
                     }
                 });
         });
@@ -1563,7 +1646,15 @@ fn render_partial(
             seen_separator,
         } => {
             if *seen_separator {
-                render_table(headers, rows, theme, buffer, ctx.as_deref_mut(), ui);
+                render_table(
+                    headers,
+                    rows,
+                    theme,
+                    buffer,
+                    ctx.as_deref_mut(),
+                    &|_| CellLook::default(),
+                    ui,
+                );
             } else {
                 ui.label(content);
             }

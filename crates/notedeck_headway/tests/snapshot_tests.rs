@@ -6230,6 +6230,84 @@ fn review_explainer_code_snapshot(theme: egui::ThemePreference, name: &str) {
     harness.snapshot(name);
 }
 
+/// An explainer source with a table whose cells are marked: two `{ok}`, a
+/// `{bad}`, a `{hot}` header and row cell, a `{dim}` note, and a mark in
+/// code that stays text.
+const TABLE_EXPLAINER: &str = "\
+---
+title: Marked cells
+---
+
+What each frame allocates.
+
+| path {hot} | before | after | note |
+|---|---|---|---|
+| timeline | 991 | 885 {ok} | spacing_mut clones {dim} |
+| thread | 412 | 430 {bad} | `{bad}` stays |
+| profile {hot} | 210 | 198 {ok} | |
+
+The end.
+";
+
+/// Open the queue card's review on [`TABLE_EXPLAINER`], shown whole.
+fn open_table_explainer(harness: &mut Harness<'static, HeadwayTestState>) {
+    let fixture = review_fixture();
+    seed_review_queue(harness, &fixture);
+    add_queue_sources_with(harness, TABLE_EXPLAINER);
+    open_review_queue(harness);
+    wait_for_label(harness, "Keys come next.");
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::E);
+    wait_for_label(harness, "The end.");
+}
+
+/// A table cell's trailing `{ok}`, `{bad}`, `{hot}` or `{dim}` marks it and
+/// isn't drawn; one in code is code.
+#[test]
+fn review_explainer_marks_table_cells() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1400.0, 2400.0));
+    open_table_explainer(&mut harness);
+    for text in ["885", "430", "profile", "spacing_mut clones", "path"] {
+        let label = harness
+            .get_by_label_contains(text)
+            .accesskit_node()
+            .label()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(!label.contains('{'), "{text}: {label:?}");
+    }
+    assert!(labelled_with(&harness, "{bad}"));
+}
+
+/// Snapshot: [`TABLE_EXPLAINER`] beside the commit message: the ok cells
+/// in moss ink, the bad one in alert ink, the hot ones on brass-soft out to
+/// their column's edges, the note in the third ink.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_table() {
+    review_explainer_table_snapshot(
+        egui::ThemePreference::Light,
+        "headway_review_explainer_table",
+    );
+}
+
+/// Snapshot: [`snapshot_headway_review_explainer_table`] in the dark theme.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_table_dark() {
+    review_explainer_table_snapshot(
+        egui::ThemePreference::Dark,
+        "headway_review_explainer_table_dark",
+    );
+}
+
+fn review_explainer_table_snapshot(theme: egui::ThemePreference, name: &str) {
+    let mut harness = headway_harness(egui::Vec2::new(1400.0, 900.0));
+    harness.ctx.options_mut(|o| o.theme_preference = theme);
+    open_table_explainer(&mut harness);
+    harness.run_steps(3);
+    harness.snapshot(name);
+}
+
 /// A review pane opened from a card's detail ("Review diff"), not the queue,
 /// reads with the queue's keys: `G` scrolls the diff, `?` pins a strip that
 /// says `q` goes back to the card, `n` steps to the next In Review card's

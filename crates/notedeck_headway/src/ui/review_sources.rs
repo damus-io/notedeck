@@ -12,14 +12,14 @@ use notedeck::tokens::{RADIUS_MD, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THI
 use notedeck::{ColorTheme, NoteContext};
 use notedeck_ui::diff::{GitPatch, LineKind};
 use notedeck_ui::eyebrow_label;
-use notedeck_ui::markdown::{BlockHook, MdBlock, fit_image};
+use notedeck_ui::markdown::{BlockHook, CellAt, CellLook, MdBlock, fit_image, table_ui};
 
 use super::widgets::{text_pill, tinted_pill};
 use crate::explain_diagram::BACKDROP;
 use crate::explain_palette::Palette;
 use crate::review_figures::{
-    DiagramFigure, Failure, Figure, FigureBody, FigureView, Figured, Figures, FittedDrawing,
-    HunkFigure, HunkFound, Pane,
+    CellMark, DiagramFigure, Failure, Figure, FigureBody, FigureView, Figured, Figures,
+    FittedDrawing, HunkFigure, HunkFound, Pane,
 };
 use crate::review_walk::{CodeWalk, ExplainerPage, FrontMatter, SourceText};
 
@@ -484,6 +484,22 @@ impl BlockHook for FigureHook<'_> {
                 .color(ink);
             ui.add(egui::Label::new(text).wrap());
             ui.add_space(SPACING_XS);
+            return true;
+        }
+        if let (MdElement::Table { headers, rows }, Some(marked)) =
+            (block.element, self.body.table_at(block.index))
+        {
+            let looks = CellLooks::of(self.page.palette, self.theme, ui.visuals().dark_mode);
+            let look = |at: CellAt| looks.of_mark(marked.mark(at));
+            table_ui(
+                headers,
+                rows,
+                block.source,
+                block.note,
+                block.txn,
+                &look,
+                ui,
+            );
             return true;
         }
         let Some(figure) = self.body.figure_at(block.index) else {
@@ -1021,6 +1037,52 @@ struct PreRow<'a> {
     kind: PreKind,
     marker: &'static str,
     text: &'a str,
+}
+
+/// The page's colours a marked table cell draws in, as explain's `td.ok`,
+/// `td.bad`, `td.hot` and `td.dim`, the theme's where the palette hasn't got
+/// one. explain sets an ok or bad cell's text at weight 600 too; here, as
+/// for `**bold**`, its ink alone sets it apart.
+struct CellLooks {
+    ok: egui::Color32,
+    bad: egui::Color32,
+    hot: egui::Color32,
+    dim: egui::Color32,
+}
+
+impl CellLooks {
+    fn of(palette: &Palette, theme: &ColorTheme, dark: bool) -> Self {
+        let token = |name, fallback| tone_color(palette, Some(name), dark).unwrap_or(fallback);
+        Self {
+            ok: token("moss-ink", theme.success),
+            bad: token("alert-ink", theme.destructive),
+            hot: token("brass-soft", theme.surface_secondary),
+            dim: token("ink-3", theme.text_muted),
+        }
+    }
+
+    /// How a cell with `mark` draws: an unmarked one as any other.
+    fn of_mark(&self, mark: Option<CellMark>) -> CellLook {
+        match mark {
+            None => CellLook::default(),
+            Some(CellMark::Ok) => CellLook {
+                ink: Some(self.ok),
+                fill: None,
+            },
+            Some(CellMark::Bad) => CellLook {
+                ink: Some(self.bad),
+                fill: None,
+            },
+            Some(CellMark::Hot) => CellLook {
+                ink: None,
+                fill: Some(self.hot),
+            },
+            Some(CellMark::Dim) => CellLook {
+                ink: Some(self.dim),
+                fill: None,
+            },
+        }
+    }
 }
 
 /// The page's colours a [`pre_ui`] block draws in, the theme's where the
