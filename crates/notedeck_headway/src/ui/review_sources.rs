@@ -226,6 +226,7 @@ fn explainer_page_ui(
         palette: &page.palette,
         figures: &mut page.figures,
         patch,
+        in_pane: false,
     };
     page_body_ui(ui, theme, app_ctx, None, figured, &page.body);
 }
@@ -289,6 +290,7 @@ pub(super) fn walk_top_ui(
                 palette,
                 figures: &mut *figures,
                 patch: None,
+                in_pane: false,
             };
             page_body_ui(ui, theme, app_ctx, None, page, &note.body);
         });
@@ -356,6 +358,7 @@ pub(super) fn walk_note_ui(
             palette,
             figures,
             patch: None,
+            in_pane: false,
         };
         page_body_ui(ui, theme, app_ctx, txn, page, &note.body);
     });
@@ -374,6 +377,21 @@ struct Page<'a> {
     palette: &'a Palette,
     figures: &'a mut Figures,
     patch: Option<&'a GitPatch>,
+    /// Whether this is a ba pane's body, whose code blocks never fold
+    /// ([`PreFold`]), as explain's `in_ba`.
+    in_pane: bool,
+}
+
+impl Page<'_> {
+    /// This page lent to a body nested in one of its figures.
+    fn nested(&mut self) -> Page<'_> {
+        Page {
+            palette: self.palette,
+            figures: &mut *self.figures,
+            patch: self.patch,
+            in_pane: self.in_pane,
+        }
+    }
 }
 
 /// `body` drawn with its refs resolved through `txn`, or one opened here
@@ -469,7 +487,13 @@ impl BlockHook for FigureHook<'_> {
             return true;
         }
         let Some(figure) = self.body.figure_at(block.index) else {
-            return false;
+            let MdElement::CodeBlock(code) = block.element else {
+                return false;
+            };
+            let lang = code.language.as_ref().map(|l| l.resolve(block.source));
+            let content = code.content.resolve(block.source);
+            code_ui(ui, self.theme, &self.page, block.index, lang, content);
+            return true;
         };
         figure_ui(
             ui,
@@ -534,12 +558,7 @@ fn figure_ui(
             FigureBody::Markdown(inner) => {
                 ui.vertical(|ui| {
                     ui.set_max_width(available);
-                    let inner_page = Page {
-                        palette: page.palette,
-                        figures: &mut *page.figures,
-                        patch: page.patch,
-                    };
-                    figured_ui(ui, theme, note, txn, inner_page, inner);
+                    figured_ui(ui, theme, note, txn, page.nested(), inner);
                 });
             }
             FigureBody::Image { alt, src } => {
@@ -721,9 +740,8 @@ fn pane_row_ui(
                 );
                 ui.add_space(SPACING_XS);
                 let inner = Page {
-                    palette: page.palette,
-                    figures: &mut *page.figures,
-                    patch: page.patch,
+                    in_pane: true,
+                    ..page.nested()
                 };
                 figured_ui(ui, theme, note.as_deref_mut(), txn, inner, &pane.body);
             });
@@ -799,12 +817,7 @@ fn wrong_ui(
         .inner_margin(margin)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            let inner = Page {
-                palette: page.palette,
-                figures: &mut *page.figures,
-                patch: page.patch,
-            };
-            figured_headed_ui(ui, theme, note, txn, inner, body, Some(edge));
+            figured_headed_ui(ui, theme, note, txn, page.nested(), body, Some(edge));
         });
     ui.add_space(SPACING_MD);
 }
@@ -822,9 +835,13 @@ const SRCNAME_SCALE: f32 = 0.7 * 16.0 / 17.0;
 /// upper-case mono (its `srcname`), then the hunk the commit's diff has for
 /// it in a coloured block ([`pre_ui`]), its `@@` header first. Without the
 /// diff it is the citation, the header alone; a diff without the hunk says
-/// so under it. `id` is the figure's number, to tell its scroll apart.
+/// so under it. `id` is the figure's number, to tell its scroll apart. A
+/// long hunk folds ([`PreFold`]), its button counting the lines under the
+/// header.
 fn hunk_ui(ui: &mut egui::Ui, theme: &ColorTheme, page: &Page<'_>, id: usize, hunk: &HunkFigure) {
     let dark = ui.visuals().dark_mode;
+    let pre_id = egui::IdSalt::new(("hunk", id));
+    let fold = PreFold::of(page, false);
     if !hunk.srcname.is_empty() {
         let size = egui::TextStyle::Body.resolve(ui.style()).size * SRCNAME_SCALE;
         let ink = tone_color(page.palette, Some("ink-3"), dark).unwrap_or(theme.text_muted);
@@ -862,8 +879,9 @@ fn hunk_ui(ui: &mut egui::Ui, theme: &ColorTheme, page: &Page<'_>, id: usize, hu
             ui,
             theme,
             page.palette,
-            id,
+            pre_id,
             std::iter::once(header).chain(lines),
+            fold.head(1),
         );
         return;
     }
@@ -873,7 +891,14 @@ fn hunk_ui(ui: &mut egui::Ui, theme: &ColorTheme, page: &Page<'_>, id: usize, hu
             marker: "",
             text: hunk.cite.header.as_str(),
         };
-        pre_ui(ui, theme, page.palette, id, std::iter::once(header));
+        pre_ui(
+            ui,
+            theme,
+            page.palette,
+            pre_id,
+            std::iter::once(header),
+            PreFold::Whole,
+        );
     }
     if hunk.found == HunkFound::Missing {
         ui.add_space(SPACING_XS);
@@ -883,6 +908,37 @@ fn hunk_ui(ui: &mut egui::Ui, theme: &ColorTheme, page: &Page<'_>, id: usize, hu
                 .color(theme.warning),
         );
     }
+}
+
+/// A fence that's no figure, as explain's `pre`: a ` ```diff ` fence's
+/// lines coloured by their first character (`@@` a hunk header, `+` added,
+/// `-` removed), any other fence's in ink. It folds when long unless
+/// `full` follows its language. `index` is its element's, to tell its
+/// scroll and fold apart.
+fn code_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    page: &Page<'_>,
+    index: usize,
+    lang: Option<&str>,
+    content: &str,
+) {
+    let mut words = lang.unwrap_or("").split_whitespace();
+    let diff = words.next() == Some("diff");
+    let full = words.any(|w| w == "full");
+    let content = content.strip_suffix('\n').unwrap_or(content);
+    let rows = content.split('\n').map(move |text| PreRow {
+        kind: if diff {
+            PreKind::of_diff_line(text)
+        } else {
+            PreKind::Plain
+        },
+        marker: "",
+        text,
+    });
+    let id = egui::IdSalt::new(("code", index));
+    pre_ui(ui, theme, page.palette, id, rows, PreFold::of(page, full));
+    ui.add_space(SPACING_SM);
 }
 
 /// How explain colours a line of a `pre`.
@@ -896,6 +952,66 @@ enum PreKind {
     Del,
     /// Any other line, in ink.
     Plain,
+}
+
+impl PreKind {
+    /// A ` ```diff ` fence's line by its first character, as explain reads
+    /// it: `@@` before `+` and `-`, so a header is never an added line.
+    fn of_diff_line(line: &str) -> Self {
+        if line.starts_with("@@") {
+            Self::Hunk
+        } else if line.starts_with('+') {
+            Self::Add
+        } else if line.starts_with('-') {
+            Self::Del
+        } else {
+            Self::Plain
+        }
+    }
+}
+
+/// A [`pre_ui`] block longer than this many lines folds.
+const FOLD_AT: usize = 30;
+
+/// The lines a folded [`pre_ui`] block shows.
+const FOLD_SHOW: usize = 20;
+
+/// The height, in lines of its font, a folded block fades out over:
+/// explain's `3.2em` mask.
+const FOLD_FADE: f32 = 3.2;
+
+/// explain's `.more-btn` against its body text: `.76rem` over its 17px.
+const FOLD_BUTTON_SCALE: f32 = 0.76 * 16.0 / 17.0;
+
+/// Whether a [`pre_ui`] block folds when it's long, as explain's `pre`.
+#[derive(Clone, Copy)]
+enum PreFold {
+    /// Always whole: a fence marked `full`, a block in a ba pane, or one
+    /// that's only ever a line.
+    Whole,
+    /// Past [`FOLD_AT`] lines it shows its first [`FOLD_SHOW`], faded, over
+    /// a "Show all N lines" button, until that's pressed. N counts the
+    /// lines after the first `head` (a hunk's `@@` line).
+    Long { head: usize },
+}
+
+impl PreFold {
+    /// How a block on `page` folds: never in a ba pane, nor when `full`.
+    fn of(page: &Page<'_>, full: bool) -> Self {
+        if full || page.in_pane {
+            Self::Whole
+        } else {
+            Self::Long { head: 0 }
+        }
+    }
+
+    /// This fold with its button not counting the first `head` lines.
+    fn head(self, head: usize) -> Self {
+        match self {
+            Self::Whole => Self::Whole,
+            Self::Long { .. } => Self::Long { head },
+        }
+    }
 }
 
 /// One line of a [`pre_ui`] block: its marker (`+`, `-`, a space, or none)
@@ -918,6 +1034,10 @@ struct PreColors {
     del_fill: egui::Color32,
     fill: egui::Color32,
     rule: egui::Color32,
+    /// A folded block's button: its text, border and fill.
+    button_ink: egui::Color32,
+    button_rule: egui::Color32,
+    button_fill: egui::Color32,
 }
 
 impl PreColors {
@@ -932,6 +1052,9 @@ impl PreColors {
             del_fill: token("alert-soft", theme.surface_secondary),
             fill: token("surface-2", theme.surface_secondary),
             rule: token("rule", theme.border_default),
+            button_ink: token("ink-2", theme.text_secondary),
+            button_rule: token("rule-strong", theme.border_strong),
+            button_fill: token("surface", theme.surface_primary),
         }
     }
 
@@ -956,17 +1079,29 @@ struct RowColors {
 /// `rows` as explain's `pre`: mono at [`CODE_SCALE`] on the page's second
 /// surface inside a 1px rule, an added or removed line's fill running the
 /// block's full width as explain's inline-block does. A block wider than the
-/// column scrolls sideways (salted by `id`) rather than wrapping.
+/// column scrolls sideways rather than wrapping, and a long one folds as
+/// `fold` says. `id` tells its scroll and fold apart from the others'.
 fn pre_ui<'a>(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     palette: &Palette,
-    id: usize,
+    id: egui::IdSalt,
     rows: impl Iterator<Item = PreRow<'a>> + Clone,
+    fold: PreFold,
 ) {
     let colors = PreColors::of(palette, theme, ui.visuals().dark_mode);
     let size = egui::TextStyle::Body.resolve(ui.style()).size * CODE_SCALE;
     let font = egui::FontId::monospace(size);
+    let opened = ui.make_persistent_id((id, "opened"));
+    let total = rows.clone().count();
+    let folded = match fold {
+        PreFold::Long { head } if total > FOLD_AT => {
+            let open = ui.data(|d| d.get_temp::<bool>(opened)).unwrap_or(false);
+            (!open).then_some(total - head)
+        }
+        _ => None,
+    };
+    let rows = rows.take(if folded.is_some() { FOLD_SHOW } else { total });
     let mut job = egui::text::LayoutJob::default();
     for (i, row) in rows.clone().enumerate() {
         let format = egui::TextFormat {
@@ -982,6 +1117,7 @@ fn pre_ui<'a>(
         job.append(row.text, 0.0, format);
     }
     let galley = ui.fonts_mut(|f| f.layout_job(job));
+    let fade = FOLD_FADE * size;
     // explain's 14px 16px, less the 1px rule.
     egui::Frame::new()
         .fill(colors.fill)
@@ -1002,6 +1138,9 @@ fn pre_ui<'a>(
                     ui.painter().rect_filled(band, 0.0, fill);
                 }
                 ui.painter().galley(rect.min, galley.clone(), colors.ink);
+                if folded.is_some() {
+                    fade_ui(ui, rect, fade, colors.fill);
+                }
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::Role::Label, true, galley.text())
                 });
@@ -1014,6 +1153,37 @@ fn pre_ui<'a>(
                 .id_salt(("explainer-pre", id))
                 .show(ui, text);
         });
+    let Some(lines) = folded else {
+        return;
+    };
+    ui.add_space(SPACING_XS);
+    let size = egui::TextStyle::Body.resolve(ui.style()).size * FOLD_BUTTON_SCALE;
+    let label = egui::RichText::new(format!("Show all {lines} lines"))
+        .monospace()
+        .size(size)
+        .color(colors.button_ink);
+    let button = egui::Button::new(label)
+        .fill(colors.button_fill)
+        .stroke(egui::Stroke::new(1.0, colors.button_rule))
+        .corner_radius(3.0);
+    if ui.add(button).clicked() {
+        ui.data_mut(|d| d.insert_temp(opened, true));
+    }
+}
+
+/// The bottom `height` of `rect` faded into `fill`, as explain masks a
+/// folded block's last lines out.
+fn fade_ui(ui: &egui::Ui, rect: egui::Rect, height: f32, fill: egui::Color32) {
+    let top = (rect.bottom() - height).max(rect.top());
+    let mut mesh = egui::Mesh::default();
+    let clear = egui::Color32::TRANSPARENT;
+    mesh.colored_vertex(egui::pos2(rect.left(), top), clear);
+    mesh.colored_vertex(egui::pos2(rect.right(), top), clear);
+    mesh.colored_vertex(rect.right_bottom(), fill);
+    mesh.colored_vertex(rect.left_bottom(), fill);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    ui.painter().add(mesh);
 }
 
 /// Palette token `name`'s colour in the light or dark theme; `None` for no

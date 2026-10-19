@@ -6107,6 +6107,129 @@ fn review_explainer_hunk_snapshot(theme: egui::ThemePreference, name: &str) {
     harness.snapshot(name);
 }
 
+/// `n` numbered lines, `prefix 1` to `prefix n`, one per line.
+fn numbered_lines(prefix: &str, n: usize) -> String {
+    (1..=n).map(|i| format!("{prefix} {i}\n")).collect()
+}
+
+/// An explainer source with a short diff fence, then three 40-line fences:
+/// one plain, which folds; one diff marked `full`, which doesn't; and one in
+/// a ba pane, which never does.
+fn code_explainer() -> String {
+    format!(
+        "\
+---
+title: Code that folds
+---
+
+The step's diff.
+
+```diff
+@@ -1,2 +1,2 @@ impl ReviewQueue {{
+-    self.index += 1;
++    self.index = (self.index + 1).min(self.cards.len() - 1);
+ }}
+```
+
+```text
+{plain}```
+
+```diff full
+{whole}```
+
+~~~ba
+### Before
+```text
+{pane}```
+### After
+Nothing.
+~~~
+
+The end.
+",
+        plain = numbered_lines("plain", 40),
+        whole = numbered_lines("+whole", 40),
+        pane = numbered_lines("pane", 40),
+    )
+}
+
+/// Open the queue card's review on [`code_explainer`], shown whole.
+fn open_code_explainer(harness: &mut Harness<'static, HeadwayTestState>) {
+    let fixture = review_fixture();
+    seed_review_queue(harness, &fixture);
+    add_queue_sources_with(harness, &code_explainer());
+    open_review_queue(harness);
+    wait_for_label(harness, "Keys come next.");
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::E);
+    wait_for_label(harness, "Show less");
+}
+
+/// Whether a node's label holds `text`.
+fn labelled_with(harness: &Harness<'static, HeadwayTestState>, text: &str) -> bool {
+    harness.query_by_label_contains(text).is_some()
+}
+
+/// A code block past 30 lines shows its first 20 over a "Show all N lines"
+/// button, which shows the rest; one marked `full`, or in a ba pane, shows
+/// whole. A diff fence draws its lines rather than its source.
+#[test]
+fn review_explainer_folds_long_code_blocks() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1400.0, 2400.0));
+    open_code_explainer(&mut harness);
+    wait_for_label(&mut harness, "The end.");
+    assert!(labelled_with(
+        &harness,
+        "+    self.index = (self.index + 1)"
+    ));
+    assert!(labelled_with(&harness, "plain 20"));
+    assert!(!labelled_with(&harness, "plain 21"));
+    assert!(labelled_with(&harness, "+whole 40"));
+    assert!(labelled_with(&harness, "pane 40"));
+    assert!(!labelled_with(&harness, "```"));
+    assert_eq!(
+        harness
+            .query_all_by_label_contains("Show all")
+            .map(|n| n.accesskit_node().label().unwrap_or_default().to_owned())
+            .collect::<Vec<_>>(),
+        ["Show all 40 lines"],
+    );
+
+    harness.get_by_label("Show all 40 lines").click_accesskit();
+    harness.run_steps(2);
+    assert!(labelled_with(&harness, "plain 40"));
+    assert!(!labelled_with(&harness, "Show all"));
+}
+
+/// Snapshot: [`code_explainer`] beside the commit message, shown whole: the
+/// diff fence's lines on moss and alert under a slate header, then the
+/// plain block's first 20 lines fading out over its button.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_code() {
+    review_explainer_code_snapshot(
+        egui::ThemePreference::Light,
+        "headway_review_explainer_code",
+    );
+}
+
+/// Snapshot: [`snapshot_headway_review_explainer_code`] in the dark theme.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_code_dark() {
+    review_explainer_code_snapshot(
+        egui::ThemePreference::Dark,
+        "headway_review_explainer_code_dark",
+    );
+}
+
+fn review_explainer_code_snapshot(theme: egui::ThemePreference, name: &str) {
+    let mut harness = headway_harness(egui::Vec2::new(1400.0, 900.0));
+    harness.ctx.options_mut(|o| o.theme_preference = theme);
+    open_code_explainer(&mut harness);
+    harness.run_steps(3);
+    harness.snapshot(name);
+}
+
 /// A review pane opened from a card's detail ("Review diff"), not the queue,
 /// reads with the queue's keys: `G` scrolls the diff, `?` pins a strip that
 /// says `q` goes back to the card, `n` steps to the next In Review card's
