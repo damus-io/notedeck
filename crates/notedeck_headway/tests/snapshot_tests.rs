@@ -5920,6 +5920,89 @@ fn review_explainer_sequence_snapshot(theme: egui::ThemePreference, name: &str) 
     harness.snapshot(name);
 }
 
+/// An explainer source with a wrong fence: its `###` title, a list of what
+/// can go wrong with code and emphasis in it, and a closing line.
+const WRONG_EXPLAINER: &str = "\
+---
+title: Where it goes wrong
+---
+
+The change, in a sentence.
+
+```wrong
+### How this can go wrong, and what was not verified
+- **The prefix test is loose.** Any lowercase word and colon counts, so `note: slow down` is sent verbatim.
+- **The monitor path isn't exercised on its own.** No test makes it the one that rejects.
+
+The full `runTests.sh` wasn't run.
+```
+
+The end.
+";
+
+/// Open the queue card's review on [`WRONG_EXPLAINER`].
+fn open_wrong_explainer(harness: &mut Harness<'static, HeadwayTestState>) {
+    let fixture = review_fixture();
+    seed_review_queue(harness, &fixture);
+    add_queue_sources_with(harness, WRONG_EXPLAINER);
+    open_review_queue(harness);
+    wait_for_label(harness, "Keys come next.");
+}
+
+/// A wrong fence draws its Markdown, its title a heading rather than a
+/// `###` line in a code block.
+#[test]
+fn review_explainer_draws_wrong_block() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1400.0, 1400.0));
+    open_wrong_explainer(&mut harness);
+    let title = "How this can go wrong, and what was not verified";
+    wait_for_label(&mut harness, title);
+    assert!(harness.query_by_label_contains("### ").is_none());
+    assert!(harness.query_by_label_contains("```").is_none());
+    assert!(
+        harness
+            .query_by_label_contains("is sent verbatim")
+            .is_some()
+    );
+    let heading = harness.get_by_label(title).rect();
+    let last = harness.get_by_label_contains("wasn't run").rect();
+    assert!(heading.bottom() < last.top(), "{heading:?} over {last:?}");
+}
+
+/// Snapshot: [`WRONG_EXPLAINER`] beside the commit message: the block on
+/// explain's alert-soft fill in its alert rule, the title in alert.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_wrong() {
+    review_explainer_wrong_snapshot(
+        egui::ThemePreference::Light,
+        "headway_review_explainer_wrong",
+    );
+}
+
+/// Snapshot: [`snapshot_headway_review_explainer_wrong`] in the dark theme,
+/// its fill and rule from explain's dark palette.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_wrong_dark() {
+    review_explainer_wrong_snapshot(
+        egui::ThemePreference::Dark,
+        "headway_review_explainer_wrong_dark",
+    );
+}
+
+fn review_explainer_wrong_snapshot(theme: egui::ThemePreference, name: &str) {
+    let mut harness = headway_harness(egui::Vec2::new(1400.0, 900.0));
+    harness.ctx.options_mut(|o| o.theme_preference = theme);
+    open_wrong_explainer(&mut harness);
+    wait_for_label(
+        &mut harness,
+        "How this can go wrong, and what was not verified",
+    );
+    harness.run_steps(3);
+    harness.snapshot(name);
+}
+
 /// A review pane opened from a card's detail ("Review diff"), not the queue,
 /// reads with the queue's keys: `G` scrolls the diff, `?` pins a strip that
 /// says `q` goes back to the card, `n` steps to the next In Review card's

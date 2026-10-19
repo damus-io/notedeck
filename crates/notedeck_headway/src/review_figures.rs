@@ -20,6 +20,9 @@
 //! - a ` ```sequence ` fence: lifelines and messages, drawn by
 //!   [`explain_sequence`](crate::explain_sequence) the same way, its narrow
 //!   drawing with the columns squeezed to a phone's width.
+//! - a ` ```wrong ` fence: how the change goes wrong and what wasn't
+//!   verified, its Markdown drawn as explain's `aside.wrong`, a block toned
+//!   alert. It has no caption: a `---` in it is a rule, as there.
 //! - a paragraph holding one image and nothing else: a screenshot, its
 //!   `"title"` the caption, read from a `data:` URI or an absolute path on
 //!   this host; a relative path says it can't show. One at a URL isn't a
@@ -101,6 +104,8 @@ pub(crate) enum FigureBody {
     Panes(Vec<Pane>),
     /// A ` ```flow ` or ` ```sequence ` fence, laid out.
     Diagram(Box<DiagramFigure>),
+    /// A ` ```wrong ` fence's Markdown, whole.
+    Wrong(Box<Figured>),
 }
 
 /// A diagram figure: its drawings, the wide one loaded as the figure's own
@@ -268,17 +273,29 @@ fn figures(md: &ParsedMarkdown, next: &mut usize) -> Vec<Figure> {
 }
 
 /// The figure `element` (top-level element `at`) is, if it is one: a
-/// ` ```figure `, ` ```ba `, ` ```flow ` or ` ```sequence ` fence, or a
-/// paragraph holding one image and nothing else whose source isn't a URL.
+/// ` ```figure `, ` ```ba `, ` ```flow `, ` ```sequence ` or ` ```wrong `
+/// fence, or a paragraph holding one image and nothing else whose source
+/// isn't a URL.
 fn figure_of(at: usize, element: &MdElement, source: &str, next: &mut usize) -> Option<Figure> {
     match element {
         MdElement::CodeBlock(code) => {
             let lang = code.language.as_ref()?.resolve(source);
             let kind = lang.split_whitespace().next();
-            if !matches!(kind, Some("figure" | "ba" | "flow" | "sequence")) {
+            if !matches!(kind, Some("figure" | "ba" | "flow" | "sequence" | "wrong")) {
                 return None;
             }
-            let Caption { body, caption } = split_caption(code.content.resolve(source));
+            let content = code.content.resolve(source);
+            if kind == Some("wrong") {
+                // explain's wrong_block takes no caption: its body is
+                // Markdown to the fence's end.
+                return Some(Figure {
+                    element: at,
+                    index: take(next),
+                    body: FigureBody::Wrong(Box::new(Figured::parse(content, next))),
+                    caption: None,
+                });
+            }
+            let Caption { body, caption } = split_caption(content);
             let diagram = match kind {
                 Some("flow") => Some(render_flow(body, lang)),
                 // A sequence with no lifelines has nothing to draw: its
@@ -942,6 +959,7 @@ Outro.
                     )
                 }
                 FigureBody::Panes(panes) => format!("@{} ba {}", f.element, panes.len()),
+                FigureBody::Wrong(_) => format!("@{} wrong", f.element),
                 FigureBody::Diagram(d) => format!(
                     "@{} diagram #{} narrow={}",
                     f.element,
@@ -1042,6 +1060,38 @@ The caption.
             [None, None, None]
         );
         assert_eq!(tones("```ba\n### Only\nx\n```\n"), [None]);
+    }
+
+    /// A wrong fence is its Markdown whole: no caption split off at `---`
+    /// (a rule there, as in explain), and a figure in it still claimed.
+    #[test]
+    fn wrong_is_markdown_whole() {
+        let text = "\
+```wrong
+### How it goes wrong
+- **Loose.** It matches too much.
+
+---
+
+![A shot](/abs/shot.jpg)
+```
+";
+        let mut next = 0;
+        let doc = Figured::parse(text, &mut next);
+        let [figure] = doc.figures.as_slice() else {
+            panic!("one figure");
+        };
+        assert_eq!(figure.caption, None);
+        let FigureBody::Wrong(body) = &figure.body else {
+            panic!("a wrong block");
+        };
+        assert!(matches!(
+            body.md.elements.first(),
+            Some(MdElement::Heading { level: 3, .. })
+        ));
+        assert!(body.md.source.contains("---"));
+        assert_eq!(body.figures.len(), 1, "the shot under the rule");
+        assert_eq!(next, 2);
     }
 
     #[test]

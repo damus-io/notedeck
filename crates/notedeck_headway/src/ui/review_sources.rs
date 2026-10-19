@@ -7,6 +7,7 @@
 //! may be the commit's explain git note, when the record has no source of its
 //! own.
 
+use md_stream::MdElement;
 use notedeck::tokens::{RADIUS_MD, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THICK};
 use notedeck::{ColorTheme, NoteContext};
 use notedeck_ui::markdown::{BlockHook, MdBlock, fit_image};
@@ -385,7 +386,26 @@ fn figured_ui(
     page: Page<'_>,
     body: &Figured,
 ) {
-    let mut hook = FigureHook { theme, page, body };
+    figured_headed_ui(ui, theme, note, txn, page, body, None);
+}
+
+/// [`figured_ui`], its `##` and `###` headings drawn in `headings`' ink
+/// when it's given (see [`FigureHook::headings`]).
+fn figured_headed_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    note: Option<&mut NoteContext>,
+    txn: Option<&nostrdb::Transaction>,
+    page: Page<'_>,
+    body: &Figured,
+    headings: Option<egui::Color32>,
+) {
+    let mut hook = FigureHook {
+        theme,
+        page,
+        body,
+        headings,
+    };
     notedeck_ui::markdown::render_parsed_markdown(
         &body.md.elements,
         None,
@@ -403,10 +423,31 @@ struct FigureHook<'a> {
     theme: &'a ColorTheme,
     page: Page<'a>,
     body: &'a Figured,
+    /// The ink a `##` or `###` heading draws in, at [`WRONG_HEADING_SCALE`]
+    /// times body text, when `body` is a wrong block's; `None` leaves
+    /// headings to the renderer.
+    headings: Option<egui::Color32>,
 }
 
 impl BlockHook for FigureHook<'_> {
     fn block_ui(&mut self, ui: &mut egui::Ui, block: MdBlock<'_, '_, '_>) -> bool {
+        if let (
+            Some(ink),
+            MdElement::Heading {
+                level: 2 | 3,
+                content,
+            },
+        ) = (self.headings, block.element)
+        {
+            let size = egui::TextStyle::Body.resolve(ui.style()).size * WRONG_HEADING_SCALE;
+            let text = egui::RichText::new(content.resolve(block.source))
+                .size(size)
+                .strong()
+                .color(ink);
+            ui.add(egui::Label::new(text).wrap());
+            ui.add_space(SPACING_XS);
+            return true;
+        }
         let Some(figure) = self.body.figure_at(block.index) else {
             return false;
         };
@@ -425,7 +466,8 @@ impl BlockHook for FigureHook<'_> {
 /// A figure, centred in a thin frame at no more than its own size or the
 /// pane's width, its caption small and muted under it. A figure that can't
 /// show draws a placeholder saying why; one loading, a spinner. A ba block
-/// without a caption is no figure in explain, so it draws bare.
+/// without a caption is no figure in explain, so it draws bare, and a wrong
+/// block is never one ([`wrong_ui`]).
 fn figure_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -434,11 +476,18 @@ fn figure_ui(
     page: &mut Page<'_>,
     figure: &Figure,
 ) {
-    if let (FigureBody::Panes(panes), None) = (&figure.body, &figure.caption) {
-        ui.add_space(SPACING_XS);
-        panes_ui(ui, theme, note, txn, page, panes);
-        ui.add_space(SPACING_SM);
-        return;
+    match (&figure.body, &figure.caption) {
+        (FigureBody::Panes(panes), None) => {
+            ui.add_space(SPACING_XS);
+            panes_ui(ui, theme, note, txn, page, panes);
+            ui.add_space(SPACING_SM);
+            return;
+        }
+        (FigureBody::Wrong(body), _) => {
+            wrong_ui(ui, theme, note, txn, page, body);
+            return;
+        }
+        _ => {}
     }
     let dark = ui.visuals().dark_mode;
     let margin = SPACING_SM;
@@ -485,6 +534,8 @@ fn figure_ui(
             FigureBody::Diagram(diagram) => {
                 diagram_ui(ui, theme, page, figure.index, diagram, available)
             }
+            // Drawn bare, above.
+            FigureBody::Wrong(_) => {}
         });
         if let Some(caption) = &figure.caption {
             ui.add_space(SPACING_XS);
@@ -682,6 +733,51 @@ fn pane_row_ui(
         egui::Rect::from_min_max(top, egui::pos2(right, bottom)),
         egui::Sense::hover(),
     );
+}
+
+/// A wrong block's `##` and `###` headings against body text: explain's
+/// 1.14rem over its 17px body.
+const WRONG_HEADING_SCALE: f32 = 1.14 * 16.0 / 17.0;
+
+/// Under this width a wrong block takes explain's phone padding.
+const WRONG_NARROW: f32 = 520.0;
+
+/// A ` ```wrong ` block, as explain's `aside.wrong`: its Markdown on the
+/// page's alert-soft fill inside a thin alert rule, its `##` and `###`
+/// headings in alert, set off from the text around it.
+fn wrong_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    note: Option<&mut NoteContext>,
+    txn: Option<&nostrdb::Transaction>,
+    page: &mut Page<'_>,
+    body: &Figured,
+) {
+    let dark = ui.visuals().dark_mode;
+    let fill =
+        tone_color(page.palette, Some("alert-soft"), dark).unwrap_or(theme.surface_secondary);
+    let edge = tone_color(page.palette, Some("alert"), dark).unwrap_or(theme.destructive);
+    // explain's 18px 20px, or 14px 16px on a phone, less the 1px rule.
+    let margin = if ui.available_width() < WRONG_NARROW {
+        egui::Margin::symmetric(15, 13)
+    } else {
+        egui::Margin::symmetric(19, 17)
+    };
+    ui.add_space(SPACING_MD);
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(egui::Stroke::new(1.0, edge))
+        .corner_radius(4.0)
+        .inner_margin(margin)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let inner = Page {
+                palette: page.palette,
+                figures: &mut *page.figures,
+            };
+            figured_headed_ui(ui, theme, note, txn, inner, body, Some(edge));
+        });
+    ui.add_space(SPACING_MD);
 }
 
 /// Palette token `name`'s colour in the light or dark theme; `None` for no
