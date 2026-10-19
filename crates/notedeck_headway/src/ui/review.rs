@@ -1013,11 +1013,12 @@ pub(super) fn review_pane_ui(
             let clicked = review_topbar_ui(ui, theme, header, review, notice, lands);
             ui.add_space(SPACING_MD);
             // The record's explainer source, else the commit's git note once
-            // the load has read it.
-            let notes = match review.loader.get(source) {
-                Some(ReviewLoad::Ready(loaded)) => Some(&loaded.notes),
+            // the load has read it; its hunk fences draw from the diff.
+            let loaded = match review.loader.get(source) {
+                Some(ReviewLoad::Ready(loaded)) => Some(loaded),
                 _ => None,
             };
+            let notes = loaded.map(|l| &l.notes);
             // A wide pane draws the explainer beside the commit message in
             // the diff's header, so only a narrow one has tabs for it.
             let wide = !notedeck::ui::is_narrow(ui.ctx());
@@ -1029,7 +1030,8 @@ pub(super) fn review_pane_ui(
             }
             ui.add_space(SPACING_MD);
             if let (ReviewTab::Explainer, Some(page)) = (shown_tab(page, review.tab), page) {
-                explainer_ui(ui, theme, app_ctx, &mut review.explainer, page);
+                let patch = loaded.map(|l| &l.patch);
+                explainer_ui(ui, theme, app_ctx, &mut review.explainer, page, patch);
                 return clicked;
             }
             let beside = wide.then_some(Beside {
@@ -1990,7 +1992,8 @@ fn split_ui(
         top.x,
         explainer_width,
     );
-    explainer_column_ui(&mut left, theme, app_ctx, beside.cache, page);
+    let patch = &head.loaded.patch;
+    explainer_column_ui(&mut left, theme, app_ctx, beside.cache, page, patch);
     let message_left = top.x + explainer_width + gap;
     let mut right = column(
         ui,

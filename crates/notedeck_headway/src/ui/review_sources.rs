@@ -10,6 +10,7 @@
 use md_stream::MdElement;
 use notedeck::tokens::{RADIUS_MD, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THICK};
 use notedeck::{ColorTheme, NoteContext};
+use notedeck_ui::diff::{GitPatch, LineKind};
 use notedeck_ui::eyebrow_label;
 use notedeck_ui::markdown::{BlockHook, MdBlock, fit_image};
 
@@ -17,7 +18,8 @@ use super::widgets::{text_pill, tinted_pill};
 use crate::explain_diagram::BACKDROP;
 use crate::explain_palette::Palette;
 use crate::review_figures::{
-    DiagramFigure, Failure, Figure, FigureBody, FigureView, Figured, Figures, FittedDrawing, Pane,
+    DiagramFigure, Failure, Figure, FigureBody, FigureView, Figured, Figures, FittedDrawing,
+    HunkFigure, HunkFound, Pane,
 };
 use crate::review_walk::{CodeWalk, ExplainerPage, FrontMatter, SourceText};
 
@@ -40,13 +42,17 @@ pub(crate) struct ExplainerCache {
 }
 
 impl ExplainerCache {
-    /// `source`'s page, parsed now if it changed since the last frame.
-    fn page(&mut self, source: SourceText<'_>) -> &mut ExplainerPage {
+    /// `source`'s page, parsed now if it changed since the last frame, its
+    /// hunk fences found in `patch` (the commit's diff) once it's loaded.
+    fn page(&mut self, source: SourceText<'_>, patch: Option<&GitPatch>) -> &mut ExplainerPage {
         if self.page.as_ref().map(|p| p.source) != Some(source.key) {
             self.page = None;
         }
-        self.page
-            .get_or_insert_with(|| ExplainerPage::new(source.text, source.key))
+        let page = self
+            .page
+            .get_or_insert_with(|| ExplainerPage::new(source.text, source.key));
+        page.resolve_hunks(patch);
+        page
     }
 }
 
@@ -126,21 +132,23 @@ fn view_tab_ui(
 }
 
 /// The explainer source `source` as a page filling the rest of a narrow
-/// pane, in a scroll of its own ([`explainer_page_ui`]). The tab above it
-/// says when it is the commit's git note.
+/// pane, in a scroll of its own ([`explainer_page_ui`]), its hunk fences
+/// drawn from `patch`, the commit's diff (`None` while it loads). The tab
+/// above it says when it is the commit's git note.
 pub(super) fn explainer_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     cache: &mut ExplainerCache,
     source: SourceText<'_>,
+    patch: Option<&GitPatch>,
 ) {
-    let page = cache.page(source);
+    let page = cache.page(source, patch);
     egui::ScrollArea::vertical()
         .id_salt("headway-review-explainer")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            explainer_page_ui(ui, theme, app_ctx, page, PageHead::Tab)
+            explainer_page_ui(ui, theme, app_ctx, page, patch, PageHead::Tab)
         });
 }
 
@@ -148,19 +156,21 @@ pub(super) fn explainer_ui(
 /// beside the commit message: the page whole ([`explainer_page_ui`]), for
 /// the caller to clamp, under a small "EXPLAINER" eyebrow as the message
 /// column is under "COMMIT". With no tab to say so, a "git note" pill by its
-/// title says when it is the commit's note.
+/// title says when it is the commit's note. Its hunk fences draw from
+/// `patch`, the diff under it.
 pub(super) fn explainer_column_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     cache: &mut ExplainerCache,
     source: SourceText<'_>,
+    patch: &GitPatch,
 ) {
-    let page = cache.page(source);
+    let page = cache.page(source, Some(patch));
     let head = PageHead::Column {
         note: source.is_note(),
     };
-    explainer_page_ui(ui, theme, app_ctx, page, head);
+    explainer_page_ui(ui, theme, app_ctx, page, Some(patch), head);
 }
 
 /// How much of a page's front matter [`explainer_page_ui`] draws over it.
@@ -181,12 +191,13 @@ enum PageHead {
 const COLUMN_TITLE_SIZE: f32 = 17.0;
 
 /// `page`: its front matter as `head` says, then the Markdown, with
-/// `headway:` refs drawn as their chips.
+/// `headway:` refs drawn as their chips and hunk fences from `patch`.
 fn explainer_page_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     page: &mut ExplainerPage,
+    patch: Option<&GitPatch>,
     head: PageHead,
 ) {
     let front = &page.front;
@@ -214,6 +225,7 @@ fn explainer_page_ui(
     let figured = Page {
         palette: &page.palette,
         figures: &mut page.figures,
+        patch,
     };
     page_body_ui(ui, theme, app_ctx, None, figured, &page.body);
 }
@@ -276,6 +288,7 @@ pub(super) fn walk_top_ui(
             let page = Page {
                 palette,
                 figures: &mut *figures,
+                patch: None,
             };
             page_body_ui(ui, theme, app_ctx, None, page, &note.body);
         });
@@ -339,7 +352,11 @@ pub(super) fn walk_note_ui(
     let frame = walk_frame(ui);
     let shown = frame.fill(egui::Color32::TRANSPARENT).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        let page = Page { palette, figures };
+        let page = Page {
+            palette,
+            figures,
+            patch: None,
+        };
         page_body_ui(ui, theme, app_ctx, txn, page, &note.body);
     });
     let card = shown.response.rect;
@@ -350,11 +367,13 @@ pub(super) fn walk_note_ui(
     );
 }
 
-/// The page a body's figures belong to: the palette they're drawn in and
-/// their loads.
+/// The page a body's figures belong to: the palette they're drawn in, their
+/// loads, and the commit's diff its hunk fences draw from (`None` for a
+/// walk's notes, whose fences are the diff's own hunks, or while it loads).
 struct Page<'a> {
     palette: &'a Palette,
     figures: &'a mut Figures,
+    patch: Option<&'a GitPatch>,
 }
 
 /// `body` drawn with its refs resolved through `txn`, or one opened here
@@ -518,6 +537,7 @@ fn figure_ui(
                     let inner_page = Page {
                         palette: page.palette,
                         figures: &mut *page.figures,
+                        patch: page.patch,
                     };
                     figured_ui(ui, theme, note, txn, inner_page, inner);
                 });
@@ -534,6 +554,12 @@ fn figure_ui(
             }
             FigureBody::Diagram(diagram) => {
                 diagram_ui(ui, theme, page, figure.index, diagram, available)
+            }
+            FigureBody::Hunk(hunk) => {
+                ui.vertical(|ui| {
+                    ui.set_width(available);
+                    hunk_ui(ui, theme, page, figure.index, hunk);
+                });
             }
             // Drawn bare, above.
             FigureBody::Wrong(_) => {}
@@ -697,6 +723,7 @@ fn pane_row_ui(
                 let inner = Page {
                     palette: page.palette,
                     figures: &mut *page.figures,
+                    patch: page.patch,
                 };
                 figured_ui(ui, theme, note.as_deref_mut(), txn, inner, &pane.body);
             });
@@ -775,10 +802,218 @@ fn wrong_ui(
             let inner = Page {
                 palette: page.palette,
                 figures: &mut *page.figures,
+                patch: page.patch,
             };
             figured_headed_ui(ui, theme, note, txn, inner, body, Some(edge));
         });
     ui.add_space(SPACING_MD);
+}
+
+/// explain's code against its body text: `.84rem` over its 17px.
+const CODE_SCALE: f32 = 0.84 * 16.0 / 17.0;
+
+/// explain's `pre` line height, in lines of its font.
+const CODE_LINE_HEIGHT: f32 = 1.6;
+
+/// explain's `srcname` against its body text: `.7rem` over its 17px.
+const SRCNAME_SCALE: f32 = 0.7 * 16.0 / 17.0;
+
+/// A ` ```hunk ` fence, as explain builds it: the file's path in small
+/// upper-case mono (its `srcname`), then the hunk the commit's diff has for
+/// it in a coloured block ([`pre_ui`]), its `@@` header first. Without the
+/// diff it is the citation, the header alone; a diff without the hunk says
+/// so under it. `id` is the figure's number, to tell its scroll apart.
+fn hunk_ui(ui: &mut egui::Ui, theme: &ColorTheme, page: &Page<'_>, id: usize, hunk: &HunkFigure) {
+    let dark = ui.visuals().dark_mode;
+    if !hunk.srcname.is_empty() {
+        let size = egui::TextStyle::Body.resolve(ui.style()).size * SRCNAME_SCALE;
+        let ink = tone_color(page.palette, Some("ink-3"), dark).unwrap_or(theme.text_muted);
+        let srcname = egui::RichText::new(hunk.srcname.as_str())
+            .monospace()
+            .size(size)
+            .color(ink);
+        ui.label(srcname);
+        ui.add_space(SPACING_SM);
+    }
+    if let (HunkFound::Found(at), Some(patch)) = (hunk.found, page.patch)
+        && let Some(file) = patch.files().get(at.file)
+        && let Some(found) = file.hunks.get(at.hunk)
+    {
+        let header = PreRow {
+            kind: PreKind::Hunk,
+            marker: "",
+            text: patch.text(found.header),
+        };
+        let lines = file.hunk_lines(found).iter().map(|line| {
+            let (kind, marker) = match line.kind {
+                LineKind::Insert => (PreKind::Add, "+"),
+                LineKind::Delete => (PreKind::Del, "-"),
+                LineKind::Context => (PreKind::Plain, " "),
+                // Its text is the whole `\ No newline …` line.
+                LineKind::NoNewline => (PreKind::Plain, ""),
+            };
+            PreRow {
+                kind,
+                marker,
+                text: patch.text(line.text),
+            }
+        });
+        pre_ui(
+            ui,
+            theme,
+            page.palette,
+            id,
+            std::iter::once(header).chain(lines),
+        );
+        return;
+    }
+    if !hunk.cite.header.is_empty() {
+        let header = PreRow {
+            kind: PreKind::Hunk,
+            marker: "",
+            text: hunk.cite.header.as_str(),
+        };
+        pre_ui(ui, theme, page.palette, id, std::iter::once(header));
+    }
+    if hunk.found == HunkFound::Missing {
+        ui.add_space(SPACING_XS);
+        ui.label(
+            egui::RichText::new("hunk not found in the diff")
+                .small()
+                .color(theme.warning),
+        );
+    }
+}
+
+/// How explain colours a line of a `pre`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PreKind {
+    /// A hunk's `@@` header, in slate.
+    Hunk,
+    /// An added line, in moss ink on moss's soft fill.
+    Add,
+    /// A removed line, in alert ink on alert's soft fill.
+    Del,
+    /// Any other line, in ink.
+    Plain,
+}
+
+/// One line of a [`pre_ui`] block: its marker (`+`, `-`, a space, or none)
+/// and its text after it.
+#[derive(Clone, Copy)]
+struct PreRow<'a> {
+    kind: PreKind,
+    marker: &'static str,
+    text: &'a str,
+}
+
+/// The page's colours a [`pre_ui`] block draws in, the theme's where the
+/// palette hasn't got one.
+struct PreColors {
+    ink: egui::Color32,
+    hunk: egui::Color32,
+    add: egui::Color32,
+    add_fill: egui::Color32,
+    del: egui::Color32,
+    del_fill: egui::Color32,
+    fill: egui::Color32,
+    rule: egui::Color32,
+}
+
+impl PreColors {
+    fn of(palette: &Palette, theme: &ColorTheme, dark: bool) -> Self {
+        let token = |name, fallback| tone_color(palette, Some(name), dark).unwrap_or(fallback);
+        Self {
+            ink: token("ink", theme.text_primary),
+            hunk: token("slate", theme.text_muted),
+            add: token("moss-ink", theme.success),
+            add_fill: token("moss-soft", theme.surface_secondary),
+            del: token("alert-ink", theme.destructive),
+            del_fill: token("alert-soft", theme.surface_secondary),
+            fill: token("surface-2", theme.surface_secondary),
+            rule: token("rule", theme.border_default),
+        }
+    }
+
+    /// The ink of a `kind` line, and the fill under it, if it has one.
+    fn row(&self, kind: PreKind) -> RowColors {
+        let (ink, fill) = match kind {
+            PreKind::Hunk => (self.hunk, None),
+            PreKind::Add => (self.add, Some(self.add_fill)),
+            PreKind::Del => (self.del, Some(self.del_fill)),
+            PreKind::Plain => (self.ink, None),
+        };
+        RowColors { ink, fill }
+    }
+}
+
+/// A [`pre_ui`] line's ink, and the fill behind it across the block.
+struct RowColors {
+    ink: egui::Color32,
+    fill: Option<egui::Color32>,
+}
+
+/// `rows` as explain's `pre`: mono at [`CODE_SCALE`] on the page's second
+/// surface inside a 1px rule, an added or removed line's fill running the
+/// block's full width as explain's inline-block does. A block wider than the
+/// column scrolls sideways (salted by `id`) rather than wrapping.
+fn pre_ui<'a>(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    palette: &Palette,
+    id: usize,
+    rows: impl Iterator<Item = PreRow<'a>> + Clone,
+) {
+    let colors = PreColors::of(palette, theme, ui.visuals().dark_mode);
+    let size = egui::TextStyle::Body.resolve(ui.style()).size * CODE_SCALE;
+    let font = egui::FontId::monospace(size);
+    let mut job = egui::text::LayoutJob::default();
+    for (i, row) in rows.clone().enumerate() {
+        let format = egui::TextFormat {
+            font_id: font.clone(),
+            color: colors.row(row.kind).ink,
+            line_height: Some(size * CODE_LINE_HEIGHT),
+            ..Default::default()
+        };
+        if i > 0 {
+            job.append("\n", 0.0, format.clone());
+        }
+        job.append(row.marker, 0.0, format.clone());
+        job.append(row.text, 0.0, format);
+    }
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
+    // explain's 14px 16px, less the 1px rule.
+    egui::Frame::new()
+        .fill(colors.fill)
+        .stroke(egui::Stroke::new(1.0, colors.rule))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(15, 13))
+        .show(ui, |ui| {
+            let width = ui.available_width();
+            let text = |ui: &mut egui::Ui| {
+                let size = egui::vec2(galley.size().x.max(width), galley.size().y);
+                let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+                for (placed, row) in galley.rows.iter().zip(rows.clone()) {
+                    let Some(fill) = colors.row(row.kind).fill else {
+                        continue;
+                    };
+                    let line = placed.rect().translate(rect.min.to_vec2());
+                    let band = egui::Rect::from_x_y_ranges(rect.x_range(), line.y_range());
+                    ui.painter().rect_filled(band, 0.0, fill);
+                }
+                ui.painter().galley(rect.min, galley.clone(), colors.ink);
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::Label, true, galley.text())
+                });
+            };
+            if galley.size().x <= width {
+                text(ui);
+                return;
+            }
+            egui::ScrollArea::horizontal()
+                .id_salt(("explainer-pre", id))
+                .show(ui, text);
+        });
 }
 
 /// Palette token `name`'s colour in the light or dark theme; `None` for no

@@ -23,6 +23,11 @@
 //! - a ` ```wrong ` fence: how the change goes wrong and what wasn't
 //!   verified, its Markdown drawn as explain's `aside.wrong`, a block toned
 //!   alert. It has no caption: a `---` in it is a rule, as there.
+//! - a ` ```hunk ` fence: one hunk of the commit's own diff, cited by its
+//!   path and header (and a `match:` line), found once the diff has loaded
+//!   ([`Figured::resolve_hunks`]) and drawn as explain's coloured block
+//!   under its path. The page never copies code: before the diff is in, or
+//!   when it hasn't got the hunk, it's the citation alone.
 //! - a paragraph holding one image and nothing else: a screenshot, its
 //!   `"title"` the caption, read from a `data:` URI or an absolute path on
 //!   this host; a relative path says it can't show. One at a URL isn't a
@@ -40,6 +45,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use base64::Engine;
 use egui::{ColorImage, TextureHandle, Vec2};
 use md_stream::{LoneImage, MdElement, ParsedMarkdown, lone_image};
+use notedeck_ui::diff::GitPatch;
 use resvg::usvg;
 
 use crate::explain_diagram::{Diagram, Drawing};
@@ -47,7 +53,7 @@ use crate::explain_flow::render_flow;
 use crate::explain_palette::Palette;
 use crate::explain_sequence::render_sequence;
 use crate::review_images::{Decoded, MAX_IMAGE_BYTES, decode_image};
-use crate::review_walk::SourceKey;
+use crate::review_walk::{HunkCite, HunkRef, SourceKey, find_hunk};
 
 /// Longest edge a figure is rasterised at, in pixels.
 const MAX_RASTER_EDGE: f32 = 2048.0;
@@ -66,6 +72,25 @@ impl Figured {
         let md = ParsedMarkdown::parse(text);
         let figures = figures(&md, next);
         Self { md, figures }
+    }
+
+    /// Find every hunk fence's hunk in `patch`, the commit's diff, its own
+    /// and those of the Markdown its figures hold.
+    pub(crate) fn resolve_hunks(&mut self, patch: &GitPatch) {
+        for figure in &mut self.figures {
+            match &mut figure.body {
+                FigureBody::Hunk(hunk) => hunk.resolve(patch),
+                FigureBody::Markdown(inner) | FigureBody::Wrong(inner) => {
+                    inner.resolve_hunks(patch)
+                }
+                FigureBody::Panes(panes) => {
+                    for pane in panes {
+                        pane.body.resolve_hunks(patch);
+                    }
+                }
+                FigureBody::Svg { .. } | FigureBody::Image { .. } | FigureBody::Diagram(_) => {}
+            }
+        }
     }
 
     /// The figure top-level element `element` is, if it's one.
@@ -106,6 +131,45 @@ pub(crate) enum FigureBody {
     Diagram(Box<DiagramFigure>),
     /// A ` ```wrong ` fence's Markdown, whole.
     Wrong(Box<Figured>),
+    /// A ` ```hunk ` fence: the hunk of the commit's diff it cites.
+    Hunk(Box<HunkFigure>),
+}
+
+/// A ` ```hunk ` fence's cite, and what the commit's diff had for it.
+pub(crate) struct HunkFigure {
+    pub cite: HunkCite,
+    /// The path over the block, as explain's `srcname` shows it: upper case.
+    pub srcname: String,
+    pub found: HunkFound,
+}
+
+impl HunkFigure {
+    fn new(cite: HunkCite) -> Self {
+        Self {
+            srcname: cite.path.to_uppercase(),
+            cite,
+            found: HunkFound::Unsearched,
+        }
+    }
+
+    /// Look for the cited hunk in `patch`.
+    fn resolve(&mut self, patch: &GitPatch) {
+        self.found = match find_hunk(patch, &self.cite) {
+            Some(at) => HunkFound::Found(at),
+            None => HunkFound::Missing,
+        };
+    }
+}
+
+/// Where a hunk fence's hunk is in the commit's diff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HunkFound {
+    /// No diff searched yet (it's still loading, or there's none): the block
+    /// is its citation, the path and the header.
+    Unsearched,
+    Found(HunkRef),
+    /// The diff hasn't got it.
+    Missing,
 }
 
 /// A diagram figure: its drawings, the wide one loaded as the figure's own
@@ -273,18 +337,31 @@ fn figures(md: &ParsedMarkdown, next: &mut usize) -> Vec<Figure> {
 }
 
 /// The figure `element` (top-level element `at`) is, if it is one: a
-/// ` ```figure `, ` ```ba `, ` ```flow `, ` ```sequence ` or ` ```wrong `
-/// fence, or a paragraph holding one image and nothing else whose source
+/// ` ```figure `, ` ```ba `, ` ```flow `, ` ```sequence `, ` ```wrong ` or
+/// ` ```hunk ` fence, or a paragraph holding one image and nothing else whose source
 /// isn't a URL.
 fn figure_of(at: usize, element: &MdElement, source: &str, next: &mut usize) -> Option<Figure> {
     match element {
         MdElement::CodeBlock(code) => {
             let lang = code.language.as_ref()?.resolve(source);
             let kind = lang.split_whitespace().next();
-            if !matches!(kind, Some("figure" | "ba" | "flow" | "sequence" | "wrong")) {
+            if !matches!(
+                kind,
+                Some("figure" | "ba" | "flow" | "sequence" | "wrong" | "hunk")
+            ) {
                 return None;
             }
             let content = code.content.resolve(source);
+            if kind == Some("hunk") {
+                // Its `match:` line is in the body, above the caption.
+                let Caption { body, caption } = split_caption(content);
+                return Some(Figure {
+                    element: at,
+                    index: take(next),
+                    body: FigureBody::Hunk(Box::new(HunkFigure::new(HunkCite::parse(lang, body)))),
+                    caption: caption.map(str::to_owned),
+                });
+            }
             if kind == Some("wrong") {
                 // explain's wrong_block takes no caption: its body is
                 // Markdown to the fence's end.
@@ -960,6 +1037,7 @@ Outro.
                 }
                 FigureBody::Panes(panes) => format!("@{} ba {}", f.element, panes.len()),
                 FigureBody::Wrong(_) => format!("@{} wrong", f.element),
+                FigureBody::Hunk(h) => format!("@{} hunk {}", f.element, h.cite.path),
                 FigureBody::Diagram(d) => format!(
                     "@{} diagram #{} narrow={}",
                     f.element,
@@ -1092,6 +1170,79 @@ The caption.
         assert!(body.md.source.contains("---"));
         assert_eq!(body.figures.len(), 1, "the shot under the rule");
         assert_eq!(next, 2);
+    }
+
+    /// A hunk fence is a figure citing its path and header, its `match:`
+    /// line read above the caption. Nothing is found until a diff is given:
+    /// then the cited hunk (by its match once the header moved, inside a ba
+    /// pane too), or none for a hunk the diff hasn't got.
+    #[test]
+    fn hunk_fences_cite_then_resolve_against_the_diff() {
+        let patch = GitPatch::parse(
+            "\
+diff --git a/src/guard.ts b/src/guard.ts
+--- a/src/guard.ts
++++ b/src/guard.ts
+@@ -10,2 +10,3 @@
+ one
++if (isLocal())
+ two
+@@ -40,2 +41,3 @@
+ six
++seven
+ eight
+",
+        );
+        let text = "\
+```hunk src/guard.ts @@ -8,2 +8,3 @@
+match: isLocal()
+---
+The guard.
+```
+
+```hunk gone.rs @@ -1 +1 @@
+```
+
+~~~ba
+### Before
+x
+### After
+```hunk src/guard.ts @@ -40,2 +41,3 @@
+```
+~~~
+";
+        let mut next = 0;
+        let mut doc = Figured::parse(text, &mut next);
+        let found = |doc: &Figured| -> Vec<HunkFound> {
+            let mut out = Vec::new();
+            for figure in &doc.figures {
+                match &figure.body {
+                    FigureBody::Hunk(h) => out.push(h.found),
+                    FigureBody::Panes(panes) => {
+                        for pane in panes {
+                            out.extend(pane.body.figures.iter().filter_map(|f| match &f.body {
+                                FigureBody::Hunk(h) => Some(h.found),
+                                _ => None,
+                            }));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out
+        };
+        let FigureBody::Hunk(first) = &doc.figures[0].body else {
+            panic!("a hunk");
+        };
+        assert_eq!(first.cite.path, "src/guard.ts");
+        assert_eq!(first.cite.header, "@@ -8,2 +8,3 @@");
+        assert_eq!(first.srcname, "SRC/GUARD.TS");
+        assert_eq!(doc.figures[0].caption.as_deref(), Some("The guard."));
+        assert_eq!(found(&doc), [HunkFound::Unsearched; 3]);
+
+        doc.resolve_hunks(&patch);
+        let hunk = |hunk| HunkFound::Found(HunkRef { file: 0, hunk });
+        assert_eq!(found(&doc), [hunk(0), HunkFound::Missing, hunk(1)]);
     }
 
     #[test]

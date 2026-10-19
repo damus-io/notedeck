@@ -6003,6 +6003,110 @@ fn review_explainer_wrong_snapshot(theme: egui::ThemePreference, name: &str) {
     harness.snapshot(name);
 }
 
+/// An explainer source with two hunk fences: one citing `src/queue.rs` by a
+/// header a rebase has moved, found by its `match:` line, with a caption;
+/// one citing a file the commit never touched.
+const HUNK_EXPLAINER: &str = "\
+---
+title: Pulled from the diff
+---
+
+The step stops at the last card.
+
+```hunk src/queue.rs @@ -1,3 +1,15 @@
+match: self.index = (self.index + 1)
+---
+The queue's step, from the commit itself.
+```
+
+```hunk src/gone.rs @@ -1 +1 @@
+```
+
+The end.
+";
+
+/// Open the queue card's review on [`HUNK_EXPLAINER`].
+fn open_hunk_explainer(harness: &mut Harness<'static, HeadwayTestState>) {
+    let fixture = review_fixture();
+    seed_review_queue(harness, &fixture);
+    add_queue_sources_with(harness, HUNK_EXPLAINER);
+    open_review_queue(harness);
+    wait_for_label(harness, "Keys come next.");
+}
+
+/// A hunk fence draws the hunk the commit's own diff has for it, under its
+/// path, its lines in place of the fence's text; one the diff hasn't got is
+/// its header and a note saying so. A narrow pane's Explainer tab draws
+/// the same from the diff it loaded.
+#[test]
+fn review_explainer_draws_hunks_from_the_diff() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1400.0, 1400.0));
+    open_hunk_explainer(&mut harness);
+    wait_for_label(&mut harness, "The queue's step, from the commit itself.");
+    // The block is one label, its header first; the diff under the
+    // explainer has its own rows for the same lines.
+    let block = "@@ -3,3 +3,15 @@ pub struct ReviewQueue {\n     cards: Vec<NoteId>,";
+    let step = "\n+        self.index = (self.index + 1)";
+    let drawn = |harness: &Harness<'static, HeadwayTestState>| {
+        harness.query_all_by_label_contains(block).any(|n| {
+            let node = n.accesskit_node();
+            [node.label(), node.value()]
+                .into_iter()
+                .flatten()
+                .any(|text| text.contains(step))
+        })
+    };
+    assert!(drawn(&harness));
+    assert!(harness.query_by_label("SRC/QUEUE.RS").is_some());
+    assert!(harness.query_by_label_contains("match:").is_none());
+    assert!(harness.query_by_label_contains("```").is_none());
+    assert!(harness.query_by_label("@@ -1 +1 @@").is_some());
+    assert!(
+        harness
+            .query_by_label("hunk not found in the diff")
+            .is_some()
+    );
+
+    let mut narrow = behavioral_harness(egui::Vec2::new(420.0, 1400.0));
+    open_hunk_explainer(&mut narrow);
+    narrow.get_by_label("Explainer source").click_accesskit();
+    wait_for_label(&mut narrow, "The queue's step, from the commit itself.");
+    assert!(drawn(&narrow));
+}
+
+/// Snapshot: [`HUNK_EXPLAINER`] beside the commit message, shown whole: the
+/// queue.rs hunk under its path, added lines on moss, the header in slate,
+/// then the missing hunk's citation and note.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_hunk() {
+    review_explainer_hunk_snapshot(
+        egui::ThemePreference::Light,
+        "headway_review_explainer_hunk",
+    );
+}
+
+/// Snapshot: [`snapshot_headway_review_explainer_hunk`] in the dark theme,
+/// its fills from explain's dark palette.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_hunk_dark() {
+    review_explainer_hunk_snapshot(
+        egui::ThemePreference::Dark,
+        "headway_review_explainer_hunk_dark",
+    );
+}
+
+fn review_explainer_hunk_snapshot(theme: egui::ThemePreference, name: &str) {
+    let mut harness = headway_harness(egui::Vec2::new(1400.0, 900.0));
+    harness.ctx.options_mut(|o| o.theme_preference = theme);
+    open_hunk_explainer(&mut harness);
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::E);
+    wait_for_label(&mut harness, "Show less");
+    harness.run_steps(3);
+    harness.snapshot(name);
+}
+
 /// A review pane opened from a card's detail ("Review diff"), not the queue,
 /// reads with the queue's keys: `G` scrolls the diff, `?` pins a strip that
 /// says `q` goes back to the card, `n` steps to the next In Review card's

@@ -266,9 +266,9 @@ pub(crate) fn source_text<'a>(
 }
 
 /// A record's explainer source, ready to draw: its front matter as a header
-/// and the rest as Markdown, its figures ([`review_figures`]) drawn. The
-/// other explain fences (`flow`, `sequence`, `ba`, `wrong`) render as the
-/// code blocks they are to a Markdown reader.
+/// and the rest as Markdown, its figures ([`review_figures`]) drawn, its
+/// hunk fences found in the commit's diff once it has loaded
+/// ([`resolve_hunks`](Self::resolve_hunks)).
 ///
 /// [`review_figures`]: crate::review_figures
 pub(crate) struct ExplainerPage {
@@ -280,6 +280,8 @@ pub(crate) struct ExplainerPage {
     pub palette: Palette,
     /// Its figures' loads and textures, dropped with the page.
     pub figures: Figures,
+    /// Whether its hunk fences have been looked for in the commit's diff.
+    pub hunks_resolved: bool,
 }
 
 impl ExplainerPage {
@@ -293,7 +295,18 @@ impl ExplainerPage {
             palette: Palette::of(&front),
             front,
             figures: Figures::new(key),
+            hunks_resolved: false,
         }
+    }
+
+    /// Find the page's hunk fences in `patch`, the diff of the commit it
+    /// explains, the first time one is given; a flag check after that.
+    pub(crate) fn resolve_hunks(&mut self, patch: Option<&GitPatch>) {
+        let Some(patch) = patch.filter(|_| !self.hunks_resolved) else {
+            return;
+        };
+        self.body.resolve_hunks(patch);
+        self.hunks_resolved = true;
     }
 }
 
@@ -381,11 +394,11 @@ fn opens_svg(line: &str) -> bool {
 
 /// A ` ```hunk ` fence: the hunk it cites.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct HunkCite {
+pub(crate) struct HunkCite {
     /// The file, by its path before or after the change.
-    path: String,
+    pub path: String,
     /// The `@@ … @@` header as written; empty when the fence gave none.
-    header: String,
+    pub header: String,
     /// `header`'s ranges.
     at: Option<HunkAt>,
     /// The `match:` line: text one of the hunk's lines holds.
@@ -436,7 +449,7 @@ impl HunkAt {
 impl HunkCite {
     /// The cite of a fence whose info string is `info` (`hunk <path>
     /// [@@ … @@]`) and whose body is `body`. The last `match:` line wins.
-    fn parse(info: &str, body: &str) -> Self {
+    pub(crate) fn parse(info: &str, body: &str) -> Self {
         let rest = info.strip_prefix("hunk").unwrap_or(info).trim();
         let (path, header) = match rest.find("@@") {
             Some(at) => (rest[..at].trim(), rest[at..].trim()),
@@ -484,7 +497,7 @@ fn hunk_has(patch: &GitPatch, f: usize, h: usize, needle: &str, context: bool) -
 /// holds the `match:` line; failing that, the hunk whose changed lines (then
 /// any lines) hold it, the nearest to the cited header if several do. A file
 /// with one hunk needs neither. `None` when nothing fits.
-fn find_hunk(patch: &GitPatch, cite: &HunkCite) -> Option<HunkRef> {
+pub(crate) fn find_hunk(patch: &GitPatch, cite: &HunkCite) -> Option<HunkRef> {
     let f = patch
         .files()
         .iter()
