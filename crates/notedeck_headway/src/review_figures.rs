@@ -14,6 +14,9 @@
 //!   opened by a `### Title {tone}` line, drawn side by side; two untoned
 //!   panes read as before (alert) and after (moss). Its caption, after a last
 //!   `---`, puts it in a figure's frame.
+//! - a ` ```flow ` fence: boxes and arrows laid out by
+//!   [`explain_flow`](crate::explain_flow), drawn as an SVG, with a narrower
+//!   top-down layout for a column the first won't fit.
 //! - a paragraph holding one image and nothing else: a screenshot, its
 //!   `"title"` the caption, read from a `data:` URI or an absolute path on
 //!   this host; a relative path says it can't show. One at a URL isn't a
@@ -33,6 +36,7 @@ use egui::{ColorImage, TextureHandle, Vec2};
 use md_stream::{LoneImage, MdElement, ParsedMarkdown, lone_image};
 use resvg::usvg;
 
+use crate::explain_flow::{Drawing, Flow, render_flow};
 use crate::explain_palette::Palette;
 use crate::review_images::{Decoded, MAX_IMAGE_BYTES, decode_image};
 use crate::review_walk::SourceKey;
@@ -90,6 +94,38 @@ pub(crate) enum FigureBody {
     Image { alt: String, src: String },
     /// A ` ```ba ` fence's panes, in order.
     Panes(Vec<Pane>),
+    /// A ` ```flow ` fence, laid out.
+    Flow(Box<FlowFigure>),
+}
+
+/// A flow figure: its drawings, the wide one loaded as the figure's own
+/// index and the narrow one as `narrow_index`.
+pub(crate) struct FlowFigure {
+    pub flow: Flow,
+    pub narrow_index: usize,
+}
+
+/// The drawing a flow shows at some width, and its load's index.
+pub(crate) struct FittedFlow<'a> {
+    pub index: usize,
+    pub drawing: &'a Drawing,
+}
+
+impl FlowFigure {
+    /// The drawing to show in `width` points ([`Flow::fitting`]), for the
+    /// figure numbered `index`.
+    pub(crate) fn fitting(&self, index: usize, width: f32) -> FittedFlow<'_> {
+        let drawing = self.flow.fitting(width);
+        let narrow = self
+            .flow
+            .narrow
+            .as_ref()
+            .is_some_and(|n| std::ptr::eq(n, drawing));
+        FittedFlow {
+            index: if narrow { self.narrow_index } else { index },
+            drawing,
+        }
+    }
 }
 
 /// One pane of a ` ```ba ` fence.
@@ -149,14 +185,14 @@ pub(crate) struct ToneTokens {
 
 /// A line split at a trailing `{tone}`.
 #[derive(Debug, PartialEq, Eq)]
-struct Toned<'a> {
-    text: &'a str,
-    tone: Option<Tone>,
+pub(crate) struct Toned<'a> {
+    pub text: &'a str,
+    pub tone: Option<Tone>,
 }
 
 /// `line` without a trailing `{tone}` naming a known tone, and that tone, as
 /// explain's `take_tone`; an unknown word stays in the text.
-fn take_tone(line: &str) -> Toned<'_> {
+pub(crate) fn take_tone(line: &str) -> Toned<'_> {
     let untoned = Toned {
         text: line,
         tone: None,
@@ -227,18 +263,33 @@ fn figures(md: &ParsedMarkdown, next: &mut usize) -> Vec<Figure> {
 }
 
 /// The figure `element` (top-level element `at`) is, if it is one: a
-/// ` ```figure ` or ` ```ba ` fence, or a paragraph holding one image and
+/// ` ```figure `, ` ```ba ` or ` ```flow ` fence, or a paragraph holding one image and
 /// nothing else whose source isn't a URL.
 fn figure_of(at: usize, element: &MdElement, source: &str, next: &mut usize) -> Option<Figure> {
     match element {
         MdElement::CodeBlock(code) => {
             let lang = code.language.as_ref()?.resolve(source);
             let kind = lang.split_whitespace().next();
-            if !matches!(kind, Some("figure" | "ba")) {
+            if !matches!(kind, Some("figure" | "ba" | "flow")) {
                 return None;
             }
             let Caption { body, caption } = split_caption(code.content.resolve(source));
             let index = take(next);
+            if kind == Some("flow") {
+                let flow = render_flow(body, lang);
+                // The narrow drawing loads as a figure of its own.
+                let narrow_index = if flow.narrow.is_some() {
+                    take(next)
+                } else {
+                    index
+                };
+                return Some(Figure {
+                    element: at,
+                    index,
+                    body: FigureBody::Flow(Box::new(FlowFigure { flow, narrow_index })),
+                    caption: caption.map(str::to_owned),
+                });
+            }
             if kind == Some("ba") {
                 return Some(Figure {
                     element: at,
@@ -720,8 +771,21 @@ impl Figures {
         dark: bool,
         source: &str,
     ) -> FigureView<'_> {
+        self.svg_with(ctx, palette, index, dark, || source.to_owned())
+    }
+
+    /// Figure `index`, the SVG `source` makes, called only the first time
+    /// the figure is asked for in a theme.
+    pub(crate) fn svg_with(
+        &mut self,
+        ctx: &egui::Context,
+        palette: &Palette,
+        index: usize,
+        dark: bool,
+        source: impl FnOnce() -> String,
+    ) -> FigureView<'_> {
         let key = FigureKey { index, dark };
-        view(self.load(ctx, key, palette, || Job::Svg(source.to_owned())))
+        view(self.load(ctx, key, palette, || Job::Svg(source())))
     }
 
     /// Figure `index`, an image at `src`: a `data:` URI or a path.
@@ -800,8 +864,8 @@ mod tests {
 
     /// The figures among a body's elements: an SVG fence (its caption and
     /// label), a Markdown fence (its own image numbered after it), a lone
-    /// image (its title the caption). A flow fence, an image mid-sentence and
-    /// a lone image at a URL aren't: the shared renderer draws them.
+    /// image (its title the caption), a flow. An image mid-sentence and a
+    /// lone image at a URL aren't: the shared renderer draws them.
     #[test]
     fn figures_are_found_by_element() {
         let text = "\
@@ -837,7 +901,7 @@ Outro.
 ";
         let mut next = 0;
         let doc = Figured::parse(text, &mut next);
-        assert_eq!(next, 4);
+        assert_eq!(next, 5);
         let shape: Vec<String> = doc
             .figures
             .iter()
@@ -864,14 +928,21 @@ Outro.
                     )
                 }
                 FigureBody::Panes(panes) => format!("@{} ba {}", f.element, panes.len()),
+                FigureBody::Flow(flow) => format!(
+                    "@{} flow #{} narrow={}",
+                    f.element,
+                    f.index,
+                    flow.flow.narrow.is_some()
+                ),
             })
             .collect();
         assert_eq!(
             shape,
             [
                 "@1 svg #0 Some(\"a box\") Some(\"The caption.\") blank=true",
-                "@4 md-fig #1 None inner=[1]",
-                "@5 img #3 A shot /abs/shot.jpg Some(\"Its caption.\")",
+                "@2 flow #1 narrow=false",
+                "@4 md-fig #2 None inner=[1]",
+                "@5 img #4 A shot /abs/shot.jpg Some(\"Its caption.\")",
             ]
         );
         assert_eq!(doc.md.elements.len(), 8);

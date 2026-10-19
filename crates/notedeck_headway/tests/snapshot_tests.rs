@@ -5691,6 +5691,132 @@ fn review_explainer_ba_snapshot(theme: egui::ThemePreference, name: &str) {
     harness.snapshot(name);
 }
 
+/// An explainer source with flow fences: a top-down pipeline (toned
+/// nodes, labels, a same-rank pair joined by a labelled line, a dashed
+/// back edge),
+/// captioned, then a left-to-right row too wide for a narrow column, so
+/// its top-down narrow layout swaps in there.
+const FLOW_EXPLAINER: &str = "\
+---
+title: Flows that lay out
+---
+
+The pipeline below is laid out, not drawn by hand.
+
+```flow label=\"The flow pipeline\"
+src: Explainer Markdown | a flow fence {brass}
+parse: parse_flow | nodes, edges, same
+lay: layout | rank, order, place, route {slate}
+check: crossings? | fewest wins {dim}
+svg: draw | an SVG in explain's tokens
+pane: flow_ui | wide, else narrow {moss}
+src -> parse
+parse -> lay
+same: lay check
+lay -- check: sweep
+lay -> svg
+svg -> pane
+pane --> src: next page
+---
+From fence to pane, top down.
+```
+
+```flow dir=right label=\"A row of three\"
+a: Ask
+b: Lay out | rank, order, place and route
+c: Draw {moss}
+a -> b: rows
+b -> c
+```
+
+The end.
+";
+
+/// Open the queue card's review on [`FLOW_EXPLAINER`].
+fn open_flow_explainer(harness: &mut Harness<'static, HeadwayTestState>) {
+    let fixture = review_fixture();
+    seed_review_queue(harness, &fixture);
+    add_queue_sources_with(harness, FLOW_EXPLAINER);
+    open_review_queue(harness);
+    wait_for_label(harness, "Keys come next.");
+}
+
+/// Wait until both of [`FLOW_EXPLAINER`]'s flows are drawn.
+fn wait_for_flows(harness: &mut Harness<'static, HeadwayTestState>) {
+    wait_for_label(harness, "The flow pipeline");
+    wait_for_label(harness, "A row of three");
+}
+
+/// A wide pane draws a flow fence as a laid-out diagram, at 1:1 in its
+/// asked-for direction; a narrow Explainer tab swaps in the narrower
+/// top-down layout rather than scaling the wide one down.
+#[test]
+fn review_explainer_draws_flows() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1400.0, 1400.0));
+    open_flow_explainer(&mut harness);
+    wait_for_flows(&mut harness);
+    assert!(
+        harness.query_by_label_contains("parse_flow").is_none(),
+        "drawn, not shown as source"
+    );
+    assert!(
+        harness
+            .query_by_label("From fence to pane, top down.")
+            .is_some()
+    );
+    let row = harness.get_by_label("A row of three").rect();
+    assert!(
+        row.width() > 400.0 && row.height() < 120.0,
+        "left to right: {row:?}"
+    );
+
+    let mut narrow = behavioral_harness(egui::Vec2::new(420.0, 1400.0));
+    open_flow_explainer(&mut narrow);
+    narrow.get_by_label("Explainer source").click_accesskit();
+    wait_for_label(&mut narrow, "Flows that lay out");
+    wait_for_flows(&mut narrow);
+    narrow.run_steps(2);
+    let stacked = narrow.get_by_label("A row of three").rect();
+    assert!(
+        stacked.width() <= 320.0 && stacked.height() > row.height(),
+        "top down: {stacked:?}, was {row:?}"
+    );
+}
+
+/// Snapshot: [`FLOW_EXPLAINER`] shown whole (`E`) beside the commit
+/// message: the toned pipeline with its caption, then the left-to-right row.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_flow() {
+    review_explainer_flow_snapshot(
+        egui::ThemePreference::Light,
+        "headway_review_explainer_flow",
+    );
+}
+
+/// Snapshot: [`snapshot_headway_review_explainer_flow`] in the dark theme,
+/// the nodes' tones from explain's dark palette and the labels on the
+/// pane's black.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_flow_dark() {
+    review_explainer_flow_snapshot(
+        egui::ThemePreference::Dark,
+        "headway_review_explainer_flow_dark",
+    );
+}
+
+fn review_explainer_flow_snapshot(theme: egui::ThemePreference, name: &str) {
+    let mut harness = headway_harness(egui::Vec2::new(1400.0, 1100.0));
+    harness.ctx.options_mut(|o| o.theme_preference = theme);
+    open_flow_explainer(&mut harness);
+    wait_for_flows(&mut harness);
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::E);
+    wait_for_label(&mut harness, "Show less");
+    harness.run_steps(3);
+    harness.snapshot(name);
+}
+
 /// A review pane opened from a card's detail ("Review diff"), not the queue,
 /// reads with the queue's keys: `G` scrolls the diff, `?` pins a strip that
 /// says `q` goes back to the card, `n` steps to the next In Review card's

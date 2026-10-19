@@ -10,6 +10,7 @@ pub use headway::{event, store, teams, views};
 
 mod cache;
 mod cursor;
+mod explain_flow;
 mod explain_palette;
 mod jump;
 mod keys;
