@@ -21,10 +21,10 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 
 use crate::explain_diagram::{
-    BACKDROP, Diagram, Drawing, EdgeOp, PHONE, diagram_tokens, edge_line, esc, fence_attr, id_len,
-    is_js_ws, mono_size, text_w, wrap,
+    BACKDROP, Diagram, Drawing, EdgeOp, PHONE, diagram_tokens, edge_line, esc, id_len, is_js_ws,
+    mono_size, text_w, wrap,
 };
-use crate::review_figures::{Tone, take_tone};
+use crate::review_figures::{Tone, fence_attr, take_tone};
 
 /// A node's line height.
 const LINE: f64 = 17.0;

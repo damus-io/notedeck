@@ -17,10 +17,10 @@
 use std::fmt::Write as _;
 
 use crate::explain_diagram::{
-    Diagram, Drawing, EdgeOp, PHONE, diagram_tokens, edge_line, esc, fence_attr, id_len, is_js_ws,
-    mono_size, text_w, wrap,
+    Diagram, Drawing, EdgeOp, PHONE, diagram_tokens, edge_line, esc, id_len, is_js_ws, mono_size,
+    text_w, wrap,
 };
-use crate::review_figures::{Tone, take_tone};
+use crate::review_figures::{Tone, fence_attr, take_tone};
 
 /// A label's line height (11px text).
 const LH: f64 = 15.0;

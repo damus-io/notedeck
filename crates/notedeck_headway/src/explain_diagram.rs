@@ -1,5 +1,5 @@
 //! What explain's diagram fences (` ```flow `, ` ```sequence `) share:
-//! reading a fence's options and its edge lines, measuring and wrapping
+//! reading a fence's edge lines, measuring and wrapping
 //! monospace text as explain does, and the [`Diagram`] a fence draws to,
 //! a wide drawing and, where that won't fit a phone, a narrow one.
 
@@ -59,54 +59,6 @@ pub(crate) struct Drawing {
     pub svg: String,
     pub width: f32,
     pub height: f32,
-}
-
-/// The value of `key=` in a fence's info string, quoted or bare, as
-/// explain's `parse_attrs` reads it; a bare flag has none.
-pub(crate) fn fence_attr<'a>(info: &'a str, key: &str) -> Option<&'a str> {
-    let bytes = info.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if !is_attr_byte(bytes[i]) {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        while i < bytes.len() && is_attr_byte(bytes[i]) {
-            i += 1;
-        }
-        let name = &info[start..i];
-        if bytes.get(i) != Some(&b'=') {
-            continue;
-        }
-        i += 1;
-        let value = match bytes.get(i) {
-            Some(&q @ (b'"' | b'\'')) => {
-                let open = i + 1;
-                let Some(len) = info[open..].find(q as char) else {
-                    // An unclosed quote: explain's regex matches the name alone.
-                    continue;
-                };
-                i = open + len + 1;
-                &info[open..open + len]
-            }
-            _ => {
-                let open = i;
-                while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
-                    i += 1;
-                }
-                &info[open..i]
-            }
-        };
-        if name == key && !value.is_empty() {
-            return Some(value);
-        }
-    }
-    None
-}
-
-fn is_attr_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
 }
 
 /// JavaScript's whitespace, which explain's regexes and `trim` use.
@@ -261,19 +213,6 @@ pub(crate) fn esc(out: &mut String, s: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A fence's options, quoted or bare; a flag or an empty value is none.
-    #[test]
-    fn fence_attrs() {
-        let info = "flow dir=right wrap=30 label=\"a b\" id='x y' wide empty=";
-        assert_eq!(fence_attr(info, "dir"), Some("right"));
-        assert_eq!(fence_attr(info, "wrap"), Some("30"));
-        assert_eq!(fence_attr(info, "label"), Some("a b"));
-        assert_eq!(fence_attr(info, "id"), Some("x y"));
-        assert_eq!(fence_attr(info, "wide"), None);
-        assert_eq!(fence_attr(info, "empty"), None);
-        assert_eq!(fence_attr(info, "flow"), None);
-    }
 
     /// Words wrap at spaces, and a long one is cut after an identifier
     /// boundary, as explain's `wrap`.

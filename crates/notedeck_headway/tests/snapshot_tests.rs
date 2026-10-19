@@ -6308,6 +6308,75 @@ fn review_explainer_table_snapshot(theme: egui::ThemePreference, name: &str) {
     harness.snapshot(name);
 }
 
+/// An explainer source whose blocks take explain's shared fence options:
+/// a figure with a `src=` and an `id=`, captioned; a ba block framed by
+/// its `id=` alone; and a `wide` flow, drawn as any other since every
+/// figure already spans the pane's column.
+const OPTIONS_EXPLAINER: &str = "\
+---
+title: Shared fence options
+---
+
+Every block takes the same options.
+
+```figure src=\"src/relay.rs\" id=limits
+The relay **rejects** a REQ past its limit.
+---
+A figure with a src, captioned.
+```
+
+```ba id=swap
+### Before
+One reply.
+### After
+Two replies.
+```
+
+```flow wide label=\"A wide flow\"
+a: Ask
+b: Answer {moss}
+a -> b
+```
+
+The end.
+";
+
+/// Open the queue card's review on [`OPTIONS_EXPLAINER`], shown whole.
+fn open_options_explainer(harness: &mut Harness<'static, HeadwayTestState>) {
+    let fixture = review_fixture();
+    seed_review_queue(harness, &fixture);
+    add_queue_sources_with(harness, OPTIONS_EXPLAINER);
+    open_review_queue(harness);
+    wait_for_label(harness, "Keys come next.");
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::E);
+    wait_for_label(harness, "The end.");
+}
+
+/// A fence's `src=` draws as the file's upper-cased name over the figure,
+/// and its `id=` nowhere.
+#[test]
+fn review_explainer_draws_fence_options() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1400.0, 2400.0));
+    open_options_explainer(&mut harness);
+    wait_for_label(&mut harness, "A figure with a src, captioned.");
+    assert!(harness.query_by_label("SRC/RELAY.RS").is_some());
+    for hidden in ["src/relay.rs", "limits", "swap", "id="] {
+        assert!(!labelled_with(&harness, hidden), "{hidden} is drawn");
+    }
+}
+
+/// Snapshot: [`OPTIONS_EXPLAINER`] beside the commit message: the srcname
+/// over the captioned figure, the ba block in a frame for its id, and the
+/// wide flow spanning the column as any figure does.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_options() {
+    let mut harness = headway_harness(egui::Vec2::new(1400.0, 900.0));
+    open_options_explainer(&mut harness);
+    harness.run_steps(3);
+    harness.snapshot("headway_review_explainer_options");
+}
+
 /// A review pane opened from a card's detail ("Review diff"), not the queue,
 /// reads with the queue's keys: `G` scrolls the diff, `?` pins a strip that
 /// says `q` goes back to the card, `n` steps to the next In Review card's

@@ -12,8 +12,8 @@
 //!   [`Palette`]); any other body is Markdown, drawn in the frame.
 //! - a ` ```ba ` fence (or `~~~ba`, when its panes hold code): panes, each
 //!   opened by a `### Title {tone}` line, drawn side by side; two untoned
-//!   panes read as before (alert) and after (moss). Its caption, after a last
-//!   `---`, puts it in a figure's frame.
+//!   panes read as before (alert) and after (moss). A caption, a `src=` or
+//!   an `id=` puts it in a figure's frame.
 //! - a ` ```flow ` fence: boxes and arrows laid out by
 //!   [`explain_flow`](crate::explain_flow), drawn as an SVG, with a narrower
 //!   top-down layout for a column the first won't fit.
@@ -33,6 +33,11 @@
 //!   this host; a relative path says it can't show. One at a URL isn't a
 //!   figure: the shared renderer draws it, as it does in any note. Only this
 //!   pane reads local paths, since only its Markdown is the user's own.
+//!
+//! A figure, ba, flow or sequence fence takes explain's shared options: a
+//! caption after a last line holding only `---`, and on its fence line
+//! `src="file.rs"` (the file's name over the body), `id=` and `wide`
+//! ([`FigureOptions`]). A hunk fence's path is its `src`.
 //!
 //! Every load runs on a thread of its own and lands in [`Figures`] as a
 //! texture; a frame only looks it up.
@@ -220,14 +225,68 @@ fn take_cell_mark(cell: &mut TableCell, source: &str) -> Option<CellMark> {
     Some(CellMark::of(tone))
 }
 
-/// A figure: what it draws, and the caption under it.
+/// A figure: what it draws, the options on its fence line, and the caption
+/// under it.
 pub(crate) struct Figure {
     /// The top-level element of its body it is.
     pub element: usize,
     /// Its number in the page: its load's key.
     pub index: usize,
     pub body: FigureBody,
+    pub options: FigureOptions,
     pub caption: Option<String>,
+}
+
+impl Figure {
+    /// Whether it draws in a figure's frame: any figure but a wrong block,
+    /// and a ba block only with a caption, a `src=` or an `id=`, as
+    /// explain's `ba` puts it in one.
+    pub(crate) fn framed(&self) -> bool {
+        match self.body {
+            FigureBody::Wrong(_) => false,
+            FigureBody::Panes(_) => {
+                self.caption.is_some()
+                    || self.options.srcname.is_some()
+                    || self.options.id.is_some()
+            }
+            _ => true,
+        }
+    }
+}
+
+/// The options explain's `figure` reads off a block's fence line, after its
+/// name: ` ```flow id=retry src="src/relay.rs" `. Its third, `wide`, lets
+/// a figure out past explain's text column; every figure in the pane
+/// already spans its column, with no margin beside it to let one into, so
+/// it draws as any other and isn't kept.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct FigureOptions {
+    /// `src=`: the file the figure is of, over its body, as explain's
+    /// `srcname` shows it: upper case. A hunk fence's is its path.
+    pub srcname: Option<String>,
+    /// `id=`: the anchor explain gives the figure. Nothing in the pane links
+    /// to one, so it shows nowhere; it only frames a ba block
+    /// ([`Figure::framed`]).
+    pub id: Option<String>,
+}
+
+impl FigureOptions {
+    /// The options on fence info string `info`.
+    fn of(info: &str) -> Self {
+        Self {
+            srcname: fence_attr(info, "src").map(str::to_uppercase),
+            id: fence_attr(info, "id").map(str::to_owned),
+        }
+    }
+
+    /// A hunk fence's: its path for the srcname, and nothing else, as
+    /// explain's `hunk` builds its figure.
+    fn of_hunk(cite: &HunkCite) -> Self {
+        Self {
+            srcname: Some(cite.path.to_uppercase()).filter(|p| !p.is_empty()),
+            ..Self::default()
+        }
+    }
 }
 
 /// What a figure draws.
@@ -255,15 +314,12 @@ pub(crate) enum FigureBody {
 /// A ` ```hunk ` fence's cite, and what the commit's diff had for it.
 pub(crate) struct HunkFigure {
     pub cite: HunkCite,
-    /// The path over the block, as explain's `srcname` shows it: upper case.
-    pub srcname: String,
     pub found: HunkFound,
 }
 
 impl HunkFigure {
     fn new(cite: HunkCite) -> Self {
         Self {
-            srcname: cite.path.to_uppercase(),
             cite,
             found: HunkFound::Unsearched,
         }
@@ -472,10 +528,12 @@ fn figure_of(at: usize, element: &MdElement, source: &str, next: &mut usize) -> 
             if kind == Some("hunk") {
                 // Its `match:` line is in the body, above the caption.
                 let Caption { body, caption } = split_caption(content);
+                let cite = HunkCite::parse(lang, body);
                 return Some(Figure {
                     element: at,
                     index: take(next),
-                    body: FigureBody::Hunk(Box::new(HunkFigure::new(HunkCite::parse(lang, body)))),
+                    options: FigureOptions::of_hunk(&cite),
+                    body: FigureBody::Hunk(Box::new(HunkFigure::new(cite))),
                     caption: caption.map(str::to_owned),
                 });
             }
@@ -486,10 +544,12 @@ fn figure_of(at: usize, element: &MdElement, source: &str, next: &mut usize) -> 
                     element: at,
                     index: take(next),
                     body: FigureBody::Wrong(Box::new(Figured::parse(content, next))),
+                    options: FigureOptions::default(),
                     caption: None,
                 });
             }
             let Caption { body, caption } = split_caption(content);
+            let options = FigureOptions::of(lang);
             let diagram = match kind {
                 Some("flow") => Some(render_flow(body, lang)),
                 // A sequence with no lifelines has nothing to draw: its
@@ -512,6 +572,7 @@ fn figure_of(at: usize, element: &MdElement, source: &str, next: &mut usize) -> 
                         diagram,
                         narrow_index,
                     })),
+                    options,
                     caption: caption.map(str::to_owned),
                 });
             }
@@ -520,6 +581,7 @@ fn figure_of(at: usize, element: &MdElement, source: &str, next: &mut usize) -> 
                     element: at,
                     index,
                     body: FigureBody::Panes(panes(body, next)),
+                    options,
                     caption: caption.map(str::to_owned),
                 });
             }
@@ -539,6 +601,7 @@ fn figure_of(at: usize, element: &MdElement, source: &str, next: &mut usize) -> 
                 element: at,
                 index,
                 body,
+                options,
                 caption: caption.map(str::to_owned),
             })
         }
@@ -554,11 +617,60 @@ fn figure_of(at: usize, element: &MdElement, source: &str, next: &mut usize) -> 
                     alt: alt.to_owned(),
                     src: target.src.to_owned(),
                 },
+                options: FigureOptions::default(),
                 caption: target.title.map(str::to_owned),
             })
         }
         _ => None,
     }
+}
+
+/// The value of `key=` in a fence's info string, quoted or bare, as
+/// explain's `parse_attrs` reads it; a bare flag has none.
+pub(crate) fn fence_attr<'a>(info: &'a str, key: &str) -> Option<&'a str> {
+    let bytes = info.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !is_attr_byte(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_attr_byte(bytes[i]) {
+            i += 1;
+        }
+        let name = &info[start..i];
+        if bytes.get(i) != Some(&b'=') {
+            continue;
+        }
+        i += 1;
+        let value = match bytes.get(i) {
+            Some(&q @ (b'"' | b'\'')) => {
+                let open = i + 1;
+                let Some(len) = info[open..].find(q as char) else {
+                    // An unclosed quote: explain's regex matches the name alone.
+                    continue;
+                };
+                i = open + len + 1;
+                &info[open..open + len]
+            }
+            _ => {
+                let open = i;
+                while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                &info[open..i]
+            }
+        };
+        if name == key && !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn is_attr_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
 }
 
 /// `*next`, moving it on.
@@ -1353,13 +1465,111 @@ x
         };
         assert_eq!(first.cite.path, "src/guard.ts");
         assert_eq!(first.cite.header, "@@ -8,2 +8,3 @@");
-        assert_eq!(first.srcname, "SRC/GUARD.TS");
+        let srcname = doc.figures[0].options.srcname.as_deref();
+        assert_eq!(srcname, Some("SRC/GUARD.TS"));
         assert_eq!(doc.figures[0].caption.as_deref(), Some("The guard."));
         assert_eq!(found(&doc), [HunkFound::Unsearched; 3]);
 
         doc.resolve_hunks(&patch);
         let hunk = |hunk| HunkFound::Found(HunkRef { file: 0, hunk });
         assert_eq!(found(&doc), [hunk(0), HunkFound::Missing, hunk(1)]);
+    }
+
+    /// A fence's options, quoted or bare; a flag or an empty value is none.
+    #[test]
+    fn fence_attrs() {
+        let info = "flow dir=right wrap=30 label=\"a b\" id='x y' wide empty=";
+        assert_eq!(fence_attr(info, "dir"), Some("right"));
+        assert_eq!(fence_attr(info, "wrap"), Some("30"));
+        assert_eq!(fence_attr(info, "label"), Some("a b"));
+        assert_eq!(fence_attr(info, "id"), Some("x y"));
+        assert_eq!(fence_attr(info, "wide"), None);
+        assert_eq!(fence_attr(info, "empty"), None);
+        assert_eq!(fence_attr(info, "flow"), None);
+        assert_eq!(fence_attr("flow label=\"open wrap=9", "wrap"), Some("9"));
+    }
+
+    /// explain's shared options on every kind of figure fence: `src=` the
+    /// upper-cased srcname, `id=`, a caption after `---`, and `wide` read
+    /// past; a
+    /// hunk's srcname is its path and nothing else, and a wrong block or a
+    /// lone image takes none. A ba block is framed by a caption, a `src=`
+    /// or an `id=`, and bare without.
+    #[test]
+    fn figures_take_the_shared_fence_options() {
+        let text = "\
+```flow id=retry src=\"src/relay.rs\" wide
+a -> b
+---
+The retry.
+```
+
+```sequence wide label=\"not wide\"
+a -> b: hi
+```
+
+```figure src='notes.md'
+Some *text*.
+```
+
+```ba
+### Before
+a
+### After
+b
+```
+
+```ba id=swap
+### Before
+a
+### After
+b
+```
+
+```ba src=lib.rs
+### Before
+a
+### After
+b
+```
+
+```hunk src/guard.ts @@ -1 +1 @@ id=nope wide
+```
+
+```wrong id=w src=w.rs wide
+It stalls.
+```
+
+![A shot](/abs/shot.jpg)
+";
+        let mut next = 0;
+        let doc = Figured::parse(text, &mut next);
+        let shape: Vec<String> = doc
+            .figures
+            .iter()
+            .map(|f| {
+                let FigureOptions { srcname, id } = &f.options;
+                format!(
+                    "{srcname:?} {id:?} {:?} {}",
+                    f.caption.as_deref(),
+                    f.framed()
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                "Some(\"SRC/RELAY.RS\") Some(\"retry\") Some(\"The retry.\") true",
+                "None None None true",
+                "Some(\"NOTES.MD\") None None true",
+                "None None None false",
+                "None Some(\"swap\") None true",
+                "Some(\"LIB.RS\") None None true",
+                "Some(\"SRC/GUARD.TS\") None None true",
+                "None None None false",
+                "None None None true",
+            ]
+        );
     }
 
     /// A cell's trailing `{tone}` comes off its text and marks it, as

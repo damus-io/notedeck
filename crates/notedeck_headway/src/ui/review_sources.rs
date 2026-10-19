@@ -523,11 +523,14 @@ impl BlockHook for FigureHook<'_> {
     }
 }
 
-/// A figure, centred in a thin frame at no more than its own size or the
-/// pane's width, its caption small and muted under it. A figure that can't
-/// show draws a placeholder saying why; one loading, a spinner. A ba block
-/// without a caption is no figure in explain, so it draws bare, and a wrong
-/// block is never one ([`wrong_ui`]).
+/// A figure, centred at no more than its own size in a thin frame as wide
+/// as the column (as explain's every figure is, so a `wide` one has nothing
+/// to widen), its caption small and muted under it. One with a `src=`
+/// has the file's name over its body ([`srcname_ui`]). A figure that can't
+/// show draws a placeholder saying
+/// why; one loading, a spinner. A ba block with no caption, `src=` or `id=`
+/// is no figure in explain, so it draws bare, and a wrong block is never
+/// one ([`wrong_ui`]).
 fn figure_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -536,20 +539,18 @@ fn figure_ui(
     page: &mut Page<'_>,
     figure: &Figure,
 ) {
-    match (&figure.body, &figure.caption) {
-        (FigureBody::Panes(panes), None) => {
-            ui.add_space(SPACING_XS);
-            panes_ui(ui, theme, note, txn, page, panes);
-            ui.add_space(SPACING_SM);
-            return;
+    if !figure.framed() {
+        match &figure.body {
+            FigureBody::Panes(panes) => {
+                ui.add_space(SPACING_XS);
+                panes_ui(ui, theme, note, txn, page, panes);
+                ui.add_space(SPACING_SM);
+            }
+            FigureBody::Wrong(body) => wrong_ui(ui, theme, note, txn, page, body),
+            _ => {}
         }
-        (FigureBody::Wrong(body), _) => {
-            wrong_ui(ui, theme, note, txn, page, body);
-            return;
-        }
-        _ => {}
+        return;
     }
-    let dark = ui.visuals().dark_mode;
     let margin = SPACING_SM;
     ui.add_space(SPACING_XS);
     ui.vertical_centered(|ui| {
@@ -558,46 +559,16 @@ fn figure_ui(
             .corner_radius(4.0)
             .inner_margin(margin);
         let available = ui.available_width() - 2.0 * margin - 2.0;
-        frame.show(ui, |ui| match &figure.body {
-            FigureBody::Svg { source, label } => {
-                let label = label.as_deref().or(figure.caption.as_deref());
-                let view = page
-                    .figures
-                    .svg(ui.ctx(), page.palette, figure.index, dark, source);
-                if let FigureView::Failed(failure) = &view {
-                    placeholder_ui(ui, theme, label, None, failure);
-                    ui.label(egui::RichText::new(source.as_str()).small().monospace());
-                    return;
-                }
-                figure_view_ui(ui, theme, view, available, label, "");
+        let srcname = figure.options.srcname.as_deref();
+        frame.show(ui, |ui| {
+            if let Some(srcname) = srcname {
+                // The name sits at the frame's left, so the frame spans
+                // the column as explain's does rather than hugging a
+                // narrower body.
+                ui.set_min_width(available);
+                srcname_ui(ui, theme, page, srcname);
             }
-            FigureBody::Markdown(inner) => {
-                ui.vertical(|ui| {
-                    ui.set_max_width(available);
-                    figured_ui(ui, theme, note, txn, page.nested(), inner);
-                });
-            }
-            FigureBody::Image { alt, src } => {
-                let view = page
-                    .figures
-                    .image(ui.ctx(), page.palette, figure.index, dark, src);
-                figure_view_ui(ui, theme, view, available, Some(alt.as_str()), src);
-            }
-            FigureBody::Panes(panes) => {
-                ui.set_width(available);
-                panes_ui(ui, theme, note, txn, page, panes);
-            }
-            FigureBody::Diagram(diagram) => {
-                diagram_ui(ui, theme, page, figure.index, diagram, available)
-            }
-            FigureBody::Hunk(hunk) => {
-                ui.vertical(|ui| {
-                    ui.set_width(available);
-                    hunk_ui(ui, theme, page, figure.index, hunk);
-                });
-            }
-            // Drawn bare, above.
-            FigureBody::Wrong(_) => {}
+            figure_body_ui(ui, theme, note, txn, page, figure, available);
         });
         if let Some(caption) = &figure.caption {
             ui.add_space(SPACING_XS);
@@ -609,6 +580,75 @@ fn figure_ui(
         }
     });
     ui.add_space(SPACING_SM);
+}
+
+/// The file a figure is of, over its body at the frame's left, as
+/// explain's `srcname`: small upper-case mono in its faint ink.
+fn srcname_ui(ui: &mut egui::Ui, theme: &ColorTheme, page: &Page<'_>, srcname: &str) {
+    let size = egui::TextStyle::Body.resolve(ui.style()).size * SRCNAME_SCALE;
+    let ink = tone_color(page.palette, Some("ink-3"), ui.visuals().dark_mode);
+    let text = egui::RichText::new(srcname)
+        .monospace()
+        .size(size)
+        .color(ink.unwrap_or(theme.text_muted));
+    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+        ui.label(text);
+    });
+    ui.add_space(SPACING_SM);
+}
+
+/// What a framed figure draws in its frame, in `available` points.
+fn figure_body_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    note: Option<&mut NoteContext>,
+    txn: Option<&nostrdb::Transaction>,
+    page: &mut Page<'_>,
+    figure: &Figure,
+    available: f32,
+) {
+    let dark = ui.visuals().dark_mode;
+    match &figure.body {
+        FigureBody::Svg { source, label } => {
+            let label = label.as_deref().or(figure.caption.as_deref());
+            let view = page
+                .figures
+                .svg(ui.ctx(), page.palette, figure.index, dark, source);
+            if let FigureView::Failed(failure) = &view {
+                placeholder_ui(ui, theme, label, None, failure);
+                ui.label(egui::RichText::new(source.as_str()).small().monospace());
+                return;
+            }
+            figure_view_ui(ui, theme, view, available, label, "");
+        }
+        FigureBody::Markdown(inner) => {
+            ui.vertical(|ui| {
+                ui.set_max_width(available);
+                figured_ui(ui, theme, note, txn, page.nested(), inner);
+            });
+        }
+        FigureBody::Image { alt, src } => {
+            let view = page
+                .figures
+                .image(ui.ctx(), page.palette, figure.index, dark, src);
+            figure_view_ui(ui, theme, view, available, Some(alt.as_str()), src);
+        }
+        FigureBody::Panes(panes) => {
+            ui.set_width(available);
+            panes_ui(ui, theme, note, txn, page, panes);
+        }
+        FigureBody::Diagram(diagram) => {
+            diagram_ui(ui, theme, page, figure.index, diagram, available)
+        }
+        FigureBody::Hunk(hunk) => {
+            ui.vertical(|ui| {
+                ui.set_width(available);
+                hunk_ui(ui, theme, page, figure.index, hunk);
+            });
+        }
+        // Never framed: drawn bare in figure_ui.
+        FigureBody::Wrong(_) => {}
+    }
 }
 
 /// A diagram figure's drawing at 1:1: the wide layout where `available` holds
@@ -847,27 +887,16 @@ const CODE_LINE_HEIGHT: f32 = 1.6;
 /// explain's `srcname` against its body text: `.7rem` over its 17px.
 const SRCNAME_SCALE: f32 = 0.7 * 16.0 / 17.0;
 
-/// A ` ```hunk ` fence, as explain builds it: the file's path in small
-/// upper-case mono (its `srcname`), then the hunk the commit's diff has for
-/// it in a coloured block ([`pre_ui`]), its `@@` header first. Without the
+/// A ` ```hunk ` fence, as explain builds it, under its path (the figure's
+/// srcname, [`srcname_ui`]): the hunk the commit's diff has for it in a
+/// coloured block ([`pre_ui`]), its `@@` header first. Without the
 /// diff it is the citation, the header alone; a diff without the hunk says
 /// so under it. `id` is the figure's number, to tell its scroll apart. A
 /// long hunk folds ([`PreFold`]), its button counting the lines under the
 /// header.
 fn hunk_ui(ui: &mut egui::Ui, theme: &ColorTheme, page: &Page<'_>, id: usize, hunk: &HunkFigure) {
-    let dark = ui.visuals().dark_mode;
     let pre_id = egui::IdSalt::new(("hunk", id));
     let fold = PreFold::of(page, false);
-    if !hunk.srcname.is_empty() {
-        let size = egui::TextStyle::Body.resolve(ui.style()).size * SRCNAME_SCALE;
-        let ink = tone_color(page.palette, Some("ink-3"), dark).unwrap_or(theme.text_muted);
-        let srcname = egui::RichText::new(hunk.srcname.as_str())
-            .monospace()
-            .size(size)
-            .color(ink);
-        ui.label(srcname);
-        ui.add_space(SPACING_SM);
-    }
     if let (HunkFound::Found(at), Some(patch)) = (hunk.found, page.patch)
         && let Some(file) = patch.files().get(at.file)
         && let Some(found) = file.hunks.get(at.hunk)
