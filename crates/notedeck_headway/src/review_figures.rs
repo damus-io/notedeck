@@ -29,10 +29,13 @@
 //!   under its path. The page never copies code: before the diff is in, or
 //!   when it hasn't got the hunk, it's the citation alone.
 //! - a paragraph holding one image and nothing else: a screenshot, its
-//!   `"title"` the caption, read from a `data:` URI or an absolute path on
-//!   this host; a relative path says it can't show. One at a URL isn't a
-//!   figure: the shared renderer draws it, as it does in any note. Only this
-//!   pane reads local paths, since only its Markdown is the user's own.
+//!   `"title"` the caption, read from a `data:` URI, an absolute path on
+//!   this host, or an https URL (what the visual-explainer skill uploads a
+//!   screenshot to, so any host can show it), fetched through the media
+//!   cache as a note's image is; a relative path says it can't show. One at
+//!   a plain http URL isn't a figure: the shared renderer draws it as its
+//!   link. Only this pane reads local paths, since only its Markdown is the
+//!   user's own.
 //!
 //! A figure, ba, flow or sequence fence takes explain's shared options: a
 //! caption after a last line holding only `---`, and on its fence line
@@ -607,7 +610,7 @@ fn figure_of(at: usize, element: &MdElement, source: &str, next: &mut usize) -> 
         }
         MdElement::Paragraph(inlines) => {
             let LoneImage { alt, target } = lone_image(inlines, source)?;
-            if matches!(image_source(target.src), ImageSource::Url(_)) {
+            if matches!(image_source(target.src), ImageSource::Url(_)) && !is_hosted(target.src) {
                 return None;
             }
             Some(Figure {
@@ -858,6 +861,12 @@ impl Failure {
             Self::Svg(e) => format!("SVG didn't parse: {e}"),
         }
     }
+}
+
+/// Whether an image figure's `src` is an https URL, which the media cache
+/// fetches (the pane draws it from there, not through [`Figures`]).
+pub(crate) fn is_hosted(src: &str) -> bool {
+    src.starts_with("https://")
 }
 
 /// Where an image's `src` points, as the pane reads it.
@@ -1135,8 +1144,9 @@ impl Figures {
         src: &str,
     ) -> FigureView<'_> {
         let job = match image_source(src) {
-            // A URL is never a figure ([`figure_of`]): it isn't one to read
-            // off this host.
+            // An https figure is the media cache's to fetch ([`is_hosted`]),
+            // and no other URL is a figure: neither is one to read off this
+            // host.
             ImageSource::Url(_) | ImageSource::Elsewhere => {
                 return FigureView::Failed(Failure::NotOnHost);
             }
@@ -1201,8 +1211,9 @@ mod tests {
 
     /// The figures among a body's elements: an SVG fence (its caption and
     /// label), a Markdown fence (its own image numbered after it), a lone
-    /// image (its title the caption), a flow. An image mid-sentence and a
-    /// lone image at a URL aren't: the shared renderer draws them.
+    /// image (its title the caption) at a path or an https URL, a flow. An
+    /// image mid-sentence and a lone image at a plain http URL aren't: the
+    /// shared renderer draws them.
     #[test]
     fn figures_are_found_by_element() {
         let text = "\
@@ -1234,11 +1245,13 @@ Some **markdown**.
 
 ![Hosted](https://example.com/shot.png \"On the web.\")
 
+![Plain](http://example.com/shot.png)
+
 Outro.
 ";
         let mut next = 0;
         let doc = Figured::parse(text, &mut next);
-        assert_eq!(next, 5);
+        assert_eq!(next, 6);
         let shape: Vec<String> = doc
             .figures
             .iter()
@@ -1282,11 +1295,12 @@ Outro.
                 "@2 diagram #1 narrow=false",
                 "@4 md-fig #2 None inner=[1]",
                 "@5 img #4 A shot /abs/shot.jpg Some(\"Its caption.\")",
+                "@6 img #5 Hosted https://example.com/shot.png Some(\"On the web.\")",
             ]
         );
-        assert_eq!(doc.md.elements.len(), 8);
+        assert_eq!(doc.md.elements.len(), 9);
         assert!(doc.figure_at(5).is_some());
-        assert!(doc.figure_at(6).is_none(), "the https image");
+        assert!(doc.figure_at(7).is_none(), "the http image");
     }
 
     /// A ba fence's panes, as explain splits them: at `### ` lines, the

@@ -41,6 +41,10 @@ struct HeadwayTestState {
     /// a test can exercise the board↔card port's seeding both ways (a `Card` token
     /// shows the detail, a `Board`/`()` token returns to the grid).
     nav_token: Option<std::rc::Rc<dyn std::any::Any>>,
+    /// When set, every frame first runs the host's background half
+    /// ([`Notedeck::tick_headless`]), so the media cache delivers the
+    /// textures it loads, as the chrome's frame does.
+    tick_host: bool,
     /// Chrome's part of the keyboard: Headway reads no keys of its own.
     keys: ChromeKeys,
     /// When set, every frame is a real chrome frame running its own Headway
@@ -237,6 +241,11 @@ fn render_headway(ui: &mut egui::Ui, state: &mut HeadwayTestState) {
             return;
         }
 
+        if state.tick_host {
+            // No app is installed in the host, so this is only its
+            // background half: media jobs land their textures.
+            state.notedeck.tick_headless();
+        }
         let mut app_ctx = state.notedeck.app_context();
         // Mirror production: chrome runs `update` (sync poll + fan-out + seed) for
         // every opened app each frame, then `render` for the foreground one.
@@ -416,6 +425,7 @@ fn bare_state() -> HeadwayTestState {
         fonts_installed: false,
         ref_note: None,
         nav_token: None,
+        tick_host: false,
         chrome: None,
     }
 }
@@ -5579,6 +5589,140 @@ fn review_explainer_figures_snapshot(theme: egui::ThemePreference, name: &str) {
     wait_for_label(&mut harness, "Show less");
     harness.run_steps(3);
     harness.snapshot(name);
+}
+
+/// Where an explainer's uploaded screenshot claims to live: https, so the
+/// pane draws it as a figure through the media cache; port 9 (discard), so
+/// the cache's mime probe fails at once and nothing leaves the machine.
+const HOSTED_SHOT_URL: &str = "https://127.0.0.1:9/fame-original-dinner-shot.png";
+
+/// The uploaded screenshot's size, narrower than a narrow pane's column so
+/// a draw at it shows nothing upscaled.
+const HOSTED_SHOT_SIZE: [usize; 2] = [180, 70];
+
+/// The uploaded screenshot's alt text, the label its image carries.
+const HOSTED_SHOT_ALT: &str = "An uploaded screenshot";
+
+/// An explainer source whose screenshot is at an https URL, as the
+/// visual-explainer skill now uploads one, its title the caption.
+fn hosted_explainer_source() -> String {
+    format!(
+        "\
+---
+title: A screenshot uploaded
+---
+
+The shot below was uploaded with sharefile.
+
+![{HOSTED_SHOT_ALT}]({HOSTED_SHOT_URL} \"Its caption, from the title.\")
+
+The end.
+"
+    )
+}
+
+/// Open the queue card's review on [`hosted_explainer_source`], its
+/// screenshot seeded into the host's disk cache under
+/// [`HOSTED_SHOT_URL`] and the host's background half ticking so the media
+/// cache delivers it.
+fn open_hosted_explainer(harness: &mut Harness<'static, HeadwayTestState>) {
+    {
+        let state = harness.state_mut();
+        state.tick_host = true;
+        let app_ctx = state.notedeck.app_context();
+        let [w, h] = HOSTED_SHOT_SIZE;
+        let pixels = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                egui::Color32::from_rgb((x * 255 / w) as u8, 140, (y * 255 / h) as u8)
+            })
+            .collect();
+        let image = egui::ColorImage::new(HOSTED_SHOT_SIZE, pixels);
+        notedeck::MediaCache::write(
+            &app_ctx.img_cache.static_imgs.cache_dir,
+            HOSTED_SHOT_URL,
+            image,
+        )
+        .expect("the screenshot goes in the disk cache");
+    }
+    let fixture = review_fixture();
+    seed_review_queue(harness, &fixture);
+    add_queue_sources_with(harness, &hosted_explainer_source());
+    open_review_queue(harness);
+    wait_for_label(harness, "Keys come next.");
+}
+
+/// Pump frames until the image labelled `alt` has drawn (not its link,
+/// which carries the same text while it loads), returning its rect.
+fn wait_for_image(harness: &mut Harness<'static, HeadwayTestState>, alt: &str) -> egui::Rect {
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        harness.run_ok();
+        let image = harness
+            .query_all_by_label(alt)
+            .find(|node| node.accesskit_node().role() == egui::accesskit::Role::Image)
+            .map(|node| node.rect());
+        if let Some(rect) = image {
+            return rect;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the image {alt:?}; on screen:\n{}",
+            tree_text(harness)
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// A screenshot at an https URL draws as the path and data: ones do: a
+/// figure, the picture at its own size centred over its title as the
+/// caption, in the wide
+/// split beside the commit message and in a narrow pane's Explainer tab.
+#[test]
+fn review_explainer_draws_a_hosted_screenshot() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1200.0, 1000.0));
+    open_hosted_explainer(&mut harness);
+    let shot = wait_for_image(&mut harness, HOSTED_SHOT_ALT);
+    assert!(
+        (shot.width() - HOSTED_SHOT_SIZE[0] as f32).abs() < 0.5,
+        "drawn at its own width, not the column's: {shot:?}"
+    );
+    let caption = harness.get_by_label("Its caption, from the title.").rect();
+    assert!(caption.top() >= shot.bottom(), "{caption:?} under {shot:?}");
+    // A figure, centred over its caption, not the shared renderer's
+    // inline image with both at the column's left.
+    assert!(
+        (shot.center().x - caption.center().x).abs() < 1.0,
+        "{shot:?} centred over {caption:?}"
+    );
+    assert!(harness.query_by_label_contains("[Image:").is_none());
+
+    let mut narrow = behavioral_harness(egui::Vec2::new(420.0, 1000.0));
+    open_hosted_explainer(&mut narrow);
+    narrow.get_by_label("Explainer source").click_accesskit();
+    wait_for_label(&mut narrow, "A screenshot uploaded");
+    let shot = wait_for_image(&mut narrow, HOSTED_SHOT_ALT);
+    assert!(
+        (shot.width() - HOSTED_SHOT_SIZE[0] as f32).abs() < 0.5,
+        "{shot:?}"
+    );
+    assert!(
+        narrow
+            .query_by_label("Its caption, from the title.")
+            .is_some()
+    );
+}
+
+/// Snapshot: [`hosted_explainer_source`]'s https screenshot beside the
+/// commit message, framed and captioned as a path one is.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_hosted_shot() {
+    let mut harness = headway_harness(egui::Vec2::new(1000.0, 1000.0));
+    open_hosted_explainer(&mut harness);
+    wait_for_image(&mut harness, HOSTED_SHOT_ALT);
+    harness.run_steps(3);
+    harness.snapshot("headway_review_explainer_hosted_shot");
 }
 
 /// An explainer source with ba fences: a Before | After pair whose two

@@ -8,6 +8,8 @@
 //! own.
 
 use md_stream::MdElement;
+use notedeck::media::AnimationMode;
+use notedeck::media::images::ImageType;
 use notedeck::tokens::{RADIUS_MD, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THICK};
 use notedeck::{ColorTheme, NoteContext};
 use notedeck_ui::diff::{GitPatch, LineKind};
@@ -19,7 +21,7 @@ use crate::explain_diagram::BACKDROP;
 use crate::explain_palette::Palette;
 use crate::review_figures::{
     CellMark, DiagramFigure, Failure, Figure, FigureBody, FigureView, Figured, Figures,
-    FittedDrawing, HunkFigure, HunkFound, Pane,
+    FittedDrawing, HunkFigure, HunkFound, Pane, is_hosted,
 };
 use crate::review_walk::{CodeWalk, ExplainerPage, FrontMatter, SourceText};
 
@@ -626,6 +628,9 @@ fn figure_body_ui(
                 ui.set_max_width(available);
                 figured_ui(ui, theme, note, txn, page.nested(), inner);
             });
+        }
+        FigureBody::Image { alt, src } if is_hosted(src) => {
+            hosted_image_ui(ui, theme, note, alt, src, available);
         }
         FigureBody::Image { alt, src } => {
             let view = page
@@ -1306,6 +1311,38 @@ fn figure_view_ui(
             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, label));
         }
     }
+}
+
+/// A screenshot at an https `url`, from the media cache as a note's image
+/// is ([`notedeck::Images::latest_texture`]), drawn as
+/// [`figure_view_ui`] draws one read off this host. Until it has loaded, or
+/// when it can't (no note context, a fetch that failed), it's the image's
+/// link, so the picture is still a click away.
+fn hosted_image_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    note: Option<&mut NoteContext>,
+    alt: &str,
+    url: &str,
+    available: f32,
+) {
+    let texture = note.and_then(|note| {
+        note.img_cache.latest_texture(
+            note.jobs,
+            ui,
+            url,
+            ImageType::Content(None),
+            AnimationMode::NoAnimation,
+        )
+    });
+    let Some(texture) = texture else {
+        let text = if alt.is_empty() { url } else { alt };
+        ui.hyperlink_to(text, url);
+        return;
+    };
+    let size = texture.size_vec2();
+    let view = FigureView::Ready { texture, size };
+    figure_view_ui(ui, theme, view, available, Some(alt), url);
 }
 
 /// Why a figure can't show: its alt text, the `src` it names in mono (when
