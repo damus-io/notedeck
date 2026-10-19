@@ -17,6 +17,9 @@
 //! - a ` ```flow ` fence: boxes and arrows laid out by
 //!   [`explain_flow`](crate::explain_flow), drawn as an SVG, with a narrower
 //!   top-down layout for a column the first won't fit.
+//! - a ` ```sequence ` fence: lifelines and messages, drawn by
+//!   [`explain_sequence`](crate::explain_sequence) the same way, its narrow
+//!   drawing with the columns squeezed to a phone's width.
 //! - a paragraph holding one image and nothing else: a screenshot, its
 //!   `"title"` the caption, read from a `data:` URI or an absolute path on
 //!   this host; a relative path says it can't show. One at a URL isn't a
@@ -36,8 +39,10 @@ use egui::{ColorImage, TextureHandle, Vec2};
 use md_stream::{LoneImage, MdElement, ParsedMarkdown, lone_image};
 use resvg::usvg;
 
-use crate::explain_flow::{Drawing, Flow, render_flow};
+use crate::explain_diagram::{Diagram, Drawing};
+use crate::explain_flow::render_flow;
 use crate::explain_palette::Palette;
+use crate::explain_sequence::render_sequence;
 use crate::review_images::{Decoded, MAX_IMAGE_BYTES, decode_image};
 use crate::review_walk::SourceKey;
 
@@ -94,34 +99,34 @@ pub(crate) enum FigureBody {
     Image { alt: String, src: String },
     /// A ` ```ba ` fence's panes, in order.
     Panes(Vec<Pane>),
-    /// A ` ```flow ` fence, laid out.
-    Flow(Box<FlowFigure>),
+    /// A ` ```flow ` or ` ```sequence ` fence, laid out.
+    Diagram(Box<DiagramFigure>),
 }
 
-/// A flow figure: its drawings, the wide one loaded as the figure's own
+/// A diagram figure: its drawings, the wide one loaded as the figure's own
 /// index and the narrow one as `narrow_index`.
-pub(crate) struct FlowFigure {
-    pub flow: Flow,
+pub(crate) struct DiagramFigure {
+    pub diagram: Diagram,
     pub narrow_index: usize,
 }
 
-/// The drawing a flow shows at some width, and its load's index.
-pub(crate) struct FittedFlow<'a> {
+/// The drawing a diagram shows at some width, and its load's index.
+pub(crate) struct FittedDrawing<'a> {
     pub index: usize,
     pub drawing: &'a Drawing,
 }
 
-impl FlowFigure {
-    /// The drawing to show in `width` points ([`Flow::fitting`]), for the
+impl DiagramFigure {
+    /// The drawing to show in `width` points ([`Diagram::fitting`]), for the
     /// figure numbered `index`.
-    pub(crate) fn fitting(&self, index: usize, width: f32) -> FittedFlow<'_> {
-        let drawing = self.flow.fitting(width);
+    pub(crate) fn fitting(&self, index: usize, width: f32) -> FittedDrawing<'_> {
+        let drawing = self.diagram.fitting(width);
         let narrow = self
-            .flow
+            .diagram
             .narrow
             .as_ref()
             .is_some_and(|n| std::ptr::eq(n, drawing));
-        FittedFlow {
+        FittedDrawing {
             index: if narrow { self.narrow_index } else { index },
             drawing,
         }
@@ -263,22 +268,28 @@ fn figures(md: &ParsedMarkdown, next: &mut usize) -> Vec<Figure> {
 }
 
 /// The figure `element` (top-level element `at`) is, if it is one: a
-/// ` ```figure `, ` ```ba ` or ` ```flow ` fence, or a paragraph holding one image and
-/// nothing else whose source isn't a URL.
+/// ` ```figure `, ` ```ba `, ` ```flow ` or ` ```sequence ` fence, or a
+/// paragraph holding one image and nothing else whose source isn't a URL.
 fn figure_of(at: usize, element: &MdElement, source: &str, next: &mut usize) -> Option<Figure> {
     match element {
         MdElement::CodeBlock(code) => {
             let lang = code.language.as_ref()?.resolve(source);
             let kind = lang.split_whitespace().next();
-            if !matches!(kind, Some("figure" | "ba" | "flow")) {
+            if !matches!(kind, Some("figure" | "ba" | "flow" | "sequence")) {
                 return None;
             }
             let Caption { body, caption } = split_caption(code.content.resolve(source));
+            let diagram = match kind {
+                Some("flow") => Some(render_flow(body, lang)),
+                // A sequence with no lifelines has nothing to draw: its
+                // source shows as a code block.
+                Some("sequence") => Some(render_sequence(body, lang)?),
+                _ => None,
+            };
             let index = take(next);
-            if kind == Some("flow") {
-                let flow = render_flow(body, lang);
+            if let Some(diagram) = diagram {
                 // The narrow drawing loads as a figure of its own.
-                let narrow_index = if flow.narrow.is_some() {
+                let narrow_index = if diagram.narrow.is_some() {
                     take(next)
                 } else {
                     index
@@ -286,7 +297,10 @@ fn figure_of(at: usize, element: &MdElement, source: &str, next: &mut usize) -> 
                 return Some(Figure {
                     element: at,
                     index,
-                    body: FigureBody::Flow(Box::new(FlowFigure { flow, narrow_index })),
+                    body: FigureBody::Diagram(Box::new(DiagramFigure {
+                        diagram,
+                        narrow_index,
+                    })),
                     caption: caption.map(str::to_owned),
                 });
             }
@@ -928,11 +942,11 @@ Outro.
                     )
                 }
                 FigureBody::Panes(panes) => format!("@{} ba {}", f.element, panes.len()),
-                FigureBody::Flow(flow) => format!(
-                    "@{} flow #{} narrow={}",
+                FigureBody::Diagram(d) => format!(
+                    "@{} diagram #{} narrow={}",
                     f.element,
                     f.index,
-                    flow.flow.narrow.is_some()
+                    d.diagram.narrow.is_some()
                 ),
             })
             .collect();
@@ -940,7 +954,7 @@ Outro.
             shape,
             [
                 "@1 svg #0 Some(\"a box\") Some(\"The caption.\") blank=true",
-                "@2 flow #1 narrow=false",
+                "@2 diagram #1 narrow=false",
                 "@4 md-fig #2 None inner=[1]",
                 "@5 img #4 A shot /abs/shot.jpg Some(\"Its caption.\")",
             ]

@@ -5817,6 +5817,109 @@ fn review_explainer_flow_snapshot(theme: egui::ThemePreference, name: &str) {
     harness.snapshot(name);
 }
 
+/// An explainer source with a sequence fence: three lifelines (two
+/// declared, one only used), a request whose label wraps, a message to
+/// itself in slate, a dashed reply in moss, a note on one lifeline and one
+/// across two, captioned. It is wider than a phone, so a narrow column
+/// swaps in its squeezed drawing.
+const SEQUENCE_EXPLAINER: &str = "\
+---
+title: Sequences that draw
+---
+
+The exchange below is drawn, not written out.
+
+```sequence label=\"The review round trip\"
+pane: Review pane
+store: nostrdb
+relay -> store: kind 30625, a review record for the card
+store -> store: fold_review {slate}
+store --> pane: ReviewRecord {ok}
+note store: indexed by card
+pane -> relay: a comment on the card
+note pane,store: the pane reads only nostrdb, never the relay
+---
+One review, from the relay to the pane and back.
+```
+
+The end.
+";
+
+/// Open the queue card's review on [`SEQUENCE_EXPLAINER`].
+fn open_sequence_explainer(harness: &mut Harness<'static, HeadwayTestState>) {
+    let fixture = review_fixture();
+    seed_review_queue(harness, &fixture);
+    add_queue_sources_with(harness, SEQUENCE_EXPLAINER);
+    open_review_queue(harness);
+    wait_for_label(harness, "Keys come next.");
+}
+
+/// A wide pane draws a sequence fence as lifelines and messages at 1:1; a
+/// narrow Explainer tab swaps in the drawing squeezed to a phone's width
+/// rather than scaling the wide one down.
+#[test]
+fn review_explainer_draws_sequences() {
+    let mut harness = behavioral_harness(egui::Vec2::new(1400.0, 1400.0));
+    open_sequence_explainer(&mut harness);
+    wait_for_label(&mut harness, "The review round trip");
+    assert!(
+        harness.query_by_label_contains("fold_review").is_none(),
+        "drawn, not shown as source"
+    );
+    assert!(
+        harness
+            .query_by_label("One review, from the relay to the pane and back.")
+            .is_some()
+    );
+    let wide = harness.get_by_label("The review round trip").rect();
+    assert!(wide.width() > 400.0, "three lifelines: {wide:?}");
+
+    let mut narrow = behavioral_harness(egui::Vec2::new(420.0, 1400.0));
+    open_sequence_explainer(&mut narrow);
+    narrow.get_by_label("Explainer source").click_accesskit();
+    wait_for_label(&mut narrow, "Sequences that draw");
+    wait_for_label(&mut narrow, "The review round trip");
+    narrow.run_steps(2);
+    let squeezed = narrow.get_by_label("The review round trip").rect();
+    assert!(
+        squeezed.width() <= 320.0 && squeezed.height() > wide.height(),
+        "squeezed: {squeezed:?}, was {wide:?}"
+    );
+}
+
+/// Snapshot: [`SEQUENCE_EXPLAINER`] shown whole (`E`) beside the commit
+/// message: heads, dashed lifelines, toned messages and brass notes.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_sequence() {
+    review_explainer_sequence_snapshot(
+        egui::ThemePreference::Light,
+        "headway_review_explainer_sequence",
+    );
+}
+
+/// Snapshot: [`snapshot_headway_review_explainer_sequence`] in the dark
+/// theme, its tones from explain's dark palette.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_review_explainer_sequence_dark() {
+    review_explainer_sequence_snapshot(
+        egui::ThemePreference::Dark,
+        "headway_review_explainer_sequence_dark",
+    );
+}
+
+fn review_explainer_sequence_snapshot(theme: egui::ThemePreference, name: &str) {
+    let mut harness = headway_harness(egui::Vec2::new(1400.0, 1100.0));
+    harness.ctx.options_mut(|o| o.theme_preference = theme);
+    open_sequence_explainer(&mut harness);
+    wait_for_label(&mut harness, "The review round trip");
+    harness.press_key_modifiers(egui::Modifiers::SHIFT, egui::Key::E);
+    wait_for_label(&mut harness, "Show less");
+    harness.run_steps(3);
+    harness.snapshot(name);
+}
+
 /// A review pane opened from a card's detail ("Review diff"), not the queue,
 /// reads with the queue's keys: `G` scrolls the diff, `?` pins a strip that
 /// says `q` goes back to the card, `n` steps to the next In Review card's

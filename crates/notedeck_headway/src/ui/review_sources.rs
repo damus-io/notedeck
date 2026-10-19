@@ -12,10 +12,10 @@ use notedeck::{ColorTheme, NoteContext};
 use notedeck_ui::markdown::{BlockHook, MdBlock, fit_image};
 
 use super::widgets::{section_label, text_pill, tinted_pill};
-use crate::explain_flow::BACKDROP;
+use crate::explain_diagram::BACKDROP;
 use crate::explain_palette::Palette;
 use crate::review_figures::{
-    Failure, Figure, FigureBody, FigureView, Figured, Figures, FittedFlow, FlowFigure, Pane,
+    DiagramFigure, Failure, Figure, FigureBody, FigureView, Figured, Figures, FittedDrawing, Pane,
 };
 use crate::review_walk::{CodeWalk, ExplainerPage, FrontMatter, SourceText};
 
@@ -482,7 +482,9 @@ fn figure_ui(
                 ui.set_width(available);
                 panes_ui(ui, theme, note, txn, page, panes);
             }
-            FigureBody::Flow(flow) => flow_ui(ui, theme, page, figure.index, flow, available),
+            FigureBody::Diagram(diagram) => {
+                diagram_ui(ui, theme, page, figure.index, diagram, available)
+            }
         });
         if let Some(caption) = &figure.caption {
             ui.add_space(SPACING_XS);
@@ -496,21 +498,21 @@ fn figure_ui(
     ui.add_space(SPACING_SM);
 }
 
-/// A flow figure's drawing at 1:1: the wide layout where `available` holds
+/// A diagram figure's drawing at 1:1: the wide layout where `available` holds
 /// it, else the narrow one, scrolling sideways if even that is wider. It is
 /// never scaled, so its text stays at explain's 12px. Its labels sit on the
 /// pane's own background.
-fn flow_ui(
+fn diagram_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     page: &mut Page<'_>,
     index: usize,
-    flow: &FlowFigure,
+    diagram: &DiagramFigure,
     available: f32,
 ) {
     let dark = ui.visuals().dark_mode;
     let backdrop = ui.visuals().panel_fill;
-    let FittedFlow { index, drawing } = flow.fitting(index, available);
+    let FittedDrawing { index, drawing } = diagram.fitting(index, available);
     let size = egui::vec2(drawing.width, drawing.height);
     let view = page
         .figures
@@ -530,13 +532,19 @@ fn flow_ui(
             return;
         }
         FigureView::Failed(failure) => {
-            placeholder_ui(ui, theme, Some(flow.flow.label.as_str()), None, &failure);
+            placeholder_ui(
+                ui,
+                theme,
+                Some(diagram.diagram.label.as_str()),
+                None,
+                &failure,
+            );
             return;
         }
         FigureView::Ready { texture, .. } => texture,
     };
     let image = egui::Image::new(texture).fit_to_exact_size(size);
-    let label = flow.flow.label.as_str();
+    let label = diagram.diagram.label.as_str();
     let add = |ui: &mut egui::Ui| {
         let response = ui.add(image);
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, label));
@@ -546,7 +554,7 @@ fn flow_ui(
         return;
     }
     egui::ScrollArea::horizontal()
-        .id_salt(("explainer-flow", index))
+        .id_salt(("explainer-diagram", index))
         .max_width(available)
         .show(ui, add);
 }
