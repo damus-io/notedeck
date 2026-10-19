@@ -1,7 +1,10 @@
 use crate::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
 use crate::icons::search_icon;
 use egui::{emath::GuiRounding, Align, CornerRadius, Label, Pos2, RichText, Stroke, TextEdit};
-use notedeck::tokens::{RADIUS_MD, RADIUS_PILL, RADIUS_SM, SPACING_SM, SPACING_XS, STROKE_THIN};
+use notedeck::tokens::{
+    EYEBROW_SIZE, EYEBROW_TRACKING, RADIUS_MD, RADIUS_PILL, RADIUS_SM, SPACING_SM, SPACING_XS,
+    STROKE_THIN,
+};
 use notedeck::{ColorTheme, InlineChrome, NotedeckTextStyle};
 
 pub fn x_button(rect: egui::Rect) -> impl egui::Widget {
@@ -434,4 +437,19 @@ mod tests {
             "the pill's outline should make it taller than the bare chip"
         );
     }
+}
+
+/// An eyebrow: a small muted all-caps label over a block it names, like the
+/// "COMMIT" and "EXPLAINER" over the two columns of Headway's wide review
+/// pane. [`EYEBROW_SIZE`] text, tracked out by [`EYEBROW_TRACKING`], in the
+/// theme's muted text colour.
+///
+/// The caller writes `text` in capitals, so a frame never uppercases it and
+/// allocates.
+pub fn eyebrow_label(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) -> egui::Response {
+    let text = RichText::new(text)
+        .size(EYEBROW_SIZE)
+        .extra_letter_spacing(EYEBROW_TRACKING)
+        .color(theme.text_muted);
+    ui.add(Label::new(text).selectable(false))
 }

@@ -97,6 +97,15 @@ pub const CHART_ROW_GAP: f32 = 4.0;
 /// Sparkline height
 pub const SPARKLINE_HEIGHT: f32 = 18.0;
 
+// --- Typography ---
+
+/// Eyebrow text size (11px): the small all-caps label over a block it names
+/// ("COMMIT", "EXPLAINER"); see `notedeck_ui::eyebrow_label`.
+pub const EYEBROW_SIZE: f32 = 11.0;
+/// Eyebrow letter spacing: 0.08em of [`EYEBROW_SIZE`], so its capitals read
+/// as a label rather than as shouted words.
+pub const EYEBROW_TRACKING: f32 = 0.08 * EYEBROW_SIZE;
+
 // --- Status Colors ---
 //
 // Linear's status-circle colors, shared so one meaning has one color across

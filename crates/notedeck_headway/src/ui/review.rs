@@ -15,6 +15,7 @@ use nostrdb_net::NoteId;
 use notedeck::ColorTheme;
 use notedeck::tokens::{SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS};
 use notedeck_ui::diff::{NoteStep, PatchHeader, PatchNoteKind, PatchScroll};
+use notedeck_ui::eyebrow_label;
 use notedeck_ui::keybind_hint::KeybindHint;
 use std::time::Instant;
 
@@ -1720,8 +1721,8 @@ struct CommitHeader<'a> {
 /// The top of the diff, which scrolls away with it: the commit's subject and
 /// byline ([`commit_head_ui`]) over its message ([`message_ui`]). On a wide
 /// pane with an explainer the two split ([`split_ui`]), and the subject and
-/// byline head the message's column, under a "Commit" label as the
-/// explainer's column is under "Explainer". Otherwise they run across the
+/// byline head the message's column, under a "COMMIT" eyebrow as the
+/// explainer's column is under "EXPLAINER". Otherwise they run across the
 /// pane over the message alone at a readable measure, with the subject left
 /// out when it's the card's title already in the header. Then the code
 /// walk's notes on no hunk ([`walk_top_ui`]). `true` when the session chip
@@ -1997,7 +1998,7 @@ fn split_ui(
         message_left,
         message_width,
     );
-    section_label(&mut right, theme, "Commit");
+    eyebrow_label(&mut right, theme, "COMMIT");
     let chip = commit_head_ui(&mut right, theme, app_ctx, head);
     right.add_space(SPACING_MD);
     message_ui(&mut right, theme, app_ctx, message);

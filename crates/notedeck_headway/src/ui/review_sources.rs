@@ -10,9 +10,10 @@
 use md_stream::MdElement;
 use notedeck::tokens::{RADIUS_MD, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THICK};
 use notedeck::{ColorTheme, NoteContext};
+use notedeck_ui::eyebrow_label;
 use notedeck_ui::markdown::{BlockHook, MdBlock, fit_image};
 
-use super::widgets::{section_label, text_pill, tinted_pill};
+use super::widgets::{text_pill, tinted_pill};
 use crate::explain_diagram::BACKDROP;
 use crate::explain_palette::Palette;
 use crate::review_figures::{
@@ -145,8 +146,8 @@ pub(super) fn explainer_ui(
 
 /// The explainer source `source` as a column of a wide pane's diff header,
 /// beside the commit message: the page whole ([`explainer_page_ui`]), for
-/// the caller to clamp, under a small "Explainer" label as the message
-/// column is under "Commit". With no tab to say so, a "git note" pill by its
+/// the caller to clamp, under a small "EXPLAINER" eyebrow as the message
+/// column is under "COMMIT". With no tab to say so, a "git note" pill by its
 /// title says when it is the commit's note.
 pub(super) fn explainer_column_ui(
     ui: &mut egui::Ui,
@@ -169,7 +170,7 @@ enum PageHead {
     /// title large, then its src line and fact pills.
     Tab,
     /// A column beside the commit message, under the card's title and
-    /// beside the commit's own byline: a small "Explainer" label and the
+    /// beside the commit's own byline: a small "EXPLAINER" eyebrow and the
     /// title at [`COLUMN_TITLE_SIZE`], with no src line (the byline has the
     /// sha) or fact pills. `note` puts a "git note" pill by the title.
     Column { note: bool },
@@ -192,7 +193,7 @@ fn explainer_page_ui(
     match head {
         PageHead::Tab => tab_head_ui(ui, theme, front),
         PageHead::Column { note } => {
-            section_label(ui, theme, "Explainer");
+            eyebrow_label(ui, theme, "EXPLAINER");
             if front.title.is_some() || note {
                 ui.horizontal_wrapped(|ui| {
                     if let Some(title) = &front.title {
