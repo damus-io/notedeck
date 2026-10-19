@@ -11,10 +11,10 @@ use notedeck::tokens::{RADIUS_MD, SPACING_MD, SPACING_SM, SPACING_XS, STROKE_THI
 use notedeck::{ColorTheme, NoteContext};
 use notedeck_ui::markdown::{BlockHook, MdBlock, fit_image};
 
-use super::widgets::{text_pill, tinted_pill};
+use super::widgets::{section_label, text_pill, tinted_pill};
 use crate::explain_palette::Palette;
 use crate::review_figures::{Failure, Figure, FigureBody, FigureView, Figured, Figures};
-use crate::review_walk::{CodeWalk, ExplainerPage, SourceText};
+use crate::review_walk::{CodeWalk, ExplainerPage, FrontMatter, SourceText};
 
 /// What a narrow review pane shows under the record's summary. A wide one has
 /// no tabs: its explainer sits beside the commit message, over the diff.
@@ -134,12 +134,15 @@ pub(super) fn explainer_ui(
     egui::ScrollArea::vertical()
         .id_salt("headway-review-explainer")
         .auto_shrink([false, false])
-        .show(ui, |ui| explainer_page_ui(ui, theme, app_ctx, page, false));
+        .show(ui, |ui| {
+            explainer_page_ui(ui, theme, app_ctx, page, PageHead::Tab)
+        });
 }
 
 /// The explainer source `source` as a column of a wide pane's diff header,
 /// beside the commit message: the page whole ([`explainer_page_ui`]), for
-/// the caller to clamp. With no tab to say so, a "git note" pill by its
+/// the caller to clamp, under a small "Explainer" label as the message
+/// column is under "Commit". With no tab to say so, a "git note" pill by its
 /// title says when it is the commit's note.
 pub(super) fn explainer_column_ui(
     ui: &mut egui::Ui,
@@ -149,29 +152,72 @@ pub(super) fn explainer_column_ui(
     source: SourceText<'_>,
 ) {
     let page = cache.page(source);
-    explainer_page_ui(ui, theme, app_ctx, page, source.is_note());
+    let head = PageHead::Column {
+        note: source.is_note(),
+    };
+    explainer_page_ui(ui, theme, app_ctx, page, head);
 }
 
-/// `page`: its front matter's title (with a "git note" pill when `note`),
-/// src and facts as a header, then the Markdown, with `headway:` refs drawn
-/// as their chips.
+/// How much of a page's front matter [`explainer_page_ui`] draws over it.
+#[derive(Clone, Copy)]
+enum PageHead {
+    /// A narrow pane's Explainer tab, where the page is all there is: its
+    /// title large, then its src line and fact pills.
+    Tab,
+    /// A column beside the commit message, under the card's title and
+    /// beside the commit's own byline: a small "Explainer" label and the
+    /// title at [`COLUMN_TITLE_SIZE`], with no src line (the byline has the
+    /// sha) or fact pills. `note` puts a "git note" pill by the title.
+    Column { note: bool },
+}
+
+/// The explainer's title in a column beside the commit message: a step
+/// over body text, since the card's title above is the pane's heading.
+const COLUMN_TITLE_SIZE: f32 = 17.0;
+
+/// `page`: its front matter as `head` says, then the Markdown, with
+/// `headway:` refs drawn as their chips.
 fn explainer_page_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     page: &mut ExplainerPage,
-    note: bool,
+    head: PageHead,
 ) {
     let front = &page.front;
-    if front.title.is_some() || note {
-        ui.horizontal_wrapped(|ui| {
-            if let Some(title) = &front.title {
-                ui.label(egui::RichText::new(title).size(20.0).strong());
+    match head {
+        PageHead::Tab => tab_head_ui(ui, theme, front),
+        PageHead::Column { note } => {
+            section_label(ui, theme, "Explainer");
+            if front.title.is_some() || note {
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(title) = &front.title {
+                        let title = egui::RichText::new(title)
+                            .size(COLUMN_TITLE_SIZE)
+                            .strong()
+                            .color(theme.text_primary);
+                        ui.label(title);
+                    }
+                    if note {
+                        tinted_pill(ui, "git note", theme.warning);
+                    }
+                });
             }
-            if note {
-                tinted_pill(ui, "git note", theme.warning);
-            }
-        });
+            ui.add_space(SPACING_SM);
+        }
+    }
+    let figured = Page {
+        palette: &page.palette,
+        figures: &mut page.figures,
+    };
+    page_body_ui(ui, theme, app_ctx, None, figured, &page.body);
+}
+
+/// A page's front matter over the Explainer tab: its title large, its src
+/// line in small muted mono, and its facts as pills.
+fn tab_head_ui(ui: &mut egui::Ui, theme: &ColorTheme, front: &FrontMatter) {
+    if let Some(title) = &front.title {
+        ui.label(egui::RichText::new(title).size(20.0).strong());
     }
     if let Some(src) = &front.src {
         ui.label(
@@ -189,14 +235,9 @@ fn explainer_page_ui(
             }
         });
     }
-    if front.title.is_some() || note || front.src.is_some() || !front.facts.is_empty() {
+    if front.title.is_some() || front.src.is_some() || !front.facts.is_empty() {
         ui.add_space(SPACING_SM);
     }
-    let figured = Page {
-        palette: &page.palette,
-        figures: &mut page.figures,
-    };
-    page_body_ui(ui, theme, app_ctx, None, figured, &page.body);
 }
 
 /// The walk's notes that thread onto no hunk — its intro, its closing words,

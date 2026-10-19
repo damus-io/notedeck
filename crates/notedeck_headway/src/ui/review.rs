@@ -62,10 +62,12 @@ pub(crate) struct ReviewUi {
     /// The open card's `headway:<board>/<word-id>`, formatted once per card
     /// rather than every frame.
     card_ref: String,
-    /// The record [`location`](Self::location) was built for.
-    location_for: Option<NoteId>,
-    /// The shown record's `host:path`, elided to fit its byline.
-    location: MiddleElided,
+    /// The record [`made_at`](Self::made_at) was built for.
+    made_at_for: Option<NoteId>,
+    /// Where the shown record was made (`⎇ branch · host:path`, see
+    /// [`made_at`]), for the hover on the byline's source; built once per
+    /// record rather than every frame.
+    made_at: String,
     /// The pane was opened (or moved to another card) since it last drew, so
     /// its trailer search is re-run (see [`ReviewLoader::expire`]).
     reopened: bool,
@@ -960,10 +962,10 @@ pub(super) fn review_pane_ui(
     let shown = review.shown_index(card).unwrap_or(0);
     let record = card.reviews.get(shown);
     if let Some(r) = record
-        && review.location_for != Some(r.id)
+        && review.made_at_for != Some(r.id)
     {
-        review.location_for = Some(r.id);
-        review.location = MiddleElided::new(host_path(&r.fields));
+        review.made_at_for = Some(r.id);
+        review.made_at = made_at(&r.fields);
     }
 
     let source = match record {
@@ -1037,7 +1039,7 @@ pub(super) fn review_pane_ui(
                 record,
                 drafts: &mut review.drafts,
                 card_title: &card.title,
-                location: &mut review.location,
+                made_at: &review.made_at,
                 raw_message: review.raw_message,
                 beside,
             };
@@ -1074,8 +1076,8 @@ struct Shown<'a> {
     /// The card's title, which the commit's subject is left out under when
     /// it's the same.
     card_title: &'a str,
-    /// The record's `host:path`, elided to fit its byline.
-    location: &'a mut MiddleElided,
+    /// Where the record was made, for the hover on the byline's source.
+    made_at: &'a str,
     /// Whether the commit's body is drawn as written.
     raw_message: bool,
     /// On a wide pane, what the explainer beside the commit message needs;
@@ -1593,17 +1595,29 @@ fn commit_keys_hint_ui(ui: &mut egui::Ui, theme: &ColorTheme) {
     });
 }
 
-/// Share of the byline's line a record's `host:path` may take before it's
-/// elided in its middle.
+/// Share of a Review-section record row's line its `host:path` may take
+/// before it's elided in its middle.
 const LOCATION_SHARE: f32 = 0.4;
 
 /// A record's `host:path`, or whichever of the two it has. Built once per
-/// record, for [`MiddleElided`].
+/// record, for [`MiddleElided`] or [`made_at`].
 fn host_path(fields: &ReviewFields) -> String {
     match (fields.host.as_deref(), fields.path.as_deref()) {
         (Some(host), Some(path)) => format!("{host}:{path}"),
         (Some(part), None) | (None, Some(part)) => part.to_string(),
         (None, None) => String::new(),
+    }
+}
+
+/// Where a record was made, `⎇ branch · host:path`, leaving out what it
+/// doesn't name; empty when it names neither. Built once per record, for
+/// the hover on the review byline's source.
+fn made_at(fields: &ReviewFields) -> String {
+    let place = host_path(fields);
+    match fields.branch.as_deref() {
+        Some(branch) if place.is_empty() => format!("⎇ {branch}"),
+        Some(branch) => format!("⎇ {branch} · {place}"),
+        None => place,
     }
 }
 
@@ -1664,7 +1678,7 @@ fn load_ui(
                 record,
                 drafts,
                 card_title,
-                location,
+                made_at,
                 raw_message,
                 beside,
             } = shown;
@@ -1673,7 +1687,7 @@ fn load_ui(
                 let commit = CommitHeader {
                     record,
                     card_title,
-                    location,
+                    made_at,
                     raw_message,
                     beside,
                 };
@@ -1691,28 +1705,27 @@ fn load_ui(
 }
 
 /// What [`commit_header_ui`] draws besides the load: the record, the card's
-/// title its subject is checked against, and the record's elided location.
+/// title its subject is checked against, and where the record was made.
 struct CommitHeader<'a> {
     record: Option<&'a ReviewView>,
     card_title: &'a str,
-    location: &'a mut MiddleElided,
+    /// Where the record was made, for the hover on the byline's source.
+    made_at: &'a str,
     /// Whether the commit's body is drawn as written.
     raw_message: bool,
     /// The explainer to draw beside the message, on a wide pane.
     beside: Option<Beside<'a>>,
 }
 
-/// The top of the diff, which scrolls away with it. The commit's subject,
-/// unless it's the card's title already in the header; then the byline, in
-/// small muted text that wraps: the sha as a pill (click copies it), who
-/// wrote the commit and when, where it came from (the full sentence, with the
-/// repo's path, on hover), where the record was made (`⎇ branch` and
-/// `host:path`, elided in its middle past [`LOCATION_SHARE`] of the line, full
-/// on hover), the record's agentium session as its chip, and whether its
-/// patch was cut short. Under it the commit message ([`message_ui`]): on a
-/// wide pane with an explainer, in a column beside it ([`split_ui`]), else
-/// alone at a readable measure. Then the code walk's notes on no hunk
-/// ([`walk_top_ui`]). `true` when the session chip was clicked.
+/// The top of the diff, which scrolls away with it: the commit's subject and
+/// byline ([`commit_head_ui`]) over its message ([`message_ui`]). On a wide
+/// pane with an explainer the two split ([`split_ui`]), and the subject and
+/// byline head the message's column, under a "Commit" label as the
+/// explainer's column is under "Explainer". Otherwise they run across the
+/// pane over the message alone at a readable measure, with the subject left
+/// out when it's the card's title already in the header. Then the code
+/// walk's notes on no hunk ([`walk_top_ui`]). `true` when the session chip
+/// was clicked.
 fn commit_header_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -1723,26 +1736,94 @@ fn commit_header_ui(
     let CommitHeader {
         record,
         card_title,
-        location,
+        made_at,
         raw_message,
         beside,
     } = commit;
     let fields = record.map(|r| &r.fields);
-    let session = fields.and_then(|f| f.agentium.as_deref());
-    if let Some(subject) = fields
-        .and_then(|f| f.title.as_deref())
-        .filter(|t| *t != card_title)
-    {
+    let subject = fields.and_then(|f| f.title.as_deref());
+    let message = Message {
+        body: &loaded.body,
+        raw: raw_message,
+        record,
+    };
+    let page = beside
+        .as_ref()
+        .and_then(|_| source_text(record, Some(&loaded.notes), ReviewSourceRole::Explainer));
+    let chip = match (beside, page) {
+        (Some(beside), Some(page)) => {
+            let head = CommitHead {
+                subject,
+                fields,
+                loaded,
+                made_at,
+            };
+            split_ui(ui, theme, app_ctx, beside, page, head, message)
+        }
+        _ => {
+            let head = CommitHead {
+                subject: subject.filter(|t| *t != card_title),
+                fields,
+                loaded,
+                made_at,
+            };
+            let chip = commit_head_ui(ui, theme, app_ctx, head);
+            ui.add_space(SPACING_MD);
+            ui.scope(|ui| {
+                ui.set_max_width(MESSAGE_MEASURE);
+                message_ui(ui, theme, app_ctx, message);
+            });
+            chip
+        }
+    };
+    if let Some(walk) = &mut loaded.walk {
+        walk_top_ui(ui, theme, app_ctx, walk);
+    }
+    chip
+}
+
+/// What [`commit_head_ui`] draws over the commit message.
+struct CommitHead<'a> {
+    /// The commit's subject, or `None` to leave it out.
+    subject: Option<&'a str>,
+    /// The shown record's fields: its sha and agentium session.
+    fields: Option<&'a ReviewFields>,
+    /// The load: the commit's author and time, its source, and whether it
+    /// was found by trailer or cut short.
+    loaded: &'a LoadedReview,
+    /// Where the record was made, for the hover on the source.
+    made_at: &'a str,
+}
+
+/// The commit's subject, strong, and under it the byline in small muted text
+/// that wraps: the sha as a pill (click copies it), who wrote the commit and
+/// when, where it came from (on hover the full sentence, with the repo's
+/// path, and where the record was made: `⎇ branch · host:path`), the
+/// record's agentium session as its chip, and whether its patch was cut
+/// short. `true` when the session chip was clicked.
+fn commit_head_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    app_ctx: &mut notedeck::AppContext,
+    head: CommitHead<'_>,
+) -> bool {
+    let CommitHead {
+        subject,
+        fields,
+        loaded,
+        made_at,
+    } = head;
+    if let Some(subject) = subject {
         let subject = egui::RichText::new(subject)
             .strong()
             .color(theme.text_primary);
         ui.add(egui::Label::new(subject).wrap());
         ui.add_space(SPACING_XS);
     }
+    let session = fields.and_then(|f| f.agentium.as_deref());
     let mut chip = false;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = SPACING_XS;
-        let line_width = ui.available_width();
         let muted = |text: &str| egui::RichText::new(text).small().color(theme.text_muted);
         if let Some(sha) = fields.and_then(|f| f.commit.as_deref()) {
             if sha_pill(ui, theme, sha).on_hover_text(sha).clicked() {
@@ -1765,7 +1846,12 @@ fn commit_header_ui(
                 .small()
                 .color(source_color),
         )
-        .on_hover_text(loaded.source_hover.as_str());
+        .on_hover_ui(|ui| {
+            ui.label(loaded.source_hover.as_str());
+            if !made_at.is_empty() {
+                ui.label(egui::RichText::new(made_at).color(theme.text_muted));
+            }
+        });
         if loaded.by_trailer {
             ui.label(
                 egui::RichText::new("hash differs from the record? (rebased)")
@@ -1777,19 +1863,6 @@ fn commit_header_ui(
                          commit carrying the card's Headway trailer.",
             );
         }
-        if let Some(branch) = fields.and_then(|f| f.branch.as_deref()) {
-            ui.label(muted("·"));
-            ui.label(muted("⎇"));
-            ui.label(muted(branch));
-        }
-        if record.is_some() && !location.is_empty() {
-            ui.label(muted("·"));
-            let width = line_width * LOCATION_SHARE;
-            if ui.available_size_before_wrap().x < location.width(ui, width) {
-                ui.end_row();
-            }
-            location.ui(ui, theme.text_muted, width);
-        }
         if let Some(session) = session {
             ui.label(muted("·"));
             chip = wrapped_session_chip_ui(ui, theme, app_ctx, session);
@@ -1798,27 +1871,6 @@ fn commit_header_ui(
             tinted_pill(ui, "patch truncated", theme.warning);
         }
     });
-    ui.add_space(SPACING_MD);
-    let message = Message {
-        body: &loaded.body,
-        raw: raw_message,
-        record,
-    };
-    let page = beside
-        .as_ref()
-        .and_then(|_| source_text(record, Some(&loaded.notes), ReviewSourceRole::Explainer));
-    match (beside, page) {
-        (Some(beside), Some(page)) => split_ui(ui, theme, app_ctx, beside, page, message),
-        _ => {
-            ui.scope(|ui| {
-                ui.set_max_width(MESSAGE_MEASURE);
-                message_ui(ui, theme, app_ctx, message);
-            });
-        }
-    }
-    if let Some(walk) = &mut loaded.walk {
-        walk_top_ui(ui, theme, app_ctx, walk);
-    }
     chip
 }
 
@@ -1874,25 +1926,32 @@ const RAW_SHARE: f32 = 0.5;
 /// the pane's first screen.
 const PEEK_HEIGHT: f32 = 400.0;
 
-/// How far up from the peek's bottom edge it fades into the pane.
-const PEEK_FADE: f32 = 96.0;
+/// The solid band of panel colour along the peek's bottom edge that its
+/// button sits in, so no text runs under the button.
+const PEEK_BAND: f32 = 44.0;
 
-/// The explainer and the commit message side by side at the top of a wide
-/// pane's diff: the message in a column on the right,
+/// How far above [`PEEK_BAND`] the peek fades into the pane.
+const PEEK_FADE: f32 = 76.0;
+
+/// The explainer and the commit side by side at the top of a wide pane's
+/// diff, each column under its own small label: the commit on the right,
+/// its subject and byline ([`commit_head_ui`]) over its message,
 /// [`MESSAGE_SHARE`] of the width within [`MESSAGE_COLUMN`] (wider to fit
 /// a raw message's [`RAW_COLUMNS`]), the explainer in the rest, a hairline
 /// between them. Unless `beside` is expanded, both are clamped to
-/// [`PEEK_HEIGHT`], fading out under a button that shows them whole (as `E`
+/// [`PEEK_HEIGHT`], fading out above a button that shows them whole (as `E`
 /// does); expanded past the peek, a "Show less" under them clamps them
-/// again. A split that fits the peek is drawn whole with neither.
+/// again. A split that fits the peek is drawn whole with neither. `true`
+/// when the session chip was clicked.
 fn split_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     app_ctx: &mut notedeck::AppContext,
     beside: Beside<'_>,
     page: SourceText<'_>,
+    head: CommitHead<'_>,
     message: Message<'_>,
-) {
+) -> bool {
     let width = ui.available_width();
     let gap = 2.0 * SPACING_LG;
     let mut message_width = MESSAGE_COLUMN.clamp(width * MESSAGE_SHARE);
@@ -1938,6 +1997,9 @@ fn split_ui(
         message_left,
         message_width,
     );
+    section_label(&mut right, theme, "Commit");
+    let chip = commit_head_ui(&mut right, theme, app_ctx, head);
+    right.add_space(SPACING_MD);
     message_ui(&mut right, theme, app_ctx, message);
 
     let full = left.min_rect().height().max(right.min_rect().height());
@@ -1960,14 +2022,21 @@ fn split_ui(
         *beside.expanded = false;
     }
     ui.add_space(SPACING_SM);
+    chip
 }
 
-/// The clamped split's bottom [`PEEK_FADE`] fading into the pane, so its cut
-/// reads as more to come rather than a clipped line.
+/// The clamped split's bottom [`PEEK_BAND`] in solid panel colour, and the
+/// [`PEEK_FADE`] above it fading into it, so the cut reads as more to come
+/// rather than a clipped line and the button under it sits on plain ground.
 fn peek_fade(ui: &egui::Ui, rect: egui::Rect) {
     let fill = ui.visuals().panel_fill;
-    let fade =
-        egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - PEEK_FADE), rect.max);
+    let band_top = rect.bottom() - PEEK_BAND;
+    let band = egui::Rect::from_min_max(egui::pos2(rect.left(), band_top), rect.max);
+    ui.painter().rect_filled(band, 0.0, fill);
+    let fade = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), band_top - PEEK_FADE),
+        egui::pos2(rect.right(), band_top),
+    );
     let mut mesh = egui::Mesh::default();
     let clear = egui::Color32::TRANSPARENT;
     mesh.colored_vertex(fade.left_top(), clear);
@@ -1979,7 +2048,7 @@ fn peek_fade(ui: &egui::Ui, rect: egui::Rect) {
     ui.painter().add(egui::Shape::mesh(mesh));
 }
 
-/// The button centred on the clamped split's fade that shows the explainer
+/// The button centred in the clamped split's [`PEEK_BAND`] that shows the explainer
 /// and message whole: a pill saying so, with the `E` that does the same. One
 /// widget, so a screen reader's click lands on what it names.
 fn peek_button_ui(ui: &mut egui::Ui, theme: &ColorTheme, rect: egui::Rect) -> egui::Response {
@@ -1995,7 +2064,7 @@ fn peek_button_ui(ui: &mut egui::Ui, theme: &ColorTheme, rect: egui::Rect) -> eg
         galley.size().x + SPACING_SM + key + 2.0 * pad.x,
         galley.size().y.max(key) + 2.0 * pad.y,
     );
-    let center = egui::pos2(rect.center().x, rect.bottom() - SPACING_MD - size.y / 2.0);
+    let center = egui::pos2(rect.center().x, rect.bottom() - PEEK_BAND / 2.0);
     let pill = egui::Rect::from_center_size(center, size);
     let response = ui
         .interact(
@@ -2709,6 +2778,23 @@ mod tests {
     use super::*;
     use crate::ui::tests::link;
     use headway::event::ColumnView;
+
+    /// `made_at` names what the record has of branch, host and path, in
+    /// that order, and is empty when it has none of them.
+    #[test]
+    fn made_at_names_what_the_record_has() {
+        let fields = |branch: Option<&str>, host: Option<&str>, path: Option<&str>| ReviewFields {
+            branch: branch.map(str::to_string),
+            host: host.map(str::to_string),
+            path: path.map(str::to_string),
+            ..ReviewFields::default()
+        };
+        let full = fields(Some("headway"), Some("monad"), Some("/dev/notedeck"));
+        assert_eq!(made_at(&full), "⎇ headway · monad:/dev/notedeck");
+        assert_eq!(made_at(&fields(Some("headway"), None, None)), "⎇ headway");
+        assert_eq!(made_at(&fields(None, Some("monad"), None)), "monad");
+        assert_eq!(made_at(&fields(None, None, None)), "");
+    }
 
     /// A column with id `id`, name `name` and one bare card per id in `cards`.
     fn column(id: &str, name: &str, cards: &[NoteId]) -> ColumnView {
