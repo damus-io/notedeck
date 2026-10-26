@@ -16,6 +16,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use cashflow::chart::{AccountMeta, record_id};
 use cashflow::manifest::{self, Manifest};
 use cashflow::{Books, CashflowDir, Vault, kinds};
 use egui_kittest::Harness;
@@ -372,6 +373,28 @@ pub fn publish_missing_segment(state: &mut CashflowTestState, host: &str) -> Seg
     let wait = ndb.wait_for_all_notes_within(landed, 1, INGEST_TIMEOUT);
     block_on(wait).expect("the manifest landed");
     hash
+}
+
+/// Publish chart metadata in [`account`]'s vault putting `account`'s
+/// subtree in `project`, as `cashflow account set <account> --project
+/// <project>` would, and wait until nostrdb has it.
+pub fn publish_account_project(state: &mut CashflowTestState, account: &str, project: &str) {
+    let app_ctx = state.notedeck.app_context();
+    let ndb = &*app_ctx.ndb;
+    let vault = Vault::new(&ACCOUNT_SECRET).expect("a vault");
+    vault.register(ndb);
+    let meta = AccountMeta {
+        project: Some(project),
+        ..AccountMeta::default()
+    };
+    let landed = ndb
+        .subscribe(&[Filter::new().kinds([kinds::ACCOUNT as u64]).build()])
+        .expect("subscribe");
+    vault
+        .write(ndb, &record_id(account), &meta, 0)
+        .expect("write the account metadata");
+    let wait = ndb.wait_for_all_notes_within(landed, 1, INGEST_TIMEOUT);
+    block_on(wait).expect("the account metadata landed");
 }
 
 /// How long a journal test waits for nostrdb or the job pool.

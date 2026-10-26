@@ -254,6 +254,12 @@ impl CashflowApp {
         self.generation += 1;
     }
 
+    /// Which project each account is in, as Projects and goals attribute
+    /// it.
+    pub fn projects(&self) -> &Projects {
+        &self.projects
+    }
+
     /// Attribute accounts to projects by `projects` from now on: the chart
     /// of accounts' attribution ([`cashflow::chart::Chart::projects`]).
     /// Every view recomputes on its next frame.
@@ -584,6 +590,12 @@ impl notedeck::App for CashflowApp {
         self.missing_segments = journal.missing().hashes.len();
         if !Arc::ptr_eq(&self.labels, journal.labels()) {
             self.labels = journal.labels().clone();
+            self.generation += 1;
+        }
+        // What set_projects does, inline because `journal` borrows self.
+        // Cloned only on the frames where the vault's chart moved.
+        if **journal.projects() != self.projects {
+            self.projects = Projects::clone(journal.projects());
             self.generation += 1;
         }
         self.boards.set_links(journal.project_links().clone());

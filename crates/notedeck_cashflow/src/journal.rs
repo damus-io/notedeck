@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 
 use cashflow::adventure::seen;
 use cashflow::chart::{Chart, Labels};
+use cashflow::projects::Projects;
 use cashflow::settings::Setting;
 use cashflow::sync::{self, SyncJob, SyncReport, TransportInfo, TransportReport};
 use cashflow::triage::Triage;
@@ -297,6 +298,9 @@ pub struct JournalSource {
     load_time: Option<Duration>,
     /// The chart's display names and icons, re-read when the vault changes.
     labels: Arc<Labels>,
+    /// Which project each account is in, re-read when the vault changes and
+    /// replaced only when it differs.
+    projects: Arc<Projects>,
     /// Which Headway boards each project links, re-read when the vault
     /// changes.
     project_links: Arc<[ProjectLink]>,
@@ -338,6 +342,7 @@ impl JournalSource {
             last_sync: None,
             load_time: None,
             labels: Arc::new(Labels::default()),
+            projects: Arc::new(Projects::default()),
             project_links: Arc::from([]),
             announced: Announced::Unknown,
             announced_generation: 0,
@@ -378,7 +383,12 @@ impl JournalSource {
             return fresh;
         };
         if edits.poll(ctx.ndb, &txn).vault {
-            self.labels = Arc::new(Chart::load(ctx.ndb, &txn, &author).labels());
+            let chart = Chart::load(ctx.ndb, &txn, &author);
+            self.labels = Arc::new(chart.labels());
+            let projects = chart.projects();
+            if *self.projects != projects {
+                self.projects = Arc::new(projects);
+            }
             let settings = Settings::load(ctx.ndb, &txn, &author);
             let home = settings.home_commodity();
             if home != self.home {
@@ -656,6 +666,12 @@ impl JournalSource {
     /// The chart's display names and icons, as the vault last had them.
     pub fn labels(&self) -> &Arc<Labels> {
         &self.labels
+    }
+
+    /// Which project each account is in, as the vault last had it: a new
+    /// `Arc` only when the attribution changed.
+    pub fn projects(&self) -> &Arc<Projects> {
+        &self.projects
     }
 
     /// What the vault's seen note says the Adventure announced, as the

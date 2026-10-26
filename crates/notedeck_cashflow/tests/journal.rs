@@ -9,7 +9,7 @@ mod common;
 
 use common::{
     ABSENT_DIR, DESKTOP, JournalFixture, journal_app, journal_harness, loaded_harness,
-    publish_missing_segment, snapshot_harness, step_until, synthetic_app,
+    publish_account_project, publish_missing_segment, snapshot_harness, step_until, synthetic_app,
 };
 use egui_kittest::kittest::Queryable;
 use notedeck_cashflow::View;
@@ -96,6 +96,31 @@ fn a_missing_segment_shows_the_sync_banner() {
     });
     harness.get_by_label("1 segment on bigbox");
     harness.get_by_label("Sync now");
+}
+
+/// A project set on an account in the vault reaches the app's attribution,
+/// inherited by the account's subtree, so Projects and goals count it.
+#[test]
+fn a_project_set_in_the_vault_attributes_its_subtree() {
+    let fixture = JournalFixture::synthetic();
+    let mut harness = loaded_harness(fixture.app(), DESKTOP, false);
+    assert_eq!(
+        harness
+            .state()
+            .app
+            .projects()
+            .project_of("income:damus:zaps"),
+        None
+    );
+
+    publish_account_project(harness.state_mut(), "income:damus", "damus");
+    step_until(&mut harness, "the project reaches the app", |s| {
+        s.app.projects().project_of("income:damus:zaps") == Some("damus")
+    });
+    assert_eq!(
+        harness.state().app.projects().project_of("income:salary"),
+        None
+    );
 }
 
 /// The pane before the first load comes back.
