@@ -364,9 +364,17 @@ Importers:
                   request; raw-zap-p is the recipient), income:lnurl
                   (raw-lnurl-address) or income/expenses:unknown
                   (raw-description); every other event goes in layer
-                  cln-chain. Ids are cln:channel:<n>, cln:chain:<n> and
-                  cln:fee:… from a patched bookkeeper, cln:h:<hash>
-                  otherwise. A description edited later on an event older
+                  cln-chain. The events of one on-chain transaction are
+                  one balanced record, cln:tx:<txid>: wallet and channel
+                  legs, the fee on expenses:fees:onchain, and only what
+                  went to or came from outside on expenses/income:unknown,
+                  so a channel close has nothing left to categorize. A
+                  later run that reads more of its events rewrites it
+                  whole. Other events, and any the journal held as a
+                  record of its own before grouping, are one record each:
+                  cln:channel:<n>, cln:chain:<n> and cln:fee:… from a
+                  patched bookkeeper, cln:h:<hash> otherwise. A
+                  description edited later on an event older
                   than the cursor is not read again. Given files, it reads
                   saved bkpr-listaccountevents output instead.
   ledger <file>   a ledger-cli file, such as books kept by hand or a script.

@@ -31,9 +31,12 @@
 //! a wallet of one paid the other. An event of zero msat each way records
 //! nothing and is passed over.
 //!
-//! **Record ids.** A patched bookkeeper prints each chain and channel event's
-//! `created_index`, lightningd's own move index, unique per type, and each
-//! on-chain fee's `update_count`; those make `cln:chain:<n>`,
+//! **Record ids.** An on-chain transaction's record is `cln:tx:<txid>`, the
+//! same from any node. Every other event is a record of its own, and so was
+//! every event before they were grouped. A patched bookkeeper prints each
+//! chain and channel event's `created_index`, lightningd's own move index,
+//! unique per type, and each on-chain fee's `update_count`; those make
+//! `cln:chain:<n>`,
 //! `cln:channel:<n>` and `cln:fee:<account>:<txid>:<count>`. An unpatched one
 //! prints no id at all, and its fields don't single an event out either
 //! (the two legs of a routed payment share a `payment_id`, and the same
@@ -63,14 +66,55 @@
 //! `debit`, for a rule on one side only) and, when the event has them,
 //! `raw-payment-id`, `raw-fees-msat` and `raw-rebalance`.
 //!
-//! A `cln-chain` event posts to its bookkeeper account (`assets:cln:wallet`
-//! for the on-chain wallet, `assets:cln` for a channel) against
-//! `income:unknown` or `expenses:unknown`, with `raw-account`,
-//! `raw-outpoint`, `raw-txid` and `raw-origin`. Two kinds don't move the
-//! owner's money and post against `equity:cln` instead: an event on
-//! bookkeeper's `external` account (`equity:cln:external`), the far side of
-//! a move whose near side is a wallet or channel event, and an on-chain fee
-//! (`equity:cln:fees`), which the wallet and channel events already net.
+//! **One record per on-chain transaction.** Bookkeeper writes a move on
+//! chain as several events: a channel close is a `channel_close` out of the
+//! channel, a `deposit` into the wallet, the peer's `to_them` output and an
+//! `onchain_fee`; a wallet spend is a `withdrawal` per coin it spends, a
+//! `deposit` of the change, an `external` `deposit` of what it sent and its
+//! fee. Every `chain` and `onchain_fee` event names its transaction, as
+//! `txid` (the transaction spending it) or else as `outpoint`'s txid (the
+//! transaction creating it), and the events of one become one balanced
+//! record, `cln:tx:<txid>`, in `cln-chain`:
+//!
+//! - the wallet's events net onto `assets:cln:wallet`, every channel's onto
+//!   `assets:cln`;
+//! - the fees net onto `expenses:fees:onchain`, an importer default as
+//!   `expenses:unknown` is, which an alias moves;
+//! - what is left over, which is what went to or came from outside (a
+//!   spend's payment, a deposit from elsewhere), goes to `expenses:unknown`
+//!   or `income:unknown`, the one leg left to categorize. A close or a sweep
+//!   to the wallet leaves nothing over and has no such leg.
+//!
+//! Events on bookkeeper's `external` account are left out: they are the
+//! peer's side of a close, or the far side of a spend, which the leftover
+//! already is, and a record that listed them would come out different when
+//! one arrived in a run before any of its transaction's other events. The
+//! record's payee is its most telling tag (`channel close`, `channel open`,
+//! `to wallet`, `withdrawal`, else its first chain event's), and it carries
+//! `raw-txid`, a `raw-cln-tag` per tag, the earliest `raw-timestamp`,
+//! `raw-direction` (`credit` when money came in) and a `raw-event` per
+//! event: `<id> <type> <account> <tag> <net msat>
+//! <timestamp> <outpoint|-> <origin|->`, `<id>` being the event's hash id
+//! (see below), which it has from a patched node or not. Those lines are how
+//! a later run
+//! completes the record: a transaction's events can arrive days apart (a
+//! unilateral close's `delayed_to_us` waits out its delay), so a run that
+//! reads only some of them merges them with the events the held record
+//! lists, and the record is rewritten whole.
+//!
+//! An event the journal already holds as a record of its own, written before
+//! events were grouped, keeps that record and is left out of its
+//! transaction's, so the switch neither counts an event twice nor strands
+//! the overrides and splits keyed on the old id. Those old records still
+//! post as they always did: to the wallet or channel against
+//! `income:unknown` or `expenses:unknown`, an `external` event to
+//! `equity:cln:external` and a fee to `equity:cln:fees`, each against
+//! `equity:cln`. Regrouping them means retiring the `cln-chain` segments
+//! that hold them and importing a whole listing again.
+//!
+//! The other non-payment events, a channel's `journal_entry` and `pushed`,
+//! name no transaction and stay one record each, on `assets:cln` against
+//! `income:unknown` or `expenses:unknown`, with `raw-account`.
 //!
 //! **Dates** are the event's day in the synced
 //! [`Setting::Timezone`](crate::settings::Setting::Timezone), so every
@@ -134,12 +178,19 @@ const UNKNOWN_PARAMETER: i64 = -32602;
 const CHANNELS: &str = "assets:cln";
 /// The node's on-chain wallet.
 const WALLET: &str = "assets:cln:wallet";
-/// Bookkeeper's `external` account.
+/// Bookkeeper's `external` account, as an event's own record posts it.
 const EXTERNAL: &str = "equity:cln:external";
-/// On-chain fees, as bookkeeper accounts them.
+/// On-chain fees, as a fee event's own record posts them.
 const FEES: &str = "equity:cln:fees";
 /// What the `external` and fee records post against.
 const MIRROR: &str = "equity:cln";
+/// What an on-chain transaction's record posts its fee to: an importer
+/// default, as [`SPENT`] is.
+const ONCHAIN_FEES: &str = "expenses:fees:onchain";
+/// The metadata key a transaction's record lists each of its events under.
+const EVENT_META: &str = "raw-event";
+/// The tags a transaction's record takes its payee from, the first it has.
+const PAYEE_TAGS: &[&str] = &["channel_close", "channel_open", "to_wallet", "withdrawal"];
 const ROUTED_IN: &str = "routed:in";
 const ROUTED_OUT: &str = "routed:out";
 const SPENT: &str = "expenses:unknown";
@@ -393,6 +444,7 @@ impl Importer for ClnImporter {
         };
         let mut payments = Vec::new();
         let mut chain = Vec::new();
+        let mut txs = Txs::default();
         let mut skipped = Vec::new();
         for listing in listings {
             skipped.extend(listing.skipped);
@@ -408,13 +460,23 @@ impl Importer for ClnImporter {
                     1 => hash,
                     n => format!("{hash}:{n}"),
                 };
-                let id = convert.record_id(event, fallback);
+                let id = convert.record_id(event, fallback.clone());
                 if event.is_payment() {
                     payments.push(convert.payment(event, id));
-                } else {
-                    chain.push(convert.chain(event, id));
+                    continue;
+                }
+                // An event the journal holds as a record of its own keeps it.
+                match event.tx().filter(|_| held.find(&id).is_none()) {
+                    // The peer's side of a close, or the far side of a
+                    // spend, which its record's leftover leg already is.
+                    Some(_) if event.account == "external" => {}
+                    Some(txid) => txs.add(txid, Member::of(event, fallback)),
+                    None => chain.push(convert.chain(event, id)),
                 }
             }
+        }
+        for Tx { txid, members } in txs.list {
+            chain.extend(convert.transaction(&txid, members));
         }
         let chain = Batch::from_raw(&chain, &[])?.journal;
         Ok(Batch {
@@ -603,6 +665,123 @@ impl Event {
     fn net(&self) -> i64 {
         self.credit_msat as i64 - self.debit_msat as i64
     }
+
+    /// The on-chain transaction a `chain` or `onchain_fee` event belongs to:
+    /// the one spending it (`txid`), else the one creating it (`outpoint`'s
+    /// txid). A channel's own events belong to none.
+    fn tx(&self) -> Option<&str> {
+        if !matches!(self.kind.as_str(), "chain" | "onchain_fee") {
+            return None;
+        }
+        match &self.txid {
+            Some(txid) => Some(txid),
+            None => Some(self.outpoint.as_deref()?.rsplit_once(':')?.0),
+        }
+    }
+}
+
+/// The on-chain transactions a run read events of, in the order it first
+/// met each.
+#[derive(Default)]
+struct Txs {
+    list: Vec<Tx>,
+    /// Each txid's place in `list`.
+    at: HashMap<String, usize>,
+}
+
+/// One on-chain transaction's events, as a run read them.
+struct Tx {
+    txid: String,
+    members: Vec<Member>,
+}
+
+impl Txs {
+    /// File `member` under `txid`, replacing an event of the same id read
+    /// before (two listings can overlap).
+    fn add(&mut self, txid: &str, member: Member) {
+        let at = *self.at.entry(txid.to_owned()).or_insert_with(|| {
+            self.list.push(Tx {
+                txid: txid.to_owned(),
+                members: Vec::new(),
+            });
+            self.list.len() - 1
+        });
+        let members = &mut self.list[at].members;
+        match members.iter_mut().find(|held| held.id == member.id) {
+            Some(held) => *held = member,
+            None => members.push(member),
+        }
+    }
+}
+
+/// One event of an on-chain transaction's record, as its `raw-event` line
+/// lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Member {
+    /// The event's hash id ([`Convert::hash_id`]), which a node gives it
+    /// whether or not it is patched.
+    id: String,
+    /// `chain` or `onchain_fee`.
+    kind: String,
+    account: String,
+    tag: String,
+    /// What it moved into its account: credit less debit.
+    net: i64,
+    timestamp: u64,
+    outpoint: Option<String>,
+    origin: Option<String>,
+}
+
+impl Member {
+    /// `event`, under hash id `id`.
+    fn of(event: &Event, id: String) -> Self {
+        Self {
+            id,
+            kind: event.kind.clone(),
+            account: event.account.clone(),
+            tag: event.tag.clone(),
+            net: event.net(),
+            timestamp: event.timestamp,
+            outpoint: event.outpoint.clone(),
+            origin: event.origin.clone(),
+        }
+    }
+
+    /// Its `raw-event` value: `<id> <type> <account> <tag> <net> <timestamp>
+    /// <outpoint|-> <origin|->`. No field has a space in it.
+    fn line(&self) -> String {
+        let or_dash = |value: &Option<String>| value.as_deref().unwrap_or("-").to_owned();
+        format!(
+            "{} {} {} {} {} {} {} {}",
+            self.id,
+            self.kind,
+            self.account,
+            self.tag,
+            self.net,
+            self.timestamp,
+            or_dash(&self.outpoint),
+            or_dash(&self.origin),
+        )
+    }
+
+    /// A [`line`](Self::line) read back; `None` for any other text.
+    fn read(line: &str) -> Option<Self> {
+        let fields: Vec<&str> = line.split(' ').collect();
+        let [id, kind, account, tag, net, timestamp, outpoint, origin] = fields.as_slice() else {
+            return None;
+        };
+        let optional = |value: &str| (value != "-").then(|| value.to_owned());
+        Some(Self {
+            id: (*id).to_owned(),
+            kind: (*kind).to_owned(),
+            account: (*account).to_owned(),
+            tag: (*tag).to_owned(),
+            net: net.parse().ok()?,
+            timestamp: timestamp.parse().ok()?,
+            outpoint: optional(outpoint),
+            origin: optional(origin),
+        })
+    }
 }
 
 /// An msat amount, as a number or, from an older node, `"1000msat"`.
@@ -753,7 +932,90 @@ impl Convert<'_> {
         }
     }
 
-    /// Any other event, for the `cln-chain` layer.
+    /// The record of on-chain transaction `txid`: the events `read` of it,
+    /// with the ones the journal's record of it lists and `read` lacks.
+    /// `None` when they move none of the owner's money.
+    fn transaction(&self, txid: &str, read: Vec<Member>) -> Option<RawTxn> {
+        let id = format!("{}:tx:{txid}", self.source);
+        let mut members = self.held_members(&id);
+        members.retain(|held| !read.iter().any(|member| member.id == held.id));
+        members.extend(read);
+        members.sort_by(|a, b| (a.timestamp, &a.id).cmp(&(b.timestamp, &b.id)));
+
+        let mut channels = 0;
+        let mut wallet = 0;
+        let mut fees = 0;
+        for member in &members {
+            match (member.kind.as_str(), member.account.as_str()) {
+                ("onchain_fee", _) => fees += member.net,
+                (_, "wallet") => wallet += member.net,
+                _ => channels += member.net,
+            }
+        }
+        let leftover = -(channels + wallet + fees);
+        let counter = if leftover > 0 { SPENT } else { RECEIVED };
+        let postings: Vec<RawPosting> = [
+            (CHANNELS, channels),
+            (WALLET, wallet),
+            (ONCHAIN_FEES, fees),
+            (counter, leftover),
+        ]
+        .into_iter()
+        .filter(|&(_, msat)| msat != 0)
+        .map(|(account, msat)| posting(account, msat))
+        .collect();
+        if postings.is_empty() {
+            return None;
+        }
+
+        let mut tags: Vec<&str> = Vec::new();
+        for member in &members {
+            if !tags.contains(&member.tag.as_str()) {
+                tags.push(&member.tag);
+            }
+        }
+        let first = &members[0];
+        let moved = members.iter().find(|m| m.kind == "chain").unwrap_or(first);
+        let direction = if leftover < 0 { "credit" } else { "debit" };
+        let mut meta: Vec<RawMeta> = tags.iter().map(|tag| meta("raw-cln-tag", tag)).collect();
+        meta.push(self::meta("raw-timestamp", &first.timestamp.to_string()));
+        meta.push(self::meta("raw-direction", direction));
+        meta.push(self::meta("raw-txid", txid));
+        meta.extend(members.iter().map(|m| self::meta(EVENT_META, &m.line())));
+        let payee = PAYEE_TAGS
+            .iter()
+            .copied()
+            .find(|tag| tags.contains(tag))
+            .unwrap_or(&moved.tag);
+        Some(RawTxn {
+            date: self.zone.date(first.timestamp),
+            cleared: true,
+            payee: payee.replace('_', " "),
+            id,
+            meta,
+            postings,
+        })
+    }
+
+    /// The events the journal's record `id` lists, none when it holds no
+    /// such record.
+    fn held_members(&self, id: &str) -> Vec<Member> {
+        let journal = self.held.journal();
+        let (Some(txn), Some(key)) = (self.held.find(id), journal.strings.lookup(EVENT_META))
+        else {
+            return Vec::new();
+        };
+        journal
+            .meta_of(journal.txn(txn))
+            .iter()
+            .filter(|entry| entry.posting.is_none() && entry.key == key)
+            .filter_map(|entry| Member::read(journal.strings.get(entry.value)))
+            .collect()
+    }
+
+    /// An event of its own, for the `cln-chain` layer: one that names no
+    /// on-chain transaction, or that the journal held as a record of its own
+    /// before events were grouped.
     fn chain(&self, event: &Event, id: String) -> RawTxn {
         let net = event.net();
         let mut meta = self.base_meta(event);
@@ -1132,82 +1394,315 @@ mod tests {
         }
     }
 
+    /// A synthetic 64-hex txid, `byte` over and over.
+    fn txid(byte: &str) -> String {
+        byte.repeat(32)
+    }
+
+    /// A `chain` event on `account` creating `outpoint`, with move index
+    /// `index`.
+    fn chain_event(account: &str, tag: &str, net: i64, outpoint: &str, index: u64) -> Value {
+        json!({
+            "account": account, "type": "chain", "tag": tag,
+            "credit_msat": net.max(0), "debit_msat": (-net).max(0), "currency": "bc",
+            "outpoint": outpoint, "timestamp": T + index, "blockheight": 800_000,
+            "created_index": index,
+        })
+    }
+
+    /// [`chain_event`] spending `outpoint` in transaction `tx`.
+    fn spending(event: Value, tx: &str) -> Value {
+        let mut event = event;
+        event["txid"] = json!(tx);
+        event
+    }
+
+    /// The `n`th fee update of transaction `tx`, on `account`.
+    fn fee_event(account: &str, net: i64, tx: &str, n: u32) -> Value {
+        json!({
+            "account": account, "type": "onchain_fee", "tag": "onchain_fee",
+            "credit_msat": net.max(0), "debit_msat": (-net).max(0), "currency": "bc",
+            "txid": tx, "timestamp": T, "update_count": n,
+        })
+    }
+
+    /// Bookkeeper's events for a mutual close of channel `c0ffee`, as it
+    /// writes them: the channel's 100k sat out, the peer's output, ours into
+    /// the wallet less the 200 sat fee, and that fee.
+    fn close_events() -> Vec<Value> {
+        let tx = txid("cc");
+        vec![
+            spending(
+                chain_event(
+                    "c0ffee",
+                    "channel_close",
+                    -100_000_000,
+                    &format!("{}:0", txid("0f")),
+                    10,
+                ),
+                &tx,
+            ),
+            {
+                let mut theirs =
+                    chain_event("external", "to_them", 40_000_000, &format!("{tx}:0"), 11);
+                theirs["origin"] = json!("c0ffee");
+                theirs
+            },
+            chain_event("wallet", "deposit", 99_800_000, &format!("{tx}:1"), 12),
+            fee_event("c0ffee", 200_000, &tx, 1),
+        ]
+    }
+
+    /// Bookkeeper's events for a wallet spend of two coins: 50k sat out to
+    /// an address, the change back, and its 300 sat fee, which bookkeeper
+    /// writes as a credit and a debit.
+    fn spend_events() -> Vec<Value> {
+        let tx = txid("5e");
+        let mut sent = chain_event("external", "deposit", 50_000_000, &format!("{tx}:0"), 23);
+        sent["origin"] = json!("wallet");
+        vec![
+            spending(
+                chain_event(
+                    "wallet",
+                    "withdrawal",
+                    -30_000_000,
+                    &format!("{}:0", txid("aa")),
+                    20,
+                ),
+                &tx,
+            ),
+            spending(
+                chain_event(
+                    "wallet",
+                    "withdrawal",
+                    -80_000_000,
+                    &format!("{}:1", txid("bb")),
+                    21,
+                ),
+                &tx,
+            ),
+            chain_event("wallet", "deposit", 59_700_000, &format!("{tx}:1"), 22),
+            sent,
+            fee_event("wallet", 60_000_000, &tx, 1),
+            fee_event("wallet", -59_700_000, &tx, 2),
+        ]
+    }
+
+    /// The `cln-chain` records an import of `events` makes.
+    fn chain_records(events: Vec<Value>) -> Vec<Txn> {
+        let Rig { cln, .. } = importer(events, true);
+        let batch = cln.import(&input()).unwrap();
+        assert!(batch.journal.txns.is_empty(), "no payments");
+        let [other] = batch.other_layers.as_slice() else {
+            panic!("one other layer");
+        };
+        assert_eq!(other.layer, "cln-chain");
+        read_batch(&other.journal)
+    }
+
+    fn events_of(txn: &Txn) -> usize {
+        txn.meta
+            .iter()
+            .filter(|m| m.starts_with("raw-event="))
+            .count()
+    }
+
     #[test]
-    fn other_events_go_in_the_chain_layer() {
+    fn a_channel_close_is_one_transaction_with_its_fee() {
+        let [close] = chain_records(close_events()).try_into().unwrap();
+        assert_eq!(close.id, format!("cln:tx:{}", txid("cc")));
+        assert_eq!(close.payee, "channel close");
+        assert_eq!(
+            close.postings,
+            [
+                leg("assets:cln", -100_000_000),
+                leg("assets:cln:wallet", 99_800_000),
+                leg("expenses:fees:onchain", 200_000),
+            ],
+            "the peer's output posts nothing and nothing is left to categorize"
+        );
+        assert!(has(&close, &format!("raw-txid={}", txid("cc"))));
+        for tag in ["channel_close", "deposit", "onchain_fee"] {
+            assert!(has(&close, &format!("raw-cln-tag={tag}")), "{tag}");
+        }
+        assert!(
+            !has(&close, "raw-cln-tag=to_them"),
+            "the peer's output isn't listed"
+        );
+        assert!(has(&close, &format!("raw-timestamp={T}")));
+        assert_eq!(events_of(&close), 3);
+    }
+
+    #[test]
+    fn a_spend_with_change_leaves_only_what_it_sent() {
+        let [spend] = chain_records(spend_events()).try_into().unwrap();
+        assert_eq!(spend.id, format!("cln:tx:{}", txid("5e")));
+        assert_eq!(spend.payee, "withdrawal");
+        assert_eq!(
+            spend.postings,
+            [
+                leg("assets:cln:wallet", -50_300_000),
+                leg("expenses:fees:onchain", 300_000),
+                leg("expenses:unknown", 50_000_000),
+            ],
+            "the change nets in the wallet rather than reading as income"
+        );
+        assert!(has(&spend, "raw-direction=debit"));
+        assert_eq!(events_of(&spend), 5, "every event but the external one");
+    }
+
+    #[test]
+    fn a_deposit_from_outside_is_income() {
+        let tx = txid("de");
+        let [deposit] = chain_records(vec![chain_event(
+            "wallet",
+            "deposit",
+            7_000_000,
+            &format!("{tx}:3"),
+            1,
+        )])
+        .try_into()
+        .unwrap();
+        assert_eq!(deposit.id, format!("cln:tx:{tx}"));
+        assert_eq!(
+            deposit.postings,
+            [
+                leg("assets:cln:wallet", 7_000_000),
+                leg("income:unknown", -7_000_000)
+            ]
+        );
+        assert!(has(&deposit, "raw-direction=credit"));
+    }
+
+    #[test]
+    fn a_channel_event_is_a_record_of_its_own() {
+        let peer_close = txid("9e");
+        let mut theirs = chain_event("external", "to_them", 5_000, &format!("{peer_close}:0"), 7);
+        theirs["origin"] = json!("c0ffee");
         let events = vec![
-            json!({
-                "account": "wallet", "type": "chain", "tag": "deposit",
-                "credit_msat": 50_000_000, "debit_msat": 0, "currency": "bc",
-                "outpoint": format!("{}:1", "ee".repeat(32)), "timestamp": T,
-                "blockheight": 800_000, "created_index": 3,
-            }),
-            json!({
-                "account": "external", "type": "chain", "tag": "to_them",
-                "credit_msat": 1_000_000, "debit_msat": 0, "currency": "bc",
-                "outpoint": format!("{}:0", "ee".repeat(32)), "origin": "c0ffee",
-                "timestamp": T, "blockheight": 800_000, "created_index": 4,
-            }),
-            json!({
-                "account": "c0ffee", "type": "onchain_fee", "tag": "onchain_fee",
-                "credit_msat": 204_000, "debit_msat": 0, "currency": "bc",
-                "txid": "ff".repeat(32), "timestamp": T, "update_count": 2,
-            }),
-            // Zero each way: a peer's channel open, nothing of ours moved.
-            json!({
-                "account": "c0ffee", "type": "chain", "tag": "channel_open",
-                "credit_msat": 0, "debit_msat": 0, "currency": "bc",
-                "outpoint": format!("{}:0", "ee".repeat(32)), "timestamp": T,
-                "blockheight": 0, "created_index": 5,
-            }),
             json!({
                 "account": "c0ffee", "type": "channel", "tag": "journal_entry",
                 "credit_msat": 0, "debit_msat": 1500, "currency": "bc",
                 "timestamp": T, "is_rebalance": false, "created_index": 6,
             }),
+            // Zero each way: a peer's channel open, nothing of ours moved.
+            chain_event("c0ffee", "channel_open", 0, &format!("{}:0", txid("0e")), 5),
+            // The close of a channel we had nothing in: only the peer's side.
+            theirs,
         ];
-        let Rig { cln, .. } = importer(events, true);
-        let batch = cln.import(&input()).unwrap();
-        assert!(batch.journal.txns.is_empty());
-        let [other] = batch.other_layers.as_slice() else {
-            panic!("one other layer");
-        };
-        assert_eq!(other.layer, "cln-chain");
-        let txns = read_batch(&other.journal);
-        let ids: Vec<_> = txns.iter().map(|t| t.id.as_str()).collect();
-        let fee_id = format!("cln:fee:c0ffee:{}:2", "ff".repeat(32));
+        let [entry] = chain_records(events).try_into().unwrap();
+        assert_eq!(entry.id, "cln:channel:6");
+        assert_eq!(entry.payee, "journal entry");
         assert_eq!(
-            ids,
-            ["cln:chain:3", "cln:chain:4", &fee_id, "cln:channel:6"]
-        );
-        assert_eq!(txns[0].payee, "deposit");
-        assert_eq!(
-            txns[0].postings,
-            [
-                leg("income:unknown", -50_000_000),
-                leg("assets:cln:wallet", 50_000_000)
-            ]
-        );
-        assert!(has(&txns[0], "raw-account=wallet"));
-        assert!(has(
-            &txns[0],
-            &format!("raw-outpoint={}:1", "ee".repeat(32))
-        ));
-        assert_eq!(
-            txns[1].postings,
-            [
-                leg("equity:cln:external", 1_000_000),
-                leg("equity:cln", -1_000_000)
-            ]
-        );
-        assert!(has(&txns[1], "raw-origin=c0ffee"));
-        assert_eq!(
-            txns[2].postings,
-            [leg("equity:cln:fees", 204_000), leg("equity:cln", -204_000)]
-        );
-        assert_eq!(
-            txns[3].postings,
+            entry.postings,
             [leg("expenses:unknown", 1500), leg("assets:cln", -1500)]
         );
+        assert!(has(&entry, "raw-account=c0ffee"));
+    }
+
+    /// The ledger's record `id`, read back as a [`Txn`].
+    fn record(store: &JournalStore, id: &str) -> Txn {
+        let ledger = Ledger::load(store, LayerFilter::All).unwrap().ledger;
+        let at = ledger.find(id).unwrap_or_else(|| panic!("no {id}"));
+        read_batch(ledger.journal())
+            .into_iter()
+            .nth(at.index())
+            .unwrap()
+    }
+
+    #[test]
+    fn a_transaction_read_over_two_runs_is_one_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = JournalStore::new(tmp.path().join("journal"));
+        let id = format!("cln:tx:{}", txid("cc"));
+        let mut events = close_events();
+        let deposit = events.remove(2);
+
+        // The first run reads the close before its deposit.
+        pull(&store, &events, true, 10);
+        assert_eq!(
+            record(&store, &id).postings,
+            [
+                leg("assets:cln", -100_000_000),
+                leg("expenses:fees:onchain", 200_000),
+                leg("expenses:unknown", 99_800_000),
+            ]
+        );
+
+        // The next reads only the deposit, and the record is completed.
+        let written = pull(&store, &[deposit], true, 11);
+        assert_eq!(written.other_layers[0].txn_rows.changed, 1);
+        let close = record(&store, &id);
+        assert_eq!(
+            close.postings,
+            [
+                leg("assets:cln", -100_000_000),
+                leg("assets:cln:wallet", 99_800_000),
+                leg("expenses:fees:onchain", 200_000),
+            ]
+        );
+        assert_eq!(events_of(&close), 3);
+
+        // Reading all of it again changes nothing.
+        let again = pull(&store, &close_events(), true, 12);
+        assert_eq!(again.other_layers[0].hash, None);
+        assert_eq!(again.other_layers[0].txn_rows.unchanged, 1);
+    }
+
+    #[test]
+    fn a_reimport_writes_nothing_and_keeps_the_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = JournalStore::new(tmp.path().join("journal"));
+        let mut events = close_events();
+        events.extend(spend_events());
+        let first = pull(&store, &events, true, 10);
+        assert_eq!(first.other_layers[0].txn_rows.new, 2);
+
+        // An unpatched node gives no created_index or update_count, but the
+        // transactions' ids and their events' ids are the same.
+        for (patched, imported) in [(true, 11), (false, 12)] {
+            let again = pull(&store, &events, patched, imported);
+            assert_eq!(again.other_layers[0].hash, None, "patched: {patched}");
+            assert_eq!(again.other_layers[0].txn_rows.unchanged, 2);
+        }
+    }
+
+    #[test]
+    fn an_event_held_on_its_own_keeps_its_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = JournalStore::new(tmp.path().join("journal"));
+        // The close's deposit, as an import from before grouping wrote it.
+        let old = "2024-03-01 * deposit\n    ; id: cln:chain:12\n    \
+                   income:unknown  -99800000 msat\n    assets:cln:wallet  99800000 msat\n";
+        let ledgerdb::Parsed { journal, errors } = ledgerdb::Journal::parse(old);
+        assert!(errors.is_empty(), "{errors:?}");
+        let header = ledgerdb::SegmentHeader {
+            source: "cln".to_owned(),
+            imported: 5,
+            layer: CHAIN_LAYER.to_owned(),
+        };
+        store.put_segment(&header, &journal).unwrap();
+
+        pull(&store, &close_events(), true, 10);
+        let deposit = record(&store, "cln:chain:12");
+        assert_eq!(deposit.postings[1], leg("assets:cln:wallet", 99_800_000));
+        let close = record(&store, &format!("cln:tx:{}", txid("cc")));
+        assert_eq!(events_of(&close), 2, "the deposit isn't in it too");
+        assert!(
+            !close
+                .postings
+                .iter()
+                .any(|p| p.account == "assets:cln:wallet")
+        );
+        let ledger = Ledger::load(&store, LayerFilter::All).unwrap().ledger;
+        let journal = ledger.journal();
+        let wallet: i64 = ledger
+            .postings()
+            .iter()
+            .filter(|p| journal.accounts.full_name(p.account) == "assets:cln:wallet")
+            .map(|p| p.qty)
+            .sum();
+        assert_eq!(wallet, 99_800_000, "counted once");
     }
 
     #[test]
