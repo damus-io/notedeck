@@ -34,7 +34,7 @@ use ledgerdb::{
 };
 
 pub use amex::AmexImporter;
-pub use appstore::{AppStoreImporter, ReportSource};
+pub use appstore::{AppStoreImporter, ReportError, ReportSource};
 pub use batch::{
     Batch, BatchError, LeftOut, OtherLayer, RawAmount, RawMeta, RawPosting, RawPrice, RawTxn,
     Skipped,

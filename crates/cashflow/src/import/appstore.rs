@@ -9,6 +9,10 @@
 //! named on the command line (`2026-03`, or a range `2025-10..2026-03`) or,
 //! with none, the twelve months before this one. A month Apple has no report
 //! for yet is left out (see [`super::LeftOut`]), and a later import takes it.
+//! So is a month Apple keeps failing on: the API answers a fair share of
+//! requests with a 500 that a moment later succeeds, so a 5xx is asked
+//! again a few times, then left out with a note, and the other months
+//! import.
 //!
 //! A report is tab-separated, its columns found by their header names. Apple
 //! spells some of them two ways (`Sales or Return`, `Sale or Return`) and
@@ -44,6 +48,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -84,12 +89,41 @@ const TOKEN_LIFETIME: u64 = 20 * 60;
 /// The extensions a directory's report files have.
 const REPORT_EXTENSIONS: &[&str] = &["txt", "tsv", "gz"];
 
+/// How often a month is asked for while Apple fails on it, waiting one
+/// second before the first retry and twice as long before each next one.
+const RETRY: Retry = Retry {
+    tries: 4,
+    backoff: Duration::from_secs(1),
+};
+
+/// Why a month left out of a fetch because Apple kept failing on it.
+const APPLE_FAILED: &str = "App Store Connect failed";
+
 /// Where finance reports come from, so the importer can be tested without
 /// App Store Connect.
 pub trait ReportSource {
     /// The financial report for fiscal month `month` (`YYYY-MM`) as Apple
     /// sends it (usually gzipped), or `None` when Apple has none for it.
-    fn report(&self, month: &str) -> Result<Option<Vec<u8>>, String>;
+    fn report(&self, month: &str) -> Result<Option<Vec<u8>>, ReportError>;
+}
+
+/// Why a [`ReportSource`] gave no answer for a month.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReportError {
+    /// Apple's side failed (a 5xx), which asking again may not.
+    Unavailable(String),
+    /// Anything asking again won't fix: a refused key, a bad request, no
+    /// network.
+    Failed(String),
+}
+
+/// How [`fetch`] asks again for a month Apple failed on.
+#[derive(Clone, Copy, Debug)]
+struct Retry {
+    /// How many times a month is asked for in all, at least 1.
+    tries: u32,
+    /// The wait before the first retry, doubled before each next one.
+    backoff: Duration,
 }
 
 /// [`ReportSource`] over `ehttp`, signed in with a token.
@@ -101,7 +135,7 @@ pub struct AppStoreHttp {
 }
 
 impl ReportSource for AppStoreHttp {
-    fn report(&self, month: &str) -> Result<Option<Vec<u8>>, String> {
+    fn report(&self, month: &str) -> Result<Option<Vec<u8>>, ReportError> {
         let url = format!(
             "{API}?filter%5BregionCode%5D={}&filter%5BreportDate%5D={month}\
              &filter%5BreportType%5D=FINANCIAL&filter%5BvendorNumber%5D={}",
@@ -110,15 +144,20 @@ impl ReportSource for AppStoreHttp {
         let mut request = ehttp::Request::get(url);
         request.headers.insert("Authorization", &self.authorization);
         request.headers.insert("Accept", "application/a-gzip");
-        let response = ehttp::fetch_blocking(&request)?;
+        let response = ehttp::fetch_blocking(&request).map_err(ReportError::Failed)?;
+        let error = || {
+            format!(
+                "{} {}: {}",
+                response.status,
+                response.status_text,
+                api_error(&response.bytes)
+            )
+        };
         match response.status {
             200 => Ok(Some(response.bytes)),
             404 => Ok(None),
-            status => Err(format!(
-                "{status} {}: {}",
-                response.status_text,
-                api_error(&response.bytes)
-            )),
+            500..=599 => Err(ReportError::Unavailable(error())),
+            _ => Err(ReportError::Failed(error())),
         }
     }
 }
@@ -189,6 +228,8 @@ pub struct AppStoreImporter {
     source: Option<Box<dyn ReportSource>>,
     /// Today, for the default months, or the clock's when `None`.
     today: Option<Date>,
+    /// How a month Apple fails on is asked for again.
+    retry: Retry,
 }
 
 impl AppStoreImporter {
@@ -200,11 +241,12 @@ impl AppStoreImporter {
             dir: dir.clone(),
             source: None,
             today: None,
+            retry: RETRY,
         }
     }
 
     /// The importer fetching from `source` rather than connecting, as if
-    /// it were `today`.
+    /// it were `today`, asking again for a failed month without waiting.
     pub fn with_source(
         config: Option<&AppStoreConfig>,
         source: Box<dyn ReportSource>,
@@ -213,6 +255,10 @@ impl AppStoreImporter {
         Self {
             source: Some(source),
             today: Some(today),
+            retry: Retry {
+                backoff: Duration::ZERO,
+                ..RETRY
+            },
             ..Self::new(config, &CashflowDir::new(""))
         }
     }
@@ -308,8 +354,14 @@ impl Importer for AppStoreImporter {
             };
             let prefix = format!("{}:{vendor}", input.source);
             match &self.source {
-                Some(source) => fetch(&**source, &months, &prefix, &mut reports)?,
-                None => fetch(&self.connect(vendor)?, &months, &prefix, &mut reports)?,
+                Some(source) => fetch(&**source, &months, &prefix, self.retry, &mut reports)?,
+                None => fetch(
+                    &self.connect(vendor)?,
+                    &months,
+                    &prefix,
+                    self.retry,
+                    &mut reports,
+                )?,
             }
         }
         let account = self.config.account.as_deref().unwrap_or(DEFAULT_ACCOUNT);
@@ -328,36 +380,72 @@ impl Importer for AppStoreImporter {
         }
         Ok(Batch {
             left_out,
+            notes: reports.notes,
             ..Batch::from_raw(&txns, &[])?
         })
     }
 }
 
-/// Add every month's report from `source` to `reports`, and leave out
-/// each month it has none for, as `<prefix>:<month>`.
+/// Add every month's report from `source` to `reports`, and leave out, as
+/// `<prefix>:<month>`, each month it has none for and each month Apple
+/// still fails on after `retry`, with a note saying how. Any other error
+/// fails the fetch.
 fn fetch(
     source: &dyn ReportSource,
     months: &[String],
     prefix: &str,
+    retry: Retry,
     reports: &mut Reports,
 ) -> Result<(), ImportError> {
     for month in months {
+        let from = format!("App Store Connect financeReports {month}");
         let fail = |error| ImportError::Fetch {
-            from: format!("App Store Connect financeReports {month}"),
+            from: from.clone(),
             error,
         };
-        let Some(body) = source.report(month).map_err(fail)? else {
-            reports.left_out.push(LeftOut {
-                id: format!("{prefix}:{month}"),
-                why: "no report",
-            });
-            continue;
+        let why = match ask(source, month, retry) {
+            Ok(Some(body)) => {
+                let text = report_text(body).map_err(fail)?;
+                let rows = read_report(&text)
+                    .map_err(|e| fail(format!("row {}: {}", e.row, e.message)))?;
+                reports.add(text, rows);
+                continue;
+            }
+            Ok(None) => "no report",
+            Err(ReportError::Unavailable(error)) => {
+                reports.notes.push(format!(
+                    "{from}: {error} ({} tries); a later import fetches it again",
+                    retry.tries
+                ));
+                APPLE_FAILED
+            }
+            Err(ReportError::Failed(error)) => return Err(fail(error)),
         };
-        let text = report_text(body).map_err(fail)?;
-        let rows = read_report(&text).map_err(|e| fail(format!("row {}: {}", e.row, e.message)))?;
-        reports.add(text, rows);
+        reports.left_out.push(LeftOut {
+            id: format!("{prefix}:{month}"),
+            why,
+        });
     }
     Ok(())
+}
+
+/// `month` from `source`, asked again after a wait while Apple fails on it,
+/// up to `retry.tries` times in all.
+fn ask(
+    source: &dyn ReportSource,
+    month: &str,
+    retry: Retry,
+) -> Result<Option<Vec<u8>>, ReportError> {
+    let mut wait = retry.backoff;
+    for _ in 1..retry.tries {
+        match source.report(month) {
+            Err(ReportError::Unavailable(_)) => {}
+            answer => return answer,
+        }
+        std::thread::sleep(wait);
+        wait *= 2;
+    }
+    source.report(month)
 }
 
 /// The command line's paths, split into report files and months to fetch.
@@ -447,8 +535,10 @@ struct Reports {
     /// Each report's text, so the same report given twice counts once.
     seen: BTreeSet<String>,
     groups: BTreeMap<Key, Group>,
-    /// The months fetched that had no report.
+    /// The months fetched that had no report, or that Apple failed on.
     left_out: Vec<LeftOut>,
+    /// What Apple said about each month it failed on.
+    notes: Vec<String>,
 }
 
 impl Reports {
@@ -1040,29 +1130,52 @@ mod tests {
     }
 
     /// Reports by month, recording the months asked for.
+    #[derive(Default)]
     struct FakeApi {
         reports: BTreeMap<&'static str, Vec<u8>>,
+        /// Errors a month answers with, one per ask, before its report.
+        errors: RefCell<BTreeMap<&'static str, Vec<ReportError>>>,
         asked: RefCell<Vec<String>>,
     }
 
     impl ReportSource for std::rc::Rc<FakeApi> {
-        fn report(&self, month: &str) -> Result<Option<Vec<u8>>, String> {
+        fn report(&self, month: &str) -> Result<Option<Vec<u8>>, ReportError> {
             self.asked.borrow_mut().push(month.to_owned());
+            if let Some(errors) = self.errors.borrow_mut().get_mut(month)
+                && !errors.is_empty()
+            {
+                return Err(errors.remove(0));
+            }
             Ok(self.reports.get(month).cloned())
         }
+    }
+
+    /// Apple's 500, as the API answers it.
+    fn apple_500() -> ReportError {
+        ReportError::Unavailable(
+            "500 Internal Server Error: An unexpected error occurred on the server side."
+                .to_owned(),
+        )
+    }
+
+    /// What `batch` left out because Apple failed, not for its own reasons.
+    fn failed_months(batch: &Batch) -> Vec<LeftOut> {
+        let failed = batch.left_out.iter().filter(|l| l.why == APPLE_FAILED);
+        failed.cloned().collect()
+    }
+
+    /// The importer fetching from `api`.
+    fn fetching(api: &std::rc::Rc<FakeApi>) -> AppStoreImporter {
+        AppStoreImporter::with_source(Some(&config()), Box::new(api.clone()), date("2026-06-10"))
     }
 
     #[test]
     fn fetched_months_read_like_files_and_a_missing_one_waits() {
         let api = std::rc::Rc::new(FakeApi {
             reports: BTreeMap::from([("2026-04", gzip(&report()))]),
-            asked: RefCell::new(Vec::new()),
+            ..FakeApi::default()
         });
-        let importer = AppStoreImporter::with_source(
-            Some(&config()),
-            Box::new(api.clone()),
-            date("2026-06-10"),
-        );
+        let importer = fetching(&api);
         let batch = importer
             .import(&input(vec![PathBuf::from("2026-04..2026-05")]))
             .unwrap();
@@ -1084,6 +1197,74 @@ mod tests {
             (asked.len(), asked[0].as_str(), asked[11].as_str()),
             (12, "2025-06", "2026-05")
         );
+    }
+
+    #[test]
+    fn a_month_apple_keeps_failing_on_is_left_out_and_the_rest_import() {
+        let api = std::rc::Rc::new(FakeApi {
+            reports: BTreeMap::from([("2026-04", gzip(&report()))]),
+            errors: RefCell::new(BTreeMap::from([("2026-03", vec![apple_500(); 9])])),
+            ..FakeApi::default()
+        });
+        let batch = fetching(&api)
+            .import(&input(vec![PathBuf::from("2026-03..2026-04")]))
+            .unwrap();
+        assert_eq!(ledger(&batch), LEDGER);
+        assert_eq!(
+            failed_months(&batch),
+            [LeftOut {
+                id: "appstore:80000001:2026-03".to_owned(),
+                why: APPLE_FAILED,
+            }]
+        );
+        assert_eq!(
+            batch.notes,
+            [
+                "App Store Connect financeReports 2026-03: 500 Internal Server Error: An \
+              unexpected error occurred on the server side. (4 tries); a later import \
+              fetches it again"
+            ]
+        );
+        let asked = api.asked.borrow();
+        assert_eq!(
+            asked.iter().filter(|m| *m == "2026-03").count(),
+            RETRY.tries as usize
+        );
+        assert_eq!(asked.last().map(String::as_str), Some("2026-04"));
+    }
+
+    #[test]
+    fn a_month_apple_fails_on_once_imports_on_the_retry() {
+        let api = std::rc::Rc::new(FakeApi {
+            reports: BTreeMap::from([("2026-04", gzip(&report()))]),
+            errors: RefCell::new(BTreeMap::from([("2026-04", vec![apple_500()])])),
+            ..FakeApi::default()
+        });
+        let batch = fetching(&api)
+            .import(&input(vec![PathBuf::from("2026-04")]))
+            .unwrap();
+        assert_eq!(ledger(&batch), LEDGER);
+        assert!(failed_months(&batch).is_empty() && batch.notes.is_empty());
+        assert_eq!(*api.asked.borrow(), ["2026-04", "2026-04"]);
+    }
+
+    #[test]
+    fn an_error_asking_again_wont_fix_fails_the_run_at_once() {
+        let refused = ReportError::Failed("401 Unauthorized: bad token".to_owned());
+        let api = std::rc::Rc::new(FakeApi {
+            reports: BTreeMap::from([("2026-04", gzip(&report()))]),
+            errors: RefCell::new(BTreeMap::from([("2026-03", vec![refused])])),
+            ..FakeApi::default()
+        });
+        let err = fetching(&api)
+            .import(&input(vec![PathBuf::from("2026-03..2026-04")]))
+            .unwrap_err();
+        assert!(
+            matches!(&err, ImportError::Fetch { from, error }
+                if from.ends_with("2026-03") && error.starts_with("401")),
+            "{err}"
+        );
+        assert_eq!(*api.asked.borrow(), ["2026-03"]);
     }
 
     #[test]
