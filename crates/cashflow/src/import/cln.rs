@@ -155,9 +155,9 @@
 //! out of order, which leave the opening in place.
 
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use futures_util::stream::{self, StreamExt};
@@ -169,6 +169,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use self::blocks::BlockTimes;
 use super::csv_rows::read;
@@ -303,18 +304,45 @@ pub enum NodeError {
     Other(String),
 }
 
-/// [`Node`] over commando: each call, or each [`Node::call_each`] batch,
-/// connects, makes its calls and hangs up.
+/// [`Node`] over commando, on one connection for as long as it lives.
+///
+/// The first call connects and every later one reuses the connection:
+/// lnsocket tells answers apart by request id, so calls share it side by
+/// side. A call that fails for want of the connection (refused, dropped,
+/// timed out) closes it, and the next call connects again. The connection
+/// lives on a thread and runtime of its own, which keeps it clear of any
+/// runtime the caller is on and keeps its pings answered between calls;
+/// dropping the `Commando` hangs up.
 pub struct Commando {
+    peer: Peer,
+    /// The connection's thread, started by the first call.
+    link: OnceLock<UnboundedSender<Job>>,
+}
+
+/// The node a [`Commando`] calls, and how.
+#[derive(Clone)]
+struct Peer {
     node_id: PublicKey,
     /// `host:port`.
     host: String,
     rune: Secret,
 }
 
+/// Calls for a [`Commando`]'s connection to make, `in_flight` at a time,
+/// and where their answers go.
+struct Job {
+    method: String,
+    params: Vec<Value>,
+    in_flight: usize,
+    reply: std::sync::mpsc::Sender<Answers>,
+}
+
+/// What a [`Job`]'s calls answered, in order, or why none was made.
+type Answers = Result<Vec<Result<Value, NodeError>>, NodeError>;
+
 impl Commando {
     /// The node `node_id` (hex) at `host` (`host[:port]`), called with
-    /// `rune`.
+    /// `rune`. Nothing connects until the first call.
     pub fn new(node_id: &str, host: &str, rune: Secret) -> Result<Self, String> {
         let node_id =
             PublicKey::from_str(node_id).map_err(|e| format!("node id {node_id:?}: {e}"))?;
@@ -324,50 +352,121 @@ impl Commando {
             format!("{host}:{DEFAULT_PORT}")
         };
         Ok(Self {
-            node_id,
-            host,
-            rune,
+            peer: Peer {
+                node_id,
+                host,
+                rune,
+            },
+            link: OnceLock::new(),
         })
     }
 
-    /// Connect and hand the client to `work`, on a runtime of its own,
-    /// which a thread of its own keeps clear of any runtime the caller is
-    /// on.
-    fn with_client<T, F, Fut>(&self, work: F) -> Result<T, NodeError>
-    where
-        T: Send,
-        F: FnOnce(CommandoClient) -> Fut + Send,
-        Fut: Future<Output = Result<T, NodeError>>,
-    {
-        std::thread::scope(|scope| {
-            scope
-                .spawn(|| {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(|e| NodeError::Other(format!("starting a runtime: {e}")))?;
-                    runtime.block_on(async {
-                        let key = SecretKey::new(&mut rand::thread_rng());
-                        let socket = LNSocket::connect_and_init(key, self.node_id, &self.host)
-                            .await
-                            .map_err(|e| {
-                                NodeError::Other(format!("connecting to {}: {e}", self.host))
-                            })?;
-                        let config = CommandoConfig::new()
-                            .timeout(Some(CALL_TIMEOUT))
-                            .retry_policy(RetryPolicy::Never)
-                            .no_reconnect();
-                        work(CommandoClient::spawn_with_config(
-                            socket,
-                            self.rune.expose(),
-                            config,
-                        ))
-                        .await
-                    })
-                })
-                .join()
-                .unwrap_or_else(|_| Err(NodeError::Other("the commando call panicked".to_owned())))
+    /// Hand `params` to the connection's thread, starting it if this is
+    /// the first call, and wait for the answers.
+    fn send(&self, method: &str, params: Vec<Value>, in_flight: usize) -> Answers {
+        let ended = || NodeError::Other("the commando connection's thread ended".to_owned());
+        let link = self.link.get_or_init(|| {
+            let (link, jobs) = unbounded_channel();
+            let peer = self.peer.clone();
+            std::thread::spawn(move || peer.serve(jobs));
+            link
+        });
+        let (reply, answers) = std::sync::mpsc::channel();
+        link.send(Job {
+            method: method.to_owned(),
+            params,
+            in_flight,
+            reply,
         })
+        .map_err(|_| ended())?;
+        answers.recv().map_err(|_| ended())?
+    }
+}
+
+impl Peer {
+    /// Answer `jobs` until the [`Commando`] that sends them is dropped.
+    fn serve(self, mut jobs: UnboundedReceiver<Job>) {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(e) => {
+                let error = NodeError::Other(format!("starting a runtime: {e}"));
+                while let Some(job) = jobs.blocking_recv() {
+                    let _ = job.reply.send(Err(error.clone()));
+                }
+                return;
+            }
+        };
+        runtime.block_on(async {
+            let mut client = None;
+            while let Some(job) = jobs.recv().await {
+                let answers = self.answer(&mut client, &job).await;
+                let _ = job.reply.send(answers);
+            }
+        });
+    }
+
+    /// Make `job`'s calls over `client`, connecting first if there is no
+    /// connection, and closing it if a call found it gone.
+    async fn answer(&self, client: &mut Option<CommandoClient>, job: &Job) -> Answers {
+        let connected = match client {
+            Some(connected) => connected,
+            None => client.insert(self.connect().await?),
+        };
+        let answers: Vec<_> = stream::iter(job.params.iter().cloned())
+            .map(|params| connected.call(job.method.as_str(), params))
+            .buffered(job.in_flight.max(1))
+            .collect()
+            .await;
+        let lost = answers.iter().any(
+            |answer| matches!(answer, Err(error) if !matches!(error, lnsocket::Error::Rpc(_))),
+        );
+        if lost {
+            *client = None;
+        }
+        Ok(answers
+            .into_iter()
+            .map(|answer| answer.map_err(node_error))
+            .collect())
+    }
+
+    /// Open a connection to the node, on the runtime this is awaited on.
+    async fn connect(&self) -> Result<CommandoClient, NodeError> {
+        let key = SecretKey::new(&mut rand::thread_rng());
+        let socket = LNSocket::connect_and_init(key, self.node_id, &self.host)
+            .await
+            .map_err(|e| NodeError::Other(format!("connecting to {}: {e}", self.host)))?;
+        let config = CommandoConfig::new()
+            .timeout(Some(CALL_TIMEOUT))
+            .retry_policy(RetryPolicy::Never)
+            .no_reconnect();
+        Ok(CommandoClient::spawn_with_config(
+            socket,
+            self.rune.expose(),
+            config,
+        ))
+    }
+}
+
+impl Node for Commando {
+    fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+        let mut answers = self.send(method, vec![params], 1)?;
+        answers
+            .pop()
+            .unwrap_or_else(|| Err(NodeError::Other(format!("{method}: no answer"))))
+    }
+
+    /// Every call over the one connection, `in_flight` at a time, their
+    /// round trips overlapping.
+    fn call_each(
+        &self,
+        method: &str,
+        params: Vec<Value>,
+        in_flight: usize,
+    ) -> Result<Vec<Result<Value, NodeError>>, NodeError> {
+        self.send(method, params, in_flight)
     }
 }
 
@@ -380,33 +479,6 @@ fn node_error(error: lnsocket::Error) -> NodeError {
             message: rpc.message,
         },
         other => NodeError::Other(other.to_string()),
-    }
-}
-
-impl Node for Commando {
-    fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
-        self.with_client(
-            |client| async move { client.call(method, params).await.map_err(node_error) },
-        )
-    }
-
-    /// Every call over the one connection, `in_flight` at a time: lnsocket
-    /// tells their answers apart by request id, so a batch costs one
-    /// handshake and its round trips overlap.
-    fn call_each(
-        &self,
-        method: &str,
-        params: Vec<Value>,
-        in_flight: usize,
-    ) -> Result<Vec<Result<Value, NodeError>>, NodeError> {
-        self.with_client(|client| async move {
-            let client = &client;
-            Ok(stream::iter(params)
-                .map(|params| async move { client.call(method, params).await.map_err(node_error) })
-                .buffered(in_flight.max(1))
-                .collect()
-                .await)
-        })
     }
 }
 

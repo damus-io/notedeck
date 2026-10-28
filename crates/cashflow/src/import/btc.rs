@@ -457,9 +457,8 @@ impl BtcImporter {
             }
         }
 
-        // One call at a time, which through corerpc is one commando handshake
-        // a page: a handful for a few wallets. `Node::call_each` could batch
-        // a wallet's pages over one connection if that ever matters.
+        // One call at a time: a page's `skip` follows from the one before.
+        // Through corerpc they all share the run's one commando connection.
         let mut entries = Vec::new();
         for wallet in &wallets {
             for skip in (0..).step_by(PAGE) {
