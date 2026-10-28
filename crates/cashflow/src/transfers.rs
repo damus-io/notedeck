@@ -13,7 +13,10 @@
 //! recorded twice the same way, by the `btc` and the `cln` importer, and
 //! both records carry the transaction's `raw-txid`. That id is proof the two
 //! are one move, so [`suggest`] pairs those first, by txid and with no date
-//! window, before it pairs the rest by amount and date.
+//! window, before it pairs the rest by amount and date. Only records with a
+//! leg on one of the owner's own accounts pair by txid: the `payroll`
+//! importer writes `raw-txid` on a payout too, but a payout is spending, not
+//! a move between own accounts, so it is never one side of a transfer.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -44,16 +47,20 @@ pub struct Suggestion {
 /// Transfers in the `raw` ledger, as importers wrote it, that `edits` don't
 /// already account for, in date order.
 ///
-/// First by txid: records of two different sources (the `<source>:` prefix
-/// of their ids) that carry one [`TXID_KEY`] are one on-chain move, and
-/// pair when each has exactly one counter leg (a posting to one of
+/// First by txid: own-account records (those with a posting to an account
+/// under [`OWN_ROOTS`]) of two different sources (the `<source>:` prefix of
+/// their ids) that carry one [`TXID_KEY`] are one on-chain move, and pair
+/// when each has exactly one counter leg (a posting to one of
 /// [`Edits::defaults`], the leg derive moves) and exactly one pair of those
 /// legs is in one commodity and nets to zero. Their other legs, a fee or a
 /// third party's output, don't matter, and neither do their dates. A txid
 /// whose records don't net that way suggests nothing: a send that paid the
 /// other wallet and someone else in one transaction needs a split first.
-/// Every record of a txid two sources hold is then left out of the amount
-/// pass, paired or not, so it isn't paired with a stranger instead.
+/// Every own-account record of a txid two sources hold is then left out of
+/// the amount pass, paired or not, so it isn't paired with a stranger
+/// instead. A record with no own-account leg, such as a payroll payout that
+/// names the send that paid it, takes no part in the txid pass at all: it
+/// pairs with nothing and holds no other record back.
 ///
 /// Then by amount: two transactions pair when each is an importer's raw record (one leg to
 /// an account under [`OWN_ROOTS`], one counter leg to one of
@@ -95,7 +102,7 @@ pub fn suggest(raw: &Ledger, edits: &Edits) -> Vec<Suggestion> {
     };
 
     let mut found = Vec::new();
-    let by_txid = pair_by_txid(journal, &is_default, &decided, &mut found);
+    let by_txid = pair_by_txid(journal, &is_default, &is_own, &decided, &mut found);
 
     // Every candidate side, grouped by what its pair must match.
     let mut groups: BTreeMap<Group, Sides> = BTreeMap::new();
@@ -145,12 +152,13 @@ pub fn suggest(raw: &Ledger, edits: &Edits) -> Vec<Suggestion> {
     found.into_iter().map(|f| f.suggestion).collect()
 }
 
-/// Pair the records of each txid two sources hold, as [`suggest`] says,
-/// pushing the pairs to `found`, and return the ids of every record of
-/// those txids, paired or not.
+/// Pair the own-account records of each txid two sources hold, as
+/// [`suggest`] says, pushing the pairs to `found`, and return the ids of
+/// every own-account record of those txids, paired or not.
 fn pair_by_txid<'a>(
     journal: &'a Journal,
     is_default: &HashSet<AccountId>,
+    is_own: &impl Fn(AccountId) -> bool,
     decided: &HashSet<&str>,
     found: &mut Vec<Found>,
 ) -> HashSet<&'a str> {
@@ -162,6 +170,9 @@ fn pair_by_txid<'a>(
         let Some(txid) = journal.txn_meta(txn, TXID_KEY) else {
             continue;
         };
+        if !journal.postings_of(txn).iter().any(|p| is_own(p.account)) {
+            continue;
+        }
         let counter = counter_leg(journal, is_default, txn).filter(|_| !decided.contains(id));
         by_txid.entry(txid).or_default().push(Record {
             id,
@@ -668,6 +679,61 @@ mod tests {
         .concat();
         let raw = &ledger(&text).ledger;
         assert!(suggest(raw, &crate::rules::default_edits()).is_empty());
+    }
+
+    /// A payroll payout: the btc importer's send `btc:<txid>`, and the
+    /// payroll importer's record of the same txid moving the paid amount
+    /// from `expenses:unknown` to `expenses:payroll`.
+    fn payroll_send(txid: &str, date: &str, msat: i64, fee: i64) -> String {
+        let send = chain(
+            &format!("btc:{txid}"),
+            date,
+            txid,
+            &[
+                ("assets:btc:hot", -(msat + fee)),
+                ("expenses:fees:btc", fee),
+                ("expenses:unknown", msat),
+            ],
+        );
+        let payout = chain(
+            &format!("payroll:{txid}"),
+            date,
+            txid,
+            &[("expenses:payroll", msat), ("expenses:unknown", -msat)],
+        );
+        send + &payout
+    }
+
+    /// A payroll record nets against its send's counter leg, but has no
+    /// own-account leg, so the two aren't a transfer.
+    #[test]
+    fn a_payroll_payout_doesnt_pair_with_its_send() {
+        let raw = &ledger(&payroll_send("jj", "2026-08-01", 1_000_000, 500)).ledger;
+        assert!(suggest(raw, &crate::rules::default_edits()).is_empty());
+    }
+
+    /// A send that paid the CLN wallet, which a payroll record also names,
+    /// still pairs with the CLN receipt by txid.
+    #[test]
+    fn a_payroll_record_doesnt_stop_a_txid_pair() {
+        let text = [
+            payroll_send("kk", "2026-08-01", 1_000_000, 500),
+            chain(
+                "cln:tx:kk",
+                "2026-08-03",
+                "kk",
+                &[
+                    ("assets:cln:wallet", 1_000_000),
+                    ("income:unknown", -1_000_000),
+                ],
+            ),
+        ]
+        .concat();
+        let raw = &ledger(&text).ledger;
+        assert_eq!(
+            suggest(raw, &crate::rules::default_edits()),
+            [pair("btc:kk", "cln:tx:kk", 2)]
+        );
     }
 
     /// A txid one of whose records an edit already decided suggests
