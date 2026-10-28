@@ -465,6 +465,9 @@ as `P` directives in the `prices` layer, one segment per source and year:
   boc        Bank of Canada rates into CAD for AUD BRL CHF DKK EUR GBP HKD
              JPY MXN NOK RUB THB TRY USD, business days, from 2007-05-01
              (before 2017-01-03, its legacy noon rates)
+  ecb        ECB reference rates crossed through the euro into CAD, only
+             where boc has none: before 2007-05-01 (from 1999-01-04), DKK
+             after 2017-04-28, THB from 2020 until 2026-04-30
   bitstamp   Bitstamp BTC/USD daily close, finished days only
 
 Together they price msat in CAD, chaining msat → sat → btc → USD → CAD at
@@ -474,10 +477,11 @@ Without --since each source resumes the day after its newest rate in the
 journal. When its oldest rate is later than the oldest transaction (an import
 brought older ones, the source learned a currency, or it has no rates yet),
 it backfills instead, from a week before that transaction or from the
-source's first day (boc 2007-05-01, bitstamp 2011-08-18). A segment is
-stamped with the day after its last rate rather than the clock, so fetching
-a range again writes nothing, and a later fetch that revises a rate
-replaces it. A source that fails is reported and the others still run.",
+source's first day (boc 2007-05-01, ecb 1999-01-04, bitstamp 2011-08-18).
+
+A segment is stamped with the day after its last rate rather than the clock,
+so fetching a range again writes nothing, and a later fetch that revises a
+rate replaces it. A source that fails is reported and the others still run.",
         options: &[
             ("--since <date>", "First day to fetch [default: resume]"),
             (

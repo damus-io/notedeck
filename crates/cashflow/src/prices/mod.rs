@@ -1,18 +1,21 @@
 //! Daily exchange rates fetched from public sources and filed as
 //! `prices`-layer segments of `P` directives.
 //!
-//! Three sources, none needing a key:
+//! Four sources, none needing a key:
 //!
 //! - [`boc`]: the Bank of Canada's daily rates into CAD for the currencies
 //!   in [`boc::CURRENCIES`], `P <day> USD <rate> CAD`, business days only (a
 //!   lookup takes the nearest earlier rate, which covers weekends and
 //!   holidays).
+//! - [`ecb`]: the European Central Bank's reference rates, crossed through
+//!   the euro into CAD, only for the days and currencies the Bank of Canada
+//!   has no rate for ([`ecb::FILLS`]).
 //! - [`bitstamp`]: Bitstamp's daily BTC/USD close, `P <day> btc <close>
 //!   USD`, every day.
 //! - [`UNITS`]: the exact relations between bitcoin's units, `msat → sat →
 //!   btc`, dated 1970-01-01 so they cover every transaction.
 //!
-//! With all three a msat amount converts to CAD by chaining msat → sat → btc
+//! With these a msat amount converts to CAD by chaining msat → sat → btc
 //! → USD → CAD, which [`ledgerdb::PriceDb`] does on its own.
 //!
 //! **One segment per source per calendar year.** A segment's `imported`
@@ -30,6 +33,7 @@
 
 pub mod bitstamp;
 pub mod boc;
+pub mod ecb;
 
 use std::fmt;
 
@@ -54,7 +58,7 @@ pub const MSAT: &str = "msat";
 
 /// Every source `cashflow prices fetch` knows, by the segment source name
 /// it files them under.
-pub const SOURCES: &[Source] = &[Source::Units, Source::Boc, Source::Bitstamp];
+pub const SOURCES: &[Source] = &[Source::Units, Source::Boc, Source::Ecb, Source::Bitstamp];
 
 /// Seconds in a day.
 const DAY: u64 = 86_400;
@@ -67,6 +71,8 @@ pub enum Source {
     Units,
     /// The Bank of Canada's rates into CAD, [`boc`].
     Boc,
+    /// The ECB's rates crossed into CAD where boc has none, [`ecb`].
+    Ecb,
     /// Bitstamp's BTC/USD, [`bitstamp`].
     Bitstamp,
 }
@@ -77,6 +83,7 @@ impl Source {
         match self {
             Source::Units => "units",
             Source::Boc => "boc",
+            Source::Ecb => "ecb",
             Source::Bitstamp => "bitstamp",
         }
     }
@@ -93,7 +100,17 @@ impl Source {
         match self {
             Source::Units => Date::EPOCH,
             Source::Boc => boc::first_day(),
+            Source::Ecb => ecb::first_day(),
             Source::Bitstamp => bitstamp::first_day(),
+        }
+    }
+
+    /// The first day on or after `day` the source has rates for, or `None`
+    /// when it has none from `day` on.
+    pub fn reach(self, day: Date) -> Option<Date> {
+        match self {
+            Source::Ecb => ecb::reach(day),
+            _ => Some(day.max(self.first_day())),
         }
     }
 
@@ -105,6 +122,7 @@ impl Source {
         match self {
             Source::Units => Ok(units()),
             Source::Boc => boc::fetch(http, since, day_of(now)),
+            Source::Ecb => ecb::fetch(http, since, day_of(now)),
             Source::Bitstamp => bitstamp::fetch(http, since, now),
         }
     }
@@ -364,13 +382,12 @@ pub fn resume_from(ledger: &Ledger, source: Source) -> Option<Date> {
         .rev()
         .find(from_source)
         .map(|at| prices[at].date);
-    let backfill = ledger.txns().first().map(|txn| {
-        let reach = txn.date.max(source.first_day());
+    let backfill = ledger.txns().first().and_then(|txn| {
         let from = Date::from_days(txn.date.days().saturating_sub(LOOKBACK_DAYS));
-        Backfill {
-            reach,
+        Some(Backfill {
+            reach: source.reach(txn.date)?,
             from: from.max(source.first_day()),
-        }
+        })
     });
     let Some(newest) = newest else {
         return backfill.map(|b| b.from);
@@ -383,7 +400,8 @@ pub fn resume_from(ledger: &Ledger, source: Source) -> Option<Date> {
 
 /// A backfill [`resume_from`] may start.
 struct Backfill {
-    /// The oldest day the ledger needs a rate for that the source has.
+    /// The oldest day the ledger needs a rate for that the source can
+    /// have: the oldest transaction's, or the source's first after it.
     reach: Date,
     /// Where fetching it starts.
     from: Date,
@@ -495,6 +513,7 @@ mod tests {
         Canned::default()
             .route(boc::BASE, boc::tests::FIXTURE)
             .route(bitstamp::BASE, bitstamp::tests::FIXTURE)
+            .route(ecb::BASE, ecb::tests::GAPS)
     }
 
     /// Unix time at midnight UTC starting `day`.
@@ -526,8 +545,8 @@ mod tests {
             first.iter().map(|f| f.hash).collect::<Vec<_>>(),
             again.iter().map(|f| f.hash).collect::<Vec<_>>()
         );
-        // units; boc 2023, 2024; bitstamp 2023, 2024.
-        assert_eq!(store.list().unwrap().len(), 5);
+        // units; boc, ecb and bitstamp 2023 and 2024.
+        assert_eq!(store.list().unwrap().len(), 7);
     }
 
     #[test]
@@ -556,6 +575,39 @@ mod tests {
         // amount was ever written, only rates): 55550.
         assert_eq!(commodities.precision(cad), 0);
         assert_eq!(in_cad, 55_550);
+    }
+
+    #[test]
+    fn a_currency_boc_lacks_converts_through_the_ecb_fill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = JournalStore::new(tmp.path().join("journal"));
+        let http = canned();
+        // A CAD amount, so CAD has cents.
+        put(
+            &store,
+            "bank",
+            1,
+            "2024-01-02 * Shop\n  ; id: t:1\n  a  1.00 CAD\n  b\n",
+        );
+        for &source in SOURCES {
+            fetch_into(&store, &http, source, date("2023-12-27"), at("2024-01-04")).unwrap();
+        }
+        let ledger = Ledger::load(&store, LayerFilter::All).unwrap().ledger;
+        let commodities = &ledger.journal().commodities;
+        let (dkk, cad) = (
+            commodities.get("DKK").unwrap(),
+            commodities.get(CAD).unwrap(),
+        );
+        let db = PriceDb::from_ledger(&ledger);
+        let hundred = Amount {
+            qty: 100,
+            commodity: dkk,
+        };
+        // 1.4565 / 7.4551 = 0.195370 CAD a krone on 2024-01-02, and on the
+        // Sunday before, Friday's 0.196460.
+        let in_cad = |day| db.convert(hundred, cad, date(day)).unwrap().qty;
+        assert_eq!(in_cad("2024-01-02"), 1954);
+        assert_eq!(in_cad("2023-12-31"), 1965);
     }
 
     /// Write `text` to `store` as a segment from `source`.

@@ -41,5 +41,5 @@ fn an_empty_journal_needs_since() {
     assert_eq!(cf.ok(&["journal", "ls"]), "");
 
     let err = expect_failure(cf.run(&["prices", "fetch", "--source", "frob"]));
-    assert!(err.contains("sources: units, boc, bitstamp"), "{err}");
+    assert!(err.contains("sources: units, boc, ecb, bitstamp"), "{err}");
 }
