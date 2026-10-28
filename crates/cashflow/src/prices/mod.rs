@@ -86,10 +86,22 @@ impl Source {
         SOURCES.iter().copied().find(|s| s.name() == name)
     }
 
+    /// The first day the source has a rate for. A fetch never asks for
+    /// earlier days: there are none, and Bitstamp answers a start before its
+    /// first candle with no candles at all.
+    pub fn first_day(self) -> Date {
+        match self {
+            Source::Units => Date::EPOCH,
+            Source::Boc => boc::first_day(),
+            Source::Bitstamp => bitstamp::first_day(),
+        }
+    }
+
     /// The rates on days `since` up to, not including, `today`, plus
     /// `today`'s when the source publishes a final one during the day.
     /// [`Source::Units`] ignores the range: its relations are fixed.
     fn fetch(self, http: &dyn Http, since: Date, now: u64) -> Result<Vec<RawPrice>, FetchError> {
+        let since = since.max(self.first_day());
         match self {
             Source::Units => Ok(units()),
             Source::Boc => boc::fetch(http, since, day_of(now)),
@@ -325,24 +337,56 @@ pub fn fetch_into(
     })
 }
 
-/// Where a fetch of `source` with no `--since` starts: the day after the
-/// newest rate `ledger` already has from it, else the first day of the
-/// ledger's oldest transaction. `None` for an empty ledger.
+/// How far before the oldest transaction a backfill starts, so a first
+/// transaction on a weekend or holiday still has the business day's rate
+/// before it.
+const LOOKBACK_DAYS: u32 = 7;
+
+/// Where a fetch of `source` with no `--since` starts. `None` for an empty
+/// ledger.
+///
+/// Usually the day after the newest rate `ledger` already has from it. But
+/// when its oldest rate is later than the oldest transaction, as far back
+/// as the source reaches, it backfills: from [`LOOKBACK_DAYS`] before that
+/// transaction. That happens when an import brings older transactions than
+/// the last fetch saw, when a source learns a currency, or when the source
+/// has no rates in the ledger yet.
 pub fn resume_from(ledger: &Ledger, source: Source) -> Option<Date> {
-    let newest = ledger
-        .prices()
-        .iter()
-        .enumerate()
+    let from_source = |at: &usize| {
+        let origin = ledger.price_origin(*at);
+        ledger.segments()[origin.segment as usize].header.source == source.name()
+    };
+    let prices = ledger.prices();
+    let oldest = (0..prices.len())
+        .find(from_source)
+        .map(|at| prices[at].date);
+    let newest = (0..prices.len())
         .rev()
-        .find(|(at, _)| {
-            let origin = ledger.price_origin(*at);
-            ledger.segments()[origin.segment as usize].header.source == source.name()
-        })
-        .map(|(_, price)| price.date);
-    match newest {
-        Some(day) => Some(Date::from_days(day.days() + 1)),
-        None => ledger.txns().first().map(|txn| txn.date),
+        .find(from_source)
+        .map(|at| prices[at].date);
+    let backfill = ledger.txns().first().map(|txn| {
+        let reach = txn.date.max(source.first_day());
+        let from = Date::from_days(txn.date.days().saturating_sub(LOOKBACK_DAYS));
+        Backfill {
+            reach,
+            from: from.max(source.first_day()),
+        }
+    });
+    let Some(newest) = newest else {
+        return backfill.map(|b| b.from);
+    };
+    match backfill {
+        Some(b) if oldest.is_some_and(|oldest| oldest > b.reach) => Some(b.from),
+        _ => Some(Date::from_days(newest.days() + 1)),
     }
+}
+
+/// A backfill [`resume_from`] may start.
+struct Backfill {
+    /// The oldest day the ledger needs a rate for that the source has.
+    reach: Date,
+    /// Where fetching it starts.
+    from: Date,
 }
 
 #[cfg(test)]
@@ -514,6 +558,17 @@ mod tests {
         assert_eq!(in_cad, 55_550);
     }
 
+    /// Write `text` to `store` as a segment from `source`.
+    fn put(store: &JournalStore, source: &str, imported: u64, text: &str) {
+        let journal = ledgerdb::Journal::parse(text).journal;
+        let header = SegmentHeader {
+            source: source.to_owned(),
+            imported,
+            layer: source.to_owned(),
+        };
+        store.write_segment(&header, &journal).unwrap();
+    }
+
     #[test]
     fn resume_starts_after_the_newest_rate_from_that_source() {
         let tmp = tempfile::tempdir().unwrap();
@@ -522,15 +577,15 @@ mod tests {
         let load = || Ledger::load(&store, LayerFilter::All).unwrap().ledger;
         assert_eq!(resume_from(&load(), Source::Boc), None);
 
-        let txn = "2022-03-04 * Shop\n  ; id: t:1\n  a  1 CAD\n  b\n";
-        let journal = ledgerdb::Journal::parse(txn).journal;
-        let header = SegmentHeader {
-            source: "bank".to_owned(),
-            imported: 1,
-            layer: "bank".to_owned(),
-        };
-        store.write_segment(&header, &journal).unwrap();
-        assert_eq!(resume_from(&load(), Source::Boc), Some(date("2022-03-04")));
+        // A Saturday: the backfill starts a week before, so Friday's rate
+        // is in it.
+        put(
+            &store,
+            "bank",
+            1,
+            "2023-12-30 * Shop\n  ; id: t:1\n  a  1 CAD\n  b\n",
+        );
+        assert_eq!(resume_from(&load(), Source::Boc), Some(date("2023-12-23")));
 
         fetch_into(
             &store,
@@ -545,7 +600,66 @@ mod tests {
         assert_eq!(resume_from(&ledger, Source::Boc), Some(date("2024-01-04")));
         assert_eq!(
             resume_from(&ledger, Source::Bitstamp),
-            Some(date("2022-03-04"))
+            Some(date("2023-12-23"))
+        );
+    }
+
+    #[test]
+    fn resume_backfills_transactions_older_than_the_oldest_rate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = JournalStore::new(tmp.path().join("journal"));
+        let http = canned();
+        let load = || Ledger::load(&store, LayerFilter::All).unwrap().ledger;
+        put(
+            &store,
+            "bank",
+            1,
+            "2023-12-30 * Shop\n  ; id: t:1\n  a  1 CAD\n  b\n",
+        );
+        fetch_into(
+            &store,
+            &http,
+            Source::Boc,
+            date("2023-12-23"),
+            at("2024-01-04"),
+        )
+        .unwrap();
+        assert_eq!(resume_from(&load(), Source::Boc), Some(date("2024-01-04")));
+
+        // An import brings a transaction older than every rate.
+        put(
+            &store,
+            "bank",
+            2,
+            "2023-12-20 * Shop\n  ; id: t:2\n  a  1 CAD\n  b\n",
+        );
+        assert_eq!(resume_from(&load(), Source::Boc), Some(date("2023-12-13")));
+
+        // One older than the source reaches backfills from its first day,
+        // and once that day's rate is in, never again.
+        put(
+            &store,
+            "bank",
+            3,
+            "2005-03-01 * Shop\n  ; id: t:3\n  a  1 CAD\n  b\n",
+        );
+        assert_eq!(resume_from(&load(), Source::Boc), Some(boc::first_day()));
+        put(&store, "boc", 4, "P 2007-05-01 USD 1.1089 CAD\n");
+        assert_eq!(resume_from(&load(), Source::Boc), Some(date("2024-01-04")));
+    }
+
+    #[test]
+    fn a_fetch_never_asks_before_the_source_begins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = JournalStore::new(tmp.path().join("journal"));
+        let http = canned();
+        let since = date("2009-01-01");
+        fetch_into(&store, &http, Source::Bitstamp, since, at("2011-08-20")).unwrap();
+        let first = u64::from(bitstamp::first_day().days()) * DAY;
+        assert!(
+            http.asked.borrow()[0].ends_with(&format!("&start={first}")),
+            "{:?}",
+            http.asked.borrow()
         );
     }
 

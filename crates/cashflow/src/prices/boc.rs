@@ -115,6 +115,11 @@ pub const CURRENCIES: &[Currency] = &[
     },
 ];
 
+/// The first day of the legacy noon series, and of this source.
+pub fn first_day() -> Date {
+    ymd(2007, 5, 1)
+}
+
 /// The first day of the daily `FX…CAD` series.
 pub fn fx_start() -> Date {
     ymd(2017, 1, 3)

@@ -19,6 +19,17 @@ use crate::import::RawPrice;
 /// The daily BTC/USD candles endpoint; the query follows.
 pub const BASE: &str = "https://www.bitstamp.net/api/v2/ohlc/btcusd/";
 
+/// The day of Bitstamp's first BTC/USD candle. A request starting before
+/// it gets no candles at all, rather than the ones from it on.
+pub fn first_day() -> Date {
+    Date::from_ymd(ledgerdb::Ymd {
+        year: 2011,
+        month: 8,
+        day: 18,
+    })
+    .expect("a calendar date")
+}
+
 /// The most candles one request returns.
 pub const LIMIT: usize = 1000;
 

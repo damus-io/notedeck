@@ -471,7 +471,10 @@ Together they price msat in CAD, chaining msat → sat → btc → USD → CAD a
 each transaction's date, the nearest earlier rate covering weekends.
 
 Without --since each source resumes the day after its newest rate in the
-journal, or from the oldest transaction when it has none. A segment is
+journal. When its oldest rate is later than the oldest transaction (an import
+brought older ones, the source learned a currency, or it has no rates yet),
+it backfills instead, from a week before that transaction or from the
+source's first day (boc 2007-05-01, bitstamp 2011-08-18). A segment is
 stamped with the day after its last rate rather than the clock, so fetching
 a range again writes nothing, and a later fetch that revises a rate
 replaces it. A source that fails is reported and the others still run.",
