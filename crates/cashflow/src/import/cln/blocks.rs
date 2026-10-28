@@ -90,7 +90,7 @@ impl BlockTimes {
     /// Ask `node`'s corerpc for each of `heights` not already known. A
     /// height that gets no time keeps none, and the note says how many and
     /// why. With no node (saved listings), nothing is asked.
-    pub(super) fn fetch(
+    pub(super) async fn fetch(
         &mut self,
         node: Option<&dyn Node>,
         heights: impl IntoIterator<Item = u32>,
@@ -105,7 +105,7 @@ impl BlockTimes {
             return None;
         }
         let why = match node {
-            Some(node) => match self.ask(node, &missing) {
+            Some(node) => match self.ask(node, &missing).await {
                 Ok(()) => return None,
                 Err(why) => why,
             },
@@ -125,7 +125,7 @@ impl BlockTimes {
     /// Ask for `heights`' hashes and then those hashes' headers, keeping
     /// each time that checks out. `Err` names the first failure when any
     /// height got no time.
-    fn ask(&mut self, node: &dyn Node, heights: &[u32]) -> Result<(), String> {
+    async fn ask(&mut self, node: &dyn Node, heights: &[u32]) -> Result<(), String> {
         let mut failure: Option<String> = None;
         let mut fail = |why: String| {
             failure.get_or_insert(why);
@@ -137,6 +137,7 @@ impl BlockTimes {
             .collect();
         let hashes = node
             .call_each(CORERPC, params, IN_FLIGHT)
+            .await
             .map_err(|error| format!("{CORERPC}: {error}"))?;
         let mut found = Vec::new();
         for (&height, answer) in heights.iter().zip(hashes) {
@@ -154,6 +155,7 @@ impl BlockTimes {
             Vec::new()
         } else {
             node.call_each(CORERPC, params, IN_FLIGHT)
+                .await
                 .map_err(|error| format!("{CORERPC}: {error}"))?
         };
         for (hashed, answer) in found.iter().zip(headers) {
@@ -176,8 +178,9 @@ impl BlockTimes {
 
 /// Whether `node`'s corerpc gives a block hash, asking for the genesis
 /// block's, which every chain has. `Err` says why not.
-pub(super) fn probe(node: &dyn Node) -> Result<(), String> {
+pub(super) async fn probe(node: &dyn Node) -> Result<(), String> {
     node.call(CORERPC, json!([WALLET, "getblockhash", 0]))
+        .await
         .map_err(node_failure)
         .and_then(block_hash)
         .map(drop)

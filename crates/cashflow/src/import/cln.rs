@@ -154,12 +154,14 @@
 //! read after its coin was opened comes only from saved listings imported
 //! out of order, which leave the opening in place.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::rc::Rc;
 use std::str::FromStr;
-use std::sync::OnceLock;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use futures_util::stream::{self, StreamExt};
 use ledgerdb::{Date, LayerFilter, Ledger};
 use lnsocket::bitcoin::secp256k1::{PublicKey, SecretKey, rand};
@@ -169,7 +171,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::OnceCell;
 
 use self::blocks::BlockTimes;
 use super::csv_rows::read;
@@ -268,10 +270,11 @@ const LNURL: &str = "income:lnurl";
 const ZAP_REQUEST: u64 = 9734;
 
 /// A Core Lightning node to call, so the importer can be tested without
-/// one.
+/// one. `async` and `?Send` as [`Importer`] is.
+#[async_trait(?Send)]
 pub trait Node {
     /// Call `method` with named `params` and return its result.
-    fn call(&self, method: &str, params: Value) -> Result<Value, NodeError>;
+    async fn call(&self, method: &str, params: Value) -> Result<Value, NodeError>;
 
     /// Call `method` once with each of `params`, answering in the same
     /// order, each call's error its own: one bad call doesn't fail the
@@ -279,17 +282,18 @@ pub trait Node {
     /// `in_flight` calls wait on the node at once, since not every method
     /// answers calls it is made side by side. By default the calls are
     /// made one after another.
-    fn call_each(
+    async fn call_each(
         &self,
         method: &str,
         params: Vec<Value>,
         in_flight: usize,
     ) -> Result<Vec<Result<Value, NodeError>>, NodeError> {
         let _ = in_flight;
-        Ok(params
-            .into_iter()
-            .map(|params| self.call(method, params))
-            .collect())
+        let mut answers = Vec::with_capacity(params.len());
+        for params in params {
+            answers.push(self.call(method, params).await);
+        }
+        Ok(answers)
     }
 }
 
@@ -310,35 +314,20 @@ pub enum NodeError {
 /// lnsocket tells answers apart by request id, so calls share it side by
 /// side. A call that fails for want of the connection (refused, dropped,
 /// timed out) closes it, and the next call connects again. The connection
-/// lives on a thread and runtime of its own, which keeps it clear of any
-/// runtime the caller is on and keeps its pings answered between calls;
-/// dropping the `Commando` hangs up.
+/// is lnsocket's task on the runtime the first call is awaited on, which
+/// keeps its pings answered between calls; dropping the `Commando` hangs
+/// up.
 pub struct Commando {
-    peer: Peer,
-    /// The connection's thread, started by the first call.
-    link: OnceLock<UnboundedSender<Job>>,
-}
-
-/// The node a [`Commando`] calls, and how.
-#[derive(Clone)]
-struct Peer {
     node_id: PublicKey,
     /// `host:port`.
     host: String,
     rune: Secret,
+    /// The connection, filled by the first call that finds it empty and
+    /// swapped for an empty one by a call that finds the connection gone.
+    /// Calls made side by side hold the same cell, so they wait on one
+    /// connect rather than each opening their own.
+    link: RefCell<Rc<OnceCell<CommandoClient>>>,
 }
-
-/// Calls for a [`Commando`]'s connection to make, `in_flight` at a time,
-/// and where their answers go.
-struct Job {
-    method: String,
-    params: Vec<Value>,
-    in_flight: usize,
-    reply: std::sync::mpsc::Sender<Answers>,
-}
-
-/// What a [`Job`]'s calls answered, in order, or why none was made.
-type Answers = Result<Vec<Result<Value, NodeError>>, NodeError>;
 
 impl Commando {
     /// The node `node_id` (hex) at `host` (`host[:port]`), called with
@@ -352,79 +341,37 @@ impl Commando {
             format!("{host}:{DEFAULT_PORT}")
         };
         Ok(Self {
-            peer: Peer {
-                node_id,
-                host,
-                rune,
-            },
-            link: OnceLock::new(),
+            node_id,
+            host,
+            rune,
+            link: RefCell::default(),
         })
     }
 
-    /// Hand `params` to the connection's thread, starting it if this is
-    /// the first call, and wait for the answers.
-    fn send(&self, method: &str, params: Vec<Value>, in_flight: usize) -> Answers {
-        let ended = || NodeError::Other("the commando connection's thread ended".to_owned());
-        let link = self.link.get_or_init(|| {
-            let (link, jobs) = unbounded_channel();
-            let peer = self.peer.clone();
-            std::thread::spawn(move || peer.serve(jobs));
-            link
-        });
-        let (reply, answers) = std::sync::mpsc::channel();
-        link.send(Job {
-            method: method.to_owned(),
-            params,
-            in_flight,
-            reply,
-        })
-        .map_err(|_| ended())?;
-        answers.recv().map_err(|_| ended())?
-    }
-}
-
-impl Peer {
-    /// Answer `jobs` until the [`Commando`] that sends them is dropped.
-    fn serve(self, mut jobs: UnboundedReceiver<Job>) {
-        let runtime = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(e) => {
-                let error = NodeError::Other(format!("starting a runtime: {e}"));
-                while let Some(job) = jobs.blocking_recv() {
-                    let _ = job.reply.send(Err(error.clone()));
-                }
-                return;
-            }
-        };
-        runtime.block_on(async {
-            let mut client = None;
-            while let Some(job) = jobs.recv().await {
-                let answers = self.answer(&mut client, &job).await;
-                let _ = job.reply.send(answers);
-            }
-        });
-    }
-
-    /// Make `job`'s calls over `client`, connecting first if there is no
-    /// connection, and closing it if a call found it gone.
-    async fn answer(&self, client: &mut Option<CommandoClient>, job: &Job) -> Answers {
-        let connected = match client {
-            Some(connected) => connected,
-            None => client.insert(self.connect().await?),
-        };
-        let answers: Vec<_> = stream::iter(job.params.iter().cloned())
-            .map(|params| connected.call(job.method.as_str(), params))
-            .buffered(job.in_flight.max(1))
+    /// Make each of `params`' calls of `method` over the connection,
+    /// `in_flight` at a time, their round trips overlapping: connecting
+    /// first if there is no connection, and closing it if a call found it
+    /// gone.
+    async fn send(
+        &self,
+        method: &str,
+        params: Vec<Value>,
+        in_flight: usize,
+    ) -> Result<Vec<Result<Value, NodeError>>, NodeError> {
+        let link = Rc::clone(&self.link.borrow());
+        let client = link.get_or_try_init(|| self.connect()).await?;
+        let answers: Vec<_> = stream::iter(params)
+            .map(|params| client.call(method, params))
+            .buffered(in_flight.max(1))
             .collect()
             .await;
         let lost = answers.iter().any(
             |answer| matches!(answer, Err(error) if !matches!(error, lnsocket::Error::Rpc(_))),
         );
-        if lost {
-            *client = None;
+        // A call that started after another closed the connection holds
+        // the new one, and leaves it be.
+        if lost && Rc::ptr_eq(&self.link.borrow(), &link) {
+            *self.link.borrow_mut() = Rc::default();
         }
         Ok(answers
             .into_iter()
@@ -450,9 +397,10 @@ impl Peer {
     }
 }
 
+#[async_trait(?Send)]
 impl Node for Commando {
-    fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
-        let mut answers = self.send(method, vec![params], 1)?;
+    async fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+        let mut answers = self.send(method, vec![params], 1).await?;
         answers
             .pop()
             .unwrap_or_else(|| Err(NodeError::Other(format!("{method}: no answer"))))
@@ -460,13 +408,13 @@ impl Node for Commando {
 
     /// Every call over the one connection, `in_flight` at a time, their
     /// round trips overlapping.
-    fn call_each(
+    async fn call_each(
         &self,
         method: &str,
         params: Vec<Value>,
         in_flight: usize,
     ) -> Result<Vec<Result<Value, NodeError>>, NodeError> {
-        self.send(method, params, in_flight)
+        self.send(method, params, in_flight).await
     }
 }
 
@@ -615,6 +563,7 @@ pub(crate) fn commando(config: &ClnConfig, dir: &CashflowDir) -> Result<Commando
     Commando::new(node_id, host, rune).map_err(NoCommando::Other)
 }
 
+#[async_trait(?Send)]
 impl Importer for ClnImporter {
     fn name(&self) -> &'static str {
         "cln"
@@ -624,11 +573,12 @@ impl Importer for ClnImporter {
         LAYER
     }
 
-    fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
+    async fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
         self.import_held(input, &Ledger::new(LayerFilter::All))
+            .await
     }
 
-    fn import_held(&self, input: &ImportInput, held: &Ledger) -> Result<Batch, ImportError> {
+    async fn import_held(&self, input: &ImportInput, held: &Ledger) -> Result<Batch, ImportError> {
         let Dating { zone, note } = self.dating()?;
         let mut notes: Vec<String> = note.into_iter().collect();
         let connected;
@@ -642,9 +592,9 @@ impl Importer for ClnImporter {
         };
         let mut listings: Vec<Listing> = match node {
             Some(node) => {
-                let start = start(node, held, &input.source);
+                let start = start(node, held, &input.source).await;
                 notes.extend(start.note);
-                let Fetched { listing, note } = fetch(node, start.cursor)?;
+                let Fetched { listing, note } = fetch(node, start.cursor).await?;
                 notes.extend(note);
                 vec![read_value(listing)?]
             }
@@ -705,7 +655,7 @@ impl Importer for ClnImporter {
         }
         let heights = txs.list.iter().filter_map(|tx| tx.height);
         let own_heights = own.iter().filter_map(|own| own.event.height());
-        notes.extend(convert.blocks.fetch(node, heights.chain(own_heights)));
+        notes.extend(convert.blocks.fetch(node, heights.chain(own_heights)).await);
         let mut chain: Vec<RawTxn> = own
             .iter()
             .map(|own| convert.chain(own.event, own.id.clone()))
@@ -794,9 +744,10 @@ fn node_failure(error: NodeError) -> String {
 
 /// Ask `node` for the events after `cursor`, or every event when there is
 /// no cursor or the node can't take one.
-fn fetch(node: &dyn Node, cursor: Option<u64>) -> Result<Fetched, ImportError> {
-    let call = |params: Value| {
+async fn fetch(node: &dyn Node, cursor: Option<u64>) -> Result<Fetched, ImportError> {
+    let call = async |params: Value| {
         node.call(METHOD, params)
+            .await
             .map_err(|error| ImportError::Fetch {
                 from: METHOD.to_owned(),
                 error: node_failure(error),
@@ -804,11 +755,11 @@ fn fetch(node: &dyn Node, cursor: Option<u64>) -> Result<Fetched, ImportError> {
     };
     let Some(start) = cursor else {
         return Ok(Fetched {
-            listing: call(json!({}))?,
+            listing: call(json!({})).await?,
             note: None,
         });
     };
-    match node.call(METHOD, json!({ "start_time": start })) {
+    match node.call(METHOD, json!({ "start_time": start })).await {
         Ok(listing) => Ok(Fetched {
             listing,
             note: None,
@@ -817,7 +768,7 @@ fn fetch(node: &dyn Node, cursor: Option<u64>) -> Result<Fetched, ImportError> {
             if code == UNKNOWN_PARAMETER && message.contains("start_time") =>
         {
             Ok(Fetched {
-                listing: call(json!({}))?,
+                listing: call(json!({})).await?,
                 note: Some(format!(
                     "the node's bookkeeper doesn't take start_time, so every event was read \
                      and only the new ones kept ({METHOD}: {message})"
@@ -887,13 +838,13 @@ struct Start {
 /// again; when corerpc answers, the listing is read whole once to date them
 /// by their block, and after that every one carries `raw-blockheight`. When
 /// it doesn't, they keep bookkeeper's dates, and the note says so.
-fn start(node: &dyn Node, held: &Ledger, source: &str) -> Start {
+async fn start(node: &dyn Node, held: &Ledger, source: &str) -> Start {
     let cursor = cursor(held, source);
     let undated = undated(held, source);
     if cursor.is_none() || undated == 0 {
         return Start { cursor, note: None };
     }
-    if let Err(why) = blocks::probe(node) {
+    if let Err(why) = blocks::probe(node).await {
         return Start {
             cursor,
             note: Some(format!(
@@ -1670,7 +1621,7 @@ mod tests {
     }
 
     impl FakeNode {
-        fn corerpc(&self, params: &Value) -> Result<Value, NodeError> {
+        async fn corerpc(&self, params: &Value) -> Result<Value, NodeError> {
             self.block_calls.borrow_mut().push(params.clone());
             let times = match &self.corerpc {
                 Corerpc::Absent => {
@@ -1702,10 +1653,11 @@ mod tests {
         }
     }
 
+    #[async_trait(?Send)]
     impl Node for FakeNode {
-        fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+        async fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
             if method == "corerpc" {
-                return self.corerpc(&params);
+                return self.corerpc(&params).await;
             }
             assert_eq!(method, METHOD);
             self.calls.borrow_mut().push(params.clone());
@@ -1854,8 +1806,8 @@ mod tests {
         txn.meta.iter().any(|m| m == meta)
     }
 
-    #[test]
-    fn invoices_post_to_their_defaults_by_description() {
+    #[tokio::test]
+    async fn invoices_post_to_their_defaults_by_description() {
         let events = vec![
             invoice(5000, 0, "Thanks for the coffee", 1),
             invoice(0, 2000, "Pay a friend", 2),
@@ -1882,7 +1834,7 @@ mod tests {
             invoice(3000, 0, "", 7),
         ];
         let Rig { cln, .. } = importer(events, true);
-        let batch = cln.import(&input()).unwrap();
+        let batch = cln.import(&input()).await.unwrap();
         let txns = read_batch(&batch.journal);
         assert_eq!(txns.len(), 7);
 
@@ -1928,8 +1880,8 @@ mod tests {
         assert!(batch.notes.is_empty());
     }
 
-    #[test]
-    fn routed_legs_are_two_records_with_a_payee() {
+    #[tokio::test]
+    async fn routed_legs_are_two_records_with_a_payee() {
         let leg_event = |account: &str, credit: u64, debit: u64, index: u64| {
             json!({
                 "account": account, "type": "channel", "tag": "routed",
@@ -1951,7 +1903,7 @@ mod tests {
         ];
         for patched in [true, false] {
             let Rig { cln, .. } = importer(events.clone(), patched);
-            let txns = read_batch(&cln.import(&input()).unwrap().journal);
+            let txns = read_batch(&cln.import(&input()).await.unwrap().journal);
             assert_eq!(txns.len(), 2);
             assert_ne!(txns[0].id, txns[1].id, "the legs share a payment_id");
             assert!(txns.iter().all(|t| t.payee == "Routed"));
@@ -2056,9 +2008,9 @@ mod tests {
     }
 
     /// The `cln-chain` records an import of `events` makes.
-    fn chain_records(events: Vec<Value>) -> Vec<Txn> {
+    async fn chain_records(events: Vec<Value>) -> Vec<Txn> {
         let Rig { cln, .. } = importer(events, true);
-        let batch = cln.import(&input()).unwrap();
+        let batch = cln.import(&input()).await.unwrap();
         assert!(batch.journal.txns.is_empty(), "no payments");
         let [other] = batch.other_layers.as_slice() else {
             panic!("one other layer");
@@ -2074,9 +2026,9 @@ mod tests {
             .count()
     }
 
-    #[test]
-    fn a_channel_close_is_one_transaction_with_its_fee() {
-        let [close] = chain_records(close_events()).try_into().unwrap();
+    #[tokio::test]
+    async fn a_channel_close_is_one_transaction_with_its_fee() {
+        let [close] = chain_records(close_events()).await.try_into().unwrap();
         assert_eq!(close.id, format!("cln:tx:{}", txid("cc")));
         assert_eq!(close.payee, "channel close");
         assert_eq!(
@@ -2100,9 +2052,9 @@ mod tests {
         assert_eq!(events_of(&close), 3);
     }
 
-    #[test]
-    fn a_spend_with_change_leaves_only_what_it_sent() {
-        let records = chain_records(spend_events());
+    #[tokio::test]
+    async fn a_spend_with_change_leaves_only_what_it_sent() {
+        let records = chain_records(spend_events()).await;
         let spend = find(&records, &format!("cln:tx:{}", txid("5e")));
         assert_eq!(spend.payee, "withdrawal");
         assert_eq!(
@@ -2118,8 +2070,8 @@ mod tests {
         assert_eq!(events_of(spend), 5, "every event but the external one");
     }
 
-    #[test]
-    fn a_deposit_from_outside_is_income() {
+    #[tokio::test]
+    async fn a_deposit_from_outside_is_income() {
         let tx = txid("de");
         let [deposit] = chain_records(vec![chain_event(
             "wallet",
@@ -2128,6 +2080,7 @@ mod tests {
             &format!("{tx}:3"),
             1,
         )])
+        .await
         .try_into()
         .unwrap();
         assert_eq!(deposit.id, format!("cln:tx:{tx}"));
@@ -2141,8 +2094,8 @@ mod tests {
         assert!(has(&deposit, "raw-direction=credit"));
     }
 
-    #[test]
-    fn a_channel_event_is_a_record_of_its_own() {
+    #[tokio::test]
+    async fn a_channel_event_is_a_record_of_its_own() {
         let peer_close = txid("9e");
         let mut theirs = chain_event("external", "to_them", 5_000, &format!("{peer_close}:0"), 7);
         theirs["origin"] = json!("c0ffee");
@@ -2157,7 +2110,7 @@ mod tests {
             // The close of a channel we had nothing in: only the peer's side.
             theirs,
         ];
-        let [entry] = chain_records(events).try_into().unwrap();
+        let [entry] = chain_records(events).await.try_into().unwrap();
         assert_eq!(entry.id, "cln:channel:6");
         assert_eq!(entry.payee, "journal entry");
         assert_eq!(
@@ -2189,8 +2142,8 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn a_transaction_read_over_two_runs_is_one_record() {
+    #[tokio::test]
+    async fn a_transaction_read_over_two_runs_is_one_record() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         let id = format!("cln:tx:{}", txid("cc"));
@@ -2198,7 +2151,7 @@ mod tests {
         let deposit = events.remove(2);
 
         // The first run reads the close before its deposit.
-        pull(&store, &events, true, 10);
+        pull(&store, &events, true, 10).await;
         assert_eq!(
             record(&store, &id).postings,
             [
@@ -2209,7 +2162,7 @@ mod tests {
         );
 
         // The next reads only the deposit, and the record is completed.
-        let written = pull(&store, &[deposit], true, 11);
+        let written = pull(&store, &[deposit], true, 11).await;
         assert_eq!(written.other_layers[0].txn_rows.changed, 1);
         let close = record(&store, &id);
         assert_eq!(
@@ -2223,18 +2176,18 @@ mod tests {
         assert_eq!(events_of(&close), 3);
 
         // Reading all of it again changes nothing.
-        let again = pull(&store, &close_events(), true, 12);
+        let again = pull(&store, &close_events(), true, 12).await;
         assert_eq!(again.other_layers[0].hash, None);
         assert_eq!(again.other_layers[0].txn_rows.unchanged, 1);
     }
 
-    #[test]
-    fn a_reimport_writes_nothing_and_keeps_the_ids() {
+    #[tokio::test]
+    async fn a_reimport_writes_nothing_and_keeps_the_ids() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         let mut events = close_events();
         events.extend(spend_events());
-        let first = pull(&store, &events, true, 10);
+        let first = pull(&store, &events, true, 10).await;
         assert_eq!(
             first.other_layers[0].txn_rows.new, 4,
             "two transactions and the spend's two coins' openings"
@@ -2243,7 +2196,7 @@ mod tests {
         // An unpatched node gives no created_index or update_count, but the
         // transactions' ids and their events' ids are the same.
         for (patched, imported) in [(true, 11), (false, 12)] {
-            let again = pull(&store, &events, patched, imported);
+            let again = pull(&store, &events, patched, imported).await;
             assert_eq!(again.other_layers[0].hash, None, "patched: {patched}");
             assert_eq!(again.other_layers[0].txn_rows.unchanged, 4);
             let opened = again.notes.iter().find(|note| note.contains("opened"));
@@ -2251,8 +2204,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_event_held_on_its_own_keeps_its_record() {
+    #[tokio::test]
+    async fn an_event_held_on_its_own_keeps_its_record() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         // The close's deposit, as an import from before grouping wrote it.
@@ -2260,7 +2213,7 @@ mod tests {
                    income:unknown  -99800000 msat\n    assets:cln:wallet  99800000 msat\n";
         put_old(&store, old);
 
-        pull(&store, &close_events(), true, 10);
+        pull(&store, &close_events(), true, 10).await;
         let deposit = record(&store, "cln:chain:12");
         assert_eq!(deposit.postings[1], leg("assets:cln:wallet", 99_800_000));
         let close = record(&store, &format!("cln:tx:{}", txid("cc")));
@@ -2282,43 +2235,43 @@ mod tests {
         assert_eq!(wallet, 99_800_000, "counted once");
     }
 
-    #[test]
-    fn an_unpatched_node_gets_hash_ids_that_count_identical_events() {
+    #[tokio::test]
+    async fn an_unpatched_node_gets_hash_ids_that_count_identical_events() {
         let twice = invoice(25_000, 0, "Same invoice", 1);
         let events = vec![twice.clone(), twice, invoice(1000, 0, "other", 2)];
         let Rig { cln, .. } = importer(events, false);
-        let txns = read_batch(&cln.import(&input()).unwrap().journal);
+        let txns = read_batch(&cln.import(&input()).await.unwrap().journal);
         assert!(txns[0].id.starts_with("cln:h:"), "{}", txns[0].id);
         assert_eq!(txns[0].id.len(), "cln:h:".len() + 16);
         assert_eq!(txns[1].id, format!("{}:2", txns[0].id));
         assert_ne!(txns[2].id, txns[0].id);
     }
 
-    #[test]
-    fn the_description_is_not_part_of_a_hash_id() {
-        let ids = |description| {
+    #[tokio::test]
+    async fn the_description_is_not_part_of_a_hash_id() {
+        let ids = async |description| {
             let Rig { cln, .. } = importer(vec![invoice(25_000, 0, description, 1)], false);
-            read_batch(&cln.import(&input()).unwrap().journal)[0]
+            read_batch(&cln.import(&input()).await.unwrap().journal)[0]
                 .id
                 .clone()
         };
-        assert_eq!(ids("before an edit"), ids("after an edit"));
+        assert_eq!(ids("before an edit").await, ids("after an edit").await);
     }
 
     /// Import `events` from a node without corerpc into `store`, at
     /// `imported`.
-    fn pull(
+    async fn pull(
         store: &JournalStore,
         events: &[Value],
         patched: bool,
         imported: u64,
     ) -> import::Written {
         let Rig { cln, .. } = importer(events.to_vec(), patched);
-        write(store, &cln, imported)
+        write(store, &cln, imported).await
     }
 
     /// Import with `cln` into `store`, at `imported`.
-    fn write(store: &JournalStore, cln: &ClnImporter, imported: u64) -> import::Written {
+    async fn write(store: &JournalStore, cln: &ClnImporter, imported: u64) -> import::Written {
         import::write(
             store,
             &Default::default(),
@@ -2327,11 +2280,12 @@ mod tests {
             None,
             Some(imported),
         )
+        .await
         .unwrap()
     }
 
-    #[test]
-    fn a_patched_node_is_read_from_the_cursor_and_keeps_older_ids() {
+    #[tokio::test]
+    async fn a_patched_node_is_read_from_the_cursor_and_keeps_older_ids() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         let deposit = json!({
@@ -2347,7 +2301,7 @@ mod tests {
         ];
 
         // Imported first from an unpatched node: hash ids, two layers.
-        let written = pull(&store, &first, false, 10);
+        let written = pull(&store, &first, false, 10).await;
         assert_eq!(written.header.layer, "cln");
         assert_eq!(written.txns, 2);
         let [chain] = written.other_layers.as_slice() else {
@@ -2366,8 +2320,9 @@ mod tests {
         let mut later = first.clone();
         later.push(invoice(3000, 0, "three", 3));
         let Rig { cln, calls, .. } = importer(later.clone(), true);
-        let written =
-            import::write(&store, &Default::default(), &cln, &input(), None, Some(11)).unwrap();
+        let written = import::write(&store, &Default::default(), &cln, &input(), None, Some(11))
+            .await
+            .unwrap();
         assert_eq!(
             calls.borrow().as_slice(),
             [json!({ "start_time": T + 2 - OVERLAP_SECS })]
@@ -2380,22 +2335,23 @@ mod tests {
         assert!(ledger.find("cln:channel:1").is_none());
 
         // Once more: nothing new, nothing written.
-        let again = pull(&store, &later, true, 12);
+        let again = pull(&store, &later, true, 12).await;
         assert_eq!(again.hash, None);
         assert_eq!(again.txn_rows.unchanged, 3);
         assert_eq!(store.list().unwrap().len(), 3);
     }
 
-    #[test]
-    fn an_unpatched_node_is_read_whole_and_says_so() {
+    #[tokio::test]
+    async fn an_unpatched_node_is_read_whole_and_says_so() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         let events = vec![invoice(1000, 0, "one", 1)];
-        pull(&store, &events, false, 10);
+        pull(&store, &events, false, 10).await;
 
         let Rig { cln, calls, .. } = importer(events, false);
-        let written =
-            import::write(&store, &Default::default(), &cln, &input(), None, Some(11)).unwrap();
+        let written = import::write(&store, &Default::default(), &cln, &input(), None, Some(11))
+            .await
+            .unwrap();
         assert_eq!(
             calls.borrow().as_slice(),
             [json!({ "start_time": T + 1 - OVERLAP_SECS }), json!({})]
@@ -2428,8 +2384,8 @@ mod tests {
         txn.meta.iter().any(|m| m.starts_with("raw-blocktime="))
     }
 
-    #[test]
-    fn on_chain_records_are_dated_by_their_block() {
+    #[tokio::test]
+    async fn on_chain_records_are_dated_by_their_block() {
         let mut events = close_events();
         // A deposit bookkeeper backfilled without its height.
         let mut backfilled =
@@ -2444,7 +2400,7 @@ mod tests {
         let Rig {
             cln, block_calls, ..
         } = importer_with(events, true, mined());
-        let batch = cln.import(&input()).unwrap();
+        let batch = cln.import(&input()).await.unwrap();
         assert!(batch.notes.is_empty(), "{:?}", batch.notes);
         let txns = read_batch(&batch.other_layers[0].journal);
 
@@ -2473,8 +2429,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_height_without_a_time_is_dated_by_its_timestamp_and_noted() {
+    #[tokio::test]
+    async fn a_height_without_a_time_is_dated_by_its_timestamp_and_noted() {
         let cases = [
             // bitcoind's error, which corerpc answers as a result.
             (Corerpc::Blocks(HashMap::new()), r#"answered {"code":-8}"#),
@@ -2485,7 +2441,7 @@ mod tests {
             let Rig {
                 cln, block_calls, ..
             } = importer_with(close_events(), true, corerpc);
-            let batch = cln.import(&input()).unwrap();
+            let batch = cln.import(&input()).await.unwrap();
             let [note] = batch.notes.as_slice() else {
                 panic!("one note: {:?}", batch.notes);
             };
@@ -2504,10 +2460,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_denied_corerpc_says_how_to_mint_the_rune() {
+    #[tokio::test]
+    async fn a_denied_corerpc_says_how_to_mint_the_rune() {
         let Rig { cln, .. } = importer_with(close_events(), true, Corerpc::Denied);
-        let batch = cln.import(&input()).unwrap();
+        let batch = cln.import(&input()).await.unwrap();
         let [note] = batch.notes.as_slice() else {
             panic!("one note: {:?}", batch.notes);
         };
@@ -2519,20 +2475,21 @@ mod tests {
 
         // A bitcoind error isn't the rune's fault, so it says nothing of it.
         let Rig { cln, .. } = importer_with(close_events(), true, Corerpc::Blocks(HashMap::new()));
-        let batch = cln.import(&input()).unwrap();
+        let batch = cln.import(&input()).await.unwrap();
         assert!(!batch.notes[0].contains("createrune"), "{:?}", batch.notes);
     }
 
-    #[test]
-    fn a_denied_listing_says_how_to_mint_the_rune() {
+    #[tokio::test]
+    async fn a_denied_listing_says_how_to_mint_the_rune() {
         struct Denied;
+        #[async_trait(?Send)]
         impl Node for Denied {
-            fn call(&self, _: &str, _: Value) -> Result<Value, NodeError> {
+            async fn call(&self, _: &str, _: Value) -> Result<Value, NodeError> {
                 Err(denied("getinfo"))
             }
         }
         let cln = ClnImporter::with_node(Some(&utc()), Box::new(Denied));
-        let err = cln.import(&input()).unwrap_err().to_string();
+        let err = cln.import(&input()).await.unwrap_err().to_string();
         assert!(
             err.starts_with("bkpr-listaccountevents: Invalid rune: Not permitted"),
             "{err}"
@@ -2543,14 +2500,14 @@ mod tests {
     /// The rune permits every call a run makes, bookkeeper's and the block
     /// lookups', and corerpc's read-only wallet listings for `import btc`,
     /// but none of bitcoind's spending calls.
-    #[test]
-    fn the_rune_permits_the_reads_and_nothing_that_spends() {
+    #[tokio::test]
+    async fn the_rune_permits_the_reads_and_nothing_that_spends() {
         let Rig {
             cln,
             calls,
             block_calls,
         } = importer_with(close_events(), true, mined());
-        cln.import(&input()).unwrap();
+        cln.import(&input()).await.unwrap();
         assert!(!calls.borrow().is_empty() && !block_calls.borrow().is_empty());
         for params in calls.borrow().iter() {
             assert!(rune_permits(METHOD, params), "{METHOD} {params}");
@@ -2588,12 +2545,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_held_block_time_is_used_without_asking() {
+    #[tokio::test]
+    async fn a_held_block_time_is_used_without_asking() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         let Rig { cln, .. } = importer_with(close_events(), true, mined());
-        write(&store, &cln, 10);
+        write(&store, &cln, 10).await;
 
         // Again, with corerpc and then without it, plus a spend in the same
         // block: nobody asks, and nothing reverts to bookkeeper's date.
@@ -2603,7 +2560,7 @@ mod tests {
             let Rig {
                 cln, block_calls, ..
             } = importer_with(events.clone(), true, corerpc);
-            let written = write(&store, &cln, imported);
+            let written = write(&store, &cln, imported).await;
             assert!(block_calls.borrow().is_empty());
             // The spend's coins are opened the first time it is read.
             let opened = (imported == 11).then_some(
@@ -2636,8 +2593,8 @@ mod tests {
             .sum()
     }
 
-    #[test]
-    fn a_coin_bookkeeper_never_saw_arrive_is_opened_by_its_spend() {
+    #[tokio::test]
+    async fn a_coin_bookkeeper_never_saw_arrive_is_opened_by_its_spend() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         // The second coin's deposit, in the same run: only the first is
@@ -2651,7 +2608,7 @@ mod tests {
             2,
         ));
         let Rig { cln, .. } = importer_with(events, true, mined());
-        let written = write(&store, &cln, 10);
+        let written = write(&store, &cln, 10).await;
         assert_eq!(
             written.notes,
             [
@@ -2681,8 +2638,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_deposit_the_journal_holds_opens_nothing() {
+    #[tokio::test]
+    async fn a_deposit_the_journal_holds_opens_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         // The first coin's deposit, as an import from before grouping
@@ -2701,23 +2658,23 @@ mod tests {
             &format!("{}:1", txid("bb")),
             2,
         );
-        pull(&store, &[deposit], true, 10);
+        pull(&store, &[deposit], true, 10).await;
 
-        let written = pull(&store, &spend_events(), true, 11);
+        let written = pull(&store, &spend_events(), true, 11).await;
         let opened = written.notes.iter().find(|note| note.contains("opened"));
         assert_eq!(opened, None);
         assert_eq!(written.other_layers[0].txn_rows.new, 1, "the spend alone");
         assert_eq!(wallet_balance(&store), 59_700_000);
     }
 
-    #[test]
-    fn records_from_before_block_dating_are_read_whole_once() {
+    #[tokio::test]
+    async fn records_from_before_block_dating_are_read_whole_once() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         // A payment days after the close puts the cursor past its events.
         let paid = invoice(1000, 0, "paid", 3 * OVERLAP_SECS);
         let cursor = T + 2 * OVERLAP_SECS;
-        pull(&store, std::slice::from_ref(&paid), true, 10);
+        pull(&store, std::slice::from_ref(&paid), true, 10).await;
         // The close, as an import from before block dating wrote it.
         let old = format!(
             "2024-03-01 * channel close\n    ; id: cln:tx:{}\n    ; raw-cln-tag: channel_close\n    \
@@ -2738,7 +2695,7 @@ mod tests {
             calls,
             block_calls,
         } = importer_with(events.clone(), true, Corerpc::Absent);
-        let written = write(&store, &cln, 11);
+        let written = write(&store, &cln, 11).await;
         assert_eq!(*calls.borrow(), [json!({ "start_time": cursor })]);
         assert_eq!(*block_calls.borrow(), [json!(["", "getblockhash", 0])]);
         let [note] = written.notes.as_slice() else {
@@ -2753,7 +2710,7 @@ mod tests {
 
         // With it, everything is read once and the close dated by its block.
         let Rig { cln, calls, .. } = importer_with(events.clone(), true, mined());
-        let written = write(&store, &cln, 12);
+        let written = write(&store, &cln, 12).await;
         assert_eq!(*calls.borrow(), [json!({})]);
         let [note] = written.notes.as_slice() else {
             panic!("one note: {:?}", written.notes);
@@ -2769,19 +2726,20 @@ mod tests {
             calls,
             block_calls,
         } = importer_with(events, true, mined());
-        let written = write(&store, &cln, 13);
+        let written = write(&store, &cln, 13).await;
         assert_eq!(*calls.borrow(), [json!({ "start_time": cursor })]);
         assert!(block_calls.borrow().is_empty());
         assert!(written.notes.is_empty(), "{:?}", written.notes);
     }
 
-    #[test]
-    fn each_call_of_a_batch_answers_in_order_with_its_own_error() {
+    #[tokio::test]
+    async fn each_call_of_a_batch_answers_in_order_with_its_own_error() {
         /// Doubles `n`, refusing odd ones as bitcoind refuses a height past
         /// its tip.
         struct Doubler;
+        #[async_trait(?Send)]
         impl Node for Doubler {
-            fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+            async fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
                 assert_eq!(method, "double");
                 let n = params["n"].as_u64().unwrap();
                 if n % 2 == 1 {
@@ -2794,7 +2752,7 @@ mod tests {
             }
         }
         let params = [2, 3, 4].map(|n| json!({ "n": n })).to_vec();
-        let answers = Doubler.call_each("double", params, 2).unwrap();
+        let answers = Doubler.call_each("double", params, 2).await.unwrap();
         assert_eq!(
             answers,
             vec![
@@ -2808,11 +2766,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn any_other_node_error_fails_the_import() {
+    #[tokio::test]
+    async fn any_other_node_error_fails_the_import() {
         struct Down;
+        #[async_trait(?Send)]
         impl Node for Down {
-            fn call(&self, _: &str, _: Value) -> Result<Value, NodeError> {
+            async fn call(&self, _: &str, _: Value) -> Result<Value, NodeError> {
                 Err(NodeError::Rpc {
                     code: 1502,
                     message: "Not authorized: method not permitted".to_owned(),
@@ -2820,15 +2779,15 @@ mod tests {
             }
         }
         let cln = ClnImporter::with_node(Some(&utc()), Box::new(Down));
-        let err = cln.import(&input()).unwrap_err();
+        let err = cln.import(&input()).await.unwrap_err();
         assert_eq!(
             err.to_string(),
             "bkpr-listaccountevents: Not authorized: method not permitted (1502)"
         );
     }
 
-    #[test]
-    fn a_saved_listing_reads_and_skips_what_does_not() {
+    #[tokio::test]
+    async fn a_saved_listing_reads_and_skips_what_does_not() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("events.json");
         let mut old_style = invoice(0, 0, "old node", 2);
@@ -2846,6 +2805,7 @@ mod tests {
                 source: "cln".to_owned(),
                 paths: vec![path],
             })
+            .await
             .unwrap();
         let txns = read_batch(&batch.journal);
         assert_eq!(txns.len(), 2);
@@ -2860,6 +2820,7 @@ mod tests {
                 source: "cln".to_owned(),
                 paths: vec![tmp.path().join("bad.json")],
             })
+            .await
             .unwrap_err();
         assert!(
             err.to_string()
@@ -2868,16 +2829,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fetching_needs_the_node_and_a_rune() {
+    #[tokio::test]
+    async fn fetching_needs_the_node_and_a_rune() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = CashflowDir::new(tmp.path());
-        let usage = |config: &ClnConfig| match ClnImporter::new(Some(config), &dir).import(&input())
+        let usage = async |config: &ClnConfig| match ClnImporter::new(Some(config), &dir)
+            .import(&input())
+            .await
         {
             Err(ImportError::Usage(message)) => message,
             other => panic!("{other:?}"),
         };
-        let message = usage(&utc());
+        let message = usage(&utc()).await;
         assert!(message.contains("`node_id` under [cln]"), "{message}");
         assert!(
             message.contains("cashflow config set cln.node_id"),
@@ -2890,7 +2853,7 @@ mod tests {
         };
         // Unless the environment happens to carry one.
         if std::env::var(secret_env_var(RUNE_SECRET)).is_err() {
-            let message = usage(&config);
+            let message = usage(&config).await;
             assert!(
                 message.contains(&format!("createrune restrictions='{RUNE_RESTRICTIONS}'")),
                 "{message}"
@@ -2905,15 +2868,15 @@ mod tests {
             timezone: Some("mars".to_owned()),
             ..config
         };
-        assert!(usage(&config).contains("[cln] timezone"));
+        assert!(usage(&config).await.contains("[cln] timezone"));
     }
 
     /// Two machines dating in their own zones file an event near midnight
     /// under different days, so each import rewrites the other's. Once the
     /// zone comes from the synced setting they agree, and the second
     /// machine's import writes nothing.
-    #[test]
-    fn a_synced_zone_keeps_two_machines_from_rewriting_each_other() {
+    #[tokio::test]
+    async fn a_synced_zone_keeps_two_machines_from_rewriting_each_other() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = CashflowDir::new(tmp.path());
         let store = JournalStore::new(tmp.path().join("journal"));
@@ -2926,7 +2889,7 @@ mod tests {
             source: "cln".to_owned(),
             paths: vec![path],
         };
-        let run = |cln: &ClnImporter, imported| {
+        let run = async |cln: &ClnImporter, imported| {
             import::write(
                 &store,
                 &Default::default(),
@@ -2935,6 +2898,7 @@ mod tests {
                 None,
                 Some(imported),
             )
+            .await
             .unwrap()
         };
         let own_zone = |zone: &str| {
@@ -2951,19 +2915,19 @@ mod tests {
                 .to_string()
         };
 
-        run(&own_zone("utc"), 10);
+        run(&own_zone("utc"), 10).await;
         assert_eq!(date("cln:channel:1"), "2024-03-02");
-        let flipped = run(&own_zone("-07:00"), 11);
+        let flipped = run(&own_zone("-07:00"), 11).await;
         assert_eq!(flipped.txn_rows.changed, 1);
         assert_eq!(date("cln:channel:1"), "2024-03-01");
 
         let synced = Synced {
             timezone: Some("Asia/Tokyo".to_owned()),
         };
-        let laptop = run(&ClnImporter::new(None, &dir).synced(&synced), 12);
+        let laptop = run(&ClnImporter::new(None, &dir).synced(&synced), 12).await;
         assert_eq!(laptop.txn_rows.changed, 1);
         assert!(laptop.notes.is_empty(), "{:?}", laptop.notes);
-        let desktop = run(&ClnImporter::new(None, &dir).synced(&synced), 13);
+        let desktop = run(&ClnImporter::new(None, &dir).synced(&synced), 13).await;
         assert_eq!(desktop.hash, None);
         assert_eq!(desktop.txn_rows.unchanged, 1);
         assert_eq!(date("cln:channel:1"), "2024-03-02");

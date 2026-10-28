@@ -34,6 +34,7 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 
+use async_trait::async_trait;
 use ledgerdb::{Date, Ymd};
 
 use super::csv_rows::{
@@ -86,6 +87,7 @@ impl AmexImporter {
     }
 }
 
+#[async_trait(?Send)]
 impl Importer for AmexImporter {
     fn name(&self) -> &'static str {
         "amex"
@@ -95,7 +97,7 @@ impl Importer for AmexImporter {
         "amex"
     }
 
-    fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
+    async fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
         if input.paths.is_empty() {
             return Err(ImportError::Usage(
                 "`import amex` takes one or more CSV files or directories".to_owned(),
@@ -381,7 +383,11 @@ mod tests {
     }
 
     /// Import `paths` into `store` as one run stamped `imported`.
-    fn import(store: &JournalStore, paths: Vec<PathBuf>, imported: u64) -> super::super::Written {
+    async fn import(
+        store: &JournalStore,
+        paths: Vec<PathBuf>,
+        imported: u64,
+    ) -> super::super::Written {
         write(
             store,
             &Default::default(),
@@ -390,6 +396,7 @@ mod tests {
             None,
             Some(imported),
         )
+        .await
         .unwrap()
     }
 
@@ -548,15 +555,15 @@ mod tests {
         assert_eq!(got_b, got_a);
     }
 
-    #[test]
-    fn a_row_becomes_a_raw_charge() {
+    #[tokio::test]
+    async fn a_row_becomes_a_raw_charge() {
         let tmp = tempfile::tempdir().unwrap();
         let text = format!(
             "{HEADER}15 Apr 2026,16 Apr 2026,CORNER BISTRO           Springfield,123.16,FS\n\
              12 Mar 2026,12 Mar 2026,PAYMENT RECEIVED - THANK YOU,\"-8,803.95\",\n"
         );
         let path = file(tmp.path(), "a.csv", &text);
-        let batch = amex().import(&input(vec![path])).unwrap();
+        let batch = amex().import(&input(vec![path])).await.unwrap();
         assert_eq!(
             batch.journal.to_ledger(WriteOptions::default()),
             "2026-03-12 * PAYMENT RECEIVED - THANK YOU\n\
@@ -577,8 +584,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn config_sets_card_currency_and_title_case() {
+    #[tokio::test]
+    async fn config_sets_card_currency_and_title_case() {
         let tmp = tempfile::tempdir().unwrap();
         let path = file(
             tmp.path(),
@@ -592,6 +599,7 @@ mod tests {
         }));
         let text = importer
             .import(&input(vec![path]))
+            .await
             .unwrap()
             .journal
             .to_ledger(WriteOptions::default());
@@ -603,32 +611,34 @@ mod tests {
         assert!(text.contains("\tliabilities:card\t-1.00 USD\n"), "{text}");
     }
 
-    #[test]
-    fn a_directory_reads_its_csv_files_in_order() {
+    #[tokio::test]
+    async fn a_directory_reads_its_csv_files_in_order() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("amex");
         std::fs::create_dir(&dir).unwrap();
         file(&dir, "b.CSV", &format!("{HEADER}2 Jan 2026,,TWO,2.00,\n"));
         file(&dir, "a.csv", &format!("{HEADER}1 Jan 2026,,ONE,1.00,\n"));
-        let batch = amex().import(&input(vec![dir])).unwrap();
+        let batch = amex().import(&input(vec![dir])).await.unwrap();
         assert_eq!(batch.txn_count(), 2);
     }
 
-    #[test]
-    fn errors_name_the_file_and_row() {
+    #[tokio::test]
+    async fn errors_name_the_file_and_row() {
         let tmp = tempfile::tempdir().unwrap();
         let path = file(tmp.path(), "a.csv", &format!("{HEADER}1 Jan 2026,,X,?,\n"));
-        let err = amex().import(&input(vec![path.clone()])).unwrap_err();
+        let err = amex().import(&input(vec![path.clone()])).await.unwrap_err();
         assert_eq!(
             err.to_string(),
             format!("{}: row 2: bad amount \"?\"", path.display())
         );
         assert!(matches!(
-            amex().import(&input(vec![])),
+            amex().import(&input(vec![])).await,
             Err(ImportError::Usage(_))
         ));
         assert!(matches!(
-            amex().import(&input(vec![tmp.path().join("missing.csv")])),
+            amex()
+                .import(&input(vec![tmp.path().join("missing.csv")]))
+                .await,
             Err(ImportError::Read { .. })
         ));
     }
@@ -666,16 +676,16 @@ mod tests {
 4 Jan 2026,4 Jan 2026,PAYMENT RECEIVED - THANK YOU,-100.00,
 ";
 
-    #[test]
-    fn overlapping_exports_import_as_their_union() {
+    #[tokio::test]
+    async fn overlapping_exports_import_as_their_union() {
         let tmp = tempfile::tempdir().unwrap();
         let first = file(tmp.path(), "1.csv", &format!("{HEADER}{FIRST}"));
         let second = file(tmp.path(), "2.csv", &format!("{HEADER}{SECOND}"));
         let union = file(tmp.path(), "u.csv", &format!("{HEADER}{UNION}"));
 
         let one_by_one = JournalStore::new(tmp.path().join("a"));
-        import(&one_by_one, vec![first.clone()], 1);
-        let later = import(&one_by_one, vec![second.clone()], 2);
+        import(&one_by_one, vec![first.clone()], 1).await;
+        let later = import(&one_by_one, vec![second.clone()], 2).await;
         assert_eq!(
             later.txn_rows,
             Rows {
@@ -686,11 +696,11 @@ mod tests {
         );
 
         let together = JournalStore::new(tmp.path().join("b"));
-        let both = import(&together, vec![first, second], 1);
+        let both = import(&together, vec![first, second], 1).await;
         assert_eq!(both.txns, 9);
 
         let at_once = JournalStore::new(tmp.path().join("c"));
-        import(&at_once, vec![union.clone()], 1);
+        import(&at_once, vec![union.clone()], 1).await;
 
         let want = books(&at_once);
         assert_eq!(want.len(), 9);
@@ -698,19 +708,20 @@ mod tests {
         assert_eq!(books(&together), want);
 
         // And the union again has nothing to add.
-        let again = import(&at_once, vec![union], 3);
+        let again = import(&at_once, vec![union], 3).await;
         assert_eq!(again.hash, None);
     }
 
-    #[test]
-    fn rules_categorize_through_derive() {
+    #[tokio::test]
+    async fn rules_categorize_through_derive() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         import(
             &store,
             vec![file(tmp.path(), "u.csv", &format!("{HEADER}{UNION}"))],
             1,
-        );
+        )
+        .await;
         // An amex.toml-shaped rules file: case-insensitive merchant
         // substrings, first match wins.
         let edits = crate::rules::parse(

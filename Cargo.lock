@@ -1559,6 +1559,7 @@ dependencies = [
 name = "cashflow"
 version = "0.11.0-beta.1"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
  "chrono",
  "chrono-tz",
@@ -2850,6 +2851,7 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59a81c221a1e4dad06cb9c9deb19aea1193a5eea084e8cd42d869068132bf876"
 dependencies = [
+ "async-channel",
  "document-features",
  "js-sys",
  "ureq 2.12.1",

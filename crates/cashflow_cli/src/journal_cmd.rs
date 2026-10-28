@@ -498,6 +498,7 @@ pub async fn import(
         args.layer.as_deref(),
         None,
     )
+    .await
     .map_err(|e| e.to_string())?;
     let hashes: Vec<SegmentHash> = written
         .other_layers

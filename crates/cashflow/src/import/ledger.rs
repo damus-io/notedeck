@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::Path;
 
+use async_trait::async_trait;
 use ledgerdb::{Journal, Parsed, WriteOptions};
 use sha2::{Digest, Sha256};
 
@@ -37,6 +38,7 @@ const LEGACY_HASH_DIGITS: usize = 16;
 /// Reads one ledger-cli file, giving legacy ids to transactions without one.
 pub struct LedgerImporter;
 
+#[async_trait(?Send)]
 impl Importer for LedgerImporter {
     fn name(&self) -> &'static str {
         "ledger"
@@ -46,7 +48,7 @@ impl Importer for LedgerImporter {
         "ledger"
     }
 
-    fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
+    async fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
         let [path] = input.paths.as_slice() else {
             return Err(ImportError::Usage(
                 "`import ledger` takes exactly one <file>".to_owned(),

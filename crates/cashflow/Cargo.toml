@@ -5,11 +5,12 @@ version.workspace = true
 description = "cashflow's non-UI core: the $CASHFLOW_DIR layout, config, secrets, the nostr vault, importers, rules and the loaded books"
 
 [dependencies]
+async-trait = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 dirs = { workspace = true }
-ehttp = { workspace = true }
+ehttp = { workspace = true, features = ["native-async"] }
 flate2 = { workspace = true }
 futures-util = { workspace = true }
 gethostname = "1"
@@ -25,7 +26,7 @@ serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 toml = { workspace = true, features = ["display"] }
 toml_edit = { workspace = true }
 wordid = { workspace = true }

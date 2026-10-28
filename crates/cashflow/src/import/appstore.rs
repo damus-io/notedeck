@@ -50,6 +50,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use ledgerdb::Date;
@@ -100,11 +101,12 @@ const RETRY: Retry = Retry {
 const APPLE_FAILED: &str = "App Store Connect failed";
 
 /// Where finance reports come from, so the importer can be tested without
-/// App Store Connect.
+/// App Store Connect. `async` and `?Send` as [`Importer`] is.
+#[async_trait(?Send)]
 pub trait ReportSource {
     /// The financial report for fiscal month `month` (`YYYY-MM`) as Apple
     /// sends it (usually gzipped), or `None` when Apple has none for it.
-    fn report(&self, month: &str) -> Result<Option<Vec<u8>>, ReportError>;
+    async fn report(&self, month: &str) -> Result<Option<Vec<u8>>, ReportError>;
 }
 
 /// Why a [`ReportSource`] gave no answer for a month.
@@ -126,7 +128,8 @@ struct Retry {
     backoff: Duration,
 }
 
-/// [`ReportSource`] over `ehttp`, signed in with a token.
+/// [`ReportSource`] over `ehttp`, signed in with a token. Each month is
+/// asked for with `ehttp::fetch_async`, as [`super::BitcoindHttp`] calls.
 pub struct AppStoreHttp {
     vendor: String,
     region: String,
@@ -134,8 +137,9 @@ pub struct AppStoreHttp {
     authorization: String,
 }
 
+#[async_trait(?Send)]
 impl ReportSource for AppStoreHttp {
-    fn report(&self, month: &str) -> Result<Option<Vec<u8>>, ReportError> {
+    async fn report(&self, month: &str) -> Result<Option<Vec<u8>>, ReportError> {
         let url = format!(
             "{API}?filter%5BregionCode%5D={}&filter%5BreportDate%5D={month}\
              &filter%5BreportType%5D=FINANCIAL&filter%5BvendorNumber%5D={}",
@@ -144,7 +148,9 @@ impl ReportSource for AppStoreHttp {
         let mut request = ehttp::Request::get(url);
         request.headers.insert("Authorization", &self.authorization);
         request.headers.insert("Accept", "application/a-gzip");
-        let response = ehttp::fetch_blocking(&request).map_err(ReportError::Failed)?;
+        let response = ehttp::fetch_async(request)
+            .await
+            .map_err(ReportError::Failed)?;
         let error = || {
             format!(
                 "{} {}: {}",
@@ -322,6 +328,7 @@ impl AppStoreImporter {
     }
 }
 
+#[async_trait(?Send)]
 impl Importer for AppStoreImporter {
     fn name(&self) -> &'static str {
         "appstore"
@@ -331,7 +338,7 @@ impl Importer for AppStoreImporter {
         "appstore"
     }
 
-    fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
+    async fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
         let vendor = self.vendor()?;
         let Args { files, months } = split_args(&input.paths)?;
         if !files.is_empty() && !months.is_empty() {
@@ -354,14 +361,19 @@ impl Importer for AppStoreImporter {
             };
             let prefix = format!("{}:{vendor}", input.source);
             match &self.source {
-                Some(source) => fetch(&**source, &months, &prefix, self.retry, &mut reports)?,
-                None => fetch(
-                    &self.connect(vendor)?,
-                    &months,
-                    &prefix,
-                    self.retry,
-                    &mut reports,
-                )?,
+                Some(source) => {
+                    fetch(&**source, &months, &prefix, self.retry, &mut reports).await?
+                }
+                None => {
+                    fetch(
+                        &self.connect(vendor)?,
+                        &months,
+                        &prefix,
+                        self.retry,
+                        &mut reports,
+                    )
+                    .await?
+                }
             }
         }
         let account = self.config.account.as_deref().unwrap_or(DEFAULT_ACCOUNT);
@@ -390,7 +402,7 @@ impl Importer for AppStoreImporter {
 /// `<prefix>:<month>`, each month it has none for and each month Apple
 /// still fails on after `retry`, with a note saying how. Any other error
 /// fails the fetch.
-fn fetch(
+async fn fetch(
     source: &dyn ReportSource,
     months: &[String],
     prefix: &str,
@@ -403,7 +415,7 @@ fn fetch(
             from: from.clone(),
             error,
         };
-        let why = match ask(source, month, retry) {
+        let why = match ask(source, month, retry).await {
             Ok(Some(body)) => {
                 let text = report_text(body).map_err(fail)?;
                 let rows = read_report(&text)
@@ -431,21 +443,21 @@ fn fetch(
 
 /// `month` from `source`, asked again after a wait while Apple fails on it,
 /// up to `retry.tries` times in all.
-fn ask(
+async fn ask(
     source: &dyn ReportSource,
     month: &str,
     retry: Retry,
 ) -> Result<Option<Vec<u8>>, ReportError> {
     let mut wait = retry.backoff;
     for _ in 1..retry.tries {
-        match source.report(month) {
+        match source.report(month).await {
             Err(ReportError::Unavailable(_)) => {}
             answer => return answer,
         }
-        std::thread::sleep(wait);
+        tokio::time::sleep(wait).await;
         wait *= 2;
     }
-    source.report(month)
+    source.report(month).await
 }
 
 /// The command line's paths, split into report files and months to fetch.
@@ -999,8 +1011,10 @@ mod tests {
         path
     }
 
-    fn import_files(paths: Vec<PathBuf>) -> Result<Batch, ImportError> {
-        AppStoreImporter::new(Some(&config()), &CashflowDir::new("unused")).import(&input(paths))
+    async fn import_files(paths: Vec<PathBuf>) -> Result<Batch, ImportError> {
+        AppStoreImporter::new(Some(&config()), &CashflowDir::new("unused"))
+            .import(&input(paths))
+            .await
     }
 
     fn ledger(batch: &Batch) -> String {
@@ -1011,10 +1025,12 @@ mod tests {
         Date::parse(text).unwrap()
     }
 
-    #[test]
-    fn rows_are_summed_per_product_currency_and_type() {
+    #[tokio::test]
+    async fn rows_are_summed_per_product_currency_and_type() {
         let tmp = tempfile::tempdir().unwrap();
-        let batch = import_files(vec![file(tmp.path(), "r.txt", report().as_bytes())]).unwrap();
+        let batch = import_files(vec![file(tmp.path(), "r.txt", report().as_bytes())])
+            .await
+            .unwrap();
         assert_eq!(ledger(&batch), LEDGER);
         assert_eq!(
             batch.left_out,
@@ -1028,24 +1044,30 @@ mod tests {
     /// The same report gzipped, with a byte-order mark and the other
     /// spelling of `Sale or Return`, reads the same, and given twice
     /// counts once.
-    #[test]
-    fn gzip_bom_and_header_spellings_read_the_same() {
+    #[tokio::test]
+    async fn gzip_bom_and_header_spellings_read_the_same() {
         let tmp = tempfile::tempdir().unwrap();
         let other = format!(
             "\u{feff}{}",
             report().replace("Sales or Return", "Sale or Return")
         );
         let gz = file(tmp.path(), "r.txt.gz", &gzip(&other));
-        assert_eq!(ledger(&import_files(vec![gz.clone()]).unwrap()), LEDGER);
+        assert_eq!(
+            ledger(&import_files(vec![gz.clone()]).await.unwrap()),
+            LEDGER
+        );
 
         let plain = file(tmp.path(), "copy.txt", other.as_bytes());
-        assert_eq!(ledger(&import_files(vec![gz, plain]).unwrap()), LEDGER);
+        assert_eq!(
+            ledger(&import_files(vec![gz, plain]).await.unwrap()),
+            LEDGER
+        );
     }
 
     /// A month split into per-region files sums to what the all-regions
     /// report has, under the same ids, and a directory reads its reports.
-    #[test]
-    fn region_files_sum_to_the_whole_month() {
+    #[tokio::test]
+    async fn region_files_sum_to_the_whole_month() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("reports");
         std::fs::create_dir(&dir).unwrap();
@@ -1059,19 +1081,20 @@ mod tests {
         file(&dir, "80000001_0426_US.txt", us.as_bytes());
         file(&dir, "80000001_0426_WW.txt.gz", &gzip(&rest));
         file(&dir, "notes.md", b"not a report");
-        assert_eq!(ledger(&import_files(vec![dir]).unwrap()), LEDGER);
+        assert_eq!(ledger(&import_files(vec![dir]).await.unwrap()), LEDGER);
     }
 
-    #[test]
-    fn reports_that_do_not_read_fail_naming_the_line() {
+    #[tokio::test]
+    async fn reports_that_do_not_read_fail_naming_the_line() {
         let tmp = tempfile::tempdir().unwrap();
-        let run = |name: &str, text: String| {
+        let run = async |name: &str, text: String| {
             import_files(vec![file(tmp.path(), name, text.as_bytes())])
+                .await
                 .unwrap_err()
                 .to_string()
         };
         let good = PRO.tsv();
-        let err = run("a.txt", good.clone());
+        let err = run("a.txt", good.clone()).await;
         assert!(err.ends_with("a.txt: row 1: a row before any header; expected a header with Start Date, End Date, Vendor Identifier, Quantity, Extended Partner Share, Partner Share Currency, Sales or Return, Apple Identifier, Title, Product Type Identifier, Country Of Sale"), "{err}");
 
         let bad = Line {
@@ -1079,7 +1102,7 @@ mod tests {
             ..PRO
         }
         .tsv();
-        let err = run("b.txt", format!("{HEADER}{good}{bad}"));
+        let err = run("b.txt", format!("{HEADER}{good}{bad}")).await;
         assert!(
             err.ends_with("b.txt: row 3: sales or return \"X\", not S or R"),
             "{err}"
@@ -1090,21 +1113,21 @@ mod tests {
             ..PRO
         }
         .tsv();
-        let err = run("c.txt", format!("{HEADER}{fine}"));
+        let err = run("c.txt", format!("{HEADER}{fine}")).await;
         assert!(err.ends_with("c.txt: row 2: bad amount \"1.005\""), "{err}");
 
         let header = HEADER.replace("\tTitle\t", "\tName\t");
-        let err = run("d.txt", format!("{header}{good}"));
+        let err = run("d.txt", format!("{header}{good}")).await;
         assert!(
             err.contains("d.txt: row 1: no \"Title\" column; the header is"),
             "{err}"
         );
     }
 
-    #[test]
-    fn a_vendor_number_is_required() {
+    #[tokio::test]
+    async fn a_vendor_number_is_required() {
         let importer = AppStoreImporter::new(None, &CashflowDir::new("unused"));
-        let err = importer.import(&input(vec![])).unwrap_err();
+        let err = importer.import(&input(vec![])).await.unwrap_err();
         assert!(matches!(&err, ImportError::Usage(m) if m.contains("`vendor` under [appstore]")));
     }
 
@@ -1138,8 +1161,9 @@ mod tests {
         asked: RefCell<Vec<String>>,
     }
 
+    #[async_trait(?Send)]
     impl ReportSource for std::rc::Rc<FakeApi> {
-        fn report(&self, month: &str) -> Result<Option<Vec<u8>>, ReportError> {
+        async fn report(&self, month: &str) -> Result<Option<Vec<u8>>, ReportError> {
             self.asked.borrow_mut().push(month.to_owned());
             if let Some(errors) = self.errors.borrow_mut().get_mut(month)
                 && !errors.is_empty()
@@ -1169,8 +1193,8 @@ mod tests {
         AppStoreImporter::with_source(Some(&config()), Box::new(api.clone()), date("2026-06-10"))
     }
 
-    #[test]
-    fn fetched_months_read_like_files_and_a_missing_one_waits() {
+    #[tokio::test]
+    async fn fetched_months_read_like_files_and_a_missing_one_waits() {
         let api = std::rc::Rc::new(FakeApi {
             reports: BTreeMap::from([("2026-04", gzip(&report()))]),
             ..FakeApi::default()
@@ -1178,6 +1202,7 @@ mod tests {
         let importer = fetching(&api);
         let batch = importer
             .import(&input(vec![PathBuf::from("2026-04..2026-05")]))
+            .await
             .unwrap();
         assert_eq!(ledger(&batch), LEDGER);
         assert_eq!(*api.asked.borrow(), ["2026-04", "2026-05"]);
@@ -1191,7 +1216,7 @@ mod tests {
 
         // With no months it asks for the twelve before this one.
         api.asked.borrow_mut().clear();
-        importer.import(&input(vec![])).unwrap();
+        importer.import(&input(vec![])).await.unwrap();
         let asked = api.asked.borrow();
         assert_eq!(
             (asked.len(), asked[0].as_str(), asked[11].as_str()),
@@ -1199,8 +1224,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_month_apple_keeps_failing_on_is_left_out_and_the_rest_import() {
+    #[tokio::test]
+    async fn a_month_apple_keeps_failing_on_is_left_out_and_the_rest_import() {
         let api = std::rc::Rc::new(FakeApi {
             reports: BTreeMap::from([("2026-04", gzip(&report()))]),
             errors: RefCell::new(BTreeMap::from([("2026-03", vec![apple_500(); 9])])),
@@ -1208,6 +1233,7 @@ mod tests {
         });
         let batch = fetching(&api)
             .import(&input(vec![PathBuf::from("2026-03..2026-04")]))
+            .await
             .unwrap();
         assert_eq!(ledger(&batch), LEDGER);
         assert_eq!(
@@ -1233,8 +1259,8 @@ mod tests {
         assert_eq!(asked.last().map(String::as_str), Some("2026-04"));
     }
 
-    #[test]
-    fn a_month_apple_fails_on_once_imports_on_the_retry() {
+    #[tokio::test]
+    async fn a_month_apple_fails_on_once_imports_on_the_retry() {
         let api = std::rc::Rc::new(FakeApi {
             reports: BTreeMap::from([("2026-04", gzip(&report()))]),
             errors: RefCell::new(BTreeMap::from([("2026-04", vec![apple_500()])])),
@@ -1242,14 +1268,15 @@ mod tests {
         });
         let batch = fetching(&api)
             .import(&input(vec![PathBuf::from("2026-04")]))
+            .await
             .unwrap();
         assert_eq!(ledger(&batch), LEDGER);
         assert!(failed_months(&batch).is_empty() && batch.notes.is_empty());
         assert_eq!(*api.asked.borrow(), ["2026-04", "2026-04"]);
     }
 
-    #[test]
-    fn an_error_asking_again_wont_fix_fails_the_run_at_once() {
+    #[tokio::test]
+    async fn an_error_asking_again_wont_fix_fails_the_run_at_once() {
         let refused = ReportError::Failed("401 Unauthorized: bad token".to_owned());
         let api = std::rc::Rc::new(FakeApi {
             reports: BTreeMap::from([("2026-04", gzip(&report()))]),
@@ -1258,6 +1285,7 @@ mod tests {
         });
         let err = fetching(&api)
             .import(&input(vec![PathBuf::from("2026-03..2026-04")]))
+            .await
             .unwrap_err();
         assert!(
             matches!(&err, ImportError::Fetch { from, error }
@@ -1267,11 +1295,11 @@ mod tests {
         assert_eq!(*api.asked.borrow(), ["2026-03"]);
     }
 
-    #[test]
-    fn fetching_without_the_key_ids_says_which_is_missing() {
+    #[tokio::test]
+    async fn fetching_without_the_key_ids_says_which_is_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let importer = AppStoreImporter::new(Some(&config()), &CashflowDir::new(tmp.path()));
-        let err = importer.import(&input(vec![])).unwrap_err();
+        let err = importer.import(&input(vec![])).await.unwrap_err();
         assert!(
             matches!(&err, ImportError::Usage(m)
                 if m.contains("`key_id`") && m.contains("cashflow config set appstore.key_id")),
@@ -1284,7 +1312,7 @@ mod tests {
             ..config()
         };
         let importer = AppStoreImporter::new(Some(&ids), &CashflowDir::new(tmp.path()));
-        let err = importer.import(&input(vec![])).unwrap_err();
+        let err = importer.import(&input(vec![])).await.unwrap_err();
         assert!(
             matches!(&err, ImportError::Usage(m)
                 if m.contains("no App Store Connect key")

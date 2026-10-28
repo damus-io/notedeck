@@ -37,6 +37,7 @@
 
 use std::collections::BTreeMap;
 
+use async_trait::async_trait;
 use ledgerdb::Date;
 
 use super::csv_rows::{
@@ -70,6 +71,7 @@ impl RbcImporter {
     }
 }
 
+#[async_trait(?Send)]
 impl Importer for RbcImporter {
     fn name(&self) -> &'static str {
         "rbc"
@@ -79,7 +81,7 @@ impl Importer for RbcImporter {
         "rbc"
     }
 
-    fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
+    async fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
         if input.paths.is_empty() {
             return Err(ImportError::Usage(
                 "`import rbc` takes one or more CSV files or directories".to_owned(),
@@ -392,8 +394,8 @@ mod tests {
     /// Rows in the shape of a real download: a trailing empty field on each,
     /// blanks after Description 2, a card's foreign charge, a cheque and a
     /// USD account.
-    #[test]
-    fn rows_become_raw_transactions() {
+    #[tokio::test]
+    async fn rows_become_raw_transactions() {
         let tmp = tempfile::tempdir().unwrap();
         let text = format!(
             "{HEADER}\
@@ -405,6 +407,7 @@ mod tests {
         );
         let batch = rbc()
             .import(&input(vec![file(tmp.path(), "a.csv", &text)]))
+            .await
             .unwrap();
         assert_eq!(
             batch.journal.to_ledger(WriteOptions::default()),
@@ -454,15 +457,15 @@ mod tests {
         assert!(!foreign(""));
     }
 
-    #[test]
-    fn an_unmapped_account_is_an_error_without_its_number() {
+    #[tokio::test]
+    async fn an_unmapped_account_is_an_error_without_its_number() {
         let tmp = tempfile::tempdir().unwrap();
         let path = file(
             tmp.path(),
             "a.csv",
             &format!("{HEADER}Visa,4500000000004444,4/3/2026,,SHOP,,-5.00,,\n"),
         );
-        let err = rbc().import(&input(vec![path.clone()])).unwrap_err();
+        let err = rbc().import(&input(vec![path.clone()])).await.unwrap_err();
         let message = err.to_string();
         assert!(
             message.starts_with(&format!(
@@ -481,6 +484,7 @@ mod tests {
         // With no [rbc] table at all, the same.
         let none = RbcImporter::new(None)
             .import(&input(vec![path]))
+            .await
             .unwrap_err();
         assert!(none.to_string().contains("[rbc.accounts]"), "{none}");
     }
@@ -518,8 +522,8 @@ mod tests {
 
     /// Two downloads that overlap, the second also listing a day of three
     /// identical coffees as two.
-    #[test]
-    fn overlapping_downloads_import_as_their_union() {
+    #[tokio::test]
+    async fn overlapping_downloads_import_as_their_union() {
         let tmp = tempfile::tempdir().unwrap();
         let coffee = "Chequing,00000-0001234,1/2/2026,,\"Purchase\",\"CAFE\",-4.00,,\n";
         let first = format!(
@@ -531,7 +535,7 @@ mod tests {
             coffee.repeat(2)
         );
         let store = JournalStore::new(tmp.path().join("journal"));
-        let run = |name: &str, text: &str, imported| {
+        let run = async |name: &str, text: &str, imported| {
             let path = file(tmp.path(), name, text);
             write(
                 &store,
@@ -541,10 +545,11 @@ mod tests {
                 None,
                 Some(imported),
             )
+            .await
             .unwrap()
         };
-        assert_eq!(run("1.csv", &first, 1).txns, 4);
-        let later = run("2.csv", &second, 2);
+        assert_eq!(run("1.csv", &first, 1).await.txns, 4);
+        let later = run("2.csv", &second, 2).await;
         assert_eq!(
             later.txn_rows,
             Rows {

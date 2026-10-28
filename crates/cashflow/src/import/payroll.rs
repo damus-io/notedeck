@@ -54,6 +54,7 @@
 
 use std::collections::HashMap;
 
+use async_trait::async_trait;
 use ledgerdb::Date;
 
 use super::csv_rows::{parse_cents, read};
@@ -104,6 +105,7 @@ impl PayrollImporter {
     }
 }
 
+#[async_trait(?Send)]
 impl Importer for PayrollImporter {
     fn name(&self) -> &'static str {
         "payroll"
@@ -113,7 +115,7 @@ impl Importer for PayrollImporter {
         "payroll"
     }
 
-    fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
+    async fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
         let [path] = input.paths.as_slice() else {
             return Err(ImportError::Usage(
                 "`import payroll` takes exactly one <file>".to_owned(),
@@ -324,8 +326,8 @@ mod tests {
         )
     }
 
-    #[test]
-    fn payouts_become_raw_transactions() {
+    #[tokio::test]
+    async fn payouts_become_raw_transactions() {
         let tmp = tempfile::tempdir().unwrap();
         let (a, b) = (txid('a'), txid('b'));
         let text = signed(&format!(
@@ -338,6 +340,7 @@ mod tests {
         }));
         let batch = importer
             .import(&input(vec![file(tmp.path(), &text)]))
+            .await
             .unwrap();
         assert!(batch.skipped.is_empty(), "{:?}", batch.skipped);
         assert_eq!(batch.price_count(), 0, "the CAD rate is not a P directive");
@@ -363,8 +366,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn defaults_and_a_configured_counter() {
+    #[tokio::test]
+    async fn defaults_and_a_configured_counter() {
         let defaults = PayrollImporter::new(None);
         assert_eq!(
             (
@@ -387,6 +390,7 @@ mod tests {
         }));
         let text = importer
             .import(&input(vec![path]))
+            .await
             .unwrap()
             .journal
             .to_ledger(WriteOptions::default());
@@ -401,8 +405,8 @@ mod tests {
     }
 
     /// Two invoices paid by one send keep a record each.
-    #[test]
-    fn a_send_paying_two_invoices() {
+    #[tokio::test]
+    async fn a_send_paying_two_invoices() {
         let tmp = tempfile::tempdir().unwrap();
         let a = txid('d');
         let path = file(
@@ -411,6 +415,7 @@ mod tests {
         );
         let batch = PayrollImporter::new(None)
             .import(&input(vec![path]))
+            .await
             .unwrap();
         let ids: Vec<_> = batch
             .journal
@@ -424,8 +429,8 @@ mod tests {
     /// A line that doesn't read is reported by line and column, and every
     /// other payout still imports. Malformed lines keep their place, so the
     /// invoice numbers after them don't shift once they're fixed.
-    #[test]
-    fn a_malformed_line_is_skipped_not_fatal() {
+    #[tokio::test]
+    async fn a_malformed_line_is_skipped_not_fatal() {
         let tmp = tempfile::tempdir().unwrap();
         let t = txid('e');
         let text = format!(
@@ -441,6 +446,7 @@ mod tests {
         );
         let batch = PayrollImporter::new(None)
             .import(&input(vec![file(tmp.path(), &text)]))
+            .await
             .unwrap();
         let skipped: Vec<_> = batch.skipped.iter().map(ToString::to_string).collect();
         assert_eq!(
@@ -460,8 +466,8 @@ mod tests {
         assert!(text.contains("payroll invoice 8\n"), "{text}");
     }
 
-    #[test]
-    fn a_file_with_no_payouts_is_empty() {
+    #[tokio::test]
+    async fn a_file_with_no_payouts_is_empty() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         let path = file(tmp.path(), &signed(""));
@@ -473,22 +479,23 @@ mod tests {
             None,
             None,
         )
+        .await
         .unwrap_err();
         assert!(matches!(err, ImportError::Empty { .. }), "{err}");
         assert!(matches!(
-            PayrollImporter::new(None).import(&input(vec![])),
+            PayrollImporter::new(None).import(&input(vec![])).await,
             Err(ImportError::Usage(_))
         ));
     }
 
     /// The file grows by a line each payday: a re-import writes only the new
     /// payout, and one with nothing new writes nothing.
-    #[test]
-    fn a_reimport_writes_only_new_payouts() {
+    #[tokio::test]
+    async fn a_reimport_writes_only_new_payouts() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         let first = format!("* ?? bc1q 2024-03-01 10CAD 100 {}\n", txid('a'));
-        let run = |text: &str, at| {
+        let run = async |text: &str, at| {
             let path = file(tmp.path(), text);
             write(
                 &store,
@@ -498,13 +505,14 @@ mod tests {
                 None,
                 Some(at),
             )
+            .await
             .unwrap()
         };
-        let one = run(&first, 1);
+        let one = run(&first, 1).await;
         assert_eq!((one.txns, one.header.layer.as_str()), (1, "payroll"));
 
         let grown = format!("{first}* ?? bc1q 2024-04-01 10CAD 90 {}\n", txid('b'));
-        let two = run(&grown, 2);
+        let two = run(&grown, 2).await;
         assert_eq!(
             two.txn_rows,
             Rows {
@@ -513,7 +521,7 @@ mod tests {
                 unchanged: 1
             }
         );
-        let again = run(&grown, 3);
+        let again = run(&grown, 3).await;
         assert_eq!(again.hash, None);
         assert_eq!(store.list().unwrap().len(), 2);
     }

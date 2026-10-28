@@ -54,6 +54,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use async_trait::async_trait;
 use base64::Engine;
 use ledgerdb::Date;
 use serde::Deserialize;
@@ -91,12 +92,14 @@ const FEES: &str = "expenses:fees:btc";
 const MSAT_DIGITS: u32 = 11;
 
 /// A bitcoind JSON-RPC endpoint, so the importer can be tested without one
-/// and read through more than one transport.
+/// and read through more than one transport. `async` and `?Send` as
+/// [`Importer`] is.
+#[async_trait(?Send)]
 pub trait Rpc {
     /// Call `method` with `params` (a JSON array) on the node (`wallet`
     /// `None`) or on the named wallet, and return the answer's `result` as
     /// JSON text, so an amount in it can still be read exactly.
-    fn call(
+    async fn call(
         &self,
         wallet: Option<&str>,
         method: &str,
@@ -131,6 +134,10 @@ pub enum RpcError {
 }
 
 /// [`Rpc`] over `ehttp`, with HTTP basic auth.
+///
+/// A call is `ehttp::fetch_async`, which natively runs the request on a
+/// short-lived thread of ehttp's own and wakes the caller when it answers,
+/// so the runtime's workers are never held while bitcoind thinks.
 pub struct BitcoindHttp {
     url: String,
     /// `Basic <base64 of user:password>`.
@@ -149,8 +156,9 @@ impl BitcoindHttp {
     }
 }
 
+#[async_trait(?Send)]
 impl Rpc for BitcoindHttp {
-    fn call(
+    async fn call(
         &self,
         wallet: Option<&str>,
         method: &str,
@@ -167,7 +175,7 @@ impl Rpc for BitcoindHttp {
         // but also a malformed URL or a TLS failure, which its text alone
         // can't tell apart from those. None of them reached bitcoind, so all
         // read as unreachable, except a body cut off after it answered.
-        let response = ehttp::fetch_blocking(&request).map_err(|error| {
+        let response = ehttp::fetch_async(request).await.map_err(|error| {
             if error.starts_with("Failed to read response body") {
                 RpcError::Other(error)
             } else {
@@ -224,8 +232,9 @@ impl<'a> Corerpc<'a> {
     }
 }
 
+#[async_trait(?Send)]
 impl Rpc for Corerpc<'_> {
-    fn call(
+    async fn call(
         &self,
         wallet: Option<&str>,
         method: &str,
@@ -238,20 +247,21 @@ impl Rpc for Corerpc<'_> {
         };
         let mut corerpc = vec![json!(wallet.unwrap_or("")), json!(method)];
         corerpc.extend(args);
-        let answer =
-            self.node
-                .call("corerpc", Value::Array(corerpc))
-                .map_err(|error| match error {
-                    NodeError::Rpc {
-                        code: cln::RUNE_DENIED,
-                        message,
-                    } => RpcError::Rpc {
-                        code: cln::RUNE_DENIED,
-                        message: format!("{message}; {}", cln::mint_rune()),
-                    },
-                    NodeError::Rpc { code, message } => RpcError::Rpc { code, message },
-                    NodeError::Other(error) => RpcError::Unreachable(error),
-                })?;
+        let answer = self
+            .node
+            .call("corerpc", Value::Array(corerpc))
+            .await
+            .map_err(|error| match error {
+                NodeError::Rpc {
+                    code: cln::RUNE_DENIED,
+                    message,
+                } => RpcError::Rpc {
+                    code: cln::RUNE_DENIED,
+                    message: format!("{message}; {}", cln::mint_rune()),
+                },
+                NodeError::Rpc { code, message } => RpcError::Rpc { code, message },
+                NodeError::Other(error) => RpcError::Unreachable(error),
+            })?;
         RawValue::from_string(answer.to_string()).map_err(|e| RpcError::Other(e.to_string()))
     }
 }
@@ -308,10 +318,13 @@ impl BtcImporter {
     }
 
     /// Every entry, through the backend `[btc] via` picks.
-    fn read(&self) -> Result<Read, ImportError> {
+    async fn read(&self) -> Result<Read, ImportError> {
         match self.config.via.unwrap_or_default() {
             BtcVia::Http => {
-                let entries = self.over_http(|rpc| self.fetch(rpc)).map_err(usage)??;
+                let entries = self
+                    .over_http(async |rpc| self.fetch(rpc).await)
+                    .await
+                    .map_err(usage)??;
                 Ok(Read {
                     entries,
                     note: None,
@@ -319,26 +332,30 @@ impl BtcImporter {
             }
             BtcVia::Corerpc => {
                 let entries = self
-                    .through_corerpc(|rpc| self.fetch(rpc))
+                    .through_corerpc(async |rpc| self.fetch(rpc).await)
+                    .await
                     .map_err(|missing| ImportError::Usage(missing.to_string()))??;
                 Ok(Read {
                     entries,
                     note: None,
                 })
             }
-            BtcVia::Auto => self.read_auto(),
+            BtcVia::Auto => self.read_auto().await,
         }
     }
 
     /// HTTP, unless its first call can't reach bitcoind or there are no
     /// credentials for it; then corerpc for the whole run, when `[cln]`
     /// can be reached, with a note saying why.
-    fn read_auto(&self) -> Result<Read, ImportError> {
-        let (why, failed) = match self.over_http(|rpc| {
-            let counted = Counted::new(rpc);
-            let fetched = self.fetch(&counted);
-            (fetched, counted.answered.get())
-        }) {
+    async fn read_auto(&self) -> Result<Read, ImportError> {
+        let (why, failed) = match self
+            .over_http(async |rpc| {
+                let counted = Counted::new(rpc);
+                let fetched = self.fetch(&counted).await;
+                (fetched, counted.answered.get())
+            })
+            .await
+        {
             Err(RpcError::NoCredentials(error)) => {
                 ("has no credentials".to_owned(), ImportError::Usage(error))
             }
@@ -361,7 +378,10 @@ impl BtcImporter {
             ),
             Ok((Err(error), _)) => return Err(error.into()),
         };
-        let entries = match self.through_corerpc(|rpc| self.fetch(rpc)) {
+        let entries = match self
+            .through_corerpc(async |rpc| self.fetch(rpc).await)
+            .await
+        {
             Ok(fetched) => fetched?,
             Err(missing) => return Err(no_fallback(failed, &missing)),
         };
@@ -376,21 +396,24 @@ impl BtcImporter {
 
     /// `work` over HTTP: the endpoint given in its place, else the one the
     /// config names.
-    fn over_http<T>(&self, work: impl FnOnce(&dyn Rpc) -> T) -> Result<T, RpcError> {
+    async fn over_http<T>(&self, work: impl AsyncFnOnce(&dyn Rpc) -> T) -> Result<T, RpcError> {
         if let Some(rpc) = &self.rpc {
-            return Ok(work(&**rpc));
+            return Ok(work(&**rpc).await);
         }
-        Ok(work(&self.connect()?))
+        Ok(work(&self.connect()?).await)
     }
 
     /// `work` through corerpc: on the node given in its place, else the one
     /// `[cln]` names.
-    fn through_corerpc<T>(&self, work: impl FnOnce(&dyn Rpc) -> T) -> Result<T, NoCommando> {
+    async fn through_corerpc<T>(
+        &self,
+        work: impl AsyncFnOnce(&dyn Rpc) -> T,
+    ) -> Result<T, NoCommando> {
         if let Some(node) = &self.node {
-            return Ok(work(&Corerpc::new(&**node)));
+            return Ok(work(&Corerpc::new(&**node)).await);
         }
         let commando = cln::commando(&self.cln, &self.dir)?;
-        Ok(work(&Corerpc::new(&commando)))
+        Ok(work(&Corerpc::new(&commando)).await)
     }
 
     /// The endpoint the config names, signed in with its credentials.
@@ -439,10 +462,11 @@ impl BtcImporter {
     }
 
     /// Every entry of every wallet the config names, over `rpc`.
-    fn fetch(&self, rpc: &dyn Rpc) -> Result<Vec<Entry>, FetchError> {
+    async fn fetch(&self, rpc: &dyn Rpc) -> Result<Vec<Entry>, FetchError> {
         let mut wallets: Vec<Wallet> = match &self.config.wallets {
             Some(names) => names.iter().map(|name| Wallet::own(name)).collect(),
-            None => call::<Vec<String>>(rpc, None, "listwallets", json!([]))?
+            None => call::<Vec<String>>(rpc, None, "listwallets", json!([]))
+                .await?
                 .iter()
                 .map(|name| Wallet::own(name))
                 .collect(),
@@ -463,7 +487,8 @@ impl BtcImporter {
         for wallet in &wallets {
             for skip in (0..).step_by(PAGE) {
                 let params = json!(["*", PAGE, skip, wallet.watch_only]);
-                let page: Vec<Listed> = call(rpc, Some(&wallet.name), "listtransactions", params)?;
+                let page: Vec<Listed> =
+                    call(rpc, Some(&wallet.name), "listtransactions", params).await?;
                 let short = page.len() < PAGE;
                 for listed in page {
                     entries.push(listed.entry(&wallet.name)?);
@@ -477,6 +502,7 @@ impl BtcImporter {
     }
 }
 
+#[async_trait(?Send)]
 impl Importer for BtcImporter {
     fn name(&self) -> &'static str {
         "btc"
@@ -486,7 +512,7 @@ impl Importer for BtcImporter {
         "btc-onchain"
     }
 
-    fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
+    async fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
         let mut note = None;
         let entries = if !input.paths.is_empty() {
             let mut entries = Vec::new();
@@ -495,7 +521,7 @@ impl Importer for BtcImporter {
             }
             entries
         } else {
-            let read = self.read()?;
+            let read = self.read().await?;
             note = read.note;
             read.entries
         };
@@ -531,14 +557,15 @@ impl<'a> Counted<'a> {
     }
 }
 
+#[async_trait(?Send)]
 impl Rpc for Counted<'_> {
-    fn call(
+    async fn call(
         &self,
         wallet: Option<&str>,
         method: &str,
         params: Value,
     ) -> Result<Box<RawValue>, RpcError> {
-        let result = self.rpc.call(wallet, method, params)?;
+        let result = self.rpc.call(wallet, method, params).await?;
         self.answered.set(self.answered.get() + 1);
         Ok(result)
     }
@@ -621,7 +648,7 @@ impl From<CallFailed> for ImportError {
 
 /// Call `method` with `params` on the node (`wallet` `None`) or a wallet,
 /// and read its result as `T`.
-fn call<T: DeserializeOwned>(
+async fn call<T: DeserializeOwned>(
     rpc: &dyn Rpc,
     wallet: Option<&str>,
     method: &str,
@@ -634,7 +661,7 @@ fn call<T: DeserializeOwned>(
         },
         error,
     };
-    let result = rpc.call(wallet, method, params).map_err(fail)?;
+    let result = rpc.call(wallet, method, params).await.map_err(fail)?;
     serde_json::from_str(result.get()).map_err(|e| {
         fail(RpcError::Other(format!(
             "{e}: {}",
@@ -1178,8 +1205,9 @@ mod tests {
         calls: Rc<RefCell<Vec<String>>>,
     }
 
+    #[async_trait(?Send)]
     impl Rpc for FakeNode {
-        fn call(
+        async fn call(
             &self,
             wallet: Option<&str>,
             method: &str,
@@ -1215,8 +1243,14 @@ mod tests {
     /// An endpoint that fails every call with what `fail` makes.
     struct Failing(fn() -> RpcError);
 
+    #[async_trait(?Send)]
     impl Rpc for Failing {
-        fn call(&self, _: Option<&str>, _: &str, _: Value) -> Result<Box<RawValue>, RpcError> {
+        async fn call(
+            &self,
+            _: Option<&str>,
+            _: &str,
+            _: Value,
+        ) -> Result<Box<RawValue>, RpcError> {
             Err((self.0)())
         }
     }
@@ -1238,8 +1272,9 @@ mod tests {
         }
     }
 
+    #[async_trait(?Send)]
     impl Node for CoreNode {
-        fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+        async fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
             assert_eq!(method, "corerpc");
             self.params.borrow_mut().push(params.clone());
             let Value::Array(mut args) = params else {
@@ -1249,7 +1284,7 @@ mod tests {
             let wallet = args[0].as_str().unwrap();
             let method = args[1].as_str().unwrap();
             let wallet = (!wallet.is_empty()).then_some(wallet);
-            match self.bitcoind.call(wallet, method, Value::Array(rest)) {
+            match self.bitcoind.call(wallet, method, Value::Array(rest)).await {
                 Ok(raw) => Ok(through_double(serde_json::from_str(raw.get()).unwrap())),
                 Err(RpcError::Rpc { code, message }) => Err(NodeError::Rpc { code, message }),
                 Err(error) => Err(NodeError::Other(error.to_string())),
@@ -1284,8 +1319,9 @@ mod tests {
     /// A node that fails every call with `error`.
     struct DownNode(NodeError);
 
+    #[async_trait(?Send)]
     impl Node for DownNode {
-        fn call(&self, _: &str, _: Value) -> Result<Value, NodeError> {
+        async fn call(&self, _: &str, _: Value) -> Result<Value, NodeError> {
             Err(self.0.clone())
         }
     }
@@ -1293,8 +1329,9 @@ mod tests {
     /// A node a test expects never to be called.
     struct Untouched;
 
+    #[async_trait(?Send)]
     impl Node for Untouched {
-        fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+        async fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
             panic!("fell back to corerpc: {method} {params}");
         }
     }
@@ -1367,8 +1404,8 @@ mod tests {
     }
 
     /// A `user` with no password secret says how to store one.
-    #[test]
-    fn a_user_without_its_password_names_the_command() {
+    #[tokio::test]
+    async fn a_user_without_its_password_names_the_command() {
         if std::env::var(secret_env_var(PASSWORD_SECRET)).is_ok() {
             return;
         }
@@ -1385,7 +1422,7 @@ mod tests {
             message.contains("cashflow secret set bitcoind-rpc-password"),
             "{message}"
         );
-        let Err(ImportError::Usage(shown)) = importer.import(&input()) else {
+        let Err(ImportError::Usage(shown)) = importer.import(&input()).await else {
             panic!("expected a usage error");
         };
         // With no [cln] to fall back to, the error says what one needs.
@@ -1403,7 +1440,7 @@ mod tests {
             ..config
         };
         let importer = BtcImporter::new(Some(&http), None, &CashflowDir::new(tmp.path()));
-        let Err(ImportError::Usage(shown)) = importer.import(&input()) else {
+        let Err(ImportError::Usage(shown)) = importer.import(&input()).await else {
             panic!("expected a usage error");
         };
         assert_eq!(shown, message);
@@ -1431,8 +1468,8 @@ mod tests {
 
     /// Each kind of failure keeps its kind through `call` and names the
     /// call in what the user sees.
-    #[test]
-    fn call_keeps_each_failure_kind() {
+    #[tokio::test]
+    async fn call_keeps_each_failure_kind() {
         let kinds: [fn() -> RpcError; 5] = [
             || RpcError::Unreachable("Connection refused".to_owned()),
             || RpcError::NoCredentials("no cookie".to_owned()),
@@ -1445,6 +1482,7 @@ mod tests {
         ];
         for make in kinds {
             let failed = call::<Vec<String>>(&Failing(make), Some("hot"), "listwallets", json!([]))
+                .await
                 .unwrap_err();
             assert_eq!(failed.from, "bitcoind listwallets (wallet \"hot\")");
             assert_eq!(
@@ -1469,7 +1507,9 @@ mod tests {
 
         // A result of the wrong shape is reported with its text.
         let node = fake_node(&[]);
-        let failed = call::<u32>(&node, None, "listwallets", json!([])).unwrap_err();
+        let failed = call::<u32>(&node, None, "listwallets", json!([]))
+            .await
+            .unwrap_err();
         let RpcError::Other(message) = failed.error else {
             panic!("expected other");
         };
@@ -1478,10 +1518,10 @@ mod tests {
 
     /// A port nothing listens on is unreachable, which a fallback takes as
     /// leave to try another way.
-    #[test]
-    fn a_closed_port_is_unreachable() {
+    #[tokio::test]
+    async fn a_closed_port_is_unreachable() {
         let http = BitcoindHttp::new("http://127.0.0.1:1", "user:password");
-        let error = http.call(None, "listwallets", json!([])).unwrap_err();
+        let error = http.call(None, "listwallets", json!([])).await.unwrap_err();
         assert!(matches!(error, RpcError::Unreachable(_)), "{error:?}");
     }
 
@@ -1545,8 +1585,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_wallet_is_paged_until_exhausted() {
+    #[tokio::test]
+    async fn a_wallet_is_paged_until_exhausted() {
         // One more entry than a page (and one unconfirmed), so it takes a
         // second call, which comes back short.
         let mut many: Vec<String> = (0..PAGE as u32 + 1)
@@ -1566,6 +1606,7 @@ mod tests {
         let calls = node.calls.clone();
         let batch = BtcImporter::with_rpc(None, Box::new(node))
             .import(&input())
+            .await
             .unwrap();
 
         assert_eq!(batch.txn_count(), PAGE + 1);
@@ -1586,8 +1627,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_move_between_wallets_is_one_transfer_with_its_fee() {
+    #[tokio::test]
+    async fn a_move_between_wallets_is_one_transfer_with_its_fee() {
         // `hot` pays 0.5 to `cold` and 0.2 to someone else in one
         // transaction; bitcoind repeats the fee on both send entries.
         let fee = Some("-0.00012345");
@@ -1600,6 +1641,7 @@ mod tests {
         let node = fake_node(&[("hot", hot), ("cold", cold)]);
         let batch = BtcImporter::with_rpc(None, Box::new(node))
             .import(&input())
+            .await
             .unwrap();
 
         assert_eq!(
@@ -1625,13 +1667,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_pure_transfer_has_no_unknown_leg() {
+    #[tokio::test]
+    async fn a_pure_transfer_has_no_unknown_leg() {
         let hot = vec![listed("send", "-0.5", Some("-0.0001"), "move", 0, DAY1)];
         let cold = vec![listed("receive", "0.5", None, "move", 0, DAY1)];
         let node = fake_node(&[("hot", hot), ("cold wallet", cold)]);
         let batch = BtcImporter::with_rpc(None, Box::new(node))
             .import(&input())
+            .await
             .unwrap();
         let text = ledger_text(&batch);
         assert!(
@@ -1645,8 +1688,8 @@ mod tests {
         assert!(!text.contains("unknown"), "{text}");
     }
 
-    #[test]
-    fn a_send_to_itself_is_only_its_fee() {
+    #[tokio::test]
+    async fn a_send_to_itself_is_only_its_fee() {
         let hot = vec![
             listed("send", "-0.5", Some("-0.0001"), "self", 0, DAY1),
             listed("receive", "0.5", None, "self", 0, DAY1),
@@ -1654,6 +1697,7 @@ mod tests {
         let node = fake_node(&[("hot", hot)]);
         let batch = BtcImporter::with_rpc(None, Box::new(node))
             .import(&input())
+            .await
             .unwrap();
         let text = ledger_text(&batch);
         assert!(
@@ -1664,14 +1708,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_send_partly_funded_by_others_is_not_a_fee() {
+    #[tokio::test]
+    async fn a_send_partly_funded_by_others_is_not_a_fee() {
         // The wallet put in 0.3 of a 0.5 output; bitcoind lists the send at
         // -0.5 with a "fee" of +0.2.
         let hot = vec![listed("send", "-0.5", Some("0.2"), "dual", 0, DAY1)];
         let node = fake_node(&[("hot", hot)]);
         let batch = BtcImporter::with_rpc(None, Box::new(node))
             .import(&input())
+            .await
             .unwrap();
         let text = ledger_text(&batch);
         assert!(
@@ -1682,8 +1727,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn named_wallets_skip_listwallets_and_an_rpc_error_says_which() {
+    #[tokio::test]
+    async fn named_wallets_skip_listwallets_and_an_rpc_error_says_which() {
         let node = fake_node(&[(
             "hot",
             vec![listed("generate", "6.25", None, "coinbase", 0, DAY1)],
@@ -1695,6 +1740,7 @@ mod tests {
         };
         let batch = BtcImporter::with_rpc(Some(&config), Box::new(node))
             .import(&input())
+            .await
             .unwrap();
         assert!(
             ledger_text(&batch).starts_with("2024-03-05 * bitcoin mined\n\t; id: btc:coinbase:0\n")
@@ -1708,6 +1754,7 @@ mod tests {
         };
         let err = BtcImporter::with_rpc(Some(&config), Box::new(node))
             .import(&input())
+            .await
             .unwrap_err();
         assert_eq!(
             err.to_string(),
@@ -1715,8 +1762,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn conflicted_and_abandoned_are_left_out() {
+    #[tokio::test]
+    async fn conflicted_and_abandoned_are_left_out() {
         let conflicted = listed("receive", "1", None, "lost", 0, DAY1)
             .replace(r#""confirmations":6"#, r#""confirmations":-3"#);
         let abandoned = listed("send", "-1", Some("-0.001"), "dropped", 0, 0)
@@ -1731,6 +1778,7 @@ mod tests {
         )]);
         let batch = BtcImporter::with_rpc(None, Box::new(node))
             .import(&input())
+            .await
             .unwrap();
         assert_eq!(batch.txn_count(), 1);
         let why: Vec<_> = batch
@@ -1744,8 +1792,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_tsv_listing_reads_like_the_rpc() {
+    #[tokio::test]
+    async fn a_tsv_listing_reads_like_the_rpc() {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("txs.tsv");
         std::fs::write(
@@ -1765,6 +1813,7 @@ mod tests {
                 source: "btc".to_owned(),
                 paths: vec![file.clone()],
             })
+            .await
             .unwrap();
         let text = ledger_text(&batch);
         assert!(
@@ -1788,12 +1837,13 @@ mod tests {
                 source: "btc".to_owned(),
                 paths: vec![file],
             })
+            .await
             .unwrap_err();
         assert!(err.to_string().contains("row 1: 2 fields"), "{err}");
     }
 
-    #[test]
-    fn a_reimport_writes_nothing_and_reports_what_it_left_out() {
+    #[tokio::test]
+    async fn a_reimport_writes_nothing_and_reports_what_it_left_out() {
         let tmp = tempfile::tempdir().unwrap();
         let store = JournalStore::new(tmp.path().join("journal"));
         let wallets = [(
@@ -1803,7 +1853,7 @@ mod tests {
                 listed("receive", "0.2", None, "pending", 0, 0),
             ],
         )];
-        let run = |imported| {
+        let run = async |imported| {
             let node = fake_node(&wallets);
             let importer = BtcImporter::with_rpc(None, Box::new(node));
             import::write(
@@ -1814,14 +1864,15 @@ mod tests {
                 None,
                 Some(imported),
             )
+            .await
             .unwrap()
         };
 
-        let first = run(7);
+        let first = run(7).await;
         assert!(first.new);
         assert_eq!(first.header.layer, "btc-onchain");
         assert_eq!(first.left_out.len(), 1);
-        let again = run(8);
+        let again = run(8).await;
         assert_eq!(again.hash, None);
         assert_eq!(
             again.txn_rows,
@@ -1846,10 +1897,11 @@ mod tests {
 
     /// The same wallets read through corerpc as over HTTP give the same
     /// records, and corerpc's first param is the wallet.
-    #[test]
-    fn corerpc_reads_what_http_reads() {
+    #[tokio::test]
+    async fn corerpc_reads_what_http_reads() {
         let http = BtcImporter::with_rpc(Some(&via(BtcVia::Http)), Box::new(two_wallets()))
             .import(&input())
+            .await
             .unwrap();
 
         let node = CoreNode::new(two_wallets());
@@ -1860,6 +1912,7 @@ mod tests {
         )
         .with_node(Box::new(node))
         .import(&input())
+        .await
         .unwrap();
 
         assert_eq!(ledger_text(&corerpc), ledger_text(&http));
@@ -1880,10 +1933,11 @@ mod tests {
 
     /// Auto falls back when bitcoind can't be reached, reads the whole run
     /// through corerpc, and says so.
-    #[test]
-    fn auto_falls_back_when_bitcoind_is_unreachable() {
+    #[tokio::test]
+    async fn auto_falls_back_when_bitcoind_is_unreachable() {
         let http = BtcImporter::with_rpc(None, Box::new(two_wallets()))
             .import(&input())
+            .await
             .unwrap();
         let batch = BtcImporter::with_rpc(
             None,
@@ -1893,6 +1947,7 @@ mod tests {
         )
         .with_node(Box::new(CoreNode::new(two_wallets())))
         .import(&input())
+        .await
         .unwrap();
         assert_eq!(ledger_text(&batch), ledger_text(&http));
         assert_eq!(
@@ -1905,8 +1960,8 @@ mod tests {
     }
 
     /// Auto falls back when there is nothing to sign in to bitcoind with.
-    #[test]
-    fn auto_falls_back_without_credentials() {
+    #[tokio::test]
+    async fn auto_falls_back_without_credentials() {
         let tmp = tempfile::tempdir().unwrap();
         let config = BtcConfig {
             url: Some("http://monad:8332".to_owned()),
@@ -1916,6 +1971,7 @@ mod tests {
         let batch = BtcImporter::new(Some(&config), None, &CashflowDir::new(tmp.path()))
             .with_node(Box::new(CoreNode::new(two_wallets())))
             .import(&input())
+            .await
             .unwrap();
         assert_eq!(batch.txn_count(), 2);
         assert_eq!(
@@ -1930,8 +1986,8 @@ mod tests {
     /// Wrong credentials and an error bitcoind answers with are real
     /// errors, not leave to try corerpc; nor is bitcoind going away after
     /// it has answered, since a run never mixes backends.
-    #[test]
-    fn auto_does_not_fall_back_once_bitcoind_answers() {
+    #[tokio::test]
+    async fn auto_does_not_fall_back_once_bitcoind_answers() {
         let kinds: [fn() -> RpcError; 2] = [
             || RpcError::Unauthorized("401 Unauthorized".to_owned()),
             || RpcError::Rpc {
@@ -1943,6 +1999,7 @@ mod tests {
             let error = BtcImporter::with_rpc(None, Box::new(Failing(make)))
                 .with_node(Box::new(Untouched))
                 .import(&input())
+                .await
                 .unwrap_err();
             assert_eq!(
                 error.to_string(),
@@ -1952,15 +2009,16 @@ mod tests {
 
         /// A bitcoind that lists its wallets, then goes away.
         struct Vanishing(FakeNode);
+        #[async_trait(?Send)]
         impl Rpc for Vanishing {
-            fn call(
+            async fn call(
                 &self,
                 wallet: Option<&str>,
                 method: &str,
                 params: Value,
             ) -> Result<Box<RawValue>, RpcError> {
                 match method {
-                    "listwallets" => self.0.call(wallet, method, params),
+                    "listwallets" => self.0.call(wallet, method, params).await,
                     _ => Err(RpcError::Unreachable("Connection reset".to_owned())),
                 }
             }
@@ -1968,6 +2026,7 @@ mod tests {
         let error = BtcImporter::with_rpc(None, Box::new(Vanishing(two_wallets())))
             .with_node(Box::new(Untouched))
             .import(&input())
+            .await
             .unwrap_err();
         assert_eq!(
             error.to_string(),
@@ -1977,8 +2036,8 @@ mod tests {
 
     /// An unreachable bitcoind with no [cln] to fall back to fails as it
     /// did, naming what the fallback needs.
-    #[test]
-    fn no_cln_names_what_the_fallback_needs() {
+    #[tokio::test]
+    async fn no_cln_names_what_the_fallback_needs() {
         let error = BtcImporter::with_rpc(
             None,
             Box::new(Failing(|| {
@@ -1986,6 +2045,7 @@ mod tests {
             })),
         )
         .import(&input())
+        .await
         .unwrap_err();
         assert_eq!(
             error.to_string(),
@@ -1997,14 +2057,15 @@ mod tests {
 
     /// A rune that doesn't permit the call says how to mint one that does;
     /// a node that can't be reached is unreachable.
-    #[test]
-    fn corerpc_failures_keep_their_kind() {
+    #[tokio::test]
+    async fn corerpc_failures_keep_their_kind() {
         let denied = DownNode(NodeError::Rpc {
             code: cln::RUNE_DENIED,
             message: "Not authorized: method not permitted".to_owned(),
         });
         let error = Corerpc::new(&denied)
             .call(None, "listwallets", json!([]))
+            .await
             .unwrap_err();
         let RpcError::Rpc { code, message } = &error else {
             panic!("expected an rpc error, got {error:?}");
@@ -2021,6 +2082,7 @@ mod tests {
         let error = BtcImporter::with_rpc(Some(&via(BtcVia::Corerpc)), Box::new(two_wallets()))
             .with_node(Box::new(denied))
             .import(&input())
+            .await
             .unwrap_err();
         assert!(error.to_string().contains("createrune"), "{error}");
 
@@ -2029,11 +2091,13 @@ mod tests {
         ));
         let error = Corerpc::new(&down)
             .call(Some("hot"), "listtransactions", json!([]))
+            .await
             .unwrap_err();
         assert!(matches!(error, RpcError::Unreachable(_)), "{error:?}");
 
         let error = Corerpc::new(&down)
             .call(None, "listwallets", json!({}))
+            .await
             .unwrap_err();
         assert!(matches!(error, RpcError::Other(_)), "{error:?}");
     }
