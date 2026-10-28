@@ -513,7 +513,13 @@ fn cln_import_files_payments_and_chain_events_apart() {
     assert_eq!(again["layer"], "cln");
     assert_eq!(again["other_layers"][0]["layer"], "cln-chain");
     assert_eq!(again["other_layers"][0]["txn_rows"]["unchanged"], 1);
-    assert_eq!(again["notes"], serde_json::json!([]));
+    // A saved listing has no node to ask for block times.
+    let notes = again["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].as_str().unwrap().contains("no node to ask"),
+        "{notes:?}"
+    );
 }
 
 /// A legacy ledger file with no ids, a raw line before its first

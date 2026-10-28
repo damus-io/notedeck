@@ -356,7 +356,11 @@ Importers:
                   `timezone` setting, so every machine dates it alike;
                   `timezone` under [cln] overrides that on one machine,
                   and with neither set it is this machine's own zone.
-                  A node whose bookkeeper takes start_time is read from a
+                  An on-chain record is dated by its block instead
+                  (raw-blockheight, raw-blocktime), with the time from the
+                  node's corerpc plugin (jb55/cln-core-rpc); a block it
+                  can't time keeps bookkeeper's timestamp, and the run
+                  says how many. A node whose bookkeeper takes start_time is read from a
                   day before the newest payment the journal holds; one
                   that doesn't is read whole, and says so. Payments
                   (invoice, routed) go in layer cln, posting msat to

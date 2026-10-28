@@ -122,6 +122,15 @@
 //! rewrites nothing. [`ClnConfig::timezone`] overrides it on one machine.
 //! With neither set it is the system's own zone, as `index.ts` dated them,
 //! and the run says so.
+//!
+//! **An on-chain record is dated by its block**, not by when bookkeeper
+//! logged it, which for coins it backfilled is years later. Every
+//! `cln-chain` record carries `raw-blockheight` (`-` when unknown: a fee
+//! event or a backfilled channel open has none, nor does a channel's own
+//! event) and, when the node's `corerpc` plugin gave the block's time,
+//! `raw-blocktime`, which then dates it. A height with no time is dated by
+//! `raw-timestamp`, which stays bookkeeper's, and the run says how many.
+//! See [`blocks`].
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -130,7 +139,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use futures_util::stream::{self, StreamExt};
-use ledgerdb::{LayerFilter, Ledger};
+use ledgerdb::{Date, LayerFilter, Ledger};
 use lnsocket::bitcoin::secp256k1::{PublicKey, SecretKey, rand};
 use lnsocket::commando::{CommandoConfig, RetryPolicy};
 use lnsocket::{CommandoClient, LNSocket};
@@ -139,6 +148,7 @@ use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use self::blocks::BlockTimes;
 use super::csv_rows::read;
 use super::{
     Batch, ImportError, ImportInput, Importer, OtherLayer, RawAmount, RawMeta, RawPosting, RawTxn,
@@ -148,6 +158,8 @@ use crate::CashflowDir;
 use crate::config::{ClnConfig, Secret, secret_env_var};
 use crate::prices::MSAT;
 use crate::zone::Zone;
+
+mod blocks;
 
 /// The secret holding the rune commando calls are made with.
 pub const RUNE_SECRET: &str = "cln-rune";
@@ -172,10 +184,6 @@ const DEFAULT_PORT: u16 = 9735;
 
 /// How long one call may take. A whole unpatched listing is hundreds of MB.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-
-/// How many calls of a [`Node::call_each`] batch [`Commando`] has waiting on
-/// the node at once.
-const IN_FLIGHT: usize = 32;
 
 /// JSON-RPC's code for a parameter the method doesn't take.
 const UNKNOWN_PARAMETER: i64 = -32602;
@@ -215,13 +223,17 @@ pub trait Node {
 
     /// Call `method` once with each of `params`, answering in the same
     /// order, each call's error its own: one bad call doesn't fail the
-    /// rest. The outer error is the node being unreachable. By default the
-    /// calls are made one after another.
+    /// rest. The outer error is the node being unreachable. At most
+    /// `in_flight` calls wait on the node at once, since not every method
+    /// answers calls it is made side by side. By default the calls are
+    /// made one after another.
     fn call_each(
         &self,
         method: &str,
         params: Vec<Value>,
+        in_flight: usize,
     ) -> Result<Vec<Result<Value, NodeError>>, NodeError> {
+        let _ = in_flight;
         Ok(params
             .into_iter()
             .map(|params| self.call(method, params))
@@ -327,19 +339,20 @@ impl Node for Commando {
         )
     }
 
-    /// Every call over the one connection, [`IN_FLIGHT`] at a time: lnsocket
+    /// Every call over the one connection, `in_flight` at a time: lnsocket
     /// tells their answers apart by request id, so a batch costs one
     /// handshake and its round trips overlap.
     fn call_each(
         &self,
         method: &str,
         params: Vec<Value>,
+        in_flight: usize,
     ) -> Result<Vec<Result<Value, NodeError>>, NodeError> {
         self.with_client(|client| async move {
             let client = &client;
             Ok(stream::iter(params)
                 .map(|params| async move { client.call(method, params).await.map_err(node_error) })
-                .buffered(IN_FLIGHT)
+                .buffered(in_flight.max(1))
                 .collect()
                 .await)
         })
@@ -478,37 +491,42 @@ impl Importer for ClnImporter {
     fn import_held(&self, input: &ImportInput, held: &Ledger) -> Result<Batch, ImportError> {
         let Dating { zone, note } = self.dating()?;
         let mut notes: Vec<String> = note.into_iter().collect();
-        let listings = if input.paths.is_empty() {
-            let connected;
-            let node: &dyn Node = match &self.node {
-                Some(node) => &**node,
-                None => {
-                    connected = self.connect()?;
-                    &connected
-                }
-            };
-            let Fetched { listing, note } = fetch(node, cursor(held, &input.source))?;
-            notes.extend(note);
-            vec![read_value(listing)?]
-        } else {
-            input
+        let connected;
+        let node: Option<&dyn Node> = match &self.node {
+            _ if !input.paths.is_empty() => None,
+            Some(node) => Some(&**node),
+            None => {
+                connected = self.connect()?;
+                Some(&connected)
+            }
+        };
+        let mut listings: Vec<Listing> = match node {
+            Some(node) => {
+                let Fetched { listing, note } = fetch(node, cursor(held, &input.source))?;
+                notes.extend(note);
+                vec![read_value(listing)?]
+            }
+            None => input
                 .paths
                 .iter()
                 .map(|path| read_file(path))
-                .collect::<Result<_, _>>()?
+                .collect::<Result<_, _>>()?,
         };
 
-        let convert = Convert {
+        let mut convert = Convert {
             source: &input.source,
             zone,
             held,
+            blocks: BlockTimes::held(held, &input.source),
         };
         let mut payments = Vec::new();
-        let mut chain = Vec::new();
+        let mut own = Vec::new();
         let mut txs = Txs::default();
-        let mut skipped = Vec::new();
-        for listing in listings {
-            skipped.extend(listing.skipped);
+        let skipped = listings
+            .iter_mut()
+            .flat_map(|listing| std::mem::take(&mut listing.skipped))
+            .collect();
+        for listing in &listings {
             let mut seen: HashMap<String, u32> = HashMap::new();
             for event in &listing.events {
                 if event.credit_msat == 0 && event.debit_msat == 0 {
@@ -531,13 +549,27 @@ impl Importer for ClnImporter {
                     // The peer's side of a close, or the far side of a
                     // spend, which its record's leftover leg already is.
                     Some(_) if event.account == "external" => {}
-                    Some(txid) => txs.add(txid, Member::of(event, fallback)),
-                    None => chain.push(convert.chain(event, id)),
+                    Some(txid) => txs.add(txid, Member::of(event, fallback), event.height()),
+                    None => own.push(Own { event, id }),
                 }
             }
         }
-        for Tx { txid, members } in txs.list {
-            chain.extend(convert.transaction(&txid, members));
+
+        // Every record's block, then every block's time, then the records.
+        for tx in &mut txs.list {
+            tx.height = tx
+                .height
+                .or_else(|| convert.held_height(&convert.tx_id(&tx.txid)));
+        }
+        let heights = txs.list.iter().filter_map(|tx| tx.height);
+        let own_heights = own.iter().filter_map(|own| own.event.height());
+        notes.extend(convert.blocks.fetch(node, heights.chain(own_heights)));
+        let mut chain: Vec<RawTxn> = own
+            .iter()
+            .map(|own| convert.chain(own.event, own.id.clone()))
+            .collect();
+        for tx in txs.list {
+            chain.extend(convert.transaction(tx));
         }
         let chain = Batch::from_raw(&chain, &[])?.journal;
         Ok(Batch {
@@ -550,6 +582,12 @@ impl Importer for ClnImporter {
             ..Batch::from_raw(&payments, &[])?
         })
     }
+}
+
+/// An event with a record of its own in `cln-chain`, under `id`.
+struct Own<'a> {
+    event: &'a Event,
+    id: String,
 }
 
 /// What [`fetch`] read.
@@ -709,6 +747,9 @@ struct Event {
     fees_msat: Option<u64>,
     #[serde(default)]
     is_rebalance: bool,
+    /// The block a `chain` event's transaction confirmed in; `0` (a
+    /// backfilled channel open) means unknown.
+    blockheight: Option<u32>,
     /// The patched bookkeeper's id for a chain or channel event.
     created_index: Option<u64>,
     /// The patched bookkeeper's id for an on-chain fee, with its account and
@@ -739,6 +780,11 @@ impl Event {
             None => Some(self.outpoint.as_deref()?.rsplit_once(':')?.0),
         }
     }
+
+    /// Its block height, when it has a known one.
+    fn height(&self) -> Option<u32> {
+        self.blockheight.filter(|&height| height > 0)
+    }
 }
 
 /// The on-chain transactions a run read events of, in the order it first
@@ -754,20 +800,27 @@ struct Txs {
 struct Tx {
     txid: String,
     members: Vec<Member>,
+    /// The block it confirmed in, as the first of its events to know it
+    /// says, else as the journal's record of it says.
+    height: Option<u32>,
 }
 
 impl Txs {
     /// File `member` under `txid`, replacing an event of the same id read
-    /// before (two listings can overlap).
-    fn add(&mut self, txid: &str, member: Member) {
+    /// before (two listings can overlap). `height` is the block the event
+    /// says the transaction confirmed in.
+    fn add(&mut self, txid: &str, member: Member, height: Option<u32>) {
         let at = *self.at.entry(txid.to_owned()).or_insert_with(|| {
             self.list.push(Tx {
                 txid: txid.to_owned(),
                 members: Vec::new(),
+                height: None,
             });
             self.list.len() - 1
         });
-        let members = &mut self.list[at].members;
+        let tx = &mut self.list[at];
+        tx.height = tx.height.or(height);
+        let members = &mut tx.members;
         match members.iter_mut().find(|held| held.id == member.id) {
             Some(held) => *held = member,
             None => members.push(member),
@@ -872,6 +925,8 @@ struct Convert<'a> {
     source: &'a str,
     zone: Zone,
     held: &'a Ledger,
+    /// The time of each block a record is in, as far as the run knows.
+    blocks: BlockTimes,
 }
 
 impl Convert<'_> {
@@ -917,6 +972,38 @@ impl Convert<'_> {
         } else {
             native
         }
+    }
+
+    /// The record id of on-chain transaction `txid`.
+    fn tx_id(&self, txid: &str) -> String {
+        format!("{}:tx:{txid}", self.source)
+    }
+
+    /// The block height the journal's record `id` carries, if known.
+    fn held_height(&self, id: &str) -> Option<u32> {
+        let txn = self.held.find(id)?;
+        let journal = self.held.journal();
+        journal
+            .txn_meta(journal.txn(txn), blocks::HEIGHT_META)?
+            .parse()
+            .ok()
+    }
+
+    /// The date of a `cln-chain` record in block `height` whose event
+    /// bookkeeper logged at `timestamp`: the block's day when its time is
+    /// known, else the timestamp's. Pushes the record's `raw-blockheight`
+    /// (`-` when unknown) and, when known, `raw-blocktime` onto `meta`.
+    fn block_date(&self, timestamp: u64, height: Option<u32>, meta: &mut Vec<RawMeta>) -> Date {
+        let Some(height) = height else {
+            meta.push(self::meta(blocks::HEIGHT_META, blocks::UNKNOWN));
+            return self.zone.date(timestamp);
+        };
+        meta.push(self::meta(blocks::HEIGHT_META, &height.to_string()));
+        let Some(time) = self.blocks.time(height) else {
+            return self.zone.date(timestamp);
+        };
+        meta.push(self::meta(blocks::TIME_META, &time.to_string()));
+        self.zone.date(time)
     }
 
     /// What every record carries.
@@ -993,11 +1080,17 @@ impl Convert<'_> {
         }
     }
 
-    /// The record of on-chain transaction `txid`: the events `read` of it,
-    /// with the ones the journal's record of it lists and `read` lacks.
-    /// `None` when they move none of the owner's money.
-    fn transaction(&self, txid: &str, read: Vec<Member>) -> Option<RawTxn> {
-        let id = format!("{}:tx:{txid}", self.source);
+    /// The record of on-chain transaction `tx`: the events the run read of
+    /// it, with the ones the journal's record of it lists and the run
+    /// lacks, dated by its block. `None` when they move none of the owner's
+    /// money.
+    fn transaction(&self, tx: Tx) -> Option<RawTxn> {
+        let Tx {
+            txid,
+            members: read,
+            height,
+        } = tx;
+        let id = self.tx_id(&txid);
         let mut members = self.held_members(&id);
         members.retain(|held| !read.iter().any(|member| member.id == held.id));
         members.extend(read);
@@ -1040,8 +1133,9 @@ impl Convert<'_> {
         let direction = if leftover < 0 { "credit" } else { "debit" };
         let mut meta: Vec<RawMeta> = tags.iter().map(|tag| meta("raw-cln-tag", tag)).collect();
         meta.push(self::meta("raw-timestamp", &first.timestamp.to_string()));
+        let date = self.block_date(first.timestamp, height, &mut meta);
         meta.push(self::meta("raw-direction", direction));
-        meta.push(self::meta("raw-txid", txid));
+        meta.push(self::meta("raw-txid", &txid));
         meta.extend(members.iter().map(|m| self::meta(EVENT_META, &m.line())));
         let payee = PAYEE_TAGS
             .iter()
@@ -1049,7 +1143,7 @@ impl Convert<'_> {
             .find(|tag| tags.contains(tag))
             .unwrap_or(&moved.tag);
         Some(RawTxn {
-            date: self.zone.date(first.timestamp),
+            date,
             cleared: true,
             payee: payee.replace('_', " "),
             id,
@@ -1080,6 +1174,7 @@ impl Convert<'_> {
     fn chain(&self, event: &Event, id: String) -> RawTxn {
         let net = event.net();
         let mut meta = self.base_meta(event);
+        let date = self.block_date(event.timestamp, event.height(), &mut meta);
         meta.push(self::meta("raw-account", &event.account));
         let fields = [
             ("raw-outpoint", &event.outpoint),
@@ -1105,7 +1200,7 @@ impl Convert<'_> {
             vec![posting(counter, -net), posting(own, net)]
         };
         RawTxn {
-            date: self.zone.date(event.timestamp),
+            date,
             cleared: true,
             payee: event.tag.replace('_', " "),
             id,
@@ -1207,10 +1302,66 @@ mod tests {
         events: Vec<Value>,
         patched: bool,
         calls: Rc<RefCell<Vec<Value>>>,
+        corerpc: Corerpc,
+        /// The params of each corerpc call.
+        block_calls: Rc<RefCell<Vec<Value>>>,
+    }
+
+    /// What a [`FakeNode`] does with a corerpc call.
+    #[derive(Clone)]
+    enum Corerpc {
+        /// No such command: the node doesn't run the plugin.
+        Absent,
+        /// The rune doesn't permit it.
+        Denied,
+        /// Answers as cln-core-rpc does, with these block times by height,
+        /// and with bitcoind's error as a *successful* result for any
+        /// other height. A height's hash is the height in hex.
+        Blocks(HashMap<u32, u64>),
+    }
+
+    impl FakeNode {
+        fn corerpc(&self, params: &Value) -> Result<Value, NodeError> {
+            self.block_calls.borrow_mut().push(params.clone());
+            let times = match &self.corerpc {
+                Corerpc::Absent => {
+                    return Err(NodeError::Rpc {
+                        code: -32601,
+                        message: "Unknown command 'corerpc'".to_owned(),
+                    });
+                }
+                Corerpc::Denied => {
+                    return Err(NodeError::Rpc {
+                        code: 1502,
+                        message: "Not authorized: method not permitted".to_owned(),
+                    });
+                }
+                Corerpc::Blocks(times) => times,
+            };
+            assert_eq!(params[0], json!(""), "the default wallet");
+            let past_the_tip = json!({ "code": -8 });
+            match params[1].as_str().unwrap() {
+                "getblockhash" => {
+                    let height = params[2].as_u64().unwrap() as u32;
+                    Ok(match times.contains_key(&height) {
+                        true => json!(format!("{height:064x}")),
+                        false => past_the_tip,
+                    })
+                }
+                "getblockheader" => {
+                    let height = u32::from_str_radix(params[2].as_str().unwrap(), 16).unwrap();
+                    Ok(json!({ "height": height, "time": times[&height] }))
+                }
+                other => panic!("corerpc {other}"),
+            }
+        }
     }
 
     impl Node for FakeNode {
         fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+            if method == "corerpc" {
+                return self.corerpc(&params);
+            }
             assert_eq!(method, METHOD);
             self.calls.borrow_mut().push(params.clone());
             let start = params.get("start_time").and_then(Value::as_u64);
@@ -1275,18 +1426,28 @@ mod tests {
     struct Rig {
         cln: ClnImporter,
         calls: Rc<RefCell<Vec<Value>>>,
+        block_calls: Rc<RefCell<Vec<Value>>>,
     }
 
+    /// An importer over a node without corerpc.
     fn importer(events: Vec<Value>, patched: bool) -> Rig {
+        importer_with(events, patched, Corerpc::Absent)
+    }
+
+    fn importer_with(events: Vec<Value>, patched: bool, corerpc: Corerpc) -> Rig {
         let calls = Rc::new(RefCell::new(Vec::new()));
+        let block_calls = Rc::new(RefCell::new(Vec::new()));
         let node = FakeNode {
             events,
             patched,
             calls: calls.clone(),
+            corerpc,
+            block_calls: block_calls.clone(),
         };
         Rig {
             cln: ClnImporter::with_node(Some(&utc()), Box::new(node)),
             calls,
+            block_calls,
         }
     }
 
@@ -1789,7 +1950,8 @@ mod tests {
         assert_eq!(ids("before an edit"), ids("after an edit"));
     }
 
-    /// Import `events` from a node into `store`, at `imported`.
+    /// Import `events` from a node without corerpc into `store`, at
+    /// `imported`.
     fn pull(
         store: &JournalStore,
         events: &[Value],
@@ -1797,10 +1959,15 @@ mod tests {
         imported: u64,
     ) -> import::Written {
         let Rig { cln, .. } = importer(events.to_vec(), patched);
+        write(store, &cln, imported)
+    }
+
+    /// Import with `cln` into `store`, at `imported`.
+    fn write(store: &JournalStore, cln: &ClnImporter, imported: u64) -> import::Written {
         import::write(
             store,
             &Default::default(),
-            &cln,
+            cln,
             &input(),
             None,
             Some(imported),
@@ -1843,7 +2010,7 @@ mod tests {
         // its created_index.
         let mut later = first.clone();
         later.push(invoice(3000, 0, "three", 3));
-        let Rig { cln, calls } = importer(later.clone(), true);
+        let Rig { cln, calls, .. } = importer(later.clone(), true);
         let written =
             import::write(&store, &Default::default(), &cln, &input(), None, Some(11)).unwrap();
         assert_eq!(
@@ -1871,7 +2038,7 @@ mod tests {
         let events = vec![invoice(1000, 0, "one", 1)];
         pull(&store, &events, false, 10);
 
-        let Rig { cln, calls } = importer(events, false);
+        let Rig { cln, calls, .. } = importer(events, false);
         let written =
             import::write(&store, &Default::default(), &cln, &input(), None, Some(11)).unwrap();
         assert_eq!(
@@ -1885,6 +2052,128 @@ mod tests {
             written.notes[0]
         );
         assert_eq!(written.hash, None);
+    }
+
+    /// 2019-06-01 00:00 UTC, years before bookkeeper logged the events.
+    const MINED: u64 = 1_559_347_200;
+
+    /// corerpc knowing block 800,000, the one [`chain_event`]s are in.
+    fn mined() -> Corerpc {
+        Corerpc::Blocks(HashMap::from([(800_000, MINED)]))
+    }
+
+    /// `txns`' record `id`.
+    fn find<'a>(txns: &'a [Txn], id: &str) -> &'a Txn {
+        txns.iter()
+            .find(|txn| txn.id == id)
+            .unwrap_or_else(|| panic!("no {id}"))
+    }
+
+    fn has_block_time(txn: &Txn) -> bool {
+        txn.meta.iter().any(|m| m.starts_with("raw-blocktime="))
+    }
+
+    #[test]
+    fn on_chain_records_are_dated_by_their_block() {
+        let mut events = close_events();
+        // A deposit bookkeeper backfilled without its height.
+        let mut backfilled =
+            chain_event("wallet", "deposit", 7_000, &format!("{}:0", txid("de")), 30);
+        backfilled["blockheight"] = json!(0);
+        events.push(backfilled);
+        events.push(json!({
+            "account": "c0ffee", "type": "channel", "tag": "journal_entry",
+            "credit_msat": 0, "debit_msat": 1500, "currency": "bc",
+            "timestamp": T, "is_rebalance": false, "created_index": 6,
+        }));
+        let Rig {
+            cln, block_calls, ..
+        } = importer_with(events, true, mined());
+        let batch = cln.import(&input()).unwrap();
+        assert!(batch.notes.is_empty(), "{:?}", batch.notes);
+        let txns = read_batch(&batch.other_layers[0].journal);
+
+        let close = find(&txns, &format!("cln:tx:{}", txid("cc")));
+        assert_eq!(close.date, "2019-06-01");
+        assert!(has(close, "raw-blockheight=800000"));
+        assert!(has(close, &format!("raw-blocktime={MINED}")));
+        assert!(
+            has(close, &format!("raw-timestamp={T}")),
+            "bookkeeper's stays"
+        );
+
+        for unknown in [&format!("cln:tx:{}", txid("de")), "cln:channel:6"] {
+            let txn = find(&txns, unknown);
+            assert_eq!(txn.date, "2024-03-01", "{unknown}");
+            assert!(has(txn, "raw-blockheight=-"), "{unknown}");
+            assert!(!has_block_time(txn), "{unknown}");
+        }
+        assert_eq!(
+            *block_calls.borrow(),
+            [
+                json!(["", "getblockhash", 800_000]),
+                json!(["", "getblockheader", format!("{:064x}", 800_000)]),
+            ],
+            "the one known height, asked once"
+        );
+    }
+
+    #[test]
+    fn a_height_without_a_time_is_dated_by_its_timestamp_and_noted() {
+        let cases = [
+            // bitcoind's error, which corerpc answers as a result.
+            (Corerpc::Blocks(HashMap::new()), r#"answered {"code":-8}"#),
+            (Corerpc::Denied, "Not authorized"),
+            (Corerpc::Absent, "Unknown command"),
+        ];
+        for (corerpc, why) in cases {
+            let Rig {
+                cln, block_calls, ..
+            } = importer_with(close_events(), true, corerpc);
+            let batch = cln.import(&input()).unwrap();
+            let [note] = batch.notes.as_slice() else {
+                panic!("one note: {:?}", batch.notes);
+            };
+            assert!(
+                note.starts_with("1 of 1 block heights have no time"),
+                "{note}"
+            );
+            assert!(note.contains(why), "{note}");
+            assert_eq!(block_calls.borrow().len(), 1, "no hash, no header call");
+            let [close] = read_batch(&batch.other_layers[0].journal)
+                .try_into()
+                .unwrap();
+            assert_eq!(close.date, "2024-03-01", "{why}");
+            assert!(has(&close, "raw-blockheight=800000"));
+            assert!(!has_block_time(&close));
+        }
+    }
+
+    #[test]
+    fn a_held_block_time_is_used_without_asking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = JournalStore::new(tmp.path().join("journal"));
+        let Rig { cln, .. } = importer_with(close_events(), true, mined());
+        write(&store, &cln, 10);
+
+        // Again, with corerpc and then without it, plus a spend in the same
+        // block: nobody asks, and nothing reverts to bookkeeper's date.
+        let mut events = close_events();
+        events.extend(spend_events());
+        for (corerpc, imported) in [(mined(), 11), (Corerpc::Absent, 12)] {
+            let Rig {
+                cln, block_calls, ..
+            } = importer_with(events.clone(), true, corerpc);
+            let written = write(&store, &cln, imported);
+            assert!(block_calls.borrow().is_empty());
+            assert!(written.notes.is_empty(), "{:?}", written.notes);
+            let rows = &written.other_layers[0].txn_rows;
+            assert_eq!(rows.changed, 0, "imported at {imported}");
+        }
+        for tx in ["cc", "5e"] {
+            let txn = record(&store, &format!("cln:tx:{}", txid(tx)));
+            assert_eq!(txn.date, "2019-06-01", "{tx}");
+        }
     }
 
     #[test]
@@ -1906,7 +2195,7 @@ mod tests {
             }
         }
         let params = [2, 3, 4].map(|n| json!({ "n": n })).to_vec();
-        let answers = Doubler.call_each("double", params).unwrap();
+        let answers = Doubler.call_each("double", params, 2).unwrap();
         assert_eq!(
             answers,
             vec![
