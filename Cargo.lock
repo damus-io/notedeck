@@ -5128,8 +5128,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 [[package]]
 name = "lnsocket"
 version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1423fc88eefaf2f31941bb3554f3b94a7835f58321eb601631e77428d8235041"
+source = "git+https://github.com/jb55/lnsocket-rs?rev=51b397521e54#51b397521e544574d0c6d2a26b26d5df59c4edb0"
 dependencies = [
  "bitcoin",
  "hashbrown 0.13.2",
@@ -5138,6 +5137,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-socks",
  "tracing",
 ]
 
