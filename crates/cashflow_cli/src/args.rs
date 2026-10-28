@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 
 use cashflow::chart::{AccountKind, MetaField};
+use cashflow::prices;
 use cli_term::help::{CommandHelp, OPTIONS_PAGE, option_names};
 use ledgerdb::{Date, LayerFilter};
 
@@ -752,8 +753,15 @@ fn adventure_args(flags: &Flags, json: bool) -> Result<AdventureArgs, String> {
 }
 
 /// The `--layer`/`--except`/`--rules`/`--in` a reading command shares.
+///
+/// `--layer` keeps the fetched rates' layer ([`prices::LAYER`]) as well:
+/// rates are not transactions, and without them every amount outside the
+/// home commodity is left out unconverted. `--except prices` drops them.
 fn books_args(flags: &Flags) -> Result<BooksArgs, String> {
-    let only: Vec<String> = flags.values("--layer").map(str::to_owned).collect();
+    let mut only: Vec<String> = flags.values("--layer").map(str::to_owned).collect();
+    if !only.is_empty() && !only.iter().any(|l| l == prices::LAYER) {
+        only.push(prices::LAYER.to_owned());
+    }
     let except: Vec<String> = flags.values("--except").map(str::to_owned).collect();
     let filter = match (only.is_empty(), except.is_empty()) {
         (true, true) => LayerFilter::All,
@@ -1567,7 +1575,11 @@ mod tests {
             run.command,
             Command::Export {
                 books: BooksArgs {
-                    filter: LayerFilter::Only(vec!["a".to_owned(), "b".to_owned()]),
+                    filter: LayerFilter::Only(vec![
+                        "a".to_owned(),
+                        "b".to_owned(),
+                        "prices".to_owned()
+                    ]),
                     rules: Some(PathBuf::from("r.toml")),
                     home: DEFAULT_HOME.to_owned(),
                 },
@@ -1582,6 +1594,14 @@ mod tests {
             panic!("not an export");
         };
         assert_eq!(books.filter, LayerFilter::Except(vec!["btc".to_owned()]));
+        let rates_named = run_of(&["export", "--layer", "prices", "--layer", "a"]);
+        let Command::Export { books, .. } = rates_named.command else {
+            panic!("not an export");
+        };
+        assert_eq!(
+            books.filter,
+            LayerFilter::Only(vec!["prices".to_owned(), "a".to_owned()])
+        );
         assert!(err_of(&["export", "--layer", "a", "--except", "b"]).contains("together"));
         assert!(err_of(&["export", "--begin", "2024-13-01"]).contains("--begin"));
         assert!(
@@ -1938,7 +1958,7 @@ mod tests {
         assert!(err_of(&["goals", "extra"]).contains("goals"));
         let cards = AdventureArgs {
             books: BooksArgs {
-                filter: LayerFilter::Only(vec!["cards".to_owned()]),
+                filter: LayerFilter::Only(vec!["cards".to_owned(), "prices".to_owned()]),
                 rules: None,
                 home: DEFAULT_HOME.to_owned(),
             },

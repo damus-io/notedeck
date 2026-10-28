@@ -274,6 +274,29 @@ fn reports_read_the_derived_books() {
     assert!(err.contains("no account named 'nowhere'"), "{err}");
 }
 
+/// `--layer` narrows the transactions but keeps the fetched rates, so a
+/// report over one layer still converts into the home commodity.
+#[test]
+fn a_layer_filter_keeps_the_rates() {
+    let cf = cashflow();
+    let (rates, txns) = BOOKS.split_at(BOOKS.find("2024-01-02").unwrap());
+    let rates = write(&cf, "rates.ledger", rates);
+    let txns = write(&cf, "books.ledger", txns);
+    cf.ok(&["import", "ledger", s(&rates), "--layer", "prices"]);
+    cf.ok(&["import", "ledger", s(&txns), "--layer", "bank"]);
+
+    let out = cf.run(&["report", "bal", "assets", "--layer", "bank"]);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let bal = harness::expect_success(out);
+    assert!(bal.contains("1350.00 CAD  assets:bank"), "{bal}");
+    assert!(!stderr.contains("no rate"), "{stderr}");
+
+    let out = cf.run(&["report", "bal", "assets", "--except", "prices"]);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    harness::expect_success(out);
+    assert!(stderr.contains("1 postings (USD) had no rate"), "{stderr}");
+}
+
 /// What `import` refuses, it refuses whole, writing nothing.
 #[test]
 fn import_refusals_write_nothing() {

@@ -18,7 +18,10 @@ macro_rules! books_options {
     ($($extra:expr),* $(,)?) => {
         &[
             $($extra,)*
-            ("--layer <name>", "Only segments in this layer; repeat for more"),
+            (
+                "--layer <name>",
+                "Only segments in this layer (plus the fetched rates); repeat for more"
+            ),
             ("--except <name>", "Every layer but this one; repeat for more"),
             ("--rules <toml>", "Categorize with this file alone, not the vault"),
         ]
