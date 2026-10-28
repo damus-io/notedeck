@@ -154,10 +154,8 @@
 //! read after its coin was opened comes only from saved listings imported
 //! out of order, which leave the opening in place.
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::rc::Rc;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -165,13 +163,12 @@ use async_trait::async_trait;
 use futures_util::stream::{self, StreamExt};
 use ledgerdb::{Date, LayerFilter, Ledger};
 use lnsocket::bitcoin::secp256k1::{PublicKey, SecretKey, rand};
-use lnsocket::commando::{CommandoConfig, RetryPolicy};
+use lnsocket::commando::CommandoConfig;
 use lnsocket::{CommandoClient, LNSocket};
 use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::OnceCell;
 
 use self::blocks::BlockTimes;
 use super::csv_rows::read;
@@ -308,102 +305,45 @@ pub enum NodeError {
     Other(String),
 }
 
-/// [`Node`] over commando, on one connection for as long as it lives.
+/// [`Node`] over commando, on the one connection it opened when it was
+/// built.
 ///
-/// The first call connects and every later one reuses the connection:
-/// lnsocket tells answers apart by request id, so calls share it side by
-/// side. A call that fails for want of the connection (refused, dropped,
-/// timed out) closes it, and the next call connects again. The connection
-/// is lnsocket's task on the runtime the first call is awaited on, which
-/// keeps its pings answered between calls; dropping the `Commando` hangs
-/// up.
+/// Calls share the connection side by side: lnsocket tells answers apart by
+/// request id. The connection is lnsocket's task on the runtime
+/// [`Commando::connect`] is awaited on, which keeps its pings answered
+/// between calls. When the socket breaks, lnsocket reconnects and resends
+/// the calls still waiting on an answer, so a call the node already ran can
+/// run twice. That is safe only because every call [`RUNE_RESTRICTIONS`]
+/// permits is read-only. Dropping the `Commando` hangs up.
 pub struct Commando {
-    node_id: PublicKey,
-    /// `host:port`.
-    host: String,
-    rune: Secret,
-    /// The connection, filled by the first call that finds it empty and
-    /// swapped for an empty one by a call that finds the connection gone.
-    /// Calls made side by side hold the same cell, so they wait on one
-    /// connect rather than each opening their own.
-    link: RefCell<Rc<OnceCell<CommandoClient>>>,
+    client: CommandoClient,
 }
 
 impl Commando {
-    /// The node `node_id` (hex) at `host` (`host[:port]`), called with
-    /// `rune`. Nothing connects until the first call.
-    pub fn new(node_id: &str, host: &str, rune: Secret) -> Result<Self, String> {
-        let node_id =
-            PublicKey::from_str(node_id).map_err(|e| format!("node id {node_id:?}: {e}"))?;
+    /// Connect to the node `node_id` at `host` (`host[:port]`), to call it
+    /// with `rune`, on the runtime this is awaited on. The error says which
+    /// host couldn't be reached and why.
+    pub async fn connect(node_id: PublicKey, host: &str, rune: &Secret) -> Result<Self, String> {
         let host = if host.contains(':') {
             host.to_owned()
         } else {
             format!("{host}:{DEFAULT_PORT}")
         };
-        Ok(Self {
-            node_id,
-            host,
-            rune,
-            link: RefCell::default(),
-        })
-    }
-
-    /// Make each of `params`' calls of `method` over the connection,
-    /// `in_flight` at a time, their round trips overlapping: connecting
-    /// first if there is no connection, and closing it if a call found it
-    /// gone.
-    async fn send(
-        &self,
-        method: &str,
-        params: Vec<Value>,
-        in_flight: usize,
-    ) -> Result<Vec<Result<Value, NodeError>>, NodeError> {
-        let link = Rc::clone(&self.link.borrow());
-        let client = link.get_or_try_init(|| self.connect()).await?;
-        let answers: Vec<_> = stream::iter(params)
-            .map(|params| client.call(method, params))
-            .buffered(in_flight.max(1))
-            .collect()
-            .await;
-        let lost = answers.iter().any(
-            |answer| matches!(answer, Err(error) if !matches!(error, lnsocket::Error::Rpc(_))),
-        );
-        // A call that started after another closed the connection holds
-        // the new one, and leaves it be.
-        if lost && Rc::ptr_eq(&self.link.borrow(), &link) {
-            *self.link.borrow_mut() = Rc::default();
-        }
-        Ok(answers
-            .into_iter()
-            .map(|answer| answer.map_err(node_error))
-            .collect())
-    }
-
-    /// Open a connection to the node, on the runtime this is awaited on.
-    async fn connect(&self) -> Result<CommandoClient, NodeError> {
         let key = SecretKey::new(&mut rand::thread_rng());
-        let socket = LNSocket::connect_and_init(key, self.node_id, &self.host)
+        let socket = LNSocket::connect_and_init(key, node_id, &host)
             .await
-            .map_err(|e| NodeError::Other(format!("connecting to {}: {e}", self.host)))?;
-        let config = CommandoConfig::new()
-            .timeout(Some(CALL_TIMEOUT))
-            .retry_policy(RetryPolicy::Never)
-            .no_reconnect();
-        Ok(CommandoClient::spawn_with_config(
-            socket,
-            self.rune.expose(),
-            config,
-        ))
+            .map_err(|e| format!("connecting to {host}: {e}"))?;
+        let config = CommandoConfig::new().timeout(Some(CALL_TIMEOUT));
+        Ok(Self {
+            client: CommandoClient::spawn_with_config(socket, rune.expose(), config),
+        })
     }
 }
 
 #[async_trait(?Send)]
 impl Node for Commando {
     async fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
-        let mut answers = self.send(method, vec![params], 1).await?;
-        answers
-            .pop()
-            .unwrap_or_else(|| Err(NodeError::Other(format!("{method}: no answer"))))
+        self.client.call(method, params).await.map_err(node_error)
     }
 
     /// Every call over the one connection, `in_flight` at a time, their
@@ -414,7 +354,11 @@ impl Node for Commando {
         params: Vec<Value>,
         in_flight: usize,
     ) -> Result<Vec<Result<Value, NodeError>>, NodeError> {
-        self.send(method, params, in_flight).await
+        Ok(stream::iter(params)
+            .map(|params| async { self.client.call(method, params).await.map_err(node_error) })
+            .buffered(in_flight.max(1))
+            .collect()
+            .await)
     }
 }
 
@@ -511,14 +455,20 @@ impl ClnImporter {
         })
     }
 
-    /// The node the config names, called with the rune secret.
-    fn connect(&self) -> Result<Commando, ImportError> {
-        commando(&self.config, &self.dir).map_err(|missing| match missing {
-            NoCommando::Unset { .. } => ImportError::Usage(format!(
-                "{missing} to fetch from the node (or give `bkpr-listaccountevents` output files)"
-            )),
-            missing => ImportError::Usage(missing.to_string()),
-        })
+    /// Connect to the node the config names, called with the rune secret.
+    async fn connect(&self) -> Result<Commando, ImportError> {
+        commando(&self.config, &self.dir)
+            .await
+            .map_err(|missing| match missing {
+                NoCommando::Unset { .. } => ImportError::Usage(format!(
+                    "{missing} to fetch from the node (or give `bkpr-listaccountevents` output files)"
+                )),
+                NoCommando::Unreachable(error) => ImportError::Fetch {
+                    from: "commando".to_owned(),
+                    error,
+                },
+                missing => ImportError::Usage(missing.to_string()),
+            })
     }
 }
 
@@ -539,15 +489,21 @@ pub(crate) enum NoCommando {
         secret_env_var(RUNE_SECRET)
     )]
     NoRune,
+    /// The node couldn't be connected to: `connecting to <host>: …`.
+    #[error("{0}")]
+    Unreachable(String),
     /// The secrets store couldn't be read, or the node id isn't one.
     #[error("{0}")]
     Other(String),
 }
 
-/// The node `config` names, called with the `cln-rune` secret in `dir`:
-/// what `import cln` reads bookkeeper from, and what `import btc` reads
-/// bitcoind through when it can't reach it itself.
-pub(crate) fn commando(config: &ClnConfig, dir: &CashflowDir) -> Result<Commando, NoCommando> {
+/// Connect to the node `config` names, called with the `cln-rune` secret in
+/// `dir`: what `import cln` reads bookkeeper from, and what `import btc`
+/// reads bitcoind through when it can't reach it itself.
+pub(crate) async fn commando(
+    config: &ClnConfig,
+    dir: &CashflowDir,
+) -> Result<Commando, NoCommando> {
     let node_id = config.node_id.as_deref().ok_or(NoCommando::Unset {
         key: "node_id",
         example: "<66-hex node id>",
@@ -560,7 +516,11 @@ pub(crate) fn commando(config: &ClnConfig, dir: &CashflowDir) -> Result<Commando
         .secret(RUNE_SECRET)
         .map_err(|e| NoCommando::Other(e.to_string()))?
         .ok_or(NoCommando::NoRune)?;
-    Commando::new(node_id, host, rune).map_err(NoCommando::Other)
+    let node_id = PublicKey::from_str(node_id)
+        .map_err(|e| NoCommando::Other(format!("node id {node_id:?}: {e}")))?;
+    Commando::connect(node_id, host, &rune)
+        .await
+        .map_err(NoCommando::Unreachable)
 }
 
 #[async_trait(?Send)]
@@ -586,7 +546,7 @@ impl Importer for ClnImporter {
             _ if !input.paths.is_empty() => None,
             Some(node) => Some(&**node),
             None => {
-                connected = self.connect()?;
+                connected = self.connect().await?;
                 Some(&connected)
             }
         };
@@ -2869,6 +2829,51 @@ mod tests {
             ..config
         };
         assert!(usage(&config).await.contains("[cln] timezone"));
+    }
+
+    /// A node that can't be connected to fails the import up front as a
+    /// commando fetch naming the host; a node id that isn't one is a usage
+    /// error before anything connects.
+    #[tokio::test]
+    async fn an_unreachable_node_fails_the_fetch_naming_its_host() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = CashflowDir::new(tmp.path());
+        dir.write_secret(RUNE_SECRET, "not-a-rune").unwrap();
+        // A port nothing listens on: bound, then let go.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let key = SecretKey::from_slice(&[0x11; 32]).unwrap();
+        let node_id =
+            PublicKey::from_secret_key(&lnsocket::bitcoin::secp256k1::Secp256k1::new(), &key);
+        let config = ClnConfig {
+            node_id: Some(node_id.to_string()),
+            host: Some(format!("127.0.0.1:{port}")),
+            ..utc()
+        };
+        match ClnImporter::new(Some(&config), &dir).import(&input()).await {
+            Err(ImportError::Fetch { from, error }) => {
+                assert_eq!(from, "commando");
+                assert!(
+                    error.starts_with(&format!("connecting to 127.0.0.1:{port}: ")),
+                    "{error}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+
+        let config = ClnConfig {
+            node_id: Some("nope".to_owned()),
+            ..config
+        };
+        match ClnImporter::new(Some(&config), &dir).import(&input()).await {
+            Err(ImportError::Usage(message)) => {
+                assert!(message.starts_with("node id \"nope\": "), "{message}")
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     /// Two machines dating in their own zones file an event near midnight

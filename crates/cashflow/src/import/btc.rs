@@ -412,7 +412,7 @@ impl BtcImporter {
         if let Some(node) = &self.node {
             return Ok(work(&Corerpc::new(&**node)).await);
         }
-        let commando = cln::commando(&self.cln, &self.dir)?;
+        let commando = cln::commando(&self.cln, &self.dir).await?;
         Ok(work(&Corerpc::new(&commando)).await)
     }
 
