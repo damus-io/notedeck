@@ -22,7 +22,9 @@ mod cln;
 mod csv_rows;
 mod ledger;
 mod payroll;
+mod pdf_text;
 mod rbc;
+mod rbc_statement;
 mod shakepay;
 
 use std::collections::HashSet;
@@ -172,6 +174,9 @@ pub enum ImportError {
         row: usize,
         message: String,
     },
+    /// A statement PDF could not be read, or its rows don't balance.
+    #[error("{}: {message}", path.display())]
+    Statement { path: PathBuf, message: String },
     /// The importer's raw records didn't make a batch.
     #[error(transparent)]
     Batch(#[from] BatchError),

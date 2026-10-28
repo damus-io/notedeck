@@ -426,16 +426,23 @@ Importers:
                   `payee` (payroll), `account` (expenses:payroll) and
                   `counter` (expenses:unknown; a wallet account for
                   payouts from a wallet that isn't imported).
-  rbc <path>...   RBC online banking \"Download Transactions\" CSVs, any
-                  mix of chequing, savings and card accounts; a directory
-                  reads its *.csv files in name order. [rbc.accounts] in
-                  config.toml maps each account's last four digits to its
-                  ledger account (\"1234\" = \"assets:rbc:chequing\"); an
-                  unmapped account is an error. Each row posts to that
-                  account and expenses:unknown or income:unknown by sign,
-                  in USD for a USD$ amount. Its id is
+  rbc <path>...   RBC online banking \"Download Transactions\" CSVs and
+                  monthly e-statement PDFs, any mix of chequing, savings
+                  and Visa accounts; a directory reads its *.csv and *.pdf
+                  files in name order. [rbc.accounts] in config.toml maps
+                  each account's last four digits to its ledger account
+                  (\"1234\" = \"assets:rbc:chequing\"); an unmapped account
+                  is an error. Each row posts to that account and
+                  expenses:unknown or income:unknown by sign, in USD for a
+                  USD$ amount. A download row's id is
                   rbc:<last4>:<date>:<cents>:<description>:<n>, so
-                  overlapping downloads keep each row once.
+                  overlapping downloads keep each row once. A statement
+                  must balance from its opening to its closing balance or
+                  the run fails; its rows' ids are
+                  rbc:stmt:<last4>:<statement date>:<date>:<cents>:...,
+                  and where statements and downloads cover the same days
+                  the journal keeps each transaction once, matched by
+                  account, date and amount.
   shakepay <path>...
                   Shakepay transaction history CSVs of the Spending (CAD)
                   account; a directory reads its *.csv files in name order,

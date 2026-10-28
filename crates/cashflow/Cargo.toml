@@ -20,6 +20,7 @@ ledgerdb = { workspace = true }
 lnsocket = { git = "https://github.com/jb55/lnsocket-rs", rev = "51b397521e54" }
 nostrdb = { workspace = true }
 nostrdb_net = { workspace = true }
+pdf-extract = { workspace = true }
 profiling = { workspace = true }
 ring = { workspace = true }
 serde = { workspace = true }
