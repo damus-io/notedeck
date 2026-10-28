@@ -349,9 +349,9 @@ Importers:
   cln [<file>...] Core Lightning bookkeeper events, bkpr-listaccountevents
                   over commando: [cln] in config.toml sets `node_id`,
                   `host` (host[:9735]) and `timezone`, and the
-                  cln-rune secret is a rune that permits the call (mint
-                  one with lightning-cli createrune
-                  restrictions='[[\"method=bkpr-listaccountevents\"]]').
+                  cln-rune secret is a rune that permits the call and,
+                  to date by block, corerpc's getblockhash and
+                  getblockheader (minted as below).
                   An event is filed under its day in the synced
                   `timezone` setting, so every machine dates it alike;
                   `timezone` under [cln] overrides that on one machine,
@@ -415,7 +415,16 @@ Importers:
 --source names the segment's source (default: the importer's name), the
 prefix of the record ids it makes. --layer files it in a layer (default: the
 importer's), which `export` and `report` can include or leave out; an
-importer's second layer, such as cln-chain, keeps its own name.",
+importer's second layer, such as cln-chain, keeps its own name.
+
+The cln-rune secret is minted on the node with:
+
+  lightning-cli createrune restrictions='[[\"method=bkpr-listaccountevents\",\"method=corerpc\"],[\"method=bkpr-listaccountevents\",\"parr1=getblockhash\",\"parr1=getblockheader\"]]'
+
+Never method=corerpc alone: corerpc passes any method through to bitcoind, so
+that rune reaches its wallet (sendtoaddress, walletpassphrase). A rune of
+bkpr-listaccountevents alone still imports, with on-chain records dated by
+when bookkeeper logged them.",
         options: &[
             (
                 "--source <name>",
@@ -1077,6 +1086,19 @@ mod tests {
         }
         assert!(overview.contains("--dir"));
         assert!(overview.contains("--relay"));
+    }
+
+    /// `import --help` gives the rune the cln importer is made for, so the
+    /// text can't drift from the one its errors give.
+    #[test]
+    fn import_help_gives_the_cln_rune() {
+        let import = COMMANDS.iter().find(|cmd| cmd.name == "import").unwrap();
+        let mint = format!(
+            "lightning-cli createrune restrictions='{}'",
+            cashflow::import::RUNE_RESTRICTIONS
+        );
+        assert!(import.details.contains(&mint), "{mint}");
+        assert!(import.details.contains("Never method=corerpc alone"));
     }
 
     /// `cashflow --help` stays within 80 columns.

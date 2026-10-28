@@ -40,7 +40,7 @@ pub use batch::{
     Skipped,
 };
 pub use btc::{BitcoindHttp, BtcImporter, Rpc};
-pub use cln::{ClnImporter, Commando, Node, NodeError};
+pub use cln::{ClnImporter, Commando, Node, NodeError, RUNE_RESTRICTIONS};
 pub use ledger::LedgerImporter;
 pub use payroll::PayrollImporter;
 pub use rbc::RbcImporter;

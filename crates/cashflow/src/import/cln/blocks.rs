@@ -21,13 +21,18 @@
 //! time for is never asked about again. So an incremental run asks only
 //! about new heights, and a machine whose rune can't reach corerpc keeps a
 //! record's block date rather than reverting it.
+//!
+//! **The rune pins the method.** corerpc passes any method through, so a
+//! rune of `method=corerpc` alone reaches bitcoind's wallet.
+//! [`super::RUNE_RESTRICTIONS`] permits only the two calls made here, and a
+//! call the rune denies says so in the run's note, with how to mint it.
 
 use std::collections::{BTreeSet, HashMap};
 
 use ledgerdb::Ledger;
 use serde_json::{Value, json};
 
-use super::{Node, NodeError};
+use super::{Node, node_failure};
 
 /// The plugin's method.
 const CORERPC: &str = "corerpc";
@@ -134,7 +139,7 @@ impl BlockTimes {
             .map_err(|error| format!("{CORERPC}: {error}"))?;
         let mut found = Vec::new();
         for (&height, answer) in heights.iter().zip(hashes) {
-            match answer.map_err(rpc_failure).and_then(block_hash) {
+            match answer.map_err(node_failure).and_then(block_hash) {
                 Ok(hash) => found.push(Hashed { height, hash }),
                 Err(why) => fail(format!("{CORERPC} getblockhash: {why}")),
             }
@@ -152,7 +157,7 @@ impl BlockTimes {
         };
         for (hashed, answer) in found.iter().zip(headers) {
             match answer
-                .map_err(rpc_failure)
+                .map_err(node_failure)
                 .and_then(|header| block_time(&header, hashed.height))
             {
                 Ok(time) => {
@@ -172,7 +177,7 @@ impl BlockTimes {
 /// block's, which every chain has. `Err` says why not.
 pub(super) fn probe(node: &dyn Node) -> Result<(), String> {
     node.call(CORERPC, json!([WALLET, "getblockhash", 0]))
-        .map_err(rpc_failure)
+        .map_err(node_failure)
         .and_then(block_hash)
         .map(drop)
         .map_err(|why| format!("{CORERPC} getblockhash: {why}"))
@@ -182,11 +187,6 @@ pub(super) fn probe(node: &dyn Node) -> Result<(), String> {
 struct Hashed {
     height: u32,
     hash: String,
-}
-
-/// A call's own error, as text.
-fn rpc_failure(error: NodeError) -> String {
-    error.to_string()
 }
 
 /// A `getblockhash` answer: 64 hex, or why it isn't one.

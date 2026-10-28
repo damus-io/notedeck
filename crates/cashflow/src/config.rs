@@ -475,8 +475,19 @@ pub struct AppStoreConfig {
 /// events from over commando, and which day an event falls on.
 ///
 /// The rune is a secret, `cln-rune` (see [`CashflowDir::secret`]). It must
-/// permit `bkpr-listaccountevents`; mint one on the node with
-/// `lightning-cli createrune restrictions='[["method=bkpr-listaccountevents"]]'`.
+/// permit `bkpr-listaccountevents`, and to date on-chain records by their
+/// block, the node's `corerpc` plugin's `getblockhash` and `getblockheader`
+/// ([`RUNE_RESTRICTIONS`](crate::import::RUNE_RESTRICTIONS)). Mint one
+/// on the node with
+///
+/// ```text
+/// lightning-cli createrune restrictions='[["method=bkpr-listaccountevents","method=corerpc"],["method=bkpr-listaccountevents","parr1=getblockhash","parr1=getblockheader"]]'
+/// ```
+///
+/// Never `method=corerpc` alone: corerpc passes any method through to
+/// bitcoind, so that rune reaches its wallet (`sendtoaddress`,
+/// `walletpassphrase`). A rune of `bkpr-listaccountevents` alone still
+/// imports, with each on-chain record dated by when bookkeeper logged it.
 /// Importing a saved listing needs none of this.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

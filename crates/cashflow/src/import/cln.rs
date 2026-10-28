@@ -167,6 +167,28 @@ mod blocks;
 /// The secret holding the rune commando calls are made with.
 pub const RUNE_SECRET: &str = "cln-rune";
 
+/// The restrictions of the rune `import cln` is made for, as
+/// `lightning-cli createrune restrictions='…'` takes them. A rune passes
+/// when every inner list does, and a list passes when any of its
+/// alternatives does. The first permits `bkpr-listaccountevents` and
+/// `corerpc`; the second holds `corerpc` to the two calls block dating
+/// makes, `getblockhash` and `getblockheader` (`parr1`, the bitcoind
+/// method, after `parr0`'s wallet).
+///
+/// `method=corerpc` alone would be unsafe: corerpc passes any method
+/// through to bitcoind, so that rune reaches its wallet, `sendtoaddress`
+/// and `walletpassphrase` included ([`RUNE_UNSAFE`]).
+pub const RUNE_RESTRICTIONS: &str = r#"[["method=bkpr-listaccountevents","method=corerpc"],["method=bkpr-listaccountevents","parr1=getblockhash","parr1=getblockheader"]]"#;
+
+/// Why [`RUNE_RESTRICTIONS`] pins corerpc's method, said wherever it is
+/// given.
+pub const RUNE_UNSAFE: &str =
+    "corerpc's method is pinned because method=corerpc alone reaches bitcoind's wallet";
+
+/// The code commando answers a call its rune doesn't permit with
+/// (`COMMANDO_ERROR_REMOTE_AUTH`).
+const RUNE_DENIED: i64 = 19537;
+
 /// The layer payments go in.
 pub const LAYER: &str = "cln";
 
@@ -468,9 +490,9 @@ impl ClnImporter {
             .map_err(|e| ImportError::Usage(e.to_string()))?
             .ok_or_else(|| {
                 ImportError::Usage(format!(
-                    "no rune: mint one on the node with lightning-cli createrune \
-                     restrictions='[[\"method={METHOD}\"]]', then store it with `cashflow \
-                     secret set {RUNE_SECRET}` (or set ${})",
+                    "no rune: {}, then store it with `cashflow secret set {RUNE_SECRET}` (or \
+                     set ${})",
+                    mint_rune(),
                     secret_env_var(RUNE_SECRET),
                 ))
             })?;
@@ -603,6 +625,26 @@ struct Fetched {
     note: Option<String>,
 }
 
+/// How to mint the rune [`RUNE_RESTRICTIONS`] describes, and why it is
+/// pinned.
+fn mint_rune() -> String {
+    format!(
+        "mint one on the node with lightning-cli createrune \
+         restrictions='{RUNE_RESTRICTIONS}' ({RUNE_UNSAFE})"
+    )
+}
+
+/// `error`, as the run reports it. A call the rune doesn't permit says how
+/// to mint one that does.
+fn node_failure(error: NodeError) -> String {
+    match error {
+        NodeError::Rpc {
+            code: RUNE_DENIED, ..
+        } => format!("{error}; {}", mint_rune()),
+        error => error.to_string(),
+    }
+}
+
 /// Ask `node` for the events after `cursor`, or every event when there is
 /// no cursor or the node can't take one.
 fn fetch(node: &dyn Node, cursor: Option<u64>) -> Result<Fetched, ImportError> {
@@ -610,7 +652,7 @@ fn fetch(node: &dyn Node, cursor: Option<u64>) -> Result<Fetched, ImportError> {
         node.call(METHOD, params)
             .map_err(|error| ImportError::Fetch {
                 from: METHOD.to_owned(),
-                error: error.to_string(),
+                error: node_failure(error),
             })
     };
     let Some(start) = cursor else {
@@ -637,7 +679,7 @@ fn fetch(node: &dyn Node, cursor: Option<u64>) -> Result<Fetched, ImportError> {
         }
         Err(error) => Err(ImportError::Fetch {
             from: METHOD.to_owned(),
-            error: error.to_string(),
+            error: node_failure(error),
         }),
     }
 }
@@ -1367,6 +1409,15 @@ mod tests {
         block_calls: Rc<RefCell<Vec<Value>>>,
     }
 
+    /// What commando answers a call that a rune of `method=<permitted>`
+    /// alone doesn't permit.
+    fn denied(permitted: &str) -> NodeError {
+        NodeError::Rpc {
+            code: RUNE_DENIED,
+            message: format!("Invalid rune: Not permitted: method is not equal to {permitted}"),
+        }
+    }
+
     /// What a [`FakeNode`] does with a corerpc call.
     #[derive(Clone)]
     enum Corerpc {
@@ -1390,12 +1441,7 @@ mod tests {
                         message: "Unknown command 'corerpc'".to_owned(),
                     });
                 }
-                Corerpc::Denied => {
-                    return Err(NodeError::Rpc {
-                        code: 1502,
-                        message: "Not authorized: method not permitted".to_owned(),
-                    });
-                }
+                Corerpc::Denied => return Err(denied("bkpr-listaccountevents")),
                 Corerpc::Blocks(times) => times,
             };
             assert_eq!(params[0], json!(""), "the default wallet");
@@ -2189,7 +2235,7 @@ mod tests {
         let cases = [
             // bitcoind's error, which corerpc answers as a result.
             (Corerpc::Blocks(HashMap::new()), r#"answered {"code":-8}"#),
-            (Corerpc::Denied, "Not authorized"),
+            (Corerpc::Denied, "Not permitted"),
             (Corerpc::Absent, "Unknown command"),
         ];
         for (corerpc, why) in cases {
@@ -2213,6 +2259,52 @@ mod tests {
             assert!(has(&close, "raw-blockheight=800000"));
             assert!(!has_block_time(&close));
         }
+    }
+
+    #[test]
+    fn a_denied_corerpc_says_how_to_mint_the_rune() {
+        let Rig { cln, .. } = importer_with(close_events(), true, Corerpc::Denied);
+        let batch = cln.import(&input()).unwrap();
+        let [note] = batch.notes.as_slice() else {
+            panic!("one note: {:?}", batch.notes);
+        };
+        assert!(
+            note.contains(&format!("createrune restrictions='{RUNE_RESTRICTIONS}'")),
+            "{note}"
+        );
+        assert!(note.contains(RUNE_UNSAFE), "{note}");
+
+        // A bitcoind error isn't the rune's fault, so it says nothing of it.
+        let Rig { cln, .. } = importer_with(close_events(), true, Corerpc::Blocks(HashMap::new()));
+        let batch = cln.import(&input()).unwrap();
+        assert!(!batch.notes[0].contains("createrune"), "{:?}", batch.notes);
+    }
+
+    #[test]
+    fn a_denied_listing_says_how_to_mint_the_rune() {
+        struct Denied;
+        impl Node for Denied {
+            fn call(&self, _: &str, _: Value) -> Result<Value, NodeError> {
+                Err(denied("getinfo"))
+            }
+        }
+        let cln = ClnImporter::with_node(Some(&utc()), Box::new(Denied));
+        let err = cln.import(&input()).unwrap_err().to_string();
+        assert!(
+            err.starts_with("bkpr-listaccountevents: Invalid rune: Not permitted"),
+            "{err}"
+        );
+        assert!(err.contains(RUNE_RESTRICTIONS), "{err}");
+    }
+
+    /// `ClnConfig`'s docs give the rune the errors give.
+    #[test]
+    fn the_config_docs_give_the_rune() {
+        let docs = include_str!("../config.rs");
+        assert!(
+            docs.contains(&format!("createrune restrictions='{RUNE_RESTRICTIONS}'")),
+            "config.rs's ClnConfig docs"
+        );
     }
 
     #[test]
@@ -2423,7 +2515,11 @@ mod tests {
         // Unless the environment happens to carry one.
         if std::env::var(secret_env_var(RUNE_SECRET)).is_err() {
             let message = usage(&config);
-            assert!(message.contains("createrune"), "{message}");
+            assert!(
+                message.contains(&format!("createrune restrictions='{RUNE_RESTRICTIONS}'")),
+                "{message}"
+            );
+            assert!(message.contains(RUNE_UNSAFE), "{message}");
             assert!(
                 message.contains("cashflow secret set cln-rune"),
                 "{message}"
