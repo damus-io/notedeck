@@ -76,13 +76,44 @@ const FEES: &str = "expenses:fees:btc";
 /// msat in one bitcoin: 10^8 sat of 10^3 msat each.
 const MSAT_DIGITS: u32 = 11;
 
-/// A bitcoind JSON-RPC endpoint, so the importer can be tested without one.
+/// A bitcoind JSON-RPC endpoint, so the importer can be tested without one
+/// and read through more than one transport.
 pub trait Rpc {
-    /// POST `body` (a JSON-RPC request) to `path` under the endpoint, `""`
-    /// for the node or `/wallet/<name>` for a wallet, and return the body of
-    /// the answer, whatever its status: bitcoind reports an RPC error as JSON
-    /// under an HTTP error.
-    fn post(&self, path: &str, body: &str) -> Result<Vec<u8>, String>;
+    /// Call `method` with `params` (a JSON array) on the node (`wallet`
+    /// `None`) or on the named wallet, and return the answer's `result` as
+    /// JSON text, so an amount in it can still be read exactly.
+    fn call(
+        &self,
+        wallet: Option<&str>,
+        method: &str,
+        params: Value,
+    ) -> Result<Box<RawValue>, RpcError>;
+}
+
+/// Why an [`Rpc`] call has no result. The kinds are kept apart so a caller
+/// can tell "bitcoind could not be reached" from "bitcoind said no".
+#[derive(Debug, thiserror::Error)]
+pub enum RpcError {
+    /// The request never reached bitcoind: the connection was refused or
+    /// timed out, or the host did not resolve. Over HTTP a malformed URL or
+    /// a TLS failure reads as this too (see [`BitcoindHttp`]).
+    #[error("{0}")]
+    Unreachable(String),
+    /// There is nothing to sign in with: no password for the configured
+    /// user, or no cookie file to read.
+    #[error("{0}")]
+    NoCredentials(String),
+    /// bitcoind turned the credentials down.
+    #[error("{0}")]
+    Unauthorized(String),
+    /// bitcoind answered with a JSON-RPC error, such as -18 for a wallet
+    /// that is not loaded.
+    #[error("{message} (code {code})")]
+    Rpc { code: i64, message: String },
+    /// Anything else: an answer that isn't JSON-RPC, one with no result, or
+    /// one cut off mid-body.
+    #[error("{0}")]
+    Other(String),
 }
 
 /// [`Rpc`] over `ehttp`, with HTTP basic auth.
@@ -105,17 +136,59 @@ impl BitcoindHttp {
 }
 
 impl Rpc for BitcoindHttp {
-    fn post(&self, path: &str, body: &str) -> Result<Vec<u8>, String> {
-        let url = format!("{}{path}", self.url);
-        let mut request = ehttp::Request::post(url, body.as_bytes().to_vec());
+    fn call(
+        &self,
+        wallet: Option<&str>,
+        method: &str,
+        params: Value,
+    ) -> Result<Box<RawValue>, RpcError> {
+        let path = wallet.map_or_else(String::new, |name| format!("/wallet/{}", encode(name)));
+        let body = json!({"jsonrpc": "1.0", "id": "cashflow", "method": method, "params": params});
+        let mut request =
+            ehttp::Request::post(format!("{}{path}", self.url), body.to_string().into_bytes());
         request.headers.insert("Authorization", &self.authorization);
         request.headers.insert("Content-Type", "application/json");
-        let response = ehttp::fetch_blocking(&request)?;
+        // ehttp hands back only the text of a failure. Any `Err` is one where
+        // no answer arrived: refused, timed out, a host that did not resolve,
+        // but also a malformed URL or a TLS failure, which its text alone
+        // can't tell apart from those. None of them reached bitcoind, so all
+        // read as unreachable, except a body cut off after it answered.
+        let response = ehttp::fetch_blocking(&request).map_err(|error| {
+            if error.starts_with("Failed to read response body") {
+                RpcError::Other(error)
+            } else {
+                RpcError::Unreachable(error)
+            }
+        })?;
         if response.status == 401 {
-            return Err("401 Unauthorized: check [btc] user and the bitcoind-rpc-password secret, or the cookie".to_owned());
+            return Err(RpcError::Unauthorized(
+                "401 Unauthorized: check [btc] user and the bitcoind-rpc-password secret, or the cookie".to_owned(),
+            ));
         }
-        Ok(response.bytes)
+        // bitcoind reports an RPC error as JSON under an HTTP error status,
+        // so the body is read whatever the status.
+        result_of(&response.bytes)
     }
+}
+
+/// The `result` of a JSON-RPC answer, or its error.
+fn result_of(answer: &[u8]) -> Result<Box<RawValue>, RpcError> {
+    let parsed: Answer = serde_json::from_slice(answer).map_err(|e| {
+        let text = String::from_utf8_lossy(answer);
+        RpcError::Other(format!(
+            "{e}: {}",
+            text.chars().take(200).collect::<String>()
+        ))
+    })?;
+    if let Some(error) = parsed.error {
+        return Err(RpcError::Rpc {
+            code: error.code,
+            message: error.message,
+        });
+    }
+    parsed
+        .result
+        .ok_or_else(|| RpcError::Other("no result in the answer".to_owned()))
 }
 
 /// Reads on-chain bitcoin wallets from bitcoind, or from `btc-txs-raw`
@@ -148,16 +221,19 @@ impl BtcImporter {
     }
 
     /// The endpoint the config names, signed in with its credentials.
-    fn connect(&self) -> Result<BitcoindHttp, ImportError> {
+    /// Credentials that aren't there, a password secret or a cookie file,
+    /// are [`RpcError::NoCredentials`]; a secrets store that can't be read is
+    /// [`RpcError::Other`].
+    fn connect(&self) -> Result<BitcoindHttp, RpcError> {
         let url = self.config.url.as_deref().unwrap_or(DEFAULT_URL);
         let credentials = match &self.config.user {
             Some(user) => {
                 let password = self
                     .dir
                     .secret(PASSWORD_SECRET)
-                    .map_err(|e| ImportError::Usage(e.to_string()))?
+                    .map_err(|e| RpcError::Other(e.to_string()))?
                     .ok_or_else(|| {
-                        ImportError::Usage(format!(
+                        RpcError::NoCredentials(format!(
                             "[btc] user is set but its password is not: store it with \
                              `cashflow secret set {PASSWORD_SECRET}` (or set ${})",
                             secret_env_var(PASSWORD_SECRET),
@@ -171,7 +247,7 @@ impl BtcImporter {
                         dirs::home_dir().map(|home| home.join(".bitcoin").join(".cookie"))
                     });
                 let Some(cookie) = cookie else {
-                    return Err(ImportError::Usage(
+                    return Err(RpcError::NoCredentials(
                         "no bitcoind credentials: run `cashflow config set btc.cookie <path>`, \
                          or `cashflow config set btc.user <rpcuser>` and `cashflow secret set \
                          bitcoind-rpc-password`"
@@ -179,9 +255,8 @@ impl BtcImporter {
                     ));
                 };
                 std::fs::read_to_string(&cookie)
-                    .map_err(|source| ImportError::Read {
-                        path: cookie,
-                        source,
+                    .map_err(|source| {
+                        RpcError::NoCredentials(format!("reading {}: {source}", cookie.display()))
                     })?
                     .trim_end()
                     .to_owned()
@@ -191,7 +266,7 @@ impl BtcImporter {
     }
 
     /// Every entry of every wallet the config names, over `rpc`.
-    fn fetch(&self, rpc: &dyn Rpc) -> Result<Vec<Entry>, ImportError> {
+    fn fetch(&self, rpc: &dyn Rpc) -> Result<Vec<Entry>, FetchError> {
         let mut wallets: Vec<Wallet> = match &self.config.wallets {
             Some(names) => names.iter().map(|name| Wallet::own(name)).collect(),
             None => call::<Vec<String>>(rpc, None, "listwallets", json!([]))?
@@ -246,7 +321,10 @@ impl Importer for BtcImporter {
         } else if let Some(rpc) = &self.rpc {
             self.fetch(&**rpc)?
         } else {
-            self.fetch(&self.connect()?)?
+            let http = self
+                .connect()
+                .map_err(|error| ImportError::Usage(error.to_string()))?;
+            self.fetch(&http)?
         };
         let Txns { txns, left_out } = txns(&input.source, entries);
         Ok(Batch {
@@ -272,6 +350,44 @@ impl Wallet {
     }
 }
 
+/// Why [`BtcImporter::fetch`] stopped: a call that failed, kept typed so a
+/// caller can tell an unreachable bitcoind from one that said no, or an entry
+/// it could not read.
+#[derive(Debug, thiserror::Error)]
+enum FetchError {
+    #[error(transparent)]
+    Call(#[from] CallFailed),
+    #[error(transparent)]
+    Entry(#[from] ImportError),
+}
+
+impl From<FetchError> for ImportError {
+    fn from(error: FetchError) -> Self {
+        match error {
+            FetchError::Call(failed) => failed.into(),
+            FetchError::Entry(error) => error,
+        }
+    }
+}
+
+/// An [`Rpc`] call that failed, and which call it was.
+#[derive(Debug, thiserror::Error)]
+#[error("{from}: {error}")]
+struct CallFailed {
+    /// The call, such as `bitcoind listtransactions (wallet "hot")`.
+    from: String,
+    error: RpcError,
+}
+
+impl From<CallFailed> for ImportError {
+    fn from(failed: CallFailed) -> Self {
+        ImportError::Fetch {
+            from: failed.from,
+            error: failed.error.to_string(),
+        }
+    }
+}
+
 /// Call `method` with `params` on the node (`wallet` `None`) or a wallet,
 /// and read its result as `T`.
 fn call<T: DeserializeOwned>(
@@ -279,37 +395,27 @@ fn call<T: DeserializeOwned>(
     wallet: Option<&str>,
     method: &str,
     params: Value,
-) -> Result<T, ImportError> {
-    let from = match wallet {
-        Some(name) => format!("bitcoind {method} (wallet {name:?})"),
-        None => format!("bitcoind {method}"),
-    };
-    let fail = |error: String| ImportError::Fetch {
-        from: from.clone(),
+) -> Result<T, CallFailed> {
+    let fail = |error: RpcError| CallFailed {
+        from: match wallet {
+            Some(name) => format!("bitcoind {method} (wallet {name:?})"),
+            None => format!("bitcoind {method}"),
+        },
         error,
     };
-    let path = wallet.map_or_else(String::new, |name| format!("/wallet/{}", encode(name)));
-    let body = json!({"jsonrpc": "1.0", "id": "cashflow", "method": method, "params": params});
-    let answer = rpc.post(&path, &body.to_string()).map_err(fail)?;
-    let answer: Answer<T> = serde_json::from_slice(&answer).map_err(|e| {
-        let text = String::from_utf8_lossy(&answer);
-        fail(format!(
+    let result = rpc.call(wallet, method, params).map_err(fail)?;
+    serde_json::from_str(result.get()).map_err(|e| {
+        fail(RpcError::Other(format!(
             "{e}: {}",
-            text.chars().take(200).collect::<String>()
-        ))
-    })?;
-    if let Some(error) = answer.error {
-        return Err(fail(format!("{} (code {})", error.message, error.code)));
-    }
-    answer
-        .result
-        .ok_or_else(|| fail("no result in the answer".to_owned()))
+            result.get().chars().take(200).collect::<String>()
+        )))
+    })
 }
 
-/// A JSON-RPC answer.
+/// A JSON-RPC answer, its result left as text.
 #[derive(Deserialize)]
-struct Answer<T> {
-    result: Option<T>,
+struct Answer {
+    result: Option<Box<RawValue>>,
     error: Option<AnswerError>,
 }
 
@@ -842,32 +948,45 @@ mod tests {
     }
 
     impl Rpc for FakeNode {
-        fn post(&self, path: &str, body: &str) -> Result<Vec<u8>, String> {
-            let request: Value = serde_json::from_str(body).unwrap();
-            let method = request["method"].as_str().unwrap();
+        fn call(
+            &self,
+            wallet: Option<&str>,
+            method: &str,
+            params: Value,
+        ) -> Result<Box<RawValue>, RpcError> {
+            let path = wallet.map_or_else(String::new, |name| format!("/wallet/{}", encode(name)));
             self.calls.borrow_mut().push(format!("{path} {method}"));
-            let result = match (path, method) {
-                ("", "listwallets") => {
+            let result = match (wallet, method) {
+                (None, "listwallets") => {
                     let names: Vec<_> = self.wallets.iter().map(|(n, _)| n.clone()).collect();
                     serde_json::to_string(&names).unwrap()
                 }
-                (path, "listtransactions") => {
-                    let Some((_, listed)) = self
-                        .wallets
-                        .iter()
-                        .find(|(name, _)| format!("/wallet/{}", encode(name)) == path)
+                (Some(wallet), "listtransactions") => {
+                    let Some((_, listed)) = self.wallets.iter().find(|(name, _)| name == wallet)
                     else {
-                        return Ok(br#"{"result":null,"error":{"code":-18,"message":"Requested wallet does not exist or is not loaded"}}"#.to_vec());
+                        return Err(RpcError::Rpc {
+                            code: -18,
+                            message: "Requested wallet does not exist or is not loaded".to_owned(),
+                        });
                     };
-                    let count = request["params"][1].as_u64().unwrap() as usize;
-                    let skip = request["params"][2].as_u64().unwrap() as usize;
+                    let count = params[1].as_u64().unwrap() as usize;
+                    let skip = params[2].as_u64().unwrap() as usize;
                     let end = listed.len().saturating_sub(skip);
                     let start = end.saturating_sub(count);
                     format!("[{}]", listed[start..end].join(","))
                 }
                 _ => panic!("unexpected call {path} {method}"),
             };
-            Ok(format!(r#"{{"result":{result},"error":null,"id":"cashflow"}}"#).into_bytes())
+            Ok(RawValue::from_string(result).unwrap())
+        }
+    }
+
+    /// An endpoint that fails every call with what `fail` makes.
+    struct Failing(fn() -> RpcError);
+
+    impl Rpc for Failing {
+        fn call(&self, _: Option<&str>, _: &str, _: Value) -> Result<Box<RawValue>, RpcError> {
+            Err((self.0)())
         }
     }
 
@@ -929,12 +1048,124 @@ mod tests {
             ..BtcConfig::default()
         };
         let importer = BtcImporter::new(Some(&config), &CashflowDir::new(tmp.path()));
-        let Some(ImportError::Usage(message)) = importer.connect().err() else {
-            panic!("expected a usage error");
+        let Some(RpcError::NoCredentials(message)) = importer.connect().err() else {
+            panic!("expected missing credentials");
         };
         assert!(
             message.contains("cashflow secret set bitcoind-rpc-password"),
             "{message}"
+        );
+        let Err(ImportError::Usage(shown)) = importer.import(&input()) else {
+            panic!("expected a usage error");
+        };
+        assert_eq!(shown, message);
+    }
+
+    /// A cookie file that isn't there is missing credentials, not a failed
+    /// read, so a fallback can take over.
+    #[test]
+    fn a_missing_cookie_is_no_credentials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cookie = tmp.path().join(".cookie");
+        let config = BtcConfig {
+            cookie: Some(cookie.clone()),
+            ..BtcConfig::default()
+        };
+        let importer = BtcImporter::new(Some(&config), &CashflowDir::new(tmp.path()));
+        let Some(RpcError::NoCredentials(message)) = importer.connect().err() else {
+            panic!("expected missing credentials");
+        };
+        assert!(
+            message.starts_with(&format!("reading {}: ", cookie.display())),
+            "{message}"
+        );
+    }
+
+    /// Each kind of failure keeps its kind through `call` and names the
+    /// call in what the user sees.
+    #[test]
+    fn call_keeps_each_failure_kind() {
+        let kinds: [fn() -> RpcError; 5] = [
+            || RpcError::Unreachable("Connection refused".to_owned()),
+            || RpcError::NoCredentials("no cookie".to_owned()),
+            || RpcError::Unauthorized("401 Unauthorized".to_owned()),
+            || RpcError::Rpc {
+                code: -18,
+                message: "not loaded".to_owned(),
+            },
+            || RpcError::Other("no result in the answer".to_owned()),
+        ];
+        for make in kinds {
+            let failed = call::<Vec<String>>(&Failing(make), Some("hot"), "listwallets", json!([]))
+                .unwrap_err();
+            assert_eq!(failed.from, "bitcoind listwallets (wallet \"hot\")");
+            assert_eq!(
+                std::mem::discriminant(&failed.error),
+                std::mem::discriminant(&make()),
+                "{:?}",
+                failed.error
+            );
+            assert_eq!(
+                ImportError::from(failed).to_string(),
+                format!("bitcoind listwallets (wallet \"hot\"): {}", make())
+            );
+        }
+        assert_eq!(
+            RpcError::Rpc {
+                code: -18,
+                message: "not loaded".to_owned()
+            }
+            .to_string(),
+            "not loaded (code -18)"
+        );
+
+        // A result of the wrong shape is reported with its text.
+        let node = fake_node(&[]);
+        let failed = call::<u32>(&node, None, "listwallets", json!([])).unwrap_err();
+        let RpcError::Other(message) = failed.error else {
+            panic!("expected other");
+        };
+        assert!(message.ends_with(": []"), "{message}");
+    }
+
+    /// A port nothing listens on is unreachable, which a fallback takes as
+    /// leave to try another way.
+    #[test]
+    fn a_closed_port_is_unreachable() {
+        let http = BitcoindHttp::new("http://127.0.0.1:1", "user:password");
+        let error = http.call(None, "listwallets", json!([])).unwrap_err();
+        assert!(matches!(error, RpcError::Unreachable(_)), "{error:?}");
+    }
+
+    /// bitcoind's answer: an error under any status, a result kept as its
+    /// own text so amounts stay exact, and anything else as other.
+    #[test]
+    fn an_answer_is_its_result_or_its_error() {
+        let result =
+            result_of(br#"{"result":[{"amount":0.10000000}],"error":null,"id":"cashflow"}"#)
+                .unwrap();
+        assert_eq!(result.get(), r#"[{"amount":0.10000000}]"#);
+
+        let error = result_of(
+            br#"{"result":null,"error":{"code":-18,"message":"Requested wallet does not exist or is not loaded"},"id":"cashflow"}"#,
+        )
+        .unwrap_err();
+        let RpcError::Rpc { code, message } = error else {
+            panic!("expected an rpc error, got {error:?}");
+        };
+        assert_eq!(code, -18);
+        assert_eq!(message, "Requested wallet does not exist or is not loaded");
+
+        let error = result_of(br#"{"result":null,"error":null,"id":"cashflow"}"#).unwrap_err();
+        assert!(
+            matches!(&error, RpcError::Other(m) if m == "no result in the answer"),
+            "{error:?}"
+        );
+
+        let error = result_of(b"<html>Not Found</html>").unwrap_err();
+        assert!(
+            matches!(&error, RpcError::Other(m) if m.ends_with(": <html>Not Found</html>")),
+            "{error:?}"
         );
     }
 

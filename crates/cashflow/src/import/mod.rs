@@ -39,7 +39,7 @@ pub use batch::{
     Batch, BatchError, LeftOut, OtherLayer, RawAmount, RawMeta, RawPosting, RawPrice, RawTxn,
     Skipped,
 };
-pub use btc::{BitcoindHttp, BtcImporter, Rpc};
+pub use btc::{BitcoindHttp, BtcImporter, Rpc, RpcError};
 pub use cln::{ClnImporter, Commando, Node, NodeError, RUNE_RESTRICTIONS};
 pub use ledger::LedgerImporter;
 pub use payroll::PayrollImporter;
