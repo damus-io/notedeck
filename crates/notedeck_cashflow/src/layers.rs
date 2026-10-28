@@ -6,8 +6,7 @@
 //! switch for that: the Overview's layer chips and the Settings toggles flip
 //! it, and whoever loads the books reloads them with [`Layers::filter`] when
 //! [`Layers::generation`] moves. It holds only what is switched off, so a
-//! layer that arrives later is on, unless it is one of
-//! [`cashflow::settings::DEFAULT_OFF_LAYERS`].
+//! layer that arrives later is on.
 //!
 //! The switches follow the account across machines: each flip is queued as
 //! a [`LayerSwitch`] for the journal source to write to the vault
@@ -15,7 +14,7 @@
 //! [`Layers::apply`].
 
 use cashflow::Books;
-use cashflow::settings::{DEFAULT_OFF_LAYERS, LayerSwitch};
+use cashflow::settings::LayerSwitch;
 use ledgerdb::LayerFilter;
 
 /// One flip of a layer, to write to the vault.
@@ -28,7 +27,7 @@ pub struct LayerWrite {
 }
 
 /// The layers switched off, and a count that moves when they change.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Layers {
     /// The names of the layers left out.
     off: Vec<String>,
@@ -36,17 +35,6 @@ pub struct Layers {
     generation: u64,
     /// Flips not yet written to the vault, oldest first, one per layer.
     writes: Vec<LayerWrite>,
-}
-
-impl Default for Layers {
-    /// Every layer on but [`DEFAULT_OFF_LAYERS`].
-    fn default() -> Self {
-        Self {
-            off: DEFAULT_OFF_LAYERS.iter().map(|&l| l.to_owned()).collect(),
-            generation: 0,
-            writes: Vec::new(),
-        }
-    }
 }
 
 impl Layers {
@@ -81,11 +69,11 @@ impl Layers {
         std::mem::take(&mut self.writes)
     }
 
-    /// Switch the layers as the vault says: [`DEFAULT_OFF_LAYERS`] off, then
-    /// each of `switches` on or off. The generation moves only if that
-    /// changes what loads.
+    /// Switch the layers as the vault says: every layer on, then each of
+    /// `switches` on or off. The generation moves only if that changes what
+    /// loads.
     pub fn apply<'a>(&mut self, switches: impl Iterator<Item = LayerSwitch<'a>>) {
-        let mut off: Vec<String> = DEFAULT_OFF_LAYERS.iter().map(|&l| l.to_owned()).collect();
+        let mut off: Vec<String> = Vec::new();
         for switch in switches {
             off.retain(|l| l != switch.layer);
             if !switch.on {
@@ -139,10 +127,7 @@ mod tests {
     /// layer and leaves one write for it.
     #[test]
     fn toggling_a_layer_changes_the_filter() {
-        let mut layers = Layers {
-            off: Vec::new(),
-            ..Layers::default()
-        };
+        let mut layers = Layers::default();
         assert!(layers.is_on("bank"));
         assert_eq!(layers.filter(), LayerFilter::All);
 
@@ -167,31 +152,40 @@ mod tests {
         assert!(layers.take_writes().is_empty());
     }
 
-    /// `cln-chain` starts off; the vault's switches override the default,
-    /// and applying what is already in effect leaves the generation alone.
+    /// Every layer starts on, `cln-chain` too; the vault's switches turn
+    /// layers off and back on, and applying what is already in effect leaves
+    /// the generation alone.
     #[test]
     fn the_vault_switches_layers() {
         let mut layers = Layers::default();
-        assert!(!layers.is_on("cln-chain"));
-        assert!(layers.is_on("amex"));
+        assert!(layers.is_on("cln-chain"));
+        assert_eq!(layers.filter(), LayerFilter::All);
 
         let switches = [
             LayerSwitch {
                 layer: "cln-chain",
-                on: true,
+                on: false,
             },
             LayerSwitch {
                 layer: "amex",
-                on: false,
+                on: true,
             },
         ];
         layers.apply(switches.into_iter());
-        assert!(layers.is_on("cln-chain"));
-        assert!(!layers.is_on("amex"));
+        assert!(!layers.is_on("cln-chain"));
+        assert!(layers.is_on("amex"));
         assert_eq!(layers.generation(), 1);
 
         layers.apply(switches.into_iter());
         assert_eq!(layers.generation(), 1, "nothing changed");
         assert!(layers.take_writes().is_empty(), "the vault's own, not ours");
+
+        let back_on = LayerSwitch {
+            layer: "cln-chain",
+            on: true,
+        };
+        layers.apply(std::iter::once(back_on));
+        assert_eq!(layers.filter(), LayerFilter::All);
+        assert_eq!(layers.generation(), 2);
     }
 }

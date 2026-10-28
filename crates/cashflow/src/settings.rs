@@ -6,10 +6,9 @@
 //! folds them into one struct with defaults filled in.
 //!
 //! Which journal layers load is a setting too, one note per layer
-//! (`d = set:layer:<name>`, [`set_layer`]), so switching `cln-chain` on at
-//! one desk switches it on at every desk without touching the other
-//! layers. A layer with no note is on, unless it is one of
-//! [`DEFAULT_OFF_LAYERS`].
+//! (`d = set:layer:<name>`, [`set_layer`]), so switching `cln-chain` off at
+//! one desk switches it off at every desk without touching the other
+//! layers. A layer with no note is on.
 //!
 //! So is which Headway boards track each project's work, one note per
 //! project (`d = set:boards:<project>`, [`set_project_boards`]): the
@@ -33,10 +32,6 @@ pub const DEFAULT_HOME_COMMODITY: &str = "CAD";
 /// machine's own zone, which is the value the setting exists to replace,
 /// so it can't be set to it.
 pub const DEFAULT_TIMEZONE: &str = "local";
-
-/// The layers that start switched off: on-chain BTC as CLN's chain moves
-/// see it overlaps the wallet's own view, so counting both doubles it.
-pub const DEFAULT_OFF_LAYERS: &[&str] = &["cln-chain"];
 
 /// [`Setting::AdventureFeedback`]'s value when the triage inbox shows the
 /// XP a categorization earns, and when it doesn't.

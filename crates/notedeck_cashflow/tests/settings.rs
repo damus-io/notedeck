@@ -160,14 +160,14 @@ fn model_with_amex_on(day: Date) -> notedeck_cashflow::views::settings::Model {
 }
 
 /// The pane draws the stale warning, the home currency and a toggle per
-/// layer: `cln-chain` starts off, and clicking a toggle flips the layer.
+/// layer: every layer starts on, and clicking a toggle flips the layer.
 #[test]
 fn layers_toggle_from_settings() {
     let mut harness = harness(app(), DESKTOP);
     harness.get_by_label("amex not imported since 2024-08-01");
     harness.get_by_label("CAD");
     harness.get_by_label("This app was handed its books: there is no journal to sync.");
-    assert!(!harness.state().app.layers().is_on("cln-chain"));
+    assert!(harness.state().app.layers().is_on("cln-chain"));
     assert!(harness.state().app.layers().is_on("rbc"));
 
     harness.get_by_label("rbc · 1 segment").click();
@@ -175,7 +175,10 @@ fn layers_toggle_from_settings() {
     assert!(!harness.state().app.layers().is_on("rbc"));
     harness.get_by_label("cln-chain · 1 segment").click();
     harness.run();
-    assert!(harness.state().app.layers().is_on("cln-chain"));
+    assert!(!harness.state().app.layers().is_on("cln-chain"));
+    harness.get_by_label("rbc · 1 segment").click();
+    harness.run();
+    assert!(harness.state().app.layers().is_on("rbc"));
 }
 
 /// An app loading its own journal lists `config.toml`'s transports and
@@ -228,7 +231,7 @@ fn transports_are_listed_and_a_layer_switch_is_saved() {
     assert!(!harness.state().app.layers().is_on("synthetic"));
 }
 
-/// The pane: layers with `cln-chain` off, CAD, the sources with Amex
+/// The pane: every layer on, CAD, the sources with Amex
 /// flagged stale, and the no-journal sync line.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test

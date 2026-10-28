@@ -440,10 +440,19 @@ pub struct BtcConfig {
     pub cookie: Option<PathBuf>,
     /// The wallets to read [default: every wallet bitcoind has loaded, from
     /// `listwallets`].
+    ///
+    /// Leave out a watch-only wallet over a CLN node's own on-chain wallet
+    /// when the `cln` importer reads that node (set this list without it):
+    /// bookkeeper is that wallet's source, so reading both counts its coins
+    /// twice, and a wallet that knows only addresses reads each channel open
+    /// as spending and each close as income. Nothing in bitcoind tells such
+    /// a wallet apart, so the importer can't leave it out on its own.
     pub wallets: Option<Vec<String>>,
     /// Watch-only wallets (a descriptor or an xpub bitcoind tracks) read as
     /// well, with their watch-only addresses included. Their funds are yours,
-    /// so a move between one of them and another wallet is a transfer.
+    /// so a move between one of them and another wallet is a transfer. Not
+    /// one over a CLN node's wallet the `cln` importer reads; see
+    /// [`Self::wallets`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_wallets: Vec<String>,
 }

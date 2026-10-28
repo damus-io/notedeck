@@ -219,21 +219,20 @@ fn badges_link_to_their_views() {
 }
 
 /// A layer chip switches its layer off for the next load, and on again.
-/// Only `cln-chain` starts off.
+/// Every layer starts on.
 #[test]
 fn a_layer_chip_switches_its_layer() {
     let mut harness = overview_harness(layered_app());
-    let off = |names: &[&str]| LayerFilter::Except(names.iter().map(|&n| n.to_owned()).collect());
-    assert_eq!(harness.state().app.layers().filter(), off(&["cln-chain"]));
+    assert_eq!(harness.state().app.layers().filter(), LayerFilter::All);
     harness.get_by_label("cln").click();
     harness.run();
     let layers = harness.state().app.layers();
-    assert_eq!(layers.filter(), off(&["cln-chain", "cln"]));
+    assert_eq!(layers.filter(), LayerFilter::Except(vec!["cln".to_owned()]));
     assert_eq!(layers.generation(), 1);
 
     harness.get_by_label("cln").click();
     harness.run();
-    assert_eq!(harness.state().app.layers().filter(), off(&["cln-chain"]));
+    assert_eq!(harness.state().app.layers().filter(), LayerFilter::All);
 }
 
 /// With no books loaded the view says so.

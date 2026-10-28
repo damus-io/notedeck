@@ -347,8 +347,15 @@ Importers:
                   (http://127.0.0.1:8332), `user` (whose password is the
                   bitcoind-rpc-password secret) or `cookie`
                   (~/.bitcoin/.cookie), and `external_wallets` (watch-only
-                  wallets read too). Given files, it reads the old
-                  btc-txs-raw TSV listings instead.
+                  wallets read too). Leave a watch-only wallet over a CLN
+                  node's own wallet out of both (list `wallets` without
+                  it) when `import cln` reads that node: bookkeeper is its
+                  source, and reading it here too counts its coins twice
+                  and reads channel opens and closes as spending and
+                  income. A move between a bitcoind wallet and the CLN
+                  wallet is paired by its txid as a transfer (`transfer
+                  suggest`). Given files, it reads the old btc-txs-raw TSV
+                  listings instead.
   cln [<file>...] Core Lightning bookkeeper events, bkpr-listaccountevents
                   over commando: [cln] in config.toml sets `node_id`,
                   `host` (host[:9735]) and `timezone`, and the

@@ -26,9 +26,11 @@
 //! layer, as `cln.ledger` had them. Every other event (deposits,
 //! withdrawals, channel opens and closes, on-chain fees, journal entries, …)
 //! goes in `cln-chain`, which a reader can switch off as a whole (`--except
-//! cln-chain`), as the dashboard is to by default: it is bookkeeper's own
-//! view of the node's on-chain side, and overlaps the `btc` importer's where
-//! a wallet of one paid the other. An event of zero msat each way records
+//! cln-chain`): it is bookkeeper's own view of the node's on-chain side, the
+//! only one the books take of the node's wallet (a bitcoind watch-only
+//! wallet over it is left out of `[btc]`), and overlaps the `btc` importer's
+//! only where a wallet of one paid the other, which
+//! [`crate::transfers::suggest`] pairs by txid. An event of zero msat each way records
 //! nothing and is passed over.
 //!
 //! **Record ids.** An on-chain transaction's record is `cln:tx:<txid>`, the

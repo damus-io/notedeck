@@ -8,10 +8,20 @@
 //! move counts once as an expense and once as income. A
 //! [`TransferLink`] nets them out (see [`ledgerdb::derive`]); [`suggest`]
 //! proposes the links, and nothing here applies one.
+//!
+//! An on-chain move between a bitcoind wallet and the CLN node's wallet is
+//! recorded twice the same way, by the `btc` and the `cln` importer, and
+//! both records carry the transaction's `raw-txid`. That id is proof the two
+//! are one move, so [`suggest`] pairs those first, by txid and with no date
+//! window, before it pairs the rest by amount and date.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use ledgerdb::{AccountId, CommodityId, Date, Edits, Ledger, TransferLink};
+use ledgerdb::{AccountId, CommodityId, Date, Edits, Journal, Ledger, Posting, TransferLink, Txn};
+
+/// The metadata key both on-chain importers keep a record's transaction id
+/// under.
+pub const TXID_KEY: &str = "raw-txid";
 
 /// How many days apart the two sides of a transfer may be dated. A payment
 /// leaves chequing a day or two before the card posts it.
@@ -34,7 +44,18 @@ pub struct Suggestion {
 /// Transfers in the `raw` ledger, as importers wrote it, that `edits` don't
 /// already account for, in date order.
 ///
-/// Two transactions pair when each is an importer's raw record (one leg to
+/// First by txid: records of two different sources (the `<source>:` prefix
+/// of their ids) that carry one [`TXID_KEY`] are one on-chain move, and
+/// pair when each has exactly one counter leg (a posting to one of
+/// [`Edits::defaults`], the leg derive moves) and exactly one pair of those
+/// legs is in one commodity and nets to zero. Their other legs, a fee or a
+/// third party's output, don't matter, and neither do their dates. A txid
+/// whose records don't net that way suggests nothing: a send that paid the
+/// other wallet and someone else in one transaction needs a split first.
+/// Every record of a txid two sources hold is then left out of the amount
+/// pass, paired or not, so it isn't paired with a stranger instead.
+///
+/// Then by amount: two transactions pair when each is an importer's raw record (one leg to
 /// an account under [`OWN_ROOTS`], one counter leg to one of
 /// [`Edits::defaults`]), their own legs are on different accounts and in
 /// the same commodity with equal and opposite quantities, and they are
@@ -73,13 +94,16 @@ pub fn suggest(raw: &Ledger, edits: &Edits) -> Vec<Suggestion> {
         root.is_some_and(|root| OWN_ROOTS.contains(&root))
     };
 
+    let mut found = Vec::new();
+    let by_txid = pair_by_txid(journal, &is_default, &decided, &mut found);
+
     // Every candidate side, grouped by what its pair must match.
     let mut groups: BTreeMap<Group, Sides> = BTreeMap::new();
     for txn in raw.txns() {
         let Some(id) = txn.id.map(|id| journal.strings.get(id)) else {
             continue;
         };
-        if decided.contains(id) {
+        if decided.contains(id) || by_txid.contains(id) {
             continue;
         }
         let [first, second] = journal.postings_of(txn) else {
@@ -114,12 +138,114 @@ pub fn suggest(raw: &Ledger, edits: &Edits) -> Vec<Suggestion> {
         }
     }
 
-    let mut found = Vec::new();
     for sides in groups.into_values() {
         sides.pair(&mut found);
     }
     found.sort_by(|x, y| (x.date, &x.suggestion.link.a).cmp(&(y.date, &y.suggestion.link.a)));
     found.into_iter().map(|f| f.suggestion).collect()
+}
+
+/// Pair the records of each txid two sources hold, as [`suggest`] says,
+/// pushing the pairs to `found`, and return the ids of every record of
+/// those txids, paired or not.
+fn pair_by_txid<'a>(
+    journal: &'a Journal,
+    is_default: &HashSet<AccountId>,
+    decided: &HashSet<&str>,
+    found: &mut Vec<Found>,
+) -> HashSet<&'a str> {
+    let mut by_txid: HashMap<&str, Vec<Record>> = HashMap::new();
+    for txn in &journal.txns {
+        let Some(id) = txn.id.map(|id| journal.strings.get(id)) else {
+            continue;
+        };
+        let Some(txid) = journal.txn_meta(txn, TXID_KEY) else {
+            continue;
+        };
+        let counter = counter_leg(journal, is_default, txn).filter(|_| !decided.contains(id));
+        by_txid.entry(txid).or_default().push(Record {
+            id,
+            source: id.split_once(':').map_or(id, |(source, _)| source),
+            date: txn.date,
+            counter: counter.copied(),
+        });
+    }
+
+    let mut held = HashSet::new();
+    for records in by_txid.values() {
+        let first = records[0].source;
+        if records.iter().all(|r| r.source == first) {
+            continue;
+        }
+        held.extend(records.iter().map(|r| r.id));
+        if let Some(suggestion) = netting_pair(records) {
+            found.push(suggestion);
+        }
+    }
+    held
+}
+
+/// The one pair of `records`, from two sources, whose counter legs net to
+/// zero in one commodity, as a suggestion; `None` when there is no such
+/// pair or more than one.
+fn netting_pair(records: &[Record]) -> Option<Found> {
+    let mut pair = None;
+    for (at, x) in records.iter().enumerate() {
+        for y in &records[at + 1..] {
+            let (Some(xc), Some(yc)) = (x.counter, y.counter) else {
+                continue;
+            };
+            let nets = x.source != y.source
+                && xc.commodity == yc.commodity
+                && xc.qty != 0
+                && i128::from(xc.qty) + i128::from(yc.qty) == 0;
+            if !nets {
+                continue;
+            }
+            if pair.is_some() {
+                return None;
+            }
+            // The side whose counter leg is positive is the one money left.
+            pair = Some(if xc.qty > 0 { (x, y) } else { (y, x) });
+        }
+    }
+    let (out, into) = pair?;
+    Some(Found {
+        date: out.date,
+        suggestion: Suggestion {
+            link: TransferLink {
+                a: out.id.to_owned(),
+                b: into.id.to_owned(),
+            },
+            days: out.date.days().abs_diff(into.date.days()),
+        },
+    })
+}
+
+/// `txn`'s one posting to a default account, or `None` when it has none or
+/// several: the leg derive moves when a link names it.
+fn counter_leg<'a>(
+    journal: &'a Journal,
+    is_default: &HashSet<AccountId>,
+    txn: &Txn,
+) -> Option<&'a Posting> {
+    let mut legs = journal
+        .postings_of(txn)
+        .iter()
+        .filter(|posting| is_default.contains(&posting.account));
+    let leg = legs.next()?;
+    legs.next().is_none().then_some(leg)
+}
+
+/// A record that carries a txid.
+struct Record<'a> {
+    id: &'a str,
+    /// The `<source>:` prefix of its id.
+    source: &'a str,
+    date: Date,
+    /// Its counter leg, or `None` when it has no single one or an edit
+    /// already decided it, so it can't be paired.
+    counter: Option<Posting>,
 }
 
 /// What both sides of a transfer share.
@@ -317,6 +443,249 @@ mod tests {
         edits.overrides.push(ledgerdb::Override {
             record_id: "card:1".to_owned(),
             account: "expenses:fees".to_owned(),
+        });
+        assert!(suggest(raw, &edits).is_empty());
+    }
+
+    /// An on-chain record `id` of txid `txid`, its postings `legs` in msat.
+    fn chain(id: &str, date: &str, txid: &str, legs: &[(&str, i64)]) -> String {
+        let mut text = format!("{date} * x\n  ; id: {id}\n  ; raw-txid: {txid}\n");
+        for (account, msat) in legs {
+            text.push_str(&format!("  {account}  {msat} msat\n"));
+        }
+        text + "\n"
+    }
+
+    /// The CLN wallet paying a bitcoind wallet: bookkeeper's grouped
+    /// withdrawal against the btc importer's receipt.
+    fn cln_to_btc(txid: &str, date: &str, msat: i64, fee: i64) -> String {
+        let cln = chain(
+            &format!("cln:tx:{txid}"),
+            date,
+            txid,
+            &[
+                ("assets:cln:wallet", -(msat + fee)),
+                ("expenses:fees:onchain", fee),
+                ("expenses:unknown", msat),
+            ],
+        );
+        let btc = chain(
+            &format!("btc:{txid}:0"),
+            date,
+            txid,
+            &[("assets:btc:hot", msat), ("income:unknown", -msat)],
+        );
+        cln + &btc
+    }
+
+    /// A raw record with no txid, `msat` into `own` against the default by
+    /// sign, which the amount pass would pair with a txid's record.
+    fn stranger(id: &str, date: &str, own: &str, msat: i64) -> String {
+        let counter = if msat < 0 {
+            "expenses:unknown"
+        } else {
+            "income:unknown"
+        };
+        format!("{date} * x\n  ; id: {id}\n  {own}  {msat} msat\n  {counter}\n\n")
+    }
+
+    /// Both directions pair by txid, each side's fee on its own account and
+    /// however far apart they are dated; a link of each nets in derive, and
+    /// neither record is also offered to a stranger by amount.
+    #[test]
+    fn on_chain_moves_pair_by_txid_both_ways() {
+        let text = [
+            cln_to_btc("aa", "2026-08-01", 1_000_000, 1_000),
+            // The bitcoind wallet paying the CLN wallet, logged ten days on.
+            chain(
+                "btc:bb",
+                "2026-08-02",
+                "bb",
+                &[
+                    ("assets:btc:hot", -2_000_500),
+                    ("expenses:fees:btc", 500),
+                    ("expenses:unknown", 2_000_000),
+                ],
+            ),
+            chain(
+                "cln:tx:bb",
+                "2026-08-12",
+                "bb",
+                &[
+                    ("assets:cln:wallet", 2_000_000),
+                    ("income:unknown", -2_000_000),
+                ],
+            ),
+            // Would pair with cln:tx:bb by amount and date.
+            stranger("bank:1", "2026-08-12", "assets:chequing", -2_000_000),
+        ]
+        .concat();
+        let raw = &ledger(&text).ledger;
+        let edits = crate::rules::default_edits();
+        let found = suggest(raw, &edits);
+        assert_eq!(
+            found,
+            [
+                pair("cln:tx:aa", "btc:aa:0", 0),
+                pair("btc:bb", "cln:tx:bb", 10)
+            ]
+        );
+
+        let mut linked = edits.clone();
+        linked.links.extend(found.into_iter().map(|s| s.link));
+        assert!(suggest(raw, &linked).is_empty());
+        let derived = derive(raw, &linked);
+        assert!(derived.report().rejected.is_empty());
+        let journal = derived.ledger().journal();
+        let transfers = journal.accounts.lookup("transfers").unwrap();
+        let legs: Vec<i64> = derived
+            .ledger()
+            .postings_to(transfers)
+            .map(|p| p.qty)
+            .collect();
+        assert_eq!(legs.len(), 4);
+        assert_eq!(legs.iter().sum::<i64>(), 0);
+    }
+
+    /// A send that paid the CLN wallet and a third party in one transaction
+    /// doesn't net, so it suggests nothing, by txid or by amount.
+    #[test]
+    fn a_third_party_output_suggests_nothing() {
+        let text = [
+            chain(
+                "btc:cc",
+                "2026-08-01",
+                "cc",
+                &[
+                    ("assets:btc:hot", -3_000_500),
+                    ("expenses:fees:btc", 500),
+                    ("expenses:unknown", 3_000_000),
+                ],
+            ),
+            chain(
+                "cln:tx:cc",
+                "2026-08-01",
+                "cc",
+                &[
+                    ("assets:cln:wallet", 1_000_000),
+                    ("income:unknown", -1_000_000),
+                ],
+            ),
+            stranger("bank:1", "2026-08-01", "assets:chequing", -1_000_000),
+        ]
+        .concat();
+        let raw = &ledger(&text).ledger;
+        assert!(suggest(raw, &crate::rules::default_edits()).is_empty());
+    }
+
+    /// Of several receipts of one txid only the one that nets pairs; when two
+    /// would, none does, and they aren't summed to make one.
+    #[test]
+    fn one_receipt_of_several_must_net() {
+        let one = [
+            cln_to_btc("dd", "2026-08-01", 1_000_000, 1_000),
+            chain(
+                "btc:dd:1",
+                "2026-08-01",
+                "dd",
+                &[("assets:btc:cold", 500_000), ("income:unknown", -500_000)],
+            ),
+        ]
+        .concat();
+        let raw = &ledger(&one).ledger;
+        let edits = crate::rules::default_edits();
+        assert_eq!(suggest(raw, &edits), [pair("cln:tx:dd", "btc:dd:0", 0)]);
+
+        let two = [
+            cln_to_btc("ee", "2026-08-01", 1_000_000, 1_000),
+            chain(
+                "btc:ee:1",
+                "2026-08-01",
+                "ee",
+                &[
+                    ("assets:btc:cold", 1_000_000),
+                    ("income:unknown", -1_000_000),
+                ],
+            ),
+        ]
+        .concat();
+        assert!(suggest(&ledger(&two).ledger, &edits).is_empty());
+
+        let split = [
+            chain(
+                "cln:tx:ff",
+                "2026-08-01",
+                "ff",
+                &[
+                    ("assets:cln:wallet", -1_501_000),
+                    ("expenses:fees:onchain", 1_000),
+                    ("expenses:unknown", 1_500_000),
+                ],
+            ),
+            chain(
+                "btc:ff:0",
+                "2026-08-01",
+                "ff",
+                &[
+                    ("assets:btc:hot", 1_000_000),
+                    ("income:unknown", -1_000_000),
+                ],
+            ),
+            chain(
+                "btc:ff:1",
+                "2026-08-01",
+                "ff",
+                &[("assets:btc:hot", 500_000), ("income:unknown", -500_000)],
+            ),
+        ]
+        .concat();
+        assert!(suggest(&ledger(&split).ledger, &edits).is_empty());
+    }
+
+    /// Records of one source that share a txid aren't paired by it.
+    #[test]
+    fn one_sources_records_of_a_txid_dont_pair() {
+        let text = [
+            chain(
+                "cln:chain:1",
+                "2026-08-01",
+                "gg",
+                &[
+                    ("assets:cln:wallet", -1_000_000),
+                    ("expenses:unknown", 1_000_000),
+                ],
+            ),
+            chain(
+                "cln:chain:2",
+                "2026-08-20",
+                "gg",
+                &[
+                    ("assets:cln:other", 1_000_000),
+                    ("income:unknown", -1_000_000),
+                ],
+            ),
+        ]
+        .concat();
+        let raw = &ledger(&text).ledger;
+        assert!(suggest(raw, &crate::rules::default_edits()).is_empty());
+    }
+
+    /// A txid one of whose records an edit already decided suggests
+    /// nothing, and its other record isn't offered to a stranger by amount.
+    #[test]
+    fn a_decided_txid_record_is_skipped() {
+        let text = [
+            cln_to_btc("hh", "2026-08-01", 1_000_000, 1_000),
+            stranger("bank:1", "2026-08-01", "assets:chequing", -1_000_000),
+        ]
+        .concat();
+        let raw = &ledger(&text).ledger;
+        let mut edits = crate::rules::default_edits();
+        assert_eq!(suggest(raw, &edits), [pair("cln:tx:hh", "btc:hh:0", 0)]);
+
+        edits.overrides.push(ledgerdb::Override {
+            record_id: "cln:tx:hh".to_owned(),
+            account: "expenses:gifts".to_owned(),
         });
         assert!(suggest(raw, &edits).is_empty());
     }
