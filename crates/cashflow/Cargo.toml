@@ -11,6 +11,7 @@ chrono-tz = { workspace = true }
 dirs = { workspace = true }
 ehttp = { workspace = true }
 flate2 = { workspace = true }
+futures-util = { workspace = true }
 gethostname = "1"
 headway = { workspace = true }
 hex = { workspace = true }

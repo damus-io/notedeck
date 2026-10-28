@@ -124,10 +124,12 @@
 //! and the run says so.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
+use futures_util::stream::{self, StreamExt};
 use ledgerdb::{LayerFilter, Ledger};
 use lnsocket::bitcoin::secp256k1::{PublicKey, SecretKey, rand};
 use lnsocket::commando::{CommandoConfig, RetryPolicy};
@@ -171,6 +173,10 @@ const DEFAULT_PORT: u16 = 9735;
 /// How long one call may take. A whole unpatched listing is hundreds of MB.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// How many calls of a [`Node::call_each`] batch [`Commando`] has waiting on
+/// the node at once.
+const IN_FLIGHT: usize = 32;
+
 /// JSON-RPC's code for a parameter the method doesn't take.
 const UNKNOWN_PARAMETER: i64 = -32602;
 
@@ -206,6 +212,21 @@ const ZAP_REQUEST: u64 = 9734;
 pub trait Node {
     /// Call `method` with named `params` and return its result.
     fn call(&self, method: &str, params: Value) -> Result<Value, NodeError>;
+
+    /// Call `method` once with each of `params`, answering in the same
+    /// order, each call's error its own: one bad call doesn't fail the
+    /// rest. The outer error is the node being unreachable. By default the
+    /// calls are made one after another.
+    fn call_each(
+        &self,
+        method: &str,
+        params: Vec<Value>,
+    ) -> Result<Vec<Result<Value, NodeError>>, NodeError> {
+        Ok(params
+            .into_iter()
+            .map(|params| self.call(method, params))
+            .collect())
+    }
 }
 
 /// Why a [`Node`] call failed.
@@ -219,8 +240,8 @@ pub enum NodeError {
     Other(String),
 }
 
-/// [`Node`] over commando: each call connects, makes the one call and
-/// hangs up.
+/// [`Node`] over commando: each call, or each [`Node::call_each`] batch,
+/// connects, makes its calls and hangs up.
 pub struct Commando {
     node_id: PublicKey,
     /// `host:port`.
@@ -246,41 +267,81 @@ impl Commando {
         })
     }
 
-    /// Make the call on a runtime of its own, which a thread of its own
-    /// keeps clear of any runtime the caller is on.
-    fn call_on_own_runtime(&self, method: &str, params: Value) -> Result<Value, NodeError> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| NodeError::Other(format!("starting a runtime: {e}")))?;
-        runtime.block_on(async {
-            let key = SecretKey::new(&mut rand::thread_rng());
-            let socket = LNSocket::connect_and_init(key, self.node_id, &self.host)
-                .await
-                .map_err(|e| NodeError::Other(format!("connecting to {}: {e}", self.host)))?;
-            let config = CommandoConfig::new()
-                .timeout(Some(CALL_TIMEOUT))
-                .retry_policy(RetryPolicy::Never)
-                .no_reconnect();
-            let client = CommandoClient::spawn_with_config(socket, self.rune.expose(), config);
-            client.call(method, params).await.map_err(|e| match e {
-                lnsocket::Error::Rpc(rpc) => NodeError::Rpc {
-                    code: rpc.code,
-                    message: rpc.message,
-                },
-                other => NodeError::Other(other.to_string()),
-            })
+    /// Connect and hand the client to `work`, on a runtime of its own,
+    /// which a thread of its own keeps clear of any runtime the caller is
+    /// on.
+    fn with_client<T, F, Fut>(&self, work: F) -> Result<T, NodeError>
+    where
+        T: Send,
+        F: FnOnce(CommandoClient) -> Fut + Send,
+        Fut: Future<Output = Result<T, NodeError>>,
+    {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| NodeError::Other(format!("starting a runtime: {e}")))?;
+                    runtime.block_on(async {
+                        let key = SecretKey::new(&mut rand::thread_rng());
+                        let socket = LNSocket::connect_and_init(key, self.node_id, &self.host)
+                            .await
+                            .map_err(|e| {
+                                NodeError::Other(format!("connecting to {}: {e}", self.host))
+                            })?;
+                        let config = CommandoConfig::new()
+                            .timeout(Some(CALL_TIMEOUT))
+                            .retry_policy(RetryPolicy::Never)
+                            .no_reconnect();
+                        work(CommandoClient::spawn_with_config(
+                            socket,
+                            self.rune.expose(),
+                            config,
+                        ))
+                        .await
+                    })
+                })
+                .join()
+                .unwrap_or_else(|_| Err(NodeError::Other("the commando call panicked".to_owned())))
         })
+    }
+}
+
+/// An lnsocket error as a [`NodeError`], keeping the node's own JSON-RPC
+/// errors apart.
+fn node_error(error: lnsocket::Error) -> NodeError {
+    match error {
+        lnsocket::Error::Rpc(rpc) => NodeError::Rpc {
+            code: rpc.code,
+            message: rpc.message,
+        },
+        other => NodeError::Other(other.to_string()),
     }
 }
 
 impl Node for Commando {
     fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
-        std::thread::scope(|scope| {
-            scope
-                .spawn(|| self.call_on_own_runtime(method, params))
-                .join()
-                .unwrap_or_else(|_| Err(NodeError::Other("the commando call panicked".to_owned())))
+        self.with_client(
+            |client| async move { client.call(method, params).await.map_err(node_error) },
+        )
+    }
+
+    /// Every call over the one connection, [`IN_FLIGHT`] at a time: lnsocket
+    /// tells their answers apart by request id, so a batch costs one
+    /// handshake and its round trips overlap.
+    fn call_each(
+        &self,
+        method: &str,
+        params: Vec<Value>,
+    ) -> Result<Vec<Result<Value, NodeError>>, NodeError> {
+        self.with_client(|client| async move {
+            let client = &client;
+            Ok(stream::iter(params)
+                .map(|params| async move { client.call(method, params).await.map_err(node_error) })
+                .buffered(IN_FLIGHT)
+                .collect()
+                .await)
         })
     }
 }
@@ -1824,6 +1885,39 @@ mod tests {
             written.notes[0]
         );
         assert_eq!(written.hash, None);
+    }
+
+    #[test]
+    fn each_call_of_a_batch_answers_in_order_with_its_own_error() {
+        /// Doubles `n`, refusing odd ones as bitcoind refuses a height past
+        /// its tip.
+        struct Doubler;
+        impl Node for Doubler {
+            fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+                assert_eq!(method, "double");
+                let n = params["n"].as_u64().unwrap();
+                if n % 2 == 1 {
+                    return Err(NodeError::Rpc {
+                        code: -8,
+                        message: format!("{n} is odd"),
+                    });
+                }
+                Ok(json!(n * 2))
+            }
+        }
+        let params = [2, 3, 4].map(|n| json!({ "n": n })).to_vec();
+        let answers = Doubler.call_each("double", params).unwrap();
+        assert_eq!(
+            answers,
+            vec![
+                Ok(json!(4)),
+                Err(NodeError::Rpc {
+                    code: -8,
+                    message: "3 is odd".to_owned()
+                }),
+                Ok(json!(8)),
+            ]
+        );
     }
 
     #[test]
