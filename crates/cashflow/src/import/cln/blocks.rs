@@ -66,14 +66,7 @@ impl BlockTimes {
     /// since a node on another network numbers its blocks alike.
     pub(super) fn held(held: &Ledger, source: &str) -> Self {
         let journal = held.journal();
-        let prefix = format!("{source}:");
-        let times = held
-            .txns()
-            .iter()
-            .filter(|txn| {
-                txn.id
-                    .is_some_and(|id| journal.strings.get(id).starts_with(&prefix))
-            })
+        let times = super::sourced(held, source)
             .filter_map(|txn| {
                 let height = journal.txn_meta(txn, HEIGHT_META)?.parse().ok()?;
                 let time = journal.txn_meta(txn, TIME_META)?.parse().ok()?;
@@ -173,6 +166,16 @@ impl BlockTimes {
             None => Ok(()),
         }
     }
+}
+
+/// Whether `node`'s corerpc gives a block hash, asking for the genesis
+/// block's, which every chain has. `Err` says why not.
+pub(super) fn probe(node: &dyn Node) -> Result<(), String> {
+    node.call(CORERPC, json!([WALLET, "getblockhash", 0]))
+        .map_err(rpc_failure)
+        .and_then(block_hash)
+        .map(drop)
+        .map_err(|why| format!("{CORERPC} getblockhash: {why}"))
 }
 
 /// A height and the hash corerpc gave for it.

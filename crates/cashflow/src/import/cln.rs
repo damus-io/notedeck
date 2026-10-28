@@ -130,7 +130,10 @@
 //! event) and, when the node's `corerpc` plugin gave the block's time,
 //! `raw-blocktime`, which then dates it. A height with no time is dated by
 //! `raw-timestamp`, which stays bookkeeper's, and the run says how many.
-//! See [`blocks`].
+//! See [`blocks`]. Records written before block dating carry no
+//! `raw-blockheight`, and their events are older than the cursor, so when
+//! the journal holds any and corerpc answers, the run reads whole once to
+//! date them ([`start`]).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -502,7 +505,9 @@ impl Importer for ClnImporter {
         };
         let mut listings: Vec<Listing> = match node {
             Some(node) => {
-                let Fetched { listing, note } = fetch(node, cursor(held, &input.source))?;
+                let start = start(node, held, &input.source);
+                notes.extend(start.note);
+                let Fetched { listing, note } = fetch(node, start.cursor)?;
                 notes.extend(note);
                 vec![read_value(listing)?]
             }
@@ -645,13 +650,7 @@ fn fetch(node: &dyn Node, cursor: Option<u64>) -> Result<Fetched, ImportError> {
 /// from before both.
 fn cursor(held: &Ledger, source: &str) -> Option<u64> {
     let journal = held.journal();
-    let prefix = format!("{source}:");
-    held.txns()
-        .iter()
-        .filter(|txn| {
-            txn.id
-                .is_some_and(|id| journal.strings.get(id).starts_with(&prefix))
-        })
+    sourced(held, source)
         .filter(|txn| {
             journal
                 .txn_meta(txn, "raw-cln-tag")
@@ -660,6 +659,67 @@ fn cursor(held: &Ledger, source: &str) -> Option<u64> {
         .filter_map(|txn| journal.txn_meta(txn, "raw-timestamp")?.parse::<u64>().ok())
         .max()
         .map(|newest| newest.saturating_sub(OVERLAP_SECS))
+}
+
+/// `held`'s records from `source`: those whose id is `<source>:…`.
+fn sourced<'a>(held: &'a Ledger, source: &str) -> impl Iterator<Item = &'a ledgerdb::Txn> {
+    let journal = held.journal();
+    let prefix = format!("{source}:");
+    held.txns().iter().filter(move |txn| {
+        txn.id
+            .is_some_and(|id| journal.strings.get(id).starts_with(&prefix))
+    })
+}
+
+/// How many of `held`'s on-chain records from `source` were written before
+/// block dating, so carry no `raw-blockheight`, not even `-`.
+fn undated(held: &Ledger, source: &str) -> usize {
+    let journal = held.journal();
+    sourced(held, source)
+        .filter(|txn| {
+            journal
+                .txn_meta(txn, "raw-cln-tag")
+                .is_some_and(|tag| !is_payment_tag(tag))
+        })
+        .filter(|txn| journal.txn_meta(txn, blocks::HEIGHT_META).is_none())
+        .count()
+}
+
+/// Where a run starts reading, and why it reads more than the cursor asks.
+struct Start {
+    /// See [`cursor`]; `None` reads every event.
+    cursor: Option<u64>,
+    note: Option<String>,
+}
+
+/// Where a run from `source` starts reading `node`: at its [`cursor`],
+/// unless `held` has on-chain records written before block dating. Their
+/// events are older than the cursor, so an incremental read never sees them
+/// again; when corerpc answers, the listing is read whole once to date them
+/// by their block, and after that every one carries `raw-blockheight`. When
+/// it doesn't, they keep bookkeeper's dates, and the note says so.
+fn start(node: &dyn Node, held: &Ledger, source: &str) -> Start {
+    let cursor = cursor(held, source);
+    let undated = undated(held, source);
+    if cursor.is_none() || undated == 0 {
+        return Start { cursor, note: None };
+    }
+    if let Err(why) = blocks::probe(node) {
+        return Start {
+            cursor,
+            note: Some(format!(
+                "{undated} on-chain records were written before block dating and stay dated by \
+                 when bookkeeper logged them until corerpc answers ({why})"
+            )),
+        };
+    }
+    Start {
+        cursor: None,
+        note: Some(format!(
+            "{undated} on-chain records were written before block dating, so every event was \
+             read once to date them by their block"
+        )),
+    }
 }
 
 fn is_payment_tag(tag: &str) -> bool {
@@ -1343,7 +1403,8 @@ mod tests {
             match params[1].as_str().unwrap() {
                 "getblockhash" => {
                     let height = params[2].as_u64().unwrap() as u32;
-                    Ok(match times.contains_key(&height) {
+                    // The genesis block, which every chain has.
+                    Ok(match height == 0 || times.contains_key(&height) {
                         true => json!(format!("{height:064x}")),
                         false => past_the_tip,
                     })
@@ -1822,6 +1883,18 @@ mod tests {
         assert!(has(&entry, "raw-account=c0ffee"));
     }
 
+    /// Put `text` in `store` as a `cln-chain` segment an older import wrote.
+    fn put_old(store: &JournalStore, text: &str) {
+        let ledgerdb::Parsed { journal, errors } = ledgerdb::Journal::parse(text);
+        assert!(errors.is_empty(), "{errors:?}");
+        let header = ledgerdb::SegmentHeader {
+            source: "cln".to_owned(),
+            imported: 5,
+            layer: CHAIN_LAYER.to_owned(),
+        };
+        store.put_segment(&header, &journal).unwrap();
+    }
+
     /// The ledger's record `id`, read back as a [`Txn`].
     fn record(store: &JournalStore, id: &str) -> Txn {
         let ledger = Ledger::load(store, LayerFilter::All).unwrap().ledger;
@@ -1896,14 +1969,7 @@ mod tests {
         // The close's deposit, as an import from before grouping wrote it.
         let old = "2024-03-01 * deposit\n    ; id: cln:chain:12\n    \
                    income:unknown  -99800000 msat\n    assets:cln:wallet  99800000 msat\n";
-        let ledgerdb::Parsed { journal, errors } = ledgerdb::Journal::parse(old);
-        assert!(errors.is_empty(), "{errors:?}");
-        let header = ledgerdb::SegmentHeader {
-            source: "cln".to_owned(),
-            imported: 5,
-            layer: CHAIN_LAYER.to_owned(),
-        };
-        store.put_segment(&header, &journal).unwrap();
+        put_old(&store, old);
 
         pull(&store, &close_events(), true, 10);
         let deposit = record(&store, "cln:chain:12");
@@ -2174,6 +2240,71 @@ mod tests {
             let txn = record(&store, &format!("cln:tx:{}", txid(tx)));
             assert_eq!(txn.date, "2019-06-01", "{tx}");
         }
+    }
+
+    #[test]
+    fn records_from_before_block_dating_are_read_whole_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = JournalStore::new(tmp.path().join("journal"));
+        // A payment days after the close puts the cursor past its events.
+        let paid = invoice(1000, 0, "paid", 3 * OVERLAP_SECS);
+        let cursor = T + 2 * OVERLAP_SECS;
+        pull(&store, std::slice::from_ref(&paid), true, 10);
+        // The close, as an import from before block dating wrote it.
+        let old = format!(
+            "2024-03-01 * channel close\n    ; id: cln:tx:{}\n    ; raw-cln-tag: channel_close\n    \
+             ; raw-timestamp: {}\n    assets:cln  -100000000 msat\n    \
+             expenses:unknown  100000000 msat\n",
+            txid("cc"),
+            T + 10,
+        );
+        put_old(&store, &old);
+        let close = format!("cln:tx:{}", txid("cc"));
+        let mut events = close_events();
+        events.push(paid);
+
+        // Without corerpc it reads from the cursor, and says why the close
+        // keeps bookkeeper's date.
+        let Rig {
+            cln,
+            calls,
+            block_calls,
+        } = importer_with(events.clone(), true, Corerpc::Absent);
+        let written = write(&store, &cln, 11);
+        assert_eq!(*calls.borrow(), [json!({ "start_time": cursor })]);
+        assert_eq!(*block_calls.borrow(), [json!(["", "getblockhash", 0])]);
+        let [note] = written.notes.as_slice() else {
+            panic!("one note: {:?}", written.notes);
+        };
+        assert!(
+            note.starts_with("1 on-chain records were written"),
+            "{note}"
+        );
+        assert!(note.contains("Unknown command"), "{note}");
+        assert_eq!(record(&store, &close).date, "2024-03-01");
+
+        // With it, everything is read once and the close dated by its block.
+        let Rig { cln, calls, .. } = importer_with(events.clone(), true, mined());
+        let written = write(&store, &cln, 12);
+        assert_eq!(*calls.borrow(), [json!({})]);
+        let [note] = written.notes.as_slice() else {
+            panic!("one note: {:?}", written.notes);
+        };
+        assert!(note.contains("read once"), "{note}");
+        let dated = record(&store, &close);
+        assert_eq!(dated.date, "2019-06-01");
+        assert!(has(&dated, "raw-blockheight=800000"));
+
+        // And not again.
+        let Rig {
+            cln,
+            calls,
+            block_calls,
+        } = importer_with(events, true, mined());
+        let written = write(&store, &cln, 13);
+        assert_eq!(*calls.borrow(), [json!({ "start_time": cursor })]);
+        assert!(block_calls.borrow().is_empty());
+        assert!(written.notes.is_empty(), "{:?}", written.notes);
     }
 
     #[test]
