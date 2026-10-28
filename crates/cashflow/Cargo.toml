@@ -16,7 +16,7 @@ gethostname = "1"
 headway = { workspace = true }
 hex = { workspace = true }
 ledgerdb = { workspace = true }
-lnsocket = "0.5.1"
+lnsocket = { git = "https://github.com/jb55/lnsocket-rs", rev = "51b397521e54" }
 nostrdb = { workspace = true }
 nostrdb_net = { workspace = true }
 profiling = { workspace = true }

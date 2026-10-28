@@ -18,4 +18,4 @@ hex = { workspace = true }
 nostrdb = { workspace = true }
 notedeck_ui = { workspace = true }
 
-lnsocket = "0.5.1"
+lnsocket = { git = "https://github.com/jb55/lnsocket-rs", rev = "51b397521e54" }
