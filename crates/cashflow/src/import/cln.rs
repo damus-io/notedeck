@@ -134,8 +134,25 @@
 //! `raw-blockheight`, and their events are older than the cursor, so when
 //! the journal holds any and corerpc answers, the run reads whole once to
 //! date them ([`start`]).
+//!
+//! **Coins bookkeeper never saw arrive get an opening balance.** A wallet
+//! that held coins before bookkeeper ran has their spends logged (its
+//! backfill writes a `withdrawal` for each) but not their deposits, so the
+//! wallet's records alone come out short of `listfunds` by exactly those
+//! coins. A wallet `withdrawal` whose `outpoint` no wallet `deposit` names,
+//! neither in the run's events nor in a record the journal holds (a
+//! `raw-event` line, or a record of its own's `raw-outpoint`), gets a record
+//! of its own, `cln:open:<outpoint>`: the coin into `assets:cln:wallet`
+//! against `equity:cln:opening`, payee `opening balance`, carrying
+//! `raw-outpoint`, the spending `raw-txid` and its withdrawal's
+//! `raw-timestamp`. When the coin arrived is not something bookkeeper knows,
+//! so it is dated as its spend is, by the spend's block, and the wallet
+//! holds it only that day. The run says how many it opened that the journal
+//! lacked. Bookkeeper logs a coin's deposit before its spend, so a deposit
+//! read after its coin was opened comes only from saved listings imported
+//! out of order, which leave the opening in place.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::Path;
 use std::str::FromStr;
@@ -223,6 +240,8 @@ const EXTERNAL: &str = "equity:cln:external";
 const FEES: &str = "equity:cln:fees";
 /// What the `external` and fee records post against.
 const MIRROR: &str = "equity:cln";
+/// What a coin bookkeeper never saw arrive is opened against.
+const OPENING: &str = "equity:cln:opening";
 /// What an on-chain transaction's record posts its fee to: an importer
 /// default, as [`SPENT`] is.
 const ONCHAIN_FEES: &str = "expenses:fees:onchain";
@@ -598,6 +617,18 @@ impl Importer for ClnImporter {
         for tx in txs.list {
             chain.extend(convert.transaction(tx));
         }
+        let unseen = convert.unseen(&listings);
+        let new = unseen
+            .iter()
+            .filter(|coin| convert.held.find(&convert.open_id(coin)).is_none())
+            .count();
+        if new > 0 {
+            notes.push(format!(
+                "{new} wallet coins bookkeeper logged spending but never arriving were opened \
+                 against {OPENING}"
+            ));
+        }
+        chain.extend(unseen.into_iter().map(|coin| convert.opening(coin)));
         let chain = Batch::from_raw(&chain, &[])?.journal;
         Ok(Batch {
             skipped,
@@ -886,6 +917,18 @@ impl Event {
     /// Its block height, when it has a known one.
     fn height(&self) -> Option<u32> {
         self.blockheight.filter(|&height| height > 0)
+    }
+
+    /// The coin it moved into the wallet, if it is a wallet deposit.
+    fn arrived(&self) -> Option<&str> {
+        let deposit = self.kind == "chain" && self.account == "wallet" && self.net() > 0;
+        self.outpoint.as_deref().filter(|_| deposit)
+    }
+
+    /// The coin it moved out of the wallet, if it is a wallet withdrawal.
+    fn left(&self) -> Option<&str> {
+        let withdrawal = self.kind == "chain" && self.account == "wallet" && self.net() < 0;
+        self.outpoint.as_deref().filter(|_| withdrawal)
     }
 }
 
@@ -1252,6 +1295,85 @@ impl Convert<'_> {
             meta,
             postings,
         })
+    }
+
+    /// The record id of the opening balance of wallet coin `coin`'s
+    /// withdrawal.
+    fn open_id(&self, coin: &Event) -> String {
+        format!("{}:open:{}", self.source, coin.left().unwrap_or("-"))
+    }
+
+    /// The wallet withdrawals among `listings`' events whose coin no wallet
+    /// deposit names, there or in the journal: each coin once, in the order
+    /// it was first spent.
+    fn unseen<'e>(&self, listings: &'e [Listing]) -> Vec<&'e Event> {
+        let events = || listings.iter().flat_map(|listing| &listing.events);
+        let arrived: HashSet<&str> = events().filter_map(Event::arrived).collect();
+        let mut opened = HashSet::new();
+        let mut unseen: Vec<&Event> = events()
+            .filter(|event| {
+                event
+                    .left()
+                    .is_some_and(|coin| !arrived.contains(coin) && opened.insert(coin))
+            })
+            .collect();
+        if !unseen.is_empty() {
+            let held = self.held_arrivals();
+            unseen.retain(|event| event.left().is_some_and(|coin| !held.contains(coin)));
+        }
+        unseen
+    }
+
+    /// The wallet coins whose deposit a record the journal holds lists: in
+    /// an on-chain transaction's `raw-event` lines, or as a wallet credit of
+    /// its own with a `raw-outpoint`.
+    fn held_arrivals(&self) -> HashSet<String> {
+        let journal = self.held.journal();
+        let event_key = journal.strings.lookup(EVENT_META);
+        let mut arrived = HashSet::new();
+        for txn in sourced(self.held, self.source) {
+            let own = journal.txn_meta(txn, "raw-account") == Some("wallet")
+                && journal.txn_meta(txn, "raw-direction") == Some("credit");
+            if let Some(coin) = journal.txn_meta(txn, "raw-outpoint").filter(|_| own) {
+                arrived.insert(coin.to_owned());
+            }
+            let Some(key) = event_key else { continue };
+            let deposits = journal
+                .meta_of(txn)
+                .iter()
+                .filter(|entry| entry.posting.is_none() && entry.key == key)
+                .filter_map(|entry| Member::read(journal.strings.get(entry.value)))
+                .filter(|m| m.kind == "chain" && m.account == "wallet" && m.net > 0);
+            arrived.extend(deposits.filter_map(|m| m.outpoint));
+        }
+        arrived
+    }
+
+    /// The opening balance of the wallet coin `coin` withdrew, which
+    /// bookkeeper never saw arrive: into the wallet against [`OPENING`],
+    /// dated by the spend's block.
+    fn opening(&self, coin: &Event) -> RawTxn {
+        let msat = -coin.net();
+        let mut meta = vec![
+            meta("raw-outpoint", coin.left().unwrap_or("-")),
+            meta("raw-timestamp", &coin.timestamp.to_string()),
+        ];
+        let height = coin.height().or_else(|| {
+            let txid = coin.txid.as_deref()?;
+            self.held_height(&self.tx_id(txid))
+        });
+        let date = self.block_date(coin.timestamp, height, &mut meta);
+        if let Some(txid) = &coin.txid {
+            meta.push(self::meta("raw-txid", txid));
+        }
+        RawTxn {
+            date,
+            cleared: true,
+            payee: "opening balance".to_owned(),
+            id: self.open_id(coin),
+            meta,
+            postings: vec![posting(WALLET, msat), posting(OPENING, -msat)],
+        }
     }
 
     /// The events the journal's record `id` lists, none when it holds no
@@ -1784,7 +1906,7 @@ mod tests {
 
     /// Bookkeeper's events for a wallet spend of two coins: 50k sat out to
     /// an address, the change back, and its 300 sat fee, which bookkeeper
-    /// writes as a credit and a debit.
+    /// writes as a credit and a debit. It never saw either coin arrive.
     fn spend_events() -> Vec<Value> {
         let tx = txid("5e");
         let mut sent = chain_event("external", "deposit", 50_000_000, &format!("{tx}:0"), 23);
@@ -1864,8 +1986,8 @@ mod tests {
 
     #[test]
     fn a_spend_with_change_leaves_only_what_it_sent() {
-        let [spend] = chain_records(spend_events()).try_into().unwrap();
-        assert_eq!(spend.id, format!("cln:tx:{}", txid("5e")));
+        let records = chain_records(spend_events());
+        let spend = find(&records, &format!("cln:tx:{}", txid("5e")));
         assert_eq!(spend.payee, "withdrawal");
         assert_eq!(
             spend.postings,
@@ -1876,8 +1998,8 @@ mod tests {
             ],
             "the change nets in the wallet rather than reading as income"
         );
-        assert!(has(&spend, "raw-direction=debit"));
-        assert_eq!(events_of(&spend), 5, "every event but the external one");
+        assert!(has(spend, "raw-direction=debit"));
+        assert_eq!(events_of(spend), 5, "every event but the external one");
     }
 
     #[test]
@@ -1997,14 +2119,19 @@ mod tests {
         let mut events = close_events();
         events.extend(spend_events());
         let first = pull(&store, &events, true, 10);
-        assert_eq!(first.other_layers[0].txn_rows.new, 2);
+        assert_eq!(
+            first.other_layers[0].txn_rows.new, 4,
+            "two transactions and the spend's two coins' openings"
+        );
 
         // An unpatched node gives no created_index or update_count, but the
         // transactions' ids and their events' ids are the same.
         for (patched, imported) in [(true, 11), (false, 12)] {
             let again = pull(&store, &events, patched, imported);
             assert_eq!(again.other_layers[0].hash, None, "patched: {patched}");
-            assert_eq!(again.other_layers[0].txn_rows.unchanged, 2);
+            assert_eq!(again.other_layers[0].txn_rows.unchanged, 4);
+            let opened = again.notes.iter().find(|note| note.contains("opened"));
+            assert_eq!(opened, None, "nothing newly opened");
         }
     }
 
@@ -2324,14 +2451,109 @@ mod tests {
             } = importer_with(events.clone(), true, corerpc);
             let written = write(&store, &cln, imported);
             assert!(block_calls.borrow().is_empty());
-            assert!(written.notes.is_empty(), "{:?}", written.notes);
+            // The spend's coins are opened the first time it is read.
+            let opened = (imported == 11).then_some(
+                "2 wallet coins bookkeeper logged spending but never arriving were opened \
+                 against equity:cln:opening",
+            );
+            assert_eq!(written.notes, Vec::from_iter(opened), "{imported}");
             let rows = &written.other_layers[0].txn_rows;
             assert_eq!(rows.changed, 0, "imported at {imported}");
         }
-        for tx in ["cc", "5e"] {
-            let txn = record(&store, &format!("cln:tx:{}", txid(tx)));
-            assert_eq!(txn.date, "2019-06-01", "{tx}");
+        let opening = format!("cln:open:{}:0", txid("aa"));
+        for id in [
+            format!("cln:tx:{}", txid("cc")),
+            format!("cln:tx:{}", txid("5e")),
+            opening,
+        ] {
+            assert_eq!(record(&store, &id).date, "2019-06-01", "{id}");
         }
+    }
+
+    /// What `store`'s records hold in the wallet.
+    fn wallet_balance(store: &JournalStore) -> i64 {
+        let ledger = Ledger::load(store, LayerFilter::All).unwrap().ledger;
+        let journal = ledger.journal();
+        ledger
+            .postings()
+            .iter()
+            .filter(|p| journal.accounts.full_name(p.account) == WALLET)
+            .map(|p| p.qty)
+            .sum()
+    }
+
+    #[test]
+    fn a_coin_bookkeeper_never_saw_arrive_is_opened_by_its_spend() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = JournalStore::new(tmp.path().join("journal"));
+        // The second coin's deposit, in the same run: only the first is
+        // opened.
+        let mut events = spend_events();
+        events.push(chain_event(
+            "wallet",
+            "deposit",
+            80_000_000,
+            &format!("{}:1", txid("bb")),
+            2,
+        ));
+        let Rig { cln, .. } = importer_with(events, true, mined());
+        let written = write(&store, &cln, 10);
+        assert_eq!(
+            written.notes,
+            [
+                "1 wallet coins bookkeeper logged spending but never arriving were opened \
+              against equity:cln:opening"
+            ]
+        );
+        let coin = format!("{}:0", txid("aa"));
+        let opening = record(&store, &format!("cln:open:{coin}"));
+        assert_eq!(opening.payee, "opening balance");
+        assert_eq!(
+            opening.postings,
+            [
+                leg("assets:cln:wallet", 30_000_000),
+                leg("equity:cln:opening", -30_000_000)
+            ]
+        );
+        assert_eq!(opening.date, "2019-06-01", "the spend's block");
+        assert!(has(&opening, &format!("raw-outpoint={coin}")));
+        assert!(has(&opening, &format!("raw-txid={}", txid("5e"))));
+        assert!(has(&opening, "raw-blockheight=800000"));
+        assert!(has(&opening, &format!("raw-timestamp={}", T + 20)));
+        assert_eq!(
+            wallet_balance(&store),
+            59_700_000,
+            "the wallet holds the change, as listfunds would"
+        );
+    }
+
+    #[test]
+    fn a_deposit_the_journal_holds_opens_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = JournalStore::new(tmp.path().join("journal"));
+        // The first coin's deposit, as an import from before grouping
+        // wrote it, and the second's in an earlier run's record.
+        let old = format!(
+            "2024-03-01 * deposit\n    ; id: cln:chain:1\n    ; raw-account: wallet\n    \
+             ; raw-direction: credit\n    ; raw-outpoint: {}:0\n    \
+             income:unknown  -30000000 msat\n    assets:cln:wallet  30000000 msat\n",
+            txid("aa")
+        );
+        put_old(&store, &old);
+        let deposit = chain_event(
+            "wallet",
+            "deposit",
+            80_000_000,
+            &format!("{}:1", txid("bb")),
+            2,
+        );
+        pull(&store, &[deposit], true, 10);
+
+        let written = pull(&store, &spend_events(), true, 11);
+        let opened = written.notes.iter().find(|note| note.contains("opened"));
+        assert_eq!(opened, None);
+        assert_eq!(written.other_layers[0].txn_rows.new, 1, "the spend alone");
+        assert_eq!(wallet_balance(&store), 59_700_000);
     }
 
     #[test]

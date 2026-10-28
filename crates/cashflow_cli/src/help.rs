@@ -380,7 +380,12 @@ Importers:
                   whole. Other events, and any the journal held as a
                   record of its own before grouping, are one record each:
                   cln:channel:<n>, cln:chain:<n> and cln:fee:… from a
-                  patched bookkeeper, cln:h:<hash> otherwise. A
+                  patched bookkeeper, cln:h:<hash> otherwise. A wallet
+                  coin bookkeeper logged spending but never arriving
+                  (coins from before it ran) gets an opening balance,
+                  cln:open:<outpoint>, into assets:cln:wallet against
+                  equity:cln:opening, dated by its spend's block, so the
+                  wallet's records add up to listfunds. A
                   description edited later on an event older
                   than the cursor is not read again. Given files, it reads
                   saved bkpr-listaccountevents output instead.
