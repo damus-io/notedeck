@@ -12,6 +12,8 @@
 use chrono::{Offset, TimeZone};
 use ledgerdb::Date;
 
+use crate::import::ImportError;
+
 /// A time zone a unix time is dated in.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Zone {
@@ -64,6 +66,54 @@ impl Zone {
         };
         let days = (secs + i64::from(offset)).div_euclid(86_400);
         Date::from_days(days.clamp(0, i64::from(u32::MAX)) as u32)
+    }
+}
+
+/// The zone an import dates events in, and a note for the user when it
+/// isn't the one every machine shares.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dating {
+    pub zone: Zone,
+    pub note: Option<String>,
+}
+
+impl Dating {
+    /// The zone an importer whose config table is `[table]` dates events
+    /// in: the table's own `timezone` key (`local`), then the `synced`
+    /// setting, then the system's own. Either fallback the user may not
+    /// expect comes with a note saying so.
+    pub fn pick(
+        table: &str,
+        local: Option<&str>,
+        synced: Option<&str>,
+    ) -> Result<Self, ImportError> {
+        if let Some(local) = local {
+            let zone = Zone::parse(local)
+                .map_err(|e| ImportError::Usage(format!("[{table}] timezone: {e}")))?;
+            let note = synced
+                .filter(|s| Zone::parse(s).ok() != Some(zone))
+                .map(|s| {
+                    format!(
+                        "dating events in [{table}] timezone {local}, not the synced timezone \
+                         {s}: another machine dating in {s} rewrites events near midnight"
+                    )
+                });
+            return Ok(Self { zone, note });
+        }
+        if let Some(synced) = synced {
+            let zone = Zone::parse(synced)
+                .map_err(|e| ImportError::Usage(format!("the timezone setting: {e}")))?;
+            return Ok(Self { zone, note: None });
+        }
+        Ok(Self {
+            zone: Zone::Local,
+            note: Some(
+                "dating events in this machine's time zone: set one every machine shares \
+                 (`cashflow settings set timezone America/Vancouver`), or two machines \
+                 importing rewrite each other's events near midnight"
+                    .to_owned(),
+            ),
+        })
     }
 }
 

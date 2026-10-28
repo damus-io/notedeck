@@ -179,7 +179,7 @@ use super::{
 use crate::CashflowDir;
 use crate::config::{ClnConfig, Secret, secret_env_var};
 use crate::prices::MSAT;
-use crate::zone::Zone;
+use crate::zone::{Dating, Zone};
 
 mod blocks;
 
@@ -374,13 +374,6 @@ fn node_error(error: lnsocket::Error) -> NodeError {
     }
 }
 
-/// The zone an import dates events in, and a note for the user when it
-/// isn't the one every machine shares.
-struct Dating {
-    zone: Zone,
-    note: Option<String>,
-}
-
 /// Reads Core Lightning bookkeeper events, from the node or saved listings.
 pub struct ClnImporter {
     config: ClnConfig,
@@ -422,37 +415,13 @@ impl ClnImporter {
     }
 
     /// The zone events are dated in: `[cln] timezone`, then the synced
-    /// setting, then the system's own. Either fallback the user may not
-    /// expect comes with a note saying so.
+    /// setting, then the system's own (see [`Dating::pick`]).
     fn dating(&self) -> Result<Dating, ImportError> {
-        let synced = self.synced_timezone.as_deref();
-        if let Some(local) = self.config.timezone.as_deref() {
-            let zone = Zone::parse(local)
-                .map_err(|e| ImportError::Usage(format!("[cln] timezone: {e}")))?;
-            let note = synced
-                .filter(|s| Zone::parse(s).ok() != Some(zone))
-                .map(|s| {
-                    format!(
-                        "dating events in [cln] timezone {local}, not the synced timezone {s}: \
-                         another machine dating in {s} rewrites events near midnight"
-                    )
-                });
-            return Ok(Dating { zone, note });
-        }
-        if let Some(synced) = synced {
-            let zone = Zone::parse(synced)
-                .map_err(|e| ImportError::Usage(format!("the timezone setting: {e}")))?;
-            return Ok(Dating { zone, note: None });
-        }
-        Ok(Dating {
-            zone: Zone::Local,
-            note: Some(
-                "dating events in this machine's time zone: set one every machine shares \
-                 (`cashflow settings set timezone America/Vancouver`), or two machines \
-                 importing rewrite each other's events near midnight"
-                    .to_owned(),
-            ),
-        })
+        Dating::pick(
+            "cln",
+            self.config.timezone.as_deref(),
+            self.synced_timezone.as_deref(),
+        )
     }
 
     /// Connect to the node the config names, called with the rune secret.
