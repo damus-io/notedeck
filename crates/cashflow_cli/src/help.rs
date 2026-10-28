@@ -347,7 +347,15 @@ Importers:
                   (http://127.0.0.1:8332), `user` (whose password is the
                   bitcoind-rpc-password secret) or `cookie`
                   (~/.bitcoin/.cookie), and `external_wallets` (watch-only
-                  wallets read too). Leave a watch-only wallet over a CLN
+                  wallets read too). Where bitcoind's RPC can't be
+                  reached, or there are no credentials for it, the run
+                  reads the same wallets through the CLN node's corerpc
+                  plugin over commando instead ([cln] node_id and host,
+                  the cln-rune secret) and says so; `via` (auto) sets it:
+                  auto, http or corerpc. A 401 or an error bitcoind
+                  answers never falls back. Through corerpc amounts pass
+                  through a double, exact to 15 significant digits.
+                  Leave a watch-only wallet over a CLN
                   node's own wallet out of both (list `wallets` without
                   it) when `import cln` reads that node: bookkeeper is its
                   source, and reading it here too counts its coins twice

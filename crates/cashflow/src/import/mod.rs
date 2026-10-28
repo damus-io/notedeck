@@ -120,7 +120,11 @@ pub fn importer(
             config.appstore.as_ref(),
             dir,
         ))),
-        "btc" => Some(Box::new(BtcImporter::new(config.btc.as_ref(), dir))),
+        "btc" => Some(Box::new(BtcImporter::new(
+            config.btc.as_ref(),
+            config.cln.as_ref(),
+            dir,
+        ))),
         "cln" => Some(Box::new(
             ClnImporter::new(config.cln.as_ref(), dir).synced(synced),
         )),

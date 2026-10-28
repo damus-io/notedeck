@@ -206,7 +206,7 @@ pub const RUNE_UNSAFE: &str =
 
 /// The code commando answers a call its rune doesn't permit with
 /// (`COMMANDO_ERROR_REMOTE_AUTH`).
-const RUNE_DENIED: i64 = 19537;
+pub(crate) const RUNE_DENIED: i64 = 19537;
 
 /// The layer payments go in.
 pub const LAYER: &str = "cln";
@@ -488,37 +488,54 @@ impl ClnImporter {
 
     /// The node the config names, called with the rune secret.
     fn connect(&self) -> Result<Commando, ImportError> {
-        let need = |key: &str, example: &str| {
-            ImportError::Usage(format!(
-                "no `{key}` under [cln] in config.toml: run `cashflow config set cln.{key} \
-                 {example}` to fetch from the node (or give `bkpr-listaccountevents` output \
-                 files)"
-            ))
-        };
-        let node_id = self
-            .config
-            .node_id
-            .as_deref()
-            .ok_or_else(|| need("node_id", "<66-hex node id>"))?;
-        let host = self
-            .config
-            .host
-            .as_deref()
-            .ok_or_else(|| need("host", "<host[:port]>"))?;
-        let rune = self
-            .dir
-            .secret(RUNE_SECRET)
-            .map_err(|e| ImportError::Usage(e.to_string()))?
-            .ok_or_else(|| {
-                ImportError::Usage(format!(
-                    "no rune: {}, then store it with `cashflow secret set {RUNE_SECRET}` (or \
-                     set ${})",
-                    mint_rune(),
-                    secret_env_var(RUNE_SECRET),
-                ))
-            })?;
-        Commando::new(node_id, host, rune).map_err(ImportError::Usage)
+        commando(&self.config, &self.dir).map_err(|missing| match missing {
+            NoCommando::Unset { .. } => ImportError::Usage(format!(
+                "{missing} to fetch from the node (or give `bkpr-listaccountevents` output files)"
+            )),
+            missing => ImportError::Usage(missing.to_string()),
+        })
     }
+}
+
+/// Why [`commando`] has no node to call. Each says what to set, worded for
+/// any importer that calls the node, which adds what it would do with it.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum NoCommando {
+    /// `[cln] <key>` isn't set.
+    #[error("no `{key}` under [cln] in config.toml: run `cashflow config set cln.{key} {example}`")]
+    Unset {
+        key: &'static str,
+        example: &'static str,
+    },
+    /// There is no `cln-rune` secret.
+    #[error(
+        "no rune: {}, then store it with `cashflow secret set {RUNE_SECRET}` (or set ${})",
+        mint_rune(),
+        secret_env_var(RUNE_SECRET)
+    )]
+    NoRune,
+    /// The secrets store couldn't be read, or the node id isn't one.
+    #[error("{0}")]
+    Other(String),
+}
+
+/// The node `config` names, called with the `cln-rune` secret in `dir`:
+/// what `import cln` reads bookkeeper from, and what `import btc` reads
+/// bitcoind through when it can't reach it itself.
+pub(crate) fn commando(config: &ClnConfig, dir: &CashflowDir) -> Result<Commando, NoCommando> {
+    let node_id = config.node_id.as_deref().ok_or(NoCommando::Unset {
+        key: "node_id",
+        example: "<66-hex node id>",
+    })?;
+    let host = config.host.as_deref().ok_or(NoCommando::Unset {
+        key: "host",
+        example: "<host[:port]>",
+    })?;
+    let rune = dir
+        .secret(RUNE_SECRET)
+        .map_err(|e| NoCommando::Other(e.to_string()))?
+        .ok_or(NoCommando::NoRune)?;
+    Commando::new(node_id, host, rune).map_err(NoCommando::Other)
 }
 
 impl Importer for ClnImporter {
@@ -660,7 +677,7 @@ struct Fetched {
 
 /// How to mint the rune [`RUNE_RESTRICTIONS`] describes, and why it is
 /// pinned.
-fn mint_rune() -> String {
+pub(crate) fn mint_rune() -> String {
     format!(
         "mint one on the node with lightning-cli createrune \
          restrictions='{RUNE_RESTRICTIONS}' ({RUNE_UNSAFE})"

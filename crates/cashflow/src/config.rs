@@ -428,11 +428,18 @@ pub struct PayrollConfig {
 /// The RPC password is a secret, `bitcoind-rpc-password` (see
 /// [`CashflowDir::secret`]), used with `user`. With no `user` the importer
 /// reads bitcoind's cookie file instead.
+///
+/// Where bitcoind's RPC can't be reached, as from a laptop away from the
+/// machine it runs on, the importer reads the same wallets through a CLN
+/// node's `corerpc` plugin over commando instead, with `[cln]`'s node and
+/// rune ([`Self::via`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BtcConfig {
     /// bitcoind's JSON-RPC endpoint [default: `http://127.0.0.1:8332`].
     pub url: Option<String>,
+    /// How bitcoind is reached [default: `auto`].
+    pub via: Option<BtcVia>,
     /// `rpcuser`, whose password is the `bitcoind-rpc-password` secret.
     pub user: Option<String>,
     /// bitcoind's `.cookie` file, used when there is no `user`
@@ -455,6 +462,24 @@ pub struct BtcConfig {
     /// [`Self::wallets`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_wallets: Vec<String>,
+}
+
+/// How the `btc` importer reaches bitcoind: `[btc] via`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BtcVia {
+    /// Over HTTP, unless bitcoind can't be reached or there are no
+    /// credentials for it before its first answer: then through corerpc,
+    /// when `[cln]` names a node and the `cln-rune` secret is set, and the
+    /// run says so. Wrong credentials (a 401) or an error bitcoind answers
+    /// with never fall back.
+    #[default]
+    Auto,
+    /// Over bitcoind's own JSON-RPC, at [`BtcConfig::url`].
+    Http,
+    /// Through the `corerpc` plugin of the CLN node `[cln]` names, over
+    /// commando with the `cln-rune` secret.
+    Corerpc,
 }
 
 /// `[appstore]` in `config.toml`: whose App Store Connect reports these
@@ -736,6 +761,10 @@ mod tests {
         assert_eq!(table.external_wallets, ["cold"]);
         assert_eq!(Config::parse(&btc.to_toml()).unwrap(), btc);
         assert!(Config::parse("[btc]\nwallet = [\"x\"]\n").is_err());
+        let corerpc = Config::parse("[btc]\nvia = \"corerpc\"\n").unwrap();
+        assert_eq!(corerpc.btc.as_ref().unwrap().via, Some(BtcVia::Corerpc));
+        assert_eq!(Config::parse(&corerpc.to_toml()).unwrap(), corerpc);
+        assert!(Config::parse("[btc]\nvia = \"ssh\"\n").is_err());
 
         assert_eq!(Config::default().goal_boards(), ["cashflow", "personal"]);
         let goals = Config::parse("[goals]\nboards = [\"money\"]\n").unwrap();

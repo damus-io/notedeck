@@ -13,9 +13,21 @@
 //! (the optional tenth column, a send's fee, is one the old script never
 //! printed). That is for offline use and tests.
 //!
+//! **Where bitcoind's RPC can't be reached**, from a laptop away from the
+//! machine it runs on, say, the same calls go through the `corerpc` plugin
+//! (jb55/cln-core-rpc) of the CLN node `[cln]` names, over commando with the
+//! `cln-rune` secret: `[btc] via` (see [`BtcVia`]). By default a run tries
+//! HTTP first and falls back only when the first call can't reach bitcoind
+//! or there are no credentials for it, and then reads the whole run through
+//! corerpc, so a run never mixes the two.
+//!
 //! **Amounts are exact.** bitcoind writes an amount as a decimal number of
 //! bitcoin, read from the JSON text itself (never through an `f64`) into
-//! integer msat, the commodity amounts are written in. An entry not yet in a
+//! integer msat, the commodity amounts are written in. Through corerpc they
+//! pass through a double twice, corerpc's JavaScript and lnsocket's parsed
+//! `Value`, so they are exact to 15 significant digits, which is every
+//! amount under 10M BTC to the sat (see [`Corerpc`]); over HTTP they stay
+//! exact from bitcoind's own text. An entry not yet in a
 //! block, or one whose transaction lost to a conflicting one, has no date to
 //! file it under: it is left out (see [`super::LeftOut`]) and a later import
 //! takes it once it confirms.
@@ -38,6 +50,7 @@
 //! or a donor's address; none of that is in this code. Its segments go in the
 //! `btc-onchain` layer, which a reader can switch off as a whole.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -48,11 +61,12 @@ use serde::de::DeserializeOwned;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
+use super::cln::{self, NoCommando, Node, NodeError};
 use super::{
     Batch, ImportError, ImportInput, Importer, LeftOut, RawAmount, RawMeta, RawPosting, RawTxn,
 };
 use crate::CashflowDir;
-use crate::config::{BtcConfig, secret_env_var};
+use crate::config::{BtcConfig, BtcVia, ClnConfig, secret_env_var};
 use crate::prices::MSAT;
 
 /// The secret holding the password of [`BtcConfig::user`].
@@ -191,33 +205,192 @@ fn result_of(answer: &[u8]) -> Result<Box<RawValue>, RpcError> {
         .ok_or_else(|| RpcError::Other("no result in the answer".to_owned()))
 }
 
+/// [`Rpc`] through a CLN node's `corerpc` plugin: `corerpc <wallet>
+/// <method> [args…]`, the empty wallet being bitcoind's default.
+///
+/// corerpc is JavaScript, so bitcoind's numbers reach it as doubles, and
+/// lnsocket hands back a parsed [`Value`]: the answer is that value written
+/// back out as text. A double's shortest form reads back as the same
+/// decimal for every amount of at most 15 significant digits, which
+/// [`btc_to_msat`] then reads exactly.
+pub struct Corerpc<'a> {
+    node: &'a dyn Node,
+}
+
+impl<'a> Corerpc<'a> {
+    /// bitcoind, through `node`'s corerpc.
+    pub fn new(node: &'a dyn Node) -> Self {
+        Self { node }
+    }
+}
+
+impl Rpc for Corerpc<'_> {
+    fn call(
+        &self,
+        wallet: Option<&str>,
+        method: &str,
+        params: Value,
+    ) -> Result<Box<RawValue>, RpcError> {
+        let Value::Array(args) = params else {
+            return Err(RpcError::Other(format!(
+                "corerpc takes its params as an array, not {params}"
+            )));
+        };
+        let mut corerpc = vec![json!(wallet.unwrap_or("")), json!(method)];
+        corerpc.extend(args);
+        let answer =
+            self.node
+                .call("corerpc", Value::Array(corerpc))
+                .map_err(|error| match error {
+                    NodeError::Rpc {
+                        code: cln::RUNE_DENIED,
+                        message,
+                    } => RpcError::Rpc {
+                        code: cln::RUNE_DENIED,
+                        message: format!("{message}; {}", cln::mint_rune()),
+                    },
+                    NodeError::Rpc { code, message } => RpcError::Rpc { code, message },
+                    NodeError::Other(error) => RpcError::Unreachable(error),
+                })?;
+        RawValue::from_string(answer.to_string()).map_err(|e| RpcError::Other(e.to_string()))
+    }
+}
+
 /// Reads on-chain bitcoin wallets from bitcoind, or from `btc-txs-raw`
 /// listings.
 pub struct BtcImporter {
     config: BtcConfig,
-    /// Where the RPC password secret is read from, when the import runs.
+    /// The CLN node a run reads through when bitcoind can't be reached.
+    cln: ClnConfig,
+    /// Where the RPC password and rune secrets are read from, when the
+    /// import runs.
     dir: CashflowDir,
     /// The endpoint to use instead of connecting with `config`, for tests.
     rpc: Option<Box<dyn Rpc>>,
+    /// The CLN node to use instead of connecting with `cln`, for tests.
+    node: Option<Box<dyn Node>>,
 }
 
 impl BtcImporter {
-    /// The importer as `config.toml`'s `[btc]` table sets it up, reading its
-    /// secret from `dir` when it runs.
-    pub fn new(config: Option<&BtcConfig>, dir: &CashflowDir) -> Self {
+    /// The importer as `config.toml`'s `[btc]` table sets it up, reading
+    /// through the node `[cln]` names when it has to, and its secrets from
+    /// `dir` when it runs.
+    pub fn new(config: Option<&BtcConfig>, cln: Option<&ClnConfig>, dir: &CashflowDir) -> Self {
         Self {
             config: config.cloned().unwrap_or_default(),
+            cln: cln.cloned().unwrap_or_default(),
             dir: dir.clone(),
             rpc: None,
+            node: None,
         }
     }
 
-    /// The importer reading from `rpc` rather than connecting.
+    /// The importer reading from `rpc` rather than connecting over HTTP.
     pub fn with_rpc(config: Option<&BtcConfig>, rpc: Box<dyn Rpc>) -> Self {
         Self {
             rpc: Some(rpc),
-            ..Self::new(config, &CashflowDir::new(""))
+            ..Self::new(config, None, &CashflowDir::new(""))
         }
+    }
+
+    /// The importer reading through `node`'s corerpc rather than connecting
+    /// to the node `[cln]` names.
+    pub fn with_node(self, node: Box<dyn Node>) -> Self {
+        Self {
+            node: Some(node),
+            ..self
+        }
+    }
+
+    /// bitcoind's endpoint, as notes and errors name it.
+    fn url(&self) -> &str {
+        self.config.url.as_deref().unwrap_or(DEFAULT_URL)
+    }
+
+    /// Every entry, through the backend `[btc] via` picks.
+    fn read(&self) -> Result<Read, ImportError> {
+        match self.config.via.unwrap_or_default() {
+            BtcVia::Http => {
+                let entries = self.over_http(|rpc| self.fetch(rpc)).map_err(usage)??;
+                Ok(Read {
+                    entries,
+                    note: None,
+                })
+            }
+            BtcVia::Corerpc => {
+                let entries = self
+                    .through_corerpc(|rpc| self.fetch(rpc))
+                    .map_err(|missing| ImportError::Usage(missing.to_string()))??;
+                Ok(Read {
+                    entries,
+                    note: None,
+                })
+            }
+            BtcVia::Auto => self.read_auto(),
+        }
+    }
+
+    /// HTTP, unless its first call can't reach bitcoind or there are no
+    /// credentials for it; then corerpc for the whole run, when `[cln]`
+    /// can be reached, with a note saying why.
+    fn read_auto(&self) -> Result<Read, ImportError> {
+        let (why, failed) = match self.over_http(|rpc| {
+            let counted = Counted::new(rpc);
+            let fetched = self.fetch(&counted);
+            (fetched, counted.answered.get())
+        }) {
+            Err(RpcError::NoCredentials(error)) => {
+                ("has no credentials".to_owned(), ImportError::Usage(error))
+            }
+            Err(error) => return Err(usage(error)),
+            Ok((Ok(entries), _)) => {
+                return Ok(Read {
+                    entries,
+                    note: None,
+                });
+            }
+            Ok((
+                Err(FetchError::Call(CallFailed {
+                    from,
+                    error: RpcError::Unreachable(error),
+                })),
+                0,
+            )) => (
+                format!("couldn't be reached: {error}"),
+                ImportError::Fetch { from, error },
+            ),
+            Ok((Err(error), _)) => return Err(error.into()),
+        };
+        let entries = match self.through_corerpc(|rpc| self.fetch(rpc)) {
+            Ok(fetched) => fetched?,
+            Err(missing) => return Err(no_fallback(failed, &missing)),
+        };
+        Ok(Read {
+            entries,
+            note: Some(format!(
+                "bitcoind's RPC at {} {why}, so wallets were read through corerpc over commando",
+                self.url()
+            )),
+        })
+    }
+
+    /// `work` over HTTP: the endpoint given in its place, else the one the
+    /// config names.
+    fn over_http<T>(&self, work: impl FnOnce(&dyn Rpc) -> T) -> Result<T, RpcError> {
+        if let Some(rpc) = &self.rpc {
+            return Ok(work(&**rpc));
+        }
+        Ok(work(&self.connect()?))
+    }
+
+    /// `work` through corerpc: on the node given in its place, else the one
+    /// `[cln]` names.
+    fn through_corerpc<T>(&self, work: impl FnOnce(&dyn Rpc) -> T) -> Result<T, NoCommando> {
+        if let Some(node) = &self.node {
+            return Ok(work(&Corerpc::new(&**node)));
+        }
+        let commando = cln::commando(&self.cln, &self.dir)?;
+        Ok(work(&Corerpc::new(&commando)))
     }
 
     /// The endpoint the config names, signed in with its credentials.
@@ -225,7 +398,7 @@ impl BtcImporter {
     /// are [`RpcError::NoCredentials`]; a secrets store that can't be read is
     /// [`RpcError::Other`].
     fn connect(&self) -> Result<BitcoindHttp, RpcError> {
-        let url = self.config.url.as_deref().unwrap_or(DEFAULT_URL);
+        let url = self.url();
         let credentials = match &self.config.user {
             Some(user) => {
                 let password = self
@@ -284,6 +457,9 @@ impl BtcImporter {
             }
         }
 
+        // One call at a time, which through corerpc is one commando handshake
+        // a page: a handful for a few wallets. `Node::call_each` could batch
+        // a wallet's pages over one connection if that ever matters.
         let mut entries = Vec::new();
         for wallet in &wallets {
             for skip in (0..).step_by(PAGE) {
@@ -312,25 +488,81 @@ impl Importer for BtcImporter {
     }
 
     fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
+        let mut note = None;
         let entries = if !input.paths.is_empty() {
             let mut entries = Vec::new();
             for path in &input.paths {
                 entries.extend(read_listing(path)?);
             }
             entries
-        } else if let Some(rpc) = &self.rpc {
-            self.fetch(&**rpc)?
         } else {
-            let http = self
-                .connect()
-                .map_err(|error| ImportError::Usage(error.to_string()))?;
-            self.fetch(&http)?
+            let read = self.read()?;
+            note = read.note;
+            read.entries
         };
         let Txns { txns, left_out } = txns(&input.source, entries);
         Ok(Batch {
             left_out,
+            notes: note.into_iter().collect(),
             ..Batch::from_raw(&txns, &[])?
         })
+    }
+}
+
+/// What a run read over the RPC, and why it read through corerpc when it
+/// fell back to it.
+struct Read {
+    entries: Vec<Entry>,
+    note: Option<String>,
+}
+
+/// An [`Rpc`] that counts the calls answered, so a fallback can tell a
+/// bitcoind that never answered from one that stopped mid-run.
+struct Counted<'a> {
+    rpc: &'a dyn Rpc,
+    answered: Cell<usize>,
+}
+
+impl<'a> Counted<'a> {
+    fn new(rpc: &'a dyn Rpc) -> Self {
+        Self {
+            rpc,
+            answered: Cell::new(0),
+        }
+    }
+}
+
+impl Rpc for Counted<'_> {
+    fn call(
+        &self,
+        wallet: Option<&str>,
+        method: &str,
+        params: Value,
+    ) -> Result<Box<RawValue>, RpcError> {
+        let result = self.rpc.call(wallet, method, params)?;
+        self.answered.set(self.answered.get() + 1);
+        Ok(result)
+    }
+}
+
+/// An [`RpcError`] from setting up a call, as the run reports it.
+fn usage(error: RpcError) -> ImportError {
+    ImportError::Usage(error.to_string())
+}
+
+/// `failed`, which a fallback to corerpc would have taken over, saying what
+/// the fallback needs that is `missing`.
+fn no_fallback(failed: ImportError, missing: &NoCommando) -> ImportError {
+    let instead = format!(
+        "to read the wallets through the CLN node's corerpc over commando instead: {missing}"
+    );
+    match failed {
+        ImportError::Fetch { from, error } => ImportError::Fetch {
+            from,
+            error: format!("{error}; {instead}"),
+        },
+        ImportError::Usage(error) => ImportError::Usage(format!("{error}; {instead}")),
+        other => other,
     }
 }
 
@@ -990,6 +1222,105 @@ mod tests {
         }
     }
 
+    /// A CLN node whose corerpc answers from `bitcoind`, its numbers
+    /// passed through a double as corerpc's JavaScript and lnsocket's
+    /// parsed `Value` pass them. Every corerpc params array is logged.
+    struct CoreNode {
+        bitcoind: FakeNode,
+        params: Rc<RefCell<Vec<Value>>>,
+    }
+
+    impl CoreNode {
+        fn new(bitcoind: FakeNode) -> Self {
+            Self {
+                bitcoind,
+                params: Rc::default(),
+            }
+        }
+    }
+
+    impl Node for CoreNode {
+        fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+            assert_eq!(method, "corerpc");
+            self.params.borrow_mut().push(params.clone());
+            let Value::Array(mut args) = params else {
+                panic!("corerpc params not an array: {params}");
+            };
+            let rest = args.split_off(2);
+            let wallet = args[0].as_str().unwrap();
+            let method = args[1].as_str().unwrap();
+            let wallet = (!wallet.is_empty()).then_some(wallet);
+            match self.bitcoind.call(wallet, method, Value::Array(rest)) {
+                Ok(raw) => Ok(through_double(serde_json::from_str(raw.get()).unwrap())),
+                Err(RpcError::Rpc { code, message }) => Err(NodeError::Rpc { code, message }),
+                Err(error) => Err(NodeError::Other(error.to_string())),
+            }
+        }
+    }
+
+    /// `value` with every number made a double and written as JavaScript
+    /// writes one (a whole number without a fraction), then read as a
+    /// `Value` without `arbitrary_precision` reads it.
+    fn through_double(value: Value) -> Value {
+        match value {
+            Value::Number(n) => {
+                let double = n.as_f64().unwrap();
+                if double.fract() == 0.0 && double.abs() < 1e15 {
+                    json!(double as i64)
+                } else {
+                    json!(double)
+                }
+            }
+            Value::Array(items) => Value::Array(items.into_iter().map(through_double).collect()),
+            Value::Object(fields) => Value::Object(
+                fields
+                    .into_iter()
+                    .map(|(k, v)| (k, through_double(v)))
+                    .collect(),
+            ),
+            other => other,
+        }
+    }
+
+    /// A node that fails every call with `error`.
+    struct DownNode(NodeError);
+
+    impl Node for DownNode {
+        fn call(&self, _: &str, _: Value) -> Result<Value, NodeError> {
+            Err(self.0.clone())
+        }
+    }
+
+    /// A node a test expects never to be called.
+    struct Untouched;
+
+    impl Node for Untouched {
+        fn call(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+            panic!("fell back to corerpc: {method} {params}");
+        }
+    }
+
+    /// `hot` paying `cold` with a fee, and a payment in: the wallets the
+    /// backend tests read both ways.
+    fn two_wallets() -> FakeNode {
+        let fee = Some("-0.00012345");
+        let hot = vec![
+            listed("receive", "1.00000000", None, "funding", 1, DAY1),
+            listed("send", "-0.50000000", fee, "move", 0, DAY2),
+            listed("send", "-0.20000000", fee, "move", 1, DAY2),
+        ];
+        let cold = vec![listed("receive", "0.50000000", None, "move", 0, DAY2)];
+        fake_node(&[("hot", hot), ("cold", cold)])
+    }
+
+    /// `config` with `[btc] via` set.
+    fn via(via: BtcVia) -> BtcConfig {
+        BtcConfig {
+            via: Some(via),
+            ..BtcConfig::default()
+        }
+    }
+
     /// One `listtransactions` entry, mined at `blocktime` (unconfirmed when
     /// 0). `amount` and `fee` are written into the JSON as given.
     fn listed(
@@ -1047,7 +1378,7 @@ mod tests {
             user: Some("rpcuser".to_owned()),
             ..BtcConfig::default()
         };
-        let importer = BtcImporter::new(Some(&config), &CashflowDir::new(tmp.path()));
+        let importer = BtcImporter::new(Some(&config), None, &CashflowDir::new(tmp.path()));
         let Some(RpcError::NoCredentials(message)) = importer.connect().err() else {
             panic!("expected missing credentials");
         };
@@ -1055,6 +1386,24 @@ mod tests {
             message.contains("cashflow secret set bitcoind-rpc-password"),
             "{message}"
         );
+        let Err(ImportError::Usage(shown)) = importer.import(&input()) else {
+            panic!("expected a usage error");
+        };
+        // With no [cln] to fall back to, the error says what one needs.
+        assert_eq!(
+            shown,
+            format!(
+                "{message}; to read the wallets through the CLN node's corerpc over commando \
+                 instead: no `node_id` under [cln] in config.toml: run `cashflow config set \
+                 cln.node_id <66-hex node id>`"
+            )
+        );
+
+        let http = BtcConfig {
+            via: Some(BtcVia::Http),
+            ..config
+        };
+        let importer = BtcImporter::new(Some(&http), None, &CashflowDir::new(tmp.path()));
         let Err(ImportError::Usage(shown)) = importer.import(&input()) else {
             panic!("expected a usage error");
         };
@@ -1071,7 +1420,7 @@ mod tests {
             cookie: Some(cookie.clone()),
             ..BtcConfig::default()
         };
-        let importer = BtcImporter::new(Some(&config), &CashflowDir::new(tmp.path()));
+        let importer = BtcImporter::new(Some(&config), None, &CashflowDir::new(tmp.path()));
         let Some(RpcError::NoCredentials(message)) = importer.connect().err() else {
             panic!("expected missing credentials");
         };
@@ -1411,7 +1760,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let importer = BtcImporter::new(None, &CashflowDir::new(tmp.path()));
+        let importer = BtcImporter::new(None, None, &CashflowDir::new(tmp.path()));
         let batch = importer
             .import(&ImportInput {
                 source: "btc".to_owned(),
@@ -1494,5 +1843,212 @@ mod tests {
         assert_eq!(wallet_account("a:b"), "assets:btc:a-b");
         assert_eq!(encode("my wallet/1"), "my%20wallet%2F1");
         assert_eq!(encode(""), "");
+    }
+
+    /// The same wallets read through corerpc as over HTTP give the same
+    /// records, and corerpc's first param is the wallet.
+    #[test]
+    fn corerpc_reads_what_http_reads() {
+        let http = BtcImporter::with_rpc(Some(&via(BtcVia::Http)), Box::new(two_wallets()))
+            .import(&input())
+            .unwrap();
+
+        let node = CoreNode::new(two_wallets());
+        let params = node.params.clone();
+        let corerpc = BtcImporter::with_rpc(
+            Some(&via(BtcVia::Corerpc)),
+            Box::new(Failing(|| panic!("called over HTTP"))),
+        )
+        .with_node(Box::new(node))
+        .import(&input())
+        .unwrap();
+
+        assert_eq!(ledger_text(&corerpc), ledger_text(&http));
+        assert!(corerpc.notes.is_empty(), "{:?}", corerpc.notes);
+        assert_eq!(
+            *params.borrow(),
+            [
+                json!(["", "listwallets"]),
+                json!(["hot", "listtransactions", "*", PAGE, 0, false]),
+                json!(["cold", "listtransactions", "*", PAGE, 0, false]),
+            ]
+        );
+    }
+
+    /// Auto falls back when bitcoind can't be reached, reads the whole run
+    /// through corerpc, and says so.
+    #[test]
+    fn auto_falls_back_when_bitcoind_is_unreachable() {
+        let http = BtcImporter::with_rpc(None, Box::new(two_wallets()))
+            .import(&input())
+            .unwrap();
+        let batch = BtcImporter::with_rpc(
+            None,
+            Box::new(Failing(|| {
+                RpcError::Unreachable("Connection refused".to_owned())
+            })),
+        )
+        .with_node(Box::new(CoreNode::new(two_wallets())))
+        .import(&input())
+        .unwrap();
+        assert_eq!(ledger_text(&batch), ledger_text(&http));
+        assert_eq!(
+            batch.notes,
+            [
+                "bitcoind's RPC at http://127.0.0.1:8332 couldn't be reached: Connection refused, \
+                 so wallets were read through corerpc over commando"
+            ]
+        );
+    }
+
+    /// Auto falls back when there is nothing to sign in to bitcoind with.
+    #[test]
+    fn auto_falls_back_without_credentials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = BtcConfig {
+            url: Some("http://monad:8332".to_owned()),
+            cookie: Some(tmp.path().join(".cookie")),
+            ..BtcConfig::default()
+        };
+        let batch = BtcImporter::new(Some(&config), None, &CashflowDir::new(tmp.path()))
+            .with_node(Box::new(CoreNode::new(two_wallets())))
+            .import(&input())
+            .unwrap();
+        assert_eq!(batch.txn_count(), 2);
+        assert_eq!(
+            batch.notes,
+            [
+                "bitcoind's RPC at http://monad:8332 has no credentials, so wallets were read \
+                 through corerpc over commando"
+            ]
+        );
+    }
+
+    /// Wrong credentials and an error bitcoind answers with are real
+    /// errors, not leave to try corerpc; nor is bitcoind going away after
+    /// it has answered, since a run never mixes backends.
+    #[test]
+    fn auto_does_not_fall_back_once_bitcoind_answers() {
+        let kinds: [fn() -> RpcError; 2] = [
+            || RpcError::Unauthorized("401 Unauthorized".to_owned()),
+            || RpcError::Rpc {
+                code: -18,
+                message: "not loaded".to_owned(),
+            },
+        ];
+        for make in kinds {
+            let error = BtcImporter::with_rpc(None, Box::new(Failing(make)))
+                .with_node(Box::new(Untouched))
+                .import(&input())
+                .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("bitcoind listwallets: {}", make())
+            );
+        }
+
+        /// A bitcoind that lists its wallets, then goes away.
+        struct Vanishing(FakeNode);
+        impl Rpc for Vanishing {
+            fn call(
+                &self,
+                wallet: Option<&str>,
+                method: &str,
+                params: Value,
+            ) -> Result<Box<RawValue>, RpcError> {
+                match method {
+                    "listwallets" => self.0.call(wallet, method, params),
+                    _ => Err(RpcError::Unreachable("Connection reset".to_owned())),
+                }
+            }
+        }
+        let error = BtcImporter::with_rpc(None, Box::new(Vanishing(two_wallets())))
+            .with_node(Box::new(Untouched))
+            .import(&input())
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "bitcoind listtransactions (wallet \"hot\"): Connection reset"
+        );
+    }
+
+    /// An unreachable bitcoind with no [cln] to fall back to fails as it
+    /// did, naming what the fallback needs.
+    #[test]
+    fn no_cln_names_what_the_fallback_needs() {
+        let error = BtcImporter::with_rpc(
+            None,
+            Box::new(Failing(|| {
+                RpcError::Unreachable("Connection refused".to_owned())
+            })),
+        )
+        .import(&input())
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "bitcoind listwallets: Connection refused; to read the wallets through the CLN \
+             node's corerpc over commando instead: no `node_id` under [cln] in config.toml: run \
+             `cashflow config set cln.node_id <66-hex node id>`"
+        );
+    }
+
+    /// A rune that doesn't permit the call says how to mint one that does;
+    /// a node that can't be reached is unreachable.
+    #[test]
+    fn corerpc_failures_keep_their_kind() {
+        let denied = DownNode(NodeError::Rpc {
+            code: cln::RUNE_DENIED,
+            message: "Not authorized: method not permitted".to_owned(),
+        });
+        let error = Corerpc::new(&denied)
+            .call(None, "listwallets", json!([]))
+            .unwrap_err();
+        let RpcError::Rpc { code, message } = &error else {
+            panic!("expected an rpc error, got {error:?}");
+        };
+        assert_eq!(*code, cln::RUNE_DENIED);
+        assert!(message.contains("lightning-cli createrune"), "{message}");
+
+        let error = BtcImporter::with_rpc(Some(&via(BtcVia::Corerpc)), Box::new(two_wallets()))
+            .with_node(Box::new(denied))
+            .import(&input())
+            .unwrap_err();
+        assert!(error.to_string().contains("createrune"), "{error}");
+
+        let down = DownNode(NodeError::Other(
+            "connecting to monad:9735: refused".to_owned(),
+        ));
+        let error = Corerpc::new(&down)
+            .call(Some("hot"), "listtransactions", json!([]))
+            .unwrap_err();
+        assert!(matches!(error, RpcError::Unreachable(_)), "{error:?}");
+
+        let error = Corerpc::new(&down)
+            .call(None, "listwallets", json!({}))
+            .unwrap_err();
+        assert!(matches!(error, RpcError::Other(_)), "{error:?}");
+    }
+
+    /// An amount through a double, written back out as its shortest form,
+    /// reads as the same msat as bitcoind's own text: corerpc's reads are
+    /// exact to 15 significant digits.
+    #[test]
+    fn amounts_through_a_double_are_exact() {
+        for text in [
+            "0.00000001",
+            "0.00000546",
+            "-0.00012300",
+            "1.23456789",
+            "20999999.97690000",
+            "-0.00001410",
+            "21000000.00000000",
+            "0.29",
+        ] {
+            let exact = btc_to_msat(text).unwrap();
+            let double = json!(text.parse::<f64>().unwrap()).to_string();
+            assert_eq!(btc_to_msat(&double), Some(exact), "{text} as {double}");
+            let parsed = through_double(serde_json::from_str(text).unwrap()).to_string();
+            assert_eq!(btc_to_msat(&parsed), Some(exact), "{text} as {parsed}");
+        }
     }
 }
