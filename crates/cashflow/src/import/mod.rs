@@ -23,6 +23,7 @@ mod csv_rows;
 mod ledger;
 mod payroll;
 mod rbc;
+mod shakepay;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -45,12 +46,15 @@ pub use cln::{ClnImporter, Commando, Node, NodeError, RUNE_RESTRICTIONS};
 pub use ledger::LedgerImporter;
 pub use payroll::PayrollImporter;
 pub use rbc::RbcImporter;
+pub use shakepay::ShakepayImporter;
 
 use crate::settings::{Setting, Settings};
 use crate::{CashflowDir, Config};
 
 /// Every importer's name, as `cashflow import <name>` takes it.
-pub const NAMES: &[&str] = &["amex", "appstore", "btc", "cln", "ledger", "payroll", "rbc"];
+pub const NAMES: &[&str] = &[
+    "amex", "appstore", "btc", "cln", "ledger", "payroll", "rbc", "shakepay",
+];
 
 /// Reads one kind of source into a batch.
 ///
@@ -140,6 +144,10 @@ pub fn importer(
         "ledger" => Some(Box::new(LedgerImporter)),
         "payroll" => Some(Box::new(PayrollImporter::new(config.payroll.as_ref()))),
         "rbc" => Some(Box::new(RbcImporter::new(config.rbc.as_ref()))),
+        "shakepay" => Some(Box::new(ShakepayImporter::new(
+            config.shakepay.as_ref(),
+            synced,
+        ))),
         _ => None,
     }
 }

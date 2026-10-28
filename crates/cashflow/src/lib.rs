@@ -68,8 +68,8 @@ mod test_util;
 pub use books::Books;
 pub use config::{
     AmexConfig, AppStoreConfig, BtcConfig, CashflowDir, Config, ConfigError, DIR_ENV, GoalsConfig,
-    NamedPath, PayrollConfig, RELAY_ENV, RbcConfig, Secret, SecretEntry, SecretSource, SyncConfig,
-    TransportConfig,
+    NamedPath, PayrollConfig, RELAY_ENV, RbcConfig, Secret, SecretEntry, SecretSource,
+    ShakepayConfig, SyncConfig, TransportConfig,
 };
 pub use edits_cache::{DeriveInputs, EditsCache};
 pub use settings::{Setting, Settings};

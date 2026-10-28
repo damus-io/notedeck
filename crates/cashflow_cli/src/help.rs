@@ -436,6 +436,24 @@ Importers:
                   in USD for a USD$ amount. Its id is
                   rbc:<last4>:<date>:<cents>:<description>:<n>, so
                   overlapping downloads keep each row once.
+  shakepay <path>...
+                  Shakepay transaction history CSVs of the Spending (CAD)
+                  account; a directory reads its *.csv files in name order,
+                  and a row of any other account is an error. Each row
+                  posts to assets:shakepay:cad and, for a card purchase
+                  or bill payment, expenses:unknown; any other type
+                  (Interac e-Transfer, Send, Receive, Reward, Buy, Sell)
+                  goes to expenses:unknown or income:unknown by sign. A
+                  Buy or Sell is only its CAD side, with its rate as
+                  raw-rate. Shakepay writes times in Eastern time, and a
+                  row is filed under its day in the synced `timezone`
+                  setting, as cln is. Its id is
+                  shakepay:<time>:<cents>:<type>:<n>, so overlapping
+                  exports keep each row once and a reworded merchant
+                  keeps its record. A run notes where an export's Balance
+                  column doesn't follow from its rows. [shakepay] in
+                  config.toml sets `account` and `timezone` (overriding
+                  the synced setting on this machine).
 
 --source names the segment's source (default: the importer's name), the
 prefix of the record ids it makes. --layer files it in a layer (default: the
@@ -473,6 +491,7 @@ with on-chain records dated by when bookkeeper logged them.",
             "cashflow import ledger books.ledger",
             "cashflow import payroll payroll.txt",
             "cashflow import rbc ~/Downloads/csv*.csv",
+            "cashflow import shakepay ~/Downloads/shakepay.csv",
             "cashflow import ledger old.ledger --source bank --layer cards",
         ],
     },

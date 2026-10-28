@@ -1,4 +1,4 @@
-//! What the CSV importers (Amex, RBC) share: finding a bank export's files
+//! What the CSV importers (Amex, RBC, Shakepay) share: finding a bank export's files
 //! and columns, reading its amounts, and giving rows without a native id
 //! their record ids.
 //!

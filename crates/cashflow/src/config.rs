@@ -356,6 +356,9 @@ pub struct Config {
     /// `[rbc]`: the RBC importer's settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rbc: Option<RbcConfig>,
+    /// `[shakepay]`: the Shakepay importer's settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shakepay: Option<ShakepayConfig>,
     /// `[btc]`: the on-chain bitcoin importer's settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub btc: Option<BtcConfig>,
@@ -401,6 +404,19 @@ pub struct RbcConfig {
     /// number.
     #[serde(default)]
     pub accounts: BTreeMap<String, String>,
+}
+
+/// `[shakepay]` in `config.toml`. Every key is optional.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShakepayConfig {
+    /// The Spending account's ledger account [default:
+    /// `assets:shakepay:cad`].
+    pub account: Option<String>,
+    /// The zone rows are dated in on this machine, overriding the synced
+    /// `timezone` setting, as `[cln] timezone` does. The export's own times
+    /// are Eastern whatever this says; this only picks the day they fall on.
+    pub timezone: Option<String>,
 }
 
 /// `[payroll]` in `config.toml`: who a payroll file pays and where it
@@ -746,6 +762,19 @@ mod tests {
             "assets:rbc:chequing"
         );
         assert_eq!(Config::parse(&rbc.to_toml()).unwrap(), rbc);
+
+        let shakepay =
+            Config::parse("[shakepay]\naccount = \"assets:shakepay\"\ntimezone = \"utc\"\n")
+                .unwrap();
+        assert_eq!(
+            shakepay.shakepay,
+            Some(ShakepayConfig {
+                account: Some("assets:shakepay".to_owned()),
+                timezone: Some("utc".to_owned()),
+            })
+        );
+        assert_eq!(Config::parse(&shakepay.to_toml()).unwrap(), shakepay);
+        assert!(Config::parse("[shakepay]\naccounts = \"x\"\n").is_err());
 
         let payroll =
             Config::parse("[payroll]\npayee = \"Ada\"\naccount = \"expenses:pay\"\n").unwrap();

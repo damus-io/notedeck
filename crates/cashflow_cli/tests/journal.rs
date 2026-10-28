@@ -396,6 +396,46 @@ fn rbc_import_maps_accounts_by_last_four() {
     assert_eq!(cf.ok(&["journal", "ls"]).lines().count(), 1);
 }
 
+/// `import shakepay` over an export into its configured account: the
+/// account's balance is the export's last Balance, a row stamped after
+/// midnight Eastern is filed under the evening before in Vancouver, and a
+/// row of another account fails the import with nothing written.
+#[test]
+fn shakepay_import_balances_and_dates_in_the_zone() {
+    let cf = cashflow();
+    std::fs::write(
+        cf.dir().join("config.toml"),
+        "[shakepay]\naccount = \"assets:shakepay\"\ntimezone = \"America/Vancouver\"\n",
+    )
+    .unwrap();
+    let header = "\"Date\",\"Account\",\"Type\",\"Description\",\"Debit\",\"Credit\",\
+                  \"Spot Rate\",\"Buy / Sell Rate\",\"Balance\"\n";
+    let rows = "\"2026-03-01 12:00:00\",\"Spending\",\"Interac e-Transfer\",\"me@example.com\",,200,,,200\n\
+                \"2026-03-02 01:30:00\",\"Spending\",\"Card purchase\",\"LATE DINER\",35.25,,,,164.75\n";
+    let export = cf.dir().join("shakepay.csv");
+    std::fs::write(&export, format!("{header}{rows}")).unwrap();
+
+    let first: Value =
+        serde_json::from_str(&cf.ok(&["import", "shakepay", s(&export), "--json"])).unwrap();
+    assert_eq!(first["txns"], 2);
+    assert_eq!(first["layer"], "shakepay");
+    let bal = cf.ok(&["report", "bal", "assets:shakepay", "--native"]);
+    assert!(bal.contains("164.75 CAD  assets:shakepay"), "{bal}");
+    let reg = cf.ok(&["report", "reg", "expenses"]);
+    assert!(reg.contains("2026-03-01"), "{reg}");
+    assert!(!reg.contains("2026-03-02"), "{reg}");
+
+    let other = cf.dir().join("bitcoin.csv");
+    std::fs::write(
+        &other,
+        format!("{header}\"2026-03-03 12:00:00\",\"Bitcoin\",\"Buy\",\"X\",,1,,,1\n"),
+    )
+    .unwrap();
+    let err = expect_failure(cf.run(&["import", "shakepay", s(&other)]));
+    assert!(err.contains("the \"Bitcoin\" account"), "{err}");
+    assert_eq!(cf.ok(&["journal", "ls"]).lines().count(), 1);
+}
+
 /// `import payroll` over a payout the `btc` importer already filed as a send:
 /// the payroll record moves it from expenses:unknown to the payroll account,
 /// so the bitcoin is spent once, and the line that doesn't read is reported
