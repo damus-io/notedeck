@@ -25,8 +25,9 @@
 //!
 //! **The rune pins the method.** corerpc passes any method through, so a
 //! rune of `method=corerpc` alone reaches bitcoind's wallet.
-//! [`super::RUNE_RESTRICTIONS`] permits only the two calls made here, and a
-//! call the rune denies says so in the run's note, with how to mint it.
+//! [`super::RUNE_RESTRICTIONS`] permits the two calls made here and the
+//! `btc` importer's two read-only wallet listings, nothing else, and a call
+//! the rune denies says so in the run's note, with how to mint it.
 
 use std::collections::{BTreeSet, HashMap};
 

@@ -478,7 +478,9 @@ pub enum BtcVia {
     /// Over bitcoind's own JSON-RPC, at [`BtcConfig::url`].
     Http,
     /// Through the `corerpc` plugin of the CLN node `[cln]` names, over
-    /// commando with the `cln-rune` secret.
+    /// commando with the `cln-rune` secret, which must permit corerpc's
+    /// `listwallets` and `listtransactions` (the rune [`ClnConfig`] gives
+    /// does).
     Corerpc,
 }
 
@@ -509,20 +511,23 @@ pub struct AppStoreConfig {
 /// events from over commando, and which day an event falls on.
 ///
 /// The rune is a secret, `cln-rune` (see [`CashflowDir::secret`]). It must
-/// permit `bkpr-listaccountevents`, and to date on-chain records by their
-/// block, the node's `corerpc` plugin's `getblockhash` and `getblockheader`
+/// permit `bkpr-listaccountevents`; to date on-chain records by their
+/// block, the node's `corerpc` plugin's `getblockhash` and `getblockheader`;
+/// and for the `btc` importer to read wallets through corerpc
+/// ([`BtcVia`]), its `listwallets` and `listtransactions`
 /// ([`RUNE_RESTRICTIONS`](crate::import::RUNE_RESTRICTIONS)). Mint one
 /// on the node with
 ///
 /// ```text
-/// lightning-cli createrune restrictions='[["method=bkpr-listaccountevents","method=corerpc"],["method=bkpr-listaccountevents","parr1=getblockhash","parr1=getblockheader"]]'
+/// lightning-cli createrune restrictions='[["method=bkpr-listaccountevents","method=corerpc"],["method=bkpr-listaccountevents","parr1=getblockhash","parr1=getblockheader","parr1=listwallets","parr1=listtransactions"]]'
 /// ```
 ///
-/// Never `method=corerpc` alone: corerpc passes any method through to
-/// bitcoind, so that rune reaches its wallet (`sendtoaddress`,
-/// `walletpassphrase`). A rune of `bkpr-listaccountevents` alone still
-/// imports, with each on-chain record dated by when bookkeeper logged it.
-/// Importing a saved listing needs none of this.
+/// Every call it permits is read-only. Never `method=corerpc` alone:
+/// corerpc passes any method through to bitcoind, so that rune reaches its
+/// wallet (`sendtoaddress`, `walletpassphrase`). A rune of
+/// `bkpr-listaccountevents` alone still imports, with each on-chain record
+/// dated by when bookkeeper logged it. Importing a saved listing needs none
+/// of this.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClnConfig {

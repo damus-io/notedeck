@@ -1873,6 +1873,10 @@ mod tests {
                 json!(["cold", "listtransactions", "*", PAGE, 0, false]),
             ]
         );
+        // The rune `import cln` asks for reads the wallets too.
+        for params in params.borrow().iter() {
+            assert!(cln::rune_permits("corerpc", params), "corerpc {params}");
+        }
     }
 
     /// Auto falls back when bitcoind can't be reached, reads the whole run
@@ -2007,7 +2011,13 @@ mod tests {
             panic!("expected an rpc error, got {error:?}");
         };
         assert_eq!(*code, cln::RUNE_DENIED);
-        assert!(message.contains("lightning-cli createrune"), "{message}");
+        assert!(
+            message.contains(&format!(
+                "createrune restrictions='{}'",
+                cln::RUNE_RESTRICTIONS
+            )),
+            "{message}"
+        );
 
         let error = BtcImporter::with_rpc(Some(&via(BtcVia::Corerpc)), Box::new(two_wallets()))
             .with_node(Box::new(denied))

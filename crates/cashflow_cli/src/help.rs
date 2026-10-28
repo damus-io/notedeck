@@ -351,11 +351,12 @@ Importers:
                   reached, or there are no credentials for it, the run
                   reads the same wallets through the CLN node's corerpc
                   plugin over commando instead ([cln] node_id and host,
-                  the cln-rune secret) and says so; `via` (auto) sets it:
-                  auto, http or corerpc. A 401 or an error bitcoind
-                  answers never falls back. Through corerpc amounts pass
-                  through a double, exact to 15 significant digits.
-                  Leave a watch-only wallet over a CLN
+                  the cln-rune secret, permitting corerpc's listwallets
+                  and listtransactions, as minted below) and says so;
+                  `via` (auto) sets it: auto, http or corerpc. A 401 or
+                  an error bitcoind answers never falls back. Through
+                  corerpc amounts pass through a double, exact to 15
+                  significant digits. Leave a watch-only wallet over a CLN
                   node's own wallet out of both (list `wallets` without
                   it) when `import cln` reads that node: bookkeeper is its
                   source, and reading it here too counts its coins twice
@@ -369,7 +370,8 @@ Importers:
                   `host` (host[:9735]) and `timezone`, and the
                   cln-rune secret is a rune that permits the call and,
                   to date by block, corerpc's getblockhash and
-                  getblockheader (minted as below).
+                  getblockheader (minted as below; the same rune lets
+                  `import btc` list wallets through corerpc).
                   An event is filed under its day in the synced
                   `timezone` setting, so every machine dates it alike;
                   `timezone` under [cln] overrides that on one machine,
@@ -440,14 +442,16 @@ prefix of the record ids it makes. --layer files it in a layer (default: the
 importer's), which `export` and `report` can include or leave out; an
 importer's second layer, such as cln-chain, keeps its own name.
 
-The cln-rune secret is minted on the node with:
+The cln-rune secret, used by cln and by btc through corerpc, is minted on the
+node with:
 
-  lightning-cli createrune restrictions='[[\"method=bkpr-listaccountevents\",\"method=corerpc\"],[\"method=bkpr-listaccountevents\",\"parr1=getblockhash\",\"parr1=getblockheader\"]]'
+  lightning-cli createrune restrictions='[[\"method=bkpr-listaccountevents\",\"method=corerpc\"],[\"method=bkpr-listaccountevents\",\"parr1=getblockhash\",\"parr1=getblockheader\",\"parr1=listwallets\",\"parr1=listtransactions\"]]'
 
-Never method=corerpc alone: corerpc passes any method through to bitcoind, so
-that rune reaches its wallet (sendtoaddress, walletpassphrase). A rune of
-bkpr-listaccountevents alone still imports, with on-chain records dated by
-when bookkeeper logged them.",
+Every call it permits is read-only: it reads wallet history, and nothing that
+spends is reachable. Never method=corerpc alone: corerpc passes any method
+through to bitcoind, so that rune reaches its wallet (sendtoaddress,
+walletpassphrase). A rune of bkpr-listaccountevents alone still imports cln,
+with on-chain records dated by when bookkeeper logged them.",
         options: &[
             (
                 "--source <name>",

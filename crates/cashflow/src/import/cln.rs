@@ -190,19 +190,24 @@ pub const RUNE_SECRET: &str = "cln-rune";
 /// `lightning-cli createrune restrictions='…'` takes them. A rune passes
 /// when every inner list does, and a list passes when any of its
 /// alternatives does. The first permits `bkpr-listaccountevents` and
-/// `corerpc`; the second holds `corerpc` to the two calls block dating
-/// makes, `getblockhash` and `getblockheader` (`parr1`, the bitcoind
-/// method, after `parr0`'s wallet).
+/// `corerpc`; the second holds `corerpc` to the calls cashflow makes
+/// through it (`parr1`, the bitcoind method, after `parr0`'s wallet):
+/// `getblockhash` and `getblockheader`, which date this importer's on-chain
+/// records by their block, and `listwallets` and `listtransactions`, which
+/// the `btc` importer reads wallets with when bitcoind's own RPC can't be
+/// reached ([`crate::config::BtcVia`]). One rune serves both importers.
 ///
+/// Every call it permits is read-only: it can read wallet history, but no
+/// call that spends, signs or unlocks a wallet is reachable.
 /// `method=corerpc` alone would be unsafe: corerpc passes any method
 /// through to bitcoind, so that rune reaches its wallet, `sendtoaddress`
 /// and `walletpassphrase` included ([`RUNE_UNSAFE`]).
-pub const RUNE_RESTRICTIONS: &str = r#"[["method=bkpr-listaccountevents","method=corerpc"],["method=bkpr-listaccountevents","parr1=getblockhash","parr1=getblockheader"]]"#;
+pub const RUNE_RESTRICTIONS: &str = r#"[["method=bkpr-listaccountevents","method=corerpc"],["method=bkpr-listaccountevents","parr1=getblockhash","parr1=getblockheader","parr1=listwallets","parr1=listtransactions"]]"#;
 
 /// Why [`RUNE_RESTRICTIONS`] pins corerpc's method, said wherever it is
 /// given.
-pub const RUNE_UNSAFE: &str =
-    "corerpc's method is pinned because method=corerpc alone reaches bitcoind's wallet";
+pub const RUNE_UNSAFE: &str = "corerpc's method is pinned to read-only calls because \
+     method=corerpc alone reaches bitcoind's wallet";
 
 /// The code commando answers a call its rune doesn't permit with
 /// (`COMMANDO_ERROR_REMOTE_AUTH`).
@@ -682,6 +687,26 @@ pub(crate) fn mint_rune() -> String {
         "mint one on the node with lightning-cli createrune \
          restrictions='{RUNE_RESTRICTIONS}' ({RUNE_UNSAFE})"
     )
+}
+
+/// Whether a rune of [`RUNE_RESTRICTIONS`] permits calling `method` with
+/// `params`, as commando checks it: every inner list must pass, and a list
+/// passes when any of its alternatives does. Only the `=` operator on
+/// `method` and a string `parr<N>` is understood, which is all the
+/// restrictions use; a param commando can't find fails its alternative.
+#[cfg(test)]
+pub(crate) fn rune_permits(method: &str, params: &Value) -> bool {
+    let lists: Vec<Vec<String>> = serde_json::from_str(RUNE_RESTRICTIONS).unwrap();
+    lists.iter().all(|alternatives| {
+        alternatives.iter().any(|alternative| {
+            let (field, wanted) = alternative.split_once('=').unwrap();
+            if field == "method" {
+                return method == wanted;
+            }
+            let index: usize = field.strip_prefix("parr").unwrap().parse().unwrap();
+            params.get(index).and_then(Value::as_str) == Some(wanted)
+        })
+    })
 }
 
 /// `error`, as the run reports it. A call the rune doesn't permit says how
@@ -2441,6 +2466,44 @@ mod tests {
             "{err}"
         );
         assert!(err.contains(RUNE_RESTRICTIONS), "{err}");
+    }
+
+    /// The rune permits every call a run makes, bookkeeper's and the block
+    /// lookups', and corerpc's read-only wallet listings for `import btc`,
+    /// but none of bitcoind's spending calls.
+    #[test]
+    fn the_rune_permits_the_reads_and_nothing_that_spends() {
+        let Rig {
+            cln,
+            calls,
+            block_calls,
+        } = importer_with(close_events(), true, mined());
+        cln.import(&input()).unwrap();
+        assert!(!calls.borrow().is_empty() && !block_calls.borrow().is_empty());
+        for params in calls.borrow().iter() {
+            assert!(rune_permits(METHOD, params), "{METHOD} {params}");
+        }
+        for params in block_calls.borrow().iter() {
+            assert!(rune_permits("corerpc", params), "corerpc {params}");
+        }
+        assert!(rune_permits("corerpc", &json!(["", "listwallets"])));
+        assert!(rune_permits(
+            "corerpc",
+            &json!(["hot", "listtransactions", "*", 1000, 0, true])
+        ));
+
+        for spend in [
+            "sendtoaddress",
+            "sendmany",
+            "send",
+            "walletpassphrase",
+            "signrawtransactionwithwallet",
+            "dumpprivkey",
+        ] {
+            assert!(!rune_permits("corerpc", &json!(["hot", spend])), "{spend}");
+        }
+        assert!(!rune_permits("corerpc", &json!([])));
+        assert!(!rune_permits("withdraw", &json!(["", "listwallets"])));
     }
 
     /// `ClnConfig`'s docs give the rune the errors give.
