@@ -13,10 +13,13 @@
 //! - [`bitstamp`]: Bitstamp's daily BTC/USD close, `P <day> btc <close>
 //!   USD`, every day.
 //! - [`UNITS`]: the exact relations between bitcoin's units, `msat → sat →
-//!   btc`, dated 1970-01-01 so they cover every transaction.
+//!   btc`, dated 1970-01-01 so they cover every transaction; and [`PEGS`],
+//!   currencies held at a fixed rate to another, dated from the peg. Both
+//!   are filed under the `units` source.
 //!
 //! With these a msat amount converts to CAD by chaining msat → sat → btc
-//! → USD → CAD, which [`ledgerdb::PriceDb`] does on its own.
+//! → USD → CAD, and AED by AED → USD → CAD, which [`ledgerdb::PriceDb`]
+//! does on its own.
 //!
 //! **One segment per source per calendar year.** A segment's `imported`
 //! header is midnight UTC of the day after its last price, not the clock, so
@@ -37,7 +40,9 @@ pub mod ecb;
 
 use std::fmt;
 
-use ledgerdb::{Date, JournalStore, Ledger, PutSegment, SegmentHash, SegmentHeader, StoreError};
+use ledgerdb::{
+    Date, JournalStore, Ledger, PutSegment, SegmentHash, SegmentHeader, StoreError, Ymd,
+};
 
 use crate::import::{Batch, BatchError, RawAmount, RawPrice};
 
@@ -67,7 +72,7 @@ const DAY: u64 = 86_400;
 /// header of its segments.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Source {
-    /// The fixed unit relations, [`UNITS`].
+    /// The fixed relations, [`UNITS`] and [`PEGS`].
     Units,
     /// The Bank of Canada's rates into CAD, [`boc`].
     Boc,
@@ -120,7 +125,7 @@ impl Source {
     fn fetch(self, http: &dyn Http, since: Date, now: u64) -> Result<Vec<RawPrice>, FetchError> {
         let since = since.max(self.first_day());
         match self {
-            Source::Units => Ok(units()),
+            Source::Units => Ok(units().into_iter().chain(pegs()).collect()),
             Source::Boc => boc::fetch(http, since, day_of(now)),
             Source::Ecb => ecb::fetch(http, since, day_of(now)),
             Source::Bitstamp => bitstamp::fetch(http, since, now),
@@ -174,6 +179,49 @@ fn units() -> Vec<RawPrice> {
             },
         })
         .collect()
+}
+
+/// Currencies their central bank holds at a fixed rate to another, so one
+/// rate prices them on every day since.
+///
+/// The UAE dirham has been pegged at 3.6725 to the US dollar since November
+/// 1997. Neither the Bank of Canada (after 2017) nor the ECB quotes it, and
+/// through the peg every AED amount takes the day's USD rate into CAD.
+pub const PEGS: &[Peg] = &[Peg {
+    relation: UnitRelation {
+        commodity: USD,
+        qty: 36725,
+        precision: 4,
+        quote: "AED",
+    },
+    since: Ymd {
+        year: 1997,
+        month: 11,
+        day: 1,
+    },
+}];
+
+/// A [`UnitRelation`] that holds from `since` on.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Peg {
+    pub relation: UnitRelation,
+    pub since: Ymd,
+}
+
+/// [`PEGS`] as prices on the day each began.
+fn pegs() -> impl Iterator<Item = RawPrice> {
+    PEGS.iter().map(|peg| {
+        let u = peg.relation;
+        RawPrice {
+            date: Date::from_ymd(peg.since).expect("a calendar date"),
+            commodity: u.commodity.to_owned(),
+            price: RawAmount {
+                qty: u.qty,
+                precision: u.precision,
+                commodity: u.quote.to_owned(),
+            },
+        }
+    })
 }
 
 /// A blocking HTTP GET, so the fetchers can be tested without a network.
@@ -545,8 +593,9 @@ mod tests {
             first.iter().map(|f| f.hash).collect::<Vec<_>>(),
             again.iter().map(|f| f.hash).collect::<Vec<_>>()
         );
-        // units; boc, ecb and bitstamp 2023 and 2024.
-        assert_eq!(store.list().unwrap().len(), 7);
+        // units 1970 and 1997 (the AED peg); boc, ecb and bitstamp 2023
+        // and 2024.
+        assert_eq!(store.list().unwrap().len(), 8);
     }
 
     #[test]
@@ -713,6 +762,36 @@ mod tests {
             "{:?}",
             http.asked.borrow()
         );
+    }
+
+    #[test]
+    fn aed_converts_through_its_peg_to_the_dollar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = JournalStore::new(tmp.path().join("journal"));
+        let http = canned();
+        put(
+            &store,
+            "bank",
+            1,
+            "2024-01-02 * Shop\n  ; id: t:1\n  a  1.00 CAD\n  b\n",
+        );
+        for &source in SOURCES {
+            fetch_into(&store, &http, source, date("2023-12-27"), at("2024-01-04")).unwrap();
+        }
+        let ledger = Ledger::load(&store, LayerFilter::All).unwrap().ledger;
+        let commodities = &ledger.journal().commodities;
+        let (aed, cad) = (
+            commodities.get("AED").unwrap(),
+            commodities.get(CAD).unwrap(),
+        );
+        let db = PriceDb::from_ledger(&ledger);
+        let hundred = Amount {
+            qty: 100,
+            commodity: aed,
+        };
+        // 100 / 3.6725 × 1.3316 = 36.2587 CAD on 2024-01-02.
+        let in_cad = db.convert(hundred, cad, date("2024-01-02")).unwrap();
+        assert_eq!(in_cad.qty, 3626);
     }
 
     #[test]

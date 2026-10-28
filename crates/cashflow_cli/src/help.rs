@@ -461,7 +461,8 @@ when bookkeeper logged them.",
 Fetch daily rates from public sources (no keys) and write them to the journal
 as `P` directives in the `prices` layer, one segment per source and year:
 
-  units      msat → sat → btc, exact, dated 1970-01-01
+  units      msat → sat → btc, exact, dated 1970-01-01; and the AED peg,
+             3.6725 to the USD since 1997-11-01
   boc        Bank of Canada rates into CAD for AUD BRL CHF DKK EUR GBP HKD
              JPY MXN NOK RUB THB TRY USD, business days, from 2007-05-01
              (before 2017-01-03, its legacy noon rates)

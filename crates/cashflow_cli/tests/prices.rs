@@ -27,7 +27,7 @@ fn units_are_written_once() {
     let exported = cf.ok(&["export"]);
     assert_eq!(
         exported,
-        "P 1970-01-01 msat 0.001 sat\nP 1970-01-01 sat 0.00000001 btc\n"
+        "P 1970-01-01 msat 0.001 sat\nP 1970-01-01 sat 0.00000001 btc\nP 1997-11-01 USD 3.6725 AED\n"
     );
 }
 

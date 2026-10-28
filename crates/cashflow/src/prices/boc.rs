@@ -39,9 +39,10 @@ pub struct Currency {
 /// The currencies this source prices in CAD.
 ///
 /// Valet's legacy series also quote the UAE dirham, but AED is left out: a
-/// lookup takes a pair's nearest earlier rate however old it is, so an
-/// AED/CAD rate that ends in 2017 would go on pricing AED for every day
-/// after.
+/// lookup takes a pair's nearest earlier rate however old it is, and on the
+/// shortest path, so an AED/CAD rate that ends in 2017 would go on pricing
+/// AED for every day after, ahead of the fresh AED → USD → CAD chain through
+/// its peg ([`super::PEGS`]).
 pub const CURRENCIES: &[Currency] = &[
     Currency {
         code: "AUD",
