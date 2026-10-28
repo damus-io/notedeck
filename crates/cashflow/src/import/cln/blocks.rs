@@ -6,15 +6,16 @@
 //! block's height. jb55/cln-core-rpc's `corerpc <wallet> <method> [args…]`
 //! passes a call through to bitcoind, so the height's time is two calls
 //! over the same commando connection: `getblockhash`, then
-//! `getblockheader`. Each batch is one [`Node::call_each`], one call at a
-//! time ([`IN_FLIGHT`]).
+//! `getblockheader`. Each batch is one [`Node::call_each`], [`IN_FLIGHT`]
+//! calls at a time.
 //!
-//! corerpc hands bitcoind's errors back as a *successful* result (`{"code":
-//! -8}` for a height past the tip), so every answer is checked for its
-//! shape: a hash is 64 hex, a header an object whose `height` is the one
-//! asked about and whose `time` is a number. Anything else leaves that
-//! height without a time, and its records are dated by bookkeeper's
-//! timestamp.
+//! Every answer is checked for its shape: a hash is 64 hex, a header an
+//! object whose `height` is the one asked about and whose `time` is a
+//! number. corerpc before jb55/cln-core-rpc b124e61f4ed3 handed bitcoind's
+//! errors back as a *successful* result (`{"code": -8}` for a height past
+//! the tip); since then they are JSON-RPC errors. Either way, or any other
+//! failure, leaves that height without a time, and its records are dated by
+//! bookkeeper's timestamp.
 //!
 //! **Held times come first.** A record the journal holds carries its
 //! `raw-blockheight` and `raw-blocktime`, and a height a held record has a
@@ -49,13 +50,12 @@ pub(super) const HEIGHT_META: &str = "raw-blockheight";
 /// one.
 pub(super) const TIME_META: &str = "raw-blocktime";
 
-/// How many corerpc calls wait on the node at once: one. clightningjs, the
-/// library the plugin is built on, reads every request into one `msg` and
-/// answers each after its `await` under `msg.id`, which by then is the
-/// newest request's, so of calls made side by side all but one are never
-/// answered, and a batch would wait out the call timeout
-/// (headway:cashflow/avoid-build-trick).
-const IN_FLIGHT: usize = 1;
+/// How many corerpc calls wait on the node at once. corerpc answers calls
+/// made side by side since jb55/cln-core-rpc b124e61f4ed3 (32 of 32 through
+/// lightningd, in under 30 ms). One built on clightningjs 0.2.2 answers only
+/// the last of the calls lightningd hands it in one read, so against it
+/// the rest wait out the call timeout (headway:cashflow/avoid-build-trick).
+const IN_FLIGHT: usize = 32;
 
 /// What a record's `raw-blockheight` says when its height is unknown.
 pub(super) const UNKNOWN: &str = "-";
