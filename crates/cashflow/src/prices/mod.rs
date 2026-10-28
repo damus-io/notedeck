@@ -3,9 +3,10 @@
 //!
 //! Three sources, none needing a key:
 //!
-//! - [`boc`]: the Bank of Canada's daily USD/CAD rate, `P <day> USD <rate>
-//!   CAD`, business days only (a lookup takes the nearest earlier rate, which
-//!   covers weekends and holidays).
+//! - [`boc`]: the Bank of Canada's daily rates into CAD for the currencies
+//!   in [`boc::CURRENCIES`], `P <day> USD <rate> CAD`, business days only (a
+//!   lookup takes the nearest earlier rate, which covers weekends and
+//!   holidays).
 //! - [`bitstamp`]: Bitstamp's daily BTC/USD close, `P <day> btc <close>
 //!   USD`, every day.
 //! - [`UNITS`]: the exact relations between bitcoin's units, `msat → sat →
@@ -64,7 +65,7 @@ const DAY: u64 = 86_400;
 pub enum Source {
     /// The fixed unit relations, [`UNITS`].
     Units,
-    /// The Bank of Canada's USD/CAD, [`boc`].
+    /// The Bank of Canada's rates into CAD, [`boc`].
     Boc,
     /// Bitstamp's BTC/USD, [`bitstamp`].
     Bitstamp,

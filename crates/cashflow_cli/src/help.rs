@@ -459,8 +459,9 @@ Fetch daily rates from public sources (no keys) and write them to the journal
 as `P` directives in the `prices` layer, one segment per source and year:
 
   units      msat → sat → btc, exact, dated 1970-01-01
-  boc        Bank of Canada USD/CAD, business days (before 2017-01-03, its
-             legacy noon rate)
+  boc        Bank of Canada rates into CAD for AUD BRL CHF DKK EUR GBP HKD
+             JPY MXN NOK RUB THB TRY USD, business days, from 2007-05-01
+             (before 2017-01-03, its legacy noon rates)
   bitstamp   Bitstamp BTC/USD daily close, finished days only
 
 Together they price msat in CAD, chaining msat → sat → btc → USD → CAD at
