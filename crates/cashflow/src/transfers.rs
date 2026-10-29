@@ -17,6 +17,15 @@
 //! leg on one of the owner's own accounts pair by txid: the `payroll`
 //! importer writes `raw-txid` on a payout too, but a payout is spending, not
 //! a move between own accounts, so it is never one side of a transfer.
+//!
+//! A withdrawal from an exchange to a bitcoind wallet has no txid on the
+//! exchange's side, but Shakepay names the address it paid, and the `btc`
+//! importer keeps the address its wallet was paid at, both as
+//! `raw-address`. So the address pairs those next, as the txid does, before
+//! the amount pass. A deposit to the exchange has no such proof (Shakepay
+//! lists the coins' sending addresses, not its own), so it pairs by amount:
+//! the wallet's send pairs by its counter leg, the output that left, since
+//! its own leg also carries the fee.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -25,6 +34,10 @@ use ledgerdb::{AccountId, CommodityId, Date, Edits, Journal, Ledger, Posting, Tr
 /// The metadata key both on-chain importers keep a record's transaction id
 /// under.
 pub const TXID_KEY: &str = "raw-txid";
+
+/// The metadata key the on-chain importers keep the addresses a record paid
+/// or was paid at under, `, `-separated.
+pub const ADDRESS_KEY: &str = "raw-address";
 
 /// How many days apart the two sides of a transfer may be dated. A payment
 /// leaves chequing a day or two before the card posts it.
@@ -71,13 +84,21 @@ pub struct Suggestion {
 /// names the send that paid it, takes no part in the txid pass at all: it
 /// pairs with nothing and holds no other record back.
 ///
-/// Then by amount: two transactions pair when each is an importer's raw record (one leg to
-/// an account under [`OWN_ROOTS`], one counter leg to one of
-/// [`Edits::defaults`]), their own legs are on different accounts and in
-/// the same commodity with equal and opposite quantities, and they are
-/// dated at most [`WINDOW_DAYS`] apart. A transaction an override, split or
-/// link already names is left out, as is one without a record id, which no
-/// link could name. Each transaction is in at most one suggestion: the
+/// Then by address: own-account records of two sources that name one
+/// address in [`ADDRESS_KEY`] pair when exactly one pair of their counter
+/// legs nets to zero, as by txid and whatever their dates. Only the records
+/// it pairs are left out of the amount pass, so an address paid twice, whose
+/// records don't single out a pair, still pairs by amount.
+///
+/// Then by amount: two transactions pair when each has exactly one counter
+/// leg (a posting to one of [`Edits::defaults`]) and exactly one own leg
+/// moving the other way in its commodity (to an account under
+/// [`OWN_ROOTS`]), their counter legs are equal and opposite, their own
+/// legs are on different accounts, and they are dated at most
+/// [`WINDOW_DAYS`] apart. Other legs, such as a send's fee, don't matter:
+/// the counter leg is what moved between the two accounts. A transaction an
+/// override, split or link already names is left out, as is one without a
+/// record id, which no link could name. Each transaction is in at most one suggestion: the
 /// outgoing sides are taken in date order, and each pairs with the nearest
 /// unpaired incoming side.
 ///
@@ -109,6 +130,14 @@ pub fn suggest(raw: &Ledger, edits: &Edits) -> Vec<Suggestion> {
 
     let mut found = Vec::new();
     let by_txid = pair_by_txid(journal, &is_default, &is_own, &decided, &mut found);
+    let by_address = pair_by_address(
+        journal,
+        &is_default,
+        &is_own,
+        &decided,
+        &by_txid,
+        &mut found,
+    );
 
     // Every candidate side, grouped by what its pair must match.
     let mut groups: BTreeMap<Group, Sides> = BTreeMap::new();
@@ -116,23 +145,15 @@ pub fn suggest(raw: &Ledger, edits: &Edits) -> Vec<Suggestion> {
         let Some(id) = txn.id.map(|id| journal.strings.get(id)) else {
             continue;
         };
-        if decided.contains(id) || by_txid.contains(id) {
+        if decided.contains(id) || by_txid.contains(id) || by_address.contains(id) {
             continue;
         }
-        let [first, second] = journal.postings_of(txn) else {
+        let Some(counter) = counter_leg(journal, &is_default, txn) else {
             continue;
         };
-        let (own, counter) = match (
-            is_default.contains(&first.account),
-            is_default.contains(&second.account),
-        ) {
-            (false, true) => (first, second),
-            (true, false) => (second, first),
-            _ => continue,
-        };
-        if !is_own(own.account) || own.qty == 0 || counter.commodity != own.commodity {
+        let Some(own) = own_leg(journal, &is_own, txn, counter) else {
             continue;
-        }
+        };
         let side = Side {
             date: txn.date,
             id,
@@ -140,11 +161,11 @@ pub fn suggest(raw: &Ledger, edits: &Edits) -> Vec<Suggestion> {
         };
         let sides = groups
             .entry(Group {
-                commodity: own.commodity,
-                magnitude: own.qty.unsigned_abs(),
+                commodity: counter.commodity,
+                magnitude: counter.qty.unsigned_abs(),
             })
             .or_default();
-        if own.qty < 0 {
+        if counter.qty > 0 {
             sides.out.push(side);
         } else {
             sides.into.push(side);
@@ -202,6 +223,68 @@ fn pair_by_txid<'a>(
     held
 }
 
+/// Pair own-account records of two sources that name one on-chain address
+/// in [`ADDRESS_KEY`], as [`suggest`] says, pushing the pairs to `found`,
+/// and return the ids of the records paired. A record the txid pass `held`
+/// or an edit `decided` takes no part.
+fn pair_by_address<'a>(
+    journal: &'a Journal,
+    is_default: &HashSet<AccountId>,
+    is_own: &impl Fn(AccountId) -> bool,
+    decided: &HashSet<&str>,
+    held: &HashSet<&str>,
+    found: &mut Vec<Found>,
+) -> HashSet<&'a str> {
+    let mut by_address: BTreeMap<&str, Vec<Record>> = BTreeMap::new();
+    for txn in &journal.txns {
+        let Some(id) = txn.id.map(|id| journal.strings.get(id)) else {
+            continue;
+        };
+        if decided.contains(id) || held.contains(id) {
+            continue;
+        }
+        let Some(addresses) = journal.txn_meta(txn, ADDRESS_KEY) else {
+            continue;
+        };
+        if !journal.postings_of(txn).iter().any(|p| is_own(p.account)) {
+            continue;
+        }
+        let Some(counter) = counter_leg(journal, is_default, txn) else {
+            continue;
+        };
+        for address in addresses.split(", ") {
+            by_address.entry(address).or_default().push(Record {
+                id,
+                source: id.split_once(':').map_or(id, |(source, _)| source),
+                date: txn.date,
+                counter: Some(*counter),
+            });
+        }
+    }
+
+    let mut paired = HashSet::new();
+    for records in by_address.values() {
+        let first = records[0].source;
+        if records.iter().all(|r| r.source == first) {
+            continue;
+        }
+        let Some(pair) = netting_pair(records) else {
+            continue;
+        };
+        let link = &pair.suggestion.link;
+        if paired.contains(link.a.as_str()) || paired.contains(link.b.as_str()) {
+            continue;
+        }
+        let ids = records
+            .iter()
+            .map(|r| r.id)
+            .filter(|id| *id == link.a || *id == link.b);
+        paired.extend(ids);
+        found.push(pair);
+    }
+    paired
+}
+
 /// The one pair of `records`, from two sources, whose counter legs net to
 /// zero in one commodity, as a suggestion; `None` when there is no such
 /// pair or more than one.
@@ -250,6 +333,28 @@ fn counter_leg<'a>(
         .postings_of(txn)
         .iter()
         .filter(|posting| is_default.contains(&posting.account));
+    let leg = legs.next()?;
+    legs.next().is_none().then_some(leg)
+}
+
+/// `txn`'s one posting to an own account that moves the other way from its
+/// `counter` leg, in its commodity: where the money a counter leg spent
+/// came from, or where the money it earned went. `None` when there is no
+/// such posting, or more than one, or the counter leg moves nothing.
+fn own_leg<'a>(
+    journal: &'a Journal,
+    is_own: &impl Fn(AccountId) -> bool,
+    txn: &Txn,
+    counter: &Posting,
+) -> Option<&'a Posting> {
+    if counter.qty == 0 {
+        return None;
+    }
+    let mut legs = journal.postings_of(txn).iter().filter(|posting| {
+        is_own(posting.account)
+            && posting.commodity == counter.commodity
+            && posting.qty.signum() == -counter.qty.signum()
+    });
     let leg = legs.next()?;
     legs.next().is_none().then_some(leg)
 }
@@ -760,5 +865,90 @@ mod tests {
             account: "expenses:gifts".to_owned(),
         });
         assert!(suggest(raw, &edits).is_empty());
+    }
+
+    /// A record with no txid any other source shares: `legs` in msat, and
+    /// `address` as its `raw-address` when there is one.
+    fn record(id: &str, date: &str, address: Option<&str>, legs: &[(&str, i64)]) -> String {
+        let mut text = format!("{date} * x\n  ; id: {id}\n");
+        if let Some(address) = address {
+            text.push_str(&format!("  ; raw-address: {address}\n"));
+        }
+        for (account, msat) in legs {
+            text.push_str(&format!("  {account}  {msat} msat\n"));
+        }
+        text + "\n"
+    }
+
+    /// A deposit to an exchange from a wallet: the wallet's send has a fee
+    /// leg beside its counter leg, and pairs by that counter leg with the
+    /// exchange's receipt a day later.
+    #[test]
+    fn a_send_with_a_fee_pairs_by_its_counter_leg() {
+        let text = [
+            record(
+                "btc:aa",
+                "2026-08-01",
+                None,
+                &[
+                    ("assets:btc:hot", -1_000_500),
+                    ("expenses:fees:btc", 500),
+                    ("expenses:unknown", 1_000_000),
+                ],
+            ),
+            stranger("exchange:1", "2026-08-02", "assets:exchange:btc", 1_000_000),
+            // The send's own leg, fee and all: nothing pairs with it.
+            stranger("exchange:2", "2026-08-02", "assets:exchange:btc", 1_000_500),
+        ]
+        .concat();
+        let raw = &ledger(&text).ledger;
+        assert_eq!(
+            suggest(raw, &crate::rules::default_edits()),
+            [pair("btc:aa", "exchange:1", 1)]
+        );
+    }
+
+    /// Two withdrawals of one amount on one day, to two addresses of one
+    /// transaction: by amount alone they'd pair crosswise, so they pair by
+    /// the address each paid instead.
+    #[test]
+    fn withdrawals_pair_by_the_address_they_paid() {
+        let out = |id: &str, address: &str| {
+            record(
+                id,
+                "2026-08-01",
+                Some(address),
+                &[
+                    ("assets:exchange:btc", -1_000_000),
+                    ("expenses:unknown", 1_000_000),
+                ],
+            )
+        };
+        let into = |id: &str, address: &str| {
+            record(
+                id,
+                "2026-08-01",
+                Some(address),
+                &[
+                    ("assets:btc:hot", 1_000_000),
+                    ("income:unknown", -1_000_000),
+                ],
+            )
+        };
+        let text = [
+            out("exchange:1", "bc1qb"),
+            out("exchange:2", "bc1qa"),
+            into("btc:tt:0", "bc1qa"),
+            into("btc:tt:1", "bc1qb"),
+        ]
+        .concat();
+        let raw = &ledger(&text).ledger;
+        assert_eq!(
+            suggest(raw, &crate::rules::default_edits()),
+            [
+                pair("exchange:1", "btc:tt:1", 0),
+                pair("exchange:2", "btc:tt:0", 0)
+            ]
+        );
     }
 }
