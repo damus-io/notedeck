@@ -397,7 +397,8 @@ fn rbc_import_maps_accounts_by_last_four() {
 }
 
 /// `import shakepay` over an export into its configured account: the
-/// account's balance is the export's last Balance, a row stamped after
+/// account's balance is the export's last Balance, a buy swaps CAD for
+/// bitcoin rather than spending it, a row stamped after
 /// midnight Eastern is filed under the evening before in Vancouver, and a
 /// row of another account fails the import with nothing written.
 #[test]
@@ -411,16 +412,23 @@ fn shakepay_import_balances_and_dates_in_the_zone() {
     let header = "\"Date\",\"Account\",\"Type\",\"Description\",\"Debit\",\"Credit\",\
                   \"Spot Rate\",\"Buy / Sell Rate\",\"Balance\"\n";
     let rows = "\"2026-03-01 12:00:00\",\"Spending\",\"Interac e-Transfer\",\"me@example.com\",,200,,,200\n\
-                \"2026-03-02 01:30:00\",\"Spending\",\"Card purchase\",\"LATE DINER\",35.25,,,,164.75\n";
+                \"2026-03-01 12:05:00\",\"Spending\",\"Buy\",\"Bought 0.001 BTC @ CA$100,000.00\",100,,,100000.00,100\n\
+                \"2026-03-02 01:30:00\",\"Spending\",\"Card purchase\",\"LATE DINER\",35.25,,,,64.75\n";
     let export = cf.dir().join("shakepay.csv");
     std::fs::write(&export, format!("{header}{rows}")).unwrap();
 
     let first: Value =
         serde_json::from_str(&cf.ok(&["import", "shakepay", s(&export), "--json"])).unwrap();
-    assert_eq!(first["txns"], 2);
+    assert_eq!(first["txns"], 3);
     assert_eq!(first["layer"], "shakepay");
     let bal = cf.ok(&["report", "bal", "assets:shakepay", "--native"]);
-    assert!(bal.contains("164.75 CAD  assets:shakepay"), "{bal}");
+    assert!(bal.contains("64.75 CAD  assets:shakepay"), "{bal}");
+    // The buy is a swap: bitcoin in, its CAD balanced through
+    // equity:conversion, and nothing filed as spending.
+    assert!(bal.contains("100000000 msat  assets:shakepay:btc"), "{bal}");
+    let equity = cf.ok(&["report", "bal", "equity", "--native"]);
+    assert!(equity.contains("100.00 CAD"), "{equity}");
+    assert!(equity.contains("-100000000 msat"), "{equity}");
     let reg = cf.ok(&["report", "reg", "expenses"]);
     assert!(reg.contains("2026-03-01"), "{reg}");
     assert!(!reg.contains("2026-03-02"), "{reg}");

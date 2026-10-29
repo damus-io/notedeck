@@ -18,13 +18,22 @@
 //!
 //! **Counter legs.** A card purchase or bill payment posts against
 //! `expenses:unknown` either way, so a refund lowers spending, as `amex`
-//! does. Every other type posts by sign, to `expenses:unknown` when money
-//! left and `income:unknown` when it came in. That covers Interac
-//! e-Transfers to and from the owner's bank, which `transfer suggest` pairs
-//! by amount, peer-to-peer `Send`s and `Receive`s, rewards, and `Buy`s and
-//! `Sell`s of bitcoin: the export has only their CAD side, the bitcoin
-//! moving in a wallet it doesn't list, so the CAD goes to the defaults and
-//! the trade's rate to `; raw-rate:`.
+//! does. Every other type but a trade posts by sign, to `expenses:unknown`
+//! when money left and `income:unknown` when it came in. That covers
+//! Interac e-Transfers to and from the owner's bank, which `transfer
+//! suggest` pairs by amount, peer-to-peer `Send`s and `Receive`s, and
+//! rewards.
+//!
+//! **Trades.** A `Buy` or `Sell` swaps CAD for bitcoin, so it is neither
+//! spending nor income. Its description (`Sold 0.002 BTC @ CA$95,000.00`)
+//! gives the bitcoin, which posts in `msat` to
+//! [`ShakepayConfig::btc_account`] (`assets:shakepay:btc`), the commodity
+//! the `btc` importer writes. An elided [`CONVERSION`] leg balances the two
+//! commodities, as ledger-cli's trading accounts do, so the record holds no
+//! uncategorized leg. The export doesn't list the bitcoin wallet itself:
+//! the on-chain deposits that fund a sell and the withdrawals after a buy
+//! are the `btc` importer's records, and the BTC account only nets to what
+//! Shakepay holds once their counter legs are categorized to it.
 //!
 //! **Dates.** `Date` is a wall-clock time in Eastern time
 //! ([`EXPORT_ZONE`], daylight saving included), Shakepay's own zone,
@@ -59,11 +68,19 @@ use super::{
 };
 use crate::config::ShakepayConfig;
 use crate::csv;
+use crate::prices::MSAT;
 use crate::zone::{Dating, Zone};
 
 /// The Spending account's ledger account when `[shakepay] account` doesn't
 /// name one.
 pub const DEFAULT_ACCOUNT: &str = "assets:shakepay:cad";
+
+/// The bitcoin a `Buy` or `Sell` trades goes to or comes from this account
+/// when `[shakepay] btc_account` doesn't name one.
+pub const DEFAULT_BTC_ACCOUNT: &str = "assets:shakepay:btc";
+
+/// The elided leg that balances a trade's two commodities.
+pub const CONVERSION: &str = "equity:conversion";
 
 /// The zone the export's `Date` column is written in. Shakepay withdrawals
 /// to a wallet land on chain minutes after the `Buy` they follow once the
@@ -84,6 +101,9 @@ const SPENT: &str = "expenses:unknown";
 /// The counter leg when money comes in.
 const RECEIVED: &str = "income:unknown";
 
+/// Millisatoshis in a satoshi.
+const MSAT_PER_SAT: i64 = 1000;
+
 /// The types that are spending on the card, refunds included.
 const CARD_TYPES: &[&str] = &["Card purchase", "Bill payment"];
 
@@ -92,6 +112,8 @@ const CARD_TYPES: &[&str] = &["Card purchase", "Bill payment"];
 pub struct ShakepayImporter {
     /// The Spending account's ledger account.
     pub account: String,
+    /// The account a trade's bitcoin posts to.
+    pub btc_account: String,
     /// `[shakepay] timezone`, the day rows fall on here, if set.
     pub timezone: Option<String>,
     /// The synced timezone setting, when the run read the vault.
@@ -105,6 +127,9 @@ impl ShakepayImporter {
         let config = config.cloned().unwrap_or_default();
         Self {
             account: config.account.unwrap_or_else(|| DEFAULT_ACCOUNT.to_owned()),
+            btc_account: config
+                .btc_account
+                .unwrap_or_else(|| DEFAULT_BTC_ACCOUNT.to_owned()),
             timezone: config.timezone,
             synced_timezone: synced.timezone.clone(),
         }
@@ -173,6 +198,8 @@ struct Row {
     description: String,
     /// `Type`, as written.
     kind: String,
+    /// The bitcoin a `Buy` (positive) or `Sell` (negative) trades, in msat.
+    msat: Option<i64>,
     /// The balance after the row, in cents.
     balance: i64,
     /// The day the row is filed under.
@@ -254,6 +281,8 @@ fn read_export(text: &str, zone: Zone) -> Result<Vec<Row>, RowError> {
             return Err(error("no Type".to_owned()));
         }
         let cents = amount(field(columns.debit), field(columns.credit)).map_err(error)?;
+        let description = field(columns.description);
+        let msat = trade(kind, description, cents).map_err(error)?;
         let balance = field(columns.balance);
         let balance =
             parse_cents(balance).ok_or_else(|| error(format!("bad balance {balance:?}")))?;
@@ -261,8 +290,9 @@ fn read_export(text: &str, zone: Zone) -> Result<Vec<Row>, RowError> {
             stamp: when.format("%Y-%m-%dT%H%M%S").to_string(),
             cents,
             kind_key: id_key(kind),
-            description: field(columns.description).to_owned(),
+            description: description.to_owned(),
             kind: kind.to_owned(),
+            msat,
             balance,
             date: zone.date(unix_time(when)),
             time: time.to_owned(),
@@ -291,6 +321,62 @@ fn amount(debit: &str, credit: &str) -> Result<i64, String> {
         Some(cents) if cents >= 0 => Ok(sign * cents),
         _ => Err(format!("bad amount {text:?}")),
     }
+}
+
+/// The bitcoin a row of type `kind` trades, in msat, signed as it moves the
+/// bitcoin account: `Some` for a `Buy` or `Sell`, `None` for any other type.
+/// A trade's `description` must read `Bought|Sold <qty> BTC @ CA$<price>`,
+/// matching its type, and its CAD must move the other way: a buy spends
+/// (`cents` negative) and a sell receives.
+fn trade(kind: &str, description: &str, cents: i64) -> Result<Option<i64>, String> {
+    let (verb, sign) = match kind {
+        "Buy" => ("Bought", 1),
+        "Sell" => ("Sold", -1),
+        _ => return Ok(None),
+    };
+    let bad = || {
+        format!("a {kind} whose description {description:?} isn't `{verb} <qty> BTC @ CA$<price>`")
+    };
+    let mut parts = description.split(' ');
+    let (Some(said), Some(qty), Some("BTC"), Some("@"), Some(price), None) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
+        return Err(bad());
+    };
+    if said != verb || !price.starts_with("CA$") {
+        return Err(bad());
+    }
+    let msat = btc_msat(qty).ok_or_else(bad)?;
+    if cents.signum() != -sign {
+        return Err(format!(
+            "a {kind} that {} CAD",
+            if cents < 0 { "spends" } else { "receives" }
+        ));
+    }
+    Ok(Some(sign * msat))
+}
+
+/// A bitcoin quantity such as `0.0141287` in msat, rounded to the satoshi:
+/// Shakepay trades whole satoshis, but some exports write the quantity
+/// with a float's noise (`0.009899979999999999`).
+fn btc_msat(qty: &str) -> Option<i64> {
+    let (whole, frac) = qty.split_once('.').unwrap_or((qty, ""));
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    if whole.is_empty() || !digits(whole) || !digits(frac) {
+        return None;
+    }
+    let whole: i64 = whole.parse().ok()?;
+    let sats: i64 = format!("{:0<8}", &frac[..frac.len().min(8)]).parse().ok()?;
+    let round_up = frac.as_bytes().get(8).is_some_and(|d| *d >= b'5');
+    let sats = whole
+        .checked_mul(100_000_000)?
+        .checked_add(sats + i64::from(round_up))?;
+    sats.checked_mul(MSAT_PER_SAT)
 }
 
 /// The unix time of `when`, a wall-clock time in [`EXPORT_ZONE`]. A time
@@ -387,22 +473,41 @@ impl ShakepayImporter {
         } else {
             row.description
         };
+        let cad = RawPosting {
+            account: self.account.clone(),
+            amount: amount(row.cents),
+        };
+        let postings = match row.msat {
+            Some(msat) => vec![
+                cad,
+                RawPosting {
+                    account: self.btc_account.clone(),
+                    amount: Some(RawAmount {
+                        qty: msat,
+                        precision: 0,
+                        commodity: MSAT.to_owned(),
+                    }),
+                },
+                RawPosting {
+                    account: CONVERSION.to_owned(),
+                    amount: None,
+                },
+            ],
+            None => vec![
+                cad,
+                RawPosting {
+                    account: counter.to_owned(),
+                    amount: amount(-row.cents),
+                },
+            ],
+        };
         RawTxn {
             date: row.date,
             cleared: true,
             payee,
             id,
             meta: metas,
-            postings: vec![
-                RawPosting {
-                    account: self.account.clone(),
-                    amount: amount(row.cents),
-                },
-                RawPosting {
-                    account: counter.to_owned(),
-                    amount: amount(-row.cents),
-                },
-            ],
+            postings,
         }
     }
 }
@@ -455,7 +560,7 @@ mod tests {
     }
 
     /// Every type the export has, each in the shape it comes in: a buy and
-    /// a sell with their rate, a refund on the card, a referral reward, a
+    /// a sell swapping CAD for bitcoin, a refund on the card, a referral reward, a
     /// peer-to-peer send and receive, a description left empty, and
     /// balances that follow from the rows.
     #[tokio::test]
@@ -498,7 +603,8 @@ mod tests {
              \t; raw-balance: 400.00\n\
              \t; raw-rate: 100000.00\n\
              \tassets:shakepay:cad\t-100.00 CAD\n\
-             \texpenses:unknown\t100.00 CAD\n\n\
+             \tassets:shakepay:btc\t100000000 msat\n\
+             \tequity:conversion\n\n\
              2026-03-02 * CORNER CAFE\n\
              \t; id: shakepay:2026-03-02T184012:-450:card-purchase:1\n\
              \t; raw-description: CORNER CAFE\n\
@@ -562,7 +668,8 @@ mod tests {
              \t; raw-balance: 550.00\n\
              \t; raw-rate: 95000.00\n\
              \tassets:shakepay:cad\t190.00 CAD\n\
-             \tincome:unknown\t-190.00 CAD\n\n\
+             \tassets:shakepay:btc\t-200000000 msat\n\
+             \tequity:conversion\n\n\
              2026-03-05 * me@example.com\n\
              \t; id: shakepay:2026-03-05T093000:-55000:interac-e-transfer:1\n\
              \t; raw-description: me@example.com\n\
@@ -598,6 +705,7 @@ mod tests {
         let utc = ShakepayImporter::new(
             Some(&ShakepayConfig {
                 account: Some("assets:shakepay".to_owned()),
+                btc_account: None,
                 timezone: Some("utc".to_owned()),
             }),
             &Synced::default(),
@@ -784,6 +892,53 @@ mod tests {
             ledger
                 .find("shakepay:2026-01-03T120000:-1000:card-purchase:1")
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn btc_quantities_round_to_the_satoshi() {
+        assert_eq!(btc_msat("0.0141287"), Some(1_412_870_000));
+        assert_eq!(btc_msat("1"), Some(100_000_000_000));
+        assert_eq!(btc_msat("0.00000001"), Some(1_000));
+        // A float's noise rounds to the satoshi it meant.
+        assert_eq!(btc_msat("0.009899979999999999"), Some(989_998_000));
+        assert_eq!(btc_msat("0.012300000000000001"), Some(1_230_000_000));
+        for bad in ["", ".5", "1.2.3", "-1", "1e-3", "0,5"] {
+            assert_eq!(btc_msat(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_trade_reads_its_bitcoin_or_fails() {
+        let buy = |description: &str, cents| trade("Buy", description, cents);
+        assert_eq!(
+            buy("Bought 0.001 BTC @ CA$100,000.00", -10_000),
+            Ok(Some(100_000_000))
+        );
+        assert_eq!(
+            trade("Sell", "Sold 0.002 BTC @ CA$95,000.00", 19_000),
+            Ok(Some(-200_000_000))
+        );
+        assert_eq!(
+            trade("Card purchase", "Bought 1 BTC @ CA$1", -100),
+            Ok(None)
+        );
+        for bad in [
+            "Sold 0.001 BTC @ CA$100,000.00",
+            "Bought 0.001 ETH @ CA$100,000.00",
+            "Bought 0.001 BTC @ US$100,000.00",
+            "Bought 0.001 BTC",
+            "Bought lots BTC @ CA$1",
+        ] {
+            assert!(
+                buy(bad, -10_000).unwrap_err().contains("isn't `Bought"),
+                "{bad}"
+            );
+        }
+        assert!(
+            buy("Bought 0.001 BTC @ CA$100,000.00", 10_000)
+                .unwrap_err()
+                .contains("a Buy that receives CAD")
         );
     }
 

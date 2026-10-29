@@ -448,19 +448,24 @@ Importers:
                   account; a directory reads its *.csv files in name order,
                   and a row of any other account is an error. Each row
                   posts to assets:shakepay:cad and, for a card purchase
-                  or bill payment, expenses:unknown; any other type
-                  (Interac e-Transfer, Send, Receive, Reward, Buy, Sell)
-                  goes to expenses:unknown or income:unknown by sign. A
-                  Buy or Sell is only its CAD side, with its rate as
-                  raw-rate. Shakepay writes times in Eastern time, and a
+                  or bill payment, expenses:unknown; Interac e-Transfer,
+                  Send, Receive and Reward go to expenses:unknown or
+                  income:unknown by sign. A Buy or Sell is a swap: the
+                  bitcoin its description names posts in msat to
+                  assets:shakepay:btc, balanced by equity:conversion,
+                  with its rate as raw-rate. That account only nets to
+                  what Shakepay holds once the btc importer's deposits
+                  to and withdrawals from Shakepay are categorized to it.
+                  Shakepay writes times in Eastern time, and a
                   row is filed under its day in the synced `timezone`
                   setting, as cln is. Its id is
                   shakepay:<time>:<cents>:<type>:<n>, so overlapping
                   exports keep each row once and a reworded merchant
                   keeps its record. A run notes where an export's Balance
                   column doesn't follow from its rows. [shakepay] in
-                  config.toml sets `account` and `timezone` (overriding
-                  the synced setting on this machine).
+                  config.toml sets `account`, `btc_account` and
+                  `timezone` (overriding the synced setting on this
+                  machine).
 
 --source names the segment's source (default: the importer's name), the
 prefix of the record ids it makes. --layer files it in a layer (default: the

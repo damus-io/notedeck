@@ -413,6 +413,9 @@ pub struct ShakepayConfig {
     /// The Spending account's ledger account [default:
     /// `assets:shakepay:cad`].
     pub account: Option<String>,
+    /// The account the bitcoin a `Buy` or `Sell` trades posts to, in msat
+    /// [default: `assets:shakepay:btc`].
+    pub btc_account: Option<String>,
     /// The zone rows are dated in on this machine, overriding the synced
     /// `timezone` setting, as `[cln] timezone` does. The export's own times
     /// are Eastern whatever this says; this only picks the day they fall on.
@@ -770,6 +773,7 @@ mod tests {
             shakepay.shakepay,
             Some(ShakepayConfig {
                 account: Some("assets:shakepay".to_owned()),
+                btc_account: None,
                 timezone: Some("utc".to_owned()),
             })
         );
