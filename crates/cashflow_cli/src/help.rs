@@ -453,9 +453,9 @@ Importers:
                   income:unknown by sign. A Buy or Sell is a swap: the
                   bitcoin its description names posts in msat to
                   assets:shakepay:btc, balanced by equity:conversion,
-                  with its rate as raw-rate. That account only nets to
-                  what Shakepay holds once the btc importer's deposits
-                  to and withdrawals from Shakepay are categorized to it.
+                  with its rate as raw-rate. With the crypto export
+                  below imported too, that account nets to what Shakepay
+                  holds.
                   Shakepay writes times in Eastern time, and a
                   row is filed under its day in the synced `timezone`
                   setting, as cln is. Its id is
@@ -466,6 +466,19 @@ Importers:
                   config.toml sets `account`, `btc_account` and
                   `timezone` (overriding the synced setting on this
                   machine).
+                  The crypto export (crypto_transactions_summary.csv),
+                  told apart by its header, is the bitcoin side: each
+                  Reward and Receive posts to assets:shakepay:btc in msat
+                  against income:unknown, each Send against
+                  expenses:unknown, read exactly to the satoshi (some
+                  amounts are in scientific notation). Market Value and
+                  Book Cost are kept as raw-market-value and
+                  raw-book-cost, a Send's address as raw-address. Its
+                  Buy and Sell rows are left out: the Spending export's
+                  swaps hold their bitcoin, and a trade no swap in the
+                  journal or the run holds is listed as left out until
+                  the Spending export is imported. Its ids are
+                  shakepay:btc:<time>:<sats>:<type>:<n>.
 
 --source names the segment's source (default: the importer's name), the
 prefix of the record ids it makes. --layer files it in a layer (default: the
@@ -504,6 +517,7 @@ with on-chain records dated by when bookkeeper logged them.",
             "cashflow import payroll payroll.txt",
             "cashflow import rbc ~/Downloads/csv*.csv",
             "cashflow import shakepay ~/Downloads/shakepay.csv",
+            "cashflow import shakepay ~/Downloads/crypto_transactions_summary.csv",
             "cashflow import ledger old.ledger --source bank --layer cards",
         ],
     },
@@ -972,7 +986,11 @@ or already in a link, can't be linked: `uncategorize` or `unlink` it first.
 
 `suggest` lists the pairs that look like one transfer: an own account
 (assets, liabilities) on each side, equal and opposite, at most 5 days apart,
-neither decided by an edit yet. --accept-all links every one; with --dry-run
+neither decided by an edit yet. A side with a fee leg, such as a wallet's
+send to an exchange, matches by what left it, not counting the fee. Two
+on-chain records that share a txid, or that name one address (a Shakepay
+withdrawal and the wallet receive it paid), pair first, whatever their
+dates. --accept-all links every one; with --dry-run
 it lists them and writes nothing.",
         options: &[
             ("--accept-all", "Link every suggested pair (suggest)"),

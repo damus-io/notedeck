@@ -26,6 +26,7 @@ mod pdf_text;
 mod rbc;
 mod rbc_statement;
 mod shakepay;
+mod shakepay_crypto;
 
 use std::collections::HashSet;
 use std::path::PathBuf;

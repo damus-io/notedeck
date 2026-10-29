@@ -1,5 +1,7 @@
 //! The `shakepay` importer: Shakepay's transaction history CSV for the
-//! Spending account, the CAD balance behind the Shakepay card.
+//! Spending account, the CAD balance behind the Shakepay card, and its
+//! crypto export, the bitcoin side (see [`super::shakepay_crypto`]). Each
+//! file is read as whichever of the two its header says it is.
 //!
 //! An export looks like this, with the columns found by their header names:
 //!
@@ -30,10 +32,25 @@
 //! [`ShakepayConfig::btc_account`] (`assets:shakepay:btc`), the commodity
 //! the `btc` importer writes. An elided [`CONVERSION`] leg balances the two
 //! commodities, as ledger-cli's trading accounts do, so the record holds no
-//! uncategorized leg. The export doesn't list the bitcoin wallet itself:
-//! the on-chain deposits that fund a sell and the withdrawals after a buy
-//! are the `btc` importer's records, and the BTC account only nets to what
-//! Shakepay holds once their counter legs are categorized to it.
+//! uncategorized leg. The export doesn't list the bitcoin's deposits and
+//! withdrawals: the crypto export does, and with both imported the BTC
+//! account nets to what Shakepay holds.
+//!
+//! **The crypto export** holds the same trades, as one bitcoin leg each.
+//! Those are left out: the Spending export's swap already holds the trade's
+//! bitcoin, so writing the row too would count it twice. A trade is matched
+//! to a swap moving the same msat stamped at most [`TRADE_SLACK_SECS`]
+//! apart (the two exports differ by a second or so on some), among the
+//! swaps the journal holds and those of the Spending exports read in the
+//! same run, so either file may be imported first. A trade no swap holds is
+//! left out too, and said so: it waits for the Spending export.
+//!
+//! Every other crypto row moves bitcoin on [`ShakepayConfig::btc_account`]
+//! against `income:unknown` (a reward or a deposit) or `expenses:unknown`
+//! (a withdrawal or a send to another user), so `transfer suggest` pairs a
+//! deposit with the wallet send that funded it, and a withdrawal with the
+//! wallet receive at the address it paid. Each reward is its own record,
+//! its description the payee, so a rule sorts cashback from referrals.
 //!
 //! **Dates.** `Date` is a wall-clock time in Eastern time
 //! ([`EXPORT_ZONE`], daylight saving included), Shakepay's own zone,
@@ -55,16 +72,18 @@
 //! `; raw-balance:`, and a run notes where an export's balances don't
 //! follow from its rows, which would mean a row is missing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
 use chrono::{NaiveDateTime, TimeZone};
 use chrono_tz::Tz;
-use ledgerdb::Date;
+use ledgerdb::{Date, Ledger};
 
 use super::csv_rows::{Header, Identified, RowError, csv_files, id_key, number, parse_cents, read};
+use super::shakepay_crypto::{CryptoRow, is_crypto, read_crypto};
 use super::{
-    Batch, ImportError, ImportInput, Importer, RawAmount, RawMeta, RawPosting, RawTxn, Synced,
+    Batch, ImportError, ImportInput, Importer, LeftOut, RawAmount, RawMeta, RawPosting, RawTxn,
+    Synced,
 };
 use crate::config::ShakepayConfig;
 use crate::csv;
@@ -104,10 +123,13 @@ const RECEIVED: &str = "income:unknown";
 /// Millisatoshis in a satoshi.
 const MSAT_PER_SAT: i64 = 1000;
 
+/// Decimal places of a satoshi in bitcoin.
+const SAT_DIGITS: i64 = 8;
+
 /// The types that are spending on the card, refunds included.
 const CARD_TYPES: &[&str] = &["Card purchase", "Bill payment"];
 
-/// Reads Shakepay Spending account CSV exports.
+/// Reads Shakepay's Spending account and crypto CSV exports.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShakepayImporter {
     /// The Spending account's ledger account.
@@ -147,6 +169,21 @@ impl Importer for ShakepayImporter {
     }
 
     async fn import(&self, input: &ImportInput) -> Result<Batch, ImportError> {
+        self.read(input, Vec::new())
+    }
+
+    /// [`import`](Importer::import), with the swaps the journal already
+    /// `held` to leave the crypto export's trades out against.
+    async fn import_held(&self, input: &ImportInput, held: &Ledger) -> Result<Batch, ImportError> {
+        self.read(input, self.held_swaps(held))
+    }
+}
+
+impl ShakepayImporter {
+    /// Read `input`'s exports, of either format, into one batch, leaving out
+    /// each crypto export trade that one of the `held` swaps or a swap of
+    /// this run's Spending exports already holds.
+    fn read(&self, input: &ImportInput, held: Vec<Swap>) -> Result<Batch, ImportError> {
         if input.paths.is_empty() {
             return Err(ImportError::Usage(
                 "`import shakepay` takes one or more CSV files or directories".to_owned(),
@@ -159,8 +196,17 @@ impl Importer for ShakepayImporter {
         )?;
         let mut notes: Vec<String> = note.into_iter().collect();
         let mut rows: BTreeMap<String, Row> = BTreeMap::new();
+        let mut crypto: BTreeMap<String, CryptoRow> = BTreeMap::new();
         for path in csv_files(&input.paths)? {
-            let file = read_export(&read(&path)?, zone).map_err(|error| error.in_file(&path))?;
+            let text = read(&path)?;
+            if is_crypto(&header_of(&text)) {
+                let file = read_crypto(&text, zone).map_err(|error| error.in_file(&path))?;
+                for Identified { id, row } in give_crypto_ids(&input.source, file) {
+                    crypto.entry(id).or_insert(row);
+                }
+                continue;
+            }
+            let file = read_export(&text, zone).map_err(|error| error.in_file(&path))?;
             if let Some(gap) = balance_gaps(&file) {
                 notes.push(format!(
                     "{}: the Balance column doesn't follow from the rows {} time(s), first at \
@@ -174,14 +220,150 @@ impl Importer for ShakepayImporter {
                 rows.entry(id).or_insert(row);
             }
         }
-        let txns: Vec<RawTxn> = rows
+
+        let mut swaps = Swaps::new(held, &rows);
+        let mut held_trades = 0;
+        let mut left_out = Vec::new();
+        let mut txns: Vec<RawTxn> = rows
             .into_iter()
             .map(|(id, row)| self.raw_txn(id, row))
             .collect();
+        for (id, row) in crypto {
+            if !TRADE_TYPES.contains(&row.kind.as_str()) {
+                txns.push(self.crypto_txn(id, row));
+            } else if swaps.take(row.msat, row.when) {
+                held_trades += 1;
+            } else {
+                left_out.push(LeftOut {
+                    id,
+                    why: "a trade no Spending export swap holds; import the Spending export",
+                });
+            }
+        }
+        if held_trades > 0 {
+            notes.push(format!(
+                "{held_trades} Buy/Sell row(s) of the crypto export left out: the Spending \
+                 export's swaps already hold their bitcoin"
+            ));
+        }
         let mut batch = Batch::from_raw(&txns, &[])?;
         batch.notes.extend(notes);
+        batch.left_out = left_out;
         Ok(batch)
     }
+
+    /// The Spending export's swaps the journal `held`: every record with a
+    /// `Buy` or `Sell` `raw-type`, a `raw-time` and a leg in msat on the
+    /// bitcoin account.
+    fn held_swaps(&self, held: &Ledger) -> Vec<Swap> {
+        let journal = held.journal();
+        let (Some(btc), Some(msat)) = (
+            journal.accounts.lookup(&self.btc_account),
+            journal.commodities.get(MSAT),
+        ) else {
+            return Vec::new();
+        };
+        held.txns()
+            .iter()
+            .filter_map(|txn| {
+                let kind = journal.txn_meta(txn, "raw-type")?;
+                if !TRADE_TYPES.contains(&kind) {
+                    return None;
+                }
+                let when = parse_time(journal.txn_meta(txn, "raw-time")?)?;
+                let leg = journal
+                    .postings_of(txn)
+                    .iter()
+                    .find(|p| p.account == btc && p.commodity == msat)?;
+                Some(Swap {
+                    id: journal.strings.get(txn.id?).to_owned(),
+                    msat: leg.qty,
+                    when,
+                })
+            })
+            .collect()
+    }
+}
+
+/// The trade types, which the Spending export writes as swaps.
+const TRADE_TYPES: &[&str] = &["Buy", "Sell"];
+
+/// How many seconds apart the two exports may stamp one trade. They agree
+/// to the second on most trades and differ by a few on the rest.
+const TRADE_SLACK_SECS: i64 = 60;
+
+/// A Spending export swap, as the crypto export's trades are matched
+/// against it.
+struct Swap {
+    /// Its record id, so a swap both held and re-read counts once.
+    id: String,
+    /// The bitcoin it moves, signed, in msat.
+    msat: i64,
+    when: NaiveDateTime,
+}
+
+/// The swaps a crypto export's trades can be matched to, each at most once.
+struct Swaps {
+    /// Each swap's time and whether a trade took it, by its signed msat.
+    by_msat: HashMap<i64, Vec<Slot>>,
+}
+
+/// One swap a trade can take.
+struct Slot {
+    when: NaiveDateTime,
+    taken: bool,
+}
+
+impl Swaps {
+    /// The `held` swaps and those of this run's Spending export `rows`.
+    fn new(held: Vec<Swap>, rows: &BTreeMap<String, Row>) -> Self {
+        let read = rows.iter().filter_map(|(id, row)| {
+            Some(Swap {
+                id: id.clone(),
+                msat: row.msat?,
+                when: parse_time(&row.time)?,
+            })
+        });
+        let mut by_id: BTreeMap<String, Swap> = BTreeMap::new();
+        for swap in held.into_iter().chain(read) {
+            by_id.insert(swap.id.clone(), swap);
+        }
+        let mut by_msat: HashMap<i64, Vec<Slot>> = HashMap::new();
+        for swap in by_id.into_values() {
+            by_msat.entry(swap.msat).or_default().push(Slot {
+                when: swap.when,
+                taken: false,
+            });
+        }
+        Self { by_msat }
+    }
+
+    /// Take the untaken swap moving `msat` stamped nearest `when`, at most
+    /// [`TRADE_SLACK_SECS`] away, and return whether there was one.
+    fn take(&mut self, msat: i64, when: NaiveDateTime) -> bool {
+        let Some(slots) = self.by_msat.get_mut(&msat) else {
+            return false;
+        };
+        let nearest = slots
+            .iter_mut()
+            .filter(|slot| !slot.taken)
+            .map(|slot| ((slot.when - when).num_seconds().abs(), slot))
+            .filter(|(secs, _)| *secs <= TRADE_SLACK_SECS)
+            .min_by_key(|(secs, _)| *secs);
+        let Some((_, slot)) = nearest else {
+            return false;
+        };
+        slot.taken = true;
+        true
+    }
+}
+
+/// The header row of an export, empty when it has none.
+fn header_of(text: &str) -> Vec<String> {
+    csv::Reader::new(text)
+        .next()
+        .map(|header| header.map(|field| field.into_owned()).collect())
+        .unwrap_or_default()
 }
 
 /// One export row, as read.
@@ -274,8 +456,7 @@ fn read_export(text: &str, zone: Zone) -> Result<Vec<Row>, RowError> {
             )));
         }
         let time = field(columns.date);
-        let when = NaiveDateTime::parse_from_str(time, "%Y-%m-%d %H:%M:%S")
-            .map_err(|_| error(format!("bad date {time:?}")))?;
+        let when = parse_time(time).ok_or_else(|| error(format!("bad date {time:?}")))?;
         let kind = field(columns.kind);
         if kind.is_empty() {
             return Err(error("no Type".to_owned()));
@@ -361,28 +542,48 @@ fn trade(kind: &str, description: &str, cents: i64) -> Result<Option<i64>, Strin
     Ok(Some(sign * msat))
 }
 
-/// A bitcoin quantity such as `0.0141287` in msat, rounded to the satoshi:
-/// Shakepay trades whole satoshis, but some exports write the quantity
-/// with a float's noise (`0.009899979999999999`).
-fn btc_msat(qty: &str) -> Option<i64> {
-    let (whole, frac) = qty.split_once('.').unwrap_or((qty, ""));
+/// A bitcoin quantity such as `0.0141287` or `1.5e-5` in msat, rounded to
+/// the satoshi, half up: Shakepay moves whole satoshis, but some exports
+/// write the quantity with a float's noise (`0.009899979999999999`) or in
+/// scientific notation. The text is read exactly, never through an `f64`.
+pub(super) fn btc_msat(qty: &str) -> Option<i64> {
+    let (mantissa, exponent) = match qty.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().ok()?),
+        None => (qty, 0),
+    };
+    let (whole, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
     let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
     if whole.is_empty() || !digits(whole) || !digits(frac) {
         return None;
     }
-    let whole: i64 = whole.parse().ok()?;
-    let sats: i64 = format!("{:0<8}", &frac[..frac.len().min(8)]).parse().ok()?;
-    let round_up = frac.as_bytes().get(8).is_some_and(|d| *d >= b'5');
-    let sats = whole
-        .checked_mul(100_000_000)?
-        .checked_add(sats + i64::from(round_up))?;
-    sats.checked_mul(MSAT_PER_SAT)
+    let digits = format!("{whole}{frac}");
+    let digits = digits.trim_start_matches('0');
+    let value: i128 = if digits.is_empty() {
+        0
+    } else {
+        digits.parse().ok()?
+    };
+    // The quantity is `value` × 10^(exponent − decimals) bitcoin, so this
+    // many powers of ten more satoshis.
+    let shift = i64::from(exponent) + SAT_DIGITS - frac.len() as i64;
+    let sats = if shift >= 0 {
+        value.checked_mul(10i128.checked_pow(u32::try_from(shift).ok()?)?)?
+    } else {
+        let unit = 10i128.checked_pow(u32::try_from(-shift).ok()?)?;
+        (value + unit / 2) / unit
+    };
+    i64::try_from(sats.checked_mul(i128::from(MSAT_PER_SAT))?).ok()
+}
+
+/// A `Date` column's text, `2026-03-02 18:40:12`, read.
+pub(super) fn parse_time(text: &str) -> Option<NaiveDateTime> {
+    NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S").ok()
 }
 
 /// The unix time of `when`, a wall-clock time in [`EXPORT_ZONE`]. A time
 /// the clocks went back over is its first occurrence; one they skipped
 /// forward over is read an hour later, as the clock showed it.
-fn unix_time(when: NaiveDateTime) -> u64 {
+pub(super) fn unix_time(when: NaiveDateTime) -> u64 {
     let instant = EXPORT_ZONE
         .from_local_datetime(&when)
         .earliest()
@@ -431,6 +632,19 @@ fn balance_gaps(rows: &[Row]) -> Option<BalanceGaps> {
 fn give_ids(source: &str, rows: Vec<Row>) -> Vec<Identified<Row>> {
     number(rows, |row| {
         format!("{source}:{}:{}:{}", row.stamp, row.cents, row.kind_key)
+    })
+}
+
+/// Give each row of one crypto export its occurrence id under `source`,
+/// the stem being (stamp, sats, type), which [`CryptoRow`] sorts by first.
+fn give_crypto_ids(source: &str, rows: Vec<CryptoRow>) -> Vec<Identified<CryptoRow>> {
+    number(rows, |row| {
+        format!(
+            "{source}:btc:{}:{}:{}",
+            row.stamp,
+            row.msat / MSAT_PER_SAT,
+            row.kind_key
+        )
     })
 }
 
@@ -512,6 +726,63 @@ impl ShakepayImporter {
     }
 }
 
+impl ShakepayImporter {
+    /// A crypto export `row` that isn't a trade as a raw transaction with
+    /// record id `id`: its bitcoin on the bitcoin account, against
+    /// `income:unknown` when it came in and `expenses:unknown` when it left.
+    fn crypto_txn(&self, id: String, row: CryptoRow) -> RawTxn {
+        let amount = |qty| {
+            Some(RawAmount {
+                qty,
+                precision: 0,
+                commodity: MSAT.to_owned(),
+            })
+        };
+        let counter = if row.msat < 0 { SPENT } else { RECEIVED };
+        let meta = |key: &str, value: &str| RawMeta {
+            key: key.to_owned(),
+            value: value.to_owned(),
+        };
+        let mut metas = Vec::new();
+        if !row.description.is_empty() {
+            metas.push(meta("raw-description", &row.description));
+        }
+        metas.push(meta("raw-type", &row.kind));
+        metas.push(meta("raw-time", &row.time));
+        if let Some(address) = row.address() {
+            metas.push(meta("raw-address", address));
+        }
+        let optional = [
+            ("raw-market-value", &row.market_value),
+            ("raw-book-cost", &row.book_cost),
+            ("raw-spot-rate", &row.spot),
+            ("raw-rate", &row.rate),
+        ];
+        for (key, value) in optional {
+            if !value.is_empty() {
+                metas.push(meta(key, value));
+            }
+        }
+        RawTxn {
+            date: row.date,
+            cleared: true,
+            payee: row.payee().to_owned(),
+            id,
+            meta: metas,
+            postings: vec![
+                RawPosting {
+                    account: self.btc_account.clone(),
+                    amount: amount(row.msat),
+                },
+                RawPosting {
+                    account: counter.to_owned(),
+                    amount: amount(-row.msat),
+                },
+            ],
+        }
+    }
+}
+
 /// `cents` as a decimal, `-1234` as `-12.34`.
 fn cents_text(cents: i64) -> String {
     let sign = if cents < 0 { "-" } else { "" };
@@ -522,6 +793,7 @@ fn cents_text(cents: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::import::shakepay_crypto::read_crypto;
     use crate::import::{Rows, write};
     use ledgerdb::{JournalStore, WriteOptions};
     use std::path::{Path, PathBuf};
@@ -903,7 +1175,16 @@ mod tests {
         // A float's noise rounds to the satoshi it meant.
         assert_eq!(btc_msat("0.009899979999999999"), Some(989_998_000));
         assert_eq!(btc_msat("0.012300000000000001"), Some(1_230_000_000));
-        for bad in ["", ".5", "1.2.3", "-1", "1e-3", "0,5"] {
+        // Scientific notation, read from the text: no float in between.
+        assert_eq!(btc_msat("1.5e-5"), Some(1_500_000));
+        assert_eq!(btc_msat("1e-3"), Some(100_000_000));
+        assert_eq!(btc_msat("8E-8"), Some(8_000));
+        assert_eq!(btc_msat("1.2340000000000001e-4"), Some(12_340_000));
+        assert_eq!(btc_msat("2.5e+1"), Some(2_500_000_000_000));
+        // Half a satoshi rounds up, less rounds down.
+        assert_eq!(btc_msat("5e-9"), Some(1_000));
+        assert_eq!(btc_msat("4.9e-9"), Some(0));
+        for bad in ["", ".5", "1.2.3", "-1", "0,5", "1e", "e-5", "1e-x", "1e-99"] {
             assert_eq!(btc_msat(bad), None, "{bad:?}");
         }
     }
@@ -939,6 +1220,352 @@ mod tests {
             buy("Bought 0.001 BTC @ CA$100,000.00", 10_000)
                 .unwrap_err()
                 .contains("a Buy that receives CAD")
+        );
+    }
+
+    /// The crypto export's header as Shakepay writes it, every name quoted.
+    const CRYPTO_HEADER: &str = "\"Date\",\"Account\",\"Amount Debited\",\"Asset Debited\",\
+                                 \"Amount Credited\",\"Asset Credited\",\"Market Value\",\
+                                 \"Market Value Currency\",\"Book Cost\",\"Book Cost Currency\",\
+                                 \"Type\",\"Spot Rate\",\"Buy / Sell Rate\",\"Description\"\n";
+
+    /// One crypto export row in Shakepay's shape: text quoted, numbers and
+    /// empty fields bare. `btc` is credited, or debited when it starts with
+    /// `-`; `cad` is both its market value and its book cost.
+    fn crypto_row(time: &str, kind: &str, btc: &str, cad: &str, description: &str) -> String {
+        let legs = match btc.strip_prefix('-') {
+            Some(debited) => format!("{debited},\"BTC\",,"),
+            None => format!(",,{btc},\"BTC\""),
+        };
+        let rate = if TRADE_TYPES.contains(&kind) {
+            "100000.00"
+        } else {
+            ""
+        };
+        format!(
+            "\"{time}\",\"Spending\",{legs},{cad},\"CAD\",{cad},\"CAD\",\"{kind}\",100000,{rate},\
+             \"{description}\""
+        )
+    }
+
+    /// A crypto export of `rows`.
+    fn crypto_export(rows: &[String]) -> String {
+        format!("{CRYPTO_HEADER}{}", rows.join("\n"))
+    }
+
+    /// Every type the crypto export has, each in the shape it comes in:
+    /// rewards in scientific notation and with a float's noise, a deposit
+    /// listing its sending addresses (the last cut off), one by Lightning,
+    /// a withdrawal to an address and a send to another user. A trade no
+    /// Spending swap holds is left out, never written as a second swap.
+    #[tokio::test]
+    async fn every_crypto_type_becomes_a_raw_transaction() {
+        let tmp = tempfile::tempdir().unwrap();
+        let text = crypto_export(&[
+            crypto_row(
+                "2026-03-01 12:00:00",
+                "Reward",
+                "1.5e-5",
+                "1.5",
+                "Bitcoin cashback",
+            ),
+            crypto_row(
+                "2026-03-01 13:00:00",
+                "Reward",
+                "0.000012340000000001",
+                "1.23",
+                "ShakeSquad",
+            ),
+            crypto_row(
+                "2026-03-02 09:00:00",
+                "Receive",
+                "0.002",
+                "200",
+                "Bitcoin address bc1qsenderone,bc1qsendertwo,bc",
+            ),
+            crypto_row(
+                "2026-03-02 10:00:00",
+                "Receive",
+                "1e-4",
+                "10",
+                "Lightning invoice lnbc1example",
+            ),
+            crypto_row(
+                "2026-03-03 11:00:00",
+                "Send",
+                "-0.0015",
+                "150",
+                "Bitcoin address bc1qmywallet",
+            ),
+            crypto_row("2026-03-03 12:00:00", "Send", "-5e-5", "5", "@friend"),
+            crypto_row(
+                "2026-03-04 12:00:00",
+                "Buy",
+                "0.001",
+                "100",
+                "Bought @ CA$100,000.00",
+            ),
+        ]);
+        let batch = shakepay()
+            .import(&input(vec![file(tmp.path(), "crypto.csv", &text)]))
+            .await
+            .unwrap();
+        assert_eq!(batch.notes, Vec::<String>::new());
+        assert_eq!(
+            batch.left_out,
+            [LeftOut {
+                id: "shakepay:btc:2026-03-04T120000:100000:buy:1".to_owned(),
+                why: "a trade no Spending export swap holds; import the Spending export",
+            }]
+        );
+        assert_eq!(
+            batch.journal.to_ledger(WriteOptions::default()),
+            "2026-03-01 * Bitcoin cashback\n\
+             \t; id: shakepay:btc:2026-03-01T120000:1500:reward:1\n\
+             \t; raw-description: Bitcoin cashback\n\
+             \t; raw-type: Reward\n\
+             \t; raw-time: 2026-03-01 12:00:00\n\
+             \t; raw-market-value: 1.5 CAD\n\
+             \t; raw-book-cost: 1.5 CAD\n\
+             \t; raw-spot-rate: 100000\n\
+             \tassets:shakepay:btc\t1500000 msat\n\
+             \tincome:unknown\t-1500000 msat\n\
+             \n\
+             2026-03-01 * ShakeSquad\n\
+             \t; id: shakepay:btc:2026-03-01T130000:1234:reward:1\n\
+             \t; raw-description: ShakeSquad\n\
+             \t; raw-type: Reward\n\
+             \t; raw-time: 2026-03-01 13:00:00\n\
+             \t; raw-market-value: 1.23 CAD\n\
+             \t; raw-book-cost: 1.23 CAD\n\
+             \t; raw-spot-rate: 100000\n\
+             \tassets:shakepay:btc\t1234000 msat\n\
+             \tincome:unknown\t-1234000 msat\n\
+             \n\
+             2026-03-02 * Receive\n\
+             \t; id: shakepay:btc:2026-03-02T090000:200000:receive:1\n\
+             \t; raw-description: Bitcoin address bc1qsenderone,bc1qsendertwo,bc\n\
+             \t; raw-type: Receive\n\
+             \t; raw-time: 2026-03-02 09:00:00\n\
+             \t; raw-market-value: 200 CAD\n\
+             \t; raw-book-cost: 200 CAD\n\
+             \t; raw-spot-rate: 100000\n\
+             \tassets:shakepay:btc\t200000000 msat\n\
+             \tincome:unknown\t-200000000 msat\n\
+             \n\
+             2026-03-02 * Receive\n\
+             \t; id: shakepay:btc:2026-03-02T100000:10000:receive:1\n\
+             \t; raw-description: Lightning invoice lnbc1example\n\
+             \t; raw-type: Receive\n\
+             \t; raw-time: 2026-03-02 10:00:00\n\
+             \t; raw-market-value: 10 CAD\n\
+             \t; raw-book-cost: 10 CAD\n\
+             \t; raw-spot-rate: 100000\n\
+             \tassets:shakepay:btc\t10000000 msat\n\
+             \tincome:unknown\t-10000000 msat\n\
+             \n\
+             2026-03-03 * Send\n\
+             \t; id: shakepay:btc:2026-03-03T110000:-150000:send:1\n\
+             \t; raw-description: Bitcoin address bc1qmywallet\n\
+             \t; raw-type: Send\n\
+             \t; raw-time: 2026-03-03 11:00:00\n\
+             \t; raw-address: bc1qmywallet\n\
+             \t; raw-market-value: 150 CAD\n\
+             \t; raw-book-cost: 150 CAD\n\
+             \t; raw-spot-rate: 100000\n\
+             \tassets:shakepay:btc\t-150000000 msat\n\
+             \texpenses:unknown\t150000000 msat\n\
+             \n\
+             2026-03-03 * @friend\n\
+             \t; id: shakepay:btc:2026-03-03T120000:-5000:send:1\n\
+             \t; raw-description: @friend\n\
+             \t; raw-type: Send\n\
+             \t; raw-time: 2026-03-03 12:00:00\n\
+             \t; raw-market-value: 5 CAD\n\
+             \t; raw-book-cost: 5 CAD\n\
+             \t; raw-spot-rate: 100000\n\
+             \tassets:shakepay:btc\t-5000000 msat\n\
+             \texpenses:unknown\t5000000 msat\n"
+        );
+    }
+
+    /// The crypto export's trades are the Spending export's swaps, stamped
+    /// the same or a second or so apart: read together, or in either order,
+    /// each trade's bitcoin is written once, by the swap.
+    #[tokio::test]
+    async fn trades_the_spending_export_holds_are_not_written_twice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spending = file(
+            tmp.path(),
+            "spending.csv",
+            &format!(
+                "{HEADER}{}\n{}\n",
+                "\"2026-03-01 12:20:00\",\"Spending\",\"Buy\",\"Bought 0.001 BTC @ CA$100,000.00\",100,,,100000.00,0",
+                "\"2026-03-05 09:00:00\",\"Spending\",\"Sell\",\"Sold 0.0005 BTC @ CA$100,000.00\",,50,,100000.00,50",
+            ),
+        );
+        let crypto = file(
+            tmp.path(),
+            "crypto.csv",
+            &crypto_export(&[
+                crypto_row(
+                    "2026-03-01 12:20:01",
+                    "Buy",
+                    "0.001",
+                    "100",
+                    "Bought @ CA$100,000.00",
+                ),
+                crypto_row(
+                    "2026-03-02 08:00:00",
+                    "Reward",
+                    "2e-5",
+                    "2",
+                    "Bitcoin cashback",
+                ),
+                crypto_row(
+                    "2026-03-05 09:00:00",
+                    "Sell",
+                    "-0.0005",
+                    "50",
+                    "Sold @ CA$100,000.00",
+                ),
+            ]),
+        );
+        let held = |n: usize| {
+            format!(
+                "{n} Buy/Sell row(s) of the crypto export left out: the Spending export's swaps \
+                 already hold their bitcoin"
+            )
+        };
+
+        let together = shakepay()
+            .import(&input(vec![spending.clone(), crypto.clone()]))
+            .await
+            .unwrap();
+        assert_eq!(together.notes, [held(2)]);
+        assert!(together.left_out.is_empty());
+        assert_eq!(together.journal.txns.len(), 3);
+
+        // Crypto first: its trades wait for the Spending export, which then
+        // writes them, and a second crypto import finds them held.
+        let store = JournalStore::new(tmp.path().join("journal"));
+        let run = async |path: &PathBuf, imported| {
+            write(
+                &store,
+                &Default::default(),
+                &shakepay(),
+                &input(vec![path.clone()]),
+                None,
+                Some(imported),
+            )
+            .await
+            .unwrap()
+        };
+        let first = run(&crypto, 1).await;
+        assert_eq!((first.txns, first.left_out.len()), (1, 2));
+        assert_eq!(run(&spending, 2).await.txns, 2);
+        let again = run(&crypto, 3).await;
+        assert_eq!(again.notes, [held(2)]);
+        assert!(again.left_out.is_empty());
+        assert_eq!(again.txns, 0);
+
+        let ledger = ledgerdb::Ledger::load(&store, ledgerdb::LayerFilter::All)
+            .unwrap()
+            .ledger;
+        let journal = ledger.journal();
+        let btc = journal.accounts.lookup(DEFAULT_BTC_ACCOUNT).unwrap();
+        let msat: i64 = ledger.postings_to(btc).map(|p| p.qty).sum();
+        assert_eq!(msat, (100_000 + 2_000 - 50_000) * MSAT_PER_SAT);
+    }
+
+    /// Two crypto exports that overlap, the first with two identical
+    /// rewards in one second and the second with one of them: the union is
+    /// imported, each row once.
+    #[tokio::test]
+    async fn overlapping_crypto_exports_import_as_their_union() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reward = || {
+            crypto_row(
+                "2026-01-02 12:00:00",
+                "Reward",
+                "1e-5",
+                "1",
+                "Bitcoin cashback",
+            )
+        };
+        let first = crypto_export(&[reward(), reward()]);
+        let second = crypto_export(&[
+            reward(),
+            crypto_row("2026-01-03 12:00:00", "Reward", "3e-5", "3", "ShakingSats"),
+        ]);
+        let store = JournalStore::new(tmp.path().join("journal"));
+        let run = async |name: &str, text: &str, imported| {
+            let path = file(tmp.path(), name, text);
+            write(
+                &store,
+                &Default::default(),
+                &shakepay(),
+                &input(vec![path]),
+                None,
+                Some(imported),
+            )
+            .await
+            .unwrap()
+        };
+        assert_eq!(run("1.csv", &first, 1).await.txns, 2);
+        assert_eq!(
+            run("2.csv", &second, 2).await.txn_rows,
+            Rows {
+                new: 1,
+                changed: 0,
+                unchanged: 1
+            }
+        );
+        let ledger = ledgerdb::Ledger::load(&store, ledgerdb::LayerFilter::All)
+            .unwrap()
+            .ledger;
+        assert_eq!(ledger.txns().len(), 3);
+        assert!(
+            ledger
+                .find("shakepay:btc:2026-01-02T120000:1000:reward:2")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_crypto_row_that_does_not_read_is_an_error() {
+        let rows = |row: &str| {
+            read_crypto(&format!("{CRYPTO_HEADER}{row}\n"), Zone::Fixed(0))
+                .unwrap_err()
+                .message
+        };
+        let ok = crypto_row("2026-01-01 12:00:00", "Send", "-0.001", "100", "@a");
+        assert!(read_crypto(&format!("{CRYPTO_HEADER}{ok}\n"), Zone::Fixed(0)).is_ok());
+        assert!(rows(&ok.replace("2026-01-01 12:00:00", "2026-01-01")).contains("bad date"));
+        assert!(rows(&ok.replace("\"Send\"", "\"\"")).contains("no Type"));
+        assert!(rows(&ok.replace("0.001,\"BTC\",,", ",,,")).contains("no amount"));
+        assert!(
+            rows(
+                &ok.replace(",,100", ",\"BTC\",100")
+                    .replace("0.001,\"BTC\",", "0.001,\"BTC\",0.001")
+            )
+            .contains("both")
+        );
+        assert!(rows(&ok.replace("\"BTC\"", "\"ETH\"")).contains("\"ETH\""));
+        assert!(rows(&ok.replace("0.001", "lots")).contains("bad amount"));
+        let buy = crypto_row(
+            "2026-01-01 12:00:00",
+            "Buy",
+            "-0.001",
+            "100",
+            "Bought @ CA$1",
+        );
+        assert!(rows(&buy).contains("a Buy that debits bitcoin"));
+        let header = read_crypto("\"Date\",\"Asset Credited\"\n", Zone::Fixed(0)).unwrap_err();
+        assert!(
+            header.message.starts_with("no \"Amount Debited\" column"),
+            "{}",
+            header.message
         );
     }
 
