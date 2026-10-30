@@ -2,7 +2,8 @@
 //!
 //! [`text_of`] turns one [`TxnDetail`] into the strings the detail draws:
 //! the hero's payee and amount, each posting with its chart label, why the
-//! counter leg went where it did, and where the record came from. It runs
+//! counter leg went where it did, the transfer it is or could be a side of,
+//! and where the record came from. It runs
 //! when the books or the record open change, never per frame; the view lays
 //! these strings out into galleys and paints those.
 
@@ -10,6 +11,7 @@ use cashflow::Books;
 use cashflow::chart::Labels;
 use cashflow::detail::{Decision, MetaLine, TxnDetail};
 use cashflow::split::LegDraft;
+use cashflow::transfers::{self, Suggestion};
 use ledgerdb::{Amount, Commodities, Date};
 
 use crate::money::money;
@@ -93,6 +95,47 @@ pub struct DetailText {
     pub comments: Vec<String>,
     /// What the Categorize section starts from.
     pub categorize: CategorizeFacts,
+    /// What the Transfer section shows.
+    pub transfer: TransferText,
+}
+
+/// The transfer a record is, or could be, a side of: the four states of
+/// the detail's Transfer section.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TransferText {
+    /// It has no counter leg, so it can't be one side of a transfer: no
+    /// section.
+    NotApplicable,
+    /// Nothing in the owner's other accounts matches it.
+    Unmatched,
+    /// [`cashflow::transfers::suggest`] pairs it with another record.
+    Suggested(OtherLeg),
+    /// A live link names it, with this other side.
+    Linked {
+        /// The other side's record id.
+        other: String,
+    },
+    /// An override or split decides it, so it can't be linked.
+    Categorized,
+}
+
+/// The other side of a suggested transfer, as the section draws it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OtherLeg {
+    /// The side money left, as the link names it.
+    pub a: String,
+    /// The side it arrived on.
+    pub b: String,
+    /// The other side's record id: `a` or `b`, whichever this isn't.
+    pub record: String,
+    /// Its own account, as a list shows it.
+    pub account: String,
+    /// The amount on that account.
+    pub amount: String,
+    /// "Card payment · 2024-10-12".
+    pub payee: String,
+    /// How it is dated against this one: "2 days earlier", "same day".
+    pub gap: String,
 }
 
 /// What the detail's Categorize section needs to know of the record.
@@ -101,8 +144,6 @@ pub struct CategorizeFacts {
     /// The source its segment came from: what an "all like this" rule is
     /// limited to.
     pub source: String,
-    /// The other side's record id, when it is linked as a transfer.
-    pub linked: Option<String>,
     /// Its split's legs as a person would write them again, a positive
     /// spend however the bank signs it; empty unless a split decides it.
     pub legs: Vec<LegDraft>,
@@ -150,9 +191,29 @@ pub struct SourceText {
     pub segment: String,
 }
 
-/// The text of `detail`, out of `books`, its accounts named by `labels`;
-/// `now` (unix seconds) is what the written time is measured from.
-pub fn text_of(books: &Books, labels: &Labels, detail: &TxnDetail, now: u64) -> DetailText {
+/// What [`text_of`] works the text out of.
+pub struct TextOf<'a> {
+    /// The books on screen.
+    pub books: &'a Books,
+    /// What names their accounts.
+    pub labels: &'a Labels,
+    /// The record, traced through them.
+    pub detail: &'a TxnDetail,
+    /// The transfer the triage suggests it is a side of, if any.
+    pub suggested: Option<&'a Suggestion>,
+    /// What the written time is measured from, in unix seconds.
+    pub now: u64,
+}
+
+/// The text of one record's detail.
+pub fn text_of(of: TextOf<'_>) -> DetailText {
+    let TextOf {
+        books,
+        labels,
+        detail,
+        suggested,
+        now,
+    } = of;
     let commodities = &books.ledger().journal().commodities;
     let home = books.home();
     let default = match &detail.decided {
@@ -204,12 +265,75 @@ pub fn text_of(books: &Books, labels: &Labels, detail: &TxnDetail, now: u64) -> 
         comments: detail.comments.clone(),
         categorize: CategorizeFacts {
             source: detail.source.clone(),
-            linked: match &detail.decided {
-                Decision::Transfer { other, .. } => Some(other.clone()),
-                _ => None,
-            },
             legs: split_drafts(&detail.decided, commodities),
         },
+        transfer: transfer_text(books, labels, detail, suggested),
+    }
+}
+
+/// The Transfer section's state for `detail`, `suggested` the pair the
+/// triage found for it.
+fn transfer_text(
+    books: &Books,
+    labels: &Labels,
+    detail: &TxnDetail,
+    suggested: Option<&Suggestion>,
+) -> TransferText {
+    match &detail.decided {
+        Decision::AsImported => return TransferText::NotApplicable,
+        Decision::Transfer { other, .. } => {
+            return TransferText::Linked {
+                other: other.clone(),
+            };
+        }
+        Decision::Override { .. } | Decision::Split { .. } => return TransferText::Categorized,
+        Decision::Unknown { .. } | Decision::Rule { .. } => {}
+    }
+    let Some(s) = suggested else {
+        return TransferText::Unmatched;
+    };
+    let record = if s.link.a == detail.record {
+        &s.link.b
+    } else {
+        &s.link.a
+    };
+    let ledger = books.ledger();
+    let journal = ledger.journal();
+    let Some(txn) = ledger.find(record) else {
+        return TransferText::Unmatched;
+    };
+    let row = journal.txn(txn);
+    let own = journal
+        .postings_of(row)
+        .iter()
+        .find(|p| transfers::is_own(journal.accounts.full_name(p.account)));
+    TransferText::Suggested(OtherLeg {
+        a: s.link.a.clone(),
+        b: s.link.b.clone(),
+        record: record.clone(),
+        account: own.map_or_else(String::new, |p| {
+            shown(labels, journal.accounts.full_name(p.account))
+        }),
+        amount: own.map_or_else(String::new, |p| {
+            money(i128::from(p.qty), p.commodity, &journal.commodities)
+        }),
+        payee: format!("{} · {}", journal.strings.get(row.payee), row.date),
+        gap: gap(row.date, detail.date),
+    })
+}
+
+/// How `other` is dated against `this`: "same day", "1 day later",
+/// "3 days earlier".
+fn gap(other: Date, this: Date) -> String {
+    let (days, way) = if other.days() < this.days() {
+        (this.days() - other.days(), "earlier")
+    } else {
+        (other.days() - this.days(), "later")
+    };
+    match days {
+        0 => "same day".to_owned(),
+        1 => format!("1 day {way}"),
+        n => format!("{n} days {way}"),
     }
 }
 
@@ -438,6 +562,15 @@ mod tests {
         assert_eq!(bare(-305, 2), "-3.05");
         assert_eq!(bare(7, 0), "7");
         assert_eq!(bare(5, 3), "0.005");
+    }
+
+    /// The gap reads from this record's side, in whole days.
+    #[test]
+    fn gap_says_which_way() {
+        let d = Date::from_days;
+        assert_eq!(gap(d(10), d(10)), "same day");
+        assert_eq!(gap(d(9), d(10)), "1 day earlier");
+        assert_eq!(gap(d(12), d(10)), "2 days later");
     }
 
     /// The short hash is the hash's head, and a short one whole.

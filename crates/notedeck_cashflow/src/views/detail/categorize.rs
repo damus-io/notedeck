@@ -1,8 +1,8 @@
 //! The detail's Categorize section: send this one transaction somewhere (an
 //! override), split it, write a rule for every transaction like it, or
 //! clear the override or split deciding it. A transaction linked as a
-//! transfer can't be categorized, so for one the section offers its unlink
-//! instead.
+//! transfer can't be categorized, so for one the section says to unlink it
+//! first, in the Transfer section ([`super::transfer`]).
 //!
 //! Every write is planned before it is made, the way the inbox plans its
 //! rules ([`crate::plan_job`]): picking an account, or legs that add up,
@@ -32,7 +32,7 @@ use cashflow::unknown;
 use egui::{Galley, RichText};
 use ledgerdb::{Edits, Ledger, TxnId};
 
-use super::model::{DetailText, Tier};
+use super::model::{DetailText, Tier, TransferText};
 use super::{Layouter, heading, text};
 use crate::plan_job::{PlanJob, PlanKey, PlanResult};
 use crate::ui::account_picker::{self, AccountPicker, Choices};
@@ -56,8 +56,6 @@ pub(crate) enum Open {
     Rule,
     /// Clearing its override or split.
     Uncategorize,
-    /// Clearing its transfer link.
-    Unlink,
 }
 
 impl Open {
@@ -69,7 +67,6 @@ impl Open {
             Open::Split => "Apply split",
             Open::Rule => "Add rule",
             Open::Uncategorize => "Apply uncategorize",
-            Open::Unlink => "Apply unlink",
         }
     }
 }
@@ -216,9 +213,11 @@ pub(super) struct CategorizeGalleys {
     rule: Arc<Galley>,
     /// Shown when an override or split decides it.
     uncategorize: Option<Arc<Galley>>,
-    /// "Linked as a transfer with bank:4", for a linked record.
+    /// Why a linked record can't be categorized, in place of the buttons.
     linked: Option<Arc<Galley>>,
-    unlink: Arc<Galley>,
+    /// Under the buttons of a record with a suggested transfer: what
+    /// categorizing it does to the suggestion.
+    suggested: Option<Arc<Galley>>,
 }
 
 impl CategorizeGalleys {
@@ -231,12 +230,21 @@ impl CategorizeGalleys {
             split: l.line("Split…", 14.0),
             rule: l.line("All like this…", 14.0),
             uncategorize: clears.then(|| l.line("Uncategorize", 14.0)),
-            linked: text
-                .categorize
-                .linked
-                .as_deref()
-                .map(|other| l.wrapped(&format!("Linked as a transfer with {other}"), 13.0, width)),
-            unlink: l.line("Unlink", 14.0),
+            linked: matches!(text.transfer, TransferText::Linked { .. }).then(|| {
+                l.wrapped(
+                    "A transfer can't be categorized: unlink it first.",
+                    13.0,
+                    width,
+                )
+            }),
+            suggested: matches!(text.transfer, TransferText::Suggested(_)).then(|| {
+                l.wrapped(
+                    "Categorizing it takes it out of the transfer suggestion: \
+                     a categorized transaction can't be linked.",
+                    12.0,
+                    width,
+                )
+            }),
         }
     }
 }
@@ -384,19 +392,6 @@ pub(crate) fn act(state: &mut CategorizeState, event: Event, text: &DetailText, 
                         record: record.to_owned(),
                     },
                 ),
-                Open::Unlink => {
-                    let Some(other) = &text.categorize.linked else {
-                        state.close();
-                        return;
-                    };
-                    state.plan(
-                        cx.plans,
-                        Action::Unlink {
-                            a: record.to_owned(),
-                            b: other.clone(),
-                        },
-                    );
-                }
             }
         }
         Event::Cancel => state.close(),
@@ -590,10 +585,6 @@ pub(super) fn section_ui(
     };
     if let Some(linked) = &g.linked {
         text(ui, linked, palette.text_muted);
-        let unlink = egui::Button::new(g.unlink.clone()).selected(state.open == Open::Unlink);
-        if ui.add(unlink).clicked() {
-            on(Some(Event::Open(Open::Unlink)));
-        }
     } else {
         ui.horizontal_wrapped(|ui| {
             let buttons = [
@@ -612,6 +603,9 @@ pub(super) fn section_ui(
                 }
             }
         });
+        if let Some(suggested) = &g.suggested {
+            text(ui, suggested, palette.text_muted);
+        }
     }
     match state.open {
         Open::Closed => {}
@@ -622,7 +616,7 @@ pub(super) fn section_ui(
         }
         Open::Split => on(split_ui(ui, palette, state, choices)),
         Open::Rule => on(rule_ui(ui, palette, state, choices)),
-        Open::Uncategorize | Open::Unlink => {}
+        Open::Uncategorize => {}
     }
     if state.open != Open::Closed {
         on(plan_ui(ui, palette, state));

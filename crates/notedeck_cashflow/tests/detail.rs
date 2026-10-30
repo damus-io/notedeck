@@ -7,8 +7,9 @@
 //! link are written through the vault before the app's first load
 //! (`common::detail_harness`), so the detail traces them to their notes.
 //!
-//! Its Categorize section writes through the vault too, each write planned
-//! first: the tests wait for the plan, Apply, and read the notes back.
+//! Its Categorize and Transfer sections write through the vault too, each
+//! write planned first: the tests wait for the plan, Apply, and read the
+//! notes back.
 //! The snapshots are `#[ignore]`d and run via `scripts/snapshot-test`
 //! (lavapipe).
 
@@ -20,7 +21,8 @@ use std::rc::Rc;
 use cashflow::kinds;
 use common::{
     CashflowTestState, DESKTOP, DETAIL_AGENTIUM, MOBILE, VaultNote, detail_fixture, detail_harness,
-    harness, read_vault, snapshot_harness, step_until, triage_app, wait_vault, watch_vault,
+    harness, loaded_harness, read_vault, snapshot_harness, step_until, triage_app, wait_vault,
+    watch_vault,
 };
 use egui::accesskit::Role;
 use egui_kittest::Harness;
@@ -461,17 +463,18 @@ fn an_override_clears_the_split() {
     assert!(splits[0].cleared);
 }
 
-/// A linked record can't be categorized: its section offers the unlink,
-/// which writes the link cleared.
+/// A linked record can't be categorized: its Transfer section offers the
+/// unlink, which writes the link cleared.
 #[test]
 fn a_linked_record_offers_unlink() {
     let fixture = detail_fixture();
     let mut harness = detail_harness(&fixture, DESKTOP, false);
     harness.state_mut().app.set_open_txn(Some("card:8"));
     harness.run();
+    assert!(harness.query_by_label("Linked with bank:4 →").is_some());
     assert!(
         harness
-            .query_by_label("Linked as a transfer with bank:4")
+            .query_by_label("A transfer can't be categorized: unlink it first.")
             .is_some()
     );
     assert!(harness.query_by_label("Recategorize…").is_none());
@@ -486,6 +489,99 @@ fn a_linked_record_offers_unlink() {
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].d, "xfer:bank:4|card:8");
     assert!(links[0].cleared);
+}
+
+/// The card payment leaving the bank is suggested as a transfer with its
+/// arrival on the card: the section shows that leg, and Link, once its plan
+/// lands, writes the link.
+#[test]
+fn a_suggested_transfer_links() {
+    let mut harness = open_on("bank:4");
+    assert!(harness.query_by_label("suggested").is_some());
+    assert!(
+        harness
+            .query_by_label("Payment received · 2024-10-14")
+            .is_some()
+    );
+    assert!(harness.query_by_label("2 days later").is_some());
+    plan_says(
+        &mut harness,
+        "Linking nets both legs: no income, no expense.",
+    );
+    assert!(!disabled(&harness, "Link as transfer"));
+    let sub = watch_vault(harness.state_mut());
+    harness.get_by_label("Link as transfer").click();
+    harness.run();
+    assert!(harness.query_by_label("Saving…").is_some());
+
+    let links = wait_vault(harness.state_mut(), sub, 1, kinds::TRANSFER);
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].d, "xfer:bank:4|card:8");
+    assert!(!links[0].cleared);
+}
+
+/// "Not a transfer" writes the link cleared; once the books re-derive with
+/// it, neither the detail nor the inbox suggests the pair.
+#[test]
+fn not_a_transfer_dismisses_it() {
+    let fixture = detail_fixture();
+    let mut app = fixture.app();
+    app.set_view(View::Transactions);
+    let mut harness = loaded_harness(app, DESKTOP, false);
+    harness.state_mut().app.set_open_txn(Some("card:8"));
+    harness.run();
+    assert!(harness.query_by_label("open bank:4 →").is_some());
+    let sub = watch_vault(harness.state_mut());
+    harness.get_by_label("Not a transfer").click();
+    harness.run();
+
+    let links = wait_vault(harness.state_mut(), sub, 1, kinds::TRANSFER);
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].d, "xfer:bank:4|card:8");
+    assert!(links[0].cleared);
+    step_until(&mut harness, "the dismissal re-derives", |s| {
+        s.app.triage().is_some_and(|t| t.suggestions.is_empty())
+    });
+    harness.run();
+    assert!(
+        harness
+            .query_by_label("No matching leg in your other accounts within 5 days")
+            .is_some()
+    );
+    harness.state_mut().app.set_open_txn(None);
+    harness.run();
+    harness.get_by_label("Inbox").click();
+    harness.run();
+    assert!(harness.query_by_label("Link as transfer").is_none());
+}
+
+/// "open bank:4 →" pushes the other leg's detail on the nav stack.
+#[test]
+fn opening_the_other_leg_pushes_its_detail() {
+    let mut harness = open_on("card:8");
+    harness.get_by_label("open bank:4 →").click();
+    harness.run();
+    let requests = harness.state_mut().take_nav();
+    assert_eq!(
+        pushed(&requests),
+        &txn_route("bank:4", "Card payment · 2024-10-12")
+    );
+    assert_eq!(harness.state().app.open_txn(), Some("bank:4"));
+}
+
+/// A categorized record can't be linked: Link is disabled, and
+/// "Uncategorize first" opens the uncategorize.
+#[test]
+fn a_categorized_record_cannot_link() {
+    let fixture = detail_fixture();
+    let mut harness = detail_harness(&fixture, DESKTOP, false);
+    harness.state_mut().app.set_open_txn(Some("card:5"));
+    harness.run();
+    assert!(disabled(&harness, "Link as transfer"));
+    harness.get_by_label("Uncategorize first").click();
+    harness.run();
+    plan_says(&mut harness, "applies");
+    assert!(!disabled(&harness, "Apply uncategorize"));
 }
 
 /// An uncategorized coffee's detail, wide: facts on the left, actions on
@@ -580,13 +676,29 @@ fn snapshot_detail_rule_preview() {
     harness.snapshot("cashflow_detail_rule_preview");
 }
 
-/// The card payment, linked as a transfer: Unlink in place of categorizing.
+/// The card payment arriving, suggested as a transfer with the bank's
+/// side: the Transfer section first, its link planned.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
-fn snapshot_detail_linked() {
+fn snapshot_detail_transfer_suggested() {
+    let mut app = triage_app();
+    app.set_open_txn(Some("card:8"));
+    let mut harness = snapshot_harness(app, DESKTOP);
+    plan_says(&mut harness, "applies");
+    harness.snapshot("cashflow_detail_transfer_suggested");
+}
+
+/// The card payment linked: the Transfer section first, its unlink
+/// planned, and Categorize saying to unlink first.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_detail_transfer_linked() {
     let fixture = detail_fixture();
     let mut harness = detail_harness(&fixture, DESKTOP, true);
     harness.state_mut().app.set_open_txn(Some("card:8"));
     harness.run();
-    harness.snapshot("cashflow_detail_linked");
+    harness.get_by_label("Unlink").click();
+    harness.run();
+    plan_says(&mut harness, "applies");
+    harness.snapshot("cashflow_detail_transfer_linked");
 }

@@ -34,6 +34,9 @@ pub enum PlanKey {
     Inbox,
     /// The transaction detail's Categorize section, before its Apply.
     Detail,
+    /// The transaction detail's Transfer section: its link, or unlink,
+    /// before it is made.
+    Transfer,
 }
 
 /// What a plan is made from: the books in hand's raw ledger and edits.

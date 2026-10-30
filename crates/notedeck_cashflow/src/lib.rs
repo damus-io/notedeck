@@ -621,6 +621,7 @@ impl CashflowApp {
                 } else {
                     views::show(*view, &mut cx, ui);
                     cx.plans.cancel(plan_job::PlanKey::Detail);
+                    cx.plans.cancel(plan_job::PlanKey::Transfer);
                 }
                 news.check(&cx.states.adventure, *view == View::Adventure);
                 if let Some(open) = cx.open {

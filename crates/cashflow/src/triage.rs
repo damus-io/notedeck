@@ -23,6 +23,7 @@
 //! [`crate::plan::plan`] makes them off the UI thread from the folded
 //! edits, before saying what the write would move.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use ledgerdb::{Edits, Ledger, Leg, TxnId, Why};
@@ -88,6 +89,9 @@ pub struct Triage {
     pub suggestions: Vec<Suggestion>,
     /// How much is left, and how much went today.
     pub progress: Progress,
+    /// Each side of every suggestion, by record id: its index in
+    /// [`Self::suggestions`].
+    by_record: HashMap<String, usize>,
 }
 
 impl Triage {
@@ -97,12 +101,26 @@ impl Triage {
     /// counter legs they pair on.
     #[profiling::function]
     pub fn new(raw: Option<&Ledger>, books: &Books, inputs: Arc<DeriveInputs>, since: u64) -> Self {
+        let suggestions = raw.map_or_else(Vec::new, |raw| suggestions(raw, &inputs));
+        let by_record = suggestions
+            .iter()
+            .enumerate()
+            .flat_map(|(i, s)| [(s.link.a.clone(), i), (s.link.b.clone(), i)])
+            .collect();
         Triage {
             groups: unknown::groups(books, &inputs.edits, Scope::default()),
-            suggestions: raw.map_or_else(Vec::new, |raw| suggestions(raw, &inputs)),
+            suggestions,
             progress: progress(books, &inputs, since),
             inputs,
+            by_record,
         }
+    }
+
+    /// The suggested transfer `record` is a side of, if one is. Each
+    /// transaction is in at most one suggestion ([`transfers::suggest`]).
+    pub fn suggestion_for(&self, record: &str) -> Option<&Suggestion> {
+        let i = *self.by_record.get(record)?;
+        self.suggestions.get(i)
     }
 
     /// Why transaction `txn` of the books is categorized as it is.
@@ -689,7 +707,8 @@ mod tests {
     }
 
     /// Before any edit: everything is unknown, the coffees group under one
-    /// pattern, and the card payment is suggested as a transfer.
+    /// pattern, and the card payment is suggested as a transfer, found from
+    /// either side.
     #[test]
     fn a_fresh_vault_has_everything_to_triage() {
         let f = fixture();
@@ -704,6 +723,14 @@ mod tests {
         assert_eq!(coffee.pattern.as_deref(), Some("sq *coffee shop"));
         assert_eq!(triage.suggestions.len(), 1);
         assert_eq!(triage.suggestions[0].link.a, "bank:1");
+        for side in ["bank:1", "card:1"] {
+            assert_eq!(
+                triage.suggestion_for(side),
+                Some(&triage.suggestions[0]),
+                "{side}"
+            );
+        }
+        assert_eq!(triage.suggestion_for("card:2"), None);
     }
 
     /// A rule from a group takes every row in it, an override takes one,

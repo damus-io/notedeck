@@ -15,9 +15,14 @@
 //! - **Wide** (≥ [`TWO_COLUMNS`]): the facts on the left, a
 //!   [`ACTIONS_WIDTH`] column of actions on the right.
 //! - **Narrow**: one column, why → actions → source.
+//!
+//! Its actions are the Categorize section ([`categorize`]), the Transfer
+//! section ([`transfer`]), first when a transfer is suggested or linked,
+//! and the record's own: copy it, show its payee.
 
 pub mod categorize;
 pub mod model;
+pub mod transfer;
 
 use std::sync::Arc;
 
@@ -27,7 +32,7 @@ use super::ViewCx;
 use super::transactions::model::RegisterFilter;
 use crate::View;
 use crate::ui::palette::Palette;
-use model::{DetailText, Tier};
+use model::{DetailText, Tier, TransferText};
 
 /// From this content width, the actions get their own column.
 pub const TWO_COLUMNS: f32 = 720.0;
@@ -56,6 +61,8 @@ pub(crate) struct DetailState {
     cached: Option<Cached>,
     /// Its Categorize section's editors and the write waiting to apply.
     categorize: categorize::CategorizeState,
+    /// Its Transfer section's link or unlink waiting to apply.
+    transfer: transfer::TransferState,
 }
 
 /// One record's text and galleys, and what they were made from.
@@ -91,12 +98,14 @@ impl DetailState {
         }
         self.open = record.map(str::to_owned);
         self.categorize = categorize::CategorizeState::default();
+        self.transfer = transfer::TransferState::default();
     }
 
-    /// A vault write failed with `err`: the Categorize section says so if
-    /// it was its own.
+    /// A vault write failed with `err`: the section that queued it says
+    /// so.
     pub(crate) fn write_failed(&mut self, err: &str) {
         self.categorize.write_failed(err);
+        self.transfer.write_failed(err);
     }
 
     /// Close the detail because a view was picked over it. True when one
@@ -124,7 +133,13 @@ impl DetailState {
         let text = cx.ledger.and_then(|ledger| {
             let detail =
                 cashflow::detail::of(ledger.books, &ledger.triage.inputs, cx.projects, record)?;
-            Some(model::text_of(ledger.books, cx.labels, &detail, unix_now()))
+            Some(model::text_of(model::TextOf {
+                books: ledger.books,
+                labels: cx.labels,
+                detail: &detail,
+                suggested: ledger.triage.suggestion_for(record),
+                now: unix_now(),
+            }))
         });
         self.cached = Some(Cached {
             generation,
@@ -192,6 +207,10 @@ struct Galleys {
     copy_ledger: Arc<Galley>,
     show_payee: Arc<Galley>,
     categorize: categorize::CategorizeGalleys,
+    transfer: transfer::TransferGalleys,
+    /// Whether the Transfer section comes before Categorize: a transfer is
+    /// suggested or linked, so it is the thing to act on.
+    transfer_first: bool,
 }
 
 /// One posting's galleys.
@@ -355,6 +374,11 @@ impl Galleys {
             copy_ledger: l.line("Copy as ledger", 14.0),
             show_payee: l.line("Show payee in register", 14.0),
             categorize: categorize::CategorizeGalleys::lay_out(&l, text, widths.actions),
+            transfer: transfer::TransferGalleys::lay_out(&l, &text.transfer, widths.actions),
+            transfer_first: matches!(
+                text.transfer,
+                TransferText::Suggested(_) | TransferText::Linked { .. }
+            ),
         }
     }
 
@@ -377,6 +401,8 @@ enum Click {
     Agentium,
     /// Something the Categorize section asked for.
     Categorize(categorize::Event),
+    /// Something the Transfer section asked for.
+    Transfer(transfer::Event),
 }
 
 /// Draw the open record's detail, over `under`, the view the rail names.
@@ -390,6 +416,11 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui, under: View) -> DetailO
         state
             .categorize
             .prepare(cx.plans, ledger.generation, record);
+        let shown = state.cached.as_ref().and_then(|c| c.text.as_ref());
+        let transfer = shown.map_or(&TransferText::NotApplicable, |t| &t.transfer);
+        state
+            .transfer
+            .prepare(cx.plans, ledger.generation, transfer);
     }
     let widths = Widths::of(ui.available_width());
     let ppp = ui.ctx().pixels_per_point();
@@ -406,7 +437,10 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui, under: View) -> DetailO
     }
 
     let DetailState {
-        cached, categorize, ..
+        cached,
+        categorize,
+        transfer,
+        ..
     } = &mut state;
     match cached.as_mut() {
         Some(Cached {
@@ -420,11 +454,14 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui, under: View) -> DetailO
             let Some(g) = galleys.as_ref() else {
                 return DetailOut::default();
             };
-            let section = categorize::Section {
-                state: categorize,
-                choices: cx.states.transactions.accounts.choices(true),
+            let sections = Sections {
+                categorize: categorize::Section {
+                    state: categorize,
+                    choices: cx.states.transactions.accounts.choices(true),
+                },
+                transfer,
             };
-            if let Some(c) = detail_ui(ui, palette, text.tier, g, widths, section) {
+            if let Some(c) = detail_ui(ui, palette, text.tier, g, widths, sections) {
                 click = Some(c);
             }
         }
@@ -489,8 +526,52 @@ fn act(
             };
             categorize::act(&mut state.categorize, event, text, write);
         }
+        Some(Click::Transfer(event)) => {
+            let (Some(text), Some(ledger)) = (text, cx.ledger) else {
+                return DetailOut::default();
+            };
+            match event {
+                transfer::Event::OpenOther => cx.open_txn = other_side(&text.transfer),
+                transfer::Event::Uncategorize => {
+                    let open = categorize::Event::Open(categorize::Open::Uncategorize);
+                    let write = categorize::Cx {
+                        books: ledger.books,
+                        raw: ledger.raw,
+                        edits: &ledger.triage.inputs.edits,
+                        generation: ledger.generation,
+                        plans: cx.plans,
+                        outbox: cx.outbox,
+                        accounts: &mut cx.states.transactions.accounts,
+                    };
+                    categorize::act(&mut state.categorize, open, text, write);
+                }
+                event => {
+                    let write = transfer::Cx {
+                        plans: cx.plans,
+                        outbox: cx.outbox,
+                        generation: ledger.generation,
+                    };
+                    transfer::act(
+                        &mut state.transfer,
+                        event,
+                        &text.record,
+                        &text.transfer,
+                        write,
+                    );
+                }
+            }
+        }
     }
     DetailOut::default()
+}
+
+/// The other side of the transfer `transfer` shows, suggested or linked.
+fn other_side(transfer: &TransferText) -> Option<String> {
+    match transfer {
+        TransferText::Suggested(leg) => Some(leg.record.clone()),
+        TransferText::Linked { other } => Some(other.clone()),
+        TransferText::NotApplicable | TransferText::Unmatched | TransferText::Categorized => None,
+    }
 }
 
 /// `record` as the books write it, ledger-cli text.
@@ -523,6 +604,12 @@ fn missing_ui(ui: &mut egui::Ui, palette: &Palette, under: View, record: Option<
     back
 }
 
+/// The action sections' state, which [`detail_ui`] draws with.
+struct Sections<'a> {
+    categorize: categorize::Section<'a>,
+    transfer: &'a transfer::TransferState,
+}
+
 /// The detail, laid out in `g`.
 fn detail_ui(
     ui: &mut egui::Ui,
@@ -530,7 +617,7 @@ fn detail_ui(
     tier: Tier,
     g: &Galleys,
     widths: Widths,
-    section: categorize::Section<'_>,
+    sections: Sections<'_>,
 ) -> Option<Click> {
     let mut click = None;
     ui.horizontal(|ui| {
@@ -574,7 +661,7 @@ fn detail_ui(
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             ui.set_width(widths.actions);
-                            on(actions_ui(ui, palette, g, section));
+                            on(actions_ui(ui, palette, g, sections));
                         },
                     );
                 });
@@ -582,7 +669,7 @@ fn detail_ui(
                 hero_ui(ui, palette, tier, g, false);
                 postings_ui(ui, palette, g);
                 on(why_ui(ui, palette, g));
-                on(actions_ui(ui, palette, g, section));
+                on(actions_ui(ui, palette, g, sections));
                 source_ui(ui, palette, g);
             }
         });
@@ -756,16 +843,35 @@ fn source_ui(ui: &mut egui::Ui, palette: &Palette, g: &Galleys) {
     }
 }
 
-/// What can be done with the record: categorize it first, then the
-/// record's own actions. Later cards add the transfer and the project here.
+/// What can be done with the record: categorize it and link it as a
+/// transfer, the transfer first when one is suggested or linked, then the
+/// record's own actions. A later card adds the project here.
 fn actions_ui(
     ui: &mut egui::Ui,
     palette: &Palette,
     g: &Galleys,
-    section: categorize::Section<'_>,
+    sections: Sections<'_>,
 ) -> Option<Click> {
-    let mut click =
-        categorize::section_ui(ui, palette, &g.categorize, section).map(Click::Categorize);
+    let Sections {
+        categorize,
+        transfer,
+    } = sections;
+    let mut click = None;
+    let mut on = |c: Option<Click>| {
+        if c.is_some() {
+            click = c;
+        }
+    };
+    let transfer_ui = |ui: &mut egui::Ui| {
+        transfer::section_ui(ui, palette, &g.transfer, transfer).map(Click::Transfer)
+    };
+    if g.transfer_first {
+        on(transfer_ui(ui));
+    }
+    on(categorize::section_ui(ui, palette, &g.categorize, categorize).map(Click::Categorize));
+    if !g.transfer_first {
+        on(transfer_ui(ui));
+    }
     heading(ui, palette, &g.actions_heading);
     for (galley, c) in [
         (&g.copy_record, Click::CopyRecord),
