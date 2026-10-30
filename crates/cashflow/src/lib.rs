@@ -55,6 +55,7 @@ pub mod projects;
 pub mod rank;
 pub mod rules;
 pub mod settings;
+pub mod split;
 pub mod sync;
 pub mod transfers;
 pub mod triage;

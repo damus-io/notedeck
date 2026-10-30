@@ -13,22 +13,27 @@
 //! split, link or rule, [`DeriveInputs::written_at`]) was written since the
 //! day began. Every machine holding the same notes counts the same.
 //!
-//! [`apply`] makes one inbox [`Action`] a vault write, with the rules the
-//! CLI's `categorize`, `rule add` and `transfer` keep: an override and a
-//! split on one record replace each other, a record in a live link can't
-//! be categorized and a categorized one can't be linked, and a dismissed
+//! [`apply`] makes one [`Action`] a vault write, and is the one copy of the
+//! write rules the app and the CLI's `categorize`, `split`, `uncategorize`,
+//! `transfer` and `account set --project` share: an override and a split on
+//! one record replace each other, a record in a live link can't be
+//! categorized and a categorized one can't be linked, and a dismissed
 //! suggestion is a cleared link note, so it is never suggested again.
+//! [`check`] makes the same refusals without writing.
 
 use std::sync::Arc;
 
-use ledgerdb::{Ledger, TxnId, Why};
+use ledgerdb::{Ledger, Leg, TxnId, Why};
 use nostrdb::{Ndb, Transaction};
+use nostrdb_net::Pubkey;
 
+use crate::chart::{AccountMeta, Chart, ChartError, record_id};
 use crate::transfers::{self, Suggestion};
 use crate::unknown::{self, PayeeGroup, Scope};
-use crate::vault::{Vault, VaultError};
+use crate::vault::{Record, Stored, Vault, VaultError, Written};
 use crate::vault_edits::{
-    EditError, LinkBody, LinkNote, OverrideBody, OverrideNote, SplitNote, VaultEdits, link_id,
+    EditBody, EditError, EditNote, LinkBody, LinkNote, OverrideBody, OverrideNote, SplitBody,
+    SplitLeg, SplitNote, VaultEdits, link_id,
 };
 use crate::vault_rules::{Place, PlaceError, RuleError, RuleNote, VaultRules, new_rule_id};
 use crate::{Books, DeriveInputs};
@@ -147,7 +152,8 @@ pub enum Decided<'t> {
     Split,
 }
 
-/// One write the triage inbox asks for.
+/// One write to the vault's edits, from the triage inbox, the detail view
+/// or the CLI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     /// Categorize every transaction whose payee contains `pattern` (from
@@ -160,18 +166,41 @@ pub enum Action {
         /// Where it sends them.
         account: String,
     },
-    /// Categorize one transaction as `account`: an override.
+    /// Categorize one transaction as `account`: an override, replacing its
+    /// split if it has one.
     Override {
         /// Its record id.
         record: String,
         /// Where its counter leg goes.
         account: String,
     },
+    /// Split one transaction's counter leg into `legs`, replacing its
+    /// override if it has one.
+    Split {
+        /// Its record id.
+        record: String,
+        /// The legs, in the counter leg's smallest units and sign, as
+        /// [`crate::split::legs`] makes them from what a person wrote.
+        legs: Vec<Leg>,
+    },
+    /// Clear one transaction's override and split, so it is unknown again
+    /// (or a rule's).
+    Uncategorize {
+        /// Its record id.
+        record: String,
+    },
     /// Accept a suggested transfer: link `a` (money out) and `b` (in).
     Link {
         /// The side money left.
         a: String,
         /// The side it arrived on.
+        b: String,
+    },
+    /// Undo a live transfer link: clear its note.
+    Unlink {
+        /// One side.
+        a: String,
+        /// The other.
         b: String,
     },
     /// Dismiss a suggested transfer: clear its link note, so it is never
@@ -181,6 +210,14 @@ pub enum Action {
         a: String,
         /// The other.
         b: String,
+    },
+    /// Tag `account`'s subtree with `project` (`None` clears it), keeping
+    /// the account's other metadata.
+    SetProject {
+        /// The account.
+        account: String,
+        /// The project, or `None` for none.
+        project: Option<String>,
     },
 }
 
@@ -201,6 +238,17 @@ pub enum WriteError {
     /// The record already has an override or split, so it can't be linked.
     #[error("{0} is already categorized: uncategorize it first")]
     Categorized(String),
+    /// The record has no override or split to uncategorize.
+    #[error("{0} has no override or split to clear")]
+    NotCategorized(String),
+    /// The two records aren't linked, so there is nothing to unlink.
+    #[error("{a} and {b} aren't linked")]
+    NotLinked {
+        /// One side.
+        a: String,
+        /// The other.
+        b: String,
+    },
     /// A live rule already does exactly this.
     #[error("rule {0} already does this")]
     Duplicate(String),
@@ -210,6 +258,9 @@ pub enum WriteError {
     /// The edit doesn't validate.
     #[error(transparent)]
     Edit(#[from] EditError),
+    /// The account metadata doesn't validate.
+    #[error(transparent)]
+    Chart(#[from] ChartError),
     /// No rank sorts after the last rule.
     #[error(transparent)]
     Place(#[from] PlaceError),
@@ -218,12 +269,111 @@ pub enum WriteError {
     Vault(#[from] VaultError),
 }
 
-/// Write `action` into `vault`, reading what it replaces from `ndb`. The
-/// notes are ingested locally; the host fans the envelopes out to the
-/// relays.
-pub fn apply(vault: &Vault, ndb: &Ndb, action: &Action) -> Result<(), WriteError> {
+/// What [`apply`] wrote, or [`check`] would.
+#[derive(Clone, Debug, Default)]
+pub struct Applied {
+    /// The notes written, in order, each with its envelope's frame for a
+    /// caller with a relay to publish. Always empty from [`check`].
+    pub written: Vec<Written>,
+    /// The `d` tags whose live revision the write rewrote or cleared, such
+    /// as the `split:` an override replaced.
+    pub replaced: Vec<String>,
+}
+
+/// Write `action` into `vault`, reading what it replaces from `ndb`, signed
+/// as written by the `agentium:<word-id>` session `agentium` (`None` from
+/// the app). The notes are ingested locally; the app's host fans the
+/// envelopes out to the relays, and the CLI publishes [`Applied::written`].
+pub fn apply(
+    vault: &Vault,
+    ndb: &Ndb,
+    action: &Action,
+    agentium: Option<&str>,
+) -> Result<Applied, WriteError> {
+    let sink = Sink {
+        to: Some(To { vault, ndb }),
+        applied: Applied::default(),
+    };
+    run(vault.author(), ndb, action, agentium, sink)
+}
+
+/// The refusal [`apply`] would make of `action`, if any, writing nothing;
+/// on success, what it would replace.
+pub fn check(vault: &Vault, ndb: &Ndb, action: &Action) -> Result<Applied, WriteError> {
+    let sink = Sink {
+        to: None,
+        applied: Applied::default(),
+    };
+    run(vault.author(), ndb, action, None, sink)
+}
+
+/// Where an action's writes go: the vault, or nowhere for [`check`].
+struct Sink<'v> {
+    to: Option<To<'v>>,
+    applied: Applied,
+}
+
+/// The vault a [`Sink`] writes into.
+struct To<'v> {
+    vault: &'v Vault,
+    ndb: &'v Ndb,
+}
+
+impl Sink<'_> {
+    /// Write `note` as the newest revision of record `id`, stamped past
+    /// `after`; `replaces` when the revision it supersedes is live.
+    fn put<'r, T: Record<'r>>(
+        &mut self,
+        id: &str,
+        note: &T,
+        after: u64,
+        replaces: bool,
+    ) -> Result<(), WriteError> {
+        if replaces {
+            self.applied.replaced.push(format!("{}:{id}", T::PREFIX));
+        }
+        if let Some(to) = &self.to {
+            self.applied
+                .written
+                .push(to.vault.write(to.ndb, id, note, after)?);
+        }
+        Ok(())
+    }
+
+    /// Clear record `record`'s edit `stored` if it is live, written by
+    /// `agentium`.
+    fn clear<'a, B: EditBody<'a>>(
+        &mut self,
+        record: &str,
+        stored: Option<&Stored<'a, EditNote<'a, B>>>,
+        agentium: Option<&'a str>,
+    ) -> Result<(), WriteError> {
+        match stored {
+            Some(s) if s.body.body.is_some() => self.put(
+                record,
+                &EditNote::<B>::cleared(agentium),
+                s.created_at,
+                true,
+            ),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Whether `stored` holds a live edit, not a cleared one.
+fn live<B>(stored: Option<&Stored<'_, EditNote<'_, B>>>) -> bool {
+    stored.is_some_and(|s| s.body.body.is_some())
+}
+
+/// [`apply`] and [`check`]: every refusal comes before the first write.
+fn run<'a>(
+    author: &Pubkey,
+    ndb: &Ndb,
+    action: &'a Action,
+    agentium: Option<&'a str>,
+    mut sink: Sink,
+) -> Result<Applied, WriteError> {
     let txn = Transaction::new(ndb)?;
-    let author = vault.author();
     match action {
         Action::Rule {
             pattern,
@@ -235,24 +385,49 @@ pub fn apply(vault: &Vault, ndb: &Ndb, action: &Action) -> Result<(), WriteError
             let note = RuleNote {
                 patterns: vec![pattern.as_str().into()],
                 source: source.as_deref(),
+                agentium,
                 ..RuleNote::new(account, &rank)
             };
             note.check()?;
             if let Some(id) = rules.duplicate_of(&note) {
                 return Err(WriteError::Duplicate(id.to_owned()));
             }
-            vault.write(ndb, &new_rule_id(&rules), &note, 0)?;
+            sink.put(&new_rule_id(&rules), &note, 0, false)?;
         }
         Action::Override { record, account } => {
             let stored = VaultEdits::load(ndb, &txn, author);
             refuse_linked(&stored, record)?;
-            let note = OverrideNote::new(OverrideBody { account }, None);
+            let note = OverrideNote::new(OverrideBody { account }, agentium);
             note.check()?;
-            if let Some(split) = stored.split_of(record).filter(|s| s.body.body.is_some()) {
-                vault.write(ndb, record, &SplitNote::cleared(None), split.created_at)?;
+            sink.clear(record, stored.split_of(record), agentium)?;
+            let old = stored.override_of(record);
+            sink.put(record, &note, old.map_or(0, |o| o.created_at), live(old))?;
+        }
+        Action::Split { record, legs } => {
+            let stored = VaultEdits::load(ndb, &txn, author);
+            refuse_linked(&stored, record)?;
+            let legs = legs
+                .iter()
+                .map(|l| SplitLeg {
+                    account: &l.account,
+                    qty: l.qty,
+                })
+                .collect();
+            let note = SplitNote::new(SplitBody { legs }, agentium);
+            note.check()?;
+            sink.clear(record, stored.override_of(record), agentium)?;
+            let old = stored.split_of(record);
+            sink.put(record, &note, old.map_or(0, |s| s.created_at), live(old))?;
+        }
+        Action::Uncategorize { record } => {
+            let stored = VaultEdits::load(ndb, &txn, author);
+            let overridden = stored.override_of(record);
+            let split = stored.split_of(record);
+            if !live(overridden) && !live(split) {
+                return Err(WriteError::NotCategorized(record.clone()));
             }
-            let after = stored.override_of(record).map_or(0, |o| o.created_at);
-            vault.write(ndb, record, &note, after)?;
+            sink.clear(record, overridden, agentium)?;
+            sink.clear(record, split, agentium)?;
         }
         Action::Link { a, b } => {
             let id = link_id(a, b)?;
@@ -260,18 +435,42 @@ pub fn apply(vault: &Vault, ndb: &Ndb, action: &Action) -> Result<(), WriteError
             for side in [a, b] {
                 linkable(&stored, side)?;
             }
-            let after = stored.link(&id).map_or(0, |l| l.created_at);
-            let note = LinkNote::new(LinkBody { a, b }, None);
-            vault.write(ndb, &id, &note, after)?;
+            let old = stored.link(&id);
+            let note = LinkNote::new(LinkBody { a, b }, agentium);
+            sink.put(&id, &note, old.map_or(0, |l| l.created_at), live(old))?;
+        }
+        Action::Unlink { a, b } => {
+            let id = link_id(a, b)?;
+            let stored = VaultEdits::load(ndb, &txn, author);
+            if !live(stored.link(&id)) {
+                return Err(WriteError::NotLinked {
+                    a: a.clone(),
+                    b: b.clone(),
+                });
+            }
+            sink.clear(&id, stored.link(&id), agentium)?;
         }
         Action::Dismiss { a, b } => {
             let id = link_id(a, b)?;
             let stored = VaultEdits::load(ndb, &txn, author);
-            let after = stored.link(&id).map_or(0, |l| l.created_at);
-            vault.write(ndb, &id, &LinkNote::cleared(None), after)?;
+            let old = stored.link(&id);
+            let note = LinkNote::cleared(agentium);
+            sink.put(&id, &note, old.map_or(0, |l| l.created_at), live(old))?;
+        }
+        Action::SetProject { account, project } => {
+            let chart = Chart::load(ndb, &txn, author);
+            let stored = chart.meta(account);
+            let meta = AccountMeta {
+                project: project.as_deref(),
+                agentium,
+                ..stored.map(|s| s.body.clone()).unwrap_or_default()
+            };
+            meta.check(account)?;
+            let after = stored.map_or(0, |s| s.created_at);
+            sink.put(&record_id(account), &meta, after, stored.is_some())?;
         }
     }
-    Ok(())
+    Ok(sink.applied)
 }
 
 /// Fail when `record` is in a live link: an override would shadow it and
@@ -310,6 +509,7 @@ mod tests {
 
     use crate::edits_cache::EditsCache;
     use crate::kinds;
+    use crate::split::{self, LegDraft};
     use crate::test_util::{INGEST_TIMEOUT, TempNdb};
 
     const SECRET: [u8; 32] = [21u8; 32];
@@ -375,11 +575,12 @@ mod tests {
 
     impl Fixture {
         /// Apply `action` and wait for its `notes` to land.
-        fn apply(&self, action: &Action, notes: u32) -> Result<(), WriteError> {
+        fn apply(&self, action: &Action, notes: u32) -> Result<Applied, WriteError> {
             let ndb = &self.ndb.ndb;
             let all = Filter::new().kinds(kinds::ALL.map(u64::from)).build();
             let landed = ndb.subscribe(&[all]).unwrap();
-            apply(&self.vault, ndb, action)?;
+            let applied = apply(&self.vault, ndb, action, None)?;
+            assert_eq!(applied.written.len(), notes as usize);
             let wait = ndb.wait_for_all_notes_within(landed, notes, INGEST_TIMEOUT);
             tokio::runtime::Builder::new_current_thread()
                 .enable_time()
@@ -387,7 +588,7 @@ mod tests {
                 .unwrap()
                 .block_on(wait)
                 .expect("the notes landed");
-            Ok(())
+            Ok(applied)
         }
 
         /// The vault folded, the books derived with it, and their triage.
@@ -494,7 +695,7 @@ mod tests {
                 other: Some("card:1")
             }
         );
-        let refused = apply(
+        let refused = check(
             &f.vault,
             &f.ndb.ndb,
             &Action::Override {
@@ -535,5 +736,184 @@ mod tests {
         cache.poll(ndb, &txn);
         let inputs = cache.inputs().unwrap();
         assert!(inputs.provenance.cleared_links.contains("bank:1|card:1"));
+    }
+
+    impl Fixture {
+        /// Why record `record` is categorized as it is, freshly derived.
+        fn decided(&self, record: &str) -> String {
+            let Derived { books, triage } = self.triage(0);
+            let txn = books.ledger().find(record).unwrap();
+            format!("{:?}", triage.explain(&books, txn))
+        }
+
+        /// The split of `record` made from `drafts`, as the CLI and the
+        /// split editor make it.
+        fn split(&self, record: &str, drafts: &[(&str, Option<&str>)]) -> Action {
+            let drafts: Vec<LegDraft> = drafts
+                .iter()
+                .map(|(account, amount)| LegDraft {
+                    account: (*account).to_owned(),
+                    amount: amount.map(str::to_owned),
+                })
+                .collect();
+            let txn = Transaction::new(&self.ndb.ndb).unwrap();
+            let inputs = DeriveInputs::load(&self.ndb.ndb, &txn, self.vault.author());
+            let at = self.raw.find(record).unwrap();
+            Action::Split {
+                record: record.to_owned(),
+                legs: split::legs(&self.raw, &inputs.edits, at, record, &drafts).unwrap(),
+            }
+        }
+    }
+
+    fn d<'r, T: Record<'r>>(id: &str) -> String {
+        format!("{}:{id}", T::PREFIX)
+    }
+
+    /// A split replaces an override and an override replaces a split, each
+    /// clearing the other in the same apply; uncategorize clears what is
+    /// left, and refuses when there is nothing.
+    #[test]
+    fn splits_and_overrides_replace_each_other() {
+        let f = fixture();
+        let split = f.split(
+            "card:2",
+            &[("expenses:food", Some("3")), ("expenses:tip", None)],
+        );
+        let Action::Split { legs, .. } = &split else {
+            unreachable!()
+        };
+        assert_eq!(legs.iter().map(|l| l.qty).collect::<Vec<_>>(), [300, 150]);
+        let applied = f.apply(&split, 1).unwrap();
+        assert!(applied.replaced.is_empty());
+        assert_eq!(f.decided("card:2"), "Split");
+
+        let over = Action::Override {
+            record: "card:2".to_owned(),
+            account: "expenses:food".to_owned(),
+        };
+        let applied = f.apply(&over, 2).unwrap();
+        assert_eq!(applied.replaced, [d::<SplitNote>("card:2")]);
+        assert_eq!(f.decided("card:2"), "Override");
+
+        let applied = f.apply(&split, 2).unwrap();
+        assert_eq!(applied.replaced, [d::<OverrideNote>("card:2")]);
+        assert_eq!(f.decided("card:2"), "Split");
+
+        let uncategorize = Action::Uncategorize {
+            record: "card:2".to_owned(),
+        };
+        let applied = f.apply(&uncategorize, 1).unwrap();
+        assert_eq!(applied.replaced, [d::<SplitNote>("card:2")]);
+        assert_eq!(f.decided("card:2"), "Unknown");
+        let again = check(&f.vault, &f.ndb.ndb, &uncategorize).unwrap_err();
+        assert_eq!(
+            again.to_string(),
+            "card:2 has no override or split to clear"
+        );
+    }
+
+    /// Neither a split nor an override can land on a linked record, a
+    /// categorized record can't be linked, and unlinking needs a live link.
+    #[test]
+    fn links_and_categorization_exclude_each_other() {
+        let f = fixture();
+        f.apply(
+            &Action::Link {
+                a: "bank:1".to_owned(),
+                b: "card:1".to_owned(),
+            },
+            1,
+        )
+        .unwrap();
+        let split = Action::Split {
+            record: "card:1".to_owned(),
+            legs: vec![Leg {
+                account: "income:x".to_owned(),
+                qty: -50000,
+            }],
+        };
+        let refused = check(&f.vault, &f.ndb.ndb, &split).unwrap_err();
+        assert!(
+            matches!(&refused, WriteError::Linked { record, other } if record == "card:1" && other == "bank:1"),
+            "{refused}"
+        );
+
+        f.apply(
+            &Action::Override {
+                record: "card:2".to_owned(),
+                account: "expenses:food".to_owned(),
+            },
+            1,
+        )
+        .unwrap();
+        let link = Action::Link {
+            a: "card:2".to_owned(),
+            b: "card:3".to_owned(),
+        };
+        let refused = check(&f.vault, &f.ndb.ndb, &link).unwrap_err();
+        assert!(matches!(refused, WriteError::Categorized(r) if r == "card:2"));
+
+        let unlink = Action::Unlink {
+            a: "card:1".to_owned(),
+            b: "bank:1".to_owned(),
+        };
+        let applied = f.apply(&unlink, 1).unwrap();
+        assert_eq!(applied.replaced, [d::<LinkNote>("bank:1|card:1")]);
+        assert_eq!(f.decided("bank:1"), "Unknown");
+        let again = check(&f.vault, &f.ndb.ndb, &unlink).unwrap_err();
+        assert_eq!(again.to_string(), "card:1 and bank:1 aren't linked");
+        let never = Action::Unlink {
+            a: "card:2".to_owned(),
+            b: "card:3".to_owned(),
+        };
+        assert!(matches!(
+            check(&f.vault, &f.ndb.ndb, &never),
+            Err(WriteError::NotLinked { .. })
+        ));
+    }
+
+    /// Tagging an account with a project keeps its name and icon, and
+    /// `None` takes the project off again.
+    #[test]
+    fn set_project_keeps_the_rest_of_the_account() {
+        let f = fixture();
+        let ndb = &f.ndb.ndb;
+        let all = Filter::new().kinds(kinds::ALL.map(u64::from)).build();
+        let landed = ndb.subscribe(&[all]).unwrap();
+        let meta = AccountMeta {
+            name: Some("Food"),
+            icon: Some("🍔"),
+            ..AccountMeta::default()
+        };
+        f.vault.write(ndb, "expenses:food", &meta, 0).unwrap();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(ndb.wait_for_all_notes_within(landed, 1, INGEST_TIMEOUT))
+            .expect("the meta landed");
+        let stored = |f: &Fixture| {
+            let txn = Transaction::new(&f.ndb.ndb).unwrap();
+            let chart = Chart::load(&f.ndb.ndb, &txn, f.vault.author());
+            let meta = &chart.meta("expenses:food").unwrap().body;
+            [meta.name, meta.icon, meta.project].map(|s| s.map(str::to_owned))
+        };
+
+        let tag = |project: Option<&str>| Action::SetProject {
+            account: "expenses:food".to_owned(),
+            project: project.map(str::to_owned),
+        };
+        let applied = f.apply(&tag(Some("damus")), 1).unwrap();
+        assert_eq!(applied.replaced, [d::<AccountMeta>("expenses:food")]);
+        let want = |project: Option<&str>| {
+            [Some("Food"), Some("🍔"), project].map(|s| s.map(str::to_owned))
+        };
+        assert_eq!(stored(&f), want(Some("damus")));
+        f.apply(&tag(None), 1).unwrap();
+        assert_eq!(stored(&f), want(None));
+
+        let blank = check(&f.vault, ndb, &tag(Some(" "))).unwrap_err();
+        assert!(matches!(blank, WriteError::Chart(_)), "{blank}");
     }
 }

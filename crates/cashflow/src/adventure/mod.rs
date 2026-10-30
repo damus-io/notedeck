@@ -547,8 +547,8 @@ fn first_import(inputs: &Inputs<'_>) -> Option<Date> {
 /// The Bookkeeping XP `action` earns once its write lands, on the rates
 /// the fold pays: what the triage inbox shows as it is clicked. `rows` is
 /// how many transactions a rule categorizes; it counts up to
-/// [`XpTuning::rule_cap`], as the fold does. Dismissing a transfer earns
-/// nothing.
+/// [`XpTuning::rule_cap`], as the fold does. Dismissing a transfer, an
+/// undo and a project tag earn nothing.
 pub fn triage_reward(action: &crate::triage::Action, rows: u32, tuning: &XpTuning) -> u64 {
     use crate::triage::Action;
 
@@ -557,7 +557,7 @@ pub fn triage_reward(action: &crate::triage::Action, rows: u32, tuning: &XpTunin
             ruled: rows.min(tuning.rule_cap),
             ..Bookkeeping::default()
         },
-        Action::Override { .. } => Bookkeeping {
+        Action::Override { .. } | Action::Split { .. } => Bookkeeping {
             triaged: 1,
             ..Bookkeeping::default()
         },
@@ -566,7 +566,10 @@ pub fn triage_reward(action: &crate::triage::Action, rows: u32, tuning: &XpTunin
             linked: 2,
             ..Bookkeeping::default()
         },
-        Action::Dismiss { .. } => Bookkeeping::default(),
+        Action::Dismiss { .. }
+        | Action::Uncategorize { .. }
+        | Action::Unlink { .. }
+        | Action::SetProject { .. } => Bookkeeping::default(),
     };
     bookkeeping_xp(counts, tuning)
 }

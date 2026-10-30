@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use cashflow::chart::{AccountKind, MetaField};
 use cashflow::prices;
+use cashflow::split::LegDraft;
 use cli_term::help::{CommandHelp, OPTIONS_PAGE, option_names};
 use ledgerdb::{Date, LayerFilter};
 
@@ -101,7 +102,7 @@ pub enum Command {
     /// `cashflow split <record-id> <account>[=<amount>]...`.
     Split {
         record_id: String,
-        legs: Vec<LegArg>,
+        legs: Vec<LegDraft>,
         write: Write,
     },
     /// `cashflow transfer ...`.
@@ -183,16 +184,6 @@ pub struct MetaArgs {
     pub kind: Option<AccountKind>,
     /// `--clear <field>`, repeatable.
     pub clear: Vec<MetaField>,
-}
-
-/// One `split` leg as given: `<account>=<amount>`, or `<account>` alone
-/// for the remainder.
-#[derive(Debug, PartialEq)]
-pub struct LegArg {
-    pub account: String,
-    /// The amount as written (`12.50`, `-3`, `12.50 CAD`); `None` takes
-    /// what the other legs leave.
-    pub amount: Option<String>,
 }
 
 /// One `cashflow transfer` subcommand.
@@ -989,13 +980,13 @@ fn split_command(positionals: Vec<String>, flags: &Flags, json: bool) -> Result<
     let usage = "`split` takes <record-id> and one or more <account>=<amount> legs, one of which may be a bare <account> taking the rest (see `cashflow split --help`)";
     let mut positionals = positionals.into_iter();
     let record_id = positionals.next().ok_or(usage)?;
-    let legs: Vec<LegArg> = positionals
+    let legs: Vec<LegDraft> = positionals
         .map(|leg| match leg.split_once('=') {
-            Some((account, amount)) => LegArg {
+            Some((account, amount)) => LegDraft {
                 account: account.to_owned(),
                 amount: Some(amount.to_owned()),
             },
-            None => LegArg {
+            None => LegDraft {
                 account: leg,
                 amount: None,
             },
@@ -1896,11 +1887,11 @@ mod tests {
             Command::Split {
                 record_id: "a:1".to_owned(),
                 legs: vec![
-                    LegArg {
+                    LegDraft {
                         account: "x:y".to_owned(),
                         amount: Some("12.50".to_owned()),
                     },
-                    LegArg {
+                    LegDraft {
                         account: "x:z".to_owned(),
                         amount: None,
                     },

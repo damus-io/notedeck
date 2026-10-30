@@ -560,7 +560,9 @@ impl CashflowApp {
             .and_then(|full| Vault::new(&full.secret_key.secret_bytes()));
         for action in self.outbox.drain(..) {
             let result = match &vault {
-                Some(vault) => triage::apply(vault, ctx.ndb, &action).map_err(|e| e.to_string()),
+                Some(vault) => triage::apply(vault, ctx.ndb, &action, None)
+                    .map(drop)
+                    .map_err(|e| e.to_string()),
                 None => {
                     Err("this account has no secret key, so it can't write to the vault".to_owned())
                 }

@@ -6,22 +6,22 @@
 //! the change, so it can print the transaction's legs both ways and refuse
 //! an edit derive would reject (a split that doesn't sum, a link that
 //! doesn't net) before anything is stored. `--dry-run` stops there.
+//! The write itself, and the refusals that come before it, are
+//! [`cashflow::triage::apply`]'s, the copy of the rules the app uses too.
 
+use cashflow::split::{self, LegDraft};
 use cashflow::transfers;
+use cashflow::triage::{self, Action, WriteError};
 use cashflow::unknown::{self, Scope};
-use cashflow::vault::{Record, Written};
-use cashflow::vault_edits::{
-    EditNote, LinkBody, LinkNote, OverrideBody, OverrideNote, SplitBody, SplitLeg, SplitNote,
-    VaultEdits, link_id,
-};
+use cashflow::vault::Record;
+use cashflow::vault_edits::{LinkNote, OverrideNote, SplitLeg, SplitNote, VaultEdits, link_id};
 use cashflow::{Books, CashflowDir, journal};
 use ledgerdb::{
-    AmountText, Derived, Edits, LayerFilter, Ledger, Override, Split, TransferLink, TxnId, Why,
-    derive,
+    Derived, Edits, LayerFilter, Ledger, Override, Split, TransferLink, TxnId, Why, derive,
 };
 use serde_json::{Value, json};
 
-use crate::args::{LegArg, TransferCommand, UnknownArgs, Write};
+use crate::args::{TransferCommand, UnknownArgs, Write};
 use crate::books_cmd::{format_total, raw_ledger, retired, vault_edits};
 use crate::vault_cmd::{Session, session_ref};
 
@@ -194,17 +194,16 @@ fn require_applied(
     Err(format!("the {what} on {record} wouldn't apply: {why}"))
 }
 
-/// Fail when `record` is in a live transfer link: an override or split
-/// would shadow the link and leave its other side half-netted.
-fn refuse_linked(edits: &VaultEdits, record: &str) -> Result<(), String> {
-    match edits.links_of(record).next() {
-        Some(link) => {
-            let other = link.body.body.map_or("", |b| b.other(record));
-            Err(format!(
-                "{record} is linked as a transfer with {other}: `cashflow transfer unlink {record} {other}` first"
-            ))
+/// `err` as the CLI says it: a refusal names the command that gets past it.
+fn refusal(err: WriteError) -> String {
+    match err {
+        WriteError::Linked { record, other } => format!(
+            "{record} is linked as a transfer with {other}: `cashflow transfer unlink {record} {other}` first"
+        ),
+        WriteError::Categorized(record) => {
+            format!("{record} has an override or split: `cashflow uncategorize {record}` first")
         }
-        None => Ok(()),
+        err => err.to_string(),
     }
 }
 
@@ -213,45 +212,25 @@ fn d_of<'a, T: Record<'a>>(id: &str) -> String {
     format!("{}:{id}", T::PREFIX)
 }
 
-/// Write each of `writes` to the vault and publish them together.
-async fn store(session: &mut Session, writes: Vec<Pending<'_>>) -> Result<(), String> {
-    let mut frames = Vec::with_capacity(writes.len());
-    for pending in writes {
-        let written = pending.write(session)?;
-        frames.push(written.frame);
+/// The refusal [`triage::apply`] would make of `action`, before anything
+/// is planned.
+fn check(session: &Session, action: &Action) -> Result<(), String> {
+    triage::check(&session.vault, &session.ndb, action)
+        .map(drop)
+        .map_err(refusal)
+}
+
+/// Write each of `actions` through [`triage::apply`], as this session, and
+/// publish them together.
+async fn commit(session: &mut Session, actions: &[Action]) -> Result<(), String> {
+    let agentium = session_ref();
+    let mut frames = Vec::with_capacity(actions.len());
+    for action in actions {
+        let applied = triage::apply(&session.vault, &session.ndb, action, agentium.as_deref())
+            .map_err(refusal)?;
+        frames.extend(applied.written.into_iter().map(|w| w.frame));
     }
     session.publish(&frames).await
-}
-
-/// One vault write a command makes.
-enum Pending<'a> {
-    Override {
-        id: &'a str,
-        note: OverrideNote<'a>,
-        after: u64,
-    },
-    Split {
-        id: &'a str,
-        note: SplitNote<'a>,
-        after: u64,
-    },
-    Link {
-        id: String,
-        note: LinkNote<'a>,
-        after: u64,
-    },
-}
-
-impl Pending<'_> {
-    fn write(&self, session: &Session) -> Result<Written, String> {
-        let ndb = &session.ndb;
-        let written = match self {
-            Pending::Override { id, note, after } => session.vault.write(ndb, id, note, *after),
-            Pending::Split { id, note, after } => session.vault.write(ndb, id, note, *after),
-            Pending::Link { id, note, after } => session.vault.write(ndb, id, note, *after),
-        };
-        written.map_err(|e| e.to_string())
-    }
 }
 
 /// `record`'s live override, as JSON, if it has one.
@@ -264,6 +243,29 @@ fn override_json(edits: &VaultEdits, record: &str) -> Option<Value> {
 fn split_json(edits: &VaultEdits, record: &str) -> Option<Value> {
     let body = edits.split_of(record)?.body.body.as_ref()?;
     Some(json!({"kind": "split", "d": d_of::<SplitNote>(record), "legs": legs_json(&body.legs)}))
+}
+
+/// The note a write to one record rewrites: the other of its override and
+/// split, if live, is cleared.
+#[derive(Clone, Copy)]
+enum Rewrites {
+    Override,
+    Split,
+}
+
+/// What a write to `record` replaces, as JSON: the note it rewrites, else
+/// the one it clears, else null. Read in a transaction of its own, since
+/// [`triage::apply`] needs the thread's only one.
+fn replaced(session: &Session, record: &str, rewrites: Rewrites) -> Result<Value, String> {
+    let txn = session.txn()?;
+    let stored = VaultEdits::load(&session.ndb, &txn, session.vault.author());
+    let override_note = || override_json(&stored, record);
+    let split_note = || split_json(&stored, record);
+    let found = match rewrites {
+        Rewrites::Override => override_note().or_else(split_note),
+        Rewrites::Split => split_note().or_else(override_note),
+    };
+    Ok(found.unwrap_or(Value::Null))
 }
 
 fn legs_json(legs: &[SplitLeg]) -> Value {
@@ -314,46 +316,6 @@ fn without_categorization(edits: &mut Edits, record: &str) {
     edits.splits.retain(|s| s.record_id != record);
 }
 
-/// The clears that go with replacing `record`'s categorization: its live
-/// override (unless `keep_override`) and live split (unless `keep_split`).
-fn clears<'a>(
-    stored: &VaultEdits<'a>,
-    record: &'a str,
-    agentium: Option<&'a str>,
-    keep: Keep,
-) -> Vec<Pending<'a>> {
-    let mut out = Vec::new();
-    if let Some(o) = stored.override_of(record)
-        && o.body.body.is_some()
-        && !keep.override_note
-    {
-        out.push(Pending::Override {
-            id: record,
-            note: EditNote::cleared(agentium),
-            after: o.created_at,
-        });
-    }
-    if let Some(s) = stored.split_of(record)
-        && s.body.body.is_some()
-        && !keep.split_note
-    {
-        out.push(Pending::Split {
-            id: record,
-            note: EditNote::cleared(agentium),
-            after: s.created_at,
-        });
-    }
-    out
-}
-
-/// Which of a record's notes [`clears`] leaves alone, because the command
-/// rewrites it anyway.
-#[derive(Clone, Copy, Default)]
-struct Keep {
-    override_note: bool,
-    split_note: bool,
-}
-
 /// `categorize <record-id> <account>`.
 pub async fn categorize(
     dir: &CashflowDir,
@@ -364,13 +326,12 @@ pub async fn categorize(
 ) -> Result<(), String> {
     let raw = raw_ledger(dir, session)?;
     find(&raw, record)?;
+    let action = Action::Override {
+        record: record.to_owned(),
+        account: account.to_owned(),
+    };
+    check(session, &action)?;
     let before = vault_edits(session)?;
-    let txn = session.txn()?;
-    let stored = VaultEdits::load(&session.ndb, &txn, session.vault.author());
-    refuse_linked(&stored, record)?;
-    let agentium = session_ref();
-    let note = OverrideNote::new(OverrideBody { account }, agentium.as_deref());
-    note.check().map_err(|e| e.to_string())?;
 
     let mut after = before.clone();
     without_categorization(&mut after, record);
@@ -392,27 +353,9 @@ pub async fn categorize(
         "override",
     )?;
     let change = plan.change(&derives, record)?;
-    // What the write replaces: the override it rewrites, else the split it
-    // clears.
-    let replaced = override_json(&stored, record)
-        .or_else(|| split_json(&stored, record))
-        .unwrap_or(Value::Null);
+    let replaced = replaced(session, record, Rewrites::Override)?;
     if !write.dry_run {
-        let mut writes = clears(
-            &stored,
-            record,
-            agentium.as_deref(),
-            Keep {
-                override_note: true,
-                split_note: false,
-            },
-        );
-        writes.push(Pending::Override {
-            id: record,
-            note,
-            after: stored.override_of(record).map_or(0, |o| o.created_at),
-        });
-        store(session, writes).await?;
+        commit(session, &[action]).await?;
     }
     report(
         session,
@@ -434,17 +377,12 @@ pub async fn uncategorize(
 ) -> Result<(), String> {
     let raw = raw_ledger(dir, session)?;
     find(&raw, record)?;
+    let action = Action::Uncategorize {
+        record: record.to_owned(),
+    };
+    check(session, &action)?;
     let before = vault_edits(session)?;
-    let txn = session.txn()?;
-    let stored = VaultEdits::load(&session.ndb, &txn, session.vault.author());
-    let agentium = session_ref();
-    let writes = clears(&stored, record, agentium.as_deref(), Keep::default());
-    if writes.is_empty() {
-        return Err(format!("{record} has no override or split to clear"));
-    }
-    let replaced = override_json(&stored, record)
-        .or_else(|| split_json(&stored, record))
-        .unwrap_or(Value::Null);
+    let replaced = replaced(session, record, Rewrites::Override)?;
     let d = replaced["d"].as_str().unwrap_or_default().to_owned();
     let mut after = before.clone();
     without_categorization(&mut after, record);
@@ -455,90 +393,10 @@ pub async fn uncategorize(
     };
     let change = plan.change(&plan.derive(), record)?;
     if !write.dry_run {
-        store(session, writes).await?;
+        commit(session, &[action]).await?;
     }
     report(session, write, &[change], &d, Value::Null, "cleared");
     Ok(())
-}
-
-/// The counter leg of `txn` in `raw`: its one posting to a default.
-fn counter_leg<'l>(raw: &'l Ledger, edits: &Edits, txn: TxnId) -> Option<&'l ledgerdb::Posting> {
-    let journal = raw.journal();
-    let mut on_default = journal.postings_of(journal.txn(txn)).iter().filter(|p| {
-        edits
-            .defaults
-            .iter()
-            .any(|d| d == journal.accounts.full_name(p.account))
-    });
-    let counter = on_default.next()?;
-    on_default.next().is_none().then_some(counter)
-}
-
-/// `legs` in the counter leg's smallest units and sign, the remainder leg
-/// filled in.
-fn split_legs<'l>(
-    raw: &Ledger,
-    counter: &ledgerdb::Posting,
-    legs: &'l [LegArg],
-) -> Result<Vec<SplitLeg<'l>>, String> {
-    let commodities = &raw.journal().commodities;
-    let commodity = commodities.name(counter.commodity);
-    let precision = commodities.precision(counter.commodity);
-    let sign = if counter.qty < 0 { -1 } else { 1 };
-    let mut out = Vec::with_capacity(legs.len());
-    let mut rest_at = None;
-    for leg in legs {
-        let Some(text) = &leg.amount else {
-            rest_at = Some(out.len());
-            out.push(SplitLeg {
-                account: &leg.account,
-                qty: 0,
-            });
-            continue;
-        };
-        let amount = AmountText::parse(text).map_err(|e| format!("{}={text}: {e}", leg.account))?;
-        if !amount.commodity.is_empty() && amount.commodity != commodity {
-            return Err(format!(
-                "{}={text}: the transaction's counter leg is in {commodity}",
-                leg.account
-            ));
-        }
-        let qty = amount
-            .qty_at(precision)
-            .map_err(|e| format!("{}={text}: {e}", leg.account))?;
-        out.push(SplitLeg {
-            account: &leg.account,
-            qty: qty * sign,
-        });
-    }
-    let sum: i128 = out.iter().map(|l| i128::from(l.qty)).sum();
-    let want = i128::from(counter.qty);
-    let shown = |qty: i128| {
-        i64::try_from(qty).map_or(qty.to_string(), |qty| {
-            ledgerdb::Amount {
-                qty,
-                commodity: counter.commodity,
-            }
-            .display(commodities)
-            .to_string()
-        })
-    };
-    match rest_at {
-        Some(at) => {
-            let rest =
-                i64::try_from(want - sum).map_err(|_| "the legs are too large".to_owned())?;
-            out[at].qty = rest;
-        }
-        None if sum != want => {
-            return Err(format!(
-                "the legs add up to {}, but the counter leg is {}",
-                shown(sum),
-                shown(want)
-            ));
-        }
-        None => {}
-    }
-    Ok(out)
 }
 
 /// `split <record-id> <account>[=<amount>]...`.
@@ -546,35 +404,24 @@ pub async fn split(
     dir: &CashflowDir,
     session: &mut Session,
     record: &str,
-    legs: &[LegArg],
+    legs: &[LegDraft],
     write: Write,
 ) -> Result<(), String> {
     let raw = raw_ledger(dir, session)?;
     let id = find(&raw, record)?;
     let before = vault_edits(session)?;
-    let counter = counter_leg(&raw, &before, id).ok_or_else(|| {
-        format!("{record} has no counter leg to split (no posting, or more than one, to a default account)")
-    })?;
-    let txn = session.txn()?;
-    let stored = VaultEdits::load(&session.ndb, &txn, session.vault.author());
-    refuse_linked(&stored, record)?;
-    let agentium = session_ref();
-    let legs = split_legs(&raw, counter, legs)?;
-    let note = SplitNote::new(SplitBody { legs: legs.clone() }, agentium.as_deref());
-    note.check().map_err(|e| e.to_string())?;
-
+    let legs = split::legs(&raw, &before, id, record, legs).map_err(|e| e.to_string())?;
     let mut after = before.clone();
     without_categorization(&mut after, record);
     after.splits.push(Split {
         record_id: record.to_owned(),
-        legs: legs
-            .iter()
-            .map(|l| ledgerdb::Leg {
-                account: l.account.to_owned(),
-                qty: l.qty,
-            })
-            .collect(),
+        legs: legs.clone(),
     });
+    let action = Action::Split {
+        record: record.to_owned(),
+        legs,
+    };
+    check(session, &action)?;
     let plan = Planned {
         raw: &raw,
         before,
@@ -589,27 +436,9 @@ pub async fn split(
         "split",
     )?;
     let change = plan.change(&derives, record)?;
-    // What the write replaces: the split it rewrites, else the override it
-    // clears.
-    let replaced = split_json(&stored, record)
-        .or_else(|| override_json(&stored, record))
-        .unwrap_or(Value::Null);
+    let replaced = replaced(session, record, Rewrites::Split)?;
     if !write.dry_run {
-        let mut writes = clears(
-            &stored,
-            record,
-            agentium.as_deref(),
-            Keep {
-                override_note: false,
-                split_note: true,
-            },
-        );
-        writes.push(Pending::Split {
-            id: record,
-            note,
-            after: stored.split_of(record).map_or(0, |s| s.created_at),
-        });
-        store(session, writes).await?;
+        commit(session, &[action]).await?;
     }
     report(
         session,
@@ -637,24 +466,6 @@ pub async fn transfer(
     }
 }
 
-/// Fail unless `record` can join a new link: it exists, and no override,
-/// split or other link decides it.
-fn linkable(raw: &Ledger, stored: &VaultEdits, record: &str) -> Result<(), String> {
-    find(raw, record)?;
-    if stored
-        .override_of(record)
-        .is_some_and(|o| o.body.body.is_some())
-        || stored
-            .split_of(record)
-            .is_some_and(|s| s.body.body.is_some())
-    {
-        return Err(format!(
-            "{record} has an override or split: `cashflow uncategorize {record}` first"
-        ));
-    }
-    refuse_linked(stored, record)
-}
-
 /// `transfer link <a> <b>`.
 async fn link(
     dir: &CashflowDir,
@@ -665,13 +476,14 @@ async fn link(
 ) -> Result<(), String> {
     let id = link_id(a, b).map_err(|e| e.to_string())?;
     let raw = raw_ledger(dir, session)?;
+    find(&raw, a)?;
+    find(&raw, b)?;
+    let action = Action::Link {
+        a: a.to_owned(),
+        b: b.to_owned(),
+    };
+    check(session, &action)?;
     let before = vault_edits(session)?;
-    let txn = session.txn()?;
-    let stored = VaultEdits::load(&session.ndb, &txn, session.vault.author());
-    linkable(&raw, &stored, a)?;
-    linkable(&raw, &stored, b)?;
-    let agentium = session_ref();
-    let note = LinkNote::new(LinkBody { a, b }, agentium.as_deref());
 
     let mut after = before.clone();
     after.links.push(TransferLink {
@@ -695,16 +507,7 @@ async fn link(
     }
     let changes = [plan.change(&derives, a)?, plan.change(&derives, b)?];
     if !write.dry_run {
-        let after = stored.link(&id).map_or(0, |l| l.created_at);
-        store(
-            session,
-            vec![Pending::Link {
-                id: id.clone(),
-                note,
-                after,
-            }],
-        )
-        .await?;
+        commit(session, &[action]).await?;
     }
     report(
         session,
@@ -727,12 +530,12 @@ async fn unlink(
 ) -> Result<(), String> {
     let id = link_id(a, b).map_err(|e| e.to_string())?;
     let raw = raw_ledger(dir, session)?;
-    let before = vault_edits(session)?;
-    let txn = session.txn()?;
-    let stored = VaultEdits::load(&session.ndb, &txn, session.vault.author());
-    let Some(existing) = stored.link(&id).filter(|l| l.body.body.is_some()) else {
-        return Err(format!("{a} and {b} aren't linked"));
+    let action = Action::Unlink {
+        a: a.to_owned(),
+        b: b.to_owned(),
     };
+    check(session, &action)?;
+    let before = vault_edits(session)?;
     let mut after = before.clone();
     after
         .links
@@ -750,16 +553,7 @@ async fn unlink(
         }
     }
     if !write.dry_run {
-        let agentium = session_ref();
-        store(
-            session,
-            vec![Pending::Link {
-                id: id.clone(),
-                note: EditNote::cleared(agentium.as_deref()),
-                after: existing.created_at,
-            }],
-        )
-        .await?;
+        commit(session, &[action]).await?;
     }
     report(
         session,
@@ -807,26 +601,14 @@ async fn suggest(
     let pairs = transfers::suggest(&raw, &edits);
     let writing = accept_all && !write.dry_run;
     if writing {
-        let agentium = session_ref();
-        let txn = session.txn()?;
-        let stored = VaultEdits::load(&session.ndb, &txn, session.vault.author());
-        let mut writes = Vec::with_capacity(pairs.len());
-        for pair in &pairs {
-            let id = link_id(&pair.link.a, &pair.link.b).map_err(|e| e.to_string())?;
-            let after = stored.link(&id).map_or(0, |l| l.created_at);
-            writes.push(Pending::Link {
-                id,
-                note: LinkNote::new(
-                    LinkBody {
-                        a: &pair.link.a,
-                        b: &pair.link.b,
-                    },
-                    agentium.as_deref(),
-                ),
-                after,
-            });
-        }
-        store(session, writes).await?;
+        let links: Vec<Action> = pairs
+            .iter()
+            .map(|pair| Action::Link {
+                a: pair.link.a.clone(),
+                b: pair.link.b.clone(),
+            })
+            .collect();
+        commit(session, &links).await?;
     }
     if write.json {
         let out = json!({

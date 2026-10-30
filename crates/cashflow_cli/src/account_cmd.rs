@@ -11,8 +11,10 @@ use std::collections::BTreeMap;
 
 use cashflow::CashflowDir;
 use cashflow::chart::{
-    self, AccountMeta, AliasBody, AliasNote, Chart, Inherited, Resolved, account_of, record_id,
+    self, AccountMeta, AliasBody, AliasNote, Chart, Inherited, MetaField, Resolved, account_of,
+    record_id,
 };
+use cashflow::triage::{self, Action};
 use ledgerdb::{AccountId, Alias, Date, Derived, EditRef, Edits, derive};
 use serde_json::{Value, json};
 
@@ -226,6 +228,24 @@ fn fields_line(meta: &AccountMeta) -> String {
     }
 }
 
+/// The project `set` gives the account (`None` to clear it) when that is
+/// all it changes, else `None`.
+fn project_only(set: &MetaArgs) -> Option<Option<&str>> {
+    let others = set.name.is_some()
+        || set.icon.is_some()
+        || set.color.is_some()
+        || set.hidden.is_some()
+        || set.kind.is_some()
+        || set.clear.iter().any(|&f| f != MetaField::Project);
+    if others {
+        return None;
+    }
+    if set.clear.contains(&MetaField::Project) {
+        return Some(None);
+    }
+    set.project.as_deref().map(Some)
+}
+
 /// `account set <account> ...`: merge the given fields into the account's
 /// metadata note.
 pub async fn set(
@@ -234,11 +254,85 @@ pub async fn set(
     set: &MetaArgs,
     write: Write,
 ) -> Result<(), String> {
+    let agentium = session_ref();
+    // A project alone is a write the app makes too, so it goes through the
+    // one copy of the rules; any other field is the CLI's own write.
+    let project = project_only(set);
+    let own_write = !write.dry_run && project.is_none();
+    let mut merged = merge(session, account, set, agentium.as_deref(), own_write)?;
+    if !write.dry_run {
+        if let Some(project) = project {
+            let action = Action::SetProject {
+                account: account.to_owned(),
+                project: project.map(str::to_owned),
+            };
+            let applied = triage::apply(&session.vault, &session.ndb, &action, agentium.as_deref())
+                .map_err(|e| e.to_string())?;
+            merged
+                .frames
+                .extend(applied.written.into_iter().map(|w| w.frame));
+        }
+        session.publish(&merged.frames).await?;
+    }
+    let d = format!("acct:{}", record_id(account));
+    if write.json {
+        let out = json!({
+            "dry_run": write.dry_run,
+            "d": d,
+            "before": merged.before.json,
+            "after": merged.after.json,
+        });
+        println!("{out}");
+        return Ok(());
+    }
+    println!("{account}");
+    println!("  before  {}", merged.before.line);
+    println!("  after   {}", merged.after.line);
+    if write.dry_run {
+        println!("dry run: would set {d}; nothing written");
+    } else {
+        println!("set {d}{}", session.offline_note());
+    }
+    Ok(())
+}
+
+/// An account's metadata as `account set` shows it.
+struct Shown {
+    json: Value,
+    line: String,
+}
+
+impl Shown {
+    fn of(meta: &AccountMeta) -> Self {
+        Shown {
+            json: meta_json(meta),
+            line: fields_line(meta),
+        }
+    }
+}
+
+/// What [`merge`] worked out: the metadata before and after, and the
+/// frames of what it wrote.
+struct Merged {
+    before: Shown,
+    after: Shown,
+    frames: Vec<String>,
+}
+
+/// Merge `set` into `account`'s stored metadata, as written by `agentium`,
+/// and when `write_it`, write the result. The read transaction ends here,
+/// since [`triage::apply`] needs the thread's only one.
+fn merge(
+    session: &Session,
+    account: &str,
+    set: &MetaArgs,
+    agentium: Option<&str>,
+    write_it: bool,
+) -> Result<Merged, String> {
     let txn = session.txn()?;
     let chart = Chart::load(&session.ndb, &txn, session.vault.author());
     let stored = chart.meta(account);
     let before = stored.map(|s| s.body.clone()).unwrap_or_default();
-    let agentium = session_ref();
     let mut after = before.clone();
     if let Some(name) = &set.name {
         after.name = Some(name);
@@ -261,42 +355,22 @@ pub async fn set(
     for &field in &set.clear {
         after.clear(field);
     }
-    after.agentium = agentium.as_deref();
+    after.agentium = agentium;
     after.check(account).map_err(|e| e.to_string())?;
-
-    let id = record_id(account);
-    let d = format!("acct:{id}");
-    if !write.dry_run {
+    let mut frames = Vec::new();
+    if write_it {
+        let after_at = stored.map_or(0, |s| s.created_at);
         let written = session
             .vault
-            .write(
-                &session.ndb,
-                &id,
-                &after,
-                stored.map_or(0, |s| s.created_at),
-            )
+            .write(&session.ndb, &record_id(account), &after, after_at)
             .map_err(|e| e.to_string())?;
-        session.publish(&[written.frame]).await?;
+        frames.push(written.frame);
     }
-    if write.json {
-        let out = json!({
-            "dry_run": write.dry_run,
-            "d": d,
-            "before": meta_json(&before),
-            "after": meta_json(&after),
-        });
-        println!("{out}");
-        return Ok(());
-    }
-    println!("{account}");
-    println!("  before  {}", fields_line(&before));
-    println!("  after   {}", fields_line(&after));
-    if write.dry_run {
-        println!("dry run: would set {d}; nothing written");
-    } else {
-        println!("set {d}{}", session.offline_note());
-    }
-    Ok(())
+    Ok(Merged {
+        before: Shown::of(&before),
+        after: Shown::of(&after),
+        frames,
+    })
 }
 
 /// Every account a change renames, with the postings that move with it.
