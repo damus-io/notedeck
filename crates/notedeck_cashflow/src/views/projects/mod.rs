@@ -88,6 +88,15 @@ struct BoardsKey {
 }
 
 impl ProjectsState {
+    /// Show `project`'s detail (`None` the unattributed income's), as a
+    /// link from another view does. A project with no row in the report
+    /// shows the list.
+    pub(crate) fn show_project(&mut self, project: Option<&str>) {
+        self.open = Some(Opened {
+            project: project.map(str::to_owned),
+        });
+    }
+
     /// Recompute the figures if `ledger`, `period` or `today` moved, and
     /// the board figures if those or `boards` did.
     #[profiling::function]

@@ -39,9 +39,12 @@ const FRAMES: usize = 15;
 /// laid out once. The closed Categorize section (its heading, its row of
 /// three buttons and the wrapping row they sit in) added 25, all egui's.
 /// The Transfer section's heading and its "no matching leg" line added 6,
-/// their accesskit nodes and labels. Measured, not chosen; if it moves,
-/// measure it again and write the new figure down.
-const MEASURED_DETAIL_ALLOCS: u64 = 268;
+/// their accesskit nodes and labels. The Project section's heading, its
+/// "Unattributed" line in the wrapping row it shares with a project's
+/// chip, and its "Move to a project account…" button added 16, all
+/// egui's. Measured, not chosen; if it moves, measure it again and write
+/// the new figure down.
+const MEASURED_DETAIL_ALLOCS: u64 = 284;
 
 /// How far above the measured figure a frame may land and still be
 /// unchanged: a different machine has measured a frame one or two

@@ -9,7 +9,8 @@
 //!
 //! Its Categorize and Transfer sections write through the vault too, each
 //! write planned first: the tests wait for the plan, Apply, and read the
-//! notes back.
+//! notes back. Its Project section's tag writes the account's metadata,
+//! and its move is the Categorize section's override.
 //! The snapshots are `#[ignore]`d and run via `scripts/snapshot-test`
 //! (lavapipe).
 
@@ -19,10 +20,11 @@ use std::any::Any;
 use std::rc::Rc;
 
 use cashflow::kinds;
+use cashflow::projects::{ProjectRoot, Projects};
 use common::{
     CashflowTestState, DESKTOP, DETAIL_AGENTIUM, MOBILE, VaultNote, detail_fixture, detail_harness,
-    harness, loaded_harness, read_vault, snapshot_harness, step_until, triage_app, wait_vault,
-    watch_vault,
+    harness, loaded_harness, publish_account_meta, publish_account_project, read_vault,
+    snapshot_harness, step_until, triage_app, wait_vault, watch_vault,
 };
 use egui::accesskit::Role;
 use egui_kittest::Harness;
@@ -257,7 +259,8 @@ fn a_split_lists_its_legs() {
             .query_by_label("expenses:household  24.20 CAD")
             .is_some()
     );
-    assert!(harness.query_by_label("expenses:household").is_some());
+    // Among the postings, and over its project in the Project section.
+    assert_eq!(harness.query_all_by_label("expenses:household").count(), 2);
 }
 
 /// Step `harness` until `label` is on screen: a plan's text, which new
@@ -584,6 +587,176 @@ fn a_categorized_record_cannot_link() {
     assert!(!disabled(&harness, "Apply uncategorize"));
 }
 
+/// The triage app with `record`'s detail open and two accounts put in
+/// projects: housing (rent under it) in `home`, shopping in `side-gig`.
+fn projects_app(record: &str) -> notedeck_cashflow::CashflowApp {
+    let root = |account: &str, project: &str| ProjectRoot {
+        account: account.to_owned(),
+        project: project.to_owned(),
+    };
+    let mut app = triage_app();
+    app.set_projects(Projects::new([
+        root("expenses:housing", "home"),
+        root("expenses:shopping", "side-gig"),
+    ]));
+    app.set_open_txn(Some(record));
+    app
+}
+
+/// A zap into a wallet, for the tag test: an income account nothing has
+/// put in a project. Made up.
+const WALLET: &str = "\
+2024-10-08 * Zap from a fan
+  ; id: wallet:1
+  assets:wallet  21.00 CAD
+  income:zaps
+";
+
+/// The rent's project comes from the housing account above it, and says
+/// so.
+#[test]
+fn an_inherited_project_shows_its_root() {
+    let mut harness = harness(projects_app("bank:2"), DESKTOP);
+    harness.run();
+    assert!(harness.query_by_label("Project").is_some());
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "home")
+            .is_some()
+    );
+    assert!(harness.query_by_label("from expenses:housing").is_some());
+    assert!(
+        harness
+            .query_by_label("Tag expenses:housing:rent with a project…")
+            .is_some()
+    );
+}
+
+/// The project's chip opens the Projects view drilled into it, and leaves
+/// the detail.
+#[test]
+fn the_project_chip_opens_projects() {
+    let mut harness = harness(projects_app("bank:2"), DESKTOP);
+    harness.state_mut().take_nav();
+    harness.get_by_role_and_label(Role::Button, "home").click();
+    harness.run();
+
+    assert_eq!(harness.state().app.view(), View::Projects);
+    assert_eq!(harness.state().app.open_txn(), None);
+    assert!(harness.query_by_label("← All projects").is_some());
+    let requests = harness.state_mut().take_nav();
+    assert!(matches!(requests[..], [NavRequest::Remove(_)]));
+}
+
+/// The coffee nothing has categorized isn't worth tagging, every unknown
+/// would go with it: no tag, but it can be moved.
+#[test]
+fn an_unknown_leg_offers_the_move_not_the_tag() {
+    let harness = open_on("card:1");
+    assert!(harness.query_by_label("Unattributed").is_some());
+    assert!(
+        harness
+            .query_by_label("Tag expenses:unknown with a project…")
+            .is_none()
+    );
+    assert!(
+        harness
+            .query_by_label("Move to a project account…")
+            .is_some()
+    );
+}
+
+/// Tagging the zap's income account says how far it reaches, writes the
+/// account's metadata with the project and its icon kept, and once the
+/// chart re-derives the detail and Projects show it.
+#[test]
+fn tagging_the_account_writes_its_project() {
+    let fixture = detail_fixture();
+    fixture.write_as("wallet", WALLET);
+    let mut harness = detail_harness(&fixture, DESKTOP, false);
+    let icon = cashflow::chart::AccountMeta {
+        icon: Some("⚡"),
+        ..cashflow::chart::AccountMeta::default()
+    };
+    publish_account_meta(harness.state_mut(), "income:zaps", &icon);
+    harness.state_mut().app.set_open_txn(Some("wallet:1"));
+    harness.run();
+    assert!(harness.query_by_label("Unattributed").is_some());
+
+    let sub = watch_vault(harness.state_mut());
+    harness
+        .get_by_label("Tag income:zaps with a project…")
+        .click();
+    harness.run();
+    assert!(
+        harness
+            .query_by_label("Tags income:zaps and everything under it: 1 transaction.")
+            .is_some()
+    );
+    type_last(&mut harness, "damus");
+    harness.get_by_label("+ New project damus").click();
+    harness.run();
+    assert!(harness.query_by_label("income:zaps → damus").is_some());
+    harness.get_by_label("Apply tag").click();
+    harness.run();
+    assert!(harness.query_by_label("Saving…").is_some());
+
+    let accounts = wait_vault(harness.state_mut(), sub, 1, kinds::ACCOUNT);
+    let zaps = accounts
+        .iter()
+        .find(|a| a.d == "acct:income:zaps")
+        .expect("the account's metadata");
+    assert_eq!(zaps.project.as_deref(), Some("damus"));
+    assert_eq!(zaps.icon.as_deref(), Some("⚡"));
+
+    step_until(&mut harness, "the project re-derives", |s| {
+        s.app.projects().project_of("income:zaps") == Some("damus")
+    });
+    assert!(harness.query_by_label("set on this account").is_some());
+    assert!(harness.query_by_label("Saving…").is_none());
+    harness.get_by_role_and_label(Role::Button, "damus").click();
+    harness.run();
+    assert_eq!(harness.state().app.view(), View::Projects);
+    assert!(harness.query_by_label("← All projects").is_some());
+}
+
+/// "Move to a project account" lists the accounts in a project first,
+/// under their project, and writes the override the Categorize section
+/// plans.
+#[test]
+fn move_to_a_project_account_writes_an_override() {
+    let fixture = detail_fixture();
+    let mut harness = detail_harness(&fixture, DESKTOP, false);
+    publish_account_project(harness.state_mut(), "expenses:shopping", "side-gig");
+    step_until(&mut harness, "the project loads", |s| {
+        s.app.projects().project_of("expenses:shopping").is_some()
+    });
+    harness.state_mut().app.set_open_txn(Some("card:1"));
+    harness.run();
+    let sub = watch_vault(harness.state_mut());
+    harness.get_by_label("Move to a project account…").click();
+    harness.run();
+    // Listed first, with its project beside it, before anything is typed.
+    assert!(harness.query_by_label("side-gig").is_some());
+    harness
+        .get_by_role_and_label(Role::Button, "expenses:shopping")
+        .click();
+    harness.run();
+    plan_says(
+        &mut harness,
+        "This one: expenses:unknown → expenses:shopping",
+    );
+    harness.get_by_label("Apply override").click();
+    harness.run();
+
+    let overrides = wait_vault(harness.state_mut(), sub, 1, kinds::OVERRIDE);
+    assert!(overrides.contains(&VaultNote {
+        d: "ov:card:1".to_owned(),
+        account: Some("expenses:shopping".to_owned()),
+        ..VaultNote::default()
+    }));
+}
+
 /// An uncategorized coffee's detail, wide: facts on the left, actions on
 /// the right.
 #[test]
@@ -671,7 +844,9 @@ fn snapshot_detail_rule_preview() {
     harness
         .get_by_label("+ New account expenses:food:coffee")
         .click();
-    harness.run();
+    // The plan landing can repaint past `run`'s few steps; `plan_says`
+    // steps until it shows.
+    let _ = harness.run_ok();
     plan_says(&mut harness, "applies");
     harness.snapshot("cashflow_detail_rule_preview");
 }
@@ -701,4 +876,31 @@ fn snapshot_detail_transfer_linked() {
     harness.run();
     plan_says(&mut harness, "applies");
     harness.snapshot("cashflow_detail_transfer_linked");
+}
+
+/// The Corner Grocer split, its household leg in a project and its
+/// groceries leg unattributed.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_detail_project() {
+    let fixture = detail_fixture();
+    let mut harness = detail_harness(&fixture, DESKTOP, true);
+    publish_account_project(harness.state_mut(), "expenses:household", "home");
+    step_until(&mut harness, "the project loads", |s| {
+        s.app.projects().project_of("expenses:household").is_some()
+    });
+    harness.state_mut().app.set_open_txn(Some("card:2"));
+    harness.run();
+    harness.snapshot("cashflow_detail_project");
+}
+
+/// "Move to a project account" open on the coffee: the accounts in a
+/// project first, under their project.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_detail_project_picker() {
+    let mut harness = snapshot_harness(projects_app("card:1"), DESKTOP);
+    harness.get_by_label("Move to a project account…").click();
+    harness.run();
+    harness.snapshot("cashflow_detail_project_picker");
 }

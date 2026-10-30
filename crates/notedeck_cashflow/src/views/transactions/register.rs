@@ -315,6 +315,7 @@ fn filters_ui(
         accounts: &accounts.names,
         recent: &accounts.recent,
         allow_new: false,
+        ..Choices::default()
     };
     let picked = account_picker::show(ui, palette, picker, choices);
     if let Some(account) = picked.account {

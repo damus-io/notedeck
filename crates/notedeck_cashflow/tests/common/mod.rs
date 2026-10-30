@@ -387,19 +387,25 @@ pub fn publish_missing_segment(state: &mut CashflowTestState, host: &str) -> Seg
 /// subtree in `project`, as `cashflow account set <account> --project
 /// <project>` would, and wait until nostrdb has it.
 pub fn publish_account_project(state: &mut CashflowTestState, account: &str, project: &str) {
-    let app_ctx = state.notedeck.app_context();
-    let ndb = &*app_ctx.ndb;
-    let vault = Vault::new(&ACCOUNT_SECRET).expect("a vault");
-    vault.register(ndb);
     let meta = AccountMeta {
         project: Some(project),
         ..AccountMeta::default()
     };
+    publish_account_meta(state, account, &meta);
+}
+
+/// Publish `meta` as `account`'s chart metadata in [`account`]'s vault, as
+/// `cashflow account set` would, and wait until nostrdb has it.
+pub fn publish_account_meta(state: &mut CashflowTestState, account: &str, meta: &AccountMeta<'_>) {
+    let app_ctx = state.notedeck.app_context();
+    let ndb = &*app_ctx.ndb;
+    let vault = Vault::new(&ACCOUNT_SECRET).expect("a vault");
+    vault.register(ndb);
     let landed = ndb
         .subscribe(&[Filter::new().kinds([kinds::ACCOUNT as u64]).build()])
         .expect("subscribe");
     vault
-        .write(ndb, &record_id(account), &meta, 0)
+        .write(ndb, &record_id(account), meta, 0)
         .expect("write the account metadata");
     let wait = ndb.wait_for_all_notes_within(landed, 1, INGEST_TIMEOUT);
     block_on(wait).expect("the account metadata landed");
@@ -996,6 +1002,8 @@ pub fn read_vault(state: &mut CashflowTestState, kind: u32) -> Vec<VaultNote> {
                 account: tag("account"),
                 pattern: tag("match"),
                 source: tag("source"),
+                project: tag("project"),
+                icon: tag("icon"),
                 legs: note
                     .tags()
                     .iter()
@@ -1021,6 +1029,10 @@ pub struct VaultNote {
     pub pattern: Option<String>,
     /// Its `source` tag, for a rule limited to one.
     pub source: Option<String>,
+    /// Its `project` tag, for account metadata.
+    pub project: Option<String>,
+    /// Its `icon` tag, for account metadata.
+    pub icon: Option<String>,
     /// How many `leg` tags it has, for a split.
     pub legs: usize,
 }

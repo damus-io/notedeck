@@ -3,13 +3,13 @@
 //! [`text_of`] turns one [`TxnDetail`] into the strings the detail draws:
 //! the hero's payee and amount, each posting with its chart label, why the
 //! counter leg went where it did, the transfer it is or could be a side of,
-//! and where the record came from. It runs
+//! the project each counter leg is in, and where the record came from. It runs
 //! when the books or the record open change, never per frame; the view lays
 //! these strings out into galleys and paints those.
 
 use cashflow::Books;
 use cashflow::chart::Labels;
-use cashflow::detail::{Decision, MetaLine, TxnDetail};
+use cashflow::detail::{Decision, MetaLine, ProjectFrom, TxnDetail};
 use cashflow::split::LegDraft;
 use cashflow::transfers::{self, Suggestion};
 use ledgerdb::{Amount, Commodities, Date};
@@ -97,6 +97,21 @@ pub struct DetailText {
     pub categorize: CategorizeFacts,
     /// What the Transfer section shows.
     pub transfer: TransferText,
+    /// What the Project section shows: each counter leg's project.
+    pub projects: Vec<LegProject>,
+}
+
+/// One counter leg's project, as the Project section shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LegProject {
+    /// The leg's account, its full name: what "Tag" writes.
+    pub account: String,
+    /// The project it is in, and the account that puts it there; `None`
+    /// is unattributed.
+    pub project: Option<ProjectFrom>,
+    /// Whether it sits on the importer's default, which isn't worth
+    /// tagging: every unknown would go with it.
+    pub unknown: bool,
 }
 
 /// The transfer a record is, or could be, a side of: the four states of
@@ -268,7 +283,37 @@ pub fn text_of(of: TextOf<'_>) -> DetailText {
             legs: split_drafts(&detail.decided, commodities),
         },
         transfer: transfer_text(books, labels, detail, suggested),
+        projects: detail
+            .postings
+            .iter()
+            .filter(|p| !p.own)
+            .map(|p| LegProject {
+                account: p.account.clone(),
+                project: p.project.clone(),
+                unknown: default == Some(p.account.as_str()),
+            })
+            .collect(),
     }
+}
+
+/// How many transactions post to `account` or an account under it in
+/// `books`, at any date: what tagging it with a project moves. Walks the
+/// subtree's postings once, when the tag is opened.
+pub fn txns_under(books: &Books, account: &str) -> usize {
+    let ledger = books.ledger();
+    let accounts = &ledger.journal().accounts;
+    let Some(top) = accounts.lookup(account) else {
+        return 0;
+    };
+    let mut txns: Vec<ledgerdb::TxnId> = Vec::new();
+    let mut stack = vec![top];
+    while let Some(at) = stack.pop() {
+        stack.extend_from_slice(accounts.children(at));
+        txns.extend(ledger.postings_to(at).map(|p| p.txn));
+    }
+    txns.sort_unstable();
+    txns.dedup();
+    txns.len()
 }
 
 /// The Transfer section's state for `detail`, `suggested` the pair the

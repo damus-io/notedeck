@@ -77,7 +77,18 @@ impl Accounts {
             accounts: &self.names,
             recent: &self.recent,
             allow_new,
+            ..Choices::default()
         }
+    }
+
+    /// Every account in the books, sorted.
+    pub(crate) fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// Recent picks, newest first.
+    pub(crate) fn recent(&self) -> &[String] {
+        &self.recent
     }
 
     /// Remember `account` as the newest pick.

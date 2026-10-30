@@ -1,6 +1,11 @@
 //! The account picker: a search box over the chart of accounts, recent
 //! picks first, that can also make a new account by typing its path.
 //!
+//! A caller can pin some accounts above the recent ones, each tagged with
+//! the group it is in ([`Pinned`]): the detail's "Move to a project
+//! account" lists the accounts in a project first, grouped by project. The
+//! same picker chooses a project name, worded for one ([`Noun::Project`]).
+//!
 //! It draws inline, under whatever opened it, rather than as a popup, so a
 //! phone shows it full width and a snapshot shows it where it is. Nothing
 //! is collected per frame: the matches are drawn as the account list is
@@ -34,14 +39,66 @@ impl AccountPicker {
 }
 
 /// The accounts the picker chooses between.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct Choices<'a> {
-    /// Every account, sorted.
+    /// Every account, sorted, less any of [`Self::pinned`].
     pub accounts: &'a [String],
     /// Recent picks, newest first.
     pub recent: &'a [String],
     /// Whether typing a path that isn't an account offers to make it.
     pub allow_new: bool,
+    /// Accounts listed before the recent ones, in this order, each with its
+    /// group beside it.
+    pub pinned: &'a [Pinned],
+    /// What it picks, which its words name.
+    pub noun: Noun,
+}
+
+/// An account the picker lists first, and the group it is listed under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pinned {
+    /// The account.
+    pub account: String,
+    /// What it is listed under: its project.
+    pub group: String,
+}
+
+/// What a picker picks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Noun {
+    /// An account path.
+    #[default]
+    Account,
+    /// A project name.
+    Project,
+}
+
+impl Noun {
+    /// The search box's hint, with or without making a new one.
+    fn hint(self, allow_new: bool) -> &'static str {
+        match (self, allow_new) {
+            (Noun::Account, true) => "Search, or type a new account path",
+            (Noun::Account, false) => "Search accounts",
+            (Noun::Project, true) => "Search, or type a new project",
+            (Noun::Project, false) => "Search projects",
+        }
+    }
+
+    /// What making `typed` is offered as.
+    fn new_label(self, typed: &str) -> String {
+        match self {
+            Noun::Account => format!("+ New account {typed}"),
+            Noun::Project => format!("+ New project {typed}"),
+        }
+    }
+
+    /// What shows when nothing matches.
+    fn none(self) -> &'static str {
+        match self {
+            Noun::Account => "No account matches",
+            Noun::Project => "No project matches",
+        }
+    }
 }
 
 /// What a frame of the picker did.
@@ -84,11 +141,7 @@ pub fn show(
         .corner_radius(6.0)
         .inner_margin(8.0)
         .show(ui, |ui| {
-            let hint = if choices.allow_new {
-                "Search, or type a new account path"
-            } else {
-                "Search accounts"
-            };
+            let hint = choices.noun.hint(choices.allow_new);
             let edit = ui.add(
                 egui::TextEdit::singleline(&mut picker.query)
                     .hint_text(hint)
@@ -105,12 +158,23 @@ pub fn show(
 
             let mut first: Option<&str> = None;
             let mut shown = 0;
-            let recent = choices.recent.iter().filter(|a| contains(a, query));
+            let is_pinned = |a: &String| choices.pinned.iter().any(|p| p.account == *a);
+            let pinned = choices
+                .pinned
+                .iter()
+                .filter(|p| contains(&p.account, query))
+                .map(|p| (Some(p.group.as_str()), &p.account));
+            let recent = choices
+                .recent
+                .iter()
+                .filter(|a| contains(a, query) && !is_pinned(a))
+                .map(|a| (Some("recent"), a));
             let rest = choices
                 .accounts
                 .iter()
-                .filter(|a| contains(a, query) && !choices.recent.contains(a));
-            for (n, account) in recent.map(|a| (true, a)).chain(rest.map(|a| (false, a))) {
+                .filter(|a| contains(a, query) && !choices.recent.contains(a))
+                .map(|a| (None, a));
+            for (tag, account) in pinned.chain(recent).chain(rest) {
                 if shown == SHOWN {
                     break;
                 }
@@ -123,8 +187,8 @@ pub fn show(
                             RichText::new(account.as_str()).color(palette.text),
                         ))
                         .clicked();
-                    if n {
-                        ui.label(RichText::new("recent").small().color(palette.text_muted));
+                    if let Some(tag) = tag {
+                        ui.label(RichText::new(tag).small().color(palette.text_muted));
                     }
                     clicked
                 });
@@ -135,18 +199,19 @@ pub fn show(
             let exists = choices
                 .accounts
                 .binary_search_by(|a| a.as_str().cmp(query))
-                .is_ok();
+                .is_ok()
+                || choices.pinned.iter().any(|p| p.account == query);
             let new = choices.allow_new && !query.is_empty() && !exists;
             if new {
                 let create = ui.add(egui::Button::selectable(
                     false,
-                    RichText::new(format!("+ New account {query}")).color(palette.accent),
+                    RichText::new(choices.noun.new_label(query)).color(palette.accent),
                 ));
                 if create.clicked() {
                     picked.account = Some(query.to_owned());
                 }
             } else if shown == 0 {
-                ui.label(RichText::new("No account matches").color(palette.text_muted));
+                ui.label(RichText::new(choices.noun.none()).color(palette.text_muted));
             }
             if enter && picked.account.is_none() {
                 picked.account = first

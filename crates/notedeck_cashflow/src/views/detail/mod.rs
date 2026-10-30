@@ -16,12 +16,14 @@
 //!   [`ACTIONS_WIDTH`] column of actions on the right.
 //! - **Narrow**: one column, why → actions → source.
 //!
-//! Its actions are the Categorize section ([`categorize`]), the Transfer
-//! section ([`transfer`]), first when a transfer is suggested or linked,
-//! and the record's own: copy it, show its payee.
+//! Its actions are the Categorize section ([`categorize`]), the Project
+//! section ([`project`]) under it, the Transfer section ([`transfer`]),
+//! first when a transfer is suggested or linked, and the record's own:
+//! copy it, show its payee.
 
 pub mod categorize;
 pub mod model;
+pub mod project;
 pub mod transfer;
 
 use std::sync::Arc;
@@ -63,6 +65,10 @@ pub(crate) struct DetailState {
     categorize: categorize::CategorizeState,
     /// Its Transfer section's link or unlink waiting to apply.
     transfer: transfer::TransferState,
+    /// Its Project section's tag panel and the tag waiting to save.
+    project: project::ProjectState,
+    /// What the Project section's pickers choose from, per load.
+    project_choices: project::ProjectChoices,
 }
 
 /// One record's text and galleys, and what they were made from.
@@ -99,6 +105,7 @@ impl DetailState {
         self.open = record.map(str::to_owned);
         self.categorize = categorize::CategorizeState::default();
         self.transfer = transfer::TransferState::default();
+        self.project = project::ProjectState::default();
     }
 
     /// A vault write failed with `err`: the section that queued it says
@@ -106,6 +113,7 @@ impl DetailState {
     pub(crate) fn write_failed(&mut self, err: &str) {
         self.categorize.write_failed(err);
         self.transfer.write_failed(err);
+        self.project.write_failed(err);
     }
 
     /// Close the detail because a view was picked over it. True when one
@@ -208,6 +216,7 @@ struct Galleys {
     show_payee: Arc<Galley>,
     categorize: categorize::CategorizeGalleys,
     transfer: transfer::TransferGalleys,
+    project: project::ProjectGalleys,
     /// Whether the Transfer section comes before Categorize: a transfer is
     /// suggested or linked, so it is the thing to act on.
     transfer_first: bool,
@@ -375,6 +384,12 @@ impl Galleys {
             show_payee: l.line("Show payee in register", 14.0),
             categorize: categorize::CategorizeGalleys::lay_out(&l, text, widths.actions),
             transfer: transfer::TransferGalleys::lay_out(&l, &text.transfer, widths.actions),
+            project: project::ProjectGalleys::lay_out(
+                &l,
+                &text.projects,
+                !matches!(text.tier, Tier::Transfer | Tier::AsImported),
+                widths.actions,
+            ),
             transfer_first: matches!(
                 text.transfer,
                 TransferText::Suggested(_) | TransferText::Linked { .. }
@@ -403,6 +418,8 @@ enum Click {
     Categorize(categorize::Event),
     /// Something the Transfer section asked for.
     Transfer(transfer::Event),
+    /// Something the Project section asked for.
+    Project(project::Event),
 }
 
 /// Draw the open record's detail, over `under`, the view the rail names.
@@ -421,6 +438,11 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui, under: View) -> DetailO
         state
             .transfer
             .prepare(cx.plans, ledger.generation, transfer);
+        state.project.prepare(ledger.generation);
+        let accounts = &cx.states.transactions.accounts;
+        state
+            .project_choices
+            .refresh(ledger.generation, accounts.names(), cx.projects);
     }
     let widths = Widths::of(ui.available_width());
     let ppp = ui.ctx().pixels_per_point();
@@ -440,6 +462,8 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui, under: View) -> DetailO
         cached,
         categorize,
         transfer,
+        project,
+        project_choices,
         ..
     } = &mut state;
     match cached.as_mut() {
@@ -454,12 +478,24 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui, under: View) -> DetailO
             let Some(g) = galleys.as_ref() else {
                 return DetailOut::default();
             };
+            let accounts = &cx.states.transactions.accounts;
+            // A move to a project's account lists the accounts in one first.
+            let choices = if categorize.projects_first() {
+                project_choices.accounts(accounts.recent())
+            } else {
+                accounts.choices(true)
+            };
             let sections = Sections {
                 categorize: categorize::Section {
                     state: categorize,
-                    choices: cx.states.transactions.accounts.choices(true),
+                    choices,
                 },
                 transfer,
+                project: project::Section {
+                    state: project,
+                    choices: project_choices,
+                    legs: &text.projects,
+                },
             };
             if let Some(c) = detail_ui(ui, palette, text.tier, g, widths, sections) {
                 click = Some(c);
@@ -515,15 +551,7 @@ fn act(
             let (Some(text), Some(ledger)) = (text, cx.ledger) else {
                 return DetailOut::default();
             };
-            let write = categorize::Cx {
-                books: ledger.books,
-                raw: ledger.raw,
-                edits: &ledger.triage.inputs.edits,
-                generation: ledger.generation,
-                plans: cx.plans,
-                outbox: cx.outbox,
-                accounts: &mut cx.states.transactions.accounts,
-            };
+            let write = categorize_cx(cx, ledger);
             categorize::act(&mut state.categorize, event, text, write);
         }
         Some(Click::Transfer(event)) => {
@@ -534,15 +562,7 @@ fn act(
                 transfer::Event::OpenOther => cx.open_txn = other_side(&text.transfer),
                 transfer::Event::Uncategorize => {
                     let open = categorize::Event::Open(categorize::Open::Uncategorize);
-                    let write = categorize::Cx {
-                        books: ledger.books,
-                        raw: ledger.raw,
-                        edits: &ledger.triage.inputs.edits,
-                        generation: ledger.generation,
-                        plans: cx.plans,
-                        outbox: cx.outbox,
-                        accounts: &mut cx.states.transactions.accounts,
-                    };
+                    let write = categorize_cx(cx, ledger);
                     categorize::act(&mut state.categorize, open, text, write);
                 }
                 event => {
@@ -561,8 +581,47 @@ fn act(
                 }
             }
         }
+        Some(Click::Project(event)) => {
+            let (Some(text), Some(ledger)) = (text, cx.ledger) else {
+                return DetailOut::default();
+            };
+            match event {
+                project::Event::OpenProject(at) => {
+                    let Some(p) = text.projects.get(at).and_then(|l| l.project.as_ref()) else {
+                        return DetailOut::default();
+                    };
+                    cx.states.projects.show_project(Some(&p.project));
+                    cx.open = Some(View::Projects);
+                }
+                project::Event::Move => {
+                    let write = categorize_cx(cx, ledger);
+                    categorize::act(&mut state.categorize, categorize::Event::Move, text, write);
+                }
+                event => {
+                    let write = project::Cx {
+                        books: ledger.books,
+                        generation: ledger.generation,
+                        outbox: cx.outbox,
+                    };
+                    project::act(&mut state.project, event, &text.projects, write);
+                }
+            }
+        }
     }
     DetailOut::default()
+}
+
+/// What the Categorize section writes with, from `cx` over `ledger`.
+fn categorize_cx<'a>(cx: &'a mut ViewCx<'_>, ledger: super::LedgerCx<'a>) -> categorize::Cx<'a> {
+    categorize::Cx {
+        books: ledger.books,
+        raw: ledger.raw,
+        edits: &ledger.triage.inputs.edits,
+        generation: ledger.generation,
+        plans: cx.plans,
+        outbox: cx.outbox,
+        accounts: &mut cx.states.transactions.accounts,
+    }
 }
 
 /// The other side of the transfer `transfer` shows, suggested or linked.
@@ -608,6 +667,7 @@ fn missing_ui(ui: &mut egui::Ui, palette: &Palette, under: View, record: Option<
 struct Sections<'a> {
     categorize: categorize::Section<'a>,
     transfer: &'a transfer::TransferState,
+    project: project::Section<'a>,
 }
 
 /// The detail, laid out in `g`.
@@ -697,7 +757,7 @@ fn hero_ui(ui: &mut egui::Ui, palette: &Palette, tier: Tier, g: &Galleys, wide: 
     ui.horizontal(|ui| {
         text(ui, &g.payee, palette.text);
         ui.add_space(8.0);
-        chip(ui, &g.tier, tier_color(palette, tier));
+        chip(ui, &g.tier, tier_color(palette, tier), Sense::hover());
         if wide {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 text(ui, &g.amount, palette.text);
@@ -727,18 +787,30 @@ fn tier_color(palette: &Palette, tier: Tier) -> Color32 {
     }
 }
 
-/// `galley` in a rounded outline of `color`.
-fn chip(ui: &mut egui::Ui, galley: &Arc<Galley>, color: Color32) {
+/// `galley` in a rounded outline of `color`, sensing `sense`: a label, or
+/// with a click a button, filled while hovered.
+fn chip(ui: &mut egui::Ui, galley: &Arc<Galley>, color: Color32, sense: Sense) -> egui::Response {
     let pad = egui::vec2(8.0, 3.0);
-    let (rect, resp) = ui.allocate_exact_size(galley.size() + 2.0 * pad, Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(galley.size() + 2.0 * pad, sense);
+    let radius = rect.height() / 2.0;
+    if resp.hovered() && sense.senses_click() {
+        ui.painter()
+            .rect_filled(rect, radius, color.gamma_multiply(0.15));
+    }
     ui.painter().rect_stroke(
         rect,
-        rect.height() / 2.0,
+        radius,
         egui::Stroke::new(1.0, color),
         egui::StrokeKind::Inside,
     );
     ui.painter().galley(rect.min + pad, galley.clone(), color);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, galley.text()));
+    let role = if sense.senses_click() {
+        egui::Role::Button
+    } else {
+        egui::Role::Label
+    };
+    resp.widget_info(|| egui::WidgetInfo::labeled(role, true, galley.text()));
+    resp
 }
 
 /// Every posting: account, amount and home amount, an unknown one in the
@@ -843,9 +915,9 @@ fn source_ui(ui: &mut egui::Ui, palette: &Palette, g: &Galleys) {
     }
 }
 
-/// What can be done with the record: categorize it and link it as a
-/// transfer, the transfer first when one is suggested or linked, then the
-/// record's own actions. A later card adds the project here.
+/// What can be done with the record: categorize it, put it in a project,
+/// and link it as a transfer, the transfer first when one is suggested or
+/// linked, then the record's own actions.
 fn actions_ui(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -855,6 +927,7 @@ fn actions_ui(
     let Sections {
         categorize,
         transfer,
+        project,
     } = sections;
     let mut click = None;
     let mut on = |c: Option<Click>| {
@@ -869,6 +942,9 @@ fn actions_ui(
         on(transfer_ui(ui));
     }
     on(categorize::section_ui(ui, palette, &g.categorize, categorize).map(Click::Categorize));
+    if g.project.shows() {
+        on(project::section_ui(ui, palette, &g.project, project).map(Click::Project));
+    }
     if !g.transfer_first {
         on(transfer_ui(ui));
     }

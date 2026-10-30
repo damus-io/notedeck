@@ -329,6 +329,7 @@ pub(crate) fn ui(
                     accounts: &accounts.names,
                     recent: &accounts.recent,
                     allow_new: true,
+                    ..Choices::default()
                 };
                 let out = group_ui(ui, palette, draw, &mut inbox.picker, choices);
                 if out.click.is_some() {

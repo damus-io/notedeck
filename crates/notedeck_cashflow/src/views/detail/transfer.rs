@@ -356,7 +356,7 @@ pub(super) fn section_ui(
         ui.horizontal(|ui| {
             text(ui, &g.heading, palette.text);
             ui.add_space(6.0);
-            chip(ui, &s.chip, palette.accent);
+            chip(ui, &s.chip, palette.accent, egui::Sense::hover());
         });
         ui.add_space(6.0);
     } else {

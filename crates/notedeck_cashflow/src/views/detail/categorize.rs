@@ -14,6 +14,11 @@
 //! [`cashflow::triage::apply`]. "Saving…" shows until the books come back
 //! derived with it, and a write that fails says why here.
 //!
+//! The Project section's "Move to a project account" opens this section's
+//! override (or, for a split, its split editor) with the accounts in a
+//! project listed first ([`Event::Move`], [`CategorizeState::projects_first`]),
+//! so the move is planned and applied like any recategorize.
+//!
 //! A split's legs are checked with [`cashflow::split::legs`] as they are
 //! typed, the same rules the CLI's `split` reads its `account=amount`s
 //! with, against the raw ledger's counter leg.
@@ -102,6 +107,9 @@ pub(crate) struct CategorizeState {
     saving: Option<u64>,
     /// Why the last write failed.
     error: Option<String>,
+    /// Whether the picker lists the accounts in a project first: it was
+    /// opened by the Project section's "Move to a project account".
+    projects_first: bool,
 }
 
 /// One leg of the split editor, as typed.
@@ -278,6 +286,9 @@ pub(crate) enum Event {
     ToggleSource,
     /// Queue the planned write.
     Apply,
+    /// Move it to a project's account: the override's picker, or for a
+    /// split the split editor, with the accounts in a project first.
+    Move,
 }
 
 /// What [`act`] writes with.
@@ -342,6 +353,12 @@ impl CategorizeState {
         self.picking = None;
         self.pending = None;
         self.problem = None;
+        self.projects_first = false;
+    }
+
+    /// Whether the picker lists the accounts in a project first.
+    pub(super) fn projects_first(&self) -> bool {
+        self.projects_first
     }
 }
 
@@ -393,6 +410,18 @@ pub(crate) fn act(state: &mut CategorizeState, event: Event, text: &DetailText, 
                     },
                 ),
             }
+        }
+        Event::Move => {
+            let open = if text.tier == Tier::Split {
+                Open::Split
+            } else {
+                Open::Recategorize
+            };
+            // Closed first, so an override already open opens again rather
+            // than toggling shut.
+            state.close();
+            act(state, Event::Open(open), text, cx);
+            state.projects_first = true;
         }
         Event::Cancel => state.close(),
         Event::Pick(what) => pick(state, what),
