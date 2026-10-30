@@ -142,6 +142,7 @@ fn this_one_writes_an_override() {
             d: "ov:card:1".to_owned(),
             cleared: false,
             account: Some("expenses:shopping".to_owned()),
+            ..VaultNote::default()
         }]
     );
     assert!(

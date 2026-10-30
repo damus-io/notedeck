@@ -32,6 +32,8 @@ use tokio::sync::oneshot;
 pub enum PlanKey {
     /// The triage inbox's "Categorize all…", before its Apply.
     Inbox,
+    /// The transaction detail's Categorize section, before its Apply.
+    Detail,
 }
 
 /// What a plan is made from: the books in hand's raw ledger and edits.

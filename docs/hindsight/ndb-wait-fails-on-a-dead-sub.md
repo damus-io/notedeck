@@ -5,3 +5,4 @@
 
 - headway:headway/tree-produce-ivory — the wait_for_notes Drop/unsubscribe bug cost most of the session as a silent hang
 - headway:dave/exhibit-social-spawn — ndb_poll_for_notes returns 0 for both "empty" and "no such sub", so the fix could only document the trap, not fail fast
+- headway:cashflow/cousin-endless-detail — `wait_vault` spends its subscription, so checking the override and the cleared split one write made needed a split-out `read_vault`

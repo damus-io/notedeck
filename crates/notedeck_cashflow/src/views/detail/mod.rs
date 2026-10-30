@@ -16,6 +16,7 @@
 //!   [`ACTIONS_WIDTH`] column of actions on the right.
 //! - **Narrow**: one column, why → actions → source.
 
+pub mod categorize;
 pub mod model;
 
 use std::sync::Arc;
@@ -53,6 +54,8 @@ pub(crate) struct DetailState {
     pub(crate) open: Option<String>,
     /// What [`Self::open`] says, worked out for one load.
     cached: Option<Cached>,
+    /// Its Categorize section's editors and the write waiting to apply.
+    categorize: categorize::CategorizeState,
 }
 
 /// One record's text and galleys, and what they were made from.
@@ -87,6 +90,13 @@ impl DetailState {
             return;
         }
         self.open = record.map(str::to_owned);
+        self.categorize = categorize::CategorizeState::default();
+    }
+
+    /// A vault write failed with `err`: the Categorize section says so if
+    /// it was its own.
+    pub(crate) fn write_failed(&mut self, err: &str) {
+        self.categorize.write_failed(err);
     }
 
     /// Close the detail because a view was picked over it. True when one
@@ -181,6 +191,7 @@ struct Galleys {
     copy_record: Arc<Galley>,
     copy_ledger: Arc<Galley>,
     show_payee: Arc<Galley>,
+    categorize: categorize::CategorizeGalleys,
 }
 
 /// One posting's galleys.
@@ -343,6 +354,7 @@ impl Galleys {
             copy_record: l.line("Copy record id", 14.0),
             copy_ledger: l.line("Copy as ledger", 14.0),
             show_payee: l.line("Show payee in register", 14.0),
+            categorize: categorize::CategorizeGalleys::lay_out(&l, text, widths.actions),
         }
     }
 
@@ -356,13 +368,15 @@ impl Galleys {
 }
 
 /// A click in the detail this frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Click {
     Back,
     CopyRecord,
     CopyLedger,
     ShowPayee,
     Agentium,
+    /// Something the Categorize section asked for.
+    Categorize(categorize::Event),
 }
 
 /// Draw the open record's detail, over `under`, the view the rail names.
@@ -371,6 +385,12 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui, under: View) -> DetailO
     let palette = cx.palette;
     let mut state = std::mem::take(&mut cx.states.detail);
     state.refresh(cx);
+    if let (Some(ledger), Some(record)) = (cx.ledger, state.open.as_deref()) {
+        cx.states.transactions.accounts.refresh(ledger);
+        state
+            .categorize
+            .prepare(cx.plans, ledger.generation, record);
+    }
     let widths = Widths::of(ui.available_width());
     let ppp = ui.ctx().pixels_per_point();
 
@@ -385,7 +405,10 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui, under: View) -> DetailO
         click = Some(Click::Back);
     }
 
-    match state.cached.as_mut() {
+    let DetailState {
+        cached, categorize, ..
+    } = &mut state;
+    match cached.as_mut() {
         Some(Cached {
             text: Some(text),
             galleys,
@@ -397,7 +420,11 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui, under: View) -> DetailO
             let Some(g) = galleys.as_ref() else {
                 return DetailOut::default();
             };
-            if let Some(c) = detail_ui(ui, palette, text.tier, g, widths) {
+            let section = categorize::Section {
+                state: categorize,
+                choices: cx.states.transactions.accounts.choices(true),
+            };
+            if let Some(c) = detail_ui(ui, palette, text.tier, g, widths, section) {
                 click = Some(c);
             }
         }
@@ -408,13 +435,18 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui, under: View) -> DetailO
         }
     }
 
-    let out = act(cx, ui, &state, click);
+    let out = act(cx, ui, &mut state, click);
     cx.states.detail = state;
     out
 }
 
 /// Do what `click` asked for.
-fn act(cx: &mut ViewCx<'_>, ui: &egui::Ui, state: &DetailState, click: Option<Click>) -> DetailOut {
+fn act(
+    cx: &mut ViewCx<'_>,
+    ui: &egui::Ui,
+    state: &mut DetailState,
+    click: Option<Click>,
+) -> DetailOut {
     let text = state.cached.as_ref().and_then(|c| c.text.as_ref());
     match click {
         None => {}
@@ -441,6 +473,21 @@ fn act(cx: &mut ViewCx<'_>, ui: &egui::Ui, state: &DetailState, click: Option<Cl
         }
         Some(Click::Agentium) => {
             cx.open_card = text.and_then(|t| t.why.agentium.clone());
+        }
+        Some(Click::Categorize(event)) => {
+            let (Some(text), Some(ledger)) = (text, cx.ledger) else {
+                return DetailOut::default();
+            };
+            let write = categorize::Cx {
+                books: ledger.books,
+                raw: ledger.raw,
+                edits: &ledger.triage.inputs.edits,
+                generation: ledger.generation,
+                plans: cx.plans,
+                outbox: cx.outbox,
+                accounts: &mut cx.states.transactions.accounts,
+            };
+            categorize::act(&mut state.categorize, event, text, write);
         }
     }
     DetailOut::default()
@@ -483,6 +530,7 @@ fn detail_ui(
     tier: Tier,
     g: &Galleys,
     widths: Widths,
+    section: categorize::Section<'_>,
 ) -> Option<Click> {
     let mut click = None;
     ui.horizontal(|ui| {
@@ -526,7 +574,7 @@ fn detail_ui(
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             ui.set_width(widths.actions);
-                            on(actions_ui(ui, palette, g));
+                            on(actions_ui(ui, palette, g, section));
                         },
                     );
                 });
@@ -534,7 +582,7 @@ fn detail_ui(
                 hero_ui(ui, palette, tier, g, false);
                 postings_ui(ui, palette, g);
                 on(why_ui(ui, palette, g));
-                on(actions_ui(ui, palette, g));
+                on(actions_ui(ui, palette, g, section));
                 source_ui(ui, palette, g);
             }
         });
@@ -708,11 +756,17 @@ fn source_ui(ui: &mut egui::Ui, palette: &Palette, g: &Galleys) {
     }
 }
 
-/// What can be done with the record. Later cards add categorizing, the
-/// transfer and the project here.
-fn actions_ui(ui: &mut egui::Ui, palette: &Palette, g: &Galleys) -> Option<Click> {
+/// What can be done with the record: categorize it first, then the
+/// record's own actions. Later cards add the transfer and the project here.
+fn actions_ui(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    g: &Galleys,
+    section: categorize::Section<'_>,
+) -> Option<Click> {
+    let mut click =
+        categorize::section_ui(ui, palette, &g.categorize, section).map(Click::Categorize);
     heading(ui, palette, &g.actions_heading);
-    let mut click = None;
     for (galley, c) in [
         (&g.copy_record, Click::CopyRecord),
         (&g.copy_ledger, Click::CopyLedger),

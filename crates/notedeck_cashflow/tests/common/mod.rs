@@ -959,10 +959,22 @@ pub fn wait_vault(
     notes: u32,
     kind: u32,
 ) -> Vec<VaultNote> {
+    {
+        let app_ctx = state.notedeck.app_context();
+        let wait = app_ctx
+            .ndb
+            .wait_for_all_notes_within(sub, notes, INGEST_TIMEOUT);
+        block_on(wait).expect("the vault notes landed");
+    }
+    read_vault(state, kind)
+}
+
+/// The newest revision of every one of [`account`]'s vault records of
+/// `kind`, by `d`, as they stand: for a second kind after [`wait_vault`],
+/// whose subscription is spent once it returns.
+pub fn read_vault(state: &mut CashflowTestState, kind: u32) -> Vec<VaultNote> {
     let app_ctx = state.notedeck.app_context();
     let ndb = &*app_ctx.ndb;
-    let wait = ndb.wait_for_all_notes_within(sub, notes, INGEST_TIMEOUT);
-    block_on(wait).expect("the vault notes landed");
     let txn = nostrdb::Transaction::new(ndb).expect("txn");
     let filter = Filter::new()
         .authors([account().pubkey.bytes()])
@@ -982,6 +994,13 @@ pub fn wait_vault(
                 d: tag("d").unwrap_or_default(),
                 cleared: tag("cleared").is_some(),
                 account: tag("account"),
+                pattern: tag("match"),
+                source: tag("source"),
+                legs: note
+                    .tags()
+                    .iter()
+                    .filter(|t| t.get_str(0) == Some("leg"))
+                    .count(),
             }
         })
         .collect();
@@ -990,7 +1009,7 @@ pub fn wait_vault(
 }
 
 /// One vault record as [`wait_vault`] read it back.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VaultNote {
     /// Its `d` tag.
     pub d: String,
@@ -998,6 +1017,12 @@ pub struct VaultNote {
     pub cleared: bool,
     /// Its `account` tag, for a rule or an override.
     pub account: Option<String>,
+    /// Its first `match` tag, for a rule.
+    pub pattern: Option<String>,
+    /// Its `source` tag, for a rule limited to one.
+    pub source: Option<String>,
+    /// How many `leg` tags it has, for a split.
+    pub legs: usize,
 }
 
 /// The agentium session [`detail_harness`]'s override is written from.
@@ -1013,12 +1038,14 @@ pub fn detail_fixture() -> JournalFixture {
 }
 
 /// A harness of `size` (on the software renderer with `snapshot`) whose
-/// app loads `fixture`'s journal and [`account`]'s vault, which holds two
+/// app loads `fixture`'s journal and [`account`]'s vault, which holds three
 /// edits written through the vault before the first load: an override
 /// sending the airline tickets (`card:5`) to `expenses:travel`, written
-/// from [`DETAIL_AGENTIUM`], and a split of the Corner Grocer run
-/// (`card:2`) into groceries and household. Stepped until the books load
-/// with both. Shows the Transactions view.
+/// from [`DETAIL_AGENTIUM`], a split of the Corner Grocer run (`card:2`)
+/// into groceries and household, and a transfer link between the card
+/// payment leaving the bank (`bank:4`) and arriving on the card
+/// (`card:8`). Stepped until the books load with all three. Shows the
+/// Transactions view.
 pub fn detail_harness(
     fixture: &JournalFixture,
     size: egui::Vec2,
@@ -1051,16 +1078,22 @@ pub fn detail_harness(
             ],
         };
         triage::apply(&vault, ndb, &split, None).expect("split");
+        let link = Action::Link {
+            a: "bank:4".to_owned(),
+            b: "card:8".to_owned(),
+        };
+        triage::apply(&vault, ndb, &link, None).expect("link");
     }
-    wait_vault(&mut state, sub, 2, kinds::OVERRIDE);
+    wait_vault(&mut state, sub, 3, kinds::OVERRIDE);
     let mut builder = Harness::builder().with_size(size);
     if snapshot {
         builder = builder.renderer(notedeck::software_renderer());
     }
     let mut harness = builder.build_ui_state(render_cashflow, state);
-    step_until(&mut harness, "the books load with both edits", |s| {
+    step_until(&mut harness, "the books load with all three edits", |s| {
         s.app.triage().is_some_and(|t| {
-            t.inputs.edits.overrides.len() == 1 && t.inputs.edits.splits.len() == 1
+            let edits = &t.inputs.edits;
+            edits.overrides.len() == 1 && edits.splits.len() == 1 && edits.links.len() == 1
         })
     });
     harness

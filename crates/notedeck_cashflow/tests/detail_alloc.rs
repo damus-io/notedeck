@@ -36,9 +36,11 @@ const FRAMES: usize = 15;
 /// egui's: accesskit nodes and their labels for each line (which the app
 /// builds only under a screen reader), the two columns' child `Ui`s, the
 /// buttons' atoms and the scroll area. Every line is painted from a galley
-/// laid out once. Measured, not chosen; if it moves, measure it again and
-/// write the new figure down.
-const MEASURED_DETAIL_ALLOCS: u64 = 237;
+/// laid out once. The closed Categorize section (its heading, its row of
+/// three buttons and the wrapping row they sit in) added 25, all egui's.
+/// Measured, not chosen; if it moves, measure it again and write the new
+/// figure down.
+const MEASURED_DETAIL_ALLOCS: u64 = 262;
 
 /// How far above the measured figure a frame may land and still be
 /// unchanged: a different machine has measured a frame one or two

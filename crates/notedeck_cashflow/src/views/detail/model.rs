@@ -9,6 +9,7 @@
 use cashflow::Books;
 use cashflow::chart::Labels;
 use cashflow::detail::{Decision, MetaLine, TxnDetail};
+use cashflow::split::LegDraft;
 use ledgerdb::{Amount, Commodities, Date};
 
 use crate::money::money;
@@ -90,6 +91,21 @@ pub struct DetailText {
     pub meta: Vec<MetaLine>,
     /// Its plain comments.
     pub comments: Vec<String>,
+    /// What the Categorize section starts from.
+    pub categorize: CategorizeFacts,
+}
+
+/// What the detail's Categorize section needs to know of the record.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CategorizeFacts {
+    /// The source its segment came from: what an "all like this" rule is
+    /// limited to.
+    pub source: String,
+    /// The other side's record id, when it is linked as a transfer.
+    pub linked: Option<String>,
+    /// Its split's legs as a person would write them again, a positive
+    /// spend however the bank signs it; empty unless a split decides it.
+    pub legs: Vec<LegDraft>,
 }
 
 /// One posting, as the detail lists it.
@@ -186,7 +202,53 @@ pub fn text_of(books: &Books, labels: &Labels, detail: &TxnDetail, now: u64) -> 
         },
         meta: detail.meta.clone(),
         comments: detail.comments.clone(),
+        categorize: CategorizeFacts {
+            source: detail.source.clone(),
+            linked: match &detail.decided {
+                Decision::Transfer { other, .. } => Some(other.clone()),
+                _ => None,
+            },
+            legs: split_drafts(&detail.decided, commodities),
+        },
     }
+}
+
+/// The legs of `decided`, a split, as [`cashflow::split::legs`] reads
+/// them back: each in the counter leg's direction, so a split of money in
+/// reads as positive amounts too. Empty for any other decision.
+fn split_drafts(decided: &Decision, commodities: &Commodities) -> Vec<LegDraft> {
+    let Decision::Split { legs, .. } = decided else {
+        return Vec::new();
+    };
+    // The legs add up to the counter leg, so their sum carries its sign.
+    let sum: i128 = legs.iter().map(|l| i128::from(l.amount.qty)).sum();
+    let sign = if sum < 0 { -1 } else { 1 };
+    legs.iter()
+        .map(|l| LegDraft {
+            account: l.account.clone(),
+            amount: Some(bare(
+                l.amount.qty * sign,
+                commodities.precision(l.amount.commodity),
+            )),
+        })
+        .collect()
+}
+
+/// `qty` smallest units at `precision` decimals, as a bare number with no
+/// commodity: `60.00`, `-3`. What a split leg's amount box holds.
+fn bare(qty: i64, precision: u8) -> String {
+    let sign = if qty < 0 { "-" } else { "" };
+    let unit = 10u64.pow(u32::from(precision));
+    let magnitude = qty.unsigned_abs();
+    let whole = magnitude / unit;
+    if precision == 0 {
+        return format!("{sign}{whole}");
+    }
+    let part = magnitude % unit;
+    format!(
+        "{sign}{whole}.{part:0width$}",
+        width = usize::from(precision)
+    )
 }
 
 /// "payee · date", what a detail's history entry is titled.
@@ -367,6 +429,15 @@ mod tests {
         assert_eq!(ago(0, 12 * DAY), "12 days ago");
         // A clock behind the note's reads as just written.
         assert_eq!(ago(500, 100), "just now");
+    }
+
+    /// A bare amount keeps every decimal and its sign, and no commodity.
+    #[test]
+    fn bare_writes_the_number_alone() {
+        assert_eq!(bare(6000, 2), "60.00");
+        assert_eq!(bare(-305, 2), "-3.05");
+        assert_eq!(bare(7, 0), "7");
+        assert_eq!(bare(5, 3), "0.005");
     }
 
     /// The short hash is the hash's head, and a short one whole.

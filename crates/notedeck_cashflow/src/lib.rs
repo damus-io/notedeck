@@ -508,7 +508,7 @@ impl CashflowApp {
             labels,
             outbox,
             plans,
-            raw: _,
+            raw,
             journal,
             summary,
             projects,
@@ -535,6 +535,12 @@ impl CashflowApp {
             seen_route: _,
         } = self;
         let zone = journal.as_ref().map_or(Zone::Local, JournalSource::zone);
+        // An `Arc` of it, so the views can read it while the journal is
+        // lent to them too; a count bumped, nothing copied.
+        let raw = match journal.as_ref() {
+            Some(journal) => journal.raw().cloned(),
+            None => raw.clone(),
+        };
         egui::CentralPanel::default()
             .frame(ui::panel_frame(palette).inner_margin(egui::Margin::symmetric(24, 16)))
             .show(ui, |ui| {
@@ -564,6 +570,7 @@ impl CashflowApp {
                         .zip(triage.as_ref())
                         .map(|(books, triage)| views::LedgerCx {
                             books,
+                            raw: raw.as_deref(),
                             triage,
                             generation: *generation,
                         });
@@ -613,6 +620,7 @@ impl CashflowApp {
                     }
                 } else {
                     views::show(*view, &mut cx, ui);
+                    cx.plans.cancel(plan_job::PlanKey::Detail);
                 }
                 news.check(&cx.states.adventure, *view == View::Adventure);
                 if let Some(open) = cx.open {

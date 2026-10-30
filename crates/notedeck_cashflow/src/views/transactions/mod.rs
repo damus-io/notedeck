@@ -25,6 +25,7 @@ use egui::RichText;
 
 use super::ViewCx;
 use crate::View;
+use crate::ui::account_picker::{self, Choices};
 
 /// Which half of the view is showing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -45,8 +46,9 @@ pub(crate) struct TransactionsState {
     pub(crate) register: register::RegisterState,
     /// The inbox's groups, suggestions and optimistic hides.
     pub(crate) inbox: inbox::InboxState,
-    /// What both pickers choose from, kept per load.
-    accounts: Accounts,
+    /// What both pickers choose from, kept per load; the detail's picker
+    /// shares it, recent picks and all.
+    pub(crate) accounts: Accounts,
 }
 
 /// The accounts the pickers offer, refreshed when the books change.
@@ -58,6 +60,30 @@ pub(crate) struct Accounts {
     names: Vec<String>,
     /// Recent picks, newest first.
     recent: Vec<String>,
+}
+
+impl Accounts {
+    /// List the books' accounts again if they changed.
+    pub(crate) fn refresh(&mut self, ledger: super::LedgerCx<'_>) {
+        if self.generation != Some(ledger.generation) {
+            self.generation = Some(ledger.generation);
+            self.names = model::account_names(ledger.books);
+        }
+    }
+
+    /// What a picker over them chooses from.
+    pub(crate) fn choices(&self, allow_new: bool) -> Choices<'_> {
+        Choices {
+            accounts: &self.names,
+            recent: &self.recent,
+            allow_new,
+        }
+    }
+
+    /// Remember `account` as the newest pick.
+    pub(crate) fn remember(&mut self, account: &str) {
+        account_picker::remember(&mut self.recent, account);
+    }
 }
 
 impl TransactionsState {
@@ -100,10 +126,7 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
         ui.label(RichText::new("No journal loaded yet.").color(palette.text_muted));
         return;
     };
-    if state.accounts.generation != Some(ledger.generation) {
-        state.accounts.generation = Some(ledger.generation);
-        state.accounts.names = model::account_names(ledger.books);
-    }
+    state.accounts.refresh(ledger);
     state.inbox.refresh(ledger);
 
     ui.horizontal(|ui| {

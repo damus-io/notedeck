@@ -96,8 +96,10 @@ pub struct GoalsCx<'a> {
 pub struct LedgerCx<'a> {
     /// The books.
     pub books: &'a Books,
-    /// Changes whenever the books (or the project attribution) are
-    /// replaced, so a view knows its cached results are stale.
+    /// The raw ledger they were derived from, which a split's legs are
+    /// checked against; `None` while a load has it, or for books handed
+    /// in without it.
+    pub raw: Option<&'a ledgerdb::Ledger>,
     /// What is left to categorize in them.
     pub triage: &'a Triage,
     /// Changes whenever the books are replaced, so a view knows its cached
@@ -134,6 +136,7 @@ impl ViewStates {
     /// A vault write a view queued failed with `err`: say so, and show
     /// again whatever was hidden waiting for it.
     pub(crate) fn write_failed(&mut self, err: String) {
+        self.detail.write_failed(&err);
         self.transactions.write_failed(err);
     }
 }
