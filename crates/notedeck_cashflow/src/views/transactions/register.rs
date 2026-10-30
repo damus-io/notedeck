@@ -7,6 +7,13 @@
 //! out and laid out when it scrolls into view and kept while it stays
 //! there ([`Window`]), so a frame that doesn't scroll formats and lays out
 //! nothing: it paints the galleys it has.
+//!
+//! A row whose record has notes ([`cashflow::notes`]) ends its payee cell
+//! with a 📝. Which records have them is a set the app keeps current
+//! ([`crate::notes::NoteSource`]); a row looks itself up only when the
+//! window is laid out, which a note arriving makes it do again.
+
+use std::collections::HashSet;
 
 use std::sync::Arc;
 
@@ -29,6 +36,9 @@ const DATE_WIDTH: f32 = 96.0;
 
 /// Width of each amount column.
 const AMOUNT_WIDTH: f32 = 120.0;
+
+/// The marker on a row whose record has notes.
+const NOTED: &str = "📝";
 
 /// What the register keeps between frames.
 #[derive(Default)]
@@ -64,6 +74,8 @@ struct Matched {
 struct Window {
     first: usize,
     pixels_per_point: f32,
+    /// The notes' generation the rows' markers were looked up in.
+    notes_generation: u64,
     rows: Vec<Row>,
 }
 
@@ -77,6 +89,8 @@ struct Row {
     account: Arc<Galley>,
     amount: Arc<Galley>,
     home: Arc<Galley>,
+    /// [`NOTED`], when the record has notes.
+    noted: Option<Arc<Galley>>,
     /// The hover over the account: its full name and what decided it.
     why: String,
     unknown: bool,
@@ -84,8 +98,8 @@ struct Row {
 }
 
 impl Row {
-    /// `text` laid out with `painter`'s fonts.
-    fn lay_out(painter: &egui::Painter, text: RowText) -> Self {
+    /// `text` laid out with `painter`'s fonts, marked when `noted`.
+    fn lay_out(painter: &egui::Painter, text: RowText, noted: bool) -> Self {
         let font = FontId::proportional(14.0);
         let galley =
             |text: String| painter.layout_no_wrap(text, font.clone(), egui::Color32::PLACEHOLDER);
@@ -95,6 +109,7 @@ impl Row {
             account: galley(text.account),
             amount: galley(text.amount),
             home: galley(text.home),
+            noted: noted.then(|| galley(NOTED.to_owned())),
             why: text.why,
             unknown: text.unknown,
             incoming: text.incoming,
@@ -139,27 +154,42 @@ impl RegisterState {
         });
     }
 
-    /// Have match rows `rows` laid out with `painter`'s fonts.
+    /// Have match rows `rows` laid out with `painter`'s fonts, each
+    /// marked when `cx`'s noted records hold it.
     fn show_window(
         &mut self,
         painter: &egui::Painter,
-        ledger: LedgerCx<'_>,
-        labels: &Labels,
+        cx: RegisterCx<'_>,
         rows: std::ops::Range<usize>,
     ) {
         let w = &self.window;
         let ppp = painter.pixels_per_point();
-        if w.first == rows.start && w.rows.len() == rows.len() && w.pixels_per_point == ppp {
+        if w.first == rows.start
+            && w.rows.len() == rows.len()
+            && w.pixels_per_point == ppp
+            && w.notes_generation == cx.notes_generation
+        {
             return;
         }
+        let journal = cx.ledger.books.ledger().journal();
+        let noted = |txn: TxnId| {
+            let Some(noted) = cx.noted else {
+                return false;
+            };
+            journal
+                .txn(txn)
+                .id
+                .is_some_and(|id| noted.contains(journal.strings.get(id)))
+        };
         self.window = Window {
             first: rows.start,
             pixels_per_point: ppp,
+            notes_generation: cx.notes_generation,
             rows: self.ids[rows]
                 .iter()
                 .map(|&txn| {
-                    let text = model::row_text(ledger.books, ledger.triage, labels, txn);
-                    Row::lay_out(painter, text)
+                    let text = model::row_text(cx.ledger.books, cx.ledger.triage, cx.labels, txn);
+                    Row::lay_out(painter, text, noted(txn))
                 })
                 .collect(),
         };
@@ -177,6 +207,11 @@ pub(crate) struct RegisterCx<'a> {
     pub(crate) projects: &'a Projects,
     /// The days the shared period covers.
     pub(crate) range: DateRange,
+    /// The records with notes, which a row marks; `None` before the
+    /// first poll.
+    pub(crate) noted: Option<&'a HashSet<String>>,
+    /// Bumps whenever [`Self::noted`] may have changed.
+    pub(crate) notes_generation: u64,
 }
 
 /// Draw the register. Returns the record id of a row clicked, whose
@@ -190,9 +225,9 @@ pub(crate) fn ui(
 ) -> Option<String> {
     let RegisterCx {
         ledger,
-        labels,
         projects,
         range,
+        ..
     } = cx;
     let TransactionsState {
         register, accounts, ..
@@ -212,7 +247,7 @@ pub(crate) fn ui(
         .id_salt("cashflow_register")
         .auto_shrink([false, false])
         .show_rows(ui, ROW_HEIGHT, total, |ui, rows| {
-            register.show_window(ui.painter(), ledger, labels, rows.clone());
+            register.show_window(ui.painter(), cx, rows.clone());
             let first = register.window.first;
             for (i, row) in register.window.rows.iter().enumerate() {
                 if row_ui(ui, palette, columns, row, first + i) {
@@ -433,13 +468,25 @@ fn row_ui(ui: &mut egui::Ui, palette: &Palette, columns: Columns, row: &Row, ind
         egui::Rect::from_x_y_ranges(rect.left() + from..=rect.left() + to - 8.0, rect.y_range())
     };
     painter.galley(left(0.0, &row.date), row.date.clone(), palette.text_muted);
+    // The marker takes the end of the payee cell, which the payee is
+    // clipped short of.
+    let marker = row.noted.as_ref().map_or(0.0, |m| m.size().x + 6.0);
     painter
-        .with_clip_rect(cell(columns.payee, columns.account))
+        .with_clip_rect(cell(columns.payee, columns.account - marker))
         .galley(
             left(columns.payee, &row.payee),
             row.payee.clone(),
             palette.text,
         );
+    if let Some(noted) = &row.noted {
+        let at = right(columns.account - 8.0, noted);
+        painter.galley(at, noted.clone(), palette.text_muted);
+        let mark = egui::Rect::from_min_size(at, noted.size());
+        let id = egui::Id::unique(("cashflow_register_noted", index));
+        ui.interact(mark, id, Sense::hover())
+            .on_hover_text("Has notes")
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Has notes"));
+    }
     let account_color = if row.unknown {
         palette.warning
     } else {

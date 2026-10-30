@@ -14,17 +14,19 @@
 //!
 //! - **Wide** (≥ [`TWO_COLUMNS`]): the facts on the left, a
 //!   [`ACTIONS_WIDTH`] column of actions on the right.
-//! - **Narrow**: one column, why → actions → similar → source.
+//! - **Narrow**: one column, why → actions → similar → source → notes.
 //!
 //! Its actions are the Categorize section ([`categorize`]), the Project
 //! section ([`project`]) under it, the Transfer section ([`transfer`]),
 //! first when a transfer is suggested or linked, and the record's own:
 //! copy it, show its payee. The Similar section ([`similar`]) lists the
 //! transactions like it, under the why in the facts column, and its "Use …"
-//! pre-fills Categorize.
+//! pre-fills Categorize. The Notes section ([`notes`]) closes the facts
+//! column: the thread of notes left on the record and a box to add one.
 
 pub mod categorize;
 pub mod model;
+pub mod notes;
 pub mod project;
 pub mod similar;
 pub mod transfer;
@@ -72,6 +74,8 @@ pub(crate) struct DetailState {
     project: project::ProjectState,
     /// What the Project section's pickers choose from, per load.
     project_choices: project::ProjectChoices,
+    /// Its Notes section's draft and laid-out thread.
+    notes: notes::NotesState,
 }
 
 /// One record's text and galleys, and what they were made from.
@@ -109,6 +113,12 @@ impl DetailState {
         self.categorize = categorize::CategorizeState::default();
         self.transfer = transfer::TransferState::default();
         self.project = project::ProjectState::default();
+        self.notes = notes::NotesState::default();
+    }
+
+    /// A note the Notes section queued failed to post with `err`.
+    pub(crate) fn note_failed(&mut self, err: String) {
+        self.notes.post_failed(err);
     }
 
     /// A vault write failed with `err`: the section that queued it says
@@ -441,6 +451,8 @@ enum Click {
     Project(project::Event),
     /// Something the Similar section asked for.
     Similar(similar::Event),
+    /// Something the Notes section asked for.
+    Notes(notes::Event),
 }
 
 /// Draw the open record's detail, over `under`, the view the rail names.
@@ -480,13 +492,22 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui, under: View) -> DetailO
     }
 
     let DetailState {
+        open,
         cached,
         categorize,
         transfer,
         project,
         project_choices,
-        ..
+        notes,
     } = &mut state;
+    // The thread is the open record's once the app has read it, which it
+    // does before the frame; until then the section waits.
+    let thread = cx.notes.thread;
+    let notes = (open.as_deref() == Some(thread.record.as_str())).then_some(notes::Section {
+        state: notes,
+        thread,
+        saving: cx.notes.saving,
+    });
     match cached.as_mut() {
         Some(Cached {
             text: Some(text),
@@ -517,6 +538,7 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui, under: View) -> DetailO
                     choices: project_choices,
                     legs: &text.projects,
                 },
+                notes,
             };
             if let Some(c) = detail_ui(ui, palette, text.tier, g, widths, sections) {
                 click = Some(c);
@@ -597,6 +619,11 @@ fn act(
         }
         Some(Click::Agentium) => {
             cx.open_card = text.and_then(|t| t.why.agentium.clone());
+        }
+        Some(Click::Notes(event)) => {
+            if let Some(record) = state.open.as_deref() {
+                notes::act(&mut state.notes, event, record, cx.notes.outbox);
+            }
         }
         Some(Click::Categorize(event)) => {
             let (Some(text), Some(ledger)) = (text, cx.ledger) else {
@@ -713,8 +740,17 @@ fn missing_ui(ui: &mut egui::Ui, palette: &Palette, under: View, record: Option<
     back
 }
 
-/// The action sections' state, which [`detail_ui`] draws with.
+/// The sections' state, which [`detail_ui`] draws with.
 struct Sections<'a> {
+    categorize: categorize::Section<'a>,
+    transfer: &'a transfer::TransferState,
+    project: project::Section<'a>,
+    /// The Notes section, once the open record's thread is read.
+    notes: Option<notes::Section<'a>>,
+}
+
+/// The action sections' state, which [`actions_ui`] draws with.
+struct Actions<'a> {
     categorize: categorize::Section<'a>,
     transfer: &'a transfer::TransferState,
     project: project::Section<'a>,
@@ -729,6 +765,17 @@ fn detail_ui(
     widths: Widths,
     sections: Sections<'_>,
 ) -> Option<Click> {
+    let Sections {
+        categorize,
+        transfer,
+        project,
+        notes,
+    } = sections;
+    let actions = Actions {
+        categorize,
+        transfer,
+        project,
+    };
     let mut click = None;
     ui.horizontal(|ui| {
         if ui
@@ -764,6 +811,10 @@ fn detail_ui(
                             on(why_ui(ui, palette, g));
                             on(similar::section_ui(ui, palette, &g.similar).map(Click::Similar));
                             source_ui(ui, palette, g);
+                            if let Some(notes) = notes {
+                                let event = notes::section_ui(ui, palette, notes, widths.facts);
+                                on(event.map(Click::Notes));
+                            }
                         },
                     );
                     ui.add_space(GUTTER);
@@ -772,7 +823,7 @@ fn detail_ui(
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             ui.set_width(widths.actions);
-                            on(actions_ui(ui, palette, g, sections));
+                            on(actions_ui(ui, palette, g, actions));
                         },
                     );
                 });
@@ -780,9 +831,13 @@ fn detail_ui(
                 hero_ui(ui, palette, tier, g, false);
                 postings_ui(ui, palette, g);
                 on(why_ui(ui, palette, g));
-                on(actions_ui(ui, palette, g, sections));
+                on(actions_ui(ui, palette, g, actions));
                 on(similar::section_ui(ui, palette, &g.similar).map(Click::Similar));
                 source_ui(ui, palette, g);
+                if let Some(notes) = notes {
+                    let event = notes::section_ui(ui, palette, notes, widths.facts);
+                    on(event.map(Click::Notes));
+                }
             }
         });
     click
@@ -974,13 +1029,13 @@ fn actions_ui(
     ui: &mut egui::Ui,
     palette: &Palette,
     g: &Galleys,
-    sections: Sections<'_>,
+    actions: Actions<'_>,
 ) -> Option<Click> {
-    let Sections {
+    let Actions {
         categorize,
         transfer,
         project,
-    } = sections;
+    } = actions;
     let mut click = None;
     let mut on = |c: Option<Click>| {
         if c.is_some() {

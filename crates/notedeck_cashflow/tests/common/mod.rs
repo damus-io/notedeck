@@ -976,6 +976,28 @@ pub fn wait_vault(
     read_vault(state, kind)
 }
 
+/// Post `texts` as notes on `record` from [`account`], oldest first, and
+/// wait until they land. Registers the vault root too, so the notes the
+/// app posts unwrap in the host's nostrdb as well.
+pub fn post_notes(state: &mut CashflowTestState, record: &str, texts: &[&str]) {
+    let app_ctx = state.notedeck.app_context();
+    let ndb = &*app_ctx.ndb;
+    let vault = Vault::new(&ACCOUNT_SECRET).expect("a vault");
+    vault.register(ndb);
+    let filter = Filter::new()
+        .kinds([u64::from(cashflow::notes::KIND)])
+        .build();
+    let sub = ndb.subscribe(&[filter]).expect("subscribe");
+    let mut after = 0;
+    for text in texts {
+        after = cashflow::notes::post(&vault, ndb, record, text, after)
+            .expect("post")
+            .created_at;
+    }
+    let wait = ndb.wait_for_all_notes_within(sub, texts.len() as u32, INGEST_TIMEOUT);
+    block_on(wait).expect("the notes landed");
+}
+
 /// The newest revision of every one of [`account`]'s vault records of
 /// `kind`, by `d`, as they stand: for a second kind after [`wait_vault`],
 /// whose subscription is spent once it returns.

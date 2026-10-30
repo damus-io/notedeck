@@ -77,6 +77,8 @@ pub struct ViewCx<'a> {
     pub tuning: &'a cashflow::adventure::XpTuning,
     /// Whether the triage inbox shows the XP a categorization earns.
     pub xp_feedback: bool,
+    /// The notes left on transactions, and where the detail queues one.
+    pub notes: crate::notes::NotesCx<'a>,
 }
 
 /// The goals found on the Headway boards, and which find they came from.

@@ -44,9 +44,12 @@ const FRAMES: usize = 15;
 /// chip, and its "Move to a project account…" button added 16, all
 /// egui's. The Similar section's heading row, its tally, its "Same payee"
 /// line, the two coffees' rows and "Show all" added 32, their accesskit
-/// nodes and labels and the heading's row. Measured, not chosen; if it
+/// nodes and labels and the heading's row. The Notes section's heading,
+/// its "No notes yet." line, the note box and the row "Post note" sits in
+/// added 34, all egui's: their accesskit nodes, the text box's and the
+/// button's atoms and the row's child `Ui`. Measured, not chosen; if it
 /// moves, measure it again and write the new figure down.
-const MEASURED_DETAIL_ALLOCS: u64 = 316;
+const MEASURED_DETAIL_ALLOCS: u64 = 350;
 
 /// How far above the measured figure a frame may land and still be
 /// unchanged: a different machine has measured a frame one or two

@@ -7,6 +7,10 @@
 //! link are written through the vault before the app's first load
 //! (`common::detail_harness`), so the detail traces them to their notes.
 //!
+//! Its Notes section posts a sealed kind-1111 note, which comes back
+//! through the app's subscription into the thread and marks the
+//! register's row.
+//!
 //! Its Similar section lists the coffees and the other side's amount, a
 //! row opens its own entry, and "Use …" pre-fills Categorize without
 //! writing.
@@ -27,7 +31,7 @@ use cashflow::kinds;
 use cashflow::projects::{ProjectRoot, Projects};
 use common::{
     CashflowTestState, DESKTOP, DETAIL_AGENTIUM, MOBILE, VaultNote, detail_fixture, detail_harness,
-    harness, loaded_harness, publish_account_meta, publish_account_project, read_vault,
+    harness, loaded_harness, post_notes, publish_account_meta, publish_account_project, read_vault,
     snapshot_harness, step_until, triage_app, wait_vault, watch_vault,
 };
 use egui::accesskit::Role;
@@ -899,6 +903,76 @@ fn move_to_a_project_account_writes_an_override() {
     }));
 }
 
+/// Wait until `label` is on screen, stepping frames: what a note that
+/// lands through the ingest thread needs.
+fn until_shown(harness: &mut Harness<'static, CashflowTestState>, label: &str) {
+    let deadline = std::time::Instant::now() + common::INGEST_TIMEOUT;
+    while harness.query_by_label(label).is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {label:?}"
+        );
+        harness.step();
+    }
+}
+
+/// A note typed into the detail posts on "Post note", comes back into
+/// the thread, and marks the record's register row; the other rows stay
+/// unmarked.
+#[test]
+fn a_note_posts_and_marks_the_register_row() {
+    let mut harness = open_on("card:1");
+    // The vault root, so the note the app seals unwraps here.
+    watch_vault(harness.state_mut());
+    assert!(harness.query_by_label("No notes yet.").is_some());
+    assert!(disabled(&harness, "Post note"), "nothing to post yet");
+
+    harness.get_by_role(Role::MultilineTextInput).focus();
+    harness.run();
+    harness
+        .get_by_role(Role::MultilineTextInput)
+        .type_text("receipt in the drawer");
+    harness.run();
+    harness.get_by_label("Post note").click();
+    harness.run();
+    until_shown(&mut harness, "receipt in the drawer");
+    assert!(harness.query_by_label("Notes (1)").is_some());
+    assert!(harness.query_by_label("you · just now").is_some());
+    assert!(disabled(&harness, "Post note"), "the box was cleared");
+    until_shown(&mut harness, "Post note");
+    assert!(harness.query_by_label("Saving…").is_none());
+
+    harness.get_by_label("← Transactions").click();
+    harness.run();
+    assert_eq!(harness.get_all_by_label("Has notes").count(), 1);
+    // A note never categorizes: the coffee is still unknown.
+    assert!(
+        harness
+            .state()
+            .app
+            .triage()
+            .is_some_and(|t| t.inputs.edits.overrides.is_empty())
+    );
+}
+
+/// Notes written elsewhere (the CLI, another device) read in the order
+/// they were written, and a reopened detail reads its own thread.
+#[test]
+fn a_thread_reads_oldest_first() {
+    let mut harness = open_on("card:1");
+    post_notes(harness.state_mut(), "card:1", &["first", "second"]);
+    until_shown(&mut harness, "Notes (2)");
+    let top = |label: &str| {
+        let node = harness.get_by_label(label);
+        node.accesskit_node().bounding_box().expect("drawn").y0
+    };
+    assert!(top("first") < top("second"), "oldest first");
+
+    harness.state_mut().app.set_open_txn(Some("card:4"));
+    harness.run();
+    assert!(harness.query_by_label("No notes yet.").is_some());
+}
+
 /// An uncategorized coffee's detail, wide: facts on the left, actions on
 /// the right.
 #[test]
@@ -1057,4 +1131,25 @@ fn snapshot_detail_similar() {
     harness.state_mut().app.set_open_txn(Some("card:7"));
     harness.run();
     harness.snapshot("cashflow_detail_similar");
+}
+
+/// The coffee with two notes, the thread at the bottom of the facts
+/// column.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_detail_notes() {
+    let mut app = triage_app();
+    app.set_open_txn(Some("card:1"));
+    let mut harness = snapshot_harness(app, TALL);
+    post_notes(
+        harness.state_mut(),
+        "card:1",
+        &[
+            "Receipt is in the shoebox.",
+            "Split with Sam: he owes half.",
+        ],
+    );
+    until_shown(&mut harness, "Notes (2)");
+    harness.run();
+    harness.snapshot("cashflow_detail_notes");
 }

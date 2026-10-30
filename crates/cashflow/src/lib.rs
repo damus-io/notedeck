@@ -24,7 +24,8 @@
 //! sources each recorded, and [`unknown`] groups what nothing has
 //! categorized yet into a triage queue, which [`triage`] counts down and
 //! writes the inbox's edits for. [`detail`] shows one record's facts and
-//! what decided its account. [`net`] is the one definition of
+//! what decided its account, and [`notes`] the notes left on one,
+//! sealed kind-1111 comments that never feed derive. [`net`] is the one definition of
 //! income, expenses and net every report totals with. [`goals`] reads the
 //! financial goals that live as `cashflow-goal` blocks on Headway cards,
 //! and measures each one's progress and whether it is on track.
@@ -50,6 +51,7 @@ pub mod journal;
 pub mod kinds;
 pub mod manifest;
 pub mod net;
+pub mod notes;
 pub mod plan;
 pub mod prices;
 pub mod projects;

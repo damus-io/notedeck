@@ -8,7 +8,8 @@
 //! (`login`/`logout`), the vault's synced settings and categorization rules
 //! (`rule`), the per-transaction edits (`categorize`, `uncategorize`,
 //! `split`, `transfer`, `edits`), the triage queue (`unknown`), one
-//! record's facts and what decided its account (`show`), the chart
+//! record's facts and what decided its account (`show`), the notes on
+//! one (`note`), the chart
 //! of accounts' metadata and aliases (`account`), the goals on Headway
 //! cards (`goals`), the Adventure's skills, quests and achievements
 //! (`skills`, `quests`, `achievements`), and the help surface.
@@ -28,6 +29,7 @@ mod edit_cmd;
 mod goals_cmd;
 mod help;
 mod journal_cmd;
+mod note_cmd;
 mod prices_cmd;
 mod rule_cmd;
 mod show_cmd;
@@ -172,6 +174,14 @@ async fn execute(run: Run) -> Result<(), String> {
             books,
             json,
         } => show_cmd::show(&dir, &run, record_id, books, *json).await,
+        Command::Note {
+            record_id,
+            text,
+            json,
+        } => {
+            let mut session = Session::open(&dir, &run).await?;
+            note_cmd::note(&mut session, record_id, text.as_deref(), *json).await
+        }
         Command::Account(AccountCommand::Ls {
             books,
             account,

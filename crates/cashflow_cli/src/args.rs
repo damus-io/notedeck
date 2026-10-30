@@ -117,6 +117,13 @@ pub enum Command {
         books: BooksArgs,
         json: bool,
     },
+    /// `cashflow note <record-id> [<text>...] [--json]`.
+    Note {
+        record_id: String,
+        /// The note to add, its words joined by spaces; `None` lists.
+        text: Option<String>,
+        json: bool,
+    },
     /// `cashflow account ...`.
     Account(AccountCommand),
     /// `cashflow goals [--board <slug>]... [--author <key>] [--headway-db <path>] [--json]`.
@@ -597,6 +604,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
                 json,
             }
         }
+        "note" => note_command(positionals, json)?,
         "account" => account_command(positionals, &flags, json)?,
         "goals" => no_positionals(
             positionals,
@@ -944,6 +952,20 @@ fn write_of(flags: &Flags, json: bool) -> Write {
 /// Exactly `N` operands, or `usage`.
 fn operands<const N: usize>(positionals: Vec<String>, usage: &str) -> Result<[String; N], String> {
     <[String; N]>::try_from(positionals).map_err(|_| usage.to_owned())
+}
+
+/// `note <record-id> [<text>...]`: the words after the record are the note.
+fn note_command(positionals: Vec<String>, json: bool) -> Result<Command, String> {
+    let mut positionals = positionals.into_iter();
+    let record_id = positionals
+        .next()
+        .ok_or("`note` takes <record-id> [<text>...] (see `cashflow note --help`)")?;
+    let words: Vec<String> = positionals.collect();
+    Ok(Command::Note {
+        record_id,
+        text: (!words.is_empty()).then(|| words.join(" ")),
+        json,
+    })
 }
 
 /// `categorize <record-id> <account>`.

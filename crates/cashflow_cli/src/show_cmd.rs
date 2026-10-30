@@ -1,10 +1,11 @@
 //! `cashflow show <record-id>`: one transaction's facts and what decided
 //! its account, read from [`cashflow::detail`], the same model the app's
-//! detail view draws.
+//! detail view draws, then the notes left on it ([`cashflow::notes`]).
 
 use cashflow::CashflowDir;
 use cashflow::chart::Chart;
 use cashflow::detail::{self, Decision, TxnDetail, Written};
+use cashflow::notes;
 use cashflow::projects::Projects;
 use ledgerdb::{Amount, Commodities, TxnFlag};
 use serde_json::{Value, json};
@@ -12,6 +13,7 @@ use serde_json::{Value, json};
 use crate::args::{BooksArgs, Run};
 use crate::books_cmd::loaded_books;
 use crate::journal_cmd::day_of;
+use crate::note_cmd;
 use crate::vault_cmd::Session;
 
 /// `cashflow show <record-id>`: print the record's detail, or with `--json`
@@ -26,12 +28,17 @@ pub async fn show(
 ) -> Result<(), String> {
     let session = Session::open_if_logged_in(dir, run).await?;
     let loaded = loaded_books(dir, session.as_ref(), books)?;
-    let projects = match &session {
+    let (projects, thread) = match &session {
         Some(session) => {
             let txn = session.txn()?;
-            Chart::load(&session.ndb, &txn, session.vault.author()).projects()
+            let author = session.vault.author();
+            let projects = Chart::load(&session.ndb, &txn, author).projects();
+            (
+                projects,
+                notes::notes_of(&session.ndb, &txn, author, record),
+            )
         }
-        None => Projects::default(),
+        None => (Projects::default(), Vec::new()),
     };
     let Some(detail) = detail::of(&loaded.books, &loaded.inputs, &projects, record) else {
         return Err(format!(
@@ -39,10 +46,18 @@ pub async fn show(
         ));
     };
     let commodities = &loaded.books.ledger().journal().commodities;
+    let me = session.as_ref().map(|s| s.vault.author());
     if json {
-        println!("{}", detail_json(&detail, commodities));
+        let mut out = detail_json(&detail, commodities);
+        if let Some(me) = me {
+            out["notes"] = note_cmd::notes_json(&thread, me);
+        }
+        println!("{out}");
     } else {
         print!("{}", detail_text(&detail, commodities));
+        if let Some(me) = me.filter(|_| !thread.is_empty()) {
+            print!("\nnotes:\n{}", note_cmd::notes_text(&thread, me));
+        }
     }
     Ok(())
 }

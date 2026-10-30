@@ -6,6 +6,10 @@
 //! [`crate::kinds`], `d = <prefix>:<id>`, its fields as tags and its content
 //! empty. Bulk transaction data never goes here; it lives in journal segments.
 //!
+//! The one thing in the vault that isn't a record is a note on a
+//! transaction ([`crate::notes`]): a regular kind-1111 comment, appended
+//! rather than replaced, posted with [`Vault::post`] and sealed the same way.
+//!
 //! ## Tags, read in place
 //!
 //! A record's fields are tags (`["value", "CAD"]`), not JSON content, so a
@@ -190,6 +194,9 @@ pub enum VaultError {
     /// id that the record's own string read never finds.
     #[error("field '{0}' holds a 64-hex value, which nostrdb stores as an id; prefix it")]
     HexValue(&'static str),
+    /// A note has no text once trimmed.
+    #[error("a note needs some text")]
+    EmptyNote,
     /// Signing, sealing or ingesting the record failed.
     #[error("couldn't write the record into the vault: {0}")]
     Write(#[from] WriteError),
@@ -292,6 +299,30 @@ impl Vault {
             after,
         )?)
     }
+
+    /// Post `note`, a regular (not replaceable) note such as a kind-1111
+    /// comment, stamped `created_at`: signed by the account, sealed and
+    /// ingested. It has no slot for a later write to supersede, so the
+    /// caller picks the stamp (see [`crate::notes::post`]).
+    ///
+    /// Like [`Self::write`], it is readable once nostrdb's ingest lands.
+    pub fn post(
+        &self,
+        ndb: &Ndb,
+        note: NoteBuilder<'_>,
+        created_at: u64,
+    ) -> Result<Written, VaultError> {
+        let secret = self.member.secret_key.secret_bytes();
+        // A full signed note, id and all: the seal peel re-parses it.
+        let rumor = note
+            .options(nostrdb::NoteBuildOptions::default())
+            .created_at(created_at)
+            .sign(&secret)
+            .build()
+            .ok_or(WriteError::Build)?;
+        let frame = sns::ingest_rumor(ndb, &self.keys, &self.member, &rumor)?;
+        Ok(Written { created_at, frame })
+    }
 }
 
 /// The newest revision of record `id` of type `T` that `author` wrote,
@@ -370,10 +401,16 @@ fn note_d<'a>(note: &Note<'a>) -> Option<&'a str> {
 
 /// The `d` tag for record `id` under `prefix`: `<prefix>:<id>`.
 fn d_tag(prefix: &str, id: &str) -> Result<String, VaultError> {
+    check_id(id)?;
+    Ok(format!("{prefix}:{id}"))
+}
+
+/// `id` is a usable record id: non-empty, with no whitespace.
+pub(crate) fn check_id(id: &str) -> Result<(), VaultError> {
     if id.is_empty() || id.chars().any(char::is_whitespace) {
         return Err(VaultError::BadId(id.to_owned()));
     }
-    Ok(format!("{prefix}:{id}"))
+    Ok(())
 }
 
 #[cfg(test)]

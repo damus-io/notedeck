@@ -167,6 +167,8 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
                 labels: cx.labels,
                 projects: cx.projects,
                 range: cx.period.resolve(cx.today).range,
+                noted: cx.notes.noted,
+                notes_generation: cx.notes.generation,
             };
             if let Some(record) = register::ui(ui, palette, register, state) {
                 cx.open_txn = Some(record);

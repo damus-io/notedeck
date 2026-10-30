@@ -80,6 +80,7 @@ pub mod journal;
 pub mod layers;
 pub mod money;
 pub mod news;
+pub mod notes;
 pub mod period;
 pub mod plan_job;
 pub mod route;
@@ -180,6 +181,9 @@ pub struct CashflowApp {
     adventure_feedback: bool,
     /// The nav stack's top the open detail was last seeded from.
     seen_route: route::SeenRoute,
+    /// The notes left on transactions: the register's markers, the open
+    /// detail's thread, and the posts it queued.
+    notes: notes::NoteSource,
 }
 
 /// What a frame did that the chrome's nav stack has to follow.
@@ -252,6 +256,7 @@ impl CashflowApp {
             tuning: XpTuning::default(),
             adventure_feedback: true,
             seen_route: route::SeenRoute::default(),
+            notes: notes::NoteSource::default(),
         }
     }
 
@@ -537,6 +542,7 @@ impl CashflowApp {
             tuning,
             adventure_feedback,
             seen_route: _,
+            notes,
         } = self;
         let zone = journal.as_ref().map_or(Zone::Local, JournalSource::zone);
         // An `Arc` of it, so the views can read it while the journal is
@@ -616,6 +622,7 @@ impl CashflowApp {
                     lands,
                     tuning,
                     xp_feedback: *adventure_feedback,
+                    notes: notes.cx(),
                 };
                 if cx.states.detail.open().is_some() {
                     let out = views::detail::ui(&mut cx, ui, *view);
@@ -781,12 +788,21 @@ impl notedeck::App for CashflowApp {
     /// [`Self::render_nav`], which seeds the state from the stack first.
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let lands = ctx.navigator.pass().lands();
+        // After render_nav has seeded which detail is open, so its thread
+        // is read for this frame.
+        self.notes.update(ctx, self.views.detail.open());
         let nav = self.ui_with(ui, ctx.renderer3d, lands);
         if lands {
             nav.reconcile(ctx.navigator);
         }
         self.update_plans(ctx, ui);
         self.flush_writes(ctx);
+        if let Some(err) = self.notes.flush(ctx) {
+            self.views.detail.note_failed(err);
+        }
+        if self.notes.is_saving() {
+            ui.ctx().request_repaint_after(BUSY_REPAINT);
+        }
         self.flush_news(ctx);
         let open = self.take_open_card();
         AppResponse::action(open.map(|card| AppAction::Open(OpenUri::new(card))))

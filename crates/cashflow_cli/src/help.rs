@@ -1045,7 +1045,7 @@ patterns it matches on), override, split or transfer link that decided it,
 when that vault note was written and by which agentium session; or that
 nothing has, and it is still on an importer default. An edit of this record
 that didn't apply is listed with the reason, such as a split that doesn't
-add up.
+add up. Last, the notes left on it with `note`, when logged in.
 
 A record the loaded books don't hold (its layer left out, or its segment not
 synced to this machine) is an error.",
@@ -1059,6 +1059,28 @@ synced to this machine) is an error.",
         examples: &[
             "cashflow show amex:2024-01-02-0001",
             "cashflow show amex:2024-01-02-0001 --json | jq '.meta'",
+        ],
+    },
+    CommandHelp {
+        name: "note",
+        group: CATEGORIZE,
+        summary: "List a transaction's notes, or leave one",
+        usage: &["note <record-id> [<text>...] [--json]"],
+        details: "\
+With only a record id, print the notes left on that transaction, oldest
+first, each with when it was written and who by. With text after it, add
+the text as a new note and publish it; the words are joined by spaces, so
+quoting is optional.
+
+A note is a NIP-22 comment (kind 1111) on the record, sealed into the vault
+like every edit: a relay sees only the envelope. Notes are append-only and
+never change how the transaction is categorized. The record id isn't
+checked against the books, so a note can be left on a record whose segment
+isn't on this machine. `show` prints the notes too.",
+        options: &[("--json", "Machine-readable output")],
+        examples: &[
+            "cashflow note amex:2024-01-02-0001",
+            "cashflow note amex:2024-01-02-0001 receipt is in the shoebox",
         ],
     },
     CommandHelp {

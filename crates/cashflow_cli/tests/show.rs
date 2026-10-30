@@ -32,7 +32,12 @@ const BOOKS: &str = "\
 
 /// A logged-in harness with [`BOOKS`] imported.
 fn setup() -> Cashflow {
-    let cf = Cashflow::knowing("show");
+    setup_knowing("show")
+}
+
+/// [`setup`] with a binary that knows `command`.
+fn setup_knowing(command: &str) -> Cashflow {
+    let cf = Cashflow::knowing(command);
     cf.ok(&["login", NSEC]);
     let books = cf.dir().join("books.ledger");
     std::fs::write(&books, BOOKS).unwrap();
@@ -119,4 +124,44 @@ fn an_unknown_record_fails() {
     assert!(err.contains("no transaction with id 'test:99'"), "{err}");
     let err = expect_failure(cf.run(&["show"]));
     assert!(err.contains("`show` takes <record-id>"), "{err}");
+}
+
+/// `note` adds a note and lists the thread oldest first; `show` prints it
+/// under the detail, and `--json` carries it.
+#[test]
+fn notes_add_then_list() {
+    let cf = setup_knowing("note");
+    assert!(cf.ok(&["note", "test:1"]).contains("no notes on test:1"));
+
+    let added = cf.ok(&["note", "test:1", "receipt", "in", "the", "drawer"]);
+    assert!(added.contains("noted on test:1"), "{added}");
+    let second = json(&cf.ok(&["note", "test:1", "returned one", "--json"]));
+    assert_eq!(second["record_id"], "test:1");
+    assert_eq!(second["text"], "returned one");
+
+    let listed = json(&cf.ok(&["note", "test:1", "--json"]));
+    let texts: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(texts, ["receipt in the drawer", "returned one"]);
+    assert_eq!(listed[0]["mine"], true);
+    assert!(listed[1]["created_at"].as_u64() > listed[0]["created_at"].as_u64());
+
+    let text = cf.ok(&["note", "test:1"]);
+    assert!(text.contains("you  receipt in the drawer"), "{text}");
+    let shown = cf.ok(&["show", "test:1"]);
+    assert!(shown.contains("notes:\n"), "{shown}");
+    assert!(shown.contains("you  returned one"), "{shown}");
+    let shown = json(&cf.ok(&["show", "test:1", "--json"]));
+    assert_eq!(shown["notes"][0]["text"], "receipt in the drawer");
+    // A note never categorizes anything.
+    assert_eq!(shown["decided"]["by"], "default");
+
+    // Another record's thread is its own.
+    assert!(cf.ok(&["note", "test:2"]).contains("no notes on test:2"));
+    let err = expect_failure(cf.run(&["note"]));
+    assert!(err.contains("`note` takes <record-id>"), "{err}");
 }
