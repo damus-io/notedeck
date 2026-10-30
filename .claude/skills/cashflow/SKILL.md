@@ -88,10 +88,14 @@ the queue until they are linked, and no rule should take them.
   categorize those rows one by one, or write a rule on `--meta` instead.
 
 To see a group's rows before deciding: `cashflow report reg expenses:unknown
---payee '<pattern>'` (date, payee, amount). To see one row's raw metadata
-(`raw-merchant`, `raw-city`, `raw-description`, `raw-zap-p`, …), export its
-day and find its id: `cashflow export --begin <day> --end <next day>`, then
-the block holding `; id: <record-id>`.
+--payee '<pattern>'` (date, payee, amount). To see one row in full, take an
+id from `record_ids` and run `cashflow show <record-id> --json`: its legs
+with home amounts, its raw metadata under `meta` (`raw-merchant`, `raw-city`,
+`raw-description`, `raw-zap-p`, …), and under `decided` what put it where it
+is now (`by`: `default`, `rule` with its `rule_id` and `patterns`,
+`override`, `split`, `transfer`, each with when and by which session it was
+`written`). `rejected` lists any edit of the row that didn't apply, and why.
+It is also how to answer "why is this charge in expenses:unknown".
 
 ### 2. Rule or override
 

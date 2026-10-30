@@ -19,6 +19,15 @@ pub(super) fn secs(date: &str) -> u64 {
     u64::from(Date::parse(date).unwrap().days()) * 86_400 + 43_200
 }
 
+/// The stamp of an edit `id` written at noon UTC on `date`.
+pub(super) fn written(id: &str, date: &str) -> Stamp {
+    Stamp {
+        id: id.to_owned(),
+        created_at: secs(date),
+        agentium: None,
+    }
+}
+
 /// What a fold reads besides the books.
 pub(super) struct World {
     pub derive: DeriveInputs,
@@ -241,11 +250,8 @@ fn bookkeeping_counts_edits_by_when_they_were_written() {
         rule: 0,
         pattern: Some(0),
     }];
-    world.derive.provenance.rules = vec![Stamp {
-        id: "r1".to_owned(),
-        created_at: secs("2024-02-10"),
-    }];
-    world.derive.provenance.overrides = vec![secs("2024-03-10")];
+    world.derive.provenance.rules = vec![written("r1", "2024-02-10")];
+    world.derive.provenance.overrides = vec![written("t:4", "2024-03-10")];
     let adventure = world.fold(&books_with(text, &edits), None);
     let counts = |month: &str| {
         let at = adventure

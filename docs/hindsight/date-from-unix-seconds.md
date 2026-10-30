@@ -11,3 +11,4 @@ caller divides by 86 400 itself and keeps its own `now()`.
 - headway:cashflow/boat-burst-capital — ~1 min: a seventh `imported / 86_400` in `notedeck_cashflow::views::settings::model` for a source's last import, and `days() * 86_400` again in its test fixture
 - headway:cashflow/right-gain-gym — ~1 min: an eighth `days() * 86_400` (`noon()` in `notedeck_cashflow/tests/projects.rs`) to stamp board completions
 - headway:cashflow/regret-sing-attitude — ~1 min: a ninth `days() * 86_400` (`secs()` in `cashflow/src/adventure/tests.rs`) to stamp vault edits for Bookkeeping
+- headway:cashflow/blue-liar-minor — ~1 min: `cashflow show` prints the UTC day of a segment's `imported` and a note's `created_at`; made `cashflow_cli::journal_cmd::day_of` pub for `show_cmd` rather than add a tenth `/ 86_400`

@@ -23,7 +23,8 @@
 //! [`transfers`] finds the moves between the owner's own accounts that two
 //! sources each recorded, and [`unknown`] groups what nothing has
 //! categorized yet into a triage queue, which [`triage`] counts down and
-//! writes the inbox's edits for. [`net`] is the one definition of
+//! writes the inbox's edits for. [`detail`] shows one record's facts and
+//! what decided its account. [`net`] is the one definition of
 //! income, expenses and net every report totals with. [`goals`] reads the
 //! financial goals that live as `cashflow-goal` blocks on Headway cards,
 //! and measures each one's progress and whether it is on track.
@@ -41,6 +42,7 @@ pub mod chart;
 pub mod config;
 pub mod config_edit;
 pub mod csv;
+pub mod detail;
 pub mod edits_cache;
 pub mod goals;
 pub mod import;

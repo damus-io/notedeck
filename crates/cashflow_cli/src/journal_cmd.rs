@@ -624,6 +624,6 @@ fn rows_text(rows: Rows) -> String {
 }
 
 /// The UTC day of unix time `secs`.
-fn day_of(secs: u64) -> Date {
+pub fn day_of(secs: u64) -> Date {
     Date::from_days((secs / 86_400).min(u64::from(u32::MAX)) as u32)
 }

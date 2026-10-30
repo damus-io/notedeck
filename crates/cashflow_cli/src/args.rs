@@ -110,6 +110,12 @@ pub enum Command {
     Edits { by: Option<String>, json: bool },
     /// `cashflow unknown [--source <s>] [--limit <n>] [--in <c>] [--json]`.
     Unknown(UnknownArgs),
+    /// `cashflow show <record-id> [books options] [--in <c>] [--json]`.
+    Show {
+        record_id: String,
+        books: BooksArgs,
+        json: bool,
+    },
     /// `cashflow account ...`.
     Account(AccountCommand),
     /// `cashflow goals [--board <slug>]... [--author <key>] [--headway-db <path>] [--json]`.
@@ -591,6 +597,15 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation, Strin
             }),
             "unknown",
         )?,
+        "show" => {
+            let usage = "`show` takes <record-id> (see `cashflow show --help`)";
+            let [record_id] = operands(positionals, usage)?;
+            Command::Show {
+                record_id,
+                books: books_args(&flags)?,
+                json,
+            }
+        }
         "account" => account_command(positionals, &flags, json)?,
         "goals" => no_positionals(
             positionals,

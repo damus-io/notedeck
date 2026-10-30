@@ -34,6 +34,15 @@ pub const WINDOW_DAYS: u32 = 5;
 /// two accounts under these is a transfer, not income or spending.
 pub const OWN_ROOTS: &[&str] = &["assets", "liabilities"];
 
+/// Whether `account` (a full name) is the owner's own: under one of
+/// [`OWN_ROOTS`].
+pub fn is_own(account: &str) -> bool {
+    account
+        .split(':')
+        .next()
+        .is_some_and(|root| OWN_ROOTS.contains(&root))
+}
+
 /// A pair of transactions that look like one transfer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Suggestion {
@@ -96,10 +105,7 @@ pub fn suggest(raw: &Ledger, edits: &Edits) -> Vec<Suggestion> {
                 .flat_map(|l| [l.a.as_str(), l.b.as_str()]),
         )
         .collect();
-    let is_own = |account: AccountId| {
-        let root = accounts.full_name(account).split(':').next();
-        root.is_some_and(|root| OWN_ROOTS.contains(&root))
-    };
+    let is_own = |account: AccountId| is_own(accounts.full_name(account));
 
     let mut found = Vec::new();
     let by_txid = pair_by_txid(journal, &is_default, &is_own, &decided, &mut found);

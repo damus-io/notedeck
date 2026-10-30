@@ -43,7 +43,7 @@ use ledgerdb::{Accounts, Edits, Leg, Override, Split, TransferLink};
 use nostrdb::{Ndb, Tags, Transaction};
 use nostrdb_net::Pubkey;
 
-use crate::edits_cache::Provenance;
+use crate::edits_cache::{Provenance, Stamp};
 use crate::kinds;
 use crate::vault::{self, Record, SCHEMA_VERSION, Stored, TagWriter};
 
@@ -414,12 +414,16 @@ fn live<'s, 'a, B>(
         .filter_map(|s| s.body.body.as_ref().map(|body| Live { id: s.id, body }))
 }
 
-/// The `created_at` of each live edit in `stored`, in [`live`]'s order.
-fn stamps<'s, B>(stored: &'s [Stored<'_, EditNote<'_, B>>]) -> impl Iterator<Item = u64> + 's {
+/// The [`Stamp`] of each live edit in `stored`, in [`live`]'s order.
+fn stamps<'s, B>(stored: &'s [Stored<'_, EditNote<'_, B>>]) -> impl Iterator<Item = Stamp> + 's {
     stored
         .iter()
         .filter(|s| s.body.body.is_some())
-        .map(|s| s.created_at)
+        .map(|s| Stamp {
+            id: s.id.to_owned(),
+            created_at: s.created_at,
+            agentium: s.body.agentium.map(str::to_owned),
+        })
 }
 
 /// The record `id` in `stored`, which is sorted by id.

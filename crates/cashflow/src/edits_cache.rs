@@ -102,6 +102,7 @@ impl DeriveInputs {
                 .map(|r| Stamp {
                     id: r.id.to_owned(),
                     created_at: r.created_at,
+                    agentium: r.body.agentium.map(str::to_owned),
                 })
                 .collect(),
             ..Provenance::default()
@@ -128,16 +129,22 @@ impl DeriveInputs {
     /// When the edit that decided a transaction `why` was written, if a
     /// vault note decided it.
     pub fn written_at(&self, why: Why) -> Option<u64> {
+        self.stamp(why).map(|s| s.created_at)
+    }
+
+    /// The vault note that decided a transaction `why`: its id, when it
+    /// was written and by which session, if a vault note decided it.
+    pub fn stamp(&self, why: Why) -> Option<&Stamp> {
         let p = &self.provenance;
         match why {
             Why::Untouched | Why::Default => None,
             Why::Rule(i) => {
                 let owner = self.owners.get(i as usize)?;
-                p.rules.get(owner.rule as usize).map(|r| r.created_at)
+                p.rules.get(owner.rule as usize)
             }
-            Why::Transfer(i) => p.links.get(i as usize).copied(),
-            Why::Override(i) => p.overrides.get(i as usize).copied(),
-            Why::Split(i) => p.splits.get(i as usize).copied(),
+            Why::Transfer(i) => p.links.get(i as usize),
+            Why::Override(i) => p.overrides.get(i as usize),
+            Why::Split(i) => p.splits.get(i as usize),
         }
     }
 
@@ -153,9 +160,10 @@ impl DeriveInputs {
     }
 }
 
-/// Which vault note each of a [`DeriveInputs`]' edits came from, and when
-/// it was written, so a transaction's [`Why`] can be traced to a note and a
-/// day: what the triage inbox's "categorized today" counts.
+/// Which vault note each of a [`DeriveInputs`]' edits came from, when it
+/// was written and by which session, so a transaction's [`Why`] can be
+/// traced to a note and a day: what the triage inbox's "categorized today"
+/// counts, and what the detail view's "why" names.
 ///
 /// Each list runs parallel to what the edits hold: [`Self::rules`] to the
 /// live rules [`DeriveInputs::owners`] index, the others to
@@ -164,25 +172,29 @@ impl DeriveInputs {
 pub struct Provenance {
     /// The live rules, in order.
     pub rules: Vec<Stamp>,
-    /// Each live override's `created_at`.
-    pub overrides: Vec<u64>,
-    /// Each live split's `created_at`.
-    pub splits: Vec<u64>,
-    /// Each live link's `created_at`.
-    pub links: Vec<u64>,
+    /// The live overrides, by record id.
+    pub overrides: Vec<Stamp>,
+    /// The live splits, by record id.
+    pub splits: Vec<Stamp>,
+    /// The live links, by [`crate::vault_edits::link_id`].
+    pub links: Vec<Stamp>,
     /// The ids ([`crate::vault_edits::link_id`]) of links whose newest note
     /// clears them: unlinked, or dismissed as a suggestion. Neither is
     /// suggested again.
     pub cleared_links: HashSet<String>,
 }
 
-/// A vault record's id and when its newest revision was written.
+/// A vault record's id, when its newest revision was written, and the
+/// session that wrote it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stamp {
     /// The record id.
     pub id: String,
     /// Its `created_at`.
     pub created_at: u64,
+    /// The `agentium:<word-id>` session that wrote the revision, if one
+    /// did. Like the time, it never makes two [`DeriveInputs`] differ.
+    pub agentium: Option<String>,
 }
 
 /// What one [`EditsCache::poll`] changed.

@@ -5,7 +5,7 @@
 use ledgerdb::{Date, Edits, Override};
 
 use super::achievements::{self, Unlocked};
-use super::tests::{TODAY, World, groceries, salary, secs, xp};
+use super::tests::{TODAY, World, groceries, salary, secs, written as stamp, xp};
 use super::*;
 use crate::goals::{Goal, parse_goal};
 use crate::projects::ProjectRoot;
@@ -63,7 +63,7 @@ fn triage_world(written: &[&str]) -> Triaged {
     );
     let mut world = World::new();
     world.derive = DeriveInputs::from_edits(edits);
-    world.derive.provenance.overrides = written.iter().map(|d| secs(d)).collect();
+    world.derive.provenance.overrides = written.iter().map(|d| stamp("", d)).collect();
     Triaged { books, world }
 }
 

@@ -1029,6 +1029,39 @@ every row's payee contains, and --source when the rows share one. Replace
         ],
     },
     CommandHelp {
+        name: "show",
+        group: CATEGORIZE,
+        summary: "One transaction in full, and what categorized it",
+        usage: &["show <record-id> [--in <commodity>] [--layer <name>]... [--except <name>]... [--rules <toml>] [--json]"],
+        details: "\
+Print one transaction of the categorized books by its `; id:`: its date,
+payee and segment (source, layer, when imported), every leg with its amount
+in --in's commodity [default: CAD] when it is in another and a rate exists,
+the project each leg's account is in, and its metadata (the importers'
+raw-merchant, raw-city, raw-description and the like) and comments.
+
+Then why its counter leg went where it did: the rule (its id and the payee
+patterns it matches on), override, split or transfer link that decided it,
+when that vault note was written and by which agentium session; or that
+nothing has, and it is still on an importer default. An edit of this record
+that didn't apply is listed with the reason, such as a split that doesn't
+add up.
+
+A record the loaded books don't hold (its layer left out, or its segment not
+synced to this machine) is an error.",
+        options: books_options![
+            (
+                "--in <commodity>",
+                "Show amounts in this too [default: CAD]",
+            ),
+            ("--json", "Machine-readable output"),
+        ],
+        examples: &[
+            "cashflow show amex:2024-01-02-0001",
+            "cashflow show amex:2024-01-02-0001 --json | jq '.meta'",
+        ],
+    },
+    CommandHelp {
         name: "account",
         group: CATEGORIZE,
         summary: "The chart of accounts: names, icons, projects and aliases",
