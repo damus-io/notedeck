@@ -13,6 +13,7 @@ use crate::{Layers, Period, View, ui::palette::Palette};
 
 pub mod adventure;
 pub mod categories;
+pub mod detail;
 pub mod goals;
 pub mod overview;
 pub mod projects;
@@ -63,6 +64,12 @@ pub struct ViewCx<'a> {
     /// A `headway:<board>/<word-id>` card to open in notedeck once this
     /// frame is drawn, set by a view that links to one.
     pub open_card: Option<String>,
+    /// The record whose detail to open once this frame is drawn, set by a
+    /// view whose row links to one.
+    pub open_txn: Option<String>,
+    /// Whether this pass draws the view the chrome's nav stack is at, or is
+    /// landing on ([`notedeck::NavPass::lands`]): the one that takes keys.
+    pub lands: bool,
     /// The XP rates the Adventure folds with.
     pub tuning: &'a cashflow::adventure::XpTuning,
     /// Whether the triage inbox shows the XP a categorization earns.
@@ -116,6 +123,8 @@ pub struct ViewStates {
     pub(crate) goals: goals::GoalsState,
     /// The Adventure's fold.
     pub(crate) adventure: adventure::AdventureState,
+    /// The transaction detail open over the view, and its cached text.
+    pub(crate) detail: detail::DetailState,
 }
 
 impl ViewStates {

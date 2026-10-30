@@ -181,10 +181,19 @@ enum Click {
     Accept(usize),
     /// Dismiss it.
     Dismiss(usize),
+    /// Open the detail of the row of group `group` that is transaction
+    /// `txn`.
+    Open {
+        /// The group it is in.
+        group: usize,
+        /// The transaction.
+        txn: TxnId,
+    },
 }
 
 /// Draw the inbox, queueing on `outbox` the writes it asks for, and
-/// floating the XP each earns at `xp`'s rates when it is given.
+/// floating the XP each earns at `xp`'s rates when it is given. Returns
+/// the record id of a row clicked, whose detail to open.
 #[profiling::function]
 pub(crate) fn ui(
     ui: &mut egui::Ui,
@@ -192,7 +201,7 @@ pub(crate) fn ui(
     outbox: &mut Vec<Action>,
     xp: Option<&XpTuning>,
     state: &mut TransactionsState,
-) {
+) -> Option<String> {
     let TransactionsState {
         inbox, accounts, ..
     } = state;
@@ -288,8 +297,14 @@ pub(crate) fn ui(
         }
         Some(Click::Accept(index)) => answer(inbox, outbox, xp, index, true),
         Some(Click::Dismiss(index)) => answer(inbox, outbox, xp, index, false),
+        Some(Click::Open { group, txn }) => {
+            let group = inbox.groups.get(group)?;
+            let row = group.rows.iter().find(|r| r.txn == txn)?;
+            return row.record.clone();
+        }
         None => {}
     }
+    None
 }
 
 /// Queue the write that accepts (or dismisses) suggestion `index`, and
@@ -472,8 +487,26 @@ fn group_ui(
                 txn: row.txn,
             };
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&row.text).size(13.0).color(palette.text));
-                if row.record.is_some() && ui.small_button("This one…").clicked() {
+                let text = RichText::new(&row.text).size(13.0).color(palette.text);
+                let opens = row.record.is_some();
+                let label = egui::Label::new(text).sense(if opens {
+                    egui::Sense::click()
+                } else {
+                    egui::Sense::hover()
+                });
+                let label = ui.add(label);
+                if opens
+                    && label
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Open its detail")
+                        .clicked()
+                {
+                    out.click = Some(Click::Open {
+                        group: group.index,
+                        txn: row.txn,
+                    });
+                }
+                if opens && ui.small_button("This one…").clicked() {
                     out.click = Some(Click::Pick(target));
                 }
             });

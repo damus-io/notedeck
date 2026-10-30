@@ -263,6 +263,27 @@ fn a_payee_opens_its_transactions() {
     assert!(harness.query_by_label("2 transactions").is_some());
 }
 
+/// A payee with one transaction in the period opens that transaction's
+/// detail rather than a register of one: Farmers Market's one groceries
+/// run.
+#[test]
+fn a_payee_with_one_transaction_opens_its_detail() {
+    let mut app = synthetic_app();
+    app.set_view(View::Categories);
+    app.set_period(Period::AllTime);
+    let mut harness = harness(app, DESKTOP);
+    drill_to_groceries(&mut harness);
+
+    harness
+        .get_by_role_and_label(Role::Button, "Farmers Market")
+        .click();
+    harness.run();
+
+    assert_eq!(harness.state().app.view(), View::Categories);
+    assert!(harness.state().app.open_txn().is_some());
+    assert!(harness.query_by_label("← Categories").is_some());
+}
+
 /// With no books loaded the view says so rather than drawing empty columns.
 #[test]
 fn no_books_says_so() {

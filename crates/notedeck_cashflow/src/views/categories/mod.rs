@@ -254,16 +254,27 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
             });
         });
 
-    if let Some(click) = clicked {
-        let journal = ledger.books.ledger().journal();
-        cx.states.transactions.show_register(RegisterFilter {
-            payee: journal.strings.get(click.payee).to_owned(),
-            whole_payee: true,
-            account: Some(journal.accounts.full_name(click.account).to_owned()),
-            ..RegisterFilter::default()
-        });
-        cx.open = Some(View::Transactions);
+    let Some(click) = clicked else {
+        return;
+    };
+    let journal = ledger.books.ledger().journal();
+    let filter = RegisterFilter {
+        payee: journal.strings.get(click.payee).to_owned(),
+        whole_payee: true,
+        account: Some(journal.accounts.full_name(click.account).to_owned()),
+        ..RegisterFilter::default()
+    };
+    // A payee with one transaction in the period opens it; more list them.
+    let range = cx.period.resolve(cx.today).range;
+    let ids = super::transactions::model::matching(ledger.books, cx.projects, range, &filter);
+    if let [only] = ids[..]
+        && let Some(record) = journal.txn(only).id
+    {
+        cx.open_txn = Some(journal.strings.get(record).to_owned());
+        return;
     }
+    cx.states.transactions.show_register(filter);
+    cx.open = Some(View::Transactions);
 }
 
 /// One column: its heading and total, its breadcrumb, and its bars. Applies

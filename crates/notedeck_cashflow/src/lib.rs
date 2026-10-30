@@ -43,6 +43,13 @@
 //! cards, as the account, with a [`goal_writer::GoalWriter`]: a comment
 //! when a goal's status changes, and the move to done once it is achieved.
 //!
+//! A transaction's detail opens over whichever view linked to it, as a
+//! [`CashflowRoute::Txn`] on the chrome's nav stack ([`route`]), so the
+//! chrome's back returns to where it was opened from. `render_nav` seeds the
+//! open detail from the stack's top; after the frame, `render` pushes a
+//! detail a row opened, steps back for the detail's own back, and drops
+//! every detail entry when a view is picked over one.
+//!
 //! The Adventure view is the game; the rest of the app stays a dashboard.
 //! Two things cross over. Once the Adventure has been opened, a level-up
 //! or an achievement toasts over whichever view is showing, once per
@@ -50,6 +57,8 @@
 //! Bookkeeping XP a categorization earns, unless the vault's
 //! `adventure.feedback_in_dashboard` setting is off.
 
+use std::any::Any;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -72,12 +81,14 @@ pub mod layers;
 pub mod money;
 pub mod news;
 pub mod period;
+pub mod route;
 pub mod ui;
 mod view;
 pub mod views;
 
 pub use layers::Layers;
 pub use period::Period;
+pub use route::{CashflowRoute, TxnRoute};
 pub use view::View;
 
 use boards::{BoardSource, Boards, ProjectLink};
@@ -156,6 +167,34 @@ pub struct CashflowApp {
     tuning: XpTuning,
     /// Whether the triage inbox shows the XP a categorization earns.
     adventure_feedback: bool,
+    /// The nav stack's top the open detail was last seeded from.
+    seen_route: route::SeenRoute,
+}
+
+/// What a frame did that the chrome's nav stack has to follow.
+#[derive(Default)]
+struct NavOut {
+    /// A detail opened: push its entry.
+    opened: Option<TxnRoute>,
+    /// The detail's own back: step back.
+    back: bool,
+    /// A view was picked over an open detail: drop every detail entry.
+    left: bool,
+}
+
+impl NavOut {
+    /// Queue on `navigator` what the frame did.
+    fn reconcile(self, navigator: &mut notedeck::Navigator) {
+        if self.left {
+            navigator.remove_routes::<CashflowRoute>(|_| true);
+        }
+        if self.back {
+            navigator.back();
+        }
+        if let Some(txn) = self.opened {
+            navigator.push_route(CashflowRoute::Txn(txn));
+        }
+    }
 }
 
 impl Default for CashflowApp {
@@ -198,6 +237,7 @@ impl CashflowApp {
             news_author: None,
             tuning: XpTuning::default(),
             adventure_feedback: true,
+            seen_route: route::SeenRoute::default(),
         }
     }
 
@@ -390,6 +430,17 @@ impl CashflowApp {
         self.view = view;
     }
 
+    /// The record whose detail shows over the view, if one does.
+    pub fn open_txn(&self) -> Option<&str> {
+        self.views.detail.open()
+    }
+
+    /// Show `record`'s detail over the view, as a row's click does but
+    /// without a nav entry: for a chrome-less embedding.
+    pub fn set_open_txn(&mut self, record: Option<&str>) {
+        self.views.detail.set_open(record);
+    }
+
     /// The palette the app draws with this frame.
     pub fn palette(&self) -> &Palette {
         &self.palette
@@ -402,18 +453,28 @@ impl CashflowApp {
     /// [`views::ViewCx`].
     #[profiling::function]
     pub fn ui(&mut self, ui: &mut egui::Ui) {
-        self.ui_with(ui, None);
+        self.ui_with(ui, None, true);
     }
 
     /// [`Self::ui`], a level-up toast's medallion drawn in 3D through
-    /// `renderer` when the host has one.
-    fn ui_with(&mut self, ui: &mut egui::Ui, renderer: Option<&notedeck::Renderer3d>) {
+    /// `renderer` when the host has one. `lands` says this pass draws the
+    /// view the nav stack is at, the one that takes keys
+    /// ([`notedeck::NavPass::lands`]). Returns what the frame did that the
+    /// nav stack has to follow.
+    fn ui_with(
+        &mut self,
+        ui: &mut egui::Ui,
+        renderer: Option<&notedeck::Renderer3d>,
+        lands: bool,
+    ) -> NavOut {
         self.palette.refresh(ui.ctx());
 
+        let mut nav = NavOut::default();
         let narrow = notedeck::ui::is_narrow(ui.ctx());
         let picked = ui::nav::show(ui, &self.palette, self.view, narrow);
         if let Some(view) = picked {
             self.view = view;
+            nav.left |= self.views.detail.leave();
         }
 
         let Self {
@@ -446,6 +507,7 @@ impl CashflowApp {
             news_author: _,
             tuning,
             adventure_feedback,
+            seen_route: _,
         } = self;
         let zone = journal.as_ref().map_or(Zone::Local, JournalSource::zone);
         egui::CentralPanel::default()
@@ -512,19 +574,39 @@ impl CashflowApp {
                     open: None,
                     goals,
                     open_card: None,
+                    open_txn: None,
+                    lands,
                     tuning,
                     xp_feedback: *adventure_feedback,
                 };
-                views::show(*view, &mut cx, ui);
+                if cx.states.detail.open().is_some() {
+                    let out = views::detail::ui(&mut cx, ui, *view);
+                    if out.back {
+                        cx.states.detail.set_open(None);
+                        nav.back = true;
+                    }
+                } else {
+                    views::show(*view, &mut cx, ui);
+                }
                 news.check(&cx.states.adventure, *view == View::Adventure);
                 if let Some(open) = cx.open {
                     *view = open;
+                    nav.left |= cx.states.detail.leave();
+                }
+                if let Some(record) = cx.open_txn.take() {
+                    let title = ledger.map_or_else(
+                        || record.clone(),
+                        |l| views::detail::title_of(l.books, &record),
+                    );
+                    cx.states.detail.set_open(Some(&record));
+                    nav.opened = Some(TxnRoute { record, title });
                 }
                 if let Some(card) = cx.open_card {
                     *open_card = Some(card);
                 }
             });
         news.show(ui, palette, renderer);
+        nav
     }
 
     /// Write the seen note the Adventure's news queued, as the selected
@@ -633,11 +715,54 @@ impl notedeck::App for CashflowApp {
         }
     }
 
+    /// Draw the app from its own state, then have the nav stack follow
+    /// what the frame did, on the pass that lands. Chrome-less embeddings
+    /// (tests) call this alone; the chrome reaches it through
+    /// [`Self::render_nav`], which seeds the state from the stack first.
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        self.ui_with(ui, ctx.renderer3d);
+        let lands = ctx.navigator.pass().lands();
+        let nav = self.ui_with(ui, ctx.renderer3d, lands);
+        if lands {
+            nav.reconcile(ctx.navigator);
+        }
         self.flush_writes(ctx);
         self.flush_news(ctx);
         let open = self.take_open_card();
         AppResponse::action(open.map(|card| AppAction::Open(OpenUri::new(card))))
+    }
+
+    /// Draw one entry of the nav stack: a [`CashflowRoute::Txn`] opens its
+    /// detail over the view, the root (or anything else) shows the view
+    /// alone. Seeded once per change of the top, so a view picked while
+    /// the stack catches up sticks.
+    fn render_nav(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        ui: &mut egui::Ui,
+        token: &Rc<dyn Any>,
+    ) -> AppResponse {
+        if self.seen_route.changed_to(token) {
+            let route = token.downcast_ref::<CashflowRoute>();
+            self.views.detail.set_open(route.map(CashflowRoute::record));
+        }
+        self.render(ctx, ui)
+    }
+
+    /// A detail entry's snapshotted "payee · date"; `None` for the root,
+    /// which the chrome titles "Cashflow".
+    fn nav_title(&self, token: &Rc<dyn Any>) -> Option<String> {
+        let route = token.downcast_ref::<CashflowRoute>()?;
+        Some(route.title().to_owned())
+    }
+
+    /// A detail entry left the stack: close its detail if it is the one
+    /// open.
+    fn cleanup_nav(&mut self, _ctx: &mut AppContext<'_>, token: &Rc<dyn Any>) {
+        let Some(route) = token.downcast_ref::<CashflowRoute>() else {
+            return;
+        };
+        if self.views.detail.open() == Some(route.record()) {
+            self.views.detail.set_open(None);
+        }
     }
 }

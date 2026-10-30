@@ -10,6 +10,9 @@
 //!   by payee, biggest first, each one rule ("categorize all") or one
 //!   override ("this one") away from categorized.
 //!
+//! A register row, or an expanded inbox group's row, opens that
+//! transaction's detail ([`super::detail`]).
+//!
 //! Both read the [`cashflow::triage::Triage`] that came with the books. The
 //! inbox's writes go to [`super::ViewCx::outbox`]; until the re-derive lands
 //! with them, what they took is hidden here so the inbox moves on at once.
@@ -131,11 +134,15 @@ pub(crate) fn ui(cx: &mut ViewCx<'_>, ui: &mut egui::Ui) {
                 projects: cx.projects,
                 range: cx.period.resolve(cx.today).range,
             };
-            register::ui(ui, palette, register, state);
+            if let Some(record) = register::ui(ui, palette, register, state) {
+                cx.open_txn = Some(record);
+            }
         }
         Tab::Inbox => {
             let xp = cx.xp_feedback.then_some(cx.tuning);
-            inbox::ui(ui, palette, cx.outbox, xp, state)
+            if let Some(record) = inbox::ui(ui, palette, cx.outbox, xp, state) {
+                cx.open_txn = Some(record);
+            }
         }
     }
 }

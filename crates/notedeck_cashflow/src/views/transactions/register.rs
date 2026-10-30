@@ -179,14 +179,15 @@ pub(crate) struct RegisterCx<'a> {
     pub(crate) range: DateRange,
 }
 
-/// Draw the register.
+/// Draw the register. Returns the record id of a row clicked, whose
+/// detail to open.
 #[profiling::function]
 pub(crate) fn ui(
     ui: &mut egui::Ui,
     palette: &Palette,
     cx: RegisterCx<'_>,
     state: &mut TransactionsState,
-) {
+) -> Option<String> {
     let RegisterCx {
         ledger,
         labels,
@@ -206,15 +207,23 @@ pub(crate) fn ui(
     let columns = Columns::new(ui.available_width(), narrow);
     header_ui(ui, palette, columns);
     let total = register.ids.len();
+    let mut clicked = None;
     egui::ScrollArea::vertical()
         .id_salt("cashflow_register")
         .auto_shrink([false, false])
         .show_rows(ui, ROW_HEIGHT, total, |ui, rows| {
             register.show_window(ui.painter(), ledger, labels, rows.clone());
-            for row in &register.window.rows {
-                row_ui(ui, palette, columns, row);
+            let first = register.window.first;
+            for (i, row) in register.window.rows.iter().enumerate() {
+                if row_ui(ui, palette, columns, row, first + i) {
+                    clicked = Some(first + i);
+                }
             }
         });
+    let txn = *register.ids.get(clicked?)?;
+    let journal = ledger.books.ledger().journal();
+    let record = journal.txn(txn).id?;
+    Some(journal.strings.get(record).to_owned())
 }
 
 /// The filter bar: payee search, account subtree, source, unknown-only,
@@ -398,11 +407,22 @@ fn header_ui(ui: &mut egui::Ui, palette: &Palette, columns: Columns) {
     );
 }
 
-/// One row of the register. Hovering its account says what decided it.
-fn row_ui(ui: &mut egui::Ui, palette: &Palette, columns: Columns, row: &Row) {
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
+/// One row of the register, match `index`: true when it was clicked, to
+/// open its detail. Hovering its account says what decided it.
+fn row_ui(ui: &mut egui::Ui, palette: &Palette, columns: Columns, row: &Row, index: usize) -> bool {
+    let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), ROW_HEIGHT));
+    // A fresh id over the whole row, so the click lands wherever it is,
+    // keyed by the match so it stays the row's as the window scrolls.
+    let resp = ui.interact(
+        rect,
+        egui::Id::unique(("cashflow_register_row", index)),
+        Sense::click(),
+    );
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, row.payee.text()));
     let painter = ui.painter_at(rect);
+    if resp.hovered() {
+        painter.rect_filled(rect, 4.0, palette.surface);
+    }
     let y = rect.center().y;
     // A galley's top-left so it sits vertically centred, starting at `x`
     // (or, right-aligned, ending there).
@@ -453,9 +473,12 @@ fn row_ui(ui: &mut egui::Ui, palette: &Palette, columns: Columns, row: &Row) {
         rect.bottom() - 0.5,
         egui::Stroke::new(0.5, palette.border),
     );
+    let clicked = resp.clicked();
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     if resp.hover_pos().is_some_and(|at| account_cell.contains(at)) {
         resp.on_hover_ui(|ui| {
             ui.label(RichText::new(&row.why).color(palette.text));
         });
     }
+    clicked
 }

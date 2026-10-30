@@ -13,7 +13,9 @@
 
 #![allow(dead_code)]
 
+use std::any::Any;
 use std::path::Path;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use cashflow::chart::{AccountMeta, record_id};
@@ -315,7 +317,12 @@ impl JournalFixture {
     /// Add `text` (ledger-cli) to the journal as one segment, as an import
     /// or a sync from another machine would.
     pub fn write(&self, text: &str) -> SegmentHash {
-        write_segment(&cashflow::journal::store(&self.dir()), "synthetic", text)
+        self.write_as("synthetic", text)
+    }
+
+    /// [`Self::write`] from source `layer`, in the layer of the same name.
+    pub fn write_as(&self, layer: &str, text: &str) -> SegmentHash {
+        write_segment(&cashflow::journal::store(&self.dir()), layer, text)
     }
 
     /// Give `config.toml` an rsync transport, so the app offers a sync.
@@ -443,6 +450,16 @@ pub struct CashflowTestState {
     /// Every reference the app asked the host to open, oldest first: what
     /// the chrome would route as `AppAction::Open`.
     pub opened: Vec<String>,
+    /// The nav stack's top to draw, as the chrome would hand it to
+    /// `render_nav`; `None` draws through `render`, chrome-less.
+    pub route: Option<Rc<dyn Any>>,
+}
+
+impl CashflowTestState {
+    /// Take the nav requests the app queued since the last take.
+    pub fn take_nav(&mut self) -> Vec<notedeck::NavRequest> {
+        self.notedeck.app_context().navigator.take()
+    }
 }
 
 /// One frame: install notedeck's look on the first, then `update` and
@@ -467,7 +484,10 @@ fn render_cashflow(ui: &mut egui::Ui, state: &mut CashflowTestState) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new())
             .show(ui, |ui| {
-                let response = state.app.render(&mut app_ctx, ui);
+                let response = match &state.route {
+                    Some(token) => state.app.render_nav(&mut app_ctx, ui, token),
+                    None => state.app.render(&mut app_ctx, ui),
+                };
                 if let Some(notedeck::AppAction::Open(open)) = response.action {
                     state.opened.push(open.reference);
                 }
@@ -500,6 +520,7 @@ pub fn test_state(app: CashflowApp) -> CashflowTestState {
         setup_done: false,
         hold_updates: false,
         opened: Vec::new(),
+        route: None,
     }
 }
 
@@ -785,7 +806,7 @@ pub const TRIAGE_CARD: &str = "\
 
 /// What a bank's download holds for the triage tests: pay, rent, the card
 /// payment leaving, and an e-transfer nothing has categorized. Made up.
-const TRIAGE_BANK: &str = "\
+pub const TRIAGE_BANK: &str = "\
 2024-10-01 * Acme Corp payroll
   ; id: bank:1
   assets:checking  4200.00 CAD
@@ -967,4 +988,70 @@ pub struct VaultNote {
     pub cleared: bool,
     /// Its `account` tag, for a rule or an override.
     pub account: Option<String>,
+}
+
+/// The agentium session [`detail_harness`]'s override is written from.
+pub const DETAIL_AGENTIUM: &str = "agentium:oak-flat-lamp";
+
+/// [`TRIAGE_CARD`] and [`TRIAGE_BANK`] in a `$CASHFLOW_DIR`, as sources
+/// `card` and `bank`, for [`detail_harness`].
+pub fn detail_fixture() -> JournalFixture {
+    let fixture = JournalFixture::empty();
+    fixture.write_as("card", TRIAGE_CARD);
+    fixture.write_as("bank", TRIAGE_BANK);
+    fixture
+}
+
+/// A harness of `size` (on the software renderer with `snapshot`) whose
+/// app loads `fixture`'s journal and [`account`]'s vault, which holds two
+/// edits written through the vault before the first load: an override
+/// sending the airline tickets (`card:5`) to `expenses:travel`, written
+/// from [`DETAIL_AGENTIUM`], and a split of the Corner Grocer run
+/// (`card:2`) into groceries and household. Stepped until the books load
+/// with both. Shows the Transactions view.
+pub fn detail_harness(
+    fixture: &JournalFixture,
+    size: egui::Vec2,
+    snapshot: bool,
+) -> Harness<'static, CashflowTestState> {
+    use cashflow::triage::{self, Action};
+
+    let mut app = fixture.app();
+    app.set_view(notedeck_cashflow::View::Transactions);
+    let mut state = test_state(app);
+    let sub = watch_vault(&mut state);
+    {
+        let app_ctx = state.notedeck.app_context();
+        let ndb = &*app_ctx.ndb;
+        let vault = Vault::new(&ACCOUNT_SECRET).expect("a vault");
+        let override_ = Action::Override {
+            record: "card:5".to_owned(),
+            account: "expenses:travel".to_owned(),
+        };
+        triage::apply(&vault, ndb, &override_, Some(DETAIL_AGENTIUM)).expect("override");
+        let leg = |account: &str, qty| ledgerdb::Leg {
+            account: account.to_owned(),
+            qty,
+        };
+        let split = Action::Split {
+            record: "card:2".to_owned(),
+            legs: vec![
+                leg("expenses:food:groceries", 6000),
+                leg("expenses:household", 2420),
+            ],
+        };
+        triage::apply(&vault, ndb, &split, None).expect("split");
+    }
+    wait_vault(&mut state, sub, 2, kinds::OVERRIDE);
+    let mut builder = Harness::builder().with_size(size);
+    if snapshot {
+        builder = builder.renderer(notedeck::software_renderer());
+    }
+    let mut harness = builder.build_ui_state(render_cashflow, state);
+    step_until(&mut harness, "the books load with both edits", |s| {
+        s.app.triage().is_some_and(|t| {
+            t.inputs.edits.overrides.len() == 1 && t.inputs.edits.splits.len() == 1
+        })
+    });
+    harness
 }

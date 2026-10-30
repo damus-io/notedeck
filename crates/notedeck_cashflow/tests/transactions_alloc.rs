@@ -43,9 +43,13 @@ const FRAMES: usize = 15;
 /// view, and painted from its galleys (before that, painting their texts
 /// cost 240 more). It was 190 over the Adventure view's old one-line
 /// placeholder; the empty Goals view that replaced it as the baseline
-/// costs 88 more, and the register's own 352 didn't move. Measured, not
-/// chosen; if it moves, measure it again and write the new figure down.
-const MEASURED_REGISTER_ALLOCS: u64 = 102;
+/// costs 88 more, and the register's own 352 didn't move. Rows that open
+/// their detail added 52, two per row on screen, both accesskit's: the
+/// row's button label and its node's bounds. The harness runs with
+/// accesskit on, which the app only does under a screen reader, and those
+/// labels are what let one click a row. Measured, not chosen; if it moves,
+/// measure it again and write the new figure down.
+const MEASURED_REGISTER_ALLOCS: u64 = 154;
 
 /// How far above the measured figure a frame may land and still be
 /// unchanged: a different machine has measured a frame one or two
